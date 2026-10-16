@@ -22,16 +22,28 @@
  * code path and checks the result, with no wall-clock bound to flake on and
  * no provider involved.
  *
- * Self-check (bottom of file): the abort probe's predicate is asserted
- * against fabricated results so this test goes RED when a broken abort path
- * would stop attributing — the same shape test-file-size-limit.ts applies
- * to itself.
+ * #1382 removed the last two wall-clock assertions this file kept after that
+ * move — Test 2's `elapsedMs >= 5_000` floor and Test 3's `elapsed < 15_000`
+ * ceiling — and replaced them with outcome assertions (`diedToSigkill` and
+ * `killedByInactivityBudget`) behind the generous settle poll in
+ * `lib/poll-until-settled.ts`. The rationale for why an absolute bound is
+ * worse than useless on both sides of that pair is in that helper's header.
+ *
+ * Self-check (bottom of file): the abort probe's predicate AND both outcome
+ * predicates are asserted against fabricated results, so this test goes RED
+ * when a broken kill path would stop attributing — the same shape
+ * test-file-size-limit.ts applies to itself.
  */
 
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSpecialist } from "../src/spawn.ts";
+import {
+  diedToSigkill,
+  killedByInactivityBudget,
+  pollUntilSettled,
+} from "./lib/poll-until-settled.ts";
 import {
   ABORT_PROMPT,
   abortProbePasses,
@@ -92,29 +104,42 @@ try {
   }
 
   // Test 2 — the SIGTERM→SIGKILL escalation: a child that IGNORES SIGTERM is
-  // still killed by the 5s SIGKILL timer (spawn-kill.ts INTERACTIVE_KILL_GRACE_MS). This was previously uncovered — the
+  // still killed by the SIGKILL timer (spawn-kill.ts INTERACTIVE_KILL_GRACE_MS). This was previously uncovered — the
   // real-spawn sections could not demonstrate it, because a healthy real child
   // exits on SIGTERM before the escalation ever matters.
   //
-  // The 5s SIGKILL escalation timer (spawn.ts) is the cost of covering a
-  // previously-uncovered path — the fake child traps SIGTERM, so the abort can
-  // only complete once the escalation fires. Bounded at ~5s, deliberately
-  // accepted: the SIGKILL timer is hardcoded in spawn.ts and out of scope here
-  // (the #296 watchdog implementation must not change for this ticket).
+  // #1382 — this used to prove the escalation by asserting
+  // `p.elapsedMs >= 5_000`. That bound proved nothing about the product at
+  // either end: a saturated host clears 5 s easily, so it never fails for the
+  // right reason, and if the escalation were ever SHORTENED below the grace
+  // period the fake child would exit on SIGTERM and the floor would still
+  // pass while the SIGKILL path went unexercised. It is replaced by an
+  // assertion on the death itself — the child died to SIGKILL (exitCode -9)
+  // and the kill was attributed to the abort — behind the generous settle
+  // poll, so the only clock left in this file is the hang guard in
+  // lib/poll-until-settled.ts. The ~5 s the fake child now costs is the price
+  // of covering the escalation; INTERACTIVE_KILL_GRACE_MS is a hardcoded
+  // export with no env override and product code is out of scope here.
   {
     writeFakePi(true);
     console.log("\n[test] fake child traps SIGTERM; SIGKILL escalation expected...");
+    // Measured from just before the probe (which aborts at abortAtMs), so the
+    // bound covers the escalation from the abort itself and not this file's
+    // bun startup — the bound is a hang guard, never a performance assertion.
+    const startedAt = Date.now();
     const p = await runAbortProbe(ABORT_PROMPT);
-    assert(p.ok, "TERM-trapping child: killCause='abort' + ok=false");
+    const escalated = await pollUntilSettled(
+      () => ({ exitCode: p.exitCode, killCause: p.killCause }),
+      diedToSigkill,
+      { startedAt },
+    );
+    assert(escalated.ok, `TERM-trapping child died to SIGKILL (exit=${p.exitCode})`);
+    assert(
+      !escalated.timedOut,
+      `SIGKILL escalation settled within the ${escalated.waitedMs}ms generous poll bound (never a wall-clock assertion — see lib/poll-until-settled.ts)`,
+    );
     for (const l of p.lines) console.log(l);
-    assert(
-      p.elapsedMs >= 5_000,
-      `SIGKILL escalation fired (wall ${p.elapsedMs}ms ≥ 5000ms; TERM was trapped)`,
-    );
-    assert(
-      p.exitCode === null || p.exitCode === -9,
-      `TERM-trapping child died to SIGKILL (exit=${p.exitCode})`,
-    );
+    assert(p.ok, "TERM-trapping child: killCause='abort' + ok=false");
   }
 
   // Test 3 — a totally silent child is killed by the inactivity watchdog long
@@ -124,13 +149,27 @@ try {
     chmodSync(join(fakeDir, "pi"), 0o755);
     process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
     console.log("\n[test] silent fake child, 2000ms inactivity budget...");
-    const start = Date.now();
+    const startedAt = Date.now();
     const r = await spawnSpecialist(
       { role: "explore", prompt: "irrelevant" },
       { timeoutMs: 60_000 },
     );
-    const elapsed = Date.now() - start;
-    assert(elapsed < 15_000, `inactivity-killed child returned early (took ${elapsed}ms)`);
+    // #1382 — `assert(elapsed < 15_000)` against a 2000 ms budget was the
+    // load-fragile one: 7.5× headroom is still a bound on the HOST (bun
+    // startup + descheduling), not on the watchdog, and on the box that
+    // started #1365 a healthy 2000 ms kill was measured 15 s+ away. What
+    // proves the watchdog fired is its own attribution — killCause and the
+    // budget it recorded — never how long the parent waited to notice.
+    const settled = await pollUntilSettled(
+      () => ({ ok: r.ok, killCause: r.killCause, killBudgetMs: r.killBudgetMs }),
+      (v) => killedByInactivityBudget(v, 2000),
+      { startedAt },
+    );
+    assert(settled.ok, "#296: silent child killed by the inactivity watchdog");
+    assert(
+      !settled.timedOut,
+      `inactivity kill settled within the ${settled.waitedMs}ms generous poll bound of the armed budget (never a wall-clock assertion — see lib/poll-until-settled.ts)`,
+    );
     assert(r.ok === false, "#296: inactivity-killed child reports ok=false");
     assert(r.killCause === "inactivity", "#296: silent child carries killCause='inactivity'");
     assert(r.killBudgetMs === 2000, "#296: inactivity killBudgetMs records the budget");
@@ -174,10 +213,12 @@ try {
     assert(r.killBudgetMs === 1500, "#296: killBudgetMs records the expired wall-clock budget");
   }
 
-  // Self-check — the abort probe's own predicate must discriminate: a
-  // correctly attributed abort passes, and each broken-path shape (no
-  // attribution, ok=true, wrong cause) fails. Same shape test-file-size-limit.ts
-  // applies to itself: a test that cannot go RED is decorative.
+  // Self-check — every predicate this file asserts on must discriminate: a
+  // correctly attributed kill passes, and each broken-path shape fails. Same
+  // shape test-file-size-limit.ts applies to itself: a test that cannot go RED
+  // is decorative. #1382 extends it to the two outcome predicates that
+  // replaced the wall-clock bounds — without these, `diedToSigkill` could
+  // degrade into `return true` and Tests 2/3 would go silently green.
   {
     const fabricated = (killCause: string | undefined, ok: boolean) =>
       abortProbePasses({ ok, lines: [], killCause, exitCode: null, elapsedMs: 0 });
@@ -188,6 +229,36 @@ try {
     assert(fabricated(undefined, false) === false, "self-check: missing killCause fails");
     assert(fabricated("timeout", false) === false, "self-check: wrong cause fails");
     assert(fabricated("abort", true) === false, "self-check: ok=true abort fails");
+
+    // diedToSigkill: the SIGKILL death passes; the deaths the escalation was
+    // NOT responsible for fail. A child that exits 0 answered SIGTERM, so
+    // Test 2 would be covering nothing while still asserting an outcome.
+    assert(diedToSigkill({ exitCode: -9 }) === true, "self-check: SIGKILL death (-9) passes");
+    assert(diedToSigkill({ exitCode: 137 }) === true, "self-check: shell-forwarded 137 passes");
+    assert(diedToSigkill({ exitCode: 0 }) === false, "self-check: clean SIGTERM exit fails");
+    assert(diedToSigkill({ exitCode: 1 }) === false, "self-check: plain failure exit fails");
+    assert(diedToSigkill({ exitCode: -15 }) === false, "self-check: a SIGTERM death fails");
+
+    // killedByInactivityBudget: the watchdog's own attribution passes; every
+    // way it can be wrong (cause missing, another cause, the wrong budget
+    // recorded, ok left true) fails.
+    const inactivity = (
+      killCause: string | undefined,
+      killBudgetMs: number | undefined,
+      ok: boolean,
+    ) => killedByInactivityBudget({ ok, killCause, killBudgetMs }, 2000);
+    assert(inactivity("inactivity", 2000, false) === true, "self-check: inactivity kill passes");
+    assert(inactivity(undefined, 2000, false) === false, "self-check: missing cause fails");
+    assert(inactivity("timeout", 2000, false) === false, "self-check: wrong cause fails");
+    assert(inactivity("inactivity", 1500, false) === false, "self-check: wrong budget fails");
+    assert(
+      inactivity("inactivity", undefined, false) === false,
+      "self-check: missing budget fails",
+    );
+    assert(
+      inactivity("inactivity", 2000, true) === false,
+      "self-check: ok=true inactivity kill fails",
+    );
   }
 } finally {
   // Restore the process-wide env even when a probe above throws — the fake
