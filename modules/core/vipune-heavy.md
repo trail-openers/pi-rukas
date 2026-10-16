@@ -37,10 +37,7 @@ vipune has no built-in TTL. Use `--status`:
 
 ```bash
 vipune add 'tentative observation' --memory-type observation --status candidate
-# NOTE: leave the row a candidate. Promotion is an operator action, not an
-# agent one: no role is granted the memory-update verb in agents.json, and a
-# content-replacing update is refused outright — it can replace a memory in
-# place with no lineage and no undo.
+# Leave the row a candidate. Promotion is an operator action, not an agent one.
 ```
 
 Default to `candidate` for anything you're not certain will outlast this session.
@@ -86,6 +83,10 @@ vipune add 'corrected statement' --supersedes <old-id> --memory-type fact
 # yours to do: see the memory-write boundary in Quick reference.
 ```
 
+**Memory-write boundary:** never run vipune update, delete, prune or promote — those
+are operator actions; correct with `add --supersedes`. The full per-mode statement
+lives under the `Memory-write boundary` heading of the bundled skill.
+
 ## Conflict handling — supersede, don't duplicate
 
 vipune flags conflicts at 0.85 similarity. Three responses:
@@ -128,14 +129,14 @@ vipune list --limit 50 --json | jq .
 
 Look for: duplicates (supersede the older), stale facts (supersede), drift across multiple `observation`-typed entries on the same theme (consolidate into one `fact`/`procedure`).
 
-Two findings you **report rather than act on**, because promotion and removal are operator actions. Put them in your **final report to the dispatcher**, one line per row, with the id verbatim:
+Two findings you **report rather than act on**, because promotion and removal are operator actions. They are **free prose in your final report to the dispatcher** (PM includes it in its reply to the operator) — there is no parser; each row is one line with the id verbatim and the word naming the wanted action. Report only rows you did not write in this session:
 
 ```text
-candidate <id> — promote
-candidate <id> — prune
+candidate <id> promote
+candidate <id> prune
 ```
 
-`vipune list --json` returns `retrieval_count`, `last_retrieved_at`, `created_at`, `memory_type`, `status` and `importance` per row — that is the evidence for both calls, read it from the same listing you are scanning for duplicates. The `/audit` memory panel (`extension/src/memory-panel.ts` / `memory-stats.ts`) gives the aggregate picture (rows by status and type, total/max retrievals, never-retrieved count) plus the candidate ids and types; it does not print per-row age. Candidates that survived ≥5 sessions go up for promotion. Report a candidate for pruning when it matches what `vipune prune` itself keys on: `status = 'candidate' AND retrieval_count < N AND age(created_at) > T` (defaults configurable via `prune_count` / `prune_age_days`). Never propose pruning a `guard` or a row with `importance` high/critical — `vipune prune` hard-excludes both, so such a row is not a prune candidate no matter how stale it looks.
+`vipune list --json` returns `retrieval_count`, `last_retrieved_at`, `created_at`, `memory_type`, `status` and `importance` per row — that is the evidence for both calls, read it from the same listing you are scanning for duplicates. The `/audit` memory panel (`extension/src/memory-panel.ts` / `memory-stats.ts`) gives the aggregate picture (rows by status and type, total/max retrievals, never-retrieved count) plus the candidate ids and types; it does not print per-row age. Candidates that survived ≥5 sessions go up for promotion. Report a candidate for pruning when it matches what the operator's `prune` command keys on: `status = 'candidate' AND retrieval_count < N AND age(created_at) > T` (defaults configurable via `prune_count` / `prune_age_days`) — candidate, never (or barely) retrieved, and old. Never propose pruning a `guard` or a row with `importance` high/critical — that command hard-excludes both, so such a row is not a prune candidate no matter how stale it looks. When something is obsolete with nothing to correct it to, report its id for pruning rather than adding a row.
 
 ## Quick reference
 
@@ -143,15 +144,9 @@ candidate <id> — prune
 vipune search '<term>' --no-hybrid --recency 0.0 --limit 5 --no-touch --json
 vipune add '<distilled fact>' --memory-type <type> [--status candidate] [--supersedes <id>]
 vipune list --limit 50
-# MEMORY-WRITE BOUNDARY (stated once; every other mention defers to this).
-# No agent role promotes, deletes, prunes, or rewrites memory content — those
-# are operator actions. `vipune update`, `delete` and `prune` are granted to no
-# role in agents.json, and an `update` carrying -t/--text is refused ahead of
-# the allowlist by isDestructiveMemoryWrite (extension/src/bash-pattern-wildcard.ts).
-# In trust mode (the default) the agents.json grant is doctrine, not a runtime
-# gate — so never run these verbs, regardless of what the gate appears to allow.
-# To correct a memory, write a new one with `--supersedes <id>`, which preserves
-# the original. To retire one, report it (see Periodic consolidation).
+# MEMORY-WRITE BOUNDARY: never run `vipune update`, `delete`, `prune` or
+# `promote` — operator actions; correct with `add --supersedes <id>`, which
+# preserves the original row. Report one to retire it (Periodic consolidation).
 ```
 
 **One atomic fact per `vipune add` call.** For the full doctrine (deep search recipes, failure-mode catalogue, all examples), load the bundled skill via `--skill <skills-dir>/vipune` (pi-rukas installs it to `~/.pi/agent/skills/vipune`).

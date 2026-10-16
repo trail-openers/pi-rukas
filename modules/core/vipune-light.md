@@ -47,6 +47,6 @@ vipune add "finding $(whoami)"   # ❌ DANGEROUS — shell expansion
 
 ## Freshness check before acting
 
-Memories are snapshots. Verify against current state before using a memory as the basis for action: list the path, search for the symbol, check the CLI help. If stale, correct it with `vipune add '<new>' --supersedes <old-id> --memory-type <type>`; that is the only correction available to you. No agent role promotes, deletes, prunes, or rewrites memory content: those are operator actions, so never run the update, delete or prune verbs (see the Quick reference in `skill/vipune/SKILL.md` for why the grant is doctrine, not a runtime gate).
+Memories are snapshots. Verify against current state before using a memory as the basis for action: list the path, search for the symbol, check the CLI help. If stale, correct it with `vipune add '<new>' --supersedes <old-id> --memory-type <type>`; that is the only correction available to you. Never run `vipune update`, `delete`, `prune` or `promote` — those are operator actions; correct with `add --supersedes`.
 
 For the full doctrine load the bundled skill via `--skill <skills-dir>/vipune`. Run `vipune --help` for options.

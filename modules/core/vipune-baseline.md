@@ -52,7 +52,7 @@ Memories are snapshots. **Before acting on a recalled memory, verify against cur
 vipune add 'corrected statement' --supersedes <old-id> --memory-type fact
 ```
 
-Superseding is the correction — it preserves the original row. Promoting, deleting, pruning or rewriting memory content are operator actions, never agent ones: the update, delete and prune verbs are granted to no role in `agents.json`, an update carrying `-t`/`--text` is refused ahead of the allowlist by `isDestructiveMemoryWrite` (`extension/src/bash-pattern-wildcard.ts`), and in trust mode (the default) the grant is doctrine rather than a runtime gate — so never run these verbs, regardless.
+Superseding is the correction — it preserves the original row. **Memory-write boundary:** never run vipune update, delete, prune or promote — those are operator actions; correct with `add --supersedes`. Per-mode enforcement is stated under the `Memory-write boundary` heading of the bundled vipune skill.
 
 ## Single-quote safety — non-negotiable
 
