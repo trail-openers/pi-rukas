@@ -1059,13 +1059,22 @@ Rules, all enforced by the parser and each covered in `extension/smoke-tests/tes
 - **Protected paths cannot be exempted.** An entry naming `.github/`, `.pi/`, `CODEOWNERS` or `agents.json` is rejected with a trace and contributes nothing; you cannot list away the files that define how your own cycle is judged.
 - **Repo root only.** A workstream worktree stages its output exactly as before, so a deliverable inside an exempt prefix is still committed.
 - **Rejected with a trace:** absolute paths, any `..` segment, glob characters, anything that normalises to empty, and protected paths. A rejected line is skipped — the good lines beside it still apply.
-- **The file is read once per cycle**, before the branch step, from the working tree; `.pi/` is a protected path, so a develop patch cannot widen the exemption mid-cycle. An absent file is an empty list (behaviour unchanged); an unreadable file is an empty list **plus a trace** — a broken config never blocks a cycle that is otherwise clean, and never fails silently.
+- **The file is read once per cycle**, before the branch step, from the working tree; `.pi/` is a protected path, so a develop patch cannot widen the exemption mid-cycle. An absent file is an empty list (behaviour unchanged); an unreadable file is an empty list **plus a trace and a handoff record** — a broken config never blocks a cycle that is otherwise clean, and never fails silently. If the cycle then blocks on repo-root residue, the handoff says `the exemption file could not be read: EACCES …` beside the paths: every one of them was judged against an empty list, so a file you legitimately exempted reads exactly like residue.
 
 ```bash
 cat .pi/dirty-root-exempt            # what this project exempts
 # rejected entries and read failures are traced as:
 # [pi-rukas] WARN work-driver: .pi/dirty-root-exempt (<repoRoot>) — entry "…" rejected (glob)
 ```
+
+**A file the cycle itself wrote under an exempt prefix is still stashed.** The
+list decides what counts as *dirt*, not what counts as *the cycle's work*: if a
+develop step writes a deliverable into a directory you exempted, the abort path
+still moves it into a recoverable `git stash` entry rather than leaving it in the
+working tree, and the claim built afterwards does not name it. A pre-existing
+`settings.local.json` you never touched is neither saved nor restored. The two
+are told apart by `git status`'s own code read before the reset — `A`/`M`/`R`
+means the cycle wrote it, `??` means it was merely sitting there.
 
 **Do not** use this to work around a genuinely dirty root. If the named file is source you or another workstream wrote, commit or move it — that is what the gate is for.
 

@@ -39,7 +39,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { traceWarn } from "./trace.ts";
+import type { DriverContext } from "./work-driver-context.ts";
 import { isProtectedPath } from "./work-driver-doctrine.ts";
+import type { WorkEvent } from "./workflow-state.ts";
 
 /** The config file, read from repoRoot's working tree once per cycle. */
 export const DIRTY_ROOT_EXEMPT_FILE = ".pi/dirty-root-exempt";
@@ -113,11 +115,11 @@ export function isConfiguredExemptDirtLine(
 
 /** Does a normalised path begin with one of the configured prefixes? */
 export function matchesConfiguredExempt(
-  path: string,
+  relPath: string,
   entries: readonly string[] | undefined,
 ): boolean {
   if (entries === undefined || entries.length === 0) return false;
-  const norm = normaliseRepoPath(path);
+  const norm = normaliseRepoPath(relPath);
   if (norm.length === 0) return false;
   return entries.some((e) => norm === e || norm.startsWith(`${e}/`));
 }
@@ -196,22 +198,33 @@ function traceConfigRead(repoRoot: string, detail: string): void {
  *    a trace**, because a broken config must not block a cycle that is
  *    otherwise clean, and must not fail silently either.
  *
+ * The read failure ALSO comes back in `readFailed`, and that is not redundant
+ * with the trace: a trace line reaches the cycle log and nowhere else, so an
+ * operator who reads only the handoff of a cycle that then blocked on residue
+ * would be told "your repo root is dirty" without being told that the very file
+ * which would have exempted it could not be read. `readDirtyRootExemptForCycle`
+ * documents where that lands.
+ *
  * Every rejection is traced with its reason, so a line the operator wrote and
  * the driver ignored is visible in the cycle log.
  */
-export async function readDirtyRootExempt(repoRoot: string): Promise<string[]> {
+export async function readDirtyRootExempt(
+  repoRoot: string,
+): Promise<{ entries: string[]; readFailed?: string }> {
   let content: string;
   try {
     content = await fs.readFile(path.join(repoRoot, DIRTY_ROOT_EXEMPT_FILE), "utf8");
   } catch (err) {
     const code = (err as NodeJS.ErrnoException | undefined)?.code;
     if (code !== "ENOENT" && code !== "ENOTDIR") {
+      const reason = `${code ?? String(err)}: ${DIRTY_ROOT_EXEMPT_FILE} at ${repoRoot}`;
       traceConfigRead(
         repoRoot,
         `could not be read (${code ?? String(err)}), so nothing is exempt — fix the file or remove it`,
       );
+      return { entries: [], readFailed: reason };
     }
-    return [];
+    return { entries: [] };
   }
   const { entries, rejected } = parseDirtyRootExempt(content);
   for (const r of rejected) {
@@ -220,18 +233,54 @@ export async function readDirtyRootExempt(repoRoot: string): Promise<string[]> {
   if (entries.length > 0) {
     traceConfigRead(repoRoot, `${entries.length} exempt path(s) in effect: ${entries.join(", ")}`);
   }
-  return entries;
+  return { entries };
+}
+
+/**
+ * #1362 — the sentence the handoff shows when the exemption file was unreadable
+ * AND the cycle then blocked on residue. Kept out of the trace alone on
+ * purpose: `traceWarn` reaches the cycle log, and the handoff is the artifact an
+ * operator actually reads. Exported so the branch-step renderer and its test
+ * quote one wording.
+ */
+export function dirtyRootExemptReadNotice(reason: string): string {
+  return `the exemption file could not be read: ${reason} — so NOTHING is exempt this cycle. If a path named below is a tool-local file this project lists in ${DIRTY_ROOT_EXEMPT_FILE}, fix that file (permissions, ownership, or a directory left in its place) and re-run: until it reads, none of its entries apply.`;
+}
+
+/**
+ * The `plumb-report` event carrying that sentence.
+ *
+ * The existing kind is deliberate: a NEW event kind would change the event-log
+ * tail, and `nextStep()` routes on that tail. `plumb-report` is the kind the
+ * handoff already renders (§ plumbing that failed), and appending it before the
+ * branch step's own events cannot disturb any routing decision.
+ */
+export function dirtyRootExemptReadEvent(reason: string): WorkEvent {
+  return {
+    kind: "plumb-report",
+    at: Date.now(),
+    step: "branch",
+    role: "driver",
+    body: dirtyRootExemptReadNotice(reason),
+  };
 }
 
 /**
  * The per-cycle entry point: read the list for the cycle's own project.
  *
- * `DriverContext` rather than a bare path so the call site at
- * `runWorkDriver` stays one line and the file's location remains this
- * module's concern, not the driver's.
+ * `Pick<DriverContext, "repoRoot">` rather than a bare path so the call site at
+ * `runWorkDriver` stays one line and the file's location remains this module's
+ * concern — and so a test can hand it a partial context instead of having to
+ * fabricate a whole `DriverContext` for one string.
+ *
+ * The returned `readFailed` is recorded on the cycle's state by the caller as a
+ * `plumb-report` event — the existing kind, so no new event kind is needed and
+ * `nextStep()`'s routing on the event-log tail is untouched — which is what
+ * makes it reachable in the handoff markdown when the branch step then blocks
+ * on residue.
  */
-export async function readDirtyRootExemptForCycle(ctx: {
-  repoRoot: string;
-}): Promise<readonly string[]> {
+export async function readDirtyRootExemptForCycle(
+  ctx: Pick<DriverContext, "repoRoot">,
+): Promise<{ entries: string[]; readFailed?: string }> {
   return readDirtyRootExempt(ctx.repoRoot);
 }
