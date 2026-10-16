@@ -9,7 +9,7 @@
  */
 
 import type { LensRunResult } from "../src/lens-review.ts";
-import { renderSummary } from "../src/lens-review.ts";
+import { renderSummary } from "../src/lens-review-render.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
