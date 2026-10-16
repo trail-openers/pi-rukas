@@ -12,6 +12,7 @@
  */
 
 import { CAP_TEMPLATES, type FixedCap } from "./headless/caps.ts";
+import type { WorkStep } from "./workflow-state-events.ts";
 
 /**
  * #543 — the FIXED-LITERAL caps (F1 loop / F6 token-budget included). A
@@ -124,3 +125,86 @@ const CAP_TEMPLATE_RE = new RegExp(`^(${Object.keys(CAP_TEMPLATES).join("|")}):`
 export function isKnownCap(cap: string): boolean {
   return (CAP_HIT_FIXED_LITERALS as readonly string[]).includes(cap) || CAP_TEMPLATE_RE.test(cap);
 }
+
+// --- #1362: moved from workflow-state-validate.ts for the 500-line gate (the same
+// #861 seam that brought the cap vocabulary here). Values verbatim; the validator
+// imports them, and workflow-state-schema.ts re-exports WORK_STEPS for importers.
+
+/**
+ * The WorkStep vocabulary as a runtime value. The union type is the source
+ * of truth for TS callers; this tuple exists so runtime readers (the #533
+ * discriminant validator) can test membership — types are erased by the
+ * untyped cast in `readState`, which is exactly why the validator needs it.
+ *
+ * #1362 — moved verbatim from workflow-state-schema.ts for the 500-line gate;
+ * that module re-exports it, so importers keep their path.
+ */
+export const WORK_STEPS: readonly WorkStep[] = [
+  "explore",
+  "plan",
+  "branch",
+  "develop",
+  "adversarial",
+  "commit-pr",
+  "lens-review",
+  "lens-fix",
+  "step-back",
+  "handoff",
+  "ci",
+  "merged",
+];
+
+/** `pipelineState.status` vocabulary. */
+export const KNOWN_STATUSES: readonly unknown[] = [
+  "running",
+  "merged",
+  "handoff",
+  "aborted",
+  // S4a (#1162) — resumable; re-entry treats it as running.
+  "interrupted",
+];
+
+/**
+ * #540 — `pipelineState.incompleteConsolidation.verdicts[].status`
+ * vocabulary. Legacy PR14 entries carry no `status` field at all (they
+ * identify themselves by `paths`); the validator tolerates the absent-
+ * status + `paths` shape and refuses everything else it does not
+ * recognize — the same "extend the union, don't smuggle a field" rule
+ * this module applies to event kinds and steps.
+ *
+ * #778 — `moved` joins the vocabulary: a covered workstream whose declared
+ * path was renamed during develop/consolidation, with the move recorded in
+ * `movedPaths` (the same "extend the union" move that added `unverifiable`
+ * for #540).
+ */
+export const KNOWN_CONSOLIDATION_STATUSES: readonly unknown[] = [
+  "complete",
+  "uncovered",
+  "moved",
+  "unverifiable",
+];
+
+/** `cap-hit.nextStep` vocabulary. */
+export const CAP_HIT_NEXT_STEPS: readonly unknown[] = ["handoff", "step-back", "ci"];
+
+/** `pipelineState.capEvidence.kind` vocabulary (#543). */
+export const CAP_EVIDENCE_KINDS: readonly unknown[] = ["loop", "token-budget"];
+
+/** #543 F5 — `pipelineState.capedPartialState.tree` vocabulary. */
+export const KNOWN_CAPPED_PARTIAL_TREES: readonly unknown[] = [
+  "committed",
+  "dirty-uncommitted",
+  "clean",
+];
+
+/** #543 F5 — `pipelineState.capedPartialState.role` vocabulary. The
+ * dispatch-cap kill is attributed to a role the driver can name, so a
+ * fabricated `cap-hit.role` is rejected with the same rule. */
+export const KNOWN_CAPPED_PARTIAL_ROLES: readonly unknown[] = [
+  "project-manager",
+  "developer",
+  "ops",
+  "explore",
+  "adversarial-developer",
+  "code-review-specialist",
+];
