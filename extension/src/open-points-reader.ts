@@ -20,8 +20,7 @@ import {
   SEVERITY_WORDS,
   openPointsHeadingPattern,
 } from "./open-points-contract.ts";
-import { redactSecrets } from "./secret-patterns.ts";
-import { flattenIssueText } from "./text-flatten.ts";
+import { flattenIssueText, redactThenBound } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
 
 /** Case-folded token without spaces or hyphens: `[CRIT ICAL]` and `[critical]` both fold to `critical`. */
@@ -66,9 +65,18 @@ interface Entry {
 const MAX_OPEN_POINT_ENTRIES = 20;
 /** The cap, exported so a test asserts against the constant rather than a copy of it. */
 export const OPEN_POINT_ENTRY_CAP = MAX_OPEN_POINT_ENTRIES;
-/** Cap the length of one stored entry; see {@link MAX_OPEN_POINT_ENTRIES}. */ const MAX_OPEN_POINT_CHARS = 2000;
-/** Marker for an entry that hit {@link MAX_OPEN_POINT_CHARS}. */
+/**
+ * Cap the length of one stored entry; see {@link MAX_OPEN_POINT_ENTRIES}.
+ *
+ * Exported because the artifact reader bounds the strings it restores from a persisted
+ * file with the SAME number (#1187 fix round 4): two independent 2000s drift, and when
+ * they do the write side clips tighter than the read side and nobody notices.
+ */
+export const OPEN_POINT_CHAR_CAP = 2000;
+/** Marker for an entry that hit {@link OPEN_POINT_CHAR_CAP}. */
 const CLIPPED_MARKER = "…(clipped)";
+/** How many code points survive {@link OPEN_POINT_CHAR_CAP} once the marker fits beside them. */
+const CLIPPED_KEEP = OPEN_POINT_CHAR_CAP - Array.from(CLIPPED_MARKER).length;
 /** Final entry recording what {@link MAX_OPEN_POINT_ENTRIES} dropped from the blocking list. */
 function moreEntriesNote(dropped: number): string {
   return `…and ${dropped} more open-point lines`;
@@ -78,29 +86,20 @@ function moreResolvedNote(dropped: number): string {
   return `…and ${dropped} more resolved open points`;
 }
 
-/** Bound one blocking line, redacting first so a clip can never cut a secret in half. */
-function boundEntry(text: string): string {
-  const { text: redacted } = redactSecrets(text);
-  const chars = Array.from(redacted);
-  return chars.length > MAX_OPEN_POINT_CHARS
-    ? `${chars.slice(0, MAX_OPEN_POINT_CHARS - CLIPPED_MARKER.length).join("")}${CLIPPED_MARKER}`
-    : redacted;
-}
-
 /**
- * The one normaliser for every text a reading stores (#1187 fix round 2).
+ * Bound one stored entry: redact, then clip, so a clip can never cut a secret in half.
  *
- * Redaction and the clip belong here rather than at the `openPoints` write site: the
- * resolved texts become assumptions the PR body renders, and an assumption is public text
- * too. Redacting before clipping matters — clipping first can cut a token into a fragment
- * no pattern recognises (the same reasoning as `redactClip`).
- *
- * Every stored text in `readOpenPoints` goes through this one function, and through it
- * exactly once, from the closing loop: `classifyItem` reads the *raw* flatten (a tag the
- * redactor rewrote would misclassify), and only the stored form is sanitised.
+ * The marker is appended from {@link redactThenBound}'s own `clipped` flag rather than from
+ * a length comparison the caller re-derives: the bound is what knows whether it trimmed,
+ * and a caller that measures the returned string again can lose the marker (measured on
+ * bun 1.4.3 and node 22 — the same expression, `chars.length > max` inside the callee and
+ * `chars.length > max` in the caller, disagreed once the callee was inlined, and the
+ * clipped branch silently returned the un-marked text). `CLIPPED_KEEP` leaves room for the
+ * marker so a bounded entry never exceeds {@link OPEN_POINT_CHAR_CAP} (#1187 fix round 4).
  */
-function storedText(flat: string): string {
-  return boundEntry(flat);
+function boundEntry(text: string): string {
+  const { text: kept, clipped } = redactThenBound(text, CLIPPED_KEEP);
+  return clipped ? `${kept}${CLIPPED_MARKER}` : kept;
 }
 
 /**
@@ -113,6 +112,21 @@ function storedText(flat: string): string {
  */
 function acceptEntry(count: number): boolean {
   return count < MAX_OPEN_POINT_ENTRIES;
+}
+
+/**
+ * Code points an entry has accumulated so far, without building its stored text.
+ *
+ * The bound an entry closes to is {@link OPEN_POINT_CHAR_CAP} over the join of its pieces,
+ * and the join only ever grows, so once that join passes the cap no further piece can move
+ * the stored text — it is clipped either way. Counting the pieces (plus one separator each)
+ * is O(pieces) and never allocates a joined string, so the reader stops bounding an entry it
+ * has already bounded (#1187 fix round 4).
+ */
+function entryChars(entry: Entry): number {
+  let n = 0;
+  for (const piece of entry.pieces) n += piece.length + 1;
+  return n;
 }
 
 /** An ATX heading: 1-6 hashes, then a space or the end of the line. */
@@ -138,6 +152,18 @@ function closesFence(line: string, opener: string): boolean {
 type ItemDisposition = Entry["kind"] | "plain";
 
 /**
+ * Whether any bracketed token in `text` case-folds to CRITICAL (#1187).
+ *
+ * One place for the anywhere-scan, so the fall-through at the end of {@link classifyItem}
+ * and the link-bullet exemption cannot disagree about what a CRITICAL-shaped tag is.
+ */
+function hasCriticalToken(text: string): boolean {
+  return [...text.matchAll(/\[([^\]]*)\]/g)].some(
+    (m) => foldToken(m[1] ?? "") === foldToken(CRITICAL_SEVERITY),
+  );
+}
+
+/**
  * The disposition of one list item, from its flattened text with any task checkbox removed.
  * Severity is recognised only at the start of the text (#1187): a tag behind emphasis or
  * strikethrough is not read, and a CRITICAL-shaped tag anywhere else in the text parks.
@@ -161,13 +187,14 @@ function classifyItem(text: string): ItemDisposition {
     if (isTagLike(token)) return "parked";
     // A markdown link is an ordinary bullet. Any other bracketed token is one we cannot read.
     // An EXACT severity tag is not exempted by a following link: the tag wins, fail closed.
-    return after.startsWith("(") ? "plain" : "parked";
+    // The link exemption is not a blind pass either (#1187 fix round 4): the anywhere-CRITICAL
+    // scan runs on the whole bullet first, so a tag hidden inside link syntax —
+    // `- [x](https://e/#[CRITICAL] who)` — parks instead of reading as an ordinary note.
+    if (after.startsWith("(")) return hasCriticalToken(text) ? "parked" : "plain";
+    return "parked";
   }
   if (/^\W*critical\b/i.test(text)) return "parked";
-  const anywhere = [...text.matchAll(/\[([^\]]*)\]/g)];
-  return anywhere.some((m) => foldToken(m[1] ?? "") === foldToken(CRITICAL_SEVERITY))
-    ? "parked"
-    : "plain";
+  return hasCriticalToken(text) ? "parked" : "plain";
 }
 
 /** What the gate read from an issue's Open points section (#1151, #1187). Every text is flattenIssueText output. */
@@ -195,17 +222,30 @@ export interface OpenPointReading {
  * "(unresolved at the gap-gate cap)" are escaped to literals, so a near-miss heading
  * ("Open points (unresolved at the gap-gate", a reworded tail, a trailing word) does not
  * match and opens no section: the settlement's "no cross-section scan" holds exactly.
+ *
+ * Derived from the FLATTENED constant: invisible characters (U+200B, bidi controls, BOM)
+ * are removed from the pattern rather than required by it. `escapeRegExpLiteral` in the
+ * contract escapes regex metacharacters but not format characters, so a matcher built from
+ * the raw constant turned every stray zero-width character in a pasted heading into a
+ * requirement at that exact position — and a heading that does not match opens no section,
+ * so the gate silently did not run while the body looked clean. Deriving from the flatten
+ * keeps the match an exact literal (a mangled word, a truncated tail or a reworded heading
+ * still opens nothing) while making an unrenderable heading gate the way its visible text
+ * reads (#1187 fix round 4).
  */
 const OPEN_POINTS_ATX = new RegExp(openPointsHeadingPattern());
 
 /**
  * Whether `raw` is the exact OPEN_POINTS_HEADING, read independently of fence state.
  *
- * Deliberately not `flattenIssueText`: an invisible character inside the heading would make
- * a mangled heading match, and a mangled heading is precisely what must NOT open a section.
+ * Both sides of the comparison are flattened — the pattern above is derived from the
+ * flattened constant and the line is flattened here — so a stray invisible character
+ * anywhere in the heading cannot disable the gate (#1187 fix round 4). The match stays an
+ * exact literal: every other difference still opens no section, which is what the
+ * settlement's "no cross-section scan" actually settles.
  */
 function isOpenPointsHeading(raw: string): boolean {
-  return OPEN_POINTS_ATX.test(raw);
+  return OPEN_POINTS_ATX.test(flattenIssueText(raw));
 }
 
 /**
@@ -248,12 +288,18 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
    * An empty piece never becomes an entry at all (#1187 fix round 2): a blank line inside a
    * fence used to open an entry whose only piece was "", which drained into the reading as
    * an empty bullet and consumed a cap slot.
+   *
+   * Saturation is checked BEFORE the entry is built (#1187 fix round 4): the old order
+   * allocated an Entry and a pieces array for every overflow line and threw both away, so a
+   * megabyte section paid one allocation per line for work that was counted and dropped. The
+   * caller skips the flatten for the same reason (see {@link acceptsMore}).
    */
   const push = (kind: Entry["kind"], piece: string): Entry | undefined => {
     if (piece === "") return undefined;
+    const produced = counts[kind]++;
+    if (!acceptEntry(produced)) return undefined;
     const entry: Entry = { kind, text: "", pieces: [piece] };
-    counts[kind]++;
-    if (acceptEntry(counts[kind] - 1)) entries.push(entry);
+    entries.push(entry);
     return entry;
   };
   /**
@@ -268,6 +314,13 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
   const open = (kind: Entry["kind"], piece: string): void => {
     push(kind, piece);
   };
+  /**
+   * Whether one more line of `kind` can be stored (#1187 fix round 4).
+   *
+   * Lets the two accumulation sites skip `flattenIssueText` — the expensive part of the
+   * loop — for a line whose kind is already full and whose text is therefore thrown away.
+   */
+  const acceptsMore = (kind: Entry["kind"]): boolean => acceptEntry(counts[kind]);
   let level = 0; // heading level of the open section; 0 = outside it
   let fence: string | undefined; // opener of the fence we are inside — INSIDE the section only
   let fenceEntry: Entry | undefined; // the one entry a fenced block inside the section becomes
@@ -290,8 +343,18 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
       // Fence bodies are quoted verbatim, so they are flattened here rather than at close.
       // A blank line inside a fence is skipped outright: it is not a piece and, on the
       // opening line, never became an entry of its own (#1187 fix round 2).
+      //
+      // Two bounds keep an unclosed fence linear (#1187 fix round 4): once the entry that
+      // accumulates the block already exceeds the char cap, further lines cannot change the
+      // stored text at all, so they are counted but not flattened or joined; and a piece is
+      // never appended to an entry that is already over the cap, so `pieces` cannot grow
+      // without limit on a body nobody would ever read.
+      if (fenceEntry === undefined || entryChars(fenceEntry) >= OPEN_POINT_CHAR_CAP) {
+        if (closesFence(raw, fence)) fence = undefined;
+        continue;
+      }
       const flat = flattenIssueText(raw);
-      if (fenceEntry !== undefined && flat !== "") fenceEntry.pieces.push(flat);
+      if (flat !== "") fenceEntry.pieces.push(flat);
       if (closesFence(raw, fence)) fence = undefined;
       continue;
     }
@@ -352,19 +415,25 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
     }
     // Indented plain prose continues the item above it — except a bracketed token, which
     // is not prose to fold in and parks on its own instead.
-    const piece = flattenIssueText(raw);
-    if (/^[ \t]/.test(raw) && cur !== undefined && !piece.startsWith("[")) {
-      cur.pieces.push(piece);
+    //
+    // A continuation of a kind that is already full, or of an entry that already exceeds the
+    // char cap, is neither flattened nor appended (#1187 fix round 4): the text was going to
+    // be counted and dropped either way, and a wrapped entry of a megabyte of indented lines
+    // is precisely the pathological body the bounds exist for.
+    if (/^[ \t]/.test(raw) && cur !== undefined && !raw.replace(/^[ \t]+/, "").startsWith("[")) {
+      if (entryChars(cur) < OPEN_POINT_CHAR_CAP && acceptsMore(cur.kind)) {
+        cur.pieces.push(flattenIssueText(raw));
+      }
       continue;
     }
-    cur = push("parked", piece);
+    cur = push("parked", flattenIssueText(raw));
   }
   const reading: OpenPointReading = { points: [], resolved: [], unparsed: [], counts };
   // The ONE place `text` is computed: for every entry, from all its pieces, once. A
   // one-piece entry gets exactly the same treatment as a wrapped one, so no entry can
   // reach a reading with the empty string it was created with.
   for (const entry of entries) {
-    entry.text = storedText(entry.pieces.join(" "));
+    entry.text = boundEntry(entry.pieces.join(" "));
     if (entry.kind === "point") reading.points.push(entry.text);
     else if (entry.kind === "resolved") reading.resolved.push(entry.text);
     else reading.unparsed.push(entry.text);
@@ -395,7 +464,10 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
 export function blockingOpenPointTexts(reading: OpenPointReading): string[] {
   const all = [...reading.points, ...reading.unparsed];
   const produced = reading.counts.point + reading.counts.parked;
-  const kept = all.slice(0, MAX_OPEN_POINT_ENTRIES).map(boundEntry);
+  // No `map(boundEntry)`: every text in a reading is bounded at the single close site in
+  // `readOpenPoints`, so re-bounding here was a second pass over text the reader already
+  // redacted and clipped (#1187 fix round 4).
+  const kept = all.slice(0, MAX_OPEN_POINT_ENTRIES);
   const dropped = produced - kept.length;
   if (dropped > 0) {
     trace(
@@ -414,7 +486,8 @@ export function blockingOpenPointTexts(reading: OpenPointReading): string[] {
  * surface that none of the bounds on the blocking list covered.
  */
 export function resolvedOpenPointTexts(reading: OpenPointReading): string[] {
-  const kept = reading.resolved.slice(0, MAX_OPEN_POINT_ENTRIES).map(boundEntry);
+  // Bounded at the reader's single close site, like the blocking list (#1187 fix round 4).
+  const kept = reading.resolved.slice(0, MAX_OPEN_POINT_ENTRIES);
   const dropped = reading.counts.resolved - kept.length;
   if (dropped > 0) {
     trace(

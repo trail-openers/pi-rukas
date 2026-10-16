@@ -189,6 +189,20 @@ assert(
   counts("- [docs](https://example.com) note").u === 0,
   "bullet starting with a link does not park",
 );
+// The link exemption is not a blind pass (#1187 fix round 4): the anywhere-CRITICAL scan
+// runs on the whole bullet before the exemption, so a tag hidden inside link syntax parks.
+assert(
+  counts("- [x](https://e/#[CRITICAL] who)").u === 1,
+  "a CRITICAL tag hidden inside link syntax parks rather than reading as a link bullet",
+);
+assert(
+  verdictOf("- [x](https://e/#[CRITICAL] who)") === "park",
+  "the gate parks on a CRITICAL tag hidden inside link syntax",
+);
+assert(
+  counts("- [docs](https://example.com/[HIGH] note)").u === 0,
+  "a link bullet carrying a non-gating bracketed token still does not park",
+);
 assert(
   counts("- [HIGH] a high point").u === 0 && counts("- [HIGH] a high point").p === 0,
   "[HIGH] does not gate",

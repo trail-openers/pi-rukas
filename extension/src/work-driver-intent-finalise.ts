@@ -14,12 +14,13 @@
 
 import { redactClip } from "./decision-log.ts";
 import {
+  OPEN_POINT_CHAR_CAP,
   type OpenPointReading,
   blockingOpenPointTexts,
   readOpenPoints,
   resolvedOpenPointTexts,
 } from "./open-points-reader.ts";
-import { flattenIssueText } from "./text-flatten.ts";
+import { flattenIssueText, redactThenBound } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
 import {
   type NormalisedSpec,
@@ -55,12 +56,36 @@ export function finaliseSpecVerdict(
     );
     // Recorded even when the spec is already parked: an unchecked body is a fact the PR body must carry.
     // Applied after reconcileVerdict, so no reconciliation can lift this park.
-    return parkUnchecked(reconciled, {
-      text: "Open-point gate did not run: issue body blank",
-      basis: "blank-issue-body — the driver could not check the issue for CRITICAL open points",
-    });
+    return boundAssumptions(
+      parkUnchecked(reconciled, {
+        text: "Open-point gate did not run: issue body blank",
+        basis: "blank-issue-body — the driver could not check the issue for CRITICAL open points",
+      }),
+    );
   }
-  return applyOpenPointGate(reconciled, readOpenPoints(primaryBody));
+  return boundAssumptions(applyOpenPointGate(reconciled, readOpenPoints(primaryBody)));
+}
+
+/**
+ * Redact and bound every assumption the FINAL spec carries (#1187 fix round 4).
+ *
+ * `applyOpenPointGate` bounds the open-point texts it writes itself, and the artifact
+ * reader bounds what it restores — but neither covers the assumptions the RESOLVER authored
+ * and the parser put straight into `spec.assumptions`. Those are rendered verbatim into the
+ * PR body by `renderAssumptions`, so an `sk-ant-api03-…` token quoted in a resolver's own
+ * assumption used to reach a public surface untouched. One pass at the last moment the spec
+ * is assembled, through the same `redactThenBound` the writer uses, so every assumption
+ * reaching the PR body has been through the one normaliser whatever wrote it.
+ */
+function boundAssumptions(spec: NormalisedSpec): NormalisedSpec {
+  if (spec.assumptions.length === 0) return spec;
+  return {
+    ...spec,
+    assumptions: spec.assumptions.map((a) => ({
+      text: redactThenBound(a.text, OPEN_POINT_CHAR_CAP).text,
+      basis: redactThenBound(a.basis, OPEN_POINT_CHAR_CAP).text,
+    })),
+  };
 }
 
 /**

@@ -31,7 +31,7 @@
 import { readFileSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { REDACTED, SECRET_PATTERNS, redactSecrets } from "./secret-patterns.ts";
+import { redactSecrets } from "./secret-patterns.ts";
 import { trace } from "./trace.ts";
 import { ensureGitExclude } from "./work-driver-git-exclude.ts";
 
