@@ -42,15 +42,6 @@
 # jobs of one interrupt pass cannot clobber each other's visited set.
 collect_tree() {
   local _ct_out="$1" _ct_root="$2"
-  # A dead root costs one `kill -0`, not one `pgrep` fork per queued level:
-  # every pid of a dead tree is dead, so the walk has nothing to find. Both
-  # callers probe dead roots — the interrupt walks every started job, and the
-  # outer-bound branch walks a job it has already taken down — so without this
-  # the tick after a kill pays a fork storm for an empty result.
-  if [[ "$_ct_root" =~ ^[0-9]+$ ]] && ! kill -0 "$_ct_root" 2>/dev/null; then
-    eval "$_ct_out=''"
-    return 0
-  fi
   if [ -z "$_ct_out" ]; then
     echo "warn: verify-loop: collect_tree: no target variable given; refusing to walk" >&2
     return 1
@@ -62,11 +53,24 @@ collect_tree() {
   # assignment time. Nothing in-tree passes a non-identifier, so a violation is
   # a caller bug and is named rather than silently tolerated (an empty result
   # here would read as "this job has no descendants" and orphan its tree).
+  #
+  # Both name checks run BEFORE any eval, including the dead-root shortcut's:
+  # that used to sit above them running `eval "$_ct_out=''"` on the unvalidated
+  # name and returning 0, so an injection there fired and read as a clean early
+  # exit.
   if ! [[ "$_ct_out" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
     echo "warn: verify-loop: collect_tree: invalid target variable name; refusing to walk" >&2
     return 1
   fi
-  if [ -z "$_ct_out" ]; then return 0; fi
+  # A dead root costs one `kill -0`, not one `pgrep` fork per queued level:
+  # every pid of a dead tree is dead, so the walk has nothing to find. Both
+  # callers probe dead roots — the interrupt walks every started job, and the
+  # outer-bound branch walks a job it has already taken down — so without this
+  # the tick after a kill pays a fork storm for an empty result.
+  if [[ "$_ct_root" =~ ^[0-9]+$ ]] && ! kill -0 "$_ct_root" 2>/dev/null; then
+    eval "$_ct_out=''"
+    return 0
+  fi
   # `wait` owns the liveness of a tree this shell still owns, so this only
   # refuses values that could never be a pid.
   if [[ ! "$_ct_root" =~ ^[0-9]+$ ]]; then
@@ -128,13 +132,15 @@ collect_tree() {
 #
 # Three corrections since that shape shipped:
 #
-#  * The tree walk covers jobs in state 1 AND state 2, taken from POOL_STARTED
-#    rather than the state array alone. State 2 excludes a job from being
-#    treated as running, not from having left descendants behind — and a job
-#    that finished is precisely the one whose grandchildren were never looked at.
-#    collect_tree on a dead root is best effort (it finds only what is still a
-#    child of that pid), which is why it is attempted for both states rather
-#    than asserted for one.
+#  * The tree walk covers jobs in state 1 ONLY, taken from POOL_STARTED. A job
+#    in state 2 has already been walked: run_pool's completion branch calls
+#    kill_process_tree on it once its rc file lands or its pid is gone, so its
+#    descendants were collected and signalled then. Re-walking every finished job
+#    on every Ctrl-C repeats a walk that can find nothing new, so only the jobs
+#    that never completed — the ones actually running when the signal landed —
+#    are taken down here. `wait` at the end of this handler reaps the finished
+#    ones. (The first draft of this comment claimed state 1 AND state 2, which
+#    was the old shape; the filter below has always been state 1 alone.)
 #  * `_extra_cleanup` is no longer probed with `type -t`. The probe made an
 #    absent or misnamed hook (verify-loop.sh renamed it once already) look like
 #    a clean interrupt while the private RUN_DIR, the failure captures and the
