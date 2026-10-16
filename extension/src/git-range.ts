@@ -46,10 +46,11 @@ export function prRange(base: string, head: string): string {
 }
 
 /**
- * Tri-state ref probe (#1134 follow-up). `absent` is git's own "not a valid
- * object" answer (exit 1 under `--quiet`); any other failure — a spawn error,
- * a timeout, a non-repo cwd — is `unknown` and carries the error, because it
- * says nothing about whether the ref exists.
+ * Tri-state ref probe (#1134 follow-up). `absent` is git's OWN answer that
+ * the ref is not there — its exit code (1 or 128) **and** its wording; any
+ * other failure — a spawn error, a timeout, a signal, a non-repo cwd, a
+ * dubious ownership — is `unknown` and carries the error, because it says
+ * nothing about whether the ref exists.
  */
 export type RefState =
   | { state: "resolves" }
@@ -64,17 +65,24 @@ export async function refResolves(
 ): Promise<RefState> {
   try {
     // A zero exit is the answer: `rev-parse --verify` prints the object id it resolved.
-    await execGit(exec, cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", ref], {
+    // No `--quiet`, deliberately (#1153 fix round): `--quiet` suppresses the
+    // stderr that is the only real evidence for `absent`, AND it changes the
+    // exit code — measured on git 2.53, a missing ref exits 1 with an empty
+    // stderr under `--quiet` and 128 with `fatal: Needed a single revision`
+    // without it. Probing without the flag is what lets `gitSaysAbsent` read
+    // git's wording instead of guessing from a bare code.
+    await execGit(exec, cwd, ["rev-parse", "--verify", "--end-of-options", ref], {
       timeout,
       maxBuffer: 64 * 1024,
     });
     return { state: "resolves" };
   } catch (err) {
-    // #1153 — only git's OWN "not a valid object" answer is `absent`. A probe
-    // the harness killed (a timeout, a signal) exits 1 as well — node's child
-    // process reports `code: 1` alongside `killed: true` — and says nothing
-    // about whether the ref exists. Reading that as absent would tell the
-    // operator "the branch was not pushed from here" about a ref nobody read.
+    // #1153 — only git's OWN "this ref is not there" answer is `absent`. A
+    // probe the harness killed (a timeout, a signal) carries a numeric exit
+    // code as well — node's child process reports `code: 1` alongside
+    // `killed: true` — and says nothing about whether the ref exists. Reading
+    // that as absent would tell the operator "the branch was not pushed from
+    // here" about a ref nobody read.
     if (gitSaysAbsent(err)) return { state: "absent" };
     return { state: "unknown", error: errorText(err) };
   }
@@ -147,16 +155,47 @@ export async function aheadOfBase(
 }
 
 /**
- * Did git itself say "not a valid object"? Exit code 1 alone is not enough:
- * a killed or timed-out probe carries `code: 1` too, with `killed` set and a
- * `signal` naming what terminated it. Both must be absent for the exit code
- * to be git's answer rather than the harness's.
+ * Did git itself say "this ref is not there"? Two conditions, both needed
+ * (#1153 review):
+ *
+ * - **The exit code is git's, not the harness's.** A killed or timed-out
+ *   probe carries a numeric code too, with `killed` set and a `signal` naming
+ *   what terminated it. Neither is an answer about the ref.
+ * - **git's wording says the ref is missing.** This is the load-bearing half,
+ *   and it is why `--quiet` is not used: with the flag, a missing ref exits 1
+ *   with an EMPTY stderr, and "exit 1 and said nothing" is not evidence — it
+ *   is the same shape a silent shim or a killed probe leaves. Measured on git
+ *   2.53 without the flag, a missing ref exits **128** with
+ *   `fatal: Needed a single revision`, so the accepted codes are 1 and 128 and
+ *   the wording decides between them. A non-repo cwd exits 128 too, with
+ *   `fatal: not a git repository` — same code, different question — which is
+ *   exactly what the wording clause separates.
  */
 function gitSaysAbsent(err: unknown): boolean {
   const e = err as { code?: unknown; killed?: unknown; signal?: unknown } | null;
-  if (e?.code !== 1) return false;
+  if (e?.code !== 1 && e?.code !== 128) return false;
   if (e.killed === true) return false;
-  return e.signal === null || e.signal === undefined;
+  if (e.signal !== null && e.signal !== undefined) return false;
+  return gitWordingSaysRefMissing(err);
+}
+
+/**
+ * git's own words for "I could not turn this string into a revision" — the
+ * `rev-parse --verify` messages that mean the ref is not there. Matched
+ * case-insensitively because git capitalises some of them
+ * (`fatal: Needed a single revision`) and lower-cases others
+ * (`fatal: not a valid object name …`).
+ *
+ * Anything else on stderr — `not a git repository`, `dubious ownership`, a
+ * corrupt-objects complaint — is about the clone, not the ref, and the probe
+ * stays `unknown`.
+ */
+function gitWordingSaysRefMissing(err: unknown): boolean {
+  const e = err as { stderr?: unknown } | null;
+  const stderr = typeof e?.stderr === "string" ? e.stderr : "";
+  return /not a valid object name|unknown revision|ambiguous argument|needed a single revision/i.test(
+    stderr,
+  );
 }
 
 /**
@@ -166,7 +205,7 @@ function gitSaysAbsent(err: unknown): boolean {
  * git repository`, `ambiguous argument`). Falls back to `message` when the
  * stream is empty or absent.
  */
-function errorText(err: unknown): string {
+export function errorText(err: unknown): string {
   const e = err as { stderr?: unknown; message?: unknown } | null;
   const stderr = typeof e?.stderr === "string" ? e.stderr.trim() : "";
   const text = stderr || ((e?.message ?? String(err)) as string);

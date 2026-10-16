@@ -17,7 +17,7 @@ import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
 import { execTree } from "./exec-tree.ts";
 import { execp as groupExecp } from "./exec.ts";
-import { execGit, prRange, refResolves } from "./git-range.ts";
+import { errorText, execGit, prRange, refResolves } from "./git-range.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { resolveMainline } from "./work-driver-git.ts";
@@ -331,7 +331,16 @@ export async function verifyConsolidation(
   } catch (err) {
     // A failed read is a NOTE, never a silent empty result (#1153): the
     // handoff must say the check did not run.
-    const note = `consolidation check skipped: diff of origin/${base}...origin/${branch} failed: ${(err as Error).message?.slice(0, 120)}`;
+    // #1153 fix round — `errorText`, not `(err as Error).message`: node's
+    // message is `Command failed: git … ` plus the argv, which is 120 chars
+    // of command name and leaves one character of git's actual reason. git's
+    // own stderr is the useful half. `prRange` renders the same range that was
+    // passed to git, so the note names the refs without a second template.
+    // The absolute repoRoot is redacted: the note is persisted to the state
+    // file and rendered into a forge comment, and a host path is neither
+    // useful to a reader there nor ours to publish.
+    const reason = errorText(err).replaceAll(ctx.repoRoot, "<repo>");
+    const note = `consolidation check skipped: diff of ${prRange(`origin/${base}`, `origin/${branch}`)} failed: ${reason}`;
     trace(`work-driver: ${note}`);
     return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
   }
