@@ -32,9 +32,17 @@
  * derived verify chain. Hence the split return type below.
  *
  * Both readers are fail-closed and say why: git itself failing, a rename token
- * without its pair, or a malformed status record all come back `{ unreadable }`
+ * without its pair, or a malformed status record all come back `{ ok: false }`
  * naming the offending token, so the caller can halt rather than pass on a change
  * set it never actually saw.
+ *
+ * **Why these are three parsers and not one** (`porcelainPaths` in
+ * work-driver-verify.ts and `worktreeStatus` in work-develop-git.ts are the other
+ * two): each is pinned to one git command's documented field layout and each
+ * rejects the shapes that command must not produce. One parser over three layouts
+ * would need a mode per command and would accept another command's tokens, which
+ * is how a rename silently becomes an empty change set — the bug this module
+ * exists for. The three are deliberately not merged.
  *
  * The executor is the driver's `verifyExecFn` seam, but a plain string `cmd` is
  * NOT accepted here. Every git call in the worktree paths goes through the argv
@@ -45,6 +53,7 @@
  * read went unexercised. `test-exec-argv-contract.ts` enforces it.
  */
 
+import { DEFAULT_GIT_TIMEOUT_MS } from "./git-range.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 
 /** Byte ceiling on either read. An overflow must reject, not truncate silently. */
@@ -76,24 +85,76 @@ export const PROTECTED_STATUS_ARGV = [
 
 /** A read that could not be trusted. The reason names the worktree's offending token. */
 export interface Unreadable {
+  ok: false;
   unreadable: string;
 }
 
-/** The uncommitted change set: every path plus the rename sides, together. */
-export type StatusRead = { paths: string[] } | Unreadable;
+/**
+ * The uncommitted change set: every path plus the rename sides, together.
+ * Discriminated on `ok` — a caller that forgets to narrow gets a compile error
+ * rather than `undefined` out of `paths`.
+ */
+export type StatusRead = { ok: true; paths: string[] } | Unreadable;
 
 /**
- * The committed change set, split by what each side is allowed to decide.
- * `targets` are the paths that changed (the union every other gate already saw);
- * `renameSources` are the paths a rename moved *away from*, which only the
- * protected-path check may consult.
+ * The committed change set: the parsed `diff -z --name-status` records. The
+ * rename *sources* are deliberately not a separate field — the only reader that
+ * may consult them is the protected-path gate, and `renameSourcePaths(targets)`
+ * derives them. A second list invited the other gates (the #285 fanout, the
+ * frontend-only skip, the falsily-green check) to consume a path they must never
+ * see: `git mv .github/workflows/ci.yml src/ci.yml` would otherwise read as a
+ * changed file it is not.
  */
-export type DiffRead = { targets: string[]; renameSources: string[] } | Unreadable;
+export type DiffRead = { ok: true; targets: NameStatus[] } | Unreadable;
 
-/** The first error message a rejection carries, bounded for the operator-facing note. */
+/**
+ * One record from `diff -z --name-status`: the change kind git printed and the
+ * path(s) it applies to. A rename's score is kept (`R100` vs `R85` is git's
+ * confidence and the only clue a mispaired rename leaves) and its source kept
+ * separate — it decides nothing outside the protected-path gate.
+ *
+ * `other` is git's own code for the kinds that are none of M/A/D/R (T type
+ * change, X unique, U unmerged). It is the code verbatim rather than a guess,
+ * and `path` is still its path — so the protected gate sees the path whatever
+ * the kind, and a future kind-specific rule has the real letter to match on.
+ */
+export type NameStatus =
+  | { kind: "M" | "A" | "D"; path: string }
+  | { kind: "R"; score: string; from: string; to: string }
+  | { kind: "other"; code: string; path: string };
+
+/** The change kinds a non-rename record can be spelled as. */
+type NamedKind = "M" | "A" | "D";
+
+/** The paths a read's records changed, in the order git printed them. */
+export function changedPaths(records: readonly NameStatus[]): string[] {
+  return records.map((r) => (r.kind === "R" ? r.to : r.path));
+}
+
+/** The paths a read's rename/copy records moved away from. */
+export function renameSourcePaths(records: readonly NameStatus[]): string[] {
+  return records
+    .filter((r): r is Extract<NameStatus, { kind: "R" }> => r.kind === "R")
+    .map((r) => r.from);
+}
+
+/**
+ * The first error message a rejection carries, bounded for the operator-facing note.
+ * Narrowed rather than cast: a rejection is not guaranteed to be an `Error` (a
+ * string or a plain object reaches here from a shimmed executor), and `(err as
+ * Error)?.message` on those yields `undefined` and then the literal `"undefined"`
+ * as the reason an operator reads.
+ */
 function errText(err: unknown): string {
-  const m = (err as Error)?.message ?? String(err);
-  return m.slice(0, 200);
+  const text = err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
+  // A rejection that stringifies to nothing still needs a name in the reason —
+  // an empty one reads as "git failed for no stated reason".
+  return (text.trim().length > 0 ? text : errTextFallback(err)).slice(0, 200);
+}
+
+/** A rejection that stringifies to nothing still needs a name in the reason. */
+function errTextFallback(err: unknown): string {
+  return err === null ? "null" : err === undefined ? "undefined" : "unknown rejection";
 }
 
 /** Porcelain v1 is `XY PATH`: at least four chars with a space at index 2. */
@@ -126,9 +187,10 @@ export async function readProtectedStatusPaths(
       argv: [...PROTECTED_STATUS_ARGV],
       cwd,
       maxBuffer: PROTECTED_READ_MAX_BUFFER,
+      timeout: DEFAULT_GIT_TIMEOUT_MS,
     }));
   } catch (err) {
-    return { unreadable: `git status --porcelain -z failed: ${errText(err)}` };
+    return { ok: false, unreadable: `git status --porcelain -z failed: ${errText(err)}` };
   }
   const tokens = stdout.split("\0");
   const paths: string[] = [];
@@ -137,7 +199,10 @@ export async function readProtectedStatusPaths(
     // The only legitimate empty token is the one after the final NUL.
     if (tok === "" && i === tokens.length - 1) continue;
     if (isMalformedStatusToken(tok)) {
-      return { unreadable: `malformed status entry ${JSON.stringify(tok.slice(0, 80))}` };
+      return {
+        ok: false,
+        unreadable: `malformed status entry ${JSON.stringify(tok.slice(0, 80))}`,
+      };
     }
     const code = tok.slice(0, 2);
     const path = tok.slice(3);
@@ -146,6 +211,7 @@ export async function readProtectedStatusPaths(
       const origin = tokens[i];
       if (origin === undefined || origin === "") {
         return {
+          ok: false,
           unreadable: `rename/copy status entry without its origin path: ${JSON.stringify(path.slice(0, 80))}`,
         };
       }
@@ -154,7 +220,7 @@ export async function readProtectedStatusPaths(
       paths.push(path);
     }
   }
-  return { paths };
+  return { ok: true, paths };
 }
 
 /**
@@ -191,13 +257,13 @@ export async function readCommittedProtectedPaths(
       argv: [...PROTECTED_DIFF_ARGV, `${base}..HEAD`],
       cwd,
       maxBuffer: PROTECTED_READ_MAX_BUFFER,
+      timeout: DEFAULT_GIT_TIMEOUT_MS,
     }));
   } catch (err) {
-    return { unreadable: `git diff -z --name-status -M failed: ${errText(err)}` };
+    return { ok: false, unreadable: `git diff -z --name-status -M failed: ${errText(err)}` };
   }
   const tokens = stdout.split("\0");
-  const targets: string[] = [];
-  const renameSources: string[] = [];
+  const records: NameStatus[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const code = tokens[i] ?? "";
     // The only legitimate empty token is the one after the final NUL.
@@ -205,6 +271,7 @@ export async function readCommittedProtectedPaths(
     const kind = code[0] ?? "";
     if (kind === "") {
       return {
+        ok: false,
         unreadable: `missing status field in name-status record ${JSON.stringify(code.slice(0, 80))}`,
       };
     }
@@ -213,22 +280,29 @@ export async function readCommittedProtectedPaths(
       const to = tokens[i + 2];
       if (from === undefined || to === undefined || from === "" || to === "") {
         return {
+          ok: false,
           unreadable: `rename/copy record ${code} without both its source and destination paths`,
         };
       }
       i += 2;
-      targets.push(to);
-      renameSources.push(from);
+      // A copy (`C`) is recorded as a rename — both have a source the protected
+      // gate must see, and the score is git's similarity for either.
+      records.push({ kind: "R", score: code.slice(1), from, to });
       continue;
     }
     const path = tokens[i + 1];
     if (path === undefined || path === "") {
-      return { unreadable: `status record ${code} without its path` };
+      return { ok: false, unreadable: `status record ${code} without its path` };
     }
     i++; // the path is consumed as this record's second token
     // A non-rename record is exactly one code and one path: `diff --name-status`
     // prints no stage columns, so an unmerged (U) entry needs no special case.
-    targets.push(path);
+    // git also emits T (type change), X (unique) and U (unmerged); none of those
+    // is a modification, an add or a delete, so the letter is kept verbatim in
+    // `code` rather than rounded to one of the named kinds.
+    const named: NamedKind | null =
+      kind === "A" ? "A" : kind === "D" ? "D" : kind === "M" ? "M" : null;
+    records.push(named ? { kind: named, path } : { kind: "other", code, path });
   }
-  return { targets, renameSources };
+  return { ok: true, targets: records };
 }

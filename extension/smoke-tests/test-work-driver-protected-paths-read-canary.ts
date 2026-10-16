@@ -7,7 +7,12 @@
  *   - the gate keeps reading `-z`. The bug was a read shape, and a read shape is
  *     exactly what a refactor quietly reverts, so the source is grepped and the
  *     pattern asserted (modelled on test-work-driver-diff-head-canary.ts) — a
- *     canary that cannot rot.
+ *     canary that cannot rot. Two halves, because grepping the file for `-z` only
+ *     proves the string is still somewhere in it: the exported argv *constants* are
+ *     asserted to carry the flags the module jsdoc calls load-bearing, and the gate
+ *     is asserted to reach no *other* change-set reader for the protected check — a
+ *     second `status --porcelain` would give a scripted fake a place to answer a
+ *     read nobody asked for.
  *   - rename SOURCES reach only the protected-path check. The array the
  *     frontend-only skip, the falsily-green check and the #285 fanout gate
  *     consume must be identical with and without a rename source present, or a
@@ -16,7 +21,7 @@
  * Part 1 (the parsers and the gate vs real git):
  * test-work-driver-protected-paths-read.ts.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -29,6 +34,7 @@ import {
 } from "../src/work-driver-protected-paths-read.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import { realExec } from "./lib/exec-fake.ts";
 import { gitIn } from "./lib/git-worktree-fixture.ts";
 
@@ -42,27 +48,6 @@ function assert(cond: boolean, msg: string) {
 }
 
 const CI = ".github/workflows/ci.yml";
-const env = process.env as Record<string, string | undefined>;
-
-async function withEnv(
-  overrides: Record<string, string | undefined>,
-  body: () => Promise<void>,
-): Promise<void> {
-  const saved: Record<string, string | undefined> = {};
-  for (const k of Object.keys(overrides)) saved[k] = env[k];
-  for (const [k, v] of Object.entries(overrides)) {
-    if (v === undefined) delete env[k];
-    else env[k] = v;
-  }
-  try {
-    await body();
-  } finally {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete env[k];
-      else env[k] = v;
-    }
-  }
-}
 
 /** A repo with `.github/workflows/ci.yml` + `src/ci.yml` committed; returns its base SHA. */
 
@@ -138,6 +123,75 @@ const protectedFailure = (f: string[]) => f.find((x) => /protected path/.test(x)
   assert(
     parser.includes("PROTECTED_DIFF_ARGV") && parser.includes("PROTECTED_STATUS_ARGV"),
     "canary: the two read shapes are declared once as exported argv constants",
+  );
+
+  // The flags the module jsdoc calls load-bearing, asserted on the exported
+  // constants themselves rather than on prose in the file that defines them: `-z`
+  // is what stops git C-quoting a name and gives each rename side its own token,
+  // and a base that reads like a flag stays a ref only because of
+  // `--end-of-options`. A comment can claim either flag is gone while the constant
+  // keeps it; this reads the constant.
+  const has = (argv: readonly string[], flag: string) => argv.includes(flag);
+  for (const [name, argv] of [
+    ["PROTECTED_STATUS_ARGV", PROTECTED_STATUS_ARGV],
+    ["PROTECTED_DIFF_ARGV", PROTECTED_DIFF_ARGV],
+  ] as const) {
+    assert(
+      has(argv, "core.quotePath=off"),
+      `canary: ${name} carries \`-c core.quotePath=off\` — the reason a failed read's own message is not octal-escaped`,
+    );
+    assert(
+      has(argv, "-z"),
+      `canary: ${name} carries \`-z\` — without it a C-quoted protected name never matches a grant`,
+    );
+  }
+  assert(
+    has(PROTECTED_DIFF_ARGV, "--end-of-options"),
+    "canary: PROTECTED_DIFF_ARGV carries `--end-of-options` — a base that reads like a flag stays a ref",
+  );
+  assert(
+    has(PROTECTED_STATUS_ARGV, "status") &&
+      has(PROTECTED_STATUS_ARGV, "--porcelain") &&
+      has(PROTECTED_STATUS_ARGV, "--untracked-files=all") &&
+      has(PROTECTED_DIFF_ARGV, "diff") &&
+      has(PROTECTED_DIFF_ARGV, "--name-status") &&
+      has(PROTECTED_DIFF_ARGV, "-M"),
+    "canary: both argv constants carry their subcommand and the flags that make the read complete",
+  );
+
+  // The gate must not reach a SECOND reader for the protected check. A stray
+  // non-`-z` `status --porcelain` / `diff --name-only` in the same loop gives a
+  // scripted fake a place to answer a read the gate never makes, and gives a
+  // refactor a route back to the shape that hid the rename. Comment lines are
+  // stripped first: this repo's prose names those commands constantly, and a
+  // comment is not a call site.
+  const FOREIGN_READER =
+    /status\s+--porcelain|--name-status|--name-only\b|porcelainPaths\s*\(|worktreeStatus\s*\(/;
+  const offenders = gate
+    .split("\n")
+    .map((l, i) => [i + 1, l] as const)
+    .filter(([_, l]) => !/^\s*(\/\/|\*|\/\*)/.test(l) && FOREIGN_READER.test(l))
+    .map(([n, l]) => `${n}: ${l.trim().slice(0, 70)}`);
+  assert(
+    offenders.length === 0,
+    `canary: the develop gate issues no change-set read of its own — the protected check has exactly one reader per side (${offenders.join(" | ") || "none"})`,
+  );
+  // Every other module that reads a change set is a DIFFERENT consumer, and the
+  // protected gate must not have quietly started consulting one of them.
+  const importers = readdirSync(srcPath).filter(
+    (f) =>
+      f.endsWith(".ts") &&
+      f !== "work-driver-verify-develop.ts" &&
+      // The module that DEFINES the readers names them in its own declarations —
+      // that is not a consumer.
+      !f.startsWith("work-driver-protected-paths-read") &&
+      /readProtectedStatusPaths|readCommittedProtectedPaths/.test(
+        readFileSync(path.join(srcPath, f), "utf8"),
+      ),
+  );
+  assert(
+    importers.length === 0,
+    `canary: only work-driver-verify-develop.ts consults the protected reads (${importers.join(", ") || "none"})`,
   );
 }
 

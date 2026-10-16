@@ -41,6 +41,9 @@ const LISTED = [
   "work-driver-verify.ts",
   "work-driver-verify-pr17.ts",
   "comment-retention.ts",
+  // #1378 — the protected-path reads take `DEFAULT_GIT_TIMEOUT_MS` from here so a
+  // hung git cannot hang the develop step; both its git calls are argv-form.
+  "work-driver-protected-paths-read.ts",
 ];
 
 /** A git command string handed to an exec call: a `(` then a literal beginning `git `. */

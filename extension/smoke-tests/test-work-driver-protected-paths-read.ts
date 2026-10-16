@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 /**
- * #1378 (part 1 of 2) — the `-z` parsers and the develop protected-path gate
- * against real git.
+ * #1378 (part 1b of 3) — the develop protected-path gate against REAL git.
  *
  * The gate used to see the change set through `git status --porcelain
  * --untracked-files=all` and `git diff --name-only <base>..HEAD`. Neither is
@@ -18,25 +17,23 @@
  * through the whole bug.
  *
  * Env hygiene: `PI_ENSEMBLE_PROTECTED_PATHS` and `PI_ENSEMBLE_VERIFY` are saved
- * and restored around every block that touches them.
+ * and restored around every block that touches them (lib/env-scope.ts).
  *
- * Part 2: test-work-driver-protected-paths-read-canary.ts.
+ * Companions: test-work-driver-protected-paths-parse.ts (the two `-z` parsers,
+ * unit-pinned) and test-work-driver-protected-paths-read-canary.ts (the
+ * read-shape canary + the rename-source scope boundary).
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import {
-  PROTECTED_DIFF_ARGV,
-  PROTECTED_STATUS_ARGV,
-  readCommittedProtectedPaths,
-  readProtectedStatusPaths,
-} from "../src/work-driver-protected-paths-read.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import { realExec } from "./lib/exec-fake.ts";
 import { gitIn } from "./lib/git-worktree-fixture.ts";
+import { isNulDiffRead, isNulStatusRead } from "./lib/nul-porcelain.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -48,29 +45,6 @@ function assert(cond: boolean, msg: string) {
 }
 
 const CI = ".github/workflows/ci.yml";
-const env = process.env as Record<string, string | undefined>;
-
-/** Run a block with both develop-gate env vars pinned, restoring whatever was there. */
-
-async function withEnv(
-  overrides: Record<string, string | undefined>,
-  body: () => Promise<void>,
-): Promise<void> {
-  const saved: Record<string, string | undefined> = {};
-  for (const k of Object.keys(overrides)) saved[k] = env[k];
-  for (const [k, v] of Object.entries(overrides)) {
-    if (v === undefined) delete env[k];
-    else env[k] = v;
-  }
-  try {
-    await body();
-  } finally {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete env[k];
-      else env[k] = v;
-    }
-  }
-}
 
 /** A repo with `.github/workflows/ci.yml` + `src/ci.yml` committed; returns its base SHA. */
 
@@ -110,107 +84,6 @@ function developCtx(grant?: readonly string[]): DriverContext {
 
 const protectedFailure = (f: string[]) => f.find((x) => /protected path/.test(x)) ?? "";
 
-// ============================ parser unit cases (no git, no gate)
-//
-// The two `-z` layouts differ in field ORDER, so they are two parsers; each is
-// pinned against the exact byte stream git produces, and against the malformed
-// streams that must come back unreadable rather than as a shorter list.
-
-{
-  const fake = (stdout: string, onCall?: (argv: string[]) => void) =>
-    (async (cmd: string, opts?: { argv?: string[] }) => {
-      onCall?.(opts?.argv ?? []);
-      return { stdout };
-    }) as typeof realExec;
-
-  const statusCalls: string[][] = [];
-  const st = await readProtectedStatusPaths(
-    fake("R  .pi/verify-cmd2\0src/a.ts\0", (a) => statusCalls.push(a)),
-    "/wt",
-  );
-  assert(
-    "paths" in st && st.paths.join("|") === ".pi/verify-cmd2|src/a.ts",
-    "status -z: a rename contributes BOTH sides, new name first (`XY new\\0orig\\0`)",
-  );
-  assert(
-    statusCalls[0]?.join(" ") === PROTECTED_STATUS_ARGV.join(" "),
-    "status read is argv-shaped: `git status --porcelain -z --untracked-files=all`",
-  );
-
-  assert(
-    "unreadable" in (await readProtectedStatusPaths(fake("R  only-one-side\0"), "/wt")),
-    "status -z: a rename with no origin token is unreadable, not a one-sided guess",
-  );
-  assert(
-    "unreadable" in (await readProtectedStatusPaths(fake("ZZ\u0000src/a.ts\u0000"), "/wt")),
-    "status -z: a malformed record (no status separator) is unreadable",
-  );
-  assert(
-    "paths" in (await readProtectedStatusPaths(fake(""), "/wt")) &&
-      (await readProtectedStatusPaths(fake(""), "/wt")).paths.length === 0,
-    "status -z: an empty stream is an empty change set, not an error",
-  );
-
-  const diffCalls: string[][] = [];
-  const df = await readCommittedProtectedPaths(
-    fake("R100\0.github/workflows/ci.yml\0src/ci.yml\0", (a) => diffCalls.push(a)),
-    "/wt",
-    "b".repeat(40),
-  );
-  assert(
-    "targets" in df && df.targets.join() === "src/ci.yml" && df.renameSources.join() === CI,
-    "diff -z: the destination is a changed path, the source is protected-only (`R100\\0from\\0to`)",
-  );
-  assert(
-    diffCalls[0]?.join(" ") === [...PROTECTED_DIFF_ARGV, `${"b".repeat(40)}..HEAD`].join(" "),
-    "committed read is argv-shaped with -z, --name-status, -M and --end-of-options",
-  );
-  assert(
-    "targets" in
-      (await readCommittedProtectedPaths(fake("D\0.pi/verify-cmd\0"), "/wt", "b".repeat(40))) &&
-      (
-        await readCommittedProtectedPaths(fake("D\0.pi/verify-cmd\0"), "/wt", "b".repeat(40))
-      ).targets.join() === ".pi/verify-cmd",
-    "diff -z: a `D` record is a first-class path (a delete-plus-add pair does not collapse to R100)",
-  );
-  assert(
-    "unreadable" in
-      (await readCommittedProtectedPaths(fake("R100\0src/a.ts\0"), "/wt", "b".repeat(40))),
-    "diff -z: a rename record missing its destination is unreadable",
-  );
-  assert(
-    "unreadable" in (await readCommittedProtectedPaths(fake("M\0"), "/wt", "b".repeat(40))),
-    "diff -z: a status record without its path is unreadable",
-  );
-  // -z names are verbatim: a backslash or a tab is data, not an escape to decode.
-  const verbatim = await readCommittedProtectedPaths(
-    fake("A\0.github/back\\slash.yml\0A\0.github/tab\there.yml\0"),
-    "/wt",
-    "b".repeat(40),
-  );
-  assert(
-    "targets" in verbatim &&
-      verbatim.targets.join("|") === ".github/back\\slash.yml|.github/tab\there.yml",
-    "diff -z: a backslash or a tab in a protected name arrives verbatim, undecoded",
-  );
-  const verbatimStatus = await readProtectedStatusPaths(
-    fake("?? .github/back\\slash.yml\0?? .github/tab\there.yml\0"),
-    "/wt",
-  );
-  assert(
-    "paths" in verbatimStatus &&
-      verbatimStatus.paths.join("|") === ".github/back\\slash.yml|.github/tab\there.yml",
-    "status -z: a backslash or a tab in a protected name arrives verbatim, undecoded",
-  );
-  const boom = (async () => {
-    throw new Error("stdout maxBuffer length exceeded");
-  }) as typeof realExec;
-  const failedDiff = await readCommittedProtectedPaths(boom, "/wt", "b".repeat(40));
-  assert(
-    "unreadable" in failedDiff && /maxBuffer/.test(failedDiff.unreadable),
-    "diff -z: a rejected read is unreadable with the error text (no silent truncation of the rename list)",
-  );
-}
 
 // ============================ the gate against real git
 //
@@ -420,14 +293,16 @@ await withEnv({ PI_ENSEMBLE_VERIFY: "1", PI_ENSEMBLE_PROTECTED_PATHS: undefined 
     repoRoot: "/nonexistent",
     issue: 1378,
     verifyExecFn: (async (cmd: string, opts?: { argv?: string[]; maxBuffer?: number }) => {
+      // Matched by the same derived matchers every other develop-gate fake uses,
+      // so this fixture cannot keep throwing at a command the gate no longer sends
+      // (which would leave the "unreadable read" assertions testing nothing).
       const line = commandOf(cmd, opts);
-      if (which === "status" && /\bstatus --porcelain -z/.test(line)) {
+      if (which === "status" && isNulStatusRead(line)) {
         throw new Error("stdout maxBuffer length exceeded");
       }
-      if (which === "diff" && /\bdiff -z --name-status -M/.test(line)) {
+      if (which === "diff" && isNulDiffRead(line)) {
         throw new Error("stdout maxBuffer length exceeded");
       }
-      if (/\bstatus --porcelain -z/.test(line)) return { stdout: "" };
       return { stdout: "" };
     }) as NonNullable<DriverContext["verifyExecFn"]>,
   });
