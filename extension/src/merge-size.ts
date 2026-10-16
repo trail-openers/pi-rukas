@@ -14,7 +14,7 @@
  * #962 replaced the walk with a strict allowlist — every pass is now linear,
  * so the DoS the bound was measured against no longer exists — and deleted
  * this module along with the matcher. #1417 restores it for the reason that
- * has nothing to do with time: an unanalysably long forge-naming command must
+ * has nothing to do with time: an unanalysably long merge-bearing command must
  * be HELD, not answered. Without a bound a 40k-char `gh … merge …` command
  * lexes to `not-a-forge-command` at best and, when its words do spell the
  * accepted form, falls through to current-branch PR resolution — the #955
@@ -23,12 +23,13 @@
  *
  * The bound stays LOW (8000) for the same reason as before: well above the
  * longest realistic merge command (a few hundred chars) with margin. What it
- * bounds is only the commands that could BE a merge — see `holdsLongCommand`.
- * #1417 round 1: the first cut bounded every forge-naming command, which held
- * a long READ (`gh pr view 17 --json body` plus a long argument) on the length
- * axis — the same symptom #1417 exists to remove, and one the troubleshooting
- * entry told the agent to cure by "writing a plain `gh api` GET", a remedy
- * that cannot work when length alone is the hold.
+ * bounds is only the commands that could BE a merge — see
+ * `exceedsAnalysisBound`. #1417 round 1: the first cut bounded every
+ * forge-naming command, which held a long READ (`gh pr view 17 --json body`
+ * plus a long argument) on the length axis — the same symptom #1417 exists to
+ * remove, and one the troubleshooting entry told the agent to cure by "writing
+ * a plain `gh api` GET", a remedy that cannot work when length alone is the
+ * hold.
  */
 
 import type { MergeCommand } from "./merge-allowlist.ts";
@@ -37,8 +38,9 @@ import { triggerCode } from "./merge-trigger.ts";
 
 /**
  * Maximum length (chars) of a merge-bearing command the classifier reads.
- * A command LONGER than this that also names `gh`/`glab` is refused as
- * `too-large` — held, named, and never resolved to the current branch's PR.
+ * A command LONGER than this that also names `gh`/`glab` AND spells a merge
+ * word is refused as `too-large` — held, named, and never resolved to the
+ * current branch's PR. See `exceedsAnalysisBound` for the exemptions.
  */
 export const MERGE_COMMAND_SIZE_BOUND = 8000;
 
@@ -88,7 +90,7 @@ function holdsLongCommand(command: string): boolean {
  * The bound's verdict for a command, or undefined when the bound does not
  * apply. `readMergeCommand` calls this first, before the read allowlist, so
  * the one question this module answers is answered in one place: a
- * forge-naming command too long to read is refused with `too-large` and the
+ * merge-bearing command too long to read is refused with `too-large` and the
  * length that triggered it, never analysed and never passed through.
  */
 export function analysisBound(command: string): MergeCommand | undefined {

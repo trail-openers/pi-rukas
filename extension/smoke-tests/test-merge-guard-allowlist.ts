@@ -26,6 +26,8 @@ import {
   NOT_MERGES,
   REFUSED,
   RESIDUAL,
+  longMergeCommand,
+  longReadCommands,
 } from "./lib/merge-allowlist-fixtures.ts";
 import { assertBigCommandsInsideBudget } from "./lib/merge-allowlist-harness.ts";
 import { assertStalledGitIsBounded } from "./lib/merge-allowlist-target.ts";
@@ -156,6 +158,29 @@ for (const [cmd, kind, code] of EXPANSION_CANARIES) {
   }
 }
 
+// ------------------------------------------------------------ the size bound, both sides
+// The bound (#955, restored by #1417) holds a merge-bearing command too long
+// to read — and holds nothing else. Both halves are asserted, because the
+// #1417 symptom is the second half failing: a long READ refused for its length
+// is the same class of failure as the reads in the original reports, and a
+// bound that over-refuses gets quietly worked around by operators instead of
+// fixed. `longMergeCommand` is one command that must be held.
+{
+  const m = readMergeCommand(longMergeCommand());
+  assert(
+    m.kind === "refused" && m.reason === "too-large",
+    `bound holds a long merge: ${JSON.stringify(m).slice(0, 90)}`,
+  );
+}
+// …and `longReadCommands` are commands that must not be.
+for (const cmd of longReadCommands()) {
+  const m = readMergeCommand(cmd);
+  assert(
+    m.kind === "none",
+    `bound leaves a long read alone (length is not a hold): ${JSON.stringify(cmd.slice(0, 50))}… (${JSON.stringify(m).slice(0, 90)})`,
+  );
+}
+
 // ------------------------------------------------------------ the residual
 for (const cmd of RESIDUAL) {
   assert(
@@ -166,6 +191,18 @@ for (const cmd of RESIDUAL) {
 
 // ------------------------------------------------------------ the real hook
 await setupLedgerPath();
+// #1417 — the reads the reports named, driven through the HOOK and not just
+// the classifier. A read that classifies `none` but blocks at the hook is the
+// failure the operator actually saw, and the length axis is where the first
+// cut of the size bound reproduced it. Zero exec calls is part of the claim:
+// a blocked read means nothing ran at all.
+for (const cmd of longReadCommands()) {
+  const r = await hookDecision(cmd, []);
+  assert(
+    !r.block && r.calls.length === 0,
+    `hook runs a long read untouched: ${JSON.stringify(cmd.slice(0, 50))}… (${(r.reason ?? "").slice(0, 80)})`,
+  );
+}
 for (const cmd of ["cd x && gh pr merge 17", "gh api repos/o/r/pulls/12/merge"]) {
   const r = await hookDecision(cmd, GOOD_ENTRIES);
   assert(r.block, `hook refuses even with a passing ledger: ${JSON.stringify(cmd)}`);

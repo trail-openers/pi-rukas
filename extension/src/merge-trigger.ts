@@ -21,18 +21,17 @@
  * re-tested all four patterns over both texts even after one had matched).
  */
 
+import type { HoldReason } from "./merge-allowlist.ts";
 import {
-  ANSI_ESCAPE_PATTERN,
   BRACE_EXPANSION,
   FORGE_WORD,
   HTTP_CLIENT,
-  type HoldReason,
   MERGE_WORD,
   VERB_PAIR,
   ansiC,
   hasComplexCommandWord,
   quotedView,
-} from "./merge-allowlist.ts";
+} from "./merge-lex-views.ts";
 
 /** A forge's own `api`/`graphql` call, or an HTTP client aimed at a forge host. */
 const FORGE_NAME = /(?:^|[^a-z0-9_])(?:gh|glab)(?![a-z0-9_])/i;

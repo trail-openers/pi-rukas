@@ -4,21 +4,27 @@
  *
  * #962. The guard used to parse arbitrary shell to find a merge wherever it
  * hid; every review round found a shape it read differently from bash. This
- * module replaces that with a strict allowlist, in three steps:
+ * module replaces that with a strict allowlist, in three steps. The steps run
+ * in order, and each is a whole answer — the first that speaks decides:
  *
- *   0a. SIZE BOUND (#955, restored by #1417 — merge-size.ts). A long command
- *      naming `gh`/`glab` that spells a merge word is `refused` with
- *      `too-large`: never resolved to the current branch's PR. A long command
- *      that spells NO merge word — a `gh pr view` with a 9 kB `--jq`, a
- *      changelog pasted into `gh pr create --body` — answers `none` as a short
- *      one would: the bound holds merge-bearing text, not long text.
+ *   0. SIZE BOUND (#955, restored by #1417 — merge-size.ts). The question the
+ *      bound answers — "read this command at all?" — is asked FIRST, before
+ *      the lexer and the read allowlist: an unreadably long merge-shaped
+ *      command is HELD, never left to fall through to current-branch PR
+ *      resolution. It bounds exactly what the steps below would have had to
+ *      read — a long command naming `gh`/`glab` that spells a merge word is
+ *      `refused` with `too-large`, while a long command spelling no merge word
+ *      (a `gh pr view` with a 9 kB `--jq`, a changelog pasted into
+ *      `gh pr create --body`) is left to the next step, where it answers
+ *      `none` as a short one would. The bound holds merge-bearing text, not
+ *      long text.
+ *
  *   0b. READ-ONLY GH. A command lexing as ONE simple command whose words are
  *      `gh` + a genuine read (or a creation with no inline body) is not a
  *      merge, whatever merge words its titles or searches carry —
  *      `READ_ONLY_GH` is the list, `BODY_FLAGS` the creation split.
  *      Comments, edits, reviews and workflow/run verbs are NOT exempt: refused
  *      when they carry a merge word (put prose in `--body-file`).
-
  *   1. TRIGGER (cheap, on the raw text, case-insensitive — merge-trigger.ts
  *      owns the patterns and their reason codes). Refused outright, without
  *      reading: forge/HTTP-client/interpreter + a merge word; `pr merge` /
@@ -85,133 +91,10 @@ export function isValidRepoValue(value: string): boolean {
   return REPO_VALUE_PATTERN.test(value);
 }
 
-export const FORGE_WORD =
-  /(?:^|[^a-z0-9_])(?:gh|glab|hub|curl|wget|https?|python3?|node|bun|deno|ruby|perl)(?![a-z0-9_])|api\.github\.com|gitlab|octokit/i;
-/**
- * `pr merge` / `mr merge` / `mr accept` (glab's alias) — a merge verb even
- * when the forge CLI runs under another name (`./g pr merge 17`).
- */
-export const VERB_PAIR = /(?:^|[^a-z0-9_])[pm]r\s+(?:merge|accept)(?![a-z0-9_])/i;
-export const MERGE_WORD =
-  /(?:^|[^a-z0-9_])merge(?![a-z0-9_])|mergepullrequest|enablepullrequestautomerge|mergerequestaccept|acceptmergerequest|mergerequestmerge|mergemergerequest|automerge|mergebranch|mergequeue|enqueuepullrequest/i;
-export const HTTP_CLIENT = /(?:^|[^a-z0-9_])(?:curl|wget|https?|httpie)(?![a-z0-9_])/i;
-/**
- * A `{a,b}` / `{a..b}` pattern bash would expand (unquoted view). Runs are
- * bounded so the match stays LINEAR: unbounded, it backtracks quadratically on
- * `{` + a long `a,a,a,…` (#962 review).
- */
-export const BRACE_EXPANSION = /\{[^{}\s,]{0,256}(?:,|\.\.)[^{}\s]{0,256}\}/;
-
 /** Outside quotes, any of these refuses (metacharacters, expansions, comments). */
 const FORBIDDEN = new Set("$`\\;|&<>(){}*?[#~!");
 /** Inside double quotes only these still expand, escape or history-expand. */
 const DQ_FORBIDDEN = new Set("$`\\!");
-
-/** ANSI-C escapes that spell one character. Anything else stays literal. */
-const ANSI_ESCAPES: Readonly<Record<string, string>> = {
-  a: "\x07",
-  b: "\b",
-  e: "\x1b",
-  E: "\x1b",
-  f: "\f",
-  n: "\n",
-  r: "\r",
-  t: "\t",
-  v: "\v",
-  "\\": "\\",
-  "'": "'",
-  '"': '"',
-  "?": "?",
-};
-export const ANSI_ESCAPE_PATTERN =
-  /\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|[0-7]{1,3}|[\s\S])/g;
-
-/**
- * Decode the escapes of an ANSI-C `$'…'` body. One bash would not decode
- * (out-of-range, no digits, unknown letter) stays literal, never dropped.
- */
-export function ansiC(body: string): string {
-  return body.replace(ANSI_ESCAPE_PATTERN, (whole, e: string) => {
-    if (e.length > 1 && /^[xuU]/.test(e)) {
-      const code = Number.parseInt(e.slice(1), 16);
-      return code <= 0x10ffff ? String.fromCodePoint(code) : whole;
-    }
-    if (/^[0-7]/.test(e)) return String.fromCodePoint(Number.parseInt(e, 8));
-    return ANSI_ESCAPES[e] ?? whole;
-  });
-}
-
-/**
- * The command with single-quoted contents removed (literal to bash), and
- * double-quoted contents too unless `keepDouble`. Quote marks stay, so a
- * removed word still leaves its `''` / `""` behind; escapes are skipped whole
- * so a `\"` cannot open or close a quote.
- */
-export function quotedView(command: string, keepDouble: boolean): string {
-  let out = "";
-  let quote: "'" | '"' | undefined;
-  const chars = [...command];
-  for (let i = 0; i < chars.length; i += 1) {
-    const ch = chars[i] ?? "";
-    if (ch === "\\" && quote !== "'") {
-      const next = chars[i + 1] ?? "";
-      i += 1;
-      if (quote === undefined || keepDouble) out += ch + next;
-      continue;
-    }
-    if (quote === "'") {
-      if (ch === "'") {
-        quote = undefined;
-        out += ch;
-      }
-      continue;
-    }
-    if (quote === '"') {
-      if (ch === '"') {
-        quote = undefined;
-        out += ch;
-      } else if (keepDouble) out += ch;
-      continue;
-    }
-    if (ch === "'" || ch === '"') quote = ch;
-    out += ch;
-  }
-  return out;
-}
-
-/** Split on unquoted command separators; each piece is the raw text of one simple command. */
-function segments(command: string): string[] {
-  const out: string[] = [];
-  let cur = "";
-  let quote: string | undefined;
-  for (const ch of command) {
-    if (quote !== undefined) {
-      if (ch === quote) quote = undefined;
-      cur += ch;
-    } else if (ch === "'" || ch === '"') {
-      quote = ch;
-      cur += ch;
-    } else if (/[;&|\n`()]/.test(ch)) {
-      out.push(cur);
-      cur = "";
-    } else {
-      cur += ch;
-    }
-  }
-  out.push(cur);
-  return out;
-}
-
-/** A segment whose command word (after `VAR=…` assignments) is expanded, quoted or escaped. */
-export function hasComplexCommandWord(command: string): boolean {
-  return segments(command).some((seg) => {
-    const word = seg
-      .trim()
-      .split(/\s+/)
-      .find((w) => !/^[A-Za-z_]\w*=/.test(w));
-    return word !== undefined && /[$`'"\\]/.test(word);
-  });
-}
 
 /**
  * Split into words with bash's quote removal, or a reason code when the text
@@ -469,13 +352,12 @@ function isReadOnlyGh(words: string[]): boolean {
 
 /** Classify a bash command for the merge guard. Linear in the command length. */
 export function readMergeCommand(command: string): MergeCommand {
-  // #955 / #1417 — the size bound first, before the read allowlist, so a
-  // merge-bearing command too long to read is HELD rather than falling through
-  // to current-branch PR resolution. What it bounds is exactly the commands
-  // the rest of this function would have had to read (merge-size.ts): a long
-  // command naming no forge, and a long command spelling no merge word, answer
-  // `none` here just as they would below the bound. Constant, predicate and
-  // wording in merge-size.ts.
+  // #955 / #1417 — the size bound, ahead of everything else: it answers
+  // "read this at all?", and an unreadably long merge-shaped command must be
+  // HELD rather than fall through to current-branch PR resolution. It bounds
+  // only what the steps below would have had to read (merge-size.ts), so a
+  // long command naming no forge — or spelling no merge word — answers `none`
+  // here exactly as it would below the bound.
   const bounded = analysisBound(command);
   if (bounded !== undefined) return bounded;
   const lexed = lex(command);
