@@ -23,6 +23,7 @@ import type { LensResidualsPostFailedEvent } from "./workflow-state-events-resid
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
 import type { DispatchSlowEvent } from "./workflow-state-events-slow.ts";
 import type {
+  ConsolidatedVerifySkippedEvent,
   VerifyFlakeRecoveredEvent,
   VerifyFullStatusEvent,
 } from "./workflow-state-events-verify-flake.ts";
@@ -431,6 +432,7 @@ export type WorkEvent =
     }
   | VerifyFullStatusEvent
   | VerifyFlakeRecoveredEvent
+  | ConsolidatedVerifySkippedEvent
   | WideningScanEvent
   | MemoryEventFragment
   | WorktreeProvisionedEvent

@@ -5,11 +5,12 @@ import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
-import { runCommitPrConsolidatedVerify } from "./work-driver-integrate-verify.ts";
+import { integrationEmptiness } from "./work-driver-integrate-emptiness.ts";
+import { verifyIntegration } from "./work-driver-integrate-verify-step.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
-import type { WorkState } from "./workflow-state-schema.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
 import { sweepBranchHolders } from "./worktree.ts";
 // Re-exported for backward compatibility (callers imported these from
@@ -63,6 +64,16 @@ export interface IntegrateOpts {
   verifyCmd?: string;
   /** Executor for `verifyCmd`. Defaults to `execFn`; tests inject. */
   verifyExecFn?: ExecFn;
+  /**
+   * #1240 — the single worktree whose content the develop gate verified
+   * green, when the integration is exactly that: ONE workstream, whose work
+   * arrived by cherry-pick (not a patch transplant, which adds no commit and
+   * is the shape `integrate()` step 4 verifies). The caller (mechanized
+   * commit-pr) supplies the develop worktree for the N=1 create-mode cycle.
+   * When supplied, step 4 skips its verify run if the committed integration
+   * tree is the tree that passed. Any other shape must leave this absent.
+   */
+  verifiedWorktree?: string;
   /** Wall-clock for `verifyCmd`. */
   verifyTimeoutMs?: number;
   /**
@@ -146,6 +157,13 @@ export type IntegrateResult =
       noDiff?: NoDiff;
       commitShas?: Record<string, string>;
       completeness?: ConsolidationCompleteness;
+      /**
+       * #1240 — the commit-pr consolidated verify did not run because the
+       * committed integration tree is the tree the develop step already
+       * verified green. The caller records the visible event from it; absent
+       * on every run that executed the command.
+       */
+      verifySkipped?: AlreadyVerifiedTree;
     }
   /** Nothing to integrate — every worktree was clean. Not an error. #492. */
   | {
@@ -190,6 +208,9 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
   // the operator found a half-applied branch; the NEXT cycle's dirty preflight
   // would refuse to run at all.
   let originalRef: string | undefined;
+  // #1240 — set only when step 4 skipped its verify run; carried on the
+  // success result so the caller can record the visible event.
+  let verifySkipped: AlreadyVerifiedTree | undefined;
   // #750 — the restore is verified, not assumed (see work-driver-restore.ts).
   const restoreRoot = async (): Promise<VerifiedRestoreResult> =>
     originalRef
@@ -360,79 +381,45 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       );
     }
 
-    // Determine which workstreams actually produced output.
+    // Determine which workstreams actually produced output. (#749 — the
+    // "nothing produced" vs "already on the branch" discrimination, and both
+    // modes' evidence shapes, live in `integrationEmptiness`.)
     const appliedWorkstreams = cherryApplied.length > 0 ? cherryApplied : patchApplied;
-    // Check if cherry-picked workstreams were all no-ops.
-    if (opts.baseSha) {
-      const { stdout: headAhead } = await execFn(
-        `git rev-list --count ${JSON.stringify(opts.baseSha)}..HEAD`,
-        { cwd: repoRoot, maxBuffer: 64 * 1024 },
-      );
-      const ahead = Number.parseInt(headAhead.trim(), 10);
-      if (!Number.isFinite(ahead) || ahead === 0) {
-        // No commits ahead — every cherry-pick was a no-op or there was
-        // nothing to do. Return empty rather than a spurious success.
-        // #749 — carry the dedup discriminator: "nothing produced" vs
-        // "work exists and its content is already on the branch".
-        const skipped = orchResult.skippedAlreadyOnBranch ?? [];
-        return {
-          ok: true,
-          workstreams: [],
-          empty: true,
-          noDiff,
-          ...(skipped.length > 0 ? { skippedAlreadyOnBranch: skipped } : {}),
-        };
-      }
-    } else {
-      // No baseSha — check if there are staged changes (patch fallback).
-      if (appliedWorkstreams.length === 0) {
-        const { stdout: hasStaged2 } = await execFn("git diff --cached --name-only", {
-          cwd: repoRoot,
-          maxBuffer: 64 * 1024,
-        });
-        if (!hasStaged2.trim()) {
-          const skipped = orchResult.skippedAlreadyOnBranch ?? [];
-          return {
-            ok: true,
-            workstreams: [],
-            empty: true,
-            noDiff,
-            ...(skipped.length > 0 ? { skippedAlreadyOnBranch: skipped } : {}),
-          };
-        }
-      }
+    const emptiness = await integrationEmptiness(execFn, {
+      repoRoot,
+      baseSha: opts.baseSha,
+      appliedWorkstreams,
+      skippedAlreadyOnBranch: orchResult.skippedAlreadyOnBranch,
+    });
+    if (emptiness.empty) {
+      // `...emptiness` carries `empty: true` plus the #749 dedup discriminator;
+      // `noDiff` is the orchestrator's own map, kept under the field name the
+      // callers already read.
+      return { ok: true, workstreams: [], noDiff, ...emptiness };
     }
 
-    // 4. Verify the CONSOLIDATED tree before it becomes a PR. See `verifyCmd`.
-    //    Rolling back on failure is safe: the worktrees still hold every
-    //    workstream's commit — they are only advanced past it after a
-    //    successful push, below.
-    //    #777 — the classification happens here (the commit-pr twin seam) via
-    //    the shared classifier, so the handoff names the specific assertion
-    //    and the workstream combination instead of "the combination does not".
-    if (opts.verifyCmd) {
-      const verifyExec = opts.verifyExecFn ?? execFn;
-      const vr = await runCommitPrConsolidatedVerify(verifyExec, {
-        verifyCmd: opts.verifyCmd,
-        repoRoot,
-        workstreamCount: ids.length,
-        workstreamIds: ids,
-        timeoutMs: opts.verifyTimeoutMs,
-        // #782 — pass the cycle's ciRetryCount through so the single flake
-        // retry fires only on the FIRST consolidated run (ciRetryCount unset).
-        isCiRetry: (opts.verifyRetry?.ciRetryCount ?? 0) > 0,
-        onRecover: opts.verifyRetry?.onRecover,
-      });
-      if (vr.ok === false) {
-        const restore = await restoreRoot();
-        return {
-          ok: false,
-          failure: "verify",
-          reason: `${vr.classifiedMessage} — it was not pushed. ${claimFor(restore)}.`,
-          ...(vr.timedOut ? { timedOut: true } : {}),
-        };
-      }
-    }
+    // 4. Verify the CONSOLIDATED tree before it becomes a PR — the seam
+    //    itself is `verifyIntegration` (work-driver-integrate-verify-step.ts):
+    //    rolling back on failure is safe only because the worktrees still hold
+    //    every workstream's commit, and #777's classification happens there.
+    //    #1240's skip is decided inside it, not here.
+    const integrationVerify = await verifyIntegration(execFn, {
+      repoRoot,
+      ids,
+      cherryApplied,
+      patchApplied,
+      noDiff,
+      mode,
+      verifiedWorktree: opts.verifiedWorktree,
+      verifyCmd: opts.verifyCmd,
+      verifyExecFn: opts.verifyExecFn,
+      verifyTimeoutMs: opts.verifyTimeoutMs,
+      verifyRetry: opts.verifyRetry,
+      restoreRoot,
+      claimFor,
+    });
+    if (integrationVerify.failure !== undefined) return integrationVerify.failure;
+    verifySkipped = integrationVerify.skipped;
 
     // 5. Push.
     const pushRefProblem = netRefProblem(branchName);
@@ -472,6 +459,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       noDiff: Object.keys(noDiff).length > 0 ? noDiff : undefined,
       commitShas: Object.keys(cherryPickShas).length > 0 ? cherryPickShas : undefined,
       completeness: orchResult.completeness,
+      ...(verifySkipped !== undefined ? { verifySkipped } : {}),
     };
   } catch (err) {
     const e = err as Error & { stderr?: string };

@@ -25,6 +25,7 @@ import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import type { IntegrateResult } from "./work-driver-integrate.ts";
 import { parsePrNumber } from "./work-driver-merged.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
+import { makeConsolidatedVerifySkippedEvent } from "./workflow-state-events-verify-flake.ts";
 import type { ConsolidationVerdict } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
@@ -259,6 +260,16 @@ export function finalizeCommitPrState(
     },
     { kind: "step-started", step: "commit-pr", at: now },
   );
+  // #1240 — the commit-pr consolidated verify skipped its run because the
+  // committed integration tree is the tree develop already judged. Emitted
+  // alongside (not instead of) the flake marker: they describe different
+  // facts, and the skip's absence is the only evidence a run happened.
+  if (res.verifySkipped !== undefined) {
+    next = appendEvent(
+      next,
+      makeConsolidatedVerifySkippedEvent("commit-pr", res.verifySkipped, ids.length),
+    );
+  }
   // #782 — the commit-pr consolidated verify recovered from a flake: emit
   // the audit trail BEFORE the dispatch-completion event so the ordering
   // in the event log matches the temporal order.
@@ -273,12 +284,19 @@ export function finalizeCommitPrState(
   // Via the shared builder (work-driver-events.ts): unique jobId — the old
   // inline literal "mechanized" appeared twice per fan-out cycle, making
   // jobId useless as a correlation key (census 2026-09-09).
+  // #1240 — the skip is named in the summary as well as in the event: the
+  // step's operator-facing line is the thing a reader scans when a commit-pr
+  // came back fast, and "it was quick, or it skipped" must have one answer.
+  const skipNote =
+    res.verifySkipped === undefined
+      ? ""
+      : `\nconsolidated verify skipped: tree ${res.verifySkipped.treeHash} already passed in ${res.verifySkipped.worktree}`;
   next = appendEvent(
     next,
     synthesizeDriverCompletion({
       step: "commit-pr",
       label: "driver:commit-pr",
-      summary: `Mechanized commit-pr: consolidated ${ids.length} worktree(s), committed, pushed ${branchName}, ${prAlreadyOpen ? `updated open PR #${prNumber}` : "opened PR"}.\npr: ${prNumber}`,
+      summary: `Mechanized commit-pr: consolidated ${ids.length} worktree(s), committed, pushed ${branchName}, ${prAlreadyOpen ? `updated open PR #${prNumber}` : "opened PR"}.${skipNote}\npr: ${prNumber}`,
       startedAt,
       now: Date.now(),
     }),

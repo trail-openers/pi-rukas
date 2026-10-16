@@ -1328,6 +1328,28 @@ The command runs in the group's worktree, never the repo root — under parallel
 
 Escape hatches: `PI_ENSEMBLE_VERIFY_FULL=0`, `PI_ENSEMBLE_VERIFY_FULL_TIMEOUT_MS`.
 
+### The develop gate ran the verify command twice on the same tree (#1240)
+
+**Symptom:** `develop` completes many minutes after its developer child finished, with nothing between them but the driver's consolidated verify. On a project whose gate is slow (the orchard factory: `scripts/test.sh`, ~18 min of serial shell tests) an N=1 cycle pays that twice per gate pass — once in the develop worktree and once again at repoRoot for the consolidated probe — and the second run checks content the first already judged. Four gate passes per cycle meant eight runs where four sufficed.
+
+**Cause:** with one workstream, the consolidated probe cherry-picks that workstream's *own* commits onto the cycle's base. The result is the same tree, so the second run is duplicate work, not a second opinion. It was never redundant at N>1, where the combination genuinely is a tree no worktree held.
+
+**Fix:** the probe now establishes identity positively, from git's own tree object ids, and skips the command only when it can prove the probe tree is the tree that just passed. Both sides include staged content and exclude untracked files, and neither is trusted when the working tree holds content no tree object describes (unstaged edits, untracked sources) — there the run happens. Any read failure, any mismatch, more than one workstream, a per-worktree failure, or the degenerate root-as-worktree shape runs the consolidated verify exactly as before: a gate that cannot prove equivalence runs the check.
+
+**What you see:** the skip is not silent. The state file's notes and the trace carry
+
+```
+consolidated verify skipped: tree <hash> already passed in <worktree> — …
+```
+
+and the develop event log keeps its `verifyEvidence` / duration recording untouched, so a fast `develop` is explainable from the state file rather than inferred from the absence of a 20-minute gap. The commit-pr half of the same rule names it in that step's operator-facing summary too, and the `consolidated-verify-skipped` event is recorded on every path the develop gate re-runs (the first pass, the fence merge-and-retry, the sibling-symbol merge, and the converge corrective) — not only the first.
+
+**The fast tier is covered by the skip as well:** `.pi/verify-cmd-fast` is skipped together with the full command, because both tiers already ran per-worktree on the same content (`PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP=0` restores both).
+
+**The named assumption — ignored dependency directories are unchanged between the two runs.** The tree hash covers tracked and staged content only, so an ignored directory (`node_modules`, `target`, `dist`) can never make the two sides differ. That is sound only because those directories are *shared* into each worktree by symlink (`worktree-provision.ts`): the per-worktree run and the repoRoot probe read the same dependency tree, so the run that passed judged the same content the skip declines to re-judge. If that assumption does not hold for your project — a per-checkout install, or a gitignored generated directory the verify reads and the probe produces differently — the skip is wrong for you and `PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP=0` disables it. Untracked-but-not-ignored paths are the opposite case and are never exempt: only the driver's own artefacts (`.pi/work-state/`, `.worktrees/`, `tmp/issue-<N>/`) are invisible to the dirt check, so a stray `?? tmp/evil.ts` denies the identity and the command runs.
+
+**Escape hatch:** `PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP` set to `0`, `false`, `off` or `no` (trimmed, case-insensitive) restores the always-run behaviour (for example, to reproduce a gate failure that only appears in the probe's checkout).
+
 ### Type-widening scan
 
 Before each lens review the integrated diff is scanned for removed compiler-enforced invariants: `T` → `Option<T>` (Rust), `T` → `T | null` / `| undefined` and added `?:` (TS), removed `readonly`/`final`/`const`, narrowing to `any`/`unknown`, removed `assert`/`debug_assert!`, removed `pub`/`mut`.

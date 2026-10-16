@@ -138,6 +138,10 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("CLAIM_SCAN", true),
   flag("COMMENT_RETENTION", true),
   list("COMMENT_RETENTION_PATHS", ",", "extension/src,extension/smoke-tests,agents-base"),
+  // #1240 — 0 restores the pre-#1240 shape: the consolidated verify always runs,
+  // even when its probe tree is provably the tree the per-worktree verify just
+  // judged. Default ON.
+  flag("CONSOLIDATED_VERIFY_SKIP", true),
   flag("CONVERGE", true),
   flag("CROSS_GROUP_CONFLICTS", true),
   ms("CYCLE_BUDGET_MS", null),
