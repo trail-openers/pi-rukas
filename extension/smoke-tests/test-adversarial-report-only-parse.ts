@@ -18,8 +18,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AdversarialVerdict } from "../src/adversarial-verdict.ts";
 import { adversarialPassed } from "../src/review-ledger.ts";
+import type { AdversarialVerdict } from "../src/types.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -232,8 +232,8 @@ try {
   // non-reportOnly loop (the tool's fix-capable path) whose round 1 is
   // ISSUES_FOUND must NOT record that round as passed: it routes to a fix round
   // and only a later round can approve. Here every round repeats ISSUES_FOUND,
-  // so the loop runs all 3 rounds and rejects.
-  // (#1161: it carries no verdict policy, so reportVerdict is not passed here)
+  // so the loop runs all 3 rounds and rejects. #1161: it carries no verdict
+  // policy, so `reportVerdict` is not passed here.
   reply = "VERDICT: ISSUES_FOUND\n\n- x.txt:1 — missing test";
   const nonReportOnly = await runAdversarialLoop(
     {
