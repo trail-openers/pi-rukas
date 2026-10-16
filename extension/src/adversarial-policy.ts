@@ -8,8 +8,9 @@
  * verdict is judged (#1154).
  *
  * The rule, stated once: `reportVerdict` is REQUIRED whenever `reportOnly` is
- * true and must be absent otherwise. A caller cannot get a reportOnly review
- * that judges its verdict with neither value set nor with only one of them.
+ * true and must be absent otherwise — a reportOnly review with neither value
+ * set is rejected as a missing policy, one with only `reportVerdict` as an
+ * orphan.
  */
 export type ReportPolicy =
   | {
@@ -38,10 +39,9 @@ export type ReportPolicy =
  * #1161 — the runtime fence behind the `ReportPolicy` type. Returns the named
  * reason when the policy is unsound, or undefined when it is sound.
  *
- * The type alone does not bind the `adversarial_loop` tool boundary, which
- * receives LLM-supplied JSON; this check is what enforces the union at that
- * boundary. A reportOnly review without a recognised policy fails as an infra
- * failure instead of being silently judged as a routed round.
+ * What the fence adds over the type: the `adversarial_loop` tool boundary
+ * receives LLM-supplied JSON, which no type binds, so this check is what
+ * enforces the rule there.
  */
 export function reportPolicyError(policy: {
   reportOnly?: unknown;
@@ -54,5 +54,7 @@ export function reportPolicyError(policy: {
     return policy.reportVerdict === undefined ? undefined : "reportVerdict requires reportOnly";
   }
   if (policy.reportVerdict === "terminal" || policy.reportVerdict === "routed") return undefined;
-  return "reportOnly review without a verdict policy";
+  return policy.reportVerdict === undefined
+    ? "reportOnly review without a verdict policy"
+    : `reportVerdict ${JSON.stringify(policy.reportVerdict)} is not a verdict policy`;
 }
