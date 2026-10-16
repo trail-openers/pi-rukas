@@ -286,7 +286,14 @@ const everyKindEvent: WorkEvent[] = [
   { kind: "fence-recovery-started", at: 1, workstreamId: "a", owners: ["b"] },
   // S4a (#1162) — the interrupt record.
   { kind: "interrupted", at: 1, reason: "signal" },
-  { kind: "cycle-interrupted", at: 1, step: "lens-fix", reason: "quit", resumable: true },
+  {
+    kind: "cycle-interrupted",
+    at: 1,
+    step: "lens-fix",
+    reason: "quit",
+    origin: "unknown",
+    resumable: true,
+  },
   {
     kind: "lens-residuals-post-failed",
     at: 1,

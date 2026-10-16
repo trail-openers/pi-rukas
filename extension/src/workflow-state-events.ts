@@ -3,6 +3,7 @@
  * and `WorkEvent` (append-only, typed event-log entries). Split from
  * `workflow-state.ts` for module-size hygiene (AGENTS.md §12).
  */
+import type { ExitOrigin } from "./exit-cause.ts";
 import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
@@ -477,9 +478,10 @@ export type CycleInterruptedEvent = {
    * #1247 — where the shutdown actually came from: a signal (`signal:SIGTERM`),
    * a closed stdin (`stdin-eof`), or `unknown` when nothing observable did. Pi's
    * `reason` field cannot distinguish these, so this is tracked at the process
-   * level (exit-cause.ts) and recorded here. Additive: old readers ignore it.
+   * level (exit-cause.ts) and recorded here. Additive and OPTIONAL: state files
+   * written before #1247 have no `origin`, and readers must not assume one.
    */
-  origin: string;
+  origin?: ExitOrigin;
   /** Where the work is, when the cycle had got that far. */
   branch?: string;
   headSha?: string;

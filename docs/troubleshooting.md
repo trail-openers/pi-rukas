@@ -1443,11 +1443,13 @@ An in-flight job id with **no** matching `dispatch-started` event is not a crash
 
 Orphaned `dispatch-started` events are deliberately kept in the log. They are the only record that a dispatch was paid for and lost.
 
-**A session shutdown is handled as that crash, not as a step failure.** Quitting, reloading or replacing the Pi session aborts every in-flight child. The driver used to read its own aborted child as the step failing: it recorded `cap-hit: step-failed:<step>` and entered a handoff that cannot finish in an exiting process, leaving `status: running, step: handoff` and no reason. It now stops where it is — no cap, no handoff — appends one `cycle-interrupted` event (step, Pi's reason, branch and head sha) and says so once:
+**A session shutdown is handled as that crash, not as a step failure.** Quitting, reloading or replacing the Pi session aborts every in-flight child. The driver used to read its own aborted child as the step failing: it recorded `cap-hit: step-failed:<step>` and entered a handoff that cannot finish in an exiting process, leaving `status: running, step: handoff` and no reason. It now stops where it is — no cap, no handoff — appends one `cycle-interrupted` event (step, Pi's reason, the origin, branch and head sha) and says so once:
 
 ```
-[pi-rukas] cycle interrupted: session shutdown (quit) during lens-fix; state is resumable — run /work 97 — work on feature/issue-97-… at 1d6a5dd0
+[pi-rukas] cycle interrupted: session shutdown (quit, origin: stdin-eof) during lens-fix; state is resumable — run /work 97 — work on feature/issue-97-… at 1d6a5dd0
 ```
+
+Pi's `reason` only ever says `quit` / `reload` / `new` / `resume` / `fork`, which does not tell you who pulled the plug, so the origin is tracked at the process level (#1247): `stdin-eof` means the caller closed stdin (the usual shape of a headless `pi --mode rpc` session whose parent went away), `signal:SIGTERM` / `signal:SIGINT` / `signal:SIGHUP` names the signal that arrived, and `unknown` means none of those fired — Pi exited on its own, or the quit came through a path the extension cannot observe. `unknown` is an answer, not a gap in the log. `/work-status` renders the same pair on its `cycle-interrupted` row; a state file written before #1247 has no `origin` and renders without it.
 
 On `quit` that line goes to stderr; on a reload or session switch it arrives as a `kind=interrupted` driver event. The state file still says `running`, deliberately: `running` with a dead `owner.pid` is what "resumable" already means, so anything reading the file from outside must check owner liveness (or look for a trailing `cycle-interrupted`) before calling the cycle live. This is a different record from the headless runner's SIGTERM / SIGINT handling (the cycle `signal`, event kind `interrupted`, status `interrupted`): a Pi session shutdown never sets that signal, so the two are checked separately. If the line says `/work N will refuse this state` instead, the step that was cut off had not written ahead and the file is at the previous boundary — `resumable: false` on the event.
 

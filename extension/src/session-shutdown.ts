@@ -15,6 +15,8 @@
  * aborted dispatch can be observed ahead of the reason for it.
  */
 
+import type { ExitOrigin } from "./exit-cause.ts";
+
 let reason: string | undefined;
 
 /**
@@ -22,10 +24,10 @@ let reason: string | undefined;
  * or `unknown`), or `undefined` while the session lives. Tracked at the
  * process level by exit-cause.ts because Pi's event does not say.
  */
-let origin: string | undefined;
+let origin: ExitOrigin | undefined;
 
 /** Called by the `session_shutdown` hook, before the jobs are aborted. */
-export function markSessionShutdown(why: string, originOfShutdown: string): void {
+export function markSessionShutdown(why: string, originOfShutdown: ExitOrigin): void {
   reason = why;
   origin = originOfShutdown;
 }
@@ -36,7 +38,7 @@ export function sessionShutdownReason(): string | undefined {
 }
 
 /** The origin of the shutdown (`stdin-eof`, `signal:SIGTERM`, `unknown`), or undefined. */
-export function sessionShutdownOrigin(): string | undefined {
+export function sessionShutdownOrigin(): ExitOrigin | undefined {
   return origin;
 }
 

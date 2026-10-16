@@ -35,6 +35,12 @@ import * as workWidget from "./work-widget.ts";
 
 export default async function (pi: ExtensionAPI) {
   trace("extension activated");
+  // #1247 — arm the process-level origin trackers (signal / stdin-EOF) the
+  // moment the extension is registered, not on `session_start`: `pi --mode
+  // rpc` can shut down without ever emitting one, and a headless session is
+  // precisely the one whose quit the operator cannot explain. Idempotent, so
+  // the `session_start` call below is a backstop and not a second arming.
+  armExitCause();
   // Subagent-mode firewall: when pi-rukas is forwarded INTO a spawned
   // subagent (by spawn.ts setting PI_ENSEMBLE_SUBAGENT_MODE=1), register
   // ONLY the permission-guard. No dispatch tools, no slash commands, no
@@ -129,8 +135,6 @@ export default async function (pi: ExtensionAPI) {
   // any event handler scope. Pi passes ctx into every event listener; we
   // hold the reference until session_shutdown.
   pi.on("session_start", (_event, ctx) => {
-    // #1247 — arm the process-level trackers (signal / stdin-EOF) so the
-    // session_shutdown line can name the quit's origin, not just `quit`.
     armExitCause();
     dispatchDeck.attach(ctx);
     workWidget.attach(ctx);
