@@ -131,7 +131,6 @@ assert(
 for (const c of [
   `cat ${storeFile}`,
   'bun -e \'require("fs").writeFileSync("review-findings-store", "")\'',
-  "bun extension/scripts/review-accept-row.ts",
   // A multi-line command starting with git is scanned, not waved through as plain git.
   'git status\nbun -e \'require("fs").writeFileSync("review-findings-store", "")\'',
   // A git/gh command with a shell operator is not plain: its store mention is scanned.
@@ -142,7 +141,7 @@ for (const c of [
   "bun test --preload ./x.ts smoke-tests/review-findings-store*",
   "bun test -r ./x.ts smoke-tests/review-findings-store*",
   // The operator script is not a test file, even under a test runner.
-  "bun test smoke-tests/review-accept-row.ts",
+  "bun test smoke-tests/review-accept.ts",
 ]) {
   assert(
     runsReviewAccept(c) !== undefined,

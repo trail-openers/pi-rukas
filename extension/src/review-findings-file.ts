@@ -1,17 +1,21 @@
 /**
  * review-findings-file — the on-disk shape of `review-findings.json` (#1105):
- * the stored row type, its validation, the pure row-cap and the acceptance
- * reason rule. A file that does not parse is corrupt (fail closed); a single
- * malformed row is set aside by review-findings-store.ts and the valid rows
- * carry on. Nothing here writes to disk.
+ * the stored row type, its validation, the pure row-cap, the acceptance reason
+ * rule, the row id, and the `Decision` a round returns per finding. A file that
+ * does not parse is corrupt (fail closed); a single malformed row is set aside
+ * by review-findings-store.ts and the valid rows carry on. Nothing here writes
+ * to disk, and nothing here imports the store or the round.
  *
  * The status union is the schema, not a write path: a row is `accepted` only
  * with an acceptance, and open/resolved rows carry none.
+ *
+ * `newRowId` and `Decision` live here rather than in the store because the
+ * store and the round (review-findings-round.ts) BOTH produce them: keeping
+ * them in either one made the two modules import each other.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import type { Severity } from "./lens-review-format.ts";
-import { trace } from "./trace.ts";
 import { looksLikeSecret } from "./vipune.ts";
 
 export type RowStatus = "open" | "accepted" | "resolved";
@@ -36,7 +40,7 @@ interface StoredBase {
    * re-rendered to the operator VERBATIM from the row, so a row that stored no
    * description would print an empty line under its own heading. Optional —
    * `report_finding`'s description is optional — but a carried row always
-   * renders something (`carriedText` in lens-review-format.ts).
+   * renders something (`findingDescription` in lens-review-format.ts).
    */
   description?: string;
   /** The lens's suggested fix, kept for the same reason as `description`. */
@@ -203,13 +207,18 @@ function rowProblem(v: unknown): string | undefined {
   return undefined;
 }
 
+/** How much of an untrusted field one disclosure line carries. */
+const SET_ASIDE_FIELD_CHARS = 200;
+
 /**
  * What one malformed row was, for the operator disclosure: enough identity to
  * find it again in the `.corrupt-<hash>` copy, and whether it held an acceptance.
+ * The copied fields are untrusted file content, so each is bounded.
  */
 export function describeSetAside(v: unknown): SetAsideNotice {
   const o = (v ?? {}) as Record<string, unknown>;
-  const text = (key: string): string => (typeof o[key] === "string" ? String(o[key]) : "?");
+  const text = (key: string): string =>
+    (typeof o[key] === "string" ? String(o[key]) : "?").slice(0, SET_ASIDE_FIELD_CHARS);
   const problem = rowProblem(v);
   const rowId = typeof o.id === "string" && o.id ? o.id : undefined;
   return {
@@ -217,10 +226,32 @@ export function describeSetAside(v: unknown): SetAsideNotice {
     path: text("path"),
     severity: text("severity"),
     title: text("title"),
-    ...(rowProblem(v) ? { problem: rowProblem(v) } : {}),
+    ...(problem ? { problem } : {}),
     wasAcceptance: o.status === "accepted",
   };
 }
+
+/** A fresh 8-hex row id, unique among `taken`. */
+export function newRowId(taken: ReadonlySet<string>): string {
+  for (;;) {
+    const id = Math.floor(Math.random() * 0x100000000)
+      .toString(16)
+      .padStart(8, "0");
+    if (!taken.has(id)) return id;
+  }
+}
+
+/**
+ * What a round decided for one finding, aligned by index with the findings it
+ * was given. `suppressed-*` findings are dropped from the review's findings
+ * and listed in the residual disclosure with their row id and reason.
+ *
+ * Declared here (and not in the store) so both halves of a round — the store
+ * and review-findings-round.ts — import the same type from a leaf.
+ */
+export type Decision =
+  | { action: "new" | "matched"; rowId: string }
+  | { action: "suppressed-unchanged" | "suppressed-accepted"; rowId: string; reason: string };
 
 /**
  * `ok` with the valid rows and any malformed ones (set aside by the store), or
@@ -261,17 +292,4 @@ export function parseFindingsFile(file: string): ParsedFile {
   if (!Array.isArray(rows)) return { ok: false, reason: "no rows array" };
   const split = splitRows(rows as unknown[]);
   return { ok: true, rows: split.rows, malformed: split.malformed };
-}
-
-/** Read the findings file; a corrupt file reads as no rows, and malformed rows are skipped. */
-export function readFindingsFile(file: string): StoredFinding[] {
-  const parsed = parseFindingsFile(file);
-  if (!parsed.ok) {
-    trace(`review-findings: ${file} is corrupt (${parsed.reason}) — treated as no memory`);
-    return [];
-  }
-  if (parsed.malformed.length > 0) {
-    trace(`review-findings: ${file} has ${parsed.malformed.length} malformed row(s) — skipped`);
-  }
-  return parsed.rows;
 }

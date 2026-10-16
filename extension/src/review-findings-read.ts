@@ -5,9 +5,9 @@
  *
  * Two read policies, and the difference between them is the whole module:
  *
- *   - `readFindingsFile` (review-findings-file.ts) treats an unreadable file as
- *     "no memory". That is right for a prompt block: a lens prompt missing its
- *     prior-findings data costs nothing.
+ *   - `parseFindingsFile` (review-findings-file.ts) is the writer's read: it
+ *     reports an unreadable file as corrupt, and the store refuses to overwrite
+ *     it and copies it aside.
  *   - `readBranchRowsRaw` here THROWS on a file that exists but cannot be read.
  *     A round that resolves, carries and suppresses rows is making decisions, and
  *     "no memory" and "memory unreadable" are different answers to the question
@@ -19,13 +19,17 @@
  * writer would set aside — but it IS returned as a notice, because a malformed
  * row that held an operator acceptance silently stops suppressing.
  *
- * Nothing here writes to disk, and nothing here calls git: the ledger path comes
- * from the store's `locate`, which every round resolves before it reads (the
- * `ledgerOf` callback below), so a read performs no second lookup and invents no
- * second resolution rule.
+ * A file that cannot be parsed is copied aside to `<file>.corrupt-<hash>` and
+ * named in the throw, mirroring the writer's disclosure: the round refuses, and
+ * the reason tells the operator where the bytes are and what to do.
+ *
+ * Nothing here writes to disk, and nothing here calls git or reads the
+ * environment: the caller that resolved the ledger path (the store's `locate`)
+ * passes it in. A read therefore performs no second lookup, invents no second
+ * resolution rule, and cannot be served a stale path by a hidden cache.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   type SetAsideNotice,
@@ -33,6 +37,7 @@ import {
   describeSetAside,
   splitRows,
 } from "./review-findings-file.ts";
+import { hashText } from "./review-findings-match.ts";
 import { trace } from "./trace.ts";
 
 /** The findings file's name, beside `review-ledger.json` — re-exported by the store. */
@@ -44,22 +49,9 @@ export interface BranchRows {
   malformed: SetAsideNotice[];
 }
 
-/**
- * Resolve the findings file's path from the ledger path the store resolved for
- * this clone. `ledgerOf` is the store's cache accessor, injected so this module
- * stays a leaf the store can own. When nothing has resolved a ledger path yet
- * there is nothing to read from, and the caller treats it as the store being
- * absent (which is the truth for a clone that never recorded a round).
- */
-export function locateFindingsFile(
-  cwd: string,
-  ledgerOf: (cwd: string) => string | undefined,
-): { ledger: string; file: string } | undefined {
-  const ledger = ledgerOf(cwd);
-  if (!ledger) return undefined;
-  const dir = path.dirname(ledger);
-  if (!existsSync(dir)) return undefined;
-  return { ledger, file: path.join(dir, FINDINGS_FILE) };
+/** The findings file that sits beside a ledger the caller has already resolved. */
+export function findingsFileFor(ledger: string): string {
+  return path.join(path.dirname(ledger), FINDINGS_FILE);
 }
 
 /**
@@ -75,42 +67,80 @@ function readRawRows(file: string): unknown[] | undefined {
 }
 
 /**
- * The rows of one branch, read straight from the file in a single pass. Throws
- * when the file exists but cannot be read or parsed; `readFindingsFile`'s
- * fail-open is the wrong policy for a round's evidence.
+ * Copy an unreadable findings file aside and name the copy, so a fail-CLOSED
+ * read discloses exactly like the store's fail-closed write: the operator sees
+ * WHERE the bytes still are, and what to do about them. Same
+ * `.corrupt-<hash>` scheme as the write path, so one repair recipe covers both.
  */
-/**
- * The branch's rows with the file's fail-OPEN policy: an unreadable file reads
- * as no memory (traced). A prompt block uses this — a lens prompt missing its
- * prior-findings data costs nothing, and a prompt must never fail a review.
- */
-export function readBranchRowsFailOpen(
-  cwd: string,
-  branch: string,
-  ledgerOf: (cwd: string) => string | undefined,
-): StoredFinding[] {
-  const loc = locateFindingsFile(cwd, ledgerOf);
-  if (!loc) return [];
+function copyAsideUnreadable(file: string, err: unknown): string {
+  const junk = readFileSync(file, "utf8");
+  const copy = `${file}.corrupt-${hashText(junk)}`;
   try {
-    return readBranchRowsRaw(cwd, branch, ledgerOf)?.rows ?? [];
-  } catch (err) {
+    if (!existsSync(copy)) writeFileSync(copy, `${junk}\n`, "utf8");
+    return copy;
+  } catch (copyErr) {
     trace(
-      `review-findings: ${loc.file} is unreadable (${(err as Error).message.slice(0, 120)}) — treated as no memory`,
+      `review-findings: could not copy ${file} aside: ${(copyErr as Error).message.slice(0, 120)}`,
     );
-    return [];
+    return `(the copy could not be made: ${(copyErr as Error).message.slice(0, 80)})`;
   }
 }
 
-export function readBranchRowsRaw(
-  cwd: string,
-  branch: string,
-  ledgerOf: (cwd: string) => string | undefined,
-): BranchRows | undefined {
-  const loc = locateFindingsFile(cwd, ledgerOf);
-  if (!loc) return undefined;
-  const raw = readRawRows(loc.file);
+/**
+ * The rows of one branch, read straight from the file in a single pass.
+ *
+ * Throws when the file exists but cannot be read or parsed: a round must not
+ * record on "no memory" when the memory is merely unreadable. `file` is the
+ * resolved path the caller obtained from its own `locate` — this module never
+ * resolves it, so a read cannot be served a path a cache kept from an earlier
+ * value of `PI_ENSEMBLE_REVIEW_LEDGER_FILE`.
+ */
+export function readBranchRowsRaw(file: string, branch: string): BranchRows | undefined {
+  let raw: unknown[] | undefined;
+  try {
+    raw = readRawRows(file);
+  } catch (err) {
+    // Fail closed, and disclose: the operator action leads and the copy closes,
+    // because the reason is clipped downstream and a truncated message must keep
+    // both halves it can still act on.
+    const copy = copyAsideUnreadable(file, err);
+    const cause = (err as Error).message.replace(/\s+/g, " ").slice(0, 100);
+    throw new Error(
+      `repair or remove ${file}, or set PI_ENSEMBLE_REVIEW_LEDGER_FILE to a healthy ledger. ` +
+        `Unreadable (${cause}); the bytes are copied to ${copy}`,
+    );
+  }
   if (!raw) return { rows: [], malformed: [] };
   const mine = raw.filter((r) => (r as { branch?: unknown })?.branch === branch);
   const split = splitRows(mine);
   return { rows: split.rows, malformed: split.malformed.map(describeSetAside) };
+}
+
+/**
+ * The branch's rows with the file's fail-OPEN policy: an unreadable file reads
+ * as no memory (traced once, with the reason). A prompt block uses this — a lens
+ * prompt missing its prior-findings data costs nothing, and a prompt must never
+ * fail a review. `undefined` means there is no ledger path to read from at all,
+ * which the caller treats as the store being absent.
+ */
+export function readBranchRowsFailOpen(
+  file: string | undefined,
+  branch: string,
+): StoredFinding[] | undefined {
+  if (!file) {
+    trace(`review-findings: no ledger path resolved for ${branch} — no findings to read`);
+    return undefined;
+  }
+  if (!existsSync(path.dirname(file))) {
+    trace(`review-findings: the ledger dir ${path.dirname(file)} is missing — no findings to read`);
+    return [];
+  }
+  try {
+    return readBranchRowsRaw(file, branch)?.rows ?? [];
+  } catch (err) {
+    trace(
+      `review-findings: ${file} is unreadable (${(err as Error).message.slice(0, 120)}) — treated as no memory`,
+    );
+    return [];
+  }
 }

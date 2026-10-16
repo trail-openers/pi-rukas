@@ -103,11 +103,33 @@ export interface FateContext {
 }
 
 /** Is `line` of `path` inside the delta's changed ranges? */
-function insideDelta(path: string, line: number, ranges: ChangedRanges | undefined): boolean {
+export function insideDelta(
+  path: string,
+  line: number,
+  ranges: ChangedRanges | undefined,
+): boolean {
   if (!ranges) return false;
   const spans = ranges.get(path);
   if (!spans) return false;
   return spans.some(([lo, hi]) => line >= lo && line <= hi);
+}
+
+/**
+ * Would a finding on `line` of `f.path` fall OUTSIDE the delta's changed lines?
+ *
+ * The one predicate both halves of a round use: the suppression pass asks it of
+ * the finding this round reported, and `rowFate` (step 8) asks it of the line an
+ * untouched row was last observed at. A finding with no usable line is NOT
+ * outside: with no line there is no claim about coverage to refute, so it falls
+ * through to the ordinary rules rather than being suppressed by silence.
+ */
+export function outsideDelta(
+  f: { path: string; line?: number },
+  hasLine: boolean,
+  ranges: ChangedRanges,
+): boolean {
+  if (!hasLine) return false;
+  return !insideDelta(f.path, f.line ?? 0, ranges);
 }
 
 /** The resolve/carry decision for one untouched open row. */

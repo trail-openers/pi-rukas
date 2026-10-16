@@ -156,9 +156,11 @@ try {
     `A2: a full round resolves the row whose cited line changed (${fullRow?.status}/${fullRow?.resolvedReason})`,
   );
 
-  // A3 — a delta round with NO changed ranges at all resolves nothing: without
-  // the ranges nothing separates a line the round reviewed from one it never
-  // saw, so it has no coverage evidence on any row (#1125 decision 5).
+  // A3 — a delta round with NO diff at all REFUSES: without changed ranges
+  // nothing separates a line the round reviewed from one it never saw, so it has
+  // no coverage evidence on any row and must not record a round whose silence
+  // would read as coverage (#1125 decision 5). The refusal is a `{ok:false}`
+  // with a reason, not a recorded round that resolves nothing.
   const roundNoRanges = await recordFindingRunOutcome({
     cwd: repo,
     branch: "feat-inside",
@@ -166,10 +168,29 @@ try {
     findings: [],
     review: "delta",
   });
-  assert(roundNoRanges.ok === true, "A3: the range-less delta round records");
   assert(
-    (roundNoRanges.ok && roundNoRanges.resolved.length === 0) || false,
-    "A3: without changed ranges a delta round resolves NOTHING",
+    roundNoRanges.ok === false &&
+      (roundNoRanges.ok === false
+        ? roundNoRanges.reason.includes("a delta round supplied no changed line ranges")
+        : false),
+    `A3: a delta round with no diff refuses with the contract reason (${JSON.stringify(roundNoRanges)})`,
+  );
+  // The refusal wrote nothing: a later round with a real diff still sees the
+  // row the refused round did not resolve.
+  await seed("feat-inside", d1, [3]);
+  const roundAfterRefusal = await recordFindingRunOutcome({
+    cwd: repo,
+    branch: "feat-inside",
+    headSha: d1,
+    findings: [],
+    review: "delta",
+    deltaDiff: headerDelta,
+  });
+  assert(
+    roundAfterRefusal.ok === true &&
+      roundAfterRefusal.resolved.length === 0 &&
+      roundAfterRefusal.carried.length === 1,
+    `A3: the refused round left the store untouched — the row still stands (${JSON.stringify(roundAfterRefusal.ok ? { resolved: roundAfterRefusal.resolved.length, carried: roundAfterRefusal.carried.length } : roundAfterRefusal)})`,
   );
 
   // ── B. accepted-row eviction on a gone path ────────────────────────────────

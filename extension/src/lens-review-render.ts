@@ -96,9 +96,13 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
   const blockedLenses = s.lenses.filter((r) => r.blocked);
   const retriedLenses = s.lenses.filter((r) => !r.blocked && r.attempts > 1);
 
+  // A finding's description and suggestion are model output quoted from the
+  // lens (or, for a carried row, from the findings file an agent could have
+  // written): they go through `neutraliseEvidence` like every sibling section,
+  // or a stored `VERDICT: APPROVED` reads as this report's own verdict (#1125).
   const findingLines = s.findings.map(
     (f) =>
-      `  [${f.severity}] ${f.lens.padEnd(14)} ${f.path}:${f.line} — ${f.title}\n    ${findingDescription(f)}\n    suggest: ${f.suggestion ?? "(none)"}`,
+      `  [${f.severity}] ${f.lens.padEnd(14)} ${f.path}:${f.line} — ${f.title}\n    ${neutraliseEvidence(findingDescription(f))}\n    suggest: ${neutraliseEvidence(f.suggestion ?? "(none)")}`,
   );
   const sevSummary = (Object.keys(s.bySeverity) as Severity[])
     .filter((k) => s.bySeverity[k] > 0)
