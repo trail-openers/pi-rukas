@@ -68,6 +68,7 @@ export const FIXED_CAPS = [
   "plan-timeout",
   "repeat-finding-seam",
   "repo-root-residue",
+  "worktree-listing-unreadable",
   "review-incomplete",
   "round-cap",
   "step-back-revise-spec",
