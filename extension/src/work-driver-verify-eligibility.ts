@@ -27,6 +27,7 @@
  */
 
 import type { DriverContext } from "./work-driver-context.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { consolidatedVerifySkipEnabled, verifyTreeId } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -42,7 +43,7 @@ export async function developVerifiedTree(
     /** Failures from the per-worktree loop — any one of these forbids a skip. */
     perWorktreeVerifyFailures: unknown[];
   },
-): Promise<{ treeHash: string; worktree: string } | undefined> {
+): Promise<AlreadyVerifiedTree | undefined> {
   if (!consolidatedVerifySkipEnabled()) return undefined;
   if (opts.perWorktreeVerifyFailures.length > 0) return undefined;
   if (Object.keys(opts.worktrees).length !== 1) return undefined;

@@ -25,6 +25,7 @@ import {
   rerunConsolidatedVerifyOnce,
   writeConsolidatedVerifyLog,
 } from "./work-driver-verify-flake.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
 /**
  * #826 — the recorded outcome of the flake-retry decision, computed ONCE in
@@ -75,7 +76,7 @@ export interface ConsolidatedVerifyOpts {
    * one workstream with every per-worktree verify green; absent otherwise.
    * Read failure on either side means no skip (fail closed toward running).
    */
-  alreadyVerifiedTree?: { treeHash: string; worktree: string };
+  alreadyVerifiedTree?: AlreadyVerifiedTree;
   retry?: {
     canRetry: boolean;
     onRecover: (evidenceTail?: string) => void;
@@ -107,7 +108,7 @@ export type ConsolidatedVerifyResult =
        * verify. Set to the `{treeHash, worktree}` the caller supplied; the
        * caller renders the visible note from it. Absent on every real run.
        */
-      skipped?: { treeHash: string; worktree: string };
+      skipped?: AlreadyVerifiedTree;
       recovered?: boolean;
       retryDecision?: ConsolidatedVerifyRetryDecision;
       /**

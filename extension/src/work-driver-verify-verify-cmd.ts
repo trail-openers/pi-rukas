@@ -46,6 +46,7 @@ import {
 import { developVerifiedTree } from "./work-driver-verify-eligibility.ts";
 import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
 import { rawOutputClause } from "./work-driver-verify-flake.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
@@ -92,7 +93,7 @@ export async function runVerifyCommandGate(opts: {
    * #1240 — called with the identity that justified skipping the consolidated
    * run, so the caller can record the `consolidated-verify-skipped` event.
    */
-  onConsolidatedVerifySkipped?: (skipped: { treeHash: string; worktree: string }) => void;
+  onConsolidatedVerifySkipped?: (skipped: AlreadyVerifiedTree) => void;
   /**
    * #814 — structured fence violations recorded by the scope gate earlier
    * in this same develop verify (the gate runs BEFORE the consolidated

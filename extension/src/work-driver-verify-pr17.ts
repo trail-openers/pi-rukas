@@ -17,6 +17,7 @@ import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 // #1134 follow-up — the argv form must be honoured: the previous
@@ -168,7 +169,7 @@ export async function verifyStepOutcome(
    * tree the per-worktree verify already judged. The caller turns this into a
    * `consolidated-verify-skipped` event (`makeConsolidatedVerifySkippedEvent`).
    */
-  consolidatedVerifySkipped?: { treeHash: string; worktree: string };
+  consolidatedVerifySkipped?: AlreadyVerifiedTree;
 }> {
   const failures: string[] = [];
   const notes: string[] = [];
@@ -192,7 +193,7 @@ export async function verifyStepOutcome(
     // #1240 — the identity that justified skipping the consolidated run.
     // Captured here and returned structurally: the caller appends the event,
     // which is where the event log lives.
-    let consolidatedVerifySkipped: { treeHash: string; worktree: string } | undefined;
+    let consolidatedVerifySkipped: AlreadyVerifiedTree | undefined;
     await verifyDevelopOutcome(
       ctx,
       state,

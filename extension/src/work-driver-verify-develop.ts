@@ -37,6 +37,7 @@ import {
 } from "./work-driver-verify-develop-gates.ts";
 import { normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
 import { fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
 
 import type { WorkState } from "./workflow-state.ts";
@@ -79,7 +80,7 @@ export async function verifyDevelopOutcome(
   // note would be the one kind of note that never survives to the state
   // file, and the event lives where the caller appends so the log stays
   // append-only.
-  onConsolidatedVerifySkipped?: (skipped: { treeHash: string; worktree: string }) => void,
+  onConsolidatedVerifySkipped?: (skipped: AlreadyVerifiedTree) => void,
 ): Promise<void> {
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0

@@ -50,6 +50,7 @@ import { appendDevelopVerifyFailure } from "./work-develop-verify-failure.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
+import { recordConsolidatedVerifySkip } from "./workflow-state-events-verify-flake.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 type DevelopVerifyGate = Awaited<ReturnType<typeof verifyStepOutcome>>;
@@ -188,6 +189,9 @@ export async function runSymbolMergeRetry(
   // The merged worktree is judged against its post-merge HEAD (#1343).
   next = await applyMergedSafetyNet(ctx, next, mergedIds, mergeHeads, execFn);
   const gate2 = await verifyStepOutcome(ctx, next, "develop");
+  // #1240 — the merged re-run's skip is recorded here too: this path owns its
+  // appends, so a skip on this path would otherwise read as a run.
+  next = recordConsolidatedVerifySkip(next, gate2);
   next = recordCommentEvidence(next, gate2.commentEvidence);
   // The surviving (producer) id carries the re-run's verdict; the absorbed
   // consumer id is no longer a workstream.

@@ -36,6 +36,18 @@ import type { ExecFn } from "./worktree.ts";
 const TREE_HASH_RE = /^[0-9a-f]{40}$/;
 
 /**
+ * The tree that already passed a verify run, plus the worktree it was judged
+ * in. This is an *identity*, never a skip decision: the two skip seams
+ * (`consolidatedVerifySkip`, `commitPrSkipDecision`) compare it against the
+ * tree they are about to verify and run the command on any mismatch.
+ *
+ * Declared here, beside the producer of every one of its `treeHash` values,
+ * so the shape carried from `verifyTreeId` through the eligibility seams to
+ * the `consolidated-verify-skipped` event cannot drift per file.
+ */
+export type AlreadyVerifiedTree = { treeHash: string; worktree: string };
+
+/**
  * The tree the project's verify command actually sees in one working tree, or
  * `undefined` when git could not establish it (a read failed, the output is
  * not an object id, or the working tree holds content no tree object
@@ -57,7 +69,8 @@ const TREE_HASH_RE = /^[0-9a-f]{40}$/;
  * the verify command reads FILES, so a hash of HEAD there would be a claim
  * about content that is not what was tested. Driver-managed scaffolding
  * (`.worktrees/`, `.pi/`, `tmp/`) does not count, so the driver's own scratch
- * never defeats the identity.
+ * never defeats the identity — but only while it is UNTRACKED (see
+ * `isDirtForTreeIdentity`).
  */
 export async function verifyTreeId(execFn: ExecFn, cwd: string): Promise<string | undefined> {
   const run = async (cmd: string): Promise<string | undefined> => {
@@ -110,17 +123,50 @@ async function porcelain(execFn: ExecFn, cwd: string): Promise<string | undefine
  * holding one is not a tree whose identity was verified. Both sides of the
  * comparison apply the same rule, so an untracked file the driver owns — the
  * scaffolding `isDriverManagedDirtLine` excludes — is invisible to it.
+ *
+ * The worktree-column test is on porcelain's SECOND column, not its third:
+ * `XY PATH` puts the separator at index 2, so a check there is dead code that
+ * silently passes every dirty tree — which is the shape #1240's whole safety
+ * argument rests on. See `isDirtForTreeIdentity`.
  */
 function hasWorkingTreeDirt(status: string): boolean {
-  return status.split("\n").some((line) => {
-    if (line.trim().length === 0) return false;
-    if (isDriverManagedDirtLine(line)) return false;
-    // An untracked entry: `?? path`.
-    if (line.startsWith("??")) return true;
-    // XY path — the worktree column (index 2) set means the FILES differ
-    // from every tree object; a blank there means the index describes them.
-    return line.length > 2 && line[2] !== " ";
-  });
+  return status.split("\n").some(isDirtForTreeIdentity);
+}
+
+/**
+ * One porcelain line, judged for tree identity — locally, NOT via
+ * `isDriverManagedDirtLine` alone, which the dirty-root gates also use.
+ *
+ * That shared predicate exempts a path under `.worktrees/`, `.pi/` or `tmp/`
+ * for ANY XY code, because those gates ask a different question: "did a
+ * previous cycle leave SCRATCH here that the operator should clear?" For tree
+ * identity the question is "do the FILES match a tree object?", and a
+ * TRACKED modification answers it the same way anywhere in the tree: `.pi/`
+ * and `tmp/` are not gitignored, so a tracked ` M .pi/verify-cmd` is the
+ * operator's own gate being edited while the verify supposedly ran against
+ * it. Hashing HEAD or the index there would certify a tree that is not the
+ * content the command read.
+ *
+ * So the driver-managed exemption applies ONLY to untracked entries (`??`) —
+ * the shape the driver's own scaffolding actually takes (`.worktrees/issue-N/`
+ * worktrees, `tmp/issue-N/` scratch, and a `.pi/work-state/` file it writes).
+ * A tracked modification or deletion under one of those prefixes is dirt, and
+ * dirt means no identity, which means the verify runs.
+ */
+export function isDirtForTreeIdentity(line: string): boolean {
+  if (line.trim().length === 0) return false;
+  // An untracked entry: `?? path`.
+  if (line.startsWith("??")) return !isDriverManagedDirtLine(line);
+  // Porcelain v1 is `XY<space>PATH`: index 0 is the INDEX column, index 1 the
+  // WORKTREE column, index 2 the separator — always a space, which is why
+  // testing index 2 here could never fire (measured: a worktree holding an
+  // unstaged ` M tracked.txt` and an index-deleted ` D file` both returned a
+  // HEAD hash, i.e. the identity claimed a tree no tree object describes).
+  // The Y column (index 1) set means the FILES differ from every tree object;
+  // a blank there means the index describes them. A tracked entry is dirt
+  // whenever Y is set, whatever the path: `isDriverManagedDirtLine` is
+  // deliberately not consulted.
+  return line.length > 1 && line[1] !== " ";
 }
 
 /**

@@ -41,6 +41,7 @@ import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { applySafetyNet } from "./work-driver-safety-net.ts";
 import { verifyCapFor } from "./work-driver-verify-develop-helpers.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
+import { recordConsolidatedVerifySkip } from "./workflow-state-events-verify-flake.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
@@ -170,6 +171,10 @@ export async function runConvergeGateHandler(
     // first (commit the uncommitted work), then the verify gate.
     next = await applySafetyNet(ctx, next);
     const gate2 = await verifyStepOutcome(ctx, next, "develop");
+    // #1240 — the corrective re-run's skip is recorded like the first pass's:
+    // without it a skip on this path is invisible, which is exactly the
+    // "gate silently stopped running" reading #1240 exists to prevent.
+    next = recordConsolidatedVerifySkip(next, gate2);
     // #1040 — lost-comment evidence persists from the re-run's develop note.
     next = recordCommentEvidence(next, gate2.commentEvidence);
     if (gate2.flakeRecovered) {

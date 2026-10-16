@@ -1280,7 +1280,9 @@ Escape hatches: `PI_ENSEMBLE_VERIFY_FULL=0`, `PI_ENSEMBLE_VERIFY_FULL_TIMEOUT_MS
 consolidated verify skipped: tree <hash> already passed in <worktree> — …
 ```
 
-and the develop event log keeps its `verifyEvidence` / duration recording untouched, so a fast `develop` is explainable from the state file rather than inferred from the absence of a 20-minute gap.
+and the develop event log keeps its `verifyEvidence` / duration recording untouched, so a fast `develop` is explainable from the state file rather than inferred from the absence of a 20-minute gap. The commit-pr half of the same rule names it in that step's operator-facing summary too, and the `consolidated-verify-skipped` event is recorded on every path the develop gate re-runs (the first pass, the fence merge-and-retry, the sibling-symbol merge, and the converge corrective) — not only the first.
+
+**The fast tier is covered by the skip as well:** `.pi/verify-cmd-fast` is skipped together with the full command, because both tiers already ran per-worktree on the same content (`PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP=0` restores both).
 
 **Escape hatch:** `PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP=0` restores the always-run behaviour (for example, to reproduce a gate failure that only appears in the probe's checkout).
 
