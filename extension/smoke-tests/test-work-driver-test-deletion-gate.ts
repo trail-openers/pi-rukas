@@ -12,6 +12,8 @@ import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { isNulStatusRead, nulStatus } from "./lib/nul-porcelain.ts";
 
 let exit = 0;
 function assert(condition: boolean, message: string): void {
@@ -46,8 +48,9 @@ async function runGate(diff: string, issue: number) {
       repoRoot: dir,
       issue,
       issueBodyFetcherFn: () => ({ stdout: "test-deletion ratchet" }),
-      verifyExecFn: async (command) => {
-        if (command === "git status --porcelain --untracked-files=all") return { stdout: "M src/tests.css\n" };
+      verifyExecFn: async (command, opts) => {
+        // #1378 — the gate's uncommitted read is NUL-separated and argv-shaped.
+        if (isNulStatusRead(commandOf(command, opts))) return { stdout: nulStatus(" M src/tests.css") };
         if (command.startsWith("git diff")) return { stdout: diff };
         return { stdout: "" };
       },

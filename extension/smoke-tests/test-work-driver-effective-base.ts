@@ -22,6 +22,8 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { verifyDevelopOutcome } from "../src/work-driver-verify-develop.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 type StubPi = Pick<ExtensionAPI, "sendUserMessage">;
@@ -76,10 +78,11 @@ try {
   // silently dropped (and the generic empty-diff failure fired instead).
   // Post-fix, the committed work counts.
   {
-    const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" }; // clean tree
+    const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+      const line = commandOf(cmd, opts);
+      if (isNulStatusRead(line)) return { stdout: "" }; // clean tree
       if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
-      if (cmd.startsWith("git diff --name-only")) return { stdout: "src/foo.ts\n" };
+      if (isNulDiffRead(line)) return { stdout: nulNameStatus("src/foo.ts") };
       return { stdout: "" };
     };
     const s = makeState({ baseSha: undefined, workstreamBaseShas: { dep: DEPS_BASE } });
@@ -100,10 +103,11 @@ try {
   // against the effective base, so the diagnostic must name THAT ref — not
   // the absent global baseSha the pre-fix guard tested.
   {
-    const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/foo.css\n" };
+    const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+      const line = commandOf(cmd, opts);
+      if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/foo.css") };
       if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
-      if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
+      if (isNulDiffRead(line)) return { stdout: "" };
       return { stdout: "" };
     };
     const s = makeState({ baseSha: undefined, workstreamBaseShas: { dep: DEPS_BASE } });
@@ -125,10 +129,11 @@ try {
   // pre-existing #453/#621 message is unchanged (no spurious SHA leak into a
   // message that pins wording).
   {
-    const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/foo.css\n" };
+    const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+      const line = commandOf(cmd, opts);
+      if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/foo.css") };
       if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
-      if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
+      if (isNulDiffRead(line)) return { stdout: "" };
       return { stdout: "" };
     };
     const s = makeState({ baseSha: VALID_SHA_40, workstreamBaseShas: { dep: VALID_SHA_40 } });
@@ -148,10 +153,11 @@ try {
   // it resolved a non-global effective base: a note naming the ref lands in
   // `notes` (the #384 silent-degradation class, made diagnosable).
   {
-    const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" };
+    const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+      const line = commandOf(cmd, opts);
+      if (isNulStatusRead(line)) return { stdout: "" };
       if (cmd.startsWith("git rev-list --count")) throw new Error("unknown revision");
-      if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
+      if (isNulDiffRead(line)) return { stdout: "" };
       return { stdout: "" };
     };
     const s = makeState({ baseSha: undefined, workstreamBaseShas: { dep: DEPS_BASE } });
@@ -168,10 +174,11 @@ try {
   // behaviour: an absent global base in the worktree's history is not
   // evidence either way — no note spam).
   {
-    const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" };
+    const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+      const line = commandOf(cmd, opts);
+      if (isNulStatusRead(line)) return { stdout: "" };
       if (cmd.startsWith("git rev-list --count")) throw new Error("unknown revision");
-      if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
+      if (isNulDiffRead(line)) return { stdout: "" };
       return { stdout: "" };
     };
     const s = makeState({ baseSha: VALID_SHA_40 });

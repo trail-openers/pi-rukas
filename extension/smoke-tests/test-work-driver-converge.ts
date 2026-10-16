@@ -15,6 +15,7 @@ import { convergeGateEnabled, runConvergeGate } from "../src/work-driver-converg
 import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkState, initialState, readState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -123,6 +124,18 @@ function makeConvergeExec(
     if (cmd.startsWith("git diff --name-only")) {
       diffRead += 1;
       return { stdout: filesForDiff().join("\n") + "\n" };
+    }
+    // #1378 — the develop gate's two protected-path reads are NUL-separated and
+    // argv-shaped. The converge gate itself still reads plain `git status
+    // --porcelain` / `git diff --name-only` above; these two exist so the develop
+    // gate's fail-closed branch (an unreadable read halts rather than passes) does
+    // not fire on a fixture that never scripted them. They share the `diffRead`
+    // counter because the gate's read sequence spans both spellings.
+    if (isNulStatusRead(cmd))
+      return { stdout: nulStatus(...filesForDiff().map((f) => `M  ${f}`)) };
+    if (isNulDiffRead(cmd)) {
+      diffRead += 1;
+      return { stdout: nulNameStatus(...filesForDiff()) };
     }
     if (cmd.includes("rev-parse --verify --end-of-options origin/"))
       return { stdout: `${"a".repeat(40)}\n` };

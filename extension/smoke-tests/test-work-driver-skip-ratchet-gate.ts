@@ -16,6 +16,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { isNulStatusRead, nulStatus } from "./lib/nul-porcelain.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState } from "../src/workflow-state.ts";
 
@@ -110,8 +112,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 baseSha: "abc123",
               },
             };
-            const execWithSkipMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-              if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "M src/test.css\n" };
+            const execWithSkipMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+              const line = commandOf(cmd, opts);
+              if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/test.css") };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
               if (cmd.startsWith("git diff")) {
                 return {
@@ -154,10 +157,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               },
             };
             // Diff has one addition and one removal, netting to zero — exercises the net-delta arithmetic
-            const execWithNetZeroMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (
-              cmd,
-            ) => {
-              if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "M src/test.css\n" };
+            const execWithNetZeroMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+              const line = commandOf(cmd, opts);
+              if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/test.css") };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
               if (cmd.startsWith("git diff")) {
                 return { stdout: '+it.skip("new");\n-#[ignore]\n' };
@@ -177,8 +179,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               "PR277: net-zero markers (addition + removal) pass gate — net-delta arithmetic is exercised",
             );
             // Also verify net-negative (more removals than additions) does not fail
-            const execWithNetNegative: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-              if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "M src/test.css\n" };
+            const execWithNetNegative: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+              const line = commandOf(cmd, opts);
+              if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/test.css") };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
               if (cmd.startsWith("git diff")) {
                 return { stdout: '+it.skip("new");\n-#[ignore]\n-it.skip("old");\n' };
@@ -217,10 +220,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 baseSha: "abc123",
               },
             };
-            const execWithFalsePositives: NonNullable<DriverContext["verifyExecFn"]> = async (
-              cmd,
-            ) => {
-              if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "M src/docs.css\n" };
+            const execWithFalsePositives: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+              const line = commandOf(cmd, opts);
+              if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/docs.css") };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
               if (cmd.startsWith("git diff")) {
                 return {
@@ -261,10 +263,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 baseSha: "abc123",
               },
             };
-            const execWithMultipleMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (
-              cmd,
-            ) => {
-              if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "M src/test.css\n" };
+            const execWithMultipleMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+              const line = commandOf(cmd, opts);
+              if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/test.css") };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
               if (cmd.startsWith("git diff")) {
                 return {
@@ -310,8 +311,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 baseSha: "abc123",
               },
             };
-            const execFailingSmoke: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-              if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "M src/main.css\n" };
+            const execFailingSmoke: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+              const line = commandOf(cmd, opts);
+              if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/main.css") };
               if (cmd.startsWith("git diff")) return { stdout: "+new code\n" };
               if (cmd.includes("run smoke")) {
                 throw new Error("Smoke failed: assertion error\n    at test/e2e/smoke.test.ts:42");
@@ -355,8 +357,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               repoRoot: dir,
               issue: 1006,
               issueBodyFetcherFn: () => ({ stdout: "adding feature" }),
-              verifyExecFn: async (cmd) => {
-                if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "M src/main.css\n" };
+              verifyExecFn: async (cmd, opts) => {
+                const line = commandOf(cmd, opts);
+                if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/main.css") };
                 if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
                 if (cmd.startsWith("git diff")) return { stdout: "+new code\n" };
                 return { stdout: "" };
@@ -393,8 +396,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                   baseSha: "abc123",
                 },
               };
-              const execSmokeDisabled: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-                if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "M src/main.css\n" };
+              const execSmokeDisabled: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+                const line = commandOf(cmd, opts);
+                if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/main.css") };
                 if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
                 if (cmd.startsWith("git diff")) return { stdout: "+new code\n" }; // No skip markers, so ratchet won't fail
                 if (cmd.includes("run smoke")) throw new Error("Smoke failed"); // Smoke fails but is disabled
@@ -433,10 +437,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                   baseSha: "abc123",
                 },
               };
-              const execRatchetDisabled: NonNullable<DriverContext["verifyExecFn"]> = async (
-                cmd,
-              ) => {
-                if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "M src/test.css\n" };
+              const execRatchetDisabled: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+                const line = commandOf(cmd, opts);
+                if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/test.css") };
                 if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
                 if (cmd.startsWith("git diff"))
                   return { stdout: '-it("deleted test");\n+#[ignore]\n+it.skip("test");\n' }; // Both ratchets disabled
