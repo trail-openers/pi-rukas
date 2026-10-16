@@ -33,13 +33,14 @@ vipune add 'observed but unconfirmed'     --memory-type observation
 vipune has no built-in TTL. Use `--status`:
 
 - `active` (default) — surfaces in default searches; validated, durable knowledge.
-- `candidate` — hidden from default searches; provisional. Promote to active once the fact survives a second confirmation.
+- `candidate` — hidden from default searches; provisional. An operator promotes it to active once the fact survives a second confirmation — that is their call, not yours.
 
 ```bash
 vipune add 'tentative observation' --memory-type observation --status candidate
-# NOTE: you cannot promote. `vipune update` is denied to every role — it can
-# replace a memory's content in place with no lineage and no undo. Leave the
-# row a candidate; promotion is an operator action.
+# NOTE: leave the row a candidate. Promotion is an operator action, not an
+# agent one: no role is granted the memory-update verb in agents.json, and a
+# content-replacing update is refused outright — it can replace a memory in
+# place with no lineage and no undo.
 ```
 
 Default to `candidate` for anything you're not certain will outlast this session.
@@ -81,7 +82,8 @@ If verification fails: **supersede or delete the stale memory immediately**. Don
 
 ```bash
 vipune add 'corrected statement' --supersedes <old-id> --memory-type fact
-# (`vipune delete` is denied to every role — superseding is the correction.)
+# (Never run `vipune delete`: no role is granted the verb in agents.json, and
+# superseding is the correction anyway — it preserves the original row.)
 ```
 
 ## Conflict handling — supersede, don't duplicate
@@ -124,7 +126,7 @@ Every ~10–15 sessions on a project, run a reflection pass:
 vipune list --limit 50 --json | jq .
 ```
 
-Look for: duplicates (supersede older), stale facts (delete/supersede), drift across multiple `observation`-typed entries on the same theme (consolidate into one `fact`/`procedure`), candidates that survived ≥5 sessions (promote), candidates untouched for months (delete).
+Look for: duplicates (supersede the older), stale facts (supersede), drift across multiple `observation`-typed entries on the same theme (consolidate into one `fact`/`procedure`). Two findings you **report rather than act on**, because both need the memory-update verb no role is granted — promotion and removal are operator actions (`/audit` lists candidates with their ids): candidates that survived ≥5 sessions (report for promotion), candidates untouched for months (report for pruning).
 
 ## Quick reference
 
@@ -132,8 +134,10 @@ Look for: duplicates (supersede older), stale facts (delete/supersede), drift ac
 vipune search '<term>' --no-hybrid --recency 0.0 --limit 5 --no-touch --json
 vipune add '<distilled fact>' --memory-type <type> [--status candidate] [--supersedes <id>]
 vipune list --limit 50
-# `vipune update` and `vipune delete` are DENIED to every role. To correct a
-# memory, write a new one with `--supersedes <id>`, which preserves the original.
+# No role is granted the `vipune update` or `vipune delete` verb in agents.json,
+# and an update carrying -t/--text is refused outright ahead of the allowlist.
+# To correct a memory, write a new one with `--supersedes <id>`, which preserves
+# the original. To retire one, report it — removal is an operator action.
 ```
 
 **One atomic fact per `vipune add` call.** For the full doctrine (deep search recipes, failure-mode catalogue, all examples), load the bundled skill via `--skill <skills-dir>/vipune` (pi-rukas installs it to `~/.pi/agent/skills/vipune`).
