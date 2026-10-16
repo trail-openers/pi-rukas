@@ -20,6 +20,27 @@ export function longMergeCommand(): string {
   return `gh pr merge 17 --subject ${"x".repeat(8100)}`;
 }
 
+/**
+ * Long reads that spell no merge word — the other side of the bound from
+ * `longMergeCommand` (#1417 round 1): what the bound must NOT hold. Length was
+ * the last axis on which the #1417 symptom survived. Each is one command with
+ * no metacharacter outside quotes, so the only rule that could refuse it is the
+ * bound itself. `gh`-less shapes are here too: a command naming no forge is
+ * never bounded at any length.
+ */
+export function longReadCommands(): string[] {
+  const pad = "y".repeat(9000);
+  return [
+    `gh pr view 17 --json body ${pad}`,
+    `gh pr view 17 --json mergeable,mergeStateStatus ${pad}`,
+    `gh api repos/o/r/issues/250 --jq .[].name ${pad}`,
+    `gh api "repos/o/r/issues/248/labels?per_page=100" --jq ".[].name" ${pad}`,
+    `gh api repos/o/r/issues/251/timeline --jq ".[].event" ${pad}`,
+    `gh pr create --title x --body "release notes: ${pad}"`,
+    `git commit -m "${pad}"`,
+  ];
+}
+
 /** `[command, forge, prNumber, repo]` — every form the reader accepts. */
 export type AcceptedRow = [string, "github" | "gitlab", number | undefined, string | undefined];
 
