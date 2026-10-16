@@ -27,7 +27,7 @@
  *     caller reports every finding and shows the reason.
  *
  * The ONLY acceptance write is `acceptFinding`; `mutateFindings` is private.
- * extension/scripts/review-accept-row.ts calls `acceptFinding`, and
+ * extension/scripts/review-accept.ts (human-only) calls `acceptFinding`, and
  * review-accept-guard.ts refuses agent attempts (advisory in trust mode).
  */
 
@@ -35,39 +35,30 @@ import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSy
 import path from "node:path";
 import { execp } from "./exec.ts";
 import type { Finding } from "./lens-review-types.ts";
-import { changedLineRanges } from "./review-diff.ts";
-import { type ReviewKind, rowFate } from "./review-findings-fate.ts";
+import { type ChangedRanges, changedLineRanges } from "./review-diff.ts";
+import type { ReviewKind } from "./review-findings-fate.ts";
 import {
   type ResolvedNotice,
+  type SetAsideNotice,
   type StoredFinding,
   capPerBranch,
   parseFindingsFile,
-  readFindingsFile,
   reasonProblem,
 } from "./review-findings-file.ts";
-import { type HeadState, hasFile, readHeadLines } from "./review-findings-head.ts";
+import { type HeadState, readHeadLines } from "./review-findings-head.ts";
+import { hashText } from "./review-findings-match.ts";
 import {
-  type FindingIdentity,
-  hashText,
-  identityOf,
-  pickMatch,
-  sameTitle,
-} from "./review-findings-match.ts";
+  type BranchRows,
+  FINDINGS_FILE,
+  readBranchRowsFailOpen,
+  readBranchRowsRaw,
+} from "./review-findings-read.ts";
+import { applyFindingRound } from "./review-findings-round.ts";
 import { acquireLedgerLock } from "./review-ledger-lock.ts";
 import { ledgerPathFor } from "./review-ledger-path.ts";
 import { trace } from "./trace.ts";
 
-export {
-  MAX_ROWS_PER_BRANCH,
-  capPerBranch,
-  capRows,
-  readFindingsFile,
-  type RowStatus,
-  type StoredFinding,
-} from "./review-findings-file.ts";
-
-/** The findings file's name, beside `review-ledger.json`. */
-export const FINDINGS_FILE = "review-findings.json";
+export { FINDINGS_FILE } from "./review-findings-read.ts";
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const ROW_ID = /^[0-9a-f]{8}$/;
 
@@ -91,12 +82,31 @@ export interface FindingRun {
   review: ReviewKind;
   /** The delta diff (`git diff since..head`); read only when `review` is `delta`. */
   deltaDiff?: string;
+  /**
+   * The changed line ranges of `deltaDiff`. A delta round that supplies the diff
+   * but not these ranges resolves NOTHING: the ranges are what separate a line
+   * the round reviewed from one it never saw (#1125 decision 5).
+   */
+  deltaRanges?: ChangedRanges;
   now?: number;
 }
 
 /** The result of recording one round: the decisions, or why nothing was recorded. */
 export type RecordOutcome =
-  | { ok: true; decisions: Decision[]; carried: Finding[]; resolved: ResolvedNotice[] }
+  | {
+      ok: true;
+      decisions: Decision[];
+      carried: Finding[];
+      resolved: ResolvedNotice[];
+      /**
+       * #1125 — memory the round set aside and disclosed: a malformed row the
+       * store refuses to act on, and an operator acceptance whose cited code
+       * changed so its suppression lapsed. A non-empty list means the round's
+       * suppression did NOT apply to these rows; the caller renders them, and a
+       * row the operator accepted by name must never vanish from that list.
+       */
+      setAside?: SetAsideNotice[];
+    }
   | { ok: false; reason: string };
 
 /** The result of an acceptance: the accepted row, or why nothing was accepted. */
@@ -112,18 +122,6 @@ export function newRowId(taken: ReadonlySet<string>): string {
       .padStart(8, "0");
     if (!taken.has(id)) return id;
   }
-}
-
-/**
- * Resolve the findings file's path and the ledger path that guards it. Both
- * are undefined outside a git clone; the findings file lives beside the ledger.
- */
-async function locate(cwd: string): Promise<{ ledger: string; file: string } | undefined> {
-  const ledger = await ledgerPathFor(execp, cwd);
-  if (!ledger) return undefined;
-  const dir = path.dirname(ledger);
-  if (!existsSync(dir)) return undefined;
-  return { ledger, file: path.join(dir, FINDINGS_FILE) };
 }
 
 /** Copy one malformed row aside, named by its content, so a repeat never duplicates it. */
@@ -186,13 +184,47 @@ async function mutateFindings<T>(
   }
 }
 
-/** The rows of one branch (any status), for the prompt block. Never throws. */
+/**
+ * The ledger path resolved per clone by `locate`. The read path (review-findings-read.ts)
+ * uses it instead of calling git again: every round resolves the path through
+ * `locate` before it reads, so a read never needs a second lookup and never
+ * invents a second resolution rule.
+ */
+const resolvedLedgerPaths = new Map<string, string>();
+
+/** The ledger path `locate` resolved for this clone, or undefined (never read yet). */
+function ledgerOf(cwd: string): string | undefined {
+  return resolvedLedgerPaths.get(cwd);
+}
+
+/**
+ * Resolve the findings file's path and the ledger path that guards it. Both
+ * are undefined outside a git clone; the findings file lives beside the ledger.
+ */
+async function locate(cwd: string): Promise<{ ledger: string; file: string } | undefined> {
+  const ledger = await ledgerPathFor(execp, cwd);
+  if (!ledger) return undefined;
+  resolvedLedgerPaths.set(cwd, ledger);
+  const dir = path.dirname(ledger);
+  if (!existsSync(dir)) return undefined;
+  return { ledger, file: path.join(dir, FINDINGS_FILE) };
+}
+
+/**
+ * The rows of one branch (any status), for the prompt block. Never throws: a
+ * file that cannot be read reads as no memory HERE (a prompt is not a
+ * decision). The round's own record path does NOT read fail-open: an unreadable
+ * findings file fails the round, because a round recorded on "no memory" would
+ * resolve rows the unreadable file may still hold.
+ */
 export async function readBranchRows(cwd: string, branch: string): Promise<StoredFinding[]> {
   try {
-    const loc = await locate(cwd);
-    if (!loc) return [];
-    return readFindingsFile(loc.file).filter((r) => r.branch === branch);
-  } catch {
+    await locate(cwd);
+    return readBranchRowsFailOpen(cwd, branch, ledgerOf);
+  } catch (err) {
+    // `locate` itself failing (no git, no common dir) is the same "no memory"
+    // answer; the read path already traced anything it could not read.
+    trace(`review-findings: no findings file to read: ${(err as Error).message.slice(0, 120)}`);
     return [];
   }
 }
@@ -237,37 +269,13 @@ export async function acceptFinding(
   return out.ok ? out.value : { ok: false, reason: out.reason };
 }
 
-/** Would a finding on `line` of `file` fall outside the delta's changed lines? */
-function outsideDelta(
-  f: Finding,
-  identity: FindingIdentity,
-  ranges: Map<string, Array<[number, number]>>,
-): boolean {
-  const spans = ranges.get(f.path);
-  if (!spans) return true;
-  if (!identity.hasLine) return false;
-  const line = f.line ?? 0;
-  return !spans.some(([lo, hi]) => line >= lo && line <= hi);
-}
-
-/** The row with its acceptance withdrawn: open again, so it is reported again. */
-function reopen(r: StoredFinding): StoredFinding {
-  return { ...r, status: "open", acceptance: undefined, resolvedReason: undefined };
-}
-
 /**
  * Record one round: match each finding to a stored row (or create one), decide
- * whether it is suppressed, and resolve open rows a complete full review no
- * longer reported. Returns the decisions (one per input finding) or the reason
- * nothing was recorded. Never throws.
- *
- * Suppression (CRITICAL is never suppressed):
- *   - `suppressed-accepted`: the matched row is accepted, the title agrees, and
- *     for a line-bearing finding the cited code still has the accepted snippet;
- *   - `suppressed-unchanged`: a delta round, the title agrees, the cited code's
- *     snippet is unchanged, and the cited line lies outside the delta.
- * A finding on a path missing or invalid at head is never suppressed.
- * An accepted row whose snippet changed lapses to open and is reported again.
+ * whether it is suppressed, and let `rowFate` resolve the open rows the round no
+ * longer reports. The matching itself is pure and lives in
+ * review-findings-round.ts; this function owns the I/O around it — the branch
+ * read, the head reads, the lock, and the write. Returns the decisions (one per
+ * input finding) or the reason nothing was recorded. Never throws.
  */
 export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOutcome> {
   try {
@@ -279,156 +287,61 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
     }
     const now = run.now ?? Date.now();
     const ranges =
-      run.review === "delta" && run.deltaDiff !== undefined
-        ? changedLineRanges(run.deltaDiff)
+      run.review === "delta"
+        ? (run.deltaRanges ??
+          (run.deltaDiff !== undefined ? changedLineRanges(run.deltaDiff) : undefined))
         : undefined;
+    // The branch's rows for this round, read ONCE: the paths to judge, and any
+    // malformed row the branch carries. A file that EXISTS but cannot be read
+    // FAILS the round: recording a round on "no memory" would resolve open rows
+    // the unreadable file may still hold, which is the corruption a fail-soft
+    // read cannot be trusted to prevent. A round that finds no file at all
+    // legitimately has no memory; a round that cannot read one does not.
+    let branchRows: BranchRows;
+    try {
+      await locate(run.cwd);
+      branchRows = readBranchRowsRaw(run.cwd, run.branch, ledgerOf) ?? { rows: [], malformed: [] };
+    } catch (err) {
+      const reason = `the branch's findings rows could not be read: ${(err as Error).message.slice(0, 160)}`;
+      trace(`review-findings: ${reason}`);
+      return { ok: false, reason };
+    }
     const heads = new Map<string, HeadState>();
     // A git read error refuses the whole round (readHeadLines): nothing is
     // suppressed or resolved on evidence that could not be read.
-    // Open rows' paths are read too: a round resolves or carries one forward only
-    // on proof about its cited code (changed, or unchanged), so it needs the head lines.
-    const openPaths = (await readBranchRows(run.cwd, run.branch))
-      .filter((r) => r.status === "open")
+    // Open AND accepted rows' paths are read: a round resolves or carries an open
+    // row only on proof about its cited code (changed, or unchanged), and an
+    // accepted row's path is read so a full round can EVICT an acceptance whose
+    // file no longer exists (#1125) rather than keep it alive forever.
+    const judgedPaths = branchRows.rows
+      .filter((r) => r.status === "open" || r.status === "accepted")
       .map((r) => r.path);
-    for (const p of [...run.findings.map((f) => f.path), ...openPaths]) {
+    for (const p of [...run.findings.map((f) => f.path), ...judgedPaths]) {
       if (heads.has(p)) continue;
       const head = await readHeadLines(run.cwd, run.headSha, p);
       if (head.kind === "error") return { ok: false, reason: head.reason };
       heads.set(p, head);
     }
-    // A path absent at head (or not a file at head) has no line to cite: the
-    // finding is a no-line one, and it is never suppressed (there is no code it
-    // could be unchanged against).
-    const noFile = (p: string) => {
-      const head = heads.get(p);
-      return head !== undefined && !hasFile(head);
-    };
-    const linesOf = (p: string): string[] => {
-      const head = heads.get(p);
-      return head?.kind === "lines" ? head.lines : [];
-    };
-    const findings = run.findings.map((f) => (noFile(f.path) ? { ...f, line: undefined } : f));
-    const identities = findings.map((f) => identityOf(f, linesOf(f.path)));
     const out = await mutateFindings(run.cwd, (all) => {
       const others = all.filter((r) => r.branch !== run.branch);
       const mine = all.filter((r) => r.branch === run.branch);
-      const touched = new Set<string>();
-      const taken = new Set(all.map((r) => r.id));
-      const decisions: Decision[] = [];
-      findings.forEach((f, i) => {
-        const id = identities[i] as FindingIdentity;
-        const critical = f.severity === "CRITICAL";
-        const gone = noFile(f.path);
-        const row = pickMatch(id, mine);
-        if (!row) {
-          const fresh: StoredFinding = {
-            id: newRowId(taken),
-            branch: run.branch,
-            path: f.path,
-            anchor: id.anchor,
-            titleClass: id.titleClass,
-            title: f.title,
-            severity: f.severity,
-            lens: f.lens,
-            ...(f.line ? { line: f.line } : {}),
-            snippetHash: id.snippetHash,
-            ...(id.lineHash ? { lineHash: id.lineHash } : {}),
-            status: "open",
-            firstSeen: now,
-            lastSeen: now,
-          };
-          taken.add(fresh.id);
-          mine.push(fresh);
-          touched.add(fresh.id);
-          decisions.push({ action: "new", rowId: fresh.id });
-          return;
-        }
-        touched.add(row.id);
-        // Suppression needs the titles to agree too (see sameTitle): a snippet
-        // match alone can be a different finding on the same line.
-        const same = sameTitle(id, row);
-        // The snippet the row was last recorded with. A changed neighbour line
-        // changes the ±2 window, so an unchanged-code suppression needs this equal.
-        const priorHash = row.snippetHash;
-        let kept: StoredFinding = {
-          ...row,
-          lastSeen: now,
-          snippetHash: id.snippetHash,
-          lineHash: id.lineHash ?? row.lineHash,
-          line: f.line,
-        };
-        if (kept.status === "resolved") kept = reopen(kept);
-        // A line-bearing finding is bound to the snippet the operator accepted; a
-        // no-line finding is bound to its title only (see sameTitle).
-        if (
-          kept.status === "accepted" &&
-          id.hasLine &&
-          kept.acceptance.snippetHash !== id.snippetHash
-        ) {
-          trace(
-            `review-findings: acceptance of ${kept.id} lapsed (cited code changed) — reported again`,
-          );
-          kept = reopen(kept);
-        }
-        mine[mine.indexOf(row)] = kept;
-        if (kept.status === "accepted" && !critical && same) {
-          decisions.push({
-            action: "suppressed-accepted",
-            rowId: kept.id,
-            reason: `accepted by ${kept.acceptance.by}: ${kept.acceptance.reason}`,
-          });
-          return;
-        }
-        if (
-          !critical &&
-          !gone &&
-          same &&
-          ranges &&
-          priorHash === id.snippetHash &&
-          outsideDelta(f, id, ranges)
-        ) {
-          const reason = `cited line ${f.line ?? "?"} is outside the delta since the last recorded review`;
-          trace(`review-findings: suppressed-unchanged ${row.id} — ${reason}`);
-          decisions.push({ action: "suppressed-unchanged", rowId: row.id, reason });
-          return;
-        }
-        decisions.push({ action: "matched", rowId: row.id });
+      const round = applyFindingRound({
+        branch: run.branch,
+        findings: run.findings,
+        mine,
+        taken: new Set(all.map((r) => r.id)),
+        headOf: (p: string) => heads.get(p),
+        review: run.review,
+        ...(ranges ? { deltaRanges: ranges } : {}),
+        now,
       });
-      const carried: Finding[] = [];
-      const resolved: ResolvedNotice[] = [];
-      // Only a complete FULL review may resolve an untouched row (rowFate); a
-      // delta or an incomplete review carries it.
-      mine.forEach((r, i) => {
-        if (r.status !== "open" || touched.has(r.id)) return;
-        // Open rows' paths are read in the read phase. A row added concurrently
-        // (after that read, before this mutate re-read the file under the lock) has
-        // no head state. Carrying it is the safe outcome: nothing is resolved on
-        // evidence never read. Throwing would fail the whole round for a row we
-        // did not decide about.
-        const head: HeadState | undefined = heads.get(r.path);
-        if (head === undefined) {
-          trace(`review-findings: no head state for ${r.path} (row added concurrently?) — carried`);
-        }
-        const fate = head === undefined ? { kind: "carry" as const } : rowFate(r, head, run.review);
-        if (fate.kind === "resolve") {
-          mine[i] = {
-            ...r,
-            status: "resolved",
-            acceptance: undefined,
-            resolvedReason: fate.reason,
-          };
-          resolved.push({ rowId: r.id, title: r.title, reason: fate.reason });
-        } else {
-          carried.push({
-            lens: r.lens,
-            severity: r.severity,
-            path: r.path,
-            line: r.line,
-            title: r.title,
-          });
-        }
-      });
-      return { rows: [...others, ...mine], result: { decisions, carried, resolved } };
+      return {
+        rows: [...others, ...mine],
+        result: {
+          ...round,
+          setAside: [...round.setAside, ...branchRows.malformed],
+        },
+      };
     });
     return out.ok
       ? {
@@ -436,6 +349,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
           decisions: out.value.decisions,
           carried: out.value.carried,
           resolved: out.value.resolved,
+          ...(out.value.setAside.length > 0 ? { setAside: out.value.setAside } : {}),
         }
       : out;
   } catch (err) {

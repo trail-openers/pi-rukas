@@ -16,10 +16,11 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { extractFindings, lensPromptFor, renderSummary } from "../src/lens-review-format.ts";
+import { extractFindings } from "../src/lens-findings-extract.ts";
+import { type LensReviewSummary, lensPromptFor } from "../src/lens-review-format.ts";
+import { renderSummary } from "../src/lens-review-render.ts";
 import {
   LENS_REPORTER_PATH,
-  type LensReviewSummary,
   type LensRunResult,
 } from "../src/lens-review.ts";
 

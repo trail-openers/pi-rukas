@@ -31,6 +31,16 @@ interface StoredBase {
   anchor: string;
   titleClass: string;
   title: string;
+  /**
+   * The finding's prose as the lens reported it (#1130): a carried row is
+   * re-rendered to the operator VERBATIM from the row, so a row that stored no
+   * description would print an empty line under its own heading. Optional —
+   * `report_finding`'s description is optional — but a carried row always
+   * renders something (`carriedText` in lens-review-format.ts).
+   */
+  description?: string;
+  /** The lens's suggested fix, kept for the same reason as `description`. */
+  suggestion?: string;
   severity: Severity;
   lens: string;
   line?: number;
@@ -50,6 +60,24 @@ export interface ResolvedNotice {
   rowId: string;
   title: string;
   reason: ResolveReason;
+}
+
+/**
+ * A row this round SET ASIDE as malformed (#1125 disclosure): a copy went to
+ * `<file>.corrupt-<hash>` and the row is gone from the store. `wasAcceptance`
+ * is the load-bearing field — an operator acceptance that failed validation
+ * silently stops suppressing, so it must reach the summary and the residual
+ * disclosure rather than only the trace log.
+ */
+export interface SetAsideNotice {
+  /** The malformed row's id, when it carried one. */
+  rowId?: string;
+  path: string;
+  severity: string;
+  title: string;
+  /** The first validation failure, when the row is an object. */
+  problem?: string;
+  wasAcceptance: boolean;
 }
 
 /** A stored row. Only an `accepted` row carries an acceptance; only open/resolved rows carry a resolution reason. */
@@ -124,31 +152,74 @@ function isAcceptance(v: unknown): v is Acceptance {
 
 /** Every declared field of a stored row, checked. The status decides whether an acceptance must be there. */
 function isRow(v: unknown): v is StoredFinding {
-  if (!v || typeof v !== "object") return false;
+  return rowProblem(v) === undefined;
+}
+
+/** The first rule the schema breaks, or undefined when it breaks none. */
+function rowProblem(v: unknown): string | undefined {
+  if (!v || typeof v !== "object") return "not an object";
   const r = v as Record<string, unknown>;
-  const common =
-    typeof r.id === "string" &&
-    typeof r.branch === "string" &&
-    typeof r.path === "string" &&
-    typeof r.anchor === "string" &&
-    typeof r.titleClass === "string" &&
-    typeof r.title === "string" &&
-    typeof r.severity === "string" &&
-    SEVERITIES.includes(r.severity) &&
-    typeof r.lens === "string" &&
-    (r.line === undefined || typeof r.line === "number") &&
-    typeof r.snippetHash === "string" &&
-    (r.lineHash === undefined || typeof r.lineHash === "string") &&
-    typeof r.firstSeen === "number" &&
-    typeof r.lastSeen === "number";
-  if (!common) return false;
-  if (r.status === "accepted") return isAcceptance(r.acceptance) && r.resolvedReason === undefined;
-  if (r.status !== "open" && r.status !== "resolved") return false;
-  if (r.acceptance !== undefined) return false;
-  return (
-    r.resolvedReason === undefined ||
-    (RESOLVE_REASONS as readonly unknown[]).includes(r.resolvedReason)
-  );
+  for (const key of [
+    "id",
+    "branch",
+    "path",
+    "anchor",
+    "titleClass",
+    "title",
+    "severity",
+    "lens",
+    "snippetHash",
+  ] as const) {
+    if (typeof r[key] !== "string") return `${key} is not a string`;
+  }
+  if (!SEVERITIES.includes(String(r.severity))) {
+    return `severity "${String(r.severity)}" is not one of ${SEVERITIES.join(", ")}`;
+  }
+  if (r.line !== undefined && typeof r.line !== "number") return "line is not a number";
+  if (r.lineHash !== undefined && typeof r.lineHash !== "string") {
+    return "lineHash is not a string";
+  }
+  for (const key of ["firstSeen", "lastSeen"] as const) {
+    if (typeof r[key] !== "number") return `${key} is not a number`;
+  }
+  for (const key of ["description", "suggestion"] as const) {
+    if (r[key] !== undefined && typeof r[key] !== "string") return `${key} is not a string`;
+  }
+  if (r.status === "accepted") {
+    if (!isAcceptance(r.acceptance)) return "acceptance is missing or malformed";
+    if (r.resolvedReason !== undefined) return "an accepted row carries a resolvedReason";
+    return undefined;
+  }
+  if (r.status !== "open" && r.status !== "resolved") {
+    return `status "${String(r.status)}" is invalid`;
+  }
+  if (r.acceptance !== undefined) return "a non-accepted row carries an acceptance";
+  if (
+    r.resolvedReason !== undefined &&
+    !(RESOLVE_REASONS as readonly unknown[]).includes(r.resolvedReason)
+  ) {
+    return `resolvedReason "${String(r.resolvedReason)}" is invalid`;
+  }
+  return undefined;
+}
+
+/**
+ * What one malformed row was, for the operator disclosure: enough identity to
+ * find it again in the `.corrupt-<hash>` copy, and whether it held an acceptance.
+ */
+export function describeSetAside(v: unknown): SetAsideNotice {
+  const o = (v ?? {}) as Record<string, unknown>;
+  const text = (key: string): string => (typeof o[key] === "string" ? String(o[key]) : "?");
+  const problem = rowProblem(v);
+  const rowId = typeof o.id === "string" && o.id ? o.id : undefined;
+  return {
+    ...(rowId ? { rowId } : {}),
+    path: text("path"),
+    severity: text("severity"),
+    title: text("title"),
+    ...(rowProblem(v) ? { problem: rowProblem(v) } : {}),
+    wasAcceptance: o.status === "accepted",
+  };
 }
 
 /**
@@ -158,6 +229,24 @@ function isRow(v: unknown): v is StoredFinding {
 export type ParsedFile =
   | { ok: true; rows: StoredFinding[]; malformed: unknown[] }
   | { ok: false; reason: string };
+
+/**
+ * Split raw parsed rows into the valid ones and the malformed ones, without
+ * touching the disk. The store's read path uses it on rows it has already read
+ * itself, so one read serves both the valid rows and the set-aside notices.
+ */
+export function splitRows(rows: readonly unknown[]): {
+  rows: StoredFinding[];
+  malformed: unknown[];
+} {
+  const good: StoredFinding[] = [];
+  const malformed: unknown[] = [];
+  for (const r of rows) {
+    if (isRow(r)) good.push(r);
+    else malformed.push(r);
+  }
+  return { rows: good, malformed };
+}
 
 /** Parse the findings file. A missing file is an empty store; anything else unreadable is corrupt. */
 export function parseFindingsFile(file: string): ParsedFile {
@@ -170,13 +259,8 @@ export function parseFindingsFile(file: string): ParsedFile {
   }
   const rows = (parsed as { rows?: unknown } | null)?.rows;
   if (!Array.isArray(rows)) return { ok: false, reason: "no rows array" };
-  const good: StoredFinding[] = [];
-  const malformed: unknown[] = [];
-  for (const r of rows as unknown[]) {
-    if (isRow(r)) good.push(r);
-    else malformed.push(r);
-  }
-  return { ok: true, rows: good, malformed };
+  const split = splitRows(rows as unknown[]);
+  return { ok: true, rows: split.rows, malformed: split.malformed };
 }
 
 /** Read the findings file; a corrupt file reads as no rows, and malformed rows are skipped. */
