@@ -82,6 +82,7 @@ const SEAMS: Seam[] = [
       __inFlightForTests: "#1393 — test-decision-shadow-inflight.ts",
       __resetShadowForTests: "#1393 — both shadow tests",
       __acquireSlotForTests: "#1393 — test-decision-shadow-inflight.ts",
+      __exactInFlightForTests: "#1393 — test-decision-shadow-exact-bound.ts",
     },
     canary: { symbol: "shadowDecide", importer: "work-driver-failure-taxonomy.ts" },
   },

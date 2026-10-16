@@ -151,6 +151,13 @@ export function keyAtBoundary(
 }
 
 /** The `n`th record of a JSONL log, or undefined. */
+/**
+ * The records of a JSONL decision log. Absent or unreadable is an EMPTY log, not
+ * an error: the shadow writer is fire-and-forget, so a poll routinely reads the
+ * file before the first append lands, and a test must not need a guard at every
+ * call site to ask "how many so far". This is the ONE reader — a test re-declaring
+ * it drifts (four local copies disagreed on whether a missing file threw).
+ */
 export function records(file: string): Record<string, unknown>[] {
   try {
     return readFileSync(file, "utf8")

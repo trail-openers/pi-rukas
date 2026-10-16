@@ -27,12 +27,11 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { Backend } from "../src/decision-backends.ts";
 import { SEAMS, type SeamSpec } from "../src/decision-seam-registry.ts";
 import { decide } from "../src/decision-seam.ts";
-import { makeAssert, tmpDir } from "./lib/decision-fixtures.ts";
+import { makeAssert, records, tmpDir } from "./lib/decision-fixtures.ts";
 
 const { assert, state } = makeAssert();
 
@@ -70,17 +69,6 @@ function answeringBackend(): Backend & { calls: number } {
     },
   };
   return b;
-}
-
-function records(file: string): Record<string, unknown>[] {
-  try {
-    return readFileSync(file, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((l) => JSON.parse(l) as Record<string, unknown>);
-  } catch {
-    return [];
-  }
 }
 
 {

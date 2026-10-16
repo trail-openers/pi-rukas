@@ -51,18 +51,29 @@ import { traceWarn } from "./trace.ts";
 /**
  * The reason stamped on an EXACT rule match's record (#1393), where the rule
  * answered and no model was asked. Exported so the taxonomy's record and its
- * tests name the same fact, and so the field the record carries —
- * `exactRuleMatch: true`, never `skipped` — is derived from one constant.
+ * tests name the same fact. The record carries it as `reason` AND the boolean
+ * `exactRuleMatch: true` — never `skipped`, which is the other kind of record
+ * and is derived from one constant either way.
  */
 export const EXACT_RULE_MATCH = "exact rule match";
 
 /**
- * Where a call's records go, plus an optional `state` payload for the paths
- * that write a record without a `decide()` call: a caller that wants a record
- * to carry a fact (an exact match's cause, e.g.) supplies it here and the
- * seam — not the caller — bounds and redacts it against the registry entry.
+ * Which of the two record kinds `writeShadowRecord` writes. A TAG, not a string
+ * the writer compares against: a skip is a note that says "we did not ask"
+ * (throttled per seam), an exact match is a decision the rule made (never
+ * throttled, and it carries `exactRuleMatch`). Deriving one from the other's
+ * prose is what let a storm of exact matches look like a burst of notes.
  */
-export type ShadowWhere = DecisionWhere & { state?: unknown };
+export type ShadowRecordKind = "skip" | "exact-rule-match";
+
+/**
+ * Where a call's records go. ROUTING ONLY (#1393): a repo root and issues. A
+ * record's `state` payload is a named argument of the writer that needs one
+ * (`shadowExactRuleMatch`), never a field smuggled through the routing object —
+ * the seam, not the caller, decides which of its paths may put text into a
+ * record and bounds it against the registry entry.
+ */
+export type ShadowWhere = DecisionWhere;
 
 /** What the shadow calls need from the session; an ExtensionContext satisfies it. */
 type SessionCtx = Pick<DecideCtx, "modelRegistry" | "model"> & { cwd?: string };
@@ -89,6 +100,35 @@ let skipNow: () => number = () => Date.now();
 const lastSkipAt = new Map<SeamId, number>();
 const suppressedSince = new Map<SeamId, number>();
 
+/**
+ * #1393 — how many exact-match records may be in flight at once. An exact match
+ * is deliberately not throttled (one is one decision the driver acted on), but
+ * "not throttled" must not mean "unbounded": a 500-kill storm that fans out 500
+ * concurrent `appendDecisionRecord` calls is the same shape the skip window
+ * exists to stop, just on the write side instead of the model side. Past the
+ * cap a record is dropped and traced rather than queued.
+ */
+const MAX_EXACT_IN_FLIGHT = 32;
+
+/** Exact-match writes currently in flight, and the window they are counted over. */
+let exactInFlight = 0;
+let exactWindowStartedAt = 0;
+
+/** One window of exact-match writes: reset when it is older than the skip window. */
+function exactWindowOpen(now: number): boolean {
+  if (now - exactWindowStartedAt >= SKIP_WINDOW_MS) {
+    exactWindowStartedAt = now;
+    exactInFlight = 0;
+    return true;
+  }
+  return true;
+}
+
+/** Test seam: the exact-match counter, which is otherwise module-private. */
+export function __exactInFlightForTests(): number {
+  return exactInFlight;
+}
+
 /** Test seam: replace the throttle's clock. Returns the restore function. */
 export function __setSkipClockForTests(now: () => number): () => void {
   const prev = skipNow;
@@ -104,14 +144,15 @@ export function __inFlightForTests(): number {
 }
 
 /**
- * Test seam: drop the throttle state (and optionally the in-flight counter).
- * A test that fakes the clock leaves a future stamp behind, which would silence
- * the next test's skips; production never calls this.
+ * Test seam: drop the throttle state and (with `inFlight` or `exact`) the
+ * in-flight counters. A test that fakes the clock leaves a future stamp behind,
+ * which would silence the next test's skips; production never calls this.
  */
-export function __resetShadowForTests(opts: { inFlight?: boolean } = {}): void {
+export function __resetShadowForTests(opts: { inFlight?: boolean; exact?: boolean } = {}): void {
   lastSkipAt.clear();
   suppressedSince.clear();
   if (opts.inFlight) inFlight = 0;
+  if (opts.inFlight || opts.exact) exactInFlight = 0;
 }
 
 /**
@@ -156,27 +197,36 @@ function sessionNow(): {
 }
 
 /**
- * The one writer behind both record paths. `throttle` chooses between a note
- * ("we did not ask", throttled) and a decision record (an exact rule match,
- * never throttled); `reason` names which.
+ * The one writer behind both record paths. `kind` is a TAG choosing between a
+ * note ("we did not ask", throttled) and a decision record (an exact rule match,
+ * never throttled by the skip window, but bounded by `MAX_EXACT_IN_FLIGHT`).
+ * `reason` names the skip, and is the exact record's `reason` too.
  *
- * The record is STATELESS apart from what the caller put in `where.state`,
- * which the seam bounds and redacts by the registry entry — so a caller can
- * never put untrusted text into a record by hand (#1393). Never throws.
+ * The record is STATELESS apart from what the caller passed as `state`, which
+ * the seam bounds and redacts by the registry entry — so a caller can never put
+ * untrusted text into a record by hand (#1393). Never throws. The trace line is
+ * INSIDE the throttle gate: a suppressed skip writes no record and no trace
+ * line, and its count is carried into the next record (#1393).
  */
 function writeShadowRecord(
   seam: SeamId,
   req: Pick<DecideRequest, "question" | "rule">,
   where: ShadowWhere,
+  kind: ShadowRecordKind,
   reason: string,
   throttle: boolean,
+  state?: unknown,
 ): Promise<undefined> {
-  traceWarn(`decision-shadow: '${seam}' not fired: ${reason}`);
   const now = skipNow();
   let summary: { suppressed: number; suppressedSinceMs: number } | undefined;
   if (throttle) {
+    // Monotonic-safe on BOTH sides of the comparison: a clock that went backwards
+    // (an NTP step, a test's restored fake clock) must neither widen the window
+    // nor wedge it shut, so the test is `now >= last` AND the elapsed gap under
+    // the window (#1393).
     const last = lastSkipAt.get(seam);
-    if (last !== undefined && now - last < SKIP_WINDOW_MS) {
+    if (last !== undefined && now >= last && now - last < SKIP_WINDOW_MS) {
+      // A suppressed skip leaves NOTHING behind: no record, no trace line.
       suppressedSince.set(seam, (suppressedSince.get(seam) ?? 0) + 1);
       return Promise.resolve(undefined);
     }
@@ -190,10 +240,41 @@ function writeShadowRecord(
         ? undefined
         : { suppressed: carried, suppressedSinceMs: now - last };
   }
+  const exact = kind === "exact-rule-match";
+  if (exact) {
+    // #1393 — the exact path is not throttled, so it is bounded instead: past
+    // the cap a write is dropped and traced, which is what keeps a 500-kill
+    // storm from becoming 500 concurrent appends.
+    exactWindowOpen(now);
+    if (exactInFlight >= MAX_EXACT_IN_FLIGHT) {
+      traceWarn(
+        `decision-shadow: '${seam}' exact-match record dropped — ${exactInFlight} already in flight`,
+      );
+      return Promise.resolve(undefined);
+    }
+    exactInFlight++;
+  }
+  let released = false;
+  const release = () => {
+    if (exact) exactInFlight = Math.max(0, exactInFlight - 1);
+  };
   const bounded =
-    where.state === undefined
-      ? undefined
-      : boundedState(where.state, SEAMS[seam] as SeamSpec).state;
+    state === undefined ? undefined : boundedState(state, SEAMS[seam] as SeamSpec).state;
+  traceWarn(
+    exact
+      ? `decision-shadow: '${seam}' answered by the exact rule: ${reason}`
+      : `decision-shadow: '${seam}' not fired: ${reason}`,
+  );
+  // The slot releases when the append SETTLES, not only when it rejects: an
+  // append that succeeds and leaves the counter held would saturate the path
+  // permanently after one storm, which is worse than the unbounded write the
+  // cap exists to prevent.
+  const releaseOnce = () => {
+    if (!released) {
+      released = true;
+      release();
+    }
+  };
   return appendDecisionRecord(
     { repoRoot: where.repoRoot ?? sessionNow().cwd, issues: where.issues },
     {
@@ -202,14 +283,19 @@ function writeShadowRecord(
       question: req.question,
       ruleAnswer: req.rule,
       // An exact match is a decision the rule made, not a call that was
-      // withheld: it carries `exactRuleMatch`, and S5 counts the two apart.
-      ...(reason === EXACT_RULE_MATCH ? { exactRuleMatch: true } : { skipped: reason }),
+      // withheld: it carries `exactRuleMatch` AND its `reason`, and S5 counts
+      // the two kinds apart.
+      ...(exact ? { exactRuleMatch: true, reason } : { skipped: reason }),
       ...(bounded === undefined ? {} : { state: bounded }),
       ...(summary ? summary : {}),
     },
   ).then(
-    () => undefined,
+    () => {
+      releaseOnce();
+      return undefined;
+    },
     (err: unknown) => {
+      releaseOnce();
       traceWarn(
         `decision-shadow: '${seam}' record not written: ${(err as Error)?.message ?? String(err)}`,
       );
@@ -237,21 +323,28 @@ export function shadowSkip(
   reason: string,
   throttle = true,
 ): Promise<undefined> {
-  return writeShadowRecord(seam, req, where, reason, throttle);
+  return writeShadowRecord(seam, req, where, "skip", reason, throttle);
 }
 
 /**
  * One record for an EXACT rule match (#1393): a cause the rule reads exactly —
  * any self-killed:*, `success`, a 429 / spend-cap from the provider's own
- * message. Deliberately NOT throttled: each is a decision the driver acted on,
- * and a storm of exact kills must still leave one auditable record per decision.
+ * message. Deliberately NOT throttled by the skip window: each is a decision the
+ * driver acted on, and a storm of exact kills must still leave one auditable
+ * record per decision. It IS bounded — at `MAX_EXACT_IN_FLIGHT` concurrent
+ * writes, past which a record is dropped and traced rather than queued.
+ *
+ * `state` is a NAMED argument, not a field of `where` (#1393): only this path
+ * may carry a payload into a record, and the seam bounds and redacts it against
+ * the registry entry.
  */
 export function shadowExactRuleMatch(
   seam: SeamId,
   req: Pick<DecideRequest, "question" | "rule">,
   where: ShadowWhere,
+  state?: unknown,
 ): Promise<undefined> {
-  return writeShadowRecord(seam, req, where, EXACT_RULE_MATCH, false);
+  return writeShadowRecord(seam, req, where, "exact-rule-match", EXACT_RULE_MATCH, false, state);
 }
 
 /**
@@ -302,6 +395,21 @@ function shadowDecideUnguarded(
   inFlight++;
   const startedAt = Date.now();
   let settled = false;
+  // #1393 — the slot-hold warning used to be written ONLY from the chain's
+  // `finally`, so a chain that never settled held its slot forever and printed
+  // nothing: the exact event the warning exists for was the one it could not
+  // observe. A timer armed at `startedAt + 4 x timeout` fires whether or not the
+  // chain does; the `finally` clears it when the call does settle, and `held()`
+  // keeps the existing wording identical on both paths.
+  const holdBoundMs = 4 * SEAMS[seam].timeoutMs;
+  let holdWatchdog: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+    holdWatchdog = undefined;
+    traceWarn(
+      `decision-shadow: '${seam}' held its slot for ${Date.now() - startedAt}ms and never settled (seam bound ${SEAMS[seam].timeoutMs}ms)`,
+    );
+  }, holdBoundMs);
+  // A watchdog must never be the reason a process stays alive.
+  holdWatchdog.unref?.();
   let chain: Promise<Decision | undefined> | undefined;
   try {
     chain = new Promise<void>((resolve) => setImmediate(resolve)).then(async () => {
@@ -325,11 +433,15 @@ function shadowDecideUnguarded(
   });
   return guarded.finally(() => {
     inFlight--;
+    if (holdWatchdog !== undefined) {
+      clearTimeout(holdWatchdog);
+      holdWatchdog = undefined;
+    }
     // A shadow call that outlived its own seam bound by a wide margin is what
     // narrows MAX_IN_FLIGHT toward zero while every later call is silently
     // dropped as "already in flight", so the event is traced rather than felt.
     const held = Date.now() - startedAt;
-    if (settled && held > 4 * SEAMS[seam].timeoutMs) {
+    if (settled && held > holdBoundMs) {
       traceWarn(
         `decision-shadow: '${seam}' held its slot for ${held}ms (seam bound ${SEAMS[seam].timeoutMs}ms)`,
       );
