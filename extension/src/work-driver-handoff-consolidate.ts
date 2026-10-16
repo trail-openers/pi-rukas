@@ -47,9 +47,10 @@ import { type ForgeDetection, detectForge } from "./forge-detect.ts";
 import { createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
+import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import { detectMainline, resolveRestoreTarget } from "./work-driver-git.ts";
+import { countAheadOfBase } from "./work-driver-handoff-ahead.ts";
 import { reconcileHandoffConsolidateBranch } from "./work-driver-handoff-consolidate-branch.ts";
-import { readError } from "./work-driver-handoff-snapshot.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import {
@@ -69,79 +70,6 @@ const defaultExecFn: ExecFn = execp;
 /** Whether handoff-time consolidation is enabled (default on). */
 export function handoffConsolidationEnabled(): boolean {
   return process.env.PI_ENSEMBLE_HANDOFF_CONSOLIDATE !== "0";
-}
-
-/**
- * How many local commits the worktrees carry past `baseSha`, and at which
- * worktree HEADs. `rev-list --count baseSha..HEAD` is the same predicate the
- * cherry-pick orchestrator uses to decide a worktree has commits to move, so
- * consolidation only runs when there is something to move. Returns
- * `{ total: 0 }` when there is no committed work to consolidate (or no base
- * SHA recorded) — the caller treats that as "nothing to do, keep the
- * existing snapshot". A count that could not be READ is reported in
- * `unreadable`, never folded into that zero.
- */
-export async function countAheadOfBase(
-  execFn: ExecFn,
-  repoRoot: string,
-  baseSha: string | undefined,
-  worktrees: Record<string, string>,
-): Promise<{ total: number; ahead: Record<string, number>; unreadable: string[] }> {
-  if (!baseSha) return { total: 0, ahead: {}, unreadable: [] };
-  const ahead: Record<string, number> = {};
-  const unreadable: string[] = [];
-  let total = 0;
-  for (const [id, wt] of Object.entries(worktrees)) {
-    try {
-      const { stdout } = await execFn(`git rev-list --count ${JSON.stringify(baseSha)}..HEAD`, {
-        cwd: wt,
-        maxBuffer: 64 * 1024,
-      });
-      const n = Number.parseInt(stdout.trim(), 10);
-      if (Number.isFinite(n) && n > 0) {
-        ahead[id] = n;
-        total += n;
-      }
-    } catch (err) {
-      // Unreadable worktree (deleted on disk, git could not run) — nothing
-      // to move from here, but NOT proof it holds no commits.
-      unreadable.push(`${wt}: ${readError(err)}`);
-    }
-  }
-  return { total, ahead, unreadable };
-}
-
-/**
- * Whether the cycle's work is demonstrably NOT yet on its local branch —
- * the re-entry guard for crash-resume re-post. A second `runHandoff`
- * (the dedupe census: a crash after the comment posted but before the
- * enclosing writeState left the file at "running") must not re-consolidate
- * work that is already on the branch: the cherry-pick orchestrator's
- * tree-hash dedupe makes a redundant run cheap but not free, and a
- * redundant run after an operator manually resolved a conflict would
- * re-introduce it. Returns true when the branch exists locally AND at
- * least one worktree is still ahead of the base; false when the branch is
- * absent (first entry — consolidate) or there is nothing ahead (nothing to
- * move, keep the snapshot the caller built).
- */
-export async function workNotYetOnBranch(
-  execFn: ExecFn,
-  repoRoot: string,
-  branchName: string | undefined,
-  baseSha: string | undefined,
-  worktrees: Record<string, string>,
-): Promise<boolean> {
-  if (!branchName || !baseSha) return true;
-  let branchExists = false;
-  try {
-    await execFn(`git rev-parse --verify ${JSON.stringify(branchName)}`, { cwd: repoRoot });
-    branchExists = true;
-  } catch {
-    branchExists = false;
-  }
-  if (!branchExists) return true;
-  const { total } = await countAheadOfBase(execFn, repoRoot, baseSha, worktrees);
-  return total > 0;
 }
 
 export interface ConsolidateOutcome {
@@ -172,7 +100,24 @@ export interface ConsolidateOutcome {
  * accurate-worktree-paths fallback and lets the handoff complete.
  */
 export async function consolidateWorktreesToBranch(
-  ctx: { repoRoot: string; issue: number; scratchDir: string },
+  ctx: {
+    repoRoot: string;
+    issue: number;
+    scratchDir: string;
+    /**
+     * #1362 — the cycle's `.pi/dirty-root-exempt` list: untracked files under
+     * one of its prefixes are neither dirt for the preflight below nor counted
+     * by the restore claims. Absent behaves exactly as before the file existed.
+     */
+    dirtyRootExempt?: readonly string[];
+    /**
+     * #1362 — the paths that were already untracked under those prefixes when the
+     * cycle started (`pipelineState.dirtyRootExemptBaseline`). A post-reset `??`
+     * file under an exempt prefix is spared by a claim only when it appears here;
+     * anything else is this consolidation's own output and the claim names it.
+     */
+    dirtyRootExemptBaseline?: readonly string[];
+  },
   state: WorkState,
   execFn: ExecFn = defaultExecFn,
 ): Promise<ConsolidateOutcome> {
@@ -223,7 +168,12 @@ export async function consolidateWorktreesToBranch(
       });
       const rootDirt = rootStatus
         .split("\n")
-        .filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
+        .filter(
+          (l) =>
+            l.trim() &&
+            !/^..\s+"?\.worktrees\//.test(l) &&
+            !isConfiguredExemptDirtLine(l, ctx.dirtyRootExempt),
+        );
       if (rootDirt.length > 0) {
         return {
           ok: false as const,
@@ -300,6 +250,8 @@ export async function consolidateWorktreesToBranch(
               ref: originalRef,
               scratchDir: ctx.scratchDir,
               label: "handoff consolidation",
+              dirtyRootExempt: ctx.dirtyRootExempt,
+              dirtyRootExemptBaseline: ctx.dirtyRootExemptBaseline,
             })
           : undefined;
         // A conflict means the worktrees still hold their commits verbatim —
@@ -322,6 +274,8 @@ export async function consolidateWorktreesToBranch(
               ref: originalRef,
               scratchDir: ctx.scratchDir,
               label: "handoff consolidation",
+              dirtyRootExempt: ctx.dirtyRootExempt,
+              dirtyRootExemptBaseline: ctx.dirtyRootExemptBaseline,
             })
           : undefined;
         const claim = restoreClaim(restore === undefined ? undefined : restore);
@@ -404,6 +358,8 @@ export async function consolidateWorktreesToBranch(
             repoRoot: ctx.repoRoot,
             ref: originalRef,
             label: "handoff consolidation",
+            dirtyRootExempt: ctx.dirtyRootExempt,
+            dirtyRootExemptBaseline: ctx.dirtyRootExemptBaseline,
           })
         : {
             restored: false,
@@ -441,6 +397,8 @@ export async function consolidateWorktreesToBranch(
         ref: originalRef,
         scratchDir: ctx.scratchDir,
         label: "handoff consolidation",
+        dirtyRootExempt: ctx.dirtyRootExempt,
+        dirtyRootExemptBaseline: ctx.dirtyRootExemptBaseline,
       });
       const claim = restoreClaim(restore, { trailing: "run git status at the repo root" });
       return {

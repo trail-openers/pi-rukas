@@ -93,6 +93,13 @@ export function setupReviewFixture(opts: {
   /** Install the six lens skills and set PI_ENSEMBLE_SKILLS_DIR (default true). */
   withSkills?: boolean;
 }): ReviewFixture {
+  // #1125 — the tests split from the shared fixture name the PR's range
+  // explicitly (a temp clone has no mainline for `resolveMainlineBase` to find,
+  // and the advisory read fails closed rather than guessing), so the base they
+  // name has to be a commit that EXISTS. One empty commit first puts every
+  // fixture's content inside `<base>...<head>`; an in-range finding then blocks
+  // and an out-of-range one is advisory, which is the distinction the split is
+  // about. A test that wants its file OUT of range says so with its own base.
   const root = mkdtempSync(path.join(os.tmpdir(), `${opts.prefix}-`));
   // What the two process env vars were before this fixture, so cleanup() can
   // undo BOTH: a leaked PI_ENSEMBLE_SKILLS_DIR points a later test at a skills
@@ -121,6 +128,7 @@ export function setupReviewFixture(opts: {
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, body);
   }
+  sh("git commit -q --allow-empty -m origin");
   sh("git add -A");
   sh("git commit -qm base");
 

@@ -28,14 +28,10 @@
  * legitimately commit in their own detached worktrees during the window.
  */
 import { trace } from "./trace.ts";
+import { branchHolders, repoRootHoldsBranch } from "./work-driver-branch-holder.ts";
 import { runCommitPrPostDispatchGates } from "./work-driver-commit-pr-events.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import {
-  branchHolders,
-  integrateWorktreeName,
-  integrateWorktreePath,
-  repoRootHoldsBranch,
-} from "./work-driver-integrate-worktree.ts";
+import { integrateWorktreeName, integrateWorktreePath } from "./work-driver-integrate-worktree.ts";
 import { appendEvent } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { worktreeRemove } from "./worktree.ts";

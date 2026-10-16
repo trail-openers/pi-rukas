@@ -5,22 +5,23 @@ import { execp } from "./exec.ts";
 import { resolveBudgetKey } from "./lens-budget-key.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import { withLensModelSlot } from "./lens-model-slots.ts";
-import { partitionDecisions } from "./lens-residuals.ts";
-import { splitCarried } from "./lens-review-advisory.ts";
 import { carriedSummary, noReviewSummary } from "./lens-review-auto-delta.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
+import { diffBaseOf } from "./lens-review-changed-ranges.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
   type AutoDeltaInfo,
-  blockedReviewSummary,
-  blockedRowsForRoster,
-  buildDeltaFullContext,
   deltaFallbackNote,
   deltaReviewOf,
+} from "./lens-review-delta-disclose.ts";
+import { blockedReviewSummary, blockedRowsForRoster } from "./lens-review-diff-blocked.ts";
+import {
+  buildDeltaFullContext,
   resolveReviewDiff,
   startPersistentBatch,
 } from "./lens-review-diff.ts";
+import { resolveReportedFindings } from "./lens-review-findings.ts";
 import { finishLensReview } from "./lens-review-finish.ts";
 import {
   DEFAULT_REVIEW_THRESHOLD,
@@ -32,8 +33,7 @@ import {
   dedupeFindings,
   piSkillsDir,
 } from "./lens-review-format.ts";
-import { isReviewIncomplete } from "./lens-review-incomplete.ts";
-import { memoryDisclosure, priorFindingsFor, recordRound } from "./lens-review-memory.ts";
+import { priorFindingsFor } from "./lens-review-memory.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
@@ -56,8 +56,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 
 import { aggregateLensUsage } from "./lens-review-usage.ts";
-/** One roster entry — the shape a lens child receives per dispatch (#873:
- * the roster is data, so `LensDef` is the parsed entry type). */
+/** One roster entry — the shape a lens child receives per dispatch (#873). */
 export type LensDef = RosterEntry;
 /** Re-exported so consumers of this module name the verdict here; the
  * definition lives in lens-review-format.ts. */
@@ -429,40 +428,41 @@ export async function runLensReview(opts: {
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
   const deduped = dedupeFindings(all, roster);
-  // #1105 — record the round against the findings memory: suppressed findings
-  // leave the review, and a complete full review resolves rows it no longer reports.
-  const review = delta ? "delta" : isReviewIncomplete(lensResults) ? "incomplete" : "full";
-  const recorded = await recordRound({
-    cwd: opts.cwd ?? process.cwd(),
-    branch: branchResolved,
+  // #1105/#1140/#1125 — the round is recorded against the findings memory (the
+  // memory seam's `recordRound`, so the round's evidence and its rows come from
+  // one store read), accepted rows suppress, unchanged open rows carry, a refused
+  // row is disclosed as a set-aside, and any finding whose cited line is outside
+  // the PR's changed lines becomes advisory. `reported` is the BLOCKING half —
+  // the one list the verdict, counts and `hasCritical` read (rules and failure
+  // modes: lens-review-findings.ts).
+  const found = await resolveReportedFindings({
+    deduped,
+    lensResults,
+    delta,
+    cwd: opts.cwd,
+    base: opts.base ?? diffBaseOf(resolved),
+    branchResolved,
     headSha,
-    findings: deduped,
-    review,
-    ...(delta ? { deltaDiff: diff } : {}),
+    diff,
+    // Who produced the diff above and over which range: the split trusts the text
+    // only for a computed full-range review (#1125 — a pasted diff is not
+    // evidence of what the PR changed).
+    resolved: {
+      diffSource: resolved.diffSource,
+      ...(resolved.base !== undefined ? { base: resolved.base } : {}),
+      ...(resolved.head !== undefined ? { head: resolved.head } : {}),
+    },
   });
-  // Fail open: an unrecorded round reports every finding, and the summary and
-  // the residual comment say why memory was not used — including the case where
-  // the round refused to record BECAUSE the branch's rows could not be read.
-  // "no memory" and "memory unreadable" must not render the same (#1125).
-  const memory = memoryDisclosure(recorded);
-  const decisions = recorded?.ok ? recorded.decisions : undefined;
-  const { kept, suppressed } = partitionDecisions(deduped, decisions);
-  // #1105 — open rows this round did not re-report, whose cited code is
-  // unchanged, still stand: a lens omitting a known finding is not a fix.
-  // They are reported alongside this round's findings. #1140 — a carried row
-  // on a file outside the PR's diff is advisory (lens-review-advisory.ts).
-  const carried = await splitCarried(recorded, opts.cwd, opts.base, headSha);
-  const reported = [...kept, ...carried.blocking];
+  const reported = found.reported;
   const verdict = computeVerdict(reported, lensResults, threshold);
-  // #973 — the round-cap rule's inputs for the ledger write: hasCritical
-  // from the deduped findings, headSha from the ref the review actually
-  // covered (the delta's head when this was a delta run, otherwise
-  // opts.head or HEAD). Both are undefined on the full-review path when no
-  // head is named (the ledger write omits them; a later round-cap check
-  // fails closed on the missing field — conservative by design).
+  // #973 — the round-cap rule's inputs for the ledger write: `hasCritical`
+  // from the BLOCKING findings (post-#1125: never an out-of-range one),
+  // `headSha` from the ref the review actually covered. Both are undefined on
+  // the full-review path with no head named — the write omits them and a later
+  // round-cap check fails closed on the missing field.
   const hasCritical = reported.some((f) => f.severity === "CRITICAL");
-  // #1039 — headSha was resolved once, before any early return (see the
-  // block above). The ledger write carries it through to all paths.
+  // #1039 — headSha was resolved once, before any early return, and the ledger
+  // write carries it through to all paths.
   // #984 — the ledger write's promise is discarded (fire-and-forget in
   // production; the await seam is for tests, not for the driver).
   return finishWith(
@@ -472,10 +472,10 @@ export async function runLensReview(opts: {
       bySeverity: bySeverityCounts(reported),
       lenses: lensResults,
       findings: reported,
-      ...(suppressed.length > 0 ? { suppressed } : {}),
-      ...(recorded?.ok && recorded.resolved.length > 0 ? { resolved: recorded.resolved } : {}),
-      ...memory,
-      ...carried.fields,
+      ...(found.suppressed.length > 0 ? { suppressed: found.suppressed } : {}),
+      ...(found.resolved.length > 0 ? { resolved: found.resolved } : {}),
+      ...(found.setAside ? { setAside: found.setAside } : {}),
+      ...found.fields,
       usage: aggregateLensUsage(lensResults),
       // #543 — a dispatch-cap kill on any lens child (loop detector / token
       // budget) is surfaced on the summary so the driver emits the fixed-literal

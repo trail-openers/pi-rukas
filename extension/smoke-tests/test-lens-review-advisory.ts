@@ -1,34 +1,55 @@
 #!/usr/bin/env bun
 /**
- * #1140 — carried findings on files outside the PR's diff are advisory.
- *
- * Lens children are injected (`lensChildFn`), so no Pi child is spawned. A
- * temp clone has `main` (src/a.ts, src/other.ts) and `feat/x`, which changes
- * only src/a.ts:
- *   1. round 1 records a HIGH on src/a.ts and a CRITICAL on src/other.ts (the
- *      #1133 phantom-row shape);
- *   2. round 2 reports nothing, so both rows are carried. Against main...feat/x
- *      the CRITICAL on src/other.ts is advisory: the verdict is ISSUES_FOUND
- *      (the in-diff HIGH still blocks), hasCritical is false on the ledger
- *      entry, and the summary lists it under "Advisory (outside this PR's diff)";
- *   3. an unreadable changed-file list keeps every carried row blocking
- *      (CRITICAL_ISSUES_FOUND) and the summary says why;
- *   4. a carried row with no path blocks; the PR residual disclosure lists the
- *      advisory rows; the store rows are unchanged.
+ * #1140 (file level) + #1125 decision 1 (line level) — a finding blocks only
+ * when its cited line is inside the PR's changed lines. Lens children are
+ * injected; the clone (its changed lines known exactly) and the stub lens are
+ * in ./lib/lens-advisory-fixtures.ts, so this file is only assertions.
+ *   1. an in-range HIGH and a CRITICAL outside the changed lines, neither
+ *      re-reported: the verdict is ISSUES_FOUND on the HIGH alone, `bySeverity`
+ *      counts no CRITICAL, the ledger entry says hasCritical: false, and the
+ *      summary lists the CRITICAL under "Advisory (outside this PR's changed
+ *      lines)";
+ *   2. the same round again with the code unchanged: both rows stay carried and
+ *      advisory — a re-review does not resurrect them into the verdict;
+ *   3. the control: a CRITICAL ON the changed line decides the verdict and
+ *      sets hasCritical (#1143's invariant, kept at line level);
+ *   4. an unreadable changed-line list keeps every finding blocking
+ *      (CRITICAL_ISSUES_FOUND) and the note says why; and so does an EMPTY
+ *      one — the discount is earned by lines actually read;
+ *   5. a finding with no path blocks; a line-less finding blocks only on a
+ *      changed file; a malformed `line <= 0` is treated as line-less; a finding
+ *      on an untouched line of a CHANGED file is advisory; a DELTA round is
+ *      judged against the PR's whole range, not the delta's; the PR residual
+ *      disclosure lists the advisory rows; the store rows are unchanged.
  */
 
-import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ADVISORY_HEADING, splitCarried } from "../src/lens-review-advisory.ts";
-import { postLensResidualDisclosure } from "../src/lens-review-residuals.ts";
-import type { LensRunResult } from "../src/lens-review-types.ts";
-import { runLensReview } from "../src/lens-review.ts";
+import { ADVISORY_HEADING, type RangeList, splitAdvisory } from "../src/lens-review-advisory.ts";
+import { rangesFromDiff } from "../src/lens-review-changed-ranges.ts";
+import { resolveReportedFindings } from "../src/lens-review-findings.ts";
 import { renderSummary } from "../src/lens-review-render.ts";
+import { postLensResidualDisclosure } from "../src/lens-review-residuals.ts";
+import type { Finding, LensRunResult } from "../src/lens-review-types.ts";
+import { runLensReview } from "../src/lens-review.ts";
 import { LENS_ROSTER } from "../src/lens-roster.ts";
 import { readBranchRows } from "../src/review-findings-store.ts";
+import type { LedgerEntry } from "../src/review-ledger.ts";
+import { validEntries } from "../src/review-ledger.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import {
+  CHANGED_LINE_DIFF as DIFF,
+  type Raw,
+  buildAdvisoryFixture,
+  renameOnBranch,
+} from "./lib/lens-advisory-fixtures.ts";
+import {
+  latestLensEntry as latestLensEntryOf,
+  seedFindings,
+  storeFileOf,
+  waitForLensRound,
+} from "./lib/review-autonomy-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -39,123 +60,82 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const root = mkdtempSync(path.join(os.tmpdir(), "lens-advisory-"));
-const repo = path.join(root, "repo");
-const skills = path.join(root, "skills");
-const ledgerDir = path.join(root, "ledger");
-const ledgerFile = path.join(ledgerDir, "review-ledger.json");
-mkdirSync(path.join(repo, "src"), { recursive: true });
-mkdirSync(ledgerDir);
-let prec = 10;
-for (const l of LENS_ROSTER) {
-  mkdirSync(path.join(skills, l.skill), { recursive: true });
-  writeFileSync(
-    path.join(skills, l.skill, "SKILL.md"),
-    `---\nname: ${l.skill}\nprecedence: ${prec}\n---\n`,
+// The clone, the skills dir and the stub lens live in the shared fixtures
+// (500-line gate): this file holds the assertions. `src/a.ts` line 11 is the
+// only line the PR changed; no line of `src/other.ts` is.
+const fixture = buildAdvisoryFixture(mkdtempSync(path.join(os.tmpdir(), "lens-advisory-")));
+const { root, repo, ledgerFile, sh } = fixture;
+const HEAD_SHA = fixture.headSha;
+// The round's FRESH findings come from the stub; the CARRIED half is seeded
+// into the findings store, so the list `splitAdvisory` receives is exact.
+const setReport = fixture.setReport;
+const storeFile = storeFileOf(ledgerFile);
+const seedStore = (rows: Raw[]) => seedFindings(storeFile, "feat/x", rows);
+const common = fixture.common;
+/** The `resolved` shape `runLensReview` hands the seam for these options: a
+ * caller-pasted diff string (`common.diff`), the shape a `/review` call makes. */
+const callerDiff = { diffSource: "caller" as const };
+/** Same, for a review that read `base...head` from refs it resolved — the only
+ * shape whose diff text the advisory split trusts as the reviewed range. */
+const computedRange = (base: string, head: string) => ({
+  diffSource: "computed" as const,
+  base,
+  head,
+});
+// The ledger rows the split's decisions are asserted on, read through the shared
+// poll's `until` seam (#984) rather than a raw read of the file: `latestLensEntry`
+// and `waitForLensRound` are the autonomy fixtures' ONE implementation (the local
+// copies this suite used to carry re-read the file through readers that swallow a
+// parse error and return a stale row), with this suite's row selector.
+const lensRows = (entries: LedgerEntry[]): LedgerEntry[] =>
+  entries.filter((e) => e.kind === "lens");
+/** Wait until the branch's lens entry records round `n` (one lens row per
+ * branch). The poll returns the entries it accepted; a timeout is a null. */
+const waitForRound = (n: number): Promise<LedgerEntry | undefined> =>
+  waitForLensRound(ledgerFile, "feat/x", n, lensRows, (file) =>
+    validEntries(JSON.parse(readFileSync(file, "utf8")).entries as unknown[]),
   );
-  prec += 10;
-}
-process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = ledgerFile;
-process.env.PI_ENSEMBLE_SKILLS_DIR = skills;
-
-const sh = (cmd: string) =>
-  execSync(cmd, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-sh("git init -q -b main");
-sh("git config user.email dev@example.com");
-sh("git config user.name dev");
-const lines = (n: number, tag: string) =>
-  `${Array.from({ length: n }, (_, i) => `// ${tag} ${i + 1}`).join("\n")}\n`;
-writeFileSync(path.join(repo, "src", "a.ts"), lines(10, "a"));
-writeFileSync(path.join(repo, "src", "other.ts"), lines(10, "other"));
-sh("git add -A");
-sh("git commit -qm base");
-// A remote mainline, so the ledger writer can compute a patch id.
-execSync(`git init -q --bare -b main ${path.join(root, "remote.git")}`);
-sh(`git remote add origin ${path.join(root, "remote.git")}`);
-sh("git push -q origin main");
-sh("git fetch -q origin");
-sh("git checkout -q -b feat/x");
-writeFileSync(path.join(repo, "src", "a.ts"), `${lines(10, "a")}// changed\n`);
-sh("git commit -qam change");
-
-type Raw = { severity: string; path: string; line: number; title: string };
-let report: Raw[] = [];
-const stubLens = async (args: { lens: { name: string } }): Promise<LensRunResult> =>
-  ({
-    lens: args.lens.name,
-    ok: true,
-    ms: 1,
-    startMs: Date.now(),
-    attempts: 1,
-    blocked: false,
-    summary: "reviewed the diff",
-    findings:
-      args.lens.name === LENS_ROSTER[0]?.name
-        ? report.map((f) => ({ lens: args.lens.name, ...f }))
-        : [],
-  }) as unknown as LensRunResult;
-
-const DIFF = "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+// changed";
-const common = {
-  cwd: repo,
-  branch: "feat/x",
-  head: "feat/x",
-  diff: DIFF,
-  lensChildFn: stubLens as never,
-};
-const latestLensEntry = (): Record<string, unknown> | undefined => {
-  const entries = JSON.parse(readFileSync(ledgerFile, "utf8")).entries as Record<string, unknown>[];
-  return entries.filter((e) => e.kind === "lens").at(-1);
-};
-/** Wait until the branch's lens entry records round `n` (one lens row per branch). */
-const waitForRound = async (n: number) => {
-  for (let i = 0; i < 250; i++) {
-    try {
-      if (latestLensEntry()?.round === n) return;
-    } catch {
-      // not written yet
-    }
-    await new Promise((r) => setTimeout(r, 20));
-  }
-};
+/** The branch's latest lens row — the one `hasCritical` is asserted on. */
+const latestLensEntry = (): LedgerEntry | undefined =>
+  latestLensEntryOf(ledgerFile, "feat/x", lensRows, (file) =>
+    validEntries(JSON.parse(readFileSync(file, "utf8")).entries as unknown[]),
+  );
 
 try {
-  // 1. Round 1 records an in-diff HIGH and a phantom out-of-diff CRITICAL.
-  report = [
-    { severity: "HIGH", path: "src/a.ts", line: 3, title: "in-diff problem" },
-    { severity: "CRITICAL", path: "src/other.ts", line: 5, title: "phantom critical" },
-  ];
+  // A finding literal, for the shapes no lens produces (no path, no line, a
+  // malformed line, a delta's own hunk): exactly what `splitAdvisory` accepts.
+  const asFinding = (f: Record<string, unknown>): Finding => f as unknown as Finding;
+  // 1. An in-range HIGH (carried by the store) and a CRITICAL on a file the PR
+  // never touches (the #1133 phantom-row shape). The split is what is under
+  // test: the CRITICAL is advisory, so it neither decides the verdict nor sets
+  // `hasCritical`.
+  seedStore([{ severity: "CRITICAL", path: "src/other.ts", line: 5, title: "phantom critical" }]);
+  // The in-range HIGH is a fresh finding from the lens, so the store cannot
+  // carry it — fresh findings never pass through the advisory split at all.
+  setReport([{ severity: "HIGH", path: "src/a.ts", line: 11, title: "in-range problem" }]);
   const r1 = await runLensReview({ ...common, base: "main" });
-  assert(r1.verdict === "CRITICAL_ISSUES_FOUND", "round 1: fresh findings are never advisory");
-  const rowsBefore = await readBranchRows(repo, "feat/x");
-  assert(rowsBefore.length === 2, "round 1: both rows are recorded open");
-
-  // 2. Round 2 reports nothing: both rows are carried.
-  report = [];
+  assert(
+    r1.verdict === "ISSUES_FOUND",
+    `round 1: the in-range HIGH decides the verdict, the out-of-range CRITICAL does not (got ${r1.verdict})`,
+  );
+  assert(
+    r1.findings.length === 1 && r1.findings[0]?.path === "src/a.ts",
+    "round 1: only the in-range finding is counted in the reported findings",
+  );
+  assert(
+    r1.advisory?.length === 1 && r1.advisory[0]?.path === "src/other.ts",
+    "round 1: the finding outside the changed lines is listed as advisory",
+  );
+  assert(r1.bySeverity.CRITICAL === 0, "round 1: the advisory CRITICAL is not counted");
   await waitForRound(1);
-  const r2 = await runLensReview({ ...common, base: "main" });
-  assert(
-    r2.verdict === "ISSUES_FOUND",
-    `round 2: the out-of-diff CRITICAL does not decide the verdict (got ${r2.verdict})`,
-  );
-  assert(
-    r2.findings.length === 1 && r2.findings[0]?.path === "src/a.ts",
-    "round 2: the carried row inside the diff still blocks, as before",
-  );
-  assert(
-    r2.advisory?.length === 1 && r2.advisory[0]?.path === "src/other.ts",
-    "round 2: the carried row outside the diff is listed as advisory",
-  );
-  assert(r2.bySeverity.CRITICAL === 0, "round 2: the advisory CRITICAL is not counted");
-  await waitForRound(2);
   assert(
     latestLensEntry()?.hasCritical === false,
-    "round 2: the ledger entry records hasCritical: false",
+    "round 1: the ledger entry records hasCritical: false",
   );
-  const text = renderSummary(r2, 4);
+  const text = renderSummary(r1, 4);
   assert(
     text.includes(ADVISORY_HEADING) && text.includes("phantom critical"),
-    "round 2: the summary lists the advisory row under its heading",
+    "round 1: the summary lists the advisory row under its heading",
   );
   const rowsAfter = await readBranchRows(repo, "feat/x");
   assert(
@@ -163,32 +143,244 @@ try {
     "the store rows are unchanged (no deletion, no status change)",
   );
 
-  // 3. An unreadable changed-file list keeps every carried row blocking.
-  const r3 = await runLensReview({ ...common, base: "no-such-ref" });
+  // 2. The next round sees the same code: the lens re-reports the in-range HIGH
+  // and the store carries the out-of-range CRITICAL forward (its cited code is
+  // unchanged, so #1130's rule does not resolve it). The verdict is unchanged —
+  // an out-of-range finding never re-enters it, round after round.
+  seedStore([{ severity: "CRITICAL", path: "src/other.ts", line: 5, title: "phantom critical" }]);
+  const r2 = await runLensReview({ ...common, base: "main" });
   assert(
-    r3.verdict === "CRITICAL_ISSUES_FOUND" && !r3.advisory,
-    "an unreadable changed-file list keeps every carried row blocking (today's behaviour)",
+    r2.verdict === "ISSUES_FOUND" && r2.findings.length === 1,
+    `round 2: the carried rows do not re-enter the verdict (got ${r2.verdict})`,
   );
   assert(
-    /changed-file list could not be read/.test(r3.memoryNote ?? ""),
-    "…and the summary says the list could not be read",
+    r2.advisory?.length === 1 && r2.advisory[0]?.path === "src/other.ts",
+    "round 2: the out-of-range row is still carried and still advisory",
+  );
+  assert(r2.bySeverity.CRITICAL === 0, "round 2: the advisory CRITICAL is not counted");
+
+  // 3. The control: a CRITICAL ON a changed line still blocks and still sets
+  // hasCritical — the advisory tier never swallows a finding whose code the PR
+  // actually touched (#1143's invariant, held at line level).
+  seedStore([{ severity: "CRITICAL", path: "src/a.ts", line: 11, title: "changed-line critical" }]);
+  await waitForRound(2);
+  const rControl = await runLensReview({ ...common, base: "main" });
+  assert(
+    rControl.verdict === "CRITICAL_ISSUES_FOUND",
+    `control: the in-range CRITICAL decides the verdict (got ${rControl.verdict})`,
+  );
+  assert(
+    rControl.findings.some((f) => f.title === "changed-line critical"),
+    "control: the in-range finding is a reported (blocking) finding",
+  );
+  await waitForRound(3);
+  assert(
+    latestLensEntry()?.hasCritical === true,
+    "control: an in-range CRITICAL sets hasCritical on the ledger entry",
   );
 
-  // 4a. A carried row with no path stays blocking.
-  const split = await splitCarried(
-    {
-      ok: true,
-      carried: [{ lens: "SECURITY", severity: "CRITICAL", path: "", title: "no path" } as never],
-    },
-    repo,
-    "main",
-    sh("git rev-parse HEAD"),
+  // 4. An unreadable changed-line list keeps every finding blocking (fail
+  // closed), and the note names the range it could not read. Driven through the
+  // injected read so the assertion is about the split's own contract (every
+  // finding blocks + the note) and not about what one git invocation happens to
+  // say on stderr.
+  const unreadable = async (): Promise<RangeList> => ({
+    ok: false as const,
+    reason: "git diff failed: no such branch",
+  });
+  const closed = await splitAdvisory({
+    reported: [asFinding({ lens: "SECURITY", severity: "HIGH", path: "src/a.ts", line: 11 })],
+    cwd: repo,
+    base: "no-such-ref",
+    head: HEAD_SHA,
+    rangeRead: unreadable,
+  });
+  assert(
+    closed.blocking.length === 1 &&
+      /changed lines could not be read/.test(closed.fields.memoryNote ?? ""),
+    "an unreadable range blocks everything and says why",
   );
-  assert(split.blocking.length === 1 && !split.fields.advisory, "a row with no path blocks");
-  const none = await splitCarried({ ok: false }, repo, "no-such-ref", undefined);
+  // The diff the lenses saw parses to nothing here, so the split falls back to
+  // the refs the review resolved — and the reason names that range, so the
+  // operator can see WHICH read failed.
+  assert(
+    /no-such-ref/.test(closed.fields.memoryNote ?? ""),
+    "…and the reason names the range it could not read",
+  );
+  // 4a. The same shape through the REAL review, at the seam that decides the
+  // verdict. The round's finding comes from the LENS, not the store; `full: true`
+  // keeps the automatic delta (#973) from narrowing it. `base` names a ref that
+  // does not exist, so the range cannot be read and everything blocks. The note
+  // assertion is NOT duplicated here at the split's seam (a third round would
+  // only re-run the read 4 already pins): what this round proves is that the
+  // fail-closed behaviour reaches the VERDICT, which case 4 cannot show.
+  setReport([{ severity: "CRITICAL", path: "src/a.ts", line: 11, title: "range unreadable" }]);
+  seedStore([]);
+  const r4 = await runLensReview({
+    ...common,
+    full: true,
+    base: "no-such-ref",
+  });
+  setReport([]);
+  assert(
+    r4.verdict === "CRITICAL_ISSUES_FOUND" && !r4.advisory,
+    "an unreadable changed-line list keeps every finding blocking (today's behaviour)",
+  );
+  assert(
+    r4.findings.length === 1 && r4.findings[0]?.title === "range unreadable",
+    "…and the finding that blocked is the round's own, not a carried row",
+  );
+
+  // (4b: the supplied-diff cases live in test-lens-review-split-source.ts)
+  // 5a. A finding with no path stays blocking; a line-less finding blocks only
+  // on a changed file; and nothing reported means no git read and no note.
+  const split = await splitAdvisory({
+    reported: [
+      asFinding({ lens: "SECURITY", severity: "CRITICAL", path: "", title: "no path" }),
+      asFinding({ lens: "SECURITY", severity: "LOW", path: "src/a.ts", title: "file-level" }),
+      asFinding({
+        lens: "ARCHITECTURE",
+        severity: "LOW",
+        path: "src/other.ts",
+        title: "file-level untouched",
+      }),
+    ],
+    cwd: repo,
+    base: "main",
+    head: HEAD_SHA,
+  });
+  assert(
+    split.blocking.length === 2 && split.fields.advisory?.length === 1,
+    "a finding with no path blocks, and a line-less finding on a changed file blocks",
+  );
+  assert(
+    split.fields.advisory?.[0]?.path === "src/other.ts",
+    "a line-less finding on a file the PR does not change is advisory",
+  );
+  const none = await splitAdvisory({
+    reported: [],
+    cwd: repo,
+    base: "no-such-ref",
+    diff: DIFF,
+    diffComputed: true,
+  });
   assert(
     none.blocking.length === 0 && !none.fields.memoryNote,
-    "no carried rows → no git read and no note",
+    "no reported findings → no git read and no note",
+  );
+
+  // (5a-bis..5b-quater: the split's own-source cases live in test-lens-review-split-source.ts)
+  // 5c. (the unreadable-range cases are 4/4a/4b above)
+  //
+  // 5c-bis. The same rule at the seam that decides the verdict: a REAL delta
+  // review (`since..head`, one file) whose store carries a MEDIUM on the line
+  // the BRANCH changed, outside that delta. It blocks — the round's ranges are
+  // the PR's `base...head`, not the delta's.
+  seedStore([{ severity: "MEDIUM", path: "src/a.ts", line: 11, title: "branch-line medium" }]);
+  const deltaHead = sh("git rev-parse HEAD");
+  writeFileSync(path.join(repo, "src", "b.ts"), "export const z = 1;\n");
+  sh("git add -A");
+  sh("git commit -qm delta-round");
+  const deltaSha = sh("git rev-parse HEAD");
+  const rDelta = await runLensReview({
+    ...common,
+    diff: undefined,
+    head: deltaSha,
+    since: deltaHead,
+    base: "main",
+  });
+  assert(
+    rDelta.verdict === "ISSUES_FOUND" &&
+      rDelta.findings.some((f) => f.title === "branch-line medium") &&
+      !rDelta.advisory,
+    `a delta round keeps a carried MEDIUM on a branch-changed line blocking (verdict ${rDelta.verdict})`,
+  );
+  setReport([]);
+
+  // 5c-ter. RENAME AGREEMENT (#1125 round 3): the two sources of changed lines —
+  // the diff the review computed and the `base...head` git read — must answer the
+  // same way about a rename, or which one the split used would decide whether a
+  // finding on renamed content blocks. Both are `git diff` runs with no rename
+  // collapsing (`--no-renames` on the range read; the review's own computed read
+  // passes no rename flag and git's default splits a rename into delete + add),
+  // so a pure rename contributes NO changed lines on the new side on both paths.
+  // Asserted against real git output on each side, not a pasted rename diff: a
+  // fixture string would pin the fixture, not git.
+  const renamedDiff = renameOnBranch(fixture, "src/other.ts", "src/renamed.ts");
+  assert(
+    /^rename from src\/other\.ts$/m.test(renamedDiff) &&
+      /^rename to src\/renamed\.ts$/m.test(renamedDiff),
+    "rename setup: git really paired the change into a rename",
+  );
+  const renamedFindings = (): Finding[] => [
+    asFinding({ lens: "SECURITY", severity: "MEDIUM", path: "src/renamed.ts", line: 3 }),
+  ];
+  // (a) The diff-computed path, judged from git's own rename diff.
+  const renameFromDiff = await splitAdvisory({
+    reported: renamedFindings(),
+    cwd: repo,
+    base: "main",
+    head: HEAD_SHA,
+    diff: renamedDiff,
+    diffComputed: true,
+  });
+  // (b) The git range read, on the same commit.
+  const renameFromGit = await splitAdvisory({
+    reported: renamedFindings(),
+    cwd: repo,
+    base: "main",
+    head: HEAD_SHA,
+  });
+  assert(
+    renameFromDiff.blocking.length === 0 && renameFromGit.blocking.length === 0,
+    "a finding on renamed content is advisory on BOTH paths — the two reads agree",
+  );
+  assert(
+    renameFromDiff.fields.advisory?.length === 1 &&
+      renameFromGit.fields.advisory?.length === 1 &&
+      !renameFromDiff.fields.memoryNote &&
+      !renameFromGit.fields.memoryNote,
+    "…and both list it as advisory rather than failing closed on an unreadable range",
+  );
+
+  const emptyList = await rangesFromDiff("", "main...head");
+  assert(
+    emptyList.ok === false && /yielded no changed lines/.test((emptyList as { ok: false }).reason),
+    "an empty diff is a failed read, not 'nothing changed'",
+  );
+  const noSections = await rangesFromDiff("total nonsense\n", "main...head");
+  assert(
+    noSections.ok === false &&
+      /yielded no changed lines/.test((noSections as { ok: false }).reason),
+    "a non-empty diff with no file sections is a failed read too",
+  );
+
+  // 5c-bis. The notes COMPOSE: a round that both failed to record AND could not
+  // read its changed lines says so on both counts — `??` used to drop one.
+  const both = await resolveReportedFindings({
+    deduped: [asFinding({ lens: "SECURITY", severity: "HIGH", path: "src/a.ts", line: 11 })],
+    lensResults: [],
+    delta: undefined,
+    cwd: repo,
+    base: "no-such-ref",
+    // A head that is not a full SHA: the memory refuses the round (its own
+    // note) and the range read cannot resolve it either (the advisory note).
+    branchResolved: "feat/x",
+    // A head that is not a full SHA: the memory refuses the round (its own
+    // note) and the range read cannot use it either (the advisory note). The
+    // diff is supplied, so the split judges the diff it was handed — and the
+    // diff it was handed is empty of file sections.
+    headSha: "not-a-sha",
+    diff: "",
+    // A caller-pasted diff (there is none here — the empty string is what a
+    // review with no range of its own hands), so the split goes to the range read
+    // and `no-such-ref` makes it fail closed.
+    resolved: callerDiff,
+  });
+  assert(
+    /findings memory unavailable/.test(both.fields.memoryNote ?? "") &&
+      /changed lines could not be read/.test(both.fields.memoryNote ?? ""),
+    "when both notes fire the summary carries both, joined — not one",
   );
 
   // 4b. The PR residual disclosure lists the advisory rows.
@@ -221,6 +413,10 @@ try {
   );
   assert(body.includes("pi-rukas:lens-residuals"), "the disclosure marker is unchanged");
 } finally {
+  // Both env vars the fixture set go back as they were found (unset stays
+  // unset), so a later test in this process does not inherit this clone's
+  // ledger path and skills dir.
+  fixture.restore();
   rmSync(root, { recursive: true, force: true });
 }
 
