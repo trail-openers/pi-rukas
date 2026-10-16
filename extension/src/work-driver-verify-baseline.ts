@@ -22,6 +22,7 @@
  * for want of dependencies — is `unknown` and reported as a note, never as
  * a red baseline: a wrong "the change is not implicated" is worse than none.
  */
+import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import {
   NO_SPECIFIC_ASSERTION,
@@ -29,6 +30,7 @@ import {
   sharesAssertion,
 } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import { VERIFY_TIMEOUT_LABEL, boundText } from "./work-driver-verify-develop-helpers.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 import { looksLikeMissingDeps, provisionWorktree } from "./worktree-provision.ts";
 import { type ExecFn, worktreePath } from "./worktree.ts";
@@ -73,7 +75,9 @@ export async function probeBaselineVerify(
     await provisionWorktree(execFn, repoRoot, abs);
     trace(`work-driver: baseline verify — running \`${cmd}\` at base ${baseSha.slice(0, 12)}`);
     try {
-      await execFn(cmd, { cwd: abs, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
+      await withVerifySlot(() =>
+        execFn(cmd, { cwd: abs, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }),
+      );
       return { status: "green" };
     } catch (err) {
       const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
@@ -111,11 +115,70 @@ export function baselineRedMessage(
 ): string {
   const where = `on a clean checkout of the cycle's base commit ${opts.baseSha.slice(0, 12)}, without this change`;
   if (verdict.timedOut) {
-    return `${BASELINE_RED_MARKER} verify command \`${opts.cmd}\` exceeded its ${Math.round(opts.timeoutMs / 60000)}-min timeout ${where} — the gate cannot finish inside its bound on this host whatever the diff contains. Raise PI_ENSEMBLE_VERIFY_TIMEOUT_MS or make the gate faster; the failures below do not implicate this change`;
+    return `${BASELINE_RED_MARKER} ${VERIFY_TIMEOUT_LABEL} verify command \`${opts.cmd}\` exceeded its ${boundText(opts.timeoutMs)} timeout ${where} — the gate cannot finish inside its bound on this host whatever the diff contains. Raise PI_ENSEMBLE_VERIFY_TIMEOUT_MS or make the gate faster; the failures below do not implicate this change`;
   }
   const same =
     verdict.assertion !== null && sharesAssertion(opts.changeFailure, verdict.assertion)
       ? " — the SAME assertion the change's run failed on"
       : "";
   return `${BASELINE_RED_MARKER} verify command \`${opts.cmd}\` ALSO FAILS ${where} — assertion at base: ${verdict.assertion ?? NO_SPECIFIC_ASSERTION}${same}. The gate was red before this change was written, so no change can pass it; the failures below cannot be attributed to this diff until the base is green. Fix the gate at the base commit (or the host it runs on), then re-run`;
+}
+
+/** One failure of the change's own verify run, for the baseline comparison. */
+export interface ChangeFailure {
+  text: string;
+  timedOut: boolean;
+}
+
+/**
+ * #1349 — true only when the change's failures are demonstrably the base's:
+ * every one shares the (extracted, non-null) base assertion, or the base and
+ * every change run were killed at the bound. A base that is red some other
+ * way says nothing about a failure the change added, so it never excuses one.
+ */
+export function baselineExplainsChange(
+  verdict: Extract<BaselineVerdict, { status: "red" }>,
+  changeFailures: readonly ChangeFailure[],
+): boolean {
+  if (changeFailures.length === 0) return false;
+  if (verdict.timedOut) return changeFailures.every((f) => f.timedOut);
+  const assertion = verdict.assertion;
+  return (
+    assertion !== null &&
+    changeFailures.every((f) => !f.timedOut && sharesAssertion(f.text, assertion))
+  );
+}
+
+/**
+ * Runs the probe after the verify command has failed (moved out of
+ * work-driver-verify-verify-cmd.ts for the 500-line cap). A red base leads
+ * `failures` with its finding; anything else is a note. Returns whether the
+ * base explains every change failure (`baselineExplainsChange`).
+ */
+export async function compareWithBaseline(
+  execFn: ExecFn,
+  opts: {
+    repoRoot: string;
+    baseSha: string;
+    issue: number;
+    cmd: string;
+    timeoutMs: number;
+    changeFailures: readonly ChangeFailure[];
+    failures: string[];
+    notes: string[];
+  },
+): Promise<boolean> {
+  const { cmd, baseSha, timeoutMs } = opts;
+  const verdict = await probeBaselineVerify(execFn, opts);
+  if (verdict.status !== "red") {
+    opts.notes.push(
+      verdict.status === "green"
+        ? `baseline verify passed — \`${cmd}\` exits 0 on a clean checkout of the base commit ${baseSha.slice(0, 12)}, so the gate was green before this change`
+        : `baseline verify not established — ${verdict.reason}`,
+    );
+    return false;
+  }
+  const changeFailure = opts.changeFailures.map((f) => f.text).join("\n");
+  opts.failures.unshift(baselineRedMessage(verdict, { cmd, baseSha, timeoutMs, changeFailure }));
+  return baselineExplainsChange(verdict, opts.changeFailures);
 }

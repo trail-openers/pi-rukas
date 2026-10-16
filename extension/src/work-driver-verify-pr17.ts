@@ -10,7 +10,7 @@
 import type { CommentEvidence } from "./comment-evidence.ts";
 import { execTree } from "./exec-tree.ts";
 import { execp as lensExecp } from "./exec.ts";
-import { countPrCommits, refResolves } from "./git-range.ts";
+import { aheadOfBase } from "./git-range.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
@@ -20,7 +20,7 @@ import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 // #1134 follow-up — the argv form must be honoured: the previous
-// `promisify(exec)` dropped `argv`, so countPrCommits ran a bare `git` in
+// `promisify(exec)` dropped `argv`, so the commit count ran a bare `git` in
 // production (no verifyExecFn is injected there) and every commit-pr read as
 // unverifiable. The argv form keeps exec.ts's executor; the shell form —
 // the project's verify and smoke commands — is tree-killing (exec-tree.ts).
@@ -161,6 +161,8 @@ export async function verifyStepOutcome(
   logPath?: string;
   /** #1040 — the develop gate's comment-loss checks, structured (see `recordCommentEvidence`). */
   commentEvidence?: CommentEvidence[];
+  /** #1349 — the verify command is red at base and its failures are the only ones. */
+  baselineRedOnly?: boolean;
 }> {
   const failures: string[] = [];
   const notes: string[] = [];
@@ -180,6 +182,7 @@ export async function verifyStepOutcome(
     let consolidatedLogPath: string | undefined;
     const fenceViolations: FenceViolationRecord[] = [];
     const commentEvidence: CommentEvidence[] = [];
+    let baselineRedOnly = false;
     await verifyDevelopOutcome(
       ctx,
       state,
@@ -194,6 +197,9 @@ export async function verifyStepOutcome(
         consolidatedLogPath = logPath;
       },
       commentEvidence,
+      () => {
+        baselineRedOnly = true;
+      },
     );
     const flakeRecovered = flakeEvidenceTail !== undefined;
     return {
@@ -203,6 +209,7 @@ export async function verifyStepOutcome(
       ...(fenceViolations.length > 0 ? { fenceViolations } : {}),
       ...(flakeRecovered ? { flakeRecovered: true } : {}),
       ...(consolidatedLogPath !== undefined ? { logPath: consolidatedLogPath } : {}),
+      ...(baselineRedOnly ? { baselineRedOnly: true } : {}),
       commentEvidence,
     };
   }
@@ -211,7 +218,7 @@ export async function verifyStepOutcome(
   // #1134 — the same mainline resolution readIntegratedDiff uses (detectMainline).
   // Unresolved has no base to count against, so it fails closed below.
   const mainline = await resolveMainline(ctx.repoRoot, execFn);
-  const base = "branch" in mainline ? mainline.branch : undefined;
+  const base = mainline.ok ? mainline.branch : undefined;
   // #451 — name the integration branch explicitly. `origin/<branchName>`
   // requires the branch to be pushed, which it is at commit-pr time (ops
   // pushes before opening the PR). Using the local ref name (not
@@ -224,7 +231,7 @@ export async function verifyStepOutcome(
   // commits, measured from the merge base.
   const branch = state.pipelineState.branchName;
   if (base === undefined) {
-    const reason = "reason" in mainline ? mainline.reason : "unknown";
+    const reason = mainline.ok ? "unknown" : mainline.reason;
     failures.push(
       `could not count commits: the mainline is unresolved (${reason}) — commit evidence is unverifiable`,
     );
@@ -232,34 +239,30 @@ export async function verifyStepOutcome(
     failures.push(
       `could not count commits ahead of origin/${base}: no branch name was recorded for this cycle`,
     );
-  } else if (!(await refResolves(execFn, ctx.repoRoot, `origin/${branch}`))) {
-    // The count reads origin/<branch>; a clone that never pushed it has nothing
-    // to count, and that is a named fact, not an unverifiable reading.
-    failures.push(`origin/${branch} not found in this clone — the branch was not pushed from here`);
   } else {
-    try {
-      const ahead = await countPrCommits(
-        execFn,
-        ctx.repoRoot,
-        `origin/${base}`,
-        `origin/${branch}`,
-      );
-      if (Number.isNaN(ahead)) {
-        // Unparseable is not zero and not a pass: it is unknown, so it fails closed.
-        failures.push(
-          `could not count commits ahead of origin/${base} — commit evidence is unverifiable`,
-        );
-      } else if (ahead === 0) {
+    const ahead = await aheadOfBase(execFn, ctx.repoRoot, `origin/${base}`, `origin/${branch}`);
+    switch (ahead.kind) {
+      case "ahead":
+        break;
+      case "empty":
         failures.push(
           `ops claimed commit+PR done but the branch has zero commits ahead of origin/${base} — nothing was committed`,
         );
+        break;
+      case "unpushed":
+        // The count reads origin/<branch>; a clone that never pushed it has nothing
+        // to count, and that is a named fact, not an unverifiable reading.
+        failures.push(
+          `origin/${branch} not found in this clone — the branch was not pushed from here`,
+        );
+        break;
+      case "unresolved":
+      case "unknown": {
+        // Unreadable or unresolvable is unknown, never zero and never a pass.
+        const why = ahead.kind === "unknown" ? ahead.error : ahead.reason;
+        failures.push(`${why} — commit evidence is unverifiable`);
+        break;
       }
-    } catch (err) {
-      // #1134 — a rejected count is unknown, the same as NaN: a failure, never a note.
-      const msg = ((err as Error).message ?? String(err)).slice(0, 200);
-      failures.push(
-        `could not count commits ahead of origin/${base}: ${msg} — commit evidence is unverifiable`,
-      );
     }
   }
   let adoptedPrNumber: number | undefined;

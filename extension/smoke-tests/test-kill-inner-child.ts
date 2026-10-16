@@ -89,7 +89,12 @@ try {
   {
     let settled = false;
     const loop = runAdversarialLoop(
-      { diff: "diff --git a/x b/x\n+changed\n", context: "ctx", reportOnly: true },
+      {
+        diff: "diff --git a/x b/x\n+changed\n",
+        context: "ctx",
+        reportOnly: true,
+        reportVerdict: "routed",
+      },
       new AbortController().signal,
       "driver-orchestrator-not-a-job",
     ).then((r) => {

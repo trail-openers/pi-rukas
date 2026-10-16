@@ -20,6 +20,7 @@ import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import {
   type WorkState,
+  type WorkStep,
   appendEvent,
   applyInterrupt,
   interruptReasonOf,
@@ -29,15 +30,18 @@ import {
 /**
  * If the cycle's signal has fired and the cycle is still running, record the
  * interrupt in `state`, persist it, and return the interrupted state. Otherwise
- * return `state` unchanged (no write).
+ * return `state` unchanged (no write). `step` names the step the signal cut
+ * off, when it fired mid-step (#1371): that step's own failure classification
+ * is then not reported as the cycle's cap.
  */
 export async function interruptIfRequested(
   ctx: CycleContext,
   state: WorkState,
+  step?: WorkStep,
 ): Promise<WorkState> {
   const signal = ctx.signal;
   if (signal?.aborted !== true) return state;
-  const next = applyInterrupt(state, interruptReasonOf(signal), Date.now());
+  const next = applyInterrupt(state, interruptReasonOf(signal), Date.now(), step);
   if (next === state) return state;
   await persistCycle(ctx, next);
   return next;

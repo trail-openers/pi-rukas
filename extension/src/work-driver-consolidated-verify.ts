@@ -9,10 +9,12 @@
 // afterwards (the combined tree is a transient probe; leaving it on a
 // scratch ref would break the next integration's dirty-preflight).
 
+import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
 import type { DriverContext } from "./work-driver-context.js";
+import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import { extractAttributedTail, isHostForkExhaustion } from "./work-driver-exec-error.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
@@ -62,6 +64,12 @@ export interface ConsolidatedVerifyOpts {
   scratchDir: string;
   verifyCmd: string;
   timeoutMs: number;
+  /**
+   * #1362 — the cycle's `.pi/dirty-root-exempt` list. Applied to the repoRoot
+   * dirty-root preflight below only: the cherry-pick and staging that follow
+   * run on the driver's own integration branch and are unchanged.
+   */
+  dirtyRootExempt?: readonly string[];
   workstreamBaseShas?: Record<string, string>;
   retry?: {
     canRetry: boolean;
@@ -165,6 +173,10 @@ export async function runConsolidatedVerifyUnlocked(
   opts: ConsolidatedVerifyOpts,
 ): Promise<ConsolidatedVerifyResult> {
   const { repoRoot, baseSha, worktrees, scratchDir, verifyCmd, timeoutMs } = opts;
+  // #1362 — the configured exemptions, threaded from the cycle context. An
+  // untracked file under one of its prefixes is not dirt here either, so a
+  // tool's own local file no longer refuses the consolidated verify.
+  const exempt = opts.dirtyRootExempt;
   // #794 — the pick scope: each workstream's own range is measured against
   // its effective base (the dependency's tip for a stacked workstream), so
   // a dependent's ANCESTOR commits are not re-picked on top of their
@@ -188,6 +200,7 @@ export async function runConsolidatedVerifyUnlocked(
       originalRef,
       scratchDir,
       label: "consolidated verify",
+      dirtyRootExempt: exempt,
     });
     // Delete the scratch branch so it does not accumulate on every develop
     // re-entry. Failure is non-fatal (a leftover branch costs nothing).
@@ -217,7 +230,11 @@ export async function runConsolidatedVerifyUnlocked(
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
-    const rootDirt = rootStatus.split("\n").filter((l) => l.trim() && !isDriverManagedDirtLine(l));
+    const rootDirt = rootStatus
+      .split("\n")
+      .filter(
+        (l) => l.trim() && !isDriverManagedDirtLine(l) && !isConfiguredExemptDirtLine(l, exempt),
+      );
     if (rootDirt.length > 0) {
       trace("work-driver: consolidated verify — repoRoot dirty, refusing to consolidate");
       return {
@@ -291,7 +308,9 @@ export async function runConsolidatedVerifyUnlocked(
     let verifyFailure: string | undefined;
     let timedOut = false;
     try {
-      await execFn(verifyCmd, { cwd: repoRoot, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
+      await withVerifySlot(() =>
+        execFn(verifyCmd, { cwd: repoRoot, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }),
+      );
     } catch (err) {
       const e = err as Error & { stderr?: string; stdout?: string; killed?: boolean };
       verifyFailure = combinedExecFailureStream(e);

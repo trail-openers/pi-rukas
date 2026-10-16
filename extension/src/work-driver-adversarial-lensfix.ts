@@ -42,11 +42,25 @@ async function integrateLensFix(
       commitTitle: `fix(lens): round ${round} review findings`,
       commitBody: `Addresses six-pass review findings from round ${round}.`,
       mode: "followup",
+      dirtyRootExempt: ctx.dirtyRootExempt,
     }),
   );
   if (!res.ok) {
     if (res.failure === "dirty-repoRoot" && res.porcelain) {
-      const outcome = await restoreRepoRoot(execFn, ctx.repoRoot, res.porcelain);
+      // #1362 — `res.porcelain` is already exemption-filtered: it comes from
+      // integrate()'s dirty-root preflight, which drops both the driver's own
+      // scaffolding and the cycle's configured `.pi/dirty-root-exempt` lines
+      // before it refuses. So an exempt tool file neither refuses the
+      // integration nor reaches the stash below. The list is passed on as well:
+      // `restoreRepoRoot`'s own "is anything here worth stashing?" test re-applies
+      // it, so a root left with only exempt tool files parks instead of stashing
+      // and popping a tree that holds none of the cycle's work.
+      const outcome = await restoreRepoRoot(
+        execFn,
+        ctx.repoRoot,
+        res.porcelain,
+        ctx.dirtyRootExempt,
+      );
       if (outcome.restored) {
         const retry = await integrate(execFn, {
           repoRoot: ctx.repoRoot,
@@ -58,6 +72,7 @@ async function integrateLensFix(
           commitTitle: `fix(lens): round ${round} review findings`,
           commitBody: `Addresses six-pass review findings from round ${round}.`,
           mode: "followup",
+          dirtyRootExempt: ctx.dirtyRootExempt,
         });
         if (!retry.ok) {
           return {

@@ -14,6 +14,7 @@ import { trace } from "./trace.ts";
 import {
   extractAttributedTail,
   hostExhaustionFailure,
+  isHostExhaustionFailure,
   isHostForkExhaustion,
   pidLimitSnapshot,
 } from "./work-driver-exec-error.ts";
@@ -23,6 +24,58 @@ export function verifyTimeoutMs() {
   const env = Number(process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS);
   if (Number.isFinite(env) && env > 0) return env;
   return 10 * 60_000;
+}
+
+/** Leads a failure string for a verify run killed at its bound (#1324). */
+export const VERIFY_TIMEOUT_LABEL = "[verify-timeout]";
+
+/** The bound as a person reads it: whole minutes, else seconds. */
+export function boundText(ms: number): string {
+  return ms >= 60_000 && ms % 60_000 === 0 ? `${ms / 60_000}-min` : `${Math.round(ms / 1000)}s`;
+}
+
+/**
+ * #1324 — the failure string for a verify run killed at its bound. A killed
+ * run reached no verdict, so the string names the bound and the knob, never
+ * an assertion about the code. `where` completes "exceeded its bound <where>".
+ */
+export function verifyTimeoutFailure(
+  cmd: string,
+  where: string,
+  timeoutMs: number,
+  knob = "PI_ENSEMBLE_VERIFY_TIMEOUT_MS",
+): string {
+  return `${VERIFY_TIMEOUT_LABEL} verify command \`${cmd}\` exceeded its ${boundText(timeoutMs)} timeout ${where} — the run was killed at the bound (${knob}), so it reached no verdict about the code`;
+}
+
+export function isVerifyTimeoutFailure(failure: string): boolean {
+  return failure.includes(VERIFY_TIMEOUT_LABEL);
+}
+
+/**
+ * #1324/#1349 — the cap for a failed verify gate. `verify-failed:<step>`
+ * means the gate ran and judged the code; the others reached no verdict:
+ *
+ *   - `verify-env:<step>` — every failure is the system refusing to start a
+ *     process or a run killed at its bound, and at least one is the former;
+ *   - `verify-timeout:<step>` — every failure is a run killed at its bound;
+ *   - `verify-baseline-red:<step>` — `baselineRedOnly`: the base-commit probe
+ *     confirmed the verify command fails without the change, and its failures
+ *     are the only ones (the caller decides; see verifyDevelopOutcome).
+ *
+ * One real failure among them is a code failure, so the cap stays verify-failed.
+ */
+export function verifyCapFor<S extends string>(
+  step: S,
+  failures: readonly string[],
+  baselineRedOnly = false,
+): `verify-failed:${S}` | `verify-timeout:${S}` | `verify-env:${S}` | `verify-baseline-red:${S}` {
+  if (failures.length === 0) return `verify-failed:${step}`;
+  const noVerdict = (f: string) => isHostExhaustionFailure(f) || isVerifyTimeoutFailure(f);
+  if (failures.every(noVerdict) && failures.some(isHostExhaustionFailure))
+    return `verify-env:${step}`;
+  if (failures.every(isVerifyTimeoutFailure)) return `verify-timeout:${step}`;
+  return baselineRedOnly ? `verify-baseline-red:${step}` : `verify-failed:${step}`;
 }
 
 /**

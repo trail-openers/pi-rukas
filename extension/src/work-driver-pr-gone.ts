@@ -22,7 +22,9 @@
  * instead and recorded as an event either way.
  */
 
+import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { execp } from "./exec.ts";
+import { severityLabel } from "./lens-residuals.ts";
 import type { LensReviewSummary } from "./lens-review-format.ts";
 import { trace } from "./trace.ts";
 import { recordedPrState } from "./work-driver-commit-reentry.ts";
@@ -195,7 +197,7 @@ function closedDuringReview(
     {
       kind: "cap-hit",
       at: Date.now(),
-      cap: `verify-failed:${step}`,
+      cap: `pr-not-open:${step}`, // #1349 — nothing was judged
       reviewRound: state.pipelineState.reviewRound,
       nextStep: "handoff",
     },
@@ -216,14 +218,20 @@ export async function recordResidualsPost(
 ): Promise<WorkState> {
   if (summary.verdict !== "ISSUES_FOUND" || !summary.note || summary.noReview) return state;
   const prNumber = state.pipelineState.prNumber;
+  // The findings are the lens's words, and this body is posted to the forge as
+  // markdown: severity, path and title all go through the markdown-post
+  // neutraliser (see `neutraliseMarkdownField`) so a stored title cannot carry
+  // an HTML comment or a link into the issue.
+  const findingLines = summary.findings.map(
+    (f) =>
+      `- [${severityLabel(f.severity)}] ${neutraliseMarkdownField(`${f.path}:${f.line ?? "?"}`)} — ${neutraliseMarkdownField(f.title)} (${neutraliseMarkdownField(f.lens)})`,
+  );
   const body = [
     "## Six-pass review — residual findings (posted to the issue)",
     "",
     `Round ${round} found these, and posting them to ${prNumber ? `PR #${prNumber}` : "the pull request"} failed: ${summary.note}`,
     "",
-    ...summary.findings.map(
-      (f) => `- [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})`,
-    ),
+    ...findingLines,
     "",
   ].join("\n");
   let issueFallback: "posted" | "failed" = "failed";
@@ -250,7 +258,8 @@ export async function recordResidualsPost(
   // Both posts failed: the findings would otherwise exist only in the event
   // log, which the handoff does not render. Keep them in plumbReports.
   const list = summary.findings.map(
-    (f) => `- ${f.path}:${f.line ?? "?"} ${f.severity} ${f.title} (${f.lens})`,
+    (f) =>
+      `- ${neutraliseMarkdownField(`${f.path}:${f.line ?? "?"}`)} ${severityLabel(f.severity)} ${neutraliseMarkdownField(f.title)} (${neutraliseMarkdownField(f.lens)})`,
   );
   const report = {
     step: "lens-review" as const,

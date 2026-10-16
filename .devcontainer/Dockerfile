@@ -184,13 +184,15 @@ RUN npm install -g --ignore-scripts wigolo@0.2.1 || true
 ENV PI_ENSEMBLE_DIR=/opt/pi-rukas
 COPY --chown=vscode:vscode . ${PI_ENSEMBLE_DIR}
 
-# #1306 — bake the git commit this image was built from so
-# `pi-rukas-headless --capabilities` can report it. The build context (the
-# repo, checked out by the publish workflow) exposes GITHUB_SHA. The marker
-# lives under .pi/ (gitignored per-clone convention), so it never lands in a
-# PR. `|| true` keeps the image build resilient if the variable is ever
-# absent (e.g. a local `docker build` without the workflow's env).
-RUN set -e; if [ -n "$GITHUB_SHA" ]; then \
+# #1306 / #1326 — bake the git commit this image was built from, so
+# `pi-rukas-headless --capabilities` and the --json result's `buildCommit`
+# can name it. publish-image.yml passes it as a build arg (a RUN step does
+# not see the workflow's GITHUB_SHA otherwise); a local `docker build`
+# without it bakes nothing and the build reports a null commit. Only a full
+# 40-hex SHA is written: a host runs `git merge-base --is-ancestor` on it.
+# The marker lives under .pi/ (gitignored), so it never lands in a PR.
+ARG GITHUB_SHA=
+RUN set -e; if printf '%s' "$GITHUB_SHA" | grep -Eq '^[0-9a-f]{40}$'; then \
       mkdir -p ${PI_ENSEMBLE_DIR}/.pi \
       && printf '%s\n' "$GITHUB_SHA" > ${PI_ENSEMBLE_DIR}/.pi/pi-rukas-commit; \
     fi
@@ -227,9 +229,13 @@ RUN test ! -e "$HOME/.pi/agent/npm/node_modules/pi-mcp-adapter" \
 # is NOT on $PATH — `command -v pi-rukas-headless` in a container found
 # nothing, forcing unattended callers to hard-code the image layout. A
 # /usr/local/bin link (already on PATH) gives a stable name; the wrapper at
-# /opt/pi-rukas/bin is unchanged.
+# /opt/pi-rukas/bin is unchanged. The script resolves its own symlink (#1366);
+# the build fails if the PATH name cannot answer --capabilities.
 USER root
 RUN ln -sf ${PI_ENSEMBLE_DIR}/bin/pi-rukas-headless /usr/local/bin/pi-rukas-headless \
+    && pi-rukas-headless --capabilities > /tmp/pi-rukas-caps.json \
+    && jq -e .schemaVersion /tmp/pi-rukas-caps.json > /dev/null \
+    && rm -f /tmp/pi-rukas-caps.json \
     && echo "pi-rukas-headless on PATH via /usr/local/bin"
 
 # Issue #933 (fresh-host EACCES): bake the state mount points into the image
@@ -308,7 +314,10 @@ ENV PI_ENSEMBLE_SANDBOX_MODE=1
 # at a timeout — stays a zombie and keeps its pid. A pid-limited container
 # then cannot fork (`/bin/sh: Cannot fork`, `spawn EAGAIN`) for the rest of
 # the cycle (#1256). tini reaps them and forwards signals to pi.
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/pi-rukas-entrypoint"]
+# `-s` registers tini as a child subreaper, so it still reaps when it is not
+# PID 1 (`docker run --init` puts docker's own init there), and does not print
+# its "not running as PID 1" warning onto the headless NDJSON stderr (#1370).
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/local/bin/pi-rukas-entrypoint"]
 
 # Default: drop the user into `pi` directly. The wrapper script overrides via
 # `pi-rukas shell` for a bash prompt instead.

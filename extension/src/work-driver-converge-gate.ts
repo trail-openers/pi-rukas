@@ -39,6 +39,7 @@ import {
 } from "./work-driver-converge.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { applySafetyNet } from "./work-driver-safety-net.ts";
+import { verifyCapFor } from "./work-driver-verify-develop-helpers.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -188,7 +189,7 @@ export async function runConvergeGateHandler(
       );
       const cap2 = conflictText
         ? ("consolidated-verify-conflict" as const)
-        : ("verify-failed:develop" as const);
+        : verifyCapFor("develop", gate2.failures, gate2.baselineRedOnly);
       next = {
         ...next,
         pipelineState: {

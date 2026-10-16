@@ -495,6 +495,8 @@ For complex problems, spawn multiple specialists simultaneously for cross-domain
 2. **Are the tasks independent?**
    - Task A doesn't depend on Task B's output → Use worktrees
    - Sequential dependency → Same branch, sequential dispatch
+   - One task creates a symbol (a new field, export or variant) that another uses → ONE task. The halves cannot each build alone, and a file-based split hides that
+   - The issue names an existing commit or PR that already fixes it → ONE task: cherry-pick it and resolve the conflicts
 
 3. **Check current branch status:**
    ```bash

@@ -8,6 +8,12 @@
  * strings are text for the operator and never drive routing. A state file
  * with no origin, or an origin this build does not know, renders as the
  * outcome gate did before origin existed.
+ *
+ * #1349 — those parks now carry their own caps (`fix-pass-park`,
+ * `pr-not-open:<step>`), as do a gate the system refused to run
+ * (`verify-env:<step>`) and a gate already red at the base commit
+ * (`verify-baseline-red:<step>`). The origin routing stays for state files
+ * written before them; each new cap renders the same text its route did.
  */
 
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
@@ -121,6 +127,26 @@ function retryLine(evidence: WorkState["pipelineState"]["verifyEvidence"]): stri
     : `\nNote: the verify command was ${verb} and still failed — this is a real failure, not a flake.`;
 }
 
+/**
+ * #1323 — the handoff sentence for a park after a sibling-symbol merge, or
+ * "" when this cycle did not merge one. Read by the verify-failed
+ * explanation so the operator sees the split was merged and still failed.
+ */
+export function mergedSplitNote(state: WorkState): string {
+  const merges = state.eventLog.filter(
+    (e): e is Extract<WorkState["eventLog"][number], { kind: "fence-recovery-started" }> =>
+      e.kind === "fence-recovery-started" && e.cause === "sibling-symbol",
+  );
+  if (merges.length === 0) return "";
+  const what = merges
+    .map(
+      (e) =>
+        `${e.owners.join(", ")} into ${e.workstreamId} (on ${(e.symbols ?? []).map((s) => `\`${s}\``).join(", ")})`,
+    )
+    .join("; ");
+  return `\nThe driver already merged the split workstreams ${what} and re-ran develop once; the merged workstream still failed, so another re-split or retry will not converge.`;
+}
+
 // PR17 — `verify-failed:<step>`: the driver-side outcome gate found
 // the step's claimed result isn't backed by executed evidence. The
 // per-check findings live in pipelineState.verifyEvidence.
@@ -152,11 +178,75 @@ export function explainVerifyFailed(cap: Cap, state: WorkState): string {
   if (step === "commit-pr") return commitPrGateText(state);
   // Neither a check the host could not fork nor a gate already red at the
   // base judged the change: "inspect the worktree(s)" would be wrong advice.
-  if (failures.some(isHostExhaustionFailure)) {
-    return `the driver's outcome-verification gate could not run on the ${step} step — the system refused to start a process (fork failed / EAGAIN):${findings}${suffix}\nThe entries marked ${HOST_EXHAUSTION_LABEL} are environment failures, not defects in the change: those checks never executed. They name the pid count and limit where the driver runs — in a container that is the container's own pid limit, not a host ulimit. Check the ceiling named in the evidence (container pid limit, pid_max, RLIMIT_NPROC, memory), clear it if it was hit, then re-run the cycle.`;
-  }
+  if (failures.some(isHostExhaustionFailure)) return hostExhaustionText(step, findings, suffix);
   const advice = failures.some((f) => f.startsWith(BASELINE_RED_MARKER))
     ? "The verify command already fails at the cycle's base commit — fix the gate there (or the host it runs on) before inspecting the worktree(s), then re-run."
     : "Inspect the worktree(s), fix or re-dispatch, and re-run.";
-  return `the driver's outcome-verification gate rejected the ${step} step's "done" claim — the claimed result is not backed by executed evidence:${findings}${suffix}\nNo LLM judged this; the driver ran the checks itself (git diff/rev-list, the project's verify command, gh pr view). ${advice} Set PI_ENSEMBLE_VERIFY=0 to disable the gate (not recommended)`;
+  const merged = step === "develop" ? mergedSplitNote(state) : "";
+  return `the driver's outcome-verification gate rejected the ${step} step's "done" claim — the claimed result is not backed by executed evidence:${findings}${suffix}${merged}\nNo LLM judged this; the driver ran the checks itself (git diff/rev-list, the project's verify command, gh pr view). ${advice} Set PI_ENSEMBLE_VERIFY=0 to disable the gate (not recommended)`;
+}
+
+function hostExhaustionText(step: string, findings: string, suffix: string): string {
+  return `the driver's outcome-verification gate could not run on the ${step} step — the system refused to start a process (fork failed / EAGAIN):${findings}${suffix}\nThe entries marked ${HOST_EXHAUSTION_LABEL} are environment failures, not defects in the change: those checks never executed. They name the pid count and limit where the driver runs — in a container that is the container's own pid limit, not a host ulimit. Check the ceiling named in the evidence (container pid limit, pid_max, RLIMIT_NPROC, memory), clear it if it was hit, then re-run the cycle.`;
+}
+
+/** The failures recorded for `step`, else the cap-hit's own evidence. */
+function recordedFailures(cap: Cap, state: WorkState, step: string): readonly string[] {
+  const evidence = state.pipelineState.verifyEvidence;
+  if (evidence?.step === step && evidence.failures.length > 0) return evidence.failures;
+  const capEvidence = lastCapHit(state, cap)?.evidence;
+  return capEvidence ? [capEvidence] : [];
+}
+
+function bullets(failures: readonly string[]): string {
+  return failures.map((f) => `\n  - ${f}`).join("") || " (no detail recorded)";
+}
+
+/**
+ * #1349 — the explanations for the parks that used to share
+ * `verify-failed:<step>`. None of them is a verdict on the code.
+ */
+export function explainNoVerdictCap(cap: Cap, state: WorkState): string | undefined {
+  const i = cap.indexOf(":");
+  const family = i < 0 ? cap : cap.slice(0, i);
+  const step = i < 0 ? "develop" : cap.slice(i + 1);
+  const failures = recordedFailures(cap, state, step);
+  const ev = state.pipelineState.verifyEvidence;
+  const suffix = `${retryLine(ev?.step === step ? ev : undefined)}${rawLogLine(step, lastCapHit(state, cap))}`;
+  switch (family) {
+    case "verify-env":
+      return hostExhaustionText(step, bullets(failures), suffix);
+    case "verify-baseline-red":
+      return `the ${step} step's verify command already fails at the cycle's base commit, without this change — the gate was red before the change was written, so no change can pass it and it reached no verdict on this one:${bullets(failures)}${suffix}\nFix the gate at the base commit (or the host it runs on) first, then re-run the cycle. The change is not implicated until the base is green. Do not set PI_ENSEMBLE_VERIFY=0 for this: the gate is broken at base, not wrong about the change`;
+    case "pr-not-open":
+      return `${prNotOpenText(step, failures)}${suffix}`;
+    case "fix-pass-park":
+      return explainFixPassPark(bullets(failures), suffix);
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * #1324 — `verify-timeout:<step>`: the verify run was killed at its bound, so
+ * nothing judged the code. The findings carry the bound; the recovery is
+ * about time and host load, not the diff. The develop gate records its
+ * findings on verifyEvidence; the commit-pr seam carries them on the cap.
+ */
+export function explainVerifyTimeout(cap: Cap, state: WorkState): string {
+  const step = cap.slice("verify-timeout:".length);
+  const evidence = state.pipelineState.verifyEvidence;
+  const capEvidence = lastCapHit(state, cap)?.evidence;
+  const failures =
+    evidence?.step === step && evidence.failures.length > 0
+      ? evidence.failures
+      : capEvidence
+        ? [capEvidence]
+        : [];
+  const findings = failures.map((f) => `\n  - ${f}`).join("") || " (no detail recorded)";
+  const knob =
+    step === "commit-pr"
+      ? "PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS"
+      : "PI_ENSEMBLE_VERIFY_TIMEOUT_MS";
+  return `the ${step} step's verify command TIMED OUT — the run was killed at its bound (${knob}) and reached no verdict, so this is not a code failure and the change is neither confirmed nor refuted:${findings}${retryLine(evidence?.step === step ? evidence : undefined)}\nGive the gate more time or more of the host, then re-run the cycle: raise ${knob}, or reduce concurrency (fewer workstreams with PI_ENSEMBLE_MAX_WORKSTREAMS, fewer cycles at once with PI_ENSEMBLE_PARALLEL_GROUPS, nothing else heavy on the host). A \`.pi/verify-cmd-fast\` (typecheck/lint) runs before the full command and fails fast on a type error. Do not set PI_ENSEMBLE_VERIFY=0 for this: the gate did not reject the change, it did not finish`;
 }

@@ -28,9 +28,9 @@ vipune add 'finding' --memory-type observation  # ephemeral, in-session
 ## Status: active vs candidate
 
 - `active` (default) — validated, durable knowledge.
-- `candidate` — provisional; hidden from default searches until promoted.
+- `candidate` — provisional; hidden from default searches until an operator promotes it.
 
-Use `--status candidate` when uncertain. Promote later if the fact holds across sessions.
+Use `--status candidate` when uncertain. If the fact holds across sessions, report the row's id for promotion — promotion is an operator action, not an agent one.
 
 ```bash
 vipune add 'tentative finding' --memory-type observation --status candidate
@@ -46,13 +46,13 @@ Score thresholds — **semantic mode only** (`--no-hybrid --recency 0.0`); hybri
 
 ## Freshness verification
 
-Memories are snapshots. **Before acting on a recalled memory, verify against current state** (`ls` for files, `grep` for symbols, `--help` for flags). If stale, supersede or delete:
+Memories are snapshots. **Before acting on a recalled memory, verify against current state** (`ls` for files, `grep` for symbols, `--help` for flags). If stale, supersede:
 
 ```bash
 vipune add 'corrected statement' --supersedes <old-id> --memory-type fact
 ```
 
-Never let two contradictory memories coexist.
+Superseding is the correction — it preserves the original row. **Memory-write boundary:** never run vipune update, delete, prune, promote or `vipune mcp` — those are operator actions; correct with `add --supersedes`. Per-mode enforcement is stated under the `Memory-write boundary` heading of the bundled vipune skill.
 
 ## Single-quote safety — non-negotiable
 

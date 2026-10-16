@@ -39,10 +39,19 @@ const MAX_PARALLEL = 10;
 // that's a data-residency / jurisdiction-routing decision and belongs to the
 // user, via `/ensemble-model` or PI_ENSEMBLE_* env vars. The tool schemas no
 // longer declare a `model` field, but a misaligned client could still pass
-// one; strip it explicitly before the spec reaches spawnSpecialist.
+// one; strip it explicitly before the spec reaches spawnSpecialist. `lens`
+// (#1348) selects the per-lens model tier, so it is stripped too: only the
+// lens fan-out, which calls spawnSpecialist directly, may set it.
 export function stripModelOverride(spec: DispatchSpec): DispatchSpec {
-  if ("model" in spec) {
-    const { model: _discarded, ...rest } = spec as DispatchSpec & { model?: unknown };
+  if ("model" in spec || "lens" in spec) {
+    const {
+      model: _m,
+      lens: _l,
+      ...rest
+    } = spec as DispatchSpec & {
+      model?: unknown;
+      lens?: unknown;
+    };
     return rest as DispatchSpec;
   }
   return spec;

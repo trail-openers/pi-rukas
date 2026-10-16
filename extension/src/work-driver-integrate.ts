@@ -1,10 +1,10 @@
 /** #287 Part B — the ONLY path that writes to repoRoot. */
 
-import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
+import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import { runCommitPrConsolidatedVerify } from "./work-driver-integrate-verify.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
@@ -21,35 +21,8 @@ export { readDirtyPorcelain, restoreRepoRoot } from "./work-driver-preflight.ts"
 // keep this file under the 500-line gate); the re-exports below preserve
 // every existing import path unchanged.
 
-/**
- * Issue title from the explore step's cached artifact; undefined on miss.
- *
- * Reads BOTH artifact shapes, anchored to the FIRST line so a body line
- * starting with `title:` can never shadow the real title (#818):
- *
- *   - `"${title}\n\n${body}"` — what `fetchIssueBodyViaGh` (the explore step,
- *     the format every production artifact uses) writes: a BARE title on
- *     line 1, no `title:` prefix. Pre-#818 the regex below only matched the
- *     `title:` shape, so it returned undefined for every production cycle
- *     (#771/#809 landed as `implement issue #N`).
- *   - `"title: ${title}\n${body}"` — the legacy `fetchIssueBodies` shape
- *     written by `work-entry.ts`; kept so pre-existing state files still
- *     resolve their title.
- */
-export async function cachedIssueTitle(state: WorkState): Promise<string | undefined> {
-  const artifact = state.pipelineState.issueBodyArtifact;
-  if (!artifact) return undefined;
-  try {
-    const body = await fs.readFile(artifact, "utf8");
-    const firstLine = body.split("\n")[0]?.trim() ?? "";
-    const prefixed = firstLine.match(/^title:\s*(.+)$/);
-    if (prefixed) return prefixed[1]?.trim();
-    if (!firstLine) return undefined;
-    return firstLine;
-  } catch {
-    return undefined;
-  }
-}
+import { cachedIssueTitle } from "./work-driver-integrate-title.ts";
+export { cachedIssueTitle } from "./work-driver-integrate-title.ts";
 
 export interface IntegrateOpts {
   repoRoot: string;
@@ -67,6 +40,13 @@ export interface IntegrateOpts {
   workstreamBaseShas?: Record<string, string>;
   /** Where conflict patches are preserved for the operator. */
   scratchDir: string;
+  /**
+   * #1362 — the cycle's `.pi/dirty-root-exempt` list. Applied to the repoRoot
+   * dirty-root preflight and the verified restore's claims; the worktree
+   * staging is deliberately NOT filtered, so a deliverable inside an exempt
+   * prefix is still committed.
+   */
+  dirtyRootExempt?: readonly string[];
   commitTitle: string;
   commitBody: string;
   mode: "create" | "followup";
@@ -185,6 +165,8 @@ export type IntegrateResult =
       noDiff?: NoDiff;
       /** #539 — structured failure discriminator. Cause readers MUST read this, never re-parse `reason`. */
       failure?: "dirty-repoRoot" | "apply" | "verify";
+      /** #1324 — the `verify` failure was a run killed at its bound. */
+      timedOut?: boolean;
       /** #654 task-c — dirty-preflight porcelain lines (the caller parks with these). */
       porcelain?: string[];
     };
@@ -197,6 +179,8 @@ export type IntegrateResult =
  */
 export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<IntegrateResult> {
   const { repoRoot, branchName, worktrees, mode } = opts;
+  // #1362 — the exemption list this consolidation reads repoRoot with.
+  const dirtyRootExempt = opts.dirtyRootExempt;
   // #794 — pick scope: own-range selection per workstream (see IntegrateOpts).
   const pickScope = { globalBaseSha: opts.baseSha, workstreamBaseShas: opts.workstreamBaseShas };
   const ids = Object.keys(worktrees);
@@ -214,6 +198,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
           originalRef,
           scratchDir: opts.scratchDir,
           label: "integrate",
+          dirtyRootExempt,
         })
       : { restored: true };
   // The verified post-condition via the shared claim builder, wrapped with
@@ -241,7 +226,12 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     });
     const rootDirt = rootStatus
       .split("\n")
-      .filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
+      .filter(
+        (l) =>
+          l.trim() &&
+          !/^..\s+"?\.worktrees\//.test(l) &&
+          !isConfiguredExemptDirtLine(l, dirtyRootExempt),
+      );
     const anyWorktree = Object.values(worktrees).some(
       (p) => path.resolve(p) !== path.resolve(repoRoot),
     );
@@ -439,6 +429,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
           ok: false,
           failure: "verify",
           reason: `${vr.classifiedMessage} — it was not pushed. ${claimFor(restore)}.`,
+          ...(vr.timedOut ? { timedOut: true } : {}),
         };
       }
     }

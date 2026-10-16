@@ -9,12 +9,12 @@
  * whether it decomposed well is worthless.
  */
 
+import { effectiveMaxWorkstreams } from "../src/work-driver-plan-workstreams.ts";
 // #679 — import from the canonical module (work-driver-plan.ts re-exports
 // the helpers; the stale duplicate copy was deleted — one function, one module).
 import { correctivePlanSteer, planQualityReason } from "../src/work-driver-plan.ts";
 import {
   countEnumeratedFindings,
-  maxWorkstreams,
   parseWorkstreams,
   planCorrectivePrompt,
 } from "../src/work-driver-plan.ts";
@@ -244,8 +244,9 @@ assert(
   const parsed = parseWorkstreams(block);
   const ids = Object.keys(parsed);
   assert(
-    ids.length === maxWorkstreams(),
-    `9 workstreams folded down to the ceiling of ${maxWorkstreams()}`,
+    // #1325 — the fold uses the ceiling lowered to the host budget.
+    ids.length === effectiveMaxWorkstreams(),
+    `9 workstreams folded down to the ceiling of ${effectiveMaxWorkstreams()}`,
   );
   const last = parsed[ids[ids.length - 1] ?? ""];
   assert(

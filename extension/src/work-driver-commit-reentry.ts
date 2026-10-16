@@ -131,7 +131,7 @@ export function prGoneRefusal(
     {
       kind: "cap-hit",
       at: Date.now(),
-      cap: "verify-failed:commit-pr",
+      cap: "pr-not-open:commit-pr", // #1349 — nothing was judged
       reviewRound: state.pipelineState.reviewRound,
       nextStep: "handoff",
     },

@@ -21,6 +21,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { adversarialPassed } from "../src/review-ledger.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -40,7 +41,8 @@ let devFailures = 0;
 // The next fix dispatch writes (via developerWrite) and then throws (#1104 r3).
 let devThrow = false;
 const spawnCalls: Array<{ role: string; cwd?: string }> = [];
-const ledgerResults: Array<{ loopOutcome?: string; text: string }> = [];
+const ledgerResults: Array<{ loopOutcome?: string; text: string; callerSuppliedDiff?: boolean }> =
+  [];
 
 mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
   makeRunId: () => "run-1104",
@@ -67,8 +69,15 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
 const realLedger = await import("../src/adversarial-ledger.ts");
 mock.module(new URL("../src/adversarial-ledger.ts", import.meta.url).href, () => ({
   ...realLedger,
-  writeAdversarialLedgerEntry: (r: { loopOutcome?: string; text: string }) => {
-    ledgerResults.push({ loopOutcome: r.loopOutcome, text: r.text });
+  writeAdversarialLedgerEntry: (
+    r: { loopOutcome?: string; text: string },
+    p: { callerSuppliedDiff?: boolean } = {},
+  ) => {
+    ledgerResults.push({
+      loopOutcome: r.loopOutcome,
+      text: r.text,
+      callerSuppliedDiff: p.callerSuppliedDiff,
+    });
   },
 }));
 const realDeck = await import("../src/dispatch-deck.ts");
@@ -438,6 +447,29 @@ try {
   assert(
     jUnparsed.r.loopOutcome === "infra-failure" && jUnparsed.ledger === "infra-failure",
     "J: tool-path unparsed reply is infra-failure in the ledger",
+  );
+
+  // -------- K. the /work fan-out passes a `diff` string and no callerSuppliedDiff:
+  // an approval must still be recorded as a passing review (the writer's input).
+  reset();
+  reviewerReplies = [APPROVED];
+  const driverApproved = await runAdversarialLoop(
+    {
+      diff: "diff --git a/f b/f\n+x",
+      context: "driver",
+      workCwd: workRepo,
+      reportOnly: true,
+      reportVerdict: "routed",
+    },
+    signal(),
+    "job-driver",
+  );
+  const driverRow = ledgerResults.at(-1);
+  assert(
+    driverApproved.loopOutcome === "approved" &&
+      driverRow?.callerSuppliedDiff !== true &&
+      adversarialPassed(driverApproved),
+    "K: a diff string without callerSuppliedDiff, approved, is written as a passing review",
   );
 } finally {
   process.chdir(priorCwd);

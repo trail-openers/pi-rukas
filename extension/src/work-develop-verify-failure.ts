@@ -9,6 +9,7 @@
 import { trace } from "./trace.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
 import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
+import { verifyCapFor } from "./work-driver-verify-develop-helpers.ts";
 import type { verifyStepOutcome } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -53,7 +54,7 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
     ? "consolidated-verify-conflict"
     : consolidationCreatedFailure
       ? "consolidated-verify-consolidation-created"
-      : "verify-failed:develop";
+      : verifyCapFor("develop", gate.failures, gate.baselineRedOnly); // #1324 — a run killed at its bound is not a code failure
   trace(`work-driver: ${cap} — ${gate.failures.join(" | ")}`);
   // #782 — when the consolidated verify recovered from a flake but the
   // converge gate then parks, record the retry so the handoff shows

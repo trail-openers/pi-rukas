@@ -46,7 +46,7 @@ function eq(actual: unknown, expected: unknown, msg: string): boolean {
 const { resolveReviewDiff } = await import("../src/lens-review-diff.ts");
 const { resolveDeltaSince } = await import("../src/lens-review-auto-delta.ts");
 const { runLensReview } = await import("../src/lens-review.ts");
-const { renderSummary } = await import("../src/lens-review-format.ts");
+const { renderSummary } = await import("../src/lens-review-render.ts");
 
 const branch = "feature/work";
 
