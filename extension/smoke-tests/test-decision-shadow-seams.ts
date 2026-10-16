@@ -19,15 +19,13 @@
  *     NOT throttled, so an outage burst cannot silence it; a 429 read only from
  *     the subagent's own words is inferred, so it IS asked (#1262);
  *   - `classifyFailureCause` alone stays pure: only `shadowFailureCause` asks;
- *   - PI_ENSEMBLE_DECISIONS=0 is rule-only: no backend is called;
- *   - an env override to `enforce` cannot make a shadow call act, and a
- *     call that is not fired still leaves one stateless record;
  *   - at most five open points per issue are asked.
  *
- * The clip/redact order and the never-throws contract live in
- * test-decision-shadow-redaction.ts and test-decision-shadow-nothrow.ts; the
- * in-flight counter in test-decision-shadow-inflight.ts. All four files share
- * this one prelude's fixtures.
+ * The clip/redact order, the never-throws contract, the configuration refusals
+ * (kill switch, enforce override) and the in-flight counter each have their own
+ * file: test-decision-shadow-redaction.ts, -nothrow.ts, -config.ts and
+ * -inflight.ts, and one record per forced failure with the session attached is
+ * test-decision-shadow-wiring.ts. All share this prelude's fixtures.
  */
 
 import { existsSync, readFileSync, rmSync } from "node:fs";
@@ -101,6 +99,42 @@ const issueWith = (...points: string[]) =>
 const ordinary = issueWith("Which retry backoff to use \u2014 proposal: 5s");
 const security = issueWith("Who may call the endpoint \u2014 authentication is undecided");
 
+// The rule's answers, captured with NO session attached. Every block below
+// compares a shadowed call against these: a shadow decision must never move
+// the acted-on outcome, so "identical to the baseline" is the assertion.
+const baseline = failures.map((f) => classifyFailureCause(f));
+const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec(), b));
+
+// ------------------------------------------------ no session: exactly the rule
+
+{
+  const root = tmpDir("shadow-nosession");
+  const where = { repoRoot: root, issues: [7] };
+  const same = failures.every(
+    (f, i) => JSON.stringify(act(f, where)) === JSON.stringify(baseline[i]),
+  );
+  assert(same, "no session model: classifyFailureCause returns exactly the rule's answer");
+  const specsSame = [ordinary, security].every(
+    (b, i) =>
+      JSON.stringify(finaliseSpecVerdict(spec(), b, where)) === JSON.stringify(baselineSpecs[i]),
+  );
+  assert(specsSame, "no session model: finaliseSpecVerdict returns exactly the rule's verdict");
+  assert(
+    baselineSpecs[0]?.verdict === "proceed-with-assumptions" &&
+      baselineSpecs[1]?.parkReason === "security-open-point",
+    "the fixtures exercise the gate: an ordinary point proceeds, a security point parks",
+  );
+  const d = await shadowDecide(
+    "failure-cause",
+    { question: "q", state: { kind: "dispatch-failed" }, rule: "subagent-failure" },
+    where,
+  );
+  assert(
+    d?.source === "rule" && d.answer === "subagent-failure" && d.abstained,
+    "no session model: the seam answers from the rule",
+  );
+}
+
 // ------------------------------------------------ a disagreeing model changes nothing
 
 {
@@ -136,7 +170,7 @@ const security = issueWith("Who may call the endpoint \u2014 authentication is u
     JSON.stringify(out) === JSON.stringify(baseline[0]),
     "a disagreeing model does not change the classification",
   );
-  let recs = await awaitRecords(log, 1);
+  const recs = await awaitRecords(log, 1);
   const r = recs[0] as {
     seam?: string;
     mode?: string;
@@ -170,9 +204,9 @@ const security = issueWith("Who may call the endpoint \u2014 authentication is u
   const isExact = (f: Tail, cause: string): boolean =>
     EXACT_CAUSES.has(cause) && (cause.startsWith("self-killed") || f.providerMessage !== undefined);
   const exactByCause = (cause: string) =>
-    records(log).find(
-      (r) => r.exactRuleMatch === true && String(r.ruleAnswer) === cause,
-    ) as Record<string, unknown> | undefined;
+    records(log).find((r) => r.exactRuleMatch === true && String(r.ruleAnswer) === cause) as
+      | Record<string, unknown>
+      | undefined;
   const exactsOf = () =>
     records(log).filter(
       (r) => r.exactRuleMatch === true && EXACT_CAUSES.has(String(r.ruleAnswer)),
@@ -233,10 +267,26 @@ const security = issueWith("Who may call the endpoint \u2014 authentication is u
     where,
   );
   assert(words.cause === baseline[6]?.cause, "an errorTail-only 429 keeps the rule's cause");
-  await awaitRecords(log, 2);
-  const wordsRec = (
-    records(log).filter((r) => r.mode !== undefined && Array.isArray(r.backends)).at(-1) ?? {}
-  ) as {
+  // The record, not the model call, is the sync point: the append lands after
+  // the backend has answered. Polling `calls.llm` instead reads the counter a
+  // turn before the writer flushes and intermittently sees the PREVIOUS
+  // record's shape (#1393).
+  for (let i = 0; i < 200; i++) {
+    if (
+      records(log).some(
+        (x) =>
+          x.mode !== undefined &&
+          Array.isArray(x.backends) &&
+          x.ruleAnswer === "rate-limited" &&
+          (x.backends as { answer?: string }[])[0]?.answer === "rate-limited",
+      )
+    )
+      break;
+    await sleep(10);
+  }
+  const wordsRec = (records(log)
+    .filter((r) => r.mode !== undefined && Array.isArray(r.backends))
+    .at(-1) ?? {}) as {
     ruleAnswer?: string;
     skipped?: string;
     backends?: { answer?: string }[];
@@ -264,32 +314,43 @@ const security = issueWith("Who may call the endpoint \u2014 authentication is u
       { kind: "dispatch-failed-provider", errorTail: "429 status: spend cap reached" },
       { kind: "dispatch-failed-provider", errorTail: "429 status code, retry delay 86400s" },
     ];
-    // Its own window, because the throttle is keyed by SEAM, not by repoRoot, and
-    // every block above shares this seam.
-    __resetShadowForTests();
-    const before = calls.llm;
-    for (const f of outage) {
-      const cls = classifyFailureCause(f);
-      assert(
-        cls.cause === "provider-severed" || cls.cause.startsWith("rate-limited:"),
-        `fixture is a provider-outage class (${cls.cause})`,
-      );
-      act(f, outWhere);
-    }
     // #1393 — skip records are throttled per seam: the four classes land inside
-    // one window, so they produce ONE record, not four.
-    const outRecs = await awaitRecords(outLog, 1);
-    await sleep(100);
-    assert(
-      calls.llm === before && records(outLog).length === 1,
-      "four provider-outage classes invoke no backend and write ONE throttled skip record, not four",
-    );
+    // one window, so they produce ONE record, not four. The window is keyed by
+    // seam and its clock is the module's, so this block drives its own fake
+    // clock and starts from a fixed point rather than inheriting whichever
+    // window a previous block left open.
+    const outT = 1_000_000;
+    const restoreOutClock = __setSkipClockForTests(() => outT);
+    let outRecs: Record<string, unknown>[] = [];
+    try {
+      __resetShadowForTests();
+      const before = calls.llm;
+      for (const f of outage) {
+        const cls = classifyFailureCause(f);
+        assert(
+          cls.cause === "provider-severed" || cls.cause.startsWith("rate-limited:"),
+          `fixture is a provider-outage class (${cls.cause})`,
+        );
+        act(f, outWhere);
+      }
+      for (let i = 0; i < 200; i++) {
+        if (records(outLog).length >= 1) break;
+        await sleep(10);
+      }
+      outRecs = records(outLog);
+      assert(
+        calls.llm === before && outRecs.length === 1,
+        `four provider-outage classes invoke no backend and write ONE throttled skip record, not four (${outRecs.length})`,
+      );
+    } finally {
+      restoreOutClock();
+      __resetShadowForTests();
+    }
     assert(
       (outRecs[0] as { skipped?: string }).skipped === "skipped: provider-outage class",
       "the provider-outage skip records the reason",
     );
   }
-
 
   // Render-only callers (classifyFailureCause alone) ask nothing.
   const before = calls.llm;
@@ -328,92 +389,27 @@ const security = issueWith("Who may call the endpoint \u2014 authentication is u
     "the model is not told the rule's answer",
   );
 
-// ------------------------------------------------ no session: exactly the rule
-
-{
-  const root = tmpDir("shadow-nosession");
-  const where = { repoRoot: root, issues: [7] };
-  const same = failures.every(
-    (f, i) => JSON.stringify(act(f, where)) === JSON.stringify(baseline[i]),
-  );
-  assert(same, "no session model: classifyFailureCause returns exactly the rule's answer");
-  const specsSame = [ordinary, security].every(
-    (b, i) =>
-      JSON.stringify(finaliseSpecVerdict(spec(), b, where)) === JSON.stringify(baselineSpecs[i]),
-  );
-  assert(specsSame, "no session model: finaliseSpecVerdict returns exactly the rule's verdict");
-  assert(
-    baselineSpecs[0]?.verdict === "proceed-with-assumptions" &&
-      baselineSpecs[1]?.parkReason === "security-open-point",
-    "the fixtures exercise the gate: an ordinary point proceeds, a security point parks",
-  );
-  const d = await shadowDecide(
-    "failure-cause",
-    { question: "q", state: { kind: "dispatch-failed" }, rule: "subagent-failure" },
-    where,
-  );
-  assert(
-    d?.source === "rule" && d.answer === "subagent-failure" && d.abstained,
-    "no session model: the seam answers from the rule",
-  );
-}
-
-
-
-
-
-  // Secrets in the error text are redacted before any model sees them.
+  // Secrets in the error text are redacted before any model sees them. The
+  // record count is keyed to THIS call by shape (a credential redaction in the
+  // log), not to a positional total: the file's record sequence changed when the
+  // configuration refusals moved to their own file, and a hardcoded count then
+  // stopped waiting for this append and read the prompt before it had landed.
   const key = `sk-ant-api03-${"A".repeat(40)}`;
+  const redactedBefore = records(log).filter((x) => (x.redactions as number) > 0).length;
   act({ kind: "dispatch-failed", errorTail: `failed with key ${key}` }, where);
-  await awaitRecords(log, 5);
-  assert(
-    !prompts.some((p) => p.includes(key)),
-    "a credential in the error text never reaches the model",
-  );
-
-  // The kill switch: rule-only, no backend.
-  process.env.PI_ENSEMBLE_DECISIONS = "0";
-  const n = calls.llm;
-  act({ kind: "dispatch-failed", errorTail: "exit 1" }, where);
-  let off: { mode?: string } | undefined;
   for (let i = 0; i < 200; i++) {
-    off = records(log).find((x) => x.mode === "off") as { mode?: string } | undefined;
-    if (off) break;
+    if (records(log).filter((x) => (x.redactions as number) > 0).length > redactedBefore) break;
     await sleep(10);
   }
+  const sawRedaction = records(log).some((x) => (x.redactions as number) > 0);
   assert(
-    calls.llm === n && off?.mode === "off",
-    "PI_ENSEMBLE_DECISIONS=0: rule-only, no backend called, still one record",
+    sawRedaction && !prompts.some((p) => p.includes(key)),
+    "a credential in the error text never reaches the model (and the log counted a redaction)",
   );
-  Reflect.deleteProperty(process.env, "PI_ENSEMBLE_DECISIONS");
 
-  // An env override to enforce cannot make a fire-and-forget call act — and the
-  // refusal still writes a record, UNTHROTTLED: an outage burst that opened this
-  // seam's skip window must not silence a configuration refusal (#1393).
-  const beforeRefuse = calls.llm;
-  process.env.PI_ENSEMBLE_DECISION_MODE_FAILURE_CAUSE = "enforce";
-  const skipped = await shadowDecide(
-    "failure-cause",
-    { question: "q", state: {}, rule: "unknown" },
-    where,
-  );
-  assert(skipped === undefined, "a shadow call refuses an enforce override");
-  Reflect.deleteProperty(process.env, "PI_ENSEMBLE_DECISION_MODE_FAILURE_CAUSE");
-  let refuse: { skipped?: string; state?: unknown; ruleAnswer?: string } | undefined;
-  for (let i = 0; i < 200; i++) {
-    refuse = records(log).find((x) =>
-      String(x.skipped ?? "").startsWith("configured to enforce"),
-    ) as { skipped?: string; state?: unknown; ruleAnswer?: string } | undefined;
-    if (refuse) break;
-    await sleep(10);
-  }
-  assert(
-    typeof refuse?.skipped === "string" &&
-      refuse.state === undefined &&
-      refuse.ruleAnswer === "unknown" &&
-      calls.llm === beforeRefuse,
-    `a refused shadow call still writes one stateless record saying why, and asks no model (${calls.llm - beforeRefuse} calls)`,
-  );
+  // The kill switch and the enforce refusal are CONFIGURATION refusals with
+  // their own file (test-decision-shadow-config.ts), where each gets an
+  // unshared seam window and cannot be silenced by this block's outage burst.
 
   // A long Open points list is capped: at most five points are asked.
   const many = issueWith(
@@ -457,8 +453,7 @@ const security = issueWith("Who may call the endpoint \u2014 authentication is u
   try {
     __resetShadowForTests();
     // A 500-failure burst: one record, and 499 suppressions counted but not written.
-    for (let i = 0; i < 500; i++)
-      await shadowSkip("failure-cause", req, where, "skipped: burst");
+    for (let i = 0; i < 500; i++) await shadowSkip("failure-cause", req, where, "skipped: burst");
     assert(
       records(log).length === 1,
       "500 skips for one seam write ONE record, not 500 (the pre-#1393 shape wrote 500 lines + 500 warnings)",
