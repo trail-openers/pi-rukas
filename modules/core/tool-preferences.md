@@ -36,7 +36,7 @@ Ordering (use the first one that fits):
 - `include` — file glob filter (e.g., "*.ts", "*.{js,tsx}")
 - `files_only` — if true, list files matching pattern instead of content
 
-**Investigation pre-check (the one exception to the 500+ token "delegate it" bar in `token-economy.md`).** Before dispatching a specialist to *investigate*, check whether one `mcp__codebase_memory__search_code` call or one `read` of a known file answers it yourself. Delegate when it does not.
+**Investigation pre-check (an exception to the 500+ token "delegate it" bar in `token-economy.md`, which owns that bar and the wording of its exceptions).** Before dispatching a specialist to *investigate*, check whether one `mcp__codebase_memory__search_code` call or one `read` of a known file answers it yourself. Delegate when it does not.
 
 See `modules/core/codebase-memory-mcp.md` for the full doctrine on which `mcp__codebase_memory__*` tool answers which question.
 
