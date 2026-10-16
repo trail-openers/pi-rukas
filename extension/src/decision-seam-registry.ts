@@ -23,6 +23,7 @@
  * are its behaviour, and it answers only to its own escape hatch.
  */
 
+import { LOG_STRING_CHARS } from "./decision-log.ts";
 import { traceWarn } from "./trace.ts";
 
 export type QuestionKind = "choice" | "bool" | "score";
@@ -239,6 +240,12 @@ export function seamContractViolations(spec: Partial<SeamSpec>): string[] {
       v.push(`field bound '${name}' needs a positive max`);
     if (bound?.from !== undefined && bound.from !== "start" && bound.from !== "end")
       v.push(`field bound '${name}' has an unknown direction`);
+    // A bound past the record-wide one is a bug, not a choice: `appendDecisionRecord`
+    // clips every string to `LOG_STRING_CHARS` anyway, so declaring more would give
+    // a field bound that silently does not exist. Better a rule-only seam and a
+    // trace line than a config that lies about what it shipped (#1393).
+    if (bound && typeof bound.max === "number" && bound.max > LOG_STRING_CHARS)
+      v.push(`field bound '${name}' exceeds LOG_STRING_CHARS (${LOG_STRING_CHARS})`);
   }
   const labels = Object.keys(full.labels);
   if (!(KINDS as readonly string[]).includes(full.kind)) v.push(`unknown kind: ${full.kind}`);

@@ -33,13 +33,8 @@ import {
 } from "./decision-backends.ts";
 import { compose } from "./decision-compose.ts";
 import { type EvidenceCheck, type EvidenceResult, verifyEvidence } from "./decision-evidence.ts";
-import {
-  LOG_STRING_CHARS,
-  appendDecisionRecord,
-  boundField,
-  redactDeep,
-  redactSecrets,
-} from "./decision-log.ts";
+import { LOG_STRING_CHARS, appendDecisionRecord, boundField, redactDeep } from "./decision-log.ts";
+import { type Attempt, runBounded } from "./decision-seam-race.ts";
 import {
   type DecisionMode,
   SEAMS,
@@ -102,13 +97,6 @@ export interface Decision {
   usage?: DecisionUsage;
 }
 
-interface Attempt {
-  backend: string;
-  source: Backend["source"];
-  latencyMs: number;
-  result: BackendResult;
-}
-
 function sumUsage(attempts: readonly Attempt[]): DecisionUsage | undefined {
   const us = attempts.map((a) => a.result.usage).filter((u): u is DecisionUsage => !!u);
   if (us.length === 0) return undefined;
@@ -142,70 +130,6 @@ function invalid(spec: SeamSpec, r: BackendResult, budget: number): string | und
   return undefined;
 }
 
-async function runBounded(
-  b: Backend,
-  input: BackendInput,
-  outer: AbortSignal | undefined,
-): Promise<Attempt> {
-  const t0 = Date.now();
-  const ac = new AbortController();
-  const onAbort = () => ac.abort();
-  outer?.addEventListener("abort", onAbort, { once: true });
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
-  // #1393 — the outer signal must END the race, not merely signal the backend.
-  // A backend that ignores its own AbortSignal and never settles used to hold
-  // `await Promise.race` open for the whole seam timeout, so an aborted caller
-  // waited out a bound it had already cancelled. The abort is now a third racer.
-  const aborted =
-    outer === undefined
-      ? undefined
-      : new Promise<BackendResult>((resolve) => {
-          if (outer.aborted) resolve({ ok: false, error: "aborted before the backend ran" });
-          else
-            outer.addEventListener("abort", () => resolve({ ok: false, error: "aborted" }), {
-              once: true,
-            });
-        });
-  // A run that settles after the bound is discarded, but traced: a judge that
-  // answers late is exactly the event an operator needs to be able to see.
-  const late = () =>
-    traceWarn(`decision-seam: ${b.name} settled after its ${input.timeoutMs}ms bound; discarded`);
-  try {
-    if (outer?.aborted) throw new Error("aborted");
-    const timeout = new Promise<BackendResult>((resolve) => {
-      timer = setTimeout(() => {
-        timedOut = true;
-        ac.abort();
-        resolve({ ok: false, error: `timed out after ${input.timeoutMs}ms` });
-      }, input.timeoutMs);
-    });
-    const run = b.run(input, ac.signal).then(
-      (r) => {
-        if (timedOut) late();
-        return r;
-      },
-      (e) => {
-        if (timedOut) late();
-        throw e;
-      },
-    );
-    const result = await Promise.race([run, timeout, aborted ?? new Promise<never>(() => {})]);
-    return { backend: b.name, source: b.source, latencyMs: Date.now() - t0, result };
-  } catch (err) {
-    const error = `threw: ${(err as Error)?.message ?? String(err)}`.slice(0, 300);
-    return {
-      backend: b.name,
-      source: b.source,
-      latencyMs: Date.now() - t0,
-      result: { ok: false, error },
-    };
-  } finally {
-    if (timer) clearTimeout(timer);
-    outer?.removeEventListener("abort", onAbort);
-  }
-}
-
 /** Undefined when the state is not JSON (cyclic, BigInt): a model must not be handed a placeholder. */
 function serialise(state: unknown): string | undefined {
   try {
@@ -216,19 +140,18 @@ function serialise(state: unknown): string | undefined {
 }
 
 /**
- * Apply the seam's declared per-field bounds (#1393), BEFORE the token-budget
- * check and before redaction: the input is bounded first, so a whole-document
- * field is never regex-scanned end to end, and each field is then redacted over
- * its complete text by `boundField` rather than at the call site. A non-string
- * or absent value, and a field the seam did not declare, pass through for the
- * record-level bound in `appendDecisionRecord` to handle.
- */
-/**
  * Bound the seam's declared fields and redact every span, in one pass per
  * field: the input is bounded BEFORE redaction, so a whole-document field is
  * never regex-scanned end to end, and `boundField` redacts over the complete
- * text it keeps, so a clip can never cut a credential into a fragment the
- * patterns no longer recognise. Lives on the seam, not at the call site (#1393).
+ * text it keeps — widened past the cut so a pattern's context is never amputated
+ * — so a clip can never leave a credential in the text that ships. Lives on the
+ * seam, not at the call site (#1393).
+ *
+ * The count is the number of spans THAT PASS replaced, never a second scan over
+ * the whole value: `redactions` on the record then describes the text the
+ * backend and the log actually received, which is the only claim it can honestly
+ * make. A credential entirely outside every bound is not shipped and is not
+ * counted (#1393).
  *
  * A non-object state has no fields to bound but is still redacted; a field the
  * seam did not declare keeps only the record-level bound `appendDecisionRecord`
@@ -237,11 +160,11 @@ function serialise(state: unknown): string | undefined {
 export function boundedState(state: unknown, spec: SeamSpec): { state: unknown; count: number } {
   const counter = { n: 0 };
   const redactOne = (v: string, bound: { max: number; from?: "start" | "end" }): string => {
-    // Counted over the whole value, then bounded: `boundField` redacts the text
-    // it keeps, so a credential the bound cut off still counts as a redaction
-    // the log already made rather than vanishing from the tally.
-    counter.n += redactSecrets(v).count;
-    return boundField(v, bound);
+    // One bounded pass, counted from its own result: what is not shipped cannot
+    // be a redaction the record claims to have made.
+    const r = boundField(v, bound);
+    counter.n += r.count;
+    return r.text;
   };
   if (state === null || typeof state !== "object" || Array.isArray(state)) {
     return typeof state === "string"
@@ -323,7 +246,9 @@ export async function decide(
     // backend, hash or log line ever sees a credential-shaped span, and no field
     // is regex-scanned past its bound. A cyclic state throws inside the redactor,
     // which is read here as the same "not serialisable" it would fail as below —
-    // one judgement, not two.
+    // one judgement, not two. The message still goes into `notes`, because
+    // "oversized" and "a getter threw while redacting" are different faults and
+    // the record is the only place either can be told apart later (#1393).
     let bounded: { state: unknown; count: number } | undefined;
     let serialised: string | undefined;
     try {
@@ -331,9 +256,12 @@ export async function decide(
       const raw = serialise(bounded.state);
       // JSON round-trip so the hash, the model and the log all see the same text.
       serialised = raw === undefined ? undefined : serialise(JSON.parse(raw));
-    } catch {
+    } catch (err) {
       bounded = bounded ?? { state: req.state, count: 0 };
       serialised = undefined;
+      notes.push(
+        `state could not be bounded or serialised: ${(err as Error)?.message ?? String(err)}`,
+      );
     }
     stateRedactions = bounded.count;
     stateText = serialised ?? "";

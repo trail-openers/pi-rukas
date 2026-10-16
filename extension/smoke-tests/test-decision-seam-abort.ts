@@ -24,12 +24,12 @@
  * Offline: the backend is a closure that never settles; nothing touches the network.
  */
 
-import { readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
 import type { Backend, BackendInput, BackendResult } from "../src/decision-backends.ts";
 import { SEAMS, type SeamSpec } from "../src/decision-seam-registry.ts";
 import { decide } from "../src/decision-seam.ts";
-import { makeAssert, tmpDir } from "./lib/decision-fixtures.ts";
+import { makeAssert, records, tmpDir } from "./lib/decision-fixtures.ts";
 
 const { assert, state } = makeAssert();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -76,17 +76,6 @@ function wedgedBackend(): Backend & { calls: number; signals: AbortSignal[] } {
     },
   };
   return b;
-}
-
-function records(file: string): Record<string, unknown>[] {
-  try {
-    return readFileSync(file, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((l) => JSON.parse(l) as Record<string, unknown>);
-  } catch {
-    return [];
-  }
 }
 
 /** Wait until a predicate sees the record it wants, or 4 s have passed. */
@@ -189,6 +178,77 @@ const req = { state: { probe: "value" }, question: "q", rule: "ok" };
   assert(
     records(log).length === 3,
     `three calls, three records: every path — aborted, pre-aborted and timed out — is audited (${records(log).length})`,
+  );
+}
+
+// 5. The abort performs the TIMEOUT racer's teardown, not just its own (#1393).
+//
+// `runBounded` arms the seam's own `setTimeout` before the backend runs. If the
+// outer abort resolved the race without clearing it, a ~30 s timer stays armed
+// past a call answered in ~100 ms, and its callback then fires into a decision
+// that has already been answered — setting `timedOut` and emitting the
+// "settled after its bound" trace for a call nobody is waiting on. A pending
+// timer is not observable from outside this runtime (no `Bun.getTimerCount`), so
+// the probe is the callback itself: this backend settles SUCCESSFULLY at 500 ms
+// under a 30 s bound with an abort at 100 ms, and the test then waits past the
+// point at which an uncleared timer would have fired.
+{
+  let traceWarned = false;
+  const realWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    const line = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    if (line.includes("settled after its")) traceWarned = true;
+    else realWrite(chunk as never, ...(rest as []));
+    return true;
+  }) as typeof process.stderr.write;
+
+  const root = tmpDir("abort-teardown");
+  // `mainCheckout` prefers `--git-common-dir`, which resolves to the MAIN
+  // checkout of this repo when the temp dir holds no `.git` of its own — and the
+  // main checkout is read-only to a test by design, so the record silently goes
+  // nowhere and the block below would assert on an empty log. A bare `.git`
+  // directory makes the temp dir its own checkout.
+  mkdirSync(path.join(root, ".git"), { recursive: true });
+  const log = path.join(root, ".pi", "decisions.jsonl");
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 100);
+  const settledBackend: Backend = {
+    name: "settles-after-abort",
+    source: "llm",
+    run: (_input: BackendInput, signal: AbortSignal) =>
+      new Promise<BackendResult>((resolve) => {
+        setTimeout(() => resolve({ ok: true, answer: "ok", justification: "late" }), 500);
+        signal.addEventListener("abort", () => resolve({ ok: false, error: "cancelled" }));
+      }),
+  };
+  const t = Date.now();
+  await decide(seam as never, req, {
+    backends: [settledBackend],
+    signal: ac.signal,
+    repoRoot: root,
+  });
+  const elapsed = Date.now() - t;
+  assert(
+    elapsed < PROMPT_MS,
+    `the aborted call settled promptly (${elapsed}ms), so any timer still armed below belongs to the abandoned race`,
+  );
+  // The seam bound is 30 s; 2 s of quiet is not the same proof, so the wait
+  // passes the point at which an uncleared timer would have fired.
+  await sleep(SEAM_BOUND_MS * 0.12);
+  process.stderr.write = realWrite;
+  assert(
+    !traceWarned,
+    "the abort cleared the seam's own bound timer, as the timeout racer does: no late-settle trace for a call already answered",
+  );
+  // The teardown path is audited like every other: the record exists and its
+  // backends array carries the cancellation the race produced. (`Decision` has
+  // no `status` field — `abstained` belongs to the answer, not the record.)
+  const rec = await awaitRecord(log, (r) => Array.isArray(r.backends));
+  const backends = rec?.backends as { name?: string; error?: string }[] | undefined;
+  assert(
+    Array.isArray(backends) &&
+      backends.some((b) => b.name === "settles-after-abort" && /cancel|abort/i.test(b.error ?? "")),
+    `the teardown path still writes its record, carrying the cancellation (${JSON.stringify(backends)})`,
   );
 }
 

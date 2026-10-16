@@ -42,19 +42,18 @@ import {
 import { classifyFailureCause, shadowFailureCause } from "../src/work-driver-failure-taxonomy.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import type { NormalisedSpec } from "../src/work-driver-intent.ts";
-import { STUB_MODEL, llmReply, makeAssert, stubRegistry, tmpDir } from "./lib/decision-fixtures.ts";
+import {
+  STUB_MODEL,
+  llmReply,
+  makeAssert,
+  records,
+  stubRegistry,
+  tmpDir,
+} from "./lib/decision-fixtures.ts";
 
 const { assert, state } = makeAssert();
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function records(file: string): Record<string, unknown>[] {
-  if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((l) => JSON.parse(l));
-}
 
 /** Wait until `file` holds `n` records (the shadow call is fire-and-forget). */
 async function awaitRecords(file: string, n: number): Promise<Record<string, unknown>[]> {

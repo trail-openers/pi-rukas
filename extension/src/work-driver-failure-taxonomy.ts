@@ -192,7 +192,10 @@ export function shadowFailureCause(
     void shadowExactRuleMatch(
       "failure-cause",
       { question: "What caused this dispatch failure?", rule: cls.cause },
-      { ...where, state: { kind: tail.kind, exactRuleCause: cls.cause } },
+      where,
+      // The payload is a NAMED argument (#1393), not a field of `where`: this is
+      // the only path allowed to put text into a record, and the seam bounds it.
+      { kind: tail.kind, exactRuleCause: cls.cause },
     );
     return;
   }
