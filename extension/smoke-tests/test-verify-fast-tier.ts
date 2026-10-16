@@ -43,6 +43,22 @@ const FULL = "bash scripts/verify.sh";
 const FAST = "bunx tsc --noEmit";
 const TSC = "src/a.ts(3,1): error TS2304: Cannot find name 'nope'.\n";
 const root = mkdtempSync(path.join(tmpdir(), "pi-fast-tier-"));
+// Cases 5 and 6 assert the DEFAULT bound's text ("10-min" develop, "15-min"
+// commit-pr). Case 5's bound comes from PI_ENSEMBLE_VERIFY_TIMEOUT_MS, which
+// the gate reads from the environment — an operator who raised it (a 45-min
+// laptop setting) would fail the case for the wrong reason. Pinned for the
+// duration of those cases and restored afterwards (case 6 passes its bound
+// explicitly, but its handoff text quotes the same 10-min knob prose).
+const VERIFY_TIMEOUT_DEFAULT = "600000";
+const savedVerifyTimeoutMs = process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS;
+const pinDefaultVerifyTimeout = <T>(caseFn: () => Promise<T>): Promise<T> => {
+  process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS = VERIFY_TIMEOUT_DEFAULT;
+  return caseFn().finally(() => {
+    if (savedVerifyTimeoutMs === undefined)
+      Reflect.deleteProperty(process.env, "PI_ENSEMBLE_VERIFY_TIMEOUT_MS");
+    else process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS = savedVerifyTimeoutMs;
+  });
+};
 type Outcome = { ok: true } | { ok: false; stdout: string; killed?: boolean };
 type Calls = Array<{ cmd: string; timeout?: number }>;
 
@@ -221,7 +237,7 @@ async function developGate(
 }
 
 // 5 — killed at the bound: its own cap, its own text, a valid state file.
-{
+await pinDefaultVerifyTimeout(async () => {
   const r = await developGate("timeout", FAST, (c) =>
     c === FULL ? { ok: false, stdout: "ok   1 passing\n", killed: true } : { ok: true },
   );
@@ -264,10 +280,10 @@ async function developGate(
       "verify-failed:develop",
     "mixed: one real failure among timeouts is verify-failed",
   );
-}
+});
 
 // 6 — commit-pr: the fast tier runs first and a kill is a timeout, not a classification.
-{
+await pinDefaultVerifyTimeout(async () => {
   const { repo } = await makeRepo("commit-pr", FAST);
   const calls: Calls = [];
   const red = await runCommitPrConsolidatedVerify(
@@ -338,7 +354,7 @@ async function developGate(
     text.includes("TIMED OUT") && text.includes("15-min"),
     "commit-pr timeout: the handoff names the bound",
   );
-}
+});
 
 // 7 — the developer runs the fast tier and leaves the full one to the driver.
 {

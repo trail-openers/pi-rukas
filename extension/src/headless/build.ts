@@ -11,6 +11,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -62,7 +63,16 @@ export function readCheckoutCommit(root: string): string | null {
       timeout: 5_000,
     });
     const [top, head] = out.trim().split("\n");
-    if (!top || !head || path.resolve(top) !== path.resolve(root)) return null;
+    if (!top || !head) return null;
+    // macOS publishes $TMPDIR (and /tmp) through symlinks: `--show-toplevel`
+    // canonicalises ("/private/var/…") where the caller passed "/var/…", so
+    // both sides are realpath'd before comparing — a plain string compare
+    // misreads a checkout as "merely inside some other repository".
+    try {
+      if (path.resolve(fs.realpathSync(top)) !== path.resolve(fs.realpathSync(root))) return null;
+    } catch {
+      if (path.resolve(top) !== path.resolve(root)) return null;
+    }
     return SHA.test(head) ? head : null;
   } catch {
     return null;

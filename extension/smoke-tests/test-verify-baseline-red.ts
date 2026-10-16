@@ -34,6 +34,20 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd });
 
 const CMD = "bash scripts/verify.sh";
+// The timeout cases assert the DEFAULT bound's text ("10-min"). The gate reads
+// PI_ENSEMBLE_VERIFY_TIMEOUT_MS from the environment, so an operator who has
+// raised it (a 45-min laptop setting) would fail them for the wrong reason.
+// Pinned for the duration of each timeout case, restored afterwards.
+const VERIFY_TIMEOUT_DEFAULT = "600000";
+const savedVerifyTimeoutMs = process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS;
+const pinDefaultVerifyTimeout = <T>(caseFn: () => Promise<T>): Promise<T> => {
+  process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS = VERIFY_TIMEOUT_DEFAULT;
+  return caseFn().finally(() => {
+    if (savedVerifyTimeoutMs === undefined)
+      Reflect.deleteProperty(process.env, "PI_ENSEMBLE_VERIFY_TIMEOUT_MS");
+    else process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS = savedVerifyTimeoutMs;
+  });
+};
 const root = mkdtempSync(path.join(tmpdir(), "pi-baseline-red-"));
 type Outcome = { ok: true } | { ok: false; stdout: string; killed?: boolean };
 
@@ -182,7 +196,7 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
 }
 
 // 5 — a run killed at its timeout is reported as a timeout, everywhere.
-{
+await pinDefaultVerifyTimeout(async () => {
   const r = await run("timeout", () => ({
     ok: false,
     stdout: "ok    no product or host names in platform files\n",
@@ -202,7 +216,7 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
       (r.failures[0] ?? "").includes("10-min timeout on a clean checkout"),
     "timeout: a base run that also times out says the gate cannot finish inside its bound",
   );
-}
+});
 
 rmSync(root, { recursive: true, force: true });
 process.exit(exit);
