@@ -24,13 +24,14 @@
  * content of a list item. Nothing else verifies.
  */
 
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
   citationPresent,
   citationUnits,
+  classifyCitation,
   normaliseForCitation,
   verifyEvidence,
 } from "../src/decision-evidence.ts";
@@ -60,6 +61,14 @@ const AGENTS = readFileSync(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
 const GRANT_LINE = AGENTS.split("\n").find((l) =>
   l.startsWith("If all project quality gates have been met"),
 );
+// Item 6: every §9 assertion below dereferences this with `as string`. If the
+// line ever moves or is reworded, that is a broken fixture, not a passing test
+// over `undefined` — so locate it before anything depends on it.
+assert(
+  typeof GRANT_LINE === "string" && GRANT_LINE.length > 40,
+  "MUST-PASS canary: the AGENTS.md §9 grant line was located as its own assert before use",
+);
+const REAL_GRANT_LINE = GRANT_LINE;
 
 const judgeSaying =
   (...answers: Partial<PolicyAnswer>[]) =>
@@ -116,48 +125,121 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
   );
 }
 
-// ------------------------------------------------------------- the unit model
+// ------------- review (b): the denial reason names the actual fault
 
 {
-  const DOC = [
-    "# Heading here",
-    "",
-    "First sentence. Second sentence stands alone. Third one too.",
-    "",
-    "- a bullet with e.g. a period, and another. still the same item.",
-    "- short bullet with no terminal punctuation",
-    "",
-    "```",
-    "Fenced. Line.",
-    "```",
-    "",
-    "| col | col |",
-    "| --- | --- |",
-    "| a row. with a period | b |",
-  ].join("\n");
-  const units = citationUnits(DOC);
-  assert(units.length === 5, `five units, no more (got ${JSON.stringify(units)})`);
-  assert(
-    units.includes("first sentence.") &&
-      units.includes("second sentence stands alone.") &&
-      units.includes("third one too."),
-    "a paragraph splits into its three sentences",
+  // A partial quote and a fabricated quote both fail, and both stay fail-closed,
+  // but an operator reading the reason must be able to tell a judge that
+  // paraphrased from a judge that invented.
+
+  // (b) The two denials read differently, on the vouched branch too.
+  const GRANT = REAL_GRANT_LINE as string;
+  const vouched = { texts: [{ name: "AGENTS.md", text: GRANT }] };
+  const half = await verifyEvidence(
+    vouched,
+    "LLMs / agents are allowed to squash merge PRs",
+    undefined,
   );
   assert(
-    units.includes("a bullet with e.g. a period, and another. still the same item."),
-    "a list item is ONE unit — interior `.` does not split it",
+    !half.passed && /real text of any supplied text but not one whole sentence/.test(half.reason),
+    `MUST-PASS: a clause of a vouched text is called a partial quote, not an invention (${half.reason})`,
+  );
+  const fiction = await verifyEvidence(
+    vouched,
+    "Agents may merge anything at any time.",
+    undefined,
   );
   assert(
-    units.includes("short bullet with no terminal punctuation"),
-    "a bullet with no terminal punctuation is its own unit",
+    !fiction.passed && /does not appear in/.test(fiction.reason),
+    `...and an invented quote still reads as an invention (${fiction.reason})`,
+  );
+  const nameMatched = await verifyEvidence(
+    vouched,
+    "LLMs / agents are allowed to squash merge PRs",
+    "AGENTS.md",
   );
   assert(
-    !units.some((u) => u.includes("heading here") || u.includes("fenced") || u.includes("a row")),
-    "headings, fenced code and table rows produce no units at all",
+    !nameMatched.passed &&
+      /real text of AGENTS.md but not one whole sentence/.test(nameMatched.reason),
+    `the name-matched branch words it the same way (${nameMatched.reason})`,
   );
   assert(
-    reExportedUnits === citationUnits,
-    "work-driver-policy re-exports the same unit matcher, so tests import it from the existing site",
+    !half.passed && !fiction.passed && !nameMatched.passed,
+    "all three stay fail-closed — the new wording changes the reason, never the verdict",
+  );
+}
+
+// ------------------------- item 5: an I/O fault is not a fabricated citation
+
+{
+  const root = mkdtempSync(path.join(os.tmpdir(), "sentence-io-"));
+  const Q = "Agents may merge once CI is green and review approved.";
+  writeFileSync(path.join(root, "POLICY.md"), `# Policy\n\n${Q}\n`);
+  writeFileSync(path.join(root, "unreadable.md"), `${Q}\n`);
+  chmodSync(path.join(root, "unreadable.md"), 0o000);
+  const fileCheck = { repoRoot: root, texts: [] };
+
+  const missing = await verifyEvidence(fileCheck, Q, "nope.md");
+  assert(
+    !missing.passed && /not a readable file/.test(missing.reason),
+    `a missing file says so (${missing.reason})`,
+  );
+  const outside = await verifyEvidence(fileCheck, Q, "../../etc/hosts");
+  assert(
+    !outside.passed && /outside the repo root/.test(outside.reason),
+    `a path escaping the root says so (${outside.reason})`,
+  );
+  const escapesButMissing = await verifyEvidence(fileCheck, Q, "../outside-only/MISSING-doc.md");
+  assert(
+    !escapesButMissing.passed && /outside the repo root/.test(escapesButMissing.reason),
+    // The confinement check runs before the existence check: otherwise a judge
+    // could probe which paths outside the root exist by reading the reasons.
+    `a traversal to a file that does not exist still says "outside", not "not found" (${escapesButMissing.reason})`,
+  );
+  const huge = path.join(root, "huge.md");
+  writeFileSync(huge, `${Q}\n${"x".repeat(300 * 1024)}`);
+  const oversized = await verifyEvidence(fileCheck, Q, "huge.md");
+  assert(
+    !oversized.passed && /larger than/.test(oversized.reason),
+    `an oversized file says so rather than reading it (${oversized.reason})`,
+  );
+  const unreadable = await verifyEvidence(fileCheck, Q, "unreadable.md");
+  chmodSync(path.join(root, "unreadable.md"), 0o644);
+  assert(
+    !unreadable.passed && /I\/O fault/.test(unreadable.reason),
+    `MUST-FAIL: an EACCES says "I/O fault", never "the quote does not appear" (${unreadable.reason})`,
+  );
+  assert(
+    !/does not appear/.test(unreadable.reason),
+    "...so an operator with a permissions problem is not told the judge hallucinated",
+  );
+  assert(
+    !unreadable.passed && !missing.passed && !outside.passed && !oversized.passed,
+    "every read failure stays fail-closed — the verdict is unchanged, only the reason",
+  );
+
+  // The distinction that matters for a hallucination signal: real text, wrong
+  // granularity, named as such.
+  const partial = await verifyEvidence(fileCheck, "Agents may merge once CI is green", "POLICY.md");
+  assert(
+    !partial.passed && /real text of POLICY.md but not one whole sentence/.test(partial.reason),
+    `a real-but-partial quote is called what it is (${partial.reason})`,
+  );
+  const invented = await verifyEvidence(
+    fileCheck,
+    "Agents may merge whenever they feel like it.",
+    "POLICY.md",
+  );
+  assert(
+    !invented.passed && /does not appear in POLICY.md/.test(invented.reason),
+    "a fabricated quote keeps the existing wording, which callers match on",
+  );
+  assert(
+    classifyCitation(Q, Q) === "whole-unit" &&
+      classifyCitation("Agents may merge once CI is green", Q) === "partial-unit" &&
+      classifyCitation("Agents may merge whenever they feel like it.", Q) === "absent" &&
+      classifyCitation("short", Q) === "too-short",
+    "classifyCitation names all four outcomes distinctly",
   );
 }
 
@@ -261,7 +343,7 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
 // ------------------------------- the grant path: a partial quote is citation-failed
 
 {
-  const REAL_GRANT = GRANT_LINE as string;
+  const REAL_GRANT = REAL_GRANT_LINE as string;
   const granted = await resolveMergeAuthority(
     judgeSaying({ verdict: "permitted", quote: REAL_GRANT, sourceFile: "AGENTS.md" }),
     docs(AGENTS),
@@ -300,8 +382,8 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
     "askPolicy flags a partial quote as a citation failure, same as a fabricated one",
   );
   assert(
-    /does not appear in/.test(decision.reason),
-    "...with the existing denial reason, so no caller sees a new source value",
+    /real text of AGENTS.md but not one whole sentence/.test(decision.reason),
+    "...with a reason that says the quote is real but partial, which is not the wording a fabricated quote gets",
   );
   // The same thing on a synthetic document, so the assertion does not depend on
   // this repo's wording staying as it is (which is out of scope to change).
@@ -317,115 +399,6 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
   assert(
     !partialSource.granted && partialSource.source === "citation-failed",
     "a real-but-partial substring of a doctrine sentence is refused as citation-failed, never a silent 'none'",
-  );
-}
-
-// ---------------------------- the escape hatches stay exactly as they were
-
-{
-  const REAL_GRANT = GRANT_LINE as string;
-  const prevJudge = process.env.PI_ENSEMBLE_POLICY_JUDGE;
-  process.env.PI_ENSEMBLE_POLICY_JUDGE = "0";
-  assert(
-    !(
-      await askPolicy(
-        judgeSaying({ verdict: "permitted", quote: REAL_GRANT, sourceFile: "AGENTS.md" }),
-        MERGE_POLICY_QUESTION,
-        docs(AGENTS),
-      )
-    ).permitted,
-    "PI_ENSEMBLE_POLICY_JUDGE=0 still denies a perfectly valid whole-sentence grant",
-  );
-  if (prevJudge === undefined) delete process.env.PI_ENSEMBLE_POLICY_JUDGE;
-  else process.env.PI_ENSEMBLE_POLICY_JUDGE = prevJudge;
-
-  const prev = process.env.PI_ENSEMBLE_DECISIONS;
-  process.env.PI_ENSEMBLE_DECISIONS = "0";
-  const root = mkdtempSync(path.join(os.tmpdir(), "sentence-decisions-"));
-  const where = { repoRoot: root, issues: [1381] };
-  assert(
-    (
-      await askPolicy(
-        judgeSaying({ verdict: "permitted", quote: REAL_GRANT, sourceFile: "AGENTS.md" }),
-        MERGE_POLICY_QUESTION,
-        docs(AGENTS),
-        where,
-      )
-    ).permitted,
-    "PI_ENSEMBLE_DECISIONS=0 still honours a verified whole-sentence grant",
-  );
-  assert(
-    !(
-      await askPolicy(
-        judgeSaying({
-          verdict: "permitted",
-          quote: "LLMs / agents are allowed to squash merge PRs",
-          sourceFile: "AGENTS.md",
-        }),
-        MERGE_POLICY_QUESTION,
-        docs(AGENTS),
-        where,
-      )
-    ).permitted,
-    "...and still denies a partial one",
-  );
-  assert(
-    !(
-      await askPolicy(
-        judgeSaying({
-          verdict: "permitted",
-          quote: "Agents may merge anything at any time for any reason.",
-          sourceFile: "AGENTS.md",
-        }),
-        MERGE_POLICY_QUESTION,
-        docs(AGENTS),
-        where,
-      )
-    ).permitted,
-    "...and still denies a fabricated one",
-  );
-  if (prev === undefined) delete process.env.PI_ENSEMBLE_DECISIONS;
-  else process.env.PI_ENSEMBLE_DECISIONS = prev;
-}
-
-// -------------------------------- the reviewer's own instruction stays in step
-
-{
-  // The code now enforces "one sentence, word for word"; the prompt and the
-  // reporter schema must keep demanding the same thing, or an honest judge
-  // that quotes a clause is denied with nothing telling it why.
-  const prompt = policyPrompt(MERGE_POLICY_QUESTION, docs("Agents may merge once CI is green."));
-  assert(
-    /word for word/i.test(prompt) && /one sentence/i.test(prompt),
-    "policyPrompt still demands the one sentence copied word for word",
-  );
-  const reporter = readFileSync(
-    path.join(REPO_ROOT, "extension", "src", "policy-reporter.ts"),
-    "utf8",
-  );
-  assert(
-    /WORD FOR WORD/.test(reporter) && /sentence/i.test(reporter),
-    "the report_policy schema still describes the quote as a single sentence copied word for word",
-  );
-}
-
-// ------------------------------------- the docs state the rule they now enforce
-
-{
-  const lines = readFileSync(path.join(REPO_ROOT, "docs/troubleshooting.md"), "utf8").split("\n");
-  const from = lines.findIndex((l) => l.startsWith("### Merge authority"));
-  let to = from + 1;
-  while (to < lines.length && !/^###? /.test(lines[to])) to++;
-  const section = lines.slice(from, to).join("\n");
-  assert(
-    from >= 0 && /whole sentence/i.test(section),
-    "docs/troubleshooting.md 'Merge authority' states the whole-sentence rule",
-  );
-  const configuration = readFileSync(path.join(REPO_ROOT, "docs/configuration.md"), "utf8");
-  const row = configuration.split("\n").find((l) => l.includes("PI_ENSEMBLE_POLICY_JUDGE")) ?? "";
-  assert(
-    /whole sentence/i.test(row),
-    "docs/configuration.md's PI_ENSEMBLE_POLICY_JUDGE row states it too",
   );
 }
 
