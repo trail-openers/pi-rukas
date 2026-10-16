@@ -10,7 +10,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type JobKind, childHandles, jobs } from "./async-jobs-registry.ts";
 import { reset as resetDeck } from "./dispatch-deck.ts";
-import { incrementFailedNotice, incrementNotice } from "./notice-counter.ts";
+import { incrementNotice } from "./notice-counter.ts";
 import * as pendingJobs from "./pending-jobs-signal.ts";
 import { markSessionShutdown } from "./session-shutdown.ts";
 import { trace, traceWarn } from "./trace.ts";
@@ -36,18 +36,21 @@ export interface DispatchHost {
  * .ts), so the common failure never reaches a caller's try/catch either. Two
  * things now survive the swallow: an unconditional WARN (`traceWarn`, not
  * `PI_ENSEMBLE_DEBUG`-gated — an operator must see a report that changed an
- * outcome), and the failure tally in notice-counter.ts, which is how a caller
- * that cannot catch — the batch settle — asks whether its own send landed.
+ * outcome), and the return value — `true` when the send did not throw, `false`
+ * when the host rejected it. The caller that made this send reads its own
+ * result; no out-of-band tally is needed to answer a question this call
+ * already knows the answer to.
  * Still never throws: `deliverStandIn` / `deliverOrStandIn` and the batch
  * settle are documented never to throw and depend on it.
  */
-export function deliverReport(host: DispatchHost, report: string): void {
+export function deliverReport(host: DispatchHost, report: string): boolean {
   incrementNotice();
   try {
     host.sendUserMessage(report, { deliverAs: "steer" });
+    return true;
   } catch (err) {
     traceWarn(`async report delivery failed: ${String(err)}`);
-    incrementFailedNotice();
+    return false;
   }
 }
 
@@ -57,19 +60,26 @@ export function deliverReport(host: DispatchHost, report: string): void {
  * a count without a report. Never throws — a stand-in that also fails is reported
  * with both errors (unconditionally: it is the last thing this path can say), so
  * the caller can still release.
+ *
+ * #1389 — it REPORTS whether the stand-in reached the host. `deliverReport` cannot
+ * throw, so a caller that must decide whether anything was handed over has no
+ * try/catch to write; without a return value the batch settle could not tell "the
+ * PM has been told something" from "nothing reached the PM and the count is about
+ * to print 0". `false` is what the batch tail's last-resort WARN reads.
  */
 export function deliverStandIn(
   host: DispatchHost,
   label: string,
   failure: unknown,
   standIn: (failure: unknown) => string,
-): void {
+): boolean {
   try {
-    deliverReport(host, standIn(failure));
+    return deliverReport(host, standIn(failure));
   } catch (err) {
     traceWarn(
       `${label} stand-in report also failed: ${String(err)} (original: ${String(failure)})`,
     );
+    return false;
   }
 }
 

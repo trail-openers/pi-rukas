@@ -9,12 +9,12 @@
  * of the four trace strings appeared in a single smoke test, and no test in the
  * repo drove a host whose `sendUserMessage` throws.
  *
- *   1. `deliverReport` caught a throwing host and did nothing a caller could
- *      see. Pi makes that swallow total: the `ExtensionAPI` binding routes a
- *      rejection from `AgentSession.prompt` to `runner.emitError`
+ *   1. `deliverReport` caught a throwing host and returned nothing a caller
+ *      could see. Pi makes that swallow total: the `ExtensionAPI` binding routes
+ *      a rejection from `AgentSession.prompt` to `runner.emitError`
  *      (agent-message.ts), so the throw never reaches a caller's try/catch
- *      either. A failed send now leaves an unconditional WARN and a failure
- *      tally, and the batch answers it with a stand-in.
+ *      either. It now RETURNS whether the send survived, leaves an
+ *      unconditional WARN, and the batch answers a rejection with a stand-in.
  *   2. `deliverBatchReport` set `delivered = true` after `send()` returned —
  *      and `send()` calls `deliverReport`, which cannot throw — so a host that
  *      rejected the batch's one steer still counted as delivered, the
@@ -22,23 +22,32 @@
  *   3. The notice badge incremented before the send, so the live view advertised
  *      a delivery nobody received.
  *
- * No Pi process spawned, no network.
+ * The fakes are in lib/pending-jobs-harness.ts, shared with
+ * test-pending-jobs-signal-shutdown-order.ts. No Pi process spawned, no network.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   type DispatchHost,
   deliverOrStandIn,
   deliverReport,
   deliverStandIn,
 } from "../src/async-jobs-lifecycle.ts";
-import { clearJobsForTesting, jobStatusSnapshot, startBatch, startJob } from "../src/async-jobs.ts";
-import * as live from "../src/dispatch-deck-live.ts";
-import * as dispatchDeck from "../src/dispatch-deck.ts";
-import { getFailedNotices, getNotices } from "../src/notice-counter.ts";
+import { clearJobsForTesting, startBatch, startJob } from "../src/async-jobs.ts";
+import { getNotices } from "../src/notice-counter.ts";
 import * as pendingJobs from "../src/pending-jobs-signal.ts";
 import { clearSlowWatchesForTesting } from "../src/slow-notice.ts";
-import type { DispatchResult } from "../src/types.ts";
+import {
+  attachRpc,
+  fakeResult,
+  freshWire,
+  makeHost,
+  makePi,
+  sent,
+  until,
+  warned,
+  withStderrCapture,
+  withStderrCaptureAsync,
+} from "./lib/pending-jobs-harness.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -49,113 +58,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** Everything the fake host and the status channel would have shown. */
-interface Wire {
-  reports: string[];
-  statuses: string[];
-  warns: string[];
-  threwAt: number[];
-}
-
-/** `makeHost` restarts its call counter, so failures are recorded per wire. */
-let currentWire: Wire = freshWire();
-
-function freshWire(): Wire {
-  return { reports: [], statuses: [], warns: [], threwAt: [] };
-}
-
-/**
- * A host whose `sendUserMessage` throws on the `throwOn`-indexed call (or on
- * every call when `throwOn` is omitted). Pi swallows the real rejection from
- * the caller, so the test's own record of "this call threw" is the honest
- * ground truth the product-side assertions are compared against.
- */
-function makeHost(w: Wire, throwOn?: number[]): DispatchHost {
-  currentWire = w;
-  let calls = 0;
-  return {
-    sendUserMessage(text: string) {
-      calls += 1;
-      if (!throwOn || throwOn.includes(calls)) {
-        w.threwAt.push(calls);
-        throw new Error(`host rejected call ${calls}`);
-      }
-      w.reports.push(text);
-    },
-  };
-}
-
-/** A `pi` double for the batch paths: accepts every send, ignores `on`. */
-function batchHost(w: Wire): ExtensionAPI {
-  return { ...makeHost(w), on: () => {} } as unknown as ExtensionAPI;
-}
-
-function withStderrCapture<T>(fn: () => T): { value: T; lines: string[] } {
-  const lines: string[] = [];
-  const real = process.stderr.write;
-  process.stderr.write = ((chunk: string | Uint8Array) => {
-    lines.push(String(chunk));
-    return true;
-  }) as typeof process.stderr.write;
-  try {
-    return { value: fn(), lines };
-  } finally {
-    process.stderr.write = real;
-  }
-}
-
-async function withStderrCaptureAsync<T>(
-  fn: () => Promise<T>,
-): Promise<{ value: T; lines: string[] }> {
-  const lines: string[] = [];
-  const real = process.stderr.write;
-  process.stderr.write = ((chunk: string | Uint8Array) => {
-    lines.push(String(chunk));
-    return true;
-  }) as typeof process.stderr.write;
-  try {
-    return { value: await fn(), lines };
-  } finally {
-    process.stderr.write = real;
-  }
-}
-
-function fakeResult(
-  role: string,
-  text: string,
-  extra: Partial<DispatchResult> = {},
-): DispatchResult {
-  return {
-    role,
-    ok: true,
-    text,
-    toolUses: [],
-    ms: 10,
-    exitCode: 0,
-    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
-    ...extra,
-  };
-}
-
-/** attach() publishes an initial "0"; every "<n>" assertion below counts past it. */
-const sent = (w: Wire) => w.statuses.slice(1);
-
-async function until(cond: () => boolean) {
-  for (let i = 0; i < 300 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
-}
-
-function attachRpc(w: Wire) {
-  currentWire = w;
-  pendingJobs.attach({
-    mode: "rpc",
-    ui: {
-      setStatus: (key: string, text: string | undefined) => {
-        if (key === pendingJobs.PENDING_JOBS_STATUS_KEY) w.statuses.push(text ?? "");
-      },
-    },
-  } as never);
-}
-
 // ---------------------------------------------------------------------------
 // 1. deliverReport: a throwing host is a failed send, not a silent success.
 // ---------------------------------------------------------------------------
@@ -163,23 +65,21 @@ function attachRpc(w: Wire) {
   const w = freshWire();
   const host = makeHost(w, [1]);
   const noticesBefore = getNotices();
-  const failedBefore = getFailedNotices();
-  const { lines } = withStderrCapture(() => deliverReport(host, "the report"));
+  const { lines } = withStderrCapture(() => {
+    // The return value IS the contract #1389 added: the caller learns the
+    // outcome of the send it made, with no counter and no exception.
+    return deliverReport(host, "the report");
+  });
   assert(w.reports.length === 0, "1a: a throwing host received nothing");
   assert(
     getNotices() - noticesBefore === 1,
     "1b: the attempted delivery still counts for the badge (the send was attempted)",
   );
   assert(
-    getFailedNotices() - failedBefore === 1,
-    "1c: the failure is tallied separately from the badge, so a caller can tell the two apart",
+    warned(lines, "async report delivery failed:"),
+    `1c: the failed send is a WARN on stderr, not a PI_ENSEMBLE_DEBUG-gated trace (got ${JSON.stringify(lines)})`,
   );
-  assert(
-    lines.some(
-      (l) => l.includes("async report delivery failed:") && l.startsWith("[pi-rukas] WARN"),
-    ),
-    `1d: the failed send is a WARN on stderr, not a PI_ENSEMBLE_DEBUG-gated trace (got ${JSON.stringify(lines)})`,
-  );
+  assert(w.deliverAs[0] === "steer", `1d: the send is a steer (got ${w.deliverAs[0]})`);
 }
 
 // ---------------------------------------------------------------------------
@@ -211,13 +111,11 @@ function attachRpc(w: Wire) {
   assert(!threw, "2a: deliverStandIn / deliverOrStandIn still never throw");
   assert(w.reports.length === 0, "2b: nothing reached the host");
   assert(
-    lines.some((l) => l.startsWith("[pi-rukas] WARN") && l.includes("probe report failed:")),
+    warned(lines, "probe report failed:"),
     `2c: the build failure is a WARN, not a debug trace (got ${JSON.stringify(lines)})`,
   );
   assert(
-    lines.some(
-      (l) => l.startsWith("[pi-rukas] WARN") && l.includes("stand-in report also failed:"),
-    ),
+    warned(lines, "stand-in report also failed:"),
     "2d: a stand-in that also failed is a WARN naming both errors",
   );
 }
@@ -229,10 +127,9 @@ function attachRpc(w: Wire) {
 // ---------------------------------------------------------------------------
 {
   const w = freshWire();
-  const host = makeHost(w, [1]);
-  const pi = { ...host, on: () => {} } as unknown as ExtensionAPI;
+  const { pi, fireShutdown } = makePi(w, [1]);
   attachRpc(w);
-  const { value: jobId, lines } = await withStderrCaptureAsync(async () => {
+  const { value, lines } = await withStderrCaptureAsync(async () => {
     const h = startJob(pi, {
       label: "explore",
       role: "explore",
@@ -242,7 +139,7 @@ function attachRpc(w: Wire) {
     return h.jobId;
   });
   assert(
-    w.reports.length === 0 && w.threwAt.length === 1,
+    w.reports.length === 0 && w.rejectedAt.length === 1,
     "3a: the one report was rejected by the host",
   );
   assert(
@@ -250,11 +147,10 @@ function attachRpc(w: Wire) {
     `3b: the count still reaches 0 — a stuck count would be the other bug (got ${sent(w)})`,
   );
   assert(
-    lines.some(
-      (l) => l.includes("async report delivery failed:") && l.startsWith("[pi-rukas] WARN"),
-    ),
-    `3c: the dropped report left a named, unconditional trace the operator can act on (job ${jobId})`,
+    warned(lines, "async report delivery failed:"),
+    `3c: the dropped report left a named, unconditional trace the operator can act on (job ${value})`,
   );
+  fireShutdown();
   pendingJobs.resetForTesting();
 }
 
@@ -265,8 +161,7 @@ function attachRpc(w: Wire) {
 // ---------------------------------------------------------------------------
 {
   const w = freshWire();
-  const host = makeHost(w, [1]);
-  const pi = { ...host, on: () => {} } as unknown as ExtensionAPI;
+  const { pi } = makePi(w, [1]);
   attachRpc(w);
   const { value: batch, lines } = await withStderrCaptureAsync(async () => {
     const b = startBatch(pi, {
@@ -279,7 +174,10 @@ function attachRpc(w: Wire) {
     await until(() => sent(w).length >= 2);
     return b;
   });
-  assert(w.threwAt.length >= 1, "4a: the batch's send was attempted and the host rejected it");
+  assert(
+    w.threwAt.length >= 1 && w.rejectedAt.length >= 1,
+    "4a: the batch's send was attempted and the host rejected it",
+  );
   assert(
     w.reports.some((r) => r.includes("(batch ") && r.includes("could not be delivered")),
     `4b: the batch answers a failed send with a stand-in naming the batch, not silence (got ${JSON.stringify(w.reports)})`,
@@ -294,14 +192,16 @@ function attachRpc(w: Wire) {
     "4d: at least one message reached the host before the count released",
   );
   assert(
-    lines.some(
-      (l) => l.startsWith("[pi-rukas] WARN") && l.includes("report delivery rejected by the host"),
-    ),
+    warned(lines, "report delivery rejected by the host"),
     "4e: the rejected batch report is named on stderr, ungated by PI_ENSEMBLE_DEBUG",
   );
   assert(
     !standIn.includes("could not be built"),
     "4f: a delivery failure does not claim the members' results were lost (they ran — only the send failed)",
+  );
+  assert(
+    w.deliverAs.every((d) => d === "steer"),
+    `4g: both the batch report and its stand-in were steers (got ${JSON.stringify(w.deliverAs)})`,
   );
   pendingJobs.resetForTesting();
 }
@@ -312,31 +212,95 @@ function attachRpc(w: Wire) {
 // ---------------------------------------------------------------------------
 {
   const w = freshWire();
-  const host: DispatchHost = {
-    // No `throwOn`: this host never rejects — so anything landing in `threwAt`
-    // here was thrown by some other deliverer sharing the wire, which is a bug
-    // in the test harness, not in the product.
-    sendUserMessage: (text: string) => {
-      currentWire.reports.push(text);
-    },
-  };
-  const pi = { ...host, on: () => {} } as unknown as ExtensionAPI;
+  // No `throwOn`: this host accepts every send, so `rejectedAt` must stay empty.
+  const { pi } = makePi(w);
+  // Drain first. Every earlier case leaves jobs whose work never reacts to
+  // `abort`, and their slow-run watches stay armed in slow-notice's module Map:
+  // `makeSlowWatch` closes over the `pi` that started the job, so an armed watch
+  // reaching the wire is another deliverer writing into THIS case's host — and
+  // 5a/5b are exactly the "nothing else touched the wire" claims. Same reason
+  // test-agent-view and the slow-notice suites drain between cases.
+  clearJobsForTesting();
+  clearSlowWatchesForTesting();
   attachRpc(w);
-  await withStderrCaptureAsync(async () => {
+  const control = await withStderrCaptureAsync(async () => {
     startBatch(pi, {
       batchLabel: "dispatch_parallel",
       members: [
         { label: "explore[a]", role: "explore", work: async () => fakeResult("explore", "a") },
       ],
     });
-    await until(() => sent(w).length >= 2);
+    // ONE send, accepted: the batch's consolidated report. `sent()` is
+    // `reports.length`, so waiting on it is waiting for the delivery to succeed —
+    // the earlier `sent(w).length >= 2` could never be satisfied by a healthy
+    // batch (there is exactly one), so the predicate timed out and 5a/5b were
+    // reading a control case that had not finished.
+    await until(() => w.threwAt.length >= 1);
   });
-  assert(w.threwAt.length === 0, "5a: nothing threw in the control case");
+  // The capture returns `{ value, lines }`, so the healthy-batch control asserts on
+  // `lines` being empty — comparing the whole result to "" was true-by-shape and
+  // false-by-type, i.e. an assertion that could never report what it saw.
+  assert(
+    control.lines.length === 0,
+    `5d: a healthy batch is silent on stderr (got ${JSON.stringify(control.lines)})`,
+  );
+  assert(
+    w.rejectedAt.length === 0 && w.threwAt.length === 1,
+    `5a: the control host was called once and threw nothing (calls ${w.threwAt}, rejections ${w.rejectedAt})`,
+  );
   assert(
     w.reports.length === 1 && w.reports[0]?.startsWith("[ensemble:async]"),
     `5b: a healthy batch sends exactly one report (got ${w.reports.length})`,
   );
   assert(sent(w).join(",") === "1,0", `5c: healthy batch → 1,0 (got ${sent(w)})`);
+  pendingJobs.resetForTesting();
+}
+
+// ---------------------------------------------------------------------------
+// 5b. Report AND stand-in both rejected: the count still has to reach 0 (a bound
+//     that would never print is worse than an honest 0), so the ONLY thing left
+//     to say is the WARN — and it must name the batch, so an operator staring at
+//     "0" in a session that received nothing can find why. Delete the
+//     `if (!standInLanded)` block in async-jobs-batch.ts and 5b-c goes red: the
+//     count prints 0 and stderr says nothing that distinguishes it from a clean
+//     delivery.
+// ---------------------------------------------------------------------------
+{
+  const w = freshWire();
+  // Reject every call the batch makes: index 1 is the consolidated report, index
+  // 2 the stand-in. `until` on rejectedAt rather than reports — nothing lands.
+  const { pi } = makePi(w, [1, 2]);
+  clearJobsForTesting();
+  clearSlowWatchesForTesting();
+  attachRpc(w);
+  const cap = await withStderrCaptureAsync(async () => {
+    startBatch(pi, {
+      batchLabel: "dispatch_parallel",
+      members: [
+        { label: "explore[a]", role: "explore", work: async () => fakeResult("explore", "a") },
+      ],
+    });
+    await until(() => w.rejectedAt.length >= 2);
+  });
+  assert(w.reports.length === 0, "5b-a: nothing reached the host");
+  assert(
+    w.rejectedAt.length >= 2,
+    `5b-b: both the report and its stand-in were rejected (got ${w.rejectedAt})`,
+  );
+  const honest = cap.lines.find((l) => l.includes("handed Pi NOTHING"));
+  assert(
+    honest !== undefined &&
+      /mvba|batch/.test(honest) &&
+      /reach 0|reaches 0|will reach 0/.test(honest),
+    `5b-c: the count reaching 0 with nothing delivered is contradicted on stderr, naming the batch (got ${JSON.stringify(cap.lines)})`,
+  );
+  // The count is only observable through the status frames, so the assertion is
+  // on the LAST frame the host saw rather than an accessor the module does not
+  // export: "0" printed anyway is the point — the WARN is what makes it honest.
+  assert(
+    w.statuses.at(-1) === "0",
+    `5b-d: the count still releases — a bound that never prints is worse than an honest 0 (got ${JSON.stringify(w.statuses)})`,
+  );
   pendingJobs.resetForTesting();
 }
 
@@ -348,8 +312,7 @@ function attachRpc(w: Wire) {
 // ---------------------------------------------------------------------------
 {
   const w = freshWire();
-  const host = makeHost(w, [1]);
-  const pi = { ...host, on: () => {} } as unknown as ExtensionAPI;
+  const { pi } = makePi(w, [1]);
   attachRpc(w);
   await withStderrCaptureAsync(async () => {
     startJob(pi, {
@@ -373,37 +336,24 @@ function attachRpc(w: Wire) {
 // ---------------------------------------------------------------------------
 // 7. Shutdown with a report still owed whose send THEN fails: the bound must
 //    close the channel, not leave it open on a report that will never arrive.
+//    The hook is registered for real through registerAsyncJobsLifecycle against
+//    this host, so the ordering the fix depends on is the production ordering.
 // ---------------------------------------------------------------------------
 {
   const w = freshWire();
-  const host = makeHost(w, [1]);
-  const pi = { ...host, on: () => {} } as unknown as ExtensionAPI;
-  let shutdownHandler: ((event?: { reason?: string }) => void) | undefined;
-  (pi as unknown as { on: (e: string, h: (ev?: { reason?: string }) => void) => void }).on(
-    "session_shutdown",
-    (ev) => shutdownHandler?.(ev),
-  );
-  // The hook is registered through the lifecycle module, which needs the real
-  // registration path: re-register against this host.
-  const registered = [] as Array<(event?: { reason?: string }) => void>;
-  const pi2 = {
-    ...host,
-    on: (_event: string, handler: (event?: { reason?: string }) => void) => {
-      registered.push(handler);
-    },
-  } as unknown as ExtensionAPI;
   const { registerAsyncJobsLifecycle } = await import("../src/async-jobs-lifecycle.ts");
-  registerAsyncJobsLifecycle(pi2);
+  const { pi, fireShutdown } = makePi(w, [1]);
+  registerAsyncJobsLifecycle(pi);
   attachRpc(w);
   process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS = "150";
   const { lines } = await withStderrCaptureAsync(async () => {
-    startJob(pi2, {
+    startJob(pi, {
       label: "explore",
       role: "explore",
       work: async () => fakeResult("explore", "late"),
     });
     await until(() => sent(w).length >= 1);
-    registered[0]?.({ reason: "quit" });
+    fireShutdown("quit");
     // The late settle's send throws inside the bound; the bound must still close.
     await until(() => sent(w).length >= 2);
   });
@@ -413,13 +363,50 @@ function attachRpc(w: Wire) {
     `7b: a failed late send does not strand the count above 0 (got ${sent(w)})`,
   );
   assert(
-    lines.some(
-      (l) => l.includes("async report delivery failed:") && l.startsWith("[pi-rukas] WARN"),
-    ),
+    warned(lines, "async report delivery failed:"),
     `7c: the session still learns the report was lost (got ${JSON.stringify(lines.slice(0, 3))})`,
   );
+  // `delete` is the correct "reset to unset": assigning undefined leaves the key
+  // present with the string value "undefined", which the next case's parse would
+  // read as a bound rather than as absent.
+  // biome-ignore lint/performance/noDelete: unset is what this resets.
   delete process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS;
   pendingJobs.resetForTesting();
+}
+
+// ---------------------------------------------------------------------------
+// 8. The two globals #1389 first reached for are gone. `deliverReport` answers
+//    its own caller, so a second process-wide failure counter is not merely
+//    unused — it is the wrong shape: a counter another deliverer moved would be
+//    read as this send's verdict. Pinned so it cannot come back as a convenience.
+// ---------------------------------------------------------------------------
+{
+  const source = await Bun.file(new URL("../src/notice-counter.ts", import.meta.url)).text();
+  assert(
+    !/failedCount|getFailedNotices|incrementFailedNotice/.test(source),
+    "8a: notice-counter.ts carries no failed-delivery tally",
+  );
+  const batchSource = await Bun.file(new URL("../src/async-jobs-batch.ts", import.meta.url)).text();
+  assert(
+    !/getFailedNotices|sendSucceeded|DeliveryTally/.test(batchSource),
+    "8b: the batch reads its send's result, not a counter delta",
+  );
+  const lifecycleSource = await Bun.file(
+    new URL("../src/async-jobs-lifecycle.ts", import.meta.url),
+  ).text();
+  assert(
+    /export function deliverReport\(host: DispatchHost, report: string\): boolean/.test(
+      lifecycleSource,
+    ),
+    "8c: deliverReport returns its outcome",
+  );
+  // And the batch's own send state is a named union, not a tri-state boolean.
+  assert(
+    /type BatchSendState = "sent" \| "rejected" \| "not-attempted"/.test(batchSource),
+    "8d: the batch's send state is the named three-valued union",
+  );
+  const host: DispatchHost = { sendUserMessage: () => undefined };
+  assert(deliverReport(host, "x") === true, "8e: an accepting host reports true");
 }
 
 clearJobsForTesting();
