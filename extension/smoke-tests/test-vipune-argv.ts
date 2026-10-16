@@ -58,7 +58,7 @@ import { promisify } from "node:util";
 import {
   EXEMPT_VIPUNE_VERBS,
   REFUSED_VIPUNE_VERBS,
-  isDestructiveMemoryWrite,
+  refusesMemoryWrite,
 } from "../src/memory-write-guard.ts";
 import { searchArgv, vipuneChildEnv } from "../src/vipune.ts";
 
@@ -408,7 +408,7 @@ assert(
     "`add` is granted and never refused — the driver writes memory through it",
   );
   assert(
-    isDestructiveMemoryWrite("vipune update 1 --status active"),
+    refusesMemoryWrite("vipune update 1 --status active") !== undefined,
     "canary: a future agents.json grant of `vipune update` would still leave the mutating-flag refusal standing",
   );
 

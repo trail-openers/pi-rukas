@@ -26,11 +26,11 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   EXEMPT_VIPUNE_VERBS,
   REFUSED_VIPUNE_VERBS,
-  isDestructiveMemoryWrite,
   registerMemoryWriteGuard,
   refusesMemoryWrite,
 } from "../src/memory-write-guard.ts";
@@ -120,25 +120,146 @@ for (const cmd of [
   // And a flag-looking word belonging to another command in the chain is not
   // borrowed by an update earlier in it.
   "vipune update 12 && cp --status x",
+  // Measured against vipune 0.15.0: clap REJECTS abbreviated long flags
+  // (`vipune update 1 --stat active` -> `error: unexpected argument '--stat'
+  // found`), so these mutate nothing. Refusing them would report a threat the
+  // binary cannot act on, and the module header, troubleshooting and the skill
+  // say exact names and `=` forms for the same reason.
+  "vipune update 12 --stat active",
+  "vipune update 12 --stat=active",
+  "vipune update 12 --imp high",
+  "vipune update 12 --mem-t guard",
+  "vipune update 12 --memorytyp=fact",
+  "vipune update 12 --memory-t fact",
+  // The granted verbs keep their own mutating flags — the reason the clause
+  // binds flags to `update` and to nothing else.
+  "vipune add 'x' --memory-type fact --status candidate",
 ]) {
   assert(refusesMemoryWrite(cmd) === undefined, `allowed — ${cmd}`);
 }
 
-// ------------------------- the delegating export keeps the old rule's coverage
+// --------------------------------------- the argument positions are NOT refused
 
 {
-  // Every command the pre-#1437 regex refused must still be refused — the new
-  // predicate is a superset, never a narrowing.
-  for (const cmd of ["vipune update 12 -t x", "vipune update 12 --text x", "vipune update 1 --text=x"]) {
-    assert(isDestructiveMemoryWrite(cmd) === true, `delegating export still refuses — ${cmd}`);
+  // The command-position rule matches the SIBLING guards' shape and then some,
+  // and the "some" is what these pin: a token that is not in command position is
+  // not an invocation, even when the words read exactly like one. Measured
+  // against the binary, none of these runs vipune at all — `grep` is the program,
+  // `vipune` and `delete` are its operands, and `echo vipune delete > notes.txt`
+  // is a write to `notes.txt` containing the literal text.
+  //
+  // This is the direction a guard must err in, and it is the reason the scan
+  // tracks command position token by token instead of searching for the
+  // `vipune delete` substring: a false refusal costs an agent one retyped
+  // command, but refusing the shapes above means refusing the log read and the
+  // note-taking, which agents do constantly and which have nothing to do with
+  // memory. Pinned so a later loosening that reopens a REAL bypass
+  // (`nohup vipune delete`) cannot be dressed up as "just fixing the grep case".
+  for (const cmd of [
+    "grep vipune delete file.log",
+    "echo vipune delete 42",
+    "echo vipune delete > notes.txt",
+  ]) {
+    assert(refusesMemoryWrite(cmd) === undefined, `argument position, not a command — ${cmd}`);
   }
-  for (const cmd of ["vipune update 12", "vipune add 'x' --status candidate", "vipune search x"]) {
-    assert(isDestructiveMemoryWrite(cmd) === false, `delegating export still allows — ${cmd}`);
+}
+
+// ---------------------------------- what the widening beyond -t/--text covers
+
+{
+  // The pre-#1437 rule was `vipune update` carrying `-t`/`--text` and nothing
+  // else. Every shape below was a hole in it, and each is a write the binary
+  // actually performs — the abbreviated-flag cases above are NOT, which is the
+  // distinction the whole block turns on.
+  for (const cmd of [
+    // -m replaces metadata in place; --memory-type silently retypes a row out
+    // of every typed read; --status moves it between the tiers.
+    "vipune update 12 --status active",
+    "vipune update 12 --memory-type fact",
+    "vipune update 12 --importance high",
+    // Clustered short flags: measured on 0.15.0, `vipune update <id> -tm`
+    // reaches the database and rewrites the row with content `m`, because `t`
+    // consumes `m` as --text's value. The `m` is invisible in the token.
+    "vipune update 12 -tm",
+    "vipune update 12 -mt",
+    "vipune update 12 -tx",
+    "vipune update 12 -tm && git status",
+  ]) {
+    assert(refusesMemoryWrite(cmd) !== undefined, `canary: the widening is real — ${cmd}`);
   }
+  // `-t=x` is `--text` with value `x` — measured, it writes `x` into the row, so
+  // it IS refused. It sits here rather than in the allowed list because the
+  // distinction it draws is the one the cluster loop exists for: `=` neither
+  // introduces a flag nor ends the scan (`-xm=1` mutates too).
+  assert(refusesMemoryWrite("vipune update 12 -t=x") !== undefined, "`-t=x` writes `x` — refused");
+}
+
+// ---------------- the wrapper / path / global-option bypasses are closed
+
+{
+  // Each of these ran the binary pre-fix: the predicate anchored on
+  // `(?:^|(?<=[;&|\n]))\s*(?:oo\s+)?vipune`, so anything between the operator
+  // and `vipune` — a wrapper, an env assignment, a path, a global option — put
+  // the verb out of reach of the match. They are refused now, and the refusal
+  // names the VERB, never the command slice (a memory body can be arbitrary text
+  // and must not come back in the reason the child is handed).
+  const cases: Array<[string, string]> = [
+    ["env FOO=1 vipune delete 42", "delete"],
+    ["VIPUNE_DEBUG=1 vipune delete 5", "delete"],
+    ["command vipune delete 42", "delete"],
+    ["nohup vipune delete 42", "delete"],
+    ["time vipune delete 42", "delete"],
+    ["timeout 30 vipune delete 42", "delete"],
+    ["nice -n 5 vipune delete 42", "delete"],
+    ["exec vipune delete 42", "delete"],
+    ["/usr/local/bin/vipune delete 42", "delete"],
+    ["~/bin/vipune delete 42", "delete"],
+    ["./vipune delete 42", "delete"],
+    ["vipune --json delete 42", "delete"],
+    ["vipune -p other delete 42", "delete"],
+    ["vipune --db-path X delete 42", "delete"],
+    ["if true; then vipune delete 42; fi", "delete"],
+    ["for x in a; do vipune delete 42; done", "delete"],
+    ["if true; then echo hi; else vipune delete 42; fi", "delete"],
+    ["( vipune delete 42 )", "delete"],
+    ["command vipune mcp", "mcp"],
+    ["env FOO=1 vipune prune", "prune"],
+  ];
+  for (const [cmd, verb] of cases) {
+    assert(refusesMemoryWrite(cmd) === verb, `canary: refused as \`${verb}\` — ${cmd}`);
+  }
+
+  // The path form requires a `/`; the whole-token comparison requires the token
+  // to BE `vipune`. Together they are why the MCP tool name stays untouched.
   assert(
-    refusesMemoryWrite("vipune update 12 --status active") !== undefined,
-    "canary: the widening beyond -t/--text is real — the old predicate allowed this, the new one refuses it",
+    refusesMemoryWrite("mcp__codebase_memory__vipune delete 42") === undefined,
+    "canary: the MCP tool name is not an invocation, chained or not",
   );
+
+  // The cheap gate must not change any verdict: identical results with and
+  // without it, on the shapes a false negative there would be worst for.
+  for (const [cmd, verb] of cases) {
+    const noVipune = cmd.replace(/vipune/, "");
+    assert(
+      refusesMemoryWrite(noVipune) === undefined,
+      `the indexOf fast path cannot invent a refusal — ${noVipune}`,
+    );
+    void verb;
+  }
+}
+
+// ---------------------------------------- global-option arity follows the binary
+
+{
+  // `-p/--project` and `--db-path` take a value; `--json`/`-h`/`-V` do not. A
+  // table that disagrees with the binary makes the verb unfindable: treat `-p`
+  // as valueless and `other` becomes the verb; treat `--json` as taking one and
+  // `delete` gets swallowed. Pinned against `vipune --help` below.
+  assert(refusesMemoryWrite("vipune -p proj delete 42") === "delete", "-p consumes its value");
+  assert(refusesMemoryWrite("vipune -p delete 42") === undefined, "…so `delete` after a bare -p is its VALUE, not a verb");
+  assert(refusesMemoryWrite("vipune --json delete 42") === "delete", "--json consumes nothing");
+  assert(refusesMemoryWrite("vipune --json prune") === "prune", "…and the verb is still found");
+  assert(refusesMemoryWrite("vipune --verbose delete 42") === "delete", "an unknown flag consumes nothing — fails toward refusing");
 }
 
 // ------------------------- the two sets are disjoint, and `hook` is the only exemption
@@ -237,6 +358,70 @@ for (const cmd of [
     !/PI_ENSEMBLE_TRUST_MODE|PI_ENSEMBLE_SANDBOX_MODE|PI_ENSEMBLE_SUBAGENT_MODE|PI_ENSEMBLE_ROLE/.test(guard),
     "canary: the guard reads no mode or role variable — it is the hook before the bypasses, not a branch inside them",
   );
+}
+
+// --------- the global-option arity table agrees with the installed binary
+
+{
+  // The verb is found by skipping the options before it, and the skip length is
+  // "how many values does this option require". Get that wrong in either
+  // direction and the predicate stops seeing verbs: `-p` treated as valueless
+  // makes `vipune -p other delete 42` read `other` as the verb, `--json` treated
+  // as taking a value makes `vipune --json delete 42` read `delete` as a value.
+  // So the table is not allowed to be remembered — it is re-read from
+  // `vipune --help`, the same way the verb sets are, and an upgrade that gives a
+  // global option a value fails the gate instead of going quietly blind.
+  const src = readFileSync(
+    path.resolve(import.meta.dirname, "..", "src", "memory-write-guard.ts"),
+    "utf8",
+  );
+  const tableMatch = /const GLOBAL_OPTIONS[^=]*=\s*\[([\s\S]*?)\n\s*\];/.exec(src);
+  assert(tableMatch !== null, "the global-option table is present and parseable");
+  const declared = new Map<string, number>();
+  if (tableMatch) {
+    for (const m of tableMatch[1].matchAll(/flags:\s*\[([^\]]*)\],\s*values:\s*(\d+)/g)) {
+      const values = Number(m[2]);
+      for (const f of (m[1] ?? "").matchAll(/"([^"]+)"/g)) declared.set(f[1] ?? "", values);
+    }
+  }
+  assert(declared.size > 0, "...and declares at least one option");
+
+  let help: string | null = null;
+  try {
+    help = execFileSync("vipune", ["--help"], { encoding: "utf8", timeout: 10_000 });
+  } catch {
+    // No binary on this host (CI, a fresh container): the table still has to be
+    // internally sound, which the assertions above already covered.
+  }
+  if (help !== null) {
+    const block = help.slice(help.indexOf("Options:"));
+    const fromBinary = new Map<string, number>();
+    for (const m of block.matchAll(/^\s{2,}(-\w),?\s+(--?\w[\w-]*)?\s*(?:<[^>]+>)?/gm)) {
+      const short = m[1];
+      const long = m[2];
+      const takesValue = /<[^>]+>/.test(m[0] ?? "") ? 1 : 0;
+      if (short) fromBinary.set(short, takesValue);
+      if (long) fromBinary.set(long, takesValue);
+    }
+    const mismatches: string[] = [];
+    for (const [flag, values] of declared) {
+      const actual = fromBinary.get(flag);
+      if (actual !== undefined && actual !== values) mismatches.push(`${flag} ${values}!=${actual}`);
+    }
+    assert(
+      mismatches.length === 0,
+      `every declared arity matches \`vipune --help\`${mismatches.length ? ` — ${mismatches.join(", ")}` : ""}`,
+    );
+    // The options the binary says take a value must be in the table, or their
+    // values get read as verbs.
+    const missing = [...fromBinary].filter(([, v]) => v === 1).filter(([f]) => !declared.has(f));
+    assert(
+      missing.length === 0,
+      `no value-taking global option is missing from the table${missing.length ? ` — ${missing.map(([f]) => f).join(", ")}` : ""}`,
+    );
+  } else {
+    console.log("- vipune binary absent: arity table checked against itself only");
+  }
 }
 
 // ---------------- the shared block registers it, ahead of every bypass
