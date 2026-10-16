@@ -20,7 +20,14 @@ import { enterCycle } from "./work-driver-cycle-entry.ts";
 import { parkAtDeadlineBoundary } from "./work-driver-deadline.ts";
 import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
-import { readDirtyRootExemptForCycle } from "./work-driver-dirty-root-exempt.ts";
+import {
+  noticeDirtyRootExemptReadFailure,
+  withDirtyRootExemptReadFailure,
+} from "./work-driver-dirty-root-exempt-notice.ts";
+import {
+  DIRTY_ROOT_EXEMPT_FILE,
+  readDirtyRootExemptForCycle,
+} from "./work-driver-dirty-root-exempt.ts";
 import { reportFinalState } from "./work-driver-final-state.ts";
 import { recordHostHandoffOnCrash } from "./work-driver-handoff-channel.ts";
 import { interruptIfRequested, recordStepCrash } from "./work-driver-interrupt.ts";
@@ -94,12 +101,18 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
     // #1362 — the project's `.pi/dirty-root-exempt` list is read ONCE per cycle,
     // before any step runs, and carried on the context for every consumer; see
     // work-driver-dirty-root-exempt.ts for why once, and why the read never
-    // throws.
-    // Set only when absent: a resumed state or a test harness that carries its
-    // own list keeps it, so there is exactly one read point and no way for a
-    // second one to disagree with it.
+    // throws. Set only when absent: a resumed state or a test harness carrying
+    // its own list keeps it, so there is exactly one read point.
     if (cycleCtx.dirtyRootExempt === undefined) {
-      cycleCtx.dirtyRootExempt = await readDirtyRootExemptForCycle(ctx);
+      const exempt = await readDirtyRootExemptForCycle(cycleCtx);
+      cycleCtx.dirtyRootExempt = exempt.entries;
+      // #1362 — a read that FAILED (not an absent file) is recorded, not just
+      // traced: `traceWarn` reaches the cycle log, the operator reads the
+      // handoff — and when the branch step then blocks on residue, every path it
+      // names was judged against the empty list this failure produced.
+      if (exempt.readFailed !== undefined) {
+        noticeDirtyRootExemptReadFailure(cycleCtx, exempt.readFailed);
+      }
     }
     // #838 — the per-cycle deck header ("/work #N"): created when the cycle
     // starts, cleared on EVERY terminal path via the finally — merged,
@@ -134,6 +147,15 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
   }
   // #1090 — record this invocation's grant; a resume without the flag clears it.
   state = recordProtectedGrant(state, ctx.protectedGrant);
+
+  // #1362 — an exemption file that could not be read is carried into the first
+  // persist. `noticeDirtyRootExemptReadFailure` already wrote it when a state
+  // file existed; on a first run there was none to write into, and that helper
+  // must not create one (this function owns the first snapshot). Idempotent, so
+  // a resumed cycle whose file already carries the record is left byte-identical.
+  if (ctx.dirtyRootExemptReadFailed !== undefined) {
+    state = withDirtyRootExemptReadFailure(state, ctx.dirtyRootExemptReadFailed);
+  }
 
   // PR12 — surface a clear notify when state is already terminal and no --restart.
   if (state.pipelineState.status !== "running" && ctx.restart !== true) {

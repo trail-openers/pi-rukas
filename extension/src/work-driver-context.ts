@@ -175,6 +175,15 @@ export interface DriverContext {
    */
   dirtyRootExempt?: readonly string[];
   /**
+   * #1362 — set when reading `.pi/dirty-root-exempt` FAILED outright (any error
+   * but ENOENT/ENOTDIR), as the error cause. Absent = the file read, or was
+   * absent (the ordinary cases). The branch step's dirty-root block folds this
+   * into its plumb report so the handoff says "the exemption file could not be
+   * read" instead of only "your repo root is dirty"; the cycle log carries the
+   * same event.
+   */
+  dirtyRootExemptReadFailed?: string;
+  /**
    * #1292 — the invoking session has no UI (`!ctx.hasUI`, e.g. `pi -p`). A
    * headless cycle opens its PR as a draft by default — nobody is watching
    * the review window — unless `PI_ENSEMBLE_DRAFT_PR` says otherwise.
