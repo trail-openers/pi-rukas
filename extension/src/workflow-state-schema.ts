@@ -35,31 +35,16 @@ import type { IncompleteConsolidation } from "./workflow-state-consolidation.ts"
 /** Current schema version. Bump on breaking changes. */
 export const WORK_STATE_SCHEMA_VERSION = 1 as const;
 
-/**
- * The WorkStep vocabulary as a runtime value. The union type is the source
- * of truth for TS callers; this tuple exists so runtime readers (the #533
- * discriminant validator) can test membership — types are erased by the
- * untyped cast in `readState`, which is exactly why the validator needs it.
- */
-export const WORK_STEPS: readonly WorkStep[] = [
-  "explore",
-  "plan",
-  "branch",
-  "develop",
-  "adversarial",
-  "commit-pr",
-  "lens-review",
-  "lens-fix",
-  "step-back",
-  "handoff",
-  "ci",
-  "merged",
-];
-
 export type { CapedPartialState, CapEvidence } from "./workflow-state-cap.ts";
+export { WORK_STEPS } from "./workflow-state-validate-caps.ts";
 
 export type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
 import type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
+// #1362 — cycle-start exempt-untracked baseline: type + #533 validator in workflow-state-dirty-root.ts (#540/#861 seam).
+export {
+  type DirtyRootExemptBaseline,
+  dirtyRootExemptBaselineFindings,
+} from "./workflow-state-dirty-root.ts";
 
 /**
  * Pipeline snapshot — the driver's "where are we" view, reconstructible
@@ -449,8 +434,8 @@ export interface PipelineState {
    * restore paths then fall back to their previous targets.
    */
   startRef?: string;
-  /** #1362 — cycle-start exempt untracked paths; the claim's provenance. */
-  dirtyRootExemptBaseline?: string[];
+  /** #1362 — cycle-start exempt untracked paths; the restore claim's provenance. */
+  dirtyRootExemptBaseline?: import("./workflow-state-dirty-root.ts").DirtyRootExemptBaseline;
   /**
    * #453 — per-workstream applied SHAs for crash-safe resume. Maps
    * workstream id → SHA cherry-picked onto the integration branch; updated as
@@ -494,6 +479,10 @@ export interface PipelineState {
   handoffDeliveredAt?: string;
 }
 
+// #1362 — WORK_STEPS' home moved to workflow-state-validate-caps.ts (the #861
+// sibling holding the other fixed vocabularies the #533 validator reads), for this
+// module's 500-line gate; the tuple and its doc came across verbatim, and it is
+// re-exported above so every importer keeps its path.
 // WorkState moved to workflow-state-schema-workstate.ts (500-line gate); re-exported.
 export type { WorkState } from "./workflow-state-schema-workstate.ts";
 
