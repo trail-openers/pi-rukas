@@ -32,6 +32,11 @@
  * silently dropped or quietly re-cut into a shape that passes.
  *
  * Offline: the backend is a closure and the log is a temp file.
+ *
+ * The over-redaction probes (what must keep matching NOTHING) and the
+ * `redactDeep` nested-string fixtures live in test-decision-redaction-overreach.ts,
+ * which shares this file's fixtures via lib/redaction-context-cases.ts. Both
+ * files must pass; the split is the 500-line cap, not a contract boundary.
  */
 
 import { readFileSync } from "node:fs";
@@ -48,53 +53,9 @@ import {
   stubRegistry,
   tmpDir,
 } from "./lib/decision-fixtures.ts";
+import { CASES, MAX, headOf, tailOf, words } from "./lib/redaction-context-cases.ts";
 
 const { assert, state } = makeAssert();
-
-/**
- * The lens's shapes, verbatim. `body` is what must never survive: `Bearer `,
- * `https://user:` and `password=` are CONTEXT the caller legitimately ships, so
- * asking whether THOSE survived would test the wrong thing — the credential half
- * is what has to be gone.
- */
-const CASES: { name: string; secret: string; body: string }[] = [
-  {
-    // The URL rule's match is `://user:pass@` -- it ENDS at the `@`, so the
-    // host and path after it legitimately survive and only the credential half
-    // (with its `://user:` context) may not. Asking for more would demand the
-    // pattern redact text it does not claim.
-    name: "url-credentials",
-    secret: "https://user:hunter2Sup3rSecretValue@origin.internal/x",
-    body: "hunter2Sup3rSecretValue",
-  },
-  {
-    name: "bearer",
-    secret: "Bearer abcdef.1234567890_gfedcba-9876543210",
-    body: "abcdef.1234567890_gfedcba",
-  },
-  {
-    name: "sk-key",
-    secret: "sk-ant-api03-aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d",
-    body: "sk-ant-api03-aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d",
-  },
-  {
-    name: "key-value",
-    secret: "password=Sup3rSecretValue99",
-    body: "Sup3rSecretValue99",
-  },
-];
-
-const MAX = 600;
-
-/** The lens's fixture: a 2 KB run with the secret AT ITS END, then a tail. */
-const tailOf = (secret: string, after: string) =>
-  `${"f".repeat(2048)} ${secret}${after ? ` ${after}` : ""}`;
-/** The mirror image: the secret at the START of the text, a long run after it. */
-const headOf = (secret: string, before: string) =>
-  `${before ? `${before} ` : ""}${secret}${" g".repeat(1500)}`;
-
-const words = (n: number, tag: string) =>
-  Array.from({ length: n }, (_, i) => `${tag}${i}`).join(" ");
 
 // ------------------------------------------------- fixture validity, before anything
 
@@ -244,18 +205,17 @@ for (const { name, secret, body } of CASES) {
     // before the keyword, filler after the value) is the one it must match, does
     // match, and is asserted instead. For a prefix rule the two coincide, so its
     // glued-before shapes stand and the duplicate is not counted twice.
-    const shapes: [string, string][] =
-      name === "key-value"
-        ? [
-            ["glued after", postOnly],
-            ["glued after, at the tail", `${"f".repeat(4 * max)} ${secret}${near}`],
-          ]
-        : [
-            ["glued both sides", both],
-            ["glued before", preOnly],
-            ["glued after", postOnly],
-            ["glued both sides at the tail", bothEnd],
-          ];
+    const shapes: [string, string][] = name.startsWith("key-value")
+      ? [
+          ["glued after", postOnly],
+          ["glued after, at the tail", `${"f".repeat(4 * max)} ${secret}${near}`],
+        ]
+      : [
+          ["glued both sides", both],
+          ["glued before", preOnly],
+          ["glued after", postOnly],
+          ["glued both sides at the tail", bothEnd],
+        ];
 
     for (const [shape, text] of shapes) {
       const unb = redactSecrets(text);
@@ -296,7 +256,7 @@ for (const { name, secret, body } of CASES) {
 // The lens's exact repro, verbatim: a 2 KB run, the credential welded to its
 // end, and a whitespace tail — reported as `count: 0` with the key intact.
 for (const { name, secret, body } of CASES) {
-  if (name === "key-value") continue; // see the glued-before note above
+  if (name.startsWith("key-value")) continue; // see the glued-before note above
   for (const max of [600, 1000, 4000]) {
     for (const k of [0, 40, 2000]) {
       const text = `${"f".repeat(2048)}${secret}${" ".repeat(k)}${"t".repeat(4 * max)}`;

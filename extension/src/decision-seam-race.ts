@@ -17,8 +17,11 @@
  * The abort racer performs the SAME teardown the timeout racer does: `ac.abort()`
  * so the wedged backend is cancelled rather than left streaming, and
  * `clearTimeout(timer)` so the bound is not left armed past a call that has
- * already been abandoned. A run that settles after the bound is discarded but
- * TRACED — a judge that answers late is what an operator needs to see.
+ * already been abandoned. A run that settles after the race — whichever racer
+ * won it — is discarded but TRACED: `settled after its <n>ms bound` for the
+ * timeout path and `... abort` for the caller-abort path, because a judge that
+ * answers late is what an operator needs to see and the abort path used to
+ * swallow it.
  *
  * Split from decision-seam.ts, which is at the repository's file-size cap; this
  * is the race and nothing else, so `decide()` keeps owning backends, composition
@@ -46,7 +49,16 @@ export async function runBounded(
   const onAbort = () => ac.abort();
   outer?.addEventListener("abort", onAbort, { once: true });
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // A run that settles after the race is over is discarded, but traced: a judge
+  // that answers late is exactly the event an operator needs to be able to see.
+  // `timedOut` says the BOUND won; `abandoned` says the OUTER ABORT did. Before
+  // this only the first was traced, so an aborted caller whose backend ignored its
+  // cancellation signal and answered later was silent — the same blind spot the
+  // timeout trace closes, reached from the other side.
   let timedOut = false;
+  let abandoned = false;
+  const late = (why: string) =>
+    traceWarn(`decision-seam: ${b.name} settled after its ${input.timeoutMs}ms ${why}; discarded`);
   // #1393 — the outer signal must END the race, not merely signal the backend.
   // A backend that ignores its own AbortSignal and never settles used to hold
   // `await Promise.race` open for the whole seam timeout, so an aborted caller
@@ -63,6 +75,10 @@ export async function runBounded(
   const onOuterAbort = () => {
     ac.abort();
     if (timer) clearTimeout(timer);
+    // The abort won the race, so whatever the backend produces from here is
+    // discarded — and the `.then` on `run` below reports it, exactly as the
+    // timeout path reports a post-bound settle.
+    abandoned = true;
     resolveOuter({ ok: false, error: "aborted" });
   };
   let resolveOuter: (r: BackendResult) => void = () => {};
@@ -77,10 +93,6 @@ export async function runBounded(
             resolve({ ok: false, error: "aborted before the backend ran" });
           } else outer.addEventListener("abort", onOuterAbort, { once: true });
         });
-  // A run that settles after the bound is discarded, but traced: a judge that
-  // answers late is exactly the event an operator needs to be able to see.
-  const late = () =>
-    traceWarn(`decision-seam: ${b.name} settled after its ${input.timeoutMs}ms bound; discarded`);
   try {
     if (outer?.aborted) throw new Error("aborted");
     const timeout = new Promise<BackendResult>((resolve) => {
@@ -92,11 +104,13 @@ export async function runBounded(
     });
     const run = b.run(input, ac.signal).then(
       (r) => {
-        if (timedOut) late();
+        if (timedOut) late("bound");
+        else if (abandoned) late("abort");
         return r;
       },
       (e) => {
-        if (timedOut) late();
+        if (timedOut) late("bound");
+        else if (abandoned) late("abort");
         throw e;
       },
     );

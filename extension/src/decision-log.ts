@@ -30,9 +30,11 @@
  * Every pattern needs CONTEXT, not just its own characters: the URL rule needs
  * the `://` before it and the `@` after, the Bearer rule needs the literal
  * `Bearer ` in front. A bounded redaction therefore scans past the edge of the
- * window it keeps — `redactClip` backs off into the dropped side — otherwise a
- * credential that straddles the cut survives in the kept half while the scan
- * reports zero matches (#1393).
+ * window it keeps — `redactBounded` widens its scan with `widenPastCut`, which
+ * backs off into the dropped side to the start of the token the cut fell inside —
+ * otherwise a credential that straddles the cut survives in the kept half while
+ * the scan reports zero matches (#1393). `redactClip` is only the text-only
+ * wrapper over `redactBounded`; the widening lives in the latter.
  */
 
 import { readFileSync, statSync } from "node:fs";
@@ -112,14 +114,17 @@ const SCAN_CAP = PRE_BOUND_SLACK + CUT_TOKEN_BUDGET;
  * it is, and a window that wide is what made the bound decorative.
  *
  * The offset it returns is a TOKEN START, not merely a token boundary, and that
- * distinction is load-bearing rather than tidy: `SECRET_PATTERNS` anchor their
- * prefixes with `^`, so a scan whose slice opens one character into a run matches
- * nothing at all and reports zero redactions over a window full of keys. Walking
- * to the whitespace and then stopping ON the delimiter leaves the walk one short
- * of the character that begins the token; the `+1`/`-1` below is the step onto
- * it. A window that begins mid-token is the shape that hid the glued credential
- * from both the bounded scan and — because the same anchoring governs the whole
- * document — from the log's own count (#1393).
+ * distinction is load-bearing rather than tidy. No pattern is `^`-anchored — the
+ * prefix rules dropped their leading `\b` deliberately (see secret-patterns.ts) —
+ * so what makes a mid-token slice useless is not an anchor but the combination of a
+ * GREEDY body and the token-end lookahead: a body swallows everything its class
+ * allows and the lookahead then refuses a continuation, so a slice that opens one
+ * character into a run has to match the pattern starting there, and for a prefix
+ * rule the prefix is behind it — no match at all, and zero redactions reported over
+ * a window full of keys. Walking to the whitespace and then stopping ON the
+ * delimiter leaves the walk one short of the character that begins the token; the
+ * `+1`/`-1` below is the step onto it. A window that begins mid-token is the shape
+ * that hid the glued credential from the bounded scan (#1393).
  */
 function widenPastCut(text: string, from: number, side: "head" | "tail"): number {
   const isSpace = (i: number) => /\s/.test(text[i] ?? "");
@@ -185,6 +190,13 @@ export function redactBounded(
   max: number,
   from: "start" | "end" = "start",
 ): { text: string; count: number } {
+  // A bound that is not a positive number cannot keep anything, and must not
+  // report that it did. Without this guard `max: 0` fell through to
+  // `widenPastCut(text, 0, "start")`, scanned the head of the text and shipped
+  // `""` with a nonzero count — a record claiming redactions over a string it
+  // never showed. `!(max > 0)` is the whole test: it takes 0, the negatives and
+  // NaN, which `max <= 0` would let through.
+  if (!(max > 0)) return { text: "", count: 0 };
   if (text.length <= max) return redactSecrets(text);
   if (from === "end") {
     const cut = text.length - max;
@@ -252,10 +264,27 @@ export function boundField(
  */
 export function redactDeep(v: unknown, counter: { n: number }, bound?: number): unknown {
   if (typeof v === "string") {
-    const pre = bound === undefined ? v : v.slice(0, bound + PRE_BOUND_SLACK);
-    const r = redactSecrets(pre);
+    if (bound === undefined) {
+      const r = redactSecrets(v);
+      counter.n += r.count;
+      return r.text;
+    }
+    // The SAME widened scan `boundField` uses, not a `slice(bound + slack)` /
+    // `slice(bound)` pair. The naive pair has no widening at the keep edge: it
+    // cuts the scan at `bound + slack`, so a credential straddling `bound` is
+    // amputated before the patterns ever see it, and the kept text ships the
+    // fragment with a count of zero — the #1393 leak, relocated from the record's
+    // top level into a nested string (`boundField` covers only the fields a seam
+    // DECLARES; `redactDeep` is what an undeclared or nested string gets).
+    const r = redactBounded(v, bound, "start");
     counter.n += r.count;
-    return bound !== undefined && r.text.length > bound ? `${r.text.slice(0, bound)}…` : r.text;
+    // The ellipsis is for the human reading the log, so it stays — but the
+    // ceiling is the bound, which an `…` on top of `slice(0, bound)` used to
+    // exceed by one character. `bound > 0` is guaranteed by the early return in
+    // `redactBounded` only for its own output, so the slice is written to stay
+    // in range for `bound === 1` rather than assuming `slice(0, 0)`-style maths.
+    const clipped = r.text.length > bound ? `${r.text.slice(0, Math.max(0, bound - 1))}…` : r.text;
+    return clipped;
   }
   if (Array.isArray(v)) return v.map((x) => redactDeep(x, counter, bound));
   if (v && typeof v === "object") {
@@ -272,9 +301,10 @@ export function redactDeep(v: unknown, counter: { n: number }, bound?: number): 
  *
  * #1393 removed `redactState`, the unbounded wrapper over `redactDeep` that
  * stood here. `boundedState` (decision-seam.ts) is the one pre-budget redaction
- * now, and it is bounded: each field the seam declares is redacted over its
- * complete text and then clipped by the registry's `FieldBound`, and every other
- * string at the record-wide bound. An unbounded regex pass over a whole-document
+ * now, and it is bounded: each field the seam declares goes through
+ * `redactBounded` over the window its `FieldBound` keeps — scan widened past the
+ * cut, then `max` kept — and every other string goes through the same widened
+ * pass at the record-wide bound. An unbounded regex pass over a whole-document
  * state, run by up to 16 concurrent shadow callers, is what that seam replaced.
  */
 const checkouts = new Map<string, string>();
