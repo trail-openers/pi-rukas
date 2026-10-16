@@ -1,59 +1,50 @@
 #!/usr/bin/env bun
 /**
- * The verify commands must not depend on the `bunx` alias — issue #1118.
+ * The commands the `/work` verify gate executes must not depend on the
+ * `bunx` alias — issue #1118.
  *
- * The `/work` develop gate runs whatever `.pi/verify-cmd` contains through
- * `/bin/sh` with the Pi process's PATH
- * (`work-driver-consolidated-verify.ts`). On 2026-10-12 the operator ran
- * `./install.sh`, restarted Pi, and `/opt/pi-ensemble/bin` contained `bun`
- * but no `bunx`. Every verify command in the repo opened with
- * `bunx tsc --noEmit`, so the gate died with `/bin/sh: 1: bunx: not found`
- * and parked two finished cycles (#1105, #1114) at `verify-failed:develop`
- * — about an hour of completed develop work destroyed by a missing symlink.
+ * Non-obvious, in short: the gate runs `.pi/verify-cmd*` through `/bin/sh`
+ * with the Pi process's PATH (`work-driver-consolidated-verify.ts`), and on
+ * 2026-10-12 provisioning shipped `/opt/pi-ensemble/bin` with `bun` but no
+ * `bunx`. `bun x` is the same dispatch through the one binary that is always
+ * there; `bunx` is a second PATH entry provisioning is free to forget. Two
+ * finished cycles (#1105, #1114) parked at `verify-failed:develop` over the
+ * missing symlink, so a tier that opens with `bunx` fails here.
  *
- * `bun x` is the same dispatch through the one binary that is always
- * present; `bunx` is a separate PATH entry that provisioning is free to
- * forget. So the commands the DRIVER executes say `bun x`, and the files
- * that say otherwise fail here.
+ * Scope is the driver's own inputs — the `kind: "command"` entries of
+ * `HEADLESS_FILES` — derived, not hand-listed, so a tier added there is
+ * covered without anyone remembering this file. `bunx` stays legal anywhere
+ * else: agents type it, `bash-command-parser.ts` allowlists it, CI calls it.
+ * One site is known-uncovered and tracked separately:
+ * `work-driver-cap-checkpoint.ts:85` runs `bunx tsc --no-emit` in driver
+ * code, which is a driver-code decision rather than a host contract, so it
+ * is not changed by this gate.
  *
- * ## Scope: the driver's inputs, not every bunx in the tree
- *
- * `bunx` stays legal elsewhere and deliberately so: agents may type it
- * interactively, `bash-command-parser.ts` allowlists it as a command, CI
- * calls it, and the checkpoint typecheck in `work-driver-cap-checkpoint.ts`
- * is a separate decision. Scanning prose or all of `extension/src` would
- * fire constantly on text that is not executed by the gate, which is how a
- * gate gets `PI_ENSEMBLE_*=0`'d. Exactly the files the driver reads are in
- * scope — the three tiers, `verify-cmd` / `verify-cmd-fast` /
- * `verify-cmd-full` — and the fast tier is named explicitly rather than
- * derived, because it was added after the issue was filed and a
- * "check the two files the issue mentioned" rule silently excludes whatever
- * lands next.
- *
- * ## Proven in both directions (AGENTS.md §12 canary discipline)
- *
- * A gate never observed to fail is worthless, so a fixture string carrying
- * the regression shape IS flagged, and one already in the fixed form is not.
- * The fixed form needs its own canary: `bun x` contains `bun` followed by a
- * space, and a matcher loose enough to catch that would have reported this
- * file green against the pre-fix commands.
+ * Each rule is also run against a planted fixture — a gate never observed to
+ * fail is worthless (AGENTS.md §12).
  */
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { HEADLESS_FILES } from "../src/headless/inputs.ts";
+import { readFirstConfigLine } from "../src/work-driver-verify-cmd.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 
+/** The driver's command inputs — every `kind: "command"` file it reads. */
+const COMMAND_FILES = HEADLESS_FILES.filter((f) => f.kind === "command").map((f) => f.path);
+
 /**
- * The files the driver executes as verify commands, named explicitly.
- *
- * Not derived from a directory listing: an explicit list makes a new tier a
- * deliberate edit here, and forgetting it is visible in the diff. An absent
- * file is a hard failure, not a skip — a tier that quietly disappears from
- * the repo also disappears from the gate, and the cycle loses its typecheck
- * with nothing said.
+ * The gate's own membership, asserted rather than trusted: a `kind:
+ * "command"` entry dropped from HEADLESS_FILES would silently shrink the
+ * scope, and a filter bug would report a clean repo over tiers it never read.
  */
-const VERIFY_FILES = [".pi/verify-cmd", ".pi/verify-cmd-fast", ".pi/verify-cmd-full"];
+const EXPECTED_COMMAND_FILES = [
+  ".pi/smoke-cmd",
+  ".pi/verify-cmd",
+  ".pi/verify-cmd-fast",
+  ".pi/verify-cmd-full",
+];
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -64,32 +55,63 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
+/** A canary that has stopped meaning something: the gate itself is broken. */
+function assertCanary(cond: boolean, msg: string) {
+  assert(cond, `GATE-BROKEN: ${msg}`);
+}
+
 /**
  * The bare-`bunx` token in a verify command's text, or null.
  *
- * A word-boundary match on the token. Comment lines are NOT skipped, unlike
- * the driver's command reader: a comment naming the old form is the first
- * step back to it, and there is no reading of this rule under which
- * "bunx works fine here" belongs in a file the driver executes.
+ * Comment lines are NOT skipped, unlike the driver's command reader: a
+ * comment naming the old form is the first step back to it, and there is no
+ * reading of this rule under which "bunx works fine here" belongs in a file
+ * the driver executes.
  */
-export function findBareBunx(text: string): string | null {
+function findBareBunx(text: string): string | null {
   const line = text.split("\n").find((l) => /\bbunx\b/.test(l));
   return line === undefined ? null : line.trim();
 }
 
 // ---------------------------------------------------------------- the gate
 
-for (const rel of VERIFY_FILES) {
+assertCanary(
+  COMMAND_FILES.join(",") === EXPECTED_COMMAND_FILES.join(","),
+  `the gate's scope equals HEADLESS_FILES' command entries (derived [${COMMAND_FILES.join(", ")}], expected [${EXPECTED_COMMAND_FILES.join(", ")}])`,
+);
+
+for (const rel of COMMAND_FILES) {
   let text: string;
   try {
     text = readFileSync(path.join(REPO_ROOT, rel), "utf8");
   } catch (err) {
+    const missing = (err as NodeJS.ErrnoException).code === "ENOENT";
+    // `.pi/smoke-cmd` is genuinely optional (`whenAbsent: "no product smoke
+    // gate"`) so its absence is not a failure; every other command input the
+    // driver reads is a file this repo ships. An unreadable one — EACCES,
+    // EISDIR — is NOT ENOENT and fails: a tier the driver cannot read at
+    // runtime is the same broken gate as a tier with the wrong command.
+    if (rel === ".pi/smoke-cmd" && missing) {
+      console.log(`· ${rel} absent — no product smoke gate, nothing to check`);
+      continue;
+    }
     assert(
       false,
-      `${rel} is readable — the driver executes it as a verify command (${err instanceof Error ? err.message : String(err)})`,
+      `${rel} is readable — the driver executes it as a verify command (${missing ? "ENOENT" : String(err)})`,
     );
     continue;
   }
+
+  // The line the driver would actually run must exist and be non-empty. A
+  // file of nothing but comments yields `undefined` to the gate, which then
+  // silently falls back to derivation — an empty tier is as broken as a
+  // broken one, and reads green on a bare token scan.
+  const command = readFirstConfigLine(text);
+  assert(
+    command !== undefined && command.length > 0,
+    `${rel} has a non-empty first non-comment line — that is the command the driver runs`,
+  );
+
   const offender = findBareBunx(text);
   assert(
     offender === null,
@@ -100,43 +122,47 @@ for (const rel of VERIFY_FILES) {
 // -------------------------------------------------- the gate CAN fail (canaries)
 
 {
-  // Canary 1: the exact regression shape — the pre-#1118 command line.
+  // The exact regression shape — the pre-#1118 command line.
   const regressed = [
     "# comment",
     "cd extension && bunx tsc --noEmit && cd .. && bun run check",
   ].join("\n");
-  assert(
+  assertCanary(
     findBareBunx(regressed) !== null,
-    "canary: `bunx tsc --noEmit` IS flagged (the #1118 shape that parked #1105/#1114)",
+    "`bunx tsc --noEmit` IS flagged (the #1118 shape that parked #1105/#1114)",
   );
 
-  // Canary 2: the fixed form must NOT be flagged. Without this, a matcher
-  // that matched `bun` followed by `x` would pass every file including the
-  // broken ones.
-  const fixed = "cd extension && bun x tsc --noEmit && bun run check";
-  assert(
-    findBareBunx(fixed) === null,
-    "canary: `bun x tsc --noEmit` passes (the fix is not itself a violation)",
+  // The fixed form must NOT be flagged. Without this, a matcher loose enough
+  // to match `bun` followed by `x` would have passed the broken commands too.
+  assertCanary(
+    findBareBunx("cd extension && bun x tsc --noEmit && bun run check") === null,
+    "`bun x tsc --noEmit` passes (the fix is not itself a violation)",
   );
 
-  // Canary 3: a comment naming the old form is caught too — comments are not
-  // exempt, so the file cannot document its way back to the broken alias.
-  const inComment = "# run bunx tsc --noEmit here instead\nbun x tsc --noEmit";
-  assert(
-    findBareBunx(inComment) !== null,
-    "canary: `bunx` inside a comment is flagged (the rule covers prose in these files)",
+  // A comment naming the old form is caught too — comments are not exempt.
+  assertCanary(
+    findBareBunx("# run bunx tsc --noEmit here instead\nbun x tsc --noEmit") !== null,
+    "`bunx` inside a comment is flagged (the rule covers prose in these files)",
   );
 
-  // Canary 4: a substring that is not the token must not fire — a path or
-  // identifier merely containing the letters is not the alias.
-  const notTheToken = "bun x tsc --noEmit && ./scripts/bunx-wrapper.sh";
-  assert(
-    findBareBunx(notTheToken) !== null,
-    "canary: a hyphenated filename IS a word boundary, so `bunx-wrapper.sh` counts (documented, not accidental)",
+  // A hyphen is a word boundary, so a hyphenated name counts as the token.
+  // Deliberate: this rule errs toward flagging, and a filename carrying the
+  // alias is worth a conversation, not a silent pass.
+  const hyphenIsBoundary = "bun x tsc --noEmit && ./scripts/bunx-wrapper.sh";
+  assertCanary(
+    findBareBunx(hyphenIsBoundary) !== null,
+    "a hyphenated filename IS a word boundary, so `bunx-wrapper.sh` counts (documented, not accidental)",
   );
-  assert(
-    findBareBunx("bun x tsc --noEmit && bun run check") === null,
-    "canary: a clean command with several `bun` invocations is not flagged",
+
+  // And the empty-tier shape the token scan cannot see on its own.
+  assertCanary(
+    readFirstConfigLine("# only a comment\n\n   \n") === undefined,
+    "a file with no command line is detected as empty (the driver would get undefined)",
+  );
+  assertCanary(
+    readFirstConfigLine("# comment\n\nbun x tsc --noEmit && bun run check") ===
+      "bun x tsc --noEmit && bun run check",
+    "the reader skips comments and blank lines to the real command",
   );
 }
 
