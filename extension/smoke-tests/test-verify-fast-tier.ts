@@ -18,8 +18,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
-import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import { runCommitPrConsolidatedVerify } from "../src/work-driver-integrate-verify.ts";
+import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import { VERIFY_TIMEOUT_LABEL, verifyCapFor } from "../src/work-driver-verify-develop-helpers.ts";
 import { FAST_TIER_LABEL, fastVerifyCmdFor, withFastTier } from "../src/work-driver-verify-fast.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
@@ -40,8 +40,7 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd });
 
 const FULL = "bash scripts/verify.sh";
-// Mirrors the real .pi/verify-cmd-fast first line (`bun x`, not `bunx` — #1118);
-// the executor is stubbed so the text is only an identity here.
+// Mirrors the real .pi/verify-cmd-fast first line: string identity only; the executor is stubbed.
 const FAST = "bun x tsc --noEmit && bun run check";
 const TSC = "src/a.ts(3,1): error TS2304: Cannot find name 'nope'.\n";
 const root = mkdtempSync(path.join(tmpdir(), "pi-fast-tier-"));
@@ -50,8 +49,8 @@ type Calls = Array<{ cmd: string; timeout?: number }>;
 
 /** A stub executor: git runs for real, verify commands get a chosen outcome. */
 function stubExec(calls: Calls, outcomeFor: (cmd: string) => Outcome) {
-  const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
-    cmd = commandOf(cmd, o);
+  const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmdArg, o) => {
+    const cmd = commandOf(cmdArg, o);
     if (cmd.startsWith("git ")) return { stdout: (await sh(o?.cwd ?? "", cmd)).stdout };
     calls.push({ cmd, timeout: o?.timeout });
     const r = outcomeFor(cmd);
