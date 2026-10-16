@@ -5,6 +5,7 @@
  */
 
 import type { WorkEvent } from "./workflow-state-events.ts";
+import type { PipelineRetryTree } from "./workflow-state-schema-retry-tree.ts";
 import type { PipelineState, WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
 
 /**
@@ -55,6 +56,18 @@ export interface WorkState {
    * inter-command composition; the v1 driver does not read these.
    */
   upstreamRefs?: Array<{ kind: "plan-issue" | "parent-pr" | "other"; ref: string }>;
-  pipelineState: PipelineState;
+  // #1391 — `retryTreeAccounting` is contributed by PipelineRetryTreeField
+  // (declared at the bottom of this file) rather than in the schema module,
+  // which sits at the 500-line gate; same object, same persistence.
+  pipelineState: PipelineState & PipelineRetryTreeField;
   eventLog: WorkEvent[];
 }
+
+/**
+ * #1391 — the step retry's tree account, contributed to `PipelineState` here
+ * rather than in `workflow-state-schema.ts` (which sits at the 500-line gate).
+ * What the last retry found in the tree it retried into, and where the dirt the
+ * lost attempt left ended up; the pre-clean reading, cleared when the step
+ * completes. See {@link PipelineRetryTree}.
+ */
+export type PipelineRetryTreeField = { retryTreeAccounting?: PipelineRetryTree };

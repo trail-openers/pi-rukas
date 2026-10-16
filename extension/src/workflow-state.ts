@@ -76,7 +76,12 @@ import path from "node:path";
 import { type EmitSink, emitPersisted } from "./work-state-emit.ts";
 import type { InterruptReason, WorkStep } from "./workflow-state-events.ts";
 import { WORK_STATE_SCHEMA_VERSION, type WorkState } from "./workflow-state-schema.ts";
-import { appendEvent, detectInconsistencies, initialState } from "./workflow-state-update.ts";
+import {
+  appendEvent,
+  clearRetryTreeAccount,
+  detectInconsistencies,
+  initialState,
+} from "./workflow-state-update.ts";
 
 export type {
   WorkStep,
@@ -99,7 +104,12 @@ export {
   missingWorkstreamsFromConsolidation,
   WORK_STEPS,
 } from "./workflow-state-schema.ts";
-export { appendEvent, detectInconsistencies, initialState } from "./workflow-state-update.ts";
+export {
+  appendEvent,
+  clearRetryTreeAccount,
+  detectInconsistencies,
+  initialState,
+} from "./workflow-state-update.ts";
 /**
  * Resolve the project-local state directory. We anchor on `cwd` rather than
  * the worktree path because state must live at the project root so

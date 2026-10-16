@@ -225,6 +225,10 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   input("RATE_LIMIT_BURST_MAX_S", "number", 300, "cycle", { unit: "s" }),
   flag("RESEARCH_FALLBACK", true, "interactive"),
   flag("RESUME", true),
+  // #1391 — where the pre-clean copy of a lost step attempt's worktree edits
+  // goes before the retry clears the tree. A scratch artifact, never a tracked
+  // path; the default is host-level so it cannot land in a repository.
+  dir("RETRY_TREE_DIR", "/tmp/pi-rukas/issue-<N>", "cycle"),
   dir("REVIEW_LEDGER_FILE", null, "cycle"),
   input("REVIEW_THRESHOLD", "enum", null, "cycle", {
     values: ["CRITICAL", "HIGH", "MEDIUM", "LOW"],

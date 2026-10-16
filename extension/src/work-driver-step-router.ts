@@ -30,10 +30,18 @@ import {
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
 import { lostAttemptLine } from "./work-driver-retry-context.ts";
+import { retryTreeAccount } from "./work-driver-retry-tree.ts";
 import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
+import { routeTailRouters } from "./work-driver-step-router-tail.ts";
 import type { CapEvidence } from "./workflow-state-cap.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
-import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
+import {
+  type WorkState,
+  type WorkStep,
+  appendEvent,
+  clearRetryTreeAccount,
+  persistCycle,
+} from "./workflow-state.ts";
 
 /**
  * #366 — injectable sleep. Real waits are the point in production (a burst
@@ -209,6 +217,9 @@ export async function routeStepOutcome(
             transientRetryAttempts: restTransient,
           },
         };
+        // #1391 — the tree account describes ONE retry: clear it with the
+        // counters, so a later retry never carries this attempt's file count.
+        state = clearRetryTreeAccount(state);
       }
       lifecycle.emitStepCompleted(
         step,
@@ -260,16 +271,24 @@ export async function routeStepOutcome(
         const attempts = state.pipelineState.transientRetryAttempts ?? {};
         const used = attempts[step] ?? 0;
         if (used < classification.maxRetries) {
+          // #1391 — account for (and clear) the tree the fresh child lands in
+          // BEFORE the retry line is composed: the line must describe the dirt as
+          // it was, and the lens-fix reposition guard must not read the dead
+          // attempt's edits as the operator's (nessie #109). Which tree, and where
+          // its copy goes, is work-driver-retry-tree's call — the router does not
+          // decide whether a developer's uncommitted work may be moved.
+          const treeAccount = await retryTreeAccount(ctx, state, step, used + 1);
           state = {
             ...state,
             pipelineState: {
               ...state.pipelineState,
               transientRetryAttempts: { ...attempts, [step]: used + 1 },
+              ...(treeAccount ? { retryTreeAccounting: treeAccount } : {}),
             },
           };
           await persistCycle(ctx, state);
           // The retry is a fresh child: say what the failed one took with it.
-          const lost = lostAttemptLine(step, used + 1, tail);
+          const lost = lostAttemptLine(step, used + 1, tail, treeAccount);
           const reason = `${failureCauseReason(tail)} · ${lost}`;
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
@@ -428,72 +447,11 @@ export async function routeStepOutcome(
     }
   }
 
-  // PR7 — multi-workstream halt-cascade router. PR3 emits
-  // `branches-converged` for N>1 fanouts (develop, lens-review).
-  // The PR5 dispatch-failed router above only watches single-dispatch
-  // tails, so all-branches-failed silently advanced into wasted
-  // adversarial + lens-review (the /work 553 2026-06-24 re-test:
-  // 3-of-3 develop branches provider-errored mid-stream, driver
-  // advanced into adversarial APPROVAL of empty diff and lens-review
-  // against header-only "diff").
-  //
-  // Doctrine: ANY failed branch on a HALT-class step routes to
-  // handoff. Partial success on multi-workstream is not a meaningful
-  // input downstream — the out-of-scope fence doctrine implies a failed
-  // branch leaves the broader decomposition incoherent.
+  // PR7 fan-out + #1016 refusal routers (work-driver-step-router-tail.ts — the
+  // 500-line gate; behaviour unchanged by #1391).
   {
-    const tail = state.eventLog[state.eventLog.length - 1];
-    if (tail?.kind === "branches-converged" && tail.verdicts.length > 0) {
-      const anyFailed = tail.verdicts.some((v) => !v.ok);
-      const policy = STEP_FAILURE_POLICY[step];
-      if (anyFailed && policy === "HALT") {
-        state = appendEvent(state, {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap: `step-failed:${step}` as const,
-          reviewRound: state.pipelineState.reviewRound,
-          nextStep: "handoff",
-        });
-        state = {
-          ...state,
-          pipelineState: { ...state.pipelineState, currentStep: "handoff" },
-        };
-        await persistCycle(ctx, state);
-        const failedCount = tail.verdicts.filter((v) => !v.ok).length;
-        trace(
-          `work-driver: HALT on step="${step}" — ${failedCount}/${tail.verdicts.length} branches failed → handoff`,
-        );
-        return { state, retry: true };
-      }
-      // RETRY_ONCE doesn't apply to multi-workstream fanouts (no step
-      // in STEP_FAILURE_POLICY that fans out is RETRY_ONCE — develop
-      // is HALT, lens-review N>1 path uses the same N>1 fanout but
-      // its retry semantics are handled internally by runLensReview).
-      // DEGRADED_OK: fall-through.
-    }
-  }
-
-  // #1016 — a driver REFUSAL halts the step as a non-transient failure. N=1
-  // has no branches-converged, so the fan-out check above cannot see it; the
-  // refusal is never retried with backoff and never advances the cycle.
-  {
-    const refusals = refusedWorkstreams(state.eventLog, step);
-    const parked = state.eventLog[state.eventLog.length - 1]?.kind === "cap-hit";
-    if (refusals.length > 0 && !parked && STEP_FAILURE_POLICY[step] === "HALT") {
-      state = appendEvent(state, {
-        kind: "cap-hit",
-        at: Date.now(),
-        cap: `step-failed:${step}` as const,
-        reviewRound: state.pipelineState.reviewRound,
-        nextStep: "handoff",
-      });
-      state = { ...state, pipelineState: { ...state.pipelineState, currentStep: "handoff" } };
-      await persistCycle(ctx, state);
-      trace(
-        `work-driver: HALT on step="${step}" — refused: ${refusals.map((r) => `${r.id} (${r.reason})`).join("; ")} → handoff`,
-      );
-      return { state, retry: true };
-    }
+    const halted = await routeTailRouters(ctx, state, step);
+    if (halted) return halted;
   }
 
   return { state, retry: false };
