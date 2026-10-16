@@ -15,6 +15,7 @@
  * NAMED as undetermined, never silently dropped: exit 0 = ignored (provisioning
  * would link it), exit 1 = not ignored (never linked), anything else = unknown.
  */
+import { traceWarn } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { provisionDepsHint } from "./work-driver-deps-hint.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -30,7 +31,7 @@ export async function missingDepsFailure(
   cmd: string,
 ): Promise<string | undefined> {
   try {
-    const missing = await missingDepLocations(repoRoot, await packageDirsAt(repoRoot), cwd);
+    const missing = await missingDepLocations(repoRoot, await packageDirsAt(repoRoot), cwd, execFn);
     const named: string[] = [];
     for (const m of missing) {
       // Only what provisioning links: a tree that is not gitignored is
@@ -46,7 +47,21 @@ export async function missingDepsFailure(
     }
     if (named.length === 0) return undefined;
     return `verify command \`${cmd}\` not run — dependencies missing: ${named.join("; ")}${provisionDepsHint(state, cwd)}`;
-  } catch {
+  } catch (err) {
+    // Fail-open is the contract: an unreadable location never blocks, the
+    // verify command runs, and its own failure plus `provisionDepsHint` is the
+    // backstop. What must NOT stay is silence. The bare `return undefined` made
+    // "the gate threw" indistinguishable from "the gate found nothing to
+    // report", so a cycle could run a verify command into its 10-minute
+    // timeout with no clue that the gate meant to fail it fast had been
+    // disabled by a filesystem fault. Same verdict, now audible.
+    const detail =
+      typeof (err as Error)?.message === "string" && (err as Error).message.trim() !== ""
+        ? (err as Error).message
+        : String(err);
+    traceWarn(
+      `worktree: deps gate could not run for ${cwd} — verify command \`${cmd}\` proceeds unchecked (${detail.slice(0, 200)})`,
+    );
     return undefined;
   }
 }

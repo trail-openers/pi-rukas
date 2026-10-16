@@ -46,6 +46,63 @@ import { WORKTREE_SETUP_HOOK } from "./worktree-provision.ts";
 import type { ExecFn, ProvisionResult } from "./worktree-provision.ts";
 
 /**
+ * How much of a hook's own output survives into `ProvisionResult.problem`.
+ *
+ * Bounded because `problem` is rendered into handoff text and PR bodies. The
+ * budget is generous enough to hold the `worktree-setup: ERROR:` line plus
+ * context, and `bound` keeps the HEAD so the hoisted cause is what survives.
+ */
+const HOOK_PROBLEM_BUDGET = 380;
+
+/** The line `die()` in `.pi/worktree-setup` prints — the actionable one. */
+const WORKTREE_ERROR_LINE = /worktree-setup:\s*ERROR:/i;
+
+/**
+ * The cause behind a failed command, bounded and ordered.
+ *
+ * `promisify(exec)` rejections carry the command's output in `stderr` and wrap
+ * `Command failed: <cmd>` around `message`, so a head-slice of `message` on a
+ * chatty command can contain nothing but the wrapper line — which is how a
+ * 2 736-char rejection lost the `EACCES` that was the whole finding.
+ *
+ * Order matters as much as the cap. `provisionDepsHint` renders `event.problem`
+ * at `slice(0, 200)`, so a cause that survives into `problem` past char 200 is
+ * recorded and still invisible to the human who reads the hint. `worktree-setup:
+ * ERROR:` is the diagnostic `die()` prints and it is the LAST line the hook
+ * writes, so ERROR lines are lifted to the front, the remainder follows for
+ * context, and only then is the whole thing capped. With no ERROR line to lift,
+ * the raw output is returned as-is — its tail is where a failure lands, and
+ * `bound`'s head-slice keeps the front, which is where the summary is.
+ *
+ * Deliberately a local copy of `worktree.ts`'s `gitErrorDetail` rather than an
+ * import: `worktree.ts` imports `provisionWorktree` from
+ * `worktree-provision.ts`, so importing back from here would cycle.
+ */
+function hookErrorDetail(err: unknown): string {
+  const e = err as { stderr?: unknown; message?: unknown };
+  const stderr = typeof e?.stderr === "string" ? e.stderr.trim() : "";
+  const message = typeof e?.message === "string" ? e.message.trim() : "";
+  const raw = (stderr !== "" ? stderr : message !== "" ? message : String(err))
+    .replace(/^\s*Command failed:[^\n]*\n?/, "")
+    .trim();
+  const lines = raw.split("\n").filter((l) => l.trim() !== "");
+  const flagged = lines.filter((l) => WORKTREE_ERROR_LINE.test(l));
+  if (flagged.length === 0) return raw;
+  return [...flagged, ...lines.filter((l) => !WORKTREE_ERROR_LINE.test(l))].join("\n");
+}
+
+/**
+ * Bound `s` to `budget`, keeping what came FIRST.
+ *
+ * `hookErrorDetail` already puts the actionable line at the front, so the head
+ * is the part worth keeping. The old implementation sliced the tail, which was
+ * right when the cause happened to land last and wrong whenever it did not.
+ */
+function bound(s: string, budget: number): string {
+  return s.length <= budget ? s : `${s.slice(0, budget)}…`;
+}
+
+/**
  * Run the project's setup hook in the worktree, then verify on the
  * filesystem what it actually did. Never throws — a failed hook run returns
  * `{ via: "hook", problem }` instead.
@@ -72,6 +129,11 @@ export async function runHookProvisioning(
         "until the source tree exists at repoRoot",
     );
   }
+  // Candidates whose gitignore status git could not answer. Declared outside
+  // the try so the catch can name them too: `hookFailed` reports the hook's
+  // exit status, and a probe that could not run is what makes that status
+  // actionable instead of mysterious.
+  const probeFailures: string[] = [];
   try {
     await execFn(`sh ${JSON.stringify(hook)}`, {
       cwd: worktreeAbs,
@@ -80,7 +142,14 @@ export async function runHookProvisioning(
     // #765 — verify, do not assume: exit 0 records INVOCATION, the
     // filesystem records provisioning. Each expected location must RESOLVE
     // to a non-empty dir (catches stale symlinks). No stdout parsing.
-    const locations = await expectedDepLocations(repoRoot, hookPackageDirs);
+    //
+    // #1394 — the probe is passed through so the expected set is filtered by
+    // gitignore exactly as the hook filters the set it links. A probe error is
+    // not "not ignored", so it is collected rather than silently shrinking the
+    // expectation.
+    const locations = await expectedDepLocations(repoRoot, hookPackageDirs, execFn, probeFailures);
+    const namedProbes =
+      probeFailures.length > 0 ? ` (git could not classify: ${probeFailures.join(", ")})` : "";
     const verified: string[] = [];
     for (const { dirRel, source } of locations) {
       const dep = path.basename(source);
@@ -92,7 +161,7 @@ export async function runHookProvisioning(
       const rel = dirRel === "" ? dep : path.join(dirRel, dep);
       const problem =
         `${WORKTREE_SETUP_HOOK} exited 0 but ${rel} in the worktree is absent, stale, or empty ` +
-        `(source: ${source}) — the hook linked nothing useful there`;
+        `(source: ${source}) — the hook linked nothing useful there${namedProbes}`;
       return {
         via: "hook",
         linked: verified,
@@ -112,7 +181,23 @@ export async function runHookProvisioning(
     trace(`worktree: provisioned via ${WORKTREE_SETUP_HOOK}`);
     return { via: "hook", linked: verified };
   } catch (err) {
-    const problem = `${WORKTREE_SETUP_HOOK} failed: ${(err as Error).message?.slice(0, 200)}`;
+    // #1394 — the cause, not the wrapper, and not truncated from the front.
+    // `promisify(exec)` reports a non-zero exit as a rejection whose `message`
+    // begins `Command failed: sh .pi/worktree-setup` and whose real output sits
+    // in `stderr`. The head-slice of `message` returned the wrapper plus
+    // whatever the command printed first — on a build, a banner — and dropped
+    // the `worktree-setup: ERROR: …` line that is the whole finding. Read
+    // `stderr`, drop the wrapper, keep the actionable line inside the budget the
+    // hint will apply.
+    const cause = hookErrorDetail(err);
+    const code = (err as { code?: unknown })?.code;
+    const prefix =
+      typeof code === "number"
+        ? `${WORKTREE_SETUP_HOOK} failed (exit ${code}): `
+        : `${WORKTREE_SETUP_HOOK} failed: `;
+    const named =
+      probeFailures.length > 0 ? ` [git check-ignore: ${probeFailures.join("; ")}]` : "";
+    const problem = `${prefix}${bound(`${cause}${named}`, HOOK_PROBLEM_BUDGET)}`;
     return { via: "hook", linked: [], problem, hookFailed: true };
   }
 }

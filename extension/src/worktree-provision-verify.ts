@@ -8,13 +8,19 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { SHAREABLE_DEPS } from "./worktree-provision.ts";
+import { type ExecFn, SHAREABLE_DEPS, ignoredStatus } from "./worktree-provision.ts";
 
 async function isNonEmptyDirectory(abs: string): Promise<boolean> {
   try {
     return (await fs.readdir(abs)).length > 0;
-  } catch {
-    return false;
+  } catch (err) {
+    // #1394 — `ENOENT` is the expected answer (a tree that was never
+    // installed); everything else is a fault the caller must hear about.
+    // Absorbing `EACCES` here made "could not look" indistinguishable from
+    // "nothing there", and the dependency tree being unreadable is exactly
+    // what the develop gate exists to notice.
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+    throw err;
   }
 }
 
@@ -23,21 +29,34 @@ function candidatesForDir(dirRel: string): string[] {
 }
 /**
  * The shareable-dep source locations the hook path must VERIFY afterwards:
- * EVERY non-empty candidate under `repoRoot` and the discovered package dirs
- * (the same resolution as `findDepDirs`, minus the gitignore check — on the
- * hook path the source is gitignored by definition). `dirRel === ""` is the
- * `repoRoot` itself; only `node_modules` is conventionally nested in a
- * package dir.
+ * the non-empty candidates under `repoRoot` and the discovered package dirs
+ * that are **gitignored**, which is exactly the set the hook itself will link.
+ * `dirRel === ""` is the `repoRoot` itself; only `node_modules` is
+ * conventionally nested in a package dir.
  *
  * #1146 — every location, not the first per dep name: pi-rukas has a
  * non-empty root `node_modules` (a jiti compile cache) AND its real tree at
  * `extension/node_modules`. First-wins verified only the root one, so a hook
  * that linked the tree the verify command needs still read as hook-failed,
  * and a missing nested tree was never noticed.
+ *
+ * #1394 — the gitignore filter. The comment here used to claim the check was
+ * unnecessary "because on the hook path the source is gitignored by
+ * definition", but the hook's own loop applies `git check-ignore` and SKIPS a
+ * non-ignored tree. So the two disagreed: a real, tracked, non-empty
+ * `node_modules` (pi-rukas's root cache, #1146's fixture) was skipped by the
+ * hook and then demanded by the verification, and a hook that did the right
+ * thing was reported as one that linked nothing. Both sides now ask the same
+ * exported probe, so they cannot drift again. `probeFailures` collects the
+ * candidates whose status git could not answer — a probe error is not "not
+ * ignored", and silently dropping it would make an unreadable repo look like
+ * a repo with no dependencies.
  */
 export async function expectedDepLocations(
   repoRoot: string,
   packageDirs: string[],
+  execFn?: ExecFn,
+  probeFailures?: string[],
 ): Promise<Array<{ dirRel: string; source: string }>> {
   const locations: Array<{ dirRel: string; source: string }> = [
     { dirRel: "", source: repoRoot },
@@ -47,9 +66,14 @@ export async function expectedDepLocations(
   for (const dep of SHAREABLE_DEPS) {
     for (const { dirRel, source } of locations) {
       if (!candidatesForDir(dirRel).includes(dep)) continue;
-      if (await isNonEmptyDirectory(path.join(source, dep))) {
-        found.push({ dirRel, source: path.join(source, dep) });
+      if (!(await isNonEmptyDirectory(path.join(source, dep)))) continue;
+      if (execFn) {
+        const rel = path.join(dirRel, dep);
+        const status = await ignoredStatus(execFn, repoRoot, rel);
+        if (status === "git-error") probeFailures?.push(rel);
+        if (status !== "ignored") continue;
       }
+      found.push({ dirRel, source: path.join(source, dep) });
     }
   }
   return found;
@@ -66,10 +90,11 @@ export async function missingDepLocations(
   repoRoot: string,
   packageDirs: string[],
   worktreeAbs: string,
+  execFn?: ExecFn,
 ): Promise<Array<{ rel: string; source: string }>> {
   const missing: Array<{ rel: string; source: string }> = [];
-  for (const { dirRel, source } of await expectedDepLocations(repoRoot, packageDirs)) {
-    const rel = path.join(dirRel, path.basename(source));
+  for (const { dirRel, source } of await expectedDepLocations(repoRoot, packageDirs, execFn)) {
+    const rel = dirRel === "" ? path.basename(source) : path.join(dirRel, path.basename(source));
     if (!(await resolvedNonEmptyDirectory(path.join(worktreeAbs, rel)))) {
       missing.push({ rel, source });
     }

@@ -108,22 +108,39 @@ export interface ProvisionResult {
  * treated as `git-error` (same as ≥2), so a candidate we cannot confirm as
  * ignored is never linked over.
  */
-async function isIgnored(execFn: ExecFn, repoRoot: string, rel: string): Promise<boolean> {
+/** The three states of `git check-ignore` for `rel` under `repoRoot`. */
+export type IgnoreVerdict = "ignored" | "not-ignored" | "git-error";
+
+/**
+ * The shared `git check-ignore` probe.
+ *
+ * Exported so the post-hook verification asks the SAME question the hook asks.
+ * Before #1394 the two had separate notions of "is this a dependency we should
+ * expect", and they disagreed: the hook skips a non-ignored tree, while the
+ * verification still expected a copy of it, so a correctly-behaving hook was
+ * reported as one that linked nothing. One probe, one answer, both sides.
+ */
+export async function ignoredStatus(
+  execFn: ExecFn,
+  repoRoot: string,
+  rel: string,
+): Promise<IgnoreVerdict> {
   try {
     await execFn(`git check-ignore -q -- ${JSON.stringify(rel)}`, {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
     });
-    return true;
+    return "ignored";
   } catch (err) {
     const code = (err as { code?: unknown })?.code;
-    if (typeof code === "number") {
-      return gitCheckIgnore(code) === "ignored";
-    }
     // No exit code — exec failed to spawn (ENOENT) or the executor itself
     // threw. Same treatment as exit ≥2: unconfirmed, never link over.
-    return false;
+    return typeof code === "number" ? gitCheckIgnore(code) : "git-error";
   }
+}
+
+async function isIgnored(execFn: ExecFn, repoRoot: string, rel: string): Promise<boolean> {
+  return (await ignoredStatus(execFn, repoRoot, rel)) === "ignored";
 }
 
 /**
