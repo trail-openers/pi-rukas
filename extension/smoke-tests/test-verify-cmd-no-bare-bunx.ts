@@ -22,8 +22,18 @@ function optionalTier(f: HostFile): boolean {
   return f.kind === "command" && !f.whenAbsent.includes("derive");
 }
 
-/** Failures for one tier's text. `optional` = the driver treats it as "no gate". */
-function checkTier(rel: string, text: string, optional: boolean): string[] {
+/**
+ * Failures for one tier's text.
+ *
+ * `optional` is NOT a parameter here: whatever the driver does when a tier is
+ * absent, a tier file that EXISTS must still carry a command. An empty
+ * optional tier is a broken gate, not "no gate" — the ENOENT skip below is
+ * the only place optionality applies.
+ *
+ * The bunx scan reads every line including comments on purpose: a tier that
+ * mentions `bunx` in prose is the one a later editor copies from.
+ */
+function checkTier(rel: string, text: string): string[] {
   const fails: string[] = [];
   for (const line of text.split("\n")) {
     if (BARE_BUNX.test(line))
@@ -31,7 +41,7 @@ function checkTier(rel: string, text: string, optional: boolean): string[] {
         `${rel} uses bare \`bunx\` — \`bun x\` uses the binary that is always there: ${line.trim().slice(0, 120)}`,
       );
   }
-  if (!optional && readFirstConfigLine(text) === undefined)
+  if (readFirstConfigLine(text) === undefined)
     fails.push(`${rel} has no command line — the driver would fall back to derivation`);
   return fails;
 }
@@ -51,6 +61,14 @@ if (COMMAND_FILES.length === 0 || !COMMAND_FILES.some((f) => f.path === ".pi/ver
     `derived scope [${COMMAND_FILES.map((f) => f.path).join(", ")}] must be non-empty and hold .pi/verify-cmd`,
   ]);
 
+// The `optionalTier` split is derived from `whenAbsent`, so a rewording of
+// that prose silently reclassifies the develop gate. Pinned explicitly.
+const REQUIRED = COMMAND_FILES.filter((f) => !optionalTier(f)).map((f) => f.path);
+if (!REQUIRED.includes(".pi/verify-cmd"))
+  report([
+    `.pi/verify-cmd must classify as required — got required tier(s) [${REQUIRED.join(", ")}]`,
+  ]);
+
 for (const f of COMMAND_FILES) {
   let text: string;
   try {
@@ -65,23 +83,23 @@ for (const f of COMMAND_FILES) {
     report([`${f.path} is NOT readable (${code})`]);
     continue;
   }
-  report(checkTier(f.path, text, optionalTier(f)));
+  report(checkTier(f.path, text));
 }
 
-// One fixture canary: a gate never observed to fail is worthless (AGENTS.md §1).
-const CANARIES: Array<[string, string, boolean, number]> = [
-  [".pi/verify-cmd", "# c\nbunx tsc --noEmit", false, 1],
-  [".pi/verify-cmd", "cd extension && bun x tsc --noEmit", false, 0],
-  [".pi/verify-cmd", "# comment only\n\n   \n", false, 1],
+// Fixture canaries: a gate never observed to fail is worthless (AGENTS.md §1).
+// Counts are exact, not ">=1" — a canary that over-reports hides a rule that
+// fires where it should not.
+const CANARIES: Array<[string, string, number]> = [
+  ["bare bunx", "# c\nbunx tsc --noEmit", 1],
+  ["clean bun x", "cd extension && bun x tsc --noEmit", 0],
+  ["comment-only tier", "# comment only\n\n   \n", 1],
+  ["empty optional tier", "", 1],
+  ["bunx in a comment is flagged", "# was: bunx tsc\nbun x tsc --noEmit", 1],
 ];
-for (const [rel, text, optional, expected] of CANARIES) {
-  const n = checkTier(rel, text, optional).length;
-  const ok = expected === 0 ? n === 0 : n >= expected;
-  if (ok) console.log(`✓ canary ${rel}: ${n} failure(s)`);
-  else
-    report([
-      `GATE-BROKEN: canary ${rel} expected ${expected === 0 ? "0" : "≥1"} failures, got ${n}`,
-    ]);
+for (const [label, text, expected] of CANARIES) {
+  const n = checkTier(".pi/verify-cmd", text).length;
+  if (n === expected) console.log(`✓ canary ${label}: ${n} failure(s)`);
+  else report([`GATE-BROKEN: canary ${label} expected ${expected} failures, got ${n}`]);
 }
 
 console.log(exit === 0 ? "\nAll verify-cmd bunx checks passed." : "\nFAILED");
