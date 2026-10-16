@@ -12,7 +12,9 @@
  *      DirtyWorktreeError (notOwnWorktree) and never removed;
  *  (j) #1396 — an unreadable `git worktree list` refuses the creation with
  *      WorktreeScanError and removes NOTHING (one retry, then refuse); a single
- *      transient failure is retried and proceeds;
+ *      transient failure is retried and proceeds; the refused attempt writes no
+ *      backup ref and leaves the tree's HEAD at the original sha — that case
+ *      now lives in test-integrate-listing-refusal-1396.ts;
  *  (k) #1396 — an unreadable `git merge-base --is-ancestor` keeps the commit
  *      instead of assuming it is already on origin/<branch>.
  */
@@ -26,7 +28,7 @@ import {
   WorktreeScanError,
   worktreePath,
 } from "../src/worktree.ts";
-import { git, realExecWithStderr as realExec } from "./lib/worktree-fake-fixture.ts";
+import { ISSUE_17_BACKUP_REF, git, realExec } from "./lib/worktree-fake-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -316,88 +318,11 @@ try {
     assert(list.includes(wt), "(h) the stale tree is still registered");
   }
 
-  // (j) #1396 — `git worktree list` itself is unreadable: the registration check
-  // cannot prove the tree is NOT driver residue, so the whole creation refuses
-  // (WorktreeScanError, not a DirtyWorktreeError — there is no finding to name)
-  // and the registered stale tree stays on disk and stays registered.
-  {
-    const { repo, baseSha, branch, wt, stateFile } = await fixture("listing-unreadable");
-    // The tree holds a commit on neither the branch nor origin — the shape the
-    // keep-or-refuse branch exists to save. Under the old fail-open listing it
-    // read as "unregistered", skipped the backup, and fell through to
-    // `git worktree add` failing on an existing path.
-    writeFileSync(path.join(wt, "a.txt"), "base\nintegrated\n");
-    await git(wt, ["commit", "-q", "-am", "integration"]);
-    const sha = (await git(wt, ["rev-parse", "HEAD"])).stdout.trim();
-    let listCalls = 0;
-    const listingFails: ExecFn = async (cmd, o) => {
-      if (cmd.startsWith("git worktree list")) {
-        listCalls++;
-        throw new Error("fatal: simulated listing failure");
-      }
-      return realExec(cmd, o);
-    };
-    let err: unknown;
-    try {
-      await ensureIntegrateWorktree(
-        listingFails,
-        { repoRoot: repo, issue: 17, branchName: branch, baseSha },
-        stateFile,
-      );
-    } catch (e) {
-      err = e;
-    }
-    assert(
-      err instanceof WorktreeScanError &&
-        !(err instanceof DirtyWorktreeError) &&
-        /simulated listing failure/.test(err.message),
-      `(j) an unreadable \`git worktree list\` refuses the integrate creation with WorktreeScanError (${err ? (err as Error).message.split("\n")[0] : "no error"})`,
-    );
-    assert(
-      listCalls === 2,
-      `(j) the strict listing retries once before refusing — both attempts ran (${listCalls})`,
-    );
-    assert(existsSync(wt), "(j) the registered stale tree is NOT removed");
-    assert(existsSync(path.join(wt, "a.txt")), "(j) and its working file survives");
-    const still = (
-      await git(repo, ["rev-parse", "--verify", "HEAD"]).catch(() => ({ stdout: "" }))
-    ).stdout.trim();
-    const list = (await git(repo, ["worktree", "list", "--porcelain"])).stdout;
-    assert(list.includes(wt), "(j) the stale tree is still registered after the refusal");
-    assert(
-      still.length > 0 && existsSync(wt),
-      `(j) its commits are still resolvable (${sha.slice(0, 8)})`,
-    );
-  }
-
-  // (j2) #1396 — one transient listing failure is retried, not refused: a flaky
-  // read must not park a cycle whose tree is perfectly replaceable.
-  {
-    const { repo, baseSha, branch, wt, stateFile } = await fixture("listing-flaky");
-    let listCalls = 0;
-    const flakyOnce: ExecFn = async (cmd, o) => {
-      if (cmd.startsWith("git worktree list") && ++listCalls === 1) {
-        throw new Error("fatal: transient lock");
-      }
-      return realExec(cmd, o);
-    };
-    let err: unknown;
-    try {
-      await ensureIntegrateWorktree(
-        flakyOnce,
-        { repoRoot: repo, issue: 17, branchName: branch, baseSha },
-        stateFile,
-      );
-    } catch (e) {
-      err = e;
-    }
-    assert(
-      err === undefined && listCalls >= 2,
-      `(j2) a single transient listing failure is retried and the re-entry proceeds (calls: ${listCalls}, ${err ? (err as Error).message.split("\n")[0] : "ok"})`,
-    );
-    const list = (await git(repo, ["worktree", "list", "--porcelain"])).stdout;
-    assert(list.includes(wt), "(j2) and the integrate worktree was recreated at its path");
-  }
+  // (j) / (j2) #1396 — the STRICT `git worktree list` behind the registration
+  // check (unreadable → WorktreeScanError, nothing removed, no backup written;
+  // one transient failure → retried and proceeds) has its own file,
+  // test-integrate-listing-refusal-1396.ts — same fixture shape, kept out of
+  // this one so the file stays under the §12 500-line cap.
 
   // (k) #1396 — an unreadable "is HEAD already on origin/<branch>?" keeps the
   // commit. The old code read any git failure as "not reachable" AND the
@@ -485,6 +410,11 @@ try {
       `(k) canary: with the probe ANSWERING "reachable" the same tree writes NO backup ref — so (k) is the unreadable answer doing the work (${canary === undefined ? "no ref" : String(canary).slice(0, 60)})`,
     );
   }
+
+  // (l) #1396 six-lens — the probe's exit code arrives in BOTH shapes (`1` and
+  // `"1"`), and a killed/signalled probe is still "could not answer". That case
+  // has its own file, test-integrate-backup-code-1396.ts — same fixture shape,
+  // kept out of this one so the file stays under the §12 500-line cap.
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

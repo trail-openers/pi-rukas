@@ -74,7 +74,8 @@ export async function readCycleWorktreePaths(stateFile: string | undefined): Pro
  * `backupIntegrateHead`, the one place that decides whether those commits are
  * the cycle's own (kept on a backup ref, the tree replaced) or foreign (a tree
  * on another branch — refused). Refusing the cycle's own commits wedged every
- * re-entry. Returns the backup ref when one was written.
+ * re-entry. Returns what was kept (the ref, and any sha it replaced) when a ref
+ * was written.
  */
 export async function keepOrRefuseStaleIntegrateTree(
   execFn: ExecFn,
@@ -83,7 +84,7 @@ export async function keepOrRefuseStaleIntegrateTree(
   ref: string,
   branchName: string,
   issue: number,
-): Promise<string | undefined> {
+): Promise<IntegrateBackup | undefined> {
   const finding = await inspectWorktreeForLoss(execFn, repoRoot, abs, ref);
   if (finding === undefined) return undefined; // provably clean: nothing uncommitted, no unique commits
   // Every other loss channel is judged HERE, before the commits-only path.
@@ -93,13 +94,24 @@ export async function keepOrRefuseStaleIntegrateTree(
     finding.notOwnWorktree !== true;
   if (!onlyCommits) throw new DirtyWorktreeError(finding);
   try {
-    return await backupIntegrateHead(execFn, abs, ref, branchName, issue);
+    return await backupIntegrateHead(execFn, abs, ref, branchName, issue, repoRoot);
   } catch (err) {
     throw new DirtyWorktreeError({
       ...finding,
       inspectError: `its commits could not be kept on a backup ref: ${(err as Error).message ?? String(err)}`,
     });
   }
+}
+
+/**
+ * #1396 — the ONE backup ref name for an issue. Written by
+ * `backupIntegrateHead`, asserted by the smoke tests, and named in
+ * `docs/troubleshooting.md`. `issue` is a number from the driver's context, so
+ * it cannot carry path or ref traversal; `assertSafeRef` still runs on the
+ * composed name before it reaches `git update-ref`.
+ */
+export function integrateBackupRef(issue: number): string {
+  return `refs/pi-rukas/integrate-backup/issue-${issue}`;
 }
 
 /**
@@ -121,9 +133,12 @@ export async function keepOrRefuseStaleIntegrateTree(
  * the ref merely pointed at; nothing survives for the ref to protect.
  *
  * Only a detached HEAD or one on the cycle's own branch is the cycle's work: a
- * tree on another branch holding unique commits throws. Returns the ref, or
- * `undefined` when there was nothing to keep. Throws when git cannot answer —
- * the caller then removes nothing.
+ * tree on another branch holding unique commits throws. Returns what was kept
+ * — the ref and, when the ref already existed and pointed at a DIFFERENT sha,
+ * the sha it replaced (#1396 six-lens: the ref is replaced in place, so without
+ * this the operator's handoff could not tell that an earlier re-entry's backup
+ * is gone) — or `undefined` when there was nothing to keep. Throws when git
+ * cannot answer — the caller then removes nothing.
  */
 export async function backupIntegrateHead(
   execFn: ExecFn,
@@ -131,7 +146,8 @@ export async function backupIntegrateHead(
   ref: string,
   branchName: string,
   issue: number,
-): Promise<string | undefined> {
+  repoRoot: string,
+): Promise<IntegrateBackup | undefined> {
   assertSafeRef(ref);
   const opts = { cwd: abs, maxBuffer: 64 * 1024 };
   const sha = (await execFn("git rev-parse --verify HEAD", opts)).stdout.trim();
@@ -148,12 +164,90 @@ export async function backupIntegrateHead(
   if (head !== "HEAD" && head !== `refs/heads/${branchName}`) {
     throw new Error(`HEAD is on ${head}, not ${branchName} — not this cycle's work`);
   }
-  const backup = `refs/pi-rukas/integrate-backup/issue-${issue}`;
-  await execFn(`git update-ref ${JSON.stringify(backup)} ${JSON.stringify(sha)}`, opts);
+  const backup = integrateBackupRef(issue);
+  assertSafeRef(backup);
+  // #1396 six-lens — the ref is one per issue and `update-ref` replaces it in
+  // place, so the sha it held until now is about to lose its only named
+  // reference. Read it FIRST: a ref that does not exist yet answers empty via
+  // `--verify --quiet` (exit 1), which is "nothing superseded", not an error.
+  //
+  // The read runs at `repoRoot`, NOT in `abs`. Both are links to the same
+  // object database and the same refs, but `abs` is the tree about to be
+  // force-removed: its `.git` file points at a gitdir the driver deletes, and
+  // in the plain-directory shape (`notOwnWorktree`) there is no valid gitdir
+  // at all. A read that fails there is indistinguishable from a transient git
+  // error, and this function's contract is "throws when git cannot answer, so
+  // the caller removes nothing" — a broken stale tree would then refuse a
+  // re-entry that has nothing to lose. repoRoot is a real worktree the driver
+  // never removes, so "could not read" from there means what it says. The read
+  // is `git rev-parse --verify --quiet <ref>`, which is fully discriminating
+  // against a real repository (measured on git 2.50.1):
+  //   present  → exit 0, the sha on stdout, stderr empty
+  //   absent   → exit 1, **stdout AND stderr empty**  — a definite negative
+  //   broken   → exit 1 with `warning: ignoring broken ref …` on stderr
+  //   no repo  → exit 128 with `fatal: …` on stderr
+  // so quiet exit 1 reads as "nothing superseded" and every other rejection is
+  // "could not answer", which this function's contract says must throw so the
+  // caller removes nothing. Same discrimination as
+  // `worktree-create-guard.ts`'s `baseRefResolves`.
+  let previous: string | undefined;
+  try {
+    const r = await execFn(`git rev-parse --verify --quiet ${JSON.stringify(backup)}`, {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+    });
+    previous = r.stdout.trim();
+  } catch (err) {
+    const e = err as {
+      code?: unknown;
+      signal?: unknown;
+      killed?: unknown;
+      stdout?: unknown;
+      stderr?: unknown;
+    };
+    const quietExit1 =
+      (e.code === 1 || e.code === "1") &&
+      !e.signal &&
+      !e.killed &&
+      String(e.stdout ?? "") === "" &&
+      String(e.stderr ?? "") === "";
+    // Definite negative: the ref does not exist, so nothing was superseded.
+    if (quietExit1) previous = "";
+    else throw err;
+  }
+  const supersededSha = previous && previous !== sha ? previous : undefined;
+  // #1396 six-lens — the write runs at `repoRoot` for the same reason the read
+  // above does: `abs` is the tree about to be force-removed, and `git update-ref`
+  // there writes through a `.git` file that points at a gitdir the driver is
+  // deleting. `update-ref` validates the ref it is overwriting before writing,
+  // so a broken link made it fail with `unable to resolve reference` — which
+  // this function's contract turns into "remove nothing", wedging the re-entry
+  // the backup exists to unblock. Both trees share one object database and one
+  // ref store, so the write lands in the same place either way.
+  await execFn(`git update-ref ${JSON.stringify(backup)} ${JSON.stringify(sha)}`, {
+    cwd: repoRoot,
+    maxBuffer: 64 * 1024,
+  });
   trace(
-    `work-driver: kept the stale integrate tree's unpushed commits on ${backup} (${sha}) — replaces any older backup for this issue`,
+    `work-driver: kept the stale integrate tree's unpushed commits on ${backup} (${sha})${
+      supersededSha
+        ? ` — replaces the older backup ${supersededSha} for this issue`
+        : " — replaces any older backup for this issue"
+    }`,
   );
-  return backup;
+  return { ref: backup, ...(supersededSha ? { supersededSha } : {}) };
+}
+
+/** What `backupIntegrateHead` kept: the ref, and the sha it replaced if any. */
+export interface IntegrateBackup {
+  ref: string;
+  /**
+   * The sha the per-issue backup ref pointed at BEFORE this call replaced it.
+   * Present only when the ref already existed with a different sha — i.e. only
+   * when a previous re-entry's kept commits have just lost their only named
+   * reference.
+   */
+  supersededSha?: string;
 }
 
 /**
@@ -165,10 +259,18 @@ export async function backupIntegrateHead(
  * ancestor" and >1 for "could not answer" (a missing ref, a corrupt object),
  * and `promisify(exec)` surfaces both as rejections. Collapsing the two — the
  * old `catch → false` — manufactured a backup ref for commits already on
- * `origin/<branch>` (a second, quieter source of ref growth) while the
- * fail-open direction that actually loses work was never distinguished. An
- * unreadable answer now returns `undefined`, and the one caller treats it as
- * NOT reachable, i.e. keep the commit.
+ * `origin/<branch>` (a second, quieter source of ref growth) while the fail-open
+ * direction that actually loses work was never distinguished. An unreadable
+ * answer now returns `undefined`, and the one caller treats it as NOT reachable,
+ * i.e. keep the commit.
+ *
+ * The exit code is read as BOTH shapes: `child_process.exec` reports the
+ * numeric status, but the executor is the driver's injected `ExecFn` and a
+ * non-numeric implementation (a shell wrapper, a test fake) reports `"1"`.
+ * Accepting only the number sent a string `"1"` down the "could not answer"
+ * branch, which keeps a commit that is provably already on `origin/<branch>`
+ * — a needless write, not a loss, so the old code got away with it. A kill or
+ * a signal is never exit-1: those stay "could not answer".
  */
 async function headReachableFrom(
   execFn: ExecFn,
@@ -180,8 +282,8 @@ async function headReachableFrom(
     await execFn(cmd, { cwd: abs, maxBuffer: 64 * 1024 });
     return true;
   } catch (err) {
-    const code = (err as { code?: unknown }).code;
-    if (code === 1) return false;
+    const e = err as { code?: unknown; signal?: unknown; killed?: unknown };
+    if ((e.code === 1 || e.code === "1") && !e.signal && !e.killed) return false;
     trace(
       `work-driver: could not tell whether HEAD is on ${remoteRef} — treating it as NOT there, so its commits are kept (${(err as Error).message ?? String(err)})`,
     );

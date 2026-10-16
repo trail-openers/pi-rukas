@@ -317,8 +317,14 @@ export async function mechanizedCommitPr(
       // marker text.
       // #1173 — the stale integrate tree's kept commits reach the plumb
       // report (and so the handoff), not only the trace.
+      // #1396 (six-lens) — and so does the sha the per-issue ref just
+      // replaced: it is named by nothing after this, so the handoff is the only
+      // place the operator can learn it existed.
+      const supersededNote = worktreeRes.supersededSha
+        ? ` It replaces an older backup of \`${worktreeRes.supersededSha}\`, now named by no ref — \`git fsck --unreachable\` / \`git reflog\` while the object is still in the store.`
+        : "";
       const kept = worktreeRes.backupRef
-        ? ` The stale integrate tree's unpushed commits were kept on ${worktreeRes.backupRef}.`
+        ? ` The stale integrate tree's unpushed commits were kept on ${worktreeRes.backupRef}.${supersededNote}`
         : "";
       return {
         ok: false,
