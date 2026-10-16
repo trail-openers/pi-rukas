@@ -71,6 +71,7 @@ import { mergeAuthorityEnabled } from "../src/work-driver-merge-authority.ts";
 import { NET_GIT_TIMEOUT_DEFAULT_MS } from "../src/work-driver-net-git.ts";
 import { crossGroupConflictsEnabled } from "../src/work-driver-path-claims.ts";
 import { planContractEnabled } from "../src/work-driver-plan-contract.ts";
+import { pendingShutdownBoundMs } from "../src/pending-jobs-signal.ts";
 import { planQualityEnabled } from "../src/work-driver-plan-helpers.ts";
 import { planDispatchTimeoutMs } from "../src/work-driver-plan-helpers.ts";
 import { maxWorkstreams } from "../src/work-driver-plan-workstreams.ts";
@@ -315,6 +316,7 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LENS_ROUND_CAP", () => lensRoundCap()],
   ["PI_ENSEMBLE_MAX_WORKSTREAMS", maxWorkstreams],
   ["PI_ENSEMBLE_PARALLEL_GROUPS", resolvedParallelGroups],
+  ["PI_ENSEMBLE_PENDING_SHUTDOWN_MS", pendingShutdownBoundMs],
   ["PI_ENSEMBLE_PLAN_CACHE_TTL_MS", planCacheTtlMs],
   ["PI_ENSEMBLE_PLAN_TIMEOUT_MS", planDispatchTimeoutMs],
   ["PI_ENSEMBLE_RATE_LIMIT_BURST_MAX_S", burstThresholdSeconds],
