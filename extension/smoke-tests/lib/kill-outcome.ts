@@ -49,8 +49,9 @@ import type { DispatchResult } from "../../src/types.ts";
  *
  * Two facts, both required, neither sufficient alone:
  *
- *  - `reaped` — the caller polled the leader's pid to gone inside the deadline
- *    it derived from `INTERACTIVE_KILL_GRACE_MS`. This is the death evidence,
+ *  - `reaped` — the caller polled the group's pid to gone inside the deadline
+ *    it derived from `KILL_GRACE_MS` (the group grace — the probe spawns with
+ *    `processGroup: true`, see `lib/cancel-escalation.ts`). This is the death evidence,
  *    read from live OS state. It is what a result shape can never supply: an
  *    un-exited leader and a SIGKILLed one look identical in `exitCode`.
  *  - `killCause === "abort"` — pi-rukas ended the child, not an unrelated
@@ -65,10 +66,7 @@ import type { DispatchResult } from "../../src/types.ts";
  * the predicate honest about what it can and cannot see: the pid poll is the
  * evidence, and the exit code is context the caller prints.
  */
-export function diedToSigkill(
-  p: Pick<DispatchResult, "exitCode" | "killCause">,
-  reaped: boolean,
-): boolean {
+export function diedToSigkill(p: Pick<DispatchResult, "killCause">, reaped: boolean): boolean {
   return reaped && p.killCause === "abort";
 }
 
