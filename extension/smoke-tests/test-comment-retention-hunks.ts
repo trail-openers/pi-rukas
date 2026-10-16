@@ -265,7 +265,15 @@ function assert(cond: boolean, msg: string) {
   // A genuinely empty range: the diff is empty AND the scoped commit count is 0.
   const none = renderCommentEvidence(
     await findLostComments(
-      async (cmd) => ({ stdout: cmd.startsWith("git rev-list") ? "0\n" : "" }),
+      async (cmd) => ({
+        stdout: cmd.startsWith("git rev-list")
+          ? "0\n"
+          : // #1153 round 3 — the probes inside `aheadOfBase` are only `resolves`
+            // when they print the object id, so the positive control prints one.
+            cmd.includes("rev-parse")
+            ? `${"a".repeat(40)}\n`
+            : "",
+      }),
       "/tmp",
       "abc",
       "def",

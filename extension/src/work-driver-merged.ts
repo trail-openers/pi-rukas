@@ -365,7 +365,7 @@ export async function runMerged(
       // branch -d attempt.
       const execFn = ctx.verifyExecFn ?? execp;
       const mainlineResult = await detectMainline(ctx.repoRoot, execFn);
-      const mainline = "branch" in mainlineResult ? mainlineResult.branch : undefined;
+      const mainline = mainlineResult.ok ? mainlineResult.branch : undefined;
       // #1093 — return the operator's checkout to the ref the cycle STARTED on,
       // not to mainline. Without a recorded startRef (pre-#1093 state) the
       // target stays mainline.
