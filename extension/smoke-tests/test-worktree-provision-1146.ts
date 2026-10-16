@@ -12,8 +12,9 @@
  * assertion. Real git, a real `git worktree add`, and this repo's REAL
  * `.pi/worktree-setup` (copied into the fixture) — no stubbed hook.
  */
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -22,6 +23,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { geteuid } from "node:process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -29,10 +31,13 @@ import { missingDepsFailure } from "../src/work-driver-deps-gate.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import { provisionWorktree } from "../src/worktree-provision.ts";
+import { WORKTREE_SETUP_HOOK } from "../src/worktree-provision.ts";
+import { runHookProvisioning } from "../src/worktree-provision-hook.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { realExec } from "./lib/exec-fake.ts";
+import { ignoredStatus } from "../src/worktree-provision.ts";
 
-const pexec = promisify(exec);
+const pexec = promisify(execFile);
 const REAL_HOOK = path.resolve(import.meta.dirname, "..", "..", ".pi", "worktree-setup");
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -67,19 +72,19 @@ async function repoShapedFixture(hook: string | undefined): Promise<{ root: stri
     if (hook === REAL_HOOK) copyFileSync(REAL_HOOK, path.join(root, ".pi", "worktree-setup"));
     else writeFileSync(path.join(root, ".pi", "worktree-setup"), hook);
   }
-  const git = (args: string) => pexec(`git ${args}`, { cwd: root });
-  await git("init -q");
-  await git("config user.email test@example.com");
-  await git("config user.name test");
-  await git("add -A");
-  await git("commit -q -m init");
+  const git = (...args: string[]) => pexec("git", args, { cwd: root });
+  await git("init", "-q");
+  await git("config", "user.email", "test@example.com");
+  await git("config", "user.name", "test");
+  await git("add", "-A");
+  await git("commit", "-q", "-m", "init");
   // Installed AFTER the commit, like a real checkout: gitignored, non-empty.
   mkdirSync(path.join(root, "node_modules", ".cache", "jiti"), { recursive: true });
   writeFileSync(path.join(root, "node_modules", ".cache", "jiti", "a.mjs"), "x\n");
   mkdirSync(path.join(root, "extension", "node_modules", "dep"), { recursive: true });
   writeFileSync(path.join(root, "extension", "node_modules", "dep", "index.js"), "x\n");
   const wt = path.join(root, ".worktrees", "issue-1-default");
-  await git(`worktree add -q --detach ${JSON.stringify(wt)} HEAD`);
+  await git("worktree", "add", "-q", "--detach", wt, "HEAD");
   return { root, wt };
 }
 
@@ -106,7 +111,7 @@ async function repoShapedFixture(hook: string | undefined): Promise<{ root: stri
       exclude.includes("node_modules") && exclude.includes("extension/node_modules"),
       "the hook writes one info/exclude entry per link, with no trailing slash",
     );
-    const { stdout } = await pexec("git status --porcelain", { cwd: wt });
+    const { stdout } = await pexec("git", ["status", "--porcelain"], { cwd: wt });
     assert(stdout.trim() === "", `no link surfaces in git status (got: ${JSON.stringify(stdout)})`);
     assert(
       (await missingDepsFailure(realExec, { eventLog: [] } as WorkState, root, wt, "v")) ===
@@ -247,10 +252,16 @@ if (existsSync("/bin/dash")) {
   const { root, wt } = await repoShapedFixture(undefined);
   try {
     rmSync(path.join(root, "extension", "node_modules"), { recursive: true });
-    const failing = (code: number) => async (cmd: string, opts: Parameters<typeof realExec>[1]) => {
-      if (cmd !== "git") return realExec(cmd, opts);
-      throw Object.assign(new Error("fatal: boom"), { code });
-    };
+    const failing = (code: number | undefined) =>
+      async (cmd: string, opts: Parameters<typeof realExec>[1]) => {
+        // argv form only — the gate's probe is `execFn("git", { argv })`, and a
+        // fake that also swallowed the shell-form calls would fail this
+        // assertion for the wrong reason.
+        if (cmd !== "git" || !opts?.argv) return realExec(cmd, opts);
+        throw Object.assign(new Error("fatal: boom"), {
+          ...(code === undefined ? {} : { code }),
+        });
+      };
     const unknown = await missingDepsFailure(
       failing(128),
       { eventLog: [] } as unknown as WorkState,
@@ -259,8 +270,13 @@ if (existsSync("/bin/dash")) {
       "v",
     );
     assert(
-      unknown?.includes("could not determine (git error: exit 128: fatal: boom)") === true,
-      `a git error on check-ignore is named as undetermined (got: ${unknown})`,
+      unknown?.includes("ignore status could not determine (git check-ignore") === true &&
+        unknown?.includes("fatal: boom") === true,
+      `a git error on check-ignore names git's own words, not just a bare state (got: ${unknown})`,
+    );
+    assert(
+      unknown?.includes("node_modules missing in") === true,
+      `...and the undetermined candidate is NOT dropped from the expectation (got: ${unknown})`,
     );
     const notIgnored = await missingDepsFailure(
       failing(1),
@@ -270,6 +286,21 @@ if (existsSync("/bin/dash")) {
       "v",
     );
     assert(notIgnored === undefined, "exit 1 (not ignored) is never linked, so never named");
+    // An executor that cannot answer at all — a spawn failure carries no exit
+    // code. That is a git error too, never a clean "not ignored", so the
+    // candidate survives into the named set.
+    const noCode = await missingDepsFailure(
+      failing(undefined),
+      { eventLog: [] } as unknown as WorkState,
+      root,
+      wt,
+      "v",
+    );
+    assert(
+      noCode?.includes("ignore status could not determine") === true &&
+        noCode?.includes("node_modules missing in") === true,
+      `an executor rejection with no exit code is a git error, not "not ignored" (got: ${noCode})`,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

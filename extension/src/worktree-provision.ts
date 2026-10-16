@@ -50,10 +50,20 @@ import { trace } from "./trace.ts";
 import { depsExpectedAt, packageDirsAt, runHookProvisioning } from "./worktree-provision-hook.ts";
 import { resolvedNonEmptyDirectory } from "./worktree-provision-verify.ts";
 
-/** The exec shape `worktree.ts` already uses. */
+/**
+ * The exec shape `worktree.ts` already uses.
+ *
+ * #1394 — `argv` is part of the contract, not an extra: the `git check-ignore`
+ * probe below passes the candidate path as ONE argument. The shell-string form
+ * (`git check-ignore -q -- "<rel>"`) re-parses the path in `sh -c`, so a
+ * directory whose name contains `$(…)` or backticks EXECUTES. Every production
+ * executor honours `argv` via `execFile` (`src/exec.ts` `execp`); a shell-only
+ * executor that drops it runs a bare `git` (#1279), which is a wrong answer,
+ * not a security hole.
+ */
 export type ExecFn = (
   cmd: string,
-  opts: { cwd?: string; maxBuffer?: number },
+  opts: { cwd?: string; maxBuffer?: number; argv?: string[] },
 ) => Promise<{ stdout: string }>;
 
 /** Where a project describes provisioning we cannot infer. */
@@ -126,16 +136,19 @@ export async function ignoredStatus(
   rel: string,
 ): Promise<IgnoreVerdict> {
   try {
-    await execFn(`git check-ignore -q -- ${JSON.stringify(rel)}`, {
+    // argv form (#1394): `rel` is a filesystem path this module did not name,
+    // and it never passes through a shell.
+    await execFn("git", {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
+      argv: ["check-ignore", "-q", "--", rel],
     });
     return "ignored";
   } catch (err) {
     const code = (err as { code?: unknown })?.code;
     // No exit code — exec failed to spawn (ENOENT) or the executor itself
     // threw. Same treatment as exit ≥2: unconfirmed, never link over.
-    return typeof code === "number" ? gitCheckIgnore(code) : "git-error";
+    return gitCheckIgnore(typeof code === "number" ? code : 2);
   }
 }
 
@@ -145,8 +158,12 @@ async function isIgnored(execFn: ExecFn, repoRoot: string, rel: string): Promise
 
 /**
  * `git check-ignore` exit codes, three states: 0 = ignored, 1 = not ignored,
- * ≥2 = git itself failed (treated as not-ignored at the caller — a candidate
+ * ≥2 = git itself failed (the caller treats that as not-linkable — a candidate
  * we cannot confirm as ignored must not be linked over).
+ *
+ * The three states are computed HERE rather than collapsed at each caller:
+ * #481's original bug was a caller folding "not ignored" and "git failed" into
+ * one answer, which let a git error read as "safe to skip".
  */
 function gitCheckIgnore(exitCode: number): "ignored" | "not-ignored" | "git-error" {
   if (exitCode === 0) return "ignored";
@@ -163,7 +180,7 @@ async function isDirectory(abs: string): Promise<boolean> {
 }
 
 /**
- * True when the directory has at least one entry.
+ * True when the directory has at least one entry, faults included.
  *
  * `git check-ignore` answers about the path, not its contents — an EMPTY
  * `node_modules/` at `repoRoot` is gitignored just like a full one, and
@@ -171,13 +188,41 @@ async function isDirectory(abs: string): Promise<boolean> {
  * from success while the worktree is still bare (#481's observed live
  * failure). Empty candidates are skipped before the link, so they are never
  * reported as a useful link.
+ *
+ * A non-`ENOENT` fault (EACCES on the tree, ELOOP, ENOTDIR under a path that
+ * exists) is COLLECTED and reported as a `problem` by the symlink path rather
+ * than swallowed — "could not look" is not the same answer as "nothing there",
+ * and the second is the #481 finding while the first is the #1394 one. The
+ * probe-free callers (the hook precondition, `missingDepLocations`' source
+ * scan) reach this copy instead of `worktree-provision-verify.ts`'s
+ * `resolvedNonEmptyDirectory`, which must stay permissive because it asks the
+ * question AFTER a link was made: a link that cannot be resolved is already a
+ * `problem` there, and re-throwing would turn a reportable state into a throw.
  */
-async function isNonEmptyDirectory(abs: string): Promise<boolean> {
+async function isNonEmptyDirectory(abs: string): Promise<{
+  nonEmpty: boolean;
+  fault?: string;
+}> {
   try {
-    return (await fs.readdir(abs)).length > 0;
-  } catch {
-    return false;
+    return { nonEmpty: (await fs.readdir(abs)).length > 0 };
+  } catch (err) {
+    // ENOENT is the expected answer for a tree that was never installed.
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { nonEmpty: false };
+    return { nonEmpty: false, fault: errnoDetail(err) };
   }
+}
+
+/** `EACCES: permission denied, scandir '…'` — the code first, then the message. */
+function errnoDetail(err: unknown): string {
+  const e = err as NodeJS.ErrnoException;
+  const code = typeof e?.code === "string" ? e.code : "unknown";
+  const message = typeof e?.message === "string" ? e.message : String(err);
+  // Node's own errno message already begins with the code, so prefixing it
+  // printed `EACCES: EACCES: permission denied…`. The code is the token a
+  // reader (and a test) greps for, so the code is kept and a duplicated prefix
+  // on the message is dropped.
+  const detail = message.startsWith(`${code}: `) ? message.slice(code.length + 2) : message;
+  return `${code}: ${detail.slice(0, 120)}`;
 }
 
 /**
@@ -204,22 +249,27 @@ async function findDepDirs(
   execFn: ExecFn,
   repoRoot: string,
   packageDirs: string[],
-): Promise<Array<{ dep: string; dirRel: string; source: string }>> {
+): Promise<{ found: Array<{ dep: string; dirRel: string; source: string }>; faults: string[] }> {
   const locations: Array<{ dirRel: string; source: string }> = [
     { dirRel: "", source: repoRoot },
     ...packageDirs.map((d) => ({ dirRel: d, source: path.join(repoRoot, d) })),
   ];
   const found: Array<{ dep: string; dirRel: string; source: string }> = [];
+  const faults: string[] = [];
   for (const dep of SHAREABLE_DEPS) {
     for (const { dirRel, source } of locations) {
       if (!candidatesForDir(dirRel).includes(dep)) continue;
       const abs = path.join(source, dep);
-      if (!(await isNonEmptyDirectory(abs))) continue;
+      const probe = await isNonEmptyDirectory(abs);
+      // The path is named first so a fault about one tree is never ambiguous
+      // with another; `slice` bounds the whole string, not the code.
+      if (probe.fault !== undefined) faults.push(`${path.join(dirRel, dep)}: ${probe.fault}`);
+      if (!probe.nonEmpty) continue;
       if (!(await isIgnored(execFn, repoRoot, path.join(dirRel, dep)))) continue;
       found.push({ dep, dirRel, source: abs });
     }
   }
-  return found;
+  return { found, faults };
 }
 
 /**
@@ -227,30 +277,67 @@ async function findDepDirs(
  *
  * Returns what it did rather than throwing: the caller records it and carries
  * on either way.
+ *
+ * #1394 — "rather than throwing" is the contract, not an aspiration, and it is
+ * total. AGENTS.md §7 says provisioning never fails the branch step, and a
+ * rejected promise here did exactly that: `worktreeCreate` propagated it, the
+ * mechanized branch setup failed, and the branch step fell to the LLM ops
+ * dispatch — or halted. So EVERY filesystem probe and every git call this
+ * function makes goes through something that turns a fault into a `problem`
+ * string: `findDepDirs` collects probe faults, the link loop catches per link,
+ * `depsExpectedAt` / `packageDirsAt` swallow theirs, and every probe exported
+ * from `worktree-provision-verify.ts` (`resolvedNonEmptyDirectory`,
+ * `anyLinkableSharedSource`, `expectedDepLocations`) absorbs its own errno into
+ * a reported field — a fault there never reaches this function as a rejection.
+ * A `repoRoot` this cannot read is reported (`via: "none"` with a fault), never
+ * propagated.
  */
 export async function provisionWorktree(
   execFn: ExecFn,
   repoRoot: string,
   worktreeAbs: string,
 ): Promise<ProvisionResult> {
-  const hook = path.join(repoRoot, WORKTREE_SETUP_HOOK);
-  const hookExists = await isDirectory(path.dirname(hook)).then(() => fileExists(hook));
+  // Built here, next to the read: `test-headless-inputs.ts` recognises a
+  // `.pi/<file>` as read only when a join of its const sits within two lines of
+  // the fs call, so hoisting this away makes the hook look unread.
+  // ENOENT — the normal answer for a project with no hook — stays quiet; any
+  // other fault reaching here would be one this module cannot explain, and
+  // `stat` is the one call in this function not already wrapped.
+  const hookExists = await fileExists(path.join(repoRoot, WORKTREE_SETUP_HOOK));
   // #545 — an unreadable repoRoot is not a provisioning failure; it means
   // the worktree was never actually created (e.g. the `ExecFn` is a test
   // fixture that never materialises the directory). Skip provisioning and
   // report via: "none" so the caller's `worktreeCreate` still returns.
+  // #1394 — "could not read" (EACCES) is reported with its errno rather than
+  // reported as "absent", because the operator's fix differs.
   if (!(await isDirectory(repoRoot))) {
-    return { via: "none", linked: [] };
+    const unreadable = await unreadableRootDetail(repoRoot);
+    return {
+      via: "none",
+      linked: [],
+      problem:
+        unreadable === undefined
+          ? undefined
+          : `could not read repoRoot ${repoRoot} — ${unreadable}; nothing was linked and the worktree will be bare`,
+    };
   }
   if (hookExists) {
-    return runHookProvisioning(execFn, repoRoot, worktreeAbs, hook);
+    return runHookProvisioning(
+      execFn,
+      repoRoot,
+      worktreeAbs,
+      path.join(repoRoot, WORKTREE_SETUP_HOOK),
+    );
   }
 
   const packageDirs = await packageDirsAt(repoRoot);
-  const found = await findDepDirs(execFn, repoRoot, packageDirs);
+  const { found, faults } = await findDepDirs(execFn, repoRoot, packageDirs);
   const linked: string[] = [];
   const linkedRel: string[] = [];
-  const problems: string[] = [];
+  // Probe faults first: an unreadable tree explains every "no dependency
+  // tree" that follows it, and a reader who sees the two in this order reads
+  // the cause rather than the symptom.
+  const problems: string[] = [...faults];
   for (const { dep, dirRel, source } of found) {
     const target = path.join(worktreeAbs, dirRel, dep);
     try {
@@ -359,6 +446,25 @@ async function fileExists(abs: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Why `repoRoot` could not be read, or `undefined` when it is simply absent.
+ *
+ * `isDirectory` cannot tell "no such directory" from "not permitted to look"
+ * — both fail — and the two need different sentences: the first means the
+ * worktree was never created (#545, a test fixture), the second means a real
+ * tree is there and something has it locked. Best-effort: this probe failing
+ * too just reports the absent case, which is the pre-#1394 behaviour.
+ */
+async function unreadableRootDetail(repoRoot: string): Promise<string | undefined> {
+  try {
+    await fs.stat(repoRoot);
+    return undefined;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+    return errnoDetail(err);
   }
 }
 
