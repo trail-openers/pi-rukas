@@ -11,7 +11,6 @@
  * The open-point gate is reached only through `finaliseSpecVerdict`.
  */
 
-import { redactClip } from "./decision-log.ts";
 import type { DecisionWhere } from "./decision-seam.ts";
 import { shadowDecide } from "./decision-shadow.ts";
 import { matchSecurityTerm } from "./security-class.ts";
@@ -90,11 +89,13 @@ export function finaliseSpecVerdict(
  * independent readings.
  */
 function askSecuritySeam(text: string, isSecurity: boolean, where: DecisionWhere): void {
+  // The seam's declared bound for `openPoint` (decision-seam-registry.ts)
+  // redacts over the whole text and then clips, inside the seam (#1393).
   void shadowDecide(
     "security-open-point",
     {
       question: "Is this open point a security decision?",
-      state: { openPoint: redactClip(text, 1000) },
+      state: { openPoint: text },
       rule: isSecurity ? "true" : "false",
     },
     where,

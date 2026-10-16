@@ -143,5 +143,40 @@ assert(
   "the policy judge is fail-closed (it defaults to unstated)",
 );
 
+// 4 — the per-field bounds (#1393) are part of the contract: a typo'd bound
+// makes the seam rule-only rather than leaving a model-visible text unbounded.
+assert(
+  seamContractViolations(fixtureSpec({ fields: { tail: { max: 600, from: "end" } } })).length === 0,
+  "a well-formed field bound is accepted",
+);
+assert(
+  seamContractViolations(fixtureSpec({ fields: { tail: { max: 600 } } })).length === 0,
+  "a bound with no direction is accepted (it defaults to the head)",
+);
+rejects({ fields: { tail: { max: 0 } } }, /positive max/, "a field bound with a zero max");
+rejects({ fields: { tail: { max: -5 } } }, /positive max/, "a field bound with a negative max");
+rejects(
+  { fields: { tail: {} as { max: number } } },
+  /positive max/,
+  "a field bound with no max at all",
+);
+rejects(
+  { fields: { tail: { max: 10, from: "middle" as "start" } } },
+  /unknown direction/,
+  "a field bound with an unknown direction",
+);
+// The two shadow seams must actually declare bounds, or the fix is inert: a
+// caller handing over a whole provider message would get the record-wide bound
+// only, with no per-field bound on the seam.
+assert(
+  Object.keys(SEAMS["failure-cause"].fields ?? {}).length >= 2 &&
+    SEAMS["failure-cause"].fields?.lastOutput?.from === "end",
+  "failure-cause bounds providerMessage and lastOutput, keeping the TAIL of the output",
+);
+assert(
+  SEAMS["security-open-point"].fields?.openPoint !== undefined,
+  "security-open-point bounds its openPoint field",
+);
+
 console.log(`\nexit ${state.exit}`);
 process.exit(state.exit);

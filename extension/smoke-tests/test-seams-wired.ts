@@ -70,6 +70,19 @@ const SEAMS: Seam[] = [
     // attaches the session model.
     file: "decision-shadow.ts",
     pending: {},
+    // #1393 — the throttle and the in-flight counter are module-private state;
+    // these observe or drive it so the leak and the throttling are assertable at
+    // all (before, nothing read `inFlight`, so the leak was invisible by
+    // construction). `EXACT_RULE_MATCH` names the field an exact-match record
+    // carries, so the taxonomy and its tests cannot drift apart.
+    testOnly: {
+      EXACT_RULE_MATCH: "#1393 — the record's marker is derived from this constant",
+      SKIP_WINDOW_MS: "#1393 — the throttle window the skip test advances a clock past",
+      __setSkipClockForTests: "#1393 — test-decision-shadow-seams.ts",
+      __inFlightForTests: "#1393 — test-decision-shadow-inflight.ts",
+      __resetShadowForTests: "#1393 — both shadow tests",
+      __acquireSlotForTests: "#1393 — test-decision-shadow-inflight.ts",
+    },
     canary: { symbol: "shadowDecide", importer: "work-driver-failure-taxonomy.ts" },
   },
   {

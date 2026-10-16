@@ -8,10 +8,9 @@
  * decide retry vs. halt behaviour per PR5/#297/#308/#314.
  */
 
-import { redactClip } from "./decision-log.ts";
 import type { SEAMS } from "./decision-seam-registry.ts";
 import type { DecisionWhere } from "./decision-seam.ts";
-import { shadowDecide, shadowSkip } from "./decision-shadow.ts";
+import { shadowDecide, shadowExactRuleMatch, shadowSkip } from "./decision-shadow.ts";
 import {
   type DispatchFailureCause,
   isRateLimit429Msg,
@@ -179,16 +178,33 @@ export function shadowFailureCause(
   where: DecisionWhere,
 ): void {
   const rule = seamLabelFor(tail, cls.cause);
-  if (rule === undefined) return;
+  if (rule === undefined) {
+    // #1393 — an EXACT rule match (any self-killed:* cause, `success`, or a
+    // 429 / spend-cap read from the provider's own message) is rule-
+    // authoritative and asks no model, but it is still a decision the driver
+    // acted on. It used to write no record at all, so S5 saw silence where the
+    // rule had answered. The record is STATELESS apart from the cause name:
+    // `seamLabelFor` returns undefined exactly where there is no seam label to
+    // record, and the payload carries `kind` + the rule cause and NOTHING else
+    // — no `providerMessage`, no `errorTail`. Those fields are the untrusted
+    // text the redaction criteria close, and an exact match has nothing for a
+    // model to add. Building them here would reintroduce the unredacted path.
+    void shadowExactRuleMatch(
+      "failure-cause",
+      { question: "What caused this dispatch failure?", rule: cls.cause },
+      { ...where, state: { kind: tail.kind, exactRuleCause: cls.cause } },
+    );
+    return;
+  }
+  // The seam's declared per-field bounds (decision-seam-registry.ts) redact over
+  // the whole text and then clip, inside the seam: no caller clips by hand.
   const req = {
     question: "What caused this dispatch failure?",
     state: {
       kind: tail.kind,
-      // Redacted over the whole text before clipping (decision-log.ts).
-      providerMessage:
-        tail.providerMessage === undefined ? undefined : redactClip(tail.providerMessage, 600),
+      providerMessage: tail.providerMessage,
       // The END of the output: a failure shows in the last words.
-      lastOutput: tail.errorTail === undefined ? undefined : redactClip(tail.errorTail, 600, "end"),
+      lastOutput: tail.errorTail,
     },
     rule,
   };
