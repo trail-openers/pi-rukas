@@ -124,7 +124,7 @@ vipune add "key finding $(whoami)"   # ❌ never do this
 Every ~10–15 sessions on a project, run a reflection pass:
 
 ```bash
-vipune list --limit 50 --json | jq .
+vipune list --limit 50 --include-candidates --json | jq .
 ```
 
 Look for: duplicates (supersede the older), stale facts (supersede), drift across multiple `observation`-typed entries on the same theme (consolidate into one `fact`/`procedure`).
@@ -136,14 +136,14 @@ candidate <id> promote
 candidate <id> prune
 ```
 
-`vipune list --json` returns `retrieval_count`, `last_retrieved_at`, `created_at`, `memory_type`, `status` and `importance` per row — that is the evidence for both calls, read it from the same listing you are scanning for duplicates. The `/audit` memory panel (`extension/src/memory-panel.ts` / `memory-stats.ts`) gives the aggregate picture (rows by status and type, total/max retrievals, never-retrieved count) plus the candidate ids and types; it does not print per-row age. Candidates that survived ≥5 sessions go up for promotion. Report a candidate for pruning when it matches what the operator's `prune` command keys on: `status = 'candidate' AND retrieval_count < N AND age(created_at) > T` (defaults configurable via `prune_count` / `prune_age_days`) — candidate, never (or barely) retrieved, and old. Never propose pruning a `guard` or a row with `importance` high/critical — that command hard-excludes both, so such a row is not a prune candidate no matter how stale it looks. When something is obsolete with nothing to correct it to, report its id for pruning rather than adding a row.
+`vipune list --include-candidates --json` returns `retrieval_count`, `last_retrieved_at`, `created_at`, `memory_type`, `status` and `importance` per row — that is the evidence for both calls, read it from the same listing you are scanning for duplicates. Pass the flag: without it `list` shows active rows only, so the candidates you are asked to report are not in the listing. The `/audit` memory panel (`extension/src/memory-panel.ts` / `memory-stats.ts`) gives the aggregate picture (rows by status and type, total/max retrievals, never-retrieved count) plus the candidate ids and types; it does not print per-row age. Candidates that survived ≥5 sessions go up for promotion. Report a candidate for pruning when it matches what the operator's `prune` command keys on: `status = 'candidate' AND retrieval_count < N AND age(created_at) > T` (defaults configurable via `prune_count` / `prune_age_days`) — candidate, never (or barely) retrieved, and old. Never propose pruning a `guard` or a row with `importance` high/critical — that command hard-excludes both, so such a row is not a prune candidate no matter how stale it looks. When something is obsolete with nothing to correct it to, report its id for pruning rather than adding a row.
 
 ## Quick reference
 
 ```bash
 vipune search '<term>' --no-hybrid --recency 0.0 --limit 5 --no-touch --json
 vipune add '<distilled fact>' --memory-type <type> [--status candidate] [--supersedes <id>]
-vipune list --limit 50
+vipune list --limit 50 --include-candidates
 # MEMORY-WRITE BOUNDARY: never run `vipune update`, `delete`, `prune` or
 # `promote` — operator actions; correct with `add --supersedes <id>`, which
 # preserves the original row. Report one to retire it (Periodic consolidation).
