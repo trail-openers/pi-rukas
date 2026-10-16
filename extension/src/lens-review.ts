@@ -5,7 +5,6 @@ import { execp } from "./exec.ts";
 import { resolveBudgetKey } from "./lens-budget-key.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import { withLensModelSlot } from "./lens-model-slots.ts";
-import { renderPriorFindingsBlock } from "./lens-residuals.ts";
 import { carriedSummary, noReviewSummary } from "./lens-review-auto-delta.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
@@ -26,23 +25,18 @@ import { resolveReportedFindings } from "./lens-review-findings.ts";
 import { finishLensReview } from "./lens-review-finish.ts";
 import {
   DEFAULT_REVIEW_THRESHOLD,
-  LENS_PREFIX,
   type LensReviewSummary,
   type Severity,
   type Verdict,
   bySeverityCounts,
   computeVerdict,
   dedupeFindings,
-  extractFindings,
-  isSeverity,
-  lensProducedEvidence,
   piSkillsDir,
-  renderSummary,
 } from "./lens-review-format.ts";
+import { priorFindingsFor } from "./lens-review-memory.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
-import { readBranchRows } from "./review-findings-store.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -56,27 +50,27 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * an overall verdict.
  *
  * Mirrors the Step 7 contract of the opencode `/work` command. Lens roster,
- * prompt construction, parsing, and rendering live in lens-review-format.ts;
- * this module owns spawning, retries, and the async-job/tool wiring.
+ * prompt construction, parsing, and dedup live in lens-review-format.ts, the
+ * operator-facing report in lens-review-render.ts; this module owns spawning,
+ * retries, and the async-job/tool wiring.
  */
 
-export {
-  CLAIM_SCAN,
-  LENS_PREFIX,
-  DEFAULT_REVIEW_THRESHOLD,
-  computeVerdict,
-  dedupeFindings,
-  extractFindings,
-  lensProducedEvidence,
-  renderSummary,
-  type LensReviewSummary,
-};
 import { aggregateLensUsage } from "./lens-review-usage.ts";
 /** One roster entry — the shape a lens child receives per dispatch (#873). */
 export type LensDef = RosterEntry;
 /** Re-exported so consumers of this module name the verdict here; the
  * definition lives in lens-review-format.ts. */
 export type { Verdict, Severity } from "./lens-review-format.ts";
+/**
+ * The lens summary type, re-exported from its definition in
+ * lens-review-format.ts. It is the output contract of `runLensReview` — every
+ * consumer of this module names it (work-driver-*, lens-review-tool, the
+ * residual/cap-kill renderers), so the type stays reachable here even though
+ * the review is assembled across the format / render / incomplete / findings
+ * modules.
+ */
+export type { LensReviewSummary } from "./lens-review-format.ts";
+
 /** Re-exported from lens-review-types.ts (#1000: the per-lens result shape
  * moved there so this file stays under the 500-line limit while keeping its
  * origin/main jsdoc comments verbatim). No consumer import path changes. */
@@ -389,10 +383,7 @@ export async function runLensReview(opts: {
   const { batchKey, bumpBatch } = startPersistentBatch(runId, roster.length);
   // #1105 — the branch's open and accepted findings from earlier rounds, as a
   // fenced DATA block every lens receives (empty on a first review).
-  const priorFindings =
-    branchResolved && headSha
-      ? renderPriorFindingsBlock(await readBranchRows(opts.cwd ?? process.cwd(), branchResolved))
-      : "";
+  const priorFindings = await priorFindingsFor(opts.cwd ?? process.cwd(), branchResolved, headSha);
   // #873 — blocked roster entries become blocked lens results (no spawn,
   // the named error as parseError) and feed REVIEW_INCOMPLETE via
   // computeVerdict; healthy entries fan out as before.
@@ -437,11 +428,13 @@ export async function runLensReview(opts: {
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
   const deduped = dedupeFindings(all, roster);
-  // #1105/#1140/#1125 — the round is recorded against the findings memory,
-  // accepted rows suppress, unchanged open rows carry, and any finding whose
-  // cited line is outside the PR's changed lines becomes advisory. `reported`
-  // is the BLOCKING half — the one list the verdict, counts and `hasCritical`
-  // read (rules and failure modes: lens-review-findings.ts).
+  // #1105/#1140/#1125 — the round is recorded against the findings memory (the
+  // memory seam's `recordRound`, so the round's evidence and its rows come from
+  // one store read), accepted rows suppress, unchanged open rows carry, a refused
+  // row is disclosed as a set-aside, and any finding whose cited line is outside
+  // the PR's changed lines becomes advisory. `reported` is the BLOCKING half —
+  // the one list the verdict, counts and `hasCritical` read (rules and failure
+  // modes: lens-review-findings.ts).
   const found = await resolveReportedFindings({
     deduped,
     lensResults,
@@ -481,6 +474,7 @@ export async function runLensReview(opts: {
       findings: reported,
       ...(found.suppressed.length > 0 ? { suppressed: found.suppressed } : {}),
       ...(found.resolved.length > 0 ? { resolved: found.resolved } : {}),
+      ...(found.setAside ? { setAside: found.setAside } : {}),
       ...found.fields,
       usage: aggregateLensUsage(lensResults),
       // #543 — a dispatch-cap kill on any lens child (loop detector / token

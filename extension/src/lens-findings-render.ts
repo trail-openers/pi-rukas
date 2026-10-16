@@ -25,7 +25,16 @@
  * Rendering is deliberately dense and severity-ordered: the first line a human
  * reads should be the worst thing the review found, not a pointer to a file
  * path they will not open.
+ *
+ * The blob is agent-authored content that survived a JSON round trip, and these
+ * lines are posted to the forge (PR body, handoff comment, round-cap residual
+ * post), so every free-text field goes through `neutraliseMarkdownField` — a
+ * stored title carrying `<!-- … -->` or a markdown link cannot survive into the
+ * post, and the residual disclosure's own merge-guard marker is matched by
+ * substring search, so a second one on the PR is not cosmetic.
  */
+
+import { neutraliseMarkdownField } from "./comment-evidence.ts";
 
 /** Worst first. Anything unrecognised sorts last but is still shown. */
 const SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const;
@@ -67,14 +76,17 @@ function rank(severity: string | undefined): number {
   return i === -1 ? SEVERITY_ORDER.length : i;
 }
 
-/** `SEVERITY  LENS  path:line — title` */
+/** `SEVERITY  LENS  path:line — title` — every field neutralised, the shape kept. */
 function renderOne(f: StoredFinding): string {
   const where = f.path
-    ? `${f.path}${typeof f.line === "number" && f.line > 0 ? `:${f.line}` : ""}`
+    ? neutraliseMarkdownField(
+        `${f.path}${typeof f.line === "number" && f.line > 0 ? `:${f.line}` : ""}`,
+      )
     : "(no path)";
   const sev = (f.severity ?? "UNKNOWN").toUpperCase();
-  const lens = f.lens ?? "UNKNOWN";
-  return `- **${sev}** \`${lens}\` — \`${where}\` — ${f.title ?? "(no title)"}`;
+  const lens = neutraliseMarkdownField(f.lens ?? "UNKNOWN");
+  const title = neutraliseMarkdownField(f.title ?? "(no title)");
+  return `- **${sev}** \`${lens}\` — \`${where}\` — ${title}`;
 }
 
 /**

@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { neutraliseEvidence } from "../src/comment-evidence.ts";
 import { deltaFallbackNote, deltaFallbackText } from "../src/lens-review-delta-disclose.ts";
-import { renderSummary } from "../src/lens-review-format.ts";
+import { renderSummary } from "../src/lens-review-render.ts";
 import { postLensResidualDisclosure } from "../src/lens-review-residuals.ts";
 import type { LensReviewSummary } from "../src/lens-review.ts";
 import { commandOf } from "./lib/argv-shell.ts";

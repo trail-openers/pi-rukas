@@ -39,12 +39,13 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { neutraliseEvidence } from "./comment-evidence.ts";
+import { neutraliseEvidence, neutraliseMarkdownField } from "./comment-evidence.ts";
 import { execp } from "./exec.ts";
 import * as cmds from "./forge-commands.ts";
 import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
-import { resolvedSection, suppressedSection } from "./lens-residuals.ts";
+import { resolvedSection, setAsideSection, suppressedSection } from "./lens-residuals.ts";
+import { severityLabel } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText } from "./lens-review-delta-disclose.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
@@ -280,9 +281,18 @@ async function doPost(
   // segment from it would post a marker the guard's
   // `lensResidualsMarker(target.headBranch, patchId)` can never match).
   const marker = lensResidualsMarker(headBranch, patchId);
-  const lines = summary.findings.map(
-    (f) => `- [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})`,
-  );
+  // Severity, path and title are the LENS's words, stored in a file an agent
+  // could have written, and this body is a forge comment: a title carrying
+  // `<!-- pi-rukas:lens-residuals … -->` would post a second marker that
+  // `mergeGuardRoundCap`'s substring check reads as its own disclosure, and a
+  // `[text](url)` title becomes a clickable link. `neutraliseMarkdownField`
+  // keeps the line's shape (this is a bullet list, not a prompt block) while
+  // removing what a POST renders; the marker below is the renderer's own line
+  // and is never passed through it.
+  const lines = summary.findings.map((f) => {
+    const where = neutraliseMarkdownField(`${f.path}:${f.line ?? "?"}`);
+    return `- [${severityLabel(f.severity)}] ${where} — ${neutraliseMarkdownField(f.title)} (${neutraliseMarkdownField(f.lens)})`;
+  });
   const body = [
     "## Six-pass review — residual findings (round disclosure)",
     "",
@@ -297,6 +307,7 @@ async function doPost(
       `Suppressed as already known (${summary.suppressed?.length ?? 0}) — not re-reported; each names its row id and the reason it was dropped:`,
     ),
     ...resolvedSection(summary.resolved),
+    ...setAsideSection(summary.setAside),
     ...advisorySection(summary.advisory),
     ...(summary.memoryNote ? ["", neutraliseEvidence(summary.memoryNote)] : []),
     ...(summary.deltaReview?.fallback

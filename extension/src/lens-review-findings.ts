@@ -29,9 +29,10 @@ import type { SuppressedFinding } from "./lens-residuals.ts";
 import { splitAdvisory } from "./lens-review-advisory.ts";
 import type { AutoDeltaInfo } from "./lens-review-delta-disclose.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
+import { type MemoryDisclosure, memoryDisclosure, recordRound } from "./lens-review-memory.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
-import type { ResolvedNotice } from "./review-findings-file.ts";
-import { recordFindingRunOutcome } from "./review-findings-store.ts";
+import type { ReviewKind } from "./review-findings-fate.ts";
+import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
 
 /** The kind of review the findings memory records this round as (#1105): a
  * delta covers only its range, an incomplete one re-reported nothing reliably,
@@ -40,7 +41,7 @@ import { recordFindingRunOutcome } from "./review-findings-store.ts";
 function reviewKind(
   delta: AutoDeltaInfo | undefined,
   lensResults: readonly LensRunResult[],
-): "delta" | "incomplete" | "full" {
+): ReviewKind {
   if (delta) return "delta";
   return isReviewIncomplete(lensResults) ? "incomplete" : "full";
 }
@@ -50,19 +51,26 @@ export interface ReportedFindings {
   reported: Finding[];
   /** Suppressed by an operator's accept decision (summary field). */
   suppressed: SuppressedFinding[];
-  /** Rows the memory resolved because a complete review no longer reports them. */
+  /** Rows the memory resolved because a complete review no longer reports them,
+   * or evicted because their cited code is gone (#1125/#1408). */
   resolved: ResolvedNotice[];
+  /** Rows the store set aside: a malformed row, or an acceptance that lapsed
+   * because its cited code changed (#1125). A suppression that vanished is
+   * disclosed, never left to return as a "new" finding. */
+  setAside?: SetAsideNotice[];
   /** Summary fields from the memory and the advisory split. Either note may be
    * set, and when BOTH are the round says both: `memoryNote` means the round was
-   * not recorded at all, the advisory note means the changed lines could not be
-   * read. They are composed, never one dropped for the other. */
+   * not recorded at all (in words distinct from "the store was empty"), the
+   * advisory note means the changed lines could not be read. They are composed,
+   * never one dropped for the other. */
   fields: { advisory?: Finding[]; memoryNote?: string };
 }
 
 /**
- * Record the round, apply the operator's decisions, carry the standing rows and
- * split them into blocking and advisory. `deduped` is every finding the round
- * produced (lens findings plus deterministic ones), already deduped.
+ * Record the round (through `recordRound`, the memory seam), apply the
+ * operator's decisions, carry the standing rows and split them into blocking and
+ * advisory. `deduped` is every finding the round produced (lens findings plus
+ * deterministic ones), already deduped.
  *
  * `branchResolved`/`headSha` gate the memory write: without a branch or a head
  * there is nothing to key the round on, so no rows carry and nothing resolves —
@@ -90,21 +98,22 @@ export async function resolveReportedFindings(opts: {
 }): Promise<ReportedFindings> {
   const { deduped, lensResults, delta, branchResolved, headSha } = opts;
   const review = reviewKind(delta, lensResults);
-  const recorded =
-    branchResolved && headSha
-      ? await recordFindingRunOutcome({
-          cwd: opts.cwd ?? process.cwd(),
-          branch: branchResolved,
-          headSha,
-          findings: deduped,
-          ...(delta ? { deltaDiff: opts.diff } : {}),
-          review,
-        })
-      : undefined;
-  // Fail open: an unrecorded round reports every finding, and the summary and
-  // the residual comment say why memory was not used.
-  const memoryNote =
-    recorded && !recorded.ok ? `findings memory unavailable: ${recorded.reason}` : undefined;
+  // The round is recorded through the memory seam (#1408): the same module that
+  // shows the lenses their prior findings writes the round, so the evidence the
+  // round acted on and the rows it recorded against cannot come from different
+  // reads of the store. `undefined` when there is no branch/head to key on.
+  const recorded = await recordRound({
+    cwd: opts.cwd ?? process.cwd(),
+    branch: branchResolved,
+    headSha,
+    findings: deduped,
+    review,
+    ...(delta ? { deltaDiff: opts.diff } : {}),
+  });
+  // Fail open, and fail OPEN *visibly*: `memoryDisclosure` keeps "the round could
+  // not be recorded, because …" distinct from "the store was empty", and carries
+  // any set-aside the round earned before the write refused (#1125).
+  const memory: MemoryDisclosure = memoryDisclosure(recorded);
   const decisions = recorded?.ok ? recorded.decisions : undefined;
   const { kept, suppressed } = partitionDecisions(deduped, decisions);
   // #1105 — open rows this round did not re-report, whose cited code is
@@ -143,12 +152,13 @@ export async function resolveReportedFindings(opts: {
   // Both notes, when both fired: the memory note says the round was not
   // recorded, the advisory note says the discount could not be earned. Neither
   // is a substitute for the other, so `??` dropping one would hide a failure.
-  const note = [memoryNote, advisory.fields.memoryNote].filter(Boolean).join("; ");
+  const note = [memory.memoryNote, advisory.fields.memoryNote].filter(Boolean).join("; ");
   if (note) fields.memoryNote = note;
   return {
     reported: advisory.blocking,
     suppressed,
     resolved: recorded?.ok ? recorded.resolved : [],
+    ...(memory.setAside ? { setAside: memory.setAside } : {}),
     fields,
   };
 }
