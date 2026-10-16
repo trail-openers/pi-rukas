@@ -412,6 +412,19 @@ export function validateDiscriminants(state: unknown): string[] {
         }
       }
     }
+    // #1153 — `pipelineState.consolidationNotes`, when present, must be an
+    // array of strings: the handoff renders each entry verbatim into a
+    // "checks that did not run" bullet, so a non-string (an object, a number)
+    // would render `[object Object]` where the operator expected a reason, and
+    // a non-array would crash the renderer.
+    if (ps.consolidationNotes !== undefined) {
+      const cn = ps.consolidationNotes;
+      if (!Array.isArray(cn)) {
+        out.push("pipelineState.consolidationNotes is not an array");
+      } else if (cn.some((v) => typeof v !== "string")) {
+        out.push("pipelineState.consolidationNotes contains a non-string entry");
+      }
+    }
     // #543 F5 — `pipelineState.capedPartialState` (the driver-owned
     // checkpoint record) must carry a known role/tree and, when the tree is
     // "committed", the commit it claims: the handoff renders

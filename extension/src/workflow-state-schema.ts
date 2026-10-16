@@ -253,6 +253,8 @@ export interface PipelineState {
   incompleteConsolidation?: IncompleteConsolidation | Array<{ id: string; paths: string[] }>;
   /** #728 (task-a) — see ConsolidationCompleteness (schema fragment). */
   consolidationCompleteness?: ConsolidationCompleteness;
+  /** #1153 — skipped consolidation checks, persisted and rendered in the handoff. */
+  consolidationNotes?: string[];
 
   /**
    * #500 — repoRoot's ACTUAL state when commit-pr completed (mechanized:
