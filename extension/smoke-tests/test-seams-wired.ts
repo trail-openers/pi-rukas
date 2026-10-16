@@ -65,9 +65,9 @@ const SEAMS: Seam[] = [
     canary: { symbol: "decide", importer: "work-driver-policy.ts" },
   },
   {
-    // #1308 S3/S4 — fire-and-forget decisions for the shadow seams. The
-    // failure-cause and security open-point owners are its callers; index.ts
-    // attaches the session model.
+    // #1308 S3 — fire-and-forget decisions for the shadow seam. The
+    // failure-cause owner is its caller; index.ts attaches the session model.
+    // (#1187 removed the S4 security-open-point seam.)
     file: "decision-shadow.ts",
     pending: {},
     canary: { symbol: "shadowDecide", importer: "work-driver-failure-taxonomy.ts" },
