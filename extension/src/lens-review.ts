@@ -24,18 +24,13 @@ import {
 import { finishLensReview } from "./lens-review-finish.ts";
 import {
   DEFAULT_REVIEW_THRESHOLD,
-  LENS_PREFIX,
   type LensReviewSummary,
   type Severity,
   type Verdict,
   bySeverityCounts,
   computeVerdict,
   dedupeFindings,
-  extractFindings,
-  isSeverity,
-  lensProducedEvidence,
   piSkillsDir,
-  renderSummary,
 } from "./lens-review-format.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
@@ -59,17 +54,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * this module owns spawning, retries, and the async-job/tool wiring.
  */
 
-export {
-  CLAIM_SCAN,
-  LENS_PREFIX,
-  DEFAULT_REVIEW_THRESHOLD,
-  computeVerdict,
-  dedupeFindings,
-  extractFindings,
-  lensProducedEvidence,
-  renderSummary,
-  type LensReviewSummary,
-};
 import { aggregateLensUsage } from "./lens-review-usage.ts";
 /** One roster entry — the shape a lens child receives per dispatch (#873:
  * the roster is data, so `LensDef` is the parsed entry type). */
@@ -77,6 +61,16 @@ export type LensDef = RosterEntry;
 /** Re-exported so consumers of this module name the verdict here; the
  * definition lives in lens-review-format.ts. */
 export type { Verdict, Severity } from "./lens-review-format.ts";
+/**
+ * The lens summary type, re-exported from its definition in
+ * lens-review-format.ts. It is the output contract of `runLensReview` — every
+ * consumer of this module names it (work-driver-*, lens-review-tool, the
+ * residual/cap-kill renderers), so the type stays reachable here even though
+ * the review is assembled across the format / render / incomplete / findings
+ * modules.
+ */
+export type { LensReviewSummary } from "./lens-review-format.ts";
+
 /** Re-exported from lens-review-types.ts (#1000: the per-lens result shape
  * moved there so this file stays under the 500-line limit while keeping its
  * origin/main jsdoc comments verbatim). No consumer import path changes. */
@@ -452,7 +446,9 @@ export async function runLensReview(opts: {
         })
       : undefined;
   // Fail open: an unrecorded round reports every finding, and the summary and
-  // the residual comment say why memory was not used.
+  // the residual comment say why memory was not used — including the case where
+  // the round refused to record BECAUSE the branch's rows could not be read.
+  // "no memory" and "memory unreadable" must not render the same (#1125).
   const memoryNote =
     recorded && !recorded.ok ? `findings memory unavailable: ${recorded.reason}` : undefined;
   const decisions = recorded?.ok ? recorded.decisions : undefined;
@@ -484,6 +480,7 @@ export async function runLensReview(opts: {
       findings: reported,
       ...(suppressed.length > 0 ? { suppressed } : {}),
       ...(recorded?.ok && recorded.resolved.length > 0 ? { resolved: recorded.resolved } : {}),
+      ...(recorded?.ok && recorded.setAside ? { setAside: recorded.setAside } : {}),
       ...(memoryNote ? { memoryNote } : {}),
       ...carried.fields,
       usage: aggregateLensUsage(lensResults),
