@@ -33,12 +33,13 @@
  */
 
 import type { MergeCommand } from "./merge-allowlist.ts";
+import { FORGE_WORD } from "./merge-lex-views.ts";
 import { refuseTooLarge } from "./merge-too-large.ts";
 import { triggerCode } from "./merge-trigger.ts";
 
 /**
  * Maximum length (chars) of a merge-bearing command the classifier reads.
- * A command LONGER than this that also names `gh`/`glab` AND spells a merge
+ * A command LONGER than this that also names a forge word AND spells a merge
  * word is refused as `too-large` — held, named, and never resolved to the
  * current branch's PR. See `exceedsAnalysisBound` for the exemptions.
  */
@@ -51,9 +52,20 @@ export const MERGE_COMMAND_SIZE_BOUND = 8000;
  * Two exemptions, both of which make the bound say the same thing the rest of
  * the classifier would have said anyway:
  *
- * - a long command that names no forge (`gh`/`glab`) — a 30k-char
- *   `git commit -m "…merge…"` — is never too large: reading it is cheap and
- *   its honest answer is "not a merge";
+ * - a long command that names no forge word at all — a 30k-char
+ *   `git commit -m "…merge…"`, a 9 kB `git log` or `echo` — is never too
+ *   large: reading it is cheap and its honest answer is "not a merge";
+ *
+ * The forge test is the trigger's own word set, `FORGE_WORD`, not a narrower
+ * `includes("gh")`/`includes("glab")` pair. The bound exists so that a command
+ * whose words the classifier cannot be trusted to read is HELD rather than
+ * answered; "which commands could be a merge" is therefore the same question
+ * the trigger asks, and must be answered with the same pattern. A `curl -X PUT
+ * https://api.github.com/repos/o/r/pulls/1/merge` of 9 kB is exactly such a
+ * command — the REST merge door of #955, spelled with an HTTP client instead
+ * of `gh` — and a substring test on the two forge CLIs called it exempt, so it
+ * fell past the bound to `not-a-forge-command` on unbounded text instead of
+ * taking the ledger-checked `too-large` path.
  * - a long command that spells **no merge word at all** — a `gh pr view` with
  *   a long `--jq` filter, a labels or timeline read, a 9 kB pasted changelog
  *   in a `gh pr create --body`. The trigger is a literal word search, so
@@ -70,12 +82,12 @@ export const MERGE_COMMAND_SIZE_BOUND = 8000;
  */
 export function exceedsAnalysisBound(command: string): boolean {
   if (command.length <= MERGE_COMMAND_SIZE_BOUND) return false;
-  if (!command.includes("gh") && !command.includes("glab")) return false;
+  if (!FORGE_WORD.test(command)) return false;
   return holdsLongCommand(command);
 }
 
 /**
- * Whether a long forge-naming command is one the guard would have to read:
+ * Whether a long forge-word-naming command is one the guard would have to read:
  * it spells a merge word, a `pr|mr merge|accept` verb pair, or a GraphQL
  * `mutation` naming a merge. A cheap shape test, not a lex — this runs on the
  * path every bash tool_call takes. Anything it lets through still faces the

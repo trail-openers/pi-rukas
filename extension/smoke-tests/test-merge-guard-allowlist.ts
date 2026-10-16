@@ -17,6 +17,7 @@ import { readFileSync } from "node:fs";
 import type { MergeCommand } from "../src/merge-allowlist.ts";
 import { readMergeCommand } from "../src/merge-allowlist.ts";
 import { analyseRefusal } from "../src/merge-guard.ts";
+import { FORGE_WORD } from "../src/merge-lex-views.ts";
 import { mergeFormRefusal } from "../src/merge-refusals.ts";
 import {
   ACCEPTED,
@@ -48,6 +49,20 @@ for (const [cmd, forge, n, repo] of ACCEPTED) {
   assert(
     m.kind === "merge" && m.forge === forge && m.prNumber === n && m.repo === repo,
     `accepted: ${JSON.stringify(cmd)} → ${forge} #${n ?? "branch"} ${repo ?? ""} (${show(m)})`,
+  );
+}
+
+// #1417 round 2 — the size bound's forge test is the TRIGGER'S word set, not a
+// narrower one. Everything the grammar can read as a merge contains a word
+// `FORGE_WORD` matches (the grammar's command word is `gh` or `glab`, both in
+// that set), so no accepted merge can ever be exempted from the bound by
+// length alone. Were this ever false, a long enough real merge command would
+// skip the bound and fall through to current-branch PR resolution — the #955
+// failure mode, arriving through the read side.
+for (const [cmd] of ACCEPTED) {
+  assert(
+    FORGE_WORD.test(cmd),
+    `every accepted merge form names a forge word, so the bound can always see it: ${JSON.stringify(cmd)}`,
   );
 }
 
@@ -259,6 +274,48 @@ for (const cmd of ["cd x && gh pr merge 17", "gh api repos/o/r/pulls/12/merge"])
     r.block && /without `--auto-merge=false`/.test(r.reason ?? "") && r.calls.length === 0,
     "hook refuses a bare glab merge with the accepted form named",
   );
+}
+{
+  // #1417 round 2 — the hold's TRACE CODE is the cause that actually fired.
+  // `earlyRefuse` used to hardcode `unresolved-pr-number` for every step
+  // before the target read, and the `refused` branch passed the bare reason
+  // code through; a matrix that read only block/reason could not tell the two
+  // apart, so a mislabelled cause stayed invisible in exactly the log a false
+  // hold gets reported from. Three causes, three codes, asserted at the seam.
+  const longMerge = `gh pr merge 17 ${"y".repeat(9000)}`;
+  for (const [cmd, code] of [
+    // Classifier refusal: the grammar stopped at an unknown flag.
+    ["gh pr merge 17 --auto", "reason=unknown-flag"],
+    // The size bound: too long to read, so nothing was analysed.
+    [longMerge, "reason=too-large"],
+  ] as Array<[string, string]>) {
+    const r = await hookDecision(cmd, GOOD_ENTRIES);
+    assert(
+      r.block && r.holds.length === 1 && r.holds[0]?.includes(code),
+      `hold logs ${code}: ${cmd.slice(0, 30)}… (${JSON.stringify(r.holds)})`,
+    );
+    // The secret-leak invariant from the earlier round: the hold line carries
+    // the code and the LENGTH only, never the command text — which is also why
+    // the assertion above cannot be satisfied by the command echoing back.
+    assert(
+      !r.holds.some((h) => h.includes("--auto") || h.includes("yyyy")),
+      `…and the hold line repeats no part of the command text: ${cmd.slice(0, 30)}…`,
+    );
+  }
+  {
+    // The one early step that is reachable today: no number in the command and
+    // the branch resolves to no PR. Before #1417 round 2 this was the ONLY
+    // cause `earlyRefuse` could ever report, whatever had actually failed.
+    const r = await hookDecision("gh pr merge", GOOD_ENTRIES, { branchNumber: "empty" });
+    assert(
+      r.block && r.holds.length === 1 && r.holds[0]?.includes("reason=unresolved-pr-number"),
+      "early refusal logs the cause that fired (unresolved-pr-number)",
+    );
+    assert(
+      !r.holds.some((h) => /reason=(form|not-a-merge|unknown-flag|too-large)\b/.test(h)),
+      "…and never another seam's code for a resolution failure",
+    );
+  }
 }
 {
   // Fail closed: a reader that throws (here on a non-string command) refuses.

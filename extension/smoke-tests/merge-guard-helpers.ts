@@ -129,6 +129,13 @@ export async function makeHook(env: {
   mainline?: string;
   /** What `git merge-base` prints (default `mb0000`; "" = no merge-base). */
   mergeBase?: string;
+  /**
+   * What `gh pr view --json number` (the CURRENT-BRANCH resolution) does.
+   * `"throws"` (default) is the stub's error; `"empty"` makes it return no
+   * `number` field, which is the shape that leaves `resolvePrNumber` with
+   * `undefined` — the case the early-refusal seam reports.
+   */
+  branchNumber?: "throws" | "empty";
 }): Promise<(event: unknown, ctx: unknown) => Promise<unknown>> {
   let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
   const fakePi = {
@@ -156,6 +163,7 @@ export async function makeHook(env: {
     env.calls.push(cmd);
     if (cmd.includes("gh pr view")) {
       if (cmd.includes("--json number")) {
+        if (env.branchNumber === "empty") return { stdout: "{}" };
         return { stdout: JSON.stringify({ number: t.prNumber }) };
       }
       if (env.failGh) throw new Error("gh: not found");
@@ -216,6 +224,7 @@ export async function hookDecision(
     ghComments?: string;
     mainline?: string;
     mergeBase?: string;
+    branchNumber?: "throws" | "empty";
   } = {},
 ) {
   const env = {
@@ -230,14 +239,33 @@ export async function hookDecision(
     ghComments: opts.ghComments,
     mainline: opts.mainline,
     mergeBase: opts.mergeBase,
+    branchNumber: opts.branchNumber,
   };
   const handler = await makeHook(env);
-  const r = await withLedger(entries, () =>
-    handler({ toolName: "bash", input: { command } }, undefined as never),
-  );
+  // #1417 round 2 — capture the HELD trace lines alongside the verdict. The
+  // line is the only place a hold's CODE is recorded (the rendered refusal
+  // deliberately carries no command text, and the trace carries the code and
+  // the length only), so a matrix that asserted only the block/reason could
+  // not tell a correct hold from one logged under someone else's cause.
+  const traces: string[] = [];
+  const realWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    traces.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  let r: unknown;
+  try {
+    r = await withLedger(entries, () =>
+      handler({ toolName: "bash", input: { command } }, undefined as never),
+    );
+  } finally {
+    process.stderr.write = realWrite;
+  }
   return {
     block: (r as { block?: boolean } | undefined)?.block === true,
     reason: (r as { reason?: string } | undefined)?.reason,
     calls: env.calls,
+    /** Every `merge-guard: HELD …` line the hook emitted for this command. */
+    holds: traces.filter((l) => l.includes("merge-guard: HELD")).map((l) => l.trim()),
   };
 }

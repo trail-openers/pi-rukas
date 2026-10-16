@@ -230,10 +230,21 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // Once the command has parsed as a merge (after `readMergeTarget` /
     // the forge check below), the refusals DO name the hatch — there the
     // command is a merge and the operator may genuinely override the reviews.
-    const earlyRefuse = (reason: string) =>
+    //
+    // #1417 round 2 — the trace CODE is a parameter, not a constant. It used
+    // to hardcode `unresolved-pr-number`, the code of the one call site that
+    // existed when the helper was written, so every later early failure —
+    // `analysis.kind === "refused"` reaching here with `too-large`,
+    // `body-indirect` or `brace-expansion` — was logged under a cause that did
+    // not occur, which is precisely the log a false hold gets reported from.
+    // The log still carries the reason code and the command LENGTH only (see
+    // `held` above): branch, cwd and command text stay out of the hold
+    // telemetry deliberately, because command strings routinely carry tokens
+    // and this stream is ungated stderr.
+    const earlyRefuse = (code: string, reason: string) =>
       held(
         renderHold({ kind: "not-a-merge", reasonText: reason }, `\`${merging}\` …`),
-        "unresolved-pr-number",
+        code,
         command,
       );
 
@@ -254,6 +265,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     }
     if (prNumber === undefined) {
       return earlyRefuse(
+        "unresolved-pr-number",
         `its words read like the merge form \`${merging}\`, but the PR/MR number could not be resolved from the command or the current branch (repo: ${repoValue ?? "none"}; fallback cwd: ${cwd})`,
       );
     }
