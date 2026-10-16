@@ -18,7 +18,6 @@
  *   - PI_ENSEMBLE_DECISIONS=0 is rule-only: no backend is called;
  *   - an env override to `enforce` cannot make a shadow call act, and a
  *     call that is not fired still leaves one stateless record;
- *   - at most five open points per issue are asked;
  *   - secrets in the error text never reach the model.
  */
 
@@ -26,8 +25,6 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { attach, detach, shadowDecide } from "../src/decision-shadow.ts";
 import { classifyFailureCause, shadowFailureCause } from "../src/work-driver-failure-taxonomy.ts";
-import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
-import type { NormalisedSpec } from "../src/work-driver-intent.ts";
 import { STUB_MODEL, llmReply, makeAssert, stubRegistry, tmpDir } from "./lib/decision-fixtures.ts";
 
 const { assert, state } = makeAssert();
@@ -69,20 +66,6 @@ const failures: Tail[] = [
   { kind: "something-else" },
 ];
 
-const spec = (): NormalisedSpec => ({
-  intent: "Apply the change.",
-  deliverables: [{ id: "d1", description: "apply the change", paths: [] }],
-  acceptanceCriteria: ["it works"],
-  outOfScope: [],
-  assumptions: [],
-  openQuestions: [],
-  evidence: [],
-  verdict: "proceed",
-  rationale: "actionable",
-});
-const issueWith = (...points: string[]) =>
-  `## Open points (unresolved at the gap-gate cap)\n\n${points.map((p) => `- [CRITICAL] ${p}`).join("\n")}\n`;
-
 // ------------------------------------------------ no session: exactly the rule
 
 const baseline = failures.map((f) => classifyFailureCause(f));
@@ -113,9 +96,12 @@ const baseline = failures.map((f) => classifyFailureCause(f));
   const prompts: string[] = [];
   const { registry, calls } = stubRegistry({
     llm: (ctx) => {
-      const text = String(ctx.messages[0]?.content ?? "");
-      prompts.push(text);
-      const label = text.includes("open point") ? "true" : "rate-limited";
+      prompts.push(String(ctx.messages[0]?.content ?? ""));
+      // The only seam still shadowed is failure-cause, whose label set is
+      // {rate-limited, provider-transient, subagent-failure, unknown}. The stub
+      // always answers `rate-limited`, so where the rule says otherwise the
+      // shadow split (model logged, rule final) is observable.
+      const label = "rate-limited";
       return llmReply(JSON.stringify({ label, justification: "stub disagrees" }));
     },
   });
