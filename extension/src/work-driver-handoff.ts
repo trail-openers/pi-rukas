@@ -449,6 +449,9 @@ export async function handoffConsolidateWorktrees(
       issue: ctx.issue,
       scratchDir: scratch,
       dirtyRootExempt: ctx.dirtyRootExempt,
+      // #1362 — the claim this consolidation builds names only the files the
+      // cycle wrote; the cycle-start baseline is what makes that true.
+      dirtyRootExemptBaseline: state.pipelineState.dirtyRootExemptBaseline,
     },
     state,
   );

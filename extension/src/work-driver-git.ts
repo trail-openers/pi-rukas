@@ -190,13 +190,22 @@ export async function restoreCheckout(opts: {
   /** The cycle-start ref (#1093); absent for pre-#1093 state. */
   startRef?: string;
   /**
-   * #1362 — the cycle's `.pi/dirty-root-exempt` list. It decides which
-   * untracked files the restore claim names; the built-in scaffolding
-   * exclusions are unchanged.
+   * #1362 — the cycle's `.pi/dirty-root-exempt` list and its cycle-start
+   * baseline. Together they decide which untracked files the restore claim
+   * names; the built-in scaffolding exclusions are unchanged.
    */
   dirtyRootExempt?: readonly string[];
+  dirtyRootExemptBaseline?: readonly string[];
 }): Promise<string[]> {
-  const { repoRoot, mainline, mergedBranch, execFn, startRef, dirtyRootExempt } = opts;
+  const {
+    repoRoot,
+    mainline,
+    mergedBranch,
+    execFn,
+    startRef,
+    dirtyRootExempt,
+    dirtyRootExemptBaseline,
+  } = opts;
   const notes: string[] = [];
 
   // 1. Fetch origin --prune. Every git command here is argv-form (#1093): a
@@ -235,6 +244,7 @@ export async function restoreCheckout(opts: {
     ref: target,
     label: "merged",
     dirtyRootExempt,
+    dirtyRootExemptBaseline,
   });
   if (!restore.checkedOut) {
     notes.push(`repoRoot was NOT restored to ${target}: ${restore.detail ?? "unknown error"}`);

@@ -27,38 +27,32 @@
  * would change the event-log tail, and `nextStep()` routes on it.
  */
 
-import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import {
-  DIRTY_ROOT_EXEMPT_FILE,
   dirtyRootExemptReadEvent,
   dirtyRootExemptReadNotice,
 } from "./work-driver-dirty-root-exempt.ts";
-import { type WorkState, appendEvent, persistCycle, readState } from "./workflow-state.ts";
+import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
- * Record an unreadable exemption file for the rest of the cycle.
+ * Record an unreadable exemption file on the cycle context (surface 1) for the
+ * rest of the cycle.
  *
- * Sets the context field (surface 1) and, when a state file already exists,
- * writes surfaces 2 and 3 into it. It does NOT create a state file: a first run
- * has none yet and `runWorkDriverInner` owns that first snapshot — it calls
- * `withDirtyRootExemptReadFailure` itself, so the record is never lost, only
- * deferred by a few milliseconds. Best-effort throughout: the `traceWarn` at
- * read time already fired, so a failed record degrades to the pre-fix behaviour
- * rather than to a thrown step.
+ * It sets ONLY the context field. Surfaces 2 and 3 are written by
+ * `withDirtyRootExemptReadFailure`, which `runWorkDriverInner` applies to the
+ * state immediately before its first persist — the one writer of that record.
+ * This function deliberately does not persist anything itself: it is called
+ * before that first write exists, so a write here would either create a state
+ * file the driver's own first snapshot then overwrite, or fire a
+ * read-then-write after it and race a later step's snapshot onto a stale copy.
+ * Both are the #1162 per-file write-ordering hazard; one writer avoids it.
+ *
+ * So the record is deferred by one step-boundary rather than lost: every path
+ * that reads the exemption file goes through `runWorkDriver`'s one read point,
+ * which is called from `runWorkDriverInner`'s own preamble.
  */
 export function noticeDirtyRootExemptReadFailure(ctx: CycleContext, reason: string): void {
   ctx.dirtyRootExemptReadFailed = reason;
-  void readState(ctx.repoRoot, ctx.issue)
-    .then((existing) => {
-      if (existing === undefined) return;
-      return persistCycle(ctx, withDirtyRootExemptReadFailure(existing, reason));
-    })
-    .catch((err) => {
-      trace(
-        `work-driver: could not record the unreadable ${DIRTY_ROOT_EXEMPT_FILE} (${(err as Error).message?.slice(0, 160)})`,
-      );
-    });
 }
 
 /**

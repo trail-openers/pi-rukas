@@ -29,6 +29,7 @@ import { detectMainline, freshMainlineTip } from "./work-driver-branch-mechanize
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { dirtyRootExemptReadNotice } from "./work-driver-dirty-root-exempt.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
+import { readDirtyRootExemptBaseline } from "./work-driver-dirty-root-exempt.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 import { handleSameIssueLeftovers } from "./worktree-leftover.ts";
@@ -87,6 +88,55 @@ export async function readRepoRootDirt(
       (l) => l.trim() && !isDriverManagedDirtLine(l) && !isConfiguredExemptDirtLine(l, exempt),
     );
   return dirt.length > 0 ? dirt : undefined;
+}
+
+/**
+ * #1362 — record the paths already untracked under the project's exempt
+ * prefixes, once, at the point where the branch step first reads repoRoot's
+ * dirt (immediately after the residue pass, before the mechanized setup can
+ * write anything). The restore claim reads this back as provenance: after an
+ * abort's mixed reset a staged-new deliverable and a tool's stray are both
+ * `??`, so only "was it already here?" separates them — and only a snapshot
+ * taken before the cycle could write answers that.
+ *
+ * Written once and never recomputed: a resumed cycle keeps the value its first
+ * run captured, because recomputing late would bless the cycle's own output as
+ * pre-existing. No exemption list, or nothing under it, records nothing — and
+ * `undefined` is the answer `isClaimCountedEntry` treats as "name everything".
+ * Best-effort: a failed read is traced and records nothing, which is the safe
+ * direction (a claim that names too much is a false alarm; one that spares the
+ * cycle's own work is the defect this field exists to prevent).
+ */
+export async function recordDirtyRootExemptBaseline(
+  ctx: CycleContext,
+  state: WorkState,
+  execFn: ExecFn,
+): Promise<WorkState> {
+  const ps = state.pipelineState;
+  if (ps.dirtyRootExemptBaseline !== undefined) return state;
+  if (ctx.dirtyRootExempt === undefined || ctx.dirtyRootExempt.length === 0) return state;
+  // Same gate as the residue pass beside it: with worktrees already in the
+  // state this is a re-entry, and repoRoot is no longer the pre-cycle tree the
+  // snapshot is meant to describe.
+  if (Object.keys(ps.worktrees ?? {}).length > 0) return state;
+  try {
+    const baseline = await readDirtyRootExemptBaseline(execFn, ctx.repoRoot, ctx.dirtyRootExempt);
+    if (baseline === undefined) return state;
+    // A cycle with no exempt paths present at all needs no field: leaving it
+    // absent keeps a resumed cycle in the same "name everything" state it would
+    // reach with an empty list, and keeps the state file unchanged for the
+    // overwhelmingly common case of nothing to record.
+    if (baseline.length === 0) return state;
+    return {
+      ...state,
+      pipelineState: { ...ps, dirtyRootExemptBaseline: baseline },
+    };
+  } catch (err) {
+    trace(
+      `work-driver: could not record the exempt baseline (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
+    );
+    return state;
+  }
 }
 
 /**

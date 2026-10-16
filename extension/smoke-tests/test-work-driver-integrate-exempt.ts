@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
-import { integrate, readDirtyPorcelain } from "../src/work-driver-integrate.ts";
+import { integrate, readDirtyPorcelain, restoreRepoRoot } from "../src/work-driver-integrate.ts";
 import { stagePorcelainPaths } from "../src/work-driver-stage.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
@@ -320,6 +320,57 @@ const gitOut = async (cwd: string, args: string[]): Promise<string> =>
         nWt >= 1 && stagedWt.some((f) => f.trim() === TOOL_FILE),
         `#1362: a deliverable in an exempt prefix inside a WORKTREE is staged as today (staged: ${JSON.stringify(stagedWt)})`,
       );
+    }
+
+    console.log("✓ #1362 dirty-root-exempt test passed");
+
+    // 4. #1362 round 3 — `restoreRepoRoot`'s untracked-only decision is
+    // exemption-aware. The settlement says a configured path is not saved or
+    // restored by a claim, so a root whose only non-scaffolding entries are
+    // exempt tool files must PARK (nothing of the cycle's is there to stash)
+    // rather than run a stash/pop over a tree holding none of its work. A real
+    // tracked edit beside the exempt file still decides the branch: stash and
+    // pop, exactly as before the list existed.
+    {
+      plantToolFile();
+      // (a) exempt-only porcelain → parks, and git's stash list is untouched.
+      const exemptOnly = ["?? .claude/", `?? ${TOOL_FILE}`];
+      const stashesBefore = (await gitOut(repoE, ["stash", "list"])).trim();
+      const parked = await restoreRepoRoot(realExec, repoE, exemptOnly, EXEMPT);
+      assert(
+        parked.restored === false && (parked.reason ?? "").includes("only untracked"),
+        `#1362 restoreRepoRoot: exempt untracked lines are not "tracked dirt", so the root parks instead of stashing (got ${JSON.stringify(parked)})`,
+      );
+      assert(
+        (await gitOut(repoE, ["stash", "list"])).trim() === stashesBefore,
+        "#1362 restoreRepoRoot: parking created no stash entry — the exempt file was neither saved nor restored",
+      );
+      assert(
+        existsSync(path.join(repoE, TOOL_FILE)),
+        "#1362 restoreRepoRoot: the exempt tool file is left on disk, unmoved",
+      );
+
+      // (b) The same list, a real tracked edit present → stash and pop as today.
+      writeFileSync(path.join(repoE, "tracked.txt"), "base\nedited by the cycle\n");
+      const withTracked = [" M tracked.txt", `?? ${TOOL_FILE}`];
+      const done = await restoreRepoRoot(realExec, repoE, withTracked, EXEMPT);
+      assert(
+        done.restored === true,
+        `#1362 restoreRepoRoot: a tracked edit still drives the stash+pop with the list in force (got ${JSON.stringify(done)})`,
+      );
+      assert(
+        existsSync(path.join(repoE, TOOL_FILE)),
+        "#1362 restoreRepoRoot: the exempt file survived the stash/pop untouched",
+      );
+
+      // (c) The no-list control: identical decision, because the exempt lines
+      // are still `??` and the untracked-only rule is what fires.
+      const noList = await restoreRepoRoot(realExec, repoE, exemptOnly);
+      assert(
+        noList.restored === false,
+        `#1362 restoreRepoRoot: with no list the same porcelain parks too (byte-identical behaviour) (got ${JSON.stringify(noList)})`,
+      );
+      clearPlanted();
     }
 
     console.log("✓ #1362 dirty-root-exempt test passed");
