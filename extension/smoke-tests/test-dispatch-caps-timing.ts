@@ -34,6 +34,58 @@ function eq(actual: unknown, expected: unknown, msg: string): void {
   }
 }
 
+// Per-block env isolation. `withEnv` is duplicated from
+// `test-dispatch-caps-budget.ts` rather than lifted into a `lib/` module — a
+// new shared file is out of scope here. The raw `delete process.env.X` in
+// `finally` it replaces was wrong twice: it destroyed a value inherited from
+// the operator/CI environment instead of restoring it, and it ran per key
+// against a single file-load snapshot in the earlier version, so a block that
+// restored a key another block had armed would silently disarm that block's
+// cap mid-run. Each block now names ONLY the keys it sets, and the restore is
+// in an unconditional `finally`, so a throwing `assert` can no longer leak a
+// cap env var into the next block (where an inertness assertion would read a
+// real kill).
+const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T => {
+  const prior: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(vars)) {
+    prior[k] = process.env[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    return fn();
+  } finally {
+    for (const [k, v] of Object.entries(prior)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+};
+
+// Same helper, awaitable. `withEnv` above is the sync shape the budget file
+// uses; these four blocks are async, and a `finally` inside an async callback
+// runs when the CALLBACK settles, not when the caller's try does — which is
+// what makes the restore land before the next block starts.
+const withEnvAsync = async <T>(
+  vars: Record<string, string | undefined>,
+  fn: () => Promise<T>,
+): Promise<T> => {
+  const prior: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(vars)) {
+    prior[k] = process.env[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(prior)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+};
+
 // ---------------------------------------------------------------------------
 // #543 H1 — grace-window kill race: the child exits on its own between the
 // poll's grace check and killChild. The kill is a no-op on a dead process,
@@ -56,8 +108,7 @@ function eq(actual: unknown, expected: unknown, msg: string): void {
     capKillGraceMs: 600,
     childExited: () => exited,
   });
-  process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER = "100";
-  try {
+  await withEnvAsync({ PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER: "100" }, async () => {
     // The tracker triggers at the first message_end (1_000_000 >= 100).
     session.tokenBudgetTracker?.check(Date.now());
     // The child exits on its own BEFORE the grace window elapses.
@@ -70,10 +121,8 @@ function eq(actual: unknown, expected: unknown, msg: string): void {
     );
     eq(child.killed, [], "H1: no kill signal sent to a self-exiting child");
     assert(session.killCause() === undefined, "H1: killCause stays undefined (ok=true semantics)");
-  } finally {
-    delete process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER;
     session.cleanup();
-  }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -98,8 +147,7 @@ function eq(actual: unknown, expected: unknown, msg: string): void {
   const killedSigs: string[] = [];
   const child = { killed: killedSigs, kill: (sig: string) => killedSigs.push(sig) } as never;
   let steered = 0;
-  process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER = "100";
-  try {
+  await withEnvAsync({ PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER: "100" }, async () => {
     const session = createCapSession({
       role: "developer",
       child,
@@ -128,11 +176,12 @@ function eq(actual: unknown, expected: unknown, msg: string): void {
     eq(killedSigs.length, 1, "chatty child: exactly one kill signal");
     assert(session.killCause() === "token-budget", "chatty child: killCause is token-budget");
     const elapsed = Date.now() - start;
-    assert(elapsed >= GRACE, `kill respected the grace window (fired at ${elapsed}ms >= ${GRACE}ms)`);
+    assert(
+      elapsed >= GRACE,
+      `kill respected the grace window (fired at ${elapsed}ms >= ${GRACE}ms)`,
+    );
     session.cleanup();
-  } finally {
-    delete process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER;
-  }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -149,24 +198,24 @@ function eq(actual: unknown, expected: unknown, msg: string): void {
     return origSetInterval(fn, ms, ...args);
   }) as typeof setInterval;
   let session: ReturnType<typeof createCapSession>;
-  process.env.PI_ENSEMBLE_DISPATCH_CAPS = "0";
-  try {
-    session = createCapSession({
-      role: "developer",
-      child: { killed: [] as string[], kill: () => {} } as never,
-      onSteer: () => {},
-      totalTokens: () => 0,
-      timedOut: () => false,
-      inactivityKilled: () => false,
-      toolInactivityKilled: () => false,
-      aborted: () => false,
-      capKillGraceMs: 1000,
-      childExited: () => false,
-    });
-  } finally {
-    globalThis.setInterval = origSetInterval;
-    delete process.env.PI_ENSEMBLE_DISPATCH_CAPS;
-  }
+  withEnv({ PI_ENSEMBLE_DISPATCH_CAPS: "0" }, () => {
+    try {
+      session = createCapSession({
+        role: "developer",
+        child: { killed: [] as string[], kill: () => {} } as never,
+        onSteer: () => {},
+        totalTokens: () => 0,
+        timedOut: () => false,
+        inactivityKilled: () => false,
+        toolInactivityKilled: () => false,
+        aborted: () => false,
+        capKillGraceMs: 1000,
+        childExited: () => false,
+      });
+    } finally {
+      globalThis.setInterval = origSetInterval;
+    }
+  });
   assert(session.loopObserver === undefined, "H2: master switch off → no loop observer");
   assert(
     session.tokenBudgetTracker === undefined,
@@ -196,8 +245,7 @@ function eq(actual: unknown, expected: unknown, msg: string): void {
   const killedSigs: string[] = [];
   const child = { killed: killedSigs, kill: (sig: string) => killedSigs.push(sig) } as never;
   let session: ReturnType<typeof createCapSession>;
-  process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = "30000"; // long window
-  try {
+  await withEnvAsync({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: "30000" /* long window */ }, async () => {
     session = createCapSession({
       role: "developer",
       child,
@@ -236,10 +284,7 @@ function eq(actual: unknown, expected: unknown, msg: string): void {
     );
     eq(child.killed, [], "spawn#6: no kill signal after the distinct message_end");
     session.cleanup();
-  } finally {
-    delete process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS;
-    session?.cleanup();
-  }
+  });
 }
 
 console.log(`\nexit ${exit}`);
