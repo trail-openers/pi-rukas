@@ -52,13 +52,39 @@
  * an adversary. A merge whose words never appear in the command text — one
  * assembled entirely from expansions (`gh pr m$X 17`), or run from a script
  * file (`bash x.sh`) — never triggers and is a documented residual.
+ *
+ * #1417 — a `refused` result is a HOLD, not a merge verdict. It says "this
+ * text looks merge-adjacent and I cannot read it", which is not the same
+ * claim as "this merge is unreviewed". The refusal texts live in
+ * merge-refusals.ts, where that difference is written out: only the MERGE
+ * refusals name the `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE` hatch, and the hold
+ * text (`renderHold`, merge-guard-reads.ts) never does — an agent told to set
+ * a merge safety switch to unblock a `gh api` read is being handed the wrong
+ * remedy for the wrong disease.
  */
+
+import { lexedWhy } from "./merge-refusals.ts";
+import { triggerCode } from "./merge-trigger.ts";
 
 /** What the guard does with a bash command. */
 export type MergeCommand =
   | { kind: "none" }
-  | { kind: "refused"; reason?: string }
+  /**
+   * A command the guard held rather than read as a merge (#1417). `detail` is
+   * the thing that was held — the trigger word, the offending word, the
+   * forge-adjacent text — not just the code that named the rule. A refusal
+   * that renders only a code is useless to the agent reading it: `[reason:
+   * body-ind…]` never explained itself.
+   */
+  | { kind: "refused"; reason?: string; detail?: string }
   | { kind: "merge"; forge: "github" | "gitlab"; prNumber?: number; repo?: string };
+
+/**
+ * #1417 — the detail behind a refusal, carried alongside its reason code so
+ * one call site cannot drop it. `code` is the stable machine-readable name
+ * every test and doc cites; `detail` is the human-readable "what was held".
+ */
+export type HoldReason = { code: string; detail: string };
 
 /** A repo value safe to pass to gh/glab: `owner/repo` (GitLab: `group/sub/repo`). */
 export const REPO_VALUE_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_.-]*(\/[A-Za-z0-9_.-]+)+$/;
@@ -68,33 +94,22 @@ export function isValidRepoValue(value: string): boolean {
   return REPO_VALUE_PATTERN.test(value);
 }
 
-const FORGE_WORD =
+export const FORGE_WORD =
   /(?:^|[^a-z0-9_])(?:gh|glab|hub|curl|wget|https?|python3?|node|bun|deno|ruby|perl)(?![a-z0-9_])|api\.github\.com|gitlab|octokit/i;
 /**
  * `pr merge` / `mr merge` / `mr accept` (glab's alias) — a merge verb even
  * when the forge CLI runs under another name (`./g pr merge 17`).
  */
-const VERB_PAIR = /(?:^|[^a-z0-9_])[pm]r\s+(?:merge|accept)(?![a-z0-9_])/i;
-const MERGE_WORD =
+export const VERB_PAIR = /(?:^|[^a-z0-9_])[pm]r\s+(?:merge|accept)(?![a-z0-9_])/i;
+export const MERGE_WORD =
   /(?:^|[^a-z0-9_])merge(?![a-z0-9_])|mergepullrequest|enablepullrequestautomerge|mergerequestaccept|acceptmergerequest|mergerequestmerge|mergemergerequest|automerge|mergebranch|mergequeue|enqueuepullrequest/i;
-const FORGE_NAME = /(?:^|[^a-z0-9_])(?:gh|glab)(?![a-z0-9_])/i;
-const API_WORD = /(?:^|[\s'"])(?:api|graphql)(?![a-z0-9_])/i;
-const HTTP_CLIENT = /(?:^|[^a-z0-9_])(?:curl|wget|https?|httpie)(?![a-z0-9_])/i;
-const FORGE_HOST = /api\.github\.com|github\.com|gitlab|graphql/i;
-/**
- * A body the request reads from a file or stdin: `k=@f` (gh -F, curl -F,
- * httpie), `-d @f`, `-T f`, `--data-binary @f`, `--data-urlencode name@f`,
- * `--input f`, `--post-file f`, `--upload-file f`. Matched on the raw text,
- * so a file reference inside single quotes (which gh still reads) counts.
- */
-const BODY_FILE =
-  /(?:^|\s)[^\s=]*=@|(?:^|\s)-[dFT]\s*@|(?:^|\s)-T\b|--(?:data[\w-]*|form)\s+@|--data-urlencode\s+[^\s=@"']*@|--(?:upload-file|post-file|input)\b/;
+export const HTTP_CLIENT = /(?:^|[^a-z0-9_])(?:curl|wget|https?|httpie)(?![a-z0-9_])/i;
 /**
  * A `{a,b}` or `{a..b}` pattern bash would expand (matched on the unquoted
  * view). Runs are bounded so the match is linear: an unbounded pair of runs
  * backtracks quadratically on `{` followed by a long `a,a,a,…` (#962 review).
  */
-const BRACE_EXPANSION = /\{[^{}\s,]{0,256}(?:,|\.\.)[^{}\s]{0,256}\}/;
+export const BRACE_EXPANSION = /\{[^{}\s,]{0,256}(?:,|\.\.)[^{}\s]{0,256}\}/;
 
 /** Outside quotes, any of these refuses (metacharacters, expansions, comments). */
 const FORBIDDEN = new Set("$`\\;|&<>(){}*?[#~!");
@@ -117,7 +132,7 @@ const ANSI_ESCAPES: Readonly<Record<string, string>> = {
   '"': '"',
   "?": "?",
 };
-const ANSI_ESCAPE_PATTERN =
+export const ANSI_ESCAPE_PATTERN =
   /\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|[0-7]{1,3}|[\s\S])/g;
 
 /**
@@ -125,7 +140,7 @@ const ANSI_ESCAPE_PATTERN =
  * decode (out-of-range code point, `\x` with no digits, unknown letter) is
  * kept literal as `\` plus its text, never dropped.
  */
-function ansiC(body: string): string {
+export function ansiC(body: string): string {
   return body.replace(ANSI_ESCAPE_PATTERN, (whole, e: string) => {
     if (e.length > 1 && /^[xuU]/.test(e)) {
       const code = Number.parseInt(e.slice(1), 16);
@@ -142,7 +157,7 @@ function ansiC(body: string): string {
  * stay, so a removed word still leaves its `''` / `""` behind. Escaped
  * characters are skipped whole so a `\"` cannot open or close a quote.
  */
-function quotedView(command: string, keepDouble: boolean): string {
+export function quotedView(command: string, keepDouble: boolean): string {
   let out = "";
   let quote: "'" | '"' | undefined;
   const chars = [...command];
@@ -174,19 +189,6 @@ function quotedView(command: string, keepDouble: boolean): string {
   return out;
 }
 
-/** Whether the command calls a forge's API or an HTTP client aimed at a forge. */
-function isForgeOrHttpCall(command: string): boolean {
-  return (
-    (FORGE_NAME.test(command) && API_WORD.test(command)) ||
-    (HTTP_CLIENT.test(command) && FORGE_HOST.test(command))
-  );
-}
-
-/** A request body that is not a literal: a file, stdin or a shell expansion. */
-function bodyIndirect(command: string): boolean {
-  return /[$`]|<\(/.test(quotedView(command, true)) || BODY_FILE.test(command);
-}
-
 /** Split on unquoted command separators; each piece is the raw text of one simple command. */
 function segments(command: string): string[] {
   const out: string[] = [];
@@ -211,7 +213,7 @@ function segments(command: string): string[] {
 }
 
 /** A segment whose command word (after `VAR=…` assignments) is expanded, quoted or escaped. */
-function hasComplexCommandWord(command: string): boolean {
+export function hasComplexCommandWord(command: string): boolean {
   return segments(command).some((seg) => {
     const word = seg
       .trim()
@@ -219,31 +221,6 @@ function hasComplexCommandWord(command: string): boolean {
       .find((w) => !/^[A-Za-z_]\w*=/.test(w));
     return word !== undefined && /[$`'"\\]/.test(word);
   });
-}
-
-/**
- * Step 1: does this command need the strict grammar at all? Returns the
- * refusal code for a trigger that refuses without reading (`expansion-command-word`,
- * `body-indirect`, `brace-expansion`), `""` for an ordinary trigger the grammar
- * judges, or undefined for no trigger. The widened view only widens the
- * trigger; the grammar in `lex` decides.
- */
-function triggerCode(command: string): string | undefined {
-  const widened = command
-    .replace(/\$'((?:[^'\\]|\\[\s\S])*)'/g, (_, body: string) => ansiC(body))
-    .replace(/\\\r?\n/g, "")
-    .replace(/\$(?=['"])/g, "")
-    .replace(/['"\\]/g, "");
-  const texts = [command, widened];
-  const verb = texts.some((t) => VERB_PAIR.test(t));
-  const merge = texts.some((t) => MERGE_WORD.test(t));
-  const forge = texts.some((t) => FORGE_WORD.test(t));
-  if ((merge || verb) && hasComplexCommandWord(command)) return "expansion-command-word";
-  if (isForgeOrHttpCall(command) && bodyIndirect(command)) return "body-indirect";
-  if (forge && BRACE_EXPANSION.test(quotedView(command, false))) return "brace-expansion";
-  if (verb) return "";
-  const graphqlMutation = texts.some((t) => /mutation/i.test(t) && /merge/i.test(t));
-  return forge && (merge || graphqlMutation) ? "" : undefined;
 }
 
 /**
@@ -400,10 +377,20 @@ function repoAt(
   return undefined;
 }
 
-const refuse = (reason: string): MergeCommand => ({ kind: "refused", reason });
+const refuse = (reason: string, detail?: string): MergeCommand => ({
+  kind: "refused",
+  reason,
+  ...(detail === undefined ? {} : { detail }),
+});
 
 /** Step 2: the strict grammar over already-lexed words. */
 function parse(g: ForgeGrammar, words: string[]): MergeCommand {
+  // #1417 — every refusal names the word it stopped at, so the agent reading
+  // it knows what to change rather than guessing from a bare code.
+  const refuseAt = (code: string, word: string, more?: string): MergeCommand =>
+    refuse(
+      `${code} — the offending word is \`${word.slice(0, 40)}\`${more === undefined ? "" : `; ${more}`}`,
+    );
   let repo: string | undefined;
   const takeRepo = (sel: { repo: string }): string | undefined => {
     if (repo !== undefined) return "repo-repeated";
@@ -421,13 +408,21 @@ function parse(g: ForgeGrammar, words: string[]): MergeCommand {
     if (bad) return refuse(bad);
     i += head.span;
   }
-  if (words[i] !== g.noun || words[i + 1] !== "merge") return refuse("not-pr-merge");
+  if (words[i] !== g.noun || words[i + 1] !== "merge") {
+    return refuseAt(
+      "not-pr-merge",
+      words[i] ?? "<end of command>",
+      `expected \`${g.noun} merge\` here, so this is not the merge the guard can check`,
+    );
+  }
   i += 2;
   let prNumber: number | undefined;
   let optedOut = false;
   const n = words[i];
   if (n !== undefined && !n.startsWith("-")) {
-    if (!/^[1-9][0-9]*$/.test(n) || !Number.isSafeInteger(Number(n))) return refuse("not-a-number");
+    if (!/^[1-9][0-9]*$/.test(n) || !Number.isSafeInteger(Number(n))) {
+      return refuseAt("not-a-number", n, "a PR/MR number must be digits");
+    }
     prNumber = Number(n);
     i += 1;
   }
@@ -442,14 +437,14 @@ function parse(g: ForgeGrammar, words: string[]): MergeCommand {
       if (w === g.requiredFlag) optedOut = true;
       i += 1;
     } else if (g.valued.has(w)) {
-      if (i + 1 >= words.length) return refuse("flag-missing-value");
+      if (i + 1 >= words.length) return refuse(`flag-missing-value — \`${w}\` takes a value`);
       i += 2;
     } else if (w.startsWith("--") && w.includes("=") && g.valued.has(w.slice(0, w.indexOf("=")))) {
       i += 1;
     } else if (w.startsWith("-")) {
-      return refuse(`unknown-flag:${w.slice(0, 40)}`);
+      return refuseAt("unknown-flag", w, "it is not a flag of the accepted merge form");
     } else {
-      return refuse("extra-command");
+      return refuseAt("extra-command", w, "only one command is read");
     }
   }
   if (g.requiredFlag !== undefined && !optedOut) return refuse("glab-auto-merge");
@@ -462,22 +457,19 @@ export function readMergeCommand(command: string): MergeCommand {
   if ("words" in lexed && isReadOnlyGh(lexed.words)) return { kind: "none" };
   const trigger = triggerCode(command);
   if (trigger === undefined) return { kind: "none" };
-  if (trigger !== "") return refuse(trigger);
-  if (!("words" in lexed)) return refuse(lexed.code);
+  // A trigger that refuses without reading: the code carries its own detail.
+  if (trigger.code !== "") return refuse(trigger.code, trigger.detail);
+  if (!("words" in lexed)) {
+    return refuse(
+      lexed.code,
+      `triggered by ${trigger.detail}; the text also holds ${lexedWhy(lexed.code)}`,
+    );
+  }
   const words = lexed.words;
   const g = words[0] === GH.tool ? GH : words[0] === GLAB.tool ? GLAB : undefined;
-  return g ? parse(g, words) : refuse("not-a-forge-command");
-}
-
-/** The refusal for a glab merge that does not opt out of deferred auto-merge. */
-export const GLAB_AUTO_MERGE_REFUSAL =
-  "merge refused: `glab mr merge` without `--auto-merge=false` queues a deferred auto-merge when the pipeline is still running, so it can merge commits pushed after the review. Use the accepted form, run on its own: `glab mr merge <N> --auto-merge=false` (or `glab -R GROUP/REPO mr merge <N> --auto-merge=false`). Operator override: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1";
-
-/** The guard's refusal for a triggered command outside the grammar. */
-export const MERGE_FORM_REFUSAL =
-  "merge refused: the merge guard checks only one plain merge command — `gh [-R OWNER/REPO] pr merge [N] [flags]` or `glab [-R GROUP/REPO] mr merge [N] [flags]`, run on its own: no pipes, chains, substitutions, variables, wrappers (env/sudo/nice/time/exec/oo), `bash -c`, `eval`, `gh api`/curl REST or GraphQL merges, a request body read from a file, stdin or a shell expansion, no deferred `--auto` merge. A command that names gh/glab/curl/an interpreter and the word `merge` anywhere (even in prose) is held to this form: put a PR or comment body in a file (`--body-file <file>`) and a commit message in `git commit -F <file>`. Operator override: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1";
-
-/** The form refusal, with the reason code that says what to change. */
-export function mergeFormRefusal(reason?: string): string {
-  return reason === undefined ? MERGE_FORM_REFUSAL : `${MERGE_FORM_REFUSAL} [reason: ${reason}]`;
+  if (g !== undefined) return parse(g, words);
+  return refuse(
+    "not-a-forge-command",
+    `triggered by ${trigger.detail}, but the command word is \`${(words[0] ?? "<empty>").slice(0, 40)}\`, not \`gh\` or \`glab\`,`,
+  );
 }
