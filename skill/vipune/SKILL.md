@@ -255,7 +255,7 @@ vipune add "key finding $(whoami)"   # ❌ never do this
 Every ~10–15 sessions on a project, run:
 
 ```bash
-vipune list --limit 50 --json | jq .
+vipune list --limit 50 --include-candidates --json | jq .
 ```
 
 Look for:
@@ -273,7 +273,7 @@ candidate <id> promote
 candidate <id> prune
 ```
 
-Report only rows you did not write in this session. Where the age and retrieval evidence comes from: `vipune list --json` — each row carries `retrieval_count`, `last_retrieved_at`, `created_at`, `memory_type`, `status` and `importance`. That listing is the evidence for both calls. The `/audit` memory panel (`extension/src/memory-panel.ts` / `memory-stats.ts`) is the aggregate view (rows by status/type, total/max retrievals, never-retrieved count, candidate ids + types) — it has no per-row age column.
+Report only rows you did not write in this session. Where the age and retrieval evidence comes from: `vipune list --include-candidates --json` — each row carries `retrieval_count`, `last_retrieved_at`, `created_at`, `memory_type`, `status` and `importance`. That listing is the evidence for both calls. Pass the flag: without the flag `list` shows active rows only, so the candidates you are asked to report are not in the listing. The `/audit` memory panel (`extension/src/memory-panel.ts` / `memory-stats.ts`) is the aggregate view (rows by status/type, total/max retrievals, never-retrieved count, candidate ids + types) — it has no per-row age column.
 
 Report a candidate for pruning when it matches what the operator's `prune` command keys on: `status = 'candidate' AND retrieval_count < N AND age(created_at) > T` — candidate, never (or barely) retrieved, and old. `prune` is an operator command, and it **hard-excludes** `guard`-type rows and rows with `importance` high/critical — never propose pruning one of those, since the operator's own tool would refuse it.
 
@@ -327,7 +327,7 @@ vipune add '<distilled fact/preference/procedure/guard/observation>' \
   --memory-type <type> [--status candidate] [--supersedes <old-id>]
 
 # LIST (for the consolidation pass)
-vipune list --limit 50
+vipune list --limit 50 --include-candidates
 
 # SUPERSEDE (when a memory drifts) — the ONLY correction available to you.
 # `--supersedes` preserves the original row, so the change is auditable and
