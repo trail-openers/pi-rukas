@@ -206,6 +206,16 @@ const agentCommands = [
   "cd extension/scripts && bun review-accept.ts main 0123abcd --reason y",
   "bun -e 'await (await import(\"./src/review-findings-store.ts\")).acceptRow({})'",
   "node -e \"require('fs').writeFileSync('review-findings.json','{}')\"",
+  // #1125 — the routes the original scan missed. Plain git/gh was exempt as a
+  // block, so a git argument that writes a file (`--output`) or runs an alias
+  // (`-c alias.x='!…'`) reached the store; and the runtime match required the
+  // runtime and the store name on one line, so a here-doc body or a program
+  // piped into `bun -` did too. The full set is in
+  // test-review-accept-guard-hardened.ts.
+  "git show HEAD:blob --output=review-findings.json",
+  "git -c alias.dump='!cat /tmp/payload review-findings.json' dump",
+  'bun <<EOF\nimport { acceptFinding } from "./src/review-findings-store.ts"\nEOF',
+  "printf 'import \"./src/review-findings-store.ts\"' | bun -",
 ];
 for (const c of agentCommands) {
   assert(
@@ -220,6 +230,12 @@ for (const c of [
   'git commit -m "feat: review-accept guard"',
   'git commit -m "docs: review-accept flow"',
   'gh pr create --body "Adds the review-accept acceptance path"',
+  // #1125 — the plain git/gh reads the exemption exists for: a log and a diff
+  // naming the store's module stay allowed, and a file-writing git argument
+  // that names no store path is just a command.
+  "git log --oneline -- extension/src/review-findings-store.ts",
+  "git diff HEAD -- extension/src/review-accept-guard.ts",
+  "git show HEAD:README.md --output=/tmp/readme.txt",
 ]) {
   assert(runsReviewAccept(c) === undefined, `guard: leaves unrelated commands alone — ${c}`);
 }
