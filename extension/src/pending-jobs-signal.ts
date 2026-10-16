@@ -91,6 +91,15 @@ const pending = new Set<string>();
 // #1389 — the still-pending "publish 0 when the bound expires" timer, kept so a
 // second shutdown() or a test teardown can cancel it rather than race it.
 let deferredArm: ReturnType<typeof setTimeout> | undefined;
+// #1389 — whether THIS process ever attached a session. `attach()` sets it;
+// nothing clears it. It is what lets the guards below tell "this session was
+// shut down, so a late message is a fact worth printing" from "this process was
+// never a headless RPC session at all" — print/json/TUI modes never attach, and
+// for them every `jobPending`/`jobReported` call is ordinary operation, not a
+// message to a session that stopped listening. Warning on it would bury the
+// real "after shutdown" lines in a stack of noise from a mode that has no
+// status channel to be honest about.
+let everAttached = false;
 // #1389 — whether this session's count is still open. `shutdown()` closes it;
 // `attach()` reopens it for the next session. It is tracked apart from `ctx`
 // because the two answer different questions: `ctx` is "is there a channel to
@@ -113,6 +122,49 @@ function publish(): void {
   }
 }
 
+/**
+ * Publish the closing "0" and say so when the channel refused it.
+ *
+ * #1389 — `publish()` swallows a `setStatus` throw behind a debug-gated `trace`,
+ * which is right for an ordinary frame and wrong for this one: the whole point
+ * of the closing frame is that a headless client is told "nothing is coming".
+ * If THAT frame does not land, a client that watched the count at `n` has no
+ * reason to believe the session is finished, and the only record of it was
+ * behind `PI_ENSEMBLE_DEBUG`. So the shutdown tail reads the publish's own
+ * answer (`publishToClient` returns whether the channel delivered it) and
+ * warns when it did not.
+ */
+function publishToClient(): boolean {
+  if (!ctx) return false;
+  try {
+    ctx.ui.setStatus(PENDING_JOBS_STATUS_KEY, String(pending.size));
+    return true;
+  } catch (err) {
+    trace(`pending-jobs: setStatus failed: ${String(err)}`);
+    return false;
+  }
+}
+
+/**
+ * A refused `jobPending`/`jobReported` after the count closed.
+ *
+ * #1389 — the two states the guards have to separate:
+ *   - a process that DID attach and then shut down: a report was handed to (or
+ *     owed by) a session that is no longer listening. Worth an unconditional
+ *     WARN — it is the same class of fact as an early "0".
+ *   - a process that never attached (print/json/TUI mode, or a bare test
+ *     process): there is no channel, nothing was ever promised to a client, and
+ *     the call is ordinary operation. `trace` only, so those modes keep working
+ *     silently and the shutdown WARNs stay findable.
+ */
+function refusedAfterClose(what: string, id: string): void {
+  if (!everAttached) {
+    trace(`pending-jobs: ignored ${what} (job ${id}) — no session ever attached`);
+    return;
+  }
+  traceWarn(`pending-jobs: ignored ${what} (job ${id}) after shutdown`);
+}
+
 /** Capture the context from session_start; RPC only. Publishes the initial count. */
 export function attach(c: StatusContext): void {
   // #1389 — a new session is a new channel: any deferred arm from a shutdown
@@ -124,6 +176,21 @@ export function attach(c: StatusContext): void {
   deferredArm = undefined;
   generation++;
   open = true;
+  // #1389 — the count starts at zero for the new session. `shutdown()` clears
+  // `pending` only on the paths that actually publish (the immediate "0", the
+  // expiry of the bound); its early return for "already at 0, nothing owed"
+  // deliberately leaves the Set alone because the channel already carries that
+  // number. Without this clear a reload would inherit whatever the previous
+  // session was still owed — `open` is back to true, so those stale ids are
+  // writable again, and the fresh "0" this publish sends is a lie in the other
+  // direction: the client reads 0 while `pending` still holds ids whose settle
+  // can never run, so nothing ever calls `jobReported` on them and the next
+  // shutdown's "reports never arrived" names jobs this session never started.
+  pending.clear();
+  // #1389 — set for ANY mode, not only RPC: the question the guards ask is "did
+  // this process ever have a session to be honest with", and a TUI/print/json
+  // attach is an affirmative answer with no channel to publish through.
+  everAttached = true;
   ctx = c.mode === "rpc" ? c : undefined;
   publish();
 }
@@ -141,7 +208,7 @@ export function attach(c: StatusContext): void {
 export function jobPending(id: string, ownerKind: "pm" | "driver"): void {
   if (ownerKind !== "pm") return;
   if (!open) {
-    traceWarn(`pending-jobs: ignored new owed report (job ${id}) after shutdown`);
+    refusedAfterClose("new owed report", id);
     return;
   }
   pending.add(id);
@@ -163,7 +230,7 @@ export function jobPending(id: string, ownerKind: "pm" | "driver"): void {
  */
 function jobReported(id: string): void {
   if (!open) {
-    traceWarn(`pending-jobs: ignored report release (job ${id}) after shutdown`);
+    refusedAfterClose("report release", id);
     return;
   }
   if (pending.delete(id)) publish();
@@ -203,6 +270,10 @@ export function resetForTesting(): void {
   generation++;
   open = false;
   ctx = undefined;
+  // #1389 — and it is a NEW PROCESS for the "was there ever a session" guard:
+  // a case that wants the never-attached shape (print/json mode) has to start
+  // from a state no attach has touched, which is what the test asserts on.
+  everAttached = false;
 }
 
 /**
@@ -232,7 +303,13 @@ export function resetForTesting(): void {
  */
 export function shutdown(): void {
   const settleMs = pendingShutdownBoundMs();
-  const owedIds = [...pending];
+  // The bound is read FIRST (above) and the Set is read where it is acted on —
+  // once at the top of the synchronous body (`if (pending.size === 0)`), once
+  // inside the armed callback from the live Set. A snapshot taken here is read
+  // by neither: the deferred path must not call never-arrived a report that
+  // landed inside the window, so it re-reads `pending` at fire time, and an
+  // unused copy is a second, staler answer to "what is owed" sitting next to
+  // the one that is consulted.
   // A re-entrant shutdown (Pi can fire the hook on both quit and reload paths)
   // re-arms rather than leaving the first bound to fire mid-teardown.
   deferredArm?.close();
@@ -247,14 +324,20 @@ export function shutdown(): void {
     if (token !== generation) return;
     pending.clear();
     // Always publish the closing frame: an id added between the call and this
-    // timer still gets its "0" rather than a silent no-op.
-    publish();
+    // timer still gets its "0" rather than a silent no-op. If the channel
+    // refused it, say so — a client still watching `n` has no way to learn the
+    // session ended, and a debug-gated trace is not a signal it can act on.
+    if (!publishToClient()) {
+      traceWarn(
+        "session shutdown: the closing 0 was not delivered to the client — a headless reader may still believe a report is coming",
+      );
+    }
     ctx = undefined;
   };
   // Already at "0" and nothing owed: the channel already carries the count this
   // would publish, so publishing again would be a redundant frame, not a
   // transition. The channel is still detached.
-  if (owedIds.length === 0) {
+  if (pending.size === 0) {
     ctx = undefined;
     return;
   }
