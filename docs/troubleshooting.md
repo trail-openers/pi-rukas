@@ -135,7 +135,7 @@ Check the raw transcript under `~/.pi/agent/ensemble-runs/<date>/` before conclu
 
 ### A merge was refused: review ledger
 
-**Symptom:** An agent (PM, ops, or a subagent) runs `gh pr merge N` or `glab mr merge N` and the command is refused with a message like *"no passing adversarial review on file for branch …"* or *"no passing lens review on file for branch …"*.
+**Symptom:** An agent (PM, ops, or a subagent) runs `gh pr merge N` or `glab mr merge N` and the command is refused with a message like *"no passing adversarial review on file for branch …"* or *"no passing lens review on file for branch …"*. The same guard also holds commands that are not merges at all — see "A read-only command was refused with merge text" below.
 
 **Cause (by design):** The mode-independent merge guard (issue #912) checks the per-clone review ledger before allowing any agent-run PR/MR merge. The ledger lives under the git common dir (`git rev-parse --git-common-dir` + `review-ledger.json`) and is written by `adversarial_loop` and `dispatch_lens_review` at completion. The guard requires:
 
@@ -156,7 +156,7 @@ This is the structural floor for the incident where a PM merged two PRs on a dev
 
 **Grouped multi-workstream cycles.** A grouped `/work` cycle (N>1) records its adversarial entries per workstream tree, not against the integrated branch. A hand/ops fallback merge of the **integrated** branch (e.g. after a handoff) may therefore be refused — the ledger holds no entry under the integration branch's name — until the reviews are re-run on that branch. The driver's own mechanized merge is unaffected (it is exempt by construction and its entries were written against the cycle's branch).
 
-**Escape hatch (operator-set only):** `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1` disables the guard for the whole session. Use only when you have reviewed by other means and want to merge by hand. It is read once when Pi starts; setting it inside a command (`env …`, `export` in a subshell) has no effect.
+**Escape hatch (operator-set only):** `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1` disables the guard for the whole session. Use only when you have reviewed by other means and want to merge by hand. It is read once when Pi starts; setting it inside a command (`env …`, `export` in a subshell) has no effect. **It is never the answer to a blocked read** — see "A read-only command was refused with merge text": widening merge protection buys nothing when nothing was being merged.
 
 **Which commands the guard checks (#962).** The guard accepts exactly one form of merge, run as a command of its own:
 
@@ -181,13 +181,44 @@ glab [-R GROUP/REPO | --repo GROUP/REPO]                     mr merge [N] [flags
 
 **Outside the command guard entirely.** The guard reads the commands an agent types. It does not see anything a forge does on its own. Label-, comment- and review-driven merge bots (bors, Mergify, an auto-merge label, a `/merge` comment) and dispatched workflows can merge a PR without any command the guard reads. A pre-existing auto-merge enabled outside the guard can fire when a review is approved or the PR is marked ready, so `gh pr review --approve` and `gh pr ready` can satisfy it. These are the same class as a direct push to the base branch. Disable such automation where the guard is the gate, or accept that it is not.
 
-**Chains are refused — run them separately.** `git merge --ff-only origin/main && gh pr view 17` is refused, because `&&` is a shell metacharacter the guard will not read through, even though the `gh` part on its own is an ordinary read. Run the two commands as separate calls.
+**A chain is refused — run each command on its own.** `git merge --ff-only origin/main && gh pr view 17` is refused, because `&&` is a shell metacharacter the guard will not read through, even though the `gh` part on its own is an ordinary read. A command that never triggers (it spells no merge word) runs whatever it chains — but a read should be one command anyway.
+
+**What the guard treats as a read.** Two things make a command inert, and both are narrow — see "A read-only command was refused with merge text" below for what to do when one of them is the reason a read ran, or the reason it did not.
+
+1. **The read allowlist** (`READ_ONLY_GH` in `merge-allowlist.ts`) exempts `gh` only, and only for `pr view|list|checks|diff|status|create`, `issue view|list|create`, `release list|view`, `search <anything>`, `label list` and `repo view` — genuine reads and creations. When it fires, a merge word in the arguments is prose: `gh pr list --search "merge conflict"` runs. It is judged on the whole command, so the command must also be one the strict lexer can read (no chain, pipe or redirection carrying a shell metacharacter outside single quotes).
+2. **No trigger at all.** A command that spells neither a merge word nor the `pr merge` / `mr merge` / `mr accept` verb pair is inert however forge-shaped it looks. That is what lets an issue read through: `gh api repos/o/r/issues/250 --jq '{number,title,state,closed_at}'`, `gh api "repos/o/r/issues/248/labels?per_page=100" --jq '.[].name'`, a `timeline` or `events` read with a `--jq` filter, and `curl` of a forge URL — none of them names a merge, so the guard never reads them. The `--jq` filter is the point: the trigger looks for literal words, and a read carries none.
+
+The shapes that defeat them, and what to do:
+
+- **A merge word plus a shell metacharacter is held whole.** `gh pr view 17 --json body | grep merge` is refused with `forbidden-char:<c>`: once the merge word triggers, the command must be the one plain merge form, and outside single quotes the lexer refuses every metacharacter — so it is never read as a gh read. The same read with no merge word in it (`gh pr view 17 --json body | head -20`) runs. When a read is held this way, run it on its own and do the filtering or logging in a second call.
+- **A merge word in a non-exempt gh verb is prose the guard cannot tell from a merge.** `gh pr comment 5 --body "please merge"`, `gh pr edit 17 --add-label automerge`, `gh workflow run merge-release.yml`, `gh run list --workflow merge.yml` are refused. Put the prose in `--body-file` or drop the word; name the workflow without `merge`.
+- **A `glab` read has no allowlist** — only `gh` has one. `glab api "projects/1/issues/250/notes" --jq '.[].body'` is inert because it spells no whole merge word (`merge_requests` is one token, not the word `merge`), but a bare `merge` anywhere in a glab command is held whatever follows it, and there is no exemption to fall back on. Drop the word.
+- **A forge API path that spells the verb is a merge door, not a read:** `gh api repos/o/r/pulls/17/merge` is refused whatever its method. Read the PR with `gh pr view 17 --json mergeable,mergeStateStatus` instead.
 
 **The documented residual.** The guard reads the command text only, so a merge whose words never appear there is not recognised. That covers a merge assembled from shell expansions (`$G pr m$X 17`, `gh pr m$(echo e)rge 17`, `gh pr m?rge 17`) and a merge written to a script file and run (`bash x.sh`). It also covers a gh/glab alias the operator configured beforehand (`gh m 17`) and a direct `git push` to the base branch. These are outside the threat model: an honest-but-forgetful agent does not hide a merge from itself, and branch protection is the control for pushes. Recent glab versions queue an auto-merge by default when the pipeline is still running, so the guard requires `--auto-merge=false` on every glab merge (see above); `--sha <reviewed head>` pins the head but does not make the merge immediate. A merge aimed at the other forge (`glab mr merge 12` in a GitHub clone) is refused, because the guard reads the PR on this repo's forge. Each forge-detection git call is bounded at 30s (a few run in sequence); a stall resolves no remote, so the guard refuses with *"could not determine the forge"*.
 
 **To satisfy the guard:** run `adversarial_loop` (the `adversarial_loop` tool) and `dispatch_lens_review` (the `dispatch_lens_review` tool) on the branch, let them complete, then merge. The ledger entries are written automatically at completion.
 
 PR: [#912](https://github.com/trail-openers/pi-rukas/issues/912)
+
+### A read-only command was refused with merge text
+
+**Symptom:** An agent reading an issue's labels, timeline or comment history — to work out, say, why a cycle was parked — is refused. The command contains no merge, and the refusal talks only about merging and offers the merge override as the remedy:
+
+> merge refused: the merge guard checks only one plain merge command — … Operator override: `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1`
+
+The three reports are janit/tehas #244 and #253 (twelve refusals of plain reads between them — issue `view`/`list` reads with `--json`/`--jq` filters, plus `labels` / `timeline` / `events` API reads) and #261 (an installer script held the same way). The guard was active even though the session logged `permission-guard: PI_ENSEMBLE_SANDBOX_MODE=1 — bypassing all tool gating` — it is registered before that short-circuit, so neither sandbox nor trust mode silences it.
+
+**Cause:** the guard is a **trigger**, not a merge parser: a command naming a forge, HTTP client or interpreter **and** a merge word is held to the plain-merge form whether or not it merges anything (see the two exemptions above). A read trips it when a merge word appears anywhere in its text — in a `--jq` filter, in an argument, in a log-file name — because once the trigger fires the command must be the one plain merge form, and a read never is. The refusal text made it worse a second way: it read as a merge refusal whatever had actually been held, and the only remedy it offered was widening the merge safety switch. **An operator who follows that advice to unblock a read weakens merge protection to fix something that was never about merging** — that is the failure this entry exists to stop.
+
+**Now:** the reads in those reports are inert, and a refusal says what it held:
+
+- **Reads are reads.** Each command in the three reports classifies as not-a-merge through one of the two exemptions above, and never reaches the ledger path: `gh api … --jq '{number,title,state,closed_at}'` runs as plainly as `gh issue view 250 --json number,title,state` always did.
+- **A refusal names the hold, not a merge.** Every refusal ends with `[reason: <code>]` naming the shape that was held. Only a command that could actually have merged — one the grammar read as a merge and rejected on its flags — is told the accepted merge form. When the held thing is not a merge (`body-indirect`, `brace-expansion`, `not-a-forge-command`), the text names that shape instead and does **not** name `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE`: a held non-merge never offers the merge override.
+
+**If a read is still refused:** read the reason code first — it names a shape, not a permission. Then, in order: run the read as its own command, with no chain, pipe or redirection; drop the merge word from the argument, or move the argument to a file; and for a gh verb outside the read allowlist, use the read verb (`gh pr view`, `gh issue view`) rather than the mutating one. **Do not set `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE`** — for a read there is nothing to override. If none of that helps, the command is genuinely forge-shaped: write it as a plain `gh api` GET with no merge word in the filter.
+
+PR: [#1417](https://github.com/trail-openers/pi-rukas/issues/1417)
 
 ### A merge was refused: latest lens passed=false / REVIEW_INCOMPLETE although the review reported APPROVED
 
