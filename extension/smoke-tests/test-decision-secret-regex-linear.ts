@@ -44,16 +44,24 @@ const globalOf = (re: RegExp) =>
  * credential with NO `token`/`password`/`secret` keyword in front of it, so the
  * keyword rule cannot also fire: exactly one pattern matches.
  *
+ * The probe's password carries a `/` (`hunt/er2…`). The userinfo classes allow `/`
+ * deliberately (#1393 item 8), and a probe whose credential did not contain one would
+ * identify any STRICTER rule as the shipped one — which is how this bar came to be
+ * pinned to a source string the set no longer contains. Identifying the rule by what
+ * it ACCEPTS is the stronger check anyway: a rewrite is judged on its language, not
+ * on its spelling.
+ *
  * Narrowed here, once, so every measurement below runs against a pattern known
  * to exist: an absent rule fails this file loudly rather than silently timing
  * `undefined`.
  */
-const PROBE = "https://janni:hunter2secretvalue@git.example.com/x";
+const PROBE = "https://janni:hunt/er2hunter2secretvalue@git.example.com/x";
+const PROBE_SHAPE = /:\/\/[^:@\s]*:[^@\s]+@/;
 const matchers = SECRET_PATTERNS.filter((re) => re.test(PROBE));
-const urlCredential = matchers[0] ?? /:\/\/[^\s/:@]+:[^\s/@]+@/;
+const urlCredential = matchers[0] ?? PROBE_SHAPE;
 assert(
-  matchers.length === 1 && urlCredential.source === new RegExp(/:\/\/[^\s/:@]+:[^\s/@]+@/).source,
-  `the URL-credential pattern is the one the linear bar is set for (${matchers
+  matchers.length === 1 && urlCredential.source === PROBE_SHAPE.source,
+  `the URL-credential pattern is the one the linear bar is set for, and it is the rule that accepts a '/' in the userinfo (${matchers
     .map((re) => re.source)
     .join(" , ")})`,
 );
@@ -142,13 +150,26 @@ for (const [what, input] of NEAR_MISSES) {
   );
 }
 
-// 4. It is still a matcher: a guard that redacts nothing would also be fast.
+// 4. It is still a matcher: a guard that redacts nothing would also be fast. The
+//    two extra shapes are the item-8 ones — a `/` in the userinfo, which the old
+//    classes refused outright — so "fast" and "still redacts the shape the rule was
+//    widened for" are both observed on the pattern the bar was measured against.
 {
-  const r = redactSecrets("clone from https://janni:hunter2secretvalue@git.example.com/x");
+  const r = redactSecrets("clone from https://janni:hunt/er2hunter2secretvalue@git.example.com/x");
   assert(
     r.count >= 1 && !r.text.includes("hunter2secretvalue"),
     `a real embedded credential is still replaced, so the bounds above measured a working pattern (${r.count} redaction(s))`,
   );
+  for (const [what, text, secret] of [
+    ["'/' in the user", "https://us/er:pwHunter2Secret@host", "pwHunter2Secret"],
+    ["'/' in the pass", "https://user:hunt/er2Hunter2Secret@host", "hunt/er2Hunter2Secret"],
+  ] as const) {
+    const r2 = redactSecrets(`remote ${text} ok`);
+    assert(
+      r2.count >= 1 && !r2.text.includes(secret),
+      `the linear pattern still matches the userinfo shape containing '/': ${what} (${r2.count})`,
+    );
+  }
 }
 
 console.log(`\nexit ${state.exit}`);

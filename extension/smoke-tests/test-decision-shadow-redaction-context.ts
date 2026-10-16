@@ -161,7 +161,6 @@ for (const { name, secret, body } of CASES) {
  * deep inside the kept half and large enough that the scan reaches it: an
  * assertion at one bound would have passed while the other leaked.
  */
-const GLUE = 2048;
 
 for (const { name, secret, body } of CASES) {
   for (const max of [600, 1000, 4000]) {
@@ -193,7 +192,6 @@ for (const { name, secret, body } of CASES) {
     // a URL path or a JSON blob — has a "whitespace before, glued after" shape
     // distinct from "glued both sides"; for a prefix rule the two coincide, and
     // counting the duplicate would report four fixtures where there are three.
-    const postEnd = `${"f".repeat(4 * max)}${secret} ${near}`;
 
     // The key/value rule is the one shape whose LEFT context the pattern itself
     // does not constrain: `password=` is the credential's own context, and a
