@@ -44,11 +44,10 @@ import {
   MAX_LABELS,
   MAX_MARKER_PAIRS,
   MAX_PROVENANCE_LINE,
-  type PlanProvenance,
   normalizeLabels,
   validateProvenance,
 } from "./plan-provenance.ts";
-import type { PlanResult } from "./plan-types.ts";
+import type { PlanDriverInput, PlanResult } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 import { piSessionHost } from "./work-driver-host.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
@@ -117,7 +116,18 @@ export function registerPlanTool(pi: ExtensionAPI) {
         Type.Object(
           {
             line: Type.String({
-              description: `One line of at most ${MAX_PROVENANCE_LINE} chars, rendered as the FIRST line of the issue body in italics followed by a blank line. Any '@', '<', '>' or backtick is REJECTED (not escaped), so the line can never mention an account or inject markup.`,
+              description: `One line of at most ${MAX_PROVENANCE_LINE} chars, rendered as the FIRST line of the issue body in italics followed by a blank line. Any '@', '<', '>', backtick, CR or LF is REJECTED (not escaped, not stripped), so the line can never mention an account, inject markup, or open a heading of the body the driver did not write.`,
+              // The schema MIRRORS `FORBIDDEN_LINE_CHARS` rather than relying on
+              // it alone: the validators in plan-provenance.ts are the authority
+              // (they produce the named `invalid-input` problems), and this is
+              // the second net — a caller reading the tool schema sees the shape
+              // it must send, and a caller that bypasses the validators (a future
+              // in-process path) still cannot get a newline into the first line.
+              // A `\n` here is a heading-injection: `"ok\n## Open points"` files a
+              // section the driver never wrote, under the heading the /work intent
+              // gate reads for blocking gaps.
+              pattern: "^[^@<>`\\r\\n]+$",
+              maxLength: MAX_PROVENANCE_LINE,
             }),
             marker: Type.Record(Type.String(), Type.String(), {
               description: `Structured pairs, rendered as the LAST line of the body as \`<!-- pi-rukas:provenance v1 k1=v1 k2=v2 ... -->\` in sorted key order. At most ${MAX_MARKER_PAIRS}; keys match ^[a-z][a-z0-9_-]{0,31}$, values match ^[A-Za-z0-9._,:/#@+=-]{1,200}$ (no spaces or newlines; '@' IS allowed in a value — the account prohibition is on \`line\` only). Written by code after drafting, never by an LLM stage, and reserved out of the body budget so compaction cannot trim it.`,
@@ -131,27 +141,31 @@ export function registerPlanTool(pi: ExtensionAPI) {
       ),
     }),
     async execute(_id, raw, _signal, _onUpdate, ctx: ExtensionContext) {
-      const params = raw as {
-        descriptor: string;
-        type?: "bug" | "feature" | "epic" | "chore" | "spike";
-        context?: string;
-        dryRun?: boolean;
-        reviewedDigest?: string;
-        labels?: string[];
-        provenance?: PlanProvenance;
-      };
-      if (!params.descriptor || params.descriptor.trim().length === 0) {
+      // Pi hands the tool a JSON value. Widening to `Record<string, unknown>`
+      // says exactly that — "fields not yet examined" — and every field is then
+      // narrowed by a validator before use: `descriptor`/`dryRun`/`reviewedDigest`
+      // by the guards here, `labels` by `normalizeLabels` (which rejects a
+      // non-array, a non-string member and a sparse array), `provenance` by
+      // `validateProvenance` (which requires a plain object with own string
+      // keys). An earlier shape-named cast here claimed a `labels: string[]`
+      // that nothing had checked yet, which is how a malformed caller would
+      // reach the create call with bytes this module never examined.
+      const params = raw as Record<string, unknown>;
+      const descriptor = params.descriptor;
+      if (typeof descriptor !== "string" || descriptor.trim().length === 0) {
         return {
           content: [{ type: "text", text: "start_plan_driver requires a non-empty descriptor." }],
           details: { started: false },
         };
       }
+      const dryRun = params.dryRun === true;
       // #1377: labels and provenance are validated here, BEFORE any dispatch.
       // A caller that mistypes a label name gets a named error for the cost of
       // one tool call, not a five-minute pipeline that then halts at the forge;
       // and nothing can reach the create call with bytes this module did not
       // check (a label with a comma would break glab's comma-separated list, a
-      // '@' in the line would name an account in visible text).
+      // '@' or a newline in the line would name an account or open a heading in
+      // visible text).
       const labelCheck = normalizeLabels(params.labels ?? []);
       if (!labelCheck.ok) {
         return invalidInput("labels", labelCheck.problems);
@@ -167,22 +181,32 @@ export function registerPlanTool(pi: ExtensionAPI) {
       const provenance = provenanceCheck.provenance;
       const repoRoot = await resolveRepoRoot(ctx.cwd);
       trace(
-        `start_plan_driver → descriptor="${params.descriptor.slice(0, 60)}" type=${params.type ?? "inferred"} dryRun=${!!params.dryRun} labels=${labels.length} provenance=${provenance ? "yes" : "no"} repoRoot=${repoRoot}`,
+        `start_plan_driver → descriptor="${descriptor.slice(0, 60)}" type=${String(params.type ?? "inferred")} dryRun=${dryRun} labels=${labels.length} provenance=${provenance ? "yes" : "no"} repoRoot=${repoRoot}`,
       );
       try {
         const result = await runPlanPipeline(
           piSessionHost(pi),
-          { ...params, labels, provenance },
+          // The typed view of the call: the four fields the driver reads by
+          // name, with the three the validators just narrowed substituted. The
+          // cast carries no unchecked field into the driver — `type` is the only
+          // one left as the caller wrote it, and the driver re-classifies an
+          // unrecognised value.
+          {
+            ...(params as Omit<PlanDriverInput, "labels" | "provenance" | "descriptor">),
+            descriptor,
+            labels,
+            provenance,
+          },
           repoRoot,
         );
         return {
           content: [
             {
               type: "text",
-              text: renderPlanResult(result, params.dryRun === true),
+              text: renderPlanResult(result, dryRun),
             },
           ],
-          details: resultDetails(result, params.dryRun === true),
+          details: resultDetails(result, dryRun),
         };
       } catch (err) {
         trace(`start_plan_driver failed: ${(err as Error).message}`);

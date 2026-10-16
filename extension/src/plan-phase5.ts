@@ -8,11 +8,12 @@
  */
 import {
   type FilingFailure,
+  type FilingResult,
   fileIssue,
   getPlanForge,
-  labelGate,
   planForgeFor,
 } from "./plan-filing.ts";
+import { labelGate } from "./plan-labels.ts";
 import { validateFinalSpec } from "./plan-validate.ts";
 
 export interface Phase5Args {
@@ -81,15 +82,31 @@ export async function phase5FilingFailure(args: Phase5Args): Promise<Phase5Resul
         detail: `the final spec failed deterministic checks, so it was not filed: ${check.problems.join("; ")}`,
       };
     } else if (!args.dryRun) {
-      // #1377: ONE "filing" timed phase, sequenced inside it — the label
+      // #1043: ONE "filing" timed phase, sequenced inside it — the label
       // existence check, then the create call. Appending two "filing" entries
       // would double the phase in the operator-visible timings line for a path
       // that has nothing to do with a second filing.
-      const resolver = getPlanForge() ?? (() => planForgeFor(args.repoRoot, args.labels ?? []));
+      //
+      // #1377: the forge is resolved ONCE and the same adapter object answers
+      // both the label read and the create call. Resolving twice would pay two
+      // `detectForge` git reads for one filing and — with a stubbed seam — let
+      // the gate and the create disagree about which forge they are on.
+      const resolver = getPlanForge() ?? (() => planForgeFor(args.repoRoot));
+      const labels = args.labels ?? [];
       const fr = await args.timed("filing", async () => {
-        const gate = await labelGate(args.labels ?? [], resolver);
+        const forge = await resolver();
+        if (!forge) {
+          // Same discriminated reason `fileIssue` gives for an unresolved forge:
+          // the gate has nothing to ask, and guessing would be worse than the
+          // skip the create path already reports.
+          const unresolved: FilingResult = { failure: { reason: "forge-unresolved" } };
+          return unresolved;
+        }
+        const gate = await labelGate(labels, forge);
         if (gate) return { failure: gate };
-        return fileIssue(args.title, args.finalBody, resolver, { labels: args.labels ?? [] });
+        return fileIssue(args.title, args.finalBody, () => Promise.resolve(forge), {
+          labels,
+        });
       });
       issueUrl = fr.url;
       issueNumber = fr.number;

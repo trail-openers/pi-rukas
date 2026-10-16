@@ -276,14 +276,39 @@ export function pipelineListCmd(limit = 1): string {
 
 /**
  * #1377 — list the repo's label NAMES, the read behind `Forge.labelList`.
- * GitHub: `gh label list --limit 500 --json name` (a filing caps a caller at 5
- * labels, so 500 rows is the whole set with room to spare). GitLab:
- * `glab label list --per-page 100 --output json`. Both single unchained reads
- * (#408 recovery-command rule) so the pre-filing check never re-prompts.
+ *
+ * `gh label list --limit 1000 --json name`. `--limit` is the only page knob gh
+ * gives this subcommand (no `--all`, no `--page` — verified against
+ * `gh label list --help` on 2.102.0), so the read asks for the largest page the
+ * CLI will carry. The caller caps a filing at 5 labels, so a page this size is
+ * comfortably the whole set for any real repo — but "comfortably" is not a
+ * guarantee, so `LABEL_LIST_PAGE_LIMIT` is exported and the plan layer compares
+ * the row count against it: a read that lands EXACTLY on the page size is
+ * treated as possibly truncated and halts the filing rather than reporting a
+ * label missing. A misread here is not cosmetic — "that label does not exist"
+ * refuses legitimate work, and the driver never creates the label to fix it.
+ *
+ * GitLab: `glab label list --page 1 --per-page 1000 --output json`. glab has no
+ * `--all` (verified against the `glab-label-list(1)` man page: the flag list is
+ * `-g/--group`, `-F/--output`, `-p/--page`, `-P/--per-page`), so the same
+ * largest-page + completeness-signal shape applies. `--page 1` is explicit
+ * rather than left to the default so the read is visibly one page of a known
+ * size, and `glabLabelListPageLimit()` exports the number the caller compares.
+ *
+ * Both are single unchained reads (#408 recovery-command rule) so the
+ * pre-filing check never re-prompts the permission matcher.
  */
+export const GH_LABEL_LIST_LIMIT = 1000;
+export const GL_LABEL_LIST_PER_PAGE = 1000;
+
+/** The page size a `labelListCmd` read asks for, on this forge. */
+export function labelListPageLimit(forge: ForgeType): number {
+  return forge === "github" ? GH_LABEL_LIST_LIMIT : GL_LABEL_LIST_PER_PAGE;
+}
+
 export function labelListCmd(forge: ForgeType): string {
-  if (forge === "github") return "gh label list --limit 500 --json name";
-  return "glab label list --per-page 100 --output json";
+  if (forge === "github") return `gh label list --limit ${GH_LABEL_LIST_LIMIT} --json name`;
+  return `glab label list --page 1 --per-page ${GL_LABEL_LIST_PER_PAGE} --output json`;
 }
 
 /** Create a label (GitLab auto-creates missing labels on add, but explicit create is the normalized path). */

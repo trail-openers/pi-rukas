@@ -48,6 +48,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { MechanicalInventory } from "./plan-draft.ts";
 import type { InvestigationResult } from "./plan-investigate.ts";
+import { isCacheEntry } from "./plan-investigation-guard.ts";
 import { assemblePriorContext } from "./plan-prior-context-assembly.ts";
 import type { PlanProvenance } from "./plan-provenance.ts";
 import type { PlanGap, PlanType } from "./plan-types.ts";
@@ -244,107 +245,16 @@ export function entryFile(cacheDir: string, i: Omit<CacheInputs, "keySha">): str
   return path.join(cacheDir, `${lineageOf(i)}.json`);
 }
 
-// ---------------------------------------------------------------------------
-// Entry guard. Validates every field the pipeline dereferences from a cached
-// entry (the barrier's findings and their tool uses, the gaps, the inventory,
-// the reviewed spec and its facts), so a malformed or hand-edited entry is a
-// miss rather than a crash deep inside drafting or filing.
-// ---------------------------------------------------------------------------
-
-const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object";
-const isStr = (x: unknown): x is string => typeof x === "string";
-const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
-
-const isToolUse = (x: unknown): boolean =>
-  isObj(x) && isStr(x.kind) && isStr(x.text) && isStr(x.angle);
-
-const isFinding = (x: unknown): boolean =>
-  isObj(x) &&
-  isStr(x.name) &&
-  typeof x.ok === "boolean" &&
-  isStr(x.text) &&
-  Array.isArray(x.toolUses) &&
-  x.toolUses.every(isToolUse) &&
-  (x.failure === undefined || isStr(x.failure));
-
-const isGap = (x: unknown): boolean =>
-  isObj(x) &&
-  typeof x.severity === "string" &&
-  SEVERITIES.includes(x.severity) &&
-  isStr(x.description) &&
-  isStr(x.resolution);
-
-const isFact = (x: unknown): boolean => isObj(x) && isStr(x.source) && isStr(x.fact);
-
-const isInventory = (x: unknown): boolean =>
-  isObj(x) &&
-  Array.isArray(x.memory) &&
-  x.memory.every((m) => isObj(m) && isStr(m.content)) &&
-  Array.isArray(x.related) &&
-  x.related.every(
-    (r) => isObj(r) && typeof r.number === "number" && isStr(r.title) && isStr(r.state),
-  ) &&
-  Array.isArray(x.errors) &&
-  x.errors.every(isStr);
-
-const isBarrier = (x: unknown): boolean =>
-  isObj(x) &&
-  Array.isArray(x.findings) &&
-  x.findings.every(isFinding) &&
-  Array.isArray(x.neverClaimDisclosure) &&
-  x.neverClaimDisclosure.every(isStr) &&
-  (x.duplicateRisk === undefined ||
-    (isObj(x.duplicateRisk) && isStr(x.duplicateRisk.level) && isStr(x.duplicateRisk.rationale)));
-
-const isProvenance = (x: unknown): boolean => {
-  if (!isObj(x)) return false;
-  if (!isStr(x.line)) return false;
-  const marker = x.marker;
-  if (!isObj(marker)) return false;
-  return Object.values(marker).every(isStr);
-};
-
-const isReviewed = (x: unknown): boolean => {
-  if (!isObj(x)) return false;
-  const { fileable, title, spec, priorContext, failedAngles, labels, provenance } = x;
-  return (
-    typeof fileable === "boolean" &&
-    isStr(title) &&
-    isStr(spec) &&
-    Array.isArray(priorContext) &&
-    priorContext.every(isFact) &&
-    (failedAngles === undefined ||
-      (Array.isArray(failedAngles) &&
-        failedAngles.every((a) => isObj(a) && isStr(a.name) && isStr(a.detail)))) &&
-    // #1377: optional on both sides — an entry written before labels existed is
-    // well-formed and files with no labels. But when they ARE present they must
-    // be the shapes the digest and the create call assume, or a hand-edited
-    // entry would send a malformed argv / hash a tuple nothing produced.
-    (labels === undefined ||
-      (Array.isArray(labels) && labels.every((l) => isStr(l) && l.trim().length > 0))) &&
-    (provenance === undefined || isProvenance(provenance)) &&
-    // A fileable entry must carry something to file.
-    (!fileable || (title.trim().length > 0 && spec.trim().length > 0))
-  );
-};
-
-function isEntry(x: unknown): x is InvestigationCacheEntry {
-  if (!isObj(x)) return false;
-  return (
-    isStr(x.key) &&
-    typeof x.createdAt === "number" &&
-    isInventory(x.inventory) &&
-    isBarrier(x.barrier) &&
-    Array.isArray(x.gaps) &&
-    x.gaps.every(isGap) &&
-    isReviewed(x.reviewed)
-  );
-}
+// The entry guard itself lives in plan-investigation-guard.ts (the 500-line
+// seam): it validates every field the pipeline dereferences from a cached entry
+// — the barrier's findings and their tool uses, the gaps, the inventory, the
+// reviewed spec and its facts — so a malformed or hand-edited entry is a miss
+// rather than a crash deep inside drafting or filing.
 
 export async function readEntryAt(file: string): Promise<InvestigationCacheEntry | undefined> {
   try {
     const parsed: unknown = JSON.parse(await fs.readFile(file, "utf8"));
-    return isEntry(parsed) ? parsed : undefined;
+    return isCacheEntry(parsed) ? parsed : undefined;
   } catch {
     return undefined;
   }

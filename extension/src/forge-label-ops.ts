@@ -20,6 +20,17 @@ export interface LabelOpsDeps {
   run: <T>(cmd: string, map: (stdout: string) => T) => Promise<T>;
 }
 
+/**
+ * The result of the pre-filing label read: the names, and whether the read may
+ * have stopped at a page boundary. `truncated` is set when the row count reached
+ * the page size the command asked for — the only completeness signal available
+ * without a pagination flag these CLIs do not have.
+ */
+export interface LabelListResult {
+  names: string[];
+  truncated: boolean;
+}
+
 /** The four label methods, built once and spread into the Forge object. */
 export function labelOps(deps: LabelOpsDeps) {
   const { forge, run } = deps;
@@ -30,9 +41,18 @@ export function labelOps(deps: LabelOpsDeps) {
      * and a name list is the whole contract, so no color/description field is
      * carried that nothing reads. A CLI that fails throws — the plan driver
      * treats an unreadable label list as a halt, never as "no labels exist".
+     *
+     * A read whose row count EQUALS the page the command asked for is returned
+     * with `truncated: true`: there is no way to tell "exactly one page" from
+     * "one page of a longer list" through these CLIs (neither has an `--all`),
+     * and a caller that answered "that label does not exist" from a truncated
+     * page would refuse a filing over a pagination artefact.
      */
-    labelList: (): Promise<string[]> =>
-      run(cmds.labelListCmd(forge), (stdout) => parseLabelNames(stdout, forge)),
+    labelList: (): Promise<LabelListResult> =>
+      run(cmds.labelListCmd(forge), (stdout) => {
+        const names = parseLabelNames(stdout, forge);
+        return { names, truncated: names.length >= cmds.labelListPageLimit(forge) };
+      }),
 
     /**
      * `gh label create --force` on an existing label prints `true` rather than

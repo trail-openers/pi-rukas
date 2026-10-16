@@ -9,11 +9,13 @@
  * caller mutate repo config through a ticket. So the rule is check-then-refuse,
  * and this module is the check.
  *
- * GitHub: `gh label list --limit 500 --json name` (one call; the acceptance
- * criterion caps a filing at 5 labels so 500 rows is comfortably the whole set).
- * GitLab: `glab label list --per-page 100 --output json`. Both are single
- * unchained reads (the #408 rule — a recovery command the permission matcher
- * cannot wildcard must be one command).
+ * GitHub: `gh label list --limit 1000 --json name` (one call; the acceptance
+ * criterion caps a filing at 5 labels so 1000 rows is comfortably the whole set,
+ * and a read that lands exactly on the page is reported as possibly truncated
+ * rather than as "these labels do not exist" — see `labelListCmd`).
+ * GitLab: `glab label list --page 1 --per-page 1000 --output json`. Both are
+ * single unchained reads (the #408 rule — a recovery command the permission
+ * matcher cannot wildcard must be one command).
  */
 import type { ForgeType } from "./forge-detect.ts";
 

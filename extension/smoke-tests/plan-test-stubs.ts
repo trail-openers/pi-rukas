@@ -33,15 +33,25 @@ export interface ForgeStubState {
    * must treat that as "could not read", never as "these labels do not exist".
    */
   existing: string[] | null;
+  /**
+   * #1377: whether the read reports a page-full (possibly truncated) result.
+   * A truncated read is the OTHER non-answer: the driver must halt with
+   * "could not read the full label set", never answer "that label is missing".
+   */
+  truncated: boolean;
   /** #1377: how many times the label list was read (0 when no labels were asked for). */
   labelListCalls: number;
+  /** #1377: how many times the forge was resolved in one filing (one, post-#1377). */
+  resolveCalls: number;
 }
 
 export const forgeStub: ForgeStubState = {
   created: [],
   mode: "ok",
   existing: null,
+  truncated: false,
   labelListCalls: 0,
+  resolveCalls: 0,
 };
 
 /**
@@ -49,10 +59,12 @@ export const forgeStub: ForgeStubState = {
  * handed as its third argument (a stub that ignored them would pass a test for
  * a filing that silently dropped them), and `labelList` answers from
  * `forgeStub.existing` — `null` leaves the method off entirely, which is how a
- * read failure is exercised.
+ * read failure is exercised, and `truncated: true` answers with the
+ * page-full-with-no-more-rows shape no CLI can distinguish from a longer list.
  */
 export function installForgeStub(): void {
   forgeStub.labelListCalls = 0;
+  forgeStub.resolveCalls = 0;
   const stub: Record<string, unknown> = {
     issueCreate: (title: string, body: string, opts?: { labels?: string[] }) => {
       forgeStub.created.push({ title, body, labels: opts?.labels });
@@ -74,12 +86,19 @@ export function installForgeStub(): void {
   };
   if (forgeStub.existing !== null) {
     const existing = forgeStub.existing;
+    const truncated = forgeStub.truncated;
     stub.labelList = () => {
       forgeStub.labelListCalls++;
-      return Promise.resolve(existing);
+      return Promise.resolve({ names: existing, truncated });
     };
   }
-  setPlanForge(() => Promise.resolve(stub as unknown as Forge));
+  // #1377: ONE resolve per filing — the gate and the create call are handed the
+  // same object, so a second call is a second `detectForge` read (or, with a
+  // stub, a second chance for the two halves to disagree).
+  setPlanForge(() => {
+    forgeStub.resolveCalls++;
+    return Promise.resolve(stub as unknown as Forge);
+  });
 }
 
 /**
@@ -329,6 +348,7 @@ export async function newPlanCache(prefix = "plan-cache-"): Promise<void> {
   // #1377: reset to the pre-#1377 stub shape so a test that does not pass
   // labels never sees a label read, and one that does must opt in explicitly.
   forgeStub.existing = null;
+  forgeStub.truncated = false;
   forgeStub.labelListCalls = 0;
 }
 

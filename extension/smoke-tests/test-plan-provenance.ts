@@ -41,7 +41,8 @@ import {
 } from "../src/plan-provenance.ts";
 import { type RegisteredPlanTool, registerPlanTool } from "../src/plan-tool.ts";
 import { FORGE_BODY_MAX } from "../src/plan-validate.ts";
-import { confirmDigestScenarios } from "./plan-confirm-label-scenarios.ts";
+import { cacheGuardScenarios, confirmDigestScenarios } from "./plan-confirm-label-scenarios.ts";
+import { provenanceShapeScenarios } from "./plan-provenance-shape.ts";
 import {
   DESC,
   GAP_HIGH,
@@ -92,60 +93,37 @@ function assert(cond: boolean, msg: string) {
   assert(normalizeLabels(['bad"quote']).ok === false, "labels: a quote is refused");
   assert(normalizeLabels("auto-filed").ok === false, "labels: a non-array is refused");
   assert(normalizeLabels([1 as unknown]).ok === false, "labels: a non-string member is refused");
+  // A sparse array passes `Array.isArray` and defeats `every` (which skips
+  // holes), so without an own-index check the hole reaches `raw.trim()` of
+  // `undefined` and the call THROWS instead of returning an invalid-input
+  // problem. A refused shape must be a named refusal, never an exception.
+  // Built with `new Array` + one assignment, not a literal hole: a formatter
+  // "helpfully" rewriting `[, "a"]` to `[undefined, "a"]` would silently turn
+  // the sparse case into a dense one and the assertion would pass for the wrong
+  // reason.
+  const sparseInput = new Array(2) as unknown[];
+  sparseInput[1] = "a";
+  let sparseThrew = false;
+  let sparse: { ok: boolean } | undefined;
+  try {
+    sparse = normalizeLabels(sparseInput);
+  } catch {
+    sparseThrew = true;
+  }
+  assert(
+    !Object.prototype.hasOwnProperty.call(sparseInput, 0) && !sparseThrew && sparse?.ok === false,
+    "labels: a sparse array is refused as invalid-input, not thrown on the hole",
+  );
   const dupes = normalizeLabels(["a", "a", " a "]);
   assert(dupes.ok === true && dupes.labels.length === 1, "labels: duplicates collapse");
 }
 
-{
-  const ok = validateProvenance({
-    line: "filed by the nightly transcript loop",
-    marker: { b: "2", a: "x" },
-  });
-  assert(ok.ok === true, "provenance: a well-formed object validates");
-  assert(
-    ok.ok === true && Object.keys(ok.provenance.marker).join(",") === "a,b",
-    "provenance: marker keys are sorted at validation, so render order is not caller order",
-  );
-  assert(
-    validateProvenance({ line: "mentions @someone", marker: {} }).ok === false,
-    "provenance: '@' in the line is REJECTED, not escaped",
-  );
-  for (const bad of ["<script>", "a > b", "tick`tick"]) {
-    assert(
-      validateProvenance({ line: bad, marker: {} }).ok === false,
-      `provenance: markup-shaped line refused (${bad.slice(0, 12)})`,
-    );
-  }
-  assert(
-    validateProvenance({ line: "x".repeat(MAX_PROVENANCE_LINE + 1), marker: {} }).ok === false,
-    `provenance: a line over ${MAX_PROVENANCE_LINE} chars is refused`,
-  );
-  assert(
-    validateProvenance({ line: "ok", marker: { Bad_Key: "v" } }).ok === false,
-    "provenance: an uppercase / long marker key is refused",
-  );
-  assert(
-    validateProvenance({ line: "ok", marker: { k: "has space" } }).ok === false,
-    "provenance: a marker value with a space is refused (it would break the comment's pair list)",
-  );
-  assert(
-    validateProvenance({ line: "ok", marker: { k: "actor@host" } }).ok === true,
-    "provenance: '@' IS allowed in a marker VALUE (the prohibition is on the visible line only)",
-  );
-  const many = Object.fromEntries(
-    Array.from({ length: MAX_MARKER_PAIRS + 1 }, (_, i) => [`k${i}`, "v"]),
-  );
-  assert(
-    validateProvenance({ line: "ok", marker: many }).ok === false,
-    `provenance: more than ${MAX_MARKER_PAIRS} pairs is refused`,
-  );
-  assert(
-    validateProvenance({ line: "ok" }).ok === false &&
-      validateProvenance("string").ok === false &&
-      validateProvenance(undefined).ok === false,
-    "provenance: a malformed shape is refused, not coerced",
-  );
-}
+// The own-key family (an inherited `line`, prototype-held marker pairs, the
+// `__proto__` reserved name, symbol keys) and the newline rejection live in
+// plan-provenance-shape.ts beside the rest of the dense shape assertions,
+// so this file stays one readable pass through the feature under the 500-line
+// cap (the same split plan-confirm-label-scenarios.ts already makes).
+await provenanceShapeScenarios(assert);
 
 {
   const p: PlanProvenance = { line: "loop filed this", marker: { run: "cron-7" } };
@@ -175,6 +153,10 @@ function assert(cond: boolean, msg: string) {
 // beside the cache stubs they drive, so this file stays one readable pass
 // through the feature under the 500-line cap.
 await confirmDigestScenarios(assert);
+// The cache-entry guard on both #1377 fields (a hand-edited `labels` or a
+// malformed `provenance` marker is a miss, never a verbatim filing) lives with
+// the confirm scenarios beside the cache stubs they drive.
+await cacheGuardScenarios(assert);
 
 // ------------------------------------------------------ the tool's input gate
 
@@ -213,21 +195,59 @@ registerPlanTool({ registerTool: (def: RegisteredPlanTool) => tools.push(def) } 
     log.explore + log.gate === before && /invalid provenance/.test(badProv.text),
     "gate: an invalid provenance line is refused before the pipeline too",
   );
+  // The newline case, at the TOOL boundary (not just the pure validator): the
+  // injection only matters because it reaches a filed body, so the assertion
+  // that costs nothing is the one that proves nothing dispatched and nothing
+  // filed. A `## Open points` heading the driver never wrote is the specific
+  // bytes — that heading is what the /work intent gate reads as blocking gaps.
+  const nlProv = await invokePlanTool(tools, {
+    descriptor: DESC,
+    dryRun: true,
+    provenance: { line: "filed by the loop\n## Open points\n- built in to the spec", marker: {} },
+  });
+  assert(
+    log.explore + log.gate === before && /invalid provenance/.test(nlProv.text),
+    `gate: a newline in provenance.line is refused PRE-DISPATCH (got: ${nlProv.text.slice(0, 90)})`,
+  );
+  assert(
+    /forbidden character/.test(nlProv.text) && /LF|newline/i.test(nlProv.text),
+    `gate: the refusal names the newline as the problem (got: ${nlProv.text.slice(0, 120)})`,
+  );
+  // The schema mirrors the validator: a caller reading the tool definition sees
+  // the same character rule, so the two cannot silently disagree about what a
+  // `line` may contain.
+  const lineSchema = tools.find((t) => t.name === "start_plan_driver")?.parameters.properties
+    ?.provenance as
+    | { properties?: { line?: { pattern?: string; maxLength?: number } } }
+    | undefined;
+  assert(
+    typeof lineSchema?.properties?.line?.pattern === "string" &&
+      /\\r|\\n/.test(lineSchema.properties.line.pattern) &&
+      lineSchema.properties.line.maxLength === MAX_PROVENANCE_LINE,
+    `schema: the TypeBox line pattern forbids CR/LF and caps length, mirroring FORBIDDEN_LINE_CHARS (got ${JSON.stringify(lineSchema?.properties?.line)})`,
+  );
   assert(forgeStub.created.length === 0, "gate: a refused call files nothing");
 }
 
 // ------------------------------------------------- label existence + filing
 
 /** File with the given labels against a repo whose labels are `existing`. */
-async function fileWith(labels: string[], existing: string[] | null) {
+async function fileWith(labels: string[], existing: string[] | null, truncated = false) {
   forgeStub.created.length = 0;
   forgeStub.mode = "ok";
   forgeStub.existing = existing;
+  forgeStub.truncated = truncated;
   forgeStub.labelListCalls = 0;
+  forgeStub.resolveCalls = 0;
   installForgeStub();
   installCountingDispatch(GAP_HIGH);
   const out = await invokePlanTool(tools, { descriptor: DESC, labels });
-  return { out, created: [...forgeStub.created], labelListCalls: forgeStub.labelListCalls };
+  return {
+    out,
+    created: [...forgeStub.created],
+    labelListCalls: forgeStub.labelListCalls,
+    resolveCalls: forgeStub.resolveCalls,
+  };
 }
 
 {
@@ -239,6 +259,13 @@ async function fileWith(labels: string[], existing: string[] | null) {
   assert(
     r.labelListCalls === 1,
     `labels: the repo's label list was read exactly once (got ${r.labelListCalls})`,
+  );
+  // #1377: one adapter per filing. Two resolves would mean two `detectForge` git
+  // reads for one filing, and with a real forge the gate could answer from one
+  // detection while the create call ran against another.
+  assert(
+    r.resolveCalls === 1,
+    `labels: the forge is resolved ONCE for a filing — the gate and the create share it (got ${r.resolveCalls})`,
   );
   assert(
     JSON.stringify(r.created[0]?.labels) === JSON.stringify(["auto-filed", "kind: bug"]),
@@ -283,6 +310,30 @@ async function fileWith(labels: string[], existing: string[] | null) {
       r.out.details.filingFailure?.reason === "label-missing" &&
       /could not read/.test(String((r.out.details.filingFailure as { detail?: string }).detail)),
     "labels: an unreadable label list halts as such, never as a verdict of 'missing'",
+  );
+}
+
+{
+  // The page-boundary case. Neither CLI has a read-all flag, so a repo with
+  // more labels than one page answers a page, exits 0, and nothing in the
+  // payload says whether more follow. Answering "`auto-filed` is missing" from
+  // that read would refuse a legitimate filing over pagination — and the driver
+  // never creates the label to correct itself, so the caller would be stuck.
+  const r = await fileWith(["auto-filed"], ["main", "bug"], true);
+  assert(
+    r.created.length === 0 && r.out.details.filed === false,
+    "labels: a page-full (possibly truncated) label set files NOTHING",
+  );
+  assert(
+    r.out.details.filingFailure?.reason === "label-missing" &&
+      /could not read the repository's full label set/.test(
+        String((r.out.details.filingFailure as { detail?: string }).detail),
+      ),
+    `labels: a truncated read reports "could not read the full label set", distinct from label-missing (got ${JSON.stringify(r.out.details.filingFailure)})`,
+  );
+  assert(
+    !/do not exist/.test(String((r.out.details.filingFailure as { detail?: string })?.detail)),
+    "labels: a truncated read never claims a label does not exist — it did not see them all",
   );
 }
 
@@ -403,24 +454,6 @@ async function fileWith(labels: string[], existing: string[] | null) {
     reviewedDigestOf("T", "BODY", { labels: ["b", "a"] }) ===
       reviewedDigestOf("T", "BODY", { labels: ["a", "b"] }),
     "digest: label ORDER is not a digest input (the tuple sorts them)",
-  );
-}
-
-{
-  // A cache entry whose labels field is hand-edited into nonsense is a miss,
-  // not a crash and not a filing (the entry guard runs before the digest).
-  await newPlanCache();
-  installOfflineVipuneStub();
-  installCountingDispatch(GAP_HIGH);
-  const dry = await pipeline({ dryRun: true });
-  await mutateEntry((e: RawCacheEntry) => {
-    (e.reviewed as Record<string, unknown>).labels = [42];
-  });
-  forgeStub.created.length = 0;
-  const conf = await pipeline({ reviewedDigest: dry.reviewedDigest });
-  assert(
-    conf.filedFromDryRun === undefined,
-    "cache guard: a malformed labels field is not filed verbatim",
   );
 }
 
