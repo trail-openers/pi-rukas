@@ -184,7 +184,7 @@ function makeShutdownPi(host: DispatchHostLike): {
     w.reports.length > 0,
     "8d: the report exists on the wire before the count released its slot",
   );
-  process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS = undefined;
+  delete process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS;
   pendingJobs.resetForTesting();
 }
 
@@ -222,7 +222,7 @@ function makeShutdownPi(host: DispatchHostLike): {
     lines.some((l) => l.includes("never arrived") && l.startsWith("[pi-rukas] WARN")),
     `9d: the report that never landed is named, ungated by PI_ENSEMBLE_DEBUG (got ${JSON.stringify(lines.slice(0, 2))})`,
   );
-  process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS = undefined;
+  delete process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS;
   pendingJobs.resetForTesting();
 }
 

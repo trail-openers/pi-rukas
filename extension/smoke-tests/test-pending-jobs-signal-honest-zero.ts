@@ -418,7 +418,7 @@ function attachRpc(w: Wire) {
     ),
     `7c: the session still learns the report was lost (got ${JSON.stringify(lines.slice(0, 3))})`,
   );
-  process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS = undefined;
+  delete process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS;
   pendingJobs.resetForTesting();
 }
 
