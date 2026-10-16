@@ -197,32 +197,34 @@ function isTagLike(token: string): boolean {
   return SEVERITY_WORDS.some((word) => word !== token && word.toLowerCase() === foldToken(token));
 }
 
-/** One list item or prose line of the section. `kind` is fixed when the item starts; `text` takes joined continuations. */
+/**
+ * The unflattened raw lines of one list item or prose line of the section.
+ *
+ * `kind` is fixed when the item starts. `text` is the stored form; `pieces` holds the
+ * raw lines that make it up (#1187 fix round 2). Re-flattening the accumulated text on
+ * every continuation line made the reader O(n²) in the length of a wrapped entry, so the
+ * pieces are collected and joined and normalised once, when the entry closes. An item with
+ * no continuation has one piece and keeps the text computed when it opened.
+ */
 interface Entry {
   kind: "point" | "resolved" | "parked" | "plain";
-  /** Already redacted (#1187 fix round 1): blocking texts are posted to a public issue. */
+  /** Normalised, redacted and bounded (#1187 fix round 2): blocking texts are posted to a public issue. */
   text: string;
-  /**
-   * The unflattened pieces of this entry, kept until it closes (#1187 fix round 2).
-   * Joining and flattening on every continuation line made the reader O(n²) in the
-   * length of a wrapped entry; flattening once at close is the same text. `text` is
-   * the flattened form, filled in when the entry closes.
-   */
   pieces: string[];
 }
 
 /**
- * Safety bounds on what one section can push into a park reason and a public handoff
- * comment (#1187 fix round 2, added after review).
+ * Cap the number of blocking entries one section contributes to a park.
  *
- * `flattenIssueText` removes control characters rather than dropping lines, so a body
- * whose Open points section is one enormous wrapped entry, or thousands of bullets, is
- * copied verbatim into `openPoints` and then into the PR body. The settlement's
- * "unclipped" rules out a *quote* clip (no 300-character truncation of a real point);
- * it cannot mean "no bound at all" against a pathological body. A bound that fires is
- * traced, so a cycle that lost points is visible rather than silently narrowed.
+ * A pathological body — thousands of bullets, or one enormous wrapped entry — would
+ * otherwise be copied verbatim into `openPoints` and then into a public handoff comment.
+ * The settlement's "unclipped" rules out a *quote* clip (no 300-character truncation of a
+ * real point); it cannot mean "no bound at all". Both bounds were added after review, and
+ * a bound that fires is traced, so a cycle that lost points is visible rather than
+ * silently narrowed.
  */
 const MAX_OPEN_POINT_ENTRIES = 20;
+/** Cap the length of one stored entry; see {@link MAX_OPEN_POINT_ENTRIES}. */
 const MAX_OPEN_POINT_CHARS = 2000;
 /** Marker for an entry that hit {@link MAX_OPEN_POINT_CHARS}. */
 const CLIPPED_MARKER = "…(clipped)";
