@@ -350,6 +350,47 @@ const capHit = (cap: string, at: number): WorkEvent =>
         else process.env[k] = v;
       }
     }
+
+    // The rest of the redirect surface: an alternate object database answers
+    // `rev-parse HEAD` for a repository the probe was never pointed at, and
+    // GIT_CEILING_DIRECTORIES changes where git decides the repository ends.
+    // A harness that ran pi-rukas inside a git hook inherits all of these.
+    const savedAll: Record<string, string | undefined> = {};
+    for (const name of [
+      "GIT_OBJECT_DIRECTORY",
+      "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+      "GIT_CEILING_DIRECTORIES",
+      "GIT_CONFIG_GLOBAL",
+      "GIT_CONFIG_SYSTEM",
+      "GIT_INDEX_FILE",
+      "GIT_NAMESPACE",
+      "GIT_COMMON_DIR",
+    ]) {
+      savedAll[name] = process.env[name];
+    }
+    try {
+      process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES = path.join(decoy, ".git", "objects");
+      process.env.GIT_OBJECT_DIRECTORY = path.join(repo, ".git", "objects");
+      process.env.GIT_CEILING_DIRECTORIES = path.dirname(repo);
+      process.env.GIT_CONFIG_GLOBAL = path.join(decoy, "gitconfig");
+      process.env.GIT_CONFIG_SYSTEM = path.join(decoy, "gitconfig");
+      process.env.GIT_INDEX_FILE = path.join(decoy, ".git", "index");
+      process.env.GIT_NAMESPACE = "nope";
+      process.env.GIT_COMMON_DIR = path.join(decoy, ".git");
+      assert(
+        readCheckoutCommit(repo) === headOf(repo),
+        "the full git redirect surface (ODB, ceiling, config, index, namespace) does not move the probe off its root",
+      );
+      assert(
+        readCheckoutCommit(sub) === null,
+        "the full git redirect surface cannot make a non-checkout report some other HEAD",
+      );
+    } finally {
+      for (const [k, v] of Object.entries(savedAll)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

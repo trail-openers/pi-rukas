@@ -21,8 +21,8 @@ import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import {
+  assertDefaultVerifyBound,
   defaultBoundText,
-  defaultVerifyTimeoutMs,
   pinDefaultVerifyTimeout,
 } from "./lib/verify-timeout-pin.ts";
 
@@ -44,13 +44,11 @@ const CMD = "bash scripts/verify.sh";
 // ./lib/verify-timeout-pin.ts), so an operator who raised the knob (a 45-min
 // laptop setting) does not fail them for the wrong reason, and a future
 // change to the default moves the asserted text with it.
-const BOUND = defaultBoundText();
-// One assertion ties the derived text to the production default, so the
-// shared helper cannot silently read a bound the gate does not use.
-assert(
-  defaultVerifyTimeoutMs() === 600_000 && BOUND === "10-min",
-  "the default verify bound is 600000ms / 10-min with the knob absent",
-);
+const BOUND = await defaultBoundText();
+// One self-check lives in the lib and BOTH consumers call it, so the shared
+// helper cannot silently read a bound the gate does not use — and the pin is
+// proven to put the operator's own knob value back afterwards.
+await assertDefaultVerifyBound(assert);
 const root = mkdtempSync(path.join(tmpdir(), "pi-baseline-red-"));
 type Outcome = { ok: true } | { ok: false; stdout: string; killed?: boolean };
 
