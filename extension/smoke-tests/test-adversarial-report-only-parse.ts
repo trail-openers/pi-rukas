@@ -230,10 +230,10 @@ try {
 
   // 7. #1154 coupling: the terminal rule applies only WITH reportOnly. A
   // non-reportOnly loop (the tool's fix-capable path) whose round 1 is
-  // (#1161: it carries no verdict policy, so reportVerdict is not passed here)
   // ISSUES_FOUND must NOT record that round as passed: it routes to a fix round
   // and only a later round can approve. Here every round repeats ISSUES_FOUND,
   // so the loop runs all 3 rounds and rejects.
+  // (#1161: it carries no verdict policy, so reportVerdict is not passed here)
   reply = "VERDICT: ISSUES_FOUND\n\n- x.txt:1 — missing test";
   const nonReportOnly = await runAdversarialLoop(
     {
