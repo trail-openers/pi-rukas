@@ -1069,6 +1069,68 @@ The park has its own cap, `fix-pass-park` (it reused `verify-failed:develop` bef
 
 **Fix:** the error in the message names the git command that failed and its stderr; fix that first. Then recover the change at the named path by hand (`git status`, `git diff`, `git diff --cached`, and `git cherry-pick --abort` if one is in progress), and clear the root before re-running.
 
+### `/work` refuses on a dirty repo root caused by a tool's own local files (#1362)
+
+**Symptom:** `/work N` halts at step 3 (branch) with cap `repo-root-residue` and a plumb report naming a file you never wrote — `.claude/settings.local.json`, an editor's workspace file, an agent's local config. The same file also trips the consolidated-verify and integrate dirty-root gates, so clearing it once by hand only moves the refusal to the next cycle.
+
+**Why:** a repo-root read of `git status --porcelain` cannot tell "the operator's in-progress work, which is a correctness hazard for integration" from "some tool's local settings". Both are dirt, and the branch step hard-blocks on any of it before paying for a develop dispatch. The built-in exemptions are the driver's own scaffolding (`.worktrees/`, `.pi/`, `tmp/`) and no more; nothing about a third-party tool's files is assumed.
+
+**Fix:** opt in, per project, by committing a list of repo-relative prefixes the dirty-root checks and repo-root staging should ignore:
+
+```
+# .pi/dirty-root-exempt — one repo-relative prefix per line
+.claude/
+.vscode/
+```
+
+Rules, and **who enforces each** — the exemption has two different answers depending on the question, and reading one where the other belongs is the trap:
+
+| Question | Who answers | Decided by |
+| --- | --- | --- |
+| Is this dirt? | The four dirty-root gates: the branch step, the preflight, consolidated verify, integrate | **Prefix** — an untracked path under a listed prefix is not dirt, whatever wrote it |
+| Is this the cycle's work? | The restore **claim** | **Provenance** — was the path already untracked at cycle start? |
+| Should it be stashed? | The abort path's stash pathspec | Nothing — it is unfiltered, because an unstashed path is one the checkout can lose |
+
+- **Untracked paths only.** A modified, staged or deleted *tracked* file under an exempt prefix is still dirt, and a rename always is — so the list cannot hide real uncommitted source.
+- **Prefix + `/` boundary.** `.claude` exempts `.claude/settings.local.json`, never `.claudefoo/x`. A path that still contains a `..` segment after normalisation is never exempt, so `docs` does not bless `docs/../.github/x`.
+- **Protected paths cannot be exempted.** An entry naming `.github/`, `.pi/`, `CODEOWNERS` or `agents.json` is rejected with a trace and contributes nothing, at any depth; you cannot list away the files that define how your own cycle is judged.
+- **Repo root only.** A workstream worktree stages its output exactly as before, so a deliverable inside an exempt prefix is still committed.
+- **Rejected with a trace:** absolute paths, any `..` segment, glob characters, anything that normalises to empty, `~`-, drive-letter- (`C:\`) and `$VAR`/`%VAR%`-prefixed entries (none of which this matcher would ever expand), and protected paths. A rejected line is skipped — the good lines beside it still apply.
+- **The file is read once per cycle**, before the branch step, from the working tree; `.pi/` is a protected path, so a develop patch cannot widen the exemption mid-cycle. An absent file is an empty list (behaviour unchanged); an unreadable file is an empty list **plus a trace and a handoff record** — a broken config never blocks a cycle that is otherwise clean, and never fails silently. If the cycle then blocks on repo-root residue, the handoff says `the exemption file could not be read: EACCES …` beside the paths: every one of them was judged against an empty list, so a file you legitimately exempted reads exactly like residue.
+
+```bash
+cat .pi/dirty-root-exempt            # what this project exempts
+# rejected entries and read failures are traced as:
+# [pi-rukas] WARN work-driver: .pi/dirty-root-exempt (<repoRoot>) — entry "…" rejected (glob)
+```
+
+**A file the cycle itself wrote under an exempt prefix is still yours to see.**
+The list decides what counts as *dirt*; it does not decide what counts as *the
+cycle's work*, because by the time the restore builds its claim it is too late to
+ask git — the abort path's mixed reset has already turned the cycle's staged-new
+files into `??`, the same code a tool's stray carries. So the branch step records
+the exempt paths that were **already untracked when the cycle started**, as
+`dirtyRootExemptBaseline` in the cycle's state file, and the claim spares an
+untracked file under an exempt prefix only when it appears there. A file the cycle
+wrote under that same prefix — a deliverable in a directory you exempted, a
+regenerated cache — is named, and is still moved into a recoverable `git stash`
+entry rather than left behind for the next cycle to trip over. Your pre-existing
+`settings.local.json` is named by neither: not stashed, not saved, not restored.
+Two things follow from the field being a snapshot. It is written once, in the
+branch step, and never recomputed — a snapshot taken later would bless the cycle's
+own output as pre-existing. And if the state file has no baseline (a cycle started
+before this existed, or one whose exempt tree was too large to record — over 500
+paths), then **nothing is claim-exempt** and the claim names every untracked path
+it finds. That is deliberate: a claim that over-names is a false alarm you can
+dismiss, and a claim that says "verified restored" over the cycle's own work is
+the failure the field exists to prevent.
+
+```bash
+jq .pipelineState.dirtyRootExemptBaseline .pi/work-state/<issue>.json   # what the claim will spare
+```
+
+**Do not** use this to work around a genuinely dirty root. If the named file is source you or another workstream wrote, commit or move it — that is what the gate is for.
+
 ### `worktree-dirty-preremove` — the branch step refuses a worktree that holds uncommitted work (#475)
 
 **Symptom:** `/work N --restart` (or a fresh `/work N` over a surviving worktree directory) halts at step 3 (branch) with cap `step-failed:branch` and a plumb report reading *“refusing to force-remove existing worktree <path> — it holds unrecoverable work: …”*. No subagent ran; nothing was pushed.
@@ -1296,6 +1358,28 @@ There is deliberately **no derivation fallback**. An inferred "full suite" recre
 The command runs in the group's worktree, never the repo root — under parallel groups the repo root may be checked out on a different group's branch by the time `ci` runs, so testing there would test the wrong code.
 
 Escape hatches: `PI_ENSEMBLE_VERIFY_FULL=0`, `PI_ENSEMBLE_VERIFY_FULL_TIMEOUT_MS`.
+
+### The develop gate ran the verify command twice on the same tree (#1240)
+
+**Symptom:** `develop` completes many minutes after its developer child finished, with nothing between them but the driver's consolidated verify. On a project whose gate is slow (the tehas factory: `scripts/test.sh`, ~18 min of serial shell tests) an N=1 cycle pays that twice per gate pass — once in the develop worktree and once again at repoRoot for the consolidated probe — and the second run checks content the first already judged. Four gate passes per cycle meant eight runs where four sufficed.
+
+**Cause:** with one workstream, the consolidated probe cherry-picks that workstream's *own* commits onto the cycle's base. The result is the same tree, so the second run is duplicate work, not a second opinion. It was never redundant at N>1, where the combination genuinely is a tree no worktree held.
+
+**Fix:** the probe now establishes identity positively, from git's own tree object ids, and skips the command only when it can prove the probe tree is the tree that just passed. Both sides include staged content and exclude untracked files, and neither is trusted when the working tree holds content no tree object describes (unstaged edits, untracked sources) — there the run happens. Any read failure, any mismatch, more than one workstream, a per-worktree failure, or the degenerate root-as-worktree shape runs the consolidated verify exactly as before: a gate that cannot prove equivalence runs the check.
+
+**What you see:** the skip is not silent. The state file's notes and the trace carry
+
+```
+consolidated verify skipped: tree <hash> already passed in <worktree> — …
+```
+
+and the develop event log keeps its `verifyEvidence` / duration recording untouched, so a fast `develop` is explainable from the state file rather than inferred from the absence of a 20-minute gap. The commit-pr half of the same rule names it in that step's operator-facing summary too, and the `consolidated-verify-skipped` event is recorded on every path the develop gate re-runs (the first pass, the fence merge-and-retry, the sibling-symbol merge, and the converge corrective) — not only the first.
+
+**The fast tier is covered by the skip as well:** `.pi/verify-cmd-fast` is skipped together with the full command, because both tiers already ran per-worktree on the same content (`PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP=0` restores both).
+
+**The named assumption — ignored dependency directories are unchanged between the two runs.** The tree hash covers tracked and staged content only, so an ignored directory (`node_modules`, `target`, `dist`) can never make the two sides differ. That is sound only because those directories are *shared* into each worktree by symlink (`worktree-provision.ts`): the per-worktree run and the repoRoot probe read the same dependency tree, so the run that passed judged the same content the skip declines to re-judge. If that assumption does not hold for your project — a per-checkout install, or a gitignored generated directory the verify reads and the probe produces differently — the skip is wrong for you and `PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP=0` disables it. Untracked-but-not-ignored paths are the opposite case and are never exempt: only the driver's own artefacts (`.pi/work-state/`, `.worktrees/`, `tmp/issue-<N>/`) are invisible to the dirt check, so a stray `?? tmp/evil.ts` denies the identity and the command runs.
+
+**Escape hatch:** `PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP` set to `0`, `false`, `off` or `no` (trimmed, case-insensitive) restores the always-run behaviour (for example, to reproduce a gate failure that only appears in the probe's checkout).
 
 ### Type-widening scan
 
@@ -2109,3 +2193,17 @@ The acceptance boundary is layered:
 Layers 1 and 3 are **advisory in trust mode**. They are environment and string checks, so an agent with a shell can still bypass them. They stop an agent that is not trying to bypass them; the operator's terminal is the real boundary.
 
 A corrupt `review-findings.json` is never overwritten. The reader and the writer both copy it to `review-findings.json.corrupt-<hash>` — the hash is of the bytes that were copied, so a repeat of the same fault names the same file and never duplicates it — and the round then REFUSES: it does not read the corrupt file as "no memory", because a round recorded on no memory would resolve open rows the unreadable file may still hold. The refusal names the copy and the cause and says `repair or remove <file>, or set PI_ENSEMBLE_REVIEW_LEDGER_FILE to a healthy ledger`; the summary carries it as `findings memory unavailable: …`, and every finding is still reported. Fix or remove the file, then re-run the review. A single malformed row is handled the same way on its own (`<file>.corrupt-<hash of the row>`) while the valid rows carry on.
+
+## The offline smoke suite
+
+### The offline suite is slow, or a test interferes with its neighbours
+
+Since #1365 `extension/smoke-tests/lib/verify-loop.sh` runs tests through a bounded job pool (`lib/verify-pool.sh`), default `PI_ENSEMBLE_VERIFY_TEST_JOBS=2`. Two symptoms mean the pool, not the tests:
+
+- **The suite is slower than it used to be**, or a run is thrashing on a busy host — the ceiling is 16 and the count is also clamped to the number of collected tests, either clamp warned on stderr.
+- **A test fails only in the full run and passes alone** — it shares state with a neighbour (a temp path, a port, a per-clone file the neighbour also writes).
+
+**Fix for both:** `PI_ENSEMBLE_VERIFY_TEST_JOBS=1 bash extension/smoke-tests/lib/verify-loop.sh extension/smoke-tests/test-*.ts` restores strictly sequential execution — the pre-#1365 shape, same output and exit codes (pinned by `test-verify-loop-parallel.ts` cases 1-2, which compare JOBS=1 and JOBS=3 byte-for-byte). If one test still fails alone, it is the test.
+
+The other knob is the per-test bound, unchanged by the pool: `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S` (default 300s, positive integer, else 300 with a warning). A test that hits it is reported `FAILED: <file> (timed out after <N>s)` with a `✗ timed out after <N>s` line prepended to its capture; the whole descendant tree is killed, so a hung test does not take the pool with it. Both variables are read once at startup.
+

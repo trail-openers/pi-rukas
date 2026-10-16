@@ -23,6 +23,18 @@ export type PullRequestState = "OPEN" | "MERGED" | "CLOSED";
 export type MergeReadiness = "CLEAN" | "DIRTY" | "UNKNOWN";
 
 /**
+ * Options a filing may carry beyond the title and body (#1377).
+ *
+ * Declared in the types module so `Forge.issueCreate` can name it without an
+ * import edge back to the plan layer: `plan-filing.ts` re-exports it for its
+ * own callers, and the forge adapter stays free of plan-pipeline imports.
+ */
+export interface FileIssueOpts {
+  /** Labels to create the issue with, in the one forge call. */
+  labels?: string[];
+}
+
+/**
  * A normalized issue. Field names follow the GitHub `gh --json` convention
  * (which is also git-pkgs/forge's normalized vocabulary); the GitLab side
  * maps `iid → number`, `description → body`, `web_url → url`.

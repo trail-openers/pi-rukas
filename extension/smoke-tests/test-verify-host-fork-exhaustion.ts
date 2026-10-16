@@ -147,10 +147,21 @@ try {
     const verifyCmd = "test -f feature.sh";
     const { f, s, ctx } = await singleWorkstream("verify-cmd", verifyCmd);
     writeFileSync(path.join(f.repo, ".pi", "smoke-cmd"), "sh ./feature.sh\n");
+    // The #1240 duplicate-run skip must be OFF for this case: the fixture is
+    // N=1 with a green per-worktree verify, so the consolidated probe is
+    // provably the tree that just passed and its run would be skipped — which
+    // would leave the `CONSOLIDATED tree` assertion below unassertable (the
+    // smoke command alone still fails the gate, so without this pin the case
+    // silently stops exercising the consolidated host-failure branch it exists
+    // to pin). `0` is the only value that disables the skip.
+    const prevSkip = process.env.PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP;
+    process.env.PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP = "0";
     const exec = starvedExec(
       (cmd, cwd) => (cwd === f.repo && cmd === verifyCmd) || cmd === "sh ./feature.sh",
     );
     const gate = await verifyStepOutcome(ctx(exec), s, "develop");
+    if (prevSkip === undefined) delete process.env.PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP;
+    else process.env.PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP = prevSkip;
     const all = gate.failures.join(" | ");
     assert(!gate.ok, "verify cannot fork: the gate still fails");
     assert(

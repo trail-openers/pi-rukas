@@ -11,9 +11,21 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
-import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
-import { WORK_STATE_SCHEMA_VERSION, WORK_STEPS } from "./workflow-state-schema.ts";
-import { isKnownCap } from "./workflow-state-validate-caps.ts";
+import { WORK_STEPS, type WorkEvent, type WorkStep } from "./workflow-state-events.ts";
+import { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
+import {
+  CAP_EVIDENCE_KINDS,
+  CAP_HIT_NEXT_STEPS,
+  KNOWN_CAPPED_PARTIAL_ROLES,
+  KNOWN_CAPPED_PARTIAL_TREES,
+  KNOWN_CONSOLIDATION_STATUSES,
+  KNOWN_STATUSES,
+  isKnownCap,
+} from "./workflow-state-validate-caps.ts";
+export { KNOWN_STATUSES } from "./workflow-state-validate-caps.ts";
+// #1362 — the cycle-start exempt-untracked baseline (#533 rule: type-check the
+// untyped cast; predicate + rationale in workflow-state-dirty-root.ts).
+import { dirtyRootExemptBaselineFindings } from "./workflow-state-dirty-root.ts";
 
 /**
  * Known event kinds — a literal `as const` tuple (narrower than the
@@ -68,6 +80,10 @@ export const KNOWN_EVENT_KINDS = [
   "verify-full-status",
   // #782 — the consolidated-verify gate's single-retry recovery marker.
   "verify-flake-recovered",
+  // #1240 — the consolidated-verify gate skipped its run because the probe
+  // tree is the tree the per-worktree verify already judged. A fast `develop`
+  // must be explainable from the state file.
+  "consolidated-verify-skipped",
   // #558 — the branch step's worktree provisioning record (the driver writes
   // it when it symlinks dependencies into a fresh worktree). Absent from the
   // tuple, a cycle that crashed after provisioning refused to resume.
@@ -119,57 +135,6 @@ export const KNOWN_EVENT_KINDS = [
 type MissingEventKinds = Exclude<WorkEvent["kind"], (typeof KNOWN_EVENT_KINDS)[number]>;
 const _eventKindExhaustive: [MissingEventKinds] extends [never] ? true : MissingEventKinds = true;
 void _eventKindExhaustive;
-
-/** `pipelineState.status` vocabulary. */
-export const KNOWN_STATUSES: readonly unknown[] = [
-  "running",
-  "merged",
-  "handoff",
-  "aborted",
-  // S4a (#1162) — resumable; re-entry treats it as running.
-  "interrupted",
-];
-
-/**
- * #540 — `pipelineState.incompleteConsolidation.verdicts[].status`
- * vocabulary. Legacy PR14 entries carry no `status` field at all (they
- * identify themselves by `paths`); the validator tolerates the absent-
- * status + `paths` shape and refuses everything else it does not
- * recognize — the same "extend the union, don't smuggle a field" rule
- * this module applies to event kinds and steps.
- *
- * #778 — `moved` joins the vocabulary: a covered workstream whose declared
- * path was renamed during develop/consolidation, with the move recorded in
- * `movedPaths` (the same "extend the union" move that added `unverifiable`
- * for #540).
- */
-export const KNOWN_CONSOLIDATION_STATUSES: readonly unknown[] = [
-  "complete",
-  "uncovered",
-  "moved",
-  "unverifiable",
-];
-
-/** `cap-hit.nextStep` vocabulary. */
-const CAP_HIT_NEXT_STEPS: readonly unknown[] = ["handoff", "step-back", "ci"];
-
-/** `pipelineState.capEvidence.kind` vocabulary (#543). */
-const CAP_EVIDENCE_KINDS: readonly unknown[] = ["loop", "token-budget"];
-
-/** #543 F5 — `pipelineState.capedPartialState.tree` vocabulary. */
-const KNOWN_CAPPED_PARTIAL_TREES: readonly unknown[] = ["committed", "dirty-uncommitted", "clean"];
-
-/** #543 F5 — `pipelineState.capedPartialState.role` vocabulary. The
- * dispatch-cap kill is attributed to a role the driver can name, so a
- * fabricated `cap-hit.role` is rejected with the same rule. */
-const KNOWN_CAPPED_PARTIAL_ROLES: readonly unknown[] = [
-  "project-manager",
-  "developer",
-  "ops",
-  "explore",
-  "adversarial-developer",
-  "code-review-specialist",
-];
 
 /**
  * Human-readable findings; empty when every discriminant is a known value.
@@ -229,6 +194,10 @@ export function validateDiscriminants(state: unknown): string[] {
         }
       }
     }
+    // #1362 — the cycle-start exempt-untracked baseline: which `??` files under
+    // an exempt prefix a restore claim spares. Checked in its own module; the
+    // same #533 rule as `commitPrRoot` above (the untyped cast is the gate).
+    out.push(...dirtyRootExemptBaselineFindings(ps.dirtyRootExemptBaseline));
     if (ps.incompleteConsolidation !== undefined) {
       const ic = ps.incompleteConsolidation;
       if (Array.isArray(ic)) {

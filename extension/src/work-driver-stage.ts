@@ -10,6 +10,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
+import { matchesConfiguredExempt } from "./work-driver-dirty-root-exempt.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -31,8 +32,19 @@ import type { ExecFn } from "./worktree.ts";
  *     staging it is exactly what git rejects. The previous comment here
  *     claimed both sides were staged, which is what made `git mv` in a
  *     worktree abort the run.
+ *
+ * #1362 — `exempt` is the project's `.pi/dirty-root-exempt` list: an UNTRACKED
+ * path under one of its prefixes is not staged. It is a parameter, never
+ * module state, because the caller decides whose project the list belongs to:
+ * repo-root reads pass it, workstream worktrees pass nothing, so develop and
+ * commit-pr output is staged exactly as before and a deliverable inside an
+ * exempt prefix is still committed.
  */
-export async function stagePorcelainPaths(execFn: ExecFn, cwd: string): Promise<number> {
+export async function stagePorcelainPaths(
+  execFn: ExecFn,
+  cwd: string,
+  exempt?: readonly string[],
+): Promise<number> {
   const { stdout } = await execFn("git status --porcelain -z", { cwd, maxBuffer: 1024 * 1024 });
   // Trailing NUL leaves an empty final field; short fields cannot hold
   // "XY " plus a path and are not entries.
@@ -46,6 +58,15 @@ export async function stagePorcelainPaths(execFn: ExecFn, cwd: string): Promise<
     // an unstaged rename surfaces as `D old` + `?? new`, two ordinary
     // entries, which need no special handling.
     if (field[0] === "R" || field[0] === "C") i += 1;
+    // #1362 — the entry's own two-character code decides eligibility: only an
+    // untracked `??` entry is exempt, so a tracked change or a rename under an
+    // exempt prefix is staged exactly as it was before this parameter existed.
+    if (field.startsWith("??") && matchesConfiguredExempt(field.slice(3), exempt)) {
+      trace(
+        `work-driver: integrate — not staging '${field.slice(3)}', listed in .pi/dirty-root-exempt`,
+      );
+      continue;
+    }
     paths.push(field.slice(3));
   }
   const staged: string[] = [];

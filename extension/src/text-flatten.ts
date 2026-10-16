@@ -13,7 +13,13 @@
  * they separate words. Format characters (Unicode category Cf: bidi controls,
  * zero-width characters, soft hyphen, word joiner) are removed outright, so they
  * cannot split or hide a word.
+ *
+ * `redactThenBound` is the sibling for text that is STORED as well as rendered:
+ * one redact-then-clip, so a length cap can never cut a credential into a fragment
+ * no pattern recognises.
  */
+
+import { redactSecrets } from "./secret-patterns.ts";
 
 /** Control characters and the Unicode line/paragraph separators: each run becomes one space. */
 const LINE_BREAKING = /[\p{Cc}\u2028\u2029]+/gu;
@@ -24,6 +30,30 @@ const INVISIBLE = /\p{Cf}/gu;
 /** One line of plain text: no control, separator, bidi or zero-width characters, collapsed whitespace. */
 export function flattenIssueText(text: string): string {
   return text.replace(INVISIBLE, "").replace(LINE_BREAKING, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Redact every secret span, THEN bound by code point (#1187 fix round 4).
+ *
+ * The order is the whole point: clipping first can cut a token into a fragment no
+ * pattern recognises, so the fragment survives into the handoff or the PR body (the
+ * same reasoning as `redactClip` in decision-log.ts). This is the ONE normaliser for
+ * text the open-point gate stores or renders — the reader's entries, the artifact
+ * reader's restored strings and the handoff's renderable list all call it, so a bound
+ * cannot be applied in one place and forgotten in another. Code points are counted, so
+ * a bound never leaves half a surrogate pair behind.
+ *
+ * `clipped` says whether the bound actually trimmed, which is how callers append a
+ * marker without re-measuring the string they were just handed: a caller that compares
+ * the returned length against its own bound re-derives a fact the function already
+ * decided, and on this runtime that comparison does not survive inlining — the clipped
+ * case silently loses its marker. The flag is the return value; nothing re-tests it.
+ */
+export function redactThenBound(text: string, max: number): { text: string; clipped: boolean } {
+  const chars = Array.from(redactSecrets(text).text);
+  return chars.length > max
+    ? { text: chars.slice(0, max).join(""), clipped: true }
+    : { text: chars.join(""), clipped: false };
 }
 
 /**
