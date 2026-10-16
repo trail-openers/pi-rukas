@@ -211,6 +211,17 @@ try {
       isConfiguredExemptDirtLine("?? .claude/x", []) === false,
       "with no list, no porcelain line is exempt (byte-identical to before)",
     );
+    // #1362 fix round — the one code that MUST stay unexempted: a staged NEW
+    // file the cycle wrote under an exempt prefix. Its code is `A`, not `??`, so
+    // the dirt gates and the restore's claim both keep treating it as the
+    // cycle's work rather than as a tool's stray. `restore-entry.ts`'s
+    // `markExemptCandidates` deliberately skips it for the same reason; were it
+    // to match on `code === "??"` alone, this line's shape is exactly what the
+    // stash would swallow and the claim would omit.
+    assert(
+      isConfiguredExemptDirtLine("A  .claude/generated-by-the-cycle.json", list) === false,
+      "a STAGED NEW file under an exempt prefix is not exempt (its `A` code is what marks it the cycle's own)",
+    );
   }
 
   // ---- 5. the config file: absent silent, unreadable traced, never throws --
@@ -219,8 +230,8 @@ try {
     mkdirSync(absent, { recursive: true });
     const r1 = await withTrace(() => readDirtyRootExempt(absent));
     assert(
-      r1.value.length === 0 && r1.lines.length === 0,
-      "no .pi/dirty-root-exempt → an empty list and NO trace (the default for every project)",
+      r1.value.entries.length === 0 && r1.value.readFailed === undefined && r1.lines.length === 0,
+      "no .pi/dirty-root-exempt → an empty list, NO readFailed and NO trace (the default for every project)",
     );
 
     const good = join(root, "good");
@@ -228,7 +239,7 @@ try {
     writeFileSync(join(good, DIRTY_ROOT_EXEMPT_FILE), "# tool-local files\n.claude/\n");
     const r2 = await withTrace(() => readDirtyRootExempt(good));
     assert(
-      r2.value.join(",") === ".claude",
+      r2.value.entries.join(",") === ".claude" && r2.value.readFailed === undefined,
       `the file is read from repoRoot's working tree (got ${JSON.stringify(r2.value)})`,
     );
 
@@ -241,12 +252,19 @@ try {
     mkdirSync(join(bad, DIRTY_ROOT_EXEMPT_FILE));
     const r3 = await withTrace(() => readDirtyRootExempt(bad));
     assert(
-      r3.value.length === 0,
+      r3.value.entries.length === 0,
       "an unreadable config yields an empty list — a broken config never throws",
     );
     assert(
       r3.lines.length > 0,
       `an unreadable config (non-ENOENT) says so in a trace (got ${JSON.stringify(r3.lines)})`,
+    );
+    // #1362 fix round — the trace goes to stderr and nowhere else. A cycle that
+    // then blocks on residue must be able to say WHY in its handoff, so the
+    // failure also comes back to the caller as data.
+    assert(
+      typeof r3.value.readFailed === "string" && r3.value.readFailed.includes("EISDIR"),
+      `an unreadable config reports readFailed so the handoff can name it (got ${JSON.stringify(r3.value.readFailed)})`,
     );
 
     const denied = join(root, "denied");
@@ -256,7 +274,9 @@ try {
     if (process.getuid?.() !== 0) {
       const r4 = await withTrace(() => readDirtyRootExempt(denied));
       assert(
-        r4.value.length === 0 && r4.lines.length > 0,
+        r4.value.entries.length === 0 &&
+          r4.lines.length > 0 &&
+          (r4.value.readFailed ?? "").includes("EACCES"),
         "an EACCES config is empty plus a trace, not a throw",
       );
     }
