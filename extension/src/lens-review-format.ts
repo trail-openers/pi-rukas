@@ -105,7 +105,9 @@ export interface LensReviewSummary {
   memoryNote?: string;
   /** #1125 — rows this round resolved because their cited code is gone, with the reason. */
   resolved?: ResolvedNotice[];
-  /** #1140 — carried rows on files outside the PR's diff: listed, never blocking. */
+  /** #1140/#1125 — reported findings whose cited code is outside the PR's
+   * changed lines: listed under the advisory heading, never counted toward the
+   * verdict, `bySeverity` or the ledger's `hasCritical`. */
   advisory?: Finding[];
 }
 
@@ -200,6 +202,14 @@ export { extractFindings } from "./lens-findings-extract.ts";
  * know (e.g. stale findings from an older pass) fall back to 99.
  */
 export function dedupeFindings(input: Finding[], lens: RosterEntry[]): Finding[] {
+  // Deterministic under the advisory split (#1125): `bestByKey` is a Map, so
+  // without this sort the emitted order is the input order — which is the lens
+  // fan-in's completion order plus the store's row order, neither of them
+  // stable. The summary, the residual disclosure and every test that reads
+  // "the" reported finding then depend on which of two findings that dedup into
+  // one row survived. Sort first, so the SAME finding survives and is listed
+  // first whatever the input order.
+  const ordered = [...input].sort(sortFindings);
   const precedenceOf = new Map<FindingSource, number>();
   for (const l of lens) {
     if (l.precedence !== undefined) precedenceOf.set(l.name, l.precedence);
@@ -213,7 +223,7 @@ export function dedupeFindings(input: Finding[], lens: RosterEntry[]): Finding[]
   // per pass) — at most a few hundred entries per invocation, and the whole
   // map goes out of scope when this function returns. No explicit cap needed.
   const bestByKey = new Map<string, Finding>();
-  for (const f of input) {
+  for (const f of ordered) {
     const key = `${f.path}::${f.line ?? 0}::${normaliseTitle(f.title)}`;
     const existing = bestByKey.get(key);
     if (!existing) {

@@ -9,7 +9,11 @@
  *   1. the run records: no memoryNote, both rows exist, the real-file row keeps
  *      its normal identity (anchor + cited line + snippet), and the missing-path
  *      row is a no-line row (anchor `file`, no line);
- *   2. both findings are reported and the verdict is ISSUES_FOUND;
+ *   2. the finding on the file the PR does change is reported and the verdict is
+ *      ISSUES_FOUND; the one on `src/gone.ts` is ADVISORY (#1125 — its cited
+ *      line is outside the PR's changed lines, so it neither blocks nor counts)
+ *      and is still recorded as a row, which is the point: advisory is a
+ *      verdict-side discount, not a reason to forget the finding;
  *   3. the operator accepts the missing-path row by id — a later full review
  *      suppresses it by title (suppressed-accepted), so an accepted wrong
  *      citation can be cleared; the real-file finding is still reported.
@@ -58,6 +62,10 @@ const sh = (cmd: string) =>
 sh("git init -q -b feat/x");
 sh("git config user.email dev@example.com");
 sh("git config user.name dev");
+// The base the runs below name: an empty commit made before the source exists,
+// so the whole file is inside `c0...c1` and no finding here is out of range.
+sh("git commit -q --allow-empty -m base");
+const c0 = sh("git rev-parse HEAD");
 const SRC = [
   "// header",
   "export function alpha(x: number) {",
@@ -106,7 +114,18 @@ const stubLens = async (args: { lens: { name: string } }): Promise<LensRunResult
   } as unknown as LensRunResult;
 };
 
-const common = { cwd: repo, branch: "feat/x", lensChildFn: stubLens as never };
+const common = {
+  cwd: repo,
+  branch: "feat/x",
+  lensChildFn: stubLens as never,
+  // #1125 — the advisory split reads `git diff <base>...<head>`, and this clone
+  // has no mainline to resolve, so the base is stated: the commit before
+  // src/a.ts existed. So `src/a.ts` is wholly in range (its finding blocks) and
+  // `src/gone.ts` is outside it (its finding is advisory) — the wrong-citation
+  // row this test is about is exactly the row #1125 discounts, which is why
+  // round 1 asserts it is recorded AND advisory.
+  base: c0,
+};
 const FULL_DIFF =
   "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+export function alpha(x: number) {";
 
@@ -115,8 +134,14 @@ try {
   const r1 = await runLensReview({ ...common, diff: FULL_DIFF, head: c1 });
   assert(r1.memoryNote === undefined, "round 1: the run records (memoryNote is unset)");
   assert(
-    r1.findings.length === 2 && r1.verdict === "ISSUES_FOUND",
-    `round 1: both findings are reported (verdict ${r1.verdict})`,
+    r1.findings.length === 1 && r1.verdict === "ISSUES_FOUND",
+    `round 1: the in-range finding is reported (verdict ${r1.verdict}, ${r1.findings.length})`,
+  );
+  // The missing-path finding is discounted by #1125 — out of the verdict, still
+  // recorded as a row, and visible in the summary as advisory.
+  assert(
+    r1.advisory?.length === 1 && r1.advisory[0]?.path === "src/gone.ts",
+    "round 1: the missing-path finding is advisory, not dropped",
   );
   const rows = await readBranchRows(repo, "feat/x");
   const real = rows.find((r) => r.path === "src/a.ts");

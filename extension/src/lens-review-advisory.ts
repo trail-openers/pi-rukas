@@ -1,102 +1,123 @@
 /**
- * lens-review-advisory — carried findings outside the PR's diff are advisory (#1140).
+ * lens-review-advisory — a finding blocks only on lines this PR changed
+ * (#1140 file level, #1125 decision 1 line level).
  *
  * Findings memory (review-findings-store.ts) carries an open row into every
- * later round while its file and cited line exist. A row stored on a file the
- * PR never touches (#1133: a phantom two-dot diff) therefore blocked forever,
+ * later round while its file and cited line exist. A row stored outside what
+ * the PR touches (#1133: a phantom two-dot diff) therefore blocked forever,
  * and a carried CRITICAL set `hasCritical`, so only an operator editing the
  * store could unblock the PR. Production review tools block only on code the
- * change touched; this module applies that rule to carried rows only:
+ * change touched; this module applies that rule to every reported finding —
+ * fresh or carried — at LINE level:
  *
- *   - a carried row whose path is NOT in `git diff --name-only <base>...<head>`
- *     (base: the review's explicit `base`, else the mainline; head: the
- *     review's resolved head SHA) is ADVISORY — out of the verdict and
+ *   - a finding that cites a line is BLOCKING only when that line falls in
+ *     `git diff <base>...<head>`'s changed ranges on the new side (head: the
+ *     review's resolved head SHA; base: the review's explicit `base`, else the
+ *     mainline). A finding elsewhere is ADVISORY — out of the verdict, out of
  *     `hasCritical`, listed under "Advisory (outside this PR's diff)";
- *   - a carried row on a changed file, or with no path, blocks as before;
- *   - when the file list cannot be read, every carried row blocks (today's
- *     behaviour) and the returned note says so.
+ *   - a finding with no line (a file-level finding) blocks when its path is in
+ *     that diff, exactly as #1140 had it;
+ *   - a finding with no path at all blocks — there is nothing to place in the
+ *     diff, so nothing can make it advisory;
+ *   - when the changed ranges cannot be read, EVERY finding blocks (today's
+ *     behaviour) and the returned note says so. The advisory tier is a
+ *     discount, and a discount is never granted on evidence that could not be
+ *     read.
  *
- * Fresh findings from the round never pass through here, and the store rows
- * are not modified.
+ * Because the same list feeds the verdict, `bySeverity`, the summary and the
+ * ledger's `hasCritical` (lens-round-cap.ts, merge-guard-round-cap.ts read it
+ * from the latest lens entry), an out-of-diff CRITICAL can no longer hold the
+ * round budget or the merge (#1143's invariant, kept at line level).
+ *
+ * The store rows are not modified: an advisory finding stays `open` there and
+ * becomes blocking again the moment its cited line is inside the diff.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { neutraliseEvidence } from "./comment-evidence.ts";
+import { changedRanges } from "./lens-review-changed-ranges.ts";
 import type { Finding } from "./lens-review-types.ts";
-import { resolveMainlineBase } from "./review-delta-hunks.ts";
-
-const execFileP = promisify(execFile);
 
 export const ADVISORY_HEADING = "Advisory (outside this PR's diff)";
 
 const norm = (p: string): string => p.replace(/^\.\//, "").replace(/\/+$/, "");
 
-/** The PR's changed files, or the reason they could not be read. */
-async function changedFiles(
-  cwd: string,
-  base: string | undefined,
-  head: string | undefined,
-): Promise<{ ok: true; files: Set<string> } | { ok: false; reason: string }> {
-  const b = base ?? (await resolveMainlineBase(cwd));
-  if (!b) return { ok: false, reason: "no base ref resolves (no explicit base, no mainline)" };
-  if (!head) return { ok: false, reason: "the reviewed head did not resolve to a commit" };
-  if (b.startsWith("-")) return { ok: false, reason: `base ref "${b}" starts with '-'` };
-  try {
-    const { stdout } = await execFileP(
-      "git",
-      ["-C", cwd, "diff", "--name-only", `${b}...${head}`],
-      {
-        maxBuffer: 1024 * 1024,
-      },
-    );
-    return { ok: true, files: new Set(stdout.split("\n").filter(Boolean).map(norm)) };
-  } catch (err) {
-    return {
-      ok: false,
-      reason: `git diff --name-only ${b}...${head} failed: ${((err as Error)?.message ?? String(err)).slice(0, 200)}`,
-    };
-  }
-}
-
-export interface CarriedSplit {
-  blocking: Finding[];
-  /** Summary fields: `advisory` rows, and a `memoryNote` when the changed-file
-   * list was unreadable (every carried row then blocks). Empty when nothing is
-   * carried, so it never overwrites a findings-memory note. */
-  fields: { advisory?: Finding[]; memoryNote?: string };
+/**
+ * True when `line` falls in one of `spans`. A one-sided hunk (`+21,0` — a
+ * pure deletion) lands on the line it deletes INTO, so the span collapses to
+ * that single line rather than vanishing: a finding citing the neighbourhood
+ * of a deletion still counts as changed code.
+ */
+function inRanges(spans: ReadonlyArray<readonly [number, number]>, line: number): boolean {
+  return spans.some(([lo, hi]) => line >= lo && line <= (hi < lo ? lo : hi));
 }
 
 /**
- * Split the round's carried rows (`recordFindingRunOutcome`'s result; none
- * when it did not record) into blocking (inside the diff, or no path) and
- * advisory.
+ * Blocking when the cited code is in the PR's changed lines; advisory when it
+ * demonstrably is not. A missing path or line can never be shown to be out of
+ * range, so it blocks.
  */
-export async function splitCarried(
-  recorded: { ok: boolean; carried?: Finding[] } | undefined,
+function isAdvisory(
+  f: Finding,
+  ranges: Map<string, Array<[number, number]>>,
+  fileChanged: (path: string) => boolean,
+): boolean {
+  if (typeof f.line === "number") return !inRanges(ranges.get(norm(f.path)) ?? [], f.line);
+  return !fileChanged(f.path);
+}
+
+export interface AdvisorySplit {
+  /** The findings that block: verdict, counts, summary and `hasCritical`. */
+  blocking: Finding[];
+  /** Summary fields: `advisory` rows, and a `memoryNote` when the changed-line
+   * ranges were unreadable (every finding then blocks). Empty when nothing is
+   * advisory, so it never overwrites a findings-memory note. */
+  fields: { advisory?: Finding[]; memoryNote?: string };
+}
+
+/** The disclosure the summary and the residual comment carry when the ranges
+ * could not be read: the discount is withheld and the reason is named. */
+function unreadableNote(reason: string): string {
+  return `findings all treated as blocking: the PR's changed lines could not be read (${reason})`;
+}
+
+/**
+ * Split the round's reported findings (fresh lens findings and carried store
+ * rows alike) into blocking (inside the PR's changed lines) and advisory.
+ *
+ * `rangeReadable` says whether this run has a range to speak of at all — its
+ * head resolved to a commit, so `base...head` means something. When it is
+ * false, NO finding is discounted and no note is emitted: the discount is
+ * earned by a range that was actually read, never assumed (#1143's invariant is
+ * "out of range", never "range unknown"). When it is true and the read still
+ * fails, every finding blocks AND the note says why, so a fail-closed round is
+ * visible rather than merely conservative.
+ */
+export async function splitAdvisory(
+  reported: readonly Finding[],
   cwd: string | undefined,
   base: string | undefined,
   head: string | undefined,
-): Promise<CarriedSplit> {
-  const carried = recorded?.ok ? (recorded.carried ?? []) : [];
-  if (carried.length === 0) return { blocking: [], fields: {} };
-  // A throw is contained like a failed git read: every carried row blocks.
-  const list = await changedFiles(cwd ?? process.cwd(), base, head).catch((err: unknown) => ({
+  rangeReadable = true,
+): Promise<AdvisorySplit> {
+  if (reported.length === 0) return { blocking: [...reported], fields: {} };
+  if (!rangeReadable) return { blocking: [...reported], fields: {} };
+  // A throw is contained like a failed git read: every finding blocks.
+  const list = await changedRanges(cwd ?? process.cwd(), base, head).catch((err: unknown) => ({
     ok: false as const,
-    reason: `changed-file check failed: ${(err as Error)?.message ?? String(err)}`,
+    reason: `changed-line check failed: ${(err as Error)?.message ?? String(err)}`,
   }));
   if (!list.ok) {
     return {
-      blocking: [...carried],
-      fields: {
-        memoryNote: `carried findings all treated as blocking: the PR's changed-file list could not be read (${list.reason})`,
-      },
+      blocking: [...reported],
+      fields: { memoryNote: unreadableNote(list.reason) },
     };
   }
+  const changed = (path: string | undefined): boolean =>
+    path !== undefined && list.ranges.has(norm(path));
   const blocking: Finding[] = [];
   const advisory: Finding[] = [];
-  for (const f of carried) {
-    (!f.path || list.files.has(norm(f.path)) ? blocking : advisory).push(f);
+  for (const f of reported) {
+    (f.path && isAdvisory(f, list.ranges, changed) ? advisory : blocking).push(f);
   }
   return { blocking, fields: advisory.length > 0 ? { advisory } : {} };
 }
@@ -106,7 +127,7 @@ export function advisorySection(advisory: readonly Finding[] | undefined): strin
   if (!advisory || advisory.length === 0) return [];
   return [
     "",
-    `${ADVISORY_HEADING} (${advisory.length}) — carried from an earlier round on files this PR does not change; they do not block:`,
+    `${ADVISORY_HEADING} (${advisory.length}) — outside the lines this PR changed; they do not block:`,
     ...advisory.map((f) =>
       neutraliseEvidence(
         `- advisory: [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})`,
