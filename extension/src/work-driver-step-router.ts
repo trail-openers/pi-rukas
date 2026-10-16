@@ -9,6 +9,13 @@
  * state plus whether the caller should `continue` the loop immediately
  * (retry / re-entered-via-handoff) rather than fall through to the
  * `nextStep()` transition.
+ *
+ * The two retry branches of the PR5 router are neighbours, not roommates:
+ * `routeDispatchFailure` (below) holds the HALT-class transient retry and the
+ * cap-hit, and `retryOnceStep` (work-driver-step-retry-once.ts) holds the
+ * RETRY_ONCE branch. #1391 added a retry-time worktree clean to both, so both
+ * go through `treeCleanLine` (work-driver-step-clean.ts) — a clean in only one
+ * of them would reintroduce the park-on-own-dirt the issue is about.
  */
 
 import * as lifecycle from "./lifecycle-events.ts";
@@ -18,8 +25,9 @@ import { trace } from "./trace.ts";
 import { capKilledString } from "./work-driver-cap-killed.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { dispatchTokens } from "./work-driver-cycle-total.ts";
-import { STEP_FAILURE_POLICY } from "./work-driver-failure-policy.ts";
+import { STEP_FAILURE_POLICY, type StepFailurePolicy } from "./work-driver-failure-policy.ts";
 import {
+  type FailureClass,
   classifyFailureCause,
   failureCauseReason,
   failureCauseReasonForClass,
@@ -30,26 +38,27 @@ import {
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
 import { lostAttemptLine } from "./work-driver-retry-context.ts";
+import { treeCleanLine } from "./work-driver-step-clean.ts";
 import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
+import { retryOnceStep } from "./work-driver-step-retry-once.ts";
 import type { CapEvidence } from "./workflow-state-cap.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
 
-/**
- * #366 — injectable sleep. Real waits are the point in production (a burst
- * 429 clears by waiting), but the offline suite must never actually sleep, so
- * the seam is here rather than a bare setTimeout at each call site.
- */
-let sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms));
+// #366 — the injectable sleep both retry branches wait through lives in
+// `work-driver-step-sleep.ts` now that the RETRY_ONCE branch is its own module.
+import { sleep as sleepFn } from "./work-driver-step-sleep.ts";
 
-/** Test seam. Returns a restore function. */
-export function __setSleepFn(fn: (ms: number) => Promise<void>): () => void {
-  const prev = sleepFn;
-  sleepFn = fn;
-  return () => {
-    sleepFn = prev;
-  };
-}
+/**
+ * #366 — re-export of the sleep seam: the offline suite swaps ONE sleep
+ * implementation for the whole retry path, and after #1391 the two retry
+ * branches live in two modules. Importing it from here (the router every retry
+ * test already imports) keeps that a single swap.
+ */
+export { __setSleepFn } from "./work-driver-step-sleep.ts";
+
+/** The dispatch-failure members of the event union the router reads. */
+type FailureEvent = Extract<WorkEvent, { kind: "dispatch-failed" | "dispatch-failed-provider" }>;
 
 /**
  * Step completed — figure out if it ended in a step-failure-shaped
@@ -224,207 +233,27 @@ export async function routeStepOutcome(
   }
   await persistCycle(ctx, state);
 
-  // PR5 halt-cascade router. Intercept dispatch-failed at HALT-class
-  // steps BEFORE nextStep() — the existing linear table has no
-  // dispatch-failed branch and would silently advance the cycle into
-  // wasted downstream work (the #553 cascade root).
+  // PR5 halt-cascade router (the body lives in `routeDispatchFailure` below).
+  // Intercept dispatch-failed at HALT-class steps BEFORE nextStep() — the
+  // linear transition table has no dispatch-failed branch and would silently
+  // advance the cycle into wasted downstream work (the #553 cascade root).
   {
     // The SAME lookup the scrollback block above used. Reading the raw tail
     // here left a fan-out's transient failure unretried while the block above
     // had already withheld its ✗ line for the retry: `failureEventOf` was
     // feeding the message and not the decision.
     const tail = failureEventOf(state.eventLog);
-    // A fan-out's failure sits behind `branches-converged`. Only the transient
-    // retry applies to it; its halt belongs to the fan-out router below, and
-    // RETRY_ONCE fan-outs (adversarial) keep their own per-workstream budget.
-    const buried = tail !== state.eventLog[state.eventLog.length - 1];
-    const isDispatchFail =
-      tail?.kind === "dispatch-failed" || tail?.kind === "dispatch-failed-provider";
-    if (isDispatchFail) {
-      const policy = STEP_FAILURE_POLICY[step];
-      // #308 — transient failures on HALT-class steps get a bounded
-      // retry with backoff BEFORE the halt-cascade. The work was
-      // interrupted (provider blip, #296 kill), not judged; aborting a
-      // multi-hour cycle over one transient was the reliability
-      // regression's amplifier. Semantic failures fall through to HALT
-      // unchanged. (When REPLAY_ONCE (#276) lands for develop, its
-      // evidence-carrying replay fires from its own router branch and
-      // this generic path becomes develop's fallback.)
-      const classification = classifyFailureCause(tail);
-      // #1308 S3 — acted on here, so the failure-cause seam is asked (in shadow).
-      shadowFailureCause(tail, classification, {
-        repoRoot: ctx.repoRoot,
-        issues: ctx.issues ?? [ctx.issue],
-      });
-      if (policy === "HALT" && transientRetryEnabled() && classification.shouldRetry) {
-        const attempts = state.pipelineState.transientRetryAttempts ?? {};
-        const used = attempts[step] ?? 0;
-        if (used < classification.maxRetries) {
-          state = {
-            ...state,
-            pipelineState: {
-              ...state.pipelineState,
-              transientRetryAttempts: { ...attempts, [step]: used + 1 },
-            },
-          };
-          await persistCycle(ctx, state);
-          // The retry is a fresh child: say what the failed one took with it.
-          const lost = lostAttemptLine(step, used + 1, tail);
-          const reason = `${failureCauseReason(tail)} · ${lost}`;
-          lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
-          trace(
-            `work-driver: retry on step="${step}" (attempt ${used + 2}/${classification.maxRetries + 1}, cause=${classification.cause}) — ${lost}`,
-          );
-          // #366 — honour the provider's own requested delay when it stated
-          // one (a rate-limit floor: waiting less is what earns the next 429),
-          // otherwise the linear transient backoff. Full jitter either way, so
-          // parallel cycles that trip the same limit don't resynchronise into
-          // a thundering herd (#289 makes that concrete).
-          const base = transientRetryBackoffMs() * (used + 1);
-          const backoff = jitteredMs(base, classification.waitMs ?? 0);
-          if (backoff > 0) await sleepFn(backoff);
-          return { state, retry: true }; // re-run same step on next loop iteration
-        }
-        // Budget exhausted → fall through to the HALT cap-hit below.
-      }
-      if (policy === "HALT" && !buried) {
-        // #308 — use structured killCause for cap detection instead of
-        // regex-matching errorTail. A timeout self-kill is a deliberate
-        // budget cap; it should NEVER be retried.
-        const killCause = (tail as { killCause?: string }).killCause;
-        // #543 — a loop / token-budget self-kill parks with the fixed-literal
-        // cap (`loop-detected` / `token-budget`) INSTEAD of `step-failed:<step>`.
-        // It is not a provider fault and must never be retried (the HALT branch
-        // already refuses retry: `shouldRetry` is false, so the #308 retry block
-        // above never ran). The fixed literal (no `'<role>'` suffix) + the
-        // `role` field is what F4(f) requires; explainCap reads capEvidence for
-        // the trigger detail.
-        const capKilled = tail.kind === "dispatch-failed" ? capKilledString(tail) : undefined;
-        const cap =
-          capKilled ??
-          (step === "develop" && killCause === "timeout"
-            ? ("developer-timeout" as const)
-            : step === "plan" && killCause === "plan-timeout"
-              ? // #754 — mirrors the develop `developer-timeout` special case:
-                //   the plan step's own bound expired and its one-shot
-                //   corrective re-dispatch did not recover, so the operator
-                //   sees a cap that names the plan step, not a generic one.
-                ("plan-timeout" as const)
-              : (`step-failed:${step}` as const));
-        const capEvent: Extract<WorkEvent, { kind: "cap-hit" }> = {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap,
-          reviewRound: state.pipelineState.reviewRound,
-          nextStep: "handoff",
-        };
-        if (capEvent.cap === "loop-detected" || capEvent.cap === "token-budget") {
-          capEvent.role = (tail as { role?: RoleName }).role;
-          // #543 F4(j) — the operator-facing explanation of WHAT looped (or
-          // how much was spent) lives on `pipelineState.capEvidence`. The
-          // structured evidence is already on the dispatch-failed event (the
-          // loopEvidence / tokenBudget fields), so persist it here, at the
-          // moment the cap-hit is emitted. Without this write, `explainCap`
-          // renders the fallback sentence for every real cap kill — the
-          // exact dead-seam shape the reviewer flagged.
-          // The evidence fields exist on the `dispatch-failed` member of the
-          // union only — narrow first, so the read is structural, not a
-          // widened property access on both members.
-          const df = tail.kind === "dispatch-failed" ? tail : undefined;
-          const ev: CapEvidence | undefined =
-            capEvent.cap === "loop-detected"
-              ? df?.loopEvidence
-                ? { kind: "loop", tool: df.loopEvidence.tool, count: df.loopEvidence.count }
-                : undefined
-              : df?.tokenBudget
-                ? {
-                    kind: "token-budget",
-                    budgetTokens: df.tokenBudget.budget,
-                    usedTokens: df.tokenBudget.used,
-                  }
-                : undefined;
-          if (ev) {
-            state = {
-              ...state,
-              pipelineState: { ...state.pipelineState, capEvidence: ev },
-            };
-          }
-        }
-        state = appendEvent(state, capEvent);
-        // Set currentStep='handoff' but LEAVE status='running' so the
-        // loop re-enters and runs runHandoff. runHandoff's final block
-        // sets status based on the cap shape (mid-flight failure →
-        // 'aborted', cap-hit verdict → 'handoff').
-        state = {
-          ...state,
-          pipelineState: { ...state.pipelineState, currentStep: "handoff" },
-        };
-        await persistCycle(ctx, state);
-        trace(
-          `work-driver: HALT on step="${step}" → cap="${cap}" → handoff (status set in runHandoff)`,
-        );
-        return { state, retry: true };
-      }
-      if (policy === "RETRY_ONCE" && !buried) {
-        // #366 — an infrastructure fault must never decrement the SEMANTIC
-        // attempt budget. Pre-fix this branch never consulted the
-        // classification, so one 429 on `adversarial` burned the single
-        // semantic retry and the next failure — of any kind — halted the
-        // cycle. Infra faults on RETRY_ONCE steps use the transient budget,
-        // same as HALT-class steps do.
-        const infra = classification.cause !== "crashed-unknown" && classification.shouldRetry;
-        const attempts = infra
-          ? (state.pipelineState.transientRetryAttempts ?? {})
-          : (state.pipelineState.retryAttempts ?? {});
-        const used = attempts[step] ?? 0;
-        const budget = stepRetryBudget(classification, infra);
-        if (used < budget) {
-          const bumped = { ...attempts, [step]: used + 1 };
-          state = {
-            ...state,
-            pipelineState: {
-              ...state.pipelineState,
-              ...(infra ? { transientRetryAttempts: bumped } : { retryAttempts: bumped }),
-            },
-          };
-          await persistCycle(ctx, state);
-          const lost = lostAttemptLine(step, used + 1, tail);
-          const reason = `${failureCauseReason(tail)} · ${lost}`;
-          lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
-          trace(
-            `work-driver: RETRY_ONCE on step="${step}" (attempt ${used + 2}, budget=${infra ? "transient" : "semantic"}, cause=${classification.cause}) — ${lost}`,
-          );
-          if (infra) {
-            const wait = jitteredMs(
-              transientRetryBackoffMs() * (used + 1),
-              classification.waitMs ?? 0,
-            );
-            if (wait > 0) await sleepFn(wait);
-          }
-          return { state, retry: true }; // re-run same step on next loop iteration
-        }
-        // Retry exhausted → HALT via the same cap shape. Same
-        // pattern as the HALT branch above — leave status='running'
-        // so the loop runs runHandoff next; runHandoff sets the
-        // terminal status based on the cap shape.
-        state = appendEvent(state, {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap: `step-failed:${step}` as const,
-          reviewRound: state.pipelineState.reviewRound,
-          nextStep: "handoff",
-        });
-        state = {
-          ...state,
-          pipelineState: { ...state.pipelineState, currentStep: "handoff" },
-        };
-        await persistCycle(ctx, state);
-        trace(
-          `work-driver: RETRY_ONCE exhausted on step="${step}" (cause=${classification.cause}) → handoff (status set in runHandoff)`,
-        );
-        return { state, retry: true };
-      }
-      // DEGRADED_OK: existing fall-through is correct (no-op here).
+    if (tail?.kind === "dispatch-failed" || tail?.kind === "dispatch-failed-provider") {
+      const routed = await routeDispatchFailure(
+        ctx,
+        state,
+        tail,
+        step,
+        stepOrd,
+        STEP_FAILURE_POLICY[step],
+      );
+      if (routed.retry) return routed;
+      state = routed.state;
     }
   }
 
@@ -496,5 +325,170 @@ export async function routeStepOutcome(
     }
   }
 
+  return { state, retry: false };
+}
+
+/**
+ * PR5 halt-cascade router, extracted from `routeStepOutcome` to keep that file
+ * inside the §12 line cap. `tail` is the failure `failureEventOf` resolved
+ * (which may sit behind a fan-out's `branches-converged`), `policy` the step's
+ * failure class. Returns the routed state plus whether the caller should
+ * `continue` its loop rather than fall through to `nextStep()`.
+ */
+async function routeDispatchFailure(
+  ctx: CycleContext,
+  stateIn: WorkState,
+  tail: FailureEvent,
+  step: WorkStep,
+  stepOrd: { num: number; total: number },
+  policy: StepFailurePolicy,
+): Promise<{ state: WorkState; retry: boolean }> {
+  let state = stateIn;
+  // A fan-out's failure sits behind `branches-converged`. Only the transient
+  // retry applies to it; its halt belongs to the fan-out router in
+  // `routeStepOutcome`, and RETRY_ONCE fan-outs (adversarial) keep their own
+  // per-workstream budget.
+  const buried = tail !== stateIn.eventLog[stateIn.eventLog.length - 1];
+  // #308 — transient failures on HALT-class steps get a bounded
+  // retry with backoff BEFORE the halt-cascade. The work was
+  // interrupted (provider blip, #296 kill), not judged; aborting a
+  // multi-hour cycle over one transient was the reliability
+  // regression's amplifier. Semantic failures fall through to HALT
+  // unchanged. (When REPLAY_ONCE (#276) lands for develop, its
+  // evidence-carrying replay fires from its own router branch and
+  // this generic path becomes develop's fallback.)
+  const classification = classifyFailureCause(tail);
+  // #1308 S3 — acted on here, so the failure-cause seam is asked (in shadow).
+  shadowFailureCause(tail, classification, {
+    repoRoot: ctx.repoRoot,
+    issues: ctx.issues ?? [ctx.issue],
+  });
+  if (policy === "HALT" && transientRetryEnabled() && classification.shouldRetry) {
+    const attempts = state.pipelineState.transientRetryAttempts ?? {};
+    const used = attempts[step] ?? 0;
+    if (used < classification.maxRetries) {
+      state = {
+        ...state,
+        pipelineState: {
+          ...state.pipelineState,
+          transientRetryAttempts: { ...attempts, [step]: used + 1 },
+        },
+      };
+      await persistCycle(ctx, state);
+      // #1391 — clean the tree the retry dispatches into BEFORE the new child
+      // starts, so the retry is not blocked by the dirt the lost attempt left;
+      // the account rides on the retry line.
+      const tree = await treeCleanLine(ctx, state, step, used + 1);
+      // The retry is a fresh child: say what the failed one took with it.
+      const lost = lostAttemptLine(step, used + 1, tail, tree);
+      const reason = `${failureCauseReason(tail)} · ${lost}`;
+      lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
+      trace(
+        `work-driver: retry on step="${step}" (attempt ${used + 2}/${classification.maxRetries + 1}, cause=${classification.cause}) — ${lost}`,
+      );
+      // #366 — honour the provider's own requested delay when it stated
+      // one (a rate-limit floor: waiting less is what earns the next 429),
+      // otherwise the linear transient backoff. Full jitter either way, so
+      // parallel cycles that trip the same limit don't resynchronise into
+      // a thundering herd (#289 makes that concrete).
+      const base = transientRetryBackoffMs() * (used + 1);
+      const backoff = jitteredMs(base, classification.waitMs ?? 0);
+      if (backoff > 0) await sleepFn(backoff);
+      return { state, retry: true }; // re-run same step on next loop iteration
+    }
+    // Budget exhausted → fall through to the HALT cap-hit below.
+  }
+  if (policy === "HALT" && !buried) {
+    // #308 — use structured killCause for cap detection instead of
+    // regex-matching errorTail. A timeout self-kill is a deliberate
+    // budget cap; it should NEVER be retried.
+    const killCause = (tail as { killCause?: string }).killCause;
+    // #543 — a loop / token-budget self-kill parks with the fixed-literal
+    // cap (`loop-detected` / `token-budget`) INSTEAD of `step-failed:<step>`.
+    // It is not a provider fault and must never be retried (the HALT branch
+    // already refuses retry: `shouldRetry` is false, so the #308 retry block
+    // above never ran). The fixed literal (no `'<role>'` suffix) + the
+    // `role` field is what F4(f) requires; explainCap reads capEvidence for
+    // the trigger detail.
+    const capKilled = tail.kind === "dispatch-failed" ? capKilledString(tail) : undefined;
+    const cap =
+      capKilled ??
+      (step === "develop" && killCause === "timeout"
+        ? ("developer-timeout" as const)
+        : step === "plan" && killCause === "plan-timeout"
+          ? // #754 — mirrors the develop `developer-timeout` special case:
+            //   the plan step's own bound expired and its one-shot
+            //   corrective re-dispatch did not recover, so the operator
+            //   sees a cap that names the plan step, not a generic one.
+            ("plan-timeout" as const)
+          : (`step-failed:${step}` as const));
+    const capEvent: Extract<WorkEvent, { kind: "cap-hit" }> = {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap,
+      reviewRound: state.pipelineState.reviewRound,
+      nextStep: "handoff",
+    };
+    if (capEvent.cap === "loop-detected" || capEvent.cap === "token-budget") {
+      capEvent.role = (tail as { role?: RoleName }).role;
+      // #543 F4(j) — the operator-facing explanation of WHAT looped (or
+      // how much was spent) lives on `pipelineState.capEvidence`. The
+      // structured evidence is already on the dispatch-failed event (the
+      // loopEvidence / tokenBudget fields), so persist it here, at the
+      // moment the cap-hit is emitted. Without this write, `explainCap`
+      // renders the fallback sentence for every real cap kill — the
+      // exact dead-seam shape the reviewer flagged.
+      // The evidence fields exist on the `dispatch-failed` member of the
+      // union only — narrow first, so the read is structural, not a
+      // widened property access on both members.
+      const df = tail.kind === "dispatch-failed" ? tail : undefined;
+      const ev: CapEvidence | undefined =
+        capEvent.cap === "loop-detected"
+          ? df?.loopEvidence
+            ? { kind: "loop", tool: df.loopEvidence.tool, count: df.loopEvidence.count }
+            : undefined
+          : df?.tokenBudget
+            ? {
+                kind: "token-budget",
+                budgetTokens: df.tokenBudget.budget,
+                usedTokens: df.tokenBudget.used,
+              }
+            : undefined;
+      if (ev) {
+        state = {
+          ...state,
+          pipelineState: { ...state.pipelineState, capEvidence: ev },
+        };
+      }
+    }
+    state = appendEvent(state, capEvent);
+    // Set currentStep='handoff' but LEAVE status='running' so the
+    // loop re-enters and runs runHandoff. runHandoff's final block
+    // sets status based on the cap shape (mid-flight failure →
+    // 'aborted', cap-hit verdict → 'handoff').
+    state = {
+      ...state,
+      pipelineState: { ...state.pipelineState, currentStep: "handoff" },
+    };
+    await persistCycle(ctx, state);
+    trace(
+      `work-driver: HALT on step="${step}" → cap="${cap}" → handoff (status set in runHandoff)`,
+    );
+    return { state, retry: true };
+  }
+  if (policy === "RETRY_ONCE") {
+    const once = await retryOnceStep(
+      ctx,
+      state,
+      tail,
+      step,
+      stepOrd,
+      classification,
+      policy,
+      buried,
+    );
+    if (once) return once;
+  }
+  // DEGRADED_OK: the caller falls through to the PR7 fan-out router.
   return { state, retry: false };
 }
