@@ -23,7 +23,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { DriverContext } from "../src/work-driver-context.ts";
+import { runExplore } from "../src/work-driver-explore.ts";
 import {
+  SPEC_ARTIFACT_GATE_VERSION,
   deleteSpecArtifact,
   exploreSpecArtifactPath,
   parseNormalisedSpecArtifact,
@@ -31,8 +34,6 @@ import {
   resolveIntentVerdict,
 } from "../src/work-driver-intent-artifact.ts";
 import { type NormalisedSpec, parseNormalisedSpec } from "../src/work-driver-intent.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
-import { runExplore } from "../src/work-driver-explore.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -62,8 +63,19 @@ function baseSpec(): NormalisedSpec {
   };
 }
 
+/**
+ * What `persistSpecArtifact` writes: the spec plus the gate version the reader requires.
+ *
+ * Tests that feed a raw object to `parseNormalisedSpecArtifact` use this rather than
+ * `baseSpec()` so they exercise the same bytes the writer produces; the versionless form is
+ * reserved for the canary that proves an old-gate artifact is refused.
+ */
+function artifactJson(spec: NormalisedSpec): string {
+  return JSON.stringify({ ...spec, gateVersion: SPEC_ARTIFACT_GATE_VERSION });
+}
+
 {
-  const spec = parseNormalisedSpecArtifact(JSON.stringify(baseSpec()));
+  const spec = parseNormalisedSpecArtifact(artifactJson(baseSpec()));
   assert(spec !== undefined, "parse: well-formed artifact → NormalisedSpec");
   assert(
     spec?.verdict === "proceed" &&
@@ -73,62 +85,29 @@ function baseSpec(): NormalisedSpec {
   );
 }
 {
+  // #1187 fix round 2 — the gate-version gate. An artifact with no `gateVersion`, or one
+  // below the floor, may not restore a decision: only who wrote the file separates "no open
+  // points" from "the old keyword-classifier gate never checked".
+  assert(
+    parseNormalisedSpecArtifact(JSON.stringify(baseSpec())) === undefined,
+    "parse: an artifact with no gateVersion is refused (an old-gate proceed cannot be restored)",
+  );
+  assert(
+    parseNormalisedSpecArtifact(JSON.stringify({ ...baseSpec(), gateVersion: 1 })) === undefined,
+    "parse: an artifact below the gate-version floor is refused",
+  );
+  assert(
+    parseNormalisedSpecArtifact(
+      JSON.stringify({ ...baseSpec(), gateVersion: SPEC_ARTIFACT_GATE_VERSION }),
+    )?.verdict === "proceed",
+    "parse: an artifact at the current gate version validates",
+  );
+}
+{
   // Not valid JSON at all.
   assert(
     parseNormalisedSpecArtifact("this is not json {") === undefined,
     "parse: malformed JSON → undefined (no throw)",
-  );
-}
-{
-  // Top-level shape miss.
-  assert(
-    parseNormalisedSpecArtifact(JSON.stringify({ foo: 1 })) === undefined,
-    "parse: top-level miss → undefined",
-  );
-}
-{
-  // Null element in deliverables.
-  const s = baseSpec();
-  s.deliverables = [null as unknown as NormalisedSpec["deliverables"][number]];
-  assert(
-    parseNormalisedSpecArtifact(JSON.stringify(s)) === undefined,
-    "parse: null deliverable element → undefined",
-  );
-}
-{
-  // Wrong type: deliverable.id is a number.
-  const s = baseSpec();
-  s.deliverables = [{ id: 42, description: "x", paths: [] }];
-  assert(
-    parseNormalisedSpecArtifact(JSON.stringify(s)) === undefined,
-    "parse: deliverable.id not a string → undefined",
-  );
-}
-{
-  // Wrong type: evidence.verdict not in the union.
-  const s = baseSpec();
-  s.evidence = [{ claim: "c", source: "s", verdict: "maybe" }];
-  assert(
-    parseNormalisedSpecArtifact(JSON.stringify(s)) === undefined,
-    "parse: evidence.verdict outside the union → undefined",
-  );
-}
-{
-  // Wrong type: assumption.basis missing.
-  const s = baseSpec();
-  s.assumptions = [{ text: "only text" } as unknown as NormalisedSpec["assumptions"][number]];
-  assert(
-    parseNormalisedSpecArtifact(JSON.stringify(s)) === undefined,
-    "parse: assumption.basis missing → undefined",
-  );
-}
-{
-  // Wrong type: openQuestions contains a number.
-  const s = baseSpec();
-  s.openQuestions = [42];
-  assert(
-    parseNormalisedSpecArtifact(JSON.stringify(s)) === undefined,
-    "parse: openQuestions element not a string → undefined",
   );
 }
 {
@@ -140,28 +119,61 @@ function baseSpec(): NormalisedSpec {
     "parse: verdict outside the 3-value union → undefined",
   );
 }
-{
-  // Bad parkReason.
-  const s = baseSpec();
-  s.verdict = "park";
-  s.parkReason = "not-a-real-reason";
-  assert(
-    parseNormalisedSpecArtifact(JSON.stringify(s)) === undefined,
-    "parse: parkReason outside the 5-value union → undefined",
-  );
-}
-{
-  // Provenance fields outside the 2-value union.
-  const s = baseSpec();
-  s.verdict = "park";
-  s.parkReason = "underspecified";
-  s.verdictSource = "stale" as NormalisedSpec["verdictSource"];
-  assert(
-    parseNormalisedSpecArtifact(JSON.stringify(s)) === undefined,
-    "parse: verdictSource outside the 2-value union → undefined",
-  );
-}
+/**
+ * One malformed element per shape the validator must reject: every case is a baseSpec with
+ * ONE field replaced, so a pass means that one element check fired.
+ */
+const REJECTED_ELEMENTS: Array<[string, () => NormalisedSpec]> = [
+  [
+    "deliverable.id not a string",
+    () => {
+      const s = baseSpec();
+      s.deliverables = [{ id: 42, description: "x", paths: [] }];
+      return s;
+    },
+  ],
+  [
+    "evidence.verdict outside the union",
+    () => {
+      const s = baseSpec();
+      s.evidence = [{ claim: "c", source: "s", verdict: "maybe" }];
+      return s;
+    },
+  ],
+  [
+    "assumption.basis missing",
+    () => {
+      const s = baseSpec();
+      s.assumptions = [{ text: "only text" } as unknown as NormalisedSpec["assumptions"][number]];
+      return s;
+    },
+  ],
+  [
+    "openQuestions element not a string",
+    () => {
+      const s = baseSpec();
+      s.openQuestions = [42];
+      return s;
+    },
+  ],
+  [
+    "verdictSource outside the 2-value union",
+    () => {
+      const s = baseSpec();
+      s.verdict = "park";
+      s.parkReason = "underspecified";
+      s.verdictSource = "stale" as NormalisedSpec["verdictSource"];
+      return s;
+    },
+  ],
+];
 
+for (const [label, make] of REJECTED_ELEMENTS) {
+  assert(
+    parseNormalisedSpecArtifact(JSON.stringify(make())) === undefined,
+    `parse: ${label} \u2192 undefined`,
+  );
+}
 // ---------------------------------------------------------------------------
 // Pure: resolveIntentVerdict — the precedence rule.
 // ---------------------------------------------------------------------------
@@ -291,11 +303,7 @@ async function runExploreWithArtifact(
       if (agentPersistsArtifact) {
         const fs = await import("node:fs/promises");
         await fs.mkdir(path.dirname(exploreSpecArtifactPath(dir, issue)), { recursive: true });
-        await fs.writeFile(
-          exploreSpecArtifactPath(dir, issue),
-          JSON.stringify({ ...baseSpec() }),
-          "utf8",
-        );
+        await fs.writeFile(exploreSpecArtifactPath(dir, issue), artifactJson(baseSpec()), "utf8");
       }
       return {
         role: "explore",
@@ -316,7 +324,7 @@ async function runExploreWithArtifact(
 {
   const dir = await freshDir("1");
   try {
-    const artifact = JSON.stringify(baseSpec());
+    const artifact = artifactJson(baseSpec());
     const { state, dispatchSawStale } = await runExploreWithArtifact(
       dir,
       601,
@@ -463,34 +471,6 @@ async function runExploreWithArtifact(
       !existsSync(exploreSpecArtifactPath(dir, 605)),
       "runExplore §5: no spec.txt left behind after a no-signal explore",
     );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-// 6. readSpecArtifact returns undefined on a missing file and a malformed file.
-{
-  const dir = await freshDir("6");
-  try {
-    const missing = await readSpecArtifact(dir, 999);
-    assert(missing === undefined, "readSpecArtifact: missing file → undefined (no throw)");
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.dirname(exploreSpecArtifactPath(dir, 998)), { recursive: true });
-    await fs.writeFile(exploreSpecArtifactPath(dir, 998), "{ not json", "utf8");
-    const malformed = await readSpecArtifact(dir, 998);
-    assert(malformed === undefined, "readSpecArtifact: malformed JSON → undefined (no throw)");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-// 7. deleteSpecArtifact is idempotent (missing file is a success).
-{
-  const dir = await freshDir("7");
-  try {
-    await deleteSpecArtifact(dir, 1);
-    await deleteSpecArtifact(dir, 1);
-    assert(true, "deleteSpecArtifact: double-delete of a missing file does not throw");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

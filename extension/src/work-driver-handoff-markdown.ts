@@ -24,7 +24,7 @@ import {
   commitPrRootFacts,
 } from "./work-driver-handoff-commitpr.ts";
 import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
-import { securityOpenPointsMarkdown } from "./work-driver-handoff-open-points.ts";
+import { openPointsMarkdown } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsMarkdown } from "./work-driver-handoff-recovery.md.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { describeBranchState } from "./work-driver-handoff-view.ts";
@@ -278,7 +278,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
   // cap-shaped recovery commands rather than the wrong "git push what's
   // there" / "longer cap" set. The cap → commands mapping lives in
   // work-driver-handoff-recovery.md.ts (split for module-size hygiene).
-  lines.push(...securityOpenPointsMarkdown(ps.normalisedSpec));
+  lines.push(...openPointsMarkdown(ps.normalisedSpec, state.issue));
   lines.push(...recoveryCommandsMarkdown(state, forge));
 
   if (transcripts.length > 0) {

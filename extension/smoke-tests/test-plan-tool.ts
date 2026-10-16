@@ -69,8 +69,9 @@ registerPlanTool(fakePi);
   const t = tools.find((x) => x.name === "start_plan_driver");
   assert(!!t, "start_plan_driver registers");
   const props = Object.keys(t?.parameters.properties ?? {});
+  // #1377: labels and provenance join the schema (both optional).
   assert(
-    props.join(",") === "descriptor,type,context,dryRun,reviewedDigest",
+    props.join(",") === "descriptor,type,context,dryRun,reviewedDigest,labels,provenance",
     `exact TypeBox schema: ${props.join(", ")}`,
   );
   const typeUnion = (t?.parameters.properties?.type as { anyOf?: Array<{ const?: string }> })

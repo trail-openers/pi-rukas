@@ -17,6 +17,7 @@ import { ciRun as ciRunImpl, ciWatch as ciWatchImpl } from "./forge-ci.ts";
 import * as cmds from "./forge-commands.ts";
 import { listIssueComments, listPrComments, postPrComment } from "./forge-comments.ts";
 import type { ForgeDetection, ForgeType } from "./forge-detect.ts";
+import { type LabelListResult, labelOps } from "./forge-label-ops.ts";
 import {
   ForgeFieldError,
   asArray,
@@ -26,13 +27,11 @@ import {
   mapGhChecks,
   mapGhComment,
   mapGhIssue,
-  mapGhIssueLabel,
   mapGhIssueWithNumber,
   mapGhPr,
   mapGhPrWithNumber,
   mapGhRepo,
   mapGlIssue,
-  mapGlIssueLabel,
   mapGlMr,
   mapGlPipelineJobs,
   mapGlRepo,
@@ -42,6 +41,7 @@ import {
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
 import type {
+  FileIssueOpts,
   MergeReadiness,
   MergeReadinessResult,
   NormalizedCICheck,
@@ -73,7 +73,16 @@ export interface Forge {
 
   // Issues
   issueView(number: number): Promise<NormalizedIssue>;
-  issueCreate(title: string, body: string): Promise<NormalizedIssue>;
+  /**
+   * #1377 — labels to create the issue with, passed to the create call so the
+   * issue carries them from its first moment. This is the ONLY label channel:
+   * the adapter deliberately has no construction-time `labels` field, which
+   * would be a second source that could disagree with the per-call one (and
+   * quietly win). `opts` is optional and its default is what keeps every
+   * existing `issueCreate(title, body)` call site — and every test stub cast to
+   * `Forge` — compiling and behaving unchanged.
+   */
+  issueCreate(title: string, body: string, opts?: FileIssueOpts): Promise<NormalizedIssue>;
   issueEdit(number: number, body: string): Promise<NormalizedIssue>;
   issueComment(number: number, body: string): Promise<string>;
   /** #775 — list the issue's comments (idempotency check before re-posting). */
@@ -111,6 +120,14 @@ export interface Forge {
   mergeReadiness(number: number, opts?: { maxBuffer?: number }): Promise<MergeReadinessResult>;
 
   // Labels
+  /**
+   * #1377 — the repo's label NAMES and whether the read may have stopped at a
+   * page boundary, for the pre-filing existence check. Returns `{ names: [],
+   * truncated: false }` for a repo with no labels; THROWS when the CLI output is
+   * not a JSON array, so an unreadable list can never read as "these labels
+   * don't exist". See `LabelListResult` in `forge-label-ops.ts`.
+   */
+  labelList(): Promise<LabelListResult>;
   labelCreate(name: string, color: string): Promise<NormalizedLabel | undefined>;
   labelAdd(target: "issue" | "mr", number: number, name: string): Promise<void>;
   labelRemove(target: "issue" | "mr", number: number, name: string): Promise<void>;
@@ -226,9 +243,9 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         return mapGlIssue(asRecord(stdout));
       }),
 
-    issueCreate: (title, body) =>
+    issueCreate: (title, body, createOpts) =>
       withBodyFile(`create-${title.slice(0, 16)}`, body, (file) =>
-        run(cmds.issueCreateCmd(forge, title, file), (stdout) => {
+        run(cmds.issueCreateCmd(forge, title, file, createOpts?.labels ?? []), (stdout) => {
           if (forge === "github") {
             // `gh issue create` has no `--json` — it prints the created issue's URL
             // as plain text. `parsePrNumberFromResponse` handles both the plain
@@ -420,24 +437,9 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     },
 
     // ── Labels ────────────────────────────────────────────────────────────
-
-    labelCreate: (name, color) =>
-      run(cmds.labelCreateCmd(forge, name, color), (stdout) => {
-        if (!stdout || stdout === "" || stdout === "true") return undefined;
-        try {
-          const o = asRecord(stdout);
-          if (forge === "github") return mapGhIssueLabel(o);
-          return mapGlIssueLabel(o);
-        } catch {
-          return undefined;
-        }
-      }),
-
-    labelAdd: (target, number, name) =>
-      run(cmds.labelAddCmd(forge, target, number, name), () => undefined),
-
-    labelRemove: (target, number, name) =>
-      run(cmds.labelRemoveCmd(forge, target, number, name), () => undefined),
+    // The family lives in forge-label-ops.ts (500-line seam) and receives this
+    // same `run` seam, so its argv goes through the same exec defaults.
+    ...labelOps({ forge, run }),
 
     // ── Repo settings ─────────────────────────────────────────────────────
 

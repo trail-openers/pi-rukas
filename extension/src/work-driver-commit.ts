@@ -239,6 +239,9 @@ export async function mechanizedCommitPr(
       // would re-pick what the branch already carries.
       workstreamBaseShas: followupBase ? undefined : ps.workstreamBaseShas,
       scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
+      // #1362 — the repoRoot dirty-root preflight and restore claims honour the
+      // project's exemption list; the worktree staging inside does not.
+      dirtyRootExempt: ctx.dirtyRootExempt,
       commitTitle: title,
       commitBody,
       mode: followupBase ? "followup" : "create",
@@ -248,6 +251,14 @@ export async function mechanizedCommitPr(
       commitShas: followupBase ? undefined : ps.commitShas,
       verifyCmd: await verifyCmdFor(ctx.repoRoot),
       verifyExecFn: ctx.verifyExecFn,
+      // #1240 — the N=1 create-mode shape: one workstream, first integration
+      // of the cycle. Its develop worktree is the tree the develop gate ran
+      // `verifyCmd` green on, and this integration is that content alone, so
+      // `integrate()` may skip its own run when the trees provably match.
+      // Every other shape (fan-out, followup/second round) passes nothing and
+      // the commit-pr verify runs as before.
+      verifiedWorktree:
+        followupBase === undefined && ids.length === 1 ? Object.values(worktrees)[0] : undefined,
       verifyTimeoutMs: integrationVerifyTimeoutMs(),
       verifyRetry: {
         ciRetryCount: ps.ciRetryCount,

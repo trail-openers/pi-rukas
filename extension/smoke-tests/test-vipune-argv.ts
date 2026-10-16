@@ -194,8 +194,11 @@ assert(
   }
   assert(allowedVerbs.size > 0, `the allowlist grants ${allowedVerbs.size} vipune verb(s)`);
   assert(
-    !allowedVerbs.has("delete") && !allowedVerbs.has("update"),
-    "...and neither `delete` nor `update` is among them",
+    !allowedVerbs.has("delete") &&
+      !allowedVerbs.has("update") &&
+      !allowedVerbs.has("prune") &&
+      !allowedVerbs.has("promote"),
+    "...and none of `delete`, `update`, `prune` or `promote` is among them",
   );
 
   /** `vipune --help` as of 0.9.0. A word that is not one of these is prose. */
@@ -212,6 +215,12 @@ assert(
     "project",
     "version",
     "mcp",
+    // Both are operator-only verbs and both appeared in prose that taught agents
+    // to run them (#1386): the consolidation pass originally read "promote the
+    // candidate" / "prune the stale row" as instructions. They are policed here
+    // so the prose cannot drift back to teaching them.
+    "promote",
+    "prune",
   ]);
 
   const taught: string[] = [];
@@ -234,7 +243,12 @@ assert(
       if (!verb || !VIPUNE_SUBCOMMANDS.has(verb) || allowedVerbs.has(verb)) return;
       // Prose that names the verb in order to FORBID it is the point of the
       // documentation, not a violation of it.
-      if (/denied|deny|cannot|not available|forbidden|refus|granted to no|not granted/i.test(text))
+      // `deny` covers "denied" and "denies"; `refus` covers refusal/refused.
+      if (
+        /denied|deny|denies|cannot|not available|forbidden|refus|never run|granted to no|not granted|operator command|operator's|operator actions/i.test(
+          text,
+        )
+      )
         return;
       taught.push(`${path.relative(ROOT, f)}:${i + 1}`);
     });

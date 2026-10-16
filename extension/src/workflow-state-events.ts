@@ -23,6 +23,7 @@ import type { LensResidualsPostFailedEvent } from "./workflow-state-events-resid
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
 import type { DispatchSlowEvent } from "./workflow-state-events-slow.ts";
 import type {
+  ConsolidatedVerifySkippedEvent,
   VerifyFlakeRecoveredEvent,
   VerifyFullStatusEvent,
 } from "./workflow-state-events-verify-flake.ts";
@@ -55,6 +56,37 @@ export type WorkStep =
   | "handoff" // Step 7g — cap-hit handoff artifact (terminal: needs-human-attention)
   | "ci" // Step 8 — ops watches CI
   | "merged"; // Step 9 — merged + learnings stored (terminal: success)
+/**
+ * The WorkStep vocabulary as a runtime value. The union type is the source
+ * of truth for TS callers; this tuple exists so runtime readers (the #533
+ * discriminant validator) can test membership — types are erased by the
+ * untyped cast in `readState`, which is exactly why the validator needs it.
+ *
+ * #1362 — moved verbatim from workflow-state-schema.ts for the 500-line gate;
+ * that module re-exports it, so importers keep their path.
+ *
+ * #1362 (CI fix) — its home is THIS module rather than the validator's cap
+ * vocabulary because the union it mirrors lives here, and this module has no
+ * value imports. Living in `workflow-state-validate-caps.ts` put a runtime
+ * edge through `headless/caps.ts` (which needs `CAP_TEMPLATES`) and back out
+ * of the headless package into `workflow-state-schema.ts` — a cycle whose
+ * first-entered member left `CAP_TEMPLATES` in the TDZ at
+ * `workflow-state-validate-caps.ts:117`.
+ */
+export const WORK_STEPS: readonly WorkStep[] = [
+  "explore",
+  "plan",
+  "branch",
+  "develop",
+  "adversarial",
+  "commit-pr",
+  "lens-review",
+  "lens-fix",
+  "step-back",
+  "handoff",
+  "ci",
+  "merged",
+];
 /**
  * Event log — append-only, typed. The log is the audit trail; pipelineState
  * is the derived snapshot. Adding a new event type is additive (older readers
@@ -400,6 +432,7 @@ export type WorkEvent =
     }
   | VerifyFullStatusEvent
   | VerifyFlakeRecoveredEvent
+  | ConsolidatedVerifySkippedEvent
   | WideningScanEvent
   | MemoryEventFragment
   | WorktreeProvisionedEvent

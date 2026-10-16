@@ -71,6 +71,15 @@ export interface BatchMemberJobState {
   startedAt: number;
   abort: AbortController;
   batchId: string;
+  /**
+   * #1389 — set when the batch's setup threw after this member started, so
+   * the member was killed rather than run. Its in-flight `work` promise still
+   * settles, and the settle handlers read this before touching the registry,
+   * the deck, the live buffer or the orchestrator's completion counter — a
+   * dead member must not advance a batch that has already errored to its
+   * caller. Optional because a member owns no other lifecycle flag today.
+   */
+  killedBySetupFailure?: boolean;
 }
 
 export interface BatchOrchestratorJobState {

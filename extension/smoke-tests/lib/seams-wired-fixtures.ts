@@ -44,9 +44,9 @@ export const SEAMS: Seam[] = [
     canary: { symbol: "decide", importer: "work-driver-policy.ts" },
   },
   {
-    // #1308 S3/S4 — fire-and-forget decisions for the shadow seams. The
-    // failure-cause and security open-point owners are its callers; index.ts
-    // attaches the session model.
+    // #1308 S3 — fire-and-forget decisions for the shadow seam. The
+    // failure-cause owner is its caller; index.ts attaches the session model.
+    // (#1187 removed the S4 security-open-point seam.)
     file: "decision-shadow.ts",
     pending: {},
     canary: { symbol: "shadowDecide", importer: "work-driver-failure-taxonomy.ts" },
@@ -168,6 +168,10 @@ export const SEAMS: Seam[] = [
         "#594 — strict JSON spec artifact validator; called by test-work-driver-pr12.ts",
       exploreSpecArtifactPath:
         "#594 — artifact path helper; called by test-work-driver-pr12.ts and internally by readSpecArtifact/deleteSpecArtifact",
+      // #1187 — the version the writer stamps and the reader requires. Read by the tests
+      // that build an artifact's bytes; production reaches it only through persistSpecArtifact.
+      SPEC_ARTIFACT_GATE_VERSION:
+        "#1187 — gate-version constant; written by persistSpecArtifact, asserted by test-work-driver-pr12.ts and the open-point gate tests",
     },
     canary: {
       symbol: "resolveIntentVerdict",
