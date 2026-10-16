@@ -33,7 +33,11 @@
 
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
-import { collectConflictEvidence } from "./work-driver-conflict-evidence.ts";
+import {
+  type ConflictEvidence,
+  collectConflictEvidence,
+  renderConflictPath,
+} from "./work-driver-conflict-evidence.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
@@ -195,13 +199,26 @@ export async function landCommittedFix(
           label: "lens-fix-integration",
         });
         // #981 — the restore claim leads the error (the same order the
-        // patch-apply branch below uses) so a downstream 300-char truncation
-        // (the caller's msg.slice(0, 300)) keeps the operator-actionable part:
-        // whether repoRoot needs manual repair, not the conflict note.
+        // patch-apply branch of integrate() uses), and the operator-facing
+        // text is built to SURVIVE the `msg.slice(0, CAUSE_BUDGET)` in the
+        // catch. That slice IS reached for these throws: they carry a restore
+        // claim, so the catch takes the single-slice return rather than
+        // re-restoring. The NOT-restored claim plus MANUAL_REPAIR_HINT runs
+        // ~400 chars on its own, so the old 300-char budget kept the claim and
+        // silently dropped every conflicting filename — the one thing the
+        // operator needs in order to resolve the conflict. So: CAUSE_BUDGET is
+        // sized for BOTH halves, and the `git -C … status` boilerplate is kept
+        // out of the returned message (it rides the trace line, and
+        // MANUAL_REPAIR_HINT already tells the operator to run git status).
+        // `test-work-driver-lens-fix-cause-budget.ts` asserts that guarantee
+        // for each restoreClaim shape.
+        trace(
+          `work-driver: lens-fix integration failed — ${orch._conflict === "conflict" ? "cherry-pick conflict" : "patch-apply failure"}; ${evidence.note}`,
+        );
         const causeMsg =
           orch._conflict === "conflict"
-            ? `cherry-pick conflict — the batch was aborted. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} ${evidence.note} The fix's commits remain in the worktree ${tree}.`
-            : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} The fix's commits remain in the worktree ${tree}.${evidence.note}`;
+            ? `cherry-pick conflict — the batch was aborted. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} ${conflictPathsClause(evidence)} The fix's commits remain in the worktree ${tree}.`
+            : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} The fix's commits remain in the worktree ${tree}. ${conflictPathsClause(evidence)}`;
         throw new Error(causeMsg);
       }
       const { stdout: stagedOut } = await execFn("git diff --cached --name-only", {
@@ -249,8 +266,35 @@ export async function landCommittedFix(
         error: `${msg.slice(0, 200)}. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} The fix's commits remain in the worktree ${tree}.`,
       };
     }
-    return { ok: false, error: msg.slice(0, 300) };
+    return { ok: false, error: msg.slice(0, CAUSE_BUDGET) };
   }
+}
+
+/**
+ * #981 — how much of a conflict / patch-apply failure the catch keeps. Sized
+ * for the WORST case each half can compose, so neither is cut: the
+ * not-restored claim carries up to ten dirty paths plus a preserved-diff path
+ * (~750 chars with MANUAL_REPAIR_HINT) and the path clause names up to ten
+ * conflicting files (`verifiedRestoreRoot` and `collectConflictEvidence` both
+ * cap their lists at ten). The path list is what a budget too small drops
+ * silently — the operator is told repoRoot needs repair and never which file
+ * conflicted.
+ */
+const CAUSE_BUDGET = 1400;
+
+/**
+ * #981 — the conflicting-path clause for the lens-fix failure message: the
+ * same wording `collectConflictEvidence` renders, minus the `git -C … status`
+ * boilerplate (this message has no room for it, and MANUAL_REPAIR_HINT
+ * already tells the operator to run git status). Follows that renderer's
+ * three branches — paths, unreadable, empty index.
+ */
+function conflictPathsClause(evidence: ConflictEvidence): string {
+  if (evidence.paths.length > 0)
+    return `Conflicting paths: ${evidence.paths.map(renderConflictPath).join(", ")}.`;
+  return evidence.note.startsWith("Conflicting paths: (unreadable")
+    ? "Conflicting paths: (unreadable — git ls-files -u failed; run it in the repository root to see which files are in conflict)."
+    : "Conflicting paths: (no unmerged paths in the index — the conflict may already be resolved; run git status to confirm).";
 }
 
 /**

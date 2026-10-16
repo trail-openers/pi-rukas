@@ -20,6 +20,11 @@ import { BASELINE_RED_MARKER } from "../src/work-driver-verify-baseline.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import {
+  defaultBoundText,
+  defaultVerifyTimeoutMs,
+  pinDefaultVerifyTimeout,
+} from "./lib/verify-timeout-pin.ts";
 
 const execFileP = promisify(execFile);
 let exit = 0;
@@ -34,20 +39,18 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd });
 
 const CMD = "bash scripts/verify.sh";
-// The timeout cases assert the DEFAULT bound's text ("10-min"). The gate reads
-// PI_ENSEMBLE_VERIFY_TIMEOUT_MS from the environment, so an operator who has
-// raised it (a 45-min laptop setting) would fail them for the wrong reason.
-// Pinned for the duration of each timeout case, restored afterwards.
-const VERIFY_TIMEOUT_DEFAULT = "600000";
-const savedVerifyTimeoutMs = process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS;
-const pinDefaultVerifyTimeout = <T>(caseFn: () => Promise<T>): Promise<T> => {
-  process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS = VERIFY_TIMEOUT_DEFAULT;
-  return caseFn().finally(() => {
-    if (savedVerifyTimeoutMs === undefined)
-      Reflect.deleteProperty(process.env, "PI_ENSEMBLE_VERIFY_TIMEOUT_MS");
-    else process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS = savedVerifyTimeoutMs;
-  });
-};
+// The timeout cases assert the DEFAULT bound's text. The bound is read from
+// the production helper with PI_ENSEMBLE_VERIFY_TIMEOUT_MS absent (see
+// ./lib/verify-timeout-pin.ts), so an operator who raised the knob (a 45-min
+// laptop setting) does not fail them for the wrong reason, and a future
+// change to the default moves the asserted text with it.
+const BOUND = defaultBoundText();
+// One assertion ties the derived text to the production default, so the
+// shared helper cannot silently read a bound the gate does not use.
+assert(
+  defaultVerifyTimeoutMs() === 600_000 && BOUND === "10-min",
+  "the default verify bound is 600000ms / 10-min with the knob absent",
+);
 const root = mkdtempSync(path.join(tmpdir(), "pi-baseline-red-"));
 type Outcome = { ok: true } | { ok: false; stdout: string; killed?: boolean };
 
@@ -98,7 +101,11 @@ async function run(name: string, outcomeFor: (where: "base" | "change") => Outco
   await runVerifyCommandGate({
     execFn,
     cmd: CMD,
-    ctx: { host: {} as unknown as DriverContext["host"], repoRoot: repo, issue: 9 } as DriverContext,
+    ctx: {
+      host: {} as unknown as DriverContext["host"],
+      repoRoot: repo,
+      issue: 9,
+    } as DriverContext,
     state,
     worktrees: { default: wt },
     baseSha,
@@ -127,16 +134,25 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
     r.verifyRuns.filter((w) => w === "base").length === 1,
     "red at base: the baseline is run exactly once after the failure",
   );
-  assert(r.baselineHadChange === false, "red at base: the baseline tree does not contain the change");
+  assert(
+    r.baselineHadChange === false,
+    "red at base: the baseline tree does not contain the change",
+  );
   const first = r.failures[0] ?? "";
-  assert(first.startsWith(BASELINE_RED_MARKER), "red at base: the baseline finding LEADS the failures");
+  assert(
+    first.startsWith(BASELINE_RED_MARKER),
+    "red at base: the baseline finding LEADS the failures",
+  );
   assert(first.includes(r.baseSha.slice(0, 12)), "red at base: the finding names the base sha");
   assert(
     first.includes("error: test failed, to rerun pass `--bin console`") &&
       first.includes("SAME assertion"),
     "red at base: the finding names the base assertion and that the change's run shares it",
   );
-  assert(first.length <= 800, `red at base: the finding survives the 800-char evidence bound (${first.length})`);
+  assert(
+    first.length <= 800,
+    `red at base: the finding survives the 800-char evidence bound (${first.length})`,
+  );
   assert(r.failures.length > 1, "red at base: the change's own failures are kept, not replaced");
   assert(!r.listed.includes("baseline-verify-9"), "red at base: the temporary worktree is removed");
   assert(!existsSync(r.baselineDir), "red at base: the temporary directory is gone");
@@ -166,7 +182,9 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
 
 // 3 — green at base: the change broke it; nothing is excused.
 {
-  const r = await run("green-at-base", (w) => (w === "base" ? { ok: true } : { ok: false, stdout: CARGO }));
+  const r = await run("green-at-base", (w) =>
+    w === "base" ? { ok: true } : { ok: false, stdout: CARGO },
+  );
   assert(r.failures.length > 0, "green at base: the failure still blocks");
   assert(
     !r.failures.some((f) => f.includes(BASELINE_RED_MARKER)),
@@ -204,16 +222,17 @@ await pinDefaultVerifyTimeout(async () => {
   }));
   const all = r.failures.join("\n");
   assert(
-    !all.includes("no specific assertion could be extracted") && !all.includes("specific assertion:"),
+    !all.includes("no specific assertion could be extracted") &&
+      !all.includes("specific assertion:"),
     "timeout: no failure claims an assertion about the code",
   );
   assert(
-    r.failures.some((f) => f.includes("10-min timeout on the CONSOLIDATED tree")),
+    r.failures.some((f) => f.includes(`${BOUND} timeout on the CONSOLIDATED tree`)),
     "timeout: the consolidated run is reported as exceeding its bound",
   );
   assert(
     (r.failures[0] ?? "").startsWith(BASELINE_RED_MARKER) &&
-      (r.failures[0] ?? "").includes("10-min timeout on a clean checkout"),
+      (r.failures[0] ?? "").includes(`${BOUND} timeout on a clean checkout`),
     "timeout: a base run that also times out says the gate cannot finish inside its bound",
   );
 });

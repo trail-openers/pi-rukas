@@ -13,10 +13,10 @@
  * Offline: temp directories only, and one `--capabilities` run of the CLI.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readBuildCommit, readBuildVersion } from "../src/headless/build.ts";
+import { readBuildCommit, readBuildVersion, readCheckoutCommit } from "../src/headless/build.ts";
 import { buildCapabilities } from "../src/headless/capabilities.ts";
 import { FIXED_CAPS, capStep, capVocabulary } from "../src/headless/caps.ts";
 import { createHeadlessHost } from "../src/headless/host.ts";
@@ -278,6 +278,81 @@ const capHit = (cap: string, at: number): WorkEvent =>
   assert(bake(sha) === sha, "the image bake step writes a commit the build reports");
   assert(bake("") === null, "no build arg bakes nothing");
   assert(bake("v1.2.3") === null, "a non-SHA build arg bakes nothing");
+}
+
+// ── readCheckoutCommit answers for the root it was given, nothing else.
+{
+  const gitCommit = (dir: string) =>
+    execFileSync("git", [
+      "-C",
+      dir,
+      "-c",
+      "user.email=t@t",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "x",
+    ]);
+  const headOf = (dir: string) =>
+    execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const mkRepo = (dir: string) => {
+    mkdirSync(dir, { recursive: true });
+    execFileSync("git", ["init", "-q", dir]);
+    gitCommit(dir);
+    return dir;
+  };
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "pi-checkout-"));
+  try {
+    // A checkout reached through an absolute symlink still reports its HEAD:
+    // the path the caller holds is not the path git prints, and a naive
+    // compare misreads it as "inside some other repository".
+    const repo = mkRepo(path.join(tmp, "real", "install"));
+    const link = path.join(tmp, "link");
+    symlinkSync(path.join(tmp, "real", "install"), link, "junction");
+    assert(
+      readCheckoutCommit(link) === headOf(repo),
+      "a checkout reached through an absolute symlink reports its HEAD",
+    );
+
+    // A root that is a symlink into a DIFFERENT repository's subdirectory is
+    // not that repository's top level, and reports null.
+    const other = mkRepo(path.join(tmp, "other"));
+    mkdirSync(path.join(other, "sub"), { recursive: true });
+    const sub = path.join(tmp, "sub-link");
+    symlinkSync(path.join(other, "sub"), sub, "junction");
+    assert(readCheckoutCommit(sub) === null, "a symlink to another repo's subdirectory is null");
+
+    // The git environment must not redirect the probe: with GIT_DIR /
+    // GIT_WORK_TREE pointing at another repository, the answer is still the
+    // root's own HEAD (or null), never that repository's.
+    const decoy = mkRepo(path.join(tmp, "decoy"));
+    const saved = {
+      GIT_DIR: process.env.GIT_DIR,
+      GIT_WORK_TREE: process.env.GIT_WORK_TREE,
+    };
+    process.env.GIT_DIR = path.join(decoy, ".git");
+    process.env.GIT_WORK_TREE = decoy;
+    try {
+      assert(
+        readCheckoutCommit(repo) === headOf(repo),
+        "GIT_DIR/GIT_WORK_TREE in the env do not redirect the checkout probe",
+      );
+      assert(
+        readCheckoutCommit(sub) === null,
+        "GIT_DIR/GIT_WORK_TREE cannot make a non-checkout report the decoy's HEAD",
+      );
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 // ── prUrl: only when unambiguous.
