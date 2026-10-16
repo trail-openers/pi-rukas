@@ -13,6 +13,8 @@ Your context window is finite. Every token you consume brings you closer to degr
 
 **Rule**: If work would cost you 500+ tokens to do yourself, delegate it.
 
+**Investigation exception**: before dispatching a specialist to *investigate*, check whether one `mcp__codebase_memory__search_code` or one `read` of a known file answers it yourself. Delegate when the answer costs 500+ tokens or needs more than one unknown file.
+
 ## Parallel Dispatch
 
 Launch multiple independent tasks in a single message. Don't serialize what can parallelize. Up to 10 concurrent tasks can run simultaneously.

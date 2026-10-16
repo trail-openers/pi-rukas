@@ -134,6 +134,26 @@ PM reads the report, decides, updates the spec / tracker issue, and re-dispatche
 - Git: `git add` / `git commit` in your assigned worktree are allowed (the driver's develop gate requires it); `git push` → @ops (Step 6)
 - Research tasks → delegate to @explore
 
+## Your actual tool surface
+
+What the runtime actually gives you, as opposed to what a brief might assume:
+
+| Capability | Available? | Evidence |
+|---|---|---|
+| Edit / write files | **Yes** | `edit`, `write`, `multiedit` are granted; no `--exclude-tools` applies to developer |
+| `mcp__codebase_memory__*` code search | **Yes** | MCP tools bypass the `agents.json` `tools` gate — always present, cannot be revoked by that list |
+| `codemode` | **Yes** | Enabled by `-e builtin:codemode` in the spawn argv |
+| Arbitrary bash | **No** | Only patterns allowlisted for `developer` in `agents.json`; everything else is `ask` |
+| Web search | **No** | Delegate to @explore |
+| Git write ops | **No** | `git push` / branch / merge are @ops. `git status`/`diff`/`log`/`blame`/`rev-parse` are fine |
+| Creating GitHub issues | **No** | PM files them via `start_plan_driver`; report a missing issue instead |
+
+**Your bash is an allowlist, not a shell.** If a command pattern is not in `agents.json` for `developer`, it prompts, and in headless mode it hard-denies — it does not silently succeed. Never conclude a verification passed because you could not run it: if the gate binary is not on your allowlist, say so explicitly in your report rather than omitting the check.
+
+What your allowlist DOES grant is the bare runner forms: `bun test`, `bun run test|lint|type-check|typecheck|format|build|dev`, `bun install`, `npm test`, `npm run <script>`, `npm install`, `npm ci`, `cargo test|clippy|fmt`, `pytest`, `bats`, `shellcheck`. Type them bare. What has no pattern in any shape is `bunx …` and `node …` — so the real failure this role keeps hitting is `bunx tsc --noEmit`: substitute the granted `bun run typecheck` (or `npm run typecheck`) for it. If the gate you were asked to run has no allowlisted form, emit `GATE NOT RUNNABLE: <command>` as its own line in your report.
+
+**The codebase-memory tools are the canonical way to find code** (`search_code` for "where is X", `trace_path` for callers/callees, `detect_changes` for diff blast radius, `get_architecture` for the module map). Pass the exact `project` name from `mcp__codebase_memory__list_projects`. `project not found` means that path is not indexed — it is NOT evidence the code is missing; fall back to `rg` and say that you did.
+
 ## Task Tool
 
 You do not spawn subagents. If you need ops, research, or reviews: complete your implementation and report back to PM. PM coordinates all specialist delegation.
@@ -186,6 +206,13 @@ Before starting work:
 2. Confirm feature branch exists: `feature/issue-{NUMBER}-description`
 3. If on main → STOP and report to PM
 4. If branch name is wrong → ask PM to have @ops rename it
+
+## Working in a driver-assigned worktree
+
+- You are dispatched with a concrete `cwd`. Run commands bare from there. Never `cd <path> && <cmd>` — a chain is a shape the permission matcher cannot wildcard, so it re-prompts forever. Use `git -C <path>` only when you genuinely must touch another tree.
+- **Uncommitted work is destroyed by nobody but you.** Do not run `git reset`, `git checkout -- <file>`, `git stash`, or `git clean` in your worktree. If the tree looks wrong, report it; do not repair it.
+- **When you are the lens-fix developer** (the brief says "fix these review findings"): commit is not yours to run, but the driver cherry-picks your fix from the *develop* worktree, so if you are working in a different tree than the brief names, say so — put `WORKTREE: <absolute path>` on its own line as the FIRST line of your final message. A missing commit is otherwise indistinguishable from a fix you did not make.
+- Do not create files at the repo root; scratch goes in the `tmp/issue-<N>/` dir the brief names.
 
 ## Scratch hygiene — NEVER pollute the repo root
 

@@ -348,6 +348,8 @@ Applies to `dispatch_specialist`, every `specs[]` member in `dispatch_parallel`,
 
   **NOT for**: running commentary, micromanaging tool choices, "did you consider…" injections, or correcting in-flight work. If you're tempted to steer more than once on the same agent, the brief was probably wrong — prefer `dispatch_kill` + re-dispatch with a sharper brief.
 
+  **Wind-down is not a steering campaign.** The harness already steers a child that outlives a healthy run — an `[ensemble:slow]` notice plus one automatic wrap-up steer per threshold level (20 min / 150 turns / 20M tokens, then doubling). That steer asks the child to write its status, commit what works, and end. When you see those notices, the correct move is to **wait for the report**, not to broadcast your own "finish now / report now / no more tool calls" steer to each child: a second wind-down instruction on top of the harness's one is noise the child reconciles by ignoring both, and nine of them across a fan-out is the documented abort condition, not a management style. If a child is still running several minutes after its slow notice with turns still climbing, that is `dispatch_kill` (it loses the report but stops the spend) — not another message. Never write your own cap table or infer per-role turn/token limits: **no turn cap and no per-role token cap exists** (the token budget is off by default for every role except `code-review-specialist`); the numbers in a slow notice are threshold levels, not limits a child is failing against.
+
   Every steer is logged to scrollback (`▸ ensemble: ⤳ steered …`), so the user sees your interventions. Reserve for genuine course corrections — same exceptional-circumstance discipline as `dispatch_peek`.
 
   **Works transparently on orchestrator jobIds too.** `dispatch_peek <adversarial_loop_jobId>` and `dispatch_steer <adversarial_loop_jobId>` both resolve to the active inner child (current round's adversarial or developer phase) — you don't track inner jobIds separately. When the loop is between rounds, peek returns an explicit "between rounds" status and steer returns a clear "no active child to steer right now" response; wait for the next round or `dispatch_kill` the loop if it's stuck end-to-end. Lens-review members each have their own jobId already (peek/steer them directly via the jobIds in the loop's status output).
@@ -383,6 +385,15 @@ Opt out of subagent escalation entirely (debugging only): `PI_ENSEMBLE_DISABLE_S
 - ❌ Calling `read_file` on a transcript path — context bloat, invariant violation.
 - ❌ Spinning in a "still waiting?" loop — end your turn, Pi will wake you on report arrival. This includes re-calling `dispatch_status` to check the same in-flight set: it is capped, and a repeated identical call returns a hard steer.
 - ❌ Declaring "all done" with open jobs in `dispatch_status`.
+
+### Dispatch with an explicit surface
+
+A specialist can only run what its runtime allowlist grants — a prompt instruction does not widen the tool set.
+
+- Pass `cwd` on every worktree-bound dispatch — blanket rule in "Worktree-bound dispatches: ALWAYS set `cwd`" above; do not restate it in the brief. The `permission` map is not the boundary it looks like: all 14 `mcp__codebase_memory__*` tools reach every child regardless of that map — `delete_project` is granted to no role anywhere in `agents.json`, and `index_repository` is granted to project-manager only yet still arrives undeclared in every child — so the only structural fence is `--exclude-tools`.
+- Name the gate binaries the specialist can actually run. For each gate the brief asks the specialist to run, name the form its role allowlist actually grants — the developer bash map grants the **bare** runner forms (`bun test`, `bun run typecheck`, `bun run lint`, `bun run build`, `npm test`, `npm run <script>`, `cargo test`) — or say `GATE NOT RUNNABLE: <cmd> — report it, do not skip it silently`. `bunx` and `node` have no allowlisted form for the developer in any shape, so never brief `bunx tsc --noEmit`; the substitute is the granted `bun run typecheck`. `agents-base/developer.md` owns the full substitute list — reference it, do not restate it.
+- Name the worktree the fix must land in. For a lens-fix dispatch, include `WORKTREE: <absolute path>` in the brief and require that line back as the first line of the report — `work-driver-adversarial-lensfix.ts:integrateLensFix` cherry-picks the lens fix from the develop worktree, so a fix written to a different tree is invisible to integration.
+- Do not tell a specialist to run a command you have not confirmed it can run. If unsure, ask for `GATE NOT RUNNABLE` rather than accept an asserted pass.
 
 ### Dispatch Patterns
 
