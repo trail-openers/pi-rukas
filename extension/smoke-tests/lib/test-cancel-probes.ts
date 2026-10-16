@@ -85,8 +85,13 @@ export async function runKillProbe(
 ): Promise<ProbeResult> {
   const start = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  if (opts.controller && opts.abortAtMs !== undefined) {
-    timer = setTimeout(() => opts.controller.abort(), opts.abortAtMs);
+  // The controller is captured first because the closure outlives the guard:
+  // `opts.controller` is optional, and inside the callback TypeScript cannot
+  // know the outer check still holds (the scratch-tsconfig compile of this
+  // file reported it as possibly undefined).
+  const controller = opts.controller;
+  if (controller && opts.abortAtMs !== undefined) {
+    timer = setTimeout(() => controller.abort(), opts.abortAtMs);
   }
   let r: Awaited<ReturnType<typeof spawnSpecialist>>;
   try {

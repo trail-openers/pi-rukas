@@ -68,13 +68,15 @@
  * applies to itself.
  */
 
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { KILL_GRACE_MS } from "../src/spawn-kill.ts";
 import { spawnSpecialist } from "../src/spawn.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { assertSigtermEscalationKillsGroup } from "./lib/cancel-escalation.ts";
 import { writeFakePi } from "./lib/cancel-fixture.ts";
+import { fixturePidFiles, readRecordedPid, readRecordedPids } from "./lib/cancel-pids.ts";
 import { diedToSigkill, killedByInactivityBudget } from "./lib/kill-outcome.ts";
 import { pidAlive } from "./lib/poll-until-killed.ts";
 import {
@@ -107,13 +109,75 @@ function assert(cond: boolean, msg: string) {
  */
 const PROBE_CEILING_MS = 30_000;
 
+// ── Fixture identity: the directory and the fake `pi`'s sleep bound.
+//
+// Declared here, next to the ceiling that reads them, rather than further
+// down: `restoreEnv` below is a function (hoisted), but the values it passes
+// to `readRecordedPids` are evaluated when it RUNS — which is either the
+// ceiling's exit or the `finally`, both after this point. Same reasoning as
+// `fakeDir`/`savedPath`, which `restoreEnv` also reads.
+const fakeDir = mkdtempSync(join(tmpdir(), "pi-ensemble-fake-pi-"));
+const savedPath = process.env.PATH;
+const savedInactivity = process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
+
+// Every sleep the fixtures can leave behind is bounded by the longest wait
+// this file takes over it: the probe ceiling plus both escalation polls.
+// Anything that outlives that is only still running because it was orphaned.
+// See lib/cancel-fixture.ts for the derivation and the floor it is clamped to.
+const ORPHAN_BOUND_MS = PROBE_CEILING_MS + 2 * KILL_GRACE_MS * 4;
+
 /**
  * A result the caller can assert on, even when the probe itself timed out.
- * `ProbeResult.ok` is the probe's own aggregate (`abortProbePasses`), which is
- * TRUE for a correctly-killed child — so it is not a failure sentinel, and
- * `undefined` is: it means the spawn never settled inside `PROBE_CEILING_MS`.
+ * `undefined` is the failure sentinel: it means the promise never settled
+ * inside `PROBE_CEILING_MS`. It is generic because the callers await two
+ * different shapes — a `ProbeResult` from the probe runner and a raw
+ * `DispatchResult` from `spawnSpecialist` — and the ceiling must type-check
+ * against both rather than one and cast for the other.
+ *
+ * Caveat a caller must know: a probe's own aggregate (`ProbeResult.ok`, from
+ * `abortProbePasses`) is TRUE for a correctly-killed child, so it is not a
+ * failure sentinel either way — `undefined` is the only one.
  */
-type Settled = ProbeResult | undefined;
+type Settled<T> = T | undefined;
+
+/**
+ * Env the file mutates process-wide, and the fixture directory it builds its
+ * fake `pi` in. `restoreEnv()` undoes ALL of it; two call sites do. Hoisted
+ * above `bounded` because the ceiling's exit calls it — `process.exit` skips
+ * this file's `finally`.
+ */
+let restored = false;
+function restoreEnv(): void {
+  if (restored) return;
+  restored = true;
+  // Restore the process-wide env even when a probe above throws — the fake
+  // `pi` on PATH and the inactivity override must not leak past this file
+  // (a stub `pi` in the parent's PATH would shadow the real binary for any
+  // later spawn in the same process).
+  process.env.PATH = savedPath;
+  process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "";
+  // `undefined` rather than `delete`: biome's noDelete rejects the operator on
+  // a member expression, and for `process.env` the two are the same observable
+  // shape — an unset variable reads back as `undefined` either way.
+  if (savedInactivity) process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = savedInactivity;
+  else process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = undefined;
+  // Round-3 MEDIUM: the fixtures' sleep reapers are best-effort (dash defers
+  // its EXIT trap while blocked in `wait`), so a descendant can outlive its
+  // leader and be reparented to init. The ceiling's `pidsOf` liveness test
+  // deliberately tolerates that while the run is going; nothing else removes
+  // it, and it accumulated across runs. So the final restore SIGKILLs every
+  // pid any fixture recorded for itself before the directory holding those
+  // pid files goes away. Measured before this: `pgrep -fa 'sleep 300'` grew
+  // by 3, 7, 13 pids at ppid=1 across consecutive runs of this file.
+  for (const pid of readRecordedPids(...fixturePidFiles(fakeDir))) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone — the case in which there is nothing to clean up.
+    }
+  }
+  rmSync(fakeDir, { recursive: true, force: true });
+}
 
 /**
  * Await a probe under `PROBE_CEILING_MS`, and END THE RUN only if the child is
@@ -129,6 +193,10 @@ type Settled = ProbeResult | undefined;
  * so a killed process whose output was still buffered does not look like a
  * crash. `process.exit` over `process.abort` for the same reason.
  *
+ * That exit skips the file's `finally` — so it calls `restoreEnv()` itself
+ * first. Without it the ceiling's exit leaked the fake `pi` into `PATH` and
+ * the fixture directory for the rest of the parent process (round-3 HIGH).
+ *
  * Nothing else in the file can end the run: by definition a hung probe never
  * returns, so the `exit` counter would never reach the bottom of the file.
  *
@@ -142,11 +210,11 @@ type Settled = ProbeResult | undefined;
  * are the fixture's own, recorded by the child; the harness has no other way to
  * name them.
  */
-async function bounded(
+async function bounded<T>(
   label: string,
-  p: Promise<ProbeResult>,
+  p: Promise<T>,
   pidsOf?: () => number[],
-): Promise<Settled> {
+): Promise<Settled<T>> {
   const ceiling = new Promise<undefined>((resolve) => {
     const t = setTimeout(() => {
       const live = (pidsOf?.() ?? []).filter(
@@ -164,14 +232,20 @@ async function bounded(
       console.error(
         `✗ ${label}: spawn did not settle within ${PROBE_CEILING_MS}ms and its pids ${live.join(", ")} were still alive — aborting run`,
       );
+      // process.exit does not run `finally` blocks, so undo the env mutation
+      // here rather than leaving a stub `pi` on PATH for the next spawn.
+      restoreEnv();
       process.exit(1);
     }, PROBE_CEILING_MS);
     t.unref();
   });
+  // Tagged race: each branch carries its own tag, so the branches below are
+  // narrowed by discriminant rather than by an `as` cast over a union whose
+  // members were indistinguishable once the race returned.
   const settled = await Promise.race([
     p.then(
-      (v) => ({ v }),
-      (e: unknown) => ({ e }),
+      (v) => ({ kind: "value" as const, v }),
+      (e: unknown) => ({ kind: "throw" as const, e }),
     ),
     ceiling,
   ]);
@@ -179,38 +253,15 @@ async function bounded(
     assert(false, `${label}: spawn did not settle within ${PROBE_CEILING_MS}ms`);
     return undefined;
   }
-  if ("e" in settled) {
-    assert(false, `${label}: spawn threw — ${(settled as { e: unknown }).e}`);
+  if (settled.kind === "throw") {
+    assert(false, `${label}: spawn threw — ${settled.e}`);
     return undefined;
   }
-  return (settled as { v: ProbeResult }).v;
-}
-
-/**
- * The pids a fixture recorded for itself (leader, and grandchild when it has
- * one). Empty when the child never got far enough to write them — the ceiling
- * treats that as "nothing of ours is running", which is the honest reading: a
- * pid file that was never written cannot name a hung child.
- */
-function recordedPids(...files: string[]): number[] {
-  const pids: number[] = [];
-  for (const f of files) {
-    try {
-      const n = Number(readFileSync(f, "utf8").trim());
-      if (Number.isFinite(n) && n > 0) pids.push(n);
-    } catch {
-      // Not written yet — nothing to poll.
-    }
-  }
-  return pids;
+  return settled.v;
 }
 
 /** Test 3's armed inactivity budget, named once so predicate and asserts agree. */
 const INACTIVITY_BUDGET_MS = 2_000;
-
-const fakeDir = mkdtempSync(join(tmpdir(), "pi-ensemble-fake-pi-"));
-const savedPath = process.env.PATH;
-const savedInactivity = process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
 
 process.env.PATH = `${fakeDir}:${savedPath}`;
 // #1017 — the offline gate (verify-loop.sh) exports
@@ -238,10 +289,10 @@ try {
   // subject is the attribution; the watchdog poll loop itself is tests 3–4).
   // The wall clock is logged for observability and never fails.
   {
-    writeFakePi(fakeDir, "exec", join(fakeDir, "t1.pid"));
+    writeFakePi(fakeDir, "exec", join(fakeDir, "t1.pid"), undefined, ORPHAN_BOUND_MS);
     console.log("[test] fake child, abort after 1500ms...");
     const p = await bounded("test 1 (abort probe)", runAbortProbe(ABORT_PROMPT), () =>
-      recordedPids(join(fakeDir, "t1.pid")),
+      readRecordedPids(join(fakeDir, "t1.pid")),
     );
     if (p) {
       for (const l of p.lines) console.log(l);
@@ -258,17 +309,25 @@ try {
       assert(p.childOk === false, `...and the killed child reports ok=false (got ${p.childOk})`);
     }
   }
-  writeFakePi(fakeDir, "trap", join(fakeDir, "t2.pid"), join(fakeDir, "t2.grand.pid"));
+  writeFakePi(
+    fakeDir,
+    "trap",
+    join(fakeDir, "t2.pid"),
+    join(fakeDir, "t2.grand.pid"),
+    ORPHAN_BOUND_MS,
+  );
   await assertSigtermEscalationKillsGroup({
     fakeDir,
     assert,
     bounded,
-    recordedPids,
+    recordedPids: readRecordedPids,
+    recordedPid: readRecordedPid,
+    sleepMs: ORPHAN_BOUND_MS,
   });
 
   // Test 3 — a totally silent child is killed by the inactivity watchdog.
   {
-    writeFakePi(fakeDir, "exec", join(fakeDir, "t3.pid"));
+    writeFakePi(fakeDir, "exec", join(fakeDir, "t3.pid"), undefined, ORPHAN_BOUND_MS);
     process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = String(INACTIVITY_BUDGET_MS);
     console.log(`\n[test] silent fake child, ${INACTIVITY_BUDGET_MS}ms inactivity budget...`);
     const r = await bounded(
@@ -325,7 +384,7 @@ try {
   // Test 5 (#296) — wall-clock cap kill carries killCause='timeout' + budget.
   // Deterministic: silent fake child, inactivity watchdog disabled.
   {
-    writeFakePi(fakeDir, "exec", join(fakeDir, "t5.pid"));
+    writeFakePi(fakeDir, "exec", join(fakeDir, "t5.pid"), undefined, ORPHAN_BOUND_MS);
     process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "0";
     console.log("\n[test] silent fake child, 1500ms wall-clock cap, watchdog off...");
     const r = await bounded(
@@ -358,35 +417,31 @@ try {
     // diedToSigkill: the abort attribution AND a reaped pid are both required.
     // The reaped flag is what the OS poll said, so it is the part that can
     // distinguish a SIGKILLed leader from one that never exited at all —
-    // therefore a still-alive pid fails even with the perfect-looking result
-    // (exitCode null + abort), which is the exact hole round 2 found.
+    // therefore a still-alive pid fails even with the perfect-looking result,
+    // which is the exact hole round 2 found. The fabricated rows carry only
+    // `killCause`, which is the whole of the predicate's input type: an
+    // `exitCode` here is a compile error, which is the point of narrowing the
+    // parameter to `Pick<DispatchResult, "killCause">` (round-3 MEDIUM) — the
+    // predicate never read it, and rows that named it implied it did.
     assert(
-      diedToSigkill({ exitCode: null, killCause: "abort" }, true) === true,
+      diedToSigkill({ killCause: "abort" }, true) === true,
       "self-check: reaped leader + abort attribution passes (the shape Test 2 measures)",
     );
     assert(
-      diedToSigkill({ exitCode: null, killCause: "abort" }, false) === false,
-      "self-check: leader still alive at the deadline fails, even with abort + exit=null",
+      diedToSigkill({ killCause: "abort" }, false) === false,
+      "self-check: leader still alive at the deadline fails, even with the abort attribution",
     );
     assert(
-      diedToSigkill({ exitCode: -9, killCause: "abort" }, true) === true,
-      "self-check: signal-death encoding (-9) with a reaped pid passes",
-    );
-    assert(
-      diedToSigkill({ exitCode: 0, killCause: "abort" }, false) === false,
-      "self-check: a leader that answered SIGTERM and is still running fails",
-    );
-    assert(
-      diedToSigkill({ exitCode: null, killCause: undefined }, true) === false,
+      diedToSigkill({ killCause: undefined }, true) === false,
       "self-check: reaped but unattributed fails (an unrelated death is not this kill path)",
     );
     assert(
-      diedToSigkill({ exitCode: null, killCause: "inactivity" }, true) === false,
+      diedToSigkill({ killCause: "inactivity" }, true) === false,
       "self-check: a reaped death attributed elsewhere fails",
     );
     assert(
-      diedToSigkill({ exitCode: 0, killCause: "abort" }, true) === true,
-      "self-check: a reaped pid, not the exit code, is the death evidence (exit 0 with a reaped leader passes)",
+      diedToSigkill({ killCause: "timeout" }, true) === false,
+      "self-check: a reaped death attributed to the wall-clock cap is not the abort escalation",
     );
 
     // killedByInactivityBudget: the watchdog's own attribution passes; every
@@ -427,15 +482,7 @@ try {
     );
   }
 } finally {
-  // Restore the process-wide env even when a probe above throws — the fake
-  // `pi` on PATH and the inactivity override must not leak past this file
-  // (a stub `pi` in the parent's PATH would shadow the real binary for any
-  // later spawn in the same process).
-  process.env.PATH = savedPath;
-  process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "";
-  if (savedInactivity) process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = savedInactivity;
-  else delete process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
-  rmSync(fakeDir, { recursive: true, force: true });
+  restoreEnv();
 }
 
 console.log(`\nexit ${exit}`);

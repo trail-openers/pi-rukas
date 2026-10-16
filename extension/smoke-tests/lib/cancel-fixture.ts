@@ -12,20 +12,53 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * The command every variant of the fake `pi` runs, kept as the literal the
- * suite has always used.
+ * The command every variant of the fake `pi` runs — the shape the suite has
+ * always used, with the duration supplied by `fakeSleepCmd`.
  *
- * It is NOT parameterised over the duration and it carries no identity token,
- * both of which look like improvements and both of which were measured to
- * break the fixture. `sleep` reads its first operand as a duration and
- * rejects anything else — `sleep 300 pi1382fixture` and
- * `sleep pi1382fixture 300` each die with `sleep: invalid time interval
- * 'pi1382fixture'`, exit 1 — so the fake `pi` never reaches the state a probe
- * is meant to observe, and every assertion reads `killCause=undefined`, which
- * is indistinguishable from a kill path that stopped attributing. Whatever the
- * leak check identifies, it must not have to write into the child's argv.
+ * The duration is NOT a free parameter: the literal `sleep 300` below is what
+ * the fixtures ran for the whole life of this test, and it is also what made
+ * an orphan a five-minute leak. It is NOT parameterised over an arbitrary
+ * string and it carries no identity token, both of which look like
+ * improvements and both of which were measured to break the fixture. `sleep`
+ * reads its first operand as a duration and rejects anything else —
+ * `sleep 300 pi1382fixture` and `sleep pi1382fixture 300` each die with
+ * `sleep: invalid time interval 'pi1382fixture'`, exit 1 — so the fake `pi`
+ * never reaches the state a probe is meant to observe, and every assertion
+ * reads `killCause=undefined`, which is indistinguishable from a kill path
+ * that stopped attributing. Whatever the leak check identifies, it must not
+ * have to write into the child's argv.
  */
-const FAKE_SLEEP_CMD = "sleep 300";
+const FAKE_SLEEP_SHAPE = "sleep";
+
+/**
+ * The shortest sleep that still outlives every wait a probe takes over it.
+ *
+ * `test-cancel.ts` derives this from its own bounds — the probe ceiling plus
+ * both escalation polls, i.e. `PROBE_CEILING_MS + 2 * KILL_GRACE_MS * 4` —
+ * and passes it in, because the fixture cannot import the test file. 300 s
+ * was the value from before those bounds existed, and it is the reason the
+ * orphan problem was a leak rather than a nuisance: a sleep reaped by nothing
+ * (dash defers its EXIT trap while blocked in `wait`) sat at ppid=1 for five
+ * minutes, and they accumulated across runs — measured 3, then 7, then 13
+ * `sleep 300` processes at ppid=1 after successive runs of the suite. At the
+ * derived bound the same orphan expires on its own within the window in which
+ * the test that spawned it was still running, so `pgrep -fa 'sleep'` shows no
+ * survivors from a finished run.
+ *
+ * It must stay comfortably above that window: a sleep that ends early is a
+ * child that finished on its own, which every probe here reads as
+ * `killCause=undefined` / `ok=true` — indistinguishable from a kill path that
+ * stopped attributing. Hence the floor below.
+ */
+export const MIN_FAKE_SLEEP_MS = 30_000;
+
+/** The sleep duration a fixture runs when the caller does not bound it. */
+const DEFAULT_FAKE_SLEEP_MS = 120_000;
+
+function fakeSleepCmd(ms: number): string {
+  const seconds = Math.max(Math.ceil(ms / 1000), Math.ceil(MIN_FAKE_SLEEP_MS / 1000));
+  return `${FAKE_SLEEP_SHAPE} ${seconds}`;
+}
 
 /**
  * A fake `pi` that stays alive until killed.
@@ -78,13 +111,19 @@ const FAKE_SLEEP_CMD = "sleep 300";
  * The `pi --version` guard is answered so binary resolution succeeds against
  * the fixture; it stays the one-line short-circuit the fixtures in this suite
  * use, which exits non-zero when the argument is not `--version`.
+ *
+ * `sleepMs` bounds how long a sleep the fixture leaves behind can survive its
+ * own reaper — see `FAKE_SLEEP_MS` for the derivation and `MIN_FAKE_SLEEP_MS`
+ * for the floor the caller's bound is clamped to.
  */
 export function writeFakePi(
   fakeDir: string,
   run: "exec" | "trap",
   pidFile: string,
   grandPidFile?: string,
+  sleepMs: number = DEFAULT_FAKE_SLEEP_MS,
 ) {
+  const FAKE_SLEEP_CMD = fakeSleepCmd(sleepMs);
   const leader = `echo $$ > ${pidFile}`;
   const backgrounded = grandPidFile
     ? `( ${FAKE_SLEEP_CMD} ) &

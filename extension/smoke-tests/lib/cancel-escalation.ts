@@ -34,13 +34,13 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { KILL_GRACE_MS, groupSpawnOpts, registerChild } from "../../src/spawn-kill.ts";
 import { writeFakePi } from "./cancel-fixture.ts";
 import { diedToSigkill } from "./kill-outcome.ts";
 import { pollUntilGone } from "./poll-until-killed.ts";
-import { ABORT_PROMPT, type ProbeResult, runAbortProbe } from "./test-cancel-probes.ts";
+import { ABORT_PROMPT, runAbortProbe } from "./test-cancel-probes.ts";
 
 /** A tick, for waiting on the fixture's own pid files. */
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -53,19 +53,28 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * leader handle otherwise), with the second one withheld. `registerChild` is
  * what selects the ref'd `KILL_GRACE_MS` branch, so the control child goes
  * through it and no separate policy is invented here.
+ *
+ * Returns whether a signal was actually DELIVERED. The control's whole verdict
+ * is "these pids were still alive after the strike", and a strike that threw
+ * ESRCH on both arms delivered nothing — so the caller must assert on this
+ * rather than infer a working control from a quiet one (round-3 MEDIUM).
  */
-function signalTreeTermOnly(child: ReturnType<typeof spawn>): void {
-  if (child.pid === undefined) return;
+function signalTreeTermOnly(child: ReturnType<typeof spawn>): boolean {
+  if (child.pid === undefined) return false;
   try {
     process.kill(-child.pid, "SIGTERM");
-    return;
+    return true;
   } catch {
     // Group already gone — fall through to the leader handle, as spawn-kill does.
   }
   try {
     child.kill("SIGTERM");
+    return true;
   } catch {
-    // Leader already reaped — nothing left to signal.
+    // Leader already reaped — nothing left to signal, so the control landed on
+    // nothing and its caller must say so rather than read "still alive" as a
+    // verdict.
+    return false;
   }
 }
 
@@ -92,16 +101,19 @@ const ESCALATION_DEADLINE_MS = KILL_GRACE_MS * 4;
 export async function assertSigtermEscalationKillsGroup(opts: {
   fakeDir: string;
   assert: (cond: boolean, msg: string) => void;
-  bounded: (
-    label: string,
-    p: Promise<ProbeResult>,
-    pidsOf?: () => number[],
-  ) => Promise<ProbeResult | undefined>;
+  bounded: <T>(label: string, p: Promise<T>, pidsOf?: () => number[]) => Promise<T | undefined>;
   /** The pids a fixture recorded for itself; lets the probe ceiling tell a
    *  hung child from a merely busy event loop. */
   recordedPids: (...files: string[]) => number[];
+  /** The guarded single-pid reader (undefined rather than NaN on a missing or
+   *  half-written pid file); the control asserts on it before signalling. */
+  recordedPid: (file: string) => number | undefined;
+  /** How long the fixture's sleep may run — the caller's overall bound, so an
+   *  orphan cannot outlive the run that created it (see lib/cancel-fixture.ts).
+   *  The control and Test 2 share the fixture and so share this value. */
+  sleepMs: number;
 }): Promise<void> {
-  const { fakeDir, assert, bounded, recordedPids } = opts;
+  const { fakeDir, assert, bounded, recordedPids, recordedPid, sleepMs } = opts;
   // ── RED control, run FIRST.
   //
   // A ceiling that reports "the spawn never settled" is a weak RED: a hung
@@ -123,7 +135,7 @@ export async function assertSigtermEscalationKillsGroup(opts: {
   {
     const cPidFile = join(fakeDir, "t2-control.pid");
     const cGrandFile = join(fakeDir, "t2-control.grand.pid");
-    writeFakePi(fakeDir, "trap", cPidFile, cGrandFile);
+    writeFakePi(fakeDir, "trap", cPidFile, cGrandFile, sleepMs);
     console.log(
       "\n[test] RED control: SIGTERM-only kill of the same fixture (SIGKILL arm withheld)...",
     );
@@ -140,9 +152,24 @@ export async function assertSigtermEscalationKillsGroup(opts: {
     for (let i = 0; i < 250 && !(existsSync(cPidFile) && existsSync(cGrandFile)); i++) {
       await sleep(20);
     }
-    signalTreeTermOnly(child);
-    const cLeader = Number(readFileSync(cPidFile, "utf8").trim());
-    const cGrand = Number(readFileSync(cGrandFile, "utf8").trim());
+    // `signalTreeTermOnly` reports whether the strike landed on anything; see
+    // the assertion below for why the control cannot be trusted without it.
+    const controlSignalDelivered = signalTreeTermOnly(child);
+    // The guarded reader, not `Number(readFileSync(...))`: an unparseable pid
+    // is `undefined`, and `process.kill(undefined)` / `pollUntilGone(NaN)` are
+    // both a verdict on a process that does not exist rather than a failure to
+    // name one (round-3 MEDIUM).
+    const cLeader = recordedPid(cPidFile);
+    const cGrand = recordedPid(cGrandFile);
+    assert(
+      cLeader !== undefined && cGrand !== undefined,
+      `RED control's fixture recorded both its own pid and its backgrounded sleep's pid (got leader=${cLeader} sleep=${cGrand})`,
+    );
+    if (cLeader === undefined || cGrand === undefined) {
+      // Without two nameable pids the discrimination below is unreadable, and
+      // an assertion over a NaN pid would be a false pass waiting to happen.
+      return;
+    }
     // Half the window is enough to prove non-death and keeps the control cheap;
     // the real test's bound is the full window, and a pid alive halfway through
     // is alive at the end for a process this simple.
@@ -152,6 +179,14 @@ export async function assertSigtermEscalationKillsGroup(opts: {
     assert(
       !leaderGone.ok && !grandGone.ok,
       `RED control held: with the SIGKILL arm withheld the TERM-ignoring leader ${cLeader} and its sleep ${cGrand} were BOTH still alive after ${halfMs}ms — so Test 2's polls DO discriminate a missing escalation`,
+    );
+    // The control's own RED is only meaningful if it actually reached the tree:
+    // a `process.kill(-pid, …)` that threw ESRCH means the control never drove
+    // anything, and "both still alive" would be an observation about a tree
+    // that was never signalled. `signalTreeTermOnly` reports which happened.
+    assert(
+      controlSignalDelivered === true,
+      `RED control delivered its SIGTERM to the tree (got ${controlSignalDelivered}) — a control whose first strike never landed proves nothing about the arm it withheld`,
     );
     // Cleanup for the control only — the surviving tree is ours, not the
     // product's, so killing it here is hygiene rather than a verdict. The kill
@@ -181,7 +216,7 @@ export async function assertSigtermEscalationKillsGroup(opts: {
   {
     const pidFile = join(fakeDir, "t2.pid");
     const grandPidFile = join(fakeDir, "t2.grand.pid");
-    writeFakePi(fakeDir, "trap", pidFile, grandPidFile);
+    writeFakePi(fakeDir, "trap", pidFile, grandPidFile, sleepMs);
     console.log("\n[test] fake child traps SIGTERM; group SIGTERM→SIGKILL escalation expected...");
     // `ProbeResult.ok` is the probe's own aggregate of `abortProbePasses`, so
     // asserting it here would only repeat what Test 1 already pins; Test 2
@@ -205,16 +240,17 @@ export async function assertSigtermEscalationKillsGroup(opts: {
       p.killCause === "abort",
       `TERM-trapping child's kill is attributed to the abort (got killCause=${p.killCause})`,
     );
-    const leaderPid = Number(readFileSync(pidFile, "utf8").trim());
-    const grandPid = Number(readFileSync(grandPidFile, "utf8").trim());
+    const leaderPid = recordedPid(pidFile);
+    const grandPid = recordedPid(grandPidFile);
     assert(
-      Number.isFinite(leaderPid) && leaderPid > 0,
-      `TERM-trapping child recorded its own pid (got ${pidFile} = '${readFileSync(pidFile, "utf8").trim()}')`,
+      leaderPid !== undefined,
+      `TERM-trapping child recorded its own pid in a parseable form (${pidFile})`,
     );
     assert(
-      Number.isFinite(grandPid) && grandPid > 0,
-      `TERM-trapping child recorded its backgrounded sleep's pid (got ${grandPidFile} = '${readFileSync(grandPidFile, "utf8").trim()}')`,
+      grandPid !== undefined,
+      `TERM-trapping child recorded its backgrounded sleep's pid in a parseable form (${grandPidFile})`,
     );
+    if (leaderPid === undefined || grandPid === undefined) return;
     // THE DEATH EVIDENCE. The grandchild, not the leader: the leader is Node's own
     // child, so between its `exit` event and the parent's reap it is a ZOMBIE, and
     // `kill -0` cannot tell that from a live process — polling it alone goes RED on
