@@ -31,6 +31,8 @@
  * which only ever consults one of them.
  */
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { readMergeCommand } from "../src/merge-allowlist.ts";
 import { FORGE_WORD, MERGE_WORD as MERGE_WORD_RE } from "../src/merge-lex-views.ts";
 import {
@@ -39,7 +41,14 @@ import {
   exceedsAnalysisBound,
   exceedsClassifierBound,
 } from "../src/merge-size.ts";
-import { assert, exit } from "./merge-guard-helpers.ts";
+import {
+  assert,
+  GOOD_ENTRIES,
+  exit,
+  hookDecision,
+  setupLedgerPath,
+  teardownLedger,
+} from "./merge-guard-helpers.ts";
 
 /** One character past the bound, padded with a benign word. */
 const pad = (extra = 0) => "y".repeat(MERGE_COMMAND_SIZE_BOUND + 1 + extra);
@@ -263,6 +272,85 @@ for (const cmd of longNonCliMergeDoors()) {
   assert(
     exceedsAnalysisBound(`${justUnder}y`) && exceedsClassifierBound(`${justUnder}y`),
     "one character more is (under either predicate)",
+  );
+}
+
+// ------------------------------------ the guard's OWN read path applies the bound
+//
+// Everything above asks the PREDICATES. A change that deletes the
+// `analysisBound` call from `readMergeCommand` removes the guard's size bound
+// while every assertion above still passes — four review lenses reached that
+// verdict independently by live mutation, and the offline suite was green. The
+// two fixtures the suite has for a long merge build one themselves and answer
+// `extra-command`, so the guard's own bound behaviour was pinned nowhere.
+//
+// The call is pinned three ways here, and the layers are not redundant — each
+// catches a mutation the others cannot see:
+//
+//   - the SOURCE canary (the shape of test-seams-wired.ts's "the production
+//     fetch default carries its deadline" block) fails the moment the call is
+//     edited away or its return discarded — the exact mutation the lenses ran;
+//   - the CLASSIFIER assertion fails if the call survives but stops answering,
+//     which a source pattern cannot see (the clause can be present and inert);
+//   - the HOOK assertion fails if the classifier still answers but the guard
+//     stops acting on it. This is the #955 shape specifically: the fixture
+//     carries NO PR number, so a bound that is not running falls through to
+//     current-branch resolution — and the stub answers that lookup with a
+//     number, so the fall-through surfaces as `gh pr view` calls on the merge
+//     path rather than hiding as some other hold. A source canary cannot see a
+//     fall-through, because it is not a source-level fact.
+//
+// The hook is the real `registerMergeGuard` tool_call handler, driven through
+// merge-guard-helpers' `hookDecision` — the same seam test-merge-guard-
+// allowlist.ts uses, so this is the guard's decision, not a reimplementation.
+{
+  const SRC = path.resolve(import.meta.dirname, "..", "src");
+  const allowlist = readFileSync(path.join(SRC, "merge-allowlist.ts"), "utf8");
+  // The function body only: an `analysisBound` mention in the import line or a
+  // docstring would satisfy a whole-file test with the call gone.
+  const bodyStart = allowlist.indexOf("export function readMergeCommand");
+  const body = bodyStart < 0 ? undefined : allowlist.slice(bodyStart);
+  assert(
+    body !== undefined,
+    "canary: merge-allowlist.ts still defines readMergeCommand — the assertions below have a body to read",
+  );
+  assert(
+    body !== undefined && /const bounded = analysisBound\(command\);/.test(body),
+    "canary: readMergeCommand still calls analysisBound(command) — the bound runs on the guard's own read path, not only in this file",
+  );
+  assert(
+    body !== undefined && /if \(bounded !== undefined\) return bounded;/.test(body),
+    "…and still returns its verdict when it speaks — a call whose answer is discarded is the same hole as no call",
+  );
+  assert(
+    body !== undefined &&
+      body.indexOf("analysisBound(command)") < body.indexOf("const lexed = lex("),
+    "…and asks it FIRST, before the lexer and trigger the #955 fall-through reaches without it",
+  );
+
+  // Merge-shaped, past the bound, and deliberately WITHOUT a number — the one
+  // shape whose failure mode is current-branch PR resolution.
+  const longNumberless = `gh pr merge --subject ${"x".repeat(MERGE_COMMAND_SIZE_BOUND * 4)}`;
+  assert(
+    longNumberless.length > MERGE_COMMAND_SIZE_BOUND,
+    `the hook fixture is past the bound by construction (${longNumberless.length} > ${MERGE_COMMAND_SIZE_BOUND})`,
+  );
+  const held = readMergeCommand(longNumberless);
+  assert(
+    held.kind === "refused" && held.reason === "too-large",
+    `the guard's own read path holds a long merge as too-large: ${JSON.stringify(held).slice(0, 80)}`,
+  );
+
+  await setupLedgerPath();
+  const r = await hookDecision(longNumberless, GOOD_ENTRIES);
+  teardownLedger();
+  assert(
+    r.block === true && r.calls.length === 0,
+    `…and the real hook blocks it without touching the PR — no current-branch resolution: ${JSON.stringify(r.calls)}`,
+  );
+  assert(
+    r.holds.length === 1 && /reason=too-large(?=\s)/.test(r.holds[0] ?? ""),
+    `…and logs the bound as the cause that fired, not a grammar refusal: ${JSON.stringify(r.holds)}`,
   );
 }
 
