@@ -13,7 +13,9 @@ import path from "node:path";
 import type { Writable } from "node:stream";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
-import { NO_TEXT_PLACEHOLDER, extractFindings, lensPromptFor } from "./lens-review-format.ts";
+import { extractFindings } from "./lens-findings-extract.ts";
+import { lensPromptFor } from "./lens-review-format.ts";
+import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
@@ -305,7 +307,8 @@ export async function runLensChild(opts: {
     const findings = result ? extractFindings(result.toolUses, lens.name).findings : [];
     const summary = result?.text?.trim() || undefined;
     const capKill = result?.killCause === "loop" || result?.killCause === "token-budget";
-    // #966 — one source for the placeholder: NO_TEXT_PLACEHOLDER (lens-review-format.ts).
+    // #966 — one source for the placeholder: NO_TEXT_PLACEHOLDER
+    // (lens-review-incomplete.ts, where `collapseEvents` declares it).
     const textIsReviewOutput =
       !!summary && summary !== NO_TEXT_PLACEHOLDER && (result?.thinkingOnly === true || capKill);
     const hasEvidence = findings.length > 0 || (!!summary && textIsReviewOutput);

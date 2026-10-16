@@ -86,6 +86,11 @@ const ISOLATION_MARKERS = [
   // The shared helper module self-isolates on import (lib/
   // review-ledger-test-helpers.ts, #1069) — importing it isolates the file.
   "review-ledger-test-helpers",
+  // The findings-memory fixture (lib/review-findings-fixtures.ts, #1125) points
+  // the ledger AND the findings file at a per-fixture temp dir in its factory,
+  // so a test that builds its repo through `setupReviewFixture` is isolated
+  // without naming the env var itself — the marker lives in the fixture.
+  "setupReviewFixture",
   // A mocked writer seam (test-lens-kill-ledger.ts mocks appendLedgerEntry).
   "mock.module",
   // A temp git repo as the write cwd: the writer keys its file on the
@@ -163,6 +168,12 @@ assert(
       path.join(fixtureDir, "test-isolated-fixture.ts"),
       "process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = \"/tmp/x.json\";\nconst r = await runLensReview({ diff: \"d\" } as never);\nvoid r;\n",
     );
+    // A fixture isolated by the shared findings-memory factory rather than by
+    // naming the env var itself: the marker lives in the fixture it imports.
+    writeFileSync(
+      path.join(fixtureDir, "test-fixture-isolated.ts"),
+      "import { setupReviewFixture } from \"./lib/review-findings-fixtures.ts\";\nconst f = setupReviewFixture({ prefix: \"p\", files: {}, report: () => [] });\nconst r = await runLensReview({ diff: \"d\" } as never);\nvoid r; void f;\n",
+    );
     const found = scanDir(fixtureDir);
     assert(
       found.includes("test-unisolated-fixture.ts"),
@@ -171,6 +182,10 @@ assert(
     assert(
       !found.includes("test-isolated-fixture.ts"),
       "static scan (canary): an isolated file (env override) is NOT flagged",
+    );
+    assert(
+      !found.includes("test-fixture-isolated.ts"),
+      "static scan (canary): a file isolated via setupReviewFixture is NOT flagged",
     );
   } finally {
     rmSync(fixtureDir, { recursive: true, force: true });
