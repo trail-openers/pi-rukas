@@ -37,8 +37,12 @@ import { ensureGitExclude } from "./work-driver-git-exclude.ts";
 
 export const REDACTED = "[REDACTED]";
 
-/** Every string in a record — the state included — is bounded to this, after redaction. */
-const LOG_STRING_CHARS = 4000;
+/**
+ * Every string in a record — the state included — is bounded to this, after
+ * redaction. Exported so `boundedState` gives an undeclared field the same
+ * bound the record applies, rather than scanning it unbounded (#1393).
+ */
+export const LOG_STRING_CHARS = 4000;
 
 const GLOBAL_PATTERNS = SECRET_PATTERNS.map(
   (re) => new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`),
@@ -56,14 +60,42 @@ export function redactSecrets(text: string): { text: string; count: number } {
   return { text: out, count };
 }
 
+/** How far past the window a credential-shaped span is scanned. A token in this
+ * project's formats is nowhere near this long, so the bound is always applied to
+ * the text the caller keeps — never to a fragment cut before the scan. */
+const PRE_BOUND_SLACK = 2048;
+
 /**
- * Redact the WHOLE text, then keep a window of it (`from` = which end). Clipping
- * first can cut a credential into a fragment no pattern recognises, so the
- * shadow seams' bounded inputs go through here rather than slicing raw text.
+ * Redact the WHOLE text, then keep a window of it (`from` = which end).
+ *
+ * Both halves matter. Redact-**then**-clip is what stops a clip cutting a
+ * credential into a fragment no pattern recognises. Scan-**then**-bound is what
+ * stops a regex pass over a multi-megabyte document, and it must slice from the
+ * SAME END the window keeps — pre-cutting from the head while keeping the tail
+ * used to hide a secret in the kept region entirely, so the "secret" reached the
+ * model and the log unredacted while the scan reported zero matches (#1393).
+ * The slack is bounded, so the scan is never longer than the window plus a
+ * fixed allowance, whichever end the text is taken from.
  */
 export function redactClip(text: string, max: number, from: "start" | "end" = "start"): string {
-  const { text: clean } = redactSecrets(text);
+  const scan = max + PRE_BOUND_SLACK;
+  const pre =
+    text.length <= scan
+      ? text
+      : from === "end"
+        ? text.slice(text.length - scan)
+        : text.slice(0, scan);
+  const { text: clean } = redactSecrets(pre);
   return from === "end" ? clean.slice(-max) : clean.slice(0, max);
+}
+
+/**
+ * The seam-driven bound for one state field (#1393): redact over the whole text,
+ * then clip. Lives here, not at the call site, so the redaction order and the
+ * per-field bound cannot drift apart.
+ */
+export function boundField(text: string, bound: { max: number; from?: "start" | "end" }): string {
+  return redactClip(text, bound.max, bound.from ?? "start");
 }
 
 /**
@@ -71,10 +103,20 @@ export function redactClip(text: string, max: number, from: "start" | "end" = "s
  * bound is applied after redaction, so it can never cut a secret into a
  * fragment the patterns no longer recognise; a generous pre-bound (well past
  * any token's length) keeps a whole-document state from being regex-scanned.
+ *
+ * Exported for `decision-seam.ts`, which must redact a state BEFORE it reaches
+ * a backend — the record-level pass in `appendDecisionRecord` only ever guards
+ * the log line, so an undeclared or nested string left unredacted here would
+ * show the model a credential while the log looked clean (#1393).
+ *
+ * A cyclic state throws rather than recursing forever; both callers treat a
+ * throw as "this state is not JSON" and take their non-serialisable path, which
+ * is what the seam's own `serialise()` would have concluded anyway.
  */
-function redactDeep(v: unknown, counter: { n: number }, bound?: number): unknown {
+export function redactDeep(v: unknown, counter: { n: number }, bound?: number): unknown {
   if (typeof v === "string") {
-    const r = redactSecrets(bound === undefined ? v : v.slice(0, bound + 2048));
+    const pre = bound === undefined ? v : v.slice(0, bound + PRE_BOUND_SLACK);
+    const r = redactSecrets(pre);
     counter.n += r.count;
     return bound !== undefined && r.text.length > bound ? `${r.text.slice(0, bound)}…` : r.text;
   }
@@ -88,9 +130,11 @@ function redactDeep(v: unknown, counter: { n: number }, bound?: number): unknown
 }
 
 /**
- * Redact a JSON-shaped state, unbounded. decide() applies this before the
- * state reaches any backend, so a credential in the state never leaves the
- * host, and the log, the hash and the model all see the same text.
+ * Redact a JSON-shaped state BEFORE the caller's token-budget check, so a
+ * credential in the state never leaves the host and the log, the hash and the
+ * model all see the same text. Unbounded by design: it is the pre-budget
+ * redaction, and the seam's per-field bounds (`boundField`) are what cap a
+ * field's length.
  */
 export function redactState(state: unknown): { state: unknown; count: number } {
   const counter = { n: 0 };

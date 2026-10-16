@@ -4,7 +4,7 @@
  * registry answers from closures, never from a network.
  */
 
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Backend, BackendResult, DecisionRegistry } from "../../src/decision-backends.ts";
@@ -116,4 +116,48 @@ export function llmReply(text: string, stopReason = "stop") {
 
 export function tmpDir(tag: string): string {
   return mkdtempSync(path.join(os.tmpdir(), `decision-${tag}-`));
+}
+
+/**
+ * A credential long enough that any 12-char window of it is recognisable, and
+ * the probe that asks whether any such window survived a clip. A clip that ran
+ * BEFORE redaction leaves a fragment no pattern matches, and a plain
+ * `includes(key)` check would then pass — so this is the only sound leak test.
+ */
+export const PROBE_KEY = `sk-ant-api03-${"aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d"}`;
+
+export function leaksKey(s: string, key: string, window = 12): boolean {
+  for (let i = 0; i + window <= key.length; i++) {
+    if (s.includes(key.slice(i, i + window))) return true;
+  }
+  return false;
+}
+
+/**
+ * Text whose `boundary`th character falls `offset` chars INSIDE `key`, so the
+ * clip keeps the head of a credential whose tail it cut. That is the shape a
+ * clip-before-redaction bug survives: the fragment is not a match for any
+ * pattern, so only `leaksKey` can see it.
+ */
+export function keyAtBoundary(
+  key: string,
+  boundary: number,
+  offset: number,
+  direction: "start" | "end",
+): string {
+  const head = "f".repeat(Math.max(0, boundary - offset - 1));
+  const tail = "t".repeat(Math.max(0, boundary + 100));
+  return direction === "start" ? `${head}${key}${tail}` : `${tail} ${key} ${head}`;
+}
+
+/** The `n`th record of a JSONL log, or undefined. */
+export function records(file: string): Record<string, unknown>[] {
+  try {
+    return readFileSync(file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+  } catch {
+    return [];
+  }
 }
