@@ -64,8 +64,10 @@ export const SHUTDOWN_SETTLE_MS = 1000;
  * `PI_ENSEMBLE_PENDING_SHUTDOWN_MS`, else `SHUTDOWN_SETTLE_MS`. The env form is
  * what lets an offline test pin one outcome ("the report lands inside the
  * window" / "it never does") instead of racing a fixed sleep against the default.
+ * Exported so `test-headless-inputs.ts` can pin the registered default against
+ * the live reader.
  */
-function shutdownBoundMs(): number {
+export function pendingShutdownBoundMs(): number {
   const raw = process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS;
   if (raw === undefined || raw === "") return SHUTDOWN_SETTLE_MS;
   const n = Number(raw);
@@ -167,7 +169,7 @@ export function resetForTesting(): void {
  * a report the session never received is a fact an operator needs and
  * `trace()` would hide it behind `PI_ENSEMBLE_DEBUG`.
  */
-export function shutdown(settleMs: number = shutdownBoundMs()): void {
+export function shutdown(settleMs: number = pendingShutdownBoundMs()): void {
   const owedIds = [...pending];
   // A re-entrant shutdown (Pi can fire the hook on both quit and reload paths)
   // re-arms rather than leaving the first bound to fire mid-teardown.
