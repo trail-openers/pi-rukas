@@ -31,8 +31,10 @@ import path from "node:path";
 import type { SeamId, SeamSpec } from "../src/decision-seam-registry.ts";
 import { SEAMS } from "../src/decision-seam-registry.ts";
 import {
+  SKIP_WINDOW_MS,
   __exactInFlightForTests,
   __resetShadowForTests,
+  __setSkipClockForTests,
   shadowExactRuleMatch,
 } from "../src/decision-shadow.ts";
 import { makeAssert, records, tmpDir } from "./lib/decision-fixtures.ts";
@@ -153,6 +155,63 @@ try {
       .every((l) => l.includes('"exactRuleMatch":true')),
     "every line in the file is an exact-match record (no skip-shaped line mixed in)",
   );
+
+  // ------------------------------------------------------------------ clock
+  //
+  // The cap is bounded by SETTLEMENT, never by the clock (#1393).
+  //
+  // The exact path used to call `exactWindowOpen(now)` before checking the cap,
+  // which zeroed `exactInFlight` once the throttle's clock rolled past
+  // `SKIP_WINDOW_MS` — while appends from before the tick were still in flight.
+  // Those then decremented a counter that had been reset to 0, so it went
+  // negative and admitted a second full window's worth of concurrent writes on
+  // top of the first: the 32 cap was a suggestion the clock could cancel.
+  //
+  // Driven with a fake clock because the whole point is a tick that lands WHILE
+  // the writes are outstanding; a real 60-second wait would only prove nothing
+  // had timed out. Acquire to the cap, advance past the skip window, and the
+  // counter must still read the cap — nothing released, nothing subtracted.
+  __resetShadowForTests({ inFlight: true, exact: true });
+  let clock = 1_000;
+  const restoreClock = __setSkipClockForTests(() => clock);
+  try {
+    const held: Promise<undefined>[] = [];
+    for (let i = 0; i < 32; i++) {
+      held.push(
+        shadowExactRuleMatch(
+          seam,
+          { question: `held ${i}`, rule: "fatal" },
+          { repoRoot: root },
+          { cause: `held write ${i}` },
+        ),
+      );
+    }
+    const atCap = __exactInFlightForTests();
+    clock += SKIP_WINDOW_MS * 3;
+    assert(
+      __exactInFlightForTests() === atCap && atCap === 32,
+      `advancing the clock past SKIP_WINDOW_MS does not drop the in-flight counter while appends are unsettled (${atCap} -> ${__exactInFlightForTests()})`,
+    );
+    // And the cap still bites after the tick: the 33rd write is refused, not
+    // admitted by a counter the clock silently reset.
+    const overflow = await shadowExactRuleMatch(
+      seam,
+      { question: "overflow", rule: "fatal" },
+      { repoRoot: root },
+      { cause: "past the cap, after a clock tick" },
+    );
+    assert(
+      overflow === undefined && __exactInFlightForTests() === atCap,
+      `the cap still refuses past a clock tick rather than counting from a reset (${__exactInFlightForTests()})`,
+    );
+    await Promise.all(held);
+    assert(
+      __exactInFlightForTests() === 0,
+      `settlement, not the clock, is what releases the slots (${__exactInFlightForTests()})`,
+    );
+  } finally {
+    restoreClock();
+  }
 } finally {
   process.stderr.write = realWrite;
 }

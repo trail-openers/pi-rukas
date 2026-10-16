@@ -55,24 +55,27 @@ export async function runBounded(
   // timeout racer does: `ac.abort()` so the wedged backend is cancelled rather
   // than left streaming, and `clearTimeout(timer)` so the seam's own bound is
   // not left armed past a call that has already been abandoned.
+  // The abort racer's handler, hoisted above the racer so the `finally` can name
+  // it. The racer registers a THUNK that calls it, rather than the handler
+  // itself: `removeEventListener` matches by identity, and the thunk is the
+  // handler the signal holds — the two must be the same function or the removal
+  // in `finally` silently removes nothing.
+  const onOuterAbort = () => {
+    ac.abort();
+    if (timer) clearTimeout(timer);
+    resolveOuter({ ok: false, error: "aborted" });
+  };
+  let resolveOuter: (r: BackendResult) => void = () => {};
   const aborted =
     outer === undefined
       ? undefined
       : new Promise<BackendResult>((resolve) => {
+          resolveOuter = resolve;
           if (outer.aborted) {
             ac.abort();
             if (timer) clearTimeout(timer);
             resolve({ ok: false, error: "aborted before the backend ran" });
-          } else
-            outer.addEventListener(
-              "abort",
-              () => {
-                ac.abort();
-                if (timer) clearTimeout(timer);
-                resolve({ ok: false, error: "aborted" });
-              },
-              { once: true },
-            );
+          } else outer.addEventListener("abort", onOuterAbort, { once: true });
         });
   // A run that settles after the bound is discarded, but traced: a judge that
   // answers late is exactly the event an operator needs to be able to see.
@@ -109,6 +112,17 @@ export async function runBounded(
     };
   } finally {
     if (timer) clearTimeout(timer);
+    // Both listeners go when the race settles, not just the one that won it.
+    // The abort racer resolves the promise but never removes its own `abort`
+    // handler, so a signal held across many `decide()` calls accumulated one
+    // closure per call — each keeping the controller, the timer and the
+    // backend's input alive long after the decision it belonged to was recorded.
+    // `outer` can be the driver's own long-lived signal, which makes the leak
+    // proportional to the number of decisions a cycle takes rather than to
+    // anything a caller could clean up. `{ once: true }` bounds it at one per
+    // signal, but only once it FIRES: a signal that never aborts keeps every
+    // listener forever (#1393).
+    if (onOuterAbort) outer?.removeEventListener("abort", onOuterAbort);
     outer?.removeEventListener("abort", onAbort);
   }
 }

@@ -110,19 +110,8 @@ const suppressedSince = new Map<SeamId, number>();
  */
 const MAX_EXACT_IN_FLIGHT = 32;
 
-/** Exact-match writes currently in flight, and the window they are counted over. */
+/** Exact-match writes currently in flight. Release-on-settle is the bound. */
 let exactInFlight = 0;
-let exactWindowStartedAt = 0;
-
-/** One window of exact-match writes: reset when it is older than the skip window. */
-function exactWindowOpen(now: number): boolean {
-  if (now - exactWindowStartedAt >= SKIP_WINDOW_MS) {
-    exactWindowStartedAt = now;
-    exactInFlight = 0;
-    return true;
-  }
-  return true;
-}
 
 /** Test seam: the exact-match counter, which is otherwise module-private. */
 export function __exactInFlightForTests(): number {
@@ -245,7 +234,16 @@ function writeShadowRecord(
     // #1393 — the exact path is not throttled, so it is bounded instead: past
     // the cap a write is dropped and traced, which is what keeps a 500-kill
     // storm from becoming 500 concurrent appends.
-    exactWindowOpen(now);
+    //
+    // The counter's ONLY release is the settle handler below. An earlier cut
+    // also zeroed it when the throttle's clock rolled past `SKIP_WINDOW_MS`, and
+    // that unbounded the cap it was supposed to enforce: appends from before the
+    // tick were still in flight, so the counter they later decremented had been
+    // reset to 0 and could go negative, admitting a second full window's worth
+    // of concurrent writes on top of the first. The skip window throttles
+    // RECORDS, which are cheap and duplicative; an in-flight counter counts
+    // LIVE WORK, and live work is only ever released by finishing. (`now` stays
+    // in scope above for the throttle, which is genuinely a clock question.)
     if (exactInFlight >= MAX_EXACT_IN_FLIGHT) {
       traceWarn(
         `decision-shadow: '${seam}' exact-match record dropped — ${exactInFlight} already in flight`,
