@@ -7,7 +7,7 @@
  */
 
 import { hasMidWildcard, midWildcardPattern } from "./bash-pattern-wildcard.ts";
-import { isDestructiveMemoryWrite } from "./memory-write-guard.ts";
+import { refusesMemoryWrite } from "./memory-write-guard.ts";
 import { trace } from "./trace.js";
 
 // Chars that indicate command injection / chaining in a bash *command*. If a
@@ -108,7 +108,12 @@ export function stripQuotedSegments(command: string): string {
 // Process-wrapper tokens to skip when extracting a command prefix.
 // `timeout 30 npm test` should extract to `npm test`, not `timeout`.
 // Matches Claude Code's documented strip set.
-const COMMAND_WRAPPERS = new Set([
+//
+// Exported because `memory-write-guard.ts` (#1437) must skip the same wrappers
+// when it looks for `vipune` in command position — `nohup vipune delete 42` is
+// the same invocation as `vipune delete 42`. One list, so the two consumers
+// cannot drift into disagreeing about what a wrapper is.
+export const COMMAND_WRAPPERS = new Set([
   "timeout",
   "time",
   "nice",
@@ -119,6 +124,28 @@ const COMMAND_WRAPPERS = new Set([
   "exec",
   "env",
 ]);
+
+/**
+ * `COMMAND_WRAPPERS` as a single regex alternation. Two rules, both of which
+ * were real bugs here once:
+ *
+ *   - **Longest first.** An alternation takes the FIRST branch that matches at
+ *     that position and does not retry later ones, so `timeout|time` matches
+ *     `timeout` and `time|timeout` matches `time` and leaves `out vipune …`
+ *     behind — which is why `timeout 30 vipune delete 42` slipped past a
+ *     length-unsorted list. The secondary alphabetical sort keeps the output
+ *     stable regardless of the Set's insertion order.
+ *   - **Word boundaries on every branch.** Without them `time` matches inside
+ *     `timeshift`, and the wrapper group then eats a word that was not a
+ *     wrapper at all.
+ *
+ * Built once at module load: the set and its regex form can disagree in exactly
+ * one place, and it is here.
+ */
+export const WRAPPERS_RE = [...COMMAND_WRAPPERS]
+  .sort((a, b) => b.length - a.length || a.localeCompare(b))
+  .map((w) => `${w}(?=[\s=]|$)`)
+  .join("|");
 
 // Multi-subcommand CLI tools: take 2 tokens (e.g. `git commit`, `npm test`).
 // These are tools where the first token alone is too broad to be a useful
@@ -323,7 +350,11 @@ export function matchBashSubcommand(
   // user can never approve `git X && rm -rf /` as a side-effect of having
   // ever approved `git status && git diff`.
   if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return null;
-  if (isDestructiveMemoryWrite(command)) return "deny";
+  // The mode-independent guard's predicate is the single source of truth for
+  // what a memory write is; there is no second rule here to keep in step with
+  // it (`refusesMemoryWrite` names the verb, so `undefined` is the only
+  // "not a write" signal).
+  if (refusesMemoryWrite(command) !== undefined) return "deny";
   // Sort patterns by length descending so the more specific entry wins.
   const patterns = Object.entries(allowlist)
     .filter(([k]) => k !== "*")

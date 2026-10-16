@@ -1684,16 +1684,39 @@ child-guards companion loads it into every spawned child) and again on the paren
 path above the sandbox short-circuit. The refused verbs are the ones no role is
 granted — `delete`, `prune`, `promote`, `export`, `backup`, `import`, `reindex`,
 `project`, `mcp` — plus `update` carrying any row-mutating flag (`-t`/`--text`,
-`-m`/`--metadata`, `--memory-type`, `--status`, `--importance`; prefix and `=`
-forms). An operator who genuinely needs one of them from an agent sets
-`PI_ENSEMBLE_ALLOW_MEMORY_WRITES=1`.
+`-m`/`--metadata`, `--memory-type`, `--status`, `--importance`). Flags are
+recognised by **exact name and in `=` form** (`--status active`, `--status=active`)
+and, for short flags, as any character of a **cluster** (`-tm`, `-mt`), since a
+cluster is a mutating flag the token hides — measured on vipune 0.15.0,
+`vipune update <id> -tm` is refused and is also a real write, because `t` consumes
+`m` as `--text`'s value and stores `m` in the row.
+
+Abbreviated long flags are never refused because the binary rejects them outright
+— `vipune update <id> --stat active` is refused by clap as an unexpected argument,
+and so is every other abbreviation (`--imp`, `--mem-t`, `--memorytyp=fact`) — so
+clap takes no long-flag prefix and refusing them would report a threat that does
+not exist. Use the exact flag names, not abbreviations, in prose and in prompts.
+
+The verb is found behind the shapes an agent actually emits: process wrappers
+(`env`, `nohup`, `command`, `exec`, `time`, `timeout 30`, `nice -n 5`), env
+assignments (`VIPUNE_DEBUG=1 vipune …`), a path to the binary
+(`/usr/local/bin/vipune`, `~/bin/vipune`, `./vipune`), the `oo` wrapper, compound
+keywords (`then`/`do`/`else`) and `(`, and vipune's own global options before the
+verb — `vipune --json delete 42`, `vipune -p other delete 42` and `vipune
+--db-path X delete 42` are refused just as a bare `vipune delete 42` is. Command
+position is tracked token by token, so an ungranted verb named only as an
+argument is never refused — `grep vipune delete file.log`, `echo vipune delete 42`
+and `echo vipune delete > notes.txt` all run, because there `vipune` is an
+argument rather than a command. `mcp__codebase_memory__vipune` is an MCP tool name
+and never an invocation. An operator who genuinely needs a refused verb from an agent
+sets `PI_ENSEMBLE_ALLOW_MEMORY_WRITES=1`.
 
 Before #1437 the only code refusal was `isDestructiveMemoryWrite`, reached from
 the permission layers that trust mode and sandbox mode both skip and from the
 parent-PM-only bash guard — so on an interactive host (trust mode is the default)
 the whole boundary was doctrine. The predicate now lives in `memory-write-guard.ts`
-and `isDestructiveMemoryWrite` is a delegating export, so the permission-layer
-call keeps working.
+and `matchBashSubcommand` calls `refusesMemoryWrite` directly — there is no second
+rule to keep in step with it, and no delegating alias with a duplicate test block.
 
 The refusal is **advisory, not a security boundary**: every rule is a string
 match on the quote-stripped command, and an agent determined to bypass it can
