@@ -9,15 +9,15 @@
  * duplicated).
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { commandOf } from "./lib/argv-shell.ts";
-import { type MergeTarget } from "../src/merge-target.ts";
 import { registerMergeGuard } from "../src/merge-guard.ts";
-import { type LedgerEntry, ledgerPathFor, latestEntry } from "../src/review-ledger.ts";
+import type { MergeTarget } from "../src/merge-target.ts";
+import { type LedgerEntry, latestEntry, ledgerPathFor } from "../src/review-ledger.ts";
 import { adversarialPassed, lensPassed } from "../src/review-ledger.ts";
+import { commandOf } from "./lib/argv-shell.ts";
 
 // The hook reads the forge from PI_ENSEMBLE_FORGE (the detectForge hard
 // override) so the decision matrix runs offline, without a real remote.
@@ -184,7 +184,7 @@ export async function makeHook(env: {
       return { stdout: "" };
     }
     if (cmd.includes("git remote")) {
-      return { stdout: env.remote + "\n" };
+      return { stdout: `${env.remote}\n` };
     }
     if (cmd.includes(`rev-parse ${env.remote}/`)) return { stdout: env.fetchedHead };
     if (cmd.includes("symbolic-ref")) {

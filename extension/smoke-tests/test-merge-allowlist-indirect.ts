@@ -48,7 +48,12 @@ for (const cmd of [
 }
 
 // ------------------------------------------------------------ brace expansion
-for (const cmd of ["gh pr m{erge,} 17", "glab mr merg{e,}", "gh pr {merge,view} 17", "gh pr m{e..e}rge 17"]) {
+for (const cmd of [
+  "gh pr m{erge,} 17",
+  "glab mr merg{e,}",
+  "gh pr {merge,view} 17",
+  "gh pr m{e..e}rge 17",
+]) {
   const m = readMergeCommand(cmd);
   assert(
     m.kind === "refused" && m.reason === "brace-expansion",
@@ -63,11 +68,17 @@ assert(kind('gh pr view 17 --jq "{a,b}"') === "none", "brace inside double quote
 // An out-of-range or unreadable escape is kept literal, so the text is not
 // rebuilt into a merge word the shell would never produce.
 for (const cmd of ["gh pr m$'\\U00110067'erge 17", "gh pr m$'\\xZZ'erge 17"]) {
-  assert(kind(cmd) !== "merge", `ANSI-C out-of-range escape is not read as a merge: ${JSON.stringify(cmd)}`);
+  assert(
+    kind(cmd) !== "merge",
+    `ANSI-C out-of-range escape is not read as a merge: ${JSON.stringify(cmd)}`,
+  );
 }
 {
   const m = readMergeCommand("$'\\U00110067gh' pr merge 17");
-  assert(m.kind === "refused", `ANSI-C prefix on the command word is refused (${JSON.stringify(m)})`);
+  assert(
+    m.kind === "refused",
+    `ANSI-C prefix on the command word is refused (${JSON.stringify(m)})`,
+  );
 }
 
 // ------------------------------------------------------------ read-only gh
@@ -91,7 +102,10 @@ for (const cmd of [
   "gh run list --workflow merge.yml",
   "gh workflow run merge-release.yml",
 ]) {
-  assert(kind(cmd) === "refused", `merge hidden behind a read-only verb is refused: ${JSON.stringify(cmd)}`);
+  assert(
+    kind(cmd) === "refused",
+    `merge hidden behind a read-only verb is refused: ${JSON.stringify(cmd)}`,
+  );
 }
 
 console.log(`\nexit ${exit}`);

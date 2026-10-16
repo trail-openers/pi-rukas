@@ -87,18 +87,16 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
-import {
-  GLAB_AUTO_MERGE_REFUSAL,
-  type MergeCommand,
-  mergeFormRefusal,
-  readMergeCommand,
-} from "./merge-allowlist.ts";
+import type { MergeCommand } from "./merge-allowlist.ts";
+import { readMergeCommand } from "./merge-allowlist.ts";
 import {
   lensNotEvaluatedRefusal,
   mergeIdentity,
   readPrCommentBodies,
+  renderHold,
 } from "./merge-guard-reads.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
+import { GLAB_AUTO_MERGE_REFUSAL } from "./merge-refusals.ts";
 import {
   type MergeExecFn,
   type MergeTarget,
@@ -113,7 +111,7 @@ import {
   readLedgerAt,
   remoteName,
 } from "./review-ledger.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 
 /** Per-exec timeout for the guard's gh/git calls. */
@@ -142,29 +140,85 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
   pi.on("tool_call", async (event, _ctx) => {
     if (event.toolName !== "bash") return;
     const command = (event.input as { command?: string })?.command ?? "";
+    // #1417 — one place that counts a hold, so the cycle record can see how
+    // often the guard blocks work instead of protecting it. A HOLD is a
+    // refusal of a command the guard could not read as a merge; the merge
+    // refusals below are not counted, because those are the guard doing its
+    // job. The line is ungated stderr (like `traceWarn`) so the console/err
+    // capture picks it up without the guard writing a file under the git
+    // common dir.
+    const held = (rendered: { block: true; reason: string }) => {
+      traceWarn(`merge-guard: HELD (not a merge) ${JSON.stringify(rendered.reason.slice(0, 240))}`);
+      return rendered;
+    };
     // Fail closed: a throw out of the tool_call hook would let the command
     // run, so anything the reader throws refuses.
     let analysis: MergeCommand;
     try {
       analysis = readMergeCommand(command);
     } catch (err) {
-      return block(
-        `merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`,
+      // #1417 — the reader threw. That says the CLASSIFIER failed, not that
+      // the command merges, so the text names the classifier as the suspect
+      // and does not offer the merge hatch: an operator setting it here has
+      // switched the whole review gate off to get one command through.
+      return held(
+        renderHold(
+          {
+            kind: "unanalysable",
+            reasonText: `the classifier threw (${analyseRefusal(err)}) — nothing in the command was read`,
+          },
+          command,
+        ),
       );
     }
     if (analysis.kind === "none") return;
     // #962: a command that names a forge and a merge but is not the one plain
     // merge form the guard checks (see merge-allowlist.ts).
+    //
+    // #1417 — a `refused` here is a HOLD, not a merge verdict: the classifier
+    // recognised merge-adjacent text it could not read, and nothing merged.
+    // So this refusal names WHAT was held (`analysis.detail` — the trigger
+    // word or the offending word) and never names the merge escape hatch.
+    // The twelve refusals of #1417 all told an agent reading an issue's label
+    // history to "issue the merge as a plain `gh pr merge`, or set
+    // PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1": wrong twice, and the only remedy
+    // offered weakened merge protection to unblock a read. The hatch belongs
+    // in the MERGE refusals (below, past `readMergeTarget`), where a merge is
+    // genuinely at stake and an operator who reviewed elsewhere can decide.
     if (analysis.kind === "refused") {
-      return block(
-        analysis.reason === "glab-auto-merge"
-          ? GLAB_AUTO_MERGE_REFUSAL
-          : mergeFormRefusal(analysis.reason),
+      if (analysis.reason === "glab-auto-merge") {
+        // A real merge in the accepted form, refused for deferring itself to
+        // the pipeline: an operator decision, so it keeps the hatch.
+        return block(GLAB_AUTO_MERGE_REFUSAL);
+      }
+      return held(
+        renderHold(
+          {
+            kind: "form",
+            reasonText:
+              analysis.reason === undefined
+                ? "merge-adjacent text it could not match to the one plain merge form the guard checks"
+                : `a \`${analysis.reason}\` shape${analysis.detail === undefined ? "" : `: ${analysis.detail}`}`,
+          },
+          command,
+        ),
       );
     }
     const merging = analysis.forge === "gitlab" ? "glab mr merge" : "gh pr merge";
     const repoValue = analysis.repo;
     let prNumber = analysis.prNumber;
+
+    // #1417 — one refusal builder for every step that runs BEFORE a merge is
+    // known to be the command at hand. Two readings of "could not decide", and
+    // the second is what the cycles hit: a `gh api … --jq` read whose
+    // classification fell through to the merge path. A step failure before
+    // this point does not prove the command merges anything, so the text says
+    // so, names the shape that would be a merge, and never offers the hatch.
+    // Once the command has parsed as a merge (after `readMergeTarget` /
+    // the forge check below), the refusals DO name the hatch — there the
+    // command is a merge and the operator may genuinely override the reviews.
+    const earlyRefuse = (reason: string) =>
+      held(renderHold({ kind: "not-a-merge", reasonText: reason }, `\`${merging}\` …`));
 
     const cwd = process.cwd();
     // The injectable exec seam: `opts.execFn` (tests drive the real hook
@@ -172,12 +226,18 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     const execFn: MergeExecFn = opts.execFn ?? execp;
 
     // No number in the command → fall back to current-branch resolution.
+    // #1417 — everything between here and `readMergeTarget` still only knows
+    // the command LOOKED merge-adjacent to the classifier; it has not read a
+    // merge. Those refusals go through `earlyRefuse` and do not name the
+    // hatch. Below `readMergeTarget` the command has parsed as a merge in the
+    // accepted form, so those refusals keep it: there an operator who has
+    // reviewed by other means genuinely decides.
     if (prNumber === undefined) {
       prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, repoValue);
     }
     if (prNumber === undefined) {
-      return block(
-        `could not resolve the PR number for \`${merging}\` (repo: ${repoValue ?? "none"}; fallback cwd: ${cwd}) — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
+      return earlyRefuse(
+        `its words read like the merge form \`${merging}\`, but the PR/MR number could not be resolved from the command or the current branch (repo: ${repoValue ?? "none"}; fallback cwd: ${cwd})`,
       );
     }
 
