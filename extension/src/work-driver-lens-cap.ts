@@ -44,6 +44,7 @@ import {
   MAX_REVIEW_ROUNDS,
   REVIEW_WALL_CLOCK_MS,
 } from "./work-driver-context.ts";
+import { recordLensResidualsPosted } from "./work-driver-draft-rearm.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -152,6 +153,17 @@ export async function appendReviewCapHit(
       const disclosed = await discloseResidualFindings(ctx, state, round, findingsBlob, verdict);
       if (disclosed.ok) {
         nextStep = "ci";
+        // #1398 — the route that DOES disclose now records that it did. This
+        // route posted the findings and recorded only its own `cap-hit`, so the
+        // draft gate could not tell a disclosed cap from an undisclosed one and
+        // had to guess from the cap's NAME. The fact is keyed on the patch
+        // identity, so a later fix push does not inherit it.
+        next = await recordLensResidualsPosted(ctx, next, {
+          round,
+          ...(state.pipelineState.prNumber !== undefined
+            ? { prNumber: state.pipelineState.prNumber }
+            : {}),
+        });
       } else {
         trace(`work-driver: round-cap — residual findings undisclosed (${disclosed.reason})`);
         next = appendEvent(next, {

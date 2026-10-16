@@ -296,6 +296,17 @@ const everyKindEvent: WorkEvent[] = [
     issueFallback: "posted",
     detail: "https://example.invalid/issues/1#issuecomment-1",
   },
+  {
+    // #1398 — the positive counterpart: a disclosure that DID reach the PR,
+    // keyed on the patch it describes. The draft-ready gate holds on this.
+    kind: "lens-residuals-posted",
+    at: 1,
+    round: 1,
+    prNumber: 7,
+    branch: "feature/issue-1398-x",
+    patchId: "3f2a9c1e0b7d4a58f6c1e0d9b8a7c6d5e4f3a2b1",
+    target: "pr",
+  },
 ];
 
 // The union-derived kind set: the source of truth both directions check

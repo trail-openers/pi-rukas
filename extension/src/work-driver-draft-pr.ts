@@ -28,6 +28,20 @@
  * verdict is CRITICAL, or while ISSUES_FOUND findings were never disclosed on
  * the PR (`readyHoldReason`). Attempts are bounded per mark point and per cycle.
  *
+ * #1398 — the disclosure check reads a FACT, not a cap name, and a `ready` is
+ * no longer permanent. `readyHoldReason` used to ask which cap NAME had
+ * appeared after the verdict (`round-cap` / `wall-clock` with
+ * `nextStep: "handoff"`) and held only in that one shape, so any other
+ * non-round-cap failure following an `ISSUES_FOUND` — `dispatch-failed`,
+ * `verify-failed:*`, a kill cause, `ci-retry` — read as "nothing to hold for"
+ * and the PR was marked ready over findings that had never been posted. The
+ * `lens-residuals-posted` event (work-driver-draft-rearm.ts) is now the
+ * positive fact, keyed on the patch identity the disclosure itself carries.
+ * And a PR marked ready that then has to be reviewed again is a draft again
+ * before that review runs — `rearmDraftForReview`, which closes the CI loop
+ * (`ci → develop → … → lens-review → ci`) that used to leave the PR mergeable
+ * for the whole re-review.
+ *
  * A draft is still state OPEN (GitHub) / opened (GitLab), so the re-entry
  * guard and the identity gate accept it unchanged.
  */
@@ -37,10 +51,14 @@ import { prReadyCmd } from "./forge-commands.ts";
 import type { ForgeType } from "./forge-detect.ts";
 import type { NormalizedPullRequest } from "./forge-types.ts";
 import type { Forge } from "./forge.ts";
+import { mergeIdentity } from "./merge-guard-reads.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { prCarriesDisclosure, readyHoldReason } from "./work-driver-draft-hold.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
+import { resolveMainline } from "./work-driver-git.ts";
 import { judgePrIdentity } from "./work-driver-verify-pr17.ts";
+import type { PrDraftFindingsFact } from "./workflow-state-schema-pr-draft.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /** `pr ready` calls per mark point (initial + 2 retries). */
@@ -98,42 +116,6 @@ export function reviewConcluded(eventLog: readonly WorkEvent[]): boolean {
   return false;
 }
 
-/**
- * Why the driver must NOT mark the PR ready, or `undefined` when it may.
- *  - a CRITICAL verdict is never marked ready over (the cap only routes it);
- *  - an ISSUES_FOUND verdict that a round/wall-clock cap sent to handoff was
- *    never disclosed on the PR (only the `ci` route discloses), so the
- *    findings would travel unseen — the PR stays a draft.
- */
-export function readyHoldReason(eventLog: readonly WorkEvent[]): string | undefined {
-  let verdictIdx = -1;
-  for (let i = eventLog.length - 1; i >= 0; i--) {
-    const k = eventLog[i]?.kind;
-    if (k === "lens-issues-found" || k === "lens-approved" || k === "lens-skipped-empty-diff") {
-      verdictIdx = i;
-      break;
-    }
-  }
-  const verdict = eventLog[verdictIdx];
-  if (verdict?.kind === "lens-issues-found" && verdict.verdict === "CRITICAL_ISSUES_FOUND") {
-    return "a CRITICAL finding is open, and the driver does not mark a PR ready over one";
-  }
-  if (verdict?.kind === "lens-issues-found") {
-    const capped = eventLog
-      .slice(verdictIdx + 1)
-      .some(
-        (e) =>
-          e.kind === "cap-hit" &&
-          (e.cap === "round-cap" || e.cap === "wall-clock") &&
-          e.nextStep === "handoff",
-      );
-    if (capped) {
-      return "the review's remaining findings were never posted to the PR, so it was not marked ready";
-    }
-  }
-  return undefined;
-}
-
 /** Mark the cycle's draft PR ready (`ci`, `merged`, handoff). Never throws. */
 export async function markDraftPrReady(
   ctx: DriverContext,
@@ -156,7 +138,25 @@ export async function markDraftPrReady(
       holdReason: `the PR could not be read to verify it is this cycle's: ${reason}`,
     });
   }
-  const hold = readyHoldReason(current.eventLog);
+  // #1398 — the hold is keyed on the patch the disclosure carries. The
+  // `prDraft.findingsPosted` mirror is the primary record, and it is computed
+  // HERE (not threaded from `markDraftPrReady`'s callers, who have no identity
+  // to key on) by asking the forge whether the comment carrying this patch's
+  // disclosure actually exists — the same read the merge guard makes
+  // (`readPrCommentBodies` + `lensResidualsMarker`), so a disclosure that
+  // landed, was edited away, or was posted for an older patch is judged the
+  // same way in both places. A null patch identity skips the read and falls
+  // back to the pre-#1398 cap-name shape: no read is made on an identity the
+  // driver cannot state, and an identity it cannot state is never a pass.
+  const patchId = await readyPatchId(ctx, current);
+  const findingsPosted = patchId
+    ? await findingsPostedFor(forge, patchId, current.pipelineState.branchName, own.pr)
+    : draft.findingsPosted;
+  const hold = readyHoldReason(current.eventLog, {
+    ...(patchId ? { patchId } : {}),
+    ...(findingsPosted ? { findingsPosted } : {}),
+    branch: current.pipelineState.branchName,
+  });
   if (hold) {
     trace(`work-driver: PR #${prNumber} stays a draft — ${hold}`);
     return withPrDraft(current, { ...draft, status: "draft", holdReason: hold });
@@ -356,7 +356,13 @@ async function readOwnPr(
   }
 }
 
-function withPrDraft(
+/**
+ * The one writer of `pipelineState.prDraft` for this family of modules. Shared
+ * with work-driver-draft-rearm.ts (the #1398 re-arm) so the two cannot build
+ * the snapshot differently — a re-arm that dropped a field the ready path had
+ * written would silently lose the disclosure fact.
+ */
+export function withPrDraft(
   state: WorkState,
   prDraft: NonNullable<WorkState["pipelineState"]["prDraft"]>,
 ): WorkState {
@@ -396,4 +402,74 @@ function defaultSleep(ms: number): Promise<void> {
     const t = setTimeout(resolve, ms);
     t.unref?.();
   });
+}
+
+/**
+ * The disclosure facts the hold check may rely on, read from the PR itself.
+ *
+ * Returns the `prDraft` mirror when the PR carries this patch's disclosure
+ * marker, and an EMPTY list when it does not — an empty list is what turns the
+ * hold on, so a state that claims a disclosure the PR cannot show does not
+ * license a ready. A failed comment read is likewise an empty list: the
+ * disclosure is a condition and an unreadable condition is a refusal, never a
+ * pass (the same rule the merge guard applies to its own comment read).
+ */
+async function findingsPostedFor(
+  forge: Forge,
+  patchId: string,
+  branch: string | undefined,
+  pr: NormalizedPullRequest,
+): Promise<PrDraftFindingsFact[]> {
+  let bodies: string[];
+  try {
+    bodies = (await forge.prComments(pr.number)).map((c) => c.body);
+  } catch (err) {
+    trace(`work-driver: the disclosure read for PR #${pr.number} failed: ${rawErrorText(err)}`);
+    return [];
+  }
+  return prCarriesDisclosure(bodies, branch ?? pr.headRefName, patchId)
+    ? [{ patchId, at: Date.now(), round: 0, prNumber: pr.number }]
+    : [];
+}
+
+/**
+ * The patch identity a disclosure or a ready is keyed on — the merge guard's own
+ * computation (`mergeIdentity`, #1305): `merge-base(remote/head, remote/mainline)
+ * ..remote/head`, against the branch's remote refs and the mainline. Lives here
+ * rather than in work-driver-draft-rearm.ts because BOTH modules need it and
+ * the re-arm module imports this one (a shared helper in the dependency
+ * direction that already exists keeps the pair acyclic).
+ *
+ * The refs must already be fetched by the caller (the disclosure path fetches
+ * them). A local clone that has not seen the latest push computes a stale id —
+ * the fail-closed direction: a stale id never matches a current one.
+ */
+export async function currentPatchIdentity(
+  execFn: VerifyExec,
+  cwd: string,
+  branch: string,
+): Promise<{ ok: true; patchId: string } | { ok: false; reason: string }> {
+  const mainline = await resolveMainline(cwd, execFn);
+  if (!mainline.ok) return mainline;
+  return mergeIdentity(execFn, cwd, branch, mainline.branch);
+}
+
+/**
+ * The patch identity the ready comparison is keyed on, or `null` when it cannot
+ * be computed (no branch, no remote, no mainline, an unreadable merge-base).
+ * `null` is deliberate and never a silent pass: `readyHoldReason` without a
+ * `patchId` falls back to the pre-#1398 cap-name shape, so a driver that cannot
+ * establish an identity cannot be fooled into marking an undisclosed review ready
+ * — and cannot be blocked by a git read that has nothing to do with the review.
+ */
+async function readyPatchId(ctx: DriverContext, state: WorkState): Promise<string | null> {
+  const branch = state.pipelineState.branchName;
+  if (!branch) return null;
+  const execFn: VerifyExec = ctx.verifyExecFn ?? execp;
+  const identity = await currentPatchIdentity(execFn, ctx.repoRoot, branch);
+  if (!identity.ok) {
+    trace(`work-driver: the ready check has no patch identity to key on — ${identity.reason}`);
+    return null;
+  }
+  return identity.patchId;
 }
