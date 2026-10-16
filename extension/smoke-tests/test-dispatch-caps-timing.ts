@@ -96,19 +96,34 @@ const withEnvAsync = async <T>(
   const killedSigs: string[] = [];
   const child = { killed: killedSigs, kill: (sig: string) => killedSigs.push(sig) } as never;
   let exited = false;
-  const session = createCapSession({
-    role: "developer",
-    child,
-    onSteer: () => {},
-    totalTokens: () => 1_000_000, // over budget — check() will trigger
-    timedOut: () => false,
-    inactivityKilled: () => false,
-    toolInactivityKilled: () => false,
-    aborted: () => false,
-    capKillGraceMs: 600,
-    childExited: () => exited,
-  });
+  // The tracker reads `tokenBudgetFor(role)` IN ITS CONSTRUCTOR, so the
+  // session must be built INSIDE the env scope — building it outside and
+  // arming the budget afterwards latched budget=0, and `check()` returns
+  // early on `budget <= 0`. Every H1 assertion then passed on a tracker that
+  // was never armed at all: the three assertions below were vacuous, and an
+  // operator/CI env carrying PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER made that
+  // worse (budget latched from the leaked value instead of 100, so the
+  // 1_000_000-token stream never crossed it either). Construction now
+  // mirrors the chatty-child block, and the budget assertion right below
+  // makes a leaked operator value fail LOUDLY rather than silently — a gate
+  // never observed to fail is worthless (AGENTS.md §1).
   await withEnvAsync({ PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER: "100" }, async () => {
+    const session = createCapSession({
+      role: "developer",
+      child,
+      onSteer: () => {},
+      totalTokens: () => 1_000_000, // over budget — check() will trigger
+      timedOut: () => false,
+      inactivityKilled: () => false,
+      toolInactivityKilled: () => false,
+      aborted: () => false,
+      capKillGraceMs: 600,
+      childExited: () => exited,
+    });
+    assert(
+      session.tokenBudgetTracker?.budgetTokens === 100,
+      `H1: tracker armed with the 100-token cap this block sets (got ${session.tokenBudgetTracker?.budgetTokens}) — an operator/CI PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER makes the three assertions below vacuous`,
+    );
     // The tracker triggers at the first message_end (1_000_000 >= 100).
     session.tokenBudgetTracker?.check(Date.now());
     // The child exits on its own BEFORE the grace window elapses.

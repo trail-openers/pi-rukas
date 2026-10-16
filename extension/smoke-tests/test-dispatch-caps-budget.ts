@@ -19,11 +19,14 @@
  * machinery is inert — no killCause outside timeout/inactivity/abort, no steer
  * written, no new behavior on a healthy stream.
  *
- * The steer-then-kill live path (a scripted usage stream crossing an explicit
- * budget) is exercised in the live spawn test (test-dispatch-caps-live.ts,
- * out of scope for the offline pre-push set) because it needs a real child to
- * receive the steer and observe the SIGTERM. The offline suite proves the
- * arithmetic and the inertness; the live suite proves the end-to-end kill.
+ * The steer-then-kill path with a REAL child (a live Pi child receiving the
+ * wrap-up steer and observing the SIGTERM) is **uncovered today**: no
+ * `test-dispatch-caps-live.ts` exists, and the live suites that do exist
+ * (`test-spawn-live.ts`, `test-progress-live.ts`) exercise spawn shape and
+ * `onProgress` cadence, not a scripted usage stream crossing an explicit
+ * budget. The offline suite proves the arithmetic, the trigger, and the
+ * inertness; the end-to-end kill against a real child is an unenforced
+ * assertion, stated plainly rather than cited to a file that is not there.
  */
 
 import { budgetSteerText, emptyRunningState, formatTokens, ingestEvent } from "../src/progress.ts";
