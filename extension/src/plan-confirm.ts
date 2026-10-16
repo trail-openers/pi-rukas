@@ -49,6 +49,7 @@ import {
   withinPlanCacheTtl,
   writeInvestigationCache,
 } from "./plan-investigation-cache.ts";
+import type { PlanProvenance } from "./plan-provenance.ts";
 import {
   type PlanDriverInput,
   type PlanGap,
@@ -71,6 +72,13 @@ export interface SettleRun {
   spec: string;
   priorContext: { source: string; fact: string }[];
   failedAngles?: { name: string; detail: string }[];
+  /**
+   * #1377: what the filing would send beyond the body — recorded with the
+   * reviewed bytes so a verbatim confirm files the same labels and appends the
+   * same provenance lines, and so the digest both sides compute matches.
+   */
+  labels?: string[];
+  provenance?: PlanProvenance;
 }
 
 /**
@@ -96,6 +104,10 @@ export async function settlePlanCache(
         spec: run.spec,
         priorContext: run.priorContext,
         failedAngles: run.failedAngles,
+        // #1377: stored only when the caller asked for them, so a dry run with
+        // no labels/provenance writes the byte-identical entry it wrote before.
+        labels: run.labels?.length ? run.labels : undefined,
+        provenance: run.provenance,
       },
     });
   } else if (run.issueUrl) {
@@ -152,8 +164,16 @@ async function verbatimMissReason(
     return `the reviewed dry run expired (${Math.round(ageMs / 60_000)} min old; PI_ENSEMBLE_PLAN_CACHE_TTL_MS sets the limit)`;
   }
   if (!entry.reviewed.fileable) return "the dry run was not fileable";
-  if (reviewedDigestOf(entry.reviewed.title, entry.reviewed.spec) !== digest) {
-    return "the reviewedDigest does not match the cached dry run";
+  // #1377: the digest covers the labels and provenance the ENTRY recorded, not
+  // the ones this call passed — a confirm that changed either is a digest
+  // mismatch, and the reason says so rather than the generic one.
+  if (
+    reviewedDigestOf(entry.reviewed.title, entry.reviewed.spec, {
+      labels: entry.reviewed.labels,
+      provenance: entry.reviewed.provenance,
+    }) !== digest
+  ) {
+    return "the reviewedDigest does not match the cached dry run (title, body, labels or provenance changed)";
   }
   return "the cached spec no longer passes the final-spec checks";
 }
@@ -172,7 +192,16 @@ export function heldForReview(
   spec: string,
 ): { reason: string } | undefined {
   if (input.dryRun || input.reviewedDigest === undefined) return undefined;
-  if (reviewedDigestOf(title, spec) === input.reviewedDigest) return undefined;
+  // #1377: the same inputs the dry run hashed — labels and provenance are part
+  // of what was reviewed, so a re-draft is compared on all of them.
+  if (
+    reviewedDigestOf(title, spec, {
+      labels: input.labels,
+      provenance: input.provenance,
+    }) === input.reviewedDigest
+  ) {
+    return undefined;
+  }
   const reason = missReason ?? "the reviewed dry run could not be filed verbatim";
   trace(
     `plan-confirm: confirm held — the re-drafted spec differs from the reviewed one (${reason})`,
@@ -254,12 +283,25 @@ async function fileClaimed(
   finishTimings: () => PlanPhaseTiming[],
 ): Promise<PlanResult> {
   const { title, spec, priorContext, failedAngles } = claimed.reviewed;
+  // #1377: the reviewed entry's OWN labels and provenance — the bytes the
+  // operator saw, which the digest just proved match. The call's own inputs are
+  // never consulted here (that is what makes it verbatim), and the label check
+  // does not re-run: the dry run already refused to call these fileable unless
+  // every label existed.
+  const labels = claimed.reviewed.labels ?? [];
+  // #1377: the forge is resolved ONCE and the same adapter files — the label
+  // gate does not re-run here (the dry run already refused to call these
+  // fileable unless every label existed), but a filing that resolved its forge
+  // per call would pay the detection read again for no benefit.
+  const forge = (await (getPlanForge() ?? (() => planForgeFor(repoRoot)))()) ?? undefined;
   // A throw from the forge releases the claim before propagating.
-  const { url, failure } = await fileIssue(
-    title,
-    spec,
-    getPlanForge() ?? (() => planForgeFor(repoRoot)),
-  ).catch(async (err: unknown) => {
+  const {
+    url,
+    number: issueNumber,
+    failure,
+  } = await fileIssue(title, spec, () => Promise.resolve(forge), {
+    labels,
+  }).catch(async (err: unknown) => {
     await claimed.release();
     throw err;
   });
@@ -273,6 +315,7 @@ async function fileClaimed(
     gaps: claimed.gaps,
     priorContext,
     issueUrl: url,
+    issueNumber,
     filingFailure: failure,
     failedAngles,
     filedFromDryRun: url ? { ageMs: claimed.ageMs } : undefined,

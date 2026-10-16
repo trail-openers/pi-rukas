@@ -17,6 +17,7 @@ import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 // #1134 follow-up — the argv form must be honoured: the previous
@@ -163,6 +164,12 @@ export async function verifyStepOutcome(
   commentEvidence?: CommentEvidence[];
   /** #1349 — the verify command is red at base and its failures are the only ones. */
   baselineRedOnly?: boolean;
+  /**
+   * #1240 — the consolidated verify did not run because its probe tree is the
+   * tree the per-worktree verify already judged. The caller turns this into a
+   * `consolidated-verify-skipped` event (`makeConsolidatedVerifySkippedEvent`).
+   */
+  consolidatedVerifySkipped?: AlreadyVerifiedTree;
 }> {
   const failures: string[] = [];
   const notes: string[] = [];
@@ -183,6 +190,10 @@ export async function verifyStepOutcome(
     const fenceViolations: FenceViolationRecord[] = [];
     const commentEvidence: CommentEvidence[] = [];
     let baselineRedOnly = false;
+    // #1240 — the identity that justified skipping the consolidated run.
+    // Captured here and returned structurally: the caller appends the event,
+    // which is where the event log lives.
+    let consolidatedVerifySkipped: AlreadyVerifiedTree | undefined;
     await verifyDevelopOutcome(
       ctx,
       state,
@@ -200,6 +211,15 @@ export async function verifyStepOutcome(
       () => {
         baselineRedOnly = true;
       },
+      // #1240 review r2 — without this callback the identity the probe
+      // recorded is DROPPED: `verifyDevelopOutcome` threads the out-parameter
+      // to the report layer, which calls it, and `consolidatedVerifySkipped`
+      // would stay undefined so no caller appended the event. The note still
+      // appeared, which is exactly how the gap hid: the note is rendered from
+      // `cons.skipped` independently of the callback.
+      (skipped) => {
+        consolidatedVerifySkipped = skipped;
+      },
     );
     const flakeRecovered = flakeEvidenceTail !== undefined;
     return {
@@ -210,6 +230,7 @@ export async function verifyStepOutcome(
       ...(flakeRecovered ? { flakeRecovered: true } : {}),
       ...(consolidatedLogPath !== undefined ? { logPath: consolidatedLogPath } : {}),
       ...(baselineRedOnly ? { baselineRedOnly: true } : {}),
+      ...(consolidatedVerifySkipped !== undefined ? { consolidatedVerifySkipped } : {}),
       commentEvidence,
     };
   }

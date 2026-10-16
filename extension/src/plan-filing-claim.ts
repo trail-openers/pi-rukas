@@ -27,16 +27,72 @@ import {
   readEntryAt,
   withinPlanCacheTtl,
 } from "./plan-investigation-cache.ts";
+import { type PlanProvenance, renderProvenance } from "./plan-provenance.ts";
 import type { PlanGap } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 
 /**
- * The short digest of the exact title + body a filing would send: 16 hex chars
- * of sha256. The dry run reports it; a verbatim filing must echo it back.
+ * What a digest binds: the exact bytes a filing would send, PLUS the two things
+ * the forge call carries that are NOT in the body.
+ *
+ * `reviewedDigestOf` is the authorisation for a verbatim filing — the operator
+ * was shown this digest in the dry run, and the confirm must echo it. Labels are
+ * arguments to the create call, never body text, so a digest that covered only
+ * title + spec would let a caller file the reviewed bytes under a DIFFERENT set
+ * of labels. #1377 therefore adds both inputs and bumps the version tag: an
+ * older dry run's digest no longer matches anything, which is correct — its
+ * cached entry carries no labels to file with.
  */
-export function reviewedDigestOf(title: string, spec: string): string {
+export interface DigestInputs {
+  title: string;
+  spec: string;
+  /** Sorted, deduped label list — the caller's order is not a digest input. */
+  labels?: string[];
+  provenance?: PlanProvenance;
+}
+
+/**
+ * The optional digest inputs, so the two positional args stay the common call.
+ *
+ * Declared as `Omit<DigestInputs, ...>` and not as a second literal, which is
+ * the whole point: `DigestInputs` is what `digestTuple` hashes, so a new digest
+ * term added there is a member of THIS type too — a caller that forgot to pass
+ * it is a type error, not a digest that silently omits a term on one side only.
+ * A parallel hand-written shape drifts precisely when it matters (a new field is
+ * hashed by the dry run and not by the confirm, and the confirm then refuses a
+ * correct digest). The pre-#1377 digest is the cautionary case: labels and
+ * provenance were arguments to the create call that a hand-written pair of
+ * shapes could carry on one side.
+ */
+export type DigestExtra = Omit<DigestInputs, "title" | "spec">;
+
+/**
+ * The digest tuple: version tag, title, body, sorted deduped labels, rendered
+ * provenance lines. The provenance term is the RENDERED lines, not the caller's
+ * object — which is what makes render and digest agree by construction: both
+ * read the same own keys through `markerLineOf`, so a marker the render would
+ * not print cannot be covered by the digest either.
+ */
+function digestTuple(i: DigestInputs): string[] {
+  return [
+    "plan-reviewed-v2",
+    i.title,
+    i.spec,
+    // Sorted AND deduped: a repeated label files the same issue, so it must not
+    // be a digest input (the dry run and the confirm must agree on one ticket).
+    JSON.stringify([...new Set(i.labels ?? [])].sort()),
+    JSON.stringify(renderProvenance(i.provenance)),
+  ];
+}
+
+/**
+ * The short digest of the exact filing a call would send: 16 hex chars of
+ * sha256 over the title, the body, the labels and the rendered provenance. The
+ * dry run reports it; a verbatim filing must echo it back.
+ */
+export function reviewedDigestOf(title: string, spec: string, extra: DigestExtra = {}): string {
   return createHash("sha256")
-    .update(JSON.stringify(["plan-reviewed-v1", title, spec]))
+    .update(JSON.stringify(digestTuple({ title, spec, ...extra })))
     .digest("hex")
     .slice(0, 16);
 }
@@ -60,6 +116,11 @@ export interface ClaimedDryRun {
  * same key (lineage + HEAD), inside the expiry, and (when given) hashing to the
  * digest the operator was shown. Used BEFORE the claim and again on the claimed
  * bytes, so a check never relies on a file that changed underneath it.
+ *
+ * The labels/provenance the digest must cover are read from the ENTRY, not from
+ * the caller: `CacheInputs` is deliberately not keyed on them (a different label
+ * set is the same plan, and the digest is the guard), so the only bytes a
+ * verbatim filing may send are the ones the dry run recorded and hashed.
  */
 function fileableEntry(
   entry: InvestigationCacheEntry | undefined,
@@ -72,7 +133,11 @@ function fileableEntry(
   }
   if (!withinPlanCacheTtl(now - entry.createdAt)) return false;
   return (
-    digest === undefined || reviewedDigestOf(entry.reviewed.title, entry.reviewed.spec) === digest
+    digest === undefined ||
+    reviewedDigestOf(entry.reviewed.title, entry.reviewed.spec, {
+      labels: entry.reviewed.labels,
+      provenance: entry.reviewed.provenance,
+    }) === digest
   );
 }
 
