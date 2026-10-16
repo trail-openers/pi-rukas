@@ -41,9 +41,17 @@ export type Composition = "may-add-only" | "tie-break" | "advisory" | "replace";
 export type DecisionMode = "off" | "shadow" | "enforce";
 
 /**
- * How one state field reaches a model and the log: redacted over the WHOLE
- * value first, then clipped to `max` from `from`. Declared on the seam, so the
- * caller hands over raw text and the seam owns the bound (#1393).
+ * How one state field reaches a model and the log: it goes through
+ * `redactBounded` (decision-log.ts), which scans a window WIDENED past the cut —
+ * up to its own `SCAN_CAP` beyond it, with the edge pulled back to the start of
+ * the token the cut fell inside — redacts that whole window, and then keeps `max`
+ * characters from
+ * `from`. So the value is NOT redacted whole and then clipped: a clip-then-redact
+ * (or a redact over only the kept window) amputates a credential that straddles
+ * the cut, and the pattern never sees enough context to match it (#1393). The
+ * scan is bounded, never the whole document, because a state can be megabytes.
+ * Declared on the seam, so the caller hands over raw text and the seam owns the
+ * bound.
  */
 export interface FieldBound {
   max: number;

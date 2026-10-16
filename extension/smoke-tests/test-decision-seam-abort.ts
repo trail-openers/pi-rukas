@@ -13,12 +13,20 @@
  * when the code under test is genuinely broken, so each "prompt" case is paired
  * with the SEAM BOUND it would have had to wait out, and the un-aborted control
  * below proves that bound is really in force: were the fixture's bound ever
- * lowered, the control fails and the 2-second bars below stop being meaningful.
+ * lowered, the control fails and the bars below stop being meaningful.
  *
- *   - aborted at 100 ms under a 30 s seam bound -> settles in well under 2 s;
+ * Every constant here is scaled about 10x from the first cut of this file, which
+ * spent ~37 s of wall clock asleep. The scaling is uniform — bound, abort
+ * latency, settle time and the teardown waits all moved together — so the
+ * COMPARATIVE structure that makes the file worth running is untouched: the abort
+ * still lands at ~1/10 of the bound, the settled-race waits still pass the point
+ * an uncleared timer would have fired, and the control still has to wait out the
+ * whole bound. Only the units changed.
+ *
+ *   - aborted at 10 ms under a 3 s seam bound -> settles in well under 500 ms;
  *   - the backend's OWN signal fires, so the backend is cancelled, not leaked;
  *   - a signal already aborted when `decide()` is called -> settles at once;
- *   - the same backend, never aborted, waits out the full 30 s (the control);
+ *   - the same backend, never aborted, waits out the full 3 s (the control);
  *   - the abort writes one record, carrying the abort as the backend's error.
  *
  * Offline: the backend is a closure that never settles; nothing touches the network.
@@ -35,9 +43,25 @@ const { assert, state } = makeAssert();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Comfortably longer than any honest abort, comfortably shorter than the bound. */
-const PROMPT_MS = 2_000;
+const PROMPT_MS = 500;
 /** The seam bound the aborted calls must NOT wait out. The control proves it bites. */
-const SEAM_BOUND_MS = 30_000;
+const SEAM_BOUND_MS = 3_000;
+/** An abort arrives at ~1/30 of the bound — same order as the 100 ms / 30 s the
+ * first cut used, which is the ratio the aborted cases are about. */
+const ABORT_AT_MS = 100;
+/**
+ * Long enough that the abort arrives BEFORE the backend answers — the whole
+ * point of case 5, so `SETTLE_MS > ABORT_AT_MS` is load-bearing, not cosmetic:
+ * with a backend that answered first the race would have settled normally and
+ * the teardown claim would be about a call nobody aborted.
+ */
+const SETTLE_MS = 500;
+/**
+ * How long to wait for an uncleared timer to betray itself: HALF the seam bound,
+ * which is past the point any racer's `setTimeout` would have fired and the
+ * reason this file used to sleep for 3.6 s per probe.
+ */
+const TEARDOWN_WAIT_MS = SEAM_BOUND_MS * 0.5;
 
 // A tests-only seam: production seams live in the registry source, where the
 // contract test reads them. Its bound is the one the aborted calls must beat.
@@ -108,12 +132,12 @@ const seamAnswered = "fixture-abort-answered";
   tokenBudget: 8_000,
 };
 
-/** Wait until a predicate sees the record it wants, or 4 s have passed. */
+/** Wait until a predicate sees the record it wants, or ~2 s have passed. */
 async function awaitRecord(
   file: string,
   pred: (r: Record<string, unknown>) => boolean,
 ): Promise<Record<string, unknown> | undefined> {
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 200; i++) {
     const hit = records(file).find(pred);
     if (hit !== undefined) return hit;
     await sleep(10);
@@ -261,7 +285,7 @@ const req = { state: { probe: "value" }, question: "q", rule: "ok" };
     return true;
   }) as typeof process.stderr.write;
   // Past the seam bound, so a timer left armed from the settled race would fire.
-  await sleep(SEAM_BOUND_MS * 0.12);
+  await sleep(TEARDOWN_WAIT_MS);
   process.stderr.write = realWrite;
   assert(!traceWarned, "a settled race leaves no armed timer and traces nothing after the fact");
   const rec = records(log).find((r) => r.seam === seamAnswered);
@@ -275,7 +299,7 @@ const req = { state: { probe: "value" }, question: "q", rule: "ok" };
   // 1. Aborted mid-flight while the backend never settles.
   const wedged = wedgedBackend();
   const ac = new AbortController();
-  const abortTimer = setTimeout(() => ac.abort(), 100);
+  const abortTimer = setTimeout(() => ac.abort(), ABORT_AT_MS);
   const t0 = Date.now();
   const d = await decide(seam as never, req, {
     backends: [wedged],
@@ -359,20 +383,24 @@ const req = { state: { probe: "value" }, question: "q", rule: "ok" };
 // 5. The abort performs the TIMEOUT racer's teardown, not just its own (#1393).
 //
 // `runBounded` arms the seam's own `setTimeout` before the backend runs. If the
-// outer abort resolved the race without clearing it, a ~30 s timer stays armed
-// past a call answered in ~100 ms, and its callback then fires into a decision
+// outer abort resolved the race without clearing it, a ~3 s timer stays armed
+// past a call answered in ~10 ms, and its callback then fires into a decision
 // that has already been answered — setting `timedOut` and emitting the
 // "settled after its bound" trace for a call nobody is waiting on. A pending
 // timer is not observable from outside this runtime (no `Bun.getTimerCount`), so
-// the probe is the callback itself: this backend settles SUCCESSFULLY at 500 ms
-// under a 30 s bound with an abort at 100 ms, and the test then waits past the
-// point at which an uncleared timer would have fired.
+// the probe is the callback itself: this backend settles SUCCESSFULLY at
+// `SETTLE_MS` (after `ABORT_AT_MS`) under a `SEAM_BOUND_MS` bound, and the test
+// then waits past the point at which an uncleared timer would have fired.
 {
-  let traceWarned = false;
+  let boundTimerFired = false;
   const realWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
     const line = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-    if (line.includes("settled after its")) traceWarned = true;
+    // The claim here is about the seam's own `setTimeout` firing into an answered
+    // call, which the timeout path labels `bound`. A `... abort; discarded` line
+    // is the LEGITIMATE trace of the backend settling late after the abort won —
+    // case 6 below asserts that one exists — so this spy must not count it.
+    if (/settled after its[^\n]*\bbound\b/.test(line)) boundTimerFired = true;
     else realWrite(chunk as never, ...(rest as []));
     return true;
   }) as typeof process.stderr.write;
@@ -386,13 +414,13 @@ const req = { state: { probe: "value" }, question: "q", rule: "ok" };
   mkdirSync(path.join(root, ".git"), { recursive: true });
   const log = path.join(root, ".pi", "decisions.jsonl");
   const ac = new AbortController();
-  setTimeout(() => ac.abort(), 100);
+  setTimeout(() => ac.abort(), ABORT_AT_MS);
   const settledBackend: Backend = {
     name: "settles-after-abort",
     source: "llm",
     run: (_input: BackendInput, signal: AbortSignal) =>
       new Promise<BackendResult>((resolve) => {
-        setTimeout(() => resolve({ ok: true, answer: "ok", justification: "late" }), 500);
+        setTimeout(() => resolve({ ok: true, answer: "ok", justification: "late" }), SETTLE_MS);
         signal.addEventListener("abort", () => resolve({ ok: false, error: "cancelled" }));
       }),
   };
@@ -407,13 +435,13 @@ const req = { state: { probe: "value" }, question: "q", rule: "ok" };
     elapsed < PROMPT_MS,
     `the aborted call settled promptly (${elapsed}ms), so any timer still armed below belongs to the abandoned race`,
   );
-  // The seam bound is 30 s; 2 s of quiet is not the same proof, so the wait
-  // passes the point at which an uncleared timer would have fired.
-  await sleep(SEAM_BOUND_MS * 0.12);
+  // The seam bound is seconds, not a minute, and half of it is still past the
+  // point at which an uncleared timer would have fired.
+  await sleep(TEARDOWN_WAIT_MS);
   process.stderr.write = realWrite;
   assert(
-    !traceWarned,
-    "the abort cleared the seam's own bound timer, as the timeout racer does: no late-settle trace for a call already answered",
+    !boundTimerFired,
+    "the abort cleared the seam's own bound timer, as the timeout racer does: no bound-fired trace for a call already answered",
   );
   // The teardown path is audited like every other: the record exists and its
   // backends array carries the cancellation the race produced. (`Decision` has

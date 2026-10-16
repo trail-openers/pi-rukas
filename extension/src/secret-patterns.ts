@@ -31,10 +31,13 @@
  * filler (`ffffsk-ant-…`, what a provider emits when it dumps a payload without
  * separators) while accepting one glued to an identifier's tail. Where a prefix
  * may begin is decided by the CALLER, which is the only party that can see it:
- * `widenToTokenStart` in decision-log.ts starts every bounded scan at the START of
- * a token, so a glued run's credential sits at position 0 of the slice and the
- * prefix still matches there. That is the trade shape-with-context has always
- * made, stated rather than hidden in a metacharacter that meant something else.
+ * `widenPastCut` in decision-log.ts starts every `redactBounded` scan at the START
+ * of a token, so a glued run's credential sits at position 0 of the slice and the
+ * prefix still matches there. That widening is on the `redactBounded` path ONLY —
+ * `redactSecrets` on a whole document does not need it, because the prefix has its
+ * own left context there — so a caller that clips first and redacts second has no
+ * such guarantee. That is the trade shape-with-context has always made, stated
+ * rather than hidden in a metacharacter that meant something else.
  *
  * Measured, not assumed: each candidate form was run against all probe positions
  * before this shape was chosen. A negative lookbehind — the obvious spelling of
@@ -46,14 +49,32 @@
  */
 
 /**
- * "The token ends here." `[^A-Za-z0-9+/=]` asks only that no character the token
- * continues across follow, so `"` and `,` satisfy it. `$` is the other way a token
- * ends: at the end of the slice, which the bounded scan reaches routinely.
+ * "The token ends here", PER RULE: `(?![BODY])` asks only that no character THIS
+ * rule's body could have continued across follows. `"`, `,` and `)` satisfy it, so
+ * a key inside JSON or a sentence matches — which is what the closing `\b` used to
+ * refuse (#1393).
+ *
+ * The class must be the rule's OWN body class and nothing wider. One shared
+ * `[^A-Za-z0-9+/=]` — the previous shape here — asks a `+`, `/` or `=` NOT to
+ * follow even for a rule whose body never consumes one, and a base64 tail is exactly
+ * those characters: `sk-ant-…==`, `sk-ant-…+` and `sk-ant-…/seg` matched NOTHING,
+ * reported `redactions: 0`, and shipped the key. Measured before the fix: count 0
+ * for all three tails, unbounded, whole document, so no scan window could have
+ * helped. `$` is the other way a token ends: at the end of the slice, which the
+ * bounded scan reaches routinely.
  */
-const TOKEN_END = "(?=$|[^A-Za-z0-9+/=])";
+const tokenEndFor = (bodyClass: string) => `(?=$|[^${bodyClass}])`;
 
-/** A prefix rule whose body consumes the whole token, so `TOKEN_END` is its edge. */
-const token = (literal: string) => new RegExp(`${literal}${TOKEN_END}`);
+/**
+ * A prefix rule. `literal` carries the prefix AND its own quantified body — each
+ * token has a different minimum length and its own character class, so there is no
+ * shared body shape to factor out. What is shared, and what the helper enforces,
+ * is the END: the lookahead excludes exactly the characters the rule's own
+ * `bodyClass` names, so a rule can never refuse a continuation its body could not
+ * have consumed anyway.
+ */
+const token = (literal: string, bodyClass: string) =>
+  new RegExp(`${literal}${tokenEndFor(bodyClass)}`);
 
 /** A prefix rule whose own text already ends the token (`Bearer `, the PEM arm). */
 const anchored = (literal: string) => new RegExp(literal);
@@ -63,19 +84,34 @@ export const SECRET_PATTERNS: readonly RegExp[] = [
   // `sk-ant-api03-`), so the token body is NOT alphanumeric-only. Measured: the
   // previous `sk-[A-Za-z0-9]{16,}` refused a legacy key and passed both current
   // formats — including this project's own provider.
-  token("sk-[A-Za-z0-9](?:[A-Za-z0-9-]{15,})"),
-  token("(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})"),
-  token("xox[baprs]-[A-Za-z0-9-]{10,}"),
-  token("glpat-[A-Za-z0-9_-]{16,}"),
-  token("AIza[0-9A-Za-z_-]{30,}"),
-  token("npm_[A-Za-z0-9]{30,}"),
-  token("AKIA[0-9A-Z]{16}"),
+  token("sk-[A-Za-z0-9](?:[A-Za-z0-9-]{15,})", "A-Za-z0-9-"),
+  token("(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})", "A-Za-z0-9_"),
+  token("xox[baprs]-[A-Za-z0-9-]{10,}", "A-Za-z0-9-"),
+  token("glpat-[A-Za-z0-9_-]{16,}", "A-Za-z0-9_-"),
+  token("AIza[0-9A-Za-z_-]{30,}", "0-9A-Za-z_-"),
+  token("npm_[A-Za-z0-9]{30,}", "A-Za-z0-9"),
+  token("AKIA[0-9A-Z]{16}", "0-9A-Z"),
   anchored("Bearer\\s+[A-Za-z0-9._-]{20,}"),
   anchored("-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-  // The key/value rule keeps its leading `\b` and gets no `TOKEN_END`: its body
+  // The key/value rule keeps its leading `\b` and gets no end assertion: its body
   // runs to the end of the token, so a trailing assertion could only ever be
   // satisfied by a body SHORTER than the token — the `\b` bug, relocated.
-  /\b(?:api[_-]?key|secret|password|passwd|token)\s*[:=]\s*["']?[A-Za-z0-9._\-/+]{12,}/i,
+  //
+  // The quote BEFORE the separator is the JSON form (#1393): `{"password":
+  // "Sup3rSecretValue99"}` puts a `"` between the keyword and the `:`, and the old
+  // rule allowed only `\s*` there, so the whole rule matched nothing — measured
+  // count 0, unbounded, whole document, so no scan window could have caught it. It
+  // sits BEFORE the `\s*` rather than only replacing the trailing `["']?`, because
+  // `password : "value"` quotes the pair, not just the value. An identifier with
+  // `=`/`:` inside it is still refused by the `\b`, which is the same
+  // shape-with-context judgement that keeps a git SHA, a UUID, `task-list` and
+  // `desk-top` out of the log — all four probe-asserted in
+  // test-decision-redaction-overreach.ts. Two rules can fire on one JSON pair
+  // (`{"token":"ghp_…"}` matches both the keyword rule and the `ghp_` prefix), so
+  // an overlap is counted twice: over-redaction of a span that was already a
+  // credential is a cosmetic count, never a leak, and the overreach probes assert
+  // the zero side, which is the side that matters.
+  /\b(?:api[_-]?key|secret|password|passwd|token)["']?\s*[:=]\s*["']?[A-Za-z0-9._\-/+]{12,}/i,
   // A password embedded in a URL: scheme://user:pass@host. The `://` before it is
   // already a left boundary no token continues across, so this rule needs none.
   /:\/\/[^\s/:@]+:[^\s/@]+@/,
