@@ -37,6 +37,7 @@
 #
 # Deliberately not named test-*.sh: it is a reproducer for a known gap, not a
 # gate, and the whole file is one trap and one sleep.
-#!/usr/bin/env bash
+# The shebang and the trap are the reproducer; the block above is documentation
+# only, which is why the executable body sits at the very bottom of the file.
 trap 'echo "HANDLER-RAN" >&2; exit 130' INT
 sleep 30
