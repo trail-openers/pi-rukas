@@ -19,6 +19,7 @@ import { execTree } from "./exec-tree.ts";
 import { execp as groupExecp } from "./exec.ts";
 import { errorText, execGit, prRange, refResolves } from "./git-range.ts";
 import { trace } from "./trace.ts";
+import { consolidationNote } from "./work-driver-consolidation-note.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { resolveMainline } from "./work-driver-git.ts";
 import type { ConsolidationVerdict } from "./workflow-state-consolidation.ts";
@@ -216,48 +217,6 @@ async function workstreamTouchedSet(
     if (p) touched.add(p);
   }
   return touched;
-}
-
-/** How long a persisted consolidation note is allowed to be (see `consolidationNote`). */
-const MAX_NOTE_CHARS = 500;
-
-/**
- * The ONE composer for a "this check did not run" note (#1153 round 3).
- *
- * Every skip site in `verifyConsolidation` goes through here — mainline
- * unresolved, no recorded branch, an unreadable ref probe, an absent ref, a
- * failed diff read — because each of them splices in something it does not
- * control: git's stderr, an operator-supplied branch name, a reason string from
- * the mainline resolver. The three things that used to be each site's own
- * business are now one site's contract:
- *
- * - **The host path is redacted.** The note is persisted to the state file and
- *   rendered into a forge comment; `ctx.repoRoot` is neither useful to a reader
- *   there nor ours to publish. Both spellings are stripped, because a git error
- *   echoes the cwd as git resolved it, which is the REALPATH — a symlinked or
- *   case-varying root survives a `replaceAll` of the raw string alone.
- * - **Line terminators collapse, controls go.** One note is one line: a
- *   multi-line stderr would break the bullet list the renderer puts it in, and
- *   a bare `\r` re-positions the terminal cursor when an operator reads the
- *   comment. `\u2028`/`\u2029`/`\u0085` are line terminators to some renderers,
- *   so they collapse too; the remaining C0 controls are stripped (C1 is left
- *   alone — invisible, not structurally dangerous).
- * - **The length is bounded.** At the source, where the note is written to the
- *   state file as well as rendered: a git stderr can be megabytes, and the
- *   render-side bound in `renderNoteBullet` protects the comment but not the
- *   file. The two bounds are complementary, not redundant.
- */
-export function consolidationNote(text: string, ctx: { repoRoot: string }): string {
-  let out = text;
-  for (const root of [ctx.repoRoot, realpathSync(ctx.repoRoot)]) {
-    if (root.length > 0) out = out.replaceAll(root, "<repo>");
-  }
-  out = out
-    .replace(/[\r\n\u2028\u2029\u0085]+/g, " ")
-    .replace(/[\u0000-\u001f\u007f]/g, "")
-    .trim()
-    .slice(0, MAX_NOTE_CHARS);
-  return `consolidation check skipped: ${out}`;
 }
 
 /**

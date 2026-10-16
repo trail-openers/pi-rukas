@@ -10,8 +10,8 @@
  *    repository, and `refResolves` separates "absent" from "unknown".
  * 3. FIXTURES — a killed/timed-out probe is `unknown`, never `absent` (#1153
  *    review): a `code: 1` produced by the harness says nothing about the ref.
- *    A probe that EXITS 0 WITHOUT AN OBJECT ID is `unknown` too (#1153 round
- *    3): a zero exit from a shim that printed nothing is not a resolution.
+ *    (Its round-3 companion — a probe that EXITS 0 WITHOUT AN OBJECT ID — lives
+ *    in test-git-range-object-id-1153.ts, which split off for the file-size cap.)
  * 4. COVERAGE — every module that imports `./git-range.ts` is in the canary's
  *    LISTED set, so a new caller cannot join the "argv only" rule by silence.
  */
@@ -354,8 +354,7 @@ async function refSaysAbsentForMissingRefInFreshRepo(): Promise<boolean> {
     `refResolves: exit 128 is unknown (got ${JSON.stringify(notGitRepo)})`,
   );
   assert(
-    notGitRepo.state === "unknown" &&
-      notGitRepo.error.startsWith("fatal: not a git repository"),
+    notGitRepo.state === "unknown" && notGitRepo.error.startsWith("fatal: not a git repository"),
     `refResolves: the exit-128 reason survives in the error text (got ${JSON.stringify(notGitRepo)})`,
   );
 
@@ -382,10 +381,7 @@ async function refSaysAbsentForMissingRefInFreshRepo(): Promise<boolean> {
   // the bound, and an all-`fatal:` stream would trip `gitSaysAbsent` into
   // `absent`, which has no `error` field to measure.
   const long = errorText({ stderr: "x".repeat(500) });
-  assert(
-    long.length === 200,
-    `errorText: bounded to 200 chars (got ${long.length})`,
-  );
+  assert(long.length === 200, `errorText: bounded to 200 chars (got ${long.length})`);
 
   // aheadOfBase propagates the distinction: a killed head probe is unknown,
   // not the "the branch was not pushed from here" reading `absent` produces.
@@ -399,137 +395,6 @@ async function refSaysAbsentForMissingRefInFreshRepo(): Promise<boolean> {
     aheadKilled.kind === "unknown",
     `aheadOfBase: a killed probe is unknown, not unpushed (got ${JSON.stringify(aheadKilled)})`,
   );
-}
-
-// ── 4. fixtures: exit 0 without an object id is not a resolution ────────────
-
-{
-  /** An exec that resolves with a caller-supplied payload (exit 0). */
-  const okExec =
-    (stdout: string): ExecFn =>
-    async () => ({ stdout, stderr: "" });
-
-  // The shape node's child_process leaves behind when a wrapper swallowed the
-  // output, and the shape a git shim that only checks the exit code prints.
-  // Both exit 0 and say nothing about the ref; `resolves` here would tell the
-  // caller "the branch is pushed" on the word of a process that printed
-  // nothing.
-  for (const [label, stdout] of [
-    ["empty stdout", ""],
-    ["whitespace only", "  \n"],
-    ["a name instead of an id", "origin/feat\n"],
-    ["a short hex string", "deadbeef\n"],
-    ["a warning line", "warning: something\n"],
-    ["two ids, one per line", "0".repeat(40) + "\n" + "1".repeat(40)],
-  ] as const) {
-    const r = await refResolves(okExec(stdout), "/repo", "origin/feat");
-    assert(
-      r.state === "unknown" && r.error === "git exited 0 without an object id",
-      `refResolves: exit 0 with ${label} is unknown, not resolves (got ${JSON.stringify(r)})`,
-    );
-  }
-
-  // The control: the payload a real `rev-parse --verify` prints — 40 hex for
-  // SHA-1, 64 for a SHA-256 object — does resolve.
-  for (const hex of ["0".repeat(40), "a".repeat(64)]) {
-    const r = await refResolves(okExec(`${hex}\n`), "/repo", "origin/feat");
-    assert(
-      r.state === "resolves",
-      `control: exit 0 with a ${hex.length}-char object id resolves (got ${JSON.stringify(r)})`,
-    );
-  }
-
-  // And the real-git control: a genuine probe of a real ref reaches resolves
-  // through this same shape check, so the check has not broken the honest path
-  // (the fresh-repo probe in section 3 covers the absent side).
-  const realRepo = mkdtempSync(path.join(tmpdir(), "git-range-1153-sha-"));
-  try {
-    const g = (args: string[]) =>
-      execGit(exec, realRepo, ["-c", "user.name=t", "-c", "user.email=t@t", ...args]);
-    await g(["init", "-q", "-b", "main"]);
-    writeFileSync(path.join(realRepo, "a.txt"), "a\n");
-    await g(["add", "a.txt"]);
-    await g(["commit", "-q", "-m", "base"]);
-    const r = await refResolves(exec, realRepo, "HEAD");
-    assert(
-      r.state === "resolves",
-      `refResolves: real git still resolves a present ref (got ${JSON.stringify(r)})`,
-    );
-  } finally {
-    rmSync(realRepo, { recursive: true, force: true });
-  }
-
-  // errorText takes the LAST line, and prefers git's VERDICT line over it:
-  // `rev-parse --verify` ends with the bare advice line (`pass argument …`, a
-  // `fatal:` above it), so last-non-empty alone would report the advice. A
-  // stream with no verdict marker still falls back to the last line.
-  const multiLine = await refResolves(
-    failingExec({
-      code: "ENOENT",
-      killed: false,
-      signal: null,
-      message: "Command failed: git rev-parse",
-      stderr:
-        "fatal: Needed a single revision\nhint: See 'git help repo'\nhint: try something else\n",
-    }),
-    "/repo",
-    "origin/feat",
-  );
-  assert(
-    multiLine.state === "unknown" && multiLine.error === "fatal: Needed a single revision",
-    `errorText: the verdict line wins over the advice below it (got ${JSON.stringify(multiLine)})`,
-  );
-  assert(
-    !multiLine.error.includes("hint:"),
-    "errorText: the informational lines below the verdict do not reach the note",
-  );
-
-  // The other side: git's dubious-ownership error has no `fatal:` after the
-  // first line, and the whole tail is remediation advice. The verdict line is
-  // what survives it — reporting `git config --global …` as the REASON a probe
-  // failed would be a note about a command nobody ran.
-  const adviceTail = await refResolves(
-    failingExec({
-      code: 128,
-      killed: false,
-      signal: null,
-      message: "Command failed",
-      stderr:
-        "fatal: detected dubious ownership in repository at '/home/dev/project'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /home/dev/project\n",
-    }),
-    "/repo",
-    "origin/feat",
-  );
-  assert(
-    adviceTail.state === "unknown" &&
-      adviceTail.error.startsWith("fatal: detected dubious ownership"),
-    `errorText: a fatal line survives the advice block below it (got ${JSON.stringify(adviceTail)})`,
-  );
-
-  // And the fallback: with no verdict marker anywhere, the last non-empty line
-  // is the most informative thing the process said.
-  assert(
-    errorText({ stderr: "one\ntwo\n  three  \n" }) === "three",
-    `errorText: no verdict marker → the last non-empty line (got ${JSON.stringify(errorText({ stderr: "one\ntwo\n  three  \n" }))})`,
-  );
-
-  // A non-string field that stringifies usefully is coerced rather than cast
-  // away, and one that does not still yields a string rather than throwing.
-  for (const [label, stderr] of [
-    ["an object with toString", { toString: () => "fatal: coerced" }],
-    ["a number", 42],
-    ["a nested object", { a: 1 }],
-  ] as const) {
-    const r = await refResolves(
-      failingExec({ code: "ENOENT", message: "m", stderr }),
-      "/repo",
-      "origin/feat",
-    );
-    assert(
-      r.state === "unknown" && typeof r.error === "string" && r.error.length > 0,
-      `errorText: ${label} is coerced to a non-empty string, not cast (got ${JSON.stringify(r)})`,
-    );
-  }
 }
 
 process.exit(exit);
