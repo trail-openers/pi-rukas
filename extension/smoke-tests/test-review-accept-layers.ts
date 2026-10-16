@@ -171,9 +171,17 @@ assert(
   runsReviewAccept("bun test smoke-tests/test-review-*.ts") === undefined,
   "guard: a test glob that names no store path is allowed",
 );
+// #1125 — a read-only test run is judged by what it RUNS, not by whether the
+// guard can see a file name: the TEST_RUN exemption is what lets
+// `review-findings-store*` through, and it is conditional (an eval flag runs
+// code; naming the operator's script is a route).
+assert(
+  runsReviewAccept("bun test smoke-tests/test-review-*.ts") === undefined,
+  "guard: a test glob that cannot name a protected file is allowed",
+);
 assert(
   runsReviewAccept("bun test smoke-tests/review-findings-store*") === undefined,
-  "guard: a read-only test run may name the store's stem by glob",
+  "guard: a test run naming the store by glob is exempt as a read-only run",
 );
 assert(
   runsReviewAccept('git commit -m "fix: note review-findings.json (#1)"') === undefined,
