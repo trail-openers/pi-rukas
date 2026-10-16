@@ -153,9 +153,23 @@ try {
   }
 
   const absent = await refResolves(exec, dir, "origin/nope");
-  assert(absent.state === "absent", "refResolves: a missing ref is absent (exit 1)");
+  assert(
+    absent.state === "absent",
+    `refResolves: a missing ref is absent — git's wording, not the code (got ${JSON.stringify(absent)})`,
+  );
   const resolves = await refResolves(exec, dir, "origin/feat");
   assert(resolves.state === "resolves", "refResolves: a present ref resolves");
+
+  // #1153 fix round — `absent` requires git's OWN WORDS, not just exit 1.
+  // The real-git half of that: a missing ref in a real repo must reach absent
+  // through the wording clause (git printed "not a valid object name"), not
+  // through the exit code alone. The non-repo case is asserted once above
+  // against a real directory, for both `aheadOfBase` and `refResolves`; the
+  // synthetic half (the exact stderr shapes) is in section 3.
+  assert(
+    await refSaysAbsentForMissingRefInFreshRepo(),
+    "refResolves: real git — a missing ref in a real repo is absent",
+  );
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
@@ -169,10 +183,37 @@ const failingExec =
     throw err;
   };
 
+/**
+ * The real-git half of the wording rule, against a repository created here
+ * rather than the shared fixture above: a ref that genuinely does not exist
+ * must reach `absent` (which now needs git's wording, not just exit 1), and
+ * one that does must `resolve`.
+ */
+async function refSaysAbsentForMissingRefInFreshRepo(): Promise<boolean> {
+  const fresh = mkdtempSync(path.join(tmpdir(), "git-range-1153-fresh-"));
+  try {
+    const g = (args: string[]) =>
+      execGit(exec, fresh, ["-c", "user.name=t", "-c", "user.email=t@t", ...args]);
+    await g(["init", "-q", "-b", "main"]);
+    writeFileSync(path.join(fresh, "a.txt"), "a\n");
+    await g(["add", "a.txt"]);
+    await g(["commit", "-q", "-m", "base"]);
+    const missing = await refResolves(exec, fresh, "refs/remotes/origin/never-pushed");
+    const present = await refResolves(exec, fresh, "HEAD");
+    return missing.state === "absent" && present.state === "resolves";
+  } finally {
+    rmSync(fresh, { recursive: true, force: true });
+  }
+}
+
 {
   // node's child_process reports a killed child as `code: 1` + `killed: true`
   // + a `signal`. Reading that as "git says the ref does not exist" would tell
   // the operator the branch was never pushed, about a ref nobody read.
+  // A killed probe on the real exec: `execFile`'s timeout kills the child,
+  // which lands `code: null` + `killed: true` + a signal — so the code test
+  // alone rejects it. The load-bearing fixture is the one below, where the
+  // harness reports git's OWN numeric code alongside `killed: true`.
   const killed = await refResolves(
     failingExec({ code: 1, killed: true, signal: "SIGTERM", message: "killed" }),
     "/repo",
@@ -204,15 +245,107 @@ const failingExec =
     `refResolves: an error with no numeric code is unknown (got ${JSON.stringify(noCode)})`,
   );
 
-  // The control: git's OWN exit 1, with nothing killed, IS absent.
+  // The control: git's OWN exit 1, with nothing killed AND its own wording
+  // saying the ref is missing, IS absent.
   const gitSaysNo = await refResolves(
-    failingExec({ code: 1, killed: false, signal: null, message: "Command failed: git rev-parse" }),
+    failingExec({
+      code: 1,
+      killed: false,
+      signal: null,
+      message: "Command failed: git rev-parse",
+      stderr: "fatal: not a valid object name 'origin/feat'\n",
+    }),
     "/repo",
     "origin/feat",
   );
   assert(
     gitSaysNo.state === "absent",
-    `control: a clean git exit 1 is absent (got ${JSON.stringify(gitSaysNo)})`,
+    `control: a clean git exit 1 with the missing-ref wording is absent (got ${JSON.stringify(gitSaysNo)})`,
+  );
+
+  // #1153 fix round — exit 1 alone is NOT absent: git's wording has to say
+  // the ref is missing. An exit 1 with an EMPTY stderr is not evidence about
+  // the ref (node rejects on the code alone, so a silent git would otherwise
+  // be read as "this branch was never pushed").
+  const silentExitOne = await refResolves(
+    failingExec({ code: 1, killed: false, signal: null, message: "Command failed", stderr: "" }),
+    "/repo",
+    "origin/feat",
+  );
+  assert(
+    silentExitOne.state === "unknown",
+    `refResolves: exit 1 with no stderr is unknown, not absent (got ${JSON.stringify(silentExitOne)})`,
+  );
+
+  // Each of git's four missing-ref wordings is absent.
+  for (const [wording, want] of [
+    ["fatal: not a valid object name 'origin/feat'", true],
+    [
+      "fatal: ambiguous argument 'origin/feat': unknown revision or path not in the working tree.",
+      true,
+    ],
+    ["fatal: needed a single revision", true],
+  ] as const) {
+    const r = await refResolves(
+      failingExec({
+        code: 1,
+        killed: false,
+        signal: null,
+        message: "Command failed",
+        stderr: wording,
+      }),
+      "/repo",
+      "origin/feat",
+    );
+    assert(
+      r.state === (want ? "absent" : "unknown"),
+      `refResolves: wording "${wording.slice(0, 40)}…" is ${want ? "absent" : "unknown"} (got ${r.state})`,
+    );
+  }
+
+  // Clone-level failures that DO exit 1 are still about the clone, not the
+  // ref, so they stay unknown. These are the shapes the reviewer named.
+  for (const shape of [
+    "fatal: not a git repository (or any of the parent directories): .git",
+    "fatal: detected dubious ownership in repository at '/home/dev/project'\nTo add an exception for this directory, call:",
+  ]) {
+    const r = await refResolves(
+      failingExec({
+        code: 1,
+        killed: false,
+        signal: null,
+        message: "Command failed",
+        stderr: shape,
+      }),
+      "/repo",
+      "origin/feat",
+    );
+    assert(
+      r.state === "unknown",
+      `refResolves: "${shape.slice(0, 34)}…" on exit 1 is unknown, not absent (got ${JSON.stringify(r)})`,
+    );
+    assert(
+      r.state === "unknown" && r.error.startsWith("fatal:"),
+      `refResolves: the clone-level reason survives in the error text (got ${JSON.stringify(r)})`,
+    );
+  }
+
+  // git exits 128 (not 1) for a non-repo; either way it is unknown. This is
+  // the real-git shape for a non-repo directory.
+  const notGitRepo = await refResolves(
+    failingExec({
+      code: 128,
+      killed: false,
+      signal: null,
+      message: "Command failed",
+      stderr: "fatal: not a git repository (or any parent up to mount point /)\n",
+    }),
+    "/repo",
+    "origin/feat",
+  );
+  assert(
+    notGitRepo.state === "unknown",
+    `refResolves: exit 128 is unknown (got ${JSON.stringify(notGitRepo)})`,
   );
 
   // errorText prefers the captured stderr over the generic node message, so

@@ -40,6 +40,11 @@ type NonEmptyIntegrateResult = Extract<IntegrateResult, { ok: true; empty: false
  * Records the root state, parses the PR number, runs the consolidation
  * completeness gate, and the outcome verification gate. Returns the
  * updated WorkState.
+ *
+ * Both commit-pr paths reach it: the LLM-ops fallback via `runCommitPrLocked`
+ * and the mechanized path via `auditCommitPrFallback`'s no-fallback branch
+ * (`work-driver-commit-pr-audit.ts`), so the consolidation notes below are
+ * persisted for a mechanized commit-pr too.
  */
 export async function runCommitPrPostDispatchGates(
   ctx: CycleContext,

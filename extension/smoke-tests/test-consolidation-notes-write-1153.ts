@@ -161,6 +161,32 @@ function singleWorkstreamState(staleNotes?: string[]): WorkState {
       notes.length === 1 && notes[0]?.startsWith(SKIPPED_PREFIX) && notes[0]?.includes("failed"),
       `writer: the skipped check is persisted on pipelineState (got ${JSON.stringify(notes)})`,
     );
+    // #1153 fix round — the note carries GIT'S REASON, not node's argv. The
+    // old note was `(err as Error).message.slice(0,120)`, and node's message
+    // is `Command failed: git diff --name-status -M --end-of-options …` — so
+    // the 120-char budget went on the command name and left one character of
+    // the reason. The reason is the only part an operator can act on.
+    assert(
+      notes.some((n) => /fatal:/.test(n)),
+      `note: git's own fatal reason is in the persisted note (got ${JSON.stringify(notes)})`,
+    );
+    // …and the range in the note is rendered by prRange, so it names the
+    // three-dot range the diff was actually asked for.
+    assert(
+      notes.some((n) => n.includes(`origin/main...origin/${BRANCH}`)),
+      `note: the prRange the diff failed on is named (got ${JSON.stringify(notes)})`,
+    );
+    // The absolute repoRoot is redacted: this note is persisted to the state
+    // file and rendered into a forge comment, neither of which is anywhere the
+    // operator's host path belongs.
+    assert(
+      notes.every((n) => !n.includes(dir)),
+      `note: the absolute repoRoot is redacted (got ${JSON.stringify(notes)})`,
+    );
+    assert(
+      notes.every((n) => !n.includes("Command failed")),
+      "note: node's generic 'Command failed' prefix does not reach the note",
+    );
     assert(
       notes.every((n) => typeof n === "string"),
       "writer: every persisted note is a string",
@@ -218,6 +244,36 @@ function singleWorkstreamState(staleNotes?: string[]): WorkState {
     assert(
       dirty.pipelineState.consolidationNotes?.includes(STALE) === true,
       "control: the stale note was present before the clean run",
+    );
+
+    // #1153 fix round — the round trip. "Cleared" here means the property is
+    // PRESENT-AND-`undefined`, not deleted, and the state's real life is as
+    // JSON on disk: `persistState` serialises it and a resume reads it back.
+    // `JSON.stringify` DROPS a key whose value is `undefined`, so the round
+    // trip is what proves the clear survives serialisation rather than being
+    // an artefact of the in-memory object — and the validator still accepts
+    // the field's absence afterwards (an absent field is legitimate: a cycle
+    // that never skipped a check has no notes to record).
+    const restored: WorkState = JSON.parse(JSON.stringify(cleared));
+    assert(
+      !("consolidationNotes" in restored.pipelineState),
+      "round-trip: the cleared field is ABSENT after JSON persist/restore, not undefined-valued",
+    );
+    assert(
+      restored.pipelineState.consolidationNotes === undefined,
+      `round-trip: reading the restored state yields no notes (got ${JSON.stringify(restored.pipelineState.consolidationNotes)})`,
+    );
+    assert(
+      validateDiscriminants(restored).length === 0,
+      `round-trip: the restored state validates clean (got ${JSON.stringify(validateDiscriminants(restored))})`,
+    );
+    // And the same round trip with notes still on it keeps them — proving the
+    // assertion above is about the clear, not about JSON dropping the field.
+    const stillNoted: WorkState = JSON.parse(JSON.stringify(out));
+    assert(
+      Array.isArray(stillNoted.pipelineState.consolidationNotes) &&
+        stillNoted.pipelineState.consolidationNotes?.length === 2,
+      `control: JSON round-trip preserves notes that were set (got ${JSON.stringify(stillNoted.pipelineState.consolidationNotes)})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
