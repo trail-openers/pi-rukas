@@ -93,10 +93,9 @@ import {
   lensNotEvaluatedRefusal,
   mergeIdentity,
   readPrCommentBodies,
-  renderHold,
 } from "./merge-guard-reads.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
-import { GLAB_AUTO_MERGE_REFUSAL } from "./merge-refusals.ts";
+import { GLAB_AUTO_MERGE_REFUSAL, holdReasonText, renderHold } from "./merge-refusals.ts";
 import {
   type MergeExecFn,
   type MergeTarget,
@@ -140,15 +139,25 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
   pi.on("tool_call", async (event, _ctx) => {
     if (event.toolName !== "bash") return;
     const command = (event.input as { command?: string })?.command ?? "";
-    // #1417 — one place that counts a hold, so the cycle record can see how
-    // often the guard blocks work instead of protecting it. A HOLD is a
-    // refusal of a command the guard could not read as a merge; the merge
-    // refusals below are not counted, because those are the guard doing its
-    // job. The line is ungated stderr (like `traceWarn`) so the console/err
-    // capture picks it up without the guard writing a file under the git
-    // common dir.
-    const held = (rendered: { block: true; reason: string }) => {
-      traceWarn(`merge-guard: HELD (not a merge) ${JSON.stringify(rendered.reason.slice(0, 240))}`);
+    // #1417 — one place that records a hold, so the log can show how often
+    // the guard blocks work instead of protecting it. A HOLD is a refusal of
+    // a command the guard could not read as a merge; the merge refusals below
+    // are not recorded, because those are the guard doing its job.
+    //
+    // #1417 LOW — the line carries the REASON CODE and the command LENGTH
+    // only, never the command text. It used to trace 240 chars of the
+    // rendered refusal, and the rendered refusal quotes the held command:
+    // command strings routinely carry tokens, and this stream is ungated
+    // stderr, captured by the headless console writer and the run transcript
+    // with no redaction in front of it. The comment no longer claims to
+    // COUNT anything — counting was never wired (notice-counter.ts is the
+    // live-view badge for async report deliveries, a different concern), so
+    // what remains is the trace, which is where a false hold gets reported
+    // from.
+    const held = (rendered: { block: true; reason: string }, code: string, cmd: string) => {
+      traceWarn(
+        `merge-guard: HELD (not a merge) reason=${code || "form"} commandLength=${cmd.length}`,
+      );
       return rendered;
     };
     // Fail closed: a throw out of the tool_call hook would let the command
@@ -169,6 +178,8 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
           },
           command,
         ),
+        "classifier-threw",
+        command,
       );
     }
     if (analysis.kind === "none") return;
@@ -177,15 +188,18 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     //
     // #1417 — a `refused` here is a HOLD, not a merge verdict: the classifier
     // recognised merge-adjacent text it could not read, and nothing merged.
-    // So this refusal names WHAT was held (`analysis.detail` — the trigger
-    // word or the offending word) and never names the merge escape hatch.
-    // The twelve refusals of #1417 all told an agent reading an issue's label
-    // history to "issue the merge as a plain `gh pr merge`, or set
-    // PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1": wrong twice, and the only remedy
-    // offered weakened merge protection to unblock a read. The hatch belongs
-    // in the MERGE refusals (below, past `readMergeTarget`), where a merge is
-    // genuinely at stake and an operator who reviewed elsewhere can decide.
+    // So this refusal names WHAT was held (`analysis.reason` — the bare
+    // code — with `analysis.detail`, the trigger word or the offending word)
+    // and never names the merge escape hatch. The twelve refusals of #1417
+    // all told an agent reading an issue's label history to "issue the merge
+    // as a plain `gh pr merge`, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1":
+    // wrong twice, and the only remedy offered weakened merge protection to
+    // unblock a read. The hatch belongs in the MERGE refusals (below, past
+    // `readMergeTarget`), where a merge is genuinely at stake and an operator
+    // who reviewed elsewhere can decide.
     if (analysis.kind === "refused") {
+      // #1417 LOW — `reason` is a bare code, so this comparison is exact
+      // rather than a prefix match against a code-plus-clause string.
       if (analysis.reason === "glab-auto-merge") {
         // A real merge in the accepted form, refused for deferring itself to
         // the pipeline: an operator decision, so it keeps the hatch.
@@ -195,13 +209,12 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
         renderHold(
           {
             kind: "form",
-            reasonText:
-              analysis.reason === undefined
-                ? "merge-adjacent text it could not match to the one plain merge form the guard checks"
-                : `a \`${analysis.reason}\` shape${analysis.detail === undefined ? "" : `: ${analysis.detail}`}`,
+            reasonText: holdReasonText(analysis.reason, analysis.detail),
           },
           command,
         ),
+        analysis.reason ?? "form",
+        command,
       );
     }
     const merging = analysis.forge === "gitlab" ? "glab mr merge" : "gh pr merge";
@@ -218,7 +231,11 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // the forge check below), the refusals DO name the hatch — there the
     // command is a merge and the operator may genuinely override the reviews.
     const earlyRefuse = (reason: string) =>
-      held(renderHold({ kind: "not-a-merge", reasonText: reason }, `\`${merging}\` …`));
+      held(
+        renderHold({ kind: "not-a-merge", reasonText: reason }, `\`${merging}\` …`),
+        "unresolved-pr-number",
+        command,
+      );
 
     const cwd = process.cwd();
     // The injectable exec seam: `opts.execFn` (tests drive the real hook

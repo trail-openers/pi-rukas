@@ -7,21 +7,27 @@
  */
 
 import { readMergeCommand } from "../src/merge-allowlist.ts";
-import { renderHold } from "../src/merge-guard-reads.ts";
-import { MERGE_FORM_REFUSAL, mergeFormRefusal } from "../src/merge-refusals.ts";
+import {
+  MERGE_FORM_REFUSAL,
+  holdReasonText,
+  mergeFormRefusal,
+  renderHold,
+} from "../src/merge-refusals.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
 
 const HATCH = "PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE";
 
-/** The guard's hold for a refused command, exactly as merge-guard.ts renders it. */
+/**
+ * The guard's hold for a refused command, exactly as merge-guard.ts renders
+ * it: the classifier's bare `reason` and its `detail` go to `holdReasonText`,
+ * which composes the `a `code` shape: …` clause, and that clause is the only
+ * prose `renderHold` is handed. (#1417 LOW — the two halves are separate
+ * fields, so a refusal the classifier built as one string is a regression.)
+ */
 function holdText(cmd: string): string {
   const m = readMergeCommand(cmd);
   if (m.kind !== "refused") return `<<${m.kind}>>`;
-  const reasonText =
-    m.reason === undefined
-      ? "merge-adjacent text it could not match to the one plain merge form the guard checks"
-      : `a \`${m.reason}\` shape${m.detail === undefined ? "" : `: ${m.detail}`}`;
-  return renderHold({ kind: "form", reasonText }, cmd).reason;
+  return renderHold({ kind: "form", reasonText: holdReasonText(m.reason, m.detail) }, cmd).reason;
 }
 
 // ------------------------------------------- what was held is named, not just coded
@@ -37,7 +43,8 @@ const HELD: Array<[string, string]> = [
 ];
 for (const [cmd, code] of HELD) {
   const m = readMergeCommand(cmd);
-  assert(m.kind === "refused" && (m.reason ?? "").startsWith(code), `held as ${code}: ${cmd}`);
+  // #1417 LOW — the code is a BARE token now, so this is an exact comparison.
+  assert(m.kind === "refused" && m.reason === code, `held as ${code}: ${cmd}`);
   const text = holdText(cmd);
   assert(text.includes("command held (not a merge)"), `the hold says it is not a merge: ${code}`);
   assert(text.includes(code), `the hold names the reason code: ${code}`);
@@ -51,6 +58,25 @@ for (const [cmd, code] of HELD) {
   );
 }
 
+// The reason code and its clause are separate fields, and the renderer
+// composes them; neither half may be dropped on the way to the text.
+assert(
+  holdReasonText("body-indirect", undefined).startsWith("a `body-indirect` shape: "),
+  "a code with no detail falls back to the standing explanation of that code",
+);
+assert(
+  holdReasonText("body-indirect", "named detail").endsWith(": named detail"),
+  "a code with detail carries the detail rather than the fallback",
+);
+assert(
+  holdReasonText("", "a merge verb pair").includes("a merge verb pair"),
+  "an ordinary trigger (no code) renders its detail alone, without a code clause",
+);
+assert(
+  holdReasonText("", undefined).includes("could not match to the one plain merge form"),
+  "…and a trigger with neither falls back to the generic clause",
+);
+
 // The offending word is quoted for the grammar refusals, so the reader sees
 // the token rather than guessing which word the rule stopped on.
 assert(
@@ -59,6 +85,14 @@ assert(
 );
 
 // ------------------------------------------- the merge refusals keep the hatch
+// #1417 / #1431 — `MERGE_FORM_REFUSAL` and `mergeFormRefusal` are the MERGE
+// half of the vocabulary: a command the grammar read as a merge attempt and
+// rejected on its flags. No guard path renders them any more (every held
+// command goes through `renderHold`, which never names the hatch), so they
+// are NOT production prose — they are the documented shape the troubleshooting
+// guide quotes, kept exercised here so a rewrite of the hold text cannot
+// silently drop the accepted-form naming. They are declared test-only in
+// test-seams-wired.ts rather than deleted, because the docs quote them.
 assert(
   MERGE_FORM_REFUSAL.includes(HATCH),
   "the merge form refusal names the hatch (a merge is at stake)",
