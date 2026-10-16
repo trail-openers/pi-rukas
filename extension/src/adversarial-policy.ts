@@ -56,5 +56,5 @@ export function reportPolicyError(policy: {
   if (policy.reportVerdict === "terminal" || policy.reportVerdict === "routed") return undefined;
   return policy.reportVerdict === undefined
     ? "reportOnly review without a verdict policy"
-    : `reportVerdict ${JSON.stringify(policy.reportVerdict)} is not a verdict policy`;
+    : "reportVerdict is not a recognised verdict policy";
 }
