@@ -8,15 +8,25 @@
 // implementation of that design.
 
 import { spawnSpecialist } from "../../src/spawn.ts";
+import type { DispatchResult } from "../../src/types.ts";
 
 // One shape for both probes: the only real difference between them is whether
 // an abort signal is in flight. Keep it a single interface — the two are the
 // same concept (a spawn probe returning an attributed-kill result), and two
 // identical interfaces silently drift the moment a field is added to one.
 export interface ProbeResult {
+  /**
+   * The probe's own verdict: `abortProbePasses` / `timeoutProbePasses` over
+   * the settled result. NOT the child's `ok` — which for a killed child is
+   * false by contract, so a passing probe necessarily prints `ok=false` in
+   * `lines[]` while carrying `ok: true` here. Callers assert the predicate.
+   */
   ok: boolean;
+  /** The CHILD's ok as the spawn settled it (`ok: false` for any kill). */
+  childOk: boolean;
   lines: string[];
-  killCause: string | undefined;
+  /** Typed against the product's own cause union, not a widened `string`. */
+  killCause: DispatchResult["killCause"];
   exitCode: number | null;
   elapsedMs: number;
 }
@@ -40,12 +50,12 @@ export function assert(cond: boolean, msg: string): void {
  * exercises the SAME predicate the probe itself uses — a test that cannot go
  * RED is decorative (the shape test-file-size-limit.ts applies to itself).
  */
-export function abortProbePasses(p: ProbeResult): boolean {
+export function abortProbePasses(p: Pick<ProbeResult, "ok" | "killCause">): boolean {
   return p.killCause === "abort" && p.ok === false;
 }
 
 // The timeout probe's pass/fail predicate, same reasoning as above.
-export function timeoutProbePasses(p: ProbeResult): boolean {
+export function timeoutProbePasses(p: Pick<ProbeResult, "ok" | "killCause">): boolean {
   return p.killCause === "timeout" && p.ok === false;
 }
 
@@ -55,9 +65,22 @@ export function timeoutProbePasses(p: ProbeResult): boolean {
 // for the remainder of abortAtMs and could attribute a kill the probe already
 // finished on). The pass/fail check uses the exported predicate so the
 // self-check in test-cancel exercises the same code that actually runs.
-async function runKillProbe(
+export async function runKillProbe(
   prompt: string,
-  opts: { controller?: AbortController; abortAtMs?: number; timeoutMs: number },
+  opts: {
+    controller?: AbortController;
+    abortAtMs?: number;
+    timeoutMs: number;
+    /** Passed straight to spawnSpecialist (#153 seam) so a caller can observe
+     *  the spawned child — test-cancel's escalation probe reads the handle's
+     *  pid from it instead of trusting a pid the fake wrote for itself. */
+    onStdin?: (stdin: import("node:stream").Writable) => void;
+    /** Passed straight through too. `true` makes the child a process-group
+     *  leader, which is what makes the SIGKILL escalation observable rather
+     *  than merely armed — see test-cancel's Test 2 for why the interactive
+     *  (leader-only) shape can never fail on the escalation. */
+    processGroup?: boolean;
+  },
   expected: "abort" | "timeout",
 ): Promise<ProbeResult> {
   const start = Date.now();
@@ -72,6 +95,8 @@ async function runKillProbe(
       {
         signal: opts.controller?.signal,
         timeoutMs: opts.timeoutMs,
+        onStdin: opts.onStdin,
+        processGroup: opts.processGroup,
       },
     );
   } finally {
@@ -91,6 +116,7 @@ async function runKillProbe(
       ];
   return {
     ok: attributed,
+    childOk: r.ok,
     lines,
     killCause: r.killCause,
     exitCode: r.exitCode,
@@ -102,9 +128,18 @@ async function runKillProbe(
  * Abort probe: fire an explore child, abort it after `abortAtMs`, and verify
  * the kill was attributed (killCause 'abort', ok=false).
  */
-export function runAbortProbe(prompt: string, abortAtMs = 1500): Promise<ProbeResult> {
+export function runAbortProbe(
+  prompt: string,
+  abortAtMs = 1500,
+  onStdin?: (stdin: import("node:stream").Writable) => void,
+  processGroup?: boolean,
+): Promise<ProbeResult> {
   const controller = new AbortController();
-  return runKillProbe(prompt, { controller, abortAtMs, timeoutMs: 60_000 }, "abort");
+  return runKillProbe(
+    prompt,
+    { controller, abortAtMs, timeoutMs: 60_000, onStdin, processGroup },
+    "abort",
+  );
 }
 
 /**
