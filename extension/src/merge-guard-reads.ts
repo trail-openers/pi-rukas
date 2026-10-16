@@ -126,6 +126,33 @@ export async function readPrCommentBodies(
 }
 
 /**
+ * #1360 — the adversarial half of the guard's refusal, with the latest row's
+ * `detail` quoted verbatim when the row is non-passing and carries one.
+ *
+ * The ledger write records WHY a review did not count (`range-not-branch:
+ * reviewed 1a2b3c4d..…`, `head-moved: …`, `tree-changed: …`, or the ordinary
+ * verdict outcome). Without it the operator sees "no passing adversarial
+ * review" and re-runs the very review that just ran — the row is on file,
+ * it just refuses to pass. The comparison itself is untouched: this renders
+ * the reason for a refusal the strict rule already made (#1360 settlement —
+ * "no guard change" means the patch-id comparison and `mergeIdentity` are
+ * unchanged; the refusal MESSAGE may carry the row's detail).
+ *
+ * A `detail` that is not a string (a legacy row) renders as no detail, and a
+ * passing row never reaches here.
+ */
+export function adversarialRefusal(branch: string, adv: LedgerEntry | undefined): string {
+  const override = " (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)";
+  if (!adv) {
+    return `no passing adversarial review on file for branch \`${branch}\` (latest: none) — run adversarial_loop and let it complete before merging${override}`;
+  }
+  const identity = `passed=${adv.passed}, patchId=${adv.patchId.slice(0, 8)}`;
+  const detail =
+    typeof adv.detail === "string" && adv.detail.trim() ? `, detail: ${adv.detail.trim()}` : "";
+  return `no passing adversarial review on file for branch \`${branch}\` (latest: ${identity}${detail}) — run adversarial_loop and let it complete before merging${override}`;
+}
+
+/**
  * #1000 — the lens-branch refusal text. The round-cap path was consulted
  * and REFUSED TO APPLY (`applies: false`); the operator must be told that
  * the round-cap path was NOT evaluated — distinct from the `applies: true`

@@ -1,0 +1,113 @@
+/**
+ * adversarial-ledger-capture — the #1360 ledger bindings, seen from the loop.
+ *
+ * `adversarial-ledger-binding.ts` decides whether a tool-path row may pass.
+ * This module is the loop's half of that: when to capture, what to thread into
+ * the writer, and the one thing the loop must not do — let a capture's failure
+ * cost a review. Both are pure functions of the loop's own state, so the
+ * binding lifecycle is testable without driving three dispatch rounds.
+ *
+ * Split from `adversarial.ts` (AGENTS.md §12, the 500-line gate).
+ */
+
+import { type LedgerBinding, captureBinding } from "./adversarial-ledger-binding.ts";
+import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
+import { execp } from "./exec.ts";
+import type { DispatchResult } from "./types.ts";
+
+/** The loop's ledger-binding state: the last capture, and the head it was taken for. */
+export interface BindingState {
+  /** The capture the NEXT ledger write must carry (the approving round's, since
+   * the write runs on the same exit as the round that set it). */
+  binding?: LedgerBinding;
+  /** The head ref `binding` describes. Threaded to the writer as `head`, so the
+   * row's headSha and its reviewedHead resolve from the same ref — the writer
+   * must never resolve a head the loop did not review. */
+  capturedHeadRef?: string;
+}
+
+/**
+ * Take this round's capture.
+ *
+ * The capture is best-effort: `captureBinding` swallows its own git failures
+ * into `bindingUnavailable`, and this call is wrapped so a throw cannot reach
+ * the review either. A round whose capture could not run still reviews — the
+ * fail-closed consequence lands on the LEDGER ROW (the writer refuses a
+ * tool-path pass it cannot verify), not on the reviewer's dispatch.
+ */
+export async function captureRound(
+  state: BindingState,
+  cwd: string,
+  baseRef: string | undefined,
+  headRef: string | undefined,
+): Promise<void> {
+  try {
+    state.binding = await captureBinding(cwd, baseRef, headRef, execp);
+    state.capturedHeadRef = headRef;
+  } catch (err) {
+    state.binding = {
+      bindingUnavailable: `the round capture failed (${(err instanceof Error ? err.message : String(err)).slice(0, 120)})`,
+    };
+    state.capturedHeadRef = headRef;
+  }
+}
+
+/**
+ * Whether a round's head is the branch tip rather than the ref the caller
+ * named at entry.
+ *
+ * Rounds after the first re-read the diff, and on the tool path that re-read is
+ * the SAME `base...head` range recomputed — which is only meaningful for the
+ * round-2 diff if the fix round's commits are in it, i.e. if the head is the
+ * branch tip. `fresh` is the re-read's output: a round that re-read nothing
+ * (a failed re-read keeps the previous diff per #859) keeps the head the
+ * previous round was bound to, because that is the material it is reviewing.
+ */
+export function roundHeadRef(
+  previous: string | undefined,
+  opts: { isRefRangeRound: boolean; freshDiff: string | undefined },
+): string | undefined {
+  if (!opts.isRefRangeRound) return previous;
+  return opts.freshDiff?.trim() ? "HEAD" : previous;
+}
+
+/**
+ * The loop's ledger writer: the single place a loop result becomes a durable
+ * review-ledger row, and the place the #1360 provenance is threaded.
+ *
+ * Extracted from `adversarial.ts` for the file-size gate. The four arguments
+ * the loop owns stay the loop's — the writer is handed them once — and each is
+ * documented at the call site in the loop. `decorate` runs FIRST so the
+ * durable row carries the same text the caller sees (#1104: fence findings),
+ * and `note` runs LAST so the not-recorded warning reaches the result and not
+ * the row (#980).
+ */
+export function makeLedgerWrite(opts: {
+  state: BindingState;
+  workCwd?: string;
+  branch?: string;
+  /** #988 — the branch the note resolved, so the write does not re-resolve. */
+  resolvedBranch?: string;
+  callerSuppliedDiff?: boolean;
+  /** #1360 — the tool path's provenance marker. Never inferred. */
+  toolPath?: boolean;
+  baseRef?: string;
+  decorate: (raw: DispatchResult) => DispatchResult;
+  note: (result: DispatchResult) => DispatchResult;
+}): (raw: DispatchResult) => DispatchResult {
+  return (raw) => {
+    const result = opts.decorate(raw);
+    writeAdversarialLedgerEntry(result, {
+      workCwd: opts.workCwd,
+      resolvedBranch: opts.resolvedBranch,
+      branch: opts.branch,
+      head: opts.state.capturedHeadRef,
+      callerSuppliedDiff: opts.callerSuppliedDiff === true,
+      // #1360 — the tool path's provenance marker and its round capture.
+      base: opts.baseRef,
+      toolPath: opts.toolPath === true,
+      binding: opts.state.binding,
+    });
+    return opts.note(result);
+  };
+}

@@ -94,6 +94,7 @@ import {
   readMergeCommand,
 } from "./merge-allowlist.ts";
 import {
+  adversarialRefusal,
   lensNotEvaluatedRefusal,
   mergeIdentity,
   readPrCommentBodies,
@@ -280,11 +281,12 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     const branch = target.headBranch;
 
     // Adversarial: latest entry must be passed AND match the current patchId.
+    // #1360 — a non-passing row's `detail` is quoted in the refusal, so an
+    // operator told "no passing review" can see the review DID run and why its
+    // row does not count (a narrowed range, a moved head, an edited tree).
     const adv = latestEntry(entries, branch, "adversarial");
     if (!adv || !adv.passed) {
-      return block(
-        `no passing adversarial review on file for branch \`${branch}\` (latest: ${adv ? `passed=${adv.passed}, patchId=${adv.patchId.slice(0, 8)}` : "none"}) — run adversarial_loop and let it complete before merging`,
-      );
+      return block(adversarialRefusal(branch, adv));
     }
     if (adv.patchId !== currentPatchId) {
       return block(
