@@ -80,6 +80,10 @@ export const KNOWN_EVENT_KINDS = [
   "verify-full-status",
   // #782 — the consolidated-verify gate's single-retry recovery marker.
   "verify-flake-recovered",
+  // #1240 — the consolidated-verify gate skipped its run because the probe
+  // tree is the tree the per-worktree verify already judged. A fast `develop`
+  // must be explainable from the state file.
+  "consolidated-verify-skipped",
   // #558 — the branch step's worktree provisioning record (the driver writes
   // it when it symlinks dependencies into a fresh worktree). Absent from the
   // tuple, a cycle that crashed after provisioning refused to resume.

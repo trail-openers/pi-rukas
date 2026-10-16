@@ -236,6 +236,16 @@ const everyKindEvent: WorkEvent[] = [
   },
   { kind: "verify-full-status", at: 1, status: "success", ms: 100 },
   { kind: "verify-flake-recovered", at: 1, step: "develop" },
+  // #1240 — the consolidated verify skipped its duplicate run. Its kind must
+  // be in the fixture set or KNOWN_EVENT_KINDS reads as carrying a stale entry.
+  {
+    kind: "consolidated-verify-skipped",
+    at: 1,
+    step: "develop",
+    treeHash: "0".repeat(40),
+    worktree: "/tmp/wt-default",
+    workstreamCount: 1,
+  },
   { kind: "widening-scan", at: 1, findings: [] },
   {
     kind: "memory-write",

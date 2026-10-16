@@ -39,6 +39,7 @@ import {
 } from "./work-driver-consolidation-classify.ts";
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import { commitPrSkipDecision } from "./work-driver-integrate-verify-skip.ts";
 import { verifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
 import {
   FAST_TIER_LABEL,
@@ -50,6 +51,7 @@ import {
   combinedExecFailureStream,
   rerunConsolidatedVerifyOnce,
 } from "./work-driver-verify-flake.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -66,6 +68,12 @@ export type CommitPrConsolidatedVerifyResult =
   | {
       ok: true /** #782 — the first run flaked and the single re-run passed. */;
       recovered?: boolean;
+      /**
+       * #1240 — the verify command was not run because the integration tree
+       * is the tree the develop gate already verified green. The caller
+       * renders the visible note from it. Absent on every real run.
+       */
+      skipped?: AlreadyVerifiedTree;
     }
   | {
       ok: false;
@@ -145,6 +153,19 @@ export async function runCommitPrConsolidatedVerify(
      * append happens, BEFORE the caller appends any failure cap).
      */
     onRecover?: (evidenceTail?: string) => void;
+    /**
+     * #1240 — the tree the develop gate last verified GREEN, established by
+     * the CALLER, plus the worktree it came from (the trace names it). At
+     * this seam the tree under verification is the integration branch's
+     * committed tree, which no develop run ever judged in place — the caller
+     * can only assert equality for the shape where the integration is that
+     * one workstream's content and nothing else (one workstream, a
+     * cherry-pick, no uncommitted residue: see `integrate()` step 4). When
+     * the pair is supplied and the committed tree is read successfully and
+     * equals it, the verify command is skipped and `skipped` reports the
+     * identity. A read failure, a mismatch, or no pair → the run happens.
+     */
+    alreadyVerifiedTree?: AlreadyVerifiedTree;
   },
 ): Promise<CommitPrConsolidatedVerifyResult> {
   // The single flake retry is allowed only when: (a) this is the first
@@ -161,6 +182,15 @@ export async function runCommitPrConsolidatedVerify(
   // #1324 — `.pi/verify-cmd-fast` runs first on the consolidated tree too.
   const fastCmd = await fastVerifyCmdFor(opts.repoRoot);
   const verifyExec = withFastTier(execFn, opts.verifyCmd, fastCmd);
+
+  // #1240 — the duplicate-run check (`commitPrSkipDecision`): why the tree is
+  // read here, after the caller committed the integration, and why residue in
+  // the index forbids the skip. Every non-skip outcome falls through to the
+  // run below.
+  const skip = await commitPrSkipDecision(execFn, opts.repoRoot, opts.alreadyVerifiedTree);
+  if (skip !== undefined) {
+    return { ok: true, skipped: skip };
+  }
   let timedOut = false;
   let ranCmd = opts.verifyCmd;
   const runOnce = async (): Promise<string | undefined> => {

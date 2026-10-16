@@ -1,3 +1,4 @@
+import path from "node:path";
 /**
  * work-status-events — event-log formatting for the `/work-status` snapshot.
  *
@@ -158,6 +159,11 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       return `  verify-full-status · ${e.status}${e.recovered ? " (recovered)" : ""}${e.ms ? ` · ${fmtElapsed(e.ms)}` : ""}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
     case "verify-flake-recovered":
       return `  verify-flake-recovered · ${e.step}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
+    case "consolidated-verify-skipped":
+      // #1240 — the visible record of a gate that did not re-run a check it
+      // proved was already run. Names the tree and the worktree so the claim
+      // is checkable, not just asserted.
+      return `  consolidated-verify-skipped · ${e.step} · tree ${e.treeHash.slice(0, 8)} already passed in ${path.basename(e.worktree)}`;
     case "widening-scan":
       return `  widening-scan · ${e.findings.length} finding(s)`;
     case "memory-write":
