@@ -121,7 +121,7 @@ export async function identityBase(
   cwd: string,
 ): Promise<{ ok: true; remote: string; mainline: string } | { ok: false; reason: string }> {
   const mainline = await resolveMainline(cwd, execFn);
-  if (!("branch" in mainline)) {
+  if (!mainline.ok) {
     return { ok: false, reason: `cannot resolve the mainline branch (${mainline.reason})` };
   }
   const remote = await remoteName(execFn, cwd);

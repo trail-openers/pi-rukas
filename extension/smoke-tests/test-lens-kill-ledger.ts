@@ -392,6 +392,14 @@ const allFail = () => ({
       runLensReview({
         diff: "diff --git a/a b/a\n+x",
         cwd: repo.repo,
+        // #1125 — the advisory split reads a real `base...head` range, so this
+        // detached run names its own refs: `dev` is the base, HEAD (the detached
+        // commit, which added change.txt) the head, and the finding cites a line
+        // of THAT file. The point of the case is unchanged — with no branch to
+        // key on, the review records nothing and says the disclosure was NOT
+        // posted — and it stays true only while the finding actually blocks.
+        base: "dev",
+        head: "HEAD",
         lensChildFn: async () => ({
           lens: "SIMPLICITY",
           ok: true,
@@ -400,8 +408,8 @@ const allFail = () => ({
           findings: [
             {
               severity: "MEDIUM" as const,
-              path: "src/a.ts",
-              line: 10,
+              path: "change.txt",
+              line: 1,
               title: "a finding",
               lens: "SIMPLICITY",
             },

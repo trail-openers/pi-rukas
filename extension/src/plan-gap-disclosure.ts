@@ -5,7 +5,7 @@
  * AGENTS.md §12). Importers take these names from this module; plan-gaps.ts
  * does not re-export them.
  */
-import { OPEN_POINTS_HEADING } from "./open-points-contract.ts";
+import { OPEN_POINTS_HEADING, OPEN_POINTS_INTRO } from "./open-points-contract.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gap-parse.ts";
 import type { PlanGap } from "./plan-types.ts";
 
@@ -47,6 +47,12 @@ export function residualGapsSection(residual: PlanGap[]): string {
  * CRITICAL still unresolved at the cap, each with the gate's proposal when it
  * gave one, so the unresolved points are visible on the issue rather than
  * blocking its filing.
+ *
+ * #1187 fix round 1: the intro sentence is the contract constant
+ * `OPEN_POINTS_INTRO`, not a literal. It is non-bullet prose under the heading, and the
+ * intent gate parks on any prose line it does not read as an item, so an inline literal
+ * meant a gap-gate-filed issue could never be cleared by `[RESOLVED]`: the points all
+ * resolved, the intro still parked. The writer and the reader take the same constant.
  */
 export function openPointsSection(points: PlanGap[]): string {
   if (points.length === 0) return "";
@@ -59,7 +65,7 @@ export function openPointsSection(points: PlanGap[]): string {
       return `- [${g.severity}] ${truncateForDisclosure(g.description)} — ${proposal}`;
     })
     .join("\n");
-  return `## ${OPEN_POINTS_HEADING}\n\nThe gap gate reached its iteration cap with these CRITICAL points still unresolved. The issue is filed so they are visible; the /work intent gate decides whether it is buildable.\n\n${items}\n`;
+  return `## ${OPEN_POINTS_HEADING}\n\n${OPEN_POINTS_INTRO}\n\n${items}\n`;
 }
 
 /**

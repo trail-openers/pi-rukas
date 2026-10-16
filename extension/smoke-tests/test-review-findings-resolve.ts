@@ -28,15 +28,12 @@
  * Every resolution records its reason on the row and in the summary (#1125).
  */
 
-import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import os from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { LensRunResult } from "../src/lens-review-types.ts";
+import { renderSummary } from "../src/lens-review-render.ts";
 import { runLensReview } from "../src/lens-review.ts";
-import { renderSummary } from "../src/lens-review-format.ts";
-import { LENS_ROSTER } from "../src/lens-roster.ts";
 import { FINDINGS_FILE, readBranchRows } from "../src/review-findings-store.ts";
+import { FULL_DIFF, type StubFinding, setupReviewFixture } from "./lib/review-findings-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -47,57 +44,23 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const root = mkdtempSync(path.join(os.tmpdir(), "findings-resolve-"));
-const repo = path.join(root, "repo");
-const skills = path.join(root, "skills");
-const ledgerDir = path.join(root, "ledger");
-mkdirSync(repo);
-mkdirSync(ledgerDir);
-let prec = 10;
-for (const l of LENS_ROSTER) {
-  mkdirSync(path.join(skills, l.skill), { recursive: true });
-  writeFileSync(
-    path.join(skills, l.skill, "SKILL.md"),
-    `---\nname: ${l.skill}\nprecedence: ${prec}\n---\n`,
-  );
-  prec += 10;
-}
-process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = path.join(ledgerDir, "review-ledger.json");
-process.env.PI_ENSEMBLE_SKILLS_DIR = skills;
-
-const sh = (cmd: string) =>
-  execSync(cmd, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-sh("git init -q -b main");
-sh("git config user.email dev@example.com");
-sh("git config user.name dev");
-mkdirSync(path.join(repo, "src"));
-writeFileSync(path.join(repo, "src", "a.ts"), "// header\nexport const a = 1;\nexport const b = 2;\n");
-writeFileSync(path.join(repo, "src", "keep.ts"), "export const k = 1;\n");
-sh("git add -A");
-sh("git commit -qm base");
-
-// The first lens reports `reportNow`; the others report nothing. Every lens
-// answers with a summary, so each round is a complete review.
-let reportNow: Array<Record<string, unknown>> = [];
-// When set, every lens but the first is blocked: the review is incomplete.
+// What the first lens reports this round; `blockNonFirst` makes a round incomplete.
+let reportNow: StubFinding[] = [];
 let blockNonFirst = false;
-const stubLens = async (args: { lens: { name: string } }): Promise<LensRunResult> => {
-  const first = args.lens.name === LENS_ROSTER[0]?.name;
-  const blocked = !first && blockNonFirst;
-  return {
-    lens: args.lens.name,
-    ok: !blocked,
-    ms: 1,
-    startMs: Date.now(),
-    attempts: 1,
-    blocked,
-    summary: "reviewed the diff",
-    findings: first ? reportNow.map((f) => ({ lens: args.lens.name, ...f })) : [],
-  } as unknown as LensRunResult;
-};
+const fixture = setupReviewFixture({
+  prefix: "findings-resolve",
+  files: {
+    "src/a.ts": "// header\nexport const a = 1;\nexport const b = 2;\n",
+    "src/keep.ts": "export const k = 1;\n",
+  },
+  report: () => reportNow,
+  blockNonFirst: () => blockNonFirst,
+});
+const repo = fixture.repo;
+const ledgerDir = fixture.ledgerDir;
+const sh = fixture.sh;
 
-const FULL_DIFF = "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+export const a = 1;";
-const runRound = (branch: string, head: string, findings: Array<Record<string, unknown>>) => {
+const runRound = (branch: string, head: string, findings: StubFinding[]) => {
   reportNow = findings;
   return runLensReview({
     cwd: repo,
@@ -105,7 +68,7 @@ const runRound = (branch: string, head: string, findings: Array<Record<string, u
     diff: FULL_DIFF,
     head,
     full: true,
-    lensChildFn: stubLens as never,
+    lensChildFn: fixture.stubLens,
   });
 };
 const head = () => sh("git rev-parse HEAD");
@@ -125,7 +88,9 @@ try {
   const a2 = await runRound("feat/gone", head(), []);
   const aRows = await readBranchRows(repo, "feat/gone");
   assert(
-    aRows.length === 1 && aRows[0]?.status === "resolved" && aRows[0]?.resolvedReason === "path-gone",
+    aRows.length === 1 &&
+      aRows[0]?.status === "resolved" &&
+      aRows[0]?.resolvedReason === "path-gone",
     "A round 2: the open row whose path is gone at head resolves, reason path-gone",
   );
   assert(
@@ -166,7 +131,10 @@ try {
     cRows.length === 1 && cRows[0]?.status === "open",
     "C round 2: a no-line row the review re-reports stays open",
   );
-  assert(c2.verdict === "ISSUES_FOUND", `C round 2: the re-reported finding blocks (${c2.verdict})`);
+  assert(
+    c2.verdict === "ISSUES_FOUND",
+    `C round 2: the re-reported finding blocks (${c2.verdict})`,
+  );
   // D — the file is truncated so the cited line no longer exists: resolved.
   sh("git checkout -q main");
   sh("git checkout -q -b feat/trunc");
@@ -197,7 +165,10 @@ try {
     typeof (await readBranchRows(repo, "feat/neighbour"))[0]?.lineHash === "string",
     "E round 1: a new row records the hash of its cited line (lineHash)",
   );
-  writeFileSync(path.join(repo, "src", "a.ts"), "// header\nexport const a = 9;\nexport const b = 2;\n");
+  writeFileSync(
+    path.join(repo, "src", "a.ts"),
+    "// header\nexport const a = 9;\nexport const b = 2;\n",
+  );
   sh("git commit -qam neighbour");
   const e2 = await runRound("feat/neighbour", head(), []);
   assert(
@@ -213,7 +184,10 @@ try {
   await runRound("feat/edited", head(), [
     { severity: "MEDIUM", path: "src/a.ts", line: 3, title: "Unused constant" },
   ]);
-  writeFileSync(path.join(repo, "src", "a.ts"), "// header\nexport const a = 1;\nexport const b = 3;\n");
+  writeFileSync(
+    path.join(repo, "src", "a.ts"),
+    "// header\nexport const a = 1;\nexport const b = 3;\n",
+  );
   sh("git commit -qam edit-cited-line");
   const f2 = await runRound("feat/edited", head(), []);
   assert(
@@ -241,8 +215,7 @@ try {
   const gRow = (await readBranchRows(repo, "feat/unchanged"))[0];
   assert(gRow?.status === "open", "G round 2: unchanged cited code stays open");
   assert(
-    g2.verdict === "ISSUES_FOUND" &&
-      g2.findings.some((f) => f.title === "Unused constant"),
+    g2.verdict === "ISSUES_FOUND" && g2.findings.some((f) => f.title === "Unused constant"),
     `G round 2: the carried finding blocks with its stored title (${g2.verdict})`,
   );
 
@@ -293,7 +266,10 @@ try {
     { severity: "MEDIUM", path: "src/a.ts", line: 3, title: "Unused constant" },
   ]);
   const deltaBase = head();
-  writeFileSync(path.join(repo, "src", "a.ts"), "// header\nexport const a = 1;\nexport const b = 3;\n");
+  writeFileSync(
+    path.join(repo, "src", "a.ts"),
+    "// header\nexport const a = 1;\nexport const b = 3;\n",
+  );
   sh("git commit -qam edit-cited-line");
   const j2 = await runLensReview({
     cwd: repo,
@@ -301,7 +277,7 @@ try {
     diff: "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+export const b = 3;",
     head: head(),
     since: deltaBase,
-    lensChildFn: stubLens as never,
+    lensChildFn: fixture.stubLens,
   });
   assert(
     (await readBranchRows(repo, "feat/delta"))[0]?.status === "open",
@@ -314,7 +290,10 @@ try {
   await runRound("feat/incomplete", head(), [
     { severity: "MEDIUM", path: "src/a.ts", line: 3, title: "Unused constant" },
   ]);
-  writeFileSync(path.join(repo, "src", "a.ts"), "// header\nexport const a = 1;\nexport const b = 3;\n");
+  writeFileSync(
+    path.join(repo, "src", "a.ts"),
+    "// header\nexport const a = 1;\nexport const b = 3;\n",
+  );
   sh("git commit -qam edit-cited-line");
   blockNonFirst = true;
   const k2 = await runRound("feat/incomplete", head(), []);
@@ -331,7 +310,10 @@ try {
   await runRound("feat/critical-edit", head(), [
     { severity: "CRITICAL", path: "src/a.ts", line: 3, title: "Unused constant" },
   ]);
-  writeFileSync(path.join(repo, "src", "a.ts"), "// header v2\nexport const a = 1;\nexport const b = 2;\n");
+  writeFileSync(
+    path.join(repo, "src", "a.ts"),
+    "// header v2\nexport const a = 1;\nexport const b = 2;\n",
+  );
   sh("git commit -qam window-edit");
   const l2 = await runRound("feat/critical-edit", head(), []);
   const lRow = (await readBranchRows(repo, "feat/critical-edit"))[0];
@@ -377,7 +359,7 @@ try {
     diff: "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n-export const b = 2;",
     head: head(),
     since: eofBase,
-    lensChildFn: stubLens as never,
+    lensChildFn: fixture.stubLens,
   });
   assert(
     (await readBranchRows(repo, "feat/eof-delta"))[0]?.status === "open" &&
@@ -414,10 +396,15 @@ try {
     { severity: "MEDIUM", path: "src/a.ts", line: 3, title: "Unused constant" },
   ]);
   const findingsFile = path.join(ledgerDir, FINDINGS_FILE);
-  const stored = JSON.parse(readFileSync(findingsFile, "utf8")) as { rows: Array<Record<string, unknown>> };
+  const stored = JSON.parse(readFileSync(findingsFile, "utf8")) as {
+    rows: Array<Record<string, unknown>>;
+  };
   for (const r of stored.rows) if (r.branch === "feat/legacy") delete r.lineHash;
   writeFileSync(findingsFile, JSON.stringify(stored));
-  writeFileSync(path.join(repo, "src", "a.ts"), "// header\nexport const a = 9;\nexport const b = 2;\n");
+  writeFileSync(
+    path.join(repo, "src", "a.ts"),
+    "// header\nexport const a = 9;\nexport const b = 2;\n",
+  );
   sh("git commit -qam legacy-window");
   const p2 = await runRound("feat/legacy", head(), []);
   assert(
@@ -451,7 +438,9 @@ try {
     { severity: "MEDIUM", path: "src/a.ts", line: 3, title: "Unused constant" },
   ]);
   const unsafeFile = path.join(ledgerDir, FINDINGS_FILE);
-  const unsafeStored = JSON.parse(readFileSync(unsafeFile, "utf8")) as { rows: Array<Record<string, unknown>> };
+  const unsafeStored = JSON.parse(readFileSync(unsafeFile, "utf8")) as {
+    rows: Array<Record<string, unknown>>;
+  };
   for (const r of unsafeStored.rows) if (r.branch === "feat/unsafe") r.path = "../x";
   writeFileSync(unsafeFile, JSON.stringify(unsafeStored));
   const r2 = await runRound("feat/unsafe", head(), []);
@@ -461,7 +450,7 @@ try {
     `R round 2: an unsafe stored path is carried, not path-gone (${r2.verdict})`,
   );
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  fixture.cleanup();
 }
 
 process.exit(exit);
