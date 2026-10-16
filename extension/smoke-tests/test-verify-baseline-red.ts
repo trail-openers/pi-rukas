@@ -20,6 +20,11 @@ import { BASELINE_RED_MARKER } from "../src/work-driver-verify-baseline.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import {
+  assertDefaultVerifyBound,
+  defaultBoundText,
+  pinDefaultVerifyTimeout,
+} from "./lib/verify-timeout-pin.ts";
 
 const execFileP = promisify(execFile);
 let exit = 0;
@@ -34,6 +39,16 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd });
 
 const CMD = "bash scripts/verify.sh";
+// The timeout cases assert the DEFAULT bound's text. The bound is read from
+// the production helper with PI_ENSEMBLE_VERIFY_TIMEOUT_MS absent (see
+// ./lib/verify-timeout-pin.ts), so an operator who raised the knob (a 45-min
+// laptop setting) does not fail them for the wrong reason, and a future
+// change to the default moves the asserted text with it.
+const BOUND = await defaultBoundText();
+// One self-check lives in the lib and BOTH consumers call it, so the shared
+// helper cannot silently read a bound the gate does not use — and the pin is
+// proven to put the operator's own knob value back afterwards.
+await assertDefaultVerifyBound(assert);
 const root = mkdtempSync(path.join(tmpdir(), "pi-baseline-red-"));
 type Outcome = { ok: true } | { ok: false; stdout: string; killed?: boolean };
 
@@ -84,7 +99,11 @@ async function run(name: string, outcomeFor: (where: "base" | "change") => Outco
   await runVerifyCommandGate({
     execFn,
     cmd: CMD,
-    ctx: { host: {} as unknown as DriverContext["host"], repoRoot: repo, issue: 9 } as DriverContext,
+    ctx: {
+      host: {} as unknown as DriverContext["host"],
+      repoRoot: repo,
+      issue: 9,
+    } as DriverContext,
     state,
     worktrees: { default: wt },
     baseSha,
@@ -113,16 +132,25 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
     r.verifyRuns.filter((w) => w === "base").length === 1,
     "red at base: the baseline is run exactly once after the failure",
   );
-  assert(r.baselineHadChange === false, "red at base: the baseline tree does not contain the change");
+  assert(
+    r.baselineHadChange === false,
+    "red at base: the baseline tree does not contain the change",
+  );
   const first = r.failures[0] ?? "";
-  assert(first.startsWith(BASELINE_RED_MARKER), "red at base: the baseline finding LEADS the failures");
+  assert(
+    first.startsWith(BASELINE_RED_MARKER),
+    "red at base: the baseline finding LEADS the failures",
+  );
   assert(first.includes(r.baseSha.slice(0, 12)), "red at base: the finding names the base sha");
   assert(
     first.includes("error: test failed, to rerun pass `--bin console`") &&
       first.includes("SAME assertion"),
     "red at base: the finding names the base assertion and that the change's run shares it",
   );
-  assert(first.length <= 800, `red at base: the finding survives the 800-char evidence bound (${first.length})`);
+  assert(
+    first.length <= 800,
+    `red at base: the finding survives the 800-char evidence bound (${first.length})`,
+  );
   assert(r.failures.length > 1, "red at base: the change's own failures are kept, not replaced");
   assert(!r.listed.includes("baseline-verify-9"), "red at base: the temporary worktree is removed");
   assert(!existsSync(r.baselineDir), "red at base: the temporary directory is gone");
@@ -152,7 +180,9 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
 
 // 3 — green at base: the change broke it; nothing is excused.
 {
-  const r = await run("green-at-base", (w) => (w === "base" ? { ok: true } : { ok: false, stdout: CARGO }));
+  const r = await run("green-at-base", (w) =>
+    w === "base" ? { ok: true } : { ok: false, stdout: CARGO },
+  );
   assert(r.failures.length > 0, "green at base: the failure still blocks");
   assert(
     !r.failures.some((f) => f.includes(BASELINE_RED_MARKER)),
@@ -182,7 +212,7 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
 }
 
 // 5 — a run killed at its timeout is reported as a timeout, everywhere.
-{
+await pinDefaultVerifyTimeout(async () => {
   const r = await run("timeout", () => ({
     ok: false,
     stdout: "ok    no product or host names in platform files\n",
@@ -190,19 +220,20 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
   }));
   const all = r.failures.join("\n");
   assert(
-    !all.includes("no specific assertion could be extracted") && !all.includes("specific assertion:"),
+    !all.includes("no specific assertion could be extracted") &&
+      !all.includes("specific assertion:"),
     "timeout: no failure claims an assertion about the code",
   );
   assert(
-    r.failures.some((f) => f.includes("10-min timeout on the CONSOLIDATED tree")),
+    r.failures.some((f) => f.includes(`${BOUND} timeout on the CONSOLIDATED tree`)),
     "timeout: the consolidated run is reported as exceeding its bound",
   );
   assert(
     (r.failures[0] ?? "").startsWith(BASELINE_RED_MARKER) &&
-      (r.failures[0] ?? "").includes("10-min timeout on a clean checkout"),
+      (r.failures[0] ?? "").includes(`${BOUND} timeout on a clean checkout`),
     "timeout: a base run that also times out says the gate cannot finish inside its bound",
   );
-}
+});
 
 rmSync(root, { recursive: true, force: true });
 process.exit(exit);
