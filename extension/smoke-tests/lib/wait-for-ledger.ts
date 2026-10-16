@@ -44,23 +44,28 @@ const LEDGER_WAIT_BUDGET_MS = 30_000;
  */
 export function waitForLedger(
   file: string,
-  budgetMs: number = LEDGER_WAIT_BUDGET_MS,
+  opts: number | { budgetMs?: number; until?: (entries: LedgerEntry[]) => boolean } = {},
 ): LedgerEntry[] | null {
+  const o = typeof opts === "number" ? { budgetMs: opts } : opts;
+  const budgetMs = o.budgetMs ?? LEDGER_WAIT_BUDGET_MS;
   const read = (): LedgerEntry[] => {
     const parsed = JSON.parse(readFileSync(file, "utf8"));
     if (!Array.isArray((parsed as { entries?: unknown } | null)?.entries)) {
-      throw new SyntaxError(
-        "malformed ledger file (expected an object with an entries array)",
-      );
+      throw new SyntaxError("malformed ledger file (expected an object with an entries array)");
     }
     return validEntries((parsed as { entries: unknown[] }).entries);
   };
+  // `until` lets a caller wait for a PROPERTY of the file rather than for the
+  // file itself (a later round of an already-existing ledger). The poll checks
+  // it first and only sleeps on a miss, so the passing path costs one read.
+  const satisfied = (entries: LedgerEntry[]): boolean => (o.until ? o.until(entries) : true);
   const deadline = Date.now() + budgetMs;
   let silentReads = 0;
   while (Date.now() < deadline) {
     if (existsSync(file)) {
       try {
-        return read();
+        const entries = read();
+        if (satisfied(entries)) return entries;
       } catch {
         // Not parseable yet (mid-rename/torn write) — count it for the
         // deadline re-raise and keep polling (the rename is atomic).
@@ -69,7 +74,7 @@ export function waitForLedger(
     }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
-  if (!existsSync(file)) return null;
+  if (!o.until && !existsSync(file)) return null;
   try {
     return read();
   } catch (err) {

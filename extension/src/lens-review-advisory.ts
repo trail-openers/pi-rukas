@@ -10,13 +10,26 @@
  * change touched; this module applies that rule to every reported finding —
  * fresh or carried — at LINE level:
  *
- *   - a finding that cites a line is BLOCKING only when that line falls in
- *     `git diff <base>...<head>`'s changed ranges on the new side (head: the
- *     review's resolved head SHA; base: the review's explicit `base`, else the
- *     mainline). A finding elsewhere is ADVISORY — out of the verdict, out of
- *     `hasCritical`, listed under "Advisory (outside this PR's diff)";
+ *   - a finding that cites a line is BLOCKING only when that line falls in the
+ *     changed ranges on the new side of the range the round belongs to:
+ *     - a FULL round judges `changedLineRanges` of THE DIFF THE REVIEW RAN
+ *       (`resolveReviewDiff`'s output — the same value the lenses were handed, so
+ *       the split and the review can never disagree about what was reviewed);
+ *     - a DELTA round judges the WHOLE PR range, `git diff <base>...<head>`, read
+ *       from git: the diff it was handed covers only `since..head`, and a
+ *       carried finding the branch itself introduced must keep blocking just
+ *       because this round's delta did not touch its line. Decision 5 scopes
+ *       what a delta may RESOLVE (review-findings-store.ts), never what blocks.
+ *     The base is the review's explicit `base`, or the base its diff was
+ *     computed against, else the mainline. A finding outside the range is
+ *     ADVISORY — out of the verdict, out of `hasCritical`, listed under
+ *     "Advisory (outside this PR's changed lines)". A pure rename contributes no
+ *     changed lines on the new side, so a finding on a renamed file's unchanged
+ *     content is advisory: the range is about lines, not paths;
  *   - a finding with no line (a file-level finding) blocks when its path is in
- *     that diff, exactly as #1140 had it;
+ *     that diff, exactly as #1140 had it; a `line` that is not a positive
+ *     integer is malformed and is treated as line-less, so it blocks when its
+ *     file changed rather than silently matching no range;
  *   - a finding with no path at all blocks — there is nothing to place in the
  *     diff, so nothing can make it advisory;
  *   - when the changed ranges cannot be read, EVERY finding blocks (today's
@@ -26,7 +39,7 @@
  *
  * Because the same list feeds the verdict, `bySeverity`, the summary and the
  * ledger's `hasCritical` (lens-round-cap.ts, merge-guard-round-cap.ts read it
- * from the latest lens entry), an out-of-diff CRITICAL can no longer hold the
+ * from the latest lens entry), an out-of-range CRITICAL can no longer hold the
  * round budget or the merge (#1143's invariant, kept at line level).
  *
  * The store rows are not modified: an advisory finding stays `open` there and
@@ -34,10 +47,10 @@
  */
 
 import { neutraliseEvidence } from "./comment-evidence.ts";
-import { changedRanges } from "./lens-review-changed-ranges.ts";
+import { changedRanges, rangeLabel, rangesFromDiff } from "./lens-review-changed-ranges.ts";
 import type { Finding } from "./lens-review-types.ts";
 
-export const ADVISORY_HEADING = "Advisory (outside this PR's diff)";
+export const ADVISORY_HEADING = "Advisory (outside this PR's changed lines)";
 
 const norm = (p: string): string => p.replace(/^\.\//, "").replace(/\/+$/, "");
 
@@ -48,8 +61,16 @@ const norm = (p: string): string => p.replace(/^\.\//, "").replace(/\/+$/, "");
  * of a deletion still counts as changed code.
  */
 function inRanges(spans: ReadonlyArray<readonly [number, number]>, line: number): boolean {
-  return spans.some(([lo, hi]) => line >= lo && line <= (hi < lo ? lo : hi));
+  return spans.some(([lo, hi]) => line >= lo && line <= hi);
 }
+
+/** A cited line usable for placement. `line` arrives from a lens payload or a
+ * store row, so a non-positive or non-integer one is possible: it is malformed
+ * rather than out of range, and treating it as line-less asks the file rule
+ * (which blocks when the file changed) instead of the range rule (which would
+ * match no span and discount it). */
+const usableLine = (f: Finding): number | undefined =>
+  typeof f.line === "number" && Number.isInteger(f.line) && f.line > 0 ? f.line : undefined;
 
 /**
  * Blocking when the cited code is in the PR's changed lines; advisory when it
@@ -61,7 +82,8 @@ function isAdvisory(
   ranges: Map<string, Array<[number, number]>>,
   fileChanged: (path: string) => boolean,
 ): boolean {
-  if (typeof f.line === "number") return !inRanges(ranges.get(norm(f.path)) ?? [], f.line);
+  const line = usableLine(f);
+  if (line !== undefined) return !inRanges(ranges.get(norm(f.path)) ?? [], line);
   return !fileChanged(f.path);
 }
 
@@ -80,36 +102,80 @@ function unreadableNote(reason: string): string {
   return `findings all treated as blocking: the PR's changed lines could not be read (${reason})`;
 }
 
+export interface AdvisorySplitOptions {
+  /** Every finding the round reported: the round's own plus the carried rows. */
+  reported: readonly Finding[];
+  /** Where a fallback range read runs. */
+  cwd?: string;
+  /** The range's base, when the review knows one. */
+  base?: string;
+  /** The review's resolved head SHA. */
+  head?: string;
+  /** The delta this round reviewed, when it reviewed one. */
+  delta?: { since: string; head: string };
+  /** The diff the review ran (`resolveReviewDiff`'s output). Used as the source
+   * of the changed lines on a FULL round only: a delta's diff covers just
+   * `since..head`, and a delta must still be judged against the PR's whole range. */
+  diff?: string;
+  /** True when this round reviewed a delta: the supplied diff is then only the
+   * delta's own range, so the ranges come from the `base...head` git read. */
+  isDelta?: boolean;
+  /** Injected for tests; defaults to the git read in lens-review-changed-ranges.ts. */
+  rangeRead?: (
+    cwd: string,
+    base: string | undefined,
+    head: string | undefined,
+  ) => Promise<RangeList>;
+}
+
+/** A range read: the changed lines, or the reason they could not be had. */
+export type RangeList =
+  | { ok: true; ranges: Map<string, Array<[number, number]>> }
+  | { ok: false; reason: string };
+
 /**
  * Split the round's reported findings (fresh lens findings and carried store
  * rows alike) into blocking (inside the PR's changed lines) and advisory.
  *
- * `rangeReadable` says whether this run has a range to speak of at all — its
- * head resolved to a commit, so `base...head` means something. When it is
- * false, NO finding is discounted and no note is emitted: the discount is
- * earned by a range that was actually read, never assumed (#1143's invariant is
- * "out of range", never "range unknown"). When it is true and the read still
- * fails, every finding blocks AND the note says why, so a fail-closed round is
- * visible rather than merely conservative.
+ * `head` says whether this run has a range to speak of at all — its head
+ * resolved to a commit, so the range means something. When it is absent, NO
+ * finding is discounted and no note is emitted: the discount is earned by a
+ * range that was actually read, never assumed (#1143's invariant is "out of
+ * range", never "range unknown"). When it is present and the read still fails,
+ * every finding blocks AND the note says why, so a fail-closed round is visible
+ * rather than merely conservative.
  */
-export async function splitAdvisory(
-  reported: readonly Finding[],
-  cwd: string | undefined,
-  base: string | undefined,
-  head: string | undefined,
-  rangeReadable = true,
-): Promise<AdvisorySplit> {
+export async function splitAdvisory({
+  reported,
+  cwd,
+  base,
+  head,
+  diff,
+  isDelta = false,
+  rangeRead = changedRanges,
+}: AdvisorySplitOptions): Promise<AdvisorySplit> {
   if (reported.length === 0) return { blocking: [...reported], fields: {} };
-  if (!rangeReadable) return { blocking: [...reported], fields: {} };
-  // A throw is contained like a failed git read: every finding blocks.
-  const list = await changedRanges(cwd ?? process.cwd(), base, head).catch((err: unknown) => ({
-    ok: false as const,
-    reason: `changed-line check failed: ${(err as Error)?.message ?? String(err)}`,
-  }));
+  if (!head) return { blocking: [...reported], fields: {} };
+  const dir = cwd ?? process.cwd();
+  const label = rangeLabel(dir, base, head);
+  // A FULL round judges the diff the review ran — the value the lenses were
+  // handed, so the split and the review cannot disagree. A DELTA round does not:
+  // its diff is only `since..head`, and blocking is always measured against the
+  // PR's whole `base...head` (decision 5 scopes RESOLUTION, not blocking). The
+  // git read is also the fallback when a supplied diff yields no ranges — a
+  // string that parses to nothing is not evidence that nothing changed.
+  // A throw is contained like a failed read: every finding blocks.
+  const fromDiff = diff && !isDelta ? rangesFromDiff(diff, label) : undefined;
+  const list = fromDiff?.ok
+    ? fromDiff
+    : await rangeRead(dir, base, head).catch((err: unknown) => ({
+        ok: false as const,
+        reason: `changed-line check failed: ${(err as Error)?.message ?? String(err)}`,
+      }));
   if (!list.ok) {
     return {
       blocking: [...reported],
-      fields: { memoryNote: unreadableNote(list.reason) },
+      fields: { memoryNote: unreadableNote(`${list.reason} — for ${label}`) },
     };
   }
   const changed = (path: string | undefined): boolean =>
@@ -122,7 +188,7 @@ export async function splitAdvisory(
   return { blocking, fields: advisory.length > 0 ? { advisory } : {} };
 }
 
-/** The summary/disclosure section listing advisory rows (empty when none). */
+/** The disclosure section listing advisory rows (empty when none). */
 export function advisorySection(advisory: readonly Finding[] | undefined): string[] {
   if (!advisory || advisory.length === 0) return [];
   return [

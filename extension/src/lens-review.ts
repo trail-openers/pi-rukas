@@ -104,11 +104,13 @@ export const LENS_REVIEW_DIFF_DESCRIPTION =
   "The full PR/MR diff to review. Fetch it once (e.g. `gh pr diff <N>` or `glab mr diff <N>`) or `git diff main...feature/...` and reuse — do NOT re-fetch per lens. For large diffs, prefer the optional base + head refs (with cwd) so the tool computes `git diff <base>...<head>` itself; when both are given, the string wins.";
 
 /** Max attempts per lens — 1 initial + 3 retries on spawn failure or non-zero
- * exit. Aborted lenses (user cancel) don't retry. */
+ * exit. Matches the opencode contract. Aborted lenses (user cancel) don't
+ * retry. */
 const MAX_LENS_ATTEMPTS = 4;
 export { MAX_LENS_ATTEMPTS };
 
-/** Backoff between retries (ms) — these failures are usually transient. */
+/** Backoff between retries (ms). Small fixed delay — these failures are
+ * usually transient (process spawn pressure, provider-side rate limits). */
 const LENS_RETRY_BACKOFF_MS = 1000;
 
 export async function runLensReview(opts: {
@@ -445,7 +447,7 @@ export async function runLensReview(opts: {
     lensResults,
     delta,
     cwd: opts.cwd,
-    base: opts.base ?? (delta ? undefined : diffBaseOf(resolved)),
+    base: opts.base ?? diffBaseOf(resolved),
     branchResolved,
     headSha,
     diff,

@@ -10,6 +10,10 @@
  * environment where it is unavailable must not turn every round fail-closed.
  * The raw diff text goes to `changedLineRanges` (review-diff.ts), the same
  * parser the delta path uses, so both read one definition of "changed line".
+ * The caller may instead hand the split the DIFF THE REVIEW ACTUALLY RAN (the
+ * #859 rule: the value the lenses saw is the value the split judges), and the
+ * git read below is the fallback for a review that has no diff string of its
+ * own — the range then being the one that diff was computed from.
  *
  * A ref beginning with `-` would be parsed by git as an option, so such a name
  * is refused as unreadable rather than passed on the argv. Failure is
@@ -21,9 +25,41 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolveMainlineBase } from "./review-delta-hunks.ts";
-import { changedLineRanges } from "./review-diff.ts";
+import { DIFF_MAX_BUFFER, changedLineRanges, diffOverflow } from "./review-diff.ts";
 
 const execFileP = promisify(execFile);
+
+/** The read every range gets: `-U0` (the split wants hunk headers, not
+ * context), and no rename/collision/ext-diff rewriting, so the paths and the
+ * line numbers are the ones the findings cite. Bounded and timed like the
+ * review's own diff reads — a hung git is a failed read, never a hung round. */
+const RANGE_ARGS = ["-U0", "--no-renames", "--no-color", "--no-ext-diff"];
+const RANGE_TIMEOUT_MS = 30_000;
+
+/** The changed LINES a `git diff <range>` produced, or the reason they could
+ * not be read. Shared by the fallback range read below and by the caller that
+ * already holds the diff the review ran (lens-review-advisory.ts), so both
+ * discriminate the same three failures the same way: unreadable refs, a cut
+ * tail, and a diff that yields no file sections. */
+export function rangesFromDiff(
+  stdout: string,
+  range: string,
+): { ok: true; ranges: Map<string, Array<[number, number]>> } | { ok: false; reason: string } {
+  if (!stdout.trim()) {
+    // An EMPTY range is not "nothing changed" here: the review that got this
+    // diff would have skipped (a full review blocks on an empty range, #384),
+    // so an empty one reaching the split is a read that produced no evidence.
+    return { ok: false, reason: `the range diff (${range}) yielded no changed lines` };
+  }
+  const ranges = changedLineRanges(stdout);
+  if (ranges.size === 0) {
+    // A non-empty diff with no file sections is a diff this parser could not
+    // read, not a change that touched no lines — the `unparseable` rule of
+    // review-delta-hunks.ts, applied to the same shape.
+    return { ok: false, reason: `the range diff (${range}) yielded no changed lines` };
+  }
+  return { ok: true, ranges };
+}
 
 /** The PR's changed line ranges, or the reason they could not be read. */
 export async function changedRanges(
@@ -41,14 +77,24 @@ export async function changedRanges(
   if (b.startsWith("-") || head.startsWith("-")) {
     return { ok: false, reason: `ref "${b.startsWith("-") ? b : head}" starts with '-'` };
   }
+  const range = `${b}...${head}`;
   try {
-    const { stdout } = await execFileP("git", ["-C", cwd, "diff", `${b}...${head}`], {
-      maxBuffer: 1024 * 1024,
+    const { stdout } = await execFileP("git", ["-C", cwd, "diff", ...RANGE_ARGS, range], {
+      maxBuffer: DIFF_MAX_BUFFER,
+      timeout: RANGE_TIMEOUT_MS,
     });
-    return { ok: true, ranges: changedLineRanges(stdout) };
+    return rangesFromDiff(stdout, range);
   } catch (err) {
-    const why = ((err as Error)?.message ?? String(err)).slice(0, 200);
-    return { ok: false, reason: `git diff ${b}...${head} failed: ${why}` };
+    const e = err as Error & { stderr?: string };
+    // A tail cut at the cap is a truncated diff, and a truncated diff would
+    // silently discount the findings past the cut. It is a failed read.
+    if (diffOverflow(e?.stderr ?? "")) {
+      return { ok: false, reason: `git diff ${range} exceeded the ${DIFF_MAX_BUFFER} byte cap` };
+    }
+    return {
+      ok: false,
+      reason: `git diff ${range} failed: ${(e?.message ?? String(err)).slice(0, 200)}`,
+    };
   }
 }
 
@@ -60,4 +106,15 @@ export function diffBaseOf(resolved: { kind: string; delta?: { since?: string } 
   | string
   | undefined {
   return resolved.kind === "ok" ? resolved.delta?.since : undefined;
+}
+
+/** The range a round's changed lines are ABOUT, in the reason text: always the
+ * PR's three-dot `base...head`, including on a delta round — blocking is
+ * measured against the whole PR, never against the delta's own range. */
+export function rangeLabel(
+  cwd: string,
+  base: string | undefined,
+  head: string | undefined,
+): string {
+  return `${base ?? "<mainline>"}...${head ?? "<unresolved head>"} (in ${cwd})`;
 }

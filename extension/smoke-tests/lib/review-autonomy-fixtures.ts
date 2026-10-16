@@ -14,9 +14,11 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { MergeTarget } from "../../src/merge-target.ts";
+import { FINDINGS_FILE } from "../../src/review-findings-store.ts";
 import type { LedgerEntry } from "../../src/review-ledger.ts";
 import { latestEntry, readLedgerAt } from "../../src/review-ledger.ts";
 import { hookDecision } from "../merge-guard-helpers.ts";
+import { waitForLedger } from "./wait-for-ledger.ts";
 
 /** A stored row's invariant fields: the test's rows are all open, unmatched,
  * and never resolved — an impossible snippet means the store matches no lens
@@ -37,9 +39,10 @@ export interface SeedRow {
   title: string;
 }
 
-/** The findings-store file beside the ledger the review reads and writes. */
+/** The findings-store file beside the ledger the review reads and writes —
+ * same directory, the store's own filename constant (never a literal). */
 export function storeFileOf(ledgerFile: string): string {
-  return path.join(path.dirname(ledgerFile), "review-findings.json");
+  return path.join(path.dirname(ledgerFile), FINDINGS_FILE);
 }
 
 /** Replace this branch's stored rows with `rows`, leaving other branches'
@@ -60,8 +63,11 @@ export function seedFindings(storeFile: string, branch: string, rows: readonly S
     others = (JSON.parse(readFileSync(storeFile, "utf8")).rows as unknown[]).filter(
       (r) => (r as { branch?: string }).branch !== branch,
     );
-  } catch {
-    // No store yet — this branch's rows are the whole file.
+  } catch (err) {
+    // A missing store means this branch's rows are the whole file; anything
+    // else (a torn or corrupt file) is a real problem and must not be quietly
+    // overwritten by the seed.
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
   }
   writeFileSync(storeFile, JSON.stringify({ rows: [...others, ...onBranch] }, null, 2), "utf8");
 }
@@ -80,12 +86,47 @@ export async function waitForLensRound(
   branch: string,
   n: number,
 ): Promise<LedgerEntry | undefined> {
+  const row = (): LedgerEntry | undefined => latestLensEntry(ledgerFile, branch);
+  // One sleep between ticks, and only when the previous check missed: the
+  // passing path reads the ledger once and returns.
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  if (row()?.round === n) return row();
   for (let i = 0; i < 250; i++) {
-    const row = latestLensEntry(ledgerFile, branch);
-    if (row?.round === n) return row;
-    await new Promise((r) => setTimeout(r, 20));
+    // The shared poll (#984 — a fixed budget that child-process startup can
+    // eat, which makes the file look "late") reads the file; the round
+    // predicate keeps the semantics this helper has always had: return the
+    // moment the round is there, and the latest row at the deadline.
+    waitForLedger(ledgerFile, { budgetMs: 200, until: () => row()?.round === n });
+    if (row()?.round === n) return row();
+    await tick();
   }
-  return latestLensEntry(ledgerFile, branch);
+  return row();
+}
+
+/**
+ * #1144 — pin the installed-skills dir to the REPO's own bundled `skill/` dir
+ * for the lifetime of `fn` (the save/restore idiom test-review-tools-refrange.ts
+ * uses): on a CI runner `~/.pi/agent/skills` has no `code-review-*` skills, so
+ * `buildExpectedRoster` marks every lens blocked and the review verdicts
+ * REVIEW_INCOMPLETE before the injected lens child is ever consulted. The
+ * scenarios would otherwise pass on a dev host that happens to have the skills
+ * installed and fail on CI. Save/restore, and an UNSET prior is restored to
+ * unset, so a caller that set the variable itself is not clobbered.
+ */
+export async function withBundledSkillsDir<T>(fn: () => Promise<T>): Promise<T> {
+  // This file lives in extension/smoke-tests/lib/, so ../../../ is the repo
+  // root — where the bundled skill/ dir lives.
+  const pinned = path.resolve(new URL("../../../skill", import.meta.url).pathname);
+  const prior = process.env.PI_ENSEMBLE_SKILLS_DIR;
+  process.env.PI_ENSEMBLE_SKILLS_DIR = pinned;
+  try {
+    return await fn();
+  } finally {
+    // `undefined` restores the unset state: `process.env` treats an undefined
+    // value as absent, and the lint rule against `delete` is right that a
+    // property assignment is the cheaper way back to it.
+    process.env.PI_ENSEMBLE_SKILLS_DIR = prior;
+  }
 }
 
 /** The shape the #973 round-cap rule reads: ISSUES_FOUND at the round cap, with

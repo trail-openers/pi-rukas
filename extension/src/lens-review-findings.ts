@@ -27,6 +27,7 @@
 import { partitionDecisions } from "./lens-residuals.ts";
 import type { SuppressedFinding } from "./lens-residuals.ts";
 import { splitAdvisory } from "./lens-review-advisory.ts";
+import type { AutoDeltaInfo } from "./lens-review-diff.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import type { ResolvedNotice } from "./review-findings-file.ts";
@@ -50,10 +51,10 @@ export interface ReportedFindings {
   suppressed: SuppressedFinding[];
   /** Rows the memory resolved because a complete review no longer reports them. */
   resolved: ResolvedNotice[];
-  /** Summary fields from the memory and the advisory split. At most one of the
-   * two notes is ever set: the memory note means the round was not recorded at
-   * all (so there was no carried row to discount), the advisory note means the
-   * changed lines could not be read. */
+  /** Summary fields from the memory and the advisory split. Either note may be
+   * set, and when BOTH are the round says both: `memoryNote` means the round was
+   * not recorded at all, the advisory note means the changed lines could not be
+   * read. They are composed, never one dropped for the other. */
   fields: { advisory?: Finding[]; memoryNote?: string };
 }
 
@@ -69,7 +70,7 @@ export interface ReportedFindings {
 export async function resolveReportedFindings(opts: {
   deduped: Finding[];
   lensResults: readonly LensRunResult[];
-  delta: unknown;
+  delta: AutoDeltaInfo | undefined;
   cwd: string | undefined;
   base: string | undefined;
   branchResolved: string | undefined;
@@ -100,19 +101,27 @@ export async function resolveReportedFindings(opts: {
   // makes any of them advisory unless its cited line is in the PR's changed
   // lines. The discount is earned only by a range actually READ (headSha
   // resolved); with none, nothing is discounted — #1143's invariant is "out of
-  // range", never "range unknown".
-  const advisory = await splitAdvisory(
-    [...kept, ...(recorded?.ok ? (recorded.carried ?? []) : [])],
-    opts.cwd,
-    opts.base,
-    headSha,
-    // A review with a resolved head has a range; the read itself may still fail, and
-    // that path (below) is what fails closed. No head means no range at all.
-    headSha !== undefined,
-  );
+  // range", never "range unknown". The changed lines come from the diff THIS
+  // review ran (`opts.diff` — the value the lenses were handed, so the split and
+  // the review cannot disagree); the git range read is the fallback for a round
+  // with no diff string, and a delta round's range is the delta's own.
+  const advisory = await splitAdvisory({
+    reported: [...kept, ...(recorded?.ok ? (recorded.carried ?? []) : [])],
+    cwd: opts.cwd,
+    base: opts.base,
+    head: headSha,
+    // A delta round's diff is only `since..head`, so the split ignores it as a
+    // source and reads the PR's whole `base...head` (blocking is never
+    // delta-scoped; #1125 decision 5 scopes resolution, which the store does).
+    ...(opts.diff ? { diff: opts.diff } : {}),
+    isDelta: delta !== undefined,
+  });
   const fields: ReportedFindings["fields"] = {};
   if (advisory.fields.advisory) fields.advisory = advisory.fields.advisory;
-  const note = memoryNote ?? advisory.fields.memoryNote;
+  // Both notes, when both fired: the memory note says the round was not
+  // recorded, the advisory note says the discount could not be earned. Neither
+  // is a substitute for the other, so `??` dropping one would hide a failure.
+  const note = [memoryNote, advisory.fields.memoryNote].filter(Boolean).join("; ");
   if (note) fields.memoryNote = note;
   return {
     reported: advisory.blocking,
