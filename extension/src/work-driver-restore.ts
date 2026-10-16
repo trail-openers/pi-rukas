@@ -64,7 +64,7 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
 /** A name a restore may pass to git: no shell metacharacters, no leading `-`. */
 const PLAIN_REF = /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/;
 /** How many untracked paths a restore claim names before it counts the rest. */
-const UNTRACKED_SHOWN = 10;
+export const UNTRACKED_SHOWN = 10;
 
 /**
  * #1093 — the syntactic half of the ref check, with no git call: a 40-hex SHA,
@@ -220,6 +220,9 @@ export function restoreClaim(
  * so it is left exactly as it is and the claim says so, with the path, for
  * a recovery by hand. The root stays dirty, and the next cycle's dirty-root
  * gate refuses to start until the operator has dealt with it — on purpose.
+ *
+ * Exported so the cause-budget test builds this shape from its REAL
+ * producer rather than hand-writing a string that may drift from it.
  */
 function saveFailedRestore(repoRoot: string, error: string): VerifiedRestoreResult {
   return {
