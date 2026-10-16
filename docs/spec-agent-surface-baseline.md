@@ -181,12 +181,21 @@ is an explicit acknowledgement that a reader role holds a real write/egress path
 set-url`, `git worktree add`, forge verbs) that no `permission` entry gates — in trust mode (the
 default) the call never consults the map, so `codemode: allow` records neither a grant nor a limit.
 
-**"Never granted" is a verdict-layer statement, not a roster-filter statement.** Arrival is a
-roster fact, and the roster is filtered only by `--exclude-tools`. `childArgsBase()`
-(`spawn-support.ts`) passes `-e builtin:mcp`; `ROLE_TOOL_EXCLUDES` (`role-tools.ts`) is the only
-roster filter and names no MCP verb — mechanism detail in `tmp/issue-1076/followups.md`.
-`grep delete_project extension/src/` returns ZERO hits — the sole enforcement in the codebase is the
-prose line at `agents-base/developer.md:144`. And **`get_file_outline` is not in the roster** — the
+**"Never granted" is a verdict-layer statement, not a roster statement** — saying it bare is
+misleading, so here is the real mechanism for `delete_project`. In the verdict layer all six
+roles name 7–8 `mcp__codebase_memory__*` keys in `agents.json`, **all `allow`**; the three reader
+roles name exactly the 7 read-side tools, and the 7 admin verbs are named by **no role**. But
+arrival does not go through that layer: `childArgsBase()` passes
+`-e builtin:mcp` unconditionally and the only roster filter is `--exclude-tools`, which
+`role-tools.ts` sets to `["write","edit","multiedit"]` for all three reader roles — no MCP verb.
+`grep delete_project extension/src/` returns ZERO hits, so the sole enforcement anywhere in the
+codebase is one prose line at `agents-base/developer.md:144`. Trust mode
+(`extension/src/permission-guard.ts` — `if (isInTrustMode(...)) return;` is the first statement of
+the `tool_call` handler) resolves no verdict at all, so an arriving `delete_project` is callable;
+strict mode yields `ask`, which escalates to the parent broker. So "not granted" describes what a
+strict-mode lookup would answer, never what sits on the roster — and the one layer that could remove
+it does not name these verbs. Hardening `ROLE_TOOL_EXCLUDES` to cover them for the reader roles is
+recorded under §Follow-ups, not taken here. And **`get_file_outline` is not in the roster** — the
 name an earlier note had guessed at is `delete_project`.
 
 For a child, every name its `permission` map omits resolves the same way — there is no per-role
@@ -400,5 +409,59 @@ and is asserted verbatim elsewhere — so it is noted as a #1421/#1422 follow-up
 
 ## Follow-ups recorded
 
-Not doctrine, so not transcribed here: the three structural items deliberately not taken this round
-and the reader-role MCP-admin hardening item are recorded in `tmp/issue-1076/followups.md`.
+### Structural items deliberately not taken this round
+
+- **Lift `withEnv` / `withEnvAsync` into `extension/smoke-tests/lib/`.** Deferred: it touches the
+  other caps suites in the same change, and the duplication is two copies of a 15-line helper whose
+  behaviour both files already pin.
+- **Widen the timing margins in `test-dispatch-caps-timing.ts`.** Deferred: the 500 ms poll against
+  400/600 ms grace windows passes reproducibly today, and widening them trades a fast suite for a
+  slow one without removing the race — the vacuity guard added in the H1 block is the fix that
+  matters, because it makes a non-firing cap visible instead of merely passing.
+- **`let session` definite-assignment in the H2 / spawn#6 blocks.** Deferred: TypeScript accepts the
+  current shape, and `strictNullChecks` would want a refactor of both blocks for no behavioural gain.
+  (The two declarations are `test-dispatch-caps-timing.ts:215` and `:262`.)
+
+### Hardening: structurally exclude the admin MCP verbs for the reader roles
+
+**Not a doc change and not a code change in this PR** — recorded here so the baseline doc stays
+doctrine rather than becoming a punch list. No GitHub issue exists for it yet, so it is recorded
+here rather than as a `// TODO(#<n>)` in the jsdoc header it would annotate: `role-tools.ts` is
+left untouched, because inventing an issue number for a pointer that has nothing to point at is
+worse than no pointer.
+
+The three reader roles (`explore`, `adversarial-developer`, `code-review-specialist`) get an
+unfiltered `mcp__codebase_memory__*` roster:
+
+- `childArgsBase()` passes `-e builtin:mcp` unconditionally, and the only roster filter is
+  `--exclude-tools`, which `ROLE_TOOL_EXCLUDES` (`extension/src/role-tools.ts`) sets to
+  `["write", "edit", "multiedit"]` for all three reader roles — no MCP verb is named.
+- `grep delete_project extension/src/` returns ZERO hits: nothing in the code excludes the
+  destructive/admin verbs. The sole enforcement in the repository is one prose line in
+  `agents-base/developer.md:144`.
+- The verdict layer cannot substitute: trust mode — the default — resolves no verdict at all
+  (`if (isInTrustMode(...)) return;` is the first statement of the `tool_call` handler in
+  `extension/src/permission-guard.ts`); strict mode yields `ask`, which escalates to the parent
+  broker rather than denying.
+- **Verdict-layer naming** (re-derivable from `agents.json`): all six roles name 7–8
+  `mcp__codebase_memory__*` keys, **all `allow`**; the three reader roles (`explore`,
+  `adversarial-developer`, `code-review-specialist`) and `developer` name exactly the 7 read-side
+  tools (`search_code`, `search_graph`, `trace_path`, `detect_changes`, `get_code_snippet`,
+  `get_architecture`, `query_graph`); `ops` names only `search_code`, `get_code_snippet`,
+  `get_architecture`; `project-manager` names those seven **plus** `index_repository` — the single
+  explicit grant, at
+  `agent["project-manager"].permission["mcp__codebase_memory__index_repository"]`. The 7 admin verbs
+  are named by **no role** except that one grant. None of this changes the roster.
+
+**Fix:** extend `ROLE_TOOL_EXCLUDES` for the reader roles with the 7 admin MCP verbs
+(`mcp__codebase_memory__delete_project`, `index_repository`, `index_status`, `list_projects`,
+`compare_graphs`, `check_index_coverage`, `manage_adr`). `--exclude-tools` is the only layer with no
+operator opt-out — there is no `PI_ENSEMBLE_ALLOW_EXCLUDED_TOOLS`, so unlike a verdict this cannot be
+widened away by an overlay or a trust level.
+
+**Test shape to follow:** `extension/smoke-tests/test-codemode-reviewer-rejection.ts` — already the
+canary for the same fence on the codemode path (its exclusion arm asserts `write`/`edit`/`multiedit`
+stay absent from the roster AND from `sandboxTools`; its positive-control arm proves the same script's
+`tools.write` succeeds without the exclusion, so a revocation fails the test rather than silently
+passing). Add the MCP verbs to that arm, and re-spawn a reader child with `exposure === "direct"`
+plus no allowlist key so a regression in the `install.sh` block is caught too (canary 3's contract).
