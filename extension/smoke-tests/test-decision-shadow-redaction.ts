@@ -89,7 +89,10 @@ const SHADOW_KEY = `sk-ant-api03-${"aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d"}`;
   );
   act({ kind: "dispatch-failed", errorTail }, where);
   const recs = await awaitRecords(log, 1);
-  assert(calls.llm === 1 && recs.length === 1, "fixture: the failure-cause call reached the backend");
+  assert(
+    calls.llm === 1 && recs.length === 1,
+    "fixture: the failure-cause call reached the backend",
+  );
   assert(
     !prompts.some((p) => leaksKey(p, SHADOW_KEY)),
     "tail clip: no 12+ char run of the key reaches the backend",
