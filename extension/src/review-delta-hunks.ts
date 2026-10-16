@@ -135,7 +135,7 @@ export function subtractReviewedHunks(headDiff: string, prevDiff: string): strin
  */
 export async function resolveMainlineBase(cwd: string): Promise<string | undefined> {
   const mainline = await detectMainline(cwd, execp);
-  if (!("branch" in mainline)) return undefined;
+  if (!mainline.ok) return undefined;
   for (const ref of [`origin/${mainline.branch}`, mainline.branch]) {
     if (await resolveHeadSha(cwd, ref, execp)) return ref;
   }

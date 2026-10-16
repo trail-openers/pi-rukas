@@ -83,6 +83,21 @@ assert(stripped.role === "developer", "stripModelOverride preserves `role`");
 assert(stripped.prompt === "hello", "stripModelOverride preserves `prompt`");
 assert(stripped.cwd === "/tmp", "stripModelOverride preserves `cwd`");
 
+// #1348 — `lens` selects the per-lens model tier; an agent must not set it.
+assert(!("lens" in specialistProps), "dispatch_specialist schema does NOT expose `lens`");
+assert(!("lens" in parallelItemProps), "dispatch_parallel.specs[] schema does NOT expose `lens`");
+const withLens = stripModelOverride({
+  role: "developer",
+  prompt: "hello",
+  lens: "SECURITY",
+  model: "x/y",
+} as DispatchSpec);
+assert(
+  !("lens" in withLens) && !("model" in withLens),
+  "stripModelOverride removes `lens` (and `model`) from a dispatched spec",
+);
+assert(withLens.role === "developer", "stripModelOverride keeps `role` when stripping `lens`");
+
 const clean = { role: "ops", prompt: "yo" } as DispatchSpec;
 const passthrough = stripModelOverride(clean);
 assert(passthrough.role === "ops", "stripModelOverride is a no-op on specs without `model`");

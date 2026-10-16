@@ -37,6 +37,11 @@ export interface DispatchSpec {
    * env vars.
    */
   model?: string;
+  /**
+   * The code-review lens this child runs (`SECURITY`, …), set by the lens
+   * fan-out only. Selects the per-lens model tier in `resolveModel`.
+   */
+  lens?: string;
 }
 
 export interface DispatchUsage {
@@ -76,7 +81,14 @@ export interface DispatchResult {
    */
   transcriptPath?: string;
   /** Where the spawn picked its model from. */
-  modelSource?: "spec" | "config" | "config-default" | "role-env" | "subagent-env" | "default";
+  modelSource?:
+    | "spec"
+    | "lens-env"
+    | "config"
+    | "config-default"
+    | "role-env"
+    | "subagent-env"
+    | "default";
   /**
    * Set when the child exited with `stopReason: "error"` on its final
    * assistant message (provider HTTP timeout, transport failure, etc).

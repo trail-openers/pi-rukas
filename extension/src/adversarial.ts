@@ -11,6 +11,11 @@ import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { makeRunPhase } from "./adversarial-phase.ts";
 import {
+  type ReportPolicy,
+  policyInfraFailureText,
+  reportPolicyError,
+} from "./adversarial-policy.ts";
+import {
   type SiblingScope,
   buildAdversarialPrompt,
   buildFixPrompt,
@@ -36,36 +41,6 @@ import { trace } from "./trace.ts";
 import type { AdversarialVerdict, DispatchResult } from "./types.ts";
 import type { ExecFn } from "./worktree.ts";
 export const MAX_ROUNDS = 3;
-
-/**
- * Whether the loop runs as one reviewer dispatch (#1114) and, if so, how its
- * verdict is judged (#1154). Discriminated: `reportVerdict` is REQUIRED whenever
- * `reportOnly` is true and must be absent otherwise, so no reportOnly caller
- * gets a verdict policy by omission.
- */
-type ReportPolicy =
-  | {
-      /**
-       * #1114 — exactly ONE reviewer dispatch: no developer dispatch, no fix
-       * round. The result carries the parsed verdict in `adversarialRounds` and
-       * its findings in `text`; the driver routes from the round record. The
-       * review-ledger entry is still written (#912) with `loopOutcome` set to
-       * `approved` on a pass and `rejected` otherwise. An unparsed verdict is an
-       * infrastructure outcome, never a verdict.
-       */
-      reportOnly: true;
-      /**
-       * #1154 — how the reportOnly verdict is judged. "terminal": the review is
-       * the loop's only round, so it is judged by the terminal-round rule
-       * (ISSUES_FOUND passes; only CRITICAL_ISSUES_FOUND or an unreadable reply
-       * fails) — the tool path. "routed": judged as round N of 3, so ISSUES_FOUND
-       * routes to a fix pass — the /work driver's per-round reviews. Set by the
-       * adversarial_loop tool (terminal) and by the /work fan-out (routed);
-       * required whenever reportOnly is true.
-       */
-      reportVerdict: "terminal" | "routed";
-    }
-  | { reportOnly?: false | undefined; reportVerdict?: undefined };
 
 /**
  * Run the 3-round adversarial loop directly. Exported so the work-driver can
@@ -127,6 +102,12 @@ export async function runAdversarialLoop(
      * mutates itself. A fix round needs `workCwd` on every path.
      */
     fixFence?: FixFence;
+    /**
+     * #1161 — set ONLY by the adversarial_loop tool when the caller pasted a
+     * `diff` string. Such a review is recorded in the review ledger as
+     * "<outcome> (caller-supplied diff)" and never counts as a passing adversarial review.
+     */
+    callerSuppliedDiff?: boolean;
   } & ReportPolicy,
   signal: AbortSignal,
   orchestratorJobId: string,
@@ -178,9 +159,29 @@ export async function runAdversarialLoop(
       resolvedBranch: branchResolved,
       branch: params.branch,
       head: params.head,
+      callerSuppliedDiff: params.callerSuppliedDiff === true,
     });
     return withLedgerNote(result);
   };
+
+  // #1161 — the reportOnly verdict policy is checked and resolved ONCE, at
+  // loop entry. An untyped caller with no recognised policy gets an infra
+  // failure, never a verdict judged as a routed round.
+  const policyError = reportPolicyError(params);
+  if (policyError) {
+    return ledgerWrite(
+      synthesizeResult({
+        ok: false,
+        loopOutcome: "infra-failure",
+        text: policyInfraFailureText(policyError),
+        ms: Date.now() - start,
+        usage,
+        transcriptPath: lastTranscript,
+        model: lastModel,
+      }),
+    );
+  }
+  const reportTerminal = params.reportVerdict === "terminal";
 
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
@@ -360,7 +361,7 @@ export async function runAdversarialLoop(
       // #912 — the review ledger keys on the latest entry per branch, so every
       // reviewed round records its verdict: a pass is `approved`, anything the
       // driver will route back or reject is `rejected` (replaced by a later pass).
-      const terminalRound = params.reportVerdict === "terminal" ? MAX_ROUNDS : round;
+      const terminalRound = reportTerminal ? MAX_ROUNDS : round;
       const passed = decideLoopAction(verdict.status, terminalRound, MAX_ROUNDS, true) === "pass";
       return ledgerWrite(
         synthesizeResult({

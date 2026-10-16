@@ -81,6 +81,50 @@ export function neutraliseEvidence(s: string): string {
   return clip(flat.replace(MARKER_RE, (m) => `‹${m}›`));
 }
 
+/** An HTML comment's delimiters: `<!--` opens, `-->` closes, in any spacing. */
+const HTML_COMMENT_OPEN = /<!--/g;
+const HTML_COMMENT_CLOSE = /-->/g;
+/**
+ * A markdown link or image's opening bracket, with its optional `!`. Replacing
+ * the `[` rather than the whole `](url)` keeps the target visible as text (a
+ * link must not silently become a URL an operator clicks) while the surrounding
+ * brackets make the pair render literally instead of as a hyperlink.
+ */
+const MD_LINK_OPEN = /!?(?=\[)/g;
+
+/**
+ * The markdown-post variant of `neutraliseEvidence`, for agent-authored text
+ * that goes into a GitHub/GitLab comment as part of a line the renderer builds.
+ *
+ * `neutraliseEvidence` flattens every run of whitespace, which is right for a
+ * prompt block and wrong for a bullet list — a stored newline would end the
+ * bullet and start a paragraph the renderer never wrote. This variant keeps the
+ * line (it collapses only CR/LF and tabs) and neutralises what a POST renders:
+ *
+ *   - every marker token, as in `neutraliseEvidence`, because the residual
+ *     disclosure's own hidden marker (`merge-guard-round-cap.ts`) is matched by
+ *     substring search — a finding titled `<!-- pi-rukas:lens-residuals … -->`
+ *     would otherwise post a second marker the merge guard reads as its own;
+ *   - the `<!--` / `-->` shape, which otherwise closes the disclosure's own
+ *     comment or opens one belonging to the finding;
+ *   - the opening bracket of a markdown link or image, so a title cannot become
+ *     a clickable hyperlink, while a title that merely names brackets stays
+ *     readable (the target is kept as text, never dropped — losing it would
+ *     hide evidence the operator may still want to look up).
+ *
+ * Still one bounded line of at most `MAX_RENDERED_CHARS` — a forge field that
+ * carries an agent's prose is never long-form content.
+ */
+export function neutraliseMarkdownField(s: string): string {
+  const kept = s
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\t/g, " ")
+    .replace(HTML_COMMENT_OPEN, "‹--")
+    .replace(HTML_COMMENT_CLOSE, "--›")
+    .replace(MD_LINK_OPEN, "‹");
+  return clip(kept.replace(MARKER_RE, (m) => `‹${m}›`));
+}
+
 /** The lost lines, each with the added comment lines of its hunk as context. */
 function renderLost(lost: LostComment[], indent: string): string[] {
   const shown = lost.slice(0, MAX_LISTED_LOST);
