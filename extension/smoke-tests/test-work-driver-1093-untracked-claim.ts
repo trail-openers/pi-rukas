@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { restoreClaim, restoreRootToRefPreserving } from "../src/work-driver-restore.ts";
@@ -140,6 +140,89 @@ const git = (dir: string, args: string[]) =>
     assert(
       claim.includes("1 untracked file(s) remain") && claim.includes(".claude/settings.local.json"),
       `no-list: without the config the exempt-looking path is named as before (got ${JSON.stringify(claim)})`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// ---- 2d. #1362 fix round — a file the CYCLE wrote under an exempt prefix is
+// still stashed, and still recoverable. The exemption filters the untracked
+// list the claim prints; it must NOT filter the stash pathspec, or the cycle's
+// own work is left in the tree for the checkout to walk over. Real git.
+{
+  const dir = buildRepo();
+  const scratch = mkdtempSync(join(tmpdir(), "issue1362-claim-stash-scratch-"));
+  try {
+    const g = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+    g(["checkout", "-q", "feature/merged"]);
+    // The cycle's own deliverable, written under a prefix the project happens
+    // to list (a tool directory the project exempted that the develop step also
+    // writes into), and staged: this is the ONLY read that can tell it from a
+    // stray, because after the mixed reset both are `??`.
+    mkdirSync(join(dir, ".claude"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "generated-by-the-cycle.json"), '{"cycle":true}\n');
+    g(["add", "--", ".claude/generated-by-the-cycle.json"]);
+    // The pre-existing tool file the cycle never wrote — the settlement case.
+    // Left unstaged, exactly as a stray is: `??`, where the deliverable is `A`.
+    writeFileSync(join(dir, ".claude", "settings.local.json"), "{}\n");
+    // A non-exempt untracked file, so the claim still proves it can name one.
+    writeFileSync(join(dir, "operator-notes.txt"), "mine\n");
+    const r = await restoreRootToRefPreserving(realExec, {
+      repoRoot: dir,
+      ref: "feature/x",
+      scratchDir: scratch,
+      label: "cycle-under-exempt",
+      dirtyRootExempt: [".claude"],
+    });
+    const claim = restoreClaim(r);
+    assert(
+      r.restored === true && head(dir) === "feature/x",
+      `#1362 stash: the checkout landed on feature/x (restored=${r.restored}, head=${head(dir)}, detail=${JSON.stringify(r.detail)})`,
+    );
+    assert(
+      g(["stash", "list"]).includes("pi-rukas #1093"),
+      "#1362 stash: a stash entry was created for the cycle's changes",
+    );
+    // The decisive half: the stash's own pathspec, read from git.
+    const stashFiles = g([
+      "stash",
+      "show",
+      "--include-untracked",
+      "--name-only",
+      "stash@{0}",
+    ]).split("\n");
+    assert(
+      stashFiles.some((f) => f.trim() === ".claude/generated-by-the-cycle.json"),
+      `#1362 stash: the cycle-written file under an exempt prefix IS in the stash, so it is recoverable (stash holds ${JSON.stringify(stashFiles.filter(Boolean))})`,
+    );
+    assert(
+      !existsSync(join(dir, ".claude", "generated-by-the-cycle.json")),
+      "#1362 stash: the cycle-written file is out of the working tree, not left behind for the next cycle to trip over",
+    );
+    // ...and recoverable means recoverable: popping it back reproduces the bytes.
+    g(["stash", "pop"]);
+    assert(
+      existsSync(join(dir, ".claude", "generated-by-the-cycle.json")) &&
+        readFileSync(join(dir, ".claude", "generated-by-the-cycle.json"), "utf8") ===
+          '{"cycle":true}\n',
+      "#1362 stash: popping the stash restores the cycle's file byte-for-byte",
+    );
+    // The settlement, on the same fixture: a pre-existing exempt file the cycle
+    // did not write is neither saved nor restored by a claim — it was never
+    // named, never stashed, and it stayed on disk the whole time.
+    assert(
+      !claim.includes("settings.local.json"),
+      `#1362 settlement: the untouched exempt tool file is not named by the claim (got ${JSON.stringify(claim)})`,
+    );
+    assert(
+      !stashFiles.some((f) => f.trim() === ".claude/settings.local.json"),
+      "#1362 settlement: the untouched exempt tool file was never stashed",
+    );
+    assert(
+      existsSync(join(dir, ".claude", "settings.local.json")),
+      "#1362 settlement: the untouched exempt tool file was never moved or restored",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

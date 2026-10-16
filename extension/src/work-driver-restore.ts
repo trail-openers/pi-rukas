@@ -60,8 +60,9 @@ import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import {
   type StatusEntry,
   isClaimCountedEntry,
-  isExcludedStatusPath,
   isTrackedEntry,
+  markExemptCandidates,
+  readStatus,
 } from "./work-driver-restore-entry.ts";
 import { preserveDiscardedState } from "./work-driver-restore-save.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -112,46 +113,38 @@ export async function restoreRefProblem(
 }
 
 /**
- * #1093 — the ONE structured status read at repoRoot. The abort path's
- * changed-path list and every restore post-condition derive from it, so they
- * cannot disagree about what is dirty. `-uall` lists each untracked file (a
- * bare `-u` collapses a directory into one `dir/` entry); `-z` keeps unusual
- * names unquoted. Throws when git cannot be read.
- */
-async function readStatus(execFn: ExecFn, repoRoot: string): Promise<StatusEntry[]> {
-  const { stdout } = await execFn("git", {
-    cwd: repoRoot,
-    maxBuffer: 8 * 1024 * 1024,
-    argv: ["status", "--porcelain", "-z", "-uall"],
-  });
-  const records = stdout.split("\0");
-  const entries: StatusEntry[] = [];
-  for (let i = 0; i < records.length; i++) {
-    const rec = records[i];
-    if (!rec) continue;
-    const entry: StatusEntry = { code: rec.slice(0, 2), path: rec.slice(3) };
-    if (/[RC]/.test(entry.code)) entry.origPath = records[++i] ?? "";
-    if (!isExcludedStatusPath(entry.path)) entries.push(entry);
-  }
-  return entries;
-}
-
-/**
  * #1093 — the paths the cycle changed at repoRoot: every TRACKED entry (a
  * staged NEW file included, and a rename's original path too). Read BEFORE the
  * abort path's mixed reset, which would turn those files untracked and leave
  * them indistinguishable from the operator's own untracked files. Throws when
  * git cannot be read.
+ *
+ * #1362 — deliberately **unfiltered** by the configured exemption, unlike the
+ * untracked list the claim prints in `restoreRootToRef`. The asymmetry is the
+ * point: this list is the pathspec of `git stash push -u -- <paths>`, and a
+ * path that is not named there is left in the working tree for the checkout to
+ * collide with or to survive into the next cycle unaccounted for. A file the
+ * cycle itself wrote under an exempt prefix (a deliverable in a directory the
+ * project later exempted, or an exempt file the develop step regenerated) is
+ * the cycle's work, and work is never dropped to satisfy a dirt filter.
+ *
+ * The settlement is not weakened: an exempt path is only ever *stashed*, never
+ * *saved or restored* — it still is not dirt to any gate, is not named by the
+ * claim, and is not staged. And the pre-existing exempt file the cycle did not
+ * touch cannot be swept up by this read either: a `??` entry is filtered out by
+ * `isTrackedEntry`, so an untouched tool file stays on disk untouched. That is
+ * exactly how the two cases are told apart — **the porcelain code, read before
+ * the reset**: `A`/`M`/`R` means the cycle wrote it, `??` means it was merely
+ * sitting there. `markExemptCandidates` records that distinction for the claim.
  */
 async function cycleChangedPaths(
   execFn: ExecFn,
   repoRoot: string,
   exempt?: readonly string[],
 ): Promise<string[]> {
-  const entries = await readStatus(execFn, repoRoot);
+  const entries = markExemptCandidates(await readStatus(execFn, repoRoot), exempt);
   return entries
     .filter(isTrackedEntry)
-    .filter((e) => isClaimCountedEntry(e, exempt))
     .flatMap((e) => (e.origPath !== undefined ? [e.path, e.origPath] : [e.path]));
 }
 
@@ -248,7 +241,11 @@ export async function restoreRootToRefPreserving(
     ref: string;
     scratchDir: string;
     label: string;
-    /** #1362 — the cycle's `.pi/dirty-root-exempt` list (see `isExemptStatusEntry`). */
+    /**
+     * #1362 — the cycle's `.pi/dirty-root-exempt` list. It filters the untracked
+     * list the claim prints, and deliberately NOT the stash pathspec (see
+     * `cycleChangedPaths`).
+     */
     dirtyRootExempt?: readonly string[];
   },
 ): Promise<VerifiedRestoreResult> {
@@ -258,6 +255,10 @@ export async function restoreRootToRefPreserving(
   const preservedAt = save.kind === "saved" ? save.path : undefined;
   let paths: string[];
   try {
+    // Unfiltered on purpose: a cycle-written file under an exempt prefix still
+    // has to be stashed, or it is lost to the checkout (#1362). The same read
+    // stamps which `??` entries the project exempts, so the claim built after
+    // the reset can still tell the cycle's staged-new files from strays.
     paths = await cycleChangedPaths(execFn, repoRoot, dirtyRootExempt);
   } catch (err) {
     return {
@@ -362,7 +363,11 @@ export async function restoreRootToRef(
   // the claim. The read always runs, so an empty `paths` is never a free pass.
   let entries: StatusEntry[];
   try {
-    entries = await readStatus(execFn, repoRoot);
+    // Marked here too, and from the caller's list: `restoreRootToRef` also runs
+    // on its own (the merged-restore path passes no `paths`), and an untracked
+    // list that silently disagreed with the abort path's would be a second
+    // answer to the same question.
+    entries = markExemptCandidates(await readStatus(execFn, repoRoot), dirtyRootExempt);
   } catch (err) {
     return {
       restored: false,
@@ -385,7 +390,7 @@ export async function restoreRootToRef(
     };
   }
   const untracked = entries
-    .filter((e) => !isTrackedEntry(e) && isClaimCountedEntry(e, dirtyRootExempt))
+    .filter((e) => !isTrackedEntry(e) && isClaimCountedEntry(e))
     .map((e) => e.path);
   return { restored: true, checkedOut: true, untracked };
 }
