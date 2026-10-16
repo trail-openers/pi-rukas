@@ -91,7 +91,14 @@ try {
     console.error(`runBranch threw: ${(e as Error).message}`);
     return undefined;
   });
-  const cap = out?.eventLog.find((e) => e.kind === "cap-hit");
+  // The FIRST cap the cycle hits is now the residue pass's own refusal
+  // (`worktree-listing-unreadable`, #1396 round 3 — the same unreadable listing
+  // it had been reading as "no leftovers"), and the `step-failed:branch` cap
+  // below it is still the sibling scan's. The scan is what this test is about,
+  // so it is selected by name rather than by "the first cap".
+  const cap = out?.eventLog.find(
+    (e) => e.kind === "cap-hit" && e.cap === "step-failed:branch",
+  );
   assert(
     cap !== undefined && cap.kind === "cap-hit" && cap.cap === "step-failed:branch",
     "an unreadable sibling listing yields a step-failed:branch cap",
@@ -108,7 +115,13 @@ try {
     "the plumb report carries the git error",
   );
 
-  // ---- the scan's own contracts (#1170)
+  // ---- the scan's own contracts (#1170, #1396 round 3)
+  // `scanWorktrees`' fail-open contract is UNCHANGED (an unreadable listing
+  // reads as no siblings) — the round-3 refusal lives at the one caller that
+  // would act on `[]` unsafely, not here. Asserted as it was before the change.
+  const failOpen = await scanWorktrees(unreadableListing, repo, "HEAD", [".worktrees/issue-1170"]);
+  assert(failOpen.length === 0, "scanWorktrees keeps its fail-open contract (no siblings)");
+
   let scanErr: unknown;
   try {
     await findDirtySameIssueLeftover(
@@ -131,8 +144,6 @@ try {
     scanErr instanceof Error && scanErr.message.includes("unable to read worktree list"),
     "WorktreeScanError carries the git error",
   );
-  const failOpen = await scanWorktrees(unreadableListing, repo, "HEAD", [".worktrees/issue-1170"]);
-  assert(failOpen.length === 0, "scanWorktrees keeps its fail-open contract (no siblings)");
 
   // ---- the strict listing retries once (#1170 r3): one transient failure proceeds
   let listCalls = 0;

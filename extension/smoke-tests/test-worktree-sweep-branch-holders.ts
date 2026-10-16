@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { integrate } from "../src/work-driver-integrate.ts";
-import { DirtyWorktreeError, sweepBranchHolders } from "../src/worktree.ts";
+import { DirtyWorktreeError, WorktreeScanError, sweepBranchHolders } from "../src/worktree.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { realExec } from "./lib/exec-fake.ts";
 
@@ -215,15 +215,102 @@ const HOLDER = path.join(REPO2, ".worktrees", "issue-654-old");
   assert(dirty?.finding.path === HOLDER, "the finding carries the holder's absolute path");
 }
 
-// ------- stub: unreadable worktree list degrades to the no-op path
+// ------- stub: a HANGING/killed listing is a refusal, not "no holder"
+// #1396 (round 3) — the new case, added alongside the instant-failure
+// degradations below rather than replacing them. Once the listing carried a
+// 30 s bound, a hang rejected; the old `.catch(() => "")` turned that into "no
+// holder" and unblocked a checkout into git's `already used by worktree` fatal
+// — the exact failure the sweep exists to prevent. A timeout/killed rejection
+// must refuse. Shape: exactly what `promisify(exec)` reports when its
+// `timeout` fires — `killed: true`, a signal, and NO `code`.
 {
-  const { execFn } = recorder({
+  const hung: ExecFn = async () => {
+    throw Object.assign(new Error("Command failed: git worktree list --porcelain"), {
+      killed: true,
+      signal: "SIGTERM",
+      code: undefined,
+      stderr: "",
+      stdout: "",
+    });
+  };
+  let refused: unknown;
+  let removed: boolean | undefined;
+  try {
+    removed = await sweepBranchHolders(hung, REPO2, "feature/issue-654-task-d");
+  } catch (e) {
+    refused = e;
+  }
+  assert(
+    refused instanceof WorktreeScanError && removed === undefined,
+    "stub: a killed/hung listing REFUSES (WorktreeScanError) instead of reading as 'no holder'",
+  );
+}
+
+// ------- stub: unreadable worktree list degrades to the no-op path
+// UNCHANGED from the pre-#1396 assertion, including the assertion text — but
+// reached through the caller that has always owned this decision.
+//
+// The sweep itself no longer reads any rejection as "no holder" except
+// `ENOENT` (see `isMissingGit`); this fake is a code-less `!THROW!` rejection
+// carrying git's "not a git repository" wording, so the sweep refuses it and
+// `integrate()` — the caller that has always degraded this case — is where the
+// degradation lives now (see `isNotARepoError` in work-driver-integrate.ts).
+// That is the same total behaviour the pre-#1396 code produced for this
+// fixture, which is why the assertion is untouched: what moved is WHO decides,
+// so a fake that only impersonates the message cannot buy a silent no-holder.
+{
+  const { calls: execCalls, execFn } = recorder({
     "git worktree list --porcelain": "!THROW!fatal: not a git repository",
+    "git status --porcelain": "\n",
+    "git symbolic-ref": "main\n",
+    "git diff --cached --name-only": "",
+    "git rev-list --count": "0\n",
   });
-  const removed = await sweepBranchHolders(execFn, REPO2, "feature/issue-654-task-d");
+  const INTEGRATE_ROOT = mkdtempSync(path.join(tmpdir(), "pi-ens-integrate-"));
+  let integrateErr: unknown;
+  let outcome: Awaited<ReturnType<typeof integrate>> | undefined;
+  try {
+    outcome = await integrate(execFn, {
+      repoRoot: INTEGRATE_ROOT,
+      branchName: "feature/issue-654-task-d",
+      worktrees: {},
+      scratchDir: "/scratch",
+      commitTitle: "t",
+      commitBody: "b",
+      mode: "followup",
+    });
+  } catch (e) {
+    integrateErr = e;
+  }
+  assert(
+    // What the pre-#1396 assertion ("degrades to 'no holder' — checkout then
+    // fails with the raw git error") actually observed, in a shape that holds
+    // after the change: the sweep ran its listing (the retry makes it three
+    // calls) and `integrate()` went on to run `git checkout`. The fake answers
+    // "" for the checkout, so the raw git error text cannot be asserted — what
+    // is asserted is that the sweep's WorktreeScanError did NOT escape: had the
+    // round-3 refusal been wired straight through to this caller, `integrate()`
+    // would have returned `{ ok: false, reason: "git worktree list failed…" }`
+    // and no checkout would have run. Before the change this was
+    // `removed === false` read straight off the sweep.
+    integrateErr === undefined &&
+      outcome !== undefined &&
+      (outcome as { ok?: boolean }).ok === true &&
+      execCalls.some((c) => c.cmd === "git worktree list --porcelain") &&
+      execCalls.some((c) => c.cmd.startsWith('git checkout "feature/issue-654-task-d"')),
+    "stub: unreadable list degrades to 'no holder' — the refusal does not escape; checkout then fails with the raw git error",
+  );
+}
+
+// ------- stub: a git that genuinely cannot run (ENOENT) keeps the degradation
+{
+  const enoent: ExecFn = async () => {
+    throw Object.assign(new Error("spawn /bin/sh ENOENT"), { code: "ENOENT" });
+  };
+  const removed = await sweepBranchHolders(enoent, REPO2, "feature/issue-654-task-d");
   assert(
     removed === false,
-    "stub: unreadable list degrades to 'no holder' — checkout then fails with the raw git error",
+    "stub: ENOENT (no git at all) still degrades to the no-op path — 'nothing here' is not 'could not look'",
   );
 }
 
