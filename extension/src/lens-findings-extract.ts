@@ -1,7 +1,8 @@
 /**
  * lens-findings-extract — turns a lens child's `report_finding` tool calls into
- * findings. Moved out of lens-review-format.ts for the 500-line gate; that
- * module re-exports `extractFindings` so its importers are unchanged.
+ * findings. Moved out of lens-review-format.ts for the 500-line gate (#1125);
+ * the re-export shim that module used to keep for old importers is gone, so
+ * `extractFindings` is now imported from here — its only definition.
  */
 import type { Severity } from "./lens-review-format.ts";
 import type { Finding } from "./lens-review.ts";

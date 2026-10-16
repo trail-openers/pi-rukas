@@ -152,7 +152,7 @@ export async function readConsolidatedDiffFiles(
   const files = new Set<string>();
   if (!branchName) return { files, unreadable: true };
   const mainline = await detectMainline(repoRoot, execFn);
-  const base = mainline && "branch" in mainline ? `origin/${mainline.branch}` : "origin/main";
+  const base = mainline.ok ? `origin/${mainline.branch}` : "origin/main";
   const tryRef = async (ref: string): Promise<boolean> => {
     if (!isSafeRef(ref) || !isSafeRef(base)) {
       trace(`work-driver: acceptance coverage — refusing unsafe ref name in diff read: ${ref}`);
