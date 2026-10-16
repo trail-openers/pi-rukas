@@ -36,8 +36,9 @@ Counts below are read from `agents.json` (bash = pattern count in `permission.ba
 deny together; "MCP in map" = keys starting `mcp__codebase_memory__`, all of them `allow`), from
 `extension/src/role-tools.ts` (`--exclude-tools`), and the undeclared column is the `BASE_ROSTER`
 set (`test-codemode-activation.ts:53`) minus the keys that role's `permission` map names. MCP and
-codemode additions bypass the tool gate by construction, so they are listed separately rather than
-folded into the declared column.
+codemode additions arrive without ever passing through the map's `tools` entries — the map is a
+verdict layer, not a roster filter — so they are listed separately rather than folded into the
+declared column.
 
 | Role | Declared tool grants | Undeclared MCP / codemode additions (from `BASE_ROSTER`) | `--exclude-tools` | Bash patterns | Declared in |
 |---|---|---|---|---|---|
@@ -68,10 +69,18 @@ account for the 14); it was a guess, and it is removed from this document.
 
 The leaked set is the same for every child role except ops, which loses four more read-side tools
 its map never names. Being absent from the `permission` map is not the point, and is not the same
-as being unavailable: MCP tools bypass the `permission` gate by Pi's construction, so the only
-structural fence is `--exclude-tools` (`extension/src/role-tools.ts` — `excludeToolsFor()`), and
-that fence currently names only `write`/`edit`/`multiedit`. No role excludes any MCP tool, so all
-14 reach every child that `spawn.ts` starts.
+as being unavailable. **Arrival is unconditional; usability is mode-dependent.** All 14
+`mcp__codebase_memory__*` tools reach every child's roster in every permission state, because the
+only fence that removes a tool from the roster is `--exclude-tools`
+(`extension/src/role-tools.ts` — `excludeToolsFor()`), and that fence currently names only
+`write`/`edit`/`multiedit` — no role excludes any MCP tool, so all 14 reach every child that
+`spawn.ts` starts. Whether arrival equals usability depends on the guard state:
+`permission` is a verdict layer, not a roster filter. Trust mode — the default for interactive host
+and sandbox — returns from the `tool_call` handler before any lookup
+(`extension/src/permission-guard.ts:388`), so an arriving MCP tool is usable; strict mode falls
+through to `resolveToolPermission` (`extension/src/permission-subagent-guard.ts:170`), whose
+Layer-3 miss yields `ask` and escalates to the parent; headless has no human to consent, so the
+same `ask` is denied.
 
 Two consequences worth stating plainly: `--exclude-tools` is the *only* structural fence, and the
 bash allowlists are where the real capability boundaries sit — three roles have zero build-tool
@@ -108,10 +117,14 @@ Two statements are currently duplicated verbatim and are being consolidated:
 
 ## The three canaries
 
-All three live in `extension/smoke-tests/` and run in the offline pre-push / CI loop (AGENTS.md §1).
-They follow the shape of `test-pm-tool-permissions.ts`: read the checked-in configuration, assert a
-stated premise first so a changed premise fails loudly rather than silently, and name the exact
-offending entries in the failure message.
+**Status: PLANNED — none of the three exist yet.** `extension/smoke-tests/` contains none of the
+files below, so every count named in this document is currently an *unenforced assertion* — correct
+today, silently rotting tomorrow. The contracts are written here first so the tests have a spec to
+be written against; treat them as the intended offline pre-push / CI loop (AGENTS.md §1), not as
+gates that run today. They follow the shape of `test-pm-tool-permissions.ts`: read the checked-in
+configuration, assert a stated premise first so a changed premise fails loudly rather than silently,
+and name the exact offending entries in the failure message. Where a contract below names a number
+in this document, the test derives it from `agents.json` at runtime rather than restating it.
 
 ### Canary 1 — `test-role-surface.ts`
 
@@ -149,8 +162,8 @@ that the undeclared set *stays* undeclared, so a future mirror in `agents.json` 
 
 ## Explicit non-goals
 
-- **No `agents.json` mirror of the MCP grants.** Those tools bypass the `permission` map by Pi's
-  construction — the map cannot remove what it never admitted — so adding the tools the roster
+- **No `agents.json` mirror of the MCP grants.** Arrival bypasses the `permission` map — the map
+  cannot remove what it never admitted — so adding the tools the roster
   carries and no role map names (the six no-role-anywhere tools above: `list_projects`,
   `delete_project`, `index_status`, `check_index_coverage`, `compare_graphs`, `manage_adr`) buys no
   enforcement and creates a fifth place to keep the roster current.
