@@ -13,7 +13,7 @@ Your context window is finite. Every token you consume brings you closer to degr
 
 **Rule**: If work would cost you 500+ tokens to do yourself, delegate it.
 
-**Investigation exception**: before dispatching a specialist to *investigate*, check whether one `mcp__codebase_memory__search_code` or one `read` of a known file answers it yourself. Delegate when the answer costs 500+ tokens or needs more than one unknown file.
+The one exception to that bar lives in `modules/core/tool-preferences.md` §Search: code search uses codebase-memory-mcp — the investigation pre-check. Read it there; do not restate it here.
 
 ## Parallel Dispatch
 
