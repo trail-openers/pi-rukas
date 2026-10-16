@@ -25,13 +25,17 @@
  * #1382 removed the last two wall-clock assertions this file kept after that
  * move — Test 2's `elapsedMs >= 5_000` floor and Test 3's `elapsed < 15_000`
  * ceiling — and replaced them with outcome assertions (`diedToSigkill` and
- * `killedByInactivityBudget`) behind the generous settle poll in
- * `lib/poll-until-settled.ts`. The rationale for why an absolute bound is
- * worse than useless on both sides of that pair is in that helper's header.
+ * `killedByInactivityBudget`) evaluated directly on the settled result. There
+ * is no poll and no clock in this file: each caller awaits the spawn, so a
+ * genuinely hung child is already bounded by the spawn's own `timeoutMs` and
+ * by the verify-loop watchdog. The rationale for why an absolute bound is
+ * worse than useless on both sides of that pair is in `lib/kill-outcome.ts`.
  *
  * Self-check (bottom of file): the abort probe's predicate AND both outcome
- * predicates are asserted against fabricated results, so this test goes RED
- * when a broken kill path would stop attributing — the same shape
+ * predicates are asserted against fabricated results in BOTH directions —
+ * each passes the shape it is supposed to pass and fails the shapes it is
+ * not, including a bare `exitCode: null` with no attribution — so this test
+ * goes RED when a broken kill path would stop attributing. Same shape
  * test-file-size-limit.ts applies to itself.
  */
 
@@ -39,11 +43,8 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSpecialist } from "../src/spawn.ts";
-import {
-  diedToSigkill,
-  killedByInactivityBudget,
-  pollUntilSettled,
-} from "./lib/poll-until-settled.ts";
+import type { DispatchResult } from "../src/types.ts";
+import { diedToSigkill, killedByInactivityBudget } from "./lib/kill-outcome.ts";
 import {
   ABORT_PROMPT,
   abortProbePasses,
@@ -99,8 +100,11 @@ try {
     writeFakePi();
     console.log("[test] fake child, abort after 1500ms...");
     const p = await runAbortProbe(ABORT_PROMPT);
-    assert(p.ok, "aborted fake child: killCause='abort' + ok=false");
     for (const l of p.lines) console.log(l);
+    assert(
+      p.ok,
+      `aborted fake child: killCause='abort' + ok=false (got killCause=${p.killCause} ok=${p.ok})`,
+    );
   }
 
   // Test 2 — the SIGTERM→SIGKILL escalation: a child that IGNORES SIGTERM is
@@ -114,32 +118,24 @@ try {
   // right reason, and if the escalation were ever SHORTENED below the grace
   // period the fake child would exit on SIGTERM and the floor would still
   // pass while the SIGKILL path went unexercised. It is replaced by an
-  // assertion on the death itself — the child died to SIGKILL (exitCode -9)
-  // and the kill was attributed to the abort — behind the generous settle
-  // poll, so the only clock left in this file is the hang guard in
-  // lib/poll-until-settled.ts. The ~5 s the fake child now costs is the price
-  // of covering the escalation; INTERACTIVE_KILL_GRACE_MS is a hardcoded
-  // export with no env override and product code is out of scope here.
+  // assertion on the death itself: the child died to SIGKILL and the kill was
+  // attributed to the abort (`diedToSigkill`). The ~5 s the fake child now
+  // costs is the price of covering the escalation; INTERACTIVE_KILL_GRACE_MS
+  // is a hardcoded export with no env override and product code is out of
+  // scope here.
   {
     writeFakePi(true);
     console.log("\n[test] fake child traps SIGTERM; SIGKILL escalation expected...");
-    // Measured from just before the probe (which aborts at abortAtMs), so the
-    // bound covers the escalation from the abort itself and not this file's
-    // bun startup — the bound is a hang guard, never a performance assertion.
-    const startedAt = Date.now();
     const p = await runAbortProbe(ABORT_PROMPT);
-    const escalated = await pollUntilSettled(
-      () => ({ exitCode: p.exitCode, killCause: p.killCause }),
-      diedToSigkill,
-      { startedAt },
-    );
-    assert(escalated.ok, `TERM-trapping child died to SIGKILL (exit=${p.exitCode})`);
-    assert(
-      !escalated.timedOut,
-      `SIGKILL escalation settled within the ${escalated.waitedMs}ms generous poll bound (never a wall-clock assertion — see lib/poll-until-settled.ts)`,
-    );
     for (const l of p.lines) console.log(l);
-    assert(p.ok, "TERM-trapping child: killCause='abort' + ok=false");
+    // `p.ok` is the probe's own aggregate of `abortProbePasses`, so asserting
+    // it again after `diedToSigkill` duplicates the ok=false + abort facts.
+    // Keep it in Test 1 (where it is the only assertion) and let Test 2 assert
+    // the two things Test 1 does not: the death shape and its attribution.
+    assert(
+      diedToSigkill(p),
+      `TERM-trapping child died to SIGKILL via the abort (got killCause=${p.killCause} exitCode=${p.exitCode})`,
+    );
   }
 
   // Test 3 — a totally silent child is killed by the inactivity watchdog long
@@ -149,7 +145,6 @@ try {
     chmodSync(join(fakeDir, "pi"), 0o755);
     process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
     console.log("\n[test] silent fake child, 2000ms inactivity budget...");
-    const startedAt = Date.now();
     const r = await spawnSpecialist(
       { role: "explore", prompt: "irrelevant" },
       { timeoutMs: 60_000 },
@@ -159,20 +154,26 @@ try {
     // startup + descheduling), not on the watchdog, and on the box that
     // started #1365 a healthy 2000 ms kill was measured 15 s+ away. What
     // proves the watchdog fired is its own attribution — killCause and the
-    // budget it recorded — never how long the parent waited to notice.
-    const settled = await pollUntilSettled(
-      () => ({ ok: r.ok, killCause: r.killCause, killBudgetMs: r.killBudgetMs }),
-      (v) => killedByInactivityBudget(v, 2000),
-      { startedAt },
-    );
-    assert(settled.ok, "#296: silent child killed by the inactivity watchdog");
+    // budget it recorded — never how long the parent waited to notice. The
+    // granular assertions below are the per-fact evidence; the composite
+    // predicate is their conjunction, asserted once so a regression that
+    // breaks any single fact also fails the predicate's own self-check below.
     assert(
-      !settled.timedOut,
-      `inactivity kill settled within the ${settled.waitedMs}ms generous poll bound of the armed budget (never a wall-clock assertion — see lib/poll-until-settled.ts)`,
+      killedByInactivityBudget(r, 2000),
+      `#296: silent child killed by the inactivity watchdog on the armed budget (got killCause=${r.killCause} killBudgetMs=${r.killBudgetMs} ok=${r.ok})`,
     );
-    assert(r.ok === false, "#296: inactivity-killed child reports ok=false");
-    assert(r.killCause === "inactivity", "#296: silent child carries killCause='inactivity'");
-    assert(r.killBudgetMs === 2000, "#296: inactivity killBudgetMs records the budget");
+    assert(
+      r.killCause === "inactivity",
+      `#296: silent child carries killCause='inactivity' (got ${r.killCause})`,
+    );
+    assert(
+      r.killBudgetMs === 2000,
+      `#296: inactivity killBudgetMs records the armed 2000ms budget (got ${r.killBudgetMs})`,
+    );
+    assert(
+      r.ok === false,
+      `#296: inactivity-killed child reports ok=false (got killCause=${r.killCause} ok=${r.ok})`,
+    );
   }
 
   // Test 4 — a child that keeps streaming stdout OUTLIVES the inactivity
@@ -213,14 +214,15 @@ try {
     assert(r.killBudgetMs === 1500, "#296: killBudgetMs records the expired wall-clock budget");
   }
 
-  // Self-check — every predicate this file asserts on must discriminate: a
-  // correctly attributed kill passes, and each broken-path shape fails. Same
-  // shape test-file-size-limit.ts applies to itself: a test that cannot go RED
-  // is decorative. #1382 extends it to the two outcome predicates that
-  // replaced the wall-clock bounds — without these, `diedToSigkill` could
-  // degrade into `return true` and Tests 2/3 would go silently green.
+  // Self-check — every predicate this file asserts on must discriminate in
+  // BOTH directions: the shape it exists to accept passes, and each broken-
+  // path shape fails. Same shape test-file-size-limit.ts applies to itself: a
+  // test that cannot go RED is decorative. #1382 extends it to the two outcome
+  // predicates that replaced the wall-clock bounds — without these,
+  // `diedToSigkill` could degrade into `return true` and Tests 2/3 would go
+  // silently green.
   {
-    const fabricated = (killCause: string | undefined, ok: boolean) =>
+    const fabricated = (killCause: DispatchResult["killCause"], ok: boolean) =>
       abortProbePasses({ ok, lines: [], killCause, exitCode: null, elapsedMs: 0 });
     assert(
       fabricated("abort", false) === true,
@@ -230,26 +232,57 @@ try {
     assert(fabricated("timeout", false) === false, "self-check: wrong cause fails");
     assert(fabricated("abort", true) === false, "self-check: ok=true abort fails");
 
-    // diedToSigkill: the SIGKILL death passes; the deaths the escalation was
-    // NOT responsible for fail. A child that exits 0 answered SIGTERM, so
-    // Test 2 would be covering nothing while still asserting an outcome.
-    assert(diedToSigkill({ exitCode: -9 }) === true, "self-check: SIGKILL death (-9) passes");
-    assert(diedToSigkill({ exitCode: 137 }) === true, "self-check: shell-forwarded 137 passes");
-    assert(diedToSigkill({ exitCode: 0 }) === false, "self-check: clean SIGTERM exit fails");
-    assert(diedToSigkill({ exitCode: 1 }) === false, "self-check: plain failure exit fails");
-    assert(diedToSigkill({ exitCode: -15 }) === false, "self-check: a SIGTERM death fails");
+    // diedToSigkill: a SIGKILL death attributed to the abort passes — in each
+    // of the three exit encodings (-9, shell-forwarded 137, and the null the
+    // TERM-trapping fake actually reports). Everything the escalation did NOT
+    // cause fails: a child that exits 0 answered SIGTERM, a SIGTERM death is
+    // the well-behaved exit, and an unattributed death says nothing about
+    // this kill path.
+    assert(
+      diedToSigkill({ exitCode: -9, killCause: "abort" }) === true,
+      "self-check: SIGKILL death (-9) + abort passes",
+    );
+    assert(
+      diedToSigkill({ exitCode: 137, killCause: "abort" }) === true,
+      "self-check: shell-forwarded 137 + abort passes",
+    );
+    assert(
+      diedToSigkill({ exitCode: null, killCause: "abort" }) === true,
+      "self-check: exit=null + abort passes (measured shape of the TERM-trapping death)",
+    );
+    assert(
+      diedToSigkill({ exitCode: 0, killCause: "abort" }) === false,
+      "self-check: clean SIGTERM exit fails",
+    );
+    assert(
+      diedToSigkill({ exitCode: 1, killCause: "abort" }) === false,
+      "self-check: plain failure exit fails",
+    );
+    assert(
+      diedToSigkill({ exitCode: -15, killCause: "abort" }) === false,
+      "self-check: a SIGTERM death fails",
+    );
+    assert(
+      diedToSigkill({ exitCode: null, killCause: undefined }) === false,
+      "self-check: exit=null with no killCause fails (null alone is not a SIGKILL)",
+    );
+    assert(
+      diedToSigkill({ exitCode: -9, killCause: "inactivity" }) === false,
+      "self-check: SIGKILL-shaped death attributed elsewhere fails",
+    );
 
     // killedByInactivityBudget: the watchdog's own attribution passes; every
     // way it can be wrong (cause missing, another cause, the wrong budget
     // recorded, ok left true) fails.
     const inactivity = (
-      killCause: string | undefined,
+      killCause: DispatchResult["killCause"],
       killBudgetMs: number | undefined,
       ok: boolean,
     ) => killedByInactivityBudget({ ok, killCause, killBudgetMs }, 2000);
     assert(inactivity("inactivity", 2000, false) === true, "self-check: inactivity kill passes");
     assert(inactivity(undefined, 2000, false) === false, "self-check: missing cause fails");
     assert(inactivity("timeout", 2000, false) === false, "self-check: wrong cause fails");
+    assert(inactivity("abort", 2000, false) === false, "self-check: abort cause fails");
     assert(inactivity("inactivity", 1500, false) === false, "self-check: wrong budget fails");
     assert(
       inactivity("inactivity", undefined, false) === false,
