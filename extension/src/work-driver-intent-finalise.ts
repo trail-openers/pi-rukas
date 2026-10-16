@@ -12,9 +12,14 @@
  * The open-point gate is reached only through `finaliseSpecVerdict`.
  */
 
-import { flattenAndClip, flattenIssueText } from "./text-flatten.ts";
+import { redactClip } from "./decision-log.ts";
+import { flattenIssueText } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
-import { type OpenPointReading, readOpenPoints } from "./work-driver-intent-criticality.ts";
+import {
+  type OpenPointReading,
+  openPointTexts,
+  readOpenPoints,
+} from "./work-driver-intent-criticality.ts";
 import {
   type NormalisedSpec,
   type SpecAssumption,
@@ -35,8 +40,12 @@ export function finaliseSpecVerdict(
 ): NormalisedSpec {
   const reconciled = reconcileVerdict(spec);
   if (primaryBody === undefined || flattenIssueText(primaryBody) === "") {
+    // Distinguishes "nobody wrote an issue" from "the fetch returned nothing": a raw body
+    // with characters in it that flattenIssueText reduced to nothing is invisible/control text.
     trace(
-      "open-point-gate-unchecked: the filed issue body was blank; its open points were not checked",
+      `open-point-gate-unchecked: the filed issue body was blank (raw body ${
+        primaryBody === undefined ? "unread (undefined)" : `non-empty: ${primaryBody.length > 0}`
+      }); its open points were not checked`,
     );
     // Recorded even when the spec is already parked: an unchecked body is a fact the PR body must carry.
     // Applied after reconcileVerdict, so no reconciliation can lift this park.
@@ -48,10 +57,17 @@ export function finaliseSpecVerdict(
   return applyOpenPointGate(reconciled, readOpenPoints(primaryBody));
 }
 
-/** A resolved point is recorded as an assumption, so the answer reaches the PR body. */
+/**
+ * A resolved point is recorded as an assumption, so the answer reaches the PR body.
+ *
+ * The text is prefixed (`resolved open point: `) because `renderAssumptions` renders every
+ * assumption as a bolded bullet with the basis beside it: bare issue text there reads as an
+ * open question the developer chose to ignore, and the prefix survives any rendering that
+ * drops the basis.
+ */
 function resolvedAssumption(text: string): SpecAssumption {
   return {
-    text,
+    text: `resolved open point: ${text}`,
     basis: "the filed issue marks this CRITICAL point resolved",
   };
 }
@@ -87,21 +103,26 @@ function parkUnchecked(spec: NormalisedSpec, note: SpecAssumption): NormalisedSp
  */
 function applyOpenPointGate(spec: NormalisedSpec, reading: OpenPointReading): NormalisedSpec {
   for (const point of reading.resolved) {
-    trace(`work-driver: intent — resolved open point skipped: ${flattenAndClip(point, 300)}`);
+    trace(`work-driver: intent — resolved open point skipped: ${redactClip(point, 300)}`);
   }
   const base: NormalisedSpec =
     reading.resolved.length === 0
       ? spec
       : {
           ...spec,
-          assumptions: [...spec.assumptions, ...reading.resolved.map(resolvedAssumption)],
+          assumptions: [
+            ...spec.assumptions,
+            ...openPointTexts(reading, "resolved").map(resolvedAssumption),
+          ],
         };
   if (reading.unparsed.length > 0) {
     trace(
       `open-point-unparsed: ${reading.unparsed.length} line(s) in the Open points section did not parse`,
     );
   }
-  const blocking = [...reading.points, ...reading.unparsed];
+  // Bounded and redacted at the one place `openPoints` is written: these lines are copied
+  // verbatim into the handoff and posted to a public PR comment (#1187 fix round 2).
+  const blocking = [...openPointTexts(reading, "points"), ...openPointTexts(reading, "unparsed")];
   if (blocking.length === 0) return base;
   if (base.verdict === "park") {
     trace(
