@@ -20,13 +20,21 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { runCommitPrConsolidatedVerify } from "../src/work-driver-integrate-verify.ts";
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
-import { VERIFY_TIMEOUT_LABEL, verifyCapFor } from "../src/work-driver-verify-develop-helpers.ts";
+import {
+  boundText,
+  VERIFY_TIMEOUT_LABEL,
+  verifyCapFor,
+} from "../src/work-driver-verify-develop-helpers.ts";
 import { FAST_TIER_LABEL, fastVerifyCmdFor, withFastTier } from "../src/work-driver-verify-fast.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
-import { defaultBoundText, pinDefaultVerifyTimeout } from "./lib/verify-timeout-pin.ts";
+import {
+  assertDefaultVerifyBound,
+  defaultBoundText,
+  pinDefaultVerifyTimeout,
+} from "./lib/verify-timeout-pin.ts";
 
 const execFileP = promisify(execFile);
 let exit = 0;
@@ -50,7 +58,11 @@ const root = mkdtempSync(path.join(tmpdir(), "pi-fast-tier-"));
 // the wrong reason, so the block runs with the knob absent and the asserted
 // text is derived from the production helper. Case 6 passes its bound
 // explicitly (timeoutMs:) and never reads that env var, so it needs no pin.
-const BOUND = defaultBoundText();
+const BOUND = await defaultBoundText();
+await assertDefaultVerifyBound(assert);
+// The commit-pr tier's own bound (a different knob from the develop gate's),
+// spelled the same way the production helper spells it.
+const INTEGRATION_BOUND = boundText(900_000);
 type Outcome = { ok: true } | { ok: false; stdout: string; killed?: boolean };
 type Calls = Array<{ cmd: string; timeout?: number }>;
 
@@ -306,7 +318,7 @@ await pinDefaultVerifyTimeout(async () => {
   assert(
     killed.ok === false &&
       killed.timedOut === true &&
-      killed.classifiedMessage.includes("15-min") &&
+      killed.classifiedMessage.includes(INTEGRATION_BOUND) &&
       killed.classifiedMessage.includes("PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS"),
     "commit-pr timeout: flagged, with the bound and the integration knob",
   );
@@ -343,7 +355,7 @@ await pinDefaultVerifyTimeout(async () => {
   });
   const text = explainCap("verify-timeout:commit-pr", st);
   assert(
-    text.includes("TIMED OUT") && text.includes("15-min"),
+    text.includes("TIMED OUT") && text.includes(INTEGRATION_BOUND),
     "commit-pr timeout: the handoff names the bound",
   );
 }
