@@ -439,6 +439,12 @@ for (const seam of SEAMS) {
     // caller is the /agents-md pre-pass dispatch (pi-prompts/agents-md.md),
     // which loads it via FACTS_EXTRA_ARGS — not a static import.
     "facts-reporter.ts",
+    // #1391 task A — the preserve-then-clean seam for a lost step attempt. Its
+    // production caller is the step router's two retry branches, which ship in
+    // task B (`work-driver-step-router.ts` / `work-driver-retry-context.ts`) in
+    // the same cycle. Declared pending so the orphan check does not fail on the
+    // seam until task B lands; remove this entry when the caller arrives.
+    "worktree-retry-clean.ts",
   ]);
   const orphans: string[] = [];
   for (const f of allFiles) {
