@@ -18,14 +18,15 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
-import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import { runCommitPrConsolidatedVerify } from "../src/work-driver-integrate-verify.ts";
+import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import { VERIFY_TIMEOUT_LABEL, verifyCapFor } from "../src/work-driver-verify-develop-helpers.ts";
 import { FAST_TIER_LABEL, fastVerifyCmdFor, withFastTier } from "../src/work-driver-verify-fast.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import { defaultBoundText, pinDefaultVerifyTimeout } from "./lib/verify-timeout-pin.ts";
 
 const execFileP = promisify(execFile);
 let exit = 0;
@@ -43,22 +44,13 @@ const FULL = "bash scripts/verify.sh";
 const FAST = "bunx tsc --noEmit";
 const TSC = "src/a.ts(3,1): error TS2304: Cannot find name 'nope'.\n";
 const root = mkdtempSync(path.join(tmpdir(), "pi-fast-tier-"));
-// Cases 5 and 6 assert the DEFAULT bound's text ("10-min" develop, "15-min"
-// commit-pr). Case 5's bound comes from PI_ENSEMBLE_VERIFY_TIMEOUT_MS, which
-// the gate reads from the environment — an operator who raised it (a 45-min
-// laptop setting) would fail the case for the wrong reason. Pinned for the
-// duration of those cases and restored afterwards (case 6 passes its bound
-// explicitly, but its handoff text quotes the same 10-min knob prose).
-const VERIFY_TIMEOUT_DEFAULT = "600000";
-const savedVerifyTimeoutMs = process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS;
-const pinDefaultVerifyTimeout = <T>(caseFn: () => Promise<T>): Promise<T> => {
-  process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS = VERIFY_TIMEOUT_DEFAULT;
-  return caseFn().finally(() => {
-    if (savedVerifyTimeoutMs === undefined)
-      Reflect.deleteProperty(process.env, "PI_ENSEMBLE_VERIFY_TIMEOUT_MS");
-    else process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS = savedVerifyTimeoutMs;
-  });
-};
+// Case 5 asserts the DEFAULT bound's text ("10-min"). Its bound comes from
+// PI_ENSEMBLE_VERIFY_TIMEOUT_MS, which the gate reads from the environment —
+// an operator who raised it (a 45-min laptop setting) would fail the case for
+// the wrong reason, so the block runs with the knob absent and the asserted
+// text is derived from the production helper. Case 6 passes its bound
+// explicitly (timeoutMs:) and never reads that env var, so it needs no pin.
+const BOUND = defaultBoundText();
 type Outcome = { ok: true } | { ok: false; stdout: string; killed?: boolean };
 type Calls = Array<{ cmd: string; timeout?: number }>;
 
@@ -261,7 +253,7 @@ await pinDefaultVerifyTimeout(async () => {
   st = appendEvent(st, { kind: "cap-hit", at: 2, cap, reviewRound: 0, nextStep: "handoff" });
   const text = explainCap(cap, st);
   assert(
-    text.includes("TIMED OUT") && text.includes("10-min"),
+    text.includes("TIMED OUT") && text.includes(BOUND),
     "timeout: the handoff says it timed out, with the bound",
   );
   assert(
@@ -283,7 +275,7 @@ await pinDefaultVerifyTimeout(async () => {
 });
 
 // 6 — commit-pr: the fast tier runs first and a kill is a timeout, not a classification.
-await pinDefaultVerifyTimeout(async () => {
+{
   const { repo } = await makeRepo("commit-pr", FAST);
   const calls: Calls = [];
   const red = await runCommitPrConsolidatedVerify(
@@ -354,7 +346,7 @@ await pinDefaultVerifyTimeout(async () => {
     text.includes("TIMED OUT") && text.includes("15-min"),
     "commit-pr timeout: the handoff names the bound",
   );
-});
+}
 
 // 7 — the developer runs the fast tier and leaves the full one to the driver.
 {

@@ -57,10 +57,25 @@ export function readBakedCommit(root: string): string | null {
  */
 export function readCheckoutCommit(root: string): string | null {
   try {
+    // The git environment can point every one of these probes at another
+    // repository (GIT_DIR/GIT_WORK_TREE are honoured ahead of `-C` for the
+    // object database and the work tree). They are removed from the child env
+    // so the probe answers for `root` alone — an inherited GIT_DIR otherwise
+    // makes a non-checkout report some other repository's HEAD.
+    const env = { ...process.env } as NodeJS.ProcessEnv;
+    for (const name of [
+      "GIT_DIR",
+      "GIT_WORK_TREE",
+      "GIT_INDEX_FILE",
+      "GIT_NAMESPACE",
+      "GIT_COMMON_DIR",
+    ])
+      delete env[name];
     const out = execFileSync("git", ["-C", root, "rev-parse", "--show-toplevel", "HEAD"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5_000,
+      env,
     });
     const [top, head] = out.trim().split("\n");
     if (!top || !head) return null;
