@@ -166,13 +166,31 @@ async function developGate(
 }
 
 // 3 — fast passes: it runs first, then the full command, everywhere.
+// #1240 pins this case to the always-run shape: the gate is N=1 and every
+// per-worktree run is green, so with the duplicate-run skip ON the
+// consolidated pair below would not run AT ALL and this 4-call assertion would
+// be asserting the pre-#1240 shape by accident. The skip's own behaviour —
+// including that it skips the fast tier along with the full command, since
+// both live inside one `verifyExec` — is what
+// test-work-driver-consolidated-verify-skip.ts case a tests.
+// Only `0` disables the skip, so the case must set `0` explicitly to pin the
+// always-run shape it asserts. The restore puts back exactly what the
+// environment held, so an operator's own setting outlives the block.
 {
+  const prevSkip = process.env.PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP;
+  process.env.PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP = "0";
   const r = await developGate("fast-green", FAST, () => ({ ok: true }));
+  // The `delete` restore form is mandated by the env-clear ratchet
+  // (test-env-clear-gate.ts): on Bun 1.4 assigning the undefined literal to an
+  // env key stores the string "undefined" rather than removing the key, which
+  // would read as "skip enabled" to every later case in this file.
+  if (prevSkip === undefined) delete process.env.PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP;
+  else process.env.PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP = prevSkip;
   assert(r.failures.length === 0, "fast green: the gate passes");
   const cmds = r.calls.map((c) => c.cmd);
   assert(
     cmds.length === 4 && cmds.join(",") === [FAST, FULL, FAST, FULL].join(","),
-    `fast green: fast then full in the worktree AND on the consolidated tree (${cmds.join(", ")})`,
+    `fast green with the #1240 skip disabled: fast then full in the worktree AND on the consolidated tree (${cmds.join(", ")})`,
   );
 }
 

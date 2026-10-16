@@ -67,11 +67,19 @@ async function run(name: string, forge: Forge) {
   const baseSha = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
   await addLocalRemote(root, repo);
   await git(repo, ["push", "-q", "-u", "origin", "main"]);
+  // #1240 — the worktree is left with UNSTAGED residue after its commit: no
+  // tree object describes it, so no identity can be established and the
+  // commit-pr verify must still run. That run is what the trace assertion
+  // below observes; a worktree that cleanly matched the integration would
+  // legitimately skip it, and the assertion would fail for the right reason.
   const wt = path.join(repo, ".worktrees", `issue-${ISSUE}-default`);
   await git(repo, ["worktree", "add", "-q", "--detach", wt, baseSha]);
   writeFileSync(path.join(wt, "feature.txt"), "feature\n");
   await git(wt, ["add", "."]);
   await git(wt, ["commit", "-q", "-m", "developer: feature"]);
+  // Unstaged, uncommitted edit: keeps the worktree's tree identity undefined
+  // (see the note above), so the commit-pr gate cannot be skipped here.
+  writeFileSync(path.join(wt, "scratch-unstaged.txt"), "not staged\n");
 
   let created = false;
   const gh: string[] = [];
