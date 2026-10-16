@@ -24,6 +24,7 @@ import {
   DirtyWorktreeError,
   type ExecFn,
   inspectWorktreeForLoss,
+  listWorktreeStrict,
   resolvePath,
 } from "./worktree.ts";
 
@@ -105,11 +106,24 @@ export async function keepOrRefuseStaleIntegrateTree(
  * #1173 — keep the stale integrate tree's commits before the tree is removed.
  * HEAD's commits that neither `ref` (the branch tip, else the base) nor
  * `origin/<branch>` already holds are written to
- * `refs/pi-rukas/integrate-backup/issue-<N>/<sha>` (keyed by SHA, so a repeat
- * re-entry rewrites the same ref). Only a detached HEAD or one on the cycle's
- * own branch is the cycle's work: a tree on another branch holding unique
- * commits throws. Returns the ref, or `undefined` when there was nothing to
- * keep. Throws when git cannot answer — the caller then removes nothing.
+ * `refs/pi-rukas/integrate-backup/issue-<N>` — **one ref per issue**, replaced
+ * in place by `git update-ref`, so a cycle that re-enters commit-pr twenty
+ * times leaves one ref, not twenty. The ref is the LAST kept HEAD, not every
+ * kept HEAD.
+ *
+ * Replacing an older ref's commit is not a new loss channel (#1173's reachability
+ * proviso, retired by #1396): the driver force-removes the tree that held the
+ * older HEAD immediately after this call returns, and every removal decision
+ * here — `inspectWorktreeForLoss` via `keepOrRefuseStaleIntegrateTree`, the
+ * operator-residue dirt check — refuses before a removal whenever the tree
+ * holds uncommitted or non-regenerable work. An older backup whose commits are
+ * reachable from nothing had already been destroyed by the same force-remove
+ * the ref merely pointed at; nothing survives for the ref to protect.
+ *
+ * Only a detached HEAD or one on the cycle's own branch is the cycle's work: a
+ * tree on another branch holding unique commits throws. Returns the ref, or
+ * `undefined` when there was nothing to keep. Throws when git cannot answer —
+ * the caller then removes nothing.
  */
 export async function backupIntegrateHead(
   execFn: ExecFn,
@@ -124,31 +138,54 @@ export async function backupIntegrateHead(
   assertSafeRef(sha);
   const { stdout } = await execFn(`git rev-list --count ${JSON.stringify(`${ref}..${sha}`)}`, opts);
   if (Number.parseInt(stdout.trim(), 10) === 0) return undefined;
-  if (await headReachableFrom(execFn, abs, `origin/${branchName}`)) return undefined;
+  // A read that cannot answer is NOT evidence of reachability: an unreadable
+  // `merge-base` must fall through to the keep below, never to the
+  // "already on origin, nothing to keep" return — that is the quiet way a
+  // commit dies with the tree. (An unreadable keep below then throws, and the
+  // caller removes nothing.)
+  if ((await headReachableFrom(execFn, abs, `origin/${branchName}`)) === true) return undefined;
   const head = (await execFn("git rev-parse --symbolic-full-name HEAD", opts)).stdout.trim();
   if (head !== "HEAD" && head !== `refs/heads/${branchName}`) {
     throw new Error(`HEAD is on ${head}, not ${branchName} — not this cycle's work`);
   }
-  const backup = `refs/pi-rukas/integrate-backup/issue-${issue}/${sha}`;
+  const backup = `refs/pi-rukas/integrate-backup/issue-${issue}`;
   await execFn(`git update-ref ${JSON.stringify(backup)} ${JSON.stringify(sha)}`, opts);
-  trace(`work-driver: kept the stale integrate tree's unpushed commits on ${backup}`);
+  trace(
+    `work-driver: kept the stale integrate tree's unpushed commits on ${backup} (${sha}) — replaces any older backup for this issue`,
+  );
   return backup;
 }
 
 /**
- * True only when HEAD is provably an ancestor of `remoteRef` (any failure = false).
- * `remoteRef` is built from the branch name `ensureIntegrateWorktree` already
- * validated with `assertSafeRef`, so it is not re-validated here.
+ * Whether HEAD is provably an ancestor of `remoteRef`. `remoteRef` is built
+ * from the branch name `ensureIntegrateWorktree` already validated with
+ * `assertSafeRef`, so it is not re-validated here.
+ *
+ * Three-valued (#1396): `git merge-base --is-ancestor` exits 1 for "not an
+ * ancestor" and >1 for "could not answer" (a missing ref, a corrupt object),
+ * and `promisify(exec)` surfaces both as rejections. Collapsing the two — the
+ * old `catch → false` — manufactured a backup ref for commits already on
+ * `origin/<branch>` (a second, quieter source of ref growth) while the
+ * fail-open direction that actually loses work was never distinguished. An
+ * unreadable answer now returns `undefined`, and the one caller treats it as
+ * NOT reachable, i.e. keep the commit.
  */
-async function headReachableFrom(execFn: ExecFn, abs: string, remoteRef: string): Promise<boolean> {
+async function headReachableFrom(
+  execFn: ExecFn,
+  abs: string,
+  remoteRef: string,
+): Promise<boolean | undefined> {
+  const cmd = `git merge-base --is-ancestor HEAD ${JSON.stringify(remoteRef)}`;
   try {
-    await execFn(`git merge-base --is-ancestor HEAD ${JSON.stringify(remoteRef)}`, {
-      cwd: abs,
-      maxBuffer: 64 * 1024,
-    });
+    await execFn(cmd, { cwd: abs, maxBuffer: 64 * 1024 });
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    const code = (err as { code?: unknown }).code;
+    if (code === 1) return false;
+    trace(
+      `work-driver: could not tell whether HEAD is on ${remoteRef} — treating it as NOT there, so its commits are kept (${(err as Error).message ?? String(err)})`,
+    );
+    return undefined;
   }
 }
 
@@ -220,28 +257,27 @@ export function isIntegrateTreeInCycle(cycleTrees: string[], abs: string): boole
  * residue — it is left for the unconditional #475 target guard, which
  * refuses a dirty one.
  *
- * Unreadable list → false (the safe direction: the path, if anything is
- * there, is then left to the guard rather than force-removed).
+ * #1396 — the read is the strict listing (`listWorktreeStrict`: one retry at
+ * 250ms, then `WorktreeScanError`). It used to catch every git failure and
+ * return false, and false is not a neutral answer here: it routes the caller
+ * to "unregistered directory", which skips the record-HEAD + backup branch
+ * entirely and can leave the driver force-removing a tree it never proved was
+ * residue. A listing that cannot be read cannot prove absence, so it refuses
+ * the whole creation — the same contract the branch step's sibling scan
+ * already has (#1170).
  */
 export async function isRegisteredWorktree(
   execFn: ExecFn,
   repoRoot: string,
   abs: string,
 ): Promise<boolean> {
-  try {
-    const { stdout } = await execFn("git worktree list --porcelain", {
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-    });
-    const target = resolvePath(abs);
-    return stdout
-      .split("\n")
-      .some(
-        (l) =>
-          l.trim().startsWith("worktree ") &&
-          resolvePath(l.trim().slice("worktree ".length)) === target,
-      );
-  } catch {
-    return false;
-  }
+  const stdout = await listWorktreeStrict(execFn, repoRoot);
+  const target = resolvePath(abs);
+  return stdout
+    .split("\n")
+    .some(
+      (l) =>
+        l.trim().startsWith("worktree ") &&
+        resolvePath(l.trim().slice("worktree ".length)) === target,
+    );
 }
