@@ -267,7 +267,14 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
   };
   // #1187 — the keyword-classifier field is retired. An artifact still carrying it was
   // written by the old gate, so it is refused: the caller re-runs intent from the issue body.
-  if (v.securityOpenPoints !== undefined) return undefined;
+  // Traced, because "the artifact was refused" and "there was no artifact" look identical
+  // downstream and only this line says which, and why.
+  if (v.securityOpenPoints !== undefined) {
+    trace(
+      "work-driver: intent — spec artifact refused: it carries the retired securityOpenPoints field (pre-#1187 gate); intent re-runs from the issue body",
+    );
+    return undefined;
+  }
   // Absent in artifacts written before the field existed: read as none, so it stays absent.
   if (v.openPoints !== undefined) {
     if (!isStringArray(v.openPoints)) return undefined;
@@ -275,7 +282,12 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
   }
   if (v.parkReason !== undefined) {
     const pr = v.parkReason;
-    if (typeof pr !== "string" || !PARK_REASONS.includes(pr as ParkReason)) return undefined;
+    if (typeof pr !== "string" || !PARK_REASONS.includes(pr as ParkReason)) {
+      trace(
+        `work-driver: intent — spec artifact refused: parkReason ${JSON.stringify(pr)} is not a declared reason (a retired reason means an artifact from an older gate); intent re-runs from the issue body`,
+      );
+      return undefined;
+    }
     out.parkReason = pr as ParkReason;
   }
   if (v.parkReasonSource !== undefined) {

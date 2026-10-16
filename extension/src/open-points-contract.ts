@@ -17,10 +17,23 @@
  *     Answer the point in the issue body, then re-run with `/work N --restart`.
  *   - any other line in the section that is not a plain bullet, checkbox or link
  *     bullet parks as unparsed, rather than being ignored (work-driver-intent-criticality.ts).
+ *   - the one intro sentence below is prose the WRITER emits, so the READER skips it
+ *     verbatim (#1187 fix round 1): without that exemption a gap-gate-filed issue can
+ *     never be cleared by `[RESOLVED]`, because the intro parks after every point is answered.
  */
 
 /** Heading of the open-points section the gap gate renders. */
 export const OPEN_POINTS_HEADING = "Open points (unresolved at the gap-gate cap)";
+
+/**
+ * The intro sentence the gap gate writes under the heading (plan-gap-disclosure.ts).
+ *
+ * Shared constant, not a copy: it is the only non-bullet line the writer itself emits,
+ * so it is the only prose line the reader exempts. The reader compares it against
+ * `flattenIssueText` output; the writer puts it on one line, so the two agree.
+ */
+export const OPEN_POINTS_INTRO =
+  "The gap gate reached its iteration cap with these CRITICAL points still unresolved. The issue is filed so they are visible; the /work intent gate decides whether it is buildable.";
 
 /** The severity tag of a bullet that gates the intent resolver. */
 export const CRITICAL_SEVERITY = "CRITICAL";

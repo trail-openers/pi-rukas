@@ -23,7 +23,13 @@
  * the filed body the caller passes in (it never fetches the issue) and never
  * decides what the spec says. work-driver-intent-finalise.ts fixes the order.
  */
-import { CRITICAL_SEVERITY, OPEN_POINTS_HEADING } from "./open-points-contract.ts";
+import { redactSecrets } from "./decision-log.ts";
+import {
+  CRITICAL_SEVERITY,
+  OPEN_POINTS_HEADING,
+  OPEN_POINTS_INTRO,
+} from "./open-points-contract.ts";
+import { trace } from "./trace.ts";
 import { flattenIssueText } from "./text-flatten.ts";
 import type { NormalisedSpec, SpecAssumption, SpecEvidence } from "./work-driver-intent.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
@@ -194,7 +200,61 @@ function isTagLike(token: string): boolean {
 /** One list item or prose line of the section. `kind` is fixed when the item starts; `text` takes joined continuations. */
 interface Entry {
   kind: "point" | "resolved" | "parked" | "plain";
+  /** Already redacted (#1187 fix round 1): blocking texts are posted to a public issue. */
   text: string;
+  /**
+   * The unflattened pieces of this entry, kept until it closes (#1187 fix round 2).
+   * Joining and flattening on every continuation line made the reader O(n²) in the
+   * length of a wrapped entry; flattening once at close is the same text. `text` is
+   * the flattened form, filled in when the entry closes.
+   */
+  pieces: string[];
+}
+
+/**
+ * Safety bounds on what one section can push into a park reason and a public handoff
+ * comment (#1187 fix round 2, added after review).
+ *
+ * `flattenIssueText` removes control characters rather than dropping lines, so a body
+ * whose Open points section is one enormous wrapped entry, or thousands of bullets, is
+ * copied verbatim into `openPoints` and then into the PR body. The settlement's
+ * "unclipped" rules out a *quote* clip (no 300-character truncation of a real point);
+ * it cannot mean "no bound at all" against a pathological body. A bound that fires is
+ * traced, so a cycle that lost points is visible rather than silently narrowed.
+ */
+const MAX_OPEN_POINT_ENTRIES = 20;
+const MAX_OPEN_POINT_CHARS = 2000;
+/** Marker for an entry that hit {@link MAX_OPEN_POINT_CHARS}. */
+const CLIPPED_MARKER = "…(clipped)";
+/** Final entry recording what {@link MAX_OPEN_POINT_ENTRIES} dropped. */
+function moreEntriesNote(dropped: number): string {
+  return `…and ${dropped} more open-point lines`;
+}
+
+/** Bound one blocking line, redacting first so a clip can never cut a secret in half. */
+function boundEntry(text: string): string {
+  const { text: redacted } = redactSecrets(text);
+  const chars = Array.from(redacted);
+  return chars.length > MAX_OPEN_POINT_CHARS
+    ? `${chars.slice(0, MAX_OPEN_POINT_CHARS - CLIPPED_MARKER.length).join("")}${CLIPPED_MARKER}`
+    : redacted;
+}
+
+/**
+ * The blocking lines of a reading, bounded, redacted and traced.
+ *
+ * One call site (the gate), so the bound lives here rather than in every entry.
+ */
+function boundedBlockingTexts(values: string[], what: string): string[] {
+  const kept = values.slice(0, MAX_OPEN_POINT_ENTRIES).map(boundEntry);
+  const dropped = values.length - kept.length;
+  if (dropped > 0) {
+    trace(
+      `work-driver: intent — open-point bound dropped ${dropped} ${what} line(s) beyond ${MAX_OPEN_POINT_ENTRIES}; the park lists the first ${MAX_OPEN_POINT_ENTRIES}`,
+    );
+    kept.push(moreEntriesNote(dropped));
+  }
+  return kept;
 }
 
 /** An ATX heading: 1-6 hashes, then a space or the end of the line. */
@@ -229,8 +289,13 @@ function classifyItem(text: string): Entry["kind"] {
       return (answer[1] ?? "").trim() ? "resolved" : "parked";
     }
     if (SEVERITY_WORDS.includes(token)) return "plain";
+    // The tag-like check runs BEFORE the link exemption (#1187 fix round 2): the writer
+    // puts ` — proposed: …` between the tag and anything else, so a near-miss tag can
+    // never be followed by `(` in a rendered section — exempting link bullets first made
+    // `- [CRIT ICAL](https://x) …` an ordinary note, which the old keyword classifier parked on.
     if (isTagLike(token)) return "parked";
     // A markdown link is an ordinary bullet. Any other bracketed token is one we cannot read.
+    // An EXACT severity tag is not exempted by a following link: the tag wins, fail closed.
     return after.startsWith("(") ? "plain" : "parked";
   }
   if (/^\W*critical\b/i.test(text)) return "parked";
@@ -251,32 +316,60 @@ export interface OpenPointReading {
 }
 
 /**
+ * Whether `raw` is the exact OPEN_POINTS_HEADING, read independently of fence state.
+ *
+ * `normaliseDeclaredPath` strips a single balanced trailing parenthetical — the whole
+ * shape of this heading — leaving `Open points`. A near-miss heading ("Open points
+ * (unresolved at the gap-gate", no close) and any other heading keep their text, so they
+ * do not match and the settlement's "no cross-section scan" still holds.
+ */
+function isOpenPointsHeading(raw: string): boolean {
+  return normaliseDeclaredPath(raw.replace(/^ {0,3}#{1,6}[ \t]+/, "")) === "Open points";
+}
+
+/**
  * Read the Open points section of a filed issue (#1151, #1187).
  *
  * The section starts at an exact OPEN_POINTS_HEADING and ends at the next heading of the
  * same or higher level outside a fenced block, or at the end of the body. Inside it:
- * blank lines never park; plain bullets, task checkboxes and link bullets do not park;
- * a CRITICAL point parks unless `[RESOLVED]` follows its tag on the same line; and any
- * other line that is not a plain item parks (non-bullet prose, unindented continuation,
- * a sub-heading, a setext underline, a fenced block, an unreadable leading token).
- * Indented lines continue the item above them, and only that item, with no blank line between.
+ * blank lines never park; plain bullets, task checkboxes, link bullets and the writer's
+ * own intro line do not park; a CRITICAL point parks unless `[RESOLVED]` follows its tag
+ * on the same line; and any other line that is not a plain item parks (non-bullet prose,
+ * unindented continuation, a sub-heading, a setext underline, a fenced block, an unreadable
+ * leading token). Indented prose continues the item above it, and only that item, with no
+ * blank line between; an indented line that is itself a list item is its own entry.
+ *
+ * Fence state is scoped to the section (#1187 fix round 2). The heading is matched whatever
+ * the fence state, and fence/continuation state reset on entry, so an unclosed ``` a
+ * thousand lines above the section can no longer hide the heading and every point in it.
+ * The stateless reader is also the right shape for a gate that runs once per cycle: it has
+ * to be right about a body it has never seen, not fast about one it has.
  */
 export function readOpenPoints(issueBody: string): OpenPointReading {
   const entries: Entry[] = [];
-  const park = (raw: string): Entry => {
-    const entry: Entry = { kind: "parked", text: flattenIssueText(raw) };
+  const add = (kind: Entry["kind"], raw: string): Entry => {
+    const entry: Entry = { kind, text: "", pieces: [raw] };
     entries.push(entry);
     return entry;
   };
   let level = 0; // heading level of the open section; 0 = outside it
-  let fence: string | undefined; // the opener of the fence we are inside
+  let fence: string | undefined; // opener of the fence we are inside — INSIDE the section only
   let fenceEntry: Entry | undefined; // the one entry a fenced block inside the section becomes
-  let cur: Entry | undefined; // the item an indented continuation line joins
+  let cur: Entry | undefined; // the item an indented prose line joins
   for (const raw of issueBody.split(/\r?\n/)) {
+    const heading = raw.match(ATX_HEADING);
+    // The heading is read before any fence handling, so a fence opened above cannot
+    // swallow the section, and entering it clears state carried from outside.
+    if (heading !== null && isOpenPointsHeading(raw)) {
+      level = heading[1]?.length ?? 0;
+      fence = undefined;
+      fenceEntry = undefined;
+      cur = undefined;
+      continue;
+    }
+    if (level === 0) continue;
     if (fence !== undefined) {
-      if (fenceEntry !== undefined && raw.trim() !== "") {
-        fenceEntry.text = flattenIssueText(`${fenceEntry.text} ${raw}`);
-      }
+      if (fenceEntry !== undefined && raw.trim() !== "") fenceEntry.pieces.push(raw);
       if (closesFence(raw, fence)) fence = undefined;
       continue;
     }
@@ -284,53 +377,76 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
     if (opener !== undefined) {
       fence = opener;
       cur = undefined;
-      fenceEntry = level > 0 ? park(raw) : undefined;
+      fenceEntry = add("parked", raw);
       continue;
     }
-    const heading = raw.match(ATX_HEADING);
-    if (heading) {
+    if (heading !== null) {
       const depth = heading[1]?.length ?? 0;
       cur = undefined;
       // A deeper heading inside the section is a sub-heading, and it parks.
-      if (level > 0 && depth > level) {
-        park(raw);
+      if (depth > level) {
+        add("parked", raw);
         continue;
       }
-      level = flattenIssueText(heading[2] ?? "") === OPEN_POINTS_HEADING ? depth : 0;
+      level = 0;
       continue;
     }
     if (raw.trim() === "") {
       cur = undefined;
       continue;
     }
-    if (level === 0) continue;
+    // The one prose line the writer itself emits is not an author's unparseable line.
+    if (flattenIssueText(raw) === OPEN_POINTS_INTRO) {
+      cur = undefined;
+      continue;
+    }
     if (SETEXT_UNDERLINE.test(raw)) {
-      park(raw);
+      add("parked", raw);
       cur = undefined;
       continue;
     }
     const item = raw.match(LIST_ITEM)?.[1];
     if (item !== undefined) {
+      // An indented list item is an item (#1187 fix round 2): folding it into the bullet
+      // above lost a nested CRITICAL point that `classifyItem` reads perfectly well.
       const text = flattenIssueText(item)
         .replace(/^\[[ xX]\](?: |$)/, "")
         .trim();
-      cur = { kind: classifyItem(text), text };
+      cur = { kind: classifyItem(text), text, pieces: [] };
       entries.push(cur);
       continue;
     }
+    // Indented plain prose continues the item above it — except a bracketed token, which
+    // is not prose to fold in and parks on its own instead.
     const piece = flattenIssueText(raw);
-    // An indented line continues the item above it; one that opens with a bracketed token is not prose to fold in.
     if (/^[ \t]/.test(raw) && cur !== undefined && !piece.startsWith("[")) {
-      cur.text = flattenIssueText(`${cur.text} ${piece}`);
+      cur.pieces.push(raw);
       continue;
     }
-    cur = park(raw);
+    cur = add("parked", raw);
   }
   const reading: OpenPointReading = { points: [], resolved: [], unparsed: [] };
   for (const entry of entries) {
+    // Flatten once, when the entry closes. `pieces` is empty for an item whose text was
+    // already flattened and normalised at open (the checkbox strip), so it is left alone.
+    if (entry.pieces.length > 0) entry.text = flattenIssueText(entry.pieces.join(" "));
     if (entry.kind === "point") reading.points.push(entry.text);
     else if (entry.kind === "resolved") reading.resolved.push(entry.text);
     else if (entry.kind === "parked") reading.unparsed.push(entry.text);
   }
   return reading;
+}
+
+/**
+ * The bounded, redacted texts of one kind of a reading (#1187 fix round 2).
+ *
+ * The gate takes `points` and `unparsed` (the blocking lines, capped and traced) and
+ * `resolved` (assumption text, bounded but never counted as blocking). Keeping this here
+ * rather than at the call site means a `openPoints` list cannot be written by a path that
+ * forgot the bound.
+ */
+export function openPointTexts(reading: OpenPointReading, kind: keyof OpenPointReading): string[] {
+  return kind === "points" || kind === "unparsed"
+    ? boundedBlockingTexts(reading[kind], kind)
+    : reading.resolved.map(boundEntry);
 }
