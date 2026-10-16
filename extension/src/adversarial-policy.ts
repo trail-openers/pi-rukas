@@ -2,12 +2,10 @@
  * adversarial-policy — the verdict policy a reportOnly adversarial review is
  * judged by (#1114 / #1154), split out of adversarial.ts (500-line cap).
  *
- * `ReportPolicy` is discriminated: `reportVerdict` is REQUIRED whenever
- * `reportOnly` is true and must be absent otherwise, so no reportOnly caller
- * gets a verdict policy by omission. Untyped JS callers can still omit it, so
- * `reportPolicyError` is the runtime fence (#1161): a reportOnly review without
- * a recognised policy fails as an infra failure instead of being silently
- * judged as a routed round.
+ * The type alone does not bind the `adversarial_loop` tool boundary, which
+ * receives LLM-supplied JSON. `reportPolicyError` is the runtime fence that
+ * does (#1161): a reportOnly review without a recognised policy fails as an
+ * infra failure instead of being silently judged as a routed round.
  */
 
 /**

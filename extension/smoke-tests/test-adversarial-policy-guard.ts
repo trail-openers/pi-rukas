@@ -139,8 +139,8 @@ try {
         context: "nopolicy",
         workCwd: workRepo,
         reportOnly: true,
-        reportVerdict: policy,
-      } as never,
+        reportVerdict: policy as never,
+      },
       signal(),
       "job-k",
     );
@@ -174,8 +174,8 @@ try {
         diff: "diff --git a/f b/f\n+x",
         context: "malformed",
         workCwd: workRepo,
-        ...policy,
-      } as never,
+        ...(policy as never),
+      },
       signal(),
       "job-m",
     );
