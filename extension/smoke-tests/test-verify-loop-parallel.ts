@@ -12,9 +12,13 @@
  *      markers keep argument order (the timed-out test is listed before the
  *      failing one, even though it finishes later).
  *   3. The timed-out test's process tree is gone after the run (no orphan).
- *   4. JOBS=3 wall-clock is below the sum of the slow tests' durations.
+ *   4. JOBS=3 wall-clock is at most 0.7x a JOBS=1 baseline of the same set,
+ *      measured in the same run.
  *   5. SIGTERM during a run exits promptly (143, no signal) and leaves no job
  *      process.
+ *   6. A set of several failing tests — one emitting two `✗` lines, one
+ *      emitting none — digests byte-identically at JOBS=1 and JOBS=3, with no
+ *      timing in it to blur the comparison.
  *
  * Every case pins PI_ENSEMBLE_VERIFY_TEST_JOBS and
  * PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S in the child env, so an operator's
@@ -32,6 +36,21 @@ const SLOW = path.join(FIXTURES, "fixture-slow.ts");
 const HANG = path.join(FIXTURES, "fixture-hang.ts");
 const FAIL = path.join(FIXTURES, "fixture-1.ts");
 const PASS = path.join(FIXTURES, "allpass-a.ts");
+// Multi-✗ failing fixtures: case 6 needs several failures, and at least one
+// emitting more than one `✗` line, so the digest has multi-line per-test
+// blocks to reorder — not just one marker per test.
+const FAIL_MULTI = path.join(FIXTURES, "fixture-multi.ts");
+const FAIL_NOISE = path.join(FIXTURES, "fixture-check-noise.ts");
+
+// A fixture set with no timing in it — nothing sleeps, nothing hangs. Cases
+// that pin output rather than speed use this, because a flake in the timing
+// cases (a slow tick, a case-5 SIGKILL) must not make them fail, and must not
+// make them take longer than the assertion is worth.
+//
+// fixture-1 fails with no `✗` line at all, which is deliberate: its block in
+// the digest is empty, so a pool that mis-paired captures with markers would
+// show fixture-1's slot filled with someone else's assertion.
+const FAILURES = [FAIL, FAIL_MULTI, FAIL_NOISE, PASS];
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -58,6 +77,10 @@ function probeOrphans(pattern: string): { ok: boolean; pids: string; status: num
 // handler's worst-case poll (20 × 0.1s), plus slack for a loaded host where a
 // 0.1s sleep and two `kill -0` rounds are not instantaneous. The handler itself
 // costs at most ~2s; the rest is tolerance, not budget.
+//
+// The hang fixture's `sleep` child is sized from this case's own 60s watchdog
+// bound, so it is still alive when the signal lands — which is the point of the
+// case: there must be a live tree for the handler to take down.
 const INTERRUPT_BOUND_MS =
   1500 /* signal delay */ + 2000 /* 20×0.1s poll */ + 5000 /* slack for a loaded host */;
 
@@ -145,21 +168,39 @@ if (case3ProbeBroken) {
   );
 }
 
-// --- Case 4: JOBS=3 overlaps slow tests (wall-clock below their summed duration).
+// --- Case 4: JOBS=3 overlaps slow tests, measured against this run's own
+// sequential baseline. The wall clock is compared to a JOBS=1 run of the same
+// three slow fixtures taken HERE, not to a constant: an absolute bound such as
+// "under 6s" passes on a fast host whether or not the pool overlapped anything,
+// and fails on a loaded one that overlapped perfectly. The ratio is the
+// assertion — three 2s fixtures under one job cannot finish faster than ~2s
+// apart from process startup, so a pool that genuinely ran them concurrently
+// must land well under that, and a pool that quietly serialised cannot.
 const slowOnly = [SLOW, SLOW, SLOW];
-const t0 = Date.now();
-const timed = runLoopEnv(slowOnly, {
+const slowCaseEnv = (jobs: number): Record<string, string> => ({
   ...POOL_ENV,
-  PI_ENSEMBLE_VERIFY_TEST_JOBS: "3",
+  PI_ENSEMBLE_VERIFY_TEST_JOBS: String(jobs),
   PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "10",
   FIXTURE_SLOW_MS: "2000",
 });
+const tBase = Date.now();
+const baseline = runLoopEnv(slowOnly, slowCaseEnv(1));
+const baseWall = (Date.now() - tBase) / 1000;
+const t0 = Date.now();
+const timed = runLoopEnv(slowOnly, slowCaseEnv(3));
 const wall = (Date.now() - t0) / 1000;
-const sumSlow = 3 * 2;
 assert(timed.status === 0, "case 4: three slow passing tests exit 0 at JOBS=3");
+assert(baseline.status === 0, "case 4: the JOBS=1 baseline run exits 0");
+// The guard is what makes the ratio meaningful: a baseline that never actually
+// took the time three 2s fixtures under one job must take means the fixtures
+// did not run as configured, and any ratio computed against it is noise.
 assert(
-  wall < sumSlow,
-  `case 4: JOBS=3 wall-clock ${wall.toFixed(1)}s is below the slow-test sum ${sumSlow}s`,
+  baseWall >= 2,
+  `case 4: the JOBS=1 baseline is slow enough to measure (${baseWall.toFixed(1)}s >= 2s)`,
+);
+assert(
+  wall <= 0.7 * baseWall,
+  `case 4: JOBS=3 wall-clock ${wall.toFixed(1)}s is at most 0.7x the JOBS=1 baseline ${baseWall.toFixed(1)}s (want <= ${(0.7 * baseWall).toFixed(1)}s)`,
 );
 
 // --- Case 5: SIGTERM mid-run interrupts the pool.
@@ -223,6 +264,57 @@ if (interruptProbeBroken) {
   assert(
     orphansAfterInterrupt === "",
     `case 5: no process of the interrupted jobs survives (got ${JSON.stringify(orphansAfterInterrupt)})`,
+  );
+}
+
+// --- Case 6: a set with several failing tests, each emitting several `✗`
+// lines, produces a byte-identical digest at JOBS=1 and JOBS=3. Cases 1-2
+// overlap hang/slow fixtures, so their output is entangled with the watchdog
+// and with whichever job happened to finish first; this set has no timing in
+// it at all, so any difference between the two runs is the pool reordering
+// per-test blocks, echoing a failing test's ✗ lines in completion order, or
+// attributing a ✗ line to the wrong test.
+{
+  const noTiming = (jobs: number): Record<string, string> => ({
+    ...POOL_ENV,
+    PI_ENSEMBLE_VERIFY_TEST_JOBS: String(jobs),
+  });
+  const d1 = runLoopEnv(["--digest", ...FAILURES], noTiming(1));
+  const d3 = runLoopEnv(["--digest", ...FAILURES], noTiming(3));
+  assert(d1.status === 1 && d3.status === 1, "case 6: both digest runs exit 1");
+  assert(
+    d3.stdout === d1.stdout,
+    "case 6: multi-failure digest output is byte-identical at JOBS=1 and JOBS=3",
+  );
+  const tally = d1.stdout.trim().split("\n").pop() ?? "";
+  assert(
+    tally.includes("P: 1  F: 3"),
+    `case 6: the set holds three failing tests and one pass (tally ${JSON.stringify(tally)})`,
+  );
+  // fixture-1 contributes no ✗ line, fixture-multi two, check-noise one (the
+  // digest drops its ✓ noise — that drop is #1028's contract and other cases
+  // pin it, but it is why the count here is 3 and not 4). ≥ 2 under one marker
+  // is the part this case needs: a set where every failing test emits exactly
+  // one line cannot show a reordered or mis-attributed block.
+  const crossLines = d1.stdout.split("\n").filter((l) => l.startsWith("✗ "));
+  assert(
+    crossLines.length >= 3,
+    `case 6: the digest carries the set's ✗ lines (got ${crossLines.length}, want >= 3)`,
+  );
+  const multiLines = crossLines.filter((l) => l.includes("fixture-multi"));
+  assert(
+    multiLines.length >= 2,
+    `case 6: at least one failing test emits several ✗ lines, so a reordered block is visible (fixture-multi got ${multiLines.length})`,
+  );
+  const failedMarkers = d3.stdout
+    .split("\n")
+    .filter((l) => l.startsWith("FAILED: ") && !l.includes("test(s)"));
+  assert(
+    failedMarkers.length === 3 &&
+      failedMarkers[0].includes(path.basename(FAIL)) &&
+      failedMarkers[1].includes(path.basename(FAIL_MULTI)) &&
+      failedMarkers[2].includes(path.basename(FAIL_NOISE)),
+    `case 6: the digest names each failing test in argument order (got ${JSON.stringify(failedMarkers)})`,
   );
 }
 

@@ -4,6 +4,11 @@
 // The verify-loop per-test timeout (PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S,
 // default 300s) is what kills it.
 //
+// The long-lived child below sleeps past the watchdog bound rather than a
+// fixed 300s, so a test that lowers the bound to a couple of seconds still
+// has a live descendant for the tree kill to find. Every caller of this
+// fixture pins PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S.
+//
 // The loop kills the whole process tree of the hung test, so the fixture
 // also spawns a long-lived child (sleep) that must die with it — the
 // "no orphan" case in test-verify-loop-timeout.ts checks for exactly this.
@@ -19,11 +24,28 @@ console.log("fixture-hang: starting, will hang until killed");
 console.log("fixture-hang: pid", process.pid);
 
 const token = process.env.FIXTURE_HANG_TOKEN ?? "hang-default";
-// A non-numeric or non-positive bound would make `sleep` exit at once and the
-// watchdog would have nothing to kill, turning the no-orphan case into a
-// silent pass. Fall back to the 300s the fixture has always used.
-const parsed = Number.parseInt(process.env.FIXTURE_HANG_S ?? "300", 10);
-const hangSeconds = Number.isFinite(parsed) && parsed > 0 ? parsed : 300;
+// The fixture must outlive the watchdog, not merely be long: a child that
+// exits before the bound leaves the watchdog nothing to kill, and the
+// no-orphan case would pass on an already-empty process table. So the sleep
+// is derived from the bound the caller set and sits 5s past it, rather than
+// being a constant that only happens to exceed the default 300s.
+//
+// A non-numeric, non-positive, or absent bound falls back to 300 + 5 — the
+// original constant — so a bad value can never produce `sleep 0`, which would
+// exit at once and turn the no-orphan case into a silent pass again.
+// A digit string of its own, not `Number.isFinite(parseInt(x))`: `parseInt`
+// accepts a leading sign, so "-5" would otherwise reach `sleep` as a negative
+// count. It also does not accept whitespace, so it cannot silently truncate.
+function positiveInt(raw: string | undefined): number | null {
+  if (raw === undefined || !/^[0-9]+$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+const watchdogBound = positiveInt(process.env.PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S) ?? 300;
+// An explicit FIXTURE_HANG_S still wins (a test that wants a specific child
+// lifetime), but it is validated the same way — a junk value must not become
+// `sleep NaN` or `sleep 0`.
+const hangSeconds = positiveInt(process.env.FIXTURE_HANG_S) ?? watchdogBound + 5;
 
 // Spawn a long-lived child with the run-unique token in its command line
 // so the no-orphan test can find it after the kill.

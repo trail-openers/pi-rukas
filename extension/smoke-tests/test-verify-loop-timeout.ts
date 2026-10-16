@@ -58,6 +58,16 @@ function pipelineEnv(
 // it into a `sleep` child's command line so the no-orphan check can find the
 // descendant by pattern after the kill (the pid is not reliable: ps output
 // can elide args, and the watchdog does not expose the child's pid).
+//
+// The grace figure above is the fixed `sleep 2` this PR replaced: the kill now
+// polls to the same bound the interrupt handler uses, so a tree that dies
+// immediately returns in well under a second and a case measures ~2-3s rather
+// than 4-5s. The 2s is retained as the ceiling, not the typical cost.
+//
+// The bound is pinned here rather than left to the default because the hang
+// fixture sizes its child's sleep from PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: the
+// env var is what makes the descendant outlive the watchdog instead of drifting
+// to a lifetime the case never chose.
 function hangTestEnv(caseId: string): { env: Record<string, string>; token: string } {
   const token = `hang-${caseId}-${process.pid}-${Date.now()}`;
   return { env: { PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "2", FIXTURE_HANG_TOKEN: token }, token };
@@ -108,7 +118,7 @@ function hangTestEnv(caseId: string): { env: Record<string, string>; token: stri
     const summaryLines = lines.filter((l) => l.startsWith("FAILED: ") && l.includes("test(s)"));
     const summaryLine = summaryLines[summaryLines.length - 1];
     assert(
-      summaryLine !== undefined && summaryLine.startsWith("FAILED: 2 test(s) —"),
+      summaryLine?.startsWith("FAILED: 2 test(s) —"),
       `case 9: the summary counts the two failures (timeout + fixture-1) (got: ${JSON.stringify(summaryLine)})`,
     );
     assert(
