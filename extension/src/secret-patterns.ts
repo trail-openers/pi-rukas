@@ -46,6 +46,32 @@
  * input, glued and clean alike, where the same body without it matches all of
  * them. A pattern that can never fire would have redacted nothing at all while
  * still reporting success.
+ *
+ * THE BODY CLASS IS WHAT THE PROVIDER EMITS, NOT WHAT LOOKED TIDY (#1393, round 2).
+ * `ghp_aB3dE5fG7hJ9kL1mN2pQ4rS6tU8v_0` and `npm_…_E` both returned `count: 0`
+ * unbounded: GitHub and npm base64url-encode their token bytes, so `_` and `-` are
+ * in the alphabet, and a body class without them stops one character short of the
+ * key — the end assertion then refuses the very character the body could not reach,
+ * so the rule matches NOTHING rather than a prefix of it. A class narrower than the
+ * provider's alphabet is a leak, not a conservative choice, which is why each arm
+ * below names the set its provider actually emits and `tokenEndFor` is derived from
+ * that same class so the two cannot disagree.
+ *
+ * THE KEY/VALUE RULE'S LEADING `\b` WAS THE SECOND SILENT GAP (#1393, round 2, item 9).
+ * It is gone. The assertion is meant to refuse a keyword that is only a substring of a
+ * longer identifier, and it does that job — `aws_secret_access_key=…`, `token_count: …`
+ * and `tokenizer=…` all match nothing with or without it. What it ALSO refused was the
+ * shape this fix round exists for: a keyword welded onto a run of non-whitespace, which
+ * is exactly what a clipped scan window hands a pattern. Repro, verbatim:
+ * `"t".repeat(2047) + "password=Sup3rSecretValue99" + "t".repeat(3000)` returned
+ * `count: 0` from `redactSecrets`, from `redactBounded(…, 2600|4000, "start")`, and from
+ * `redactDeep({evidence}, counter, 4000)` — the password shipped whole and every count
+ * read zero. The keyword IS present; the left context the pattern demanded was cut off
+ * by the clip, so no scan window of any width could have matched it. Dropping the `\b`
+ * costs nothing on the zero side, which is the side the overreach probes assert, and it
+ * is the only spelling that works here: `\b` is also false at the start of a slice, and
+ * a widened scan hands the pattern exactly such a slice, so a bounded pass can never be
+ * made to see what an unbounded one sees while the assertion stands.
  */
 
 /**
@@ -85,34 +111,82 @@ export const SECRET_PATTERNS: readonly RegExp[] = [
   // previous `sk-[A-Za-z0-9]{16,}` refused a legacy key and passed both current
   // formats — including this project's own provider.
   token("sk-[A-Za-z0-9](?:[A-Za-z0-9-]{15,})", "A-Za-z0-9-"),
-  token("(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})", "A-Za-z0-9_"),
-  token("xox[baprs]-[A-Za-z0-9-]{10,}", "A-Za-z0-9-"),
+  // GitHub's token bytes are base64url: `_` and `-` both occur in a real `ghp_`
+  // / `github_pat_` key, and the old `A-Za-z0-9_` class stopped at the first `-`
+  // with the end assertion refusing it — measured `count: 0` for a `ghp_…_E` key
+  // unbounded, whole document. npm does the same, so its arm carries `_` too.
+  token("(?:gh[pousr]_[A-Za-z0-9_-]{16,}|github_pat_[A-Za-z0-9_-]{20,})", "A-Za-z0-9_-"),
+  token("xox[baprs]-[A-Za-z0-9_-]{10,}", "A-Za-z0-9_-"),
   token("glpat-[A-Za-z0-9_-]{16,}", "A-Za-z0-9_-"),
   token("AIza[0-9A-Za-z_-]{30,}", "0-9A-Za-z_-"),
-  token("npm_[A-Za-z0-9]{30,}", "A-Za-z0-9"),
-  token("AKIA[0-9A-Z]{16}", "0-9A-Z"),
-  anchored("Bearer\\s+[A-Za-z0-9._-]{20,}"),
+  token("npm_[A-Za-z0-9_-]{30,}", "A-Za-z0-9_-"),
+  // `{16,}` and not `{16}`: an AKIA key welded onto the following run
+  // (`AKIAIOSFODNN7EXAMPLEX`, a payload dump with no separators) has seventeen
+  // uppercase characters after the prefix, and the fixed length plus the end
+  // assertion refused the whole thing — measured `count: 0`. The key is still at
+  // least sixteen, so widening the minimum loses nothing and the glued form is
+  // redacted rather than shipped.
+  token("AKIA[0-9A-Z]{16,}", "0-9A-Z"),
+  // The body is JWT base64url *with its padding*: `.` separates the segments and
+  // `=` terminates a padded one. `[A-Za-z0-9._-]{20,}` stopped at the `=`, so a
+  // padded bearer leaked its tail — measured `Bearer eyJ…=.sig` → `[REDACTED]=.sig`.
+  // `~`, `+` and `/` are the remaining base64url/base64 digits (`_` and `-` are
+  // already in there), so the class is the alphabet a bearer token is written in
+  // rather than one character short of it.
+  anchored("Bearer\\s+[A-Za-z0-9._~=+/-]{20,}"),
   anchored("-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-  // The key/value rule keeps its leading `\b` and gets no end assertion: its body
-  // runs to the end of the token, so a trailing assertion could only ever be
-  // satisfied by a body SHORTER than the token — the `\b` bug, relocated.
+  // The key/value rule has NO leading `\b` (see the header: that is the item-9 gap) and
+  // no end assertion: its body runs to the end of the token, so a trailing assertion
+  // could only ever be satisfied by a body SHORTER than the token — the `\b` bug,
+  // relocated.
   //
   // The quote BEFORE the separator is the JSON form (#1393): `{"password":
   // "Sup3rSecretValue99"}` puts a `"` between the keyword and the `:`, and the old
   // rule allowed only `\s*` there, so the whole rule matched nothing — measured
   // count 0, unbounded, whole document, so no scan window could have caught it. It
   // sits BEFORE the `\s*` rather than only replacing the trailing `["']?`, because
-  // `password : "value"` quotes the pair, not just the value. An identifier with
-  // `=`/`:` inside it is still refused by the `\b`, which is the same
-  // shape-with-context judgement that keeps a git SHA, a UUID, `task-list` and
-  // `desk-top` out of the log — all four probe-asserted in
-  // test-decision-redaction-overreach.ts. Two rules can fire on one JSON pair
+  // `password : "value"` quotes the pair, not just the value. An identifier is still
+  // refused, by the separator and the 12-character body rather than by an assertion:
+  // `aws_secret_access_key=abcdef1234567890`, `token_count: 1234567890123`,
+  // `tokenizer=abcdefghijklmn` and `tokens=1234567890123` all match nothing, because
+  // what follows the keyword is `_`, not `[:=]` — the same shape-with-context judgement
+  // that keeps a git SHA, a UUID, `task-list` and `desk-top` out of the log, all
+  // probe-asserted in test-decision-redaction-overreach.ts. Two rules can fire on one JSON pair
   // (`{"token":"ghp_…"}` matches both the keyword rule and the `ghp_` prefix), so
   // an overlap is counted twice: over-redaction of a span that was already a
   // credential is a cosmetic count, never a leak, and the overreach probes assert
   // the zero side, which is the side that matters.
-  /\b(?:api[_-]?key|secret|password|passwd|token)["']?\s*[:=]\s*["']?[A-Za-z0-9._\-/+]{12,}/i,
+  //
+  // The body quantifier is BOUNDED ABOVE, and the upper bound is not a style
+  // preference. `String.replace` explores alternatives for an open-ended `{12,}`
+  // over a multi-megabyte keyword-first run, which was observed to exhaust the
+  // stack — a throw out of `redactSecrets`, which every caller reads as "not
+  // JSON" and takes its non-serialisable path. 4096 is past any credential in
+  // service: the longest real key here is a `github_pat_` at ~90 characters, and
+  // the PEM arm does not use this rule at all.
+  /(?:api[_-]?key|secret|password|passwd|token)["']?\s*[:=]\s*["']?[A-Za-z0-9._\-/+]{12,4096}/i,
   // A password embedded in a URL: scheme://user:pass@host. The `://` before it is
   // already a left boundary no token continues across, so this rule needs none.
-  /:\/\/[^\s/:@]+:[^\s/@]+@/,
+  //
+  // WHAT CHANGED (item 8): the classes no longer exclude `/`. A userinfo component may
+  // hold one (RFC 3986 leaves `user` and `password` permissive, and real connection
+  // strings use it — a namespace or key separated by `/`, a path-ish secret), and the
+  // old `[^\s/:@]+:[^\s/@]+@` stopped at the first `/`: measured `count: 0` unbounded,
+  // whole document, for both `https://us/er:pw@host` and `https://user:hunt/er2Sup3r@host`.
+  //
+  // The shapes each half excludes are NOT symmetric, and that asymmetry is load-bearing
+  // rather than tidy. The USER half excludes `:` and whitespace but allows `/`; the PASS
+  // half additionally excludes `@` — it has to, or `https://:@host` is read as an empty
+  // credential — while the user half does not, which is what lets the `@` that terminates
+  // the match fall inside the user class and reach a credential whose password itself
+  // ends in base64 padding. Excluding `@` from BOTH halves, which is the tempting
+  // symmetric spelling, silently loses `https://user:hunt/er2Sup3r@…`-shaped keys.
+  //
+  // No class is starred over a run it can also terminate on. `[^\s@]*:[^\s@]*@` over a
+  // long run of `:` was measured at 4.3 SECONDS — a denial of service on the decision
+  // path, since redaction runs on untrusted text — where this shape takes under 1 ms on
+  // every input in test-decision-secret-regex-linear.ts. That file is the guard, and its
+  // TRAP (a nested-quantifier variant over the same input) proves the harness can see
+  // the difference: a guard never observed to fail is worthless.
+  /:\/\/[^:@\s]*:[^@\s]+@/,
 ];

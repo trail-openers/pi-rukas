@@ -43,22 +43,27 @@ export const CASES: { name: string; secret: string; body: string }[] = [
     body: "sk-ant-api03-aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d",
   },
   {
-    // A base64 TAIL: `=` and `+` are not in any prefix rule's body class, so the
+    // A base64 TAIL: `=`, `+` and `/` are not in any prefix rule's body class, so the
     // old SHARED `TOKEN_END` refused the match outright. Measured: count 0,
     // unbounded, whole document — a pattern gap no scan window could reach.
+    //
+    // These three used to be byte-identical (`PROBE_KEY` alone, three times), so the
+    // file claimed to test `+` and `/` while testing `=` three times. Each now really
+    // ends in its own tail: three names for one tail left two of the three classes
+    // unobserved, which is a gate never observed to fail.
     name: "sk-key-base64-pad",
-    secret: `${PROBE_KEY}`,
-    body: PROBE_KEY,
+    secret: `${PROBE_KEY}==`,
+    body: `${PROBE_KEY}==`,
   },
   {
     name: "sk-key-base64-plus",
-    secret: `${PROBE_KEY}`,
-    body: PROBE_KEY,
+    secret: `${PROBE_KEY}+`,
+    body: `${PROBE_KEY}+`,
   },
   {
     name: "sk-key-base64-slash",
-    secret: `${PROBE_KEY}`,
-    body: PROBE_KEY,
+    secret: `${PROBE_KEY}/seg`,
+    body: `${PROBE_KEY}/seg`,
   },
   {
     name: "sk-key-json-quoted",
@@ -84,6 +89,87 @@ export const CASES: { name: string; secret: string; body: string }[] = [
     name: "key-value-json-quoted-key",
     secret: String.raw`{"api_key" : "Sup3rSecretValue99"}`,
     body: "Sup3rSecretValue99",
+  },
+  // ---- one positive fixture per SECRET_PATTERNS arm.
+  //
+  // The cases above cover sk-, the Bearer rule, the URL rule and the key/value rule.
+  // These cover the rest, and test-decision-secret-pattern-coverage.ts fails the gate
+  // if any ARM of SECRET_PATTERNS matches none of them unbounded — the shape that let
+  // a provider-alphabet gap (ghp_..._E, npm_..._0) sit in the set with every test
+  // green. Each carries a base64url `_`/`-` tail where its provider emits one, since
+  // that tail is exactly what a class narrowed below the provider's alphabet refuses.
+  {
+    name: "ghp-base64url",
+    secret: "ghp_aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d_E",
+    body: "ghp_aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d_E",
+  },
+  {
+    name: "github-pat",
+    secret: "github_pat_11AABBB0aB3dE5fG7hJ9kL_1mN2pQ4rS6tU8vW0xY2zA4bC6dE",
+    body: "github_pat_11AABBB0aB3dE5fG7hJ9kL_1mN2pQ4rS6tU8vW0xY2zA4bC6dE",
+  },
+  {
+    name: "xox-slack",
+    // Deliberately NOT a well-formed bot token. A realistic `xoxb-<digits>-<digits>-…`
+    // shape trips GitHub's push-protection secret scanner even though it is not a live
+    // credential, and this file's whole purpose is to PLACE a credential where the
+    // redactor must find it. The arm is keyed on `xox[baprs]-` plus ten body
+    // characters, so an unmistakably synthetic tail still exercises the provider's
+    // base64url alphabet (`_`) — the fixture tests the pattern, not the scanner.
+    secret: "xoxb-placeholder-token-value_with_url",
+    body: "placeholder-token-value_with_url",
+  },
+  {
+    name: "glpat-gitlab",
+    secret: "glpat-aB3dE5fG7hJ9kL1m_N2pQ",
+    body: "glpat-aB3dE5fG7hJ9kL1m_N2pQ",
+  },
+  {
+    name: "aiza-google",
+    secret: "AIzaSy_aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC",
+    body: "AIzaSy_aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC",
+  },
+  {
+    name: "npm-base64url",
+    secret: "npm_aB3dE5fG7hJ9kL1mN2pQ4rS6tU8v_0",
+    body: "npm_aB3dE5fG7hJ9kL1mN2pQ4rS6tU8v_0",
+  },
+  {
+    name: "akia-aws",
+    secret: "AKIAIOSFODNN7EXAMPLE",
+    body: "AKIAIOSFODNN7EXAMPLE",
+  },
+  {
+    name: "akia-glued",
+    // The fixed-length 16-char body plus the end assertion refused a key welded onto
+    // the run after it; a permissive minimum redacts it. Its own case rather than a
+    // fold into akia-aws, because the two fail for different reasons.
+    secret: "AKIAIOSFODNN7EXAMPLEX",
+    body: "AKIAIOSFODNN7EXAMPLEX",
+  },
+  {
+    name: "bearer-padded-jwt",
+    // A padded JWT: `=` terminates segment two, and the old body class stopped on it,
+    // so [REDACTED]=.c2ln... shipped the signature.
+    secret: "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0=.c2lnbmF0dXJlYmFzZTY0",
+    body: "eyJzdWIiOiIxMjM0NTY3ODkwIn0=.c2lnbmF0dXJlYmFzZTY0",
+  },
+  {
+    name: "pem-private-key",
+    secret: "-----BEGIN RSA PRIVATE KEY-----",
+    body: "PRIVATE KEY",
+  },
+  {
+    name: "url-credentials-slash-user",
+    // A `/` inside the userinfo component: the old classes excluded `/` and stopped
+    // at it, so the rule matched NOTHING unbounded, whole document.
+    secret: "https://us/er:pwSup3rSecretValue@origin.internal/x",
+    body: "pwSup3rSecretValue",
+  },
+  {
+    name: "url-credentials-slash-pass",
+    secret: "https://user:hunt/er2Sup3rSecretValue@origin.internal/x",
+    body: "hunt/er2Sup3rSecretValue",
   },
 ];
 
@@ -118,6 +204,24 @@ export const MUST_NOT_REDACT: { name: string; text: string }[] = [
     text: "payload SGVsbG8gV29ybGQgZnJvbSB0aGUgZ3JvdXAxMjM0NTY3ODk= trailing",
   },
   { name: "hyphen-words", text: "a task-list of desk-top items, with an on-call rota" },
+  // Prose that CARRIES a provider prefix as a word rather than as a key. Each names
+  // the arm it sits next to, and each is refused because what follows the prefix is a
+  // separator or a short tail rather than a credential body — the judgement the widened
+  // base64url classes must not disturb.
+  { name: "prose-ghp-like", text: "a ghp-like-word and a ghp_ prefix in prose" },
+  { name: "prose-npm-install", text: "npm_install runs before npm_test in CI" },
+  { name: "prose-xox", text: "the xox- prefixed labels sort oddly" },
+  { name: "prose-glpat", text: "a glpat- placeholder stands in for the real key" },
+  // An `@` with no `:` before it, and an unqualified clone URL: the URL rule's `:`
+  // separates a password from a username, and neither of these has one.
+  { name: "url-at-in-path", text: "see https://example.com/issue#comment@1234 for that" },
+  { name: "url-ssh-git", text: "clone ssh://git@github.com/trail-openers/pi-rukas" },
+  { name: "mailto", text: "write to dev@example.com about it" },
+  // Identifiers that merely CONTAIN a key/value keyword: refused because what follows
+  // the keyword is `_`, not `:` or `=`. These are the zero side of dropping the word
+  // boundary from the key/value rule (#1393 item 9) — the assertion never refused them.
+  { name: "kv-identifier", text: "aws_secret_access_key=abcdef1234567890 is the field name" },
+  { name: "kv-token-count", text: "token_count: 1234567890123 and tokenizer=abcdefghijklmn" },
 ];
 
 /** The fixture bound every clip assertion is run at. */

@@ -261,6 +261,15 @@ export function boundField(
  * A cyclic state throws rather than recursing forever; both callers treat a
  * throw as "this state is not JSON" and take their non-serialisable path, which
  * is what the seam's own `serialise()` would have concluded anyway.
+ *
+ * OBJECT KEYS ARE STRINGS TOO. The first arm covered values only, so
+ * `{"tok:sk-ant-…": "v"}` shipped the key verbatim while the value looked clean —
+ * a credential in the one place the counter never visited. A key now goes through
+ * the SAME bounded pass as a value, and its redactions land in the same counter, so
+ * the record's `redactions` describes the whole line rather than its values. A key is
+ * not CLIPPED to `bound` the way a value is: it is a short identifier, and clipping it
+ * would mangle field names the operator has to read in order to bound a span the JSON
+ * parser would already have refused. The redaction is the claim, not the bound.
  */
 export function redactDeep(v: unknown, counter: { n: number }, bound?: number): unknown {
   if (typeof v === "string") {
@@ -288,8 +297,19 @@ export function redactDeep(v: unknown, counter: { n: number }, bound?: number): 
   }
   if (Array.isArray(v)) return v.map((x) => redactDeep(x, counter, bound));
   if (v && typeof v === "object") {
+    // A key is a string too, so it goes through the SAME pattern set as a value
+    // (#1393): a credential hiding in a key was shipped whole by a value-only pass,
+    // with the counter describing only half the record. It is redacted and COUNTED,
+    // but not clipped to `bound` the way a value is — a key is a short identifier, and
+    // clipping it would mangle field names into something the operator cannot read in
+    // order to bound a span the JSON parser would already have refused.
+    const redactKey = (k: string): string => {
+      const r = bound === undefined ? redactSecrets(k) : redactBounded(k, bound, "start");
+      counter.n += r.count;
+      return r.text;
+    };
     return Object.fromEntries(
-      Object.entries(v).map(([k, x]) => [k, redactDeep(x, counter, bound)]),
+      Object.entries(v).map(([k, x]) => [redactKey(k), redactDeep(x, counter, bound)]),
     );
   }
   return v;
