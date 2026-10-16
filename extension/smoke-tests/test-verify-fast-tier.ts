@@ -40,7 +40,9 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd });
 
 const FULL = "bash scripts/verify.sh";
-const FAST = "bunx tsc --noEmit";
+// Mirrors the real .pi/verify-cmd-fast first line (`bun x`, not `bunx` — #1118);
+// the executor is stubbed so the text is only an identity here.
+const FAST = "bun x tsc --noEmit && bun run check";
 const TSC = "src/a.ts(3,1): error TS2304: Cannot find name 'nope'.\n";
 const root = mkdtempSync(path.join(tmpdir(), "pi-fast-tier-"));
 type Outcome = { ok: true } | { ok: false; stdout: string; killed?: boolean };
