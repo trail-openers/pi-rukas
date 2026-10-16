@@ -51,7 +51,26 @@ export function lastEvent<K extends WorkEvent["kind"]>(
 
 /** The cap of the most recent cap-hit event, if any. */
 export function lastCap(state: WorkState): WorkCapLiteral | undefined {
-  return lastEvent(state, "cap-hit")?.cap;
+  const e = state.eventLog[lastCapIndex(state)];
+  return e?.kind === "cap-hit" ? e.cap : undefined;
+}
+
+/**
+ * Index of the most recent cap-hit the cycle stands on, or -1. #1371 — a cap
+ * hit by a step the signal then cut off (between that step's `step-started`
+ * and an `interrupted` event naming it) is the abort's doing: the driver never
+ * routed it, and a resume runs the step again. It is skipped.
+ */
+export function lastCapIndex(state: WorkState): number {
+  const log = state.eventLog;
+  let skipping = false;
+  for (let i = log.length - 1; i >= 0; i--) {
+    const e = log[i];
+    if (e?.kind === "interrupted" && e.step !== undefined) skipping = true;
+    else if (e?.kind === "step-started") skipping = false;
+    else if (e?.kind === "cap-hit" && !skipping) return i;
+  }
+  return -1;
 }
 
 /** The reason of the most recent `interrupted` event (`signal` or `timeout`). */

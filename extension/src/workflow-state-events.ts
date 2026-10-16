@@ -413,9 +413,11 @@ export type WorkEvent =
   /**
    * S4a (#1162) — the cycle was interrupted (SIGTERM / SIGINT, via
    * `markInterrupted`). `reason` is the operator-facing why; renderers read
-   * the most recent `interrupted` event for it.
+   * the most recent `interrupted` event for it. #1371 — `step` is the step the
+   * interrupt cut off, set only when the signal fired while that step ran
+   * (absent at a step boundary): its own cap-hits are the abort's doing.
    */
-  | { kind: "interrupted"; at: number; reason: InterruptReason };
+  | { kind: "interrupted"; at: number; reason: InterruptReason; step?: WorkStep };
 /**
  * Why a cycle was interrupted: the runner's SIGTERM / SIGINT / SIGHUP (`signal`)
  * or its own `--timeout` (`timeout`). The one vocabulary for the event field,

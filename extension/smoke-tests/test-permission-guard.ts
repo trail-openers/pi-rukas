@@ -418,7 +418,7 @@ const opsPermissionCases: Array<[string, "allow" | "ask"]> = [
   ["oo gh api repos/randomm/pi-ensemble/pulls/42", "ask"],
   ["oo gh api repos/randomm/pi-ensemble/actions/runs/12345", "ask"],
   ["oo gh pr close 42", "allow"],
-  ["oo gh pr merge 42", "allow"],
+  ["oo gh pr merge 42", "ask"], // #962: no merge grant; the merge guard refuses `oo` forms
   ["oo gh issue list --state open", "allow"],
   ["oo gh pr list --state open", "allow"],
   ["oo gh run list --branch main --limit 3", "allow"],
