@@ -3,9 +3,10 @@
  * #1161 — the reportOnly verdict-policy guard, and the adversarial_loop tool
  * boundary's caller-supplied-diff flag.
  *
- *   - K: a reportOnly review with no recognised verdict policy (an untyped JS
- *     caller) is an infra-failure naming the policy. It dispatches nothing and
- *     is never judged as a routed round.
+ *   - K: a reportOnly review with no recognised verdict policy — an absent
+ *     `reportVerdict` or an unrecognised value (the untyped JS caller) — is an
+ *     infra-failure naming the policy. It dispatches nothing and is never
+ *     judged as a routed round.
  *   - M: a reportOnly that is not a boolean, or a reportVerdict without
  *     reportOnly (untyped callers), is an infra-failure naming the reason.
  *   - L: a diff pasted into the tool is recorded as caller-supplied; the same
@@ -114,6 +115,49 @@ registerAdversarialTool({
   },
 } as never);
 
+/**
+ * The malformed-policy rows below carry values the `ReportPolicy` union
+ * forbids, which is the point — they exist to reach the runtime fence. The
+ * union is structural, so it rejects a well-typed object carrying a bad value
+ * at the call site; `as never` would type-check but cannot be spread
+ * (TS2698). The unsound widening is therefore written ONCE here and used at
+ * both the K and the M call site, so the rows keep their literal values and
+ * tsc still checks the object shape handed to the fence.
+ */
+type AdversarialParams = Parameters<typeof runAdversarialLoop>[0];
+const policyParams = (params: object) => params as unknown as AdversarialParams;
+
+/**
+ * K: the reportOnly rows with no usable verdict policy. Each row is
+ * `[label, policy]` and targets one arm of the fence's policy check: `absent`
+ * leaves `reportVerdict` unset, `bogus` sets one the fence does not recognise.
+ */
+const K_POLICY_ROWS: Array<[label: string, policy: object]> = [
+  ["absent", {}],
+  ["bogus", { reportVerdict: "bogus" }],
+];
+
+/**
+ * M: the rows whose reportOnly / reportVerdict combination the fence must
+ * reject. Each row is `[label, policy, expected reason]` and targets one arm of
+ * `reportPolicyError`: a non-boolean reportOnly (string and null), and a
+ * reportVerdict with no reportOnly (absent and explicitly false).
+ */
+const M_POLICY_ROWS: Array<[label: string, policy: object, reason: string]> = [
+  [
+    "reportOnly-not-boolean",
+    { reportOnly: "yes", reportVerdict: "terminal" },
+    "reportOnly must be a boolean when set",
+  ],
+  ["reportOnly-null", { reportOnly: null }, "reportOnly must be a boolean when set"],
+  ["orphan-verdict", { reportVerdict: "terminal" }, "reportVerdict requires reportOnly"],
+  [
+    "verdict-with-reportOnly-false",
+    { reportOnly: false, reportVerdict: "routed" },
+    "reportVerdict requires reportOnly",
+  ],
+];
+
 /** Start the tool with `raw` arguments and run the job it dispatched. */
 async function runTool(raw: Record<string, unknown>, reviewText: string) {
   reviewerReply = reviewText;
@@ -129,22 +173,21 @@ async function runTool(raw: Record<string, unknown>, reviewText: string) {
 
 try {
   // ------------------------------------------------ K. no verdict policy → infra
-  for (const policy of [undefined, "bogus"]) {
+  for (const [label, policy] of K_POLICY_ROWS) {
     spawnCalls.length = 0;
     ledgerResults.length = 0;
     reviewerReply = APPROVED;
     const k = await runAdversarialLoop(
-      {
+      policyParams({
         diff: "diff --git a/f b/f\n+x",
         context: "nopolicy",
         workCwd: workRepo,
         reportOnly: true,
-        reportVerdict: policy as never,
-      },
+        ...policy,
+      }),
       signal(),
       "job-k",
     );
-    const label = String(policy);
     assert(
       k.loopOutcome === "infra-failure" && k.ok === false,
       `K(${label}): reportOnly without a verdict policy is an infra-failure`,
@@ -161,25 +204,18 @@ try {
   }
 
   // ------------------------------- M. malformed reportOnly / orphan verdict → infra
-  const malformed: Array<[Record<string, unknown>, string]> = [
-    [{ reportOnly: "yes", reportVerdict: "terminal" }, "reportOnly must be a boolean when set"],
-    [{ reportOnly: null }, "reportOnly must be a boolean when set"],
-    [{ reportVerdict: "terminal" }, "reportVerdict requires reportOnly"],
-    [{ reportOnly: false, reportVerdict: "routed" }, "reportVerdict requires reportOnly"],
-  ];
-  for (const [policy, reason] of malformed) {
+  for (const [label, policy, reason] of M_POLICY_ROWS) {
     spawnCalls.length = 0;
     const m = await runAdversarialLoop(
-      {
+      policyParams({
         diff: "diff --git a/f b/f\n+x",
         context: "malformed",
         workCwd: workRepo,
-        ...(policy as never),
-      },
+        ...policy,
+      }),
       signal(),
       "job-m",
     );
-    const label = JSON.stringify(policy);
     assert(
       m.loopOutcome === "infra-failure" && m.text.includes(reason),
       `M(${label}): infra-failure naming "${reason}"`,
