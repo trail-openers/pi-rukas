@@ -34,7 +34,8 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { redactSecrets } from "./secret-patterns.ts";
+import { OPEN_POINT_CHAR_CAP, OPEN_POINT_ENTRY_CAP } from "./open-points-reader.ts";
+import { redactThenBound } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
 import {
   type NormalisedSpec,
@@ -47,7 +48,7 @@ import {
 import { dispatchArtifactPath, writeDispatchArtifact } from "./workflow-state.ts";
 
 /**
- * The gate version this build writes, and the minimum it accepts.
+ * The gate version this build writes, and the ONLY one it accepts.
  *
  * A spec artifact is the durable record of an intent decision, and an old record is a
  * decision the current gate never made: pre-#1187 artifacts were written by the keyword
@@ -55,19 +56,38 @@ import { dispatchArtifactPath, writeDispatchArtifact } from "./workflow-state.ts
  * they simply omit `openPoints` — which reads as "no open points" rather than "not checked".
  * Field-name checks cannot see that, so the version is required. Version 1 is the implicit
  * absence the classifier era left behind; version 2 is the topic-neutral open-point gate.
+ * Acceptance is equality with this number, on an integer — a lower bound would admit a
+ * version that does not exist, and a non-integer would admit anything (`2.5 >= 2`).
  */
 export const SPEC_ARTIFACT_GATE_VERSION = 2;
-const MIN_ARTIFACT_GATE_VERSION = SPEC_ARTIFACT_GATE_VERSION;
 
 /**
  * The most entries `openPoints` may carry on the way IN: the write-side cap plus the one
- * "…and N more open-point lines" note. Mirrors the reader's own bound (see
- * `blockingOpenPointTexts` in open-points-reader.ts), so the reader refuses
- * exactly what the writer could never have produced.
+ * "…and N more open-point lines" note. Imports the reader's own constant (see
+ * `blockingOpenPointTexts` in open-points-reader.ts), so the reader refuses exactly what
+ * the writer could never have produced, and a change to the cap cannot leave the two
+ * bounds disagreeing (#1187 fix round 4).
  */
-const MAX_OPEN_POINT_ENTRIES = 20;
-/** Bound for one read-side text that reaches the public PR body (assumptions). */
-const MAX_ARTIFACT_ENTRY_CHARS = 2000;
+const MAX_OPEN_POINT_ENTRIES = OPEN_POINT_ENTRY_CAP;
+/**
+ * Bound for one read-side text, imported from the writer so the two bounds are one number.
+ *
+ * Assumptions reach the public PR body and the handoff, so nothing the artifact restores is
+ * taken on trust for length or content; the reader and the writer bounding the same field
+ * with the same constant is what keeps a clipped write and a clipped read compatible.
+ */
+const MAX_ARTIFACT_ENTRY_CHARS = OPEN_POINT_CHAR_CAP;
+
+/**
+ * A persisted spec, exactly as {@link persistSpecArtifact} writes it.
+ *
+ * Typed rather than picked off a `Record<string, unknown>` field by field: `gateVersion`
+ * is load-bearing for the refusal in {@link validateSpec}, and reading it off an untyped
+ * payload let a value the current gate never writes (`2.5`, or a larger number from a
+ * future build) satisfy a lower-bound comparison. The type puts the integer requirement
+ * where a reader of the payload can see it.
+ */
+type PersistedSpec = NormalisedSpec & { gateVersion: number };
 
 /**
  * Parse the spec artifact (the JSON the resolver persisted to spec.txt)
@@ -189,8 +209,10 @@ export async function persistSpecArtifact(
 ): Promise<void> {
   try {
     // The gate version is stamped here, at the single write site, so a reader can tell an
-    // artifact this build produced from one the retired classifier left behind.
-    const artifact = { ...spec, gateVersion: SPEC_ARTIFACT_GATE_VERSION };
+    // artifact this build produced from one the retired classifier left behind. Typed as
+    // `PersistedSpec` so the write site and {@link validateSpec}'s read of the same field
+    // share one shape — a drift between them is a compile error, not a restored decision.
+    const artifact: PersistedSpec = { ...spec, gateVersion: SPEC_ARTIFACT_GATE_VERSION };
     await writeDispatchArtifact(repoRoot, issue, "spec", JSON.stringify(artifact, null, 2));
   } catch (err) {
     trace(`work-driver: could not persist spec artifact: ${(err as Error).message}`);
@@ -244,10 +266,11 @@ function isAssumptionArray(v: unknown): v is SpecAssumption[] {
  * `assumptions[].text` and `basis` are rendered verbatim into the handoff and the PR body,
  * and the artifact is a file a prior cycle (or a truncated write) produced, so the reader
  * cannot take its length or its contents on trust. One helper for both fields so the bound
- * and the redaction cannot be applied to one and forgotten on the other (#1187 fix round 2).
+ * and the redaction cannot be applied to one and forgotten on the other (#1187 fix round 2),
+ * and both go through the single `redactThenBound` normaliser the writer uses (round 4).
  */
 function boundReadText(text: string): string {
-  return redactSecrets(text).text.slice(0, MAX_ARTIFACT_ENTRY_CHARS);
+  return redactThenBound(text, MAX_ARTIFACT_ENTRY_CHARS).text;
 }
 
 const EVIDENCE_VERDICTS: readonly SpecEvidence["verdict"][] = [
@@ -298,15 +321,25 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
     return undefined;
   }
   const out: NormalisedSpec = {
-    intent: v.intent,
-    deliverables: v.deliverables as SpecDeliverable[],
-    acceptanceCriteria: v.acceptanceCriteria as string[],
-    outOfScope: v.outOfScope as string[],
+    // EVERY restored string goes through `boundReadText` (#1187 fix round 4): the artifact
+    // is a file a prior cycle (or a truncated write) produced, and `intent`, `rationale`
+    // and the list elements reach the handoff and the PR body, so neither their length nor
+    // their content is taken on trust. `assumptions` and `openPoints` are rewritten below
+    // with the same helper; these are the fields that previously passed through raw.
+    intent: boundReadText(v.intent),
+    deliverables: (v.deliverables as SpecDeliverable[]).map((d) => ({
+      ...d,
+      id: boundReadText(d.id),
+      description: boundReadText(d.description),
+      paths: d.paths.map(boundReadText),
+    })),
+    acceptanceCriteria: (v.acceptanceCriteria as string[]).map(boundReadText),
+    outOfScope: (v.outOfScope as string[]).map(boundReadText),
     assumptions: v.assumptions as SpecAssumption[],
-    openQuestions: v.openQuestions as string[],
+    openQuestions: (v.openQuestions as string[]).map(boundReadText),
     evidence: v.evidence as SpecEvidence[],
     verdict: v.verdict,
-    rationale: typeof v.rationale === "string" ? v.rationale : "",
+    rationale: typeof v.rationale === "string" ? boundReadText(v.rationale) : "",
   };
   // #1187 fix round 2 — the gate version. An artifact written before the topic-neutral
   // gate carries a proceed a CRITICAL open point should have parked, and field names alone
@@ -316,12 +349,18 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
   // FIRST, so the refusal says which gate wrote the file rather than whichever field happened
   // to be checked first: a pre-#1187 artifact carries both markers, and the version is the
   // one that explains both.
-  const gate = v.gateVersion;
-  if (typeof gate !== "number" || gate < MIN_ARTIFACT_GATE_VERSION) {
+  //
+  // Round 4: EXACT equality with the current version, on an integer. The old lower-bound
+  // read `2.5` — and any larger number, including one no build of this gate has defined —
+  // as satisfying the floor, so a payload the current gate never wrote restored a decision
+  // it would not have made.
+  const persisted = v as unknown as Partial<PersistedSpec>;
+  const gate = persisted.gateVersion;
+  if (!Number.isInteger(gate) || gate !== SPEC_ARTIFACT_GATE_VERSION) {
     trace(
       `work-driver: intent — spec artifact refused: gateVersion ${
         gate === undefined ? "absent" : JSON.stringify(gate)
-      } is below the required ${MIN_ARTIFACT_GATE_VERSION} (an artifact from the keyword-classifier gate); intent re-runs from the issue body`,
+      } is not the integer ${SPEC_ARTIFACT_GATE_VERSION} this build writes (an artifact from the keyword-classifier gate, or from a gate this build does not know); intent re-runs from the issue body`,
     );
     return undefined;
   }
@@ -353,10 +392,26 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
     out.openPoints = v.openPoints.map(boundReadText);
   }
   // Assumptions reach the PR body verbatim, so both their fields are bounded and redacted
-  // on the way in rather than trusted from a file a prior cycle wrote.
-  out.assumptions = (v.assumptions as SpecAssumption[]).map((a) => ({
+  // on the way in rather than trusted from a file a prior cycle wrote. Their COUNT is
+  // bounded the same way `openPoints` is: the gate writes at most the resolved-point cap
+  // plus the reconciliation assumptions it owns, so a list far past that was not written by
+  // this gate and is refused rather than rendered (#1187 fix round 4).
+  const assumptions = v.assumptions as SpecAssumption[];
+  if (assumptions.length > MAX_OPEN_POINT_ENTRIES + 1) {
+    trace(
+      `work-driver: intent — spec artifact refused: assumptions is a list of ${assumptions.length}, above the ${MAX_OPEN_POINT_ENTRIES + 1} the gate writes; intent re-runs from the issue body`,
+    );
+    return undefined;
+  }
+  out.assumptions = assumptions.map((a) => ({
     text: boundReadText(a.text),
     basis: boundReadText(a.basis),
+  }));
+  // Evidence strings reach the handoff's evidence section, so they are bounded too.
+  out.evidence = (v.evidence as SpecEvidence[]).map((e) => ({
+    claim: boundReadText(e.claim),
+    source: boundReadText(e.source),
+    verdict: e.verdict,
   }));
   if (v.parkReason !== undefined) {
     const pr = v.parkReason;

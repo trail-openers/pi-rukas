@@ -15,6 +15,9 @@
  *     the severity tag on the bullet's own first line (`- [CRITICAL][RESOLVED] …` or
  *     `- [CRITICAL] [RESOLVED] …`). `**[RESOLVED]**` does not count and parks.
  *     Answer the point in the issue body, then re-run with `/work N --restart`.
+ *     `[RESOLVED]` is matched CASE-SENSITIVELY by design: `[resolved]` is emphasis-free
+ *     markup an author could reach by accident, and only the exact machine-written token
+ *     the writer emits counts as an answer — a near-miss keeps the point gating.
  *   - any other line in the section that is not a plain bullet, checkbox or link
  *     bullet parks as unparsed, rather than being ignored (open-points-reader.ts).
  *   - the one intro sentence below is prose the WRITER emits, so the READER skips it

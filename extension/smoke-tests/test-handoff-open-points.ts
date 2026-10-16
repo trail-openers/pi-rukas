@@ -50,6 +50,70 @@ const spec = (over: Partial<NormalisedSpec> = {}): NormalisedSpec => ({
   assert(span.slice(3, -3).trim() === "a `b` and ``c``", "codeSpan: the text is carried verbatim");
   const edge = codeSpan("`tick`");
   assert(edge === "`` `tick` ``", "codeSpan: a text that starts or ends with a backtick is padded");
+  // Canary for what the render boundary has to defend against: codeSpan neutralises
+  // backticks but NOT newlines — its fence still closes on one — which is exactly why
+  // `renderablePoints` flattens before spanning the text. The assertions below check the
+  // rendered output; this one pins the property that makes the flattening load-bearing.
+  const forged = codeSpan("benign\n### Injected heading\n- injected bullet");
+  assert(
+    forged.startsWith("`") && forged.endsWith("`") && forged.split("\n").length > 1,
+    "codeSpan: the fence wraps a newline rather than removing it — which is what makes the renderer's flatten load-bearing",
+  );
+}
+
+// The render boundary flattens, so a stored newline can never forge markdown (#1187 round 4).
+// codeSpan alone does not neutralise a newline — its fence still closes on one — so the
+// flattening happens in renderablePoints and this asserts the rendered output, not the helper.
+{
+  const forged = spec({
+    openPoints: ["benign point\n### Injected heading\n- injected bullet", "   ", "\t  \u200B"],
+  });
+  const md = openPointsMarkdown(forged, 42).join("\n");
+  const chat = openPointsChat(forged, 42).join("\n");
+  const forgedNeedle = "benign point ### Injected heading - injected bullet";
+  // The canary for the flattening: the point appears in one inert form and never in the
+  // form a stored newline would have produced. `md.includes("### Injected heading")` is
+  // deliberately NOT asserted false — the flat form is a substring of it — so these read
+  // line structure instead of substring presence.
+  assert(
+    md.includes(forgedNeedle) && chat.includes(forgedNeedle),
+    "handoff: a forged `### heading` in a stored point renders flattened, inside one code span",
+  );
+  assert(
+    md.split("\n").some((l) => l.includes("### Injected heading") && l.trim().startsWith("- ")) &&
+      chat.split("\n").some((l) => l.includes("### Injected heading") && l.trim().startsWith("-")),
+    "handoff: the forged heading sits inside a bullet line, never at a line start as markdown",
+  );
+  assert(
+    md
+      .split("\n")
+      .filter((l) => l.startsWith("### "))
+      .every((l) => l === `### ${OPEN_POINTS_HANDOFF_HEADING}`),
+    "handoff: the only ### line in the body is the renderers' own heading",
+  );
+  // The canary: the point text reaches the output in one line, with its newlines flattened,
+  // where codeSpan alone would have carried them. `- injected bullet` at a line start is
+  // what a stored newline would have minted, and a line-leading `### ` is a real heading.
+  assert(
+    md.includes("\n### ") === false &&
+      chat.includes("\n### ") === false &&
+      md
+        .split("\n")
+        .filter((l) => l.trim() !== "")
+        .every(
+          (l) => l.trim().startsWith("-") || l.startsWith("### ") || l.startsWith("Answer each"),
+        ) &&
+      chat.split("\n").every((l) => l.startsWith("  ") || l.startsWith("Open points")),
+    "handoff: a stored newline cannot mint a heading or a bullet line of its own",
+  );
+  assert(
+    md.includes(forgedNeedle),
+    "handoff: the point is still shown, flattened onto one line inside its code span",
+  );
+  assert(
+    chat.split("\n").filter((l) => l.trim().startsWith("-")).length === 1,
+    "handoff: whitespace-only points are dropped, so no empty bullet renders",
+  );
 }
 
 // Both renderers name each point, in a code span, under the heading, with the escape.

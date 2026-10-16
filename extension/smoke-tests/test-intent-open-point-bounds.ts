@@ -8,9 +8,13 @@
  * cap that silently drops entries is worse than no cap: the park would read as complete.
  */
 
-import { OPEN_POINT_ENTRY_CAP, readOpenPoints } from "../src/open-points-reader.ts";
+import {
+  OPEN_POINT_CHAR_CAP,
+  OPEN_POINT_ENTRY_CAP,
+  readOpenPoints,
+} from "../src/open-points-reader.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
-import type { NormalisedSpec } from "../src/work-driver-intent.ts";
+import { type NormalisedSpec, renderAssumptions } from "../src/work-driver-intent.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -128,8 +132,96 @@ const spec = (over: Partial<NormalisedSpec> = {}): NormalisedSpec => ({
   const gated = finaliseSpecVerdict(spec(), section(huge));
   const stored = gated.openPoints?.[0] ?? "";
   assert(
-    gated.verdict === "park" && stored.endsWith("…(clipped)") && Array.from(stored).length <= 2000,
+    gated.verdict === "park" &&
+      stored.endsWith("…(clipped)") &&
+      Array.from(stored).length <= OPEN_POINT_CHAR_CAP,
     "an enormous entry is clipped to the bound with the '…(clipped)' marker",
+  );
+}
+
+// --- Invisible characters in the HEADING must not disable the gate (#1187 fix round 4) ----
+//
+// The heading matcher was built from the raw OPEN_POINTS_HEADING constant, so a stray U+200B
+// was a character the pattern REQUIRED at that position: a heading that did not match opened
+// no section, the section's CRITICAL points were never read, and a body that should have
+// parked read back as clean and proceeded. That is fail-open on the gate's own entry
+// condition, and it is a paste artefact rather than an attack. The match is still an exact
+// literal, so a mangled word or a reworded tail still opens nothing (asserted below).
+{
+  const H = "## Open points (unresolved at the gap-gate cap)";
+  const zwspTail = `${H}\u200B`;
+  const zwspInside = "## Open poin\u200Bts (unresolved at the gap-gate cap)";
+  for (const [name, heading] of [
+    ["trailing U+200B", zwspTail],
+    ["interior U+200B", zwspInside],
+  ] as const) {
+    const body = [heading, "", "- [CRITICAL] Which timeout wins"].join("\n");
+    const gated = finaliseSpecVerdict(spec(), body);
+    assert(
+      gated.verdict === "park" &&
+        gated.parkReason === "unresolved-critical-open-point" &&
+        gated.openPoints?.[0] === "[CRITICAL] Which timeout wins",
+      `a heading with a ${name} is still read: the section is scanned and the point parks`,
+    );
+  }
+  // The exactness the settlement demands is untouched: invisible characters do not make the
+  // matcher fuzzy, they only make it see the visible text.
+  for (const near of [
+    "## Open points (unresolved at the gap-gate",
+    "## Open poinits (unresolved at the gap-gate cap)",
+    "## Open points somewhere else",
+    "## Open points (unresolved at the gap-gate cap) extra\u200B",
+  ]) {
+    const body = [near, "", "- [CRITICAL] Which timeout wins"].join("\n");
+    assert(
+      finaliseSpecVerdict(spec(), body).verdict === "proceed",
+      `a near-miss heading ${JSON.stringify(near.slice(0, 34))} still opens no section and does not park`,
+    );
+  }
+}
+
+// --- Resolver-authored assumptions are redacted and bounded (#1187 fix round 4) -----------
+//
+// `renderAssumptions` puts every assumption in the PR body verbatim. The open-point texts
+// were bounded where the gate wrote them and where the artifact restored them, but the
+// assumptions the RESOLVER authored arrived untouched, so a token quoted in one reached a
+// public surface with no redaction anywhere in its path.
+{
+  const token = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123";
+  const gated = finaliseSpecVerdict(
+    spec({
+      assumptions: [
+        {
+          text: `the resolver found ${token} in the fixture and redacts it`,
+          basis: `seen at retry.ts:7 where ${token} is hard-coded`,
+        },
+        { text: "z".repeat(6000), basis: "b".repeat(6000) },
+      ],
+    }),
+    section("- plain note"),
+  );
+  assert(
+    gated.assumptions.every(
+      (a) => !a.text.includes("sk-ant-api03") && !a.basis.includes("sk-ant-api03"),
+    ),
+    "a provider token in a resolver-authored assumption does not survive finaliseSpecVerdict",
+  );
+  assert(
+    gated.assumptions.some((a) => a.text.includes("[REDACTED]")),
+    "the assumption is kept, with the token replaced by the redaction marker",
+  );
+  assert(
+    gated.assumptions.every(
+      (a) =>
+        Array.from(a.text).length <= OPEN_POINT_CHAR_CAP &&
+        Array.from(a.basis).length <= OPEN_POINT_CHAR_CAP,
+    ),
+    "a resolver-authored assumption is bounded to the char cap in both fields",
+  );
+  const block = renderAssumptions(gated);
+  assert(
+    block.includes("sk-ant-api03") === false && block.includes("[REDACTED]"),
+    "renderAssumptions renders no credential for the PR body",
   );
 }
 

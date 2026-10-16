@@ -9,6 +9,7 @@
  * the park/handoff text carries the escape.
  */
 
+import { OPEN_POINT_CHAR_CAP, OPEN_POINT_ENTRY_CAP } from "../src/open-points-reader.ts";
 import { openPointsSection } from "../src/plan-gap-disclosure.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gap-parse.ts";
 import type { PlanGap } from "../src/plan-types.ts";
@@ -238,8 +239,8 @@ for (const blank of ["", "   \n\t ", "\u200B\u200B"]) {
   const gated = finaliseSpecVerdict(complete(), body(...lines));
   assert(
     gated.verdict === "park" &&
-      gated.openPoints?.length === 21 &&
-      gated.openPoints[20] === "…and 5 more open-point lines",
+      gated.openPoints?.length === OPEN_POINT_ENTRY_CAP + 1 &&
+      gated.openPoints[OPEN_POINT_ENTRY_CAP] === "…and 5 more open-point lines",
     "openPoints caps at 20 entries plus one '…and N more open-point lines' note",
   );
 }
@@ -408,8 +409,12 @@ for (const reason of ["unresolved-critical-open-point", "blank-issue-body"] as c
   );
   assert(
     parseNormalisedSpecArtifact(
-      artifactJson({ ...kept, openPoints: Array.from({ length: 21 }, (_, i) => `p${i}`) }),
-    )?.openPoints?.length === 21,
+      artifactJson({
+        ...kept,
+        openPoints: Array.from({ length: OPEN_POINT_ENTRY_CAP + 1 }, (_, i) => `p${i}`),
+      }),
+    )?.openPoints?.length ===
+      OPEN_POINT_ENTRY_CAP + 1,
     "the cap plus one '…and N more' note is exactly what the reader accepts",
   );
   // Assumption text reaches the PR body, so both fields are bounded and redacted on READ,
@@ -430,8 +435,8 @@ for (const reason of ["unresolved-critical-open-point", "blank-issue-body"] as c
   });
   const bounded = parseNormalisedSpecArtifact(artifactJson(longAssumption));
   assert(
-    (bounded?.assumptions[0]?.text.length ?? 0) <= 2000 &&
-      (bounded?.assumptions[0]?.basis.length ?? 0) <= 2000,
+    (bounded?.assumptions[0]?.text.length ?? 0) <= OPEN_POINT_CHAR_CAP &&
+      (bounded?.assumptions[0]?.basis.length ?? 0) <= OPEN_POINT_CHAR_CAP,
     "artifact assumption text and basis are both bounded on read",
   );
 }

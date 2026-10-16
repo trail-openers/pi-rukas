@@ -14,7 +14,8 @@
  * the one surface here that is public: redaction is cheap, a leaked token is not.
  */
 
-import { redactSecrets } from "./secret-patterns.ts";
+import { OPEN_POINT_CHAR_CAP } from "./open-points-reader.ts";
+import { flattenIssueText, redactThenBound } from "./text-flatten.ts";
 
 /** The one field the renderers read; the persisted spec type satisfies it. */
 type OpenPointsSource = { openPoints?: string[] } | undefined;
@@ -33,9 +34,21 @@ export function codeSpan(text: string): string {
   return `${fence}${pad}${text}${pad}${fence}`;
 }
 
-/** The list the renderers show: every stored point, redacted at the public boundary. */
+/**
+ * The list the renderers show: every stored point, flattened, redacted and bounded at the
+ * public boundary, with anything that sanitises away to nothing dropped (#1187 fix round 4).
+ *
+ * The flatten is part of this boundary, not a courtesy: `openPoints` is written bounded by
+ * the gate and bounded by the artifact reader, but the renderers accept any value that
+ * satisfies the field, and a stored newline there would forge a bullet or a `### heading`
+ * inside the handoff body. `redactThenBound` then replaces credentials — the same
+ * normaliser the writer uses, so the boundary and the store cannot drift — and the filter
+ * drops a line the redactor reduced to whitespace so it never renders as an empty bullet.
+ */
 function renderablePoints(spec: OpenPointsSource): string[] {
-  return (spec?.openPoints ?? []).map((p) => redactSecrets(p).text);
+  return (spec?.openPoints ?? [])
+    .map((p) => flattenIssueText(redactThenBound(p, OPEN_POINT_CHAR_CAP).text))
+    .filter((p) => p.trim() !== "");
 }
 
 /** Markdown lines (GitHub handoff body); empty when there are none. */
