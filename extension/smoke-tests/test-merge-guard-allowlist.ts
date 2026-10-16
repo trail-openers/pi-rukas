@@ -21,6 +21,7 @@ import { mergeFormRefusal } from "../src/merge-refusals.ts";
 import {
   ACCEPTED,
   CODES,
+  EXPANSION_CANARIES,
   GLAB_NO_OPT_OUT,
   NOT_MERGES,
   REFUSED,
@@ -69,12 +70,31 @@ assert(
 );
 
 // ------------------------------------------------------------ reason codes
+// #1417 LOW — `reason` is the BARE code, compared EXACTLY (it used to carry
+// its clause inline, so nothing could compare it); `detail` carries the prose
+// and is asserted to be present where the rule is not self-evident.
+for (const [cmd, code, detail] of CODES as Array<[string, string, string?]>) {
+  const m = readMergeCommand(cmd);
+  assert(
+    m.kind === "refused" && m.reason === code,
+    `reason ${code}: ${JSON.stringify(cmd.slice(0, 60))} (${show(m).slice(0, 160)})`,
+  );
+  if (detail !== undefined) {
+    assert(
+      m.kind === "refused" && (m.detail ?? "").includes(detail),
+      `detail for ${code}: ${JSON.stringify(cmd.slice(0, 60))} (${show(m).slice(0, 160)})`,
+    );
+  }
+}
+// The code never carries its clause any more — that is the whole point of the
+// split, and a regression here silently breaks every exact-match consumer.
 for (const [cmd, code] of CODES) {
   const m = readMergeCommand(cmd);
   assert(
-    m.kind === "refused" && (m.reason ?? "").startsWith(code),
-    `reason ${code}: ${JSON.stringify(cmd)} (${show(m)})`,
+    m.kind === "refused" && !/\s—\s/.test(m.reason ?? ""),
+    `reason is a bare code, never code + prose: ${JSON.stringify(cmd.slice(0, 40))} (${show(m).slice(0, 120)})`,
   );
+  assert(code === code.trim(), `code has no padding: ${code}`);
 }
 assert(
   mergeFormRefusal("x").includes("pr merge [N]") && mergeFormRefusal("x").includes("[reason: x —"),
@@ -114,6 +134,26 @@ assert(
 for (const cmd of NOT_MERGES) {
   const m = readMergeCommand(cmd);
   assert(m.kind === "none", `not a merge: ${JSON.stringify(cmd)} (${show(m)})`);
+}
+
+// ------------------------------------------------------------ #1317 expansion canaries
+// The shapes the deleted `test-merge-guard-1317.ts` gated, each with the
+// verdict the allowlist produces now. A `"none"` row is an explicitly named
+// INERT residual (the merge word never appears, so nothing triggers) — a
+// reviewed decision, not a silent deletion; the RESIDUAL table below is the
+// rest of that list.
+for (const [cmd, kind, code] of EXPANSION_CANARIES) {
+  const m = readMergeCommand(cmd);
+  assert(
+    m.kind === kind,
+    `#1317 canary → ${kind}: ${JSON.stringify(cmd.slice(0, 60))} (${show(m).slice(0, 160)})`,
+  );
+  if (code !== undefined) {
+    assert(
+      m.kind === "refused" && m.reason === code,
+      `#1317 canary reason ${code}: ${JSON.stringify(cmd.slice(0, 60))} (${show(m).slice(0, 160)})`,
+    );
+  }
 }
 
 // ------------------------------------------------------------ the residual

@@ -1,9 +1,10 @@
 /**
- * merge-guard-reads — the forge reads and refusal texts the merge guard
- * (merge-guard.ts) needs on the lens-decision branch, extracted into their
- * own module to keep the guard under the 500-line file-size limit.
+ * merge-guard-reads — the forge reads and the ledger-branch refusal text the
+ * merge guard (merge-guard.ts) needs on the lens-decision branch, extracted
+ * into their own module to keep the guard under the 500-line file-size limit.
  *
- * Two concerns live here:
+ * Three concerns live here, all of them "read the forge or the ledger, then
+ * say what the ledger shows":
  *
  * - `readPrCommentBodies` (#973): the PR/MR comment bodies the round-cap
  *   path's disclosure check reads (the guard's own exec call through the
@@ -16,16 +17,16 @@
  *   distinct from the `applies: true` path, where the rule WAS evaluated
  *   and a specific condition N failed (that refusal names the condition
  *   verbatim).
- * - `renderHold` (#1417): the single refusal the guard emits for a command it
- *   HELD rather than read as a merge. It names what was held and never
- *   mentions the merge escape hatch, because a held command is not a merge —
- *   the hatch that widens merge protection is the wrong remedy for it.
+ *
+ * #1417 moved `renderHold` (and `HoldKind` / `HoldDetails`) out of here and
+ * into merge-refusals.ts: a hold is refusal prose, not a forge read, and it
+ * belongs beside the merge refusals it is deliberately worded differently
+ * from.
  */
 
 import { prCommentsCmd } from "./forge-commands.ts";
 import { extractCommentRows } from "./forge-comments.ts";
-import { type HoldReason, isValidRepoValue } from "./merge-allowlist.ts";
-import { ACCEPTED_MERGE_FORM } from "./merge-refusals.ts";
+import { isValidRepoValue } from "./merge-allowlist.ts";
 import type { MergeExecFn, MergeTarget } from "./merge-target.ts";
 import { identityBase } from "./review-ledger-path.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
@@ -163,61 +164,5 @@ export function lensNotEvaluatedRefusal(
   return {
     block: true,
     reason: `no passing lens review on file for branch \`${branch}\` (latest: passed=${lens.passed}, ${detail}) — the round-cap path was not evaluated (it applies only to an ISSUES_FOUND latest entry); run dispatch_lens_review and let it complete before merging${override}`,
-  };
-}
-
-/**
- * Why the guard held a command it could not read as a merge (#1417).
- *
- * `form` — the classifier refused it outright (a trigger it will not read,
- * or a shape outside the merge grammar).
- * `not-a-merge` — the command read like the accepted merge form, but a step
- * before the merge could be confirmed failed (the PR number would not
- * resolve). Nothing has been shown to merge, so this is a hold too.
- */
-export type HoldKind = "unanalysable" | "form" | "not-a-merge";
-
-/** The guard's own hold, carrying the text that explains it. */
-export interface HoldDetails {
-  kind: HoldKind;
-  /** What was held, already rendered to prose — never a bare reason code. */
-  reasonText: string;
-}
-
-/**
- * #1417 — what an agent and an operator actually learn from a hold. Three
- * questions, all answered in the text: what was held, that no review gate
- * was applied, and what to do instead. The escape hatch is NOT among them:
- * `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE` governs the reviews a MERGE must
- * have, and an operator following it to unblock a blocked READ would weaken
- * merge protection to fix something the merge gate was never protecting.
- * The hatch appears in guard refusals only where the command really is a
- * merge (see merge-refusals.ts and the post-`readMergeTarget` refusals).
- *
- * The held text is clamped at the source rather than left to the console:
- * truncation is exactly what made `[reason: body-ind…]` useless, so nothing
- * load-bearing may depend on a terminal rendering the whole string.
- */
-export function renderHold(details: HoldDetails, held: string): { block: true; reason: string } {
-  const quote = held.length > 160 ? `${held.slice(0, 160)}…` : held;
-  const what =
-    details.kind === "unanalysable"
-      ? "the merge guard could not read this command at all"
-      : details.kind === "not-a-merge"
-        ? "the merge guard held this command before confirming it merges anything"
-        : "the merge guard held this command because it could not read it as a merge";
-  const why =
-    details.kind === "unanalysable"
-      ? "nothing ran, because a command the guard cannot analyse is refused by default"
-      : "nothing was merged, and no review gate was applied to it";
-  const how =
-    details.kind === "unanalysable"
-      ? "split it into simple commands, or run the forge read on its own"
-      : details.kind === "not-a-merge"
-        ? "name the PR/MR number in the merge command (`gh pr merge <N>` / `glab mr merge <N> --auto-merge=false`); a read needs nothing from the guard"
-        : "run the merge as one plain `gh pr merge <N>` / `glab mr merge <N> --auto-merge=false`, on its own; run a read on its own";
-  return {
-    block: true,
-    reason: `command held (not a merge): ${what} — ${details.reasonText}. ${why}; this hold is not a review gate, and the merge escape hatch would not unblock it. ${how}. The shape the guard does check is ${ACCEPTED_MERGE_FORM}. If this command is genuinely not a merge, report it as a false hold — the guard's classifier is the thing to fix, not the reviews. Held command: ${JSON.stringify(quote)}`,
   };
 }

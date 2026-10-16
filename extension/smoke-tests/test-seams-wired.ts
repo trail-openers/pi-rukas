@@ -11,16 +11,14 @@
  * So this file asserts the one thing those tests structurally cannot: that each
  * seam is reachable from production, and that every export either has a
  * production caller or sits on a written-down list naming the issue that will
- * wire it.
- *
- * The allowlist is the point. It turns "this is dead" from something nobody
- * notices into a number that has to shrink, and shipping a new export without
- * either wiring it or declaring it becomes a failure rather than a habit.
+ * wire it. The allowlist is the point: it turns "this is dead" from something
+ * nobody notices into a number that has to shrink, and shipping a new export
+ * without wiring or declaring it becomes a failure rather than a habit.
  *
  * Generalised from the vipune-only version after the pattern recurred a third
- * time: `retry-config-check.ts` was written, tested, wired — and the wiring was
- * then reverted by a stray `git checkout`, leaving a module that passed its own
- * suite while doing nothing. One seam is an incident; three is a class.
+ * time: `retry-config-check.ts` was written, tested and wired — and a stray
+ * `git checkout` reverted the wiring, leaving a module that passed its own suite
+ * while doing nothing. One seam is an incident; three is a class.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -278,6 +276,25 @@ const SEAMS: Seam[] = [
     canary: { symbol: "readMergeTarget", importer: "merge-guard.ts" },
   },
   {
+    // #912/#1417 — the merge guard's refusal PROSE. `renderHold` +
+    // `holdReasonText` (every HELD command) and `GLAB_AUTO_MERGE_REFUSAL` are
+    // called by merge-guard.ts. The MERGE half lost its production caller when
+    // #1417 split hold text from merge refusals: declared test-only rather than
+    // deleted, because docs/troubleshooting.md quotes its wording as the
+    // documented refusal shape and the hold-text suite pins it survives.
+    file: "merge-refusals.ts",
+    pending: {},
+    testOnly: {
+      ACCEPTED_MERGE_FORM:
+        "#1417 — the one accepted shape, inlined into HOLD_FORM_TEXT and MERGE_FORM_REFUSAL; the hold-text suite pins the sentence",
+      MERGE_FORM_REFUSAL:
+        "#1417 — MERGE-half prose, no production caller since holds got their own text; docs quote it, test-merge-guard-hold-text-1417.ts pins it",
+      mergeFormRefusal:
+        "#1417 — composes MERGE_FORM_REFUSAL with a reason code; same status, exercised by the hold-text and allowlist suites",
+    },
+    canary: { symbol: "renderHold", importer: "merge-guard.ts" },
+  },
+  {
     // #1019 — the pi binary version probe. The probe half (getPiResolutionInfo)
     // used to ship with no production caller, so its PATH-source / older-than-
     // verified warnings never fired. spawn.ts now kicks it fire-and-forget on
@@ -462,11 +479,10 @@ for (const seam of SEAMS) {
 
 // ------------------------- the production fetch default carries its deadline
 //
-// Every explore smoke test injects `ctx.issueBodyFetcherFn`, so the default the
-// driver actually ships with is exercised by none of them. That is the same
-// blind spot this file exists for: a refactor swapping the default for a
-// fetcher without `timeout:` would restore the unbounded `gh issue view` that
-// killed cycle #700, and the whole suite would still pass.
+// Every explore smoke test injects `ctx.issueBodyFetcherFn`, so the shipped
+// default is exercised by none of them — the same blind spot this file exists
+// for: swapping the default for a fetcher without `timeout:` would restore the
+// unbounded `gh issue view` that killed cycle #700 and the suite would pass.
 {
   const exploreRun = readFileSync(path.join(SRC, "work-driver-explore-run.ts"), "utf8");
   const explore = readFileSync(path.join(SRC, "work-driver-explore.ts"), "utf8");

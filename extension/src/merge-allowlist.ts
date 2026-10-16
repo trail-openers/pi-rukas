@@ -4,38 +4,27 @@
  *
  * #962. The guard used to parse arbitrary shell to find a merge wherever it
  * hid; every review round found a shape it read differently from bash. This
- * module replaces that with a strict allowlist, in two steps:
+ * module replaces that with a strict allowlist, in three steps:
  *
- *   0. READ-ONLY GH. A command that lexes as ONE simple command under the
- *      strict lexer, whose words are `gh` followed by a genuine read or a
- *      creation (`pr view|list|checks|diff|status|create`, `issue view|list|create`,
- *      `release list|view`, `search *`, `label list`, `repo view`) is not a
- *      merge, whatever merge words its titles, bodies or searches carry.
- *      Comments, edits, reviews, workflow dispatches and run re-runs are NOT
- *      exempt: they fall through to step 1, so they are refused only when they
- *      carry a merge word (use `--body-file` for prose).
+ *   0a. SIZE BOUND (#955, restored by #1417 — merge-size.ts). A long command
+ *      naming `gh`/`glab` that spells a merge word is `refused` with
+ *      `too-large`: never resolved to the current branch's PR. A long command
+ *      that spells NO merge word — a `gh pr view` with a 9 kB `--jq`, a
+ *      changelog pasted into `gh pr create --body` — answers `none` as a short
+ *      one would: the bound holds merge-bearing text, not long text.
+ *   0b. READ-ONLY GH. A command lexing as ONE simple command whose words are
+ *      `gh` + a genuine read (or a creation with no inline body) is not a
+ *      merge, whatever merge words its titles or searches carry —
+ *      `READ_ONLY_GH` is the list, `BODY_FLAGS` the creation split.
+ *      Comments, edits, reviews and workflow/run verbs are NOT exempt: refused
+ *      when they carry a merge word (put prose in `--body-file`).
 
- *   1. TRIGGER (cheap, on the raw text, case-insensitive). A command is
- *      refused outright, without reading it, when:
- *        - it names a forge, HTTP client or interpreter (`gh`, `glab`, `hub`,
- *          `curl`, `wget`, `http(s)`, `python`, `node`, `bun`, `deno`, `ruby`,
- *          `perl`, `octokit`, `api.github.com`, `gitlab`) AND a merge word
- *          (`merge` as a whole word, or a GraphQL/forge merge name such as
- *          `mergeRequestAccept`, `mergePullRequest`, `automerge`); or it
- *          mentions a GraphQL `mutation` alongside any `merge` substring;
- *        - it says `pr merge` / `mr merge` / `mr accept` at all;
- *        - a merge word appears and a segment's command word (after `VAR=…`
- *          assignments) is an expansion or quoted/escaped (`"$GH" pr merge`,
- *          `$G api …/merge`, `g"h" pr merge`);
- *        - a forge `api`/`graphql` call or an HTTP client aimed at a forge
- *          reads its body from a file, stdin or a shell expansion
- *          (`body-indirect`: `-f query="$(cat q)"`, `-d @body`, `-T f`,
- *          `--post-file f`);
- *        - a forge name appears with an unquoted `{a,b}` or `{a..b}` pattern
- *          that bash would expand (`brace-expansion`: `gh pr m{erge,} 17`).
- *      The words are looked for in the raw text and in a widened view that
- *      undoes bash quoting (`g"h"`, `m"erge"`, `$'\x6d'erge`). No trigger →
- *      `none`: not a merge.
+ *   1. TRIGGER (cheap, on the raw text, case-insensitive — merge-trigger.ts
+ *      owns the patterns and their reason codes). Refused outright, without
+ *      reading: forge/HTTP-client/interpreter + a merge word; `pr merge` /
+ *      `mr merge` / `mr accept` at all; an expanded, quoted or escaped command
+ *      word; a forge or HTTP body read from a file, stdin or an expansion; a
+ *      forge name with a brace pattern bash would expand. No trigger → `none`.
  *   2. A triggered command must be EXACTLY one simple command in the grammar
  *      below, or it is `refused` with a reason code saying what to change:
  *
@@ -48,48 +37,50 @@
  *      only `$`, backtick, `\` and `!` are dangerous), so every word bash
  *      would see is exactly the word read here.
  *
- * Threat model (docs/troubleshooting.md): an honest-but-forgetful agent, not
- * an adversary. A merge whose words never appear in the command text — one
- * assembled entirely from expansions (`gh pr m$X 17`), or run from a script
- * file (`bash x.sh`) — never triggers and is a documented residual.
+ * Threat model, the accepted flags and the full list of what is refused:
+ * docs/troubleshooting.md. An honest-but-forgetful agent, not an adversary: a
+ * merge whose words never appear in the command text (`gh pr m$X 17`,
+ * `bash x.sh`) never triggers and is a documented residual.
  *
- * #1417 — a `refused` result is a HOLD, not a merge verdict. It says "this
- * text looks merge-adjacent and I cannot read it", which is not the same
- * claim as "this merge is unreviewed". The refusal texts live in
- * merge-refusals.ts, where that difference is written out: only the MERGE
- * refusals name the `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE` hatch, and the hold
- * text (`renderHold`, merge-guard-reads.ts) never does — an agent told to set
- * a merge safety switch to unblock a `gh api` read is being handed the wrong
- * remedy for the wrong disease.
+ * #1417 — a `refused` result is a HOLD, not a merge verdict: "this text looks
+ * merge-adjacent and I cannot read it", not "this merge is unreviewed". The
+ * texts live in merge-refusals.ts, where only the MERGE refusals name the
+ * `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE` hatch — an agent told to set a merge
+ * safety switch to unblock a read is handed the wrong remedy.
  */
 
 import { lexedWhy } from "./merge-refusals.ts";
+import { analysisBound } from "./merge-size.ts";
 import { triggerCode } from "./merge-trigger.ts";
 
 /** What the guard does with a bash command. */
 export type MergeCommand =
   | { kind: "none" }
   /**
-   * A command the guard held rather than read as a merge (#1417). `detail` is
-   * the thing that was held — the trigger word, the offending word, the
-   * forge-adjacent text — not just the code that named the rule. A refusal
-   * that renders only a code is useless to the agent reading it: `[reason:
-   * body-ind…]` never explained itself.
+   * A command the guard HELD rather than read as a merge (#1417).
+   *
+   * #1417 LOW — `reason` is a BARE code, `detail` its prose, in two fields.
+   * They used to be one string (`"unknown-flag — the offending word is
+   * `--auto`"`), which broke every exact comparison: the guard's own
+   * `analysis.reason === "glab-auto-merge"` test only worked because that one
+   * refusal happens to carry no clause. `holdReasonText` composes the two;
+   * nothing downstream splits them. `detail` names WHAT was held (the trigger
+   * word, the offending word), because a refusal that renders only a code
+   * never explained itself: `[reason: body-ind…]`.
    */
   | { kind: "refused"; reason?: string; detail?: string }
   | { kind: "merge"; forge: "github" | "gitlab"; prNumber?: number; repo?: string };
 
-/**
- * #1417 — the detail behind a refusal, carried alongside its reason code so
- * one call site cannot drop it. `code` is the stable machine-readable name
- * every test and doc cites; `detail` is the human-readable "what was held".
- */
+/** A trigger's answer: the stable code every test/doc cites, and what was held. */
 export type HoldReason = { code: string; detail: string };
 
-/** A repo value safe to pass to gh/glab: `owner/repo` (GitLab: `group/sub/repo`). */
+/**
+ * A repo value safe to pass to gh/glab — `owner/repo` (GitLab:
+ * `group/sub/repo`) — and so safe to interpolate into a forge exec string.
+ */
 export const REPO_VALUE_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_.-]*(\/[A-Za-z0-9_.-]+)+$/;
 
-/** Whether a repo value is safe to interpolate into a forge exec string. */
+/** Whether a repo value matches the pattern above. */
 export function isValidRepoValue(value: string): boolean {
   return REPO_VALUE_PATTERN.test(value);
 }
@@ -105,9 +96,9 @@ export const MERGE_WORD =
   /(?:^|[^a-z0-9_])merge(?![a-z0-9_])|mergepullrequest|enablepullrequestautomerge|mergerequestaccept|acceptmergerequest|mergerequestmerge|mergemergerequest|automerge|mergebranch|mergequeue|enqueuepullrequest/i;
 export const HTTP_CLIENT = /(?:^|[^a-z0-9_])(?:curl|wget|https?|httpie)(?![a-z0-9_])/i;
 /**
- * A `{a,b}` or `{a..b}` pattern bash would expand (matched on the unquoted
- * view). Runs are bounded so the match is linear: an unbounded pair of runs
- * backtracks quadratically on `{` followed by a long `a,a,a,…` (#962 review).
+ * A `{a,b}` / `{a..b}` pattern bash would expand (unquoted view). Runs are
+ * bounded so the match stays LINEAR: unbounded, it backtracks quadratically on
+ * `{` + a long `a,a,a,…` (#962 review).
  */
 export const BRACE_EXPANSION = /\{[^{}\s,]{0,256}(?:,|\.\.)[^{}\s]{0,256}\}/;
 
@@ -136,9 +127,8 @@ export const ANSI_ESCAPE_PATTERN =
   /\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|[0-7]{1,3}|[\s\S])/g;
 
 /**
- * Decode the escapes of an ANSI-C `$'…'` body. An escape bash would not
- * decode (out-of-range code point, `\x` with no digits, unknown letter) is
- * kept literal as `\` plus its text, never dropped.
+ * Decode the escapes of an ANSI-C `$'…'` body. One bash would not decode
+ * (out-of-range, no digits, unknown letter) stays literal, never dropped.
  */
 export function ansiC(body: string): string {
   return body.replace(ANSI_ESCAPE_PATTERN, (whole, e: string) => {
@@ -152,10 +142,10 @@ export function ansiC(body: string): string {
 }
 
 /**
- * The command with the contents of single quotes removed (they are literal
- * to bash), and of double quotes too unless `keepDouble`. The quote marks
- * stay, so a removed word still leaves its `''` / `""` behind. Escaped
- * characters are skipped whole so a `\"` cannot open or close a quote.
+ * The command with single-quoted contents removed (literal to bash), and
+ * double-quoted contents too unless `keepDouble`. Quote marks stay, so a
+ * removed word still leaves its `''` / `""` behind; escapes are skipped whole
+ * so a `\"` cannot open or close a quote.
  */
 export function quotedView(command: string, keepDouble: boolean): string {
   let out = "";
@@ -225,9 +215,9 @@ export function hasComplexCommandWord(command: string): boolean {
 
 /**
  * Split into words with bash's quote removal, or a reason code when the text
- * holds anything this reading could get wrong: a forbidden character outside
- * single quotes (or one of `$` `` ` `` `\` `!` inside double quotes), a
- * control or non-ASCII character outside single quotes, or an unbalanced quote.
+ * holds anything that reading could get wrong: a forbidden character outside
+ * single quotes (or `$` `` ` `` `\` `!` inside double), a control or non-ASCII
+ * character, or an unbalanced quote.
  */
 function lex(command: string): { words: string[] } | { code: string } {
   const words: string[] = [];
@@ -266,8 +256,9 @@ function lex(command: string): { words: string[] } | { code: string } {
  * gh subcommands that are genuine reads or creations: a merge word in their
  * arguments is prose. Everything else (comment, edit, review, ready, close,
  * reopen, workflow, run, release create|upload|delete, label create|edit,
- * issue edit|comment|close) is judged by the trigger, so a merge word in it
- * refuses — those verbs can mutate a PR, or fire a merge bot or workflow.
+ * issue edit|comment|close) is judged by the trigger — those verbs can
+ * mutate a PR, or fire a merge bot or workflow. `pr create` / `issue create`
+ * are not unconditionally exempt: see `isCreationWithBody`.
  */
 const READ_ONLY_GH = new Set([
   "pr view",
@@ -284,14 +275,6 @@ const READ_ONLY_GH = new Set([
   "label list",
   "repo view",
 ]);
-
-/** Whether the words are one of the known read-only or creating gh subcommands. */
-function isReadOnlyGh(words: string[]): boolean {
-  if (words[0] !== "gh") return false;
-  const [, noun = "", verb = ""] = words;
-  if (noun === "search") return true;
-  return READ_ONLY_GH.has(`${noun} ${verb}`);
-}
 
 interface ForgeGrammar {
   forge: "github" | "gitlab";
@@ -310,9 +293,9 @@ interface ForgeGrammar {
 }
 
 // Deferred merges (gh `--auto`, glab `--when-pipeline-succeeds`/`--auto-merge`)
-// are refused: they run later, against whatever head the PR has by then, so
-// the guard's one-time ledger and head check would not cover them. Recent glab
-// queues one by default, so a glab merge must carry `--auto-merge=false`.
+// run later, against whatever head the PR has by then, so the guard's one-time
+// ledger and head check would not cover them. Recent glab queues one by
+// default, so a glab merge must carry `--auto-merge=false`.
 const GH: ForgeGrammar = {
   forge: "github",
   tool: "gh",
@@ -365,7 +348,7 @@ const GLAB: ForgeGrammar = {
   requiredFlag: "--auto-merge=false",
 };
 
-/** Read a repo selector at `words[i]`: the words it spans and its value, or undefined. */
+/** Read a repo selector at `words[i]`: its span and value, or undefined. */
 function repoAt(
   g: ForgeGrammar,
   words: string[],
@@ -386,10 +369,13 @@ const refuse = (reason: string, detail?: string): MergeCommand => ({
 /** Step 2: the strict grammar over already-lexed words. */
 function parse(g: ForgeGrammar, words: string[]): MergeCommand {
   // #1417 — every refusal names the word it stopped at, so the agent reading
-  // it knows what to change rather than guessing from a bare code.
+  // it knows what to change rather than guessing from a bare code. The code
+  // and the clause are SEPARATE fields (#1417 LOW): `reason` stays exactly
+  // the stable token a test or doc cites.
   const refuseAt = (code: string, word: string, more?: string): MergeCommand =>
     refuse(
-      `${code} — the offending word is \`${word.slice(0, 40)}\`${more === undefined ? "" : `; ${more}`}`,
+      code,
+      `the offending word is \`${word.slice(0, 40)}\`${more === undefined ? "" : `; ${more}`}`,
     );
   let repo: string | undefined;
   const takeRepo = (sel: { repo: string }): string | undefined => {
@@ -437,7 +423,7 @@ function parse(g: ForgeGrammar, words: string[]): MergeCommand {
       if (w === g.requiredFlag) optedOut = true;
       i += 1;
     } else if (g.valued.has(w)) {
-      if (i + 1 >= words.length) return refuse(`flag-missing-value — \`${w}\` takes a value`);
+      if (i + 1 >= words.length) return refuse("flag-missing-value", `\`${w}\` takes a value`);
       i += 2;
     } else if (w.startsWith("--") && w.includes("=") && g.valued.has(w.slice(0, w.indexOf("=")))) {
       i += 1;
@@ -451,8 +437,47 @@ function parse(g: ForgeGrammar, words: string[]): MergeCommand {
   return { kind: "merge", forge: g.forge, prNumber, repo };
 }
 
+/**
+ * The inline body flags that cost a `gh pr create` / `issue create` its read
+ * exemption (#1417 — the narrow half of the option the review offered). An
+ * inline `--body` is a string the agent typed, and that is where a merge word
+ * reaches the forge verbatim: `--body "gh pr merge 12"` is judged.
+ *
+ * The file forms (`--body-file` / `-F`) are NOT here: the guard cannot read
+ * the file, so the flag is no evidence of a merge, and naming one is the
+ * guard's OWN documented remedy for a merge word in prose ("put the prose in
+ * a file") — refusing it would make the documented way out a dead end. It is
+ * also how this harness posts bodies (`forge-commands.ts`, and the /work
+ * driver's ops fallback). A title is prose and stays exempt.
+ */
+const BODY_FLAGS = new Set(["--body", "-b"]);
+
+function isCreationWithBody(words: string[]): boolean {
+  const [, noun = "", verb = ""] = words;
+  if (verb !== "create" || (noun !== "pr" && noun !== "issue")) return false;
+  return words.some((w) => BODY_FLAGS.has(w) || BODY_FLAGS.has(w.split("=")[0] ?? ""));
+}
+
+/** Whether the words are one of the known read-only or creating gh subcommands. */
+function isReadOnlyGh(words: string[]): boolean {
+  if (words[0] !== "gh") return false;
+  if (isCreationWithBody(words)) return false;
+  const [, noun = "", verb = ""] = words;
+  if (noun === "search") return true;
+  return READ_ONLY_GH.has(`${noun} ${verb}`);
+}
+
 /** Classify a bash command for the merge guard. Linear in the command length. */
 export function readMergeCommand(command: string): MergeCommand {
+  // #955 / #1417 — the size bound first, before the read allowlist, so a
+  // merge-bearing command too long to read is HELD rather than falling through
+  // to current-branch PR resolution. What it bounds is exactly the commands
+  // the rest of this function would have had to read (merge-size.ts): a long
+  // command naming no forge, and a long command spelling no merge word, answer
+  // `none` here just as they would below the bound. Constant, predicate and
+  // wording in merge-size.ts.
+  const bounded = analysisBound(command);
+  if (bounded !== undefined) return bounded;
   const lexed = lex(command);
   if ("words" in lexed && isReadOnlyGh(lexed.words)) return { kind: "none" };
   const trigger = triggerCode(command);
