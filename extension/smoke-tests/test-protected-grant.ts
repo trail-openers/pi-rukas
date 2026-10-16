@@ -26,6 +26,8 @@ import {
 } from "../src/work-driver-protected-grant.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -138,9 +140,14 @@ function ctx(porcelain: string, grant?: string[], committed = ""): DriverContext
     repoRoot: "/nonexistent",
     issue: 1090,
     protectedGrant: grant,
-    verifyExecFn: async (cmd) => {
-      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: porcelain };
-      if (cmd.startsWith("git diff --name-only")) return { stdout: committed };
+    // #1378 — the gate issues both reads in argv form, so the fake matches on
+    // `commandOf(cmd, opts)` (lib/argv-shell.ts) and forwards `opts`. A fake that
+    // string-matched the old plain command would fall through to `{stdout:""}` for
+    // the `-z` call and every protected assertion here would pass vacuously.
+    verifyExecFn: async (cmd, opts) => {
+      const line = commandOf(cmd, opts);
+      if (isNulStatusRead(line)) return { stdout: nulStatus(...porcelain.split("\n")) };
+      if (isNulDiffRead(line)) return { stdout: nulNameStatus(...committed.split("\n")) };
       return { stdout: "" };
     },
   };
@@ -176,7 +183,7 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
   );
   const unsafeHit = unsafe.failures.find(isProtectedFailure) ?? "";
   assert(
-    unsafeHit.includes("--allow-protected <path>") && !unsafeHit.includes("--allow-protected .github"),
+    unsafeHit.includes("cannot be granted") && !unsafeHit.includes("--allow-protected .github"),
     "a filename that is not a plain path token is never pasted into the command",
   );
   const grouped = await verifyStepOutcome(
@@ -333,8 +340,8 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
   const statusThrows = (seen: { maxBuffer?: number }): DriverContext =>
     ({
       ...ctx(""),
-      verifyExecFn: async (cmd: string, opts?: { maxBuffer?: number }) => {
-        if (cmd === "git status --porcelain --untracked-files=all") {
+      verifyExecFn: async (cmd: string, opts?: { maxBuffer?: number; argv?: string[] }) => {
+        if (isNulStatusRead(commandOf(cmd, opts))) {
           seen.maxBuffer = opts?.maxBuffer;
           throw new Error("stdout maxBuffer length exceeded");
         }

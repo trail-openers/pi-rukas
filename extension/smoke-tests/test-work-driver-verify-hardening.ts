@@ -19,6 +19,12 @@ import { verifyCmdFor, verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import {
+  isNulDiffRead,
+  isNulStatusRead,
+  nulNameStatus,
+  nulStatus,
+} from "./lib/nul-porcelain.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -103,7 +109,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         };
         const oneErrOneEmpty: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
           cmd = commandOf(cmd, opts);
-          if (cmd === "git status --porcelain --untracked-files=all") {
+          if (isNulStatusRead(cmd)) {
             if (opts?.cwd?.endsWith("/a")) throw new Error("not a git repository");
             return { stdout: "" };
           }
@@ -133,11 +139,56 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           "R1: the erroring worktree is surfaced as a failure naming it (gate on)",
         );
 
+        // #1378 — the committed read fails closed on the same reasoning. Before this
+        // change its `catch {}` only set a flag, so an unreadable range passed the
+        // protected-path gate as "nothing protected changed".
+        {
+          const diffErr: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
+            const line = commandOf(cmd, o);
+            if (isNulStatusRead(line)) return { stdout: "" };
+            if (line.includes("rev-parse --verify --end-of-options origin/"))
+              return { stdout: "a".repeat(40) + "\n" };
+            // A 40-hex base is the only form the committed read accepts (isValidSha).
+            if (line.startsWith("git rev-list --count")) return { stdout: "1\n" };
+            if (isNulDiffRead(line)) throw new Error("stdout maxBuffer length exceeded");
+            return { stdout: "" };
+          };
+          const diffState = {
+            ...s,
+            pipelineState: { ...s.pipelineState, baseSha: "a".repeat(40) },
+          };
+          const diffGate = await verifyStepOutcome(
+            { ...ctx, verifyExecFn: diffErr },
+            diffState,
+            "develop",
+          );
+          assert(
+            diffGate.failures.some(
+              (f) => /git diff failed in worktree "task-a"/.test(f) && f.includes("maxBuffer"),
+            ),
+            "R1/#1378: an unreadable committed-diff read fails develop naming the worktree (gate on)",
+          );
+          process.env.PI_ENSEMBLE_PROTECTED_PATHS = "0";
+          try {
+            const diffNote = await verifyStepOutcome(
+              { ...ctx, verifyExecFn: diffErr },
+              diffState,
+              "develop",
+            );
+            assert(
+              !diffNote.failures.some((f) => /git diff failed/.test(f)) &&
+                diffNote.notes.some((n) => /git diff failed in task-a/.test(n)),
+              "R1/#1378: PI_ENSEMBLE_PROTECTED_PATHS=0 makes the unreadable committed read a note",
+            );
+          } finally {
+            delete process.env.PI_ENSEMBLE_PROTECTED_PATHS;
+          }
+        }
+
         // All worktrees unassessable → degrade to pass-with-note, no failure.
         const allErr: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, stubOpts) => {
           cmd = commandOf(cmd, stubOpts);
-          if (cmd === "git status --porcelain --untracked-files=all")
-            throw new Error("not a git repository");
+          if (isNulStatusRead(cmd)) throw new Error("not a git repository");
           if (cmd.includes("rev-parse --verify --end-of-options origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) throw new Error("bad revision");
@@ -202,16 +253,16 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       let committedFiles: string[] = [];
       const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, stubOpts) => {
         cmd = commandOf(cmd, stubOpts);
-        if (cmd === "git status --porcelain --untracked-files=all") {
-          return { stdout: files.map((file) => ` M ${file}`).join("\n") };
+        if (isNulStatusRead(cmd)) {
+          return { stdout: nulStatus(...files.map((file) => ` M ${file}`)) };
         }
         if (cmd.includes("rev-parse --verify --end-of-options origin/"))
           return { stdout: "a".repeat(40) + "\n" };
         if (cmd.startsWith("git rev-list --count")) {
           return { stdout: files.length > 0 || committedFiles.length > 0 ? "1\n" : "0\n" };
         }
-        if (cmd.startsWith("git diff --name-only")) {
-          return { stdout: committedFiles.join("\n") };
+        if (isNulDiffRead(cmd)) {
+          return { stdout: nulNameStatus(...committedFiles) };
         }
         return { stdout: "" };
       };

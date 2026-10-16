@@ -32,6 +32,8 @@ import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { fetchDiff } from "../src/work-driver-diff.ts";
 import { verifyDevelopOutcome } from "../src/work-driver-verify-develop.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 const execFileP = promisify(execFile);
@@ -121,8 +123,9 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
           baseSha: VALID_SHA_40,
         },
       };
-      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/foo.css\n" };
+      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+        const line = commandOf(cmd, opts);
+        if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/foo.css") };
         if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
         return { stdout: "" };
       };
@@ -163,10 +166,11 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
           baseSha: VALID_SHA_40,
         },
       };
-      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" }; // clean tree
+      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+        const line = commandOf(cmd, opts);
+        if (isNulStatusRead(line)) return { stdout: "" }; // clean tree
         if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" }; // 1 commit
-        if (cmd.startsWith("git diff --name-only")) return { stdout: "src/foo.ts\n" };
+        if (isNulDiffRead(line)) return { stdout: nulNameStatus("src/foo.ts") };
         return { stdout: "" };
       };
       const failures: string[] = [];
@@ -189,8 +193,9 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
           baseSha: "abc123", // too short → isValidSha returns false
         },
       };
-      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/foo.css\n" };
+      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+        const line = commandOf(cmd, opts);
+        if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/foo.css") };
         return { stdout: "" };
       };
       const failures: string[] = [];
@@ -336,11 +341,12 @@ async function mainFalsilyGreen(): Promise<void> {
     // zero commits ahead of base. The developer declared source but only did
     // docs — falsely green.
     {
-      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain --untracked-files=all")
+      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+        const line = commandOf(cmd, opts);
+        if (isNulStatusRead(line))
           return { stdout: " M docs/notes.md\n" }; // uncommitted docs
         if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
-        if (cmd.startsWith("git diff --name-only")) return { stdout: "" }; // no committed changes
+        if (isNulDiffRead(line)) return { stdout: "" }; // no committed changes
         return { stdout: "" };
       };
       const { failures } = await run({
@@ -365,10 +371,11 @@ async function mainFalsilyGreen(): Promise<void> {
     // is the EXISTING "empty diff" case, NOT falsely-green — the developer
     // produced nothing at all, which the generic empty-diff message catches.
     {
-      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" }; // clean tree
+      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+        const line = commandOf(cmd, opts);
+        if (isNulStatusRead(line)) return { stdout: "" }; // clean tree
         if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
-        if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
+        if (isNulDiffRead(line)) return { stdout: "" };
         return { stdout: "" };
       };
       const { failures } = await run({
@@ -399,10 +406,11 @@ async function mainFalsilyGreen(): Promise<void> {
     // neither the falsily-green check nor the generic empty-diff message should
     // fire against it.
     {
-      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M docs/guide.md\n" }; // uncommitted doc
+      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+        const line = commandOf(cmd, opts);
+        if (isNulStatusRead(line)) return { stdout: nulStatus(" M docs/guide.md") }; // uncommitted doc
         if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
-        if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
+        if (isNulDiffRead(line)) return { stdout: "" };
         return { stdout: "" };
       };
       const { failures } = await run({
@@ -433,10 +441,11 @@ async function mainFalsilyGreen(): Promise<void> {
 
     // (3) Source workstream that DID commit → not falsely green.
     {
-      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" };
+      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+        const line = commandOf(cmd, opts);
+        if (isNulStatusRead(line)) return { stdout: "" };
         if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" }; // 1 commit
-        if (cmd.startsWith("git diff --name-only")) return { stdout: "src/foo.ts\n" };
+        if (isNulDiffRead(line)) return { stdout: nulNameStatus("src/foo.ts") };
         return { stdout: "" };
       };
       const { failures } = await run({
