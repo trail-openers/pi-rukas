@@ -10,13 +10,7 @@
  * it scans.
  */
 
-import {
-  breakAt,
-  isCredentialChar,
-  reversed,
-  walkRun,
-  walkRunOneBreak,
-} from "./credential-walk.ts";
+import { breakAt, isCredentialChar, reversed, walkRunOneBreak } from "./credential-walk.ts";
 import { REDACTED } from "./secret-patterns.ts";
 
 /**
@@ -26,6 +20,21 @@ import { REDACTED } from "./secret-patterns.ts";
  * `\s` carries no `g` flag, so a single shared instance cannot leak `lastIndex`.
  */
 const WHITESPACE = /\s/;
+
+/**
+ * The characters the fail-closed net writes a credential in — exported as SOURCE so the sweep
+ * test can pin `isCredentialChar` against it character by character. The class literal is the
+ * members below, which `CREDENTIAL_RUN` is built from; a copy in a test would be a second claim
+ * that drifts.
+ */
+const CREDENTIAL_RUN_CLASS_MEMBERS = "A-Za-z0-9._\\-/+=";
+
+/**
+ * The same eleven characters as a one-character class, so the pin below asks the ENGINE the
+ * question it asks the comparison chain. Derived, never written out: a literal that has to be
+ * kept in step with `CREDENTIAL_RUN` is the second claim this export exists to remove.
+ */
+export const CREDENTIAL_RUN_CLASS_SOURCE = `[${CREDENTIAL_RUN_CLASS_MEMBERS}]`;
 
 /**
  * The floor the fail-closed net judges a token by, and the characters a credential is
@@ -41,6 +50,8 @@ const WHITESPACE = /\s/;
  * sit below it and survive, while anything long enough to be a base64 key body sits above it
  * and is replaced. A 64+ hex hash landing in a clipped window is therefore redacted, and that
  * is the accepted cost of the net rather than a defect.
+ *
+ * question is pinned by the exported `CREDENTIAL_RUN_CLASS_SOURCE` the literal is built from.
  *
  * The `g` flag lives on {@link CREDENTIAL_RUN} rather than at the use site, so the passes
  * below cannot disagree about whether they walk the whole window. A fresh `String.replace`
@@ -68,7 +79,10 @@ const CREDENTIAL_RUN_MIN = 64;
  * blanks and the break a key was wrapped over are taken with it — they are part of the leaked
  * material's layout, not content an operator needed.
  */
-const CREDENTIAL_RUN = /[A-Za-z0-9._\-/+=]+(?:[ \t]*(?:\r\n|\n|\r)[ \t]*)?[A-Za-z0-9._\-/+=]*/g;
+const CREDENTIAL_RUN = new RegExp(
+  `${CREDENTIAL_RUN_CLASS_SOURCE}+(?:[ \t]*(?:\r\n|\n|\r)[ \t]*)?${CREDENTIAL_RUN_CLASS_SOURCE}*`,
+  "g",
+);
 
 /**
  * Pull a scan cut outward to a token boundary, into the side being DROPPED.
@@ -192,18 +206,8 @@ export function widenPastCut(
  * probes entirely — neither edge of the window touches it — so the crossing belongs here
  * rather than only in {@link edgeRunReaches}, which judges the two tokens the clip cut.
  *
- * `unscanned` is how the caller passes what the window itself cannot know: a predicate over
- * offsets into `kept` saying whether the LINE a match sits on lies outside what the scan covered
- * and was not replaced. Without it the net can only judge the window's own characters, and a
- * 40-character interior line of a key is indistinguishable from a 40-character word — same
- * characters, same length, same everything. What distinguishes them is provenance, and only
- * `redactBounded` holds it: it knows where the scan stopped and where the clip fell. Asked that
- * question, the net takes every short line of a body it never reached and leaves prose alone,
- * because a log line after a key is inside the scanned region by construction — the arm stopped
- * on it, which is how the key ended where it did.
- *
- * Omitted, the net judges on in-window length alone, which is the whole judgement available to a
- * window and the behaviour every caller without a scan boundary gets.
+ * Judges in-window run length only; a short final line of a key body whose header is out of
+ * reach is a known gap tracked in #1439.
  *
  * What `TAIL_SWEEP` handles is the narrower case — credential-class GLUE butting straight
  * against a marker, with no separator — and the net leaves exactly that position alone: the
@@ -241,9 +245,11 @@ export function redactUnscannedRuns(kept: string): { text: string; count: number
  * How far the token touching each edge of a clipped window reaches in the FULL text
  * ({@link redactBounded}, #1393).
  *
- * The walk CROSSSES LINE BREAKS. It measures a PEM body, and a PEM body is many lines, so a
- * run that stops at a newline is a run the walk gave up on rather than a short one. The stop
- * at the newline was the whole defect: with the header out of {@link PEM_HEADER_REACH} the
+ * The walk crosses LINE BREAKS — but at most ONE, the reach of {@link CREDENTIAL_RUN} that the
+ * net can actually spell ({@link walkRunOneBreak}). It measures a PEM body, and a PEM body is
+ * many lines, so a run that stops at the first newline is a run the walk gave up on rather than
+ * a short one. The stop
+ * at the newline was the whole defect: with the header out of `PEM_HEADER_REACH` (decision-log.ts) the
  * arm cannot anchor, the clip lands mid-body, and the window's last line is a 40-character
  * base64 tail sitting under the 64-character floor. Measured at `redactBounded(text, 600,
  * "end")` on 145 lines of 120-character base64 followed by a 40-character line, the walk
@@ -292,7 +298,7 @@ export function edgeRunReaches(
   const reaches = (from: number, step: -1 | 1): boolean => {
     // Both legs walk FORWARD over `src`; the backward leg walks the reversed text, where
     // "leftward in the original" is a forward scan and the break probe is the same sticky
-    // regex on both sides (see {@link walkRun}).
+    // regex on both sides (see {@link walkRunOneBreak}).
     //
     // ONE break, and no further — which is what {@link CREDENTIAL_RUN} the net can spell, and
     // what HEAD's walk did by stopping at the newline under the token it was asked about.
@@ -340,12 +346,6 @@ export function edgeRunReaches(
     windowStart <= last && isCredentialChar(text.charCodeAt(last)) ? reaches(windowEnd, 1) : false;
   return { head, tail };
 }
-
-/**
- * A {@link walkRun} that crosses at most ONE line break, which is how far the net's own class
-  };
-}
-
 
 /**
  * Replace the token at one edge of a clipped window — the one {@link edgeRunReaches}

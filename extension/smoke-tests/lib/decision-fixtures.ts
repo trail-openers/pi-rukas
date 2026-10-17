@@ -4,7 +4,7 @@
  * registry answers from closures, never from a network.
  */
 
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Backend, BackendResult, DecisionRegistry } from "../../src/decision-backends.ts";
@@ -114,9 +114,37 @@ export function llmReply(text: string, stopReason = "stop") {
   };
 }
 
+/**
+ * Every directory this module hands out, so the process-exit hook below can remove them.
+ * A suite that created its scratch inside a `finally` was one `process.exit()` away from
+ * leaking it anyway — measured at ~1 200 surviving `/tmp/decision-*` dirs per full run —
+ * because an assertion that throws skips the block that would have cleaned up.
+ */
+const made: string[] = [];
+
+/**
+ * A fresh scratch directory under `os.tmpdir()`, prefixed `decision-<tag>-` so the suite's
+ * output is greppable and the sweep below can find its own. Every caller relies on the
+ * removal at process exit rather than on a `finally` it might skip.
+ */
 export function tmpDir(tag: string): string {
-  return mkdtempSync(path.join(os.tmpdir(), `decision-${tag}-`));
+  const dir = mkdtempSync(path.join(os.tmpdir(), `decision-${tag}-`));
+  made.push(dir);
+  return dir;
 }
+
+// `beforeExit` fires when the event loop drains and `exit` on an explicit
+// `process.exit(code)` — which every decision test ends with — so both shapes are covered.
+// `rmSync` is recursive and forceful: a fixture may hold a dangling symlink, which a plain
+// unlink would refuse and which must not turn a green run into a noisy one.
+const sweep = () => {
+  while (made.length) {
+    const dir = made.pop();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
+};
+process.on("beforeExit", sweep);
+process.on("exit", sweep);
 
 /**
  * A credential long enough that any 12-char window of it is recognisable, and
@@ -151,7 +179,7 @@ export function keyAtBoundary(
 }
 
 /**
- * The records of a JSONL decision log. Absent or unreadable is an EMPTY log, not
+ * The JSONL records of a decision log, parsed. Absent or unreadable is an EMPTY log, not
  * an error: the shadow writer is fire-and-forget, so a poll routinely reads the
  * file before the first append lands, and a test must not need a guard at every
  * call site to ask "how many so far". This is the ONE reader — a test re-declaring

@@ -352,4 +352,29 @@ export const SEAMS: Seam[] = [
     },
     canary: { symbol: "parseVerifiedLine", importer: "pi-version-probe.ts" },
   },
+  {
+    // #1393 — the credential-run character primitives split out of the redaction window.
+    // decision-redact-window.ts is the only production importer; the class-vs-chain pin
+    // reaches isCredentialChar directly because that is the claim being pinned.
+    file: "credential-walk.ts",
+    pending: {},
+    testOnly: {
+      isCredentialChar:
+        "the per-character class test the walks step with; pinned against the net's class source by test-decision-redaction-tail-sweep.ts",
+    },
+    canary: { symbol: "walkRunOneBreak", importer: "decision-redact-window.ts" },
+  },
+  {
+    // #1393 — the scan-window moves `redactBounded` is built from, split out of
+    // decision-log.ts for the 500-line cap. redactBounded is the only caller.
+    file: "decision-redact-window.ts",
+    pending: {},
+    testOnly: {
+      // Exported so the sweep test can re-test the class literal rather than copy it;
+      // the module itself reads the `CREDENTIAL_RUN` built from it.
+      CREDENTIAL_RUN_CLASS_SOURCE:
+        "the class literal exported as source; pinned by test-decision-redaction-tail-sweep.ts",
+    },
+    canary: { symbol: "redactUnscannedRuns", importer: "decision-log.ts" },
+  },
 ];

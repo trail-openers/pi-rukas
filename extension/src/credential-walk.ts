@@ -5,11 +5,10 @@
  *
  * Nothing here decides whether a secret is present. These answer three questions — is this
  * character part of a credential run, does a line break start here, how far does the run from
- * here reach — and carry the two walks that disagree about the last one: {@link walkRun}, which
- * the measurement uses and which crosses any number of breaks, and {@link walkRunOneBreak},
- * which the net's own class reaches and therefore crosses at most one. That disagreement is
- * load-bearing, and it lives in one file, the two walks side by side, rather than in two
- * modules that can drift apart.
+ * here reach — and carry the walk both callers use: {@link walkRunOneBreak}, which crosses at
+ * most one break because that is as far as the net's own class reaches. The measurement and the
+ * sweep share that one walk, and the cap is what keeps a measurement from promising a replacement
+ * the class cannot deliver.
  */
 
 /**
@@ -17,7 +16,8 @@
  * would re-enter the engine on every step of a walk that can run the whole scan cap deep; the
  * class is eleven codepoints, so a comparison chain is both cheaper and free of `lastIndex`
  * hazards. The ranges are the same eleven characters the regex in `decision-redact-window.ts`
- * carries — `test-decision-redaction-tail-sweep.ts` pins the two against each other.
+ * carries — `test-decision-redaction-tail-sweep.ts` pins the two against each other through the
+ * exported class source.
  */
 export function isCredentialChar(code: number): boolean {
   return (
@@ -66,54 +66,6 @@ export function breakAt(src: string, at: number): number {
 }
 
 /**
- * Walk a credential-class run FORWARD from `origin`, stepping across the line breaks that
- * separate the lines of a key body, and return the offset one PAST the run's last character.
- *
- * This is the one walk, shared by the measurement and the sweep — which is the point of
- * factoring it out. The two used to be separate loops with the same shape and no line leg, and
- * when the measurement grew one they disagreed: `head` came back true for a run measured across
- * two lines, and the sweep that stops at the newline between them replaced the first and left
- * the second. One walk decides both, so they cannot part company again.
- *
- * A break continues the run only when a body character waits on its far side, which is the
- * difference between "this run goes on" and "a newline happens to be here": a break before
- * prose ends the run. A run of blanks with no break in it is not a break at all, so the walk
- * never reaches a credential across an empty line.
- *
- * Stops at the first character that is neither in the class nor part of a continuing break, or
- * at `limit`, and reports the distance actually covered so the caller can tell an out-of-budget
- * walk from a finished one.
- */
-export function walkRun(
-  src: string,
-  origin: number,
-  limit: number,
-): { end: number; walked: number } {
-  let i = origin;
-  let walked = 0;
-  // The origin is NOT classified before the loop. The legs are handed the delimiter beside the
-  // token — the newline that ends the run above it, or begins the one below — and asking the
-  // break probe there is the whole point: the original walk stopped at exactly that newline and
-  // it was right. A guard demanding a body character at the origin would refuse the delimiter,
-  // walk zero steps, and report every clipped body fragment as a short token, which is the bug
-  // this round set out to fix.
-  while (i < limit) {
-    if (isCredentialChar(src.charCodeAt(i))) {
-      i++;
-      walked++;
-      continue;
-    }
-    const blen = breakAt(src, i);
-    if (blen === 0 || i + blen > limit) break;
-    const after = i + blen;
-    if (after >= src.length || !isCredentialChar(src.charCodeAt(after))) break;
-    i += blen;
-    walked += blen;
-  }
-  return { end: i, walked };
-}
-
-/**
  * The reversal cache: one `split`/`join` per text rather than one per edge. A bounded redaction
  * asks the two legs of one measurement plus the two of the sweep, and the reversal is the only
  * per-call cost the backward leg adds over a non-crossing walk.
@@ -128,8 +80,8 @@ export function reversed(text: string): string {
 }
 
 /**
- * A {@link walkRun} that crosses at most ONE line break, which is how far the net's own class
- * reaches.
+ * Walk a credential-class run FORWARD from `origin`, stepping across at most ONE line break —
+ * which is how far the net's own class reaches.
  *
  * The cap is not caution, it is agreement. The net replaces only a match it can spell, and a
  * match it can spell carries at most one break; a measurement allowed to cross two hands it a
