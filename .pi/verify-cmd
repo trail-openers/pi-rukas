@@ -8,31 +8,14 @@
 # runs once per workstream worktree in parallel; the deeper suite lives in
 # .pi/verify-cmd-full, which the ci step runs once.
 #
-# PI_ENSEMBLE_VERIFY_TEST_JOBS is sized from the host here, not a new default:
-# the pool in lib/verify-pool.sh ships 2, and while the suite alone finishes in
-# 8m55s — inside the bound — the FULL command under load (the two typechecks,
-# the lint, and the suite, with other /work cycles running) took ~19 min on this
-# host at JOBS=2, which blows the binding bound: the develop gate's 10-min
-# wall-clock, PI_ENSEMBLE_VERIFY_TIMEOUT_MS (verifyTimeoutMs, #1324). The
-# measurement covers the suite stage alone; the surrounding gates are what push
-# it past 10 min.
-#
-# 4 jobs on a host with 8 or more CPUs, 2 otherwise — a small host gains nothing
-# from a wide pool and pays for it in contention. An explicit ambient setting of
-# the variable wins over the host-derived value. Measured on a 10-core host at
-# the suite stage: JOBS=2 → 8m55s, JOBS=4 → 4m49s, same failures at both. JOBS=6
-# and above made test-cancel.ts flaky, so the pool is not widened further.
-#
-# `--jobs-from-host` is how that sizing reaches the pool, and it lives in the
-# script rather than as an inline `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf
-# …)}"` prefix because the review-accept guard (#1125) refuses any command word
-# carrying a shell expansion — `$`, backtick, braces. On an agent-run command no
-# flag ban separates a benign `${VAR:-$(…)}` from an injection, so the guard's
-# A5 arm admits `bash smoke-tests/lib/verify-loop.sh <suites>` and nothing with
-# an expansion in it. That rule is the guard's, not this file's, so the
-# expansion moved behind a flag the script owns. The flag is opt-in and CI does
-# not pass it, so .github/workflows/ci.yml keeps the shipped default of 2 — the
-# same shape as before #1365, and the reason the host lookup is opt-in rather
-# than the pool's own default. test-review-accept-guard-hardened.ts reads this
-# file arm by arm and pins that every one of them passes the guard.
+# `--jobs-from-host` sizes the smoke pool from the host CPU count when
+# PI_ENSEMBLE_VERIFY_TEST_JOBS is unset: 4 jobs on a host reporting 8+ CPUs, 2
+# otherwise, an explicit ambient setting always winning. Measured on a 10-core
+# host at the suite stage: 4 jobs → 4m49s, versus ~19 min under load at 2 — past
+# the binding bound, the develop gate's PI_ENSEMBLE_VERIFY_TIMEOUT_MS (10 min).
+# It is a flag rather than an inline `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf
+# …)}"` prefix because review-accept-guard A5 admits `bash …/verify-loop.sh` only
+# when every following word is `--digest` or a test path (see
+# test-review-accept-guard-hardened.ts, which checks each arm here against A5).
+# See docs/configuration.md (`PI_ENSEMBLE_VERIFY_TEST_JOBS`).
 cd extension && bun x tsc --noEmit && bun x tsc --noEmit -p tsconfig.smoke-tests.json && cd .. && bun run check && cd extension && bash smoke-tests/lib/verify-loop.sh --jobs-from-host smoke-tests/test-*.ts

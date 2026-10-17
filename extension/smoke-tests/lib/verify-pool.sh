@@ -63,19 +63,49 @@ VERIFY_TEST_JOBS_MAX=16
 # alike. On a host without it the lookup fails and the answer is the narrow
 # default — sizing UP off an unknown host is the wrong direction to guess.
 #
+# NOTE: the count is the raw online CPU count, NOT the cgroup CPU quota — a
+# container limited to 2 CPUs on an 8-core host still reports 8 here. The
+# cgroup-aware authority is `extension/src/host-resources.ts` (`hostBudget`),
+# which lowers `os.availableParallelism()` by the quota; this shell-side number
+# is deliberately the coarse one because the pool only picks between 2 and 4.
+#
 # A function rather than an inline substitution at the call site, so the tests
 # can put a stub `getconf` earlier on PATH and pin all three branches (8+ CPUs,
 # under 8, no working getconf) without owning a machine of each kind.
 host_job_count() {
   local cpus
-  cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || cpus=""
+  # No `|| cpus=""`: a getconf that exits non-zero still prints its error to
+  # stderr (discarded) and nothing to stdout, so `$cpus` is already the empty
+  # string the `''` arm below handles — and a non-zero exit that DID print a
+  # count is a count, which the same arms judge on its content either way.
+  cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null)"
   # `case` rather than `[[ =~ ]]`: an unquoted, unvalidated `$cpus` in an
   # arithmetic test is the shape that accepts junk, and getconf on a BSD host
   # can print something that is not a bare count.
+  local width
   case "$cpus" in
-    '' | *[!0-9]*) echo 2 ;;
-    *) if [ "$cpus" -ge 8 ]; then echo 4; else echo 2; fi ;;
+    '' | *[!0-9]*)
+      # One stderr note, then the narrow default — silently sizing down is the
+      # wrong shape: an operator who asked for host sizing is entitled to know
+      # the host did not answer.
+      echo "warn: verify-loop: could not read CPU count; pool at 2" >&2
+      width=2
+      ;;
+    *) if [ "$cpus" -ge 8 ]; then width=4; else width=2; fi ;;
   esac
+  # The chosen width is echoed to stdout — it is this function's answer, and
+  # nothing else reads it — and ALSO traced to stderr under a name the caller
+  # cannot produce by accident. Stderr is where the test observes it: stdout is
+  # captured by the command substitution in `apply_host_jobs` and never reaches
+  # the caller's terminal. The trace is what lets
+  # `test-verify-loop-jobs-from-host.ts` assert the width the host sizing
+  # produced (4 on an 8+ CPU stub, 2 below that, 2 on a host where the lookup
+  # fails) rather than inferring it from the peak overlap, which is only ever a
+  # lower bound on the ceiling. The `verify-loop.sh:` segment names the script
+  # the pool belongs to, matching the `verify-loop:` prefix every other line here
+  # carries — the prefix is `verify-loop.sh` because that is the caller's name.
+  echo "note: verify-loop.sh: host_job_count: $width (cpus='${cpus}')" >&2
+  echo "$width"
 }
 
 # apply_host_jobs — the `--jobs-from-host` decision, kept separate from
@@ -91,7 +121,7 @@ apply_host_jobs() {
   # caller running under `set -e` would treat a bare `[ … ] || return 0` whose
   # test fails as the statement of record. `return 0` at the end keeps the
   # function's status 0 on every path whichever way the caller's shell is set.
-  if [ -n "${VERIFY_JOBS_FROM_HOST:-}" ] && [ "$VERIFY_JOBS_FROM_HOST" -eq 1 ]; then
+  if [ "${VERIFY_JOBS_FROM_HOST:-0}" = "1" ]; then
     # An ambient setting wins; only an UNSET variable lets the host decide.
     # Deliberately not "unset or unparseable": the parse above already warned
     # about junk and fell back to 2, and a caller who set the variable at all

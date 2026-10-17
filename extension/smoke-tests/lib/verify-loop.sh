@@ -218,6 +218,13 @@ fi
 # A flag is never a test path: each recognised word is `shift`ed out of "$@", so
 # the pool only ever collects real paths, and `pool_collect`'s `--` guard against
 # dash-leading arguments stays intact.
+#
+# An unrecognised dash-leading word is a usage error too, not a test path. Before
+# this, `verify-loop.sh --diagst …` fell through the `*` arm, got collected, and
+# the pool reported "no such file" for a typo in a flag — a run whose real tests
+# were never given the flag's behaviour. `--` itself still passes through to the
+# pool's own guard (see the explicit arm below) rather than being refused, so the
+# documented `-- <files>` shape is unaffected.
 DIGEST=0
 if [ "$#" -gt 0 ] && [ "$1" = "--digest" ]; then
   DIGEST=1
@@ -227,16 +234,23 @@ fi
 # the caller did not name a number. Opt-in, and CI does not pass it, so the
 # shipped default of 2 stays the CI shape; the host-derived 4 is what this repo's
 # own develop gate needs to stay inside PI_ENSEMBLE_VERIFY_TIMEOUT_MS. It lives
-# here rather than as an inline expansion in .pi/verify-cmd because the
-# review-accept guard refuses any command word carrying `$`/backticks/braces —
-# a shell-expansion gate on agent commands cannot distinguish a benign
-# `${VAR:-$(getconf …)}` from an injection, so the expansion belongs in the
-# script the arm already allows.
+# here rather than as an inline expansion in .pi/verify-cmd because that word is
+# not a form the review-accept guard (#1125) admits: A5 (`armVerifyLoop`) accepts
+# `bash …/verify-loop.sh` only when every word after the script is `--digest` or a
+# test path, and `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf …)}"` is neither.
+# A5 is not a general ban on expansions in a `bash` command — it is this arm's
+# argv rule — so the sizing has to be a flag the arm recognises.
 VERIFY_JOBS_FROM_HOST=0
 _args=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --jobs-from-host) VERIFY_JOBS_FROM_HOST=1 ;;
+    --) _args+=("$1") ;;
+    --*)
+      echo "usage: verify-loop.sh [--digest] [--jobs-from-host] <file> ..." >&2
+      echo "error: verify-loop: unknown option '$1'" >&2
+      exit 2
+      ;;
     *) _args+=("$1") ;;
   esac
   shift
