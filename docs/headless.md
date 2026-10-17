@@ -4,13 +4,34 @@
 
 ```
 pi-rukas-headless work <issue> [more issues] [--restart] [--timeout <minutes>] [--json]
+pi-rukas-headless plan <descriptor> (--dry-run | --file) [--type <t>] [--context <text>] [--reviewed-digest <d>] [--json]
+pi-rukas-headless research <topic> [--tier quick|standard|deep|adoption] [--context <text>] [--json]
+pi-rukas-headless agents-md <create|update|check> [root] [file] [--deep] [--json]
+pi-rukas-headless lens-review [--base <ref> --head <ref>] [--since <ref>] [--full] [--context <text>] [--pr <n>] [--json]
 pi-rukas-headless --capabilities
 ```
 
 - **`work`** — runs one or more work cycles, writes NDJSON v1 progress to stderr, and exits with a code derived from the state file.
+- **`plan`, `research`, `agents-md`, `lens-review`** — run the compiled /plan and /research pipelines, the agents-md verbs and the six-pass review once, on the same headless host. See [Subcommands](#subcommands).
 - **`--capabilities`** — prints one versioned JSON object describing what *this* build supports and exits 0. It starts no cycle, reads no project repository, and makes no network call.
 
 A caller (e.g. tehas) calls `--capabilities` once per image build and once before each cycle. An unknown name in the object means "not supported"; the caller fails closed on it.
+
+## Subcommands
+
+`plan`, `research`, `agents-md` and `lens-review` (#1021) run one pipeline each and exit. They share `work`'s output rules: stderr carries only NDJSON v1 lines (the pipeline's messages as `log` lines, without `issue`), and stdout carries exactly one JSON document, always — `--json` is accepted and changes nothing. Every document carries `subcommand`, `exitCode`, `buildCommit` and `buildVersion`; bad arguments, including an unknown flag, exit 40 with `error.code: "bad-arguments"`. They use the exit-code values below with these meanings:
+
+| Subcommand | 0 | 10 | 11 | 20 | 30 | 40 |
+|---|---|---|---|---|---|---|
+| `plan` | dry run (`spec`), or filed (`url`) | `duplicate-risk`, or a `--file` run that filed nothing (the reviewed spec changed) | `needs-clarification`, with `questions` | | | any other filing failure, with `failure.reason` / `failure.detail` |
+| `research` | artifact written (`artifactPath`), including `"abstained": true` | | | | halted without an artifact (`halt`) | unknown tier (`error.code: "unknown-tier"`) |
+| `agents-md` | clean | findings or drift; gated on a human (`"gated": true`) | | | | refused or corrupt (`error`) |
+| `lens-review` | `APPROVED`, or no review (`"noReview": true` — an empty delta, not an approval) | `ISSUES_FOUND` | | `CRITICAL_ISSUES_FOUND` | `REVIEW_INCOMPLETE` | the round budget refused the run (`ROUND_CAP_REACHED`) |
+
+- **`plan`** files only with `--file`; a dry run reports a `reviewedDigest`, and `--file --reviewed-digest <d>` with the same inputs files that reviewed spec verbatim. The document carries the pipeline's whole result (`spec`, `gaps`, `status`, `mode`).
+- **`research`**: a deep run whose entailment pass could not run carries `"entailment": "unavailable"`.
+- **`agents-md`** documents carry `verb` (`create` / `update` / `check`), `status` (`clean`, `findings`, `gated`, `refused`), `findings[]` and, for `create` / `update`, `wouldWrite`. `root` defaults to the repository root.
+- **`lens-review`** is admitted through the same round budget as `dispatch_lens_review` and writes the review ledger like it. Without `--base` / `--head` it reviews the working tree.
 
 ## The four contracts
 
@@ -352,7 +373,11 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
     }
   },
   "verbs": {
-    "work": { "flags": ["--restart", "--json", "--timeout"] }
+    "work": { "flags": ["--restart", "--json", "--timeout"] },
+    "plan": { "flags": ["--dry-run", "--file", "--type", "--context", "--reviewed-digest", "--json"] },
+    "research": { "flags": ["--tier", "--context", "--json"] },
+    "agents-md": { "flags": ["--deep", "--json"] },
+    "lens-review": { "flags": ["--base", "--head", "--since", "--full", "--context", "--pr", "--json"] }
   },
   "inputs": [                  // every PI_ENSEMBLE_* input this build or its wrapper reads
     { "name": "PI_ENSEMBLE_MAX_WORKSTREAMS", "type": "integer", "default": 6, "scope": "cycle" },
@@ -394,6 +419,7 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
 | `contracts.ndjson.version` | `NDJSON_VERSION` | Version of the NDJSON progress schema. |
 | `contracts.ndjson.stable` | `NDJSON_STABLE_VERSION`, `NDJSON_STABLE_FIELDS` | The stable kinds and their guaranteed `event` fields (see "The stable subset"). |
 | `verbs.work.flags` | `WORK_FLAGS` array | The flags the `work` verb accepts, in the order the parser accepts them. An unknown flag in a caller's argv means "not supported" and is refused with exit 40. |
+| `verbs.<subcommand>.flags` | `PLAN_FLAGS`, `RESEARCH_FLAGS`, `AGENTS_MD_FLAGS`, `LENS_REVIEW_FLAGS` | The flags each subcommand accepts (#1021). A subcommand absent from `verbs` is not in this build. |
 | `inputs[].name` | `HEADLESS_INPUTS` (`inputs.ts`) | An environment variable the build reads. A name with `<ROLE>`, `<SEAM>` or `<LENS>` is a family: `<ROLE>` is a role name, `<SEAM>` a decision-seam id and `<LENS>` a code-review lens name, upper-cased with `-` → `_` (e.g. `PI_ENSEMBLE_MODEL_DEVELOPER`). |
 | `inputs[].members` | The role list (`roles.ts`), the seam registry (`decision-seam-registry.ts`) and the bundled lens roster (`lens-roster.ts`) | Present on every family: the ids its placeholder takes in this build. A name with any other id, such as the typo `PI_ENSEMBLE_MODEL_REVIEWER`, is read by nothing and leaves the default in place. `<ROLE>` lists the spawned roles (the parent session has no per-role variable). `<SEAM>` lists the seams that read env config; the grandfathered policy judge does not. `<LENS>` lists the lenses shipped with the build; a lens added to the installed skills dir is not listed. Independent of `values`: `PI_ENSEMBLE_DECISION_MODE_<SEAM>` has both. |
 | `inputs[].type` | Hardcoded | `boolean` (`1` on, `0` off), `integer`, `number` (see `unit`), `duration-ms`, `string`, `path`, `list` (joined by `separator`) or `enum` (one of `values`). |
@@ -426,7 +452,7 @@ echo "$caps" | jq -e --arg m "REVIEWER" \
   || { echo "PI_ENSEMBLE_MODEL_REVIEWER is not a role"; exit 1; }
 ```
 
-An unknown name (no matching key in `features`, `inputs`, `files`, or `verbs.work.flags`) means the build does not support it. The caller fails closed — it does not guess or fall back.
+An unknown name (no matching key in `features`, `inputs`, `files`, `verbs`, or a verb's `flags`) means the build does not support it. The caller fails closed — it does not guess or fall back.
 
 ### Baking the commit
 
