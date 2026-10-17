@@ -74,11 +74,6 @@ export function seedFindings(storeFile: string, branch: string, rows: readonly S
   writeFileSync(storeFile, JSON.stringify({ rows: [...others, ...onBranch] }, null, 2), "utf8");
 }
 
-/** A file reader: how a suite turns the ledger path into validated entries.
- * `readLedgerAt` is the default; the advisory suite passes its own because it
- * asserts on rows the writer keyed differently. */
-export type LedgerReader = (file: string) => LedgerEntry[];
-
 /** The branch's latest lens entry — the row the round-cap rule and the merge
  * guard read. `rows` selects which entries a suite counts (default: this
  * branch's lens rows). */
@@ -91,6 +86,14 @@ export function latestLensEntry(
 ): LedgerEntry | undefined {
   return latestEntry(rows(read(ledgerFile)), branch, "lens");
 }
+
+/** How long `waitForLensRound` waits for the fire-and-forget write to land the
+ * row it is looking for. The writer's measured latency is two subprocess hops
+ * (a couple of hundred ms on an idle host); this is the headroom for a loaded
+ * one, chosen well under the smoke watchdog's per-test bound so a hung writer
+ * surfaces as this suite's own assertion, not as a watchdog kill naming the
+ * wrong thing. */
+const LENS_ROUND_WAIT_MS = 30_000;
 
 /** Wait until the branch's lens entry records round `n`. The ledger write is
  * fire-and-forget (#984), so a scenario reads the entry through this seam
@@ -133,14 +136,20 @@ export async function waitForLensRound(
   // across the whole loop) happened to leave the writer enough gaps to finish,
   // which is why this suite is green on a fast host and red on a loaded one.
   //
-  // So: `budgetMs: 0` (one read, never a blocking wait) plus the awaited 20 ms
-  // tick, which yields to the loop so the writer's git children can run. The
-  // bound is explicit and total rather than per-read: ~500 iterations x 20 ms is
-  // ≈ 10 s of wall clock, comfortably above the writer's measured latency and far
-  // below anything the watchdog would notice. It is a BUDGET, not an unbounded
-  // wait — when the predicate is never satisfied the loop ends on its own and
-  // returns null (the shared poll's contract), never the stale file.
+  // So: `once: true` (one read, never a blocking wait — #1145 round 3 replaced
+  // the `budgetMs: 0` that only LOOKED like a single read; see
+  // lib/wait-for-ledger.ts) plus the awaited 20 ms tick, which yields to the
+  // loop so the writer's git children can run.
+  //
+  // The bound is a WALL-CLOCK DEADLINE, not an iteration count. The old shape
+  // ("500 iterations × 20 ms ≈ 10 s") stated a bound it did not implement:
+  // `setTimeout(20)` is a floor, and a loop whose body also does a synchronous
+  // file read and parse under load runs each tick slower than 20 ms, so the
+  // real ceiling was however long 500 slow ticks take — a number that grows
+  // exactly when the host is loaded, which is the condition the wait exists for.
+  // A `Date.now()` deadline says the thing it means: this much time, no more.
   const tick = () => new Promise((r) => setTimeout(r, 20));
+  const deadlineMs = Date.now() + LENS_ROUND_WAIT_MS;
   const settled = (entries: LedgerEntry[]): boolean => rows(entries).some((e) => e.round === n);
   const rowOf = (entries: LedgerEntry[]): LedgerEntry | undefined =>
     latestEntry(rows(entries), branch, "lens");
@@ -148,11 +157,11 @@ export async function waitForLensRound(
   // `readLedgerAt`, which swallows a parse error to `[]`: a torn or malformed
   // file must not read as "no such round" here either.
   const attempt = (): LedgerEntry[] | null =>
-    waitForLedger(ledgerFile, { budgetMs: 0, until: settled });
+    waitForLedger(ledgerFile, { once: true, until: settled });
   const first = attempt();
   const firstRow = first ? rowOf(first) : undefined;
   if (firstRow?.round === n) return firstRow;
-  for (let i = 0; i < 500; i++) {
+  while (Date.now() < deadlineMs) {
     await tick();
     const entries = attempt();
     const row = entries ? rowOf(entries) : undefined;

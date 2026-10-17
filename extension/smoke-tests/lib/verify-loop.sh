@@ -150,12 +150,20 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX \
 # in-fixture `git config user.email`), and ensureGitIdentity in
 # lib/git-worktree-fixture.ts supplies the GIT_AUTHOR/GIT_COMMITTER fallback.
 # A test that genuinely needs the real home reads os.homedir(), which bun
-# snapshots at process start, or PI_ENSEMBLE_TEST_REAL_HOME (lib/git-test-env.ts).
+# snapshots at process start (the isolated HOME this block exports never reaches
+# it). There is deliberately no `PI_ENSEMBLE_TEST_REAL_HOME` export: it was
+# documented as the consumer-facing spelling of the same thing, nothing read it,
+# and a second way to name a value with one correct reader is a second way to
+# get it wrong.
 #
 # Operator escape hatch: PI_ENSEMBLE_SMOKE_HOST_GIT=1 runs the suite against
 # the host's real git config (debugging a fixture that only misbehaves here).
 # It is not a bypass for the gate: .pi/verify-cmd and CI do not set it, so the
-# default for every gate run is isolated.
+# default for every gate run is isolated. It is NOT silent — see the loud line
+# in the else branch: a fixture suite whose verdict depends on the operator's
+# `~/.config/git/ignore` is exactly the state #1145 exists to make visible, and
+# a bypass nobody can see is how that state comes back.
+_git_iso=""
 if [ "${PI_ENSEMBLE_SMOKE_HOST_GIT:-}" != "1" ]; then
   _git_iso="$(mktemp -d "${TMPDIR:-/tmp}/verify-loop-gitiso.XXXXXX" 2>/dev/null)" || _git_iso=""
   if [ -n "$_git_iso" ]; then
@@ -173,13 +181,23 @@ if [ "${PI_ENSEMBLE_SMOKE_HOST_GIT:-}" != "1" ]; then
     # lib/git-test-env.ts exports so the two levers agree on one directory.
     export XDG_CONFIG_HOME="$_git_iso/home/.config"
   else
-    # Could not allocate the isolation dir. Falling through to the host config
-    # is the status-quo shape; pointing git at a path that does not exist would
-    # fail every fixture with a confusing git error. But SAY SO — an
-    # unannounced pass on a host whose config corrupts the fixtures is the
-    # failure this block exists to prevent.
+    # Could not allocate the isolation dir: fall through to the host config
+    # rather than point git at a path that does not exist, but SAY SO. The
+    # re-clear below is what keeps the cleanup trap's `rm -rf` off whatever an
+    # unset `$TMPDIR` expands to — the assignment on the mktemp line has already
+    # run by this point, so without it the trap could inherit a bare relative
+    # path from the failed substitution.
     echo "warn: verify-loop: could not allocate the git-isolation dir — tests run against the HOST's global git config; fixtures that assert on untracked paths may misjudge" >&2
+    _git_iso=""
   fi
+else
+  # The same class of announcement the allocation-failure branch above makes,
+  # for the case where the operator asked for it: the run is against the host's
+  # git config, so a green suite here is not the isolated verdict .pi/verify-cmd
+  # and CI produce. Written once for the whole run rather than per test — the
+  # per-test half of this lives in lib/git-test-env.ts, which traces which shape
+  # its own helper chose.
+  echo "WARNING [verify-loop]: PI_ENSEMBLE_SMOKE_HOST_GIT=1 — HOST GIT CONFIG IN USE — isolation disabled. Fixture git views depend on this machine's git config; this run is NOT the isolated verdict CI produces." >&2
 fi
 
 # #1017 — forbid live spawns in every offline test. Any offline test that
@@ -316,6 +334,13 @@ _extra_cleanup() {
   rm -f ${_extra_captures[*]:-} || :
   if [ -n "$RUN_DIR" ]; then rm -rf "$RUN_DIR" || :; fi
   if [ -n "${_ledger_tmp_dir:-}" ]; then rm -rf "${_ledger_tmp_dir}" || :; fi
+  # #1145 round 3 — the git-isolation temp dir exported at the top of this file
+  # (`HOME`, `XDG_CONFIG_HOME`, an empty `GIT_CONFIG_GLOBAL`) was never removed:
+  # every gate run left a 0700 directory in TMPDIR for the life of the machine,
+  # and a suite re-run in a loop accumulates them. Same `|| :` discipline as the
+  # three lines above — the EXIT trap's last status IS the shell's exit status,
+  # so a cleanup that can fail must not be the thing that decides the verdict.
+  if [ -n "${_git_iso:-}" ]; then rm -rf "$_git_iso" || :; fi
 }
 trap '_extra_cleanup' EXIT
 

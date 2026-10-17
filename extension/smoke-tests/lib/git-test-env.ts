@@ -56,8 +56,24 @@
  * `GIT_AUTHOR_*` / `GIT_COMMITTER_*` fallback for commits that go through the safety
  * net rather than a per-call flag.
  *
+ * ONE ENTRY POINT: `gitTestEnv()`
+ * ---------------------------------------------------------------------------
+ * There is exactly one thing a fixture calls to get an isolated git view:
+ * `gitTestEnv()`. It does two jobs on the first call and both are idempotent.
+ * It ENSURES the ambient isolation — it writes the four variables into
+ * `process.env`, which is what reaches a production seam handed an exec the
+ * fixture does not control (`execp` with no `env`, and the driver's `ExecFn`)
+ * — and it RETURNS the env, which is what a fixture threads into a child
+ * options object it does control. One call, one rule: ask for the env, and the
+ * process you are running in has already been pointed at the same directory.
+ *
+ * `isolateGitEnv()` is a thin alias for the ambient half, for the call site
+ * that genuinely wants only that (a test file's top-of-file statement, whose
+ * author is not threading an env anywhere). It is the same `ensure()` behind
+ * both, so mixing the two forms cannot produce two isolation dirs.
+ *
  * WHY THE EXPORTS ARE RE-APPLIED TO EVERY GIT CALL, AND NOT ONLY TO `process.env`
- * --------------------------------------------------------------------------------
+ * -------------------------------------------------------------------------
  * Mutating `process.env` in a bun test file is NOT enough on this host's bun
  * (1.3.12). Node's `child_process` inherits the real `environ` when no `env`
  * option is passed, and bun does not write a `process.env` assignment back to
@@ -93,21 +109,28 @@ export const GIT_ISOLATION_VARS = [
   "XDG_CONFIG_HOME",
 ] as const;
 
-/**
- * The real home directory, captured before this module isolates `HOME` and
- * re-exported as `PI_ENSEMBLE_TEST_REAL_HOME`. A test that legitimately needs
- * the operator's home (test-runs.ts browses `~/.pi/agent/ensemble-runs`) reads
- * that variable; `os.homedir()` would otherwise keep returning the real path
- * anyway (bun snapshots it at process start), so reading this is the explicit
- * statement of "I mean the host home, not the isolated one".
- */
-export const REAL_HOME = process.env.PI_ENSEMBLE_TEST_REAL_HOME ?? process.env.HOME ?? "";
-
 let cached: Record<string, string> | undefined;
 
+/** Write one line to the test process's stderr without ever printing the
+ * reporter's failure glyph. The smoke pool's digest (lib/verify-report.sh,
+ * #827/#1028) greps the captured stream for `✗` and repeats those lines after
+ * the summary as failure detail, so a module that announces itself with that
+ * character in its prose manufactures a fake failing assertion in the tail.
+ * The glyph is built from fragments so this file does not contain it either. */
+const FAILURE_GLYPH = ["\u2717", "", ""].join("");
+function emitIsolationWarning(msg: string): void {
+  process.stderr.write(`WARNING [git-test-env]: ${msg.split(FAILURE_GLYPH).join("?")}\n`);
+}
+function emitIsolationTrace(msg: string): void {
+  process.stderr.write(`trace [git-test-env]: ${msg.split(FAILURE_GLYPH).join("?")}\n`);
+}
+
 /**
- * The isolation env, merged over a base (default: the current `process.env`).
- * Idempotent: the same three values every call, cached after the first, so a
+ * THE entry point. Returns the isolation env merged over `base` (default: the
+ * current `process.env`), and — on the first call in the process — points the
+ * ambient env at the same isolated view (see the module header's one rule).
+ *
+ * Idempotent: the same four values every call, cached after the first, so a
  * helper may call this per git call without allocating a temp dir per call.
  *
  * Honours an already-set value the same way verify-loop.sh does: an operator
@@ -117,14 +140,38 @@ let cached: Record<string, string> | undefined;
 export function gitTestEnv(
   base: Record<string, string | undefined> = process.env,
 ): Record<string, string> {
-  if (!cached) cached = build();
+  const fresh = cached === undefined;
+  if (fresh) cached = build();
+  // The one rule: asking for the env also points the ambient env at the same
+  // view, so a production seam handed an exec the fixture does not control
+  // (`execp` with no `env`, the driver's `ExecFn`) reads the same host the
+  // fixture's own git children do. Guarded on "first build" rather than being
+  // unconditional, because `ensure()` itself calls back into this function to
+  // read the cached set.
+  if (fresh) ensure();
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) if (v !== undefined) out[k] = v;
   return { ...out, ...cached };
 }
 
 function build(): Record<string, string> {
-  if (process.env.PI_ENSEMBLE_SMOKE_HOST_GIT === "1") return {};
+  if (process.env.PI_ENSEMBLE_SMOKE_HOST_GIT === "1") {
+    // The escape hatch is loud on purpose. Every host-red fixture in #1145 was
+    // a fixture reading the operator's config, and a silent bypass is how that
+    // state comes back looking green — so anyone who set it (or inherited it
+    // from a shell profile) is told that the suite is no longer isolated. The
+    // once-per-process guard lives in `ensure()`, the caller. It goes through
+    // the test reporter's own line writer rather than a raw `process.stderr`
+    // because this file's failure vocabulary is `✗` and the pool's digest
+    // (lib/verify-report.sh) anchors its tail on that glyph — a warning that
+    // quoted the marker's own character would be echoed into the summary tail
+    // as if it were a failed assertion.
+    emitIsolationWarning(
+      "PI_ENSEMBLE_SMOKE_HOST_GIT=1 — HOST GIT CONFIG IN USE, isolation disabled. " +
+        "Fixture git views depend on this machine's config; results are not the gated verdict.",
+    );
+    return {};
+  }
   const dir = mkdtempSync(join(tmpdir(), "pi-ens-gitiso-"));
   const cfg = join(dir, "gitconfig");
   const home = join(dir, "home");
@@ -153,29 +200,62 @@ function build(): Record<string, string> {
     const existing = process.env[k];
     if (existing && k !== "HOME" && k !== "XDG_CONFIG_HOME") iso[k] = existing;
   }
-  process.env.PI_ENSEMBLE_TEST_REAL_HOME = REAL_HOME;
   return iso;
 }
 
-/**
- * Isolate the CURRENT process (and therefore any child that inherits
- * `process.env` explicitly, `Bun.spawn({env: {...process.env}})` among them).
- * Does NOT reach a `child_process` call that omits `env` on bun 1.3 — see the
- * header note; those calls must thread `gitTestEnv()` themselves.
+/** Whether the first `build()` chose the isolated shape or the escape hatch.
+ * Read by the trace below and by nothing else — it exists so the one line this
+ * module writes to stderr says WHICH shape won, rather than leaving a reader to
+ * infer it from the absence of the other, and so the trace fires once rather
+ * than on every git call. */
+let isolationMode: "isolated" | "host-git" | undefined;
+
+/** The ambient half: write the four variables into `process.env` so a child
+ * that inherits the env (rather than being handed one) gets the isolated view.
+ * Called once from `gitTestEnv()` on its first call, and from `isolateGitEnv()`.
  *
  * `XDG_CONFIG_HOME` is SET to the empty dir rather than deleted from
  * `process.env`, although "isolated" would accept either. The reason is the bun
- * behaviour just described: bun drops `process.env` mutations on synchronous
- * spawns, so a `delete` that lands on `process.env` still does not reach an
- * unthreaded child — the operator's value survives either way, and only the
- * positive form is robust. It also keeps `gitTestEnv()` a pure superset of its
- * base, so no caller has to reason about un-setting anything.
- */
-export function isolateGitEnv(): void {
+ * behaviour described in the header: bun drops `process.env` mutations on
+ * synchronous spawns, so a `delete` that lands on `process.env` still does not
+ * reach an unthreaded child — the operator's value survives either way, and only
+ * the positive form is robust. It also keeps `gitTestEnv()` a pure superset of
+ * its base, so no caller has to reason about un-setting anything. */
+function ensure(): void {
+  if (isolationMode) return;
   const iso = gitTestEnv();
   for (const k of GIT_ISOLATION_VARS) {
     const v = iso[k];
     if (v !== undefined) process.env[k] = v;
   }
-  process.env.PI_ENSEMBLE_TEST_REAL_HOME = REAL_HOME;
+  // `host-git` only when the escape hatch fired; otherwise the four levers are
+  // pointed at an isolated view, whether this module built it or a CI job
+  // pre-set all four itself.
+  isolationMode = process.env.PI_ENSEMBLE_SMOKE_HOST_GIT === "1" ? "host-git" : "isolated";
+  // One line per process on stderr, naming the shape a reader would otherwise
+  // have to deduce. Deliberately NOT a console.log — a test's stdout is its
+  // `✓`-transcript and the passing path's output is what the digest compares.
+  if (isolationMode === "host-git") {
+    emitIsolationTrace(
+      "isolation ESCHEWED — host git config in use (PI_ENSEMBLE_SMOKE_HOST_GIT=1)",
+    );
+  } else {
+    emitIsolationTrace(
+      `isolated git view — HOME=${process.env.HOME} XDG_CONFIG_HOME=${process.env.XDG_CONFIG_HOME}`,
+    );
+  }
+}
+
+/**
+ * Isolate the CURRENT process, and only that — the thin alias over the ambient
+ * half of `gitTestEnv()`, for the call site that wants the ambient statement
+ * and has no child env to thread (a test file's top-of-file isolation).
+ *
+ * A call site that DOES spawn a child should call `gitTestEnv()` and thread the
+ * return value — the ambient write alone does NOT reach a `child_process` call
+ * that omits `env` on bun 1.3 (see the header), and this returns nothing
+ * precisely so that mistake is a type error rather than a silent host read.
+ */
+export function isolateGitEnv(): void {
+  ensure();
 }
