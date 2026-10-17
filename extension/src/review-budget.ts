@@ -98,9 +98,18 @@ export const MIN_REVIEW_BUDGET_MS = 10 * 60 * 1000;
  * reads as broken with no diagnostic. A fault that changes an outcome is
  * exactly what `traceWarn` exists for.
  *
- * The raw value is bounded before interpolation: it is operator input going to
- * stderr (mirrored into the TUI), so an ANSI control sequence in it could alter
- * terminal rendering. Length-bounded, truncated with an ellipsis.
+ * The raw value is bounded before interpolation, and the bound is on VOLUME,
+ * not CONTENT: `boundRaw()` caps how much of an untrusted operator-supplied env
+ * value is echoed to the terminal, for log legibility. It is NOT a content
+ * sanitiser — an escape byte inside the first 80 chars reaches
+ * `process.stderr.write` unchanged.
+ *
+ * Full sanitisation is deliberately not done here. At this repo's trust model
+ * (AGENTS.md §3 — the sandbox is not the trust boundary; the operator's own
+ * shell is the trust authority), any value that reaches `process.stderr.write`
+ * also reaches `/bin/sh`, so stripping control bytes at this call site would
+ * be theatre rather than a security boundary. Sanitising untrusted text for
+ * rendering is `dispatch-deck-line.ts`'s job (`sanitizeText`), not this one's.
  */
 const MAX_REJECTED_VALUE_CHARS = 80;
 
