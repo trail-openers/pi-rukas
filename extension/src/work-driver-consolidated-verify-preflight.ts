@@ -64,26 +64,73 @@ export async function readRepoRootPreflight(
     maxBuffer: 1024 * 1024,
   });
   const candidateLines = rootStatus.split("\n");
+  // #1421 fix round (lens) — the candidate paths, built ONCE. Both the probe
+  // and the classifier used to re-derive their own view of the same list, and
+  // the probe re-spreading the ignored set into it meant every `!!` path the
+  // status read printed went back to git as a question — paths the classifier
+  // then honoured without consulting the answer. One list, derived from the
+  // `??` lines only (`!!` lines are git's own answer already), de-duplicated,
+  // is the source for both. The probe's candidates do not need the ignored
+  // listing — only the extra driver-observed lines below do — so the two git
+  // reads start together.
+  const candidatePaths = new Set<string>();
+  for (const line of candidateLines) {
+    if (line.trim().length === 0) continue;
+    // `!!` lines carry git's own verdict; anything else is a path to ask about.
+    if (line.trimStart().startsWith("!!")) continue;
+    const norm = normaliseRepoPath(line.slice(2));
+    if (norm.length > 0) candidatePaths.add(norm);
+  }
   // #1421 — git's own opinion about which of these paths are ignored output.
   // `undefined` (the read failed) classifies every path as dirt, so a gate
   // that cannot tell still refuses: the fail-closed direction is the pre-#1421
   // behaviour, never "nothing is ignored".
-  const ignored = await readIgnoredPaths(execFn, repoRoot);
-  // #1421 fix round — the direct per-path probe, whose three answers (a set /
-  // an empty set / undefined) the classifier reads separately. The candidates
-  // are the status lines PLUS the directory paths the ignored listing named:
-  // with `-uall` git never walks into a wholly-ignored directory, so the
-  // descendants of `!! target/` are absent from `rootStatus` and the listing is
-  // the only witness to them — the exact question the probe answers. The FILE
+  //
+  // #1421 fix round (lens) — the two git reads run CONCURRENTLY. The probe's
+  // candidates are the status-derived `??` paths above, so they do not wait on
+  // the ignored listing; the extra directory paths the listing names are
+  // probed afterwards, which is the only half that genuinely depends on it.
+  // Probe candidates: the untracked paths the STATUS read printed, each asked
+  // exactly once (the Set is the de-duplication).
+  const probePaths = [...candidatePaths];
+  const [ignored, statusProbed] = await Promise.all([
+    readIgnoredPaths(execFn, repoRoot),
+    probeIgnored(
+      execFn,
+      repoRoot,
+      probePaths.map((p) => `?? ${p}`),
+    ),
+  ]);
+  // The directory paths the ignored listing named: with `-uall` git never
+  // walks into a wholly-ignored directory, so the descendants of `!! target/`
+  // are absent from `rootStatus` and the listing is the only witness to them —
+  // the exact question the probe answers. They are asked as their own batch
+  // precisely because `check-ignore` is not transitive: a bare directory name
+  // does not answer for the files under it, which is why the pre-fix shape
+  // probed `target/` and got nothing useful for `target/.cargo-lock`. The FILE
   // forms are not asked: a path git already printed as `!!` needs no second
   // opinion, and asking anyway would let one artifact whose status git will not
   // report (a lock file, a nested path it never listed) fail the whole probe
   // and turn a root of pure build output into a refusal on a technicality.
-  const probeLines = [
-    ...candidateLines,
-    ...[...(ignored ?? [])].filter((p) => p.endsWith("/")).map((p) => `?? ${p}`),
+  const ignoredDirs = [...(ignored ?? [])].filter((p) => p.endsWith("/"));
+  // One candidate per collapsed directory: a path under it, asked so the probe
+  // covers descendants the status read never walked into (`check-ignore` is not
+  // transitive — a bare `target/` does not answer for `target/.cargo-lock`).
+  const observedDirs = [
+    ...new Set(ignoredDirs.map((p) => `${p.replace(/\/$/, "")}/driver-observed-residue`)),
   ];
-  const probeResult = await probeIgnored(execFn, repoRoot, probeLines);
+  // The second probe keeps the same three-state answer as the first: `undefined`
+  // (git could not answer this half) voids the whole probe answer, exactly as
+  // the sequential shape did, and never leaves a partial union behind.
+  let probed = statusProbed;
+  if (probed !== undefined && observedDirs.length > 0) {
+    const extra = await probeIgnored(
+      execFn,
+      repoRoot,
+      observedDirs.map((p) => `?? ${p}`),
+    );
+    probed = extra === undefined ? undefined : new Set([...probed, ...extra]);
+  }
   // The candidate LINES the classifier adjudicates: what the status read
   // produced, plus one line for every ignored DIRECTORY that read did not
   // mention — the descendant of a collapsed directory
@@ -91,18 +138,8 @@ export async function readRepoRootPreflight(
   // never walks into and which would otherwise leave the gate with "no dirt,
   // no residue": a pass with nothing classified. `!!` lines git printed itself
   // need no addition; the classifier already honours them.
-  const listedPaths = new Set(
-    candidateLines.filter((l) => l.trim().length > 0).map((l) => normaliseRepoPath(l.slice(2))),
-  );
-  const classifiedLines = [
-    ...candidateLines,
-    ...[...(ignored ?? [])]
-      .filter((p) => p.endsWith("/"))
-      .map((p) => `${p.replace(/\/$/, "")}/driver-observed-residue`)
-      .filter((p) => p.length > 0 && !listedPaths.has(p))
-      .map((p) => `?? ${p}`),
-  ];
-  const classified = classifyRootDirt(classifiedLines, ignored, exempt, probeResult);
+  const classifiedLines = [...candidateLines, ...observedDirs.map((p) => `?? ${p}`)];
+  const classified = classifyRootDirt(classifiedLines, ignored, exempt, probed);
   if (classified.dirt.length > 0) {
     trace("work-driver: consolidated verify — repoRoot dirty, refusing to consolidate");
     const residueNote =
@@ -113,7 +150,7 @@ export async function readRepoRootPreflight(
     // and a bare "repoRoot is dirty" would have the operator deleting files git
     // had already declared output. The trace goes to stderr; the refusal is
     // what gets read.
-    const unknownNote = probeResult === undefined ? "; the ignored-status probe could not run" : "";
+    const unknownNote = probed === undefined ? "; the ignored-status probe could not run" : "";
     return {
       status: "conflict",
       kind: "dirty-root",

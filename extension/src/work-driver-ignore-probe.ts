@@ -12,8 +12,10 @@
  *     still COLLAPSES a wholly-ignored directory to one `!! target/` entry and
  *     never prints the files inside it, which is precisely the residue the
  *     incident charged as dirt.
- *   - `probeIgnored` asks `git check-ignore --no-index -- <paths…>` per path,
- *     which is exact and independent of how git chose to print the tree.
+ *   - `probeIgnored` asks `git check-ignore --no-index -- <paths…>`, batching
+ *     the candidates into argv groups of ≤`IGNORE_PROBE_BATCH` and running up
+ *     to `IGNORE_PROBE_CONCURRENCY` of those batches at a time, which is exact
+ *     and independent of how git chose to print the tree.
  *
  * `classifyRootDirt` consults both and needs BOTH to have answered before it
  * exempts anything, so both readers return THREE states, never two: a set (git
@@ -77,6 +79,20 @@ const IGNORE_PROBE_TIMEOUT_MS = 30_000;
 const IGNORE_PROBE_BATCH = 500;
 
 /**
+ * #1421 fix round (lens) — how many probe batches run at once. The batches are
+ * independent reads of one tree, so running them one after another costs the
+ * sum of their latencies for no benefit: a root with 2 000 untracked paths
+ * paid four sequential `git check-ignore` round-trips. Four in flight keeps
+ * the gate at a fraction of that while staying far below the descriptor and
+ * process limits an unbounded fan-out would reach.
+ *
+ * Module-private on purpose: the offline test asserts the behaviour (it
+ * measures the peak number of batches actually in flight) rather than the
+ * number, so nothing outside this file needs to name the bound.
+ */
+const IGNORE_PROBE_CONCURRENCY = 4;
+
+/**
  * Why an ignore probe could not ask git, in the words the trace carries.
  *
  * Both reads answer the same question — "is that path git's own output?" — and
@@ -103,8 +119,10 @@ function ignoreProbeFailure(err: unknown): string {
  * `-uall`, git lists ignored FILES under a tracked directory (`!! build/out.js`)
  * but collapses a wholly-ignored directory to `!! target/` — so a gate reading
  * only that output would classify `?? target/.cargo-lock` as dirt and refuse,
- * which is the incident. Hence the prefix set plus a direct probe per candidate
- * path, which is exact and independent of how git chose to print the tree.
+ * which is the incident. Hence the prefix set plus a batched direct probe —
+ * `git check-ignore --no-index`, ≤`IGNORE_PROBE_BATCH` paths per call and up to
+ * `IGNORE_PROBE_CONCURRENCY` calls in flight — which is exact and independent
+ * of how git chose to print the tree.
  *
  * Both sources come from `git status`, so `.gitignore`, `core.excludesFile`
  * and `.git/info/exclude` all count, and neither reimplements git's pattern
@@ -154,7 +172,10 @@ export async function readIgnoredPaths(
  * (`git check-ignore --no-index -- <paths…>`) rather than inferred from the
  * status listing, which collapses wholly-ignored directories.
  *
- * ONE git call per BATCH of ≤IGNORE_PROBE_BATCH paths, in the argv form: a
+ * ONE git call per BATCH of ≤IGNORE_PROBE_BATCH paths, with up to
+ * IGNORE_PROBE_CONCURRENCY batches in flight (the batches are independent
+ * reads of one tree, so sequencing them only adds their latencies), in the
+ * argv form: a
  * shell string that merely contains the word `git` is indistinguishable from a
  * verify command to an `ExecFn` that counts them separately, and a piped form
  * here was counted as a second verify run and silenced a flake-recovery test.
@@ -192,8 +213,28 @@ export async function probeIgnored(
   }
   const out = new Set<string>();
   if (candidates.length === 0) return out;
+  const batches: string[][] = [];
   for (let start = 0; start < candidates.length; start += IGNORE_PROBE_BATCH) {
-    const batch = candidates.slice(start, start + IGNORE_PROBE_BATCH);
+    batches.push(candidates.slice(start, start + IGNORE_PROBE_BATCH));
+  }
+  // #1421 fix round (lens) — the batches run concurrently, bounded to
+  // IGNORE_PROBE_CONCURRENCY in flight by a cursor each worker advances: no
+  // queue, no dependency, and the number of simultaneous children never
+  // grows with the size of the root. Failure semantics are UNCHANGED — any
+  // rejection that is not git's exit-1 answer still voids the whole answer,
+  // so the fail-closed contract does not depend on the order the batches
+  // settle in. Each worker catches its own rejection so a pool member never
+  // becomes an unhandled rejection while its siblings are still running.
+  let next = 0;
+  // `undefined` = no batch has failed; `true` = one did. A sentinel rather
+  // than the error itself, because a rejection whose only payload is `code:
+  // undefined` must still void the answer — the same three-state discipline
+  // the rest of this module keeps. `lastFailure` carries the reason the trace
+  // prints.
+  let failed = false;
+  let lastFailure: unknown;
+  const runBatch = async (batch: string[]): Promise<Set<string>> => {
+    const found = new Set<string>();
     try {
       // `git check-ignore` also reads paths from `--stdin`, but passing the
       // batch as trailing pathspec arguments is equivalent, needs no shell and
@@ -209,22 +250,41 @@ export async function probeIgnored(
       });
       for (const line of stdout.split("\n")) {
         const norm = normaliseRepoPath(line);
-        if (norm.length > 0) out.add(norm);
+        if (norm.length > 0) found.add(norm);
       }
+      return found;
     } catch (err) {
       const e = err as Error & { killed?: boolean };
       const code = exitCodeOf(err);
       // Exit 1 is git's answer, not git's failure: "none of these are ignored".
       // The empty set is then correct information, and the caller keeps its
       // fail-closed dirt list on the strength of the read, not a guess.
-      if (code === 1 && e.killed !== true) continue;
-      traceWarn(
-        `work-driver: probeIgnored could not ask git ${ignoreProbeFailure(err)} — the ignored set is unknown, so every untracked path is charged as dirt (fail closed)`,
-      );
-      // Fail CLOSED on the whole answer, not the batch: a union of the batches
-      // that answered would exempt paths on a partial read.
-      return undefined;
+      if (code === 1 && e.killed !== true) return found;
+      lastFailure = err;
+      failed = true;
+      return found;
     }
+  };
+  const worker = async (): Promise<void> => {
+    while (!failed && next < batches.length) {
+      const batch = batches[next];
+      next++;
+      if (batch === undefined) continue;
+      for (const norm of await runBatch(batch)) out.add(norm);
+    }
+  };
+  const pool: Promise<void>[] = [];
+  for (let i = 0; i < Math.min(IGNORE_PROBE_CONCURRENCY, batches.length); i++) {
+    pool.push(worker());
+  }
+  await Promise.all(pool);
+  if (failed) {
+    traceWarn(
+      `work-driver: probeIgnored could not ask git ${ignoreProbeFailure(lastFailure)} — the ignored set is unknown, so every untracked path is charged as dirt (fail closed)`,
+    );
+    // Fail CLOSED on the whole answer, not the batch: a union of the batches
+    // that answered would exempt paths on a partial read.
+    return undefined;
   }
   return out;
 }

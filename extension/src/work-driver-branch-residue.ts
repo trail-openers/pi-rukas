@@ -102,13 +102,17 @@ export async function readRepoRootDirt(
   // the consolidated verify's identical refusal 50 minutes later) parked
   // finished work. The ignored read failing classifies everything as dirt —
   // the pre-#1421 shape — so this narrowing can never weaken the gate.
-  const ignored = await readIgnoredPaths(execFn, repoRoot);
-  const classified = classifyRootDirt(
-    dirt,
-    ignored,
-    exempt,
-    await probeIgnored(execFn, repoRoot, dirt),
-  );
+  //
+  // #1421 fix round (lens) — the two git reads run CONCURRENTLY. Here (unlike
+  // the consolidated verify's preflight) the probe's candidates are exactly
+  // the status lines, so neither read waits on the other; each still fails
+  // closed on its own, and `classifyRootDirt` refuses on either being
+  // `undefined`.
+  const [ignored, probed] = await Promise.all([
+    readIgnoredPaths(execFn, repoRoot),
+    probeIgnored(execFn, repoRoot, dirt),
+  ]);
+  const classified = classifyRootDirt(dirt, ignored, exempt, probed);
   return classified.dirt.length > 0 ? classified.dirt : undefined;
 }
 
