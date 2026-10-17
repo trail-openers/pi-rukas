@@ -218,12 +218,13 @@ initEnv();
     `the hold names the CLOSED state as the reason (got ${r.state?.pipelineState.mergeHold?.evidenceReason})`,
   );
   assert(
-    // The fixture's `prViewJson` always emits `"state"`, so a line carrying
-    // `"state":"CLOSED"` is a wide-prView answer; the evidence probe's own
-    // stdout is not recorded as a line. Asserting no wide read said CLOSED is
-    // what makes "the gate refused" exclusive to the gate.
-    r.log.calls.every((c) => !c.includes('"state":"CLOSED"')),
-    "no wide `gh pr view` answer said CLOSED — only the evidence gate's own probe reported the closed PR",
+    // `calls` holds the command LINES the seam was handed, never the answers it
+    // gave back — a JSON blob in a command line is not an answer, so asserting
+    // on `calls` could not fail however CLOSED the wide read was. The answers
+    // are recorded separately, and the exclusivity lives on the field that
+    // actually carries them: `prViewAnswers`.
+    r.log.prViewAnswers.every((a) => !a.includes('"state":"CLOSED"')),
+    `no wide \`gh pr view\` ANSWER said CLOSED — only the evidence gate's own probe reported the closed PR (${r.log.prViewAnswers.join(" | ") || "no wide prView was asked"})`,
   );
   assert(r.log.mergeCmds.length === 0, "a PR that is not OPEN is never merged");
   assertLogClean(assert, r.log);
