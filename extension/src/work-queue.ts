@@ -57,6 +57,13 @@ export type {
   QueueSummary,
 } from "./work-queue-types.ts";
 import type { GroupOutcome, IssueGroup, QueueEntry, QueueSummary } from "./work-queue-types.ts";
+// #1101 fix-round — `deferred` is typed as the wait list's own entry shape
+// rather than an inline `{gi, group}` literal: `work-queue-waitlist.ts` owns
+// that record and `dropDeferred`/`isDeferred` mutate it, so a literal here is a
+// second definition of somebody else's type. `dropDeferred` is reached through
+// the worker; `isDeferred` is what `sweepStranded` asks before it reports a
+// group as abandoned-while-waiting rather than simply never-reached.
+import { isDeferred } from "./work-queue-waitlist.ts";
 // #676 — re-exported so importers of work-queue keep working; the predicates
 // live in work-queue-overlap.ts.
 export { groupPathsOverlap, overlappingSiblingIds } from "./work-queue-overlap.ts";
@@ -219,7 +226,6 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
   // Keyed by original index so the summary is deterministic regardless of the
   // order groups actually finish in.
   const entries = new Map<number, QueueEntry>();
-  const claimed = new Set<string>();
   // #1093 — the operator's checkout, read ONCE before any group starts. A group
   // that leaves repoRoot on its own branch (a failed restore) must not become
   // a sibling's start ref, so every group stamps this value, not a re-read.
@@ -241,9 +247,9 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
     cursor: 0,
     halted: false,
     entries,
-    claimed,
     // #1101 — who has taken a group. Set alongside `inFlight` on every claim,
-    // read by the scan (to skip) and by `finish()` (to report).
+    // read by the scan (to skip) and by `finish()` (to report). A pre-flight
+    // cycle park (`owners` below) also marks it, so no worker can pick it up.
     owners: new Set<string>(),
     // #1101 — groups the scan could not claim live here, not on the cursor:
     // sat-on-at-the-cursor is what let one blocked group wedge the whole
@@ -276,8 +282,11 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
     for (const [gi, g] of groups.entries()) {
       if (g.issues[0] === undefined) continue;
       if (!(opts.cyclic ?? []).includes(g.id)) continue;
-      claimed.add(g.id);
+      // `owners` is what keeps a worker from re-examining a group; `claimed`
+      // never guarded the scan (`work-queue-waitlist.ts` says why) and is gone.
+      state.owners.add(g.id);
       state.settled.add(g.id);
+      state.resolved.add(g.id);
       state.outcomeOf.set(g.id, "parked");
       const others = (opts.dependencies?.[g.id]?.blockingGroupIds ?? []).join(", ") || g.id;
       entries.set(gi, {
@@ -292,7 +301,12 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
   }
 
   await Promise.all(Array.from({ length: cap }, () => runQueueWorker(state)));
-  const summary = finish(entries, groups, claimed, state);
+  // #1101 fix-round — a halt abandons every group that was still waiting. The
+  // workers return on `state.halted` without giving them an outcome, so the
+  // index kept only "Not started: group-x" — no reason, no action, nothing for
+  // `/work-status` to render. Be explicit before the queue writes its summary.
+  sweepStranded(state);
+  const summary = finish(entries, groups, state);
   // #382 — the summary is the most actionable state the run produces: which
   // groups parked, why, and what a human has to do about each. It used to
   // exist only in the scrollback of the session that produced it, so walking
@@ -319,10 +333,53 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
   return summary;
 }
 
+/**
+ * Give an explicit park reason to a group the queue abandoned WHILE WAITING.
+ *
+ * Narrow on purpose, because the neighbouring concept must stay untouched:
+ * #368's `notStarted` is the honest report for a group the queue simply never
+ * reached — a halt stopped the scan before the cursor got there, no wait was
+ * ever involved, and turning that into a `parked` row would inflate the parked
+ * column and tell the operator the queue had judged the group. The case this
+ * sweep exists for is different and was invisible: a group the scheduler had
+ * already DEFERRED — one it was actively holding behind a dependency or an
+ * in-flight sibling — when the halt released every worker. That group was the
+ * queue's business, and it left with no entry at all.
+ *
+ * So the three conditions are: no entry (nothing reported it), no `resolved`
+ * mark (nothing answered for it), and it was in the wait list (the queue was
+ * holding it). The reason names what it was waiting on, which is the finding
+ * the `Not started` line could not carry.
+ */
+function sweepStranded(state: WorkerState): void {
+  for (const [gi, g] of state.groups.entries()) {
+    if (state.entries.has(gi)) continue;
+    if (state.resolved.has(g.id)) continue;
+    // Only a group the queue had taken into the wait list — an untouched
+    // group behind the halt belongs to `notStarted`, which `finish()` renders.
+    if (!isDeferred(state, g.id)) continue;
+    const waitingOn = state.dependencies[g.id]?.blockingGroupIds ?? [];
+    const blocker =
+      waitingOn.length > 0
+        ? `dependency group(s) ${waitingOn.join(", ")}`
+        : `the queue halted before it dispatched ${g.id}`;
+    state.outcomeOf.set(g.id, "parked");
+    state.resolved.add(g.id);
+    state.settled.add(g.id);
+    state.entries.set(gi, {
+      groupId: g.id,
+      issues: g.issues,
+      outcome: "parked",
+      reason: `cap queue-stranded:${blocker}`,
+      humanAction: `the queue halted while ${g.id} was still waiting on ${blocker} — resolve the halt /work-status reports, then re-run \`/work ${g.issues.join(" ")} --restart\`; this group never started, so nothing was built`,
+    });
+    trace(`work-queue: ${g.id} parked — the queue stopped while it was waiting (${blocker})`);
+  }
+}
+
 function finish(
   entries: Map<number, QueueEntry>,
   groups: IssueGroup[],
-  claimed: Set<string>,
   state: WorkerState,
 ): QueueSummary {
   // Never-claimed, not "everything after the last index". With K workers

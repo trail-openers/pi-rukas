@@ -210,8 +210,6 @@ export function recordQueuePark(
   cap: QueueWaitCap | "dependency-parked",
   detail: string,
 ): void {
-  const issues = g.issues.join(", #");
-  const rerun = `/work ${g.issues.join(" ")} --restart`;
   // The reason string is what `humanActionFor` and the renderers pattern on.
   // #1101's contract names it `dependency-parked:#N` — with the colon — and
   // `humanActionFor` reads it back with `/cap dependency-parked:(\S+)/`, so
@@ -225,11 +223,15 @@ export function recordQueuePark(
   // entries for one group would be counted twice by the summary and printed
   // twice to the operator.
   if (state.entries.has(gi)) return;
-  // A queue-level park is an outcome too. Without this the group stayed in
-  // `settled`-but-unresolved, so `stillWaiting` kept a waiter alive over a
-  // group that had already been reported — and a group that had only ever
-  // waited looked identical to one that had finished, which is the
-  // distinction `drainDeferred` needs before it will re-dispatch anything.
+  // #1101 fix-round — the duplicate-entry guard must NOT skip the marks. Two
+  // routes can reach a park for the same group (a cap racing a settle, the scan
+  // racing the drain), and when the second one arrives the entry is already
+  // there — but `resolved`/`outcomeOf` are what `stillWaiting`, `finish()` and
+  // `drainDeferred` decide on, and a group that reached this function twice
+  // while only the first pass stamped them was left looking "never answered".
+  // The entry is deduplicated; the answer is not. The action is built by
+  // `humanActionFor` rather than an inline copy of its text, so the two cannot
+  // drift — that is the reason the function exists.
   state.resolved.add(g.id);
   state.outcomeOf.set(g.id, "parked");
   state.entries.set(gi, {
@@ -237,9 +239,6 @@ export function recordQueuePark(
     issues: g.issues,
     outcome: "parked",
     reason,
-    humanAction:
-      cap === "dependency-parked"
-        ? `get #${issues}'s dependency ${detail} merged (or drop the declared dependency from its body), then re-run \`${rerun}\` — this group never started, so nothing was built`
-        : `inspect .pi/work-state/${g.issues[0]}.json and re-run \`${rerun}\` — this group never started, so nothing was built`,
+    humanAction: humanActionFor(reason, g.issues[0] as number),
   });
 }

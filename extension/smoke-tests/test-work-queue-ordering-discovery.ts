@@ -60,8 +60,11 @@ function g(id: string, issue: number, paths: string[] = []): IssueGroup {
     ["blocked by", "blocked by #12"],
     ["blocked-by colon", "Blocked-by: #12"],
     ["blocked on", "blocked on #12"],
-    ["requires", "requires #12"],
+    // `requires` in its MARKER forms only — see the module header of
+    // work-queue-deps.ts. A colon, or alone on its own line.
     ["requires colon", "Requires: #12"],
+    ["requires lowercase colon", "requires: #12"],
+    ["requires on its own line", "notes\nrequires #12"],
     ["predecessors", "predecessors are #12"],
   ];
   for (const [label, phrasing] of phrasings) {
@@ -81,6 +84,14 @@ function g(id: string, issue: number, paths: string[] = []): IssueGroup {
     "part of #12",
     "duplicate of #12",
     "this depends on the API being stable",
+    // #1101 fix-round — the broad verb, in prose. `requires` is ordinary
+    // English; the others are ordering vocabulary. A mid-sentence `requires #N`
+    // is a property being described, not a schedule being declared, and the
+    // false positive here is the expensive kind: the dependent waits behind a
+    // group that was never its dependency and then gets parked blaming it.
+    "this requires #12 to be understood first",
+    "the module requires #12 semantics to hold",
+    "we require #12 before merging",
   ]) {
     const deps = orderingDependencies(`title: x\n\n${notOrdering}`);
     assert(

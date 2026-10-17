@@ -51,11 +51,12 @@ import {
 } from "./work-queue-outcome.ts";
 import type { GroupOutcome, IssueGroup, QueueEntry } from "./work-queue-types.ts";
 import { dropDeferred, isDeferred } from "./work-queue-waitlist.ts";
+import type { WaitEntry } from "./work-queue-waitlist.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /** Everything the loop touches, owned by `runWorkQueue` and mutated through
  * this object. Passed by reference on purpose: the worker's whole job is to
- * move groups between `claimed`, `inFlight`, `settled` and `merged`, and a
+ * move groups between `inFlight`, `owners`, `settled` and `merged`, and a
  * copy would freeze the very state the scheduler reads. */
 export interface WorkerState {
   repoRoot: string;
@@ -74,14 +75,13 @@ export interface WorkerState {
   cursor: number;
   halted: boolean;
   entries: Map<number, QueueEntry>;
-  claimed: Set<string>;
   /**
    * Groups that could not be claimed on the first pass and are being waited
    * on. Held outside the cursor so the scan reaches everything behind them
    * (see the module header); each worker re-tests all of them whenever any
    * group settles.
    */
-  deferred: Array<{ gi: number; group: IssueGroup }>;
+  deferred: WaitEntry[];
   /** groupId → the cursor position it was claimed at. */
   inFlight: Map<string, number>;
   /**
@@ -172,9 +172,9 @@ export async function runQueueWorker(state: WorkerState): Promise<void> {
       // Someone already has this group — this worker scanned it earlier, or a
       // sibling is running it out of the wait list. `owners` is written in the
       // same synchronous step that writes `inFlight`, so one test covers both
-      // "already scanned" and "someone else is mid-cycle"; testing `claimed`
-      // alone re-dispatched a running cycle, and testing `inFlight` alone
-      // re-scanned a group whose outcome was already recorded.
+      // "already scanned" and "someone else is mid-cycle"; a `claimed` set
+      // tried to answer this and re-dispatched a running cycle, and testing
+      // `inFlight` alone re-scanned a group whose outcome was already recorded.
       state.cursor += 1;
       continue;
     }
@@ -210,7 +210,6 @@ export async function runQueueWorker(state: WorkerState): Promise<void> {
     // this group's wait budget, and handing a group that went back into the
     // wait list a fresh cap each round is how a wait outlived its bound.
     state.owners.add(g.id);
-    state.claimed.add(g.id);
     state.inFlight.set(g.id, gi);
 
     const primary = g.issues[0];
@@ -326,8 +325,20 @@ async function drainDeferred(state: WorkerState): Promise<void> {
           // parked by an earlier pass whose blocker has since cleared.
           // Retrying is what stops a premature park from being permanent, and
           // clearing the marks is what lets `claimDeferred` take it honestly.
+          //
+          // #1101 fix-round — `resolved` and `outcomeOf` are cleared with the
+          // entry. `resolved` is the mark that says "this group has told the
+          // queue what it became, never ask again": leaving it stamped meant a
+          // revived group carried the *park* as its answer while a fresh
+          // `runGroup` was on the stack, so `stillWaiting` read it as finished,
+          // `finish()` read it as started, and a waiter retired beside a cycle
+          // that was running. `outcomeOf` is the same claim in the per-group
+          // map — a dependent reading it would be told a running group had
+          // already parked.
           state.entries.delete(gi);
           state.settled.delete(group.id);
+          state.resolved.delete(group.id);
+          state.outcomeOf.delete(group.id);
           dropDeferred(state, group.id);
         }
         await claimDeferred(state, gi, group);
@@ -400,7 +411,6 @@ async function claimDeferred(state: WorkerState, gi: number, g: IssueGroup): Pro
   // reason — the difference between one dispatch per group and one per awake
   // worker.
   state.owners.add(g.id);
-  state.claimed.add(g.id);
   state.inFlight.set(g.id, gi);
   // See `classify`: reached through the scan/drain guard, so the primary exists.
   const primary = g.issues[0] as number;

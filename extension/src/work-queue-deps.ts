@@ -32,6 +32,20 @@
  *    order, so no group in it runs and every one of them parks with
  *    `dependency-cycle`. Waiting for a dependency that will never merge is
  *    the same dead end reached more slowly.
+ *  - **`requires` is read only in its marker form.** The other terms
+ *    (`depends on`, `blocked by`, `blocked on`, `predecessors are`) are
+ *    ordering language; `requires` is ordinary English, and a bare
+ *    "this requires the tests to pass #12" / "the module requires #kafka
+ *    semantics" sentence is a description of a property, not a scheduling
+ *    claim. Read unanchored it serialises a pair that never asked to be
+ *    serialised, and a spurious edge is the expensive kind of false positive
+ *    here: the dependent sits behind a sibling that was never its dependency,
+ *    and the park it eventually earns blames that sibling by name. So
+ *    `requires` earns the edge only as a labelled marker — `Requires: #N`,
+ *    `requires #N` on a line of its own, or the `requires:` prefix — where
+ *    the writer set the word apart from prose. The other terms keep the
+ *    loose form, because there is no common English reading of "depends on
+ *    #12" that is not an ordering statement.
  *
  * Edges collapse across groups: `A → B` means "every group holding a
  * dependency of `A`'s issues must reach merged before `A`'s group is
@@ -44,9 +58,15 @@
  * the trace able to answer "why is this group waiting" without a re-read. */
 export type OrderingSource = "body";
 
-/** The statements that mean "do not build this before that one". */
+/** The statements that mean "do not build this before that one".
+ *
+ * Two alternatives, deliberately: the ordering vocabulary in general, and
+ * `requires` only where a marker sets it apart from prose (see the module
+ * header). The `requires?` of the original single alternation was also wrong
+ * on its own terms — it matched a bare `require #12`, a word no issue body uses
+ * to mean ordering. */
 const ORDERING_RE =
-  /\b(?:depends?[-\s]?on|blocked?[-\s]?by|blocked?[-\s]?on|predecessor(?:s)?(?:\s+are)?|requires?)\s*:?\s*#(\d+)/gi;
+  /\b(?:depends?[-\s]?on|blocked?[-\s]?by|blocked?[-\s]?on|predecessor(?:s)?(?:\s+are)?|(?:^|\n)[ \t]*requires?|require[sd]?:[ \t])\s*:?\s*#(\d+)/gi;
 
 export interface OrderingEdge {
   /** The issue carrying the statement — the dependent. */

@@ -29,10 +29,15 @@ import type { QueueSummary } from "./work-queue.ts";
  * was fixed for. The distinct glyph is what makes the difference visible while
  * skimming — an operator scanning for `⏸` to find work to salvage should not be
  * shown groups that contain none.
+ *
+ * #1101 fix-round — the return is just the glyph. It used to carry a `step`
+ * field that every branch set to `""`, so the `queued ? step : …` ternary below
+ * could only ever print nothing for a queue-level park — the behaviour is
+ * correct and was always correct, and the field was a second place a reader
+ * could believe a step existed.
  */
-function parkMark(reason: string | undefined): { glyph: string; step: string } {
-  if (isQueueLevelPark(reason)) return { glyph: "◌", step: "" };
-  return { glyph: "⏸", step: "" };
+function parkMark(reason: string | undefined): string {
+  return isQueueLevelPark(reason) ? "◌" : "⏸";
 }
 
 /** Groups the queue parked without ever dispatching them (#1101). */
@@ -61,11 +66,11 @@ export function renderQueueSummary(s: QueueSummary): string {
     if (e.outcome === "merged") {
       lines.push(`  ✓ ${e.groupId} (${issues}) — merged`);
     } else if (e.outcome === "parked") {
-      const { glyph, step } = parkMark(e.reason);
+      const glyph = parkMark(e.reason);
       const queued = isQueueLevelPark(e.reason);
       lines.push(
         `  ${glyph} ${e.groupId} (${issues}) — ${e.reason}${
-          queued ? step : e.failedStep ? ` at ${e.failedStep}` : ""
+          queued ? "" : e.failedStep ? ` at ${e.failedStep}` : ""
         }`,
       );
       if (e.humanAction) lines.push(`      → ${e.humanAction}`);
