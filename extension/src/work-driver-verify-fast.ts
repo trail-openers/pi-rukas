@@ -88,3 +88,27 @@ export function developVerifyLine(verifyCmd?: string, fastCmd?: string): string 
     ? `Before committing, run the project's verify command — \`${verifyCmd}\` — and make it pass in your worktree; this is the exact command the verify gate will run, so the two cannot diverge. Run it when the change is complete, not after every edit: the driver runs it again on your worktree the moment you finish, so a re-run that only re-confirms a green result buys nothing. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`
     : "This project has no discoverable verify command, so there is no project-level check to run before committing — rely on the change being correct and complete.";
 }
+
+/**
+ * The wall-clock bound every suite command a developer runs carries.
+ * Prompt-layer only — nothing in the harness parses or enforces it. Measured
+ * on a `/work` fan-out: developers ran the whole offline suite in parallel
+ * worktrees with no bound at all and one stuck ~20 minutes on a single suite
+ * call, so the slowest child set the pace of every gate.
+ */
+export const SUITE_TIMEOUT_SECONDS = 1200;
+
+/**
+ * #1156 — the test-scope rule for the develop prompt, appended to the verify
+ * line. It complements `developVerifyLine` rather than restating it: that
+ * function already says which *project verify command* the developer runs
+ * (#1324's fast tier), and this says what else the developer does NOT run —
+ * the whole suite, which the driver's own verify runs once on the worktree
+ * after the child finishes.
+ *
+ * Separate export so the rule is testable on its own: `developVerifyLine`
+ * returns one of three strings and the rule applies to all three.
+ */
+export function developTestScopeLine(): string {
+  return `Scope your own testing: run the smoke tests for the files you changed, plus typecheck and lint. Do NOT run the full test suite — the driver runs the full suite once on your worktree after you finish, and several workstreams each running it whole in parallel only slow every gate down. Wrap every suite or test command in \`timeout ${SUITE_TIMEOUT_SECONDS}\` (e.g. \`timeout ${SUITE_TIMEOUT_SECONDS} bun test extension/smoke-tests/test-foo.ts\`) so a single stuck test can never consume the dispatch.`;
+}
