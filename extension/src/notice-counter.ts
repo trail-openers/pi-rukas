@@ -8,6 +8,11 @@
  * the count is > 0. A single global counter is sufficient — the badge
  * is only read by the view that is open, and a delivery while no view
  * is open is unbadged by design (resetOnOpen wipes it).
+ *
+ * The badge counts an ATTEMPTED delivery, and that is all it counts. Whether
+ * a particular send reached Pi is not bookkeeping a process-global should hold:
+ * `deliverReport` returns that answer to its own caller (#1389), which is the
+ * only party that can judge the send it made.
  */
 
 let count = 0;

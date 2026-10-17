@@ -1038,6 +1038,68 @@ The park has its own cap, `fix-pass-park` (it reused `verify-failed:develop` bef
 
 **Fix:** the error in the message names the git command that failed and its stderr; fix that first. Then recover the change at the named path by hand (`git status`, `git diff`, `git diff --cached`, and `git cherry-pick --abort` if one is in progress), and clear the root before re-running.
 
+### `/work` refuses on a dirty repo root caused by a tool's own local files (#1362)
+
+**Symptom:** `/work N` halts at step 3 (branch) with cap `repo-root-residue` and a plumb report naming a file you never wrote — `.claude/settings.local.json`, an editor's workspace file, an agent's local config. The same file also trips the consolidated-verify and integrate dirty-root gates, so clearing it once by hand only moves the refusal to the next cycle.
+
+**Why:** a repo-root read of `git status --porcelain` cannot tell "the operator's in-progress work, which is a correctness hazard for integration" from "some tool's local settings". Both are dirt, and the branch step hard-blocks on any of it before paying for a develop dispatch. The built-in exemptions are the driver's own scaffolding (`.worktrees/`, `.pi/`, `tmp/`) and no more; nothing about a third-party tool's files is assumed.
+
+**Fix:** opt in, per project, by committing a list of repo-relative prefixes the dirty-root checks and repo-root staging should ignore:
+
+```
+# .pi/dirty-root-exempt — one repo-relative prefix per line
+.claude/
+.vscode/
+```
+
+Rules, and **who enforces each** — the exemption has two different answers depending on the question, and reading one where the other belongs is the trap:
+
+| Question | Who answers | Decided by |
+| --- | --- | --- |
+| Is this dirt? | The four dirty-root gates: the branch step, the preflight, consolidated verify, integrate | **Prefix** — an untracked path under a listed prefix is not dirt, whatever wrote it |
+| Is this the cycle's work? | The restore **claim** | **Provenance** — was the path already untracked at cycle start? |
+| Should it be stashed? | The abort path's stash pathspec | Nothing — it is unfiltered, because an unstashed path is one the checkout can lose |
+
+- **Untracked paths only.** A modified, staged or deleted *tracked* file under an exempt prefix is still dirt, and a rename always is — so the list cannot hide real uncommitted source.
+- **Prefix + `/` boundary.** `.claude` exempts `.claude/settings.local.json`, never `.claudefoo/x`. A path that still contains a `..` segment after normalisation is never exempt, so `docs` does not bless `docs/../.github/x`.
+- **Protected paths cannot be exempted.** An entry naming `.github/`, `.pi/`, `CODEOWNERS` or `agents.json` is rejected with a trace and contributes nothing, at any depth; you cannot list away the files that define how your own cycle is judged.
+- **Repo root only.** A workstream worktree stages its output exactly as before, so a deliverable inside an exempt prefix is still committed.
+- **Rejected with a trace:** absolute paths, any `..` segment, glob characters, anything that normalises to empty, `~`-, drive-letter- (`C:\`) and `$VAR`/`%VAR%`-prefixed entries (none of which this matcher would ever expand), and protected paths. A rejected line is skipped — the good lines beside it still apply.
+- **The file is read once per cycle**, before the branch step, from the working tree; `.pi/` is a protected path, so a develop patch cannot widen the exemption mid-cycle. An absent file is an empty list (behaviour unchanged); an unreadable file is an empty list **plus a trace and a handoff record** — a broken config never blocks a cycle that is otherwise clean, and never fails silently. If the cycle then blocks on repo-root residue, the handoff says `the exemption file could not be read: EACCES …` beside the paths: every one of them was judged against an empty list, so a file you legitimately exempted reads exactly like residue.
+
+```bash
+cat .pi/dirty-root-exempt            # what this project exempts
+# rejected entries and read failures are traced as:
+# [pi-rukas] WARN work-driver: .pi/dirty-root-exempt (<repoRoot>) — entry "…" rejected (glob)
+```
+
+**A file the cycle itself wrote under an exempt prefix is still yours to see.**
+The list decides what counts as *dirt*; it does not decide what counts as *the
+cycle's work*, because by the time the restore builds its claim it is too late to
+ask git — the abort path's mixed reset has already turned the cycle's staged-new
+files into `??`, the same code a tool's stray carries. So the branch step records
+the exempt paths that were **already untracked when the cycle started**, as
+`dirtyRootExemptBaseline` in the cycle's state file, and the claim spares an
+untracked file under an exempt prefix only when it appears there. A file the cycle
+wrote under that same prefix — a deliverable in a directory you exempted, a
+regenerated cache — is named, and is still moved into a recoverable `git stash`
+entry rather than left behind for the next cycle to trip over. Your pre-existing
+`settings.local.json` is named by neither: not stashed, not saved, not restored.
+Two things follow from the field being a snapshot. It is written once, in the
+branch step, and never recomputed — a snapshot taken later would bless the cycle's
+own output as pre-existing. And if the state file has no baseline (a cycle started
+before this existed, or one whose exempt tree was too large to record — over 500
+paths), then **nothing is claim-exempt** and the claim names every untracked path
+it finds. That is deliberate: a claim that over-names is a false alarm you can
+dismiss, and a claim that says "verified restored" over the cycle's own work is
+the failure the field exists to prevent.
+
+```bash
+jq .pipelineState.dirtyRootExemptBaseline .pi/work-state/<issue>.json   # what the claim will spare
+```
+
+**Do not** use this to work around a genuinely dirty root. If the named file is source you or another workstream wrote, commit or move it — that is what the gate is for.
+
 ### `worktree-dirty-preremove` — the branch step refuses a worktree that holds uncommitted work (#475)
 
 **Symptom:** `/work N --restart` (or a fresh `/work N` over a surviving worktree directory) halts at step 3 (branch) with cap `step-failed:branch` and a plumb report reading *“refusing to force-remove existing worktree <path> — it holds unrecoverable work: …”*. No subagent ran; nothing was pushed.
@@ -1116,9 +1178,22 @@ Symptom: a `commit-pr` that fell back to the ops dispatch committed in `.worktre
 
 Cause (#1173, #1100): the driver created the integrate tree on a **detached HEAD**, because it passed the branch's SHA to `git worktree add`, not the branch name. The prompt said the tree was on the branch. So the ops child's commit never moved the branch, and `git push -u origin <branch>` pushed nothing. Fixed: the tree is now created on the branch (a missing branch is created at the base). The fallback prompt also forbids creating or switching to any other branch.
 
-A stale integrate tree whose only loss is commits, and which is detached or on the cycle's own branch, no longer refuses. Its commits are kept on `refs/pi-rukas/integrate-backup/issue-<N>/<sha>` and the tree is recreated. The commit-pr plumb report names the ref: `The stale integrate tree's unpushed commits were kept on …`. A tree with uncommitted or non-regenerable ignored files, or one on a different branch, still refuses. Recover a kept commit with `git log <ref>` / `git cherry-pick <ref>`. Delete the ref with `git update-ref -d <ref>` once you no longer need it.
+A stale integrate tree whose only loss is commits, and which is detached or on the cycle's own branch, no longer refuses. Its commits are kept on `refs/pi-rukas/integrate-backup/issue-<N>` and the tree is recreated. The commit-pr plumb report names the ref: `The stale integrate tree's unpushed commits were kept on …`. A tree with uncommitted or non-regenerable ignored files, or one on a different branch, still refuses. Recover a kept commit with `git log refs/pi-rukas/integrate-backup/issue-<N>` / `git cherry-pick refs/pi-rukas/integrate-backup/issue-<N>`.
 
-A kept ref is **not** re-applied automatically: the next commit-pr regenerates the consolidation from the develop patches, so the ref exists only for manual recovery. Kept refs are never pruned automatically; list them with `git for-each-ref refs/pi-rukas/integrate-backup` and remove each with `git update-ref -d <ref>`.
+**One ref per issue (#1396).** The namespace holds at most `refs/pi-rukas/integrate-backup/issue-<N>` — one ref per issue, replaced in place on every re-entry — so a cycle that re-enters `commit-pr` twenty times leaves one ref, not twenty (`git for-each-ref refs/pi-rukas/integrate-backup` counted refs growing one per SHA before the fix). It therefore names the **last** kept HEAD only, and an older re-entry's backup is replaced. That is not a new loss channel: the driver force-removes the tree that held the older HEAD immediately after writing the ref, and every removal decision refuses first whenever a tree holds uncommitted or non-regenerable work — so nothing the ref protected had survived anyway. To drop the ref when you are done with it: `git update-ref -d refs/pi-rukas/integrate-backup/issue-<N>`.
+
+**The replaced sha is named (#1396).** When a re-entry overwrites a ref that pointed at a *different* commit, the commit-pr plumb report and the handoff name it: `It replaces an older backup of \`<sha>\`, which no ref now names`. After that write nothing in the ref namespace points at the older commit.
+
+**Recover it promptly — `git reflog` is not a route (#1396 adversarial round).** The tree that held the older HEAD is force-removed immediately after the ref is written, and `git worktree remove --force` deletes `.git/worktrees/<name>` — **its reflogs included**. So the reflog of the integrate worktree does not exist by the time the halt is read, and "check the reflog there" is a dead instruction. What still works, in this order:
+
+1. `git fsck --unreachable` at the repo root, and look for a commit carrying the consolidation message.
+2. Pin it the moment you have the sha: `git branch rescue-<sha> <sha>` — any ref makes it reachable, and gc skips it thereafter.
+
+Both race **auto-gc**: an unreachable commit is pruned once it ages out of the reflog-expiry window (`gc.reflogExpire`, 90 days by default but immediate for objects that were never in a reflog), so "later" is not a plan. A re-entry that writes the same sha again names nothing superseded: nothing was lost.
+
+A kept ref is **not** re-applied automatically: the next commit-pr regenerates the consolidation from the develop patches, so the ref exists only for manual recovery.
+
+**A `git worktree list` that cannot be read refuses the whole creation (#1396).** The registration check that decides whether a stale `issue-<N>-integrate` tree is driver residue used to read an unreadable listing as "not registered" — which skipped the commit-keeping path entirely and let the driver force-remove a tree it had never proved was residue. It now uses the strict listing: one retry at 250 ms, then a `WorktreeScanError` naming the git error, **nothing removed** — the tree stays on disk and stays registered, exactly as in the sibling-scan refusal above. The halt surfaces as `integration-worktree-violation`; read its plumb report for the underlying git error (a stale lock, a permissions problem) rather than re-running blind.
 
 ### CI failed, the driver "fixed" it, and CI failed on the same commit again
 
@@ -1266,6 +1341,28 @@ The command runs in the group's worktree, never the repo root — under parallel
 
 Escape hatches: `PI_ENSEMBLE_VERIFY_FULL=0`, `PI_ENSEMBLE_VERIFY_FULL_TIMEOUT_MS`.
 
+### The develop gate ran the verify command twice on the same tree (#1240)
+
+**Symptom:** `develop` completes many minutes after its developer child finished, with nothing between them but the driver's consolidated verify. On a project whose gate is slow (the orchard factory: `scripts/test.sh`, ~18 min of serial shell tests) an N=1 cycle pays that twice per gate pass — once in the develop worktree and once again at repoRoot for the consolidated probe — and the second run checks content the first already judged. Four gate passes per cycle meant eight runs where four sufficed.
+
+**Cause:** with one workstream, the consolidated probe cherry-picks that workstream's *own* commits onto the cycle's base. The result is the same tree, so the second run is duplicate work, not a second opinion. It was never redundant at N>1, where the combination genuinely is a tree no worktree held.
+
+**Fix:** the probe now establishes identity positively, from git's own tree object ids, and skips the command only when it can prove the probe tree is the tree that just passed. Both sides include staged content and exclude untracked files, and neither is trusted when the working tree holds content no tree object describes (unstaged edits, untracked sources) — there the run happens. Any read failure, any mismatch, more than one workstream, a per-worktree failure, or the degenerate root-as-worktree shape runs the consolidated verify exactly as before: a gate that cannot prove equivalence runs the check.
+
+**What you see:** the skip is not silent. The state file's notes and the trace carry
+
+```
+consolidated verify skipped: tree <hash> already passed in <worktree> — …
+```
+
+and the develop event log keeps its `verifyEvidence` / duration recording untouched, so a fast `develop` is explainable from the state file rather than inferred from the absence of a 20-minute gap. The commit-pr half of the same rule names it in that step's operator-facing summary too, and the `consolidated-verify-skipped` event is recorded on every path the develop gate re-runs (the first pass, the fence merge-and-retry, the sibling-symbol merge, and the converge corrective) — not only the first.
+
+**The fast tier is covered by the skip as well:** `.pi/verify-cmd-fast` is skipped together with the full command, because both tiers already ran per-worktree on the same content (`PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP=0` restores both).
+
+**The named assumption — ignored dependency directories are unchanged between the two runs.** The tree hash covers tracked and staged content only, so an ignored directory (`node_modules`, `target`, `dist`) can never make the two sides differ. That is sound only because those directories are *shared* into each worktree by symlink (`worktree-provision.ts`): the per-worktree run and the repoRoot probe read the same dependency tree, so the run that passed judged the same content the skip declines to re-judge. If that assumption does not hold for your project — a per-checkout install, or a gitignored generated directory the verify reads and the probe produces differently — the skip is wrong for you and `PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP=0` disables it. Untracked-but-not-ignored paths are the opposite case and are never exempt: only the driver's own artefacts (`.pi/work-state/`, `.worktrees/`, `tmp/issue-<N>/`) are invisible to the dirt check, so a stray `?? tmp/evil.ts` denies the identity and the command runs.
+
+**Escape hatch:** `PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP` set to `0`, `false`, `off` or `no` (trimmed, case-insensitive) restores the always-run behaviour (for example, to reproduce a gate failure that only appears in the probe's checkout).
+
 ### Type-widening scan
 
 Before each lens review the integrated diff is scanned for removed compiler-enforced invariants: `T` → `Option<T>` (Rust), `T` → `T | null` / `| undefined` and added `?:` (TS), removed `readonly`/`final`/`const`, narrowing to `any`/`unknown`, removed `assert`/`debug_assert!`, removed `pub`/`mut`.
@@ -1359,11 +1456,17 @@ An in-flight job id with **no** matching `dispatch-started` event is not a crash
 
 Orphaned `dispatch-started` events are deliberately kept in the log. They are the only record that a dispatch was paid for and lost.
 
-**A session shutdown is handled as that crash, not as a step failure.** Quitting, reloading or replacing the Pi session aborts every in-flight child. The driver used to read its own aborted child as the step failing: it recorded `cap-hit: step-failed:<step>` and entered a handoff that cannot finish in an exiting process, leaving `status: running, step: handoff` and no reason. It now stops where it is — no cap, no handoff — appends one `cycle-interrupted` event (step, Pi's reason, branch and head sha) and says so once:
+**A session shutdown is handled as that crash, not as a step failure.** Quitting, reloading or replacing the Pi session aborts every in-flight child. The driver used to read its own aborted child as the step failing: it recorded `cap-hit: step-failed:<step>` and entered a handoff that cannot finish in an exiting process, leaving `status: running, step: handoff` and no reason. It now stops where it is — no cap, no handoff — appends one `cycle-interrupted` event (step, Pi's reason, the origin, branch and head sha) and says so once:
 
 ```
-[pi-rukas] cycle interrupted: session shutdown (quit) during lens-fix; state is resumable — run /work 97 — work on feature/issue-97-… at 1d6a5dd0
+[pi-rukas] cycle interrupted: session shutdown (quit, origin: stdin-eof) during lens-fix; state is resumable — run /work 97 — work on feature/issue-97-… at 1d6a5dd0
 ```
+
+Pi's `reason` only ever says `quit` / `reload` / `new` / `resume` / `fork`, which does not tell you who pulled the plug, so the origin is tracked at the process level (#1247): `stdin-eof` means **the caller closed its stdin pipe**, `signal:SIGTERM` / `signal:SIGINT` / `signal:SIGHUP` names the signal that arrived, and `unknown` means none of those fired — Pi exited on its own, or the quit came through a path the extension cannot observe. `unknown` is an answer, not a gap in the log. `/work-status` renders the same pair on its `cycle-interrupted` row; a state file written before #1247 has no `origin` and renders without it.
+
+**`stdin-eof` is a claim about a caller, so it needs one to make it.** It is reported only when fd 0 is a pipe or a socket — something a parent process holds the other end of, and whose going away is the event worth naming (the usual shape of a headless `pi --mode rpc` session whose parent died). When fd 0 is `/dev/null`, or was closed, or is anything else, Node still reports the stream as ended, and the session was **born** in that state: nothing happened to it, and there was no caller to close anything. `stdio: "ignore"` and a shell's `< /dev/null` both look like this, and in `-p` mode they used to make every SIGTERM and every self-exit read as `origin: stdin-eof` — a dead pipe blamed for a quit that a signal or Pi itself caused. Those now report `signal:…` or `unknown`, which is what actually happened. If you were relying on `stdin-eof` appearing for an ignore-stdin session, that line was the bug, not a feature: keep fd 0 a pipe (a caller that can close it) and the origin is reported again.
+
+**Arming the tracker does not change what a signal does.** Installing a listener replaces a signal's default action, and SIGINT / SIGTERM / SIGHUP are fatal by default, so a tracker that only recorded the origin would have made `kill <pi>` stop killing Pi. When the tracker's listener is the only one for a signal it removes itself and re-raises, so the fatal disposition runs; once anything else in the process handles that signal, the tracker stays out of the way and the process survives it as it asked to.
 
 On `quit` that line goes to stderr; on a reload or session switch it arrives as a `kind=interrupted` driver event. The state file still says `running`, deliberately: `running` with a dead `owner.pid` is what "resumable" already means, so anything reading the file from outside must check owner liveness (or look for a trailing `cycle-interrupted`) before calling the cycle live. This is a different record from the headless runner's SIGTERM / SIGINT handling (the cycle `signal`, event kind `interrupted`, status `interrupted`): a Pi session shutdown never sets that signal, so the two are checked separately. If the line says `/work N will refuse this state` instead, the step that was cut off had not written ahead and the file is at the previous boundary — `resumable: false` on the event.
 
@@ -1506,10 +1609,11 @@ Escape hatch: `PI_ENSEMBLE_MERGE_AUTHORITY=0` restores the previous behaviour, w
 
 ### A `/work` PR is still a draft
 
-With `PI_ENSEMBLE_DRAFT_PR=1` — the default for a headless `/work` — commit-pr opens the PR as a draft so nobody merges it while the six-pass review is still running (#1292). The driver marks it ready once the review has produced a verdict: on entering CI, before its own merge, or at a handoff after the review concluded (an approval, or residual findings that a round cap posted to the PR). It is never marked ready over an open CRITICAL finding, nor over residual findings that could not be posted. A PR that is still a draft at the end of a cycle means one of two things, and the handoff comment says which:
+With `PI_ENSEMBLE_DRAFT_PR=1` — the default for a headless `/work` — commit-pr opens the PR as a draft so nobody merges it while the six-pass review is still running (#1292). The driver marks it ready once the review has produced a verdict: on entering CI, before its own merge, or at a handoff after the review concluded (an approval, or residual findings that a round cap posted to the PR). It is never marked ready over an open CRITICAL finding, nor over residual findings the PR cannot show it has — the driver reads the merge guard's own disclosure marker off the PR's comments, keyed on the patch being marked ready, so a ready is never licensed where the guard would then refuse the merge (#1398). A PR that **was** marked ready and then has to be reviewed again is made a draft again before that review runs (`gh pr ready N --undo` / `glab mr update N --draft`) — the CI and lens-fix loops used to leave it mergeable for the whole re-review (#1398). A PR that is still a draft at the end of a cycle means one of three things, and the handoff comment says which:
 
-- **"Pull request is still a draft"** — the cycle stopped before the review concluded (a park or halt at commit-pr, during review, or in a fix round), or the latest verdict is CRITICAL. The work is not finished; mark it ready yourself with `gh pr ready <N>` when it is.
+- **"Pull request is still a draft"** — the cycle stopped before the review concluded (a park or halt at commit-pr, during review, or in a fix round), the latest verdict is CRITICAL, or an `ISSUES_FOUND` verdict's findings were never disclosed on the PR. The work is not finished; mark it ready yourself with `gh pr ready <N>` when it is.
 - **"Marking the pull request ready FAILED"** — the review is done but `gh pr ready` failed on every attempt (3 per mark point, 6 per cycle); the last error is quoted. Run `gh pr ready <N>`.
+- **"the driver could not make the PR a draft again"** — the review was re-running and putting the PR back to a draft failed (or the cycle's `pr ready` attempts were already spent), so the cycle parked rather than review a PR anyone could merge. Make it a draft yourself with `gh pr ready <N> --undo` (GitHub) or `glab mr update <N> --draft` (GitLab) and re-run, or merge deliberately if the findings are settled (#1398).
 
 A draft cannot be merged by `gh pr merge` (`mergeStateStatus: DRAFT`), so a ready that keeps failing also shows up as an `awaiting-human-merge` park. Set `PI_ENSEMBLE_DRAFT_PR=0` to open PRs ready, as before. If your CI skips draft PRs (`if: github.event.pull_request.draft == false`), add `ready_for_review` to the workflow's `pull_request` types, or the head commit's checks stay skipped after the PR is marked ready — and the merge gate does not count skipped as passing.
 
@@ -2072,9 +2176,23 @@ bun extension/scripts/review-accept.ts <branch> <row-id> --reason "<at least 20 
 The acceptance boundary is layered:
 
 1. The script refuses to run when `PI_ENSEMBLE_ROLE` is set, or when `PI_ENSEMBLE_SUBAGENT_MODE=1` or `PI_ENSEMBLE_TRUST_MODE=1` is in its environment.
-2. The write path (`extension/scripts/review-accept-row.ts`) is imported by nothing under `src/`. It also enforces the reason rule and refuses CRITICAL rows.
-3. `review-accept-guard.ts` refuses agent bash that names the script, the findings file, the store module or the write module, and agent `edit`/`write`/`multiedit` of `review-findings.json`.
+2. The acceptance write itself (`acceptFinding` in `extension/src/review-findings-store.ts`) is called by no other `src/` module and registered by no Pi tool, and `src/` imports nothing from `scripts/` — the operator script is the only caller in the tree, and smoke tests assert both. The reason rule and the CRITICAL refusal live with it in the store.
+3. `review-accept-guard.ts` refuses agent bash that names the operator script `extension/scripts/review-accept.ts`, the findings file `review-findings.json`, or the store module `review-findings-store.ts`, and agent `edit`/`write`/`multiedit` of `review-findings.json`.
 
 Layers 1 and 3 are **advisory in trust mode**. They are environment and string checks, so an agent with a shell can still bypass them. They stop an agent that is not trying to bypass them; the operator's terminal is the real boundary.
 
-A corrupt `review-findings.json` is never overwritten. The writer copies it to `review-findings.json.corrupt-<ms>`, the review reads it as no memory, and the summary shows `findings memory unavailable: …`. Fix or remove the file, then re-run the review.
+A corrupt `review-findings.json` is never overwritten. The reader and the writer both copy it to `review-findings.json.corrupt-<hash>` — the hash is of the bytes that were copied, so a repeat of the same fault names the same file and never duplicates it — and the round then REFUSES: it does not read the corrupt file as "no memory", because a round recorded on no memory would resolve open rows the unreadable file may still hold. The refusal names the copy and the cause and says `repair or remove <file>, or set PI_ENSEMBLE_REVIEW_LEDGER_FILE to a healthy ledger`; the summary carries it as `findings memory unavailable: …`, and every finding is still reported. Fix or remove the file, then re-run the review. A single malformed row is handled the same way on its own (`<file>.corrupt-<hash of the row>`) while the valid rows carry on.
+
+## The offline smoke suite
+
+### The offline suite is slow, or a test interferes with its neighbours
+
+Since #1365 `extension/smoke-tests/lib/verify-loop.sh` runs tests through a bounded job pool (`lib/verify-pool.sh`), default `PI_ENSEMBLE_VERIFY_TEST_JOBS=2`. Two symptoms mean the pool, not the tests:
+
+- **The suite is slower than it used to be**, or a run is thrashing on a busy host — the ceiling is 16 and the count is also clamped to the number of collected tests, either clamp warned on stderr.
+- **A test fails only in the full run and passes alone** — it shares state with a neighbour (a temp path, a port, a per-clone file the neighbour also writes).
+
+**Fix for both:** `PI_ENSEMBLE_VERIFY_TEST_JOBS=1 bash extension/smoke-tests/lib/verify-loop.sh extension/smoke-tests/test-*.ts` restores strictly sequential execution — the pre-#1365 shape, same output and exit codes (pinned by `test-verify-loop-parallel.ts` cases 1-2, which compare JOBS=1 and JOBS=3 byte-for-byte). If one test still fails alone, it is the test.
+
+The other knob is the per-test bound, unchanged by the pool: `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S` (default 300s, positive integer, else 300 with a warning). A test that hits it is reported `FAILED: <file> (timed out after <N>s)` with a `✗ timed out after <N>s` line prepended to its capture; the whole descendant tree is killed, so a hung test does not take the pool with it. Both variables are read once at startup.
+

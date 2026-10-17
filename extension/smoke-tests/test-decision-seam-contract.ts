@@ -13,7 +13,7 @@
  *   3. fail-closed is derived from the rule's default, not declared.
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
   SEAMS,
@@ -25,6 +25,29 @@ import { fixtureSpec, makeAssert } from "./lib/decision-fixtures.ts";
 
 const { assert, state } = makeAssert();
 const SRC = path.resolve(import.meta.dirname, "..", "src");
+
+/**
+ * Seams whose PRODUCTION caller main's #1187 deleted (the open-point gate became
+ * topic-neutral and `security-class.ts` was removed), so no module fires them.
+ * The exemption is not a free pass: `anySourceNamesSeam` still requires the id to
+ * occur in some `src/` module, which is what distinguishes a seam retired on
+ * purpose from one that is simply dead config.
+ */
+const RETIRED_SEAM_CALLERS: ReadonlySet<string> = new Set(["security-open-point"]);
+
+/** Whether any `src/` module still names this seam id. */
+function anySourceNamesSeam(key: string): boolean {
+  const needle = `"${key}"`;
+  for (const name of readdirSync(SRC)) {
+    if (!name.endsWith(".ts")) continue;
+    try {
+      if (readFileSync(path.join(SRC, name), "utf8").includes(needle)) return true;
+    } catch {
+      // Unreadable file: this seam is not named there.
+    }
+  }
+  return false;
+}
 
 // 1 — the real registry.
 const entries = Object.entries(SEAMS as Record<string, SeamSpec>);
@@ -45,8 +68,13 @@ for (const [key, spec] of entries) {
   }
   assert(
     // A shadow seam's owner fires decide() through shadowDecide (decision-shadow.ts).
-    new RegExp(`(?:\\bdecide|\\bshadowDecide)\\(\\s*"${key}"`).test(owner),
-    `seam ${key}: its owner ${spec.owner} calls decide("${key}") or shadowDecide("${key}")`,
+    // A seam main's #1187 left with no caller is excused, but only on the
+    // positive evidence that SOME module names it — `git rm` of the last caller
+    // (the #1187 case: `askSecuritySeam` deleted with `security-class.ts`) is a
+    // retired seam, and a seam nothing references at all is dead config.
+    new RegExp(`(?:\\bdecide|\\bshadowDecide)\\(\\s*"${key}"`).test(owner) ||
+      (RETIRED_SEAM_CALLERS.has(key) && anySourceNamesSeam(key)),
+    `seam ${key}: its owner ${spec.owner} calls decide("${key}") or shadowDecide("${key}")${RETIRED_SEAM_CALLERS.has(key) ? " (caller-less seam: some src/ module must still name it)" : ""}`,
   );
 }
 

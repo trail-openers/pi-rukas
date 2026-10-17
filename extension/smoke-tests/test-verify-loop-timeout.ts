@@ -17,6 +17,11 @@
  *       full consumer path (loop → tail → assertion) yields attributed:
  *       true and the `✗ timed out after <N>s` line as the specific
  *       assertion.
+ *   11. #1014 exit-124 disambiguation: a test that exits 124 itself is a plain
+ *       failure, not a timeout.
+ *   12. #1365 exit-214 disambiguation: the watchdog's old return code is now an
+ *       ordinary exit code a test may use, and a test that returns it is still
+ *       not a timeout.
  */
 
 import { spawnSync } from "node:child_process";
@@ -53,11 +58,22 @@ function pipelineEnv(
 }
 
 // Shared env for the two timeout cases: PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S=2
-// (the poll loop is 1s-resolution, the kill has a 2s grace → each ~4-5s, not
-// the 300s default) plus a run-unique FIXTURE_HANG_TOKEN — the fixture bakes
-// it into a `sleep` child's command line so the no-orphan check can find the
-// descendant by pattern after the kill (the pid is not reliable: ps output
-// can elide args, and the watchdog does not expose the child's pid).
+// (the poll loop is 1s-resolution, the kill's grace is a bounded poll with a
+// 20 × 0.1s = 2s ceiling → each ~2-3s, not the 300s default) plus a run-unique
+// FIXTURE_HANG_TOKEN — the fixture bakes it into a `sleep` child's command line
+// so the no-orphan check can find the descendant by pattern after the kill (the
+// pid is not reliable: ps output can elide args, and the watchdog does not
+// expose the child's pid).
+//
+// The 2s above is the CEILING of that poll, not its cost: the kill now polls
+// for liveness to clear (same shape as the interrupt handler) instead of
+// sleeping a fixed `sleep 2`, so a tree that dies immediately returns in well
+// under a second and a case measures ~2-3s rather than 4-5s.
+//
+// The bound is pinned here rather than left to the default because the hang
+// fixture sizes its child's sleep from PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: the
+// env var is what makes the descendant outlive the watchdog instead of drifting
+// to a lifetime the case never chose.
 function hangTestEnv(caseId: string): { env: Record<string, string>; token: string } {
   const token = `hang-${caseId}-${process.pid}-${Date.now()}`;
   return { env: { PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "2", FIXTURE_HANG_TOKEN: token }, token };
@@ -108,7 +124,7 @@ function hangTestEnv(caseId: string): { env: Record<string, string>; token: stri
     const summaryLines = lines.filter((l) => l.startsWith("FAILED: ") && l.includes("test(s)"));
     const summaryLine = summaryLines[summaryLines.length - 1];
     assert(
-      summaryLine !== undefined && summaryLine.startsWith("FAILED: 2 test(s) —"),
+      summaryLine?.startsWith("FAILED: 2 test(s) —"),
       `case 9: the summary counts the two failures (timeout + fixture-1) (got: ${JSON.stringify(summaryLine)})`,
     );
     assert(
@@ -136,7 +152,8 @@ function hangTestEnv(caseId: string): { env: Record<string, string>; token: stri
 
     // (d) no orphan — the fixture spawned a `sleep` child with the token in
     // its args. Bounded poll (≤5s, 10 × 500ms) for the token's absence in
-    // `ps` output: the watchdog's kill (TERM → 2s grace → KILL) can race
+    // `ps` output: the watchdog's kill (TERM → bounded grace poll, 2s ceiling →
+    // KILL) can race
     // with the process table on a loaded machine, so a single fixed sleep(1)
     // before the check could observe the still-dying child.
     let survivors: string[] = [];
@@ -200,6 +217,42 @@ function hangTestEnv(caseId: string): { env: Record<string, string>; token: stri
   assert(
     !stdout.includes("✗ timed out after"),
     "case 11: the ✗ timed out line is absent (the watchdog did not fire)",
+  );
+}
+
+// --- Case 12: exit-214 disambiguation (#1365 fix round). The companion to
+// case 11, one code along: the watchdog used to RETURN 214 when the bound
+// fired and the caller keyed the timeout reporting on `rc -eq 214`, so a test
+// that exits 214 itself — its own tooling's convention — was reported as
+// "timed out" though nothing ever timed out. Timeout reporting is now keyed on
+// the marker file the watchdog (and the pool's outer bound) writes, so this
+// fixture gets a plain FAILED marker, keeps its real exit code as a failure,
+// and no timeout text appears anywhere in the run.
+{
+  const { status, stdout } = runLoopEnv([path.join(FIXTURES, "fixture-exit214.ts")], {});
+  assert(status !== 0, "case 12: exit non-zero when a test exits 214 of its own accord");
+  const failedLines = stdout.split("\n").filter((l) => l.startsWith("FAILED: "));
+  const perTest = failedLines.find((l) => l.includes("fixture-exit214.ts"));
+  assert(
+    perTest !== undefined,
+    `case 12: the per-test FAILED marker names the file (got: ${JSON.stringify(perTest)})`,
+  );
+  assert(
+    perTest !== undefined && !perTest.includes("(timed out"),
+    `case 12: the exit-214 test is NOT misattributed as a timeout (got: ${JSON.stringify(perTest)})`,
+  );
+  assert(
+    !stdout.includes("timed out"),
+    "case 12: no timeout text at all in the run (the watchdog never fired)",
+  );
+  assert(
+    stdout.includes("fixture-exit214: intentional self-exit-214"),
+    "case 12: the test's own output is reported, so the real failure is visible",
+  );
+  const summaryLine = failedLines.filter((l) => l.includes("test(s)")).pop();
+  assert(
+    (summaryLine ?? "").includes("fixture-exit214.ts"),
+    `case 12: the summary counts it as a failure (got: ${JSON.stringify(summaryLine)})`,
   );
 }
 

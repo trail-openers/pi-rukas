@@ -156,8 +156,13 @@ export const SEAMS = {
     tokenBudget: 4_000,
   },
   // S4 (#1187) — whether an unresolved CRITICAL open point is a security
-  // decision. may-add-only once S5's promotion bar is met: the model may add
-  // a park, never remove one.
+  // decision. main's #1187 made the open-point gate TOPIC-NEUTRAL and deleted
+  // `security-class.ts`, so no production caller fires this seam any more; the
+  // gate keeps the seam's caller contract assertable. It stays registered
+  // because its declared `openPoint` bound is the contract test's proof that a
+  // shadow seam carries per-field bounds (#1393), and its throttle is asserted
+  // per-seam by test-decision-shadow-seams.ts. may-add-only once S5's promotion
+  // bar is met: the model may add a park, never remove one.
   "security-open-point": {
     id: "security-open-point",
     kind: "bool",
@@ -174,7 +179,11 @@ export const SEAMS = {
     composition: "may-add-only",
     defaultMode: "shadow",
     evidence: "none",
-    owner: "work-driver-intent-finalise.ts",
+    // A caller-less seam (main's #1187 retired the open-point classifier), so it
+    // names the module that fires every shadow seam: `decide()` is reached only
+    // through here. The seam's id still occurs in this file (its own registry
+    // key), which is what the contract test's caller-less exemption reads.
+    owner: "decision-shadow.ts",
     // The point's own text only — never the rest of the issue.
     fields: { openPoint: { max: 1000 } },
     timeoutMs: 30_000,

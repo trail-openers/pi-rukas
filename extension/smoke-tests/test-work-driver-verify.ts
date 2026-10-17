@@ -11,12 +11,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { asShellForm } from "./lib/argv-shell.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
+import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import { verifyCmdFor, verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
-import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
+import { asShellForm } from "./lib/argv-shell.ts";
 
 /**
  * The branch these fixtures put on the cycle.
@@ -135,7 +135,17 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
     {
       const dir = mkdtempSync(path.join(tmpdir(), "verify-cmd-coupling-"));
       const wsF = { id: "default", scope: "test", paths: ["src/a.ts"], outOfScope: [] } as const;
-      const pf = (cmd: string | undefined) => inlineDevelopPrompt([751], "/tmp/scratch", { ...wsF }, undefined, undefined, undefined, undefined, cmd);
+      const pf = (cmd: string | undefined) =>
+        inlineDevelopPrompt(
+          [751],
+          "/tmp/scratch",
+          { ...wsF },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          cmd,
+        );
       try {
         fsSync.mkdirSync(path.join(dir, ".pi"), { recursive: true });
         fsSync.writeFileSync(path.join(dir, ".pi", "verify-cmd"), "echo hello\n");
@@ -143,8 +153,15 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         assert(gc === "echo hello" && pf(gc).includes(gc), "#751: gate cmd == prompt cmd");
         fsSync.writeFileSync(path.join(dir, ".pi", "verify-cmd"), "cargo test --workspace\n");
         const gc2 = await verifyCmdFor(dir);
-        assert(gc2 === "cargo test --workspace" && pf(gc2).includes(gc2) && !pf(gc2).includes("echo hello"), "#751: both change at once");
-      } finally { rmSync(dir, { recursive: true, force: true }); }
+        assert(
+          gc2 === "cargo test --workspace" &&
+            pf(gc2).includes(gc2) &&
+            !pf(gc2).includes("echo hello"),
+          "#751: both change at once",
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
 
     // --- verifyStepOutcome: develop ---
@@ -169,7 +186,8 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         };
         const emptyExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" };
-          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
+          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+            return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           return { stdout: "" };
         };
@@ -185,7 +203,8 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         fsSync.mkdirSync(path.join(dir, ".pi"), { recursive: true });
         fsSync.writeFileSync(path.join(dir, ".pi", "verify-cmd"), "run-verify\n");
         const passExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-          if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/foo.ts\n" };
+          if (cmd === "git status --porcelain --untracked-files=all")
+            return { stdout: " M src/foo.ts\n" };
           if (cmd === "run-verify") return { stdout: "all good" };
           return { stdout: "" };
         };
@@ -200,10 +219,11 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // refuses), so no consolidation runs and the per-worktree verify
         // failure is the verdict — the E0308 tail surfaces as a failure.
         const failExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-          if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/foo.ts\n" };
-          if (cmd.startsWith("git rev-parse HEAD"))
-            return { stdout: "b".repeat(40) + "\n" };
-          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
+          if (cmd === "git status --porcelain --untracked-files=all")
+            return { stdout: " M src/foo.ts\n" };
+          if (cmd.startsWith("git rev-parse HEAD")) return { stdout: "b".repeat(40) + "\n" };
+          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+            return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
           if (cmd === "run-verify") {
             const err = new Error("Command failed: run-verify") as Error & {
@@ -252,7 +272,8 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // Zero commits ahead → failure even though PR resolves.
         const zeroCommits: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
-          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
+          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+            return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           if (cmd.startsWith("gh pr view"))
             return { stdout: JSON.stringify({ state: "OPEN", headRefName: BRANCH_UNDER_TEST }) };
@@ -268,7 +289,8 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // Commits ahead + PR resolves → ok.
         const happy: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
-          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
+          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+            return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("gh pr view"))
             return { stdout: JSON.stringify({ state: "OPEN", headRefName: BRANCH_UNDER_TEST }) };
@@ -285,7 +307,8 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         };
         const adopt: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
-          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
+          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+            return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("gh pr list")) return { stdout: "789\n" };
           if (cmd.startsWith("gh pr view"))
@@ -301,7 +324,8 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // prNumber missing + NO PR for branch → failure.
         const noPr: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
-          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
+          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+            return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("gh pr list")) return { stdout: "\n" };
           return { stdout: "" };
@@ -316,7 +340,8 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // prNumber set but gh pr view errors → failure.
         const ghosted: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
-          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
+          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+            return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("gh pr view")) {
             const err = new Error("gh failed") as Error & { stderr?: string };
@@ -356,24 +381,6 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         "explainCap verify-failed:develop: names the gate + surfaces the evidence lines",
       );
       assert(/PI_ENSEMBLE_VERIFY=0/.test(text), "explainCap verify-failed: names the escape hatch");
-    }
-
-    // --- F5 (#540): verifyConsolidation coverage rule (full-set subsumption) ---
-    //
-    // Coverage rule: a workstream W is COVERED iff for EVERY declared path p
-    // of W: p is in the committed diff, OR p is declared by a sibling S whose
-    // ENTIRE declared path set is present in the committed diff. A partial
-    // sibling cannot cover another workstream's path. Cap fires iff some
-    // workstream is not covered.
-    //
-    // These use a REAL git repo so `git diff --name-status -M origin/main..HEAD`
-    // produces actual output (baseline commit = origin/main; committed files
-    // = the feature-branch diff).
-    //
-    // F5 tests moved to test-work-driver-verify-consolidation.ts (#778 task-b)
-    // to stay within the 500-line file size limit.
-    {
-      // (F5 consolidation tests now live in test-work-driver-verify-consolidation.ts)
     }
   } finally {
     if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;

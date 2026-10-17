@@ -1,6 +1,11 @@
 /**
  * secret-patterns — the one secret-shape pattern set, shared by vipune.ts
- * (`looksLikeSecret`) and decision-log.ts (`redactSecrets`).
+ * (`looksLikeSecret`) and the redactor below.
+ *
+ * Dependency-free by design: vipune.ts, decision-log.ts (`redactSecrets`, re-exported
+ * from here for its existing callers) and the open-point reader all import from this file,
+ * and the reader must not pull `node:fs` / `node:child_process` into its closure just to
+ * redact a bullet (#1187 fix round 2).
  */
 
 /**
@@ -271,3 +276,27 @@ export const SECRET_PATTERNS: readonly RegExp[] = [
     `-----BEGIN [A-Z ]*PRIVATE KEY-----(?:${SEP})?[A-Za-z0-9+/=]*(?:${SEP}[A-Za-z0-9+/=]+)*(?:${SEP}-----END [A-Z ]*PRIVATE KEY-----)?`,
   ),
 ];
+
+/** The fixed marker every redacted span becomes. */
+export const REDACTED = "[REDACTED]";
+
+/** `SECRET_PATTERNS` with the global flag added, so `replace` hits every span. */
+const GLOBAL_PATTERNS: readonly RegExp[] = SECRET_PATTERNS.map(
+  (re) => new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`),
+);
+
+/**
+ * Replace every span matching a {@link SECRET_PATTERNS} rule with {@link REDACTED}
+ * and report how many spans were replaced.
+ */
+export function redactSecrets(text: string): { text: string; count: number } {
+  let count = 0;
+  let out = text;
+  for (const re of GLOBAL_PATTERNS) {
+    out = out.replace(re, () => {
+      count++;
+      return REDACTED;
+    });
+  }
+  return { text: out, count };
+}

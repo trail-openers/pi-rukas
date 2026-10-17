@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * The failure-cause (S3) and security-open-point (S4) seams run in SHADOW
+ * The failure-cause (S3) seam runs in SHADOW
  * (#1308): the rule's answer is always the acted-on outcome, the model's is
  * only logged. Offline: the session model is a stub registry.
  *
@@ -19,7 +19,10 @@
  *     NOT throttled, so an outage burst cannot silence it; a 429 read only from
  *     the subagent's own words is inferred, so it IS asked (#1262);
  *   - `classifyFailureCause` alone stays pure: only `shadowFailureCause` asks;
- *   - at most five open points per issue are asked.
+ *   - PI_ENSEMBLE_DECISIONS=0 is rule-only: no backend is called;
+ *   - an env override to `enforce` cannot make a shadow call act, and a
+ *     call that is not fired still leaves one stateless record;
+ *   - secrets in the error text never reach the model.
  *
  * The clip/redact order, the never-throws contract, the configuration refusals
  * (kill switch, enforce override) and the in-flight counter each have their own
@@ -40,16 +43,7 @@ import {
   shadowSkip,
 } from "../src/decision-shadow.ts";
 import { classifyFailureCause, shadowFailureCause } from "../src/work-driver-failure-taxonomy.ts";
-import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
-import type { NormalisedSpec } from "../src/work-driver-intent.ts";
-import {
-  STUB_MODEL,
-  llmReply,
-  makeAssert,
-  records,
-  stubRegistry,
-  tmpDir,
-} from "./lib/decision-fixtures.ts";
+import { STUB_MODEL, llmReply, makeAssert, records, stubRegistry, tmpDir } from "./lib/decision-fixtures.ts";
 
 const { assert, state } = makeAssert();
 
@@ -82,27 +76,10 @@ const failures: Tail[] = [
   { kind: "something-else" },
 ];
 
-const spec = (): NormalisedSpec => ({
-  intent: "Apply the change.",
-  deliverables: [{ id: "d1", description: "apply the change", paths: [] }],
-  acceptanceCriteria: ["it works"],
-  outOfScope: [],
-  assumptions: [],
-  openQuestions: [],
-  evidence: [],
-  verdict: "proceed",
-  rationale: "actionable",
-});
-const issueWith = (...points: string[]) =>
-  `## Open points (unresolved at the gap-gate cap)\n\n${points.map((p) => `- [CRITICAL] ${p}`).join("\n")}\n`;
-const ordinary = issueWith("Which retry backoff to use \u2014 proposal: 5s");
-const security = issueWith("Who may call the endpoint \u2014 authentication is undecided");
-
 // The rule's answers, captured with NO session attached. Every block below
 // compares a shadowed call against these: a shadow decision must never move
 // the acted-on outcome, so "identical to the baseline" is the assertion.
 const baseline = failures.map((f) => classifyFailureCause(f));
-const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec(), b));
 
 // ------------------------------------------------ no session: exactly the rule
 
@@ -113,16 +90,6 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
     (f, i) => JSON.stringify(act(f, where)) === JSON.stringify(baseline[i]),
   );
   assert(same, "no session model: classifyFailureCause returns exactly the rule's answer");
-  const specsSame = [ordinary, security].every(
-    (b, i) =>
-      JSON.stringify(finaliseSpecVerdict(spec(), b, where)) === JSON.stringify(baselineSpecs[i]),
-  );
-  assert(specsSame, "no session model: finaliseSpecVerdict returns exactly the rule's verdict");
-  assert(
-    baselineSpecs[0]?.verdict === "proceed-with-assumptions" &&
-      baselineSpecs[1]?.parkReason === "security-open-point",
-    "the fixtures exercise the gate: an ordinary point proceeds, a security point parks",
-  );
   const d = await shadowDecide(
     "failure-cause",
     { question: "q", state: { kind: "dispatch-failed" }, rule: "subagent-failure" },
@@ -155,9 +122,12 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
   const prompts: string[] = [];
   const { registry, calls } = stubRegistry({
     llm: (ctx) => {
-      const text = String(ctx.messages[0]?.content ?? "");
-      prompts.push(text);
-      const label = text.includes("open point") ? "true" : "rate-limited";
+      prompts.push(String(ctx.messages[0]?.content ?? ""));
+      // The only seam still shadowed is failure-cause, whose label set is
+      // {rate-limited, provider-transient, subagent-failure, unknown}. The stub
+      // always answers `rate-limited`, so where the rule says otherwise the
+      // shadow split (model logged, rule final) is observable.
+      const label = "rate-limited";
       return llmReply(JSON.stringify({ label, justification: "stub disagrees" }));
     },
   });
@@ -357,37 +327,6 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
   await sleep(100);
   assert(calls.llm === before, "classifyFailureCause alone is pure: it asks no model");
 
-  // Security: an ordinary point the model calls security still proceeds.
-  const specs = [ordinary, security].map((b) => finaliseSpecVerdict(spec(), b, where));
-  assert(
-    specs.every((s, i) => JSON.stringify(s) === JSON.stringify(baselineSpecs[i])),
-    "a model that calls every point security does not change the verdict",
-  );
-  // The two appends are concurrent, so they are selected by seam and sorted by
-  // the rule's answer rather than read by position (#1393).
-  for (let i = 0; i < 200; i++) {
-    if (records(log).filter((x) => x.seam === "security-open-point").length >= 2) break;
-    await sleep(10);
-  }
-  const sec = records(log).filter((x) => x.seam === "security-open-point") as {
-    seam?: string;
-    ruleAnswer?: string;
-    final?: { answer?: string };
-  }[];
-  sec.sort((a, b) => String(a.ruleAnswer).localeCompare(String(b.ruleAnswer)));
-  assert(
-    sec.length === 2 &&
-      sec.every((x) => x.seam === "security-open-point") &&
-      sec[0]?.ruleAnswer === "false" &&
-      sec[0]?.final?.answer === "false" &&
-      sec[1]?.ruleAnswer === "true",
-    "each open point logs one security record; the rule's answer is final",
-  );
-  assert(
-    prompts.every((p) => !p.includes("rate-limited:") && !p.includes("ruleAnswer")),
-    "the model is not told the rule's answer",
-  );
-
   // Secrets in the error text are redacted before any model sees them. The
   // record count is keyed to THIS call by shape (a credential redaction in the
   // log), not to a positional total: the file's record sequence changed when the
@@ -408,37 +347,61 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
 
   // The kill switch and the enforce refusal are CONFIGURATION refusals with
   // their own file (test-decision-shadow-config.ts), where each gets an
-  // unshared seam window and cannot be silenced by this block's outage burst.
-
-  // A long Open points list is capped: at most five points are asked.
-  const many = issueWith(
-    ...Array.from(
-      { length: 7 },
-      (_, i) => `Which retry backoff for queue ${i} \u2014 proposal: 5s`,
-    ),
-  );
-  const secBefore = records(log).filter((x) => x.seam === "security-open-point").length;
-  const asked = calls.llm;
-  const capped = finaliseSpecVerdict(spec(), many, where);
-  assert(
-    JSON.stringify(capped) === JSON.stringify(finaliseSpecVerdict(spec(), many)),
-    "the capped list's verdict is the rule's",
-  );
-  for (let i = 0; i < 200; i++) {
-    if (records(log).filter((x) => x.seam === "security-open-point").length >= secBefore + 5) break;
-    await sleep(10);
-  }
-  await sleep(100);
-  assert(
-    records(log).filter((x) => x.seam === "security-open-point").length === secBefore + 5 &&
-      calls.llm - asked === 5,
-    "seven open points: five asked in shadow, the rest traced",
-  );
+  // unshared seam window, is awaited by SHAPE rather than by positional index,
+  // and cannot be silenced by this block's outage burst.
 
   detach();
 }
 
-// ------------------------------------------------ skip records are throttled per seam
+// ------------------------------------------------ redact the WHOLE text, then clip
+
+/** True when any 12-char run of `key` appears in `s` (a fragment that could still leak). */
+function leaksKey(s: string, key: string): boolean {
+  for (let i = 0; i + 12 <= key.length; i++) {
+    if (s.includes(key.slice(i, i + 12))) return true;
+  }
+  return false;
+}
+
+const SHADOW_KEY = `sk-ant-api03-${"aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d"}`;
+{
+  // The key's prefix sits ~10 chars before the 600-char tail boundary: a clip
+  // before redaction would leave a fragment no pattern matches.
+  const root = tmpDir("shadow-redact-tail");
+  const where = { repoRoot: root, issues: [9] };
+  const log = path.join(root, ".pi", "work-state", "9", "decisions.jsonl");
+  const prompts: string[] = [];
+  const { registry, calls } = stubRegistry({
+    llm: (ctx) => {
+      prompts.push(String(ctx.messages[0]?.content ?? ""));
+      return llmReply(JSON.stringify({ label: "subagent-failure", justification: "stub" }));
+    },
+  });
+  attach({ modelRegistry: registry, model: STUB_MODEL, cwd: root });
+  // Spaces around the key: the pattern needs word boundaries at both ends.
+  const errorTail = `${"f".repeat(99)} ${SHADOW_KEY} ${"t".repeat(556)}`;
+  assert(
+    errorTail.length - 600 === 100 + 10,
+    "fixture: the 600-char tail boundary falls 10 chars into the key",
+  );
+  act({ kind: "dispatch-failed", errorTail }, where);
+  const recs = await awaitRecords(log, 1);
+  assert(
+    calls.llm === 1 && recs.length === 1,
+    "fixture: the failure-cause call reached the backend",
+  );
+  assert(
+    !prompts.some((p) => leaksKey(p, SHADOW_KEY)),
+    "tail clip: no 12+ char run of the key reaches the backend",
+  );
+  assert(
+    !leaksKey(readFileSync(log, "utf8"), SHADOW_KEY),
+    "tail clip: no 12+ char run of the key reaches the decision log",
+  );
+  detach();
+}
+
+// ------------------------------------------------ the shadow call never throws
 
 {
   const root = tmpDir("shadow-throttle");

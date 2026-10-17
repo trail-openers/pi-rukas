@@ -11,12 +11,17 @@
  * It also owns `identityBase` (#1305): the ONE answer to "which ref is a
  * review's patch identity taken against", shared by the ledger writer and the
  * merge guard so the two cannot resolve different bases.
+ *
+ * #1387 — this module imports no `work-driver*.ts` module. Its mainline lookup
+ * comes from the neutral leaf `mainline.ts`, which the driver imports too.
+ * `test-review-ledger-path-imports.ts` fails the suite on any driver import
+ * here, direct or type-only.
  */
 
 import path from "node:path";
+import { resolveMainline } from "./mainline.ts";
 import type { LedgerExecFn } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
-import { resolveMainline } from "./work-driver-git.ts";
 
 /**
  * #955 lens fix 6: tracks which override paths have been traced in this
@@ -121,7 +126,7 @@ export async function identityBase(
   cwd: string,
 ): Promise<{ ok: true; remote: string; mainline: string } | { ok: false; reason: string }> {
   const mainline = await resolveMainline(cwd, execFn);
-  if (!("branch" in mainline)) {
+  if (!mainline.ok) {
     return { ok: false, reason: `cannot resolve the mainline branch (${mainline.reason})` };
   }
   const remote = await remoteName(execFn, cwd);

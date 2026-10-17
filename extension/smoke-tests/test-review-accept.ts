@@ -193,9 +193,9 @@ const importsScripts = srcFiles.filter((f) =>
 assert(importsScripts.length === 0, "boundary: no src module imports the operator script");
 const registersAcceptance = srcFiles.filter((f) => {
   const c = contents.get(f) ?? "";
-  return c.includes("registerTool") && c.includes("acceptRow");
+  return c.includes("registerTool") && c.includes("acceptFinding");
 });
-assert(registersAcceptance.length === 0, "boundary: no Pi tool registers acceptRow");
+assert(registersAcceptance.length === 0, "boundary: no Pi tool registers acceptance");
 
 const agentCommands = [
   "bun extension/scripts/review-accept.ts feat/x deadbeef --reason 'a reason that is long enough'",

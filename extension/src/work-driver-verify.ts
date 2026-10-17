@@ -17,8 +17,9 @@ import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
 import { execTree } from "./exec-tree.ts";
 import { execp as groupExecp } from "./exec.ts";
-import { prRange, refResolves } from "./git-range.ts";
+import { errorText, execGit, prRange, refResolves } from "./git-range.ts";
 import { trace } from "./trace.ts";
+import { consolidationNote } from "./work-driver-consolidation-note.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { resolveMainline } from "./work-driver-git.ts";
 import type { ConsolidationVerdict } from "./workflow-state-consolidation.ts";
@@ -143,10 +144,11 @@ async function workstreamTouchedSet(
   // THIS repo or its output cannot be trusted as evidence for this cycle.
   const commonDirOf = async (dir: string) => {
     try {
-      const { stdout } = await fn("git rev-parse --path-format=absolute --git-common-dir", {
-        cwd: dir,
-        maxBuffer: 64 * 1024,
-      });
+      const stdout = await execGit(fn, dir, [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+      ]);
       return realpathSync(stdout.trim());
     } catch {
       return undefined;
@@ -170,11 +172,7 @@ async function workstreamTouchedSet(
   if (ownBase === undefined || !VALID_SHA_RE.test(ownBase)) return undefined;
   let rangeOut: string;
   try {
-    const { stdout } = await fn(`git diff --name-status -M ${JSON.stringify(ownBase)}..HEAD`, {
-      cwd: wt,
-      maxBuffer: 1024 * 1024,
-    });
-    rangeOut = stdout;
+    rangeOut = await execGit(fn, wt, ["diff", "--name-status", "-M", `${ownBase}..HEAD`]);
   } catch {
     return undefined; // unreadable range → fail closed
   }
@@ -203,11 +201,13 @@ async function workstreamTouchedSet(
   // cumulative set file-granular.
   let porcelainOut: string;
   try {
-    const { stdout } = await fn("git status --porcelain --untracked-files=all", {
-      cwd: wt,
-      maxBuffer: 1024 * 1024,
+    // 16 MiB (not execGit's 1 MiB default): a worktree with a large generated
+    // or vendored untracked tree prints one porcelain line per file, and a
+    // maxBuffer overrun throws — which this site reads as "unreadable" and
+    // fails closed, so a big-but-legal tree would otherwise fail the gate.
+    porcelainOut = await execGit(fn, wt, ["status", "--porcelain", "--untracked-files=all"], {
+      maxBuffer: 16 * 1024 * 1024,
     });
-    porcelainOut = stdout;
   } catch {
     return undefined; // unreadable worktree → fail closed
   }
@@ -280,8 +280,8 @@ export async function verifyConsolidation(
   // #1134 follow-up — the same resolver readIntegratedDiff uses. Unresolved is a
   // named note on the best-effort result, never a guessed "main".
   const mainline = await resolveMainline(ctx.repoRoot, execp);
-  if (!("branch" in mainline)) {
-    const note = `consolidation check skipped: mainline unresolved: ${mainline.reason}`;
+  if (!mainline.ok) {
+    const note = consolidationNote(`mainline unresolved: ${mainline.reason}`, ctx);
     trace(`work-driver: ${note}`);
     return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
   }
@@ -296,12 +296,22 @@ export async function verifyConsolidation(
   // No recorded branch: unknowable, so the best-effort path below (no-missing).
   // (#1134 follow-up: that path is now an explicit early return carrying a note.)
   if (!branch) {
-    const note = "consolidation check skipped: no branch recorded";
+    const note = consolidationNote("no branch recorded", ctx);
     trace(`work-driver: ${note}`);
     return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
   }
-  if (!(await refResolves(execp, ctx.repoRoot, `origin/${branch}`))) {
-    const note = `consolidation check skipped: origin/${branch} not found in this clone — the branch was not pushed from here`;
+  const pushed = await refResolves(execp, ctx.repoRoot, `origin/${branch}`);
+  if (pushed.state === "unknown") {
+    // Unreadable is not absent: a failed probe must not read as "not pushed".
+    const note = consolidationNote(`could not check origin/${branch}: ${pushed.error}`, ctx);
+    trace(`work-driver: ${note}`);
+    return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
+  }
+  if (pushed.state === "absent") {
+    const note = consolidationNote(
+      `origin/${branch} not found in this clone — the branch was not pushed from here`,
+      ctx,
+    );
     trace(`work-driver: ${note}`);
     return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
   }
@@ -315,23 +325,28 @@ export async function verifyConsolidation(
     // the merge base, so a base that moved after the branch was cut does not read
     // as reverted files.
     // argv (not a shell string): the range reaches git verbatim.
-    const { stdout } = await execp("git", {
-      argv: [
-        "diff",
-        "--name-status",
-        "-M",
-        "--end-of-options",
-        prRange(`origin/${base}`, `origin/${branch}`),
-      ],
-      cwd: ctx.repoRoot,
-      maxBuffer: 1024 * 1024,
-    });
-    statusOut = stdout;
+    statusOut = await execGit(execp, ctx.repoRoot, [
+      "diff",
+      "--name-status",
+      "-M",
+      "--end-of-options",
+      prRange(`origin/${base}`, `origin/${branch}`),
+    ]);
   } catch (err) {
-    trace(
-      `work-driver: verifyConsolidation diff failed (treating as no-missing): ${(err as Error).message?.slice(0, 120)}`,
+    // A failed read is a NOTE, never a silent empty result (#1153): the
+    // handoff must say the check did not run. `errorText`, not
+    // `(err as Error).message`: node's message is `Command failed: git … ` plus
+    // the argv, which is 120 chars of command name and leaves one character of
+    // git's actual reason; git's own stderr is the useful half. `prRange`
+    // renders the same range that was passed to git, so the note names the refs
+    // without a second template. Redaction, flattening and the bound are
+    // `consolidationNote`'s contract, not this site's.
+    const note = consolidationNote(
+      `diff of ${prRange(`origin/${base}`, `origin/${branch}`)} failed: ${errorText(err)}`,
+      ctx,
     );
-    return { missing: [], filesPresent: [], verdicts: [], notes: [] };
+    trace(`work-driver: ${note}`);
+    return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
   }
   const changedFiles = new Set<string>();
   // #778 — rename SOURCES (the old side of R### codes): a declared path that
