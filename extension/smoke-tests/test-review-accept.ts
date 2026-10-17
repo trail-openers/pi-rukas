@@ -152,11 +152,13 @@ try {
     dir,
     OPERATOR_ENV,
   ).finally(() => {
-    // `undefined` rather than `delete`: for `process.env` both remove the variable from
-    // the child's environment, and assigning avoids biome's noDelete rule.
-    if (savedGlobal === undefined) process.env.GIT_CONFIG_GLOBAL = undefined;
+    // `Reflect.deleteProperty`, NOT an `undefined` assignment: on `process.env` an
+    // assignment coerces, so `process.env.X = undefined` leaves the STRING "undefined"
+    // in the child's environment — the opposite of removing the variable. Biome's
+    // noDelete rule is why `delete` is not used either.
+    if (savedGlobal === undefined) Reflect.deleteProperty(process.env, "GIT_CONFIG_GLOBAL");
     else process.env.GIT_CONFIG_GLOBAL = savedGlobal;
-    if (savedNoSystem === undefined) process.env.GIT_CONFIG_NOSYSTEM = undefined;
+    if (savedNoSystem === undefined) Reflect.deleteProperty(process.env, "GIT_CONFIG_NOSYSTEM");
     else process.env.GIT_CONFIG_NOSYSTEM = savedNoSystem;
   });
   assert(noId.code === 2, "accept: no git identity refuses (the operator must be known)");
@@ -231,10 +233,10 @@ for (const c of [
   "echo review-acceptance-notes",
   'git commit -m "feat: review-accept guard"',
   'git commit -m "docs: review-accept flow"',
-  // The plain git/gh reads the exemption exists for: a log and a diff naming the
-  // store's module stay allowed because the QUOTED / path position makes them prose to
-  // the arms, not path operands.
-  "git log --oneline -- extension/src/review-findings-store.ts",
+  // The plain git reads the exemption exists for. `git log -- extension/src/
+  // review-findings-store.ts` is NOT one of them any more: the #1125 fix round refuses a
+  // path operand whose last segment is a protected stem, and that over-refusal is
+  // asserted in test-review-accept-guard-hardened.ts's OVER_REFUSALS.
   "git diff HEAD -- extension/src/review-accept-guard.ts",
 ]) {
   assert(runsReviewAccept(c) === undefined, `guard: leaves unrelated commands alone — ${c}`);

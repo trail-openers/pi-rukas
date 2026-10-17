@@ -193,11 +193,7 @@ assert(
   "guard: a git commit message naming the findings file is allowed",
 );
 // #1125 — the hardening must not swallow the reads the exemption exists for.
-for (const c of [
-  "git log --oneline -- extension/src/review-findings-store.ts",
-  "git diff HEAD -- extension/src/review-accept-guard.ts",
-  "gh pr view 1105",
-]) {
+for (const c of ["git diff HEAD -- extension/src/review-accept-guard.ts", "gh pr view 1105"]) {
   assert(
     runsReviewAccept(c) === undefined,
     `guard: a plain git/gh read is allowed — ${c.slice(0, 44)}`,
