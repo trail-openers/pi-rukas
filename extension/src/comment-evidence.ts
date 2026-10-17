@@ -71,6 +71,14 @@ const clip = (s: string): string =>
  * one bounded line, no code fences, no fence delimiters, and no marker token a
  * reader would parse. The replacement brackets the token so the reader's own
  * `TOKEN :` / `TOKEN APPROVED` shape can no longer match.
+ *
+ * Lone backticks are deliberately NOT stripped. Every caller here embeds its
+ * text inside a `<<<` / `>>>` DATA fence or a fenced report line, where one
+ * backtick is inert, and the text is *evidence* — a diff hunk, a finding title,
+ * a stored suggestion. Stripping them (round 3 did) rewrites the evidence and
+ * mangles markdown a reader was meant to see quoted. The one caller that needs
+ * inline-code-span safety for failure text is `mainline.ts`, which owns that
+ * rule locally rather than changing what every other caller renders.
  */
 export function neutraliseEvidence(s: string): string {
   const flat = s
