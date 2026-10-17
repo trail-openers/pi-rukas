@@ -4,7 +4,7 @@
  *
  * `draftSpec` computes the dropped list and renders it through
  * `plan-dropped-section.ts`; the driver is the one that owns the repo root and
- * therefore owns writing `.pi/plan-dropped/`. Threading the items back out of
+ * therefore owns writing `.pi/work-state/plan-dropped/`. Threading the items back out of
  * `draftSpec`'s return value would widen a twelve-positional-arg signature that
  * `plan-driver-phase3.ts` already documents as the reason it exists, and the
  * corrective re-draft calls it a second time with the same list. So the list is

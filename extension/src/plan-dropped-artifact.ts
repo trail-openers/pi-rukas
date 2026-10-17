@@ -10,10 +10,11 @@
  * lifetime of the issue has to name bytes the pipeline itself wrote.
  *
  * So the pipeline writes them: one JSON file per run that omitted anything,
- * under `<repo>/.pi/plan-dropped/`, named so an operator holding the issue can
- * find it from the descriptor. `DROPPED_ARTIFACT_DIR` in
+ * under `<repo>/.pi/work-state/plan-dropped/`, named so an operator holding the
+ * issue can find it from the descriptor. `DROPPED_ARTIFACT_DIR` in
  * plan-dropped-budget.ts is the directory; this file owns the naming, the
- * write, and the sweep that keeps the directory from growing without bound.
+ * write, the exclude entry, and the sweep that keeps the directory from
+ * growing without bound.
  *
  * It never throws and never rejects a run: the artifact is what makes the
  * omission line's promise TRUE, and a read-only or full checkout degrades to
@@ -30,6 +31,7 @@ import { lastDroppedRender } from "./plan-dropped-holder.ts";
 import { repointDroppedOmission } from "./plan-dropped-section.ts";
 import { FORGE_BODY_MAX } from "./plan-validate.ts";
 import { trace } from "./trace.ts";
+import { ensureGitExclude } from "./work-driver-git-exclude.ts";
 export { repointDroppedOmission } from "./plan-dropped-section.ts";
 
 /** How long a dropped-items artifact survives the sweep. Transcripts get 5
@@ -134,6 +136,9 @@ export async function writeDroppedArtifact(
     await mkdir(join(repoRoot, DROPPED_ARTIFACT_DIR), { recursive: true });
     await writeFile(tmp, JSON.stringify(payload, null, 2));
     await rename(tmp, file);
+    // Best-effort: the write is the deliverable, the exclude is hygiene. A
+    // failure leaves the artifact readable but visible to `git status`.
+    await ensureDroppedArtifactExcluded(repoRoot);
   } catch (err) {
     await rm(tmp, { force: true }).catch(() => undefined);
     trace(
@@ -143,6 +148,19 @@ export async function writeDroppedArtifact(
   }
   await sweepDroppedArtifacts(join(repoRoot, DROPPED_ARTIFACT_DIR));
   return file;
+}
+
+/**
+ * Keep the artifact directory out of the project's `git status`.
+ *
+ * `.pi/` is a protected path and untracked files under it dirty the repo root,
+ * which /work's branch step hard-blocks on. `ensureGitExclude` is the harness's
+ * one serialised `.git/info/exclude` writer (work-driver-git-exclude.ts) — the
+ * same call `decision-log.ts` makes for `.pi/decisions.jsonl`. No `.gitignore`
+ * entry: that would alter the project's tracked shape.
+ */
+export async function ensureDroppedArtifactExcluded(repoRoot: string): Promise<void> {
+  await ensureGitExclude(repoRoot, [`${DROPPED_ARTIFACT_DIR}/`]);
 }
 
 /**

@@ -131,11 +131,11 @@ export const DROPPED_SECTION_MAX_CHARS = 8_000;
  * the un-clipped item text it claims to hold is not there) and prunes
  * transcripts after 5 days, so "the full list lives in the run transcripts"
  * was a false pointer. The pipeline now WRITES the full list to
- * `<repo>/.pi/plan-dropped/<slug>-<runId>.json` whenever it omitted anything
- * (`writeDroppedArtifact`), and this constant names that path so the body's
- * omission line, the compaction note and the tool result all point at bytes
- * that exist. `plan-tool.ts` renders `droppedListFile` from the result; this
- * constant is the fallback when a run wrote nothing (a read-only checkout).
+ * `<repo>/.pi/work-state/plan-dropped/<slug>-<runId>.json` whenever it omitted
+ * anything (`writeDroppedArtifact`), and this constant names that path so the
+ * body's omission line, the compaction note and the tool result all point at
+ * bytes that exist. `plan-tool.ts` renders `droppedListFile` from the result;
+ * this constant is the fallback when a run wrote nothing (a read-only checkout).
  */
 export const DROPPED_ARTIFACT = "the plan run's dropped-items file";
 
@@ -151,11 +151,24 @@ export const DROPPED_REOPENED_HEADING = "## Open points (unresolved at the gap-g
 
 /**
  * The directory holding the dropped-items artifacts, relative to the repo root.
- * A sibling of `.pi/work-state/` (workflow-state.ts) and `.pi/decisions.jsonl`
- * (decision-log.ts) — the same "durable, per-clone operator artifact" family,
- * and the reason the omission line can promise a location at all.
+ *
+ * Under `.pi/work-state/` — the harness's existing per-clone untracked-state
+ * directory (workflow-state.ts) — and kept out of `git status` by the same
+ * `.git/info/exclude` mechanism that holds `.worktrees/`, `/tmp/` and
+ * `.pi/decisions.jsonl` out (work-driver-git-exclude.ts, called from
+ * `ensureDroppedArtifactExcluded`). NOT a sibling at `.pi/plan-dropped/`: that
+ * path is gitignored only in THIS repo's own `.gitignore`, so in any other
+ * project a `/plan` would have left untracked files under `.pi/` — dirtying the
+ * repo root that /work's branch step hard-blocks on, in a protected path.
+ *
+ * Deliberately a subdirectory of work-state rather than a peer of the state
+ * files: `work-driver-artifact-sweep.ts` removes only NUMERIC directories
+ * under `.pi/work-state/` whose sibling `<N>.json` state file is gone, so a
+ * named directory here is not swept by that lifecycle; `sweepDroppedArtifacts`
+ * owns this directory's own age + count bound. `writeState` writes one file
+ * (`<issue>.json`), never a directory, so the two never collide.
  */
-export const DROPPED_ARTIFACT_DIR = ".pi/plan-dropped";
+export const DROPPED_ARTIFACT_DIR = ".pi/work-state/plan-dropped";
 
 /**
  * The widest string the omission line can name as the full list's home. The
