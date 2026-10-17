@@ -224,6 +224,13 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // S4a (#1162) — the interrupt record; the cycle resumes on re-entry.
       return `  interrupted · ${e.reason.slice(0, 80)}`;
     case "cycle-interrupted":
-      return `  cycle-interrupted · ${e.step} · session shutdown (${e.reason})${e.branch ? ` · ${e.branch}${e.headSha ? ` @ ${e.headSha.slice(0, 8)}` : ""}` : ""} · ${e.resumable ? "resumable" : "NOT resumable"}`;
+      // #1247 — the origin names what closed the session (a signal, a dead
+      // stdin, or nothing observable). Optional: a state file written before
+      // #1247 has no `origin`, and this renders one byte shorter for it.
+      // Tested with `typeof`, not truthiness: `origin` arrives from a state
+      // file on disk, and a falsy-but-present value (an empty string a hand
+      // edit left) is a corrupt record the validator reports, not an absent
+      // field to render around.
+      return `  cycle-interrupted · ${e.step} · session shutdown (${e.reason}${typeof e.origin === "string" ? `, origin: ${e.origin}` : ""})${e.branch ? ` · ${e.branch}${e.headSha ? ` @ ${e.headSha.slice(0, 8)}` : ""}` : ""} · ${e.resumable ? "resumable" : "NOT resumable"}`;
   }
 }

@@ -11,6 +11,7 @@ import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
 import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
+import type { ExitOrigin } from "./workflow-state-events-exit-origin.ts";
 import type { FenceRecoveryStartedEvent } from "./workflow-state-events-fence.ts";
 import type {
   HandoffConsolidatedEvent,
@@ -484,6 +485,17 @@ export type CycleInterruptedEvent = {
    * `(string & {})` keeps the union open so a new Pi reason is not a type error.
    */
   reason: "quit" | "reload" | "new" | "resume" | "fork" | (string & {});
+  /**
+   * #1247 — where the shutdown actually came from: a signal (`signal:SIGTERM`),
+   * a closed stdin (`stdin-eof`), or `unknown` when nothing observable did. Pi's
+   * `reason` field cannot distinguish these, so this is tracked at the process
+   * level (exit-cause.ts) and recorded here. The vocabulary is a closed union
+   * owned by the schema layer (workflow-state-events-exit-origin.ts), and
+   * `validateDiscriminants` refuses an origin outside it. Additive and OPTIONAL:
+   * state files written before #1247 have no `origin`, and readers must not
+   * assume one.
+   */
+  origin?: ExitOrigin;
   /** Where the work is, when the cycle had got that far. */
   branch?: string;
   headSha?: string;
