@@ -90,7 +90,10 @@ export function makeSweepRepo(name: string): { repoRoot: string; baseSha: string
   git(repoRoot, ["config", "user.email", "sweep@test.invalid"]);
   git(repoRoot, ["config", "user.name", "Sweep"]);
   writeFileSync(join(repoRoot, "base.txt"), "base\n");
-  git(repoRoot, ["add", "base.txt"]);
+  // node_modules is ignored so a fixture tree holding a real one reads as
+  // "clean" to git while the dependency-suppression rule still fires on it.
+  writeFileSync(join(repoRoot, ".gitignore"), "node_modules\n");
+  git(repoRoot, ["add", "base.txt", ".gitignore"]);
   git(repoRoot, ["commit", "-qm", "base"]);
   mkdirSync(join(repoRoot, ".worktrees"), { recursive: true });
   mkdirSync(join(repoRoot, ".pi", "work-state"), { recursive: true });
@@ -107,23 +110,35 @@ export interface SweepWorktree {
 }
 
 /**
- * `<repoRoot>/.worktrees/<name>` as a real, detached worktree at `baseSha`,
- * with a `.git` file that satisfies `resolveSweepTarget`'s exact-string check.
+ * `<repoRoot>/.worktrees/<name>` as a real, detached worktree at `baseSha`.
+ *
+ * The `.git` file is whatever `git worktree add` wrote — the detached layout puts
+ * the administrative record at `<gitdir>/worktrees/<name>`, so it is already the
+ * exact line `resolveSweepTarget` compares against (`readWorktreeGitdir` pins
+ * it; `sweepGitdirLine` is the shared builder). It is git's real line, not a
+ * hand-written stand-in.
  *
  * `dirty` writes an untracked file into the tree — the state that makes Rule 5
  * (full removal) refuse and Rule 6 (artifact purge) apply, so the branch the
  * sweep takes is decided by the tree's real state rather than a fake's answer.
+ *
+ * `installDeps` lays down a REAL (non-symlink) `node_modules` — the expensive
+ * shape `git clean -fdX` would destroy, and the one the dependency-suppression
+ * rule keys on. git sees it as ignored, so the tree stays "clean" either way.
  */
 export function makeSweepWorktree(
   repoRoot: string,
   baseSha: string,
   name: string,
-  opts: { dirty?: boolean } = {},
+  opts: { dirty?: boolean; installDeps?: boolean } = {},
 ): SweepWorktree {
   const path = join(repoRoot, ".worktrees", name);
   git(repoRoot, ["worktree", "add", "--detach", path, baseSha]);
   const expectedGitdir = sweepGitdirLine(repoRoot, name);
-  writeFileSync(join(path, ".git"), `${expectedGitdir}\n`);
+  if (opts.installDeps) {
+    mkdirSync(join(path, "node_modules"), { recursive: true });
+    writeFileSync(join(path, "node_modules", "dep.js"), "installed\n");
+  }
   if (opts.dirty) writeFileSync(join(path, "leftover.txt"), "uncommitted\n");
   return { name, path, expectedGitdir };
 }
