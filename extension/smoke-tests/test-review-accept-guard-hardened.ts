@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 // `import.meta.url` rather than `import.meta.dir`: this suite is run under both bun and
 // node, and only bun defines `dir`.
 const HERE = dirname(fileURLToPath(import.meta.url));
+import { armForgeRead, armGitRead } from "../src/review-accept-arms.ts";
 import {
   editsFindingsFile,
   registerReviewAcceptGuard,
@@ -77,6 +78,11 @@ const ALLOWANCES: Case[] = [
   { c: "bun run check", why: "the exact check form" },
   { c: "bunx tsc --noEmit", why: "the exact type-check form" },
   { c: "bun x tsc --noEmit", why: "the same form spelled with a space" },
+  // An empty command runs nothing, so it needs no arm: `scanCommand` returns undefined
+  // only for input that is genuinely whitespace once quotes are removed.
+  { c: "''", why: "an empty command (quoted) is harmless" },
+  { c: '""', why: "an empty command (double-quoted) is harmless" },
+  { c: "'' ''", why: "two empty quoted words are harmless" },
   { c: `git commit -m "feat: review-accept guard"`, why: "a commit naming the operator script" },
   {
     c: `git commit -m "clean up the ${DATA} handling"`,
@@ -177,6 +183,22 @@ const MANDATED_REFUSALS: Case[] = [
   },
   { c: `git log --oneline < .git/${DATA}`, why: "a redirection reading the data file" },
   { c: "git status > /tmp/out.txt", why: "a redirection no arm spells" },
+  // A git repo-location selector moves the repository the "plain read" runs against, so
+  // the arm's promise is about some tree the arms never saw. Each spelling is refused
+  // whole, `=`-attached, and case-folded (`-C` reaches the arms as `-c`).
+  { c: "git -C /repo/.git log", why: "ACCEPTANCE: git -C pointing the read at another repo" },
+  { c: "git -c /repo/.git log", why: "git -C lowercased the way the arms see it" },
+  { c: "git --GIT-DIR=/x log", why: "git --git-dir= in its original case" },
+  { c: "git --git-dir=/x log", why: "ACCEPTANCE: git --git-dir= naming another object store" },
+  { c: "git --git-dir /x log", why: "git --git-dir with a spaced value" },
+  { c: "git --work-tree=/x status", why: "ACCEPTANCE: git --work-tree= pointing elsewhere" },
+  { c: "git --exec-path=/x status", why: "git --exec-path= shadowing git-shell" },
+  { c: "git -C /x log --oneline", why: "the selector before the verb, outside `rest`" },
+  // An empty quoted word glues to its neighbour in the shell (`''f` is a token no operand
+  // test recognises), so it must not be able to SEPARATE or HIDE a store name.
+  { c: `git status ${Q}${Q} ${DATA}`, why: "ACCEPTANCE: an empty word before the data file" },
+  { c: `git status "" .git/${DATA}`, why: 'ACCEPTANCE: an empty "" before the data file' },
+  { c: `git log ${Q}${Q}${Q}${Q}${DATA}`, why: "four quotes glued to the data file name" },
 ];
 
 const DENY_BY_DEFAULT_REFUSALS: Case[] = [
@@ -318,6 +340,49 @@ const OVER_REFUSALS: Case[] = [
 ];
 
 // ── assertions ────────────────────────────────────────────────────────────────
+
+// ── the arms, asked DIRECTLY ────────────────────────────────────────────────────
+//
+// The guard's pre-checks refuse `-c` and any quoted word for every command, so a whole
+// command proves only the pre-check. These ask one arm one segment: what the ARM refuses,
+// with nothing above it to catch the fall. The A1/A2 arms are the last line for a git/gh
+// read that the pre-checks let through.
+
+/** Words exactly as an arm receives them: lowercased segment split on spaces. */
+const words = (s: string): string[] => s.toLowerCase().split(" ");
+
+for (const c of [
+  "git -c /repo/.git log",
+  "git --git-dir=/x log",
+  "git --git-dir /x log",
+  "git --work-tree=/x status",
+  "git --exec-path=/x status",
+  "git --exec-path /x blame src/a.ts",
+  "git log --oneline --git-dir=/x",
+  // The empty word AFTER the verb, spelled so nothing else in the segment refuses: an
+  // operand test cannot see through `''`, so this is the case the empty-word refusal is
+  // the only term that makes red.
+  "git log '' review-findings.json",
+  "git log '' extension/src/review-findings-store.ts",
+  // `''` glued to a leading dot: `slice(2)` reads `ts/`, which no operand test owns, so
+  // the empty-word refusal is the only term that can make this red.
+  // `''` glued to a DOT-relative path: the colon branch reads `.git/` (not the store) and
+  // the plain basename test sees `.json`, so ONLY the empty-word term can make this red.
+  "git log '' .git/review-findings.json",
+])
+  assert(!armGitRead(words(c)), `arm A1 refuses the repo-location selector — ${c}`);
+for (const c of ["git log --oneline", "git --no-pager status", "git show HEAD:readme.md"])
+  assert(armGitRead(words(c)), `arm A1 still admits the plain read — ${c}`);
+
+for (const c of [
+  "gh pr view 1 --git-dir=/x",
+  "gh pr view 1 -c x",
+  "gh pr diff 2 --work-tree=/x",
+  "gh repo view --git-dir /x",
+])
+  assert(!armForgeRead(words(c)), `arm A2 refuses the repo-location selector — ${c}`);
+for (const c of ["gh pr view 1105", "glab mr diff 3"])
+  assert(armForgeRead(words(c)), `arm A2 still admits the exact read — ${c}`);
 
 for (const t of ALLOWANCES) assert(!refused(t.c), `allowed — ${t.why}`);
 for (const t of MANDATED_REFUSALS) assert(refused(t.c), `mandated refusal — ${t.why}`);

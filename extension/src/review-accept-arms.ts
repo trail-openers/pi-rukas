@@ -19,6 +19,17 @@ export const RUNTIME = /^(?:bun|bunx|node|npx|tsx|ts-node|deno)$/;
 export const WRITE_FLAGS = ["-o", "--output", "-c", "--ext-diff"];
 /** A runner that executes text rather than a file: no arm admits one. */
 const EVAL_FLAGS = ["-e", "-p", "--print", "--eval", "-r", "--require", "--preload"];
+/** git's repo-location selectors. Each one MOVES the repository the read runs against
+ * (`.git` elsewhere, a work-tree elsewhere, a `PATH`-shadowed `git-shell` via
+ * `--exec-path`), so the "plain git read" premise the git arms vouch for is about some
+ * tree the arms never saw. Refused by whole word and `=`-attached, either spelling — the
+ * segments reach the arms LOWERCASED, so `-C` arrives as `-c` and `--GIT-DIR=/x` as
+ * `--git-dir=/x`. */
+const REPO_LOCATION_FLAGS = ["-c", "--git-dir", "--work-tree", "--exec-path"];
+/** The same selectors as a regex, for an arm that matches words it has ALREADY folded
+ * (`armForgeRead` maps `unquote` over the segment before matching the subcommand, so
+ * `hasFlag` would be looking at the quote characters rather than the flag). */
+const REPO_LOCATION_FLAG = /^(-c|--git-dir|--work-tree|--exec-path)(?:=|\s|$)/;
 /** The verbs arm A1 admits: reads that print to stdout and take no output argument. */
 const GIT_READ_VERBS = ["status", "log", "diff", "show", "blame"];
 /** Read tools arm A8 admits, each for arguments naming nothing protected. `bash` is
@@ -119,7 +130,19 @@ export function armGitRead(w: string[]): boolean {
   const verb = w[i];
   if (i === 0 || verb === undefined || !GIT_READ_VERBS.includes(verb)) return false;
   const rest = w.slice(i);
+  // Asked of every word of the arm, INCLUDING the verb position: `git -C /repo/.git log`
+  // puts the selector before the verb, where `rest` cannot see it.
+  if (hasFlag(w, ...REPO_LOCATION_FLAGS)) return false;
   if (hasFlag(rest, ...WRITE_FLAGS) || tokensOf(rest.join(" ")).includes("alias")) return false;
+  // EMPTY words are asked LAST, after the operand tests: an empty word separates nothing,
+  // so a name the operand loop below already caught is reported for the NAME rather than
+  // for the empty word. The shell glues `''` to its neighbour (`''f` is ONE word), so the
+  // quote characters shift the `slice()` offsets and a protected name hides from every
+  // test above — which is exactly why an empty word has no arm here. Asked of the WHOLE
+  // arm (`w`, not `rest`): the empty word may sit before the verb, where `rest` cannot
+  // reach it. A word is never empty by accident, so refusing one is clause (b)'s accepted
+  // cost, not a lost read.
+  if (w.some((x) => unquote(x).trim() === "")) return false;
   return !rest.map(unquote).some(namesStoreOperand);
 }
 
@@ -141,6 +164,8 @@ export function armForgeRead(w: string[]): boolean {
       words[0] === tool && area.includes(words[1] ?? "") && verbs.includes(words[2] ?? ""),
   );
   if (!ok) return false;
+  const folded = w.map(unquote);
+  if (folded.some((a) => REPO_LOCATION_FLAG.test(a))) return false;
   return !hasFlag(w, ...WRITE_FLAGS) && !tokensOf(w.join(" ")).includes("alias");
 }
 
