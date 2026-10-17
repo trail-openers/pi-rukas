@@ -74,8 +74,9 @@ export interface LifecycleDetails {
   jobId: string;
   /** Display label. For step-* kinds, this is the step name. */
   label: string;
-  /** Role for telemetry; same as label for synthetic orchestrator labels. */
-  role: string;
+  /** Role for telemetry; same as label for synthetic orchestrator labels, absent
+   *  on `step-notice` (not a dispatch). */
+  role?: string;
   /** Elapsed ms for completed/failed/errored/step-completed/step-failed. */
   elapsedMs?: number;
   /** Total tokens (input + output + cache); set for completed/errored/step-completed. */
@@ -100,11 +101,10 @@ export interface LifecycleDetails {
   /** Total step count for step-* kinds. */
   stepTotal?: number;
   /**
-   * Failure reason for step-failed (e.g., "subagent ABORT", "cap-hit:
-   * ci-retry"). Shown after the elapsed metric on the scrollback line so
-   * the user knows WHY the step failed without opening the state file.
-   */
-  reason?: string;
+   * The message: the failure reason for step-failed ("subagent ABORT",
+   * "cap-hit: ci-retry"), the whole notice for step-notice. Rendered after the
+   * elapsed metric, so the user knows WHY without opening the state file.
+   */ reason?: string;
   /**
    * #299 — set on step-completed when the step succeeded after one or more
    * retries. The scrollback line appends "recovered after retry" so a
@@ -363,7 +363,7 @@ export function emitStepRetry(
  * still knows which workstream died and what it left behind.
  */
 export function emitStepNotice(step: string, message: string, issue?: number): void {
-  emit({ kind: "step-notice", issue, jobId: step, label: step, role: step, reason: message });
+  emit({ kind: "step-notice", issue, jobId: step, label: step, reason: message });
 }
 
 function emit(details: LifecycleDetails): void {
@@ -452,7 +452,8 @@ export function formatLine(d: LifecycleDetails): string {
       return `▸ ensemble: ${cycleTag(d.issue)}✗ step ${ordinal}${d.label}${round} failed${elapsed}${reason}`;
     }
     case "step-notice":
-      // #1403 — the step is not "done"; the message says what died.
+      // #1403 — the step is not "done"; the message says what died. From inside
+      // the handler, so there is no ordinal to render.
       return `▸ ensemble: ${cycleTag(d.issue)}! ${d.label}: ${d.reason ?? ""}`;
     case "step-retry": {
       const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";

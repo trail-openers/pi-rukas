@@ -23,6 +23,7 @@ import { buildMemoryBrief } from "./memory-brief.ts";
 import { trace } from "./trace.ts";
 import {
   type CrashVerdict,
+  type DevelopPassResult,
   classifyDevelopPass,
   crashedBranchCompleted,
 } from "./work-develop-crash.ts";
@@ -75,20 +76,22 @@ export interface DevelopRunState {
    *  (the step's own `verifyExecFn`, so the fan-out and its gates describe the
    *  same tree). */
   execFn: NonNullable<DriverContext["verifyExecFn"]>;
-  /** #1403 — the per-workstream EFFECTIVE BASES: a dependent's tree is
-   *  compared against ITS base (its dependency's post-commit SHA), not the
-   *  global one — the same resolution `effectiveBaseForWorkstream` uses in the
-   *  #622 safety net. */
-  workstreamBaseShas: Record<string, string>;
+  /** #1403 — resolves the base a workstream's worktree is described against:
+   *  its own entry in `workstreamBaseShas`, else the cycle's global base. The
+   *  ONE base resolution the step has (the classify path calls it at classify
+   *  time, so a dependent classified after its own entry landed is described
+   *  against ITS base, not the global one). */
+  baseFor: (id: string) => string | undefined;
   /** #1403 — the classify seam. The topological step supplies the one shared
-   *  across the fan-out (its own base resolution); a test injects a fake
-   *  tree. Absent → the closure calls `classifyDevelopPass` directly. */
+   *  across both dispatch phases (its own base resolution + executor); a test
+   *  injects a fake tree. Absent → the closure calls `classifyDevelopPass`
+   *  directly with `baseFor` and `execFn`. */
   classifyPass?: (args: {
     id: string;
     cwd: string;
     base: string | undefined;
     execFn: NonNullable<DriverContext["verifyExecFn"]>;
-    result: { ok: boolean; errorStop?: unknown; text?: string; exitCode?: number | null };
+    result: DevelopPassResult;
   }) => Promise<CrashVerdict>;
   /** Per-branch verdicts accumulated across both phases. */
   verdicts: Array<{ id: string; ok: boolean; reason?: string }>;
@@ -128,8 +131,9 @@ export interface DependentRunState {
   /** #1403 — the executor the dependent phase's classification reads with (the
    *  same one the independent fan-out uses). */
   execFn: NonNullable<DriverContext["verifyExecFn"]>;
-  /** #1403 — the per-run classify seam (see `DevelopRunState.classifyPass`). */
-  classifyPass?: DevelopRunState["classifyPass"];
+  /** #1403 — resolves each workstream's effective base (see
+   *  `DevelopRunState.baseFor`): the shared map plus the global fallback. */
+  baseFor: (id: string) => string | undefined;
   /** #1016 — the one-shot retry reset for a failed dependent. */
   resetFor?: (
     id: string,
@@ -360,11 +364,10 @@ export function makeRunOneWorkstream(
       // code 1)` and exited non-zero fell onto the ordinary failure path with
       // a reason drawn from the completion event's tail — nothing said it had
       // crashed, and nothing named the work it left uncommitted.
-      const base = s.workstreamBaseShas?.[id] ?? s.stateRef.current.pipelineState.baseSha;
       const verdict = await (s.classifyPass ?? classifyDevelopPass)({
         id,
         cwd,
-        base,
+        base: s.baseFor(id),
         execFn: s.execFn,
         result: res,
       });

@@ -22,6 +22,7 @@
 
 import {
   type LifecycleDetails,
+  type LifecycleKind,
   attach,
   detach,
   emitCompleted,
@@ -99,11 +100,13 @@ function fakeTheme(): { theme: { fg: (style: string, text: string) => string }; 
   return { theme, styles };
 }
 
-// All 9 LifecycleDetails shapes (one per kind) — the full matrix the
-// renderer must handle, plus the synthetic entries built from them.
-const ALL_SHAPES: LifecycleDetails[] = [
-  { kind: "dispatched", jobId: "df8a-7r", label: "developer", role: "developer" },
-  {
+// Every LifecycleDetails shape (one per kind) — the full matrix the renderer must
+// handle. `satisfies Record<LifecycleKind, LifecycleDetails>` makes a kind missing
+// from this list a COMPILE error, so the guard cannot lag a new `LifecycleKind`
+// member (which is how `step-notice` shipped unpinned).
+const ALL_SHAPES_BY_KIND = {
+  dispatched: { kind: "dispatched", jobId: "df8a-7r", label: "developer", role: "developer" },
+  completed: {
     kind: "completed",
     jobId: "df8a-7r",
     label: "developer",
@@ -111,7 +114,7 @@ const ALL_SHAPES: LifecycleDetails[] = [
     elapsedMs: 151000,
     totalTokens: 14300,
   },
-  {
+  failed: {
     kind: "failed",
     jobId: "df8a-7r",
     label: "developer",
@@ -119,21 +122,21 @@ const ALL_SHAPES: LifecycleDetails[] = [
     elapsedMs: 151000,
     exitCode: 1,
   },
-  {
+  errored: {
     kind: "errored",
     jobId: "df8a-7r",
     label: "developer",
     role: "developer",
     elapsedMs: 3000,
   },
-  {
+  steered: {
     kind: "steered",
     jobId: "df8a-7r",
     label: "developer",
     role: "developer",
     steerMessage: "please continue",
   },
-  {
+  "step-started": {
     kind: "step-started",
     jobId: "adversarial",
     label: "adversarial",
@@ -141,7 +144,7 @@ const ALL_SHAPES: LifecycleDetails[] = [
     stepNumber: 5,
     stepTotal: 9,
   },
-  {
+  "step-completed": {
     kind: "step-completed",
     jobId: "adversarial",
     label: "adversarial",
@@ -153,7 +156,7 @@ const ALL_SHAPES: LifecycleDetails[] = [
     round: 2,
     recovered: true,
   },
-  {
+  "step-failed": {
     kind: "step-failed",
     jobId: "adversarial",
     label: "adversarial",
@@ -163,7 +166,7 @@ const ALL_SHAPES: LifecycleDetails[] = [
     elapsedMs: 45000,
     reason: "cap-hit: ci-retry",
   },
-  {
+  "step-retry": {
     kind: "step-retry",
     jobId: "lens-review",
     label: "lens-review",
@@ -173,7 +176,28 @@ const ALL_SHAPES: LifecycleDetails[] = [
     round: 2,
     reason: "subagent ABORT",
   },
-];
+  "step-notice": {
+    kind: "step-notice",
+    jobId: "develop",
+    label: "develop",
+    reason: "a developer child's engine stopped unexpectedly",
+  },
+} satisfies Record<LifecycleKind, LifecycleDetails>;
+
+// The #1403 notice carries no role, ordinal or elapsed: the renderer reads only
+// `label` and `reason`, so those are what these assertions pin.
+{
+  const notice = ALL_SHAPES_BY_KIND["step-notice"];
+  const line = formatLine(notice);
+  assert(
+    line === "▸ ensemble: ! develop: a developer child's engine stopped unexpectedly",
+    `step-notice renders '! <step>: <message>' (got ${JSON.stringify(line)})`,
+  );
+  assert(!line.includes("undefined"), "step-notice line never leaks an undefined field");
+  assert(notice.role === undefined, "step-notice carries no role — it is not a dispatch");
+}
+
+const ALL_SHAPES: LifecycleDetails[] = Object.values(ALL_SHAPES_BY_KIND);
 
 const KINDS = ALL_SHAPES.map((d) => d.kind);
 
@@ -269,7 +293,10 @@ const KINDS = ALL_SHAPES.map((d) => d.kind);
   emitStepFailed("adversarial", 5, 9, 1000, "cap-hit: ci-retry");
   emitStepRetry("lens-review", 7, 9, 2, "subagent ABORT");
   assert(entries.length === 8, "eight emits → eight appendEntry calls (one per emit)");
-  assert(entries.every((e) => e.customType === "ensemble:lifecycle"), "every entry uses ensemble:lifecycle customType");
+  assert(
+    entries.every((e) => e.customType === "ensemble:lifecycle"),
+    "every entry uses ensemble:lifecycle customType",
+  );
   assert(sentMessages.length === 0, "zero sendMessage calls after the migration");
   const kinds = entries.map((e) => (e.data as LifecycleDetails).kind);
   assert(
@@ -345,7 +372,7 @@ const KINDS = ALL_SHAPES.map((d) => d.kind);
   let allText = true;
   let allNonUndefined = true;
   let byteIdentical = true;
-  const expectedStyles: Record<string, string> = {
+  const expectedStyles: Record<LifecycleKind, string> = {
     dispatched: "dim",
     completed: "success",
     failed: "error",
@@ -355,11 +382,16 @@ const KINDS = ALL_SHAPES.map((d) => d.kind);
     "step-completed": "success",
     "step-failed": "error",
     "step-retry": "warning",
+    // #1403 — a dead child's notice is an error line, not a dim footnote.
+    "step-notice": "error",
   };
   if (renderer) {
     for (const details of ALL_SHAPES) {
       const { theme, styles } = fakeTheme();
-      const entry = { customType: "ensemble:lifecycle", data: details } as unknown as Parameters<EntryRenderFn>[0];
+      const entry = {
+        customType: "ensemble:lifecycle",
+        data: details,
+      } as unknown as Parameters<EntryRenderFn>[0];
       const comp = renderer(entry, { expanded: false }, theme);
       if (comp === undefined) {
         allNonUndefined = false;
@@ -378,19 +410,39 @@ const KINDS = ALL_SHAPES.map((d) => d.kind);
       const expected = renderLifecycleEntryLine(details, theme);
       if (firstLine !== expected) {
         byteIdentical = false;
-        console.error(`  byte-identity mismatch for ${details.kind}:\n    got:      ${JSON.stringify(firstLine)}\n    expected: ${JSON.stringify(expected)}`);
+        console.error(
+          `  byte-identity mismatch for ${details.kind}:\n    got:      ${JSON.stringify(firstLine)}\n    expected: ${JSON.stringify(expected)}`,
+        );
       }
       // The fake theme records the style applied — assert it matches the
       // kind's expected theme.fg style (the applyTheme switch).
       if (styles[0] !== expectedStyles[details.kind]) {
-        console.error(`  style mismatch for ${details.kind}: got ${styles[0]}, expected ${expectedStyles[details.kind]}`);
+        console.error(
+          `  style mismatch for ${details.kind}: got ${styles[0]}, expected ${expectedStyles[details.kind]}`,
+        );
         byteIdentical = false;
       }
     }
   }
-  assert(allNonUndefined, "renderer returns a component (never undefined) for all 9 detail shapes");
-  assert(allText, "renderer returns a Text component (with render()) for all 9 detail shapes");
-  assert(byteIdentical, "renderer output is byte-identical to applyTheme(details, formatLine(details), theme) for all 9 kinds");
+  assert(
+    allNonUndefined,
+    `renderer returns a Text-shaped component for all ${KINDS.length} detail shapes`,
+  );
+  assert(
+    allText,
+    `renderer returns a Text component (with render()) for all ${KINDS.length} detail shapes`,
+  );
+  assert(
+    byteIdentical,
+    `renderer output is byte-identical to applyTheme(details, formatLine(details), theme) for all ${KINDS.length} kinds`,
+  );
+  // The matrix itself: every LifecycleKind has a shape AND an expected style. A
+  // missing kind is already a compile error via `satisfies`; this is its runtime twin.
+  assert(
+    KINDS.length === Object.keys(expectedStyles).length &&
+      KINDS.every((k) => k !== undefined && expectedStyles[k] !== undefined),
+    `the shape matrix covers every LifecycleKind exactly once (${KINDS.join(", ")})`,
+  );
   detach();
 }
 
@@ -405,7 +457,14 @@ const KINDS = ALL_SHAPES.map((d) => d.kind);
   if (renderer) {
     try {
       const { theme } = fakeTheme();
-      const comp = renderer({ customType: "ensemble:lifecycle", data: undefined } as unknown as Parameters<EntryRenderFn>[0], { expanded: false }, theme);
+      const comp = renderer(
+        {
+          customType: "ensemble:lifecycle",
+          data: undefined,
+        } as unknown as Parameters<EntryRenderFn>[0],
+        { expanded: false },
+        theme,
+      );
       if (comp === undefined) ok = false;
     } catch {
       ok = false;

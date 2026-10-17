@@ -36,6 +36,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { FIXED_CAPS } from "../src/headless/caps.ts";
 import { FAILURE_KINDS, failureOf } from "../src/headless/failure.ts";
+import type { DispatchResult } from "../src/types.ts";
 import {
   ENGINE_STOPPED_MARKER,
   classifyDevelopPass,
@@ -44,7 +45,9 @@ import {
   developCrashes,
   engineCrashed,
 } from "../src/work-develop-crash.ts";
+import type { ExecFn } from "../src/work-develop-git.ts";
 import { runDevelopTopological } from "../src/work-develop-topological.ts";
+import type { CycleContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { fmtEvent } from "../src/work-status-events.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
@@ -60,16 +63,33 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
+const CRASH_TEXT = `working on the lock fix\n\n${ENGINE_STOPPED_MARKER} (exit code 1); the next request restarts it`;
+
+/** A crash reply shaped exactly like the incident's dispatch result: ok:false,
+ *  no errorStop, the harness's engine-death line in the collapsed transcript. */
+const crashResult: DispatchResult = {
+  role: "developer",
+  ok: false,
+  text: CRASH_TEXT,
+  toolUses: [],
+  ms: 197676,
+  exitCode: 1,
+};
+const crashReply = async (): Promise<DispatchResult> => crashResult;
+
 /** One classify call's fixed arguments — only the tree/executor varies. */
-const crashArgs = (id: string, cwd: string, base: string | undefined, execFn: never) => ({
+const crashArgs = (
+  id: string,
+  cwd: string,
+  base: string | undefined,
+  execFn: ExecFn,
+): Parameters<typeof classifyDevelopPass>[0] => ({
   id,
   cwd,
   base,
   execFn,
   result: { ok: false, text: CRASH_TEXT, exitCode: 1 },
 });
-
-const CRASH_TEXT = `working on the lock fix\n\n${ENGINE_STOPPED_MARKER} (exit code 1); the next request restarts it`;
 
 // ---------------------------------------------------------------------------
 // 1. Detection: the marker, and only the marker.
@@ -91,11 +111,24 @@ assert(
   "1d: a non-zero exit with no text is not claimed as a crash",
 );
 assert(
-  !engineCrashed({
+  engineCrashed({
     text: "I will not print the engine stopped unexpectedly line, it is only an example.",
     exitCode: 0,
-  }) === false,
+  }) === true,
   "1e: a child quoting the phrase still counts (the marker is the harness's own line)",
+);
+assert(
+  engineCrashed({
+    text: "working on the lock fix — three tests green so far",
+    exitCode: 1,
+    stderr: `${ENGINE_STOPPED_MARKER} (exit code 1); the next request restarts it`,
+  }) === true,
+  "1f: the marker is found on STDERR too — a child that narrated before it died keeps its text, so collapseEvents never folds the death notice into `text`",
+);
+assert(
+  engineCrashed({ text: "all done", exitCode: 0, stderr: "npm warn deprecated left-pad" }) ===
+    false,
+  "1g: ordinary stderr noise is not a crash",
 );
 
 // ---------------------------------------------------------------------------
@@ -121,13 +154,13 @@ try {
   // dead pass committed NOTHING (the incident's shape — its fix was never
   // committed). Records what it was asked so the test can assert the base used.
   const asked: string[][] = [];
-  const execFn = (async (cmd: string, opts: { argv?: string[]; cwd?: string }) => {
-    const argv = opts.argv ?? [];
+  const execFn: ExecFn = async (_cmd, opts) => {
+    const argv = opts?.argv ?? [];
     asked.push(argv);
     if (argv[0] === "status") return { stdout: statusLines, stderr: "" };
     if (argv[0] === "rev-list") return { stdout: "0\n", stderr: "" };
     throw new Error(`unexpected git ${argv.join(" ")}`);
-  }) as never;
+  };
 
   const crashed = await classifyDevelopPass(crashArgs("default", wt, BASE, execFn));
   assert(crashed.ok === false, "2a: a pass whose engine died is NOT ok");
@@ -175,11 +208,11 @@ try {
 
   // A clean tree + crash: honest about there being nothing to recover. The
   // tree reads clean (no porcelain entries) and commits ahead of base.
-  const cleanExec = (async (_c: string, opts: { argv?: string[] }) => {
-    const argv = opts.argv ?? [];
+  const cleanExec: ExecFn = async (_c, opts) => {
+    const argv = opts?.argv ?? [];
     if (argv[0] === "status") return { stdout: "", stderr: "" };
     return { stdout: "1\n", stderr: "" };
-  }) as never;
+  };
   const cleanCrash = await classifyDevelopPass(crashArgs("default", wt, BASE, cleanExec));
   assert(
     cleanCrash.crashed === true && cleanCrash.evidence === "clean" && cleanCrash.lostWork === false,
@@ -194,11 +227,11 @@ try {
     `2k2: a crash with no base still names the dirt it left (${crashFragment(noBaseCrash).tree})`,
   );
   // A readable tree with neither dirt nor commits: the pass wrote nothing.
-  const emptyExec = (async (_c: string, opts: { argv?: string[] }) => {
-    const argv = opts.argv ?? [];
+  const emptyExec: ExecFn = async (_c, opts) => {
+    const argv = opts?.argv ?? [];
     if (argv[0] === "status") return { stdout: "", stderr: "" };
     return { stdout: "0\n", stderr: "" };
-  }) as never;
+  };
   const emptyCrash = await classifyDevelopPass(crashArgs("default", wt, BASE, emptyExec));
   assert(
     emptyCrash.crashed && crashFragment(emptyCrash).tree === "empty",
@@ -206,9 +239,9 @@ try {
   );
 
   // An unreadable tree is never reported as clean.
-  const brokenExec = (async () => {
+  const brokenExec: ExecFn = async () => {
     throw new Error("fork failed");
-  }) as never;
+  };
   const unreadable = await classifyDevelopPass(crashArgs("default", wt, BASE, brokenExec));
   assert(
     unreadable.evidence === undefined && (unreadable.reason ?? "").includes("unreadable"),
@@ -275,36 +308,36 @@ try {
     },
     eventLog: [{ kind: "step-started", step: "develop", at: 1 }],
   };
+  // The fixture is typed against the exported seams rather than cast to
+  // `never`: `satisfies`/`Pick` keep the ctx, the workstreams map and the
+  // dispatch signature checked against the shapes the change introduces
+  // (tsc does not type-check smoke-tests/, so this file is the only place
+  // those seams are exercised at all).
+  type TopoArgs = Parameters<typeof runDevelopTopological>;
+  /** The dispatch seam's own signature, so the fixture below cannot drift from
+   *  it (a `never` cast would have hidden a changed shape). */
+  type DispatchFn = NonNullable<CycleContext["dispatchFn"]>;
+  /** The child that "finished" exactly as the incident's did — the same
+   *  `crashResult` the classifier fixtures assert on, bound here to the
+   *  dispatch seam's signature. */
+  const crashDispatch: DispatchFn = async () => crashResult;
+  const ctx: Pick<CycleContext, "repoRoot" | "issue" | "host" | "dispatchFn" | "verifyExecFn"> = {
+    repoRoot: dir,
+    issue: 1403,
+    host: { emit: () => undefined },
+    dispatchFn: crashDispatch,
+    verifyExecFn: execFn,
+  };
+  const workstreams = {
+    default: { id: "default", scope: "fix the lock", paths: ["scripts/stop.sh"], outOfScope: [] },
+  } satisfies NonNullable<TopoArgs[3]>;
   const out = await runDevelopTopological(
-    {
-      repoRoot: dir,
-      issue: 1403,
-      // The child that "finished" exactly as the incident's did: ok:false,
-      // no errorStop, the harness's engine-death line in its output.
-      dispatchFn: (async () => ({
-        role: "developer",
-        ok: false,
-        text: CRASH_TEXT,
-        toolUses: [],
-        ms: 197676,
-        exitCode: 1,
-      })) as never,
-      verifyExecFn: execFn,
-    } as never,
+    ctx as CycleContext,
     state,
     ["default"],
-    {
-      default: { id: "default", scope: "fix the lock", paths: ["scripts/stop.sh"], outOfScope: [] },
-    } as never,
+    workstreams,
     [1403],
-    (async () => ({
-      role: "developer",
-      ok: false,
-      text: CRASH_TEXT,
-      toolUses: [],
-      ms: 197676,
-      exitCode: 1,
-    })) as never,
+    crashDispatch,
     execFn,
     Date.now(),
     "develop",

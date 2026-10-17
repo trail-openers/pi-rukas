@@ -10,6 +10,7 @@ import path from "node:path";
  * registration stay in `work-status.ts`.
  */
 
+import { crashTreeSentence } from "./work-develop-crash.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 
 export function fmtElapsed(ms: number): string {
@@ -74,19 +75,23 @@ export function fmtRecentEvents(log: WorkEvent[], n: number): string[] {
 }
 
 /** #1403 — what a crashed pass left in its worktree, in the status line's
- *  compact form. Paths are bounded to three: the line is one of many and the
- *  full list rides on the event. */
+ *  compact register. Shares `crashTreeSentence` with the cap evidence and the
+ *  handoff explanation so the same crash is described the same way wherever an
+ *  operator reads it; only the dirty case is shortened here, to the first
+ *  three paths, because this is a one-line log. */
 function crashTreeText(
   crash: NonNullable<Extract<WorkEvent, { kind: "branch-completed" }>["crash"]>,
 ): string {
-  if (crash.tree === "committed") return "committed before it died";
-  if (crash.tree === "empty") return "nothing in the worktree";
-  if (crash.tree === "unreadable") return "worktree unreadable";
-  if (crash.tree === "no-commits") return "no base to count commits against";
   const paths = crash.paths ?? [];
-  if (paths.length === 0) return "0 uncommitted path(s)";
-  const shown = paths.slice(0, 3).join(", ");
-  return `${paths.length} uncommitted path(s): ${shown}${paths.length > 3 ? ` +${paths.length - 3} more` : ""}`;
+  return crashTreeSentence({
+    id: "",
+    tree: crash.tree,
+    paths:
+      crash.tree === "dirty" && paths.length > 3
+        ? [...paths.slice(0, 3), `+${paths.length - 3} more`]
+        : paths,
+    reason: "",
+  });
 }
 
 /** Format an event for the "last N" trailing log. Compact one-liner per event. */

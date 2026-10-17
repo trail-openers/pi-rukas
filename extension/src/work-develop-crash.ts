@@ -14,7 +14,8 @@
  * Three defects compose into that shape, and this module owns the fix for the
  * one that made it invisible:
  *
- *  1. `runOneWorkstream` derived ok from `res.ok && !res.errorStop`. A child
+ *  1. `runOneWorkstream` derived ok from `developPassIsOk(res)` (`res.ok &&
+ *     !res.errorStop` — the predicate now lives here, see below). A child
  *     whose engine died exits non-zero with NO errorStop, so a crash landed on
  *     the ordinary failure path — and the ordinary failure path's reason came
  *     from the completion event's `errorTail`, which for this shape was the
@@ -42,23 +43,30 @@
 
 import * as lifecycle from "./lifecycle-events.ts";
 import { trace } from "./trace.ts";
+import type { DispatchResult } from "./types.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
 import {
   type ExecFn,
+  INVALID_BASE_MSG,
   commitEntriesOf,
   commitsAheadOfBase,
-  isValidBaseSha,
+  errText,
+  parseStatus,
   runGit,
-  worktreeStatus,
 } from "./work-develop-git.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
-/** The substring of the child's stderr that names a dead engine.
+/** The substring of the child's collapsed transcript that names a dead engine.
  *
  * Pi's harness prints `the engine stopped unexpectedly (exit code N); the
  * next request restarts it` when the child's model harness dies mid-session.
- * It arrives in `DispatchResult.text` (the collapsed transcript), not as an
- * `errorStop` — pi-ai never saw a request fail, so it never synthesised one.
+ * The harness writes the line to the child's **stderr** (which is where it is
+ * written during a live run) and `collapseEvents` folds it into
+ * `DispatchResult.text` only when the child produced no assistant text at all
+ * (`text || stderr || "(no output)"`) — a child that narrated before it died
+ * keeps its narration in `text` and its death notice stays in `stderr`, which
+ * is why `engineCrashed` reads BOTH streams. The marker never arrives as an
+ * `errorStop`: pi-ai never saw a request fail, so it never synthesised one.
  */
 export const ENGINE_STOPPED_MARKER = "the engine stopped unexpectedly";
 
@@ -93,22 +101,46 @@ export interface CrashVerdict {
   /** The child's exit code, when it exited — carried onto the event record so
    *  the handoff names `exit 1` the way the console line did. */
   exitCode?: number | null;
-  /** True when the crash classification could not resolve a base to compare
-   *  against (no per-workstream SHA, no global). Absent (undefined) means a
-   *  base WAS used, so an unreadable tree is never confused with the
-   *  no-base case by a later reader. */
-  noBase?: boolean;
+}
+
+/** What the classify seam is given: the part of a dispatch a verdict is
+ *  derived from, plus the child's stderr tail. `errorStop` keeps
+ *  `DispatchResult`'s shape rather than being widened to `unknown`, so the
+ *  seam tracks the published contract. */
+export type DevelopPassResult = Pick<DispatchResult, "ok" | "errorStop" | "text" | "exitCode"> & {
+  stderr?: string;
+};
+
+/**
+ * The ONE rule for "did this develop pass succeed": the child exited clean AND
+ * pi-ai did not synthesise an error-stop. `!res.errorStop` (not `=== undefined`)
+ * is the pre-#1403 rule and every caller keeps it — a present-but-falsy
+ * error-stop is still a provider fault, not a success.
+ *
+ * Both develop paths call this — `classifyDevelopPass` and the #1005
+ * merge-and-retry re-dispatch — so the rule has one home and the module
+ * header above describes it by reference rather than restating it.
+ */
+export function developPassIsOk(result: Pick<DispatchResult, "ok" | "errorStop">): boolean {
+  return result.ok && !result.errorStop;
 }
 
 /**
- * #1403 — did this child's engine die? Read from the collapsed transcript
- * text only. A `killCause` (pi-rukas ended the child) or an `errorStop`
- * (pi-ai synthesised an error message) is a DIFFERENT shape and arrives
- * through `buildCompletionEvent`'s own branches; this marker is the third
- * shape — neither of those fired, and the child printed its death notice.
+ * #1403 — did this child's engine die? Read from the collapsed transcript AND
+ * the child's stderr (see `ENGINE_STOPPED_MARKER`: `collapseEvents` folds
+ * stderr into `text` only when there was no assistant text). A `killCause`
+ * (pi-rukas ended the child) or an `errorStop` (pi-ai synthesised an error
+ * message) is a DIFFERENT shape and arrives through `buildCompletionEvent`'s
+ * own branches; this marker is the third shape — neither of those fired, and
+ * the child printed its death notice.
  */
-export function engineCrashed(result: { text?: string; exitCode?: number | null }): boolean {
-  return (result.text ?? "").toLowerCase().includes(ENGINE_STOPPED_MARKER);
+export function engineCrashed(result: {
+  text?: string;
+  stderr?: string;
+  exitCode?: number | null;
+}): boolean {
+  const haystack = `${result.text ?? ""}\n${result.stderr ?? ""}`.toLowerCase();
+  return haystack.includes(ENGINE_STOPPED_MARKER);
 }
 
 /** How many uncommitted paths get named before the list says "+N more". */
@@ -124,19 +156,61 @@ function namePaths(paths: string[]): string {
   return paths.length > SHOWN_PATHS ? `${shown} (+${paths.length - SHOWN_PATHS} more)` : shown;
 }
 
+/** How long the crash classification waits for one git read before calling the
+ *  tree unreadable. Generous for a healthy tree (a big monorepo `git status`
+ *  is seconds) and short enough that a hung git cannot stall the develop step. */
+const TREE_READ_TIMEOUT_MS = 30_000;
+
+/** The classifier's own status reader: same argv, same `-z` parse as
+ *  `worktreeStatus`, plus an explicit bound — a hung `git status` (a stale
+ *  worktree, a lock left by the child that just died) must degrade to
+ *  `unreadable`, not block the develop fan-out. */
+function treeReader(execFn: ExecFn): (cwd: string) => Promise<ReturnType<typeof parseStatus>> {
+  return async (cwd) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const p = execFn("git", {
+        cwd,
+        argv: ["status", "--porcelain", "-z", "--untracked-files=all"],
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: TREE_READ_TIMEOUT_MS,
+      });
+      const settled = await Promise.race([
+        p,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`git status timed out after ${TREE_READ_TIMEOUT_MS}ms`)),
+            TREE_READ_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      return parseStatus(settled.stdout);
+    } catch (err) {
+      return { unreadable: errText(err) };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
+}
+
 /**
  * #1403 — the outcome of one develop dispatch, computed from the facts the
  * driver can verify rather than from the child's own claim.
  *
- * `ok` keeps the pre-#1403 rule (`res.ok && !res.errorStop`) and adds the
- * crash: a child whose engine died is never ok. The `evidence` field is the
- * new half — the tree is read with the SAME primitives the #622 safety net
+ * `ok` is `developPassIsOk(result)` plus the crash: a child whose engine died
+ * is never ok. The `evidence` field is the new half — the tree is read with
+ * the SAME primitives the #622 safety net
  * uses (`worktreeStatus` + `commitsAheadOfBase`'s porcelain), so "done" and
  * "what is actually in the worktree" come from one place.
  *
  * An unreadable tree is reported as `evidence: undefined`, never as `clean`:
  * absence of evidence is not evidence of absence, and a clean claim a person
  * cannot check is the confident-wrong record this issue exists to remove.
+ *
+ * The two git reads run concurrently under an explicit timeout: a hung
+ * `git status` (a stale worktree, a lock left by the child that just died)
+ * degrades to `evidence: undefined` rather than stalling the develop step,
+ * whose write-ahead dispatch marker is already recorded by then.
  */
 export async function classifyDevelopPass(args: {
   id: string;
@@ -144,22 +218,39 @@ export async function classifyDevelopPass(args: {
   /** The workstream's effective base (per-workstream SHA, else global). */
   base: string | undefined;
   execFn: ExecFn;
-  result: { ok: boolean; errorStop?: unknown; text?: string; exitCode?: number | null };
+  result: DevelopPassResult;
 }): Promise<CrashVerdict> {
   const { id, cwd, base, execFn, result } = args;
   const crashed = engineCrashed(result);
-  const ok = result.ok && result.errorStop === undefined && !crashed;
+  const ok = developPassIsOk(result) && !crashed;
+
+  // The healthy path is answered from the child's own result: the tree
+  // readings below exist for the FAILURE record, and on the green path the
+  // caller reads only `verdict.ok` (work-develop-run.ts). Reading the tree on
+  // every pass would fork git twice per pass to compute fields nobody reads.
+  if (ok)
+    return {
+      ok: true,
+      crashed: false,
+      uncommitted: [],
+      lostWork: false,
+      exitCode: result.exitCode,
+    };
 
   const git = runGit(execFn);
+  const readTree = treeReader(execFn);
   // The base decides what "the pass produced work" means. An invalid/absent
   // base makes the commit half unresolvable, and `commitsAheadOfBase` already
   // says so (it refuses to run git at all) — so it is always asked and its
-  // tri-state answer is what `evidence` reads. `noBase` records WHY the count
-  // was unavailable, so a later reader never mistakes "could not count" for
-  // "counted zero".
-  const noBase = !isValidBaseSha(base);
-  const ahead = await commitsAheadOfBase(git, cwd, base);
-  const status = await worktreeStatus(git, cwd);
+  // tri-state answer is what `evidence` reads. The cause is read from `ahead`
+  // alone — one predicate decides both the evidence and the explanation, so
+  // "could not count because no base" can never be synthesised here.
+  //
+  // Both reads are independent and bounded: `Promise.all` so a slow tree costs
+  // one window not two, and `timeout` so a hung git is an unreadable tree
+  // rather than a stalled step.
+  const [ahead, status] = await Promise.all([commitsAheadOfBase(git, cwd, base), readTree(cwd)]);
+  const noBase = "unreadable" in ahead && ahead.unreadable === INVALID_BASE_MSG;
   const uncommitted = Array.isArray(status) ? commitEntriesOf(status).map((e) => e.path) : [];
   const readable = Array.isArray(status);
 
@@ -173,17 +264,6 @@ export async function classifyDevelopPass(args: {
     else if (!("commits" in ahead)) evidence = "no-commits";
     else evidence = ahead.commits > 0 ? "clean" : "none";
   }
-
-  if (ok)
-    return {
-      ok: true,
-      crashed: false,
-      evidence,
-      uncommitted,
-      lostWork: false,
-      exitCode: result.exitCode,
-      ...(noBase ? { noBase: true } : {}),
-    };
 
   const tail = typeof result.text === "string" ? result.text.trim().slice(-200) : "";
   const parts: string[] = [];
@@ -224,7 +304,6 @@ export async function classifyDevelopPass(args: {
     uncommitted,
     lostWork,
     exitCode: result.exitCode,
-    ...(noBase ? { noBase: true } : {}),
   };
 }
 
@@ -245,10 +324,12 @@ export type DevelopCrashFragment = {
   exitCode?: number | null;
   /** How much of the worktree the driver could read after the death.
    *
-   * `"no-base"` is the fourth reading: the tree is readable but no base
-   * resolved, so the driver cannot tell whether the pass committed anything.
-   * It is NOT `"clean"` — claiming a clean tree on an unresolvable comparison
-   * is the confident-wrong record this issue exists to remove. */
+   * `"no-commits"` is the fourth reading: the tree is readable but the commit
+   * count was unavailable (no base resolved, or the count itself unreadable —
+   * `classifyDevelopPass` distinguishes the two through `INVALID_BASE_MSG`),
+   * so the driver cannot tell whether the pass committed anything. It is NOT
+   * `"clean"` — claiming a clean tree on an unresolvable comparison is the
+   * confident-wrong record this issue exists to remove. */
   tree: "dirty" | "committed" | "empty" | "unreadable" | "no-commits";
   /** The dirty paths the dead pass left behind (bounded, driver artefacts excluded). */
   paths?: string[];
@@ -259,19 +340,24 @@ export type DevelopCrashFragment = {
 /** The event's `paths` list is bounded: the handoff renders it verbatim. */
 const EVENT_PATHS_MAX = 20;
 
+/** The evidence → tree-state ladder: the ONE place the worktree reading is
+ *  named, so the event record, the cap evidence, the status line and the
+ *  handoff sentence cannot give the same crash four different names. */
+const TREE_BY_EVIDENCE: Record<WorkstreamEvidence, DevelopCrashFragment["tree"]> = {
+  leftover: "dirty",
+  commits: "committed",
+  clean: "committed",
+  none: "empty",
+  "no-commits": "no-commits",
+};
+
 /** Build the crash fragment for a crashed pass. */
 export function crashFragment(v: CrashVerdict): DevelopCrashFragment {
   return {
     ...(v.exitCode === undefined ? {} : { exitCode: v.exitCode }),
     ...(v.evidence === undefined
       ? { tree: "unreadable" as const }
-      : v.evidence === "leftover"
-        ? { tree: "dirty" as const }
-        : v.evidence === "clean"
-          ? { tree: "committed" as const }
-          : v.evidence === "none"
-            ? { tree: "empty" as const }
-            : { tree: "no-commits" as const }),
+      : { tree: TREE_BY_EVIDENCE[v.evidence] }),
     ...(v.uncommitted.length > 0 ? { paths: v.uncommitted.slice(0, EVENT_PATHS_MAX) } : {}),
     reason: v.reason ?? "child engine crashed",
   };
@@ -297,15 +383,27 @@ export function crashedBranchCompleted(args: {
 }
 
 /**
- * #1403 — is any workstream's develop verdict a crash? Reads the
- * `branch-completed` events of the current develop attempt (the same window
- * the #1016 attempt counter uses). A kept/re-recorded green never carries
- * `crash`, so a resumed crash does not re-assert itself.
+ * One crashed pass, as read back from its event. `tree` reuses the fragment's
+ * literal union rather than restating it as `string`, so every downstream
+ * comparison is checked against the vocabulary the writer produces.
  */
-export function developCrashes(
-  events: readonly WorkEvent[],
-): Array<{ id: string; tree: string; paths: string[]; reason: string }> {
-  const out: Array<{ id: string; tree: string; paths: string[]; reason: string }> = [];
+export type DevelopCrashRecord = {
+  id: string;
+  tree: DevelopCrashFragment["tree"];
+  paths: string[];
+  reason: string;
+};
+
+/**
+ * #1403 — is any workstream's develop verdict a crash? Scans the whole event
+ * log's `branch-completed` events. For the develop step's caller that IS the
+ * current attempt: the park runs at the step boundary immediately after the
+ * fan-out, and a re-dispatched pass re-records its own `branch-completed`;
+ * a kept/re-recorded green never carries `crash`, so a resumed crash does not
+ * re-assert itself.
+ */
+export function developCrashes(events: readonly WorkEvent[]): DevelopCrashRecord[] {
+  const out: DevelopCrashRecord[] = [];
   for (const e of events) {
     if (e.kind !== "branch-completed" || e.crash === undefined) continue;
     out.push({
@@ -326,20 +424,33 @@ export function developCrashes(
  * work) or unreadable (the driver cannot claim it is clean). A crash over a
  * clean tree is a genuine loss of nothing — the pass either committed before
  * it died or produced nothing — and does not park the cycle on its own.
+ *
+ * No verdict filter: a pass that carries a `crash` fragment is never `ok`
+ * (`classifyDevelopPass` forces it), so an ok-id set could exclude nothing.
  */
-export function unrecoverableCrashes(
-  events: readonly WorkEvent[],
-  okIds: ReadonlySet<string>,
-): Array<{ id: string; tree: string; paths: string[]; reason: string }> {
+export function unrecoverableCrashes(events: readonly WorkEvent[]): DevelopCrashRecord[] {
   return developCrashes(events).filter(
-    (c) =>
-      (c.tree === "dirty" || c.tree === "unreadable" || c.tree === "no-commits") &&
-      !okIds.has(c.id),
+    (c) => c.tree === "dirty" || c.tree === "unreadable" || c.tree === "no-commits",
   );
 }
 
-/** Re-export so callers that only need the base-validity check share one home. */
-export { isValidBaseSha };
+/** The operator-facing sentence for one crash's tree state. ONE mapping, used
+ *  by the cap evidence, `explainDevelopCrash` and the `/work-status` line, so
+ *  the same crash reads the same on every surface. */
+export function crashTreeSentence(c: DevelopCrashRecord): string {
+  switch (c.tree) {
+    case "dirty":
+      return `left ${c.paths.length} uncommitted path(s): ${c.paths.join(", ")}`;
+    case "committed":
+      return "had committed its work before it died, so nothing is left in the worktree";
+    case "empty":
+      return "left an empty worktree — it had written nothing when it died";
+    case "no-commits":
+      return "left a tree whose commits could not be counted (no base resolved, or the commit check was unreadable)";
+    case "unreadable":
+      return "left a worktree the driver could not read";
+  }
+}
 
 /**
  * #1403 — the develop step's crash park: filter the crashed passes, say so on
@@ -356,15 +467,8 @@ export { isValidBaseSha };
  * above deliberately excluded it (its `only` set is the ok verdicts), so that
  * work exists nowhere but the working tree.
  */
-export function parkOnDevelopCrash(
-  state: WorkState,
-  verdicts: readonly { id: string; ok: boolean }[],
-  issue?: number,
-): WorkState | undefined {
-  const crashed = unrecoverableCrashes(
-    state.eventLog,
-    new Set(verdicts.filter((v) => v.ok).map((v) => v.id)),
-  );
+export function parkOnDevelopCrash(state: WorkState, issue: number): WorkState | undefined {
+  const crashed = unrecoverableCrashes(state.eventLog);
   if (crashed.length === 0) return undefined;
   // #1403 — the console says so too. Pre-fix the operator's last word was
   // `✓ step 4/9 develop finished`; the cap-hit below makes the step router
@@ -380,18 +484,7 @@ export function parkOnDevelopCrash(
   trace(
     `work-driver: develop-child-crash — ${crashed.map((c) => `${c.id} (${c.tree})`).join(", ")}`,
   );
-  const named = crashed
-    .map(
-      (c) =>
-        `${c.id}: ${
-          c.tree === "dirty"
-            ? `${c.paths.length} uncommitted path(s) — ${c.paths.join(", ")}`
-            : c.tree === "no-commits"
-              ? "commits ahead of base could not be counted — no base resolved or the check was unreadable"
-              : "worktree unreadable"
-        }`,
-    )
-    .join(" | ");
+  const named = crashed.map((c) => `${c.id}: ${crashTreeSentence(c)}`).join(" | ");
   return appendEvent(state, {
     kind: "cap-hit",
     at: Date.now(),

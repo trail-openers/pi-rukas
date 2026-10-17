@@ -1,3 +1,4 @@
+import { classifyDevelopPass, crashedBranchCompleted } from "./work-develop-crash.ts";
 /**
  * work-develop-fence-merge — #1005: the merge-and-retry's MERGE half (the
  * workstream map, the rebase, and the re-dispatch).
@@ -352,7 +353,21 @@ export async function runMergePrep(
         { role: "developer", prompt, cwd: wt },
         { label: `developer[${mergedId}] (merge-retry)` },
       );
-      const ok = res.ok && !res.errorStop;
+      // #1403 — the re-dispatch is a develop pass like any other: it earns the
+      // same crash classification, so a child whose engine dies inside the
+      // merge-retry records the same structured `crash` fragment and names the
+      // work it left uncommitted. Pre-#1403 this path derived `ok` from its own
+      // copy of the rule and never classified, so a crash here parked under
+      // `fence-violation:develop` with no word about the dead engine — the
+      // invisibility this issue exists to remove, relocated to a second path.
+      const verdict = await classifyDevelopPass({
+        id: mergedId,
+        cwd: wt,
+        base: workstreamBaseShas[mergedId] ?? stateIn.pipelineState.baseSha,
+        execFn,
+        result: res,
+      });
+      const ok = verdict.ok;
       const completionEvent = await buildCompletionEvent(
         ctx,
         "develop",
@@ -366,7 +381,16 @@ export async function runMergePrep(
       // sees this re-dispatch's events.
       next = appendEvent(next, completionEvent);
       stateRef.current = next;
-      if (ids.length > 1) {
+      if (verdict.crashed) {
+        // The crash record survives whether or not the fan-out is multi-
+        // workstream (same rule as work-develop-run.ts: the crash IS the
+        // finding, and suppressing it for N=1 is what made it invisible).
+        next = appendEvent(
+          next,
+          crashedBranchCompleted({ id: mergedId, ms: Date.now() - startedAt, verdict }),
+        );
+        stateRef.current = next;
+      } else if (ids.length > 1) {
         next = appendEvent(next, {
           kind: "branch-completed",
           step: "develop",
