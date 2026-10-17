@@ -77,6 +77,50 @@ function step(s: WorkState, name: "explore" | "plan" | "branch", at: number): Wo
   );
 }
 
+// ── 1b. #1247 — `cycle-interrupted.origin`: optional, but when present it must
+//        be an origin a tracker could have written. The field names what closed
+//        the session and both the handoff and `/work-status` render it as fact,
+//        so a value outside the closed vocabulary is reported rather than
+//        rendered. Absent stays legal (state files pre-#1247 have none).
+{
+  const base = initialState(2);
+  const withOrigin = (origin: unknown) =>
+    appendEvent({ ...base, pipelineState: { ...base.pipelineState, status: "running" } }, {
+      kind: "cycle-interrupted",
+      at: 1,
+      step: "lens-fix",
+      reason: "quit",
+      origin,
+      resumable: true,
+    } as unknown as WorkEvent);
+  for (const legal of [
+    "stdin-eof",
+    "signal:SIGTERM",
+    "signal:SIGINT",
+    "signal:SIGHUP",
+    "unknown",
+  ] as const) {
+    assert(
+      validateDiscriminants(withOrigin(legal)).length === 0,
+      `validateDiscriminants accepts the origin \`${legal}\` (the vocabulary is not narrower than the tracker)`,
+    );
+  }
+  assert(
+    validateDiscriminants(withOrigin("signal:SIGKILL")).some((f) =>
+      f.includes('origin has unknown value "signal:SIGKILL"'),
+    ),
+    "validateDiscriminants rejects a signal no tracker arms — an origin the operator would read as fact",
+  );
+  assert(
+    validateDiscriminants(withOrigin("")).some((f) => f.includes('origin has unknown value ""')),
+    "validateDiscriminants rejects an empty-string origin rather than rendering a blank cause",
+  );
+  assert(
+    validateDiscriminants(withOrigin(undefined)).length === 0,
+    "an absent origin still validates — pre-#1247 state files must keep loading",
+  );
+}
+
 // ── 2. markInterrupted sets the status, appends the event, and persists.
 {
   const repo = tmpRepo();

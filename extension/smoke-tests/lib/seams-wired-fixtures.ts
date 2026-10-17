@@ -37,6 +37,18 @@ export interface Seam {
 
 export const SEAMS: Seam[] = [
   {
+    // #1247 — the process-level origin trackers; index.ts is the production caller.
+    file: "exit-cause.ts",
+    pending: {},
+    testOnly: {
+      // The suite shares one module instance, and a signal / stdin EOF cannot be
+      // injected into it from inside a test.
+      resetExitCauseForTesting: "#1247 — test-exit-cause.ts, test-work-driver-session-shutdown.ts",
+      recordExitCauseForTesting: "#1247 — first-writer-wins case; test-exit-cause.ts",
+    },
+    canary: { symbol: "armExitCause", importer: "index.ts" },
+  },
+  {
     // #1308 — the generic decision seam. The policy judge (S2) is its first
     // production caller; the shadow seams (S3/S4) reach it via decision-shadow.ts.
     file: "decision-seam.ts",

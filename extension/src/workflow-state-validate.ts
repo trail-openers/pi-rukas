@@ -11,7 +11,9 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
+import { isKnownExitOrigin } from "./workflow-state-events-exit-origin.ts";
 import { WORK_STEPS, type WorkEvent, type WorkStep } from "./workflow-state-events.ts";
+import { prDraftFindings } from "./workflow-state-schema-pr-draft.ts";
 import { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
 import {
   CAP_EVIDENCE_KINDS,
@@ -122,6 +124,9 @@ export const KNOWN_EVENT_KINDS = [
   // A residual-findings disclosure that did not reach the PR (and whether the
   // issue got it instead).
   "lens-residuals-post-failed",
+  // #1398 — a residual-findings disclosure that DID reach the PR, keyed on the
+  // reviewed patch: the fact the draft-ready gate holds on.
+  "lens-residuals-posted",
 ] as const;
 
 // #986 — compile-time exhaustiveness. If the `WorkEvent` union gains a kind
@@ -198,6 +203,13 @@ export function validateDiscriminants(state: unknown): string[] {
     // an exempt prefix a restore claim spares. Checked in its own module; the
     // same #533 rule as `commitPrRoot` above (the untyped cast is the gate).
     out.push(...dirtyRootExemptBaselineFindings(ps.dirtyRootExemptBaseline));
+    // #1398 — the PR draft record, the same #533 rule as `commitPrRoot` above:
+    // `markDraftPrReady` reads `status` to decide whether the PR may merge and
+    // `findingsPosted` to decide whether a disclosure licenses that ready, so a
+    // partial or hand-edited record is a confident wrong answer about whether a
+    // PR is mergeable. Predicate + rationale in workflow-state-schema-pr-draft.ts;
+    // absent validates (a cycle that never opened its PR as a draft).
+    out.push(...prDraftFindings(ps.prDraft));
     if (ps.incompleteConsolidation !== undefined) {
       const ic = ps.incompleteConsolidation;
       if (Array.isArray(ic)) {
@@ -459,6 +471,19 @@ export function validateDiscriminants(state: unknown): string[] {
       // a template value). #1263/#753/#973: an unknown cap fails re-entry.
       if (e.kind === "cap-hit" && typeof e.cap === "string" && !isKnownCap(e.cap)) {
         out.push(`eventLog[${i}].cap has unknown value ${JSON.stringify(e.cap)}`);
+      }
+      // #1247 — a `cycle-interrupted` origin must be one the process tracker
+      // can actually write. The field is OPTIONAL (state files pre-#1247 have
+      // none), but when PRESENT it names what closed the session, and the
+      // handoff and `/work-status` render it to the operator as fact. A string
+      // no tracker could produce (`signal:SIGKILL`, a typo, a hand edit) is a
+      // confident wrong cause, so it is reported rather than rendered.
+      if (
+        e.kind === "cycle-interrupted" &&
+        e.origin !== undefined &&
+        !isKnownExitOrigin(e.origin)
+      ) {
+        out.push(`eventLog[${i}].origin has unknown value ${JSON.stringify(e.origin)}`);
       }
     });
   }

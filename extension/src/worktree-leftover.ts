@@ -39,6 +39,16 @@
  * The local `feature/issue-N` branch is handled separately (it is created
  * lazily by `integrate()` and never by worktree machinery, so it can only
  * be handled there, not here).
+ *
+ * #1396 (round 3) — the residue pass FAILS CLOSED on a listing it could not
+ * read. `scanWorktrees` used to turn any git failure into `[]` and this caller
+ * swallows every throw as "non-fatal, continue", so the two together read a
+ * `git worktree list` that HANGS (now a 30 s timeout rejection) as "no
+ * leftovers" and the pass removed nothing while reporting success — the same
+ * fail-open class as the #654 sweep. `handleSameIssueLeftovers` now rethrows
+ * anything `scanWorktrees` could not distinguish from an absent listing, and
+ * the caller's catch turns THAT into a visible unresolved-path refusal rather
+ * than a clean continue.
  */
 
 import { realpathSync } from "node:fs";
@@ -48,6 +58,10 @@ import { type ProvisionResult, provisionWorktree } from "./worktree-provision.ts
 import {
   type DirtyWorktreeFinding,
   type ExecFn,
+  WorktreeScanError,
+  gitErrorDetail,
+  isMissingGit,
+  listWorktreeStrict,
   salvageDirtyWorktree,
   scanWorktrees,
   worktreePrune,
@@ -68,6 +82,50 @@ export interface LeftoverAction {
   salvageDir?: string;
 }
 
+/**
+ * #1396 (round 3) — `scanWorktrees` for a caller that DELETES what it does not
+ * see. `scanWorktrees` degrades any listing failure to `[]` (the contract its
+ * read-only callers rely on); for the residue pass `[]` is an instruction —
+ * "nothing to preserve, proceed" — so the degradation has to be undone here,
+ * where the removal decision is made and the listing is the only evidence.
+ *
+ * A rejection whose code is `ENOENT` really is "there is no git here" and keeps
+ * the empty answer (an absent binary is not a hazard a branch step can act on).
+ * Anything else — the 30 s timeout's kill, a signal, a lock — is re-read
+ * through `listWorktreeStrict` (one retry, then `WorktreeScanError` naming the
+ * git error) so a HANG cannot become a silent "no leftovers" while a dirty
+ * same-issue tree sits at the path the next `git worktree add` will refuse on.
+ */
+async function scanWorktreesUncertain(
+  execFn: ExecFn,
+  repoRoot: string,
+  fromRef: string,
+  pathSubstrings: string[],
+): Promise<{ path: string; name: string; finding?: DirtyWorktreeFinding }[]> {
+  // `uncertain` is the answer, not the hit count: `scanWorktrees` logs the
+  // rejection it swallowed and no caller can tell "the list was empty" from
+  // "the list could not be read", which is precisely the distinction this pass
+  // needs because it REMOVES what it does not see. A throw is recorded here and
+  // re-run strictly; an empty answer is passed through untouched.
+  let swallowed: unknown;
+  const probe: ExecFn = async (cmd, o) => {
+    if (!cmd.includes("worktree list")) return execFn(cmd, o);
+    try {
+      return await execFn(cmd, o);
+    } catch (err) {
+      swallowed = err;
+      throw err;
+    }
+  };
+  const hits = await scanWorktrees(probe, repoRoot, fromRef, pathSubstrings);
+  if (swallowed === undefined) return hits; // a genuine empty list
+  if (isMissingGit(swallowed)) return hits; // no git here — nothing to preserve
+  // A hang, a kill, a lock: re-read through the shared strict listing so the
+  // refusal is one shape (`WorktreeScanError`, one 250 ms retry) everywhere.
+  await listWorktreeStrict(execFn, repoRoot);
+  throw new WorktreeScanError(gitErrorDetail(swallowed));
+}
+
 export async function findSameIssueLeftovers(
   execFn: ExecFn,
   repoRoot: string,
@@ -75,7 +133,13 @@ export async function findSameIssueLeftovers(
   issueNumbers: number[],
 ): Promise<SameIssueLeftover[]> {
   const prefixes = issueNumbers.map((n) => `.worktrees${path.sep}issue-${n}`);
-  const hits = await scanWorktrees(execFn, repoRoot, fromRef, prefixes);
+  // #1396 (round 3) — `scanWorktrees` keeps its fail-open `catch → []` contract
+  // (its other callers act on the empty list safely), but THIS caller removes
+  // worktrees, so an empty list it never saw is not an answer it may act on.
+  // `scanWorktreesUncertain` re-runs the read through the strict listing and
+  // throws `WorktreeScanError` on a rejection that is not "git is not here" —
+  // the caller in `work-driver-branch-residue.ts` turns that into a park.
+  const hits = await scanWorktreesUncertain(execFn, repoRoot, fromRef, prefixes);
   return hits.map((h) => ({
     path: h.path,
     name: h.name,
@@ -92,6 +156,8 @@ export async function handleSameIssueLeftovers(
   scratch: string,
   adoptable?: string,
 ): Promise<{ actions: LeftoverAction[]; unresolved: string[] }> {
+  // #1396 round 3 — deliberately NOT wrapped in a catch: a listing that could
+  // not be read must not become "no leftovers, nothing to do". See the header.
   const leftovers = await findSameIssueLeftovers(execFn, repoRoot, fromRef, issueNumbers);
   const actions: LeftoverAction[] = [];
   const unresolved: string[] = [];

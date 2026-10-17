@@ -34,7 +34,8 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { notifyAgent } from "./agent-message.ts";
-import { sessionShutdownReason } from "./session-shutdown.ts";
+import type { ExitOrigin } from "./exit-cause.ts";
+import { sessionShutdownOrigin, sessionShutdownReason } from "./session-shutdown.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
@@ -142,6 +143,10 @@ export function interruptedByShutdown(
   cause?: unknown,
 ): boolean {
   const reason = sessionShutdownReason();
+  // Collapse to one fallback: `unknown` is the value exitOrigin() already
+  // answers with when nothing fired, so a missing origin here means the same
+  // thing and must not be a second place that decides what silence means.
+  const origin: ExitOrigin = sessionShutdownOrigin() ?? "unknown";
   if (reason === undefined || state.pipelineState.status !== "running") return false;
   workWidget.clear(ctx.issue);
   const branch = state.pipelineState.branchName;
@@ -181,6 +186,7 @@ export function interruptedByShutdown(
           at: Date.now(),
           step,
           reason,
+          origin,
           ...(branch ? { branch } : {}),
           ...(headSha ? { headSha } : {}),
           resumable: refusal === undefined,
@@ -201,7 +207,7 @@ export function interruptedByShutdown(
       : recorded.refusal === undefined
         ? `state is resumable — run /work ${ctx.issue}`
         : `/work ${ctx.issue} will refuse this state (${recorded.refusal})`;
-  const line = `cycle interrupted: session shutdown (${reason}) during ${step}; ${next}${where}`;
+  const line = `cycle interrupted: session shutdown (${reason}, origin: ${origin}) during ${step}; ${next}${where}`;
   // `quit` tears the session down, so stderr is the one channel still read;
   // any other reason leaves a live TUI that a raw write would corrupt.
   if (reason === "quit") process.stderr.write(`[pi-rukas] ${line}\n`);

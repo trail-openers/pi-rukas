@@ -22,6 +22,14 @@
  *
  * Never throws: the existing refusal/degradation paths cover the case
  * where the pass could not resolve the residue.
+ *
+ * #1396 (round 3) has one exception, and it is the fail-open this module used
+ * to be: the listing behind the residue pass is now bounded, so a HANG is a
+ * rejection. Turning that into "no leftovers" (the old `catch → []` plus this
+ * file's blanket non-fatal catch) would report a clean residue pass while a
+ * same-issue tree holding uncommitted work sat untouched. A rejection that is
+ * not "there is no git here" is recorded as a `worktree-listing-unreadable`
+ * cap-hit — a visible park with the git error as its evidence.
  */
 
 import { trace } from "./trace.ts";
@@ -34,7 +42,7 @@ import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 import { handleSameIssueLeftovers } from "./worktree-leftover.ts";
 import type { ExecFn } from "./worktree.ts";
-import { worktreePath } from "./worktree.ts";
+import { WorktreeScanError, isMissingGit, worktreePath } from "./worktree.ts";
 
 /**
  * #746 task-b — the driver-managed paths that do NOT count as repoRoot dirt.
@@ -268,6 +276,26 @@ This is residue from a previous cycle or the operator's own in-progress work —
     }
     return next;
   } catch (err) {
+    // #1396 round 3 — "could not read the listing" is not "there was nothing
+    // to clean". Only a git that genuinely cannot run (`ENOENT`) keeps the
+    // long-standing non-fatal degradation; a timeout or a kill parks, because
+    // the alternative is a residue pass that removed nothing and reported
+    // success while a dirty same-issue tree stayed in place for the next
+    // cycle's `worktree add` to refuse on.
+    if (err instanceof WorktreeScanError || !isMissingGit(err)) {
+      const detail = (err as Error).message ?? String(err);
+      trace(
+        `work-driver: same-issue residue pass could not read the worktree list — halting the branch step: ${detail.slice(0, 200)}`,
+      );
+      return appendEvent(state, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "worktree-listing-unreadable",
+        reviewRound: state.pipelineState.reviewRound,
+        nextStep: "handoff",
+        evidence: `same-issue residue pass could not read \`git worktree list\`, so the branch step cannot tell whether a leftover holds work: ${detail.slice(0, 300)}`,
+      });
+    }
     trace(
       `work-driver: same-issue residue pass failed (non-fatal): ${(err as Error).message?.slice(
         0,
