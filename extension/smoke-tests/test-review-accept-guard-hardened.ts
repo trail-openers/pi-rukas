@@ -55,13 +55,10 @@ const ALLOWANCES: Case[] = [
   { c: "git diff HEAD~1 HEAD", why: "a diff between commits" },
   { c: "git show HEAD:README.md", why: "a blob read" },
   { c: "git blame src/a.ts", why: "blame" },
-  { c: `git log --oneline -- extension/src/${STORE}.ts`, why: "git log naming the store module" },
-  { c: `git diff HEAD -- extension/src/${STORE}.ts`, why: "git diff naming the store module" },
   { c: "gh pr view 1105", why: "gh pr view" },
   { c: "gh pr view --json number,title", why: "gh pr view --json" },
   { c: "gh pr diff 1105", why: "gh pr diff" },
   { c: "gh repo view", why: "gh repo view" },
-  { c: "gh api /repos/o/r --jq .name", why: "gh api with no write argument" },
   { c: "gh issue view 1125 --json body -q .body", why: "gh issue view" },
   { c: "glab mr view 1105", why: "glab mr view" },
   { c: "glab mr diff 1105", why: "glab mr diff" },
@@ -139,9 +136,48 @@ const MANDATED_REFUSALS: Case[] = [
     c: `bun <<~EOF${NL}import "${STORE}"${NL}EOF`,
     why: "a tilde here-doc importing the store",
   },
+  // Shell expansion hides the name from a string match, so no arm vouches for a word
+  // carrying `$`, a backtick or a backslash: the guard cannot read what the shell will
+  // substitute, and `$(…)` / `${V}` can ASSEMBLE a protected name the text never spells.
+  {
+    c: "cat $({)review-findings.json$({)",
+    why: "ACCEPTANCE: cat of the data file assembled by brace expansion",
+  },
+  {
+    c: `cat "a${"${DF}"}b"`,
+    why: "ACCEPTANCE: a quoted word carrying a parameter expansion the guard cannot read",
+  },
+  {
+    c: `cat ${Q}review-findings${Q}$(echo .json)${Q}`,
+    why: "a command substitution glued to a quoted run of the store's name",
+  },
+  {
+    c: "cat rev\\iew-findings.json",
+    why: "an escaped word: the guard cannot tell what the shell hands to cat",
+  },
+  {
+    c: "git log --oneline; cat `echo review-findings`.json",
+    why: "a backtick-built store name in a chained segment",
+  },
+  // `gh api` is no longer an arm: it carries an arbitrary method and body, so no flag
+  // ban turns it into a read (#1125: any command containing a forge CLI is refused).
+  { c: "gh api -X DELETE /repos/o/r", why: "ACCEPTANCE: gh api DELETE" },
+  { c: "gh api -X POST /repos/o/r/issues -f body=x", why: "ACCEPTANCE: gh api POST with a body" },
+  { c: "gh api --method=DELETE /repos/o/r", why: "ACCEPTANCE: gh api with --method=DELETE" },
+  { c: "gh api /repos/o/r", why: "ACCEPTANCE: bare gh api" },
+  // A git read verb whose operand NAMES the store as a search term or a blob path.
+  { c: `git log -- ${DATA}`, why: "ACCEPTANCE: git log with the data file as a path operand" },
+  { c: `git show HEAD:${DATA}`, why: "ACCEPTANCE: git show of the data file's blob" },
+  { c: `git log -S${DATA}`, why: "ACCEPTANCE: git log -S naming the data file" },
+  { c: `git log --grep=${DATA}`, why: "git log --grep= naming the data file" },
+  // A redirection moves bytes to or from a path no arm ever saw.
+  {
+    c: `git log --oneline > .git/${DATA}`,
+    why: "ACCEPTANCE: a redirection writing the data file",
+  },
+  { c: `git log --oneline < .git/${DATA}`, why: "a redirection reading the data file" },
+  { c: "git status > /tmp/out.txt", why: "a redirection no arm spells" },
 ];
-
-// ── 3. every other command that names the store, or runs something, is refused ─
 
 const DENY_BY_DEFAULT_REFUSALS: Case[] = [
   // A heredoc body the guard cannot read, whatever the runtime.
@@ -267,6 +303,18 @@ const OVER_REFUSALS: Case[] = [
   { c: `awk ${Q}{print $1}${Q} extension/src/${STORE}.ts`, why: "awk naming the store" },
   { c: `wc -l extension/src/${STORE}.ts`, why: "wc naming the store" },
   { c: `sed -n ${Q}1,20p${Q} extension/src/${STORE}.ts`, why: "sed -n naming the store" },
+  {
+    c: `git log --oneline -- extension/src/${STORE}.ts`,
+    why: "a git read whose path operand is the store module (#1125 fix round: a path SEGMENT whose last segment is a protected stem is refused; name the module by a path the guard can read, or run the read through a tool)",
+  },
+  {
+    c: `git diff HEAD -- extension/src/${STORE}.ts`,
+    why: "a git diff whose path operand is the store module — the same over-refusal as the log above",
+  },
+  {
+    c: "gh api /repos/o/r --jq .name",
+    why: "gh api is no longer an arm at all: it carries an arbitrary method and body, so every gh api is refused",
+  },
 ];
 
 // ── assertions ────────────────────────────────────────────────────────────────
@@ -366,7 +414,6 @@ for (const command of [
 for (const command of [
   `git commit -m "clean up the ${DATA} handling"`,
   "gh pr view 1105",
-  `git log --oneline -- extension/src/${STORE}.ts`,
   `bun test smoke-tests/test-${STORE}*.ts`,
 ]) {
   const verdict = await call(command);
