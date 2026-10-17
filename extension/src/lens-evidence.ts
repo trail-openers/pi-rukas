@@ -25,6 +25,7 @@
  */
 
 import {
+  type PathExistenceLookup,
   type UngroundedClaim,
   explainUngrounded,
   extractClaimCandidates,
@@ -141,8 +142,9 @@ export async function runClaimScan(
   };
 
   let ungrounded: UngroundedClaim[];
+  const pathExists = pathExistsAtBranch(execFn, repoRoot, branchName);
   try {
-    ungrounded = await groundClaims(candidates, safeLookup);
+    ungrounded = await groundClaims(candidates, safeLookup, pathExists);
   } catch (err) {
     trace(`work-driver: claim-scan — grounding failed, skipping (${(err as Error).message})`);
     return [];
@@ -157,4 +159,85 @@ export async function runClaimScan(
     description: explainUngrounded(c),
     suggestion: `Replace \`${c.token}\` with a value the repository actually contains, cite where it comes from, or drop the claim.`,
   }));
+}
+
+/**
+ * A path that is safe to interpolate into a git command.
+ *
+ * Same shape as `SAFE_PATH` in `work-driver-diff.ts`. A claim token is
+ * untrusted text lifted out of prose, and `..` is what a token like
+ * `../escape/foo.md` would otherwise smuggle into a tree-ish.
+ */
+const SAFE_PATH = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
+
+/**
+ * Does the file a path claim points at exist ON THE BRANCH?
+ *
+ * Two resolutions, and either one existing is enough (PM clarification, #1002):
+ *
+ *   - joined onto the asserting file's directory — `references/ci-cd.md` cited
+ *     from `skill/devops-infrastructure/SKILL.md` is that skill's own reference
+ *     file, which is how Pi documents bundled skill files ("use relative paths
+ *     from the skill directory");
+ *   - as-is from the repo root — for a token like `docs/foo.md` that was never
+ *     relative to the file citing it.
+ *
+ * Both are checked at `origin/<branch>`, never the filesystem. The lens
+ * children's worktree is detached at `baseSha`, so a reference file the PR
+ * itself added does not exist on disk and would false-fire.
+ *
+ * Exit codes distinguish the two failure modes, and collapsing them was the
+ * trap: `git cat-file -e` exits 128 for "not there", which is a fact the caller
+ * acts on, and anything else (git missing, bad ref, unreadable repo) is "could
+ * not tell", which throws and drops the claim. Grounding a claim on a
+ * git-internal error, or flagging an absent file because git broke, are both
+ * defects.
+ */
+function pathExistsAtBranch(
+  execFn: ExecFn,
+  repoRoot: string,
+  branchName: string,
+): PathExistenceLookup {
+  return async (token, assertingFile) => {
+    if (!SAFE_PATH.test(branchName) || !SAFE_PATH.test(token)) {
+      // Not a repo path at all (it carries `..`, a backslash, or characters
+      // outside the safe set). The existence question is unanswerable, which is
+      // "absent" — the token stays eligible for the token-occurrence rule that
+      // already ran above, so an unusual-but-real path can still ground by
+      // appearing in code.
+      return false;
+    }
+    const candidates = [joinAgainstAssertingDir(token, assertingFile), token];
+    let couldNotTell = false;
+    for (const resolved of candidates) {
+      if (!SAFE_PATH.test(resolved)) continue;
+      try {
+        await execFn(`git cat-file -e ${JSON.stringify(`origin/${branchName}:${resolved}`)}`, {
+          cwd: repoRoot,
+          maxBuffer: 64 * 1024,
+        });
+        return true;
+      } catch (err) {
+        const e = err as { code?: number };
+        // 128 is git's "does not exist". Any other non-zero is a broken git,
+        // an unresolvable ref, or a timeout — none of which say the file is
+        // missing.
+        if (e.code !== 128) couldNotTell = true;
+      }
+    }
+    if (couldNotTell) throw new Error(`could not read the branch for path \`${token}\``);
+    return false;
+  };
+}
+
+/**
+ * Resolve a relative path token the way Markdown does: against the directory
+ * of the file that cites it. A token already sitting at the repo root (no
+ * directory in the asserting file) resolves to itself, and a leading `./` is
+ * dropped so `./references/x.md` and `references/x.md` are the same claim.
+ */
+function joinAgainstAssertingDir(token: string, assertingFile: string): string {
+  const clean = token.startsWith("./") ? token.slice(2) : token;
+  const dir = assertingFile.slice(0, assertingFile.lastIndexOf("/") + 1);
+  return `${dir}${clean}`;
 }

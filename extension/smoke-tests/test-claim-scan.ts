@@ -175,6 +175,110 @@ const NESSIE_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
   );
 }
 
+// ------------------- a path claim whose file exists on the branch (#1002)
+
+{
+  // The /work 994 shape, replayed. Six skills each cited a `references/` file
+  // that exists next to the SKILL.md citing it, and the scan called all six
+  // fabricated — because the target is itself prose, so the rule that grounds
+  // nothing in prose could never ground any of it.
+  const diff = `--- a/skill/devops-infrastructure/SKILL.md
++++ b/skill/devops-infrastructure/SKILL.md
+@@ -63,1 +63,2 @@
+ intro
++Read \`references/ci-cd.md\` for pipeline patterns.
+`;
+  const candidates = extractClaimCandidates(diff);
+  assert(
+    candidates.some((c) => c.token === "references/ci-cd.md" && c.kind === "path"),
+    "the relative path is extracted as a path-kind claim — the shape that false-fired",
+  );
+
+  // Without the existence escape the old rule still fires: not vacuous.
+  const noEscape = await groundClaims(candidates, async () => [
+    "skill/devops-infrastructure/SKILL.md",
+  ]);
+  assert(
+    noEscape.length === 1,
+    "with no existence lookup injected, the pre-#1002 rule still flags it — the new test can fail",
+  );
+
+  // The file is there → grounded.
+  const exists = await groundClaims(
+    candidates,
+    async () => ["skill/devops-infrastructure/SKILL.md"],
+    async () => true,
+  );
+  assert(exists.length === 0, "a path claim whose file exists on the branch is grounded");
+
+  // The file is not there → still a finding. The escape is an OR, not a pardon.
+  const absent = await groundClaims(
+    candidates,
+    async () => ["skill/devops-infrastructure/SKILL.md"],
+    async () => false,
+  );
+  assert(
+    absent.length === 1,
+    "a path claim whose file does NOT exist is still 'Unsourced path' — an invented reference is a defect",
+  );
+
+  // The escape answers a question, so it must receive the pair the question needs.
+  const seen: Array<[string, string]> = [];
+  await groundClaims(
+    candidates,
+    async () => [],
+    async (t, f) => {
+      seen.push([t, f]);
+      return true;
+    },
+  );
+  assert(
+    seen[0]?.[0] === "references/ci-cd.md" &&
+      seen[0]?.[1] === "skill/devops-infrastructure/SKILL.md",
+    "the existence lookup is given the token AND the asserting file, so it can resolve against that directory",
+  );
+
+  // "Could not tell" is never "absent" — the gate blocks merges.
+  const broke = await groundClaims(
+    candidates,
+    async () => [],
+    async () => {
+      throw new Error("git unavailable");
+    },
+  );
+  assert(
+    broke.length === 0,
+    "an existence check that cannot read the branch drops the claim rather than fabricating a finding",
+  );
+
+  // The escape is kind-gated. `Serverless v2` at postgres-database/SKILL.md:83
+  // is a product claim described only in prose, and the ticket keeps it a
+  // finding: a file that exists must not vouch for a spec that is not a path.
+  const productDiff = `--- a/skill/postgres-database/SKILL.md
++++ b/skill/postgres-database/SKILL.md
+@@ -82,1 +82,2 @@
+ intro
++Read \`references/aurora-aws.md\` for Aurora cluster, Serverless v2, and scaling.
+`;
+  const productCandidates = extractClaimCandidates(productDiff);
+  assert(
+    productCandidates.some((c) => c.token === "Serverless v2" && c.kind === "product"),
+    "'Serverless v2' is extracted as a product claim — the out-of-scope shape",
+  );
+  const productUngrounded = await groundClaims(
+    productCandidates.filter((c) => c.kind === "product"),
+    async () => [
+      "skill/postgres-database/SKILL.md",
+      "skill/postgres-database/references/aurora-aws.md",
+    ],
+    async () => true,
+  );
+  assert(
+    productUngrounded.length === 1 && productUngrounded[0]?.token === "Serverless v2",
+    "existence grounds paths only — a product claim described solely in prose stays ungrounded",
+  );
+}
+
 // ----------------------------------------------- end to end, with a fake git
 
 {
@@ -188,6 +292,74 @@ const NESSIE_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
   };
   const findings = await runClaimScan(exec, "/repo", "feature/x", NESSIE_DIFF);
   assert(findings.length === 3, "the scan produces one finding per invented spec");
+
+  // The pre-#1002 fake returned a code file for EVERY command, so the
+  // existence seam was never reached and no path-kind claim ever got here.
+  // With the real rule in place, the answer to "does it exist" is the whole
+  // difference between eight false MEDIUMs and none.
+  const SKILL_DIFF = `--- a/skill/go-idiomatic/SKILL.md
++++ b/skill/go-idiomatic/SKILL.md
+@@ -66,1 +66,2 @@
+ intro
++See \`references/patterns.md\` for idioms.
+`;
+  const grepOnly = async (cmd: string) => {
+    if (cmd.startsWith("git cat-file")) {
+      throw Object.assign(new Error("exit 128"), { code: 128, stdout: "" });
+    }
+    return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
+  };
+  assert(
+    (await runClaimScan(grepOnly, "/repo", "feature/x", SKILL_DIFF)).length === 1,
+    "a cited references/ file that is NOT on the branch still produces an 'Unsourced path' finding",
+  );
+
+  // The probing itself is the contract: the existence question must be asked at
+  // `origin/<branch>`, and asked against the ASSERTING FILE'S DIRECTORY. A
+  // probe that asked the worktree, or the repo root only, would look wrong here
+  // and the #994 false positive would survive the fix.
+  const probes: string[] = [];
+  const record = async (cmd: string) => {
+    probes.push(cmd);
+    return { stdout: "" };
+  };
+  await runClaimScan(record, "/repo", "feature/x", SKILL_DIFF);
+  assert(
+    probes.some(
+      (p) =>
+        p.includes("git cat-file -e") &&
+        p.includes("origin/feature/x:") &&
+        p.includes("skill/go-idiomatic/references/patterns.md"),
+    ),
+    "the existence probe is 'git cat-file -e origin/<branch>:<asserting dir>/<token>' — branch ref, not worktree, resolved against the citing file",
+  );
+
+  const atBranch = async (cmd: string) => {
+    if (cmd.startsWith("git grep")) {
+      return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
+    }
+    // The existence probe answers for either resolution — asserting-dir-relative
+    // here, repo-root in the block below.
+    return { stdout: "" };
+  };
+  assert(
+    (await runClaimScan(atBranch, "/repo", "feature/x", SKILL_DIFF)).length === 0,
+    "the same claim is silent once the branch has the file — the #994 false positive, gone",
+  );
+
+  // A git that is broken (not merely "no such file") must not invent a finding.
+  const brokenGit = async (cmd: string) => {
+    if (cmd.startsWith("git cat-file")) {
+      throw Object.assign(new Error("git: command not found"), { code: 127, stdout: "" });
+    }
+    return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
+  };
+  assert(
+    (await runClaimScan(brokenGit, "/repo", "feature/x", SKILL_DIFF)).length === 0,
+    "exit 128 is 'absent' and any other code is 'could not tell' — a broken git never becomes 'Unsourced path'",
+  );
+
+  // `git grep` exits 1 with no output when there are simply no matches. That is
   assert(
     findings.every((f) => f.lens === "CLAIM_SCAN"),
     "findings are attributed to CLAIM_SCAN, not to a lens that did not produce them",
