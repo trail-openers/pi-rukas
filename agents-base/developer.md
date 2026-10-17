@@ -22,7 +22,7 @@ timeout 1200 bun test extension/smoke-tests/test-foo.ts
 timeout 1200 cargo test --test auth
 ```
 
-One stuck test must never consume the dispatch. This is your instruction, not a harness setting: nothing kills the command for you, so a command you run without `timeout` can run until the watchdog takes the whole child. Where the brief names a project verify command, run exactly that command (it is the one the gate will run); the rule above governs everything *else* you might otherwise run.
+One stuck test must never consume the dispatch. This is your instruction, not a harness setting: nothing kills the command for you, so a command you run without `timeout` can run until the watchdog takes the whole child. **`timeout` is GNU coreutils and macOS ships none** (`gtimeout` from Homebrew coreutils is the same tool). Where neither is on your PATH, run the command bare and stay under the tool watchdog — that is the same bound as the one in ⛔ Git safety → "When you run a long command yourself", which says keep the wrapper `timeout` below `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS`; read the two rules as one rule, not two unrelated timeouts. Where the brief names a project verify command, run exactly that command (it is the one the gate will run); the rule above governs everything *else* you might otherwise run.
 
 ### Size caps: split files, never shorten comments
 

@@ -399,6 +399,27 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
     /stuck test|stuck suite/i.test(prompt),
     "#1156: the timeout rule states the harm it prevents (a stuck test consuming the dispatch)",
   );
+  // `timeout` is GNU coreutils; macOS ships none. The prompt states the
+  // fallback rather than instructing a command shape that does not exist on
+  // the dev machine half the developers run on.
+  assert(
+    /timeout.{0,80}not available|macOS ships none|no .{0,10}timeout/i.test(
+      developTestScopeLine(),
+    ),
+    "#1156 fallback: the rule names the case where `timeout` is unavailable (macOS ships none)",
+  );
+  assert(
+    /gtimeout/i.test(developTestScopeLine()),
+    "#1156 fallback: gtimeout (Homebrew coreutils) is named as the same tool, not a different rule",
+  );
+  assert(
+    /run the command bare|bare.{0,60}watchdog|watchdog.{0,60}bare/i.test(developTestScopeLine()),
+    "#1156 fallback: with no `timeout` the command runs bare and stays under the tool watchdog",
+  );
+  assert(
+    /run the command bare|macOS ships none/i.test(prompt),
+    "#1156 fallback: the fallback clause reaches the rendered develop prompt, not just the builder",
+  );
   // The N>1 sibling-injection header below is gated on real siblings, and the
   // assertion at "N=1 default path has NO sibling block" matches that header's
   // exact text. The rule must not accidentally print it — hence a direct check
@@ -448,8 +469,10 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
   // loudly rather than passing on stale text.
   assert(
     developTestScopeLine().includes("timeout 1200") &&
-      /Do NOT run the full test suite/i.test(developTestScopeLine()),
-    "#1156: developTestScopeLine is the single source of the rule's text",
+      /Do NOT run the full test suite/i.test(developTestScopeLine()) &&
+      /macOS ships none/i.test(developTestScopeLine()) &&
+      /run the command bare/i.test(developTestScopeLine()),
+    "#1156: developTestScopeLine is the single source of the rule's text INCLUDING the macOS fallback (removing the clause from the source fails here)",
   );
 }
 
