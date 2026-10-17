@@ -98,6 +98,28 @@ export function explainLens(cap: Cap, state: WorkState): string {
         : "";
       return `the lens-fix reposition guard could not establish the correct base for the next round: ${cause}. ${where}${backup} The cycle halted rather than dispatching a fix onto a stale or diverged worktree, because a fix built there would not integrate cleanly (the #978 shape: round 2 built on the old base while the branch advanced by round 1). Inspect the worktree and the evidence above — commit or clean uncommitted work, land the missing commit on the branch, or restore from the backup ref — then re-run the cycle`;
     }
+    case "draft-rearm-failed": {
+      // #1398 — the review was about to run a second time and the PR was still
+      // mergeable. The cap's evidence carries the reason the driver recorded;
+      // the draft's holdReason carries the same text (one string, two places,
+      // written together) so either renderer tells the operator the truth.
+      const hit = [...state.eventLog]
+        .reverse()
+        .find(
+          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
+            e.kind === "cap-hit" && e.cap === "draft-rearm-failed",
+        );
+      const pr = state.pipelineState.prNumber;
+      const why =
+        hit?.evidence ?? state.pipelineState.prDraft?.holdReason ?? "(no reason recorded)";
+      // One command string per forge, built once — the draft direction of the
+      // forge command the operator has to run by hand.
+      const draftCmd =
+        pr === undefined
+          ? "the forge's draft command (`gh pr ready <N> --undo` / `glab mr update <N> --draft`)"
+          : `\`gh pr ready ${pr} --undo\` (GitHub) or \`glab mr update ${pr} --draft\` (GitLab)`;
+      return `the PR was marked ready for review, the review had to run again, and the driver could not make the PR a draft again: ${why}. It halted rather than reviewing a PR anyone could merge while it was under review — the window #1292 exists to close, reopened by the CI and lens-fix loops. The PR's real draft state is what the forge says; make it a draft with ${draftCmd} and re-run the cycle, or merge it deliberately if the review's findings are already settled`;
+    }
     default:
       return `unhandled lens cap: ${cap}`;
   }

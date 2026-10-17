@@ -155,6 +155,8 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       return `  merged · PR #${e.prNumber}${e.mergedByOtherDuring ? ` · by someone else during ${e.mergedByOtherDuring}` : ""}`;
     case "lens-residuals-post-failed":
       return `  lens-residuals-post-failed · round ${e.round}${e.prNumber ? ` · PR #${e.prNumber}` : ""} · issue fallback ${e.issueFallback}${e.detail ? ` · ${e.detail.slice(0, 80)}` : ""}`;
+    case "lens-residuals-posted":
+      return `  lens-residuals-posted · round ${e.round}${e.prNumber ? ` · PR #${e.prNumber}` : ""} · ${e.target} · patch ${e.patchId.slice(0, 12)}`;
     case "branches-fanned-out":
       return `  branches-fanned-out · ${e.step} · ${e.workstreams.length} branches: ${e.workstreams.join(", ")}`;
     case "branch-completed":

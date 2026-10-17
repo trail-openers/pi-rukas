@@ -12,7 +12,7 @@ import { killDetail } from "./kill-detail.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { capedPartialStateLines } from "./work-driver-caped-state.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
-import { draftPrHandoffLines } from "./work-driver-draft-pr.ts";
+import { draftPrHandoffLines } from "./work-driver-draft-pr-handoff.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import {
   adversarialOutcomeSection,

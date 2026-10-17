@@ -20,6 +20,8 @@ import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
+import { recordLensResidualsPosted } from "./work-driver-draft-disclosure.ts";
+import { lastCapIsRearmFailure, rearmDraftForReview } from "./work-driver-draft-rearm.ts";
 import { lensCapKillEvent, lensTimingsOf } from "./work-driver-lens-capkill.ts";
 import { applyLensVerdict } from "./work-driver-lens-verdicts.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
@@ -49,6 +51,23 @@ export async function runLens(
     },
   };
   next = appendEvent(next, { kind: "step-started", step: "lens-review", at: now });
+  // #1398 — a review that runs again after the PR was marked ready runs on a
+  // DRAFT. The CI loop (`ci → develop → adversarial → commit-pr → lens-review`)`
+  // and the lens-fix loop both reach this point with `prDraft.status ===
+  // "ready"` still on the state, because `markDraftPrReady`'s short-circuit
+  // made the ready permanent — which left the PR mergeable for the whole
+  // re-review, the exact window #1292 exists to close. No-op unless the state
+  // says ready, the log says the review is being re-run, and the FORGE says the
+  // PR really is mergeable; a re-arm that is needed and fails halts the cycle
+  // (work-driver-draft-rearm.ts).
+  {
+    const rearmed = await rearmDraftForReview(ctx, next, now);
+    // A halt (a `draft-rearm-failed` cap on the state) returns without running
+    // the review: the router reads the cap and routes to handoff, so a review
+    // never passes on a PR nobody can merge.
+    if (lastCapIsRearmFailure(rearmed.state)) return rearmed.state;
+    next = rearmed.state;
+  }
   const diffResult = await readAllMergedDiffs(ps.worktrees ?? {}, ctx.repoRoot, ps.branchName);
   if (!diffResult.ok) {
     trace(`work-driver: lens-review — diff unreadable: ${diffResult.reason}`);
@@ -184,6 +203,17 @@ export async function runLens(
       pr: ps.prNumber, // the disclosure goes to this cycle's PR, merged or not
     });
     next = await recordResidualsPost(ctx, next, summary, round);
+    // #1398 — the POSITIVE disclosure fact. `recordResidualsPost` only emits
+    // when the PR post FAILED; nothing recorded a success, so the draft gate had
+    // to infer "were the findings disclosed?" from which cap name appeared and
+    // any non-round-cap failure read as "nothing to hold for". The fact is
+    // keyed on the patch identity the disclosure itself carries, and persisted
+    // before this returns.
+    next = await recordLensResidualsPosted(ctx, next, {
+      round,
+      ...(ps.prNumber !== undefined ? { prNumber: ps.prNumber } : {}),
+      ...(summary.note ? { note: summary.note } : {}),
+    });
     const capKillEvent = lensCapKillEvent(
       summary,
       jobId,

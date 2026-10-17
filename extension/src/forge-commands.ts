@@ -189,6 +189,29 @@ export function prReadyCmd(forge: ForgeType, number: number): string {
 }
 
 /**
+ * #1398 — the inverse: put a PR/MR back to draft. Verified against the
+ * installed CLIs and their docs, and recorded in the PR body:
+ *
+ *  - GitHub `gh pr ready <N> --undo` (gh 2.102.0 `--help`: "--undo Convert a
+ *    pull request to \"draft\""). On an unknown PR it exits 1 with
+ *    `GraphQL: Could not resolve to a PullRequest with the number of …` — it
+ *    does NOT exit 0 silently, which is why the re-arm can tell a real
+ *    success from a no-op (the ready direction cannot: it warns and exits 0).
+ *  - GitLab `glab mr update <N> --draft` (docs/source/mr/update.md: "--draft
+ *    Mark merge request as a draft", with `--wip` as the documented
+ *    alternative). `glab` is not installed in the sandbox image's dev host, so
+ *    this form is pinned from the upstream docs rather than a local `--help`.
+ *
+ * Deliberately NOT a bare extra `prReadyCmd` call: a `gh pr ready` that
+ * "succeeds" on an already-ready PR leaves it mergeable and reports nothing,
+ * so the re-arm must issue the draft direction and read the forge back.
+ */
+export function prDraftCmd(forge: ForgeType, number: number): string {
+  if (forge === "github") return `gh pr ready ${number} --undo`;
+  return `glab mr update ${number} --draft`;
+}
+
+/**
  * MR/PR merge. SAFETY INVARIANT (epic #608): on GitLab this MUST always
  * pass `--auto-merge=false`. `glab mr merge` enables scheduled auto-merge
  * when auto-merge is configured for the MR, deferring the actual merge to a

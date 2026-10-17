@@ -1,0 +1,205 @@
+/**
+ * work-driver-draft-hold — why the driver must NOT mark the cycle's PR ready
+ * (#1292, and the #1398 fix to how the disclosure is judged).
+ *
+ * Split from work-driver-draft-pr.ts for the 500-line cap (AGENTS.md §12). The
+ * predicates here are pure functions of the event log plus the disclosure facts,
+ * so they are the part of the draft gate a test can drive without a forge, and
+ * the part a reviewer can read to learn the rule.
+ *
+ * ## The #1398 fix, in one paragraph
+ *
+ * `readyHoldReason` used to ask which cap NAME had appeared after the verdict
+ * (`round-cap` / `wall-clock` with `nextStep: "handoff"`, the one route that
+ * does not disclose) and held only in that shape. An `ISSUES_FOUND` followed by
+ * anything ELSE that stopped the cycle before the disclosure — `dispatch-failed`,
+ * `verify-failed:*`, a kill cause, `ci-retry` — looked like "nothing to hold
+ * for", and `markDraftPrReady` marked the PR ready over findings nobody ever
+ * posted. The rule is now stated positively: an `ISSUES_FOUND` may be marked
+ * ready only when a `lens-residuals-posted` fact for the CURRENT patch says the
+ * findings reached the PR. Keyed on the patch identity, because a disclosed
+ * finding is not a fix — pushing a fix produces a new patch the old fact does
+ * not describe, and must not inherit a licence to go ready.
+ */
+
+import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
+import type { PrDraftFindingsFact } from "./workflow-state-schema-pr-draft.ts";
+import type { WorkEvent } from "./workflow-state.ts";
+
+/** The hold text — one string, so the trace, the state and the handoff agree. */
+export const DISCLOSED_HOLD =
+  "the review's remaining findings were never posted to the PR, so it was not marked ready";
+
+/** The CRITICAL hold text. */
+export const CRITICAL_HOLD =
+  "a CRITICAL finding is open, and the driver does not mark a PR ready over one";
+
+/** Inputs the disclosure comparison needs, all optional (each degrades, none passes). */
+export type ReadyHoldOpts = {
+  /**
+   * The identity of the patch being marked ready (`currentPatchIdentity`). When
+   * absent the disclosure check falls back to the pre-#1398 cap-name shape — an
+   * identity the driver cannot establish is not evidence that a disclosure
+   * matched it, and is not a reason to block either.
+   */
+  patchId?: string;
+  /** The `prDraft.findingsPosted` mirror, checked alongside the event log. */
+  findingsPosted?: PrDraftFindingsFact[];
+  /** The cycle's branch — a disclosure fact is per-branch. */
+  branch?: string;
+  /**
+   * item 5 (#1398) — with no `patchId` to key on, an `ISSUES_FOUND` HOLDS
+   * instead of falling back to the pre-#1398 cap-name rule. The fallback read
+   * every non-round-cap failure after a verdict as "nothing to hold for", which
+   * is how a PR came to be marked ready over findings nobody posted; a driver
+   * that cannot state WHICH patch it is marking ready cannot state that that
+   * patch's findings were disclosed. Set by `markDraftPrReady` when the patch
+   * identity could not be computed.
+   */
+  failClosedWithoutPatchId?: boolean;
+  /**
+   * item 6 (#1398) — the PR's comment read itself failed, so the disclosure
+   * could not be checked at the PR. The hold reason says so, which separates
+   * "the findings were never posted" (a fact about the review) from "the driver
+   * could not read the PR" (a fact about the tooling) in the handoff.
+   *
+   * #1398 round 3 — this now HOLDS outright. It used to be decoration on the
+   * hold text while the caller still passed the persisted mirror through as the
+   * answer, which meant a hand-edited or corrupt state file — a `findingsPosted`
+   * row somebody wrote by hand — could license a ready the PR could not show.
+   * The mirror is a cache of a PR read; when the read cannot be made, the cache
+   * is not evidence.
+   */
+  disclosureReadFailed?: string;
+  /**
+   * #1398 round 3 — the persisted mirror may be consulted at all. Set by
+   * `markDraftPrReady` only when the PR's comment list was read successfully
+   * (or was skipped BECAUSE the mirror already covered the patch and that
+   * coverage was itself confirmed by a read). With the read unavailable the
+   * mirror alone must never license a ready.
+   */
+  mirrorAcceptable?: boolean;
+};
+
+/**
+ * Why the driver must NOT mark the PR ready, or `undefined` when it may:
+ *  - a CRITICAL verdict is never marked ready over (the cap only routes it);
+ *  - an `ISSUES_FOUND` verdict whose residual findings are not disclosed on the
+ *    PR for the patch being marked ready — the findings would travel unseen.
+ */
+export function readyHoldReason(
+  eventLog: readonly WorkEvent[],
+  opts: ReadyHoldOpts = {},
+): string | undefined {
+  let verdictIdx = -1;
+  for (let i = eventLog.length - 1; i >= 0; i--) {
+    const k = eventLog[i]?.kind;
+    if (k === "lens-issues-found" || k === "lens-approved" || k === "lens-skipped-empty-diff") {
+      verdictIdx = i;
+      break;
+    }
+  }
+  const verdict = eventLog[verdictIdx];
+  if (verdict?.kind === "lens-issues-found" && verdict.verdict === "CRITICAL_ISSUES_FOUND") {
+    return CRITICAL_HOLD;
+  }
+  if (verdict?.kind !== "lens-issues-found") return undefined;
+  if (opts.disclosureReadFailed) {
+    // The disclosure is a condition and a condition that could not be read is
+    // a refusal, never a pass — the merge guard's own rule for its comment
+    // read, applied here. Deliberately checked BEFORE the patchId branch so a
+    // caller that still hands the mirror through cannot resurrect a pass on a
+    // read that failed.
+    return holdText(opts.disclosureReadFailed);
+  }
+  if (opts.patchId !== undefined) {
+    return disclosedFor(eventLog, opts, opts.patchId)
+      ? undefined
+      : holdText(opts.disclosureReadFailed);
+  }
+  if (opts.failClosedWithoutPatchId) {
+    // No identity to key on: the disclosure cannot be established for the patch
+    // being marked ready, so the ready is refused. Fail closed.
+    return holdText(
+      opts.disclosureReadFailed ?? "the patch being marked ready could not be identified",
+    );
+  }
+  // No patch identity AND no fail-closed request (a caller outside the ready
+  // path, e.g. a renderer asking the question of a log): keep the shape that
+  // shipped (#1292) — the round/wall-clock route to handoff is the one known
+  // non-disclosing route, so hold on it and let everything else through.
+  const capped = eventLog
+    .slice(verdictIdx + 1)
+    .some(
+      (e) =>
+        e.kind === "cap-hit" &&
+        (e.cap === "round-cap" || e.cap === "wall-clock") &&
+        e.nextStep === "handoff",
+    );
+  return capped ? DISCLOSED_HOLD : undefined;
+}
+
+/**
+ * The disclosure hold's text, naming why the disclosure could not be
+ * established when that reason is something other than "nobody posted".
+ */
+function holdText(why: string | undefined): string {
+  return why
+    ? `${DISCLOSED_HOLD} (${why}; the driver holds rather than passing on a read it could not make)`
+    : DISCLOSED_HOLD;
+}
+
+/**
+ * Did a disclosure of THIS patch reach the PR? Both records are consulted: the
+ * event log (what survives a resume and what `/work-status` renders) and the
+ * `prDraft` mirror (what the handoff renders) — they are written together but
+ * read by different callers.
+ *
+ * #1398 round 3 — the mirror is gated. `mirrorAcceptable: false` means the
+ * caller could not confirm the mirror against the PR, and a state file is not
+ * self-authenticating: a hand-edited or corrupt `findingsPosted` row must not
+ * license the ready the PR itself cannot show. The event log is not gated — it
+ * is append-only and validated on read (`workflow-state-validate.ts`) — but it
+ * is the weaker of the two for this purpose precisely because the PR's own
+ * bytes are what the merge guard reads.
+ */
+function disclosedFor(
+  eventLog: readonly WorkEvent[],
+  opts: ReadyHoldOpts,
+  patchId: string,
+): boolean {
+  if (opts.mirrorAcceptable !== false) {
+    if ((opts.findingsPosted ?? []).some((fact) => fact.patchId === patchId)) return true;
+  }
+  return eventLog.some(
+    (e) =>
+      e.kind === "lens-residuals-posted" &&
+      e.target === "pr" &&
+      e.patchId === patchId &&
+      (opts.branch === undefined || e.branch === opts.branch),
+  );
+}
+
+/**
+ * The disclosure marker the PR itself must carry: the same substring the merge
+ * guard's round-cap condition 5 compares (`lensResidualsMarker`, keyed on the
+ * branch and the CURRENT patch), read from the same seam (`prComments`). This
+ * is why the check is not a state-file assertion: the state can claim a
+ * disclosure the PR does not have, and the guard would refuse the merge the
+ * driver just licensed. Here the two read the same bytes.
+ *
+ * A comment body is untrusted content, so this is a substring test on the
+ * renderer's own marker line — never a parse of anything the comment says.
+ */
+export function prCarriesDisclosure(
+  bodies: readonly string[],
+  branch: string | undefined,
+  patchId: string,
+): boolean {
+  // The marker is only meaningful with a branch (the guard compares the PR's
+  // headRefName); without one there is nothing to match, and a missing
+  // disclosure is a hold, not a pass.
+  if (!branch) return false;
+  const marker = lensResidualsMarker(branch, patchId);
+  return bodies.some((body) => body.includes(marker));
+}
