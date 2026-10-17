@@ -63,27 +63,44 @@ export function isVerifyTimeoutFailure(failure: string): boolean {
  *   - `verify-baseline-red:<step>` — `baselineRedOnly`: the base-commit probe
  *     confirmed the verify command fails without the change, and its failures
  *     are the only ones (the caller decides; see verifyDevelopOutcome);
- *   - `verify-env:<step>` also covers #1421's `[build-residue]`: the gate
- *     declined to mutate a root holding untracked, git-ignored build output
- *     (cargo's `target/`, a bundler's `dist/`), so nothing about the change
- *     was judged. An environment refusal, like the fork failure beside it.
+ *   - `verify-env:<step>` also covers #1421's residue decline (`buildResidueOnly`
+ *     from the consolidated gate, reported STRUCTURALLY, never matched out of
+ *     the failure prose): the gate declined to mutate a root holding untracked,
+ *     git-ignored build output (cargo's `target/`, a bundler's `dist/`), so
+ *     nothing about the change was judged. An environment refusal, like the
+ *     fork failure beside it.
  *
  * One real failure among them is a code failure, so the cap stays verify-failed.
+ * The residue branch sits INSIDE the every-no-verdict guard for that reason:
+ * a timeout beside a residue decline is still a run that reached no verdict,
+ * so it routes `verify-timeout:<step>` — never `verify-failed` (the adversarial
+ * round-1 finding: a separate early `every(isBuildResidueFailure)` return made
+ * `[timeout] + [residue]` read as a code verdict).
  */
 export function verifyCapFor<S extends string>(
   step: S,
   failures: readonly string[],
   baselineRedOnly = false,
+  buildResidueOnly = false,
 ): `verify-failed:${S}` | `verify-timeout:${S}` | `verify-env:${S}` | `verify-baseline-red:${S}` {
   if (failures.length === 0) return `verify-failed:${step}`;
   const noVerdict = (f: string) =>
     isHostExhaustionFailure(f) || isVerifyTimeoutFailure(f) || isBuildResidueFailure(f);
-  if (failures.every(noVerdict) && failures.some(isHostExhaustionFailure))
-    return `verify-env:${step}`;
-  // #1421 — build residue alone is an environment refusal, not a verdict.
-  if (failures.every(isBuildResidueFailure)) return `verify-env:${step}`;
-  if (failures.every(isVerifyTimeoutFailure)) return `verify-timeout:${step}`;
-  return baselineRedOnly ? `verify-baseline-red:${step}` : `verify-failed:${step}`;
+  if (!failures.every(noVerdict))
+    return baselineRedOnly ? `verify-baseline-red:${step}` : `verify-failed:${step}`;
+  if (failures.some(isHostExhaustionFailure)) return `verify-env:${step}`;
+  // #1324 — a run killed at its bound decided this cap BEFORE anything else
+  // can: "the bound was too short" is the actionable diagnosis, and it stays
+  // actionable whether or not the gate also declined on residue. Checking the
+  // residue flag first is what made `[timeout] + [residue]` read as
+  // `verify-env` (and, pre-fold, as `verify-failed`) instead of the timeout
+  // the operator can actually fix. The check is `some`, not `every`, for the
+  // same reason: one kill among no-verdict entries is the thing to report.
+  if (failures.some(isVerifyTimeoutFailure)) return `verify-timeout:${step}`;
+  // #1421 — nothing was killed and the gate declined to run at all: an
+  // environment refusal, not a verdict on the code.
+  if (buildResidueOnly) return `verify-env:${step}`;
+  return `verify-failed:${step}`;
 }
 
 /**

@@ -92,4 +92,15 @@ export type ConsolidatedVerifyResult =
       residuePaths?: string[];
       /** Why each path is not this cycle's problem, same order. */
       residueReasons?: DirtReason[];
+      /**
+       * #1421 fix round — TRUE only when the root held NOTHING but residue:
+       * every non-residue line the gate considered had already been dropped as
+       * driver-managed or configured-exempt, so the residue alone is why the
+       * batch was declined. A decline sitting beside dirt the gate charged, or
+       * one unblocked by an exemption, does NOT carry the environment cap —
+       * which is why the caller reads THIS field instead of matching a
+       * substring out of `detail` (an operator path named
+       * `build/[build-residue].log` is prose the router must never route on).
+       */
+      buildResidueOnly?: boolean;
     };

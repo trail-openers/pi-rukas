@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 /**
- * #1421 — build output at repoRoot is not "repoRoot is dirty".
+ * #1421 — build output at repoRoot is not "repoRoot is dirty" (part 1: the
+ * classifier, the gate, the cap, the handoff).
  *
  * The incident (janit/tehas#248, cycle `248-261016-102836`, one cargo
  * workspace at the repo root). Develop finished green, the adversarial gate
@@ -9,8 +10,8 @@
  *   consolidated verify was refused — repoRoot is dirty (target/.rustc_info.json,
  *   target/CACHEDIR.TAG, target/debug/.cargo-*-lock) …
  *
- * Cargo's own build output and lock files, written at the root by the driver's
- * OWN root-level gate run, unignored because the base's `.gitignore` covers
+ * Cargo’s own build output and lock files, written at the root by the driver’s
+ * OWN root-level gate run, unignored because the base’s `.gitignore` covers
  * `/console/target/` and nothing covers `/target/`. The change whose whole
  * point was the root build was refused verification by residue the driver
  * produced, and the park carried `verify-failed:develop` — the cap pi-rukas
@@ -23,37 +24,40 @@
  *      an untracked path git declares ignored is residue and a tracked
  *      modification is not, whatever the pattern file says. An unreadable read
  *      classifies EVERYTHING as dirt (fail closed = the pre-#1421 shape).
- *   2. THE GATE — cargo's `target/` at the root no longer refuses the batch:
- *      the probe runs, and nothing is cleaned. Asserted at N>1, where #1240's
+ *   2. THE GATE — cargo’s `target/` at the root no longer refuses the batch:
+ *      the probe runs, and nothing is cleaned. Asserted at N>1, where #1240’s
  *      duplicate-run skip cannot apply, so "passed" cannot be the skip doing
  *      the work; and with a genuine verify failure beside it, which still
  *      reports `failed` and is never decorated with the residue label.
  *   3. THE CAP — `[build-residue]` alone parks `verify-env:develop`, one real
  *      failure beside it keeps `verify-failed:develop`, and the cap-hit carries
- *      the paths as evidence (the incident's empty err.txt is not repeated).
- *   4. THE HANDOFF — a declined consolidation names the driver's reason AND the
+ *      the paths as evidence (the incident’s empty err.txt is not repeated).
+ *   4. THE HANDOFF — a declined consolidation names the driver’s reason AND the
  *      worktrees + HEAD SHAs where the reviewed commits still are, instead of
  *      the fixed "consolidation infeasible (work remains on its worktree
  *      detached HEADs)" that said nothing about either.
  *
+ * The probe’s three answers, the `!!` rule and the exemption interaction are
+ * pinned in the sibling file, `test-build-residue-dirty-root-1421b.ts`, which
+ * shares this one’s fixtures through `lib/build-residue-1421-fixtures.ts`.
+ *
  * Offline: temp git repos, real git for the ignore semantics (the whole point
- * is git's opinion of the path, not a pattern list this driver maintains).
+ * is git’s opinion of the path, not a pattern list this driver maintains).
  */
-
-import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { appendDevelopVerifyFailure } from "../src/work-develop-verify-failure.ts";
 import { reportConsolidatedVerifyOutcome } from "../src/work-driver-consolidated-verify-report.ts";
 import { runConsolidatedVerify } from "../src/work-driver-consolidated-verify.ts";
 import type { ConsolidatedVerifyResult } from "../src/work-driver-consolidated-verify.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import {
   BUILD_RESIDUE_LABEL,
   buildResidueFailure,
   classifyRootDirt,
   readIgnoredPaths,
+  residuePathText,
 } from "../src/work-driver-dirty-root-classify.ts";
 import { consolidateWorktreesToBranch } from "../src/work-driver-handoff-consolidate.ts";
 import { makeHandoffEmittedEvent } from "../src/work-driver-handoff-post.ts";
@@ -62,12 +66,19 @@ import { verifyCapFor } from "../src/work-driver-verify-develop-helpers.ts";
 import { humanActionFor } from "../src/work-queue.ts";
 import type { WorkCapLiteral } from "../src/workflow-state-events-caps.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
+import {
+  REAL_FAILURE,
+  RESIDUE,
+  RESIDUE_FAILURE,
+  TIMEOUT_FAILURE,
+  git,
+  gitOut,
+  makeRepo,
+  parkReasonOf,
+  worktreeWithCommit,
+  writeResidue,
+} from "./lib/build-residue-1421-fixtures.ts";
 import { realExec } from "./lib/exec-fake.ts";
-
-const execFileP = promisify(execFile);
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
-const gitOut = async (cwd: string, args: string[]): Promise<string> =>
-  (await git(cwd, args)).stdout.trim();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -78,48 +89,7 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const RESIDUE = [
-  "target/.rustc_info.json",
-  "target/CACHEDIR.TAG",
-  "target/debug/.cargo-lock",
-] as const;
-
-/** A repo whose `.gitignore` covers the residue — the state the classifier can prove. */
-async function makeRepo(repo: string): Promise<string> {
-  mkdirSync(repo, { recursive: true });
-  await git(repo, ["init", "-q", "--initial-branch=main"]);
-  await git(repo, ["config", "user.email", "t@example.com"]);
-  await git(repo, ["config", "user.name", "T"]);
-  writeFileSync(path.join(repo, "a.txt"), "base\n");
-  writeFileSync(path.join(repo, ".gitignore"), "/console/target/\n/target/\n");
-  await git(repo, ["add", "."]);
-  await git(repo, ["commit", "-q", "-m", "base"]);
-  return gitOut(repo, ["rev-parse", "HEAD"]);
-}
-
-/** Cargo's build output, exactly as the incident left it. */
-function writeResidue(repo: string) {
-  for (const rel of RESIDUE) {
-    const abs = path.join(repo, rel);
-    mkdirSync(path.dirname(abs), { recursive: true });
-    writeFileSync(
-      abs,
-      rel.endsWith(".json") ? "{}" : rel.includes("CACHEDIR") ? "Signature: 8a" : "",
-    );
-  }
-}
-
-/** A worktree at `baseSha` with one commit of its own. */
-async function worktreeWithCommit(repo: string, name: string, baseSha: string, file: string) {
-  const wt = path.join(repo, ".worktrees", name);
-  await git(repo, ["worktree", "add", "-q", "--detach", wt, baseSha]);
-  writeFileSync(path.join(wt, file), `// ${file}\n`);
-  await git(wt, ["add", file]);
-  await git(wt, ["commit", "-q", "-m", `feat: ${file}`]);
-  return wt;
-}
-
-const root = mkdtempSync(path.join(tmpdir(), "pi-ens-1421-"));
+const root = mkdtempSync(path.join(tmpdir(), "pi-ens-1421a-"));
 
 try {
   // =============================================== 1. the classifier
@@ -131,6 +101,7 @@ try {
 
     const ignored = await readIgnoredPaths(realExec, repo);
     assert(
+      /* biome-ignore lint/complexity/useOptionalChain: the two answers are distinct — an empty set is "nothing is ignored", `undefined` is "git could not tell" */
       ignored !== undefined && ignored.has("target"),
       "#1: git declares target/ ignored (the fixture is honest)",
     );
@@ -290,6 +261,7 @@ try {
     const cons: ConsolidatedVerifyResult = {
       status: "conflict",
       kind: "build-residue",
+      buildResidueOnly: true,
       residuePaths: [...RESIDUE],
       residueReasons: RESIDUE.map(() => "git-ignored" as const),
       detail,
@@ -314,13 +286,71 @@ try {
       "#3: the refusal never presents as a cherry-pick conflict (that wording routes the decomposition cap)",
     );
     assert(
-      verifyCapFor("develop", failures) === "verify-env:develop",
-      `#3: residue alone parks verify-env, never verify-failed (got: ${verifyCapFor("develop", failures)})`,
+      verifyCapFor("develop", failures, false, true) === "verify-env:develop",
+      `#3: residue alone parks verify-env, never verify-failed (got: ${verifyCapFor("develop", failures, false, true)})`,
     );
     assert(
-      verifyCapFor("develop", [...failures, "verify command `x` failed: expected 1"]) ===
-        "verify-failed:develop",
+      verifyCapFor(
+        "develop",
+        [...failures, "verify command `x` failed: expected 1"],
+        false,
+        true,
+      ) === "verify-failed:develop",
       "#3: one real failure beside the residue keeps verify-failed — the label cannot mask a verdict",
+    );
+    // #1421 fix round 1 (adversarial) — a run killed at its bound beside a
+    // residue decline is still a run that reached no verdict. The pre-fix
+    // shape returned an early `every(isBuildResidueFailure)` env cap only for
+    // residue-only lists, so `[timeout] + [residue]` fell through to
+    // `verify-failed:develop` — a code verdict for a kill nobody timed out on.
+    // The residue env cap therefore sits INSIDE the every-no-verdict guard,
+    // after the host check and before the timeout check: the kill still
+    // decides the cap, because "the bound was too short" is the actionable
+    // diagnosis and residue is only the reason no verdict was reached.
+    assert(
+      verifyCapFor("develop", [TIMEOUT_FAILURE, RESIDUE_FAILURE], false, true) ===
+        "verify-timeout:develop",
+      `#3 fix: timeout beside a residue decline is verify-timeout, not verify-failed (got: ${verifyCapFor("develop", [TIMEOUT_FAILURE, RESIDUE_FAILURE], false, true)})`,
+    );
+    assert(
+      verifyCapFor("develop", [TIMEOUT_FAILURE], false, false) === "verify-timeout:develop",
+      "#3 fix: a timeout alone still routes verify-timeout",
+    );
+    assert(
+      verifyCapFor("develop", [TIMEOUT_FAILURE, REAL_FAILURE], false, true) ===
+        "verify-failed:develop",
+      "#3 fix: a real failure beside a timeout is still a verdict, even with the residue flag set",
+    );
+    // #1421 fix round 3 (lens) — the cap routes on the STRUCTURED flag, so
+    // prose that merely contains the tag cannot earn the environment cap. The
+    // pre-fix router substring-matched the label, so an operator-authored path
+    // named `build/[build-residue].log` turned a real failure into verify-env
+    // and hid the verdict. The bracket-stripping in `residuePathText` is the
+    // display-side half; this is the routing-side half.
+    const bracketed = buildResidueFailure(
+      [residuePathText("?? build/[build-residue].log"), ...RESIDUE],
+      "the repo root is not clean",
+    );
+    assert(
+      !/\[build-residue\]\.log/.test(bracketed),
+      "#3 fix: a residue path with brackets is printed without them, so its text cannot re-create a routing tag",
+    );
+    assert(
+      verifyCapFor("develop", [bracketed, REAL_FAILURE], false, false) === "verify-failed:develop",
+      "#3 fix: a residue path named `build/[build-residue].log` beside a real failure is verify-failed",
+    );
+    assert(
+      verifyCapFor(
+        "develop",
+        [...failures, "verify command `x` failed: build/[build-residue].log expected 1 to be 2"],
+        false,
+        false,
+      ) === "verify-failed:develop",
+      "#3 fix: a real failure whose text contains the residue tag is verify-failed when the gate did not decline",
+    );
+    assert(
+      verifyCapFor("develop", [RESIDUE_FAILURE], false, false) === "verify-failed:develop",
+      "#3 fix: with no structured decline the label alone does not buy verify-env (structure, not prose)",
     );
 
     let s = initialState(1421, 1_000_000) as WorkState;
@@ -328,7 +358,15 @@ try {
       ...s,
       pipelineState: { ...s.pipelineState, currentStep: "develop", worktrees: { default: "/wt" } },
     };
-    const withCap = appendDevelopVerifyFailure(s, { ok: false, failures, notes: [] } as never);
+    // The structured decline is part of the gate result the real producer
+    // carries (`verifyStepOutcome` reports it from the consolidated run), so
+    // the cap seam is driven with it rather than re-deriving it from prose.
+    const withCap = appendDevelopVerifyFailure(s, {
+      ok: false,
+      failures,
+      notes: [],
+      buildResidueOnly: true,
+    } as never);
     const hit = [...withCap.eventLog].reverse().find((e) => e.kind === "cap-hit");
     assert(
       hit?.kind === "cap-hit" && hit.cap === ("verify-env:develop" as WorkCapLiteral),
@@ -344,73 +382,63 @@ try {
       ),
       "#3: the queue action points at the build, not the diff",
     );
-  }
-
-  // =============================================== 4. the handoff names the work
-  {
-    const repo = path.join(root, "consolidate");
-    const base = await makeRepo(repo);
-    const a = await worktreeWithCommit(repo, "issue-1421-a", base, "a.rs");
-    // Dirt the consolidation cannot sweep: an unignored untracked file.
-    writeFileSync(path.join(repo, "operator-work.ts"), "export const y = 2;\n");
-
-    let s = initialState(1421, 1_000_000) as WorkState;
-    s = {
-      ...s,
-      pipelineState: {
-        ...s.pipelineState,
-        branchName: "feature/issue-1421-x",
-        baseSha: base,
-        worktrees: { a },
-      },
-    };
-    const out = await consolidateWorktreesToBranch(
-      { repoRoot: repo, issue: 1421, scratchDir: path.join(repo, "tmp", "issue-1421") },
-      s,
+    // #1421 fix round 2 (adversarial + lens) — `humanActionFor` reads the
+    // `:build-residue` suffix `parkReason` writes and nothing else. The
+    // pre-fix matcher was a bare substring, so a park whose evidence merely
+    // QUOTED the tag (a log line, an operator path) got the build advice for
+    // a gate that had judged the code.
+    assert(
+      !/CARGO_TARGET_DIR/.test(humanActionFor("cap verify-failed:develop [build-residue]", 1421)),
+      "#3 fix: an unanchored [build-residue] in the reason gets NO residue advice",
     );
     assert(
-      out.ok === false,
-      "#4: a dirty root still refuses consolidation (this half is unchanged)",
+      /inspect/.test(humanActionFor("cap verify-failed:develop [build-residue]", 1421)),
+      "#3 fix: that park still gets the diff-inspection advice its cap warrants",
     );
     assert(
-      out.ok === false && /operator-work\.ts/.test(out.reason ?? ""),
-      `#4: the refusal names the dirt (got: ${(out.ok ? "" : (out.reason ?? "")).slice(0, 140)})`,
+      /CARGO_TARGET_DIR/.test(humanActionFor("cap verify-env:commit-pr:build-residue", 1421)),
+      "#3 fix: the anchored suffix carries the advice on any step",
     );
-
-    const head = await gitOut(a, ["rev-parse", "HEAD"]);
-    const committedWork: HandoffCommittedWorkEntry[] = [
-      { worktreeId: "a", path: a, headSha: head, ahead: 1 },
-    ];
-    const ev = makeHandoffEmittedEvent({
-      at: Date.now(),
-      commentUrl: undefined,
-      labelApplied: false,
-      handoffBodyPath: "/tmp/body.md",
-      consolidated: false,
-      consolidationReason: `consolidation did not run — the committed work is NOT lost: ${committedWork
-        .map(
-          (w) =>
-            `worktree ${w.worktreeId} at ${w.path} (HEAD ${w.headSha.slice(0, 8)}, ${w.ahead} commit(s) ahead of the base)}`,
-        )
-        .join("; ")}. See the recovery steps below for the cherry-pick commands; driver's reason: ${
-        out.ok ? "" : out.reason
-      }`,
-    });
-    assert(
-      (ev.consolidationReason ?? "").includes("NOT lost") &&
-        (ev.consolidationReason ?? "").includes(a) &&
-        (ev.consolidationReason ?? "").includes(head.slice(0, 8)),
-      "#4: the handoff reason names the worktree path AND the HEAD sha where the commits are",
-    );
-    assert(
-      (ev.consolidationReason ?? "").includes("driver's reason:") &&
-        (ev.consolidationReason ?? "").includes("operator-work.ts"),
-      "#4: the handoff reason carries the driver's actual cause, not a fixed sentence",
-    );
-    assert(
-      !(ev.consolidationReason ?? "").includes("consolidation infeasible"),
-      "#4: the old fixed 'consolidation infeasible' wording is gone",
-    );
+    // The producer side of that contract: parkReason writes the suffix from
+    // the STRUCTURED decline, so the queue cannot be fooled by prose, and a
+    // park with no structured decline never gets it.
+    {
+      const base1421 = initialState(1421, 1_000_000) as WorkState;
+      const withEvidence = (extra: Record<string, unknown>) =>
+        ({
+          ...base1421,
+          pipelineState: {
+            ...base1421.pipelineState,
+            currentStep: "develop",
+            failures: undefined,
+            verifyEvidence: {
+              step: "develop",
+              failures: [RESIDUE_FAILURE],
+              at: 1,
+              origin: "outcome-gate",
+              ...extra,
+            },
+          },
+          eventLog: [
+            {
+              kind: "cap-hit",
+              at: 1,
+              cap: "verify-env:develop",
+              nextStep: "handoff",
+              reviewRound: 0,
+            },
+          ],
+        }) as WorkState;
+      assert(
+        parkReasonOf(withEvidence({ buildResidueOnly: true })) ===
+          "cap verify-env:develop:build-residue",
+        "#3 fix: parkReason derives the residue suffix from the structured flag",
+      );
+      assert(
+        parkReasonOf(withEvidence({})) === "cap verify-env:develop",
+        "#3 fix: failures that merely contain the label get no residue suffix — the advice cannot be earned by prose",
+      );
+    }
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
