@@ -29,7 +29,7 @@
  * Offline: pure string work, no I/O, no network, no child process.
  */
 
-import { redactBounded, redactDeep, redactSecrets } from "../src/decision-log.ts";
+import { REDACTED, redactBounded, redactDeep, redactSecrets } from "../src/decision-log.ts";
 import { SECRET_PATTERNS } from "../src/secret-patterns.ts";
 import { leaksKey, makeAssert } from "./lib/decision-fixtures.ts";
 import { CASES, MUST_NOT_REDACT } from "./lib/redaction-context-cases.ts";
@@ -84,7 +84,6 @@ for (const { name, text } of MUST_NOT_REDACT) {
 const BOUNDS = [2000, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 4000];
 
 for (const { name, secret, body } of CASES) {
-  if (name.startsWith("key-value")) continue; // the glued-before note in the companion file
   for (const glue of ["", " "]) {
     const text = `${"t".repeat(2047)}${glue}${secret}${"t".repeat(3000)}`;
     const whole = redactSecrets(text);
@@ -171,6 +170,78 @@ for (const { name, secret, body } of CASES) {
   assert(
     Object.keys(clean).join(",") === "lastOutput,openPoint" && c3.n === 0,
     `an ordinary key survives byte-for-byte and claims no redaction (${c3.n})`,
+  );
+}
+
+// ---------------- 3b. two keys that redact to the SAME marker keep TWO rows (#1393 r5)
+
+/**
+ * Redaction makes distinct keys EQUAL, and `Object.fromEntries` collapses an object
+ * literal's duplicate keys to its last row. So three `sk-`-shaped keys went in, ONE
+ * `[REDACTED]` row came out, and `counter.n` still read 3 — a record claiming
+ * redactions over rows it no longer contained. A key that LITERALLY read `[REDACTED]`
+ * was overwritten by an unrelated redaction the same way. Neither leaks a credential;
+ * both make the log's own count false, which is the one property a measurement log
+ * cannot lose. The fix builds the object in a loop and suffixes a colliding key `~n`.
+ */
+{
+  const KEYS = [
+    "tok:sk-ant-api03-aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d",
+    "tok:sk-ant-api03-zZ9yX8wV7uT6sR5qP4oN3mL2kJ1iH0gF9eD8cB6a",
+    "tok:sk-proj-aQ1wE3r5tY7uI9oP2aS4dF6gH8jK0lZ9xC7vB3nM5qW1e",
+  ];
+  const counter = { n: 0 };
+  const src: Record<string, string> = {};
+  for (const k of KEYS) src[k] = `value-for-${k.slice(-4)}`;
+  const out = redactDeep(src, counter) as Record<string, unknown>;
+  const keys = Object.keys(out);
+  assert(
+    keys.length === KEYS.length,
+    `three keys that redact to the same marker keep ${KEYS.length} rows, not one (${keys.length}: ${keys.join(", ")})`,
+  );
+  assert(
+    new Set(keys).size === keys.length,
+    `the surviving keys are distinct, so no row overwrote another (${keys.join(", ")})`,
+  );
+  assert(
+    counter.n === KEYS.length,
+    `the count describes the rows that shipped (${counter.n} redactions over ${keys.length} keys)`,
+  );
+  assert(
+    keys.every((k) => k !== REDACTED) && keys.every((k) => k.includes(REDACTED)),
+    `each colliding row carries the marker, uniquely suffixed where the marker alone was taken (${keys.join(", ")})`,
+  );
+  // A suffix that re-matched a pattern would be counted again, or would redact itself
+  // into another collision — either way the count and the rows would drift apart again.
+  assert(
+    redactSecrets(keys[0] ?? "").count === 0,
+    `the suffix is inert: a suffixed key matches no pattern, so a second pass cannot re-collide it (${keys[0]})`,
+  );
+  // Each row still carries the value that came from ITS OWN key, which is the pairing a
+  // collapse destroyed silently: the last writer won and two values vanished.
+  assert(
+    KEYS.every((k, i) => out[keys[i] ?? ""] === `value-for-${k.slice(-4)}`),
+    `every row keeps the value it arrived with, in order (${JSON.stringify(out).slice(0, 90)})`,
+  );
+  // A key that LITERALLY reads the marker is a row too, and must survive a collision
+  // whose redaction produced the same text by accident.
+  const c2 = { n: 0 };
+  const clash = redactDeep(
+    { [REDACTED]: "pre-existing", [KEYS[0] ?? "x"]: "redacted" },
+    c2,
+  ) as Record<string, unknown>;
+  assert(
+    Object.keys(clash).length === 2 && clash[REDACTED] === "pre-existing",
+    `a pre-existing literal "${REDACTED}" key survives a collision rather than being overwritten (${JSON.stringify(clash)})`,
+  );
+  // And the nested path, which is where a state's keys actually live.
+  const c3 = { n: 0 };
+  const nested = redactDeep({ a: { [KEYS[0] ?? "x"]: 1, [KEYS[1] ?? "y"]: 2 } }, c3, 4000) as {
+    a: Record<string, unknown>;
+  };
+  assert(
+    Object.keys(nested.a ?? {}).length === 2,
+    `the collision fix reaches nested objects too (${JSON.stringify(nested).slice(0, 80)})`,
   );
 }
 

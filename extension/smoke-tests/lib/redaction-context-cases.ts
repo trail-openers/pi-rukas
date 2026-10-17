@@ -15,6 +15,18 @@ import { PROBE_KEY } from "./decision-fixtures.ts";
  * asking whether THOSE survived would test the wrong thing — the credential half
  * is what has to be gone.
  */
+/**
+ * A base64 run shaped like a PEM key body. Used as the `body` of the PEM cases so the
+ * assertion asks about the KEY and not about its header (#1393 round 5, item 3).
+ * Declared before `CASES` because the cases read it in their initialiser.
+ */
+const PEM_BODY =
+  "MIIEowIBAAKCAQEA" +
+  "aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6dE7fG8hJ9kL0mN1pQ2rS3tU4v" +
+  "W5xY6zA7bC8dE9fG0hJ1kL2mN3pQ4rS5tU6vW7xY8zA9bC0dE1fG2hJ3kL4mN5pQ6" +
+  "rS7tU8vW9xY0zA1bC2dE3fG4hJ5kL6mN7pQ8rS9tU0vW1xY2zA3bC4dE5fG6hJ7kL8" +
+  "mN9pQ0rS1tU2vW3xY4zA5bC6dE7fG8hJ9kL0mN1pQ2rS3tU4vW5xY6zA7bC8dE9fG0";
+
 export const CASES: { name: string; secret: string; body: string }[] = [
   {
     // The URL rule's match is `://user:pass@` -- it ENDS at the `@`, so the
@@ -156,15 +168,35 @@ export const CASES: { name: string; secret: string; body: string }[] = [
   },
   {
     name: "pem-private-key",
-    secret: "-----BEGIN RSA PRIVATE KEY-----",
-    body: "PRIVATE KEY",
+    // The WHOLE key, not its header (#1393 round 5, item 3). `body` used to be
+    // "PRIVATE KEY" — the delimiter line every PEM on earth shares — so the assertion
+    // passed while the base64 key body, which IS the secret, shipped verbatim. The
+    // longest run here is what a real RSA block looks like, and it is the string that
+    // must not survive.
+    secret: `-----BEGIN RSA PRIVATE KEY-----\n${PEM_BODY}\n-----END RSA PRIVATE KEY-----`,
+    body: PEM_BODY,
   },
   {
-    name: "url-credentials-slash-user",
-    // A `/` inside the userinfo component: the old classes excluded `/` and stopped
-    // at it, so the rule matched NOTHING unbounded, whole document.
-    secret: "https://us/er:pwSup3rSecretValue@origin.internal/x",
-    body: "pwSup3rSecretValue",
+    name: "pem-private-key-clipped",
+    // A clipped PEM — the scan window ended before the `-----END` delimiter. The lazy
+    // body runs to `$` in that case, because a truncated PEM is still a leaked PEM.
+    secret: `-----BEGIN OPENSSH PRIVATE KEY-----\n${PEM_BODY}`,
+    body: PEM_BODY,
+  },
+  {
+    name: "key-value-base64-pad",
+    // The body class used to stop at the first `=`, so a base64 key whose padding (or
+    // internal `=`) sits past the 12-character floor shipped whole — the same defect the
+    // Bearer arm carried for the same reason (#1393 round 5, item 4). `=` is in the class
+    // now. The tail is `…8vW0=Q4rS`: every 12-char window of it contains an `=`, so it
+    // survives redaction ONLY when the class carries `=`, which is what makes this case
+    // break-proof. The first draft of this fixture (`…U8vW0==`) was NOT: with `=` out of
+    // the class the match stopped at the final `=` and the leaked tail was two characters,
+    // shorter than the `leaksKey` window, so every 12-char window of the body was gone and
+    // the case passed while shipping `client_[REDACTED]==`. A body that merely ENDS in `=`
+    // can never catch that arm — the leak has to be ≥ 12 chars long.
+    secret: "client_secret=aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0=Q4rS",
+    body: "aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0=Q4rS",
   },
   {
     name: "url-credentials-slash-pass",

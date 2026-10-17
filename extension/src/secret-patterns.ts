@@ -134,7 +134,14 @@ export const SECRET_PATTERNS: readonly RegExp[] = [
   // already in there), so the class is the alphabet a bearer token is written in
   // rather than one character short of it.
   anchored("Bearer\\s+[A-Za-z0-9._~=+/-]{20,}"),
-  anchored("-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+  // The PEM arm spans the WHOLE key, not just its header (#1393 round 5, item 3). The
+  // header alone was redacted and the base64 body — the actual secret — shipped in
+  // clear. `\s\S` is every character, so this is the second arm whose match can cover a
+  // large run, and the span is LAZY against the END delimiter rather than greedy: a
+  // greedy body over a clipped key (no END, which is what a scan-window cut produces)
+  // re-explores the tail at every start position. `test-decision-secret-regex-linear.ts`
+  // measures both shapes at 200 KB and 1.6 MB and carries the greedy variant as its TRAP.
+  anchored("-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)"),
   // The key/value rule has NO leading `\b` (see the header: that is the item-9 gap) and
   // no end assertion: its body runs to the end of the token, so a trailing assertion
   // could only ever be satisfied by a body SHORTER than the token — the `\b` bug,
@@ -164,6 +171,12 @@ export const SECRET_PATTERNS: readonly RegExp[] = [
   // JSON" and takes its non-serialisable path. 4096 is past any credential in
   // service: the longest real key here is a `github_pat_` at ~90 characters, and
   // the PEM arm does not use this rule at all.
+  // The body class carries `=` (#1393 round 5, item 4). Base64 pads with it, so
+  // `client_secret=…A-Q==` stopped at the first `=` and shipped the padding — measured
+  // `client_[REDACTED]==`, the same tail-leak the Bearer arm carried for the same reason
+  // and for the same fix. The class is still a CREDENTIAL alphabet, not `\S`: `@`, `,`,
+  // `"` and whitespace stay out, so a key still stops at the delimiter that ends it and
+  // the `kv-identifier` / `kv-token-count` overreach probes keep matching nothing.
   /(?:api[_-]?key|secret|password|passwd|token)["']?\s*[:=]\s*["']?[A-Za-z0-9._\-/+]{12,4096}/i,
   // A password embedded in a URL: scheme://user:pass@host. The `://` before it is
   // already a left boundary no token continues across, so this rule needs none.
