@@ -327,6 +327,18 @@ function latchedExec(
     /declined before the checkout/.test(text),
     "E: the residue string says the gate declined before the checkout",
   );
+  // #1421 round 3 — the closing sentence states the gate's own silence as a
+  // neutral clause, not as an assertion about the code. The old phrasing ("the
+  // code reached no verdict") reads as a finding about the change; the gate
+  // never judged it, so it may only say no verdict was reached.
+  assert(
+    /no verdict was reached on the code/.test(text),
+    `E: the closing sentence is neutral about the code (got: ${text.slice(-260)})`,
+  );
+  assert(
+    !/the code reached no verdict/.test(text),
+    "E: the old code-facing phrasing is gone",
+  );
   // The other caller-visible half: the string is still routeable, and still
   // names the fix. Changing the prose must not cost the cap router its key.
   const c = classifyRootDirt(["?? target/.cargo-lock"], new Set(["target", "target/"]));
