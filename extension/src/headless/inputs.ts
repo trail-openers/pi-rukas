@@ -233,12 +233,18 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   input("RATE_LIMIT_BURST_MAX_S", "number", 300, "cycle", { unit: "s" }),
   flag("RESEARCH_FALLBACK", true, "interactive"),
   flag("RESUME", true),
+  // The ceiling the `check_review_cap` tool answers against (#1429). Separate
+  // from REVIEW_WALL_CLOCK_MS: different ceiling, different consumer.
+  ms("REVIEW_CAP_MS", 5_400_000),
   // The 90-min review-loop budget is enforced at the fix dispatch, not just displayed.
   flag("REVIEW_ENFORCE", true),
   dir("REVIEW_LEDGER_FILE", null, "cycle"),
   input("REVIEW_THRESHOLD", "enum", null, "cycle", {
     values: ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
   }),
+  // The driver's review-loop wall clock: what the fixer dispatch is bound by
+  // and what the widget and `/work-status` print (#1429).
+  ms("REVIEW_WALL_CLOCK_MS", 5_400_000),
   str("ROLE", null, "internal"),
   dir("RUNS_DIR", "~/.pi/agent/ensemble-runs"),
   flag("SAFETY_NET_COMMIT", true),

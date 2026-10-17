@@ -38,13 +38,9 @@ import { adversarialGateApproved } from "./adversarial-findings.ts";
 import { execp } from "./exec.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
+import { reviewWallClockMs } from "./review-budget.ts";
 import { trace } from "./trace.ts";
-import {
-  type CycleContext,
-  type DriverContext,
-  MAX_REVIEW_ROUNDS,
-  REVIEW_WALL_CLOCK_MS,
-} from "./work-driver-context.ts";
+import { type CycleContext, type DriverContext, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { recordLensResidualsPosted } from "./work-driver-draft-disclosure.ts";
 import { currentPatchIdentity } from "./work-driver-draft-pr.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
@@ -177,7 +173,7 @@ export async function appendReviewCapHit(
   // wall-clock cap exists for. Running out of rounds says the fix loop is not
   // converging; running out of time says nobody knows what it is doing.
   const wallClockExceeded = Boolean(
-    ps.reviewCapStartedAt && Date.now() - ps.reviewCapStartedAt > REVIEW_WALL_CLOCK_MS,
+    ps.reviewCapStartedAt && Date.now() - ps.reviewCapStartedAt > reviewWallClockMs(),
   );
   if (round >= MAX_REVIEW_ROUNDS) {
     let next = state;

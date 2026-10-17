@@ -45,9 +45,9 @@
  */
 
 import { notifyAgent } from "./agent-message.ts";
+import { reviewWallClockMs } from "./review-budget.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
-import { REVIEW_WALL_CLOCK_MS } from "./work-driver-context.ts";
 import { handoffDispatchTimeoutMs } from "./work-driver-handoff.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
 
@@ -99,7 +99,7 @@ export function reviewFixDispatchBoundMs(
   if (step !== "lens-fix") return undefined;
   const elapsed = reviewElapsedMs(state, now);
   if (elapsed === undefined) return undefined;
-  const remaining = REVIEW_WALL_CLOCK_MS - elapsed;
+  const remaining = reviewWallClockMs() - elapsed;
   // Past the cap: a minimal bound stays armed rather than leaving the fixer
   // unbounded — unbounded is the bug. (The lens-fix caller parks instead of
   // dispatching; the develop fix-pass caller has no park of its own, so this
@@ -135,9 +135,10 @@ export async function parkLensFixOverrun(
 ): Promise<WorkState> {
   if (!reviewEnforceEnabled()) return state;
   const elapsed = reviewElapsedMs(state, now);
-  if (elapsed === undefined || elapsed <= REVIEW_WALL_CLOCK_MS) return state;
+  const capMs = reviewWallClockMs();
+  if (elapsed === undefined || elapsed <= capMs) return state;
   const round = state.pipelineState.reviewRound;
-  const evidence = `lens-fix not dispatched: the review loop has run ${Math.round(elapsed / 60_000)}m (round ${round}) against the ${REVIEW_WALL_CLOCK_MS / 60_000}-minute cap, so the fixer was stopped before it started rather than left running past its own printed budget.`;
+  const evidence = `lens-fix not dispatched: the review loop has run ${Math.round(elapsed / 60_000)}m (round ${round}) against the ${capMs / 60_000}-minute cap, so the fixer was stopped before it started rather than left running past its own printed budget.`;
   trace(`work-driver: lens-fix — review wall-clock cap exceeded — ${evidence}`);
   let next: WorkState = appendEvent(state, {
     kind: "cap-hit",
@@ -151,7 +152,7 @@ export async function parkLensFixOverrun(
   await persistCycle(ctx, next);
   notifyAgent(
     ctx.host,
-    `pi-rukas: /work for issue #${ctx.issue} hit the ${REVIEW_WALL_CLOCK_MS / 60_000}-minute review-loop cap (${Math.round(elapsed / 60_000)}m elapsed, round ${round}) — the lens-fix developer was not dispatched. Routing to handoff so the comment posts.`,
+    `pi-rukas: /work for issue #${ctx.issue} hit the ${capMs / 60_000}-minute review-loop cap (${Math.round(elapsed / 60_000)}m elapsed, round ${round}) — the lens-fix developer was not dispatched. Routing to handoff so the comment posts.`,
   );
   return next;
 }

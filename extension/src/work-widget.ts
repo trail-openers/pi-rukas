@@ -24,6 +24,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { setLiveCycleCount } from "./lifecycle-events.ts";
+import { reviewWallClockMs } from "./review-budget.ts";
 import { trace } from "./trace.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -125,7 +126,13 @@ export function renderStatus(
     parts.push(`round ${ps.reviewRound}/3`);
     if (ps.reviewCapStartedAt) {
       const capElapsed = fmtElapsed(now - ps.reviewCapStartedAt);
-      parts.push(`cap ${capElapsed}/90m`);
+      // #1429 — this used to be the literal `90m`, so the footer kept
+      // advertising a 90-minute ceiling after the operator moved it. The
+      // denominator now follows the resolved budget, the same value the driver
+      // enforces and `work-status.ts` prints. Rendered as whole minutes to keep
+      // the default rendering byte-identical (`90m`), which `fmtElapsed` would
+      // have turned into `90m00s`.
+      parts.push(`cap ${capElapsed}/${reviewWallClockMs() / 60_000}m`);
     }
   }
   if ((ps.ciRetryCount ?? 0) > 0) {

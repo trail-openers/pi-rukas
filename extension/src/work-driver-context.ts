@@ -14,6 +14,7 @@
 
 import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
+import { reviewWallClockMs } from "./review-budget.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
 import type { DispatchImage, DispatchResult } from "./types.ts";
 import type { DriverHost } from "./work-driver-host.ts";
@@ -61,11 +62,19 @@ export const MAX_REVIEW_ROUNDS = 3;
 export const MAX_CI_RETRIES = 2;
 
 /**
- * Wall-clock cap for the entire fix loop (lens-review → developer-fix →
- * adversarial → re-review). 90 minutes, same as legacy review-cap.ts.
- * Persisted in `pipelineState.reviewCapStartedAt` so it survives restart.
+ * The review-loop time ceilings live in `review-budget.ts` (#1429), which is
+ * the only place either ceiling is stated. Re-exported so every existing
+ * import path keeps working and `nextStep` below reads the resolved value.
  */
-export const REVIEW_WALL_CLOCK_MS = 90 * 60 * 1000;
+export {
+  MIN_REVIEW_BUDGET_MS,
+  REVIEW_CAP_DEFAULT_MS,
+  REVIEW_CAP_ENV,
+  REVIEW_WALL_CLOCK_ENV,
+  REVIEW_WALL_CLOCK_MS,
+  reviewCapMs,
+  reviewWallClockMs,
+} from "./review-budget.ts";
 
 /**
  * Headless S4 (#1024) — the context a cycle runs with once `enterCycle` has
@@ -408,7 +417,7 @@ export function nextStep(state: WorkState): StepDecision {
     // somehow reached the cap without a cap-hit recorded has nothing that says
     // where it should go, and "stop" is the only safe answer to that.
     if (ps.reviewRound >= MAX_REVIEW_ROUNDS) return { kind: "step", step: "handoff" };
-    if (ps.reviewCapStartedAt && Date.now() - ps.reviewCapStartedAt > REVIEW_WALL_CLOCK_MS) {
+    if (ps.reviewCapStartedAt && Date.now() - ps.reviewCapStartedAt > reviewWallClockMs()) {
       return { kind: "step", step: "handoff" };
     }
     return { kind: "step", step: "lens-fix" };
