@@ -19,6 +19,7 @@ import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
+import { skillLoadProof } from "./lens-skill-load-proof.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { readEnumMarker } from "./reply-markers.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
@@ -346,11 +347,33 @@ export async function runLensChild(opts: {
   // is the executed evidence that the skill existed; absence is traced
   // (PI_ENSEMBLE_DEBUG=1) so the operator can see the honor system was
   // simply not exercised.
+  //
+  // PR #1530 lens finding (SECURITY, MEDIUM) — SUCCESS was the child's own
+  // word and nothing else, which made the whole marker an honor system with
+  // a merge gate on the far side. Since #995 the prompt defines SUCCESS as a
+  // `read` of `skillPath` that returned content, so the claim is checkable
+  // against the child's recorded tool calls: a SUCCESS with no matching read
+  // is downgraded to FAILED and takes the existing FAILED path (blocked,
+  // findings kept, named parseError). `unproven` is the refutation;
+  // `unverifiable` (the child recorded no tool calls at all — a killed
+  // child's replay carries none, see `observedToolCalls`) is NOT read as one:
+  // the pre-spawn stat stays the evidence and absence's policy applies.
   const skillLoadStatus = readEnumMarker(result.text ?? "", "Skill Load Status", [
     "SUCCESS",
     "FAILED",
   ]);
-  if (skillLoadStatus === "FAILED") {
+  let skillLoadDowngrade: string | undefined;
+  if (skillLoadStatus === "SUCCESS") {
+    const proof = skillLoadProof(result.toolUses, skillPath);
+    if (proof === "unproven") {
+      skillLoadDowngrade = `skill load reported SUCCESS by the child (${lens.skill}) but no read of ${skillPath} appears in its tool calls — treated as FAILED`;
+    } else if (proof === "unverifiable") {
+      trace(
+        `skill load SUCCESS unverifiable (${lens.skill}): the child recorded no tool calls; treated as absent, not refuted`,
+      );
+    }
+  }
+  if (skillLoadStatus === "FAILED" || skillLoadDowngrade) {
     return {
       lens: lens.name,
       ok: result.ok,
@@ -362,7 +385,7 @@ export async function runLensChild(opts: {
       summary: result.text?.trim() || undefined,
       model: result.model,
       transcriptPath: result.transcriptPath,
-      parseError: `skill load reported FAILED by the child (${lens.skill})`,
+      parseError: skillLoadDowngrade ?? `skill load reported FAILED by the child (${lens.skill})`,
       usage: result.usage,
     };
   }
@@ -388,7 +411,9 @@ export async function runLensChild(opts: {
 
 // #872 — honor-system absence is traced, not blocked: the marker was not
 // emitted, but the pre-spawn statSync in `runLensChild` is the executed
-// evidence the skill exists, so only an explicit FAILED ever blocks.
+// evidence the skill exists, so an absent marker never blocks — and a SUCCESS
+// whose read the child did not perform is downgraded to FAILED above rather
+// than reaching this line.
 function traceSkillLoadAbsence(lensSkill: string, status: string | undefined): void {
   if (status === undefined) {
     trace(`skill load status absent (${lensSkill}) — pre-spawn stat passed; marker not emitted`);

@@ -180,7 +180,7 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
     values: ["SUCCESS", "FAILED"],
     consumer: "lens-review-child.ts",
     onAbsence:
-      "not blocked — traced; the pre-spawn statSync is the executed evidence the skill exists; only an explicit FAILED blocks",
+      "not blocked — traced; the pre-spawn statSync is the executed evidence the skill exists. A parsed SUCCESS is verified against the child's recorded tool calls (`skillLoadProof`, lens-skill-load-proof.ts): no matching read of the skill path → downgraded to FAILED (blocked, findings kept); no recorded tool calls at all → traced and treated as absent, never refuted",
   },
   {
     // Not a child reply: the gap gate writes this section into a filed issue body,

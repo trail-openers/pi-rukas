@@ -163,6 +163,23 @@ export class RosterSourceError extends Error {
   }
 }
 
+/** Why a caught value says what it says, without assuming it is an `Error`.
+ *  `readFileSync` throws a `NodeJS.ErrnoException` (`code`), `JSON.parse` a
+ *  plain `SyntaxError`, and anything a caller hands us neither — so the
+ *  message is read conditionally rather than asserted, and `code` only when
+ *  the object actually carries it. Both used to be `as` casts in the catch
+ *  blocks below, which is the same class of error as reading `.code` off an
+ *  `undefined`: the cast compiles, the value is `undefined` at runtime, and
+ *  the branch that depends on it silently mis-routes. */
+function errorDetail(err: unknown): { message: string; code?: string } {
+  const message = err instanceof Error ? err.message : String(err);
+  const code =
+    typeof err === "object" && err !== null && "code" in err
+      ? String((err as { code: unknown }).code)
+      : undefined;
+  return code === undefined ? { message } : { message, code };
+}
+
 /** Shared read of the permission maps. Absent file → undefined (a caller that
  *  passes an explicit path with no file is exercising the fixture shape and is
  *  allowed silence). Unreadable-but-present, or present-and-malformed → throws
@@ -174,15 +191,15 @@ function parseAgentPermissions(
   try {
     raw = readFileSync(agentsPath, "utf8");
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
+    const { message, code } = errorDetail(err);
     if (code === "ENOENT") return undefined;
-    throw new RosterSourceError(agentsPath, `unreadable: ${(err as Error).message}`);
+    throw new RosterSourceError(agentsPath, `unreadable: ${message}`);
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new RosterSourceError(agentsPath, `malformed JSON: ${(err as Error).message}`);
+    throw new RosterSourceError(agentsPath, `malformed JSON: ${errorDetail(err).message}`);
   }
   const agent = (parsed as { agent?: unknown })?.agent;
   if (agent === undefined) {
@@ -259,15 +276,15 @@ export function mcpToolNames(
     try {
       raw = readFileSync(mcpConfigPath, "utf8");
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
+      const { message, code } = errorDetail(err);
       if (code === "ENOENT" || code === "ENOTDIR") continue; // optional source
-      throw new RosterSourceError(mcpConfigPath, `unreadable: ${(err as Error).message}`);
+      throw new RosterSourceError(mcpConfigPath, `unreadable: ${message}`);
     }
     let parsed: { mcpServers?: unknown; servers?: unknown };
     try {
       parsed = JSON.parse(raw) as { mcpServers?: unknown; servers?: unknown };
     } catch (err) {
-      throw new RosterSourceError(mcpConfigPath, `malformed JSON: ${(err as Error).message}`);
+      throw new RosterSourceError(mcpConfigPath, `malformed JSON: ${errorDetail(err).message}`);
     }
     const declared = parsed?.mcpServers;
     if (declared !== undefined && declared !== null) {

@@ -30,7 +30,7 @@
  */
 
 import { lensPromptFor } from "../src/lens-review-format.ts";
-import { LENS_ROSTER } from "../src/lens-roster.ts";
+import { LENS_ROSTER, type RosterEntry } from "../src/lens-roster.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -46,7 +46,18 @@ const NOT_INLINED = "NOT inlined in your context";
 
 {
   const fakePath = "/tmp/skills/code-review-security";
-  const lensEntry = LENS_ROSTER[0] as never as { name: string; skill: string };
+  // The real roster entry type — the same `RosterEntry` `lensPromptFor` is
+  // declared against. `LENS_ROSTER[0]` is a genuine entry (the bundled
+  // `skill/` dir is the roster's source), so the index is checked rather than
+  // asserted: a roster that resolved to nothing has to fail HERE, loudly, not
+  // have its absence cast away so every assertion below reads the prompt of
+  // an undefined lens. The `!` below is the one narrow assertion — it is
+  // backed by the line right above it, which fails the test if it is false.
+  const lensEntry = LENS_ROSTER[0];
+  assert(
+    lensEntry !== undefined && typeof lensEntry.skill === "string",
+    "(i) the bundled lens roster resolves at least one entry (the fixture this test builds on)",
+  );
   const withPath = lensPromptFor(
     lensEntry,
     "diff --git a/a b/a",
