@@ -17,9 +17,12 @@
  * thing a contributor commits and the thing that can drift.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
-import { SUITE_TIMEOUT_SECONDS } from "../src/work-driver-verify-fast.ts";
+import { suiteTimeoutSeconds } from "../src/work-driver-verify-fast.ts";
+import { assertSuiteBoundDerivation } from "./lib/developer-test-scope.ts";
+
+const SUITE_SECONDS = suiteTimeoutSeconds();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -33,7 +36,10 @@ function assert(cond: boolean, msg: string) {
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const DOC = path.join(ROOT, "agents-base", "developer.md");
 
-const src = existsSync(DOC) ? readFileSync(DOC, "utf8") : "";
+// No existsSync guard: a missing or unreadable doc is the failure this test
+// exists to catch, and `readFileSync` naming the path and the errno is a
+// better report than an assertion that a file is empty.
+const src = readFileSync(DOC, "utf8");
 assert(src.length > 0, `non-vacuity: ${path.relative(ROOT, DOC)} is readable`);
 
 // ------------------------------------------------ test-scope + suite timeout
@@ -55,24 +61,30 @@ assert(
   "#1156: the role prompt says the driver runs the full suite, so skipping it is not skipping verification",
 );
 assert(
-  src.includes(`timeout ${SUITE_TIMEOUT_SECONDS}`),
-  `#1156: every suite command carries \`timeout ${SUITE_TIMEOUT_SECONDS}\` (exported constant, so code and doctrine cannot drift apart)`,
+  src.includes(`timeout ${SUITE_SECONDS}`),
+  `#1156: every suite command carries \`timeout ${SUITE_SECONDS}\` (derived from the watchdog, so code and doctrine cannot drift apart)`,
 );
 assert(
   /timeout 1200/.test(src),
-  "#1156: the literal 'timeout 1200' the issue names is in the role prompt",
+  "#1156: the literal 'timeout 1200' the issue names is in the role prompt at the default watchdog",
 );
 
-// `timeout` is GNU coreutils — macOS ships none, and this repo's own
-// smoke-tests/lib/verify-kill.sh deliberately avoids it for the same reason.
-// A role prompt that mandates the binary is wrong on the dev machine.
+// `timeout` is GNU coreutils and macOS ships none by default — but whether a
+// binary exists is a fact about the machine the child is on, so the role
+// prompt must make the child LOOK rather than rest on a platform claim. A
+// prompt that asserts "macOS ships none" tells a child in a Linux container,
+// a CI image, or a Mac with coreutils installed to run unbounded for nothing.
 assert(
-  /macOS ships none|macOS has no .{0,10}timeout/i.test(src),
-  "#1156 fallback: the role prompt says macOS has no `timeout`",
+  /probe for a timeout binary/i.test(src) && /command -v timeout gtimeout/.test(src),
+  "#1156 fallback: the role prompt tells the child to PROBE for a timeout binary (imperative prose + the probe command) rather than rest on a platform claim",
 );
 assert(
   /gtimeout/i.test(src),
   "#1156 fallback: gtimeout (Homebrew coreutils) is named as the same tool",
+);
+assert(
+  /only where the probe prints nothing/i.test(src),
+  "#1156 fallback: running bare is gated on the probe finding neither binary, not on a platform guess",
 );
 assert(
   /run the command bare/i.test(src),
@@ -86,13 +98,27 @@ assert(
   /PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS/.test(src),
   "#1156 fallback: the watchdog bound is named by its knob, so the two timeout rules resolve to one",
 );
+// Mutation anchor: a heading that has gone missing makes indexOf return -1,
+// which silently empties the slice and the regex below fails on "" with a
+// message that blames the prose rather than the heading.
+function between(start: string, end: string): string {
+  const from = src.indexOf(start);
+  if (from === -1) throw new Error(`missing heading anchor "${start}" in ${DOC}`);
+  const to = src.indexOf(end, from);
+  if (to === -1) throw new Error(`missing heading anchor "${end}" after "${start}" in ${DOC}`);
+  return src.slice(from, to);
+}
 assert(
   /Git safety/i.test(src) &&
     /(same bound|one rule|not two unrelated|same rule)/i.test(
-      src.slice(src.indexOf("Scope your own testing"), src.indexOf("Size caps")),
+      between("Scope your own testing", "Size caps"),
     ),
   "#1156 fallback: the section points at the existing watchdog paragraph so the two timeout rules do not read as unrelated",
 );
+
+// ------------------------------------------- the bound follows the watchdog
+
+assertSuiteBoundDerivation(assert);
 
 // ------------------------------------------------ size cap: split, don't shorten
 

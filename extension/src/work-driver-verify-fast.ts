@@ -16,6 +16,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { toolInactivityTimeoutMs } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import { readFirstConfigLine } from "./work-driver-verify-cmd.ts";
 
@@ -90,21 +91,27 @@ export function developVerifyLine(verifyCmd?: string, fastCmd?: string): string 
 }
 
 /**
- * The wall-clock bound every suite command a developer runs carries.
+ * The wall-clock bound every suite command a developer runs carries, derived
+ * from the tool-inactivity watchdog rather than frozen as a literal.
+ *
  * Prompt-layer only — nothing in the harness parses or enforces it. Measured
  * on a `/work` fan-out: developers ran the whole offline suite in parallel
  * worktrees with no bound at all and one stuck ~20 minutes on a single suite
  * call, so the slowest child set the pace of every gate.
  *
- * 1200s sits between the two bounds this one has to live inside: it is 4× the
- * 300s a single test already gets under `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S`
- * (verify-kill.sh), so one suite gets room for a slow-but-progressing run
- * without one stuck call eating the whole budget; and it is a third of the
- * 3600s `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` watchdog that would otherwise
- * take the child down, so the command reports what hung instead of the child
- * being killed for silence.
+ * A third of the watchdog is the shape that was always intended: the command
+ * reports what hung instead of the child being killed for silence. Deriving
+ * it keeps that true when an operator shrinks
+ * `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` — a frozen 1200 told the developer
+ * to wrap a command in a bound LONGER than the watchdog that would then take
+ * it down, which is the opposite of a bound. The 1200 ceiling is the number
+ * the derivation already gives at the 60-min default, and it keeps the prompt
+ * sane at an enlarged watchdog rather than telling a child to let one suite
+ * run for hours.
  */
-export const SUITE_TIMEOUT_SECONDS = 1200;
+export function suiteTimeoutSeconds(): number {
+  return Math.min(1200, Math.floor(toolInactivityTimeoutMs() / 1000 / 3));
+}
 
 /**
  * #1156 — the test-scope rule for the develop prompt, appended to the verify
@@ -116,7 +123,24 @@ export const SUITE_TIMEOUT_SECONDS = 1200;
  *
  * Separate export so the rule is testable on its own: `developVerifyLine`
  * returns one of three strings and the rule applies to all three.
+ *
+ * `adHocOnly` is the #1324 fast-tier mode. There `developVerifyLine` already
+ * forbids the developer running the project verify command at all, so this
+ * rule must not read as licensing it: the binding then covers only the ad-hoc
+ * test commands the child picks for itself, and says plainly that it is not
+ * permission to run the full verify.
  */
-export function developTestScopeLine(): string {
-  return `Scope your own testing: run the smoke tests for the files you changed, plus typecheck and lint. Do NOT run the full test suite — the driver runs the full suite once on your worktree after you finish, and several workstreams each running it whole in parallel only slow every gate down. Wrap every suite or test command in \`timeout ${SUITE_TIMEOUT_SECONDS}\` (e.g. \`timeout ${SUITE_TIMEOUT_SECONDS} bun test extension/smoke-tests/test-foo.ts\`) so a single stuck test can never consume the dispatch; where \`timeout\` is not available (macOS ships none — \`gtimeout\` from Homebrew coreutils is the same tool), run the command bare and keep it under the tool watchdog.`;
+export function developTestScopeLine(adHocOnly = false): string {
+  const seconds = suiteTimeoutSeconds();
+  // The macOS branch is a PROBE, not a claim about the platform. Whether a
+  // `timeout` binary exists is a fact about the machine the child is sitting
+  // on, and the child can look it up. Asserting "macOS ships none" instead
+  // told a child on a machine that HAS one (coreutils via Homebrew, a Linux
+  // container) to run its suites unbounded for no reason at all.
+  const binding = adHocOnly
+    ? "The bound below applies to the ad-hoc test commands you run for yourself — not to the project verify command, which the fast tier says you do NOT run; nothing here licenses running it."
+    : `Wrap every suite or test command in \`timeout ${seconds}\` (e.g. \`timeout ${seconds} bun test extension/smoke-tests/test-foo.ts\`) so a single stuck test can never consume the dispatch.`;
+  const fallback =
+    "Only where the probe prints nothing — run the command bare and keep it under the tool watchdog (`PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS`).";
+  return `Scope your own testing: run the smoke tests for the files you changed, plus typecheck and lint. Do NOT run the full test suite — the driver runs the full suite once on your worktree after you finish, and several workstreams each running it whole in parallel only slow every gate down. ${binding} Probe for a timeout binary first: \`command -v timeout gtimeout\`, and use whichever it prints (\`gtimeout\` is Homebrew coreutils' same tool). ${fallback}`;
 }
