@@ -108,6 +108,13 @@ export type WorkCapLiteral =
   // empty-diff guard APPROVED on it, merging code unreviewed. Halting
   // is cheap; approving on the absence of evidence is not.
   | "lens-diff-unreadable"
+  // #1398 — the review was about to run again after the PR had been marked
+  // ready, and putting the PR back to a draft failed (or the cycle's
+  // `pr ready` attempts are spent). Continuing would run a review on a PR
+  // anyone could merge while it is under review — the exact window #1292
+  // closes — so the cycle parks with the reason rather than reviewing a
+  // mergeable PR.
+  | "draft-rearm-failed"
   | "existing-pr-detected"
   // #844 — the ops-fallback branch path's post-dispatch merge-base check
   // failed: the branch ops created does not sit on the driver-resolved
