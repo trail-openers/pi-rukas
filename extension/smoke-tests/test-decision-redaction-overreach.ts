@@ -35,6 +35,7 @@
 import { redactBounded, redactDeep, redactSecrets } from "../src/decision-log.ts";
 import { PROBE_KEY, leaksKey, makeAssert } from "./lib/decision-fixtures.ts";
 import { MUST_NOT_REDACT } from "./lib/redaction-context-cases.ts";
+import { BODY_CLASS_OVERREACH } from "./lib/redaction-context-cases.ts";
 
 const { assert, state } = makeAssert();
 
@@ -63,6 +64,15 @@ for (const { name, text } of MUST_NOT_REDACT) {
       );
     }
   }
+}
+
+// ---- the key/value body class is a credential alphabet, not `\S`: a JSON object
+// literal welded to a keyword names a credential without carrying one, and must
+// report no redaction at all (#1393).
+
+for (const { name, text } of BODY_CLASS_OVERREACH) {
+  const r = redactSecrets(text);
+  assert(r.count === 0, `${name}: NOTHING is redacted (${r.count} for ${JSON.stringify(text)})`);
 }
 
 // ------------------------- redactDeep: the nested-string arm keeps its context too
