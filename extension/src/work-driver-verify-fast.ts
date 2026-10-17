@@ -108,9 +108,16 @@ export function developVerifyLine(verifyCmd?: string, fastCmd?: string): string 
  * the derivation already gives at the 60-min default, and it keeps the prompt
  * sane at an enlarged watchdog rather than telling a child to let one suite
  * run for hours.
+ *
+ * The floor of 1 is load-bearing in a way the ceiling is not. The knob accepts
+ * `0`, and a non-numeric value (`""`, `"abc"`) also reads as 0 — and coreutils
+ * treats `timeout 0` as *no timeout at all*. So the very shape this bound
+ * exists to prevent — a suite running until the watchdog takes the whole child
+ * — is what a `timeout 0` in the prompt instructs the child to do. Same reason
+ * `withFastTier` above floors its derived bound with `Math.max(1, ...)`.
  */
 export function suiteTimeoutSeconds(): number {
-  return Math.min(1200, Math.floor(toolInactivityTimeoutMs() / 1000 / 3));
+  return Math.max(1, Math.min(1200, Math.floor(toolInactivityTimeoutMs() / 1000 / 3)));
 }
 
 /**
@@ -140,7 +147,8 @@ export function developTestScopeLine(adHocOnly = false): string {
   const binding = adHocOnly
     ? "The bound below applies to the ad-hoc test commands you run for yourself — not to the project verify command, which the fast tier says you do NOT run; nothing here licenses running it."
     : `Wrap every suite or test command in \`timeout ${seconds}\` (e.g. \`timeout ${seconds} bun test extension/smoke-tests/test-foo.ts\`) so a single stuck test can never consume the dispatch.`;
+  const probe = "`command -v timeout || command -v gtimeout`";
   const fallback =
     "Only where the probe prints nothing — run the command bare and keep it under the tool watchdog (`PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS`).";
-  return `Scope your own testing: run the smoke tests for the files you changed, plus typecheck and lint. Do NOT run the full test suite — the driver runs the full suite once on your worktree after you finish, and several workstreams each running it whole in parallel only slow every gate down. ${binding} Probe for a timeout binary first: \`command -v timeout gtimeout\`, and use whichever it prints (\`gtimeout\` is Homebrew coreutils' same tool). ${fallback}`;
+  return `Scope your own testing: run the smoke tests for the files you changed, plus typecheck and lint. Do NOT run the full test suite — the driver runs the full suite once on your worktree after you finish, and several workstreams each running it whole in parallel only slow every gate down. ${binding} Probe for a timeout binary first: ${probe} (POSIX-specified; \`gtimeout\` is Homebrew coreutils' same tool). ${fallback}`;
 }
