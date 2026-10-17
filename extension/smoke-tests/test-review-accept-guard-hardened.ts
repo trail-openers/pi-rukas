@@ -9,13 +9,10 @@
  * refusal is a path-operand one. Those two sentences are asserted here, once.
  *
  * The base refusals (the operator script, the edit tools) are covered in
- * test-review-accept.ts and test-review-accept-layers.ts.
- */
-
+ * test-review-accept.ts and test-review-accept-layers.ts. */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
 // `import.meta.url` rather than `import.meta.dir`: this suite is run under both bun and
 // node, and only bun defines `dir`.
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -41,14 +38,11 @@ const NL = String.fromCharCode(10);
 const Q = String.fromCharCode(39);
 
 type Case = { c: string; why: string };
-
 /** Verdict, computed once per case and asserted against a literal expectation. */
 function refused(c: string): boolean {
   return runsReviewAccept(c) !== undefined;
 }
-
 // ── 1. the exact read-only allowlist (clause (a)) ─────────────────────────────
-
 const ALLOWANCES: Case[] = [
   { c: "git status", why: "git status" },
   // The exec-flag and prefix-word refusals an ARM cannot see are asserted here; the arm's
@@ -118,7 +112,17 @@ const SIBLING_REFUSALS: Case[] = [
   { c: `git log --oneline -- -G${STORE}`, why: "-G after the path-limiting --" },
   { c: `git diff -G${STORE} HEAD`, why: "-G on a diff" },
 ];
-
+/**
+ * The store name spelled the way the SHELL builds it: `'rev''iew-findings.json'` is ONE
+ * word that the shell concatenates into the exact store name, so no quoting may hide it.
+ * The matcher-level and edit-path assertions — for this and for CASE, which a `write` path
+ * never folds the way the guard folds a command — are asked DIRECTLY in the arms-direct
+ * suite (#1125). */
+const SPELLING_REFUSALS: Case[] = [
+  { c: `cat 'rev${Q}${Q}iew-findings.json'`, why: "ACCEPTANCE: a quoted-split store name" },
+  { c: `cat "rev""iew-findings.json"`, why: "the same concatenation in double quotes" },
+  { c: `cat Review-Findings.json`, why: "ACCEPTANCE: the data file in mixed case" },
+];
 /** The repo's own develop gate must stay allowed, verbatim from .pi/verify-cmd. */
 function verifyCmdArms(): string[] {
   const file = join(HERE, "..", "..", ".pi", "verify-cmd");
@@ -132,9 +136,7 @@ function verifyCmdArms(): string[] {
     .map((arm) => arm.replace(/^cd \S+$/, "").trim())
     .filter((arm) => arm && !arm.startsWith("cd ") && !arm.startsWith("bun run check"));
 }
-
 // ── 2. the #1125-mandated refusals ────────────────────────────────────────────
-
 const MANDATED_REFUSALS: Case[] = [
   {
     c: `git show HEAD:x --output=.git/${DATA}`,
@@ -385,13 +387,13 @@ for (const t of MANDATED_REFUSALS) assert(refused(t.c), `mandated refusal — ${
 for (const t of DENY_BY_DEFAULT_REFUSALS) assert(refused(t.c), `refused — ${t.why}`);
 for (const t of OVER_REFUSALS) assert(refused(t.c), `known over-refusal — ${t.why}`);
 for (const t of SIBLING_REFUSALS) assert(refused(t.c), `known over-refusal — ${t.why}`);
+for (const t of SPELLING_REFUSALS) assert(refused(t.c), `spelling refusal — ${t.why}`);
 
 // The repo's own develop gate is allowed verbatim.
 for (const arm of verifyCmdArms())
   assert(!refused(arm), `.pi/verify-cmd arm allowed — ${arm.slice(0, 60)}`);
 
 // ── the edit tools ────────────────────────────────────────────────────────────
-
 const storeFile = `/repo/.git/${DATA}`;
 /** A sibling of a protected name: any dotted suffix reaches the store's bytes. */
 const siblingEdits: Array<[string, string]> = [
@@ -423,11 +425,11 @@ assert(
     editsFindingsFile("write", { path: "/repo/src/review-acceptance-notes.md" }) !== undefined,
   "a word merely STARTING with a protected stem is refused as a sibling",
 );
-// The throwing `path` getter and the trailing/`..` edit-path spellings are asserted in the
-// arms-direct suite (#1125 item 4).
+// The throwing `path` getter, the trailing/`..` spellings, the CASE spellings and the
+// guard module's own editability are asked of the edit path DIRECTLY in the arms-direct
+// suite (#1125), where no guard step sits above them.
 
 // ── the hook: one base reason, plus at most the two remedy sentences ────────────
-
 const handlers: Record<string, (e: unknown, c: unknown) => Promise<unknown>> = {};
 registerReviewAcceptGuard({
   on: (ev: string, fn: (e: unknown, c: unknown) => Promise<unknown>) => {

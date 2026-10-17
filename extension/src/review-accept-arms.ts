@@ -224,13 +224,19 @@ export function armBuild(w: string[]): boolean {
  * and the message itself QUOTED: `commit "-m" "m <store>"` excuses only the word after
  * the flag the arm actually spells, so a quoted `-m` is a pathspec and the prose excuse
  * never opens. A protected word standing outside the real message is a path operand.
- * No `-F/--file` may name a file.
+ * No `-F/--file` may name a file, and neither may a template or a cleanup selector: each
+ * one names a PATH the commit reads (`--template=<store>`, `-t <store>`), so the arm
+ * refuses them outright rather than guess which of its arguments is a file.
  */
 export function armCommit(w: string[]): boolean {
   if (unquote(w[0] ?? "") !== "git" || unquote(w[1] ?? "") !== "commit") return false;
   const words = w.map(unquote);
   const rest = w.slice(2);
-  if (hasFlag(rest.map(unquote), "-f", "--file")) return false;
+  // `-t` is `--template` (a file whose contents become the message) and `--cleanup` names
+  // a file too on some spellings; with or without `=value`, an operand of this shape is a
+  // path the commit opens, which no arm vouches for.
+  if (hasFlag(rest.map(unquote), "-f", "--file", "-F", "-t", "--template", "--cleanup"))
+    return false;
   // The same ban every git read arm carries: `-c` sets a config (a hook or an alias the
   // commit then runs) and the repo-location flags move the repository being committed to.
   if (hasFlag(rest.map(unquote), ...WRITE_FLAGS, ...REPO_LOCATION_FLAGS)) return false;
