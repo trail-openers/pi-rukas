@@ -103,30 +103,60 @@ export function latestLensEntry(
  * `[]`, so a torn or malformed file at the deadline read as "no such round" and
  * the scenario threw its own 'recorded no lens entry' instead of the poll's
  * report of an unreadable ledger. A predicate never satisfied by the deadline
- * returns null (the shared poll's contract), never the stale file. */
+ * returns null (the shared poll's contract), never the stale file.
+ *
+ * There is no injected `read` any more: the predicate seam is what decides,
+ * `waitForLedger` is what reads, and a second reader is precisely the
+ * swallowed-parse-error bug the paragraph above describes. A caller that wants
+ * different ROWS passes `rows`; a caller that wanted a different READER was
+ * asking for a second, weaker read. */
 export async function waitForLensRound(
   ledgerFile: string,
   branch: string,
   n: number,
   rows: (entries: LedgerEntry[]) => LedgerEntry[] = (entries) =>
     entries.filter((e) => e.kind === "lens" && e.branch === branch),
-  read: LedgerReader = readLedgerAt,
 ): Promise<LedgerEntry | undefined> {
   // One sleep between ticks, and only when the previous check missed: the
   // passing path reads the ledger once and returns (the shared poll's own idiom).
+  //
+  // #1145 — the sleep is an ASYNC `setTimeout`, and that is load-bearing, not
+  // cosmetic. `waitForLedger`'s own wait is `Atomics.wait` on a
+  // SharedArrayBuffer, which parks the WHOLE thread for its budget: no timer
+  // fires and no I/O callback runs while it waits. The writer this poll is
+  // waiting for is the fire-and-forget ledger write, which is itself a chain of
+  // ASYNC git subprocess calls (`workingTreePatchId` → `identityBase` →
+  // `resolveMainline`). So a long `Atomics.wait` here starves exactly the writer
+  // whose file it is watching for: with a 60 s budget the row appeared only at
+  // t=60 s, immediately after the wait released — the writer could not run while
+  // the poll ran. The pre-#1145 shape (a 200 ms budget, ~500 ms of parked thread
+  // across the whole loop) happened to leave the writer enough gaps to finish,
+  // which is why this suite is green on a fast host and red on a loaded one.
+  //
+  // So: `budgetMs: 0` (one read, never a blocking wait) plus the awaited 20 ms
+  // tick, which yields to the loop so the writer's git children can run. The
+  // bound is explicit and total rather than per-read: ~500 iterations x 20 ms is
+  // ≈ 10 s of wall clock, comfortably above the writer's measured latency and far
+  // below anything the watchdog would notice. It is a BUDGET, not an unbounded
+  // wait — when the predicate is never satisfied the loop ends on its own and
+  // returns null (the shared poll's contract), never the stale file.
   const tick = () => new Promise((r) => setTimeout(r, 20));
   const settled = (entries: LedgerEntry[]): boolean => rows(entries).some((e) => e.round === n);
   const rowOf = (entries: LedgerEntry[]): LedgerEntry | undefined =>
     latestEntry(rows(entries), branch, "lens");
-  if (settled(read(ledgerFile))) return rowOf(read(ledgerFile));
-  for (let i = 0; i < 250; i++) {
-    // The shared poll (#984 — a fixed budget that child-process startup can eat,
-    // which makes the file look "late") does the reading AND the deciding: its
-    // `until` is the round predicate, so a hit costs one read.
-    const entries = waitForLedger(ledgerFile, { budgetMs: 200, until: settled });
+  // The pre-check and every tick read the file directly rather than through
+  // `readLedgerAt`, which swallows a parse error to `[]`: a torn or malformed
+  // file must not read as "no such round" here either.
+  const attempt = (): LedgerEntry[] | null =>
+    waitForLedger(ledgerFile, { budgetMs: 0, until: settled });
+  const first = attempt();
+  const firstRow = first ? rowOf(first) : undefined;
+  if (firstRow?.round === n) return firstRow;
+  for (let i = 0; i < 500; i++) {
+    await tick();
+    const entries = attempt();
     const row = entries ? rowOf(entries) : undefined;
     if (row?.round === n) return row;
-    await tick();
   }
   // Timed out with the predicate never satisfied: null, so the caller's assertion
   // fails on the missing round rather than on whatever older row is on disk.
