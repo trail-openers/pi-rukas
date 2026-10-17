@@ -21,6 +21,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildMemoryBrief } from "./memory-brief.ts";
 import { trace } from "./trace.ts";
+import {
+  type CrashVerdict,
+  type DevelopPassResult,
+  classifyDevelopPass,
+  crashedBranchCompleted,
+} from "./work-develop-crash.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
@@ -66,6 +72,27 @@ export interface DevelopRunState {
    *  the deck option itself is composed inside the closure from the cycle
    *  key + step. */
   deckTagFor: (id: string) => string;
+  /** #1403 — the executor the crash classification reads each worktree with
+   *  (the step's own `verifyExecFn`, so the fan-out and its gates describe the
+   *  same tree). */
+  execFn: NonNullable<DriverContext["verifyExecFn"]>;
+  /** #1403 — resolves the base a workstream's worktree is described against:
+   *  its own entry in `workstreamBaseShas`, else the cycle's global base. The
+   *  ONE base resolution the step has (the classify path calls it at classify
+   *  time, so a dependent classified after its own entry landed is described
+   *  against ITS base, not the global one). */
+  baseFor: (id: string) => string | undefined;
+  /** #1403 — the classify seam. The topological step supplies the one shared
+   *  across both dispatch phases (its own base resolution + executor); a test
+   *  injects a fake tree. Absent → the closure calls `classifyDevelopPass`
+   *  directly with `baseFor` and `execFn`. */
+  classifyPass?: (args: {
+    id: string;
+    cwd: string;
+    base: string | undefined;
+    execFn: NonNullable<DriverContext["verifyExecFn"]>;
+    result: DevelopPassResult;
+  }) => Promise<CrashVerdict>;
   /** Per-branch verdicts accumulated across both phases. */
   verdicts: Array<{ id: string; ok: boolean; reason?: string }>;
   /** Per-branch events (completion, speculative, branch-completed, dispatch-failed). */
@@ -101,6 +128,12 @@ export interface DependentRunState {
   updateState?: (fn: (s: WorkState) => WorkState) => void;
   /** #1016 — waits for every queued state write before a direct write. */
   flushState?: () => Promise<void>;
+  /** #1403 — the executor the dependent phase's classification reads with (the
+   *  same one the independent fan-out uses). */
+  execFn: NonNullable<DriverContext["verifyExecFn"]>;
+  /** #1403 — resolves each workstream's effective base (see
+   *  `DevelopRunState.baseFor`): the shared map plus the global fallback. */
+  baseFor: (id: string) => string | undefined;
   /** #1016 — the one-shot retry reset for a failed dependent. */
   resetFor?: (
     id: string,
@@ -317,7 +350,6 @@ export function makeRunOneWorkstream(
         throw developerSettled.reason;
       }
       const res = developerSettled.value;
-      const ok = res.ok && !res.errorStop;
       const completionEvent = await buildCompletionEvent(
         ctx,
         "develop",
@@ -326,7 +358,27 @@ export function makeRunOneWorkstream(
         res,
       );
       s.branchEvents.push(completionEvent);
-      if (ids.length > 1) {
+      // #1403 — the pass is classified against the WORKTREE, not only against
+      // the child's own claim. Pre-fix this was `res.ok && !res.errorStop`, so
+      // a child whose engine printed `the engine stopped unexpectedly (exit
+      // code 1)` and exited non-zero fell onto the ordinary failure path with
+      // a reason drawn from the completion event's tail — nothing said it had
+      // crashed, and nothing named the work it left uncommitted.
+      const verdict = await (s.classifyPass ?? classifyDevelopPass)({
+        id,
+        cwd,
+        base: s.baseFor(id),
+        execFn: s.execFn,
+        result: res,
+      });
+      const ok = verdict.ok;
+      // A crash gets its own structured branch-completed record whether or not
+      // the fan-out is multi-workstream: the crash is the finding, and for
+      // N=1 (every real cycle measured on this host) suppressing the event by
+      // `ids.length > 1` is what made it invisible to every later reader.
+      if (verdict.crashed) {
+        emitCompleted(crashedBranchCompleted({ id, ms: Date.now() - startedAt, verdict }));
+      } else if (ids.length > 1) {
         emitCompleted({
           kind: "branch-completed",
           step: "develop",
@@ -338,7 +390,7 @@ export function makeRunOneWorkstream(
       }
       // #1016 — a first-pass failure carries its reason into the verdicts.
       const tail = "errorTail" in completionEvent ? completionEvent.errorTail : undefined;
-      const reason = ok ? undefined : (tail ?? "developer did not complete ok");
+      const reason = ok ? undefined : (verdict.reason ?? tail ?? "developer did not complete ok");
       s.verdicts.push(ok ? { id, ok } : { id, ok, reason });
       return ok ? { id, ok } : { id, ok, reason };
     } catch (err) {

@@ -13,6 +13,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { isNulStatusRead, nulStatus } from "./lib/nul-porcelain.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 import fsSync from "node:fs";
@@ -56,7 +58,7 @@ try {
     issue: 1010,
     issueBodyFetcherFn: () => ({ stdout: "smoke cwd test" }),
     verifyExecFn: async (cmd, opts) => {
-      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "M src/app.css\n" };
+      if (isNulStatusRead(commandOf(cmd, opts))) return { stdout: nulStatus(" M src/app.css") };
       if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
       if (cmd.startsWith("git diff")) return { stdout: "+new code\n" };
       if (cmd.includes("run smoke")) {

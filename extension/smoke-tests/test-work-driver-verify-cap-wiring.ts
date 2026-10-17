@@ -23,6 +23,7 @@ import { explainCap } from "../src/work-driver-explain.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import { isNulStatusRead, nulStatus } from "./lib/nul-porcelain.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -97,7 +98,7 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           cmd = commandOf(cmd, stubOpts);
           if (cmd === "git rev-parse HEAD")
             return { stdout: "1111111111111111111111111111111111111111\n" };
-          if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" };
+          if (isNulStatusRead(cmd)) return { stdout: "" };
           if (cmd.includes("rev-parse --verify --end-of-options origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
@@ -158,8 +159,7 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           cmd = commandOf(cmd, stubOpts);
           if (cmd === "git rev-parse HEAD")
             return { stdout: "1111111111111111111111111111111111111111\n" };
-          if (cmd === "git status --porcelain --untracked-files=all")
-            return { stdout: " M src/lib.rs\n" };
+          if (isNulStatusRead(cmd)) return { stdout: nulStatus(" M src/lib.rs") };
           if (cmd.includes("rev-parse --verify --end-of-options origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
@@ -233,8 +233,7 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           cmd = commandOf(cmd, stubOpts);
           if (cmd === "git rev-parse HEAD")
             return { stdout: "1111111111111111111111111111111111111111\n" };
-          if (cmd === "git status --porcelain --untracked-files=all")
-            return { stdout: " M src/lib.rs\n" };
+          if (isNulStatusRead(cmd)) return { stdout: nulStatus(" M src/lib.rs") };
           if (cmd.includes("rev-parse --verify --end-of-options origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
