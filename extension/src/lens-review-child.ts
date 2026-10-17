@@ -348,44 +348,58 @@ export async function runLensChild(opts: {
   // (PI_ENSEMBLE_DEBUG=1) so the operator can see the honor system was
   // simply not exercised.
   //
-  // PR #1530 lens finding (SECURITY, MEDIUM) — SUCCESS was the child's own
-  // word and nothing else, which made the whole marker an honor system with
-  // a merge gate on the far side. Since #995 the prompt defines SUCCESS as a
-  // `read` of `skillPath` that returned content, so the claim is checkable
-  // against the child's recorded tool calls: a SUCCESS with no matching read
-  // is downgraded to FAILED and takes the existing FAILED path (blocked,
-  // findings kept, named parseError). `unproven` is the refutation;
-  // `unverifiable` (the child recorded no tool calls at all — a killed
-  // child's replay carries none, see `observedToolCalls`) is NOT read as one:
-  // the pre-spawn stat stays the evidence and absence's policy applies.
+  // PR #1530 / #995 added a cross-check of a claimed SUCCESS against the
+  // child's recorded tool calls (`skillLoadProof`). As of round 3 of that
+  // review it runs in SHADOW: the proof is computed and a disagreement is
+  // traced, but it does NOT change the outcome. The child's own marker is the
+  // only thing that blocks, exactly as before the proof existed.
+  //
+  // Why shadow rather than a block. A false `unproven` blocks every lens
+  // review on every PR, and two false-refutation classes were still open:
+  //   - `observedToolCalls` is only consulted when it EXCEEDS `toolUses.length`,
+  //     so an under-recovered-but-non-empty replay (live 5, recovered 2, the
+  //     read among the 3 that were dropped) refutes a lens that read its skill;
+  //   - the directory resolution (`realpathOr`) can mismatch when the skills
+  //     dir is a symlink tree that resolves differently at check time than the
+  //     child saw at read time.
+  // Both are judgement calls about another module's records, and the repo rule
+  // for a new judgement seam is shadow first, enforce once the log earns it.
+  // FOLLOW-UP: promote `unproven` to a block once the shadow log shows no
+  // false refutations — the line below is the log, and the enforcement is one
+  // `blocked: true` branch on `case "unproven"` here.
   const skillLoadStatus = readEnumMarker(result.text ?? "", "Skill Load Status", [
     "SUCCESS",
     "FAILED",
   ]);
-  let skillLoadDowngrade: string | undefined;
   if (skillLoadStatus === "SUCCESS") {
-    // `observedToolCalls` is passed so an under-recovered replay abstains
-    // rather than refutes: the child made calls the replay did not carry, so
-    // the absence of a read from `toolUses` says nothing about whether it read
-    // the skill (lens-skill-load-proof.ts).
+    // `observedToolCalls` is passed so a replay that is EMPTY on the array but
+    // non-empty on the live count abstains outright (`unverifiable`): the child
+    // made calls the replay did not carry, so the absence of a read from
+    // `toolUses` says nothing about whether it read the skill.
     const proof = skillLoadProof(result.toolUses, skillPath, result.observedToolCalls);
-    if (proof === "unproven") {
-      // traceWarn, not trace: this line changes an OUTCOME (a lens goes from
-      // reviewed to blocked) and it is a judgement this module makes about
-      // another module's tool-call records, so the operator has to be able to
-      // see it — and the tool NAMES and PATHS it saw — without PI_ENSEMBLE_DEBUG
-      // on and without re-running the review to learn what was matched against.
-      traceWarn(
-        `skill load SUCCESS not corroborated (${lens.skill}): no read of ${skillPath} among ${describeToolCalls(result.toolUses)} — treated as FAILED`,
-      );
-      skillLoadDowngrade = `skill load reported SUCCESS by the child (${lens.skill}) but no read of ${skillPath} appears in its tool calls — treated as FAILED`;
-    } else if (proof === "unverifiable") {
-      trace(
-        `skill load SUCCESS unverifiable (${lens.skill}): the child recorded no usable tool calls; treated as absent, not refuted`,
-      );
+    switch (proof) {
+      case "proven":
+        // The marker and the records agree; nothing to say.
+        break;
+      case "unproven":
+        // SHADOW: warn, do not block. traceWarn (not trace) so the line shows
+        // without PI_ENSEMBLE_DEBUG and the operator can see — in a normal run
+        // log — the lens, the verdict it claimed, and the tool names/paths the
+        // proof looked at. That is the evidence the promotion decision needs.
+        traceWarn(
+          `skill load SHADOW: SUCCESS not corroborated (${lens.skill}): no read of ${skillPath} among ${describeToolCalls(result.toolUses)} — NOT blocking (shadow mode; the child's own marker decides)`,
+        );
+        break;
+      case "unverifiable":
+        trace(
+          `skill load SUCCESS unverifiable (${lens.skill}): the child recorded no usable tool calls; treated as absent, not refuted`,
+        );
+        break;
     }
   }
-  if (skillLoadStatus === "FAILED" || skillLoadDowngrade) {
+  // The child's own marker is the gate. A `FAILED` self-report blocks with its
+  // findings kept — unchanged from before #995's proof.
+  if (skillLoadStatus === "FAILED") {
     return {
       lens: lens.name,
       ok: result.ok,
@@ -397,7 +411,7 @@ export async function runLensChild(opts: {
       summary: result.text?.trim() || undefined,
       model: result.model,
       transcriptPath: result.transcriptPath,
-      parseError: skillLoadDowngrade ?? `skill load reported FAILED by the child (${lens.skill})`,
+      parseError: `skill load reported FAILED by the child (${lens.skill})`,
       usage: result.usage,
     };
   }
@@ -422,10 +436,13 @@ export async function runLensChild(opts: {
 }
 
 /** A compact, bounded summary of what the proof actually looked at, for the
- * downgrade warning: the tool names it saw and the path-shaped arguments those
+ * SHADOW warning: the tool names it saw and the path-shaped arguments those
  * calls carried. Nothing is executed and no argument content beyond paths is
  * echoed; the list is capped so a chatty child cannot make the warning the
- * longest line in the run. */
+ * longest line in the run. Both the `read` and `file_path` spellings are
+ * collected — this line reports what the child NAMED, so the operator can see
+ * why the proof disagreed with it, including when the model used a spelling
+ * the tool would have rejected. */
 function describeToolCalls(toolUses: readonly unknown[]): string {
   const names: string[] = [];
   const paths: string[] = [];
@@ -438,9 +455,11 @@ function describeToolCalls(toolUses: readonly unknown[]): string {
       call.arguments && typeof call.arguments === "object"
         ? (call.arguments as Record<string, unknown>)
         : {};
-    const v = args.path;
-    if (typeof v === "string" && v.trim() && paths.length < 8 && !paths.includes(v)) {
-      paths.push(v);
+    for (const key of ["path", "file_path"]) {
+      const v = args[key];
+      if (typeof v === "string" && v.trim() && paths.length < 8 && !paths.includes(v)) {
+        paths.push(v);
+      }
     }
   }
   const seen = names.length > 0 ? names.join(", ") : "(none)";

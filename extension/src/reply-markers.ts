@@ -180,7 +180,7 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
     values: ["SUCCESS", "FAILED"],
     consumer: "lens-review-child.ts",
     onAbsence:
-      "not blocked — traced; the pre-spawn statSync is the executed evidence the skill exists. A parsed SUCCESS is verified against the child's recorded tool calls (`skillLoadProof`, lens-skill-load-proof.ts): no matching read of the skill path → downgraded to FAILED (blocked, findings kept); no recorded tool calls at all → traced and treated as absent, never refuted",
+      "not blocked — traced; the pre-spawn statSync is the executed evidence the skill exists. The marker is the child's SELF-REPORT and it alone decides the outcome: a parsed FAILED blocks (findings kept), anything else does not. The driver additionally cross-checks a claimed SUCCESS against the child's recorded tool calls (`skillLoadProof`, lens-skill-load-proof.ts) in SHADOW — a refutation (`unproven`) emits a traceWarn naming the lens, the verdict and the tool names/paths seen, and blocks nothing; no recorded tool calls at all reads as absent, never refuted. FOLLOW-UP: promote the cross-check to enforce once the shadow log shows no false refutations (see docs/configuration.md → Skill Load Status marker)",
   },
   {
     // Not a child reply: the gap gate writes this section into a filed issue body,
