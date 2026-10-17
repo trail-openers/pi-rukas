@@ -209,4 +209,11 @@ export type WorkCapLiteral =
   // different — the child died, and the driver can NAME the paths it left
   // behind — so the cycle parks as a handoff with the leftover list rather
   // than advancing on a tree whose state it does not know.
-  | "develop-child-crash";
+  | "develop-child-crash"
+  // #1396 (round 3) — the branch step's same-issue residue pass could not read
+  // `git worktree list` (the listing is bounded since #1396, so a hang is a
+  // rejection). The pass cannot tell whether a same-issue tree holds work, and
+  // "could not look" must not degrade to "nothing to clean" — the branch step
+  // parks with the git error as evidence rather than removing nothing and
+  // reporting a clean pass.
+  | "worktree-listing-unreadable";

@@ -17,6 +17,7 @@ import { deriveCommitPrTitle } from "./work-driver-commit-title.ts";
  */
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { draftPrEnabled } from "./work-driver-draft-pr.ts";
+import { type IntegrateBackupError, integrateBackupNote } from "./work-driver-integrate-cycle.ts";
 import { ensureIntegrateWorktree } from "./work-driver-integrate-worktree.ts";
 import { integrateWorktreePath } from "./work-driver-integrate-worktree.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
@@ -132,7 +133,10 @@ export async function ensureIntegrateWorktreeOrHalt(
   // #1173 — why integrate() failed; the halt otherwise records only the
   // downstream creation failure, and the operator cannot see the first cause.
   integrateReason?: string,
-): Promise<{ path: string; state: WorkState; backupRef?: string } | { halted: WorkState }> {
+): Promise<
+  | { path: string; state: WorkState; backupRef?: string; supersededSha?: string }
+  | { halted: WorkState }
+> {
   const ps = state.pipelineState;
   if (!ps.baseSha) {
     return { path: integrateWorktreePath(ctx.repoRoot, ctx.issue), state };
@@ -155,9 +159,19 @@ export async function ensureIntegrateWorktreeOrHalt(
       ...state,
       pipelineState: { ...state.pipelineState, integrateWorktree: created.path },
     };
-    return { path: created.path, state: next, backupRef: created.backupRef };
+    return {
+      path: created.path,
+      state: next,
+      backupRef: created.backupRef,
+      supersededSha: created.supersededSha,
+    };
   } catch (rawErr) {
-    const err = rawErr as Error & { stderr?: string };
+    // #1396 (six-lens round 3) — one read of the ONE error type
+    // (`IntegrateBackupError`) the creation path writes. The previous shape
+    // cast `rawErr` twice — once for `backupRef`, once for `supersededSha` —
+    // with `unknown` field types, so a field renamed on the write side became
+    // silently `undefined` here and the operator's halt lost the pointer.
+    const err = rawErr as IntegrateBackupError;
     const detail = (err.stderr ?? err.message ?? "").toString();
     trace(
       `work-driver: integrate worktree creation failed — halting (no unpinned ops dispatch): ${detail.slice(0, 200)}`,
@@ -165,15 +179,18 @@ export async function ensureIntegrateWorktreeOrHalt(
     const capBody = `integrate worktree could not be created: ${detail.slice(0, 200)}`;
     // #1173 — the ref travels on the error (ensureIntegrateWorktree attaches
     // it), so the handoff names it without parsing the message.
-    const keptRef = (rawErr as { backupRef?: unknown }).backupRef;
-    const backupRef = typeof keptRef === "string" ? keptRef : undefined;
+    const backupRef = err.backupRef;
+    // #1396 (six-lens) — the per-issue ref is replaced in place, so when this
+    // re-entry overwrote a different sha the operator must be told WHICH one:
+    // it is no longer named by any ref, only by a fsck sweep.
+    const supersededNote = integrateBackupNote(backupRef, err.supersededSha);
     const halted: WorkState = appendEvent(
       appendEvent(state, {
         kind: "plumb-report",
         at: Date.now(),
         step: "commit-pr",
         role: "driver",
-        body: `The driver-owned integrate worktree could not be created; the commit-pr ops fallback is pinned to it as the ONLY permitted working tree, so no ops dispatch is attempted.${integrateReason ? ` The mechanized integrate failed first: ${integrateReason.slice(0, 400)}` : ""}${backupRef ? ` The stale integrate tree's unpushed commits were kept on ${backupRef}; they are NOT re-applied automatically (the next commit-pr regenerates the consolidation from the patches), so that ref is for manual recovery.` : ""} Creation error: ${detail.slice(0, 400)}`,
+        body: `The driver-owned integrate worktree could not be created; the commit-pr ops fallback is pinned to it as the ONLY permitted working tree, so no ops dispatch is attempted.${integrateReason ? ` The mechanized integrate failed first: ${integrateReason.slice(0, 400)}` : ""}${supersededNote} Creation error: ${detail.slice(0, 400)}`,
         fallbackCause: "other",
       }),
       {

@@ -15,7 +15,7 @@
 
 import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
-import type { ExecFn } from "./worktree.ts";
+import { type ExecFn, WORKTREE_LIST_TIMEOUT_MS } from "./worktree.ts";
 
 /**
  * Whether the MAIN working tree (repoRoot) currently holds the branch.
@@ -93,8 +93,16 @@ export async function repoRootHoldsBranch(repoRoot: string, branchName: string):
  * any other holder halts the cycle. Sibling worktree HEADs are NOT
  * compared — concurrent cycles legitimately commit in their own worktrees.
  *
- * Unreadable list → empty array (the safe direction: nothing to halt on;
- * the PR-verification gates still run the executed-evidence checks).
+ * Unreadable list → `{ ok: false, error }` (the audit halts rather than reading
+ * "no holders"; the PR-verification gates still run the executed-evidence
+ * checks).
+ *
+ * #1396 (round 3) — the listing carries `WORKTREE_LIST_TIMEOUT_MS`, the bound
+ * every other `git worktree list` in the harness runs with (see the timeout
+ * policy in `worktree.ts`'s header). Without it, a listing that hung here held
+ * the caller — the post-dispatch audit, in the integration path — for as long
+ * as git took, and the `{ ok: false }` branch was only reachable via an error
+ * git chose to report.
  */
 export type BranchHoldersResult = { ok: true; holders: string[] } | { ok: false; error: string };
 
@@ -108,6 +116,7 @@ export async function branchHolders(
     ({ stdout: list } = await execFn("git worktree list --porcelain", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
+      timeout: WORKTREE_LIST_TIMEOUT_MS,
     }));
   } catch (err) {
     return { ok: false, error: (err as Error).message ?? String(err) };

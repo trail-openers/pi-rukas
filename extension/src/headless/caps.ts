@@ -74,6 +74,7 @@ export const FIXED_CAPS = [
   "step-back-revise-spec",
   "token-budget",
   "wall-clock",
+  "worktree-listing-unreadable",
 ] as const satisfies readonly FixedCap[];
 
 // Compile-time exhaustiveness (the #986 pattern): a fixed cap in the union
