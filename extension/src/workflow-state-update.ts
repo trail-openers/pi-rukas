@@ -44,6 +44,23 @@ export function initialState(issue: number, now: number = Date.now()): WorkState
  * after batching their event(s) + pipelineState mutation; persisting
  * between events would expose intermediate states to a concurrent reader.
  */
+/**
+ * #1391 — drop the step retry's tree account.
+ *
+ * The account describes ONE retry: what the attempt that just failed left in the
+ * tree the fresh child was dispatched into, and where its copy went. Once the
+ * retried step has run there is nothing left for it to describe, and a later
+ * retry of the same step must not be rendered with this attempt's file count.
+ * No-op when nothing was recorded.
+ */
+export function clearRetryTreeAccount(state: WorkState): WorkState {
+  if (state.pipelineState.retryTreeAccounting === undefined) return state;
+  return {
+    ...state,
+    pipelineState: { ...state.pipelineState, retryTreeAccounting: undefined },
+  };
+}
+
 export function appendEvent(state: WorkState, ...events: WorkEvent[]): WorkState {
   return {
     ...state,
