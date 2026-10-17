@@ -16,8 +16,9 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { epicSubIssues } from "./plan-angles.ts";
-import { applyOperatorConflicts, droppedSection } from "./plan-draft-conflicts.ts";
+import { applyOperatorConflicts } from "./plan-draft-conflicts.ts";
 import { applyOperatorDedupe } from "./plan-draft-dedupe.ts";
+import { droppedSection } from "./plan-dropped-section.ts";
 import {
   type MechanicalInventory,
   mechanicalInventory,

@@ -39,6 +39,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { runPlanPipeline } from "./plan-driver.ts";
+import { DROPPED_ARTIFACT } from "./plan-dropped-budget.ts";
 import { truncateForDisclosure } from "./plan-gap-disclosure.ts";
 import {
   FORBIDDEN_LINE_CHARS,
@@ -49,6 +50,7 @@ import {
   validateProvenance,
 } from "./plan-provenance.ts";
 import type { PlanDriverInput, PlanResult } from "./plan-types.ts";
+import { FORGE_BODY_MAX } from "./plan-validate.ts";
 import { trace } from "./trace.ts";
 import { piSessionHost } from "./work-driver-host.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
@@ -366,7 +368,7 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
     ? `\n\n=== BASE FALLBACK ===\nInvestigators read the local checkout, not origin/<default>: ${r.baseFallback}. The investigation cache was not used for this run.`
     : "";
   const compactedNote = r.compacted
-    ? "\n\nCOMPACTED: the body was deterministically compacted to fit the forge's 65,536-char limit (a disclosure line inside the body says how; full findings live in the run transcripts)."
+    ? `\n\nCOMPACTED: the body was deterministically compacted to fit the forge's ${FORGE_BODY_MAX}-char limit (a disclosure line inside the body says how; full findings live in ${DROPPED_ARTIFACT}).`
     : "";
   const timingsLine =
     r.timings && r.timings.length > 0
