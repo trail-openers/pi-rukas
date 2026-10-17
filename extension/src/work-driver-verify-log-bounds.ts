@@ -10,7 +10,10 @@
  * importing the other's executor plumbing.
  */
 
-// #841 — bound on a persisted run log.
+// #841 — bound on a persisted run log. The raw stream can be large (the
+// 8 MiB maxBuffer), and the log is diagnostic, not load-bearing: past the
+// cap the operator still has the bounded tail in the evidence, so truncate
+// with a marker instead of writing multi-MB scratch files.
 export const VERIFY_LOG_MAX_BYTES = 2 * 1024 * 1024;
 
 /** #841 — apply the size cap to a raw run stream before it is persisted. */

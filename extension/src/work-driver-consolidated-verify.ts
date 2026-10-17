@@ -368,12 +368,15 @@ export async function runConsolidatedVerifyUnlocked(
       // #841 — the shared rawOutputClause helper (single home for the
       // sentence so the develop gate and the handoff cannot drift).
       const logClause = rawOutputClause(finalLogPath);
+      // #1427 — the hang report is written here, once, for the run that ended
+      // the run: the tree was walked at its kill (above), and a report written
+      // at the catch would describe the first run after the re-run superseded
+      // it. Written only when the run that decided this outcome was killed.
       // #1427 fix round — written ONCE here, for the run that ENDED the run
       // (the flake re-run overwrites `timedOut` / `rawFailure` above), from the
       // tree that run's catch captured: one walk feeds both this report and the
       // failure-string clause, so the two cannot describe different snapshots
-      // for one kill. A report written at the catch would describe the FIRST
-      // run after the re-run superseded it, which is why it is not there.
+      // for one kill.
       if (timedOut) {
         hang = writeGateHangReport({
           scratchDir,
