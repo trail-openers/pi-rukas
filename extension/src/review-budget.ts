@@ -45,7 +45,7 @@
  * never changes the number the widget and `/work-status` print.
  */
 
-import { trace } from "./trace.ts";
+import { traceWarn } from "./trace.ts";
 
 /** Default wall-clock cap for the fix loop (lens-review → developer-fix →
  *  adversarial → re-review): 90 minutes, the value every surface showed before
@@ -89,15 +89,34 @@ export const MIN_REVIEW_BUDGET_MS = 10 * 60 * 1000;
  * or `dflt`. Shared by both knobs so they cannot drift in validation.
  *
  * Non-integer, zero, negative, blank, non-numeric and below-floor values all
- * return `dflt` and trace the rejected raw value.
+ * return `dflt`.
+ *
+ * The rejection is reported with `traceWarn`, NOT `trace`: `trace` is gated on
+ * `PI_ENSEMBLE_DEBUG=1`, and a rejected value silently substitutes the default
+ * — an operator who sets `PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS=30m` gets a
+ * 90-minute ceiling and no output at all at default log level, so the knob
+ * reads as broken with no diagnostic. A fault that changes an outcome is
+ * exactly what `traceWarn` exists for.
+ *
+ * The raw value is bounded before interpolation: it is operator input going to
+ * stderr (mirrored into the TUI), so an ANSI control sequence in it could alter
+ * terminal rendering. Length-bounded, truncated with an ellipsis.
  */
+const MAX_REJECTED_VALUE_CHARS = 80;
+
+function boundRaw(value: string): string {
+  return value.length > MAX_REJECTED_VALUE_CHARS
+    ? `${value.slice(0, MAX_REJECTED_VALUE_CHARS)}…`
+    : value;
+}
+
 function resolveMs(name: string, raw: string | undefined, dflt: number): number {
   const trimmed = raw?.trim();
   if (!trimmed) return dflt;
   const n = Number(trimmed);
   if (Number.isInteger(n) && n >= MIN_REVIEW_BUDGET_MS) return n;
-  trace(
-    `review-budget: ignoring ${name}=${trimmed} — not an integer of at least ${MIN_REVIEW_BUDGET_MS}ms; using the ${dflt / 60_000}-minute default`,
+  traceWarn(
+    `review-budget: ignoring ${name}=${boundRaw(trimmed)} — not an integer of at least ${MIN_REVIEW_BUDGET_MS}ms; using the ${dflt / 60_000}-minute default`,
   );
   return dflt;
 }
