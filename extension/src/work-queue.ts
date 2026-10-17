@@ -206,7 +206,13 @@ export function humanActionFor(reason: string, primary: number): string {
   }
   // #1421 — checked BEFORE the `verify-env:` rule below: a build-residue park
   // shares that cap family with the fork failure, and the advice differs.
-  if (/\[build-residue\]/.test(reason) || /build-residue/.test(reason))
+  // Anchored to the `:build-residue` suffix `parkReason` writes — the ONLY
+  // carrier this match reads. A bare `[build-residue]` / substring match read
+  // the same advice out of a failure string that merely MENTIONED the tag
+  // (an operator path named `build/[build-residue].log`, a quoted line from
+  // the log), which would send someone to the build for a park the gate
+  // raised on the code.
+  if (/:build-residue\b/.test(reason))
     return `#${primary}'s cycle was declined by git-ignored build output in the repo root — keep the project's build out of the checkout (CARGO_TARGET_DIR or a .gitignore entry), clear what is there, then re-run \`/work ${primary} --restart\` (the diff was never judged)`;
   if (reason.includes(HOST_EXHAUSTION_SUFFIX) || /verify-env:/.test(reason)) {
     return `free processes on the host (it could not fork — the gate never ran on #${primary}), then re-run \`/work ${primary} --restart\``;

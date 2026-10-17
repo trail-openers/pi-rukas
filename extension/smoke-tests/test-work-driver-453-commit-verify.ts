@@ -32,6 +32,7 @@ import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { fetchDiff } from "../src/work-driver-diff.ts";
 import { verifyDevelopOutcome } from "../src/work-driver-verify-develop.ts";
+import type { VerifyDevelopOutcomeOptions } from "../src/work-driver-verify-develop-options.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
 import { initialState } from "../src/workflow-state.ts";
@@ -98,6 +99,10 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
 
 // --------------------- #453: commit-required verify gate (unit tests) ------
 
+// The out-parameters are now one options object; these cases drive the gates
+// that need none of them.
+const NO_OPTIONS: VerifyDevelopOutcomeOptions = {};
+
 // Minimal DriverContext for verifyDevelopOutcome: no verify cmd, no smoke cmd.
 // verifyCmdFor uses the repoRoot to look for .pi/verify-cmd etc.; an empty
 // temp dir yields `undefined` (diff-evidence-only mode).
@@ -131,7 +136,7 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
       };
       const failures: string[] = [];
       const notes: string[] = [];
-      await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes);
+      await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes, NO_OPTIONS);
       const uncommittedFailure = failures.find((f) => /uncommitted changes but no commit/.test(f));
       assert(
         Boolean(uncommittedFailure),
@@ -175,7 +180,7 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
       };
       const failures: string[] = [];
       const notes: string[] = [];
-      await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes);
+      await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes, NO_OPTIONS);
       assert(
         failures.length === 0,
         `#453 verify: committed worktree with valid baseSha passes diff gate (failures: ${failures.join("; ")})`,
@@ -200,7 +205,7 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
       };
       const failures: string[] = [];
       const notes: string[] = [];
-      await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes);
+      await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes, NO_OPTIONS);
       assert(
         failures.length === 0,
         "#453 verify: invalid baseSha (old state file) — uncommitted work still passes (backwards compat)",
@@ -333,7 +338,7 @@ async function mainFalsilyGreen(): Promise<void> {
       };
       const failures: string[] = [];
       const notes: string[] = [];
-      await verifyDevelopOutcome(mkCtx(opts.execFn), s, opts.execFn, failures, notes);
+      await verifyDevelopOutcome(mkCtx(opts.execFn), s, opts.execFn, failures, notes, NO_OPTIONS);
       return { failures, notes };
     };
 

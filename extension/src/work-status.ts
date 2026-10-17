@@ -232,6 +232,21 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
       `  target:  ${te.targetType ? `${te.targetType} #${te.targetNumber ?? "?"}` : "?"} (explicit, #798)`,
       `  comment: ${te.commentUrl ?? "WARNING: NOT POSTED — see recovery #4 below"}`,
       labelLine,
+      // #1421 fix round — the jsdoc for `degradedReason` claimed the renderers
+      // print the driver's decline reason; nothing read the field, so an
+      // operator running `/work-status` on a cycle whose consolidation was
+      // refused by cargo's `target/` saw only "handoff-emitted" and had to
+      // open the state file to learn the work was on a worktree. Now the
+      // reader matches the claim. `makeHandoffEmittedEvent` OMITS
+      // `consolidated` on a declined consolidation (it is only set on the
+      // success path), so absence plus a reason is the declined shape.
+      ...(te.degradedReason
+        ? [
+            `  consolid: ${te.consolidated ? "partly —" : "declined —"} ${te.degradedReason.slice(0, 200)}`,
+          ]
+        : te.consolidated
+          ? [`  consolid: onto ${te.consolidatedBranch ?? "?"}`]
+          : []),
     );
   }
 

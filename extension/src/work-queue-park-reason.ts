@@ -1,4 +1,3 @@
-import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 /**
  * Why a queued group parked, read from its state file. Moved out of
  * work-queue.ts (#1093) to make room for the once-per-invocation start-ref
@@ -79,7 +78,13 @@ export function parkReason(state: WorkState | undefined): { reason: string; fail
       // #1421 — same treatment for a gate declined by build output: the
       // reason string is what `humanActionFor` matches on, and without the
       // suffix it gets the "inspect the diff" advice.
-      state.pipelineState.verifyEvidence?.failures.some(isBuildResidueFailure)
+      //
+      // #1421 fix round — read the gate's STRUCTURED decline, not a substring
+      // of the failure strings. The label lives in prose whose path text is
+      // not ours (a residue path, a quoted log line), and a park that merely
+      // MENTIONED it used to earn the build advice when the gate had in fact
+      // judged the code. The boolean is the consolidated gate's own decision.
+      state.pipelineState.verifyEvidence?.buildResidueOnly === true
     ) {
       suffix = `:${BUILD_RESIDUE_SUFFIX}`;
     }

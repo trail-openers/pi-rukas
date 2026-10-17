@@ -43,6 +43,7 @@ import {
 import { dirtyRootExemptReadNotice } from "./work-driver-dirty-root-exempt.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import { readDirtyRootExemptBaseline } from "./work-driver-dirty-root-exempt.ts";
+import { IGNORE_PROBE_TIMEOUT_MS } from "./work-driver-ignore-probe.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 import { handleSameIssueLeftovers } from "./worktree-leftover.ts";
@@ -91,9 +92,17 @@ export async function readRepoRootDirt(
   repoRoot: string,
   exempt?: readonly string[],
 ): Promise<string[] | undefined> {
+  // #1421 round 3 — BOUNDED, same reasoning as the consolidated verify's
+  // preflight: an unbounded read of a hung git holds the integration lock (the
+  // branch step runs under it) and every other worktree's consolidation behind
+  // it, and reports nothing. The kill rejects with no exit code, which
+  // `runBranchResiduePass` already degrades non-fatally — the post-develop
+  // gate still fires — so the bound converts a hang into that existing
+  // degradation instead of an endless block.
   const { stdout } = await execFn("git status --porcelain -uall", {
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
+    timeout: IGNORE_PROBE_TIMEOUT_MS,
   });
   const dirt = stdout.split("\n");
   // #1421 — untracked paths git itself declares ignored are build output, not
@@ -102,13 +111,17 @@ export async function readRepoRootDirt(
   // the consolidated verify's identical refusal 50 minutes later) parked
   // finished work. The ignored read failing classifies everything as dirt —
   // the pre-#1421 shape — so this narrowing can never weaken the gate.
-  const ignored = await readIgnoredPaths(execFn, repoRoot);
-  const classified = classifyRootDirt(
-    dirt,
-    ignored,
-    exempt,
-    await probeIgnored(execFn, repoRoot, dirt),
-  );
+  //
+  // #1421 fix round (lens) — the two git reads run CONCURRENTLY. Here (unlike
+  // the consolidated verify's preflight) the probe's candidates are exactly
+  // the status lines, so neither read waits on the other; each still fails
+  // closed on its own, and `classifyRootDirt` refuses on either being
+  // `undefined`.
+  const [ignored, probed] = await Promise.all([
+    readIgnoredPaths(execFn, repoRoot),
+    probeIgnored(execFn, repoRoot, dirt),
+  ]);
+  const classified = classifyRootDirt(dirt, ignored, exempt, probed);
   return classified.dirt.length > 0 ? classified.dirt : undefined;
 }
 
