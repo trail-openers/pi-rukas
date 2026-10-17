@@ -79,6 +79,11 @@ export const CAP_HIT_FIXED_LITERALS = [
   // terminalized as a handoff (not `step-failed:` — that prefix would read
   // as a mid-flight crash); the paths are preserved, never mutated.
   "repo-root-residue",
+  // #1396 round 3 — the residue pass could not read the worktree listing (a
+  // bounded `git worktree list` that hung). A deliberate park terminalized as
+  // a handoff: the alternative is the pass reporting "nothing to clean" over a
+  // dirty same-issue tree it never saw.
+  "worktree-listing-unreadable",
   "intent-park",
   "awaiting-human-merge",
   "lens-diff-unreadable",

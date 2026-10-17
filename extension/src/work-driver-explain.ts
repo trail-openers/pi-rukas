@@ -161,6 +161,10 @@ export function explainCap(
       const paths = hit?.evidence ?? "(no detail recorded)";
       return `the branch step found uncommitted work at the repo root BEFORE any development dispatch: ${paths}. This is residue from a previous cycle or the operator's own in-progress work — NOT a defect in this cycle's diff. The driver preserved it (nothing was deleted or stashed) and halted before paying for a develop dispatch that would only fail at the verification gate roughly 50 minutes later. Inspect the paths (\`git status\` at the repo root), clear them (commit, move, or add to .gitignore), and re-run the cycle.`;
     }
+    case "worktree-listing-unreadable": {
+      const hit = lastCapHit(state, "worktree-listing-unreadable");
+      return `the branch step's same-issue residue pass could not read \`git worktree list\` (${(hit?.evidence ?? "no detail recorded").slice(0, 300)}). The listing is bounded, so this is a git that hung or failed — not an empty list. The driver halted rather than report "nothing to clean" while a same-issue worktree it could not see might hold uncommitted work. Clear whatever is blocking git (a stale \`.git/worktrees\` lock, an I/O wait), then re-run the cycle.`;
+    }
     case "cross-group-conflict": {
       const hit = lastCapHit(state, "cross-group-conflict");
       const ev = hit?.evidence ?? "";

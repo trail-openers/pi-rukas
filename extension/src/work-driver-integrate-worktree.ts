@@ -18,6 +18,10 @@
  *    HEAD is recorded (its unpushed commits kept on a backup ref, #1173),
  *    it is force-removed, and a fresh one is created.
  *    The #475/#545 create guards (runCreateGuards) still run on top.
+ *    #1396: the registration check is a STRICT `git worktree list` — an
+ *    unreadable listing throws `WorktreeScanError` and removes nothing,
+ *    rather than reading the tree as unregistered and skipping the
+ *    commit-keeping path.
  *  - If repoRoot itself holds the branch, it is detached first (under the
  *    caller's integration lock) when clean, and a dirty repoRoot halts —
  *    the driver never moves operator residue.
@@ -33,7 +37,9 @@ import { repoRootHoldsBranch } from "./work-driver-branch-holder.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import {
+  type IntegrateBackupError,
   backupIntegrateHead,
+  isCommitSha,
   isIntegrateTreeInCycle,
   isRegisteredWorktree,
   keepOrRefuseStaleIntegrateTree,
@@ -96,6 +102,13 @@ export interface IntegrateWorktreeCreation {
   staleHead?: string;
   /** #1173 — the ref the stale tree's unpushed commits were kept on, if any. */
   backupRef?: string;
+  /**
+   * #1396 (six-lens) — the sha the per-issue backup ref held BEFORE this call
+   * replaced it. Present only on a re-entry whose ref already pointed at a
+   * different commit: the ref is one per issue, so that older kept HEAD has
+   * just lost its only named reference and the handoff must say so.
+   */
+  supersededSha?: string;
   /** True when the driver detached repoRoot off the branch to free it. */
   repoRootDetached: boolean;
 }
@@ -122,17 +135,20 @@ export async function ensureIntegrateWorktree(
 ): Promise<IntegrateWorktreeCreation> {
   // #1173 — a failure AFTER the stale tree's commits were kept must still name
   // the ref, or the operator's halt has no pointer to the recoverable work.
-  const kept: { ref?: string } = {};
+  // #1396 (six-lens round 3) — `kept` is the shared error shape itself, so the
+  // fields written here are the fields the halt report reads; no second cast.
+  const kept: IntegrateBackupError = new Error("integrate backup evidence");
   try {
     return await createIntegrateWorktree(execFn, opts, stateFile, kept);
   } catch (err) {
-    if (kept.ref === undefined || !(err instanceof Error)) throw err;
+    if (kept.backupRef === undefined || !(err instanceof Error)) throw err;
     // Annotate in place: the error keeps its class (DirtyWorktreeError stays one).
     // The ref also travels as a structured field, so the halt report can name
     // it without parsing the message (which the halt truncates).
-    const note = ` (the stale integrate tree's unpushed commits were kept on ${kept.ref})`;
-    const e = err as Error & { stderr?: unknown; backupRef?: string };
-    e.backupRef = kept.ref;
+    const note = ` (the stale integrate tree's unpushed commits were kept on ${kept.backupRef})`;
+    const e = err as IntegrateBackupError;
+    e.backupRef = kept.backupRef;
+    if (kept.supersededSha !== undefined) e.supersededSha = kept.supersededSha;
     e.message += note;
     if (typeof e.stderr === "string" && e.stderr) e.stderr += note;
     throw err;
@@ -155,7 +171,7 @@ async function createIntegrateWorktree(
     dirtyRootExempt?: readonly string[];
   },
   stateFile: string | undefined,
-  kept: { ref?: string },
+  kept: IntegrateBackupError,
 ): Promise<IntegrateWorktreeCreation> {
   const { repoRoot, issue, branchName, baseSha } = opts;
   const name = integrateWorktreeName(issue);
@@ -199,6 +215,7 @@ async function createIntegrateWorktree(
   let repoRootDetached = false;
   let staleHead: string | undefined;
   let backupRef: string | undefined;
+  let supersededSha: string | undefined;
   const registered = await isRegisteredWorktree(execFn, repoRoot, abs);
   // #861 round 3 — one branch decides the fate of a registered tree at the
   // integrate path: driver-owned (this cycle's state file records it) →
@@ -234,7 +251,7 @@ async function createIntegrateWorktree(
       }
       // #1170 — a stale tree holding uncommitted or foreign work is refused,
       // not force-removed; #1173 — the cycle's own commits are backed up.
-      backupRef = kept.ref = await keepOrRefuseStaleIntegrateTree(
+      const backup = await keepOrRefuseStaleIntegrateTree(
         execFn,
         repoRoot,
         abs,
@@ -242,6 +259,10 @@ async function createIntegrateWorktree(
         branchName,
         issue,
       );
+      kept.backupRef = backup?.ref;
+      kept.supersededSha = backup?.supersededSha;
+      backupRef = backup?.ref;
+      supersededSha = backup?.supersededSha;
       trace(
         `work-driver: stale ${name} worktree at ${abs} (old HEAD: ${staleHead ?? "unreadable"}) — driver-owned, force-removing and recreating`,
       );
@@ -262,13 +283,18 @@ async function createIntegrateWorktree(
       // #1173 — clean is not "nothing to lose": a detached HEAD's commits
       // die with the tree, so they are kept on a backup ref first (a tree on
       // another branch holding unique commits throws instead).
-      backupRef = kept.ref = await backupIntegrateHead(
+      const backup = await backupIntegrateHead(
         execFn,
         abs,
         branchHead ?? baseSha,
         branchName,
         issue,
+        repoRoot,
       );
+      kept.backupRef = backup?.ref;
+      kept.supersededSha = backup?.supersededSha;
+      backupRef = backup?.ref;
+      supersededSha = backup?.supersededSha;
       trace(
         `work-driver: registered worktree at ${abs} is NOT this cycle's (state file does not record it) and is clean — force-removing and recreating (the cycle already committed to replacing the integrate tree)`,
       );
@@ -389,6 +415,7 @@ async function createIntegrateWorktree(
     refHead: ref,
     ...(staleHead ? { staleHead } : {}),
     ...(backupRef ? { backupRef } : {}),
+    ...(supersededSha && isCommitSha(supersededSha) ? { supersededSha } : {}),
     repoRootDetached,
   };
 }
