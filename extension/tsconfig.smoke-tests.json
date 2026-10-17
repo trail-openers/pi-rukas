@@ -1,0 +1,17 @@
+{
+  // A second project over the files #1417 touched, because the whole
+  // smoke-tests tree carries a pre-existing type-error backlog (~2180 errors)
+  // that tsconfig.json never saw — its `include` covers only src/ and scripts/.
+  // Adding the whole tree to tsconfig.json would red the gate with unrelated
+  // work, and @ts-ignore / file exclusions are not the fix. This file is the
+  // ratchet: it typechecks the merge-guard test seam now, and each follow-up
+  // ticket adds its own clean files to `include` until the backlog is gone and
+  // the tree can move into tsconfig.json.
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/**/*",
+    "scripts/**/*",
+    "smoke-tests/lib/merge-allowlist-target.ts",
+    "smoke-tests/test-merge-size-bound.ts"
+  ]
+}
