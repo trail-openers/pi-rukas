@@ -48,6 +48,7 @@ export const FIXED_CAPS = [
   "cross-group-conflict",
   "deadline",
   "deferred-creation:develop",
+  "develop-child-crash",
   "develop-incomplete-deliverables",
   "developer-timeout",
   "existing-pr-detected",

@@ -51,6 +51,11 @@ export const CAP_HIT_FIXED_LITERALS = [
   // incident shape): distinct from the conflict cap and the verify-failed:
   // develop template. The dropped paths ride in the event's evidence.
   "consolidation-incomplete",
+  // #1403 — a develop child's engine died mid-pass and left uncommitted work
+  // in its worktree. A deliberate park terminalized as a handoff (NOT
+  // `step-failed:develop`, which would read as a generic dispatch failure and
+  // terminalize as `aborted`, hiding that recoverable work is on disk).
+  "develop-child-crash",
   // #741 — the converge gate's distinct cap: a plan deliverable is absent
   // from the end-of-develop diff even after the one-shot corrective
   // re-dispatch. Distinct from the verify-failed:develop template (the

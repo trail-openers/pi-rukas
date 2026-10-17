@@ -73,6 +73,22 @@ export function fmtRecentEvents(log: WorkEvent[], n: number): string[] {
   return log.slice(from).map((e, i) => fmtEvent(e, rounds[from + i]));
 }
 
+/** #1403 — what a crashed pass left in its worktree, in the status line's
+ *  compact form. Paths are bounded to three: the line is one of many and the
+ *  full list rides on the event. */
+function crashTreeText(
+  crash: NonNullable<Extract<WorkEvent, { kind: "branch-completed" }>["crash"]>,
+): string {
+  if (crash.tree === "committed") return "committed before it died";
+  if (crash.tree === "empty") return "nothing in the worktree";
+  if (crash.tree === "unreadable") return "worktree unreadable";
+  if (crash.tree === "no-commits") return "no base to count commits against";
+  const paths = crash.paths ?? [];
+  if (paths.length === 0) return "0 uncommitted path(s)";
+  const shown = paths.slice(0, 3).join(", ");
+  return `${paths.length} uncommitted path(s): ${shown}${paths.length > 3 ? ` +${paths.length - 3} more` : ""}`;
+}
+
 /** Format an event for the "last N" trailing log. Compact one-liner per event. */
 export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
   switch (e.kind) {
@@ -137,7 +153,16 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
     case "branches-fanned-out":
       return `  branches-fanned-out · ${e.step} · ${e.workstreams.length} branches: ${e.workstreams.join(", ")}`;
     case "branch-completed":
-      return `  branch-completed · ${e.step}[${e.workstreamId}] · ${e.ok ? "ok" : "FAIL"} · ${fmtElapsed(e.ms)}${e.error ? ` · ${e.error.slice(0, 40)}` : ""}`;
+      // #1403 — a dead child must not render as an ordinary FAIL: the line is
+      // the only place the operator sees, without opening the state file, that
+      // this pass's engine stopped and what it left uncommitted.
+      return e.crash
+        ? `  branch-completed · ${e.step}[${e.workstreamId}] · CRASHED (engine stopped${
+            e.crash.exitCode === null || e.crash.exitCode === undefined
+              ? ""
+              : `, exit ${e.crash.exitCode}`
+          }) · ${crashTreeText(e.crash)}`
+        : `  branch-completed · ${e.step}[${e.workstreamId}] · ${e.ok ? "ok" : "FAIL"} · ${fmtElapsed(e.ms)}${e.error ? ` · ${e.error.slice(0, 40)}` : ""}`;
     case "branches-converged": {
       const okN = e.verdicts.filter((v) => v.ok).length;
       return `  branches-converged · ${e.step} · ${okN}/${e.verdicts.length} ok`;
