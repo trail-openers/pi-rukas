@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { jobStatusSnapshot } from "../src/async-jobs.ts";
 import type { Forge } from "../src/forge.ts";
 import { setPlanVipuneSearch } from "../src/plan-draft.ts";
 /**
@@ -19,6 +20,11 @@ import type { RegisteredPlanTool } from "../src/plan-tool.ts";
 import type { PlanDriverInput, PlanResult } from "../src/plan-types.ts";
 import type { SearchResult } from "../src/vipune.ts";
 import type { vipuneSearch } from "../src/vipune.ts";
+import { parseReportDetails, reportBody } from "./plan-report-read.ts";
+
+// Re-exported so a test that reads a delivered report imports one module for
+// the harness and gets the reader with it (the two are always used together).
+export { parseReportDetails, reportBody } from "./plan-report-read.ts";
 
 /** The gate prompts captured by installForgeStub/makeDispatchStub callers. */
 export const gatePrompts: string[] = [];
@@ -212,173 +218,182 @@ export function setPlanVipuneStub(
  */
 export const calls: string[] = [];
 
+/**
+ * The one host capability a launched job needs: receive its steer. Every
+ * report-delivering tool hands its job to the `pi` it was REGISTERED on, so a
+ * test's `fakePi` must answer `sendUserMessage` as well as `registerTool` —
+ * build it with `{ registerTool, ...makeJobDeliverer() }`. A stub with only
+ * `registerTool` gets the delivery WARN'd away by `deliverReport` and the
+ * harness waits on a report that never arrives.
+ */
+export interface JobDeliverer {
+  sendUserMessage(content: string, options?: { deliverAs?: string }): void;
+}
+
+/**
+ * The steer inbox the launched jobs deliver to, shared by the harness below
+ * and by test-plan-research-async.ts. `waitForJobReport` reads it; a test
+ * drains it (or passes its own array to `makeJobDeliverer`) when it needs to
+ * distinguish two runs' reports.
+ */
+export const jobSteerInbox: Array<{ content: string; deliverAs?: string }> = [];
+
+/**
+ * Jobs whose registry entry has disappeared. `jobs.delete()` runs at the TOP of
+ * the settle path (`async-jobs.ts`), and delivery happens after it — so a tick
+ * landing in that gap sees a settled job with no report yet. Absence is
+ * therefore NOT proof of a broken delivery; what `waitForJobReport` fails fast
+ * on is a registry that stayed empty for a full second after the job vanished,
+ * which is the shape of a run that finished its dispatches and never produced a
+ * report.
+ */
+function runningJobIds(): string[] {
+  return jobStatusSnapshot().map((j) => j.jobId);
+}
+
+export function makeJobDeliverer(
+  inbox: Array<{ content: string; deliverAs?: string }> = jobSteerInbox,
+): JobDeliverer {
+  return {
+    sendUserMessage(content: string, options?: { deliverAs?: string }) {
+      inbox.push({
+        content: typeof content === "string" ? content : JSON.stringify(content),
+        deliverAs: options?.deliverAs,
+      });
+    },
+  };
+}
+
+/** Either compiled driver tool def — the harness drives both identically. */
+export type RegisteredDriverTool = RegisteredPlanTool | RegisteredResearchTool;
+
+/** The tool's launch return — the only thing `execute()` gives back since #1044. */
+export interface PlanLaunchReturn {
+  content: Array<{ type: string; text: string }>;
+  details: Record<string, unknown>;
+}
+
+/**
+ * Drive one `start_plan_driver` call to its END and hand back what the PM
+ * actually sees: the launch return from `execute()` plus the steer the job
+ * eventually delivers.
+ *
+ * Before #1044 this helper read `content[0].text` and every dry-run e2e block
+ * asserted the spec there. That text is now a launch notice — the pipeline
+ * runs in a background job and its rendered result is the steer body, so
+ * `text` here IS that body (the job report with the `[ensemble:async]` header
+ * stripped). A test that wants the launch notice reads `launch` instead.
+ *
+ * A call the tool REFUSES before it launches — an empty descriptor, an invalid
+ * label or provenance (#1377) — has no job and therefore no steer: the
+ * refusal is the tool's own return, so it is what `text` carries. `started`
+ * distinguishes the two paths.
+ *
+ * `onLaunch` runs after `execute()` returns and before the steer is awaited,
+ * which is the only window in which an in-flight assertion (the registry
+ * carrying the job, no steer yet) is observable.
+ */
+export async function invokePlanToolFull(
+  tools: RegisteredDriverTool[],
+  params: Record<string, unknown>,
+  opts: { onLaunch?: (ret: PlanLaunchReturn) => void | Promise<void> } = {},
+): Promise<{
+  text: string;
+  details: Record<string, unknown>;
+  launch: PlanLaunchReturn;
+  jobId: string;
+  report: string;
+}> {
+  const t = tools.find((x) => x.name === "start_plan_driver" || x.name === "start_research_driver");
+  if (!t) throw new Error("no compiled driver tool is registered");
+  calls.length = 0;
+  gatePrompts.length = 0;
+  // Only this call's own deliveries are in scope: without draining, the next
+  // invoke would read the PREVIOUS run's report (both carry a jobId, and the
+  // assertion would pass on stale bytes).
+  jobSteerInbox.length = 0;
+  // #1044: the pipeline now runs inside a job, and the job's report reaches
+  // the `pi` the tool was REGISTERED on. A harness whose fakePi implements
+  // only `registerTool` would have that delivery WARN'd away by
+  // deliverReport, so the harness hands the tool a context that also answers
+  // sendUserMessage into the inbox `waitForJobReport` reads.
+  const launch = (await t.execute("id", params, undefined, undefined, {
+    cwd: process.cwd(),
+    ...makeJobDeliverer(),
+  })) as unknown as PlanLaunchReturn;
+  const jobId = String(launch.details?.jobId ?? "");
+  if (!jobId) {
+    // Refused pre-launch: no job, no steer, the tool's own text is the result.
+    if (opts.onLaunch) await opts.onLaunch(launch);
+    return {
+      text: launch.content?.[0]?.text ?? "",
+      details: launch.details ?? {},
+      launch,
+      jobId: "",
+      report: "",
+    };
+  }
+  if (opts.onLaunch) await opts.onLaunch(launch);
+  const report = await waitForJobReport(jobId, jobSteerInbox);
+  return {
+    text: reportBody(report),
+    details: parseReportDetails(report, params),
+    launch,
+    jobId,
+    report,
+  };
+}
+
+/**
+ * The compatibility shim the pre-#1044 blocks keep calling: same contract,
+ * `{ text, details }` is now read out of the delivered steer.
+ */
 export async function invokePlanTool(
   tools: RegisteredPlanTool[],
   params: Record<string, unknown>,
 ): Promise<{ text: string; details: Record<string, unknown> }> {
-  const t = tools.find((x) => x.name === "start_plan_driver");
-  if (!t) throw new Error("start_plan_driver not registered");
-  calls.length = 0;
-  gatePrompts.length = 0;
-  const out = (await t.execute("id", params, undefined, undefined, { cwd: process.cwd() })) as {
-    content: Array<{ type: string; text: string }>;
-    details: Record<string, unknown>;
+  const { text, details } = await invokePlanToolFull(tools, params);
+  return { text, details };
+}
+
+/**
+ * Deliver every settled job's report to `pi` and resolve once the job with
+ * this id has reported. Shared with the research async test (the delivery
+ * mechanics are identical for both compiled drivers).
+ */
+export function makeJobPiStub() {
+  const inbox: Array<{ content: string; deliverAs?: string }> = [];
+  /** Reports delivered for this job id, in arrival order. */
+  const forJob = (jobId: string) => inbox.filter((m) => m.content.includes(`(job ${jobId})`));
+  // biome-ignore lint/suspicious/noExplicitAny: minimal stub; only these two are used
+  const pi: any = {
+    ...makeJobDeliverer(inbox),
+    registerTool: () => {},
   };
-  return { text: out.content[0]?.text ?? "", details: out.details ?? {} };
-}
-
-// ---------------------------------------------------------------------------
-// #1043 cache tests — the fixtures shared by test-plan-confirm-reviewed.ts and
-// test-plan-investigation-cache.ts (formerly copied into both).
-// ---------------------------------------------------------------------------
-
-export const DESC = "add a start_plan_driver tool for the plan pipeline in extension";
-export const REPO = process.cwd();
-export const GAP_HIGH =
-  "GAP: HIGH — the spec omits the rollback path — proposed resolution: add a rollback section\nVERDICT: READY";
-export const GAP_CRITICAL =
-  "GAP: CRITICAL the spec commits to both a retry cap of 3 and an infinite retry — proposed resolution: name which wins\nVERDICT: NEEDS_ITERATION";
-export const DUP_NONE = "DUPLICATE_RISK: none — no overlapping open work";
-
-/** Dispatches seen by the counting stub: explore (duplicate-risk + angles) and gate. */
-export const log = { explore: 0, gate: 0 };
-
-/**
- * Counting dispatch for the pipeline and cache tests. `gateReply` is one reply or
- * one per gate round (the last repeats); `dupReply` is the duplicate-risk verdict.
- */
-export function installCountingDispatch(gateReply: string | string[], dupReply = DUP_NONE): void {
-  const replies = Array.isArray(gateReply) ? gateReply : [gateReply];
-  log.explore = 0;
-  log.gate = 0;
-  gatePrompts.length = 0;
-  setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
-    const base = { ok: true, toolUses: [], ms: 1, exitCode: 0 };
-    if (spec.role === "adversarial-developer") {
-      gatePrompts.push(spec.prompt);
-      const text = replies[Math.min(log.gate, replies.length - 1)] ?? "";
-      log.gate++;
-      return Promise.resolve({ ...base, role: spec.role, text });
-    }
-    log.explore++;
-    if (spec.prompt.includes("DUPLICATE RISK CHECK")) {
-      return Promise.resolve({ ...base, role: "explore", text: dupReply });
-    }
-    return Promise.resolve({
-      ...base,
-      role: "explore",
-      text: "summary prose",
-      toolUses: [
-        {
-          name: "report_plan_item",
-          arguments: { kind: "acceptance-criterion", text: "the tool registers", angle: "x" },
-        },
-      ],
-    });
-  }) as never);
+  return { pi, inbox, forJob };
 }
 
 /**
- * A dispatch stub whose angles emit `perKind` oversized items per kind — the
- * shape that overflows stage 0's render budget and fits stage 1's (the
- * compaction case, same fixture as test-plan-body-budget).
+ * Poll until the job's report has reached the stub inbox (600 × 10 ms — the
+ * plan pipeline runs dozens of stubbed dispatches before it reports). A job
+ * that settled WITHOUT delivering throws immediately: that is a broken
+ * delivery, and a slow suite is a different problem from a silent one.
  */
-export function installOverflowDispatch(itemText: string, perKind = 20): void {
-  const kinds = [
-    "acceptance-criterion",
-    "test-surface-item",
-    "edge-case",
-    "reference",
-    "out-of-scope",
-  ];
-  const toolUses = kinds.flatMap((kind) =>
-    Array.from({ length: perKind }, (_, i) => ({
-      name: "report_plan_item",
-      arguments: { kind, text: `${kind}-${i}: ${itemText}`, angle: "x" },
-    })),
-  );
-  setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
-    if (spec.role === "adversarial-developer") {
-      return Promise.resolve({
-        role: spec.role,
-        ok: true,
-        text: "VERDICT: READY",
-        toolUses: [],
-        ms: 1,
-        exitCode: 0,
-      });
+export async function waitForJobReport(
+  jobId: string,
+  inbox: Array<{ content: string }> = jobSteerInbox,
+): Promise<string> {
+  for (let i = 0; i < 600; i++) {
+    const hit = inbox.find((m) => m.content.includes(`(job ${jobId})`));
+    if (hit) return hit.content;
+    const running = runningJobIds();
+    // Nothing in flight and nothing left to deliver it: the job is gone from
+    // the registry, and a full second of an empty one is far more than the
+    // synchronous delivery that follows the delete needs.
+    if (running.length === 0 && i > 100) {
+      throw new Error(`job ${jobId} settled without delivering a report`);
     }
-    if (spec.prompt.includes("DUPLICATE RISK CHECK")) {
-      return Promise.resolve({
-        role: "explore",
-        ok: true,
-        text: DUP_NONE,
-        toolUses: [],
-        ms: 1,
-        exitCode: 0,
-      });
-    }
-    return Promise.resolve({
-      role: "explore",
-      ok: true,
-      text: "prose summary",
-      toolUses,
-      ms: 1,
-      exitCode: 0,
-    });
-  }) as never);
-}
-
-export function pipeline(input: Partial<PlanDriverInput> = {}): Promise<PlanResult> {
-  return runPlanPipeline({} as never, { descriptor: DESC, ...input }, REPO);
-}
-
-/** The per-test cache: its directory and the HEAD the git-state stub reports. */
-export const cacheState = { dir: "", keySha: "a".repeat(40) };
-const tmpCacheDirs: string[] = [];
-
-/** A fresh cache directory and HEAD, with the git-state stub pointing at them. */
-export async function newPlanCache(prefix = "plan-cache-"): Promise<void> {
-  cacheState.dir = await mkdtemp(path.join(os.tmpdir(), prefix));
-  tmpCacheDirs.push(cacheState.dir);
-  cacheState.keySha = "a".repeat(40);
-  setPlanGitStateFn(async () => ({ keySha: cacheState.keySha, cacheDir: cacheState.dir }));
-  forgeStub.created.length = 0;
-  forgeStub.mode = "ok";
-  // #1377: reset to the pre-#1377 stub shape so a test that does not pass
-  // labels never sees a label read, and one that does must opt in explicitly.
-  forgeStub.existing = null;
-  forgeStub.truncated = false;
-  forgeStub.labelListCalls = 0;
-}
-
-/** Reset the seams and remove every cache directory a test created. */
-export async function teardownPlanCache(): Promise<void> {
-  setPlanGitStateFn(null);
-  setPlanDispatch(null);
-  for (const d of tmpCacheDirs) await rm(d, { recursive: true, force: true });
-}
-
-/** The lineage entry files (`*.json`) in the current cache directory. */
-export async function cacheFiles(): Promise<string[]> {
-  try {
-    return (await readdir(cacheState.dir)).filter((f) => f.endsWith(".json"));
-  } catch {
-    return [];
+    await new Promise((r) => setTimeout(r, 10));
   }
-}
-
-export type RawCacheEntry = {
-  createdAt: number;
-  barrier: Record<string, unknown>;
-  reviewed?: Record<string, unknown>;
-};
-
-/** Rewrite the current cache's first entry through `fn` (simulates a stale or hand-edited file). */
-export async function mutateEntry(fn: (e: RawCacheEntry) => void): Promise<void> {
-  const [f] = await cacheFiles();
-  const p = path.join(cacheState.dir, f ?? "");
-  const e = JSON.parse(await readFile(p, "utf8")) as RawCacheEntry;
-  fn(e);
-  await writeFile(p, JSON.stringify(e));
+  throw new Error(`no [ensemble:async] report delivered for job ${jobId}`);
 }
