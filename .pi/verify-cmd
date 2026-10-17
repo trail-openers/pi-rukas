@@ -22,5 +22,17 @@
 # the variable wins over the host-derived value. Measured on a 10-core host at
 # the suite stage: JOBS=2 → 8m55s, JOBS=4 → 4m49s, same failures at both. JOBS=6
 # and above made test-cancel.ts flaky, so the pool is not widened further.
-# Set here rather than in verify-pool.sh so CI keeps the shipped default of 2.
-cd extension && bun x tsc --noEmit && bun x tsc --noEmit -p tsconfig.smoke-tests.json && cd .. && bun run check && cd extension && PI_ENSEMBLE_VERIFY_TEST_JOBS="${PI_ENSEMBLE_VERIFY_TEST_JOBS:-$( [ "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)" -ge 8 ] && echo 4 || echo 2 )}" bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts
+#
+# `--jobs-from-host` is how that sizing reaches the pool, and it lives in the
+# script rather than as an inline `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf
+# …)}"` prefix because the review-accept guard (#1125) refuses any command word
+# carrying a shell expansion — `$`, backtick, braces. On an agent-run command no
+# flag ban separates a benign `${VAR:-$(…)}` from an injection, so the guard's
+# A5 arm admits `bash smoke-tests/lib/verify-loop.sh <suites>` and nothing with
+# an expansion in it. That rule is the guard's, not this file's, so the
+# expansion moved behind a flag the script owns. The flag is opt-in and CI does
+# not pass it, so .github/workflows/ci.yml keeps the shipped default of 2 — the
+# same shape as before #1365, and the reason the host lookup is opt-in rather
+# than the pool's own default. test-review-accept-guard-hardened.ts reads this
+# file arm by arm and pins that every one of them passes the guard.
+cd extension && bun x tsc --noEmit && bun x tsc --noEmit -p tsconfig.smoke-tests.json && cd .. && bun run check && cd extension && bash smoke-tests/lib/verify-loop.sh --jobs-from-host smoke-tests/test-*.ts

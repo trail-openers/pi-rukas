@@ -37,8 +37,9 @@
 # global lines that follow all per-test blocks in the --digest output.
 #
 # Usage:
-#   verify-loop.sh <file> [<file> ...]           — normal mode
-#   verify-loop.sh --digest <file> [<file> ...] — #1028 digest mode
+#   verify-loop.sh <file> [<file> ...]                  — normal mode
+#   verify-loop.sh --digest <file> [<file> ...]         — #1028 digest mode
+#   verify-loop.sh --jobs-from-host <file> [...]        — pool width from the host
 #
 # Normal mode: runs every test once, prints each test's full output plus a
 # per-failure `FAILED: <file>` marker and a final summary line.
@@ -75,9 +76,13 @@
 # --- #1365 — bounded job pool (lib/verify-pool.sh).
 # Tests run concurrently, at most PI_ENSEMBLE_VERIFY_TEST_JOBS at once
 # (${VERIFY_TEST_JOBS:-2}; 1 restores the strictly sequential pre-#1365
-# shape). The count is clamped to the number of collected tests and to 16,
-# with a warning naming the clamp — more than 16 concurrent `bun` processes
-# compete with each other for CPU and the suite gets slower, not faster.
+# shape). With --jobs-from-host and no ambient setting, the count comes from
+# host_job_count (4 on a host reporting 8 or more CPUs, 2 otherwise) instead of
+# the shipped default of 2 — see that function for why getconf, and why an
+# unparseable CPU count sizes down rather than up. The count is clamped to the
+# number of collected tests and to 16, with a warning naming the clamp — more
+# than 16 concurrent `bun` processes compete with each other for CPU and the
+# suite gets slower, not faster.
 # Every job still runs under the per-test watchdog above. Output is replayed
 # in ARGUMENT order after the pool drains, so both modes' output (and the
 # digest) are byte-identical to a sequential run regardless of finish order.
@@ -201,16 +206,45 @@ if ! command -v pgrep >/dev/null 2>&1; then
   echo "warn: verify-loop: pgrep not found — on timeout only the top-level test process will be killed (descendants may be orphaned)" >&2
 fi
 
-# --- #1028 — parse --digest flag (must come before the usage check so that
-# a bare `--digest` with no files is still a usage error).
+# --- #1028 — parse the --digest flag, and the host-sizing flag.
+#
+# Both parse BEFORE the usage check so that a bare `--digest` / `--jobs-from-host`
+# with no files is still a usage error. `--digest` stays position-pinned (only
+# accepted as the first word) because test-ci-verify-digest.ts pins that argv
+# shape; the new flag is accepted in ANY position, which is what lets
+# .pi/verify-cmd carry it either side of the test glob — case 4 of
+# test-verify-loop-jobs-from-host.ts pins both positions.
+#
+# A flag is never a test path: each recognised word is `shift`ed out of "$@", so
+# the pool only ever collects real paths, and `pool_collect`'s `--` guard against
+# dash-leading arguments stays intact.
 DIGEST=0
 if [ "$#" -gt 0 ] && [ "$1" = "--digest" ]; then
   DIGEST=1
   shift
 fi
+# #1365 follow-up — --jobs-from-host: size the pool from the host CPU count when
+# the caller did not name a number. Opt-in, and CI does not pass it, so the
+# shipped default of 2 stays the CI shape; the host-derived 4 is what this repo's
+# own develop gate needs to stay inside PI_ENSEMBLE_VERIFY_TIMEOUT_MS. It lives
+# here rather than as an inline expansion in .pi/verify-cmd because the
+# review-accept guard refuses any command word carrying `$`/backticks/braces —
+# a shell-expansion gate on agent commands cannot distinguish a benign
+# `${VAR:-$(getconf …)}` from an injection, so the expansion belongs in the
+# script the arm already allows.
+VERIFY_JOBS_FROM_HOST=0
+_args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --jobs-from-host) VERIFY_JOBS_FROM_HOST=1 ;;
+    *) _args+=("$1") ;;
+  esac
+  shift
+done
+set -- ${_args[@]+"${_args[@]}"}
 
 if [ "$#" -eq 0 ]; then
-  echo "usage: verify-loop.sh [--digest] <file> ..." >&2
+  echo "usage: verify-loop.sh [--digest] [--jobs-from-host] <file> ..." >&2
   exit 2
 fi
 
