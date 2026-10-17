@@ -133,6 +133,15 @@ export type WorkCapLiteral =
   // #754 — the plan step's own bound expired on the primary plan
   // dispatch; distinct from `step-failed:plan` and `developer-timeout`.
   | "plan-timeout"
+  // #819 — the plan-to-spec gate refused the plan: no workstream declares any
+  // path of a deliverable the spec requires, or the reply carried more than
+  // one `## Workstreams` section. A DELIBERATE park terminalized as a handoff
+  // (not `step-failed:plan`, which would read as a dispatch that failed and
+  // terminalize as `aborted`, hiding that the plan was judged and found to be
+  // about the wrong work). It fires BEFORE the branch step, so nothing was
+  // written: the #818 shape — a corrective plan about a different problem,
+  // four developers and 45 minutes spent building it — is what this stops.
+  | "plan-spec-mismatch"
   // #280 §B — round-1 repeat-finding seam detection. Same finding
   // shape across ≥3 files → step-back (SDD spec-gap analysis).
   | "repeat-finding-seam"

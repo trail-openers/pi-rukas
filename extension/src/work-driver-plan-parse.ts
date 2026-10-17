@@ -28,6 +28,22 @@ export function sliceMarkdownSection(text: string, name: string): string | undef
   return body.replace(/\n\s*-{3,}\s*$/, "\n");
 }
 
+/** How many `## <name>` headings a reply carries.
+ *
+ * The count, not the first slice: `sliceMarkdownSection` uses a non-global
+ * regex, so it reports the first match and is silent about whether more
+ * followed. `parseWorkstreams` calls this BEFORE slicing so a reply carrying
+ * two `## Workstreams` blocks is detected rather than quietly resolved to
+ * whichever the model happened to write first (#818: three blocks, the first
+ * one fabricated, and the driver built it).
+ */
+export function countMarkdownSections(text: string, name: string): number {
+  const re = new RegExp(`^##\\s+${name}\\s*$`, "gim");
+  let n = 0;
+  for (const _match of text.matchAll(re)) n += 1;
+  return n;
+}
+
 /**
  * Split a `key: a, b, c` value into items — but never inside parentheses.
  *
