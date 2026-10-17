@@ -31,11 +31,38 @@
  *   `runtimeHost.dispose()` (the `session_shutdown` emit) from inside that
  *   first listener. So the extension's own `end` listener may still be queued
  *   when the hook fires, and `origin` is then undefined. `exitOrigin` therefore
- *   also consults `process.stdin.readableEnded`, the flag Node sets on the
- *   stream itself: it is already true when Pi's listener runs, so the origin is
- *   correct whichever listener reaches the read first. (Listener order alone is
- *   not a safe assumption either — bun delivers the remaining `end` listeners
- *   even after an earlier one calls `process.exit()`.)
+ *   also consults the stream's own EOF state — `readableEnded`, the readable
+ *   state's `ended`/`endEmitted`, and `readable === false` with
+ *   `readableDidRead` — none of which needs a listener of ours to have run, so
+ *   the origin is correct whichever listener reaches the read first. (Listener
+ *   order alone is not a safe assumption either — bun delivers the remaining
+ *   `end` listeners even after an earlier one calls `process.exit()`.)
+ *
+ *   **Which of those flags exist is itself runtime-dependent, which is why the
+ *   read is a disjunction and not one field.** Measured on the two runtimes
+ *   that matter — bun 1.3.13 (what CI's `quality-gate` pins in
+ *   `.github/workflows/ci.yml`) and bun 1.4.3 (what contributors run) — bun
+ *   1.3.13 leaves BOTH `readableEnded` and `_readableState.ended` at `false`
+ *   for the whole life of the stream, including inside a later `end` listener
+ *   and a tick after the shutdown it triggers. A fix that ORs only those two
+ *   flags therefore still reports `unknown` on the runner and B1 stays red
+ *   there. What 1.3.13 does set, inside the first `end` listener, is
+ *   `readable === false` and `destroyed/closed === true` — bun closes the
+ *   stream as it emits EOF. `readable === false` alone is not the answer: it
+ *   is also false after a `destroy()` that saw no EOF, and the born-EOF
+ *   `/dev/null` shape (G) must keep reporting `unknown`, so it is admitted only
+ *   alongside the `readableDidRead` / `endEmitted` pair that says bytes actually
+ *   arrived. Together the three clauses hold on both runtimes.
+ *
+ *   What this read can NEVER do is carry the case alone on a runtime that
+ *   stamps no EOF flag at all, which is why `armExitCause` also records on
+ *   `close`: measured against `rpc-mode.js`'s real `void shutdown()` ordering,
+ *   bun 1.3.13 leaves the read blind in the window the shutdown hook actually
+ *   reads in, so `close` is what names the origin there. On a runtime that does
+ *   stamp its flags the `end` listener records synchronously first and
+ *   `record`'s first-writer guard makes `close` a no-op. The read stays because
+ *   it is the only thing that answers without a listener of ours having run —
+ *   the ordering belt, and what makes the case testable at all.
  * - **Listening must not change what a signal DOES.** Installing a listener
  *   replaces the signal's default disposition, and SIGINT / SIGTERM / SIGHUP
  *   are fatal by default. A tracker that only recorded the origin would make
@@ -108,16 +135,53 @@ function callerClosableStdin(): boolean {
  *
  * The stdin-EOF case is read from the stream rather than waited for: Pi's own
  * `end` listener can reach the shutdown hook before this module's listener has
- * fired, so `origin` may still be undefined at the moment it is read.
- * `readableEnded` is Node's own record that the stream finished, and it needs
- * no listener of ours to have run — which is also the only thing that makes
- * this case testable without depending on listener ordering. Gated on the same
- * pipe-or-socket answer as the listener, so a born-EOF stdin is not a cause on
- * either path.
+ * fired, so `origin` may still be undefined at the moment it is read. The
+ * stream's own EOF state needs no listener of ours to have run — which is also
+ * the only thing that makes this case testable without depending on listener
+ * ordering. Gated on the same pipe-or-socket answer as the listener, so a
+ * born-EOF stdin is not a cause on either path.
  */
+
+/**
+ * The readable-state shape, read structurally rather than through a getter.
+ * Declared locally (not imported) because these fields are Node internals that
+ * bun does not fully implement — see `stdinReachedEof` for what each runtime
+ * actually sets.
+ */
+type ReadableEofState = { ended?: boolean; endEmitted?: boolean };
+
+/**
+ * Has stdin reached EOF? True on every runtime we measure, whichever clause
+ * that runtime happens to implement.
+ *
+ * - `readableEnded` and `_readableState.ended` are Node's own record that EOF
+ *   was pushed. Both are set *before* `end` is emitted on Node, so a listener
+ *   that runs ahead of ours still sees them — but bun 1.3.13 (CI's pin) sets
+ *   neither, ever. They stay in the disjunction because they are the correct,
+ *   most specific answer on Node and on bun ≥ 1.4.
+ * - `readable === false` with `readableDidRead` (or `endEmitted`) is the shape
+ *   bun 1.3.13 leaves behind: it closes the stream as it emits EOF, so the
+ *   stream is no longer readable even though its flags were never stamped.
+ *   `readableDidRead` is what keeps a `destroy()` that saw no data — and the
+ *   born-EOF `/dev/null` case G guards — from reading as a caller-closed pipe.
+ */
+function stdinReachedEof(): boolean {
+  const stdin = process.stdin as
+    | (NodeJS.ReadableStream & {
+        readableEnded?: boolean;
+        _readableState?: ReadableEofState;
+        readableDidRead?: boolean;
+      })
+    | undefined;
+  if (!stdin) return false;
+  const state = stdin._readableState;
+  if (stdin.readableEnded === true || state?.ended === true) return true;
+  return stdin.readable === false && (stdin.readableDidRead === true || state?.endEmitted === true);
+}
+
 export function exitOrigin(): ExitOrigin {
   if (origin !== undefined) return origin;
-  return stdinIsCallerClosable && process.stdin?.readableEnded === true ? "stdin-eof" : "unknown";
+  return stdinIsCallerClosable && stdinReachedEof() ? "stdin-eof" : "unknown";
 }
 
 /** The first origin that fires wins; later ones are ignored. */
@@ -172,6 +236,19 @@ export function armExitCause(): void {
   stdinIsCallerClosable = callerClosableStdin();
   if (stdinIsCallerClosable) {
     process.stdin.on("end", () => record("stdin-eof"));
+    // `end` is the primary record and `close` is the second chance — and on the
+    // runtime CI pins it is the ONLY one that names the origin for the real flow.
+    // `rpc-mode.js` does `void shutdown()`, so its listener returns without
+    // yielding and the `end` emit continues; if this module's `end` handler were
+    // reached it would record synchronously. Measured against that ordering on
+    // bun 1.3.13, though, our `end` handler is not reached before the shutdown
+    // hook reads, and 1.3.13 stamps no EOF flag on the stream in that window —
+    // so with the `end` listener alone a real headless EOF is reported `unknown`
+    // on the runner. `close` does fire there, and re-recording the same origin is
+    // a no-op under `record`'s first-writer guard, so on a runtime that already
+    // stamped its flags (bun >= 1.4, Node) this listener cannot change the
+    // answer. It exists for the one shape where the read is blind.
+    process.stdin.on("close", () => record("stdin-eof"));
   }
   for (const sig of TRACKED_SIGNALS) {
     process.on(sig, handlerFor(sig));
