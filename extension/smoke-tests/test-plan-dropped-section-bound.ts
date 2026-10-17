@@ -14,6 +14,25 @@
  * rendered the same 56k and the fitter halted instead of compacting — the
  * compaction pass was a no-op for exactly the section that had grown.
  *
+ * Round 2 (the adversarial lens) found the bound could be defeated three ways,
+ * and each has a pin here rather than a comment:
+ *
+ * 1. `item.angle` was interpolated OUTSIDE every clip and the loop emitted the
+ *    first line whole (`shown > 0`), so one item with a 60,000-char angle
+ *    rendered a 60k section under an 8,000-char cap. → every slot is clipped
+ *    and every line is clipped-to-fit; `droppedSection(...).length <=
+ *    DROPPED_SECTION_MAX_CHARS` is asserted EXACTLY, no slack constant.
+ * 2. The omission line promised the full list "in the run transcripts
+ *    (/runs)" — false, because `/runs` truncates tool args and prunes after 5
+ *    days. → the pipeline writes the full list to `.pi/plan-dropped/` and the
+ *    line names that file (or the reopened open-points section, which already
+ *    carries the text).
+ * 3. The cap is part of the DRAFTED body, not of BODY_BUDGET's 4,096-char
+ *    post-fit headroom. → the arithmetic `POST_FIT_APPENDS_MAX_CHARS <=
+ *    FORGE_BODY_MAX - BODY_BUDGET` is asserted outright, and a worst-case draft
+ *    (section at its cap, other sections just under budget, every post-fit
+ *    append present) is shown to file under FORGE_BODY_MAX.
+ *
  * Pins: the per-item clip and the whole-section cap; the omission line (count +
  * where the full list lives) and its agreement with the tool result's COMPACTED
  * note; the section keeps its own heading so `bodySectionBreakdown` still names
@@ -21,85 +40,39 @@
  * section is already small (the bound is a no-op below its threshold).
  */
 
-import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import type { DroppedInvestigationItem } from "../src/plan-draft-conflicts.ts";
 import { draftSpec } from "../src/plan-draft.ts";
+import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import {
+  DROPPED_ARTIFACT,
+  DROPPED_ARTIFACT_DIR,
   DROPPED_ITEM_MAX_CHARS,
+  DROPPED_LINE_MAX_CHARS,
+  DROPPED_OMISSION_LINE_MAX_CHARS,
+  DROPPED_REOPENED_HEADING,
+  DROPPED_SECTION_HEADING,
   DROPPED_SECTION_MAX_CHARS,
+  DROPPED_SOURCE_MAX_CHARS,
+  POST_FIT_APPENDS_MAX_CHARS,
+  droppedSectionFrameChars,
 } from "../src/plan-dropped-budget.ts";
-import { droppedSection } from "../src/plan-dropped-section.ts";
-import { FORGE_BODY_MAX, bodySectionBreakdown, fitDraftToBudget } from "../src/plan-validate.ts";
+import { lastDroppedRender } from "../src/plan-dropped-holder.ts";
+import { droppedSection, repointDroppedOmission } from "../src/plan-dropped-section.ts";
+import {
+  BODY_BUDGET,
+  FORGE_BODY_MAX,
+  bodySectionBreakdown,
+  fitDraftToBudget,
+} from "../src/plan-validate.ts";
 import {
   forgeStub,
   gatePrompts,
   installForgeStub,
-  installOfflineVipuneStub,
   installNoPlanCacheStub,
+  installOfflineVipuneStub,
 } from "./plan-test-stubs.ts";
 
-let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
-
-/**
- * `n` fully-loaded dropped items — the worst case the renderer can be handed
- * (two 900-char deciding sources clipped to 160 each, plus a 1,200-char item
- * text). The observed 56,738-char section was ~170 of these. Built directly
- * rather than through `draftSpec`'s conflict stages, which re-partition any
- * candidate set handed to them — the render bound is what this pins, not the
- * drop decision (test-plan-operator-conflicts.ts owns that).
- */
-function droppedFixture(n: number): DroppedInvestigationItem[] {
-  return Array.from({ length: n }, (_, i) => ({
-    item: {
-      kind: "edge-case",
-      text: `${"s".repeat(1200)} item ${i} must never keep unbounded dropped disclosure`,
-      angle: `a${i % 3}`,
-    },
-    against: "s".repeat(900),
-    sibling: "s".repeat(900),
-    reason: "settled",
-  }));
-}
-
-/** The reported failure shape: a body whose bytes are almost all dropped items. */
-const DROPPED_DOMINATED_BODY = `${droppedSection(droppedFixture(120)).trimStart()}
-## Acceptance criteria
-
-- keep me
-
-## Test surface
-
-- keep me too
-
-## Open Questions
-
-- (none)
-`;
-
-// ------------------------------------------------------------------- the fit
-// A dropped-dominated body must PASS fitDraftToBudget rather than halt. The
-// bound is budget-independent, so neither stage can reproduce the 56k render —
-// which is why the cap lives outside RenderBudget (plan-dropped-budget.ts).
-
-{
-  const fitted = fitDraftToBudget(() => ({ body: DROPPED_DOMINATED_BODY }));
-  assert(
-    "result" in fitted && !fitted.compacted,
-    "fit: a dropped-dominated body fits at stage 0 — no tooLarge halt",
-  );
-  const breakdown = bodySectionBreakdown(DROPPED_DOMINATED_BODY);
-  assert(
-    /Dropped investigation items: \d+ chars/.test(breakdown),
-    `fit: the breakdown still names the section after the bound (${breakdown.slice(0, 60)}…)`,
-  );
-}
+import { assert, droppedFixture, finish } from "./plan-dropped-harness.ts";
 
 // ------------------------------------------------------- the pipeline (stubs)
 
@@ -121,6 +94,46 @@ const NEG = (i: number) =>
   `the dropped renderer must never ${PAD}${i} keep unbounded disclosure in the filed body`;
 const OP = `the dropped renderer keeps ${PAD}999 bounded disclosure in the filed body`;
 const CLASHING_CONTEXT = `ACCEPTANCE CRITERIA:\n- ${OP}`;
+
+/**
+ * The dropped list the clashing pipeline run actually produced, rebuilt from
+ * the same inputs the dispatch stub fed the angles: `draftSpec` is pure, so
+ * running it over these items yields the same `dropped` the pipeline drafted
+ * with. This is what lets the size pins measure the RENDERER's output rather
+ * than a slice of the body (see the #1451 finding-4 note at the first use).
+ */
+function clashingDroppedItems(): DroppedInvestigationItem[] {
+  const items = Array.from({ length: 120 }, (_, i) => ({
+    kind: i % 2 === 0 ? ("edge-case" as const) : ("test-surface-item" as const),
+    text: NEG(i),
+    angle: "x",
+  }));
+  const drafted = draftSpec(
+    "feature",
+    DESCRIPTOR,
+    [{ name: "x", ok: true, text: "", toolUses: items }],
+    [],
+    [],
+    [],
+    0,
+    { acceptanceCriteria: [OP], pitfalls: [], outOfScope: [] },
+    [],
+  );
+  return lastDroppedRender()?.items ?? [];
+}
+
+/** The rendered section for a decided dropped list — the only thing the cap governs. */
+function sectionOf(items: DroppedInvestigationItem[]): string {
+  let shown = 0;
+  const s = droppedSection(items, undefined, (n) => {
+    shown = n;
+  });
+  assert(
+    shown < items.length,
+    `bound: the fixture is large enough that the cap actually fired (${shown} of ${items.length} shown)`,
+  );
+  return s;
+}
 
 function clashingDispatch() {
   return ((_pi: unknown, spec: { role: string; prompt: string }) => {
@@ -184,31 +197,43 @@ function clashingDispatch() {
     r.spec.length < FORGE_BODY_MAX,
     `dropped: the spec sits under the forge cap (${r.spec.length} < ${FORGE_BODY_MAX})`,
   );
-  const start = r.spec.indexOf("## Dropped investigation items");
+  const start = r.spec.indexOf(DROPPED_SECTION_HEADING);
   assert(start > 0, "dropped: the section is present and still names itself");
-  const section = r.spec.slice(start, r.spec.indexOf("## Open Questions", start));
+  // Measured on `droppedSection`'s OWN output, not on a slice of the filed
+  // body (#1451 finding 4): a next-`## `-delimited slice charges the bytes
+  // between this heading and `## Open Questions` to this section — and in the
+  // pipeline body those bytes are `draftSpec`'s own `## Edge cases & pitfalls`
+  // content, so the slice reported 8,022 for a section that renders 6,106. The
+  // renderer's return value is the only thing the cap governs.
+  const section = sectionOf(clashingDroppedItems());
   assert(
-    section.length <= DROPPED_SECTION_MAX_CHARS + 40,
-    `dropped: the section is at most the cap (${section.length} <= ${DROPPED_SECTION_MAX_CHARS})`,
+    section.length <= DROPPED_SECTION_MAX_CHARS,
+    `dropped: the section is at most the cap, exactly (${section.length} <= ${DROPPED_SECTION_MAX_CHARS})`,
   );
   assert(
     /_\u2026 \d+ further dropped item\(s\) not shown/.test(section),
     "dropped: the omission line is present with its count",
   );
+  // The pointer must name something the pipeline actually produced. Round 1
+  // named the run transcripts, which truncate tool args and prune after 5
+  // days — a promise the body carries for the lifetime of the issue.
   assert(
-    section.includes("run transcripts") && section.includes("/runs"),
+    section.includes(DROPPED_ARTIFACT_DIR) || section.includes(DROPPED_ARTIFACT),
     "dropped: the omission line names where the full list lives",
+  );
+  assert(
+    !section.includes("/runs"),
+    "dropped: the omission line no longer points at the pruned run transcripts",
   );
   const bullets = section.split("\n").filter((l) => l.startsWith("- dropped:"));
   assert(bullets.length > 0, "dropped: kept-disclosure bullets still render (not silenced)");
   assert(
-    Math.max(...bullets.map((l) => l.length)) <= DROPPED_ITEM_MAX_CHARS + 560,
-    `dropped: no single line runs away (${Math.max(...bullets.map((l) => l.length))} chars; item clip ${DROPPED_ITEM_MAX_CHARS})`,
+    Math.max(...bullets.map((l) => l.length)) <= DROPPED_LINE_MAX_CHARS,
+    `dropped: no single line runs away (${Math.max(...bullets.map((l) => l.length))} chars; line bound ${DROPPED_LINE_MAX_CHARS})`,
   );
   const gate = gatePrompts[0] ?? "";
   assert(
-    gate.includes("## Dropped investigation items") &&
-      gate.includes("further dropped item(s) not shown"),
+    gate.includes(DROPPED_SECTION_HEADING) && gate.includes("further dropped item(s) not shown"),
     "dropped: the gap gate reviewed the BOUNDED section plus its omission line",
   );
   assert(
@@ -243,7 +268,7 @@ function clashingDispatch() {
     `dropped: the same draft files (reason ${fired.filingFailure?.reason})`,
   );
   assert(
-    forgeStub.created.length === 1 && forgeStub.created[0]!.body.length < FORGE_BODY_MAX,
+    forgeStub.created.length === 1 && forgeStub.created[0]?.body.length < FORGE_BODY_MAX,
     `dropped: the forge received a body under the cap (${forgeStub.created[0]?.body.length})`,
   );
 }
@@ -318,17 +343,24 @@ function clashingDispatch() {
 }
 
 setPlanDispatch(null);
-delete process.env.PI_ENSEMBLE_FORGE;
+process.env.PI_ENSEMBLE_FORGE = undefined;
 
 // ---------------------------------------------------------------- draftSpec
 // The bound holds through the real renderer, across BOTH drop-producing stages
 // (conflicts + dedupe) since plan-draft.ts concatenates the two lists.
 // The operator directive set is spelled inline rather than importing NO_DIRS from
 // test-plan-operator-conflicts.ts — these files stay independent.
+// The operator directive set is spelled inline rather than importing NO_DIRS from
+// test-plan-operator-conflicts.ts — these files stay independent.
+// The operator directive set is spelled inline rather than importing NO_DIRS from
+// test-plan-operator-conflicts.ts — these files stay independent.
+// The operator directive set is spelled inline rather than importing NO_DIRS from
+// test-plan-operator-conflicts.ts — these files stay independent.
 {
   const items = Array.from({ length: 120 }, (_, i) => ({
     kind: i % 2 === 0 ? ("edge-case" as const) : ("test-surface-item" as const),
     text: NEG(i),
+    angle: "a",
   }));
   const body = draftSpec(
     "feature",
@@ -341,11 +373,14 @@ delete process.env.PI_ENSEMBLE_FORGE;
     { acceptanceCriteria: [OP], pitfalls: [], outOfScope: [] },
     [],
   ).body;
-  const start = body.indexOf("## Dropped investigation items");
+  const start = body.indexOf(DROPPED_SECTION_HEADING);
   assert(start > 0, "draft: the dropped section is present for a clashing draft");
-  const section = body.slice(start, body.indexOf("## Open Questions", start));
+  // The renderer's own output again, not a slice of `body` (see the note at the
+  // pipeline-level pin): `## Open Questions` is the NEXT heading, so a slice
+  // would bill `draftSpec`'s own Edge cases bytes to this section.
+  const section = sectionOf(lastDroppedRender()?.items ?? []);
   assert(
-    section.length <= DROPPED_SECTION_MAX_CHARS + 120,
+    section.length <= DROPPED_SECTION_MAX_CHARS,
     `draft: the section spliced into the body is bounded (${section.length})`,
   );
   assert(
@@ -381,7 +416,7 @@ delete process.env.PI_ENSEMBLE_FORGE;
     `bound: 120 fully-loaded drops render inside the section cap (${s.length} <= ${DROPPED_SECTION_MAX_CHARS})`,
   );
   assert(
-    s.startsWith("\n## Dropped investigation items\n\n"),
+    s.startsWith(`\n${DROPPED_SECTION_HEADING}\n\n`),
     "bound: the heading is unchanged so the halt's breakdown still names the section",
   );
   const bullets = s.split("\n").filter((l) => l.startsWith("- dropped:"));
@@ -391,24 +426,31 @@ delete process.env.PI_ENSEMBLE_FORGE;
   );
   const longest = Math.max(...bullets.map((b) => b.length));
   assert(
-    longest <= DROPPED_ITEM_MAX_CHARS + 560,
-    `bound: each line is one short item plus the deciding source (${longest} chars, item clip ${DROPPED_ITEM_MAX_CHARS})`,
+    longest <= DROPPED_LINE_MAX_CHARS,
+    `bound: each line is one short item plus the deciding source (${longest} chars, derived line bound ${DROPPED_LINE_MAX_CHARS})`,
   );
   const itemTexts = bullets.map((b) => b.slice(b.lastIndexOf("] ") + 2));
   assert(
     itemTexts.every((t) => t.length <= DROPPED_ITEM_MAX_CHARS),
     `bound: the item text itself never exceeds the clip (${Math.max(...itemTexts.map((t) => t.length))})`,
   );
+  const omission = s.split("\n").find((l) => l.startsWith("_\u2026")) ?? "";
   assert(
     /_\u2026 \d+ further dropped item\(s\) not shown/.test(s),
     "bound: the disclosure line states how many further items were dropped",
   );
   assert(
-    /not shown \(\d+-char item text, section capped at \d+ chars\)/.test(s),
+    /not shown \(\d+-char item text, \d+-char deciding source, section capped at \d+ chars\)/.test(
+      s,
+    ),
     "bound: the disclosure line names the bounds that fired",
   );
   assert(
-    s.includes("run transcripts") && s.includes("/runs"),
+    omission.length <= DROPPED_OMISSION_LINE_MAX_CHARS,
+    `bound: the omission line fits its own derived budget (${omission.length} <= ${DROPPED_OMISSION_LINE_MAX_CHARS})`,
+  );
+  assert(
+    s.includes(DROPPED_ARTIFACT) || s.includes(DROPPED_ARTIFACT_DIR),
     "bound: the disclosure line names where the full list lives",
   );
 
@@ -423,38 +465,10 @@ delete process.env.PI_ENSEMBLE_FORGE;
   ]);
   assert(
     small ===
-      "\n## Dropped investigation items\n\n- dropped: conflicts with operator decision \"an op line\" — [a / edge-case] a short dropped item\n",
+      `\n${DROPPED_SECTION_HEADING}\n\n- dropped: conflicts with operator decision "an op line" — [a / edge-case] a short dropped item\n`,
     `bound: a small section renders byte-identically to the pre-fix shape (${JSON.stringify(small.slice(-30))})`,
   );
   assert(droppedSection([]) === "", "bound: zero drops still render no section at all");
 }
 
-
-// ------------------------------------------------------------------- canary
-// The operator must be able to find the full list from the tool result alone.
-// The body's omission line and plan-tool.ts's COMPACTED note name the same
-// location because both read one constant — two literals would drift.
-{
-  const { readFileSync } = await import("node:fs");
-  const path = await import("node:path");
-  const read = (f: string) =>
-    readFileSync(path.resolve(import.meta.dirname, "..", "src", f), "utf8");
-  assert(
-    /export const DROPPED_ARTIFACT = "the run transcripts \(\/runs\)";/.test(
-      read("plan-dropped-budget.ts"),
-    ),
-    "canary: the full-list location is one exported constant",
-  );
-  assert(
-    read("plan-dropped-section.ts").includes("DROPPED_ARTIFACT") &&
-      read("plan-tool.ts").includes("DROPPED_ARTIFACT"),
-    "canary: the body's omission line and the COMPACTED note name the same location",
-  );
-  assert(
-    !/full findings live in "the run/.test(read("plan-tool.ts")),
-    "canary: plan-tool.ts has no competing literal for the findings location",
-  );
-}
-
-console.log(`\nexit ${exit}`);
-process.exit(exit);
+process.exit(finish());

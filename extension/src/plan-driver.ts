@@ -39,7 +39,11 @@ import {
   getPlanDispatchOverride,
   getPlanStatFnOverride,
 } from "./plan-driver-seams.ts";
-import { DROPPED_ARTIFACT } from "./plan-dropped-budget.ts";
+import {
+  compactedDisclosure,
+  finalizeDroppedDisclosure,
+  tracePlanRun,
+} from "./plan-dropped-artifact.ts";
 import { reviewedDigestOf } from "./plan-filing-claim.ts";
 import { filedBodyOf, settledGapsSection } from "./plan-gap-disclosure.ts";
 import { type GapGateLoopResult, runGapGateLoop } from "./plan-gaps.ts";
@@ -264,7 +268,7 @@ async function runPipelineOn(
   let { title, body } = phase3;
   if (compacted) {
     trace(`plan-driver: body compacted to fit the forge limit (${body.length} chars)`);
-    body += `\n\n> Compacted to fit the forge's ${FORGE_BODY_MAX}-char body limit (per-section items capped at ${chosenBudget.maxItemsPerSection}, item text clipped at ${chosenBudget.itemClipChars} chars); full findings live in ${DROPPED_ARTIFACT}.`;
+    body += compactedDisclosure(chosenBudget);
   }
   // #677 — the NEVER CLAIM post-filter disclosure, appended to the drafted
   // body BEFORE validation (so the filed spec names what was dropped and
@@ -391,6 +395,9 @@ async function runPipelineOn(
     rawUnparsedHead = loopResult.rawUnparsedHead;
   }
 
+  // #1383: plan-dropped-artifact.ts decides where the omitted items live.
+  const dl = await finalizeDroppedDisclosure({ repoRoot, descriptor, type, openPoints });
+  if (dl.omitted) body = dl.repoint(body);
   // D2: when the cap routed to filing, the spec that gets filed carries the
   // residual disclosure. Append it HERE, before fileIssue, so the single
   // filing pass below sees the final body.
@@ -447,14 +454,9 @@ async function runPipelineOn(
     provenance: input.provenance,
   });
 
-  // #633: report BOTH how many angles were dispatched and how many produced
-  // structured items — `angles=` alone read as "3 angles ran" even when all
-  // three returned prose-only (the all-angles-failed case the guard above
-  // halts for now still surfaces the count when it fires).
-  const structuredCount = findings.filter((f) => f.toolUses.length > 0).length;
-  trace(
-    `plan-driver: type=${type} angles=${findings.length} structured=${structuredCount} gaps=${gaps.length} filed=${!!issueUrl} dryRun=${!!dryRun} capReason=${capReason ?? "none"}`,
-  );
+  // #633: angles AND how many produced structured items (the line lives in
+  // plan-dropped-artifact.ts, which is where the driver's size seam sits).
+  tracePlanRun({ type, findings, gaps, issueUrl, dryRun: !!dryRun, capReason });
 
   return buildPlanResult({
     type,
@@ -470,6 +472,8 @@ async function runPipelineOn(
     failedAngles,
     compacted,
     issueNumber,
+    // #1383: the durable full dropped list, so plan-tool.ts names real bytes.
+    droppedListFile: dl.file,
     // #1043: a fileable dry run reports the digest a verbatim filing must echo.
     // #1377: labels and provenance are digest inputs — labels are arguments to
     // the create call (never body text), and the provenance lines are appended

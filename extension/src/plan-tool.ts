@@ -368,7 +368,7 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
     ? `\n\n=== BASE FALLBACK ===\nInvestigators read the local checkout, not origin/<default>: ${r.baseFallback}. The investigation cache was not used for this run.`
     : "";
   const compactedNote = r.compacted
-    ? `\n\nCOMPACTED: the body was deterministically compacted to fit the forge's ${FORGE_BODY_MAX}-char limit (a disclosure line inside the body says how; full findings live in ${DROPPED_ARTIFACT}).`
+    ? `\n\nCOMPACTED: the body was deterministically compacted to fit the forge's ${FORGE_BODY_MAX}-char limit (a disclosure line inside the body says how; full findings live in ${r.droppedListFile ?? DROPPED_ARTIFACT}).`
     : "";
   const timingsLine =
     r.timings && r.timings.length > 0

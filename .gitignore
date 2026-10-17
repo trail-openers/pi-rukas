@@ -27,6 +27,12 @@ dist/prompts/
 # /work driver workflow state (per-issue, per-project)
 .pi/work-state/
 
+# #1383: the full dropped-items list behind the bounded
+# `## Dropped investigation items` section. Per-clone operator artefact the plan
+# driver writes; the filed spec names the path, so it is durable but never
+# committed.
+.pi/plan-dropped/
+
 # Research artefacts from workflow runs — local working material, not shipped.
 outputs/
 .feynman/
