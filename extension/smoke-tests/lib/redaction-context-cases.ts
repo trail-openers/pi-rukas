@@ -242,6 +242,26 @@ export const PADDING_LEAKS: {
 ];
 
 /**
+ * Overreach probes for the key/value BODY CLASS: shapes that name a credential
+ * keyword but carry something that is not a credential after it. Each must leave
+ * `redactSecrets` with `count: 0`.
+ *
+ * `token={"a":1}` is the reason the body class is a CREDENTIAL alphabet and not
+ * `\S`: a JSON object literal welded to a keyword. With a stray `{` admitted into
+ * the class the arm matches the whole object and reports a redaction that redacted
+ * nothing secret (#1393).
+ *
+ * The `{`'s effect is gated by the class's own `{12,4096}`: after the `=` the regex
+ * must still find 12 body characters, so a SHORT object reports zero either way and
+ * cannot discriminate. `json-object-braced-12` is the minimal shape that can — the
+ * braces themselves only satisfy the run while `{` sits in the class.
+ */
+export const BODY_CLASS_OVERREACH: { name: string; text: string }[] = [
+  { name: "json-object-literal", text: 'token={"a":1}' },
+  { name: "json-object-braced-12", text: "token={abcdefghijkl}" },
+];
+
+/**
  * Text that must keep matching NOTHING, at every pattern position. Each entry is
  * a shape a widened character class could plausibly have swallowed: the per-rule
  * token-end rewrite had to keep the base64 tail matchable for a PREFIX it owns
