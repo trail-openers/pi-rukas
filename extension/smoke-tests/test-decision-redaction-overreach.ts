@@ -40,16 +40,32 @@ import { PEM_TAIL_PRESERVES } from "./lib/redaction-context-cases.ts";
 
 const { assert, state } = makeAssert();
 
+/**
+ * Filler for the over-reach probes: `n` characters broken by a space roughly every 80.
+ *
+ * These probes ask whether a pattern eats something that is not a credential, so their
+ * filler must sit in the regime a scan actually covers — a whitespace-separated run,
+ * which `widenPastCut` walks to a token boundary and `redactSecrets` judges. A bare
+ * `"f".repeat(2048)` puts the probe on the far side of `SCAN_CAP` from the kept window,
+ * where `widenPastCut` gives up and the fail-closed pass below replaces the whole run
+ * with a marker on purpose: correct behaviour for a window that is one unscannable
+ * credential-class token, and a false over-reach alarm for a probe that is not one.
+ */
+function filler(n: number, ch = "f"): string {
+  const word = ch.repeat(80);
+  return (`${word} `.repeat(Math.ceil(n / 80)) + word).slice(0, n);
+}
+
 // ------------------- no over-redaction: what the patterns must keep matching NOTHING
 
 for (const { name, text } of MUST_NOT_REDACT) {
   const positions: [string, string][] = [
     ["as-is", text],
-    ["glued to a run", `${"f".repeat(120)}${text}${"t".repeat(400)}`],
+    ["glued to a run", `${filler(120)}${text}${filler(400, "t")}`],
     ["double-quoted", `"${text}"`],
     ["in a JSON field", String.raw`{"note":"${name}"}`],
-    ["at the tail of a long run", `${"f".repeat(2048)} ${text}`],
-    ["at the head of a long run", `${text} ${"t".repeat(2048)}`],
+    ["at the tail of a long run", `${filler(2048)} ${text}`],
+    ["at the head of a long run", `${text} ${filler(2048)}`],
   ];
   for (const [where, probe] of positions) {
     const unb = redactSecrets(probe);
@@ -65,6 +81,41 @@ for (const { name, text } of MUST_NOT_REDACT) {
       );
     }
   }
+}
+
+// --------- the fail-closed pass: a kept window that is one giant token is redacted ON PURPOSE
+
+{
+  // The mirror of the over-reach claim above, and deliberately its opposite. When the
+  // filler is one whitespace-free run longer than `SCAN_CAP`, `widenPastCut` gives up
+  // (there is no whitespace to walk to), no arm anchors on the run, and the kept window
+  // opens on live credential-class material with `count: 0`. That is the shape
+  // `redactUnscannedRuns` fails closed on — a 10 KB base64 body shipped by
+  // `redactBounded(…, 600, "end")` reported zero redactions while carrying key material.
+  // So the rule is: over-reach is judged inside a scannable window, and a window that is
+  // ONE unscannable token is treated as a credential. A `:` breaks the run into words so
+  // the window stays scannable and the same shape reports nothing.
+  const SEG = "aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d";
+  const giant = `${"f".repeat(5000)} password=${SEG.repeat(200)} tail words`;
+  const closed = redactBounded(giant, 600, "end");
+  assert(
+    closed.count >= 1 && !closed.text.includes(SEG),
+    `a whitespace-free run past the scan budget is redacted on purpose (${closed.count}, ${JSON.stringify(closed.text.slice(0, 32))})`,
+  );
+  // The control shows what the pass keys on: not the length of the window but whether a
+  // credential-class RUN reaches it. Here the kept window opens on 600 characters of an
+  // unbroken `g`-class run — the same unscannable shape — and that run is itself replaced.
+  // That is the intended cost of failing closed: when the scan could not reach the window,
+  // anything long enough to be a key body is treated as one, filler included. Shorter
+  // tokens in the same window (the `tail words` behind it) survive untouched, which is the
+  // part that keeps a real error tail readable.
+  const scannable = redactBounded(`${"g".repeat(5000)} tail words`, 600, "end");
+  assert(
+    scannable.count === 1 &&
+      scannable.text === "[REDACTED] tail words" &&
+      !scannable.text.includes("g"),
+    `...and the fail-closed pass takes the run, never the short words after it (${scannable.count}, ${JSON.stringify(scannable.text)})`,
+  );
 }
 
 // ---- the key/value body class is a credential alphabet, not `\S`: a JSON object
