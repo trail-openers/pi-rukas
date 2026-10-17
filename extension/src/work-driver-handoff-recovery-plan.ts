@@ -52,7 +52,13 @@ export function planSpecMismatchSteps(
       lines: forgeRecoveryLines(
         forge,
         [`/plan ${issue}    # or: gh issue edit ${issue}`],
-        [`/plan ${issue}    # or: glab issue edit ${issue} --description "<revised body>"`],
+        // `glab` has NO `issue edit` subcommand (unlike `gh`), so the line
+        // that used to sit here was not a command anyone could run. The REST
+        // form is what the forge adapter itself uses (forge-commands.ts
+        // `issueEditCmd`).
+        [
+          `/plan ${issue}    # or: glab api -X PUT projects/:id/issues/${issue} -f "description=<revised body>"`,
+        ],
       ),
     },
     {
@@ -71,7 +77,15 @@ export function planSpecMismatchSteps(
         "   plan-quality gates for one run — and fix the spec afterwards, because",
         "   the next cycle hits the same wall:",
       ],
-      lines: [`PI_ENSEMBLE_PLAN_QUALITY=0 /work ${issue} --restart`],
+      lines: [
+        // #819 round-2 — two lines, not one. `PI_ENSEMBLE_PLAN_QUALITY=0 /work …`
+        // is not a command: `/work` is a Pi slash command typed into the chat,
+        // so a shell env prefix in front of it is pasted as literal text and
+        // the command does not resolve. The variable has to be in the PI
+        // PROCESS's environment before the session runs the slash command.
+        "# set PI_ENSEMBLE_PLAN_QUALITY=0 in the pi process first (restart pi with it, or export it in the shell pi was started from)",
+        `/work ${issue} --restart`,
+      ],
     },
   ];
 }

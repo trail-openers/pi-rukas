@@ -7,7 +7,7 @@
  */
 
 import { hostBudget } from "./host-resources.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import {
   countMarkdownSections,
   extractListField,
@@ -60,10 +60,14 @@ export function parseWorkstreams(text: string): Record<string, Workstream> {
   const out: Record<string, Workstream> = {};
   const blocks = countMarkdownSections(text, "Workstreams");
   if (blocks > 1) {
-    // Loud on the driver's trace channel: the reply the cycle built from was
+    // Loud on the driver's WARN channel: the reply the cycle built from was
     // one arbitrary block of several, and the operator reading a handoff
-    // later needs to be able to see that this happened.
-    trace(
+    // later needs to be able to see that this happened. `traceWarn`, not
+    // `trace`: this is a reply the driver is about to REJECT and halt on, not
+    // routine step bookkeeping — at info level the line is indistinguishable
+    // from the trace noise around it, which is how the #818 reply reached four
+    // developers without anyone seeing a warning.
+    traceWarn(
       `work-driver: plan reply carried ${blocks} '## Workstreams' sections — parsed the first (the plan-to-spec gate refuses this reply)`,
     );
   }

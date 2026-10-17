@@ -13,7 +13,11 @@ import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { extractListField, sliceMarkdownSection } from "./work-driver-plan-parse.ts";
 
 // Re-exported: several modules read plan/spec markdown through this module.
-export { sliceMarkdownSection, splitOutsideParens } from "./work-driver-plan-parse.ts";
+export {
+  countMarkdownSections,
+  sliceMarkdownSection,
+  splitOutsideParens,
+} from "./work-driver-plan-parse.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
@@ -27,6 +31,11 @@ import {
   portReferenceForCycle,
 } from "./work-driver-plan-contract.ts";
 import { mergeCoupledWorkstreams } from "./work-driver-plan-coupling.ts";
+// #819 round-2 — `countMarkdownSections` has exactly ONE definition (the parse
+// module's). The spec-coverage module used to carry a second copy, which is a
+// drift hazard rather than a convenience, so it now imports the counter and
+// this module re-exports it from the parse module only.
+import { planSpecMismatchReason } from "./work-driver-plan-spec-coverage.ts";
 import { execp } from "./work-driver-verify.ts";
 // #679 — the CANONICAL planQualityReason / correctivePlanSteer / steer builders
 // live in work-driver-plan-helpers.ts; this module re-exports them so existing
@@ -42,7 +51,6 @@ export {
   planQualityReason,
   planCorrectivePrompt,
   planDispatchTimeoutMs,
-  planSpecMismatchPlanQualityReason,
   planTimeoutCorrective,
 } from "./work-driver-plan-helpers.ts";
 // #849 — parseWorkstreams + maxWorkstreams moved to work-driver-plan-workstreams.ts
@@ -57,7 +65,6 @@ export {
 // #819 — the plan-to-spec gate's pieces, re-exported so the smoke tests import
 // the gate from the plan module the same way they import every other rule.
 export {
-  countMarkdownSections,
   findUncoveredDeliverables,
   planSpecMismatchReason,
 } from "./work-driver-plan-spec-coverage.ts";
@@ -70,14 +77,13 @@ import {
   planQualityEnabled,
   planQualityReason,
   planSpecMismatchCap,
-  planSpecMismatchPlanQualityReason,
   planTimeoutCorrective,
   planTimeoutKill,
 } from "./work-driver-plan-helpers.ts";
 import { findPathCollisions, findTestSubjectSplits } from "./work-driver-plan-paths.ts";
 // #819 — the cap helper below is typed on the gate's verdict shape.
 import type { PlanSpecMismatch } from "./work-driver-plan-spec-coverage.ts";
-import { planCorrectivePrompt } from "./work-driver-plan-timeout.ts";
+import { planCorrectivePrompt, planKillFailureEvent } from "./work-driver-plan-timeout.ts";
 import { parseWorkstreams } from "./work-driver-plan-workstreams.ts";
 import { planFindingsCount } from "./work-driver-pr-body-definition.ts";
 import { inlinePlanPrompt } from "./work-driver-prompts-early.ts";
@@ -206,6 +212,12 @@ export async function runPlan(
   let droppedEdges: { from: string; to: string }[] | undefined;
 
   const spec = next.pipelineState.normalisedSpec;
+  // #819 round-2 — one read of the knob for every gate site in this step (the
+  // primary spec gate, the gate's own dispatch guard, the corrective's spec
+  // gate and the recorded reason). Four separate calls to a function that
+  // reads `process.env` allowed an operator flip mid-step to make the gate
+  // fire at one site and not the next.
+  const planGateEnabled = planQualityEnabled();
   // #792 — count only the deliverables that are expected to produce a diff.
   // A plan-time no-diff marker (settings toggle, operator action, manual
   // verification) cannot land in any diff, so it must not feed the
@@ -240,11 +252,20 @@ export async function runPlan(
       parseWorkstreams,
       planCorrectivePrompt,
     );
-    if (recovered.ok) {
-      next = recovered.state;
-      workstreams = recovered.workstreams;
-      redispatched = true;
-    }
+    // #819 round-2 — adopt the state even when the corrective did not recover:
+    // `planTimeoutCorrective` appends the corrective's own failure event (its
+    // kill, or the synthesised one for a dispatch that THREW) to the state it
+    // returns, and the pre-round-2 `if (recovered.ok)` discarded it. The step
+    // then ended on a `step-completed` with no failure tail at all, so the
+    // router saw a successful plan step and the cycle went to branch with
+    // `workstreams: {}` — the #754 "ends on its dispatch-failed and the
+    // router's plan-timeout cap halts to handoff" contract was never actually
+    // met on this path. `next` is already this function's local, so the
+    // assignment is safe on both branches; `workstreams` stays `{}` on failure,
+    // which the empty-plan synthetic-default branch below then fills.
+    next = recovered.state;
+    workstreams = recovered.workstreams;
+    redispatched = true;
   }
   // #1005 — the coupling merge is a NO-OP on a single-workstream plan; the
   // gate and the corrective steer reason about the POST-MERGE plan.
@@ -281,8 +302,8 @@ export async function runPlan(
   // saw one block and produced one map either way.
   // An existing reason takes precedence in the corrective steer (the more
   // specific diagnosis: a collision is a fixable split, wrong work is not).
-  const specMismatch = planQualityEnabled()
-    ? planSpecMismatchPlanQualityReason(result.text ?? "", workstreams, spec)
+  const specMismatch = planGateEnabled
+    ? planSpecMismatchReason(result.text ?? "", workstreams, spec)
     : undefined;
   // The kill-triggered corrective already spent this cycle's one-shot budget,
   // so the gate below does not re-dispatch — but #819 must not proceed to
@@ -301,7 +322,7 @@ export async function runPlan(
   // the shape gate passed and only the spec gate fired, the steer is the
   // spec-steer (an existing reason keeps precedence: it is the more specific
   // diagnosis of the two).
-  if (!planKill && planQualityEnabled() && (reason || specMismatch)) {
+  if (!planKill && planGateEnabled && (reason || specMismatch)) {
     // #849 — the first plan's RAW workstreams, held aside for the dropped-edge
     // check. Set here (the quality gate firing on the primary's plan) so the
     // kill-triggered corrective path leaves it undefined (pre-#1005 shape).
@@ -358,6 +379,17 @@ export async function runPlan(
         correctiveRawWorkstreams = reparsed; // #1005 — the corrective's RAW map
       }
       redispatched = true;
+      // #819 round-2 — a corrective killed by one of the driver's own caps
+      // (backstop timeout, loop detector, token budget, abort) is NOT a plan:
+      // a killed child has no structured output, so judging its text against
+      // the spec gate invents a `plan-spec-mismatch` finding out of a silence
+      // we caused. Route it like the primary's kill instead — a `dispatch-failed`
+      // carrying the structured cause, whose tail the step router maps to the
+      // plan caps (`plan-timeout` for the step's own bound, the cap's own
+      // literal for loop/token-budget, else `step-failed:plan`).
+      if (retry.killCause) {
+        return appendEvent(next, planKillFailureEvent("plan", "explore", "plan:corrective", retry));
+      }
       // #1005 — the coupling merge runs AGAIN on the corrective plan: the
       // corrective re-plan is free to merge the colliding workstreams (that
       // is the overlap fix), but it is also free to split coupled work AGAIN
@@ -372,8 +404,8 @@ export async function runPlan(
       // only before the re-dispatch would have passed it. A corrective is
       // already this cycle's one-shot budget — a plan-to-spec failure here
       // HALTS rather than proceeding to branch/develop on fabricated scope.
-      const correctiveMismatch = planQualityEnabled()
-        ? planSpecMismatchPlanQualityReason(retry.text ?? "", workstreams, spec)
+      const correctiveMismatch = planGateEnabled
+        ? planSpecMismatchReason(retry.text ?? "", workstreams, spec)
         : undefined;
       if (correctiveMismatch) {
         return planSpecMismatchCap(
@@ -430,8 +462,7 @@ export async function runPlan(
   const finalReason =
     droppedEdges && droppedEdges.length > 0
       ? "dropped-dependencies"
-      : (reason ??
-        (specMismatch && planQualityEnabled() ? ("plan-spec-mismatch" as const) : undefined));
+      : (reason ?? (specMismatch && planGateEnabled ? ("plan-spec-mismatch" as const) : undefined));
   return {
     ...next,
     pipelineState: {

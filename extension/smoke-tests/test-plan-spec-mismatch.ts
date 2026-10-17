@@ -19,8 +19,9 @@
  */
 
 import { correctivePlanSteer } from "../src/work-driver-plan-helpers.ts";
+import { countMarkdownSections } from "../src/work-driver-plan-parse.ts";
+import { PLAN_SINGLE_BLOCK_RULE } from "../src/work-driver-prompts-plan.ts";
 import {
-  countMarkdownSections,
   findUncoveredDeliverables,
   planSpecMismatchReason,
 } from "../src/work-driver-plan-spec-coverage.ts";
@@ -206,6 +207,59 @@ const FABRICATED = ws({
   );
 }
 
+// ------------------------- #819 round-2: prose in a `paths:` slot is not a path
+
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
+{
+  // The defect: `"n/a"`, `"tbd"` and a whole sentence all survive
+  // `normaliseDeclaredPath` (it strips annotations, backticks and slashes, not
+  // English), so they reached the coverage comparison as paths no workstream
+  // could ever declare — and the gate rejected an honest plan for a slot the
+  // SPEC author filled with prose. `isPlainRepoRelativePath` is the same
+  // predicate the shape gate uses for `invalid-path` on the workstream side;
+  // both sides now judge a slot by it.
+  const PROSE_SPEC = {
+    deliverables: [
+      { id: "d1", paths: ["n/a"] },
+      { id: "d2", paths: ["the developer will decide where this lands"] },
+    ],
+  };
+  const prose = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), PROSE_SPEC);
+  assert(
+    prose.checkedCount === 0,
+    "#819 round-2: a deliverable whose paths slot is prose is NOT measurable — checkedCount stays 0",
+  );
+  assert(
+    prose.uncovered.length === 0,
+    "#819 round-2: prose in the paths slot produces no uncovered row (the planner cannot act on it)",
+  );
+  assert(
+    planSpecMismatchReason("## Workstreams\n### default\n- paths: src/a.ts\n", ws({ a: ["src/a.ts"] }), PROSE_SPEC) ===
+      undefined,
+    "#819 round-2: a spec whose only paths are prose never rejects the plan (the gate has nothing to judge)",
+  );
+  // Absolute / traversing slots are non-paths too (same predicate).
+  for (const bad of ["/etc/passwd", "src/../secrets.ts", "src/fo o.ts"]) {
+    const r = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), {
+      deliverables: [{ id: "d1", paths: [bad] }],
+    });
+    assert(
+      r.checkedCount === 0 && r.uncovered.length === 0,
+      `#819 round-2: a non-path slot (${JSON.stringify(bad)}) is not measurable, not a rejection`,
+    );
+  }
+  // A deliverable mixing a real path with prose is excluded WHOLESALE: the
+  // EVERY-path rule would reject the plan for the prose half regardless, so
+  // judging the measurable half would only produce a rejection nobody can fix.
+  const mixed = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), {
+    deliverables: [{ id: "d1", paths: ["src/a.ts", "n/a"] }],
+  });
+  assert(
+    mixed.checkedCount === 0 && mixed.uncovered.length === 0,
+    "#819 round-2: one non-path slot disqualifies the whole deliverable (no partial judgement, no false rejection)",
+  );
+}
+
 // ---------------------------------- no spec / no deliverables = not judgeable
 
 // biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
@@ -280,8 +334,11 @@ const TAIL = "## Verification\n- run the suite\n";
     "ambiguous reply (correct block first) → REJECTED too: last-wins/first-wins is a guess, and #818 showed the blocks come in no semantic order",
   );
   assert(
-    (a?.evidence ?? "").includes("exactly one"),
-    "the ambiguity verdict tells the planner what to emit instead",
+    // #819 round-2 — the rule is one exported constant (PLAN_SINGLE_BLOCK_RULE)
+    // quoted by the prompt, the steer and this evidence, so the assertion is
+    // against the constant rather than a paraphrase of it.
+    (a?.evidence ?? "").includes(PLAN_SINGLE_BLOCK_RULE),
+    "the ambiguity verdict tells the planner what to emit instead (quotes the shared single-block rule)",
   );
 }
 
@@ -310,7 +367,7 @@ const TAIL = "## Verification\n- run the suite\n";
     "the corrective steer forbids re-choosing WHAT gets built — the #818 failure mode",
   );
   assert(
-    /exactly ONE `## Workstreams` section/.test(s),
+    s.includes(PLAN_SINGLE_BLOCK_RULE),
     "the steer names the single-block rule so the corrective cannot repeat the ambiguity",
   );
   assert(!s.includes("undefined"), "the steer renders with no details and leaks no 'undefined'");

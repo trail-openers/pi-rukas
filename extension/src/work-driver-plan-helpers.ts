@@ -16,6 +16,9 @@ import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
+// #819 round-2 — the single-block rule lives in the prompt module so the
+// planner prompt, this steer and the gate's evidence all quote one string.
+import { PLAN_SINGLE_BLOCK_RULE } from "./work-driver-prompts-plan.ts";
 // #849 — findDroppedDependencyEdges moved to work-driver-plan-deps.ts (the
 // 500-line cap); re-exported so the importers keep their paths.
 export { findDroppedDependencyEdges } from "./work-driver-plan-deps.ts";
@@ -36,6 +39,7 @@ import {
   type PathCollision,
   findPathCollisions,
   findTestSubjectSplits,
+  isPlainRepoRelativePath,
 } from "./work-driver-plan-paths.ts";
 // #819 — the plan-to-spec gate (an adjacent pure function, NOT a new branch
 // in planQualityReason, which never sees the spec).
@@ -64,7 +68,7 @@ export function planQualityEnabled(): boolean {
 }
 
 /**
- * #819 — the plan-to-spec gate, shaped for `planQuality.reason`.
+ * #819 — the plan-to-spec gate's verdict, shaped for `planQuality.reason`.
  *
  * Deliberately NOT a branch inside `planQualityReason`: that function is
  * called positionally as `(workstreams, findingsCount)` from four smoke
@@ -81,7 +85,6 @@ export function planSpecMismatchPlanQualityReason(
 ): PlanSpecMismatch | undefined {
   return planSpecMismatchReason(text, workstreams, spec);
 }
-
 /**
  * #819 — the halts both gate sites emit, factored out of `runPlan` so the
  * step handler stays inside its own budget. Same decision from two places: the
@@ -90,6 +93,20 @@ export function planSpecMismatchPlanQualityReason(
  *
  * `nextStep: "handoff"`, and NO commits, branch or worktree — the cap fires
  * before the branch step, which is the whole value of placing the gate there.
+ *
+ * #819 round-2 — the cap alone is not enough for the operator to see WHY this
+ * cycle stopped at plan: `lastCapHit` is the only other reader of the gate's
+ * verdict, and a state file whose `planQuality.reason` is absent reads as "the
+ * shape gate passed, the cycle just happened to stop". So this writes BOTH the
+ * cap-hit event and `pipelineState.planQuality.reason = "plan-spec-mismatch"`,
+ * preserving whatever `findingsCount` / `redispatched` the step already
+ * recorded.
+ *
+ * The persisted evidence is capped: this string is rendered verbatim into the
+ * handoff (and an uncovered-deliverables verdict concatenates EVERY uncovered
+ * deliverable with ALL its paths, so a 20-deliverable spec's evidence is
+ * kilobytes). `recoveryStepsForCap` already clips the rendered line; capping
+ * here keeps the state file — which the driver re-parses on every wake — small.
  */
 export function planSpecMismatchCap(
   state: WorkState,
@@ -97,13 +114,28 @@ export function planSpecMismatchCap(
   whyNotReplanned: string,
 ): WorkState {
   trace(`work-driver: plan to-spec gate — ${mismatch.kind}, halting before branch`);
-  return appendEvent(state, {
+  const evidence = `${mismatch.evidence} — ${whyNotReplanned}`.slice(0, 500);
+  const withReason: WorkState = {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      planQuality: {
+        findingsCount: state.pipelineState.planQuality?.findingsCount ?? 0,
+        redispatched: state.pipelineState.planQuality?.redispatched ?? false,
+        ...(state.pipelineState.planQuality?.droppedEdges
+          ? { droppedEdges: state.pipelineState.planQuality.droppedEdges }
+          : {}),
+        reason: "plan-spec-mismatch",
+      },
+    },
+  };
+  return appendEvent(withReason, {
     kind: "cap-hit",
     at: Date.now(),
     cap: "plan-spec-mismatch",
     reviewRound: state.pipelineState.reviewRound,
     nextStep: "handoff",
-    evidence: `${mismatch.evidence} — ${whyNotReplanned}`,
+    evidence,
   });
 }
 
@@ -262,9 +294,8 @@ export function correctivePlanSteer(
       "declares paths must be declared by at least one workstream. Do NOT invent new work — a file",
       "that reaches your context through prior-context prose, a memory row, or another issue's",
       "history is not a deliverable. Do NOT change WHAT is built: re-splitting is the only thing",
-      "this re-dispatch is for. Emit exactly ONE `## Workstreams` section — two or more sections",
-      "make the reply ambiguous and the driver refuses it, because it cannot tell which block is",
-      "the plan.",
+      "this re-dispatch is for.",
+      PLAN_SINGLE_BLOCK_RULE,
     ].join("\n");
   }
   if (reason === "overlapping-paths") {
@@ -423,24 +454,4 @@ export function countEnumeratedFindings(body: string): number {
     if (/^\s*(?:\d+[.)]\s+\S|[-*]\s+\[[ xX]\]\s*\S)/.test(line)) n += 1;
   }
   return n;
-}
-
-/**
- * #1005 — a declared path is a plain repo-relative path when it has no
- * shell metacharacter, no leading `/`, and no `..` segment. The check is
- * deliberately conservative (rejects what is clearly dangerous; does not
- * try to be a full path grammar): the fence and the consolidation checks
- * compare these strings as-is, so a `..`-traversing or absolute path is
- * not a scope the driver can verify.
- */
-function isPlainRepoRelativePath(p: string): boolean {
-  const trimmed = p.trim();
-  if (trimmed.length === 0) return false;
-  // Shell metacharacters that would execute in a shell-built command.
-  if (/[`$;&|<>(){}\\\"'\s]/.test(trimmed)) return false;
-  // Absolute path (leading /).
-  if (trimmed.startsWith("/")) return false;
-  // .. traversal (as a segment, not inside a filename like "a..b.ts").
-  if (trimmed.split("/").includes("..")) return false;
-  return true;
 }
