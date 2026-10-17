@@ -56,7 +56,7 @@ import {
   runMergePrep,
   secondViolationProse,
 } from "./work-develop-fence-merge.ts";
-
+import { mergeRetryCap } from "./work-develop-fence-retry-cap.ts";
 import {
   applyFenceVerdicts,
   replaceDevelopConvergedVerdicts,
@@ -65,7 +65,6 @@ import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
 import { recordConsolidatedVerifySkip } from "./work-driver-verify-events.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
-
 import type { WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
 
@@ -219,4 +218,3 @@ export async function runMergeRetryFlow(
   );
   return next;
 }
-import { mergeRetryCap } from "./work-develop-fence-retry-cap.ts";

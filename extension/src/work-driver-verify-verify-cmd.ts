@@ -36,7 +36,6 @@ import {
   isHostForkExhaustion,
   pidLimitSnapshot,
 } from "./work-driver-exec-error.ts";
-import { recordGateHangLogPath } from "./work-driver-gate-hang.ts";
 import { captureProcessTree } from "./work-driver-gate-hang.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { compareWithBaseline } from "./work-driver-verify-baseline.ts";
@@ -112,13 +111,6 @@ export async function runVerifyCommandGate(opts: {
   /** #1349 — the base run demonstrably fails the way the change's run does. */
   onBaselineAttributed?: () => void;
   /**
-   * #1427 — called with each hang report the gate persisted (one per killed
-   * run). The caller records the paths on the cap-hit event's `logPaths`, so
-   * the handoff names the file without regexing it out of the failure prose —
-   * the same structural channel #841 uses for the consolidated run logs.
-   */
-  onGateHangLogPath?: (logPath: string) => void;
-  /**
    * #1427 — injectable process-tree walker, so a smoke test can assert the
    * report's shape without forking `ps`. Production omits it and the real
    * walker runs.
@@ -157,7 +149,6 @@ export async function runVerifyCommandGate(opts: {
     onVerifyFlakeRecovered,
     fenceViolations,
     onConsolidatedLogPath,
-    onGateHangLogPath,
     walkProcessTree,
     hangSink,
     // #1240 review r2 — the callback must be destructured AND forwarded:
@@ -234,7 +225,6 @@ export async function runVerifyCommandGate(opts: {
             cmd: ran,
             cwd,
             timeoutMs: verifyTimeoutMs(),
-            ...(typeof e.treePid === "number" ? { treePid: e.treePid } : {}),
             ...(killedTree !== undefined ? { tree: killedTree } : {}),
           }
         : undefined;
@@ -257,12 +247,14 @@ export async function runVerifyCommandGate(opts: {
           { tag: cwdSlug },
         );
         if (logPath !== undefined) {
-          // #1427 round 3 — recorded on THIS gate call's sink, not on `ctx`:
+          // #1427 round 3/4 — recorded on THIS gate call's sink, not on `ctx`:
           // the context is cycle-scoped and the three cap sites are three
           // separate gate CALLS, which is what let a late cap name an early
-          // run's file. The callback still fires for the consolidated leg.
-          onGateHangLogPath?.(logPath);
-          if (hangSink !== undefined) recordGateHangLogPath(hangSink, logPath);
+          // run's file. Pushed directly — the recorder it used to call had one
+          // reader, a test, and no other caller.
+          if (hangSink !== undefined) {
+            hangSink.gateHangLogPaths = [...(hangSink.gateHangLogPaths ?? []), logPath];
+          }
         }
       }
       perWorktreeVerifyFailures.push(
@@ -444,13 +436,18 @@ export async function runVerifyCommandGate(opts: {
     // #1421 fix round — same forwarding rule: without it the structured
     // decline dies here and the cap router falls back to the prose label.
     ...(onBuildResidueOnly !== undefined ? { onBuildResidueOnly } : {}),
-    // #1427 round 3 — the consolidated probe writes its own hang report; its
+    // #1427 round 3/4 — the consolidated probe writes its own hang report; its
     // path lands on the same per-call sink as the per-worktree seam's, so the
     // one reader (the cap emit site) sees both legs of THIS gate call and
-    // nothing from an earlier one.
+    // nothing from an earlier one. `runConsolidatedVerify` already reports the
+    // path on its result (`hangLogPath`), which is what this callback carries —
+    // so the sink is the only channel a caller needs, and the extra
+    // `onGateHangLogPath` hop (whose sole reader was a test's local variable)
+    // is gone.
     onGateHangLogPath: (logPath) => {
-      onGateHangLogPath?.(logPath);
-      if (hangSink !== undefined) recordGateHangLogPath(hangSink, logPath);
+      if (hangSink !== undefined) {
+        hangSink.gateHangLogPaths = [...(hangSink.gateHangLogPaths ?? []), logPath];
+      }
     },
   });
   // Aggregation: a consolidated FAILURE keeps per-worktree failures as

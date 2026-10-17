@@ -20,7 +20,11 @@
 
 import { GATE_HANG_LABEL, gateHangClause, reportGateHang } from "../src/work-driver-gate-hang.ts";
 import { explainVerifyTimeout } from "../src/work-driver-explain-verify.ts";
-import { isTimedOutKill, timeoutWhere } from "../src/work-driver-verify-develop-helpers.ts";
+import { isTimedOutKill } from "../src/work-driver-verify-develop-helpers.ts";
+import {
+  verifyHangFailure,
+  verifyTimeoutFailure,
+} from "../src/work-driver-verify-develop-helpers.ts";
 import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -142,8 +146,10 @@ assert(
 );
 assert(isTimedOutKill({ killed: false }) === false, "gate: a run that was not killed is not one");
 
-// An overflow run produces no clause at all: the seam calls `timeoutWhere`
-// only for a hang, and a run it does not treat as hung gets the plain `where`.
+// An overflow kill is not a hang, so the seam never builds a run to describe
+// and the failure string is exactly the #1324 sentence: `verifyHangFailure` with
+// no run adds nothing. That is the shape the seam produces for an overflow, so
+// this asserts the prose the operator actually reads.
 {
   const overflowErr = Object.assign(new Error("maxBuffer"), {
     killed: true,
@@ -153,10 +159,17 @@ assert(isTimedOutKill({ killed: false }) === false, "gate: a run that was not ki
     stderr: "",
   });
   const hung = isTimedOutKill(overflowErr);
-  const where = hung ? timeoutWhere("in /wt/a", { output: "", cmd: "c", cwd: "/wt/a", timeoutMs: 1 }) : "in /wt/a";
+  const failure = hung
+    ? verifyHangFailure("cargo test", "in /wt/a", 1000, {
+        output: "",
+        cmd: "cargo test",
+        cwd: "/wt/a",
+        timeoutMs: 1000,
+      })
+    : verifyTimeoutFailure("cargo test", "in /wt/a", 1000);
   assert(
-    !where.includes(GATE_HANG_LABEL),
-    `overflow: no gate-hang clause is produced (${where})`,
+    !failure.includes(GATE_HANG_LABEL),
+    `overflow: no gate-hang clause is produced (${failure})`,
   );
 }
 

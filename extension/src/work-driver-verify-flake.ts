@@ -28,7 +28,7 @@ import path from "node:path";
 import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import type { HangProcess } from "./work-driver-gate-hang.ts";
-import { captureProcessTree } from "./work-driver-gate-hang.ts";
+import { NO_TREE_CAPTURED, captureProcessTree } from "./work-driver-gate-hang.ts";
 export { slugName, writeGateHangLog } from "./work-driver-gate-hang-log.ts";
 import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
 import { boundVerifyLog } from "./work-driver-verify-log-bounds.ts";
@@ -138,12 +138,6 @@ export async function rerunConsolidatedVerifyOnce(
   timeoutMs: number,
   scratchDir?: string,
   timestamp?: string,
-  /**
-   * #1427 — injectable process-tree walker. The tree is walked here, in the
-   * window between the executor's kill and the caller's classification: after
-   * this function returns, the processes it must describe are gone.
-   */
-  walk?: (leaderPid: number) => { processes: HangProcess[]; treeUnavailable?: string },
 ): Promise<
   | {
       raw: string;
@@ -184,9 +178,19 @@ export async function rerunConsolidatedVerifyOnce(
     // grandchildren may still be alive: the lantern #1054 case is precisely
     // children that outlive the leader, and a walk after the settle would
     // report nothing about them.
-    if (timedOut && typeof e.treePid === "number") {
-      treeLeaderPid = e.treePid;
-      tree = (walk ?? captureProcessTree)(e.treePid);
+    //
+    // #1427 round 4 — a timed-out run whose executor reported NO leader pid now
+    // carries an explicit tree saying `no tree was captured`, rather than no tree
+    // at all: this helper has no injected walker, so an absent tree would reach
+    // the caller indistinguishable from a group nobody looked at, and the clause
+    // must never render that as an observed-empty count.
+    if (timedOut) {
+      if (typeof e.treePid === "number") {
+        treeLeaderPid = e.treePid;
+        tree = captureProcessTree(e.treePid);
+      } else {
+        tree = { processes: [], treeUnavailable: NO_TREE_CAPTURED };
+      }
     }
   }
   if (rawFailure === undefined) return undefined;

@@ -25,6 +25,13 @@ export const STUCK_TEST = "repo::sync::tests::pull_then_fetch";
 /** The process the fake walker claims is still holding on. */
 export const SENTINEL_ARGS = "SENTINEL-git-remote-https-origin";
 
+export interface HangProcessLike {
+  pid: number;
+  ppid: number;
+  etime: string;
+  args: string;
+}
+
 export const HUNG_STREAM = [
   "running 212 tests",
   "test git::fetch::tests::ok ... ok",

@@ -39,7 +39,7 @@ import {
 } from "./work-driver-consolidation-classify.ts";
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
-import { type HangProcess, captureProcessTree } from "./work-driver-gate-hang.ts";
+import { type HangProcess, NO_TREE_CAPTURED, captureProcessTree } from "./work-driver-gate-hang.ts";
 import { commitPrSkipDecision } from "./work-driver-integrate-verify-skip.ts";
 import { isTimedOutKill, verifyHangFailure } from "./work-driver-verify-develop-helpers.ts";
 import {
@@ -249,10 +249,14 @@ export async function runCommitPrConsolidatedVerify(
       const stream = combinedExecFailureStream(e);
       if (timedOut) {
         killedOutput = stream;
+        // #1427 round 4 — ONE capture, made in this catch while the group's
+        // stragglers can still be alive, and handed to the clause. The clause
+        // can no longer walk (`treePid`/`walk` are gone from `KilledGateRun`),
+        // so a seam that does not capture here gets `no tree was captured`.
         killedTree =
           typeof e.treePid === "number"
             ? captureProcessTree(e.treePid)
-            : { processes: [] as HangProcess[] };
+            : { processes: [] as HangProcess[], treeUnavailable: NO_TREE_CAPTURED };
       }
       return stream;
     }
@@ -311,7 +315,10 @@ export async function runCommitPrConsolidatedVerify(
     // the run that ended the run.
     if (secondRun.timedOut) {
       killedOutput = secondRun.raw;
-      killedTree = secondRun.tree ?? { processes: [] as HangProcess[] };
+      killedTree = secondRun.tree ?? {
+        processes: [] as HangProcess[],
+        treeUnavailable: NO_TREE_CAPTURED,
+      };
     }
     ranCmd = fastCmd && secondRun.raw.includes(FAST_TIER_LABEL) ? fastCmd : opts.verifyCmd;
   }

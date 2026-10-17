@@ -32,7 +32,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import type { GateHangPathSink } from "../src/work-driver-gate-hang.ts";
 import { writeGateHangLog } from "../src/work-driver-verify-flake.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
@@ -152,14 +151,12 @@ async function caseScopedPerGateCall() {
     second.hangLogPaths === undefined,
     `scope: an un-killed gate call names NO hang report (${(second.hangLogPaths ?? []).join(", ") || "none"})`,
   );
-  // The context-level accumulator is the leak: while it exists at all, the cap
-  // emit sites can (and the fence-retry fallback does) read reports from an
-  // earlier call. Round 3 removes the field, so nothing accumulates.
-  const leaked = (ctx as unknown as GateHangPathSink).gateHangLogPaths ?? [];
-  assert(
-    leaked.length === 0,
-    `scope: the cycle context accumulates no report paths (${leaked.length} leaked) — a later cap must not name an earlier run's file`,
-  );
+  // #1427 round 4 — no leak assertion here any more. The cycle-context
+  // accumulator (`ctx.gateHangLogPaths`) this used to probe no longer exists:
+  // #1427 round 3 gave each gate CALL its own sink and round 4 deleted the
+  // recorder that fed it. The per-call result is the only carrier, so the
+  // assertions above and below (this call reports its own file; the next call
+  // reports none) are the leak test — a field that cannot exist cannot leak.
   // The first call's file is still on disk and still readable — scoping the
   // list must not delete evidence, only stop it being attributed to the wrong cap.
   assert(

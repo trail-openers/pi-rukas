@@ -33,16 +33,15 @@ import {
   type HangProcess,
   MAX_ARGS_CHARS,
   MAX_SNAPSHOT_CHARS,
+  NO_TREE_CAPTURED,
   extractRunningTests,
   gateHangClause,
   isGateHangFailure,
   lastOutputLines,
-  recordGateHangLogPath,
   reportGateHang,
   walkProcessTree,
 } from "../src/work-driver-gate-hang.ts";
 import {
-  timeoutWhere,
   verifyHangFailure,
   verifyTimeoutFailure,
 } from "../src/work-driver-verify-develop-helpers.ts";
@@ -215,13 +214,21 @@ function main() {
       "failure: and the hang is named in the same string",
     );
     expect(
-      !timeoutWhere("in /x").includes("gate-hang"),
-      "failure: a run with nothing to say adds nothing to the sentence",
-    );
-    expect(
       verifyHangFailure("cargo test", "in /x", 1000) ===
         verifyTimeoutFailure("cargo test", "in /x", 1000),
       "failure: no run to describe is exactly the #1324 sentence",
+    );
+    // #1427 round 4 — a run with no captured tree says so, rather than the
+    // `no child process` that would read as an observed-empty group.
+    const noTree = verifyHangFailure("cargo test", "in /x", 1000, {
+      output: CARGO_STREAM,
+      cmd: "cargo test",
+      cwd: "/x",
+      timeoutMs: 1000,
+    });
+    expect(
+      noTree.includes(NO_TREE_CAPTURED),
+      `failure: an uncaptured tree is reported as uncaptured (${noTree.slice(-90)})`,
     );
   }
 
@@ -439,12 +446,6 @@ function main() {
     const bad = writeGateHangLog("/proc/nope/nope", "t", base({ output: "" }));
     expect(bad === undefined, "log: an unwritable scratch dir yields no path, not an error");
 
-    const sink: { gateHangLogPaths?: string[] } = {};
-    if (p !== undefined) {
-      recordGateHangLogPath(sink, p);
-      recordGateHangLogPath(sink, p);
-      expect(sink.gateHangLogPaths?.length === 1, "sink: the same report is recorded once");
-    }
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
