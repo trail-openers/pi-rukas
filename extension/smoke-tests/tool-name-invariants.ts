@@ -49,7 +49,7 @@ type Assert = (cond: boolean, msg: string) => void;
 /**
  * Unsets an environment variable for real.
  *
- * `process.env.HOME = undefined` does NOT unset it — the assignment stringifies,
+ * Assigning undefined to an env key (e.g. `process.env["HOME"]`) does NOT unset it — the assignment stringifies,
  * leaving the literal string "undefined", and the next roster read resolves `~`
  * against a directory named "undefined". A restoration helper that assigned
  * undefined would leave the probe testing a state no real process is ever in.
