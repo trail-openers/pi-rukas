@@ -26,6 +26,7 @@ import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gitTestEnv } from "./git-test-env.ts";
 
 /**
  * Self-isolate from the REAL per-clone review ledger (idempotent). Sets
@@ -48,14 +49,23 @@ export function isolateLedger(): void {
   }
 }
 
-/** Set up a temp repo with a local bare origin + a feature branch. */
+/** Set up a temp repo with a local bare origin + a feature branch.
+ *
+ * #1145 — every `execSync` here carries `env: gitTestEnv()`. These are the
+ * synchronous spawn forms, which is exactly the case bun 1.3 does not fix by an
+ * ambient `process.env` write, and this repo is what the ledger writers and the
+ * merge guard read their identity from: a host `init.defaultBranch` makes the
+ * clone's default branch differ, a host `~/.config/git/ignore` makes a file
+ * vanish from the fixture's own status. Both decide the verdict, neither is
+ * about the code under test. */
 export function setupRepo(): { repo: string; origin: string; branch: string } {
   const dir = mkdtempSync(path.join(os.tmpdir(), "ledger-"));
   const repo = path.join(dir, "repo");
   const origin = path.join(dir, "origin.git");
-  execSync(`git init -q ${origin}`, { stdio: "ignore" });
-  execSync(`git clone -q ${origin} ${repo}`, { stdio: "ignore" });
-  const git = (cmd: string) => execSync(cmd, { cwd: repo, stdio: "ignore" });
+  const gitEnv = gitTestEnv();
+  execSync(`git init -q ${origin}`, { stdio: "ignore", env: gitEnv });
+  execSync(`git clone -q ${origin} ${repo}`, { stdio: "ignore", env: gitEnv });
+  const git = (cmd: string) => execSync(cmd, { cwd: repo, stdio: "ignore", env: gitEnv });
   git("git config user.email t@t.t");
   git("git config user.name t");
   git("echo base > base.txt");
@@ -83,6 +93,7 @@ export const ledgerFile = (repo: string) => {
   const common = execSync("git rev-parse --git-common-dir", {
     cwd: repo,
     encoding: "utf8",
+    env: gitTestEnv(),
   }).trim();
   const abs = path.isAbsolute(common) ? common : path.resolve(repo, common);
   return path.join(abs, "review-ledger.json");

@@ -35,17 +35,27 @@ import { registerMergeGuard } from "../../src/merge-guard.ts";
 import type { LedgerEntry } from "../../src/review-ledger.ts";
 import { latestEntry, readLedgerFile } from "../../src/review-ledger.ts";
 import { commandOf } from "./argv-shell.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 /** The branch every fixture builds. One name so a row's branch is never the
  * thing an arm is accidentally asserting about. */
 export const BRANCH = "feature/x";
 
-/** Run a real git command in `repo` and return its trimmed stdout. */
+/** Run a real git command in `repo` and return its trimmed stdout.
+ *
+ * #1145 — `env: gitTestEnv()` on every git child this harness spawns. Only `gh`
+ * is faked here, so the binding decision under test IS this set of git reads:
+ * without the isolated env a host `~/.config/git/ignore` (or a host
+ * `init.defaultBranch`, which is what makes `origin/HEAD` exist and moves
+ * `resolveMainline` between two different answers) changes what the guard
+ * decides, and the arm's verdict becomes a property of the machine. Same reason
+ * for the two bare `execFileSync` calls in `setupRepo` below. */
 export const sh = (repo: string, ...argv: string[]) => {
   const stdout = execFileSync("git", ["-C", repo, ...argv], {
     cwd: repo,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: gitTestEnv(),
   });
   return stdout.trim();
 };
@@ -72,8 +82,14 @@ export function setupRepo(mainline = "main"): Repo {
   const root = mkdtempSync(path.join(os.tmpdir(), "adv-1360-"));
   const origin = path.join(root, "origin.git");
   const dir = path.join(root, "repo");
-  execFileSync("git", ["-C", root, "init", "-q", "--bare", origin], { stdio: "ignore" });
-  execFileSync("git", ["-C", root, "clone", "-q", origin, dir], { stdio: "ignore" });
+  execFileSync("git", ["-C", root, "init", "-q", "--bare", origin], {
+    stdio: "ignore",
+    env: gitTestEnv(),
+  });
+  execFileSync("git", ["-C", root, "clone", "-q", origin, dir], {
+    stdio: "ignore",
+    env: gitTestEnv(),
+  });
   sh(dir, "config", "user.email", "t@t.t");
   sh(dir, "config", "user.name", "t");
   sh(dir, "checkout", "-qb", mainline);
@@ -156,8 +172,18 @@ export function forgeExec(repo: string, pr: { comments: string[] }, baseBranch =
   return async (cmd0: string, o?: { argv?: string[] }): Promise<{ stdout: string }> => {
     if (cmd0 !== "gh" && !cmd0.startsWith("gh ")) {
       const stdout = o?.argv
-        ? execFileSync(cmd0, o.argv, { cwd: repo, encoding: "utf8", stdio: "pipe" })
-        : execFileSync("/bin/sh", ["-c", cmd0], { cwd: repo, encoding: "utf8", stdio: "pipe" });
+        ? execFileSync(cmd0, o.argv, {
+            cwd: repo,
+            encoding: "utf8",
+            stdio: "pipe",
+            env: gitTestEnv(),
+          })
+        : execFileSync("/bin/sh", ["-c", cmd0], {
+            cwd: repo,
+            encoding: "utf8",
+            stdio: "pipe",
+            env: gitTestEnv(),
+          });
       return { stdout };
     }
     const cmd = commandOf(cmd0, o);
