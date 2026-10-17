@@ -47,6 +47,21 @@
  *   - **Prose does not ground prose.** If a doc asserting "Intel i7" could be
  *     grounded by that same doc, every invented specification would validate
  *     itself. Self-reference is not evidence.
+ *
+ * ## …and the one exception: a path claim whose file exists (#1002)
+ *
+ * The second half of that rule made every relative path in a `SKILL.md`
+ * ungroundable, because the thing it points at is itself prose. Six skills each
+ * cited `references/patterns.md` and the scan called all six fabricated —
+ * `/work` 994 died on eight MEDIUM findings against files that exist on the
+ * branch. The rule was never wrong about *evidence*; it was wrong about the
+ * *question*. A path assertion asks "does this file exist?", which a lookup
+ * answers directly, and the token's own occurrence adds nothing to that answer.
+ *
+ * So `kind === "path"` claims get an existence escape, and only they do. A
+ * quantity, product, flag, or env token that happens to look like a path — or a
+ * file name that happens to exist — still needs a non-prose referent, because
+ * for those kinds the question really is "does anything back this up?".
  */
 
 /** A prose file — where unsupported claims are asserted rather than executed. */
@@ -191,6 +206,21 @@ export function extractClaimCandidates(diff: string, limit = MAX_CANDIDATES): Cl
  */
 export type GroundingLookup = (token: string) => Promise<string[]>;
 
+/**
+ * Whether a path claim's referent exists on the branch. Injected for the same
+ * reason `GroundingLookup` is: this module stays pure and offline-testable.
+ *
+ * The three outcomes are not interchangeable and the caller must not collapse
+ * them:
+ *
+ *   - `true` — the file is there, the claim is grounded.
+ *   - `false` — the branch was read and the file is not there. That is a fact,
+ *     and the claim stays a finding.
+ *   - a throw — the branch could not be read at all. "Could not tell", which
+ *     drops the claim rather than reporting it: see this function's docstring.
+ */
+export type PathExistenceLookup = (token: string, assertingFile: string) => Promise<boolean>;
+
 export interface UngroundedClaim extends ClaimCandidate {
   /** Prose files that mention it — never grounding, recorded for the message. */
   proseHits: string[];
@@ -203,11 +233,17 @@ export interface UngroundedClaim extends ClaimCandidate {
  * A lookup that throws is treated as "could not tell" and the claim is dropped,
  * never reported. An unreadable repository is not evidence that a claim is
  * fabricated, and this gate blocks merges — it must never manufacture a finding
- * out of its own failure.
+ * out of its own failure. The existence lookup follows the same rule: a git
+ * failure never becomes "Unsourced path", and never becomes "grounded" either.
+ *
+ * `pathExists` is the #1002 escape, applied to `kind === "path"` candidates
+ * only. It is consulted AFTER the token-occurrence rule, as an OR, so it can
+ * only ever remove a finding, never add one.
  */
 export async function groundClaims(
   candidates: readonly ClaimCandidate[],
   lookup: GroundingLookup,
+  pathExists?: PathExistenceLookup,
 ): Promise<UngroundedClaim[]> {
   const out: UngroundedClaim[] = [];
   for (const c of candidates) {
@@ -219,6 +255,15 @@ export async function groundClaims(
     }
     const nonProse = hits.filter((h) => h.length > 0 && !isProseFile(h));
     if (nonProse.length > 0) continue;
+    if (c.kind === "path" && pathExists) {
+      let exists: boolean;
+      try {
+        exists = await pathExists(c.token, c.file);
+      } catch {
+        continue;
+      }
+      if (exists) continue;
+    }
     out.push({ ...c, proseHits: hits.filter((h) => h.length > 0) });
   }
   return out;
