@@ -75,6 +75,16 @@ export type HandoffEmittedEvent = {
   consolidatedWorkstreams?: string[];
   /** #674 — why consolidation degraded to the per-worktree fallback. */
   consolidationReason?: string;
+  /**
+   * #1421 fix round — the producer's own reason when consolidation was
+   * DECLINED (dirty root, cherry-pick conflict, git error, lock failure),
+   * carried on the `handoff-emitted` event, which `/work-status` reads for its
+   * `consolid:` line. This is the single carrier: the driver's reason is NOT
+   * also written onto the `handoff-consolidated` event, because a field no
+   * writer sets and no reader reads is a second place for the same fact to go
+   * stale.
+   */
+  degradedReason?: string;
 };
 
 /** #674 — the driver consolidated the parked work onto the feature branch. */
@@ -92,15 +102,6 @@ export type HandoffConsolidatedEvent = {
    * recorded" and never as "restored".
    */
   restoreClaim?: string;
-  /**
-   * #1421 — the driver's own reason when consolidation was DECLINED (dirty
-   * root, cherry-pick conflict, git error, lock failure). The handoff used to
-   * report one fixed sentence for every failure, so a cycle refused by cargo's
-   * `target/` read exactly like one whose picks conflicted, and nothing said
-   * where the reviewed commits were. Absent on success and on events written
-   * before #1421.
-   */
-  degradedReason?: string;
 };
 
 /**
