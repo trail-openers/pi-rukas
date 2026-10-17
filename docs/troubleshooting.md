@@ -1387,6 +1387,77 @@ Each cycle produces **its own PR** and its own state file (`.pi/work-state/<prim
 - **PR15 (v0.12.15)**: retreated to strictly sequential one-PR-per-issue. Safe but ignored the "these issues genuinely belong together" signal.
 - **PR16 (v0.12.16+)**: deterministic grouping decides the middle path.
 
+### A dependent issue started before the issue it depends on (#1101)
+
+**Symptom:** `/work 12 13` where #13's body says `Depends-on: #12`. Both cycles
+start. One of them parks at `plan` with `cross-group-conflict` — after an
+explore and a plan dispatch have already been paid for — and nothing in the
+handoff names the other group as the cause. Re-running the parked issue with
+`--restart` usually reproduces it, in the other direction this time.
+
+**Cause:** grouping and ordering were never connected. `groupIssues()` R1
+merges issues that declare a link, but three of its own exit paths split them
+apart anyway — an `R3 Split: true` marker, a component over
+`MAX_ISSUES_PER_GROUP` (3) broken into singletons, or R1 not matching the
+phrasing at all. Once they are two groups, the queue had no ordering notion
+whatsoever: its only pre-dispatch gate is a path-overlap check that keys on
+extracted file tokens, so a pair whose bodies name no path runs side by side and
+the reactive plan-time claim check parks the loser later. The queue could see
+that two groups collided, and could not see that one was meant to wait.
+
+**What changed:** ordering statements are read from the bodies at grouping time
+and carried on the grouping result (`depsByIssue`), independently of R1's union
+decisions — so an R3 split cannot make the obligation invisible. Before a group
+dispatches, the queue requires every group it waits on to have reached `merged`.
+
+**The three things to check when an issue does not wait for its dependency:**
+
+1. **Is the statement one the scanner recognises?** The ordering set is
+   `depends on` / `depends-on` / `blocked by` / `blocked-by` / `blocked on` /
+   `requires` / `predecessor(s)`, each followed by `#N`. It is deliberately
+   narrower than R1's link regex: `closes #12`, `fixes #12`, `related to #12`
+   and `part of #12` merge, they do not order. An unnumbered "this depends on
+   the API being stable" declares nothing — guessing a group to wait for is how
+   a queue serialises work nobody asked it to order.
+2. **Are they actually two groups?** If R1 merged them, the edge is intra-group
+   and there is nothing for the queue to enforce; the whole issue runs as one
+   cycle. Check the grouping notes in the state file for `R1 link:`.
+3. **Is the dependency in this invocation?** `Depends-on: #44` where #44 was not
+   passed to `/work` is ignored and noted — it cannot block, because nothing in
+   this run will ever merge it. It does not park the dependent either.
+
+**What you see when the wait does what it should:**
+
+| Situation | Queue outcome |
+|---|---|
+| dependency merges | dependent dispatches immediately — the wait costs no timer, the queue wakes it |
+| dependency parks, fails, or refuses to start | dependent parks `cap dependency-parked:#N`, **`runGroup` never invoked**, no dispatch spent |
+| two issues depend on each other | every group in the loop parks `cap dependency-cycle`, naming its edge, before any dispatch |
+| the wait outlasts `PI_ENSEMBLE_QUEUE_DEFER_CAP_MS` | dependent parks with the reason naming the group that never released — it does **not** proceed |
+
+The last row is a deliberate reversal of the old behaviour. A wait that gave up
+and proceeded was the pre-#1101 shape, and for an ordering edge it is the
+irreversible direction: the thing that was supposed to land first does not land
+at all, and the dependent is already built on top of it.
+
+**The 30-minute cap is a bound, not an interval.** Do not lower it to make the
+queue "poll faster" — waiters park on an event and are woken the instant
+anything they wait on settles, so the cap only ever fires when a dependency
+genuinely never reaches a terminal state. A healthy cycle really can take that
+long. It is injectable for tests (`deferCapMs`) and overridable via
+`PI_ENSEMBLE_QUEUE_DEFER_CAP_MS`.
+
+**Reading the report:** a queue-level park renders with a distinct mark and
+**names no step**, because nothing ran — there is no diff, no branch, no
+findings. `⏸ … at lens-review` means a cycle ran and died somewhere, and has
+work to salvage; `◌ … cap dependency-parked:#12` means the group produced
+nothing and the action to take is on #12, not on this group. The headline counts
+them separately (`2 parked (1 never dispatched)`) for the same reason.
+
+Escape hatch: there is none for the edge itself. Set no ordering statement and
+the queue has nothing to act on, which is the pre-#1101 behaviour and the
+correct way to opt out per-pair.
+
 ### Verify-full tier: "fast green, full unrun"
 
 The `ci` step runs two tiers. The fast one (`.pi/verify-cmd`) already gated `develop`. The full one is opt-in: create `.pi/verify-cmd-full` whose first non-empty, non-comment line is the command that exercises real dependencies, e.g.

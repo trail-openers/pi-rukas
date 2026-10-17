@@ -25,8 +25,48 @@ export const HOST_EXHAUSTION_SUFFIX = "host-resource-exhaustion";
 /** #1421 — the suffix for a gate declined by git-ignored build output. */
 export const BUILD_RESIDUE_SUFFIX = "build-residue";
 
+/**
+ * #1101 — queue-raised park reasons, recognised here as well as in
+ * `work-queue-cap.ts`.
+ *
+ * These three never came from a cycle: the queue raised them about a group it
+ * never dispatched. `parkReason` reads a STATE FILE, and for these groups there
+ * is none — so the shapes below are not reasons this function produces, they
+ * are the reasons it must not mistake for one. A queue-level park writes an
+ * entry with no state file behind it, and a renderer or a `/work-status` reader
+ * that walks in expecting `cap <cycle-cap>` + a step to inspect will send the
+ * operator to a diff that was never written. `isQueueLevelPark` is the single
+ * test for that, shared so the two places cannot drift.
+ */
+export const QUEUE_PARK_REASONS = [
+  "dependency-parked",
+  "dependency-timeout",
+  "dependency-cycle",
+] as const;
+
+/**
+ * Was this reason raised by the queue about a group it never dispatched?
+ *
+ * `cross-group-conflict` is deliberately NOT in the list: the same cap name is
+ * raised by the reactive plan-time check, which runs INSIDE a cycle that had
+ * already dispatched. Only the queue-level sighting of it produces no state
+ * file, and `work-queue-cap.ts` distinguishes those by route, not by name — so
+ * this predicate stays honest by naming only the reasons no cycle ever raises.
+ */
+export function isQueueLevelPark(reason: string | undefined): boolean {
+  if (!reason) return false;
+  return QUEUE_PARK_REASONS.some((cap) => new RegExp(`\\bcap ${cap}\\b`).test(reason));
+}
+
 export function parkReason(state: WorkState | undefined): { reason: string; failedStep?: string } {
   if (!state) return { reason: "cycle produced no state file" };
+  // #1101 — a group the QUEUE parked has no state file of its own, so this
+  // function is never the right reader for it. Guarded rather than assumed:
+  // `runGroup` can report `started: false` for a group whose on-disk state
+  // belongs to a DIFFERENT cycle, and reporting that cycle's cap as this
+  // group's reason is how a live cycle's mid-flight cap got printed as a
+  // terminal failure with `--restart` advice that would race it.
+  //
   // A `running` status with a live owner is not a park — it is a cycle in
   // flight. Reporting its most recent cap-hit as a terminal reason told the
   // operator a live cycle had failed, and recommended `--restart`.
