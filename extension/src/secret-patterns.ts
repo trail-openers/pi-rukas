@@ -140,11 +140,21 @@ const TAIL_SWEEP_SOURCE = `\\${REDACTED}[A-Za-z0-9._+\x2F=]+`;
  * separator did not recognise. The arm's job is the KEY, so the separator is the
  * alphabet a key is actually written in, not the one that looked tidy.
  *
+ * The bare `\t` branch is a tab-separated key — the separator a base64 blob pasted
+ * through a shell variable, a `tr` invocation or a copy out of an editor's single-line
+ * view actually carries. With `\n` as the only blank-then-break branch it matched nothing
+ * past the header: measured `redactions: 1` with BOTH body lines shipping, unbounded and
+ * bounded, from `"start"` and from `"end"` alike. It was the one shape of the six that
+ * still leaked — CRLF, bare CR, indentation and the JSON-escaped form all redacted whole
+ * once `SEP` carried the newline family — and it is the one the separator fixture now
+ * pins, because a case that cannot fail is not a case.
+ *
  * Linear despite being an alternation: every branch begins with optional blanks and
- * then a MANDATORY newline token, and the body class `[A-Za-z0-9+/=]` carries neither
+ * then a MANDATORY break token, and the body class `[A-Za-z0-9+/=]` carries neither
  * blank nor newline, so no SEP can match what its neighbour matches and a failed
  * continuation backtracks in one step. `test-decision-secret-regex-linear.ts` measures
- * the arm at 200 KB and 1.6 MB, closed and clipped.
+ * the arm at 200 KB and 1.6 MB, closed and clipped, and the tab-separated form is in
+ * that measurement.
  *
  * In a JS regex SOURCE STRING the escaped branches are a literal backslash followed by
  * `n`, so each backslash is itself escaped here — `\\\\n` in source is the two characters
@@ -152,7 +162,7 @@ const TAIL_SWEEP_SOURCE = `\\${REDACTED}[A-Za-z0-9._+\x2F=]+`;
  * removes the JSON-escaped branch while still matching everything else: the test for it
  * (`pem-json-escaped`) is the only thing that would notice.
  */
-const SEP = "[ \\t]*(?:\\r\\n|\\r|\\n|\\\\r\\\\n|\\\\n)[ \\t]*";
+const SEP = "[ \\t]*(?:\\r\\n|\\r|\\n|\\\\r\\\\n|\\\\n|\\t)[ \\t]*";
 
 //
 // THE TAIL A BOUNDED RULE LEAVES BEHIND (#1393) — see TAIL_SWEEP below, which is

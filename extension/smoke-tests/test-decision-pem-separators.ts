@@ -84,16 +84,31 @@ for (const { name, text, mustContain } of PEM_PROSE_END) {
 
 // ---- a key longer than the window: the scan must reach back to the header it cut off.
 
-for (const { name, text, body, max } of PEM_LONG_CLIPPED) {
-  const r = redactBounded(text, max, "end");
-  assert(
-    r.count >= 1,
-    `${name} (from="end", max ${max}): the scan reaches the header behind the cut (${r.count})`,
-  );
-  assert(
-    !leaksKey(r.text, body),
-    `${name} (from="end", max ${max}): the visible body of the long key ships (${JSON.stringify(r.text.slice(0, 60))})`,
-  );
+for (const { name, text, body, max, sweepFrom, sweepTo, sweepStep } of PEM_LONG_CLIPPED) {
+  // One window for the plain case; every window of the sweep for the case that can only be
+  // seen by sweeping, because the leak depends on where the cut falls inside the body.
+  const from = sweepFrom;
+  const to = sweepTo ?? 0;
+  const step = sweepStep ?? 1;
+  const windows =
+    from === undefined
+      ? [max]
+      : Array.from({ length: Math.floor((to - from) / step) + 1 }, (_, i) => from + i * step);
+  for (const m of windows) {
+    const r = redactBounded(text, m, "end");
+    assert(
+      r.count >= 1,
+      `${name} (from="end", max ${m}): the scan reaches the header behind the cut (${r.count})`,
+    );
+    assert(
+      !leaksKey(r.text, body),
+      `${name} (from="end", max ${m}): the visible body of the long key ships (${JSON.stringify(r.text.slice(0, 60))})`,
+    );
+    assert(
+      r.text.length <= m,
+      `${name} (from="end", max ${m}): the window is no longer than the bound (${r.text.length})`,
+    );
+  }
 }
 
 console.log(`\nexit ${state.exit}`);
