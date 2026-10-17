@@ -258,7 +258,7 @@ cycle starts (exit 40, `error.code: "bad-arguments"`):
 `--capabilities` publishes no `--sandboxed` or `--merge` input for the same
 reason: an unknown name means "not supported", and a host failing closed on it
 is the intended outcome. `PI_ENSEMBLE_SANDBOX_MODE` **is** listed — as scope
-`internal`, which the wrapper and the image set and a host must not.
+`sandbox`, which the sandbox wrapper and the image set and a host must not.
 
 The practical consequence at the merge step: a cycle parked there in a repository
 whose doctrine grants nothing exits **10** (`awaiting-human-merge`) having run no
