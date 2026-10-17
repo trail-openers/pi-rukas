@@ -69,10 +69,7 @@ const seam = "fixture-abort-late-settle";
       // Deliberately does NOT resolve on `signal` — a backend that keeps
       // streaming after being told to stop.
       new Promise<BackendResult>((resolve) => {
-        setTimeout(
-          () => resolve({ ok: true, answer: "ok", justification: "far too late" }),
-          DEAF_SETTLE_MS,
-        );
+        setTimeout(() => resolve({ ok: true, answer: "ok" }), DEAF_SETTLE_MS);
       }),
   };
   const d = await decide(

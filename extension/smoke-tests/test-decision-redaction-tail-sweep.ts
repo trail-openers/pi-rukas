@@ -35,7 +35,7 @@
  * Offline: pure string work, no I/O, no network, no child process.
  */
 
-import { redactBounded, redactSecrets } from "../src/decision-log.ts";
+import { boundField, redactBounded, redactSecrets } from "../src/decision-log.ts";
 import { REDACTED, SECRET_PATTERNS, TAIL_SWEEP } from "../src/secret-patterns.ts";
 import { looksLikeSecret } from "../src/vipune.ts";
 import { leaksKey, makeAssert } from "./lib/decision-fixtures.ts";
@@ -75,21 +75,51 @@ const LONG = SEGMENT.repeat(200);
 }
 
 // The mirror image: the credential so far into the text that a 600-char END clip
-// keeps only its tail. This is the case the sweep CANNOT serve, and naming it is
-// the point: the arm's 4096-character cap starts the replacement at `token=`, which
-// lies ~4 800 characters before the kept window, so no pattern and no sweep ever
-// reach it. The kept 600 characters are the far end of a run no pass was asked to
-// scan. `redactBounded` is documented to keep exactly `max` of the already-redacted
-// SCAN WINDOW — the scan is bounded, so a credential entirely outside it is not
-// shipped-by-a-redactor, it is never-shipped-at-all, and the shadow seams that use
-// this path keep the tail deliberately because a failure is its last words. A test
-// that demanded a redaction here would be demanding the impossible from a bound.
+// keeps only its tail. Two shapes, and they are NOT the same case.
+//
+// The FIRST is the leak this round closes. With `password=` as the separator the
+// filler-to-credential seam sits more than `SCAN_CAP` before the kept window, so
+// `widenPastCut` walks its whole budget without finding whitespace and gives up: the scan
+// window opens inside an unbroken base64 run, no arm anchors on it, and before the fix
+// the pass reported `count: 0` while shipping 600 characters of live key material. That
+// is exactly the shape a bound must fail closed on — widening cannot reach the arm's
+// anchor and there is no PEM header to back up to — so `redactUnscannedRuns` replaces any
+// credential-class run the scan did not reach. It is asserted with `leaksKey`, not with a
+// length: `length <= 600` was true while the leak was live, which is why the length alone
+// is not the claim here (the bound is separately pinned by the control block below).
 {
-  const text = `${"f".repeat(1500)} token=${LONG} trailing words here`;
+  const text = `${"f".repeat(5000)} password=${LONG} tail words`;
   const bounded = redactBounded(text, 600, "end");
   assert(
-    bounded.text.length <= 600,
-    `the end clip keeps exactly its bound (${bounded.text.length} of ${text.length})`,
+    !leaksKey(bounded.text, SEGMENT),
+    `the end clip fails closed on an unscanned window (${bounded.count} redaction(s), ${JSON.stringify(bounded.text.slice(0, 40))})`,
+  );
+  // The seam-driven bound is the same path the shadow fields take, so the leak and its
+  // fix have to be asserted there too rather than only on the lower-level helper.
+  const viaField = boundField(text, { max: 600, from: "end" });
+  assert(
+    !leaksKey(viaField.text, SEGMENT),
+    `boundField({from:"end"}) fails closed the same way (${viaField.count} redaction(s), ${JSON.stringify(viaField.text.slice(0, 40))})`,
+  );
+  assert(
+    viaField.count === bounded.count && viaField.text === bounded.text,
+    "...and the seam path and the helper path agree, so neither is the one holding the fix",
+  );
+
+  // The SECOND is the shape the sweep genuinely cannot serve, and naming it is still
+  // the point: with ` token=` — a space before the keyword — the arm's 4096-character cap
+  // starts the replacement at `token=`, ~4 800 characters before the kept window, so no
+  // pattern reaches it, and the walk finds whitespace immediately so the window is not
+  // one the scan gave up on and `redactUnscannedRuns` does not fire. The kept 600
+  // characters are the far end of a run no pass was asked to scan; `redactBounded` is
+  // documented to keep `max` of the already-redacted SCAN WINDOW, so a credential wholly
+  // outside that window is never-shipped-at-all rather than shipped-unredacted, and the
+  // shadow seams keep the tail deliberately because a failure's last words are its tail.
+  const dropped = `${"f".repeat(1500)} token=${LONG} trailing words here`;
+  const clipped = redactBounded(dropped, 600, "end");
+  assert(
+    clipped.text.length <= 600,
+    `the end clip keeps exactly its bound (${clipped.text.length} of ${dropped.length})`,
   );
   // What the sweep DOES guarantee on this input: a marker that IS in the window
   // never leaves a glued tail. Placed so the marker lands inside the kept 600.

@@ -256,54 +256,68 @@ function writeShadowRecord(
   const release = () => {
     if (exact) exactInFlight = Math.max(0, exactInFlight - 1);
   };
-  // The same own-property lookup `decide()` uses: an unregistered id is not a
-  // seam, and `boundedState(undefined)` would throw out of a path documented
-  // never to throw. No spec means no seam-driven bound, so no state is written.
-  const spec = Object.hasOwn(SEAMS, seam) ? (SEAMS as Record<string, SeamSpec>)[seam] : undefined;
-  const bounded =
-    state === undefined || spec === undefined ? undefined : boundedState(state, spec).state;
-  traceWarn(
-    exact
-      ? `decision-shadow: '${seam}' answered by the exact rule: ${reason}`
-      : `decision-shadow: '${seam}' not fired: ${reason}`,
-  );
-  // The slot releases when the append SETTLES, not only when it rejects: an
-  // append that succeeds and leaves the counter held would saturate the path
-  // permanently after one storm, which is worse than the unbounded write the
-  // cap exists to prevent.
+  // The slot's only release is `releaseOnce`, below, so everything from the increment
+  // onward — the seam lookup, `boundedState`, the trace line and the append — sits inside
+  // one guard. `boundedState` serialises a caller-supplied `state`, so a cyclic object
+  // threw out of a path documented never to throw AND left the counter permanently
+  // raised: 32 such calls saturate the exact-match path for the life of the process
+  // (#1393).
   const releaseOnce = () => {
     if (!released) {
       released = true;
       release();
     }
   };
-  return appendDecisionRecord(
-    { repoRoot: where.repoRoot ?? sessionNow().cwd, issues: where.issues },
-    {
-      ts: new Date().toISOString(),
-      seam,
-      question: req.question,
-      ruleAnswer: req.rule,
-      // An exact match is a decision the rule made, not a call that was
-      // withheld: it carries `exactRuleMatch` AND its `reason`, and S5 counts
-      // the two kinds apart.
-      ...(exact ? { exactRuleMatch: true, reason } : { skipped: reason }),
-      ...(bounded === undefined ? {} : { state: bounded }),
-      ...(summary ? summary : {}),
-    },
-  ).then(
-    () => {
-      releaseOnce();
-      return undefined;
-    },
-    (err: unknown) => {
-      releaseOnce();
-      traceWarn(
-        `decision-shadow: '${seam}' record not written: ${(err as Error)?.message ?? String(err)}`,
-      );
-      return undefined;
-    },
-  );
+  try {
+    // The same own-property lookup `decide()` uses: an unregistered id is not a
+    // seam, and `boundedState(undefined)` would throw out of a path documented
+    // never to throw. No spec means no seam-driven bound, so no state is written.
+    const spec = Object.hasOwn(SEAMS, seam) ? (SEAMS as Record<string, SeamSpec>)[seam] : undefined;
+    const bounded =
+      state === undefined || spec === undefined ? undefined : boundedState(state, spec).state;
+    traceWarn(
+      exact
+        ? `decision-shadow: '${seam}' answered by the exact rule: ${reason}`
+        : `decision-shadow: '${seam}' not fired: ${reason}`,
+    );
+    // The slot releases when the append SETTLES, not only when it rejects: an
+    // append that succeeds and leaves the counter held would saturate the path
+    // permanently after one storm, which is worse than the unbounded write the
+    // cap exists to prevent.
+    return appendDecisionRecord(
+      { repoRoot: where.repoRoot ?? sessionNow().cwd, issues: where.issues },
+      {
+        ts: new Date().toISOString(),
+        seam,
+        question: req.question,
+        ruleAnswer: req.rule,
+        // An exact match is a decision the rule made, not a call that was
+        // withheld: it carries `exactRuleMatch` AND its `reason`, and S5 counts
+        // the two kinds apart.
+        ...(exact ? { exactRuleMatch: true, reason } : { skipped: reason }),
+        ...(bounded === undefined ? {} : { state: bounded }),
+        ...(summary ? summary : {}),
+      },
+    ).then(
+      () => {
+        releaseOnce();
+        return undefined;
+      },
+      (err: unknown) => {
+        releaseOnce();
+        traceWarn(
+          `decision-shadow: '${seam}' record not written: ${(err as Error)?.message ?? String(err)}`,
+        );
+        return undefined;
+      },
+    );
+  } catch (err) {
+    releaseOnce();
+    traceWarn(
+      `decision-shadow: '${seam}' record not written: ${(err as Error)?.message ?? String(err)}`,
+    );
+    return Promise.resolve(undefined);
+  }
 }
 
 /**

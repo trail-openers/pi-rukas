@@ -13,14 +13,22 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { SEAMS, type SeamSpec } from "../src/decision-seam-registry.ts";
-import { attach, detach, shadowExactRuleMatch, shadowSkip } from "../src/decision-shadow.ts";
+import {
+  __exactInFlightForTests,
+  __resetShadowForTests,
+  attach,
+  detach,
+  shadowExactRuleMatch,
+  shadowSkip,
+} from "../src/decision-shadow.ts";
 import { classifyFailureCause, shadowFailureCause } from "../src/work-driver-failure-taxonomy.ts";
 import {
   STUB_MODEL,
+  fixtureSpec,
   llmReply,
   makeAssert,
   records,
+  registerFixture,
   stubRegistry,
   tmpDir,
 } from "./lib/decision-fixtures.ts";
@@ -94,11 +102,7 @@ const SHADOW_KEY = `sk-ant-api03-${"aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d"}`;
   // state whose boundary falls 10 chars into the key, and asks the same question
   // of the bytes on disk: does any 12-char window survive the seam's own clip
   // (#1393).
-  (SEAMS as Record<string, SeamSpec>)["fixture-head-clip"] = {
-    ...(SEAMS as Record<string, SeamSpec>)['failure-cause'],
-    id: "fixture-head-clip",
-    fields: { openPoint: { max: 1000 } },
-  };
+  registerFixture(fixtureSpec({ id: "fixture-head-clip", fields: { openPoint: { max: 1000 } } }));
   const point = `${"p".repeat(990)} ${SHADOW_KEY} ${"q".repeat(49)}`;
   // The key starts at index 991 and runs 53 chars, so index 1000 — the boundary
   // of a 1000-char head clip — sits 10 chars inside it. That is the shape a
@@ -118,8 +122,9 @@ const SHADOW_KEY = `sk-ant-api03-${"aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d"}`;
     { openPoint: point },
   );
   const after = await records(log);
+  const headClip = after.find((r) => (r as { seam?: string }).seam === "fixture-head-clip");
   assert(
-    after.length === 2 && (after[1] as { state?: unknown }).state !== undefined,
+    headClip !== undefined && (headClip as { state?: unknown }).state !== undefined,
     "fixture: the seam-bounded state reached the record rather than being dropped",
   );
   assert(
@@ -154,6 +159,56 @@ const SHADOW_KEY = `sk-ant-api03-${"aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d"}`;
     records(path.join(root, ".pi", "work-state", "11", "decisions.jsonl")).length > 0,
     "the unknown-seam record still lands, with no seam-bounded state",
   );
+}
+
+// --------------------------- the shadow writer survives a state it cannot serialise
+
+{
+  // `writeShadowRecord` is documented NEVER THROWS and it holds an in-flight slot while
+  // it runs. The synchronous middle — the seam lookup, `boundedState`, the trace line —
+  // sits between `exactInFlight++` and the append's settle handler, so a `state` that
+  // throws on serialise (a cyclic object is the shape a caller can actually hand over)
+  // used to escape into the caller AND leave the slot held: the counter only ever goes
+  // down in the settle handlers, so 32 such calls saturate `MAX_EXACT_IN_FLIGHT` and every
+  // later exact-match record is dropped for the life of the process (#1393).
+  const root = tmpDir("shadow-cyclic-state");
+  const where = { repoRoot: root, issues: [12] };
+  const cyclic: Record<string, unknown> = { openPoint: "some text" };
+  cyclic.self = cyclic;
+  __resetShadowForTests({ exact: true });
+  let threw = false;
+  try {
+    await shadowExactRuleMatch(
+      "failure-cause" as never,
+      { question: "q", rule: "unknown" },
+      where,
+      cyclic,
+    );
+  } catch {
+    threw = true;
+  }
+  assert(!threw, "shadowExactRuleMatch on a cyclic state does not throw out of the caller's path");
+  assert(
+    __exactInFlightForTests() === 0,
+    `...and the throw does not leak its in-flight slot (${__exactInFlightForTests()})`,
+  );
+  // 33 of them: one past the cap. With the leak the 33rd is silently dropped as
+  // "already in flight" and writes no record at all.
+  let leaked = false;
+  for (let i = 0; i < 33 && !leaked; i++) {
+    await shadowExactRuleMatch(
+      "failure-cause" as never,
+      { question: "q", rule: "unknown" },
+      where,
+      cyclic,
+    );
+    leaked = __exactInFlightForTests() !== 0;
+  }
+  assert(
+    !leaked && __exactInFlightForTests() === 0,
+    `a burst of throwing writes never saturates the exact-match path (${__exactInFlightForTests()})`,
+  );
+  __resetShadowForTests({ exact: true });
 }
 
 process.exit(state.exit);
