@@ -14,12 +14,27 @@
  * `[ensemble:async] … (job <id>)` / `(batch <id>)` report header. Pinned so
  * a change to either fails here before it breaks a client.
  *
+ * #1389 — the two ways that last clause was false, pinned in code: a host
+ * whose `sendUserMessage` throws (the swallow in `deliverReport` published
+ * "0" for a report nobody received — now it warns, and the batch answers with
+ * a stand-in), and `session_shutdown` publishing "0" while the jobs it had
+ * just aborted were still settling. The failed-send delivery cases, both
+ * `session_shutdown` bound cases and the half-started-batch teardown live in
+ * test-pending-jobs-signal-honest-zero.ts, which is where they went when this
+ * file reached the 500-line cap (test-file-size-limit.ts).
+ *
+ * The session_shutdown case below that stays here is the one that predates
+ * #1389 and whose assertion had to change: it slept 30 ms and read "nothing is
+ * sent after shutdown", which locked in the lost report rather than catching
+ * it. See the honest-zero file for the two cases that pin the bound itself.
+ *
  * No Pi process spawned, no network.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { deliverOrStandIn, deliverStandIn } from "../src/async-jobs-lifecycle.ts";
 import {
   clearJobsForTesting,
   killJob,
@@ -27,8 +42,8 @@ import {
   startBatch,
   startJob,
 } from "../src/async-jobs.ts";
-import { deliverOrStandIn, deliverStandIn } from "../src/async-jobs-lifecycle.ts";
 import * as pendingJobs from "../src/pending-jobs-signal.ts";
+import { clearSlowWatchesForTesting } from "../src/slow-notice.ts";
 import type { DispatchResult } from "../src/types.ts";
 
 let exit = 0;
@@ -98,7 +113,10 @@ async function until(cond: () => boolean) {
 }
 
 pendingJobs.attach(rpcCtx());
-assert(statuses().join(",") === "0", `attach in RPC mode publishes an initial 0 (got ${statuses()})`);
+assert(
+  statuses().join(",") === "0",
+  `attach in RPC mode publishes an initial 0 (got ${statuses()})`,
+);
 wire.length = 0;
 
 // --- Two PM jobs: '1', '2'; one settles → '1'; the other is killed → '0' ---
@@ -263,18 +281,6 @@ wire.length = 0;
   );
 }
 
-// --- session_shutdown → '0', and the aborted job's late settle sends nothing ---
-{
-  wire.length = 0;
-  const s = controlled("explore");
-  startJob(pi, { label: "explore", role: "explore", work: s.work });
-  assert(statuses().join(",") === "1", "a PM job starts → 1");
-  shutdownHandler?.({ reason: "quit" });
-  assert(statuses().join(",") === "1,0", `session_shutdown → 0 (got ${statuses()})`);
-  await new Promise((r) => setTimeout(r, 30));
-  assert(statuses().join(",") === "1,0", "nothing is sent after shutdown");
-}
-
 // --- Setup that throws after the job is registered never leaves it owed ---
 {
   wire.length = 0;
@@ -359,47 +365,18 @@ wire.length = 0;
     r.length === 1 && r[0].startsWith("[ensemble:async]") && r[0].includes(`(batch ${batchId})`),
     "a settle-body throw still hands Pi one [ensemble:async] report naming (batch <id>)",
   );
-  assert(r[0].includes("FAILED") && r[0].includes("usage boom"), "the stand-in report says the batch failed and why");
-  assert(statuses().join(",") === "1,0", `the count drops to 0 only after that report (got ${statuses()})`);
+  assert(
+    r[0].includes("FAILED") && r[0].includes("usage boom"),
+    "the stand-in report says the batch failed and why",
+  );
+  assert(
+    statuses().join(",") === "1,0",
+    `the count drops to 0 only after that report (got ${statuses()})`,
+  );
   assert(
     wire.indexOf(`report:${r[0]}`) < wire.lastIndexOf("status:0"),
     "the stand-in report precedes the 0",
   );
-}
-
-// --- A batch whose member setup throws partway aborts the members already started ---
-{
-  wire.length = 0;
-  let firstSignal: AbortSignal | undefined;
-  let threw = false;
-  try {
-    startBatch(pi, {
-      batchLabel: "dispatch_parallel",
-      members: [
-        {
-          label: "explore[a]",
-          role: "explore",
-          work: (signal) => {
-            firstSignal = signal;
-            return new Promise<DispatchResult>(() => undefined);
-          },
-        },
-        {
-          get label(): string {
-            throw new Error("second member setup boom");
-          },
-          role: "explore",
-          work: controlled("explore").work,
-        },
-      ],
-    });
-  } catch {
-    threw = true;
-  }
-  assert(threw, "a partway batch setup throw surfaces to the caller");
-  assert(firstSignal?.aborted === true, "the already-started member is aborted");
-  await new Promise((r) => setTimeout(r, 30));
-  assert(statuses().length === 0 && reports().length === 0, `a half-started batch owes nothing (got ${wire})`);
 }
 
 // --- TUI mode: no status at all ---
@@ -446,4 +423,6 @@ wire.length = 0;
 }
 
 clearJobsForTesting();
+clearSlowWatchesForTesting();
+pendingJobs.resetForTesting();
 process.exit(exit);

@@ -24,7 +24,7 @@
 
 import { extractClaimCandidates, groundClaims, isProseFile } from "../src/claim-scan.ts";
 import { runClaimScan } from "../src/lens-evidence.ts";
-import { computeVerdict } from "../src/lens-review.ts";
+import { computeVerdict } from "../src/lens-review-format.ts";
 import type { Finding } from "../src/lens-review.ts";
 import { pathsInDiff } from "../src/work-driver-diff.ts";
 

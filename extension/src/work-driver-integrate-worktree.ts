@@ -18,6 +18,10 @@
  *    HEAD is recorded (its unpushed commits kept on a backup ref, #1173),
  *    it is force-removed, and a fresh one is created.
  *    The #475/#545 create guards (runCreateGuards) still run on top.
+ *    #1396: the registration check is a STRICT `git worktree list` — an
+ *    unreadable listing throws `WorktreeScanError` and removes nothing,
+ *    rather than reading the tree as unregistered and skipping the
+ *    commit-keeping path.
  *  - If repoRoot itself holds the branch, it is detached first (under the
  *    caller's integration lock) when clean, and a dirty repoRoot halts —
  *    the driver never moves operator residue.
@@ -29,9 +33,13 @@
 import fs from "node:fs/promises";
 import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
+import { repoRootHoldsBranch } from "./work-driver-branch-holder.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
+import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import {
+  type IntegrateBackupError,
   backupIntegrateHead,
+  isCommitSha,
   isIntegrateTreeInCycle,
   isRegisteredWorktree,
   keepOrRefuseStaleIntegrateTree,
@@ -94,6 +102,13 @@ export interface IntegrateWorktreeCreation {
   staleHead?: string;
   /** #1173 — the ref the stale tree's unpushed commits were kept on, if any. */
   backupRef?: string;
+  /**
+   * #1396 (six-lens) — the sha the per-issue backup ref held BEFORE this call
+   * replaced it. Present only on a re-entry whose ref already pointed at a
+   * different commit: the ref is one per issue, so that older kept HEAD has
+   * just lost its only named reference and the handoff must say so.
+   */
+  supersededSha?: string;
   /** True when the driver detached repoRoot off the branch to free it. */
   repoRootDetached: boolean;
 }
@@ -108,22 +123,32 @@ export interface IntegrateWorktreeCreation {
  */
 export async function ensureIntegrateWorktree(
   execFn: ExecFn,
-  opts: { repoRoot: string; issue: number; branchName: string; baseSha: string },
+  opts: {
+    repoRoot: string;
+    issue: number;
+    branchName: string;
+    baseSha: string;
+    /** #1362 — the cycle's `.pi/dirty-root-exempt` list (see `createIntegrateWorktree`). */
+    dirtyRootExempt?: readonly string[];
+  },
   stateFile?: string,
 ): Promise<IntegrateWorktreeCreation> {
   // #1173 — a failure AFTER the stale tree's commits were kept must still name
   // the ref, or the operator's halt has no pointer to the recoverable work.
-  const kept: { ref?: string } = {};
+  // #1396 (six-lens round 3) — `kept` is the shared error shape itself, so the
+  // fields written here are the fields the halt report reads; no second cast.
+  const kept: IntegrateBackupError = new Error("integrate backup evidence");
   try {
     return await createIntegrateWorktree(execFn, opts, stateFile, kept);
   } catch (err) {
-    if (kept.ref === undefined || !(err instanceof Error)) throw err;
+    if (kept.backupRef === undefined || !(err instanceof Error)) throw err;
     // Annotate in place: the error keeps its class (DirtyWorktreeError stays one).
     // The ref also travels as a structured field, so the halt report can name
     // it without parsing the message (which the halt truncates).
-    const note = ` (the stale integrate tree's unpushed commits were kept on ${kept.ref})`;
-    const e = err as Error & { stderr?: unknown; backupRef?: string };
-    e.backupRef = kept.ref;
+    const note = ` (the stale integrate tree's unpushed commits were kept on ${kept.backupRef})`;
+    const e = err as IntegrateBackupError;
+    e.backupRef = kept.backupRef;
+    if (kept.supersededSha !== undefined) e.supersededSha = kept.supersededSha;
     e.message += note;
     if (typeof e.stderr === "string" && e.stderr) e.stderr += note;
     throw err;
@@ -132,9 +157,21 @@ export async function ensureIntegrateWorktree(
 
 async function createIntegrateWorktree(
   execFn: ExecFn,
-  opts: { repoRoot: string; issue: number; branchName: string; baseSha: string },
+  opts: {
+    repoRoot: string;
+    issue: number;
+    branchName: string;
+    baseSha: string;
+    /**
+     * #1362 — the cycle's exemption list. Read ONLY for the repoRoot dirt check
+     * below: the integrate tree at `abs` is the driver's own integration
+     * point, not the operator's checkout, so its dirt is judged with no list
+     * — an exempted prefix never hides work from the commit that runs there.
+     */
+    dirtyRootExempt?: readonly string[];
+  },
   stateFile: string | undefined,
-  kept: { ref?: string },
+  kept: IntegrateBackupError,
 ): Promise<IntegrateWorktreeCreation> {
   const { repoRoot, issue, branchName, baseSha } = opts;
   const name = integrateWorktreeName(issue);
@@ -178,6 +215,7 @@ async function createIntegrateWorktree(
   let repoRootDetached = false;
   let staleHead: string | undefined;
   let backupRef: string | undefined;
+  let supersededSha: string | undefined;
   const registered = await isRegisteredWorktree(execFn, repoRoot, abs);
   // #861 round 3 — one branch decides the fate of a registered tree at the
   // integrate path: driver-owned (this cycle's state file records it) →
@@ -213,7 +251,7 @@ async function createIntegrateWorktree(
       }
       // #1170 — a stale tree holding uncommitted or foreign work is refused,
       // not force-removed; #1173 — the cycle's own commits are backed up.
-      backupRef = kept.ref = await keepOrRefuseStaleIntegrateTree(
+      const backup = await keepOrRefuseStaleIntegrateTree(
         execFn,
         repoRoot,
         abs,
@@ -221,6 +259,10 @@ async function createIntegrateWorktree(
         branchName,
         issue,
       );
+      kept.backupRef = backup?.ref;
+      kept.supersededSha = backup?.supersededSha;
+      backupRef = backup?.ref;
+      supersededSha = backup?.supersededSha;
       trace(
         `work-driver: stale ${name} worktree at ${abs} (old HEAD: ${staleHead ?? "unreadable"}) — driver-owned, force-removing and recreating`,
       );
@@ -241,13 +283,18 @@ async function createIntegrateWorktree(
       // #1173 — clean is not "nothing to lose": a detached HEAD's commits
       // die with the tree, so they are kept on a backup ref first (a tree on
       // another branch holding unique commits throws instead).
-      backupRef = kept.ref = await backupIntegrateHead(
+      const backup = await backupIntegrateHead(
         execFn,
         abs,
         branchHead ?? baseSha,
         branchName,
         issue,
+        repoRoot,
       );
+      kept.backupRef = backup?.ref;
+      kept.supersededSha = backup?.supersededSha;
+      backupRef = backup?.ref;
+      supersededSha = backup?.supersededSha;
       trace(
         `work-driver: registered worktree at ${abs} is NOT this cycle's (state file does not record it) and is clean — force-removing and recreating (the cycle already committed to replacing the integrate tree)`,
       );
@@ -270,8 +317,17 @@ async function createIntegrateWorktree(
     // is DETACHED first (decision (1)), and a DIRTY one HALTS — the
     // driver never moves operator residue. The probe runs through the
     // production exec seam, so a test fake cannot fake the checkout.
+    // #1362 — the UNFILTERED read, and the filter is applied to its result two
+    // lines down rather than inside the reader: the raw lines are what the halt
+    // message quotes, so an exempt line stays visible in the evidence while
+    // being excluded from the decision. Deliberate asymmetry with the other
+    // dirt gates, which filter inside the reader.
     const dirt = await readDirtyPorcelainLines(execFn, repoRoot);
-    if (dirt.some((l) => !isDriverManagedDirtLine(l))) {
+    if (
+      dirt.some(
+        (l) => !isDriverManagedDirtLine(l) && !isConfiguredExemptDirtLine(l, opts.dirtyRootExempt),
+      )
+    ) {
       throw new Error(
         `repoRoot holds ${branchName} and is dirty — cannot detach it for the ${name} worktree: ${dirt
           .slice(0, 5)
@@ -359,128 +415,9 @@ async function createIntegrateWorktree(
     refHead: ref,
     ...(staleHead ? { staleHead } : {}),
     ...(backupRef ? { backupRef } : {}),
+    ...(supersededSha && isCommitSha(supersededSha) ? { supersededSha } : {}),
     repoRootDetached,
   };
-}
-
-/**
- * Whether the MAIN working tree (repoRoot) currently holds the branch.
- * `git worktree list --porcelain` never lists the main tree, so the
- * branch-holder audit and the repoRoot-detach path can both see it only
- * via this direct probe of its own checkout.
- *
- * Error classes are distinguished, because "cannot answer" and "holds the
- * branch" have OPPOSITE consequences:
- *  - "not a git repository" (stderr) or ENOENT (the directory is gone) →
- *    FALSE. A directory that is not a repository cannot hold a branch, so
- *    reading it as holding would halt clean cycles with a spurious
- *    `integration-worktree-violation` (the #861 shape: the fallback audit
- *    probed a temp repoRoot that is not a repo and the fail-closed default
- *    read it as the offending holder).
- *  - ANY OTHER git error (a lock, permission, timeout) → TRUE (fail closed
- *    with a trace): there is a repo there we simply could not read, and a
- *    possibly-holding tree must not be exculpated (the #861 defect: a
- *    failing probe read as "does not hold").
- */
-export async function repoRootHoldsBranch(repoRoot: string, branchName: string): Promise<boolean> {
-  if (!branchName) return false;
-  // The probe ALWAYS runs through the production exec seam (not execFn):
-  // the repoRoot holder is the one `git worktree list` refuses to report,
-  // and a test fake's `git symbolic-ref` short-circuit must not be able to
-  // make the probe fail and exculpate that holder. The primary probe is
-  // `symbolic-ref`; a DETACHED HEAD returns non-empty output but the wrong
-  // ref, so a detached root reads as not-holding. A truly unreadable
-  // symbolic-ref (not a clean empty) cannot be distinguished from a
-  // detached HEAD via that command, so the `git status` fallback
-  // disambiguates: its "## branch..." line carries the checkout name.
-  const probe = async (cmd: string): Promise<string | undefined> => {
-    try {
-      const { stdout } = await execp(cmd, {
-        cwd: repoRoot,
-        maxBuffer: 1024 * 1024,
-        timeout: 60_000,
-      });
-      return stdout;
-    } catch (err) {
-      const e = err as Error & { code?: string; stderr?: string };
-      const detail = e.stderr ?? e.message ?? "";
-      if (/not a git repository/i.test(detail) || e.code === "ENOENT") {
-        // A directory that is not a repository (or is gone) cannot hold a
-        // branch — the fail-closed default would halt clean cycles over
-        // what is actually nothing (the #861 spurious-violation shape).
-        trace(
-          `work-driver: repoRoot holder probe for ${branchName} — ${repoRoot} is not a git repository (or is gone) — it cannot hold the branch`,
-        );
-        return "not-a-repo";
-      }
-      trace(
-        `work-driver: repoRoot holder probe failed for ${branchName} — treating as possibly holding (fail closed): ${String(detail).slice(0, 200)}`,
-      );
-      return undefined;
-    }
-  };
-  const refProbe = await probe("git symbolic-ref --quiet --short HEAD");
-  if (refProbe === "not-a-repo") return false;
-  if (refProbe !== undefined) return refProbe.trim() === branchName;
-  const statusOut = await probe("git status --porcelain=v1 -b --untracked-files=normal");
-  if (statusOut === "not-a-repo") return false;
-  if (statusOut === undefined) return true;
-  const line = statusOut.split("\n")[0] ?? "";
-  const m = /^## ([^\s.]+)/.exec(line);
-  return m !== null && m[1] === branchName;
-}
-
-/**
- * The branch-holder audit (decision (4)). Parses `git worktree list
- * --porcelain` and REALPATH-resolves every listed path (the macOS
- * /private/var shape — #753) and returns the worktrees whose `branch`
- * attribute is `refs/heads/<branchName>`. The driver's post-dispatch audit
- * requires that list to contain only the integrate worktree (or be empty);
- * any other holder halts the cycle. Sibling worktree HEADs are NOT
- * compared — concurrent cycles legitimately commit in their own worktrees.
- *
- * Unreadable list → empty array (the safe direction: nothing to halt on;
- * the PR-verification gates still run the executed-evidence checks).
- */
-export type BranchHoldersResult = { ok: true; holders: string[] } | { ok: false; error: string };
-
-export async function branchHolders(
-  execFn: ExecFn,
-  repoRoot: string,
-  branchName: string,
-): Promise<BranchHoldersResult> {
-  let list: string;
-  try {
-    ({ stdout: list } = await execFn("git worktree list --porcelain", {
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-    }));
-  } catch (err) {
-    return { ok: false, error: (err as Error).message ?? String(err) };
-  }
-  const lines = list.split("\n");
-  const holders: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i]?.trim() ?? "";
-    if (!l.startsWith("worktree ")) continue;
-    // The worktree line is followed by its attribute lines (HEAD, branch,
-    // detached) up to the next `worktree` marker — the branch we care about
-    // is in the `branch` line, so walk forward (the #654 sweep pattern).
-    let j = i + 1;
-    let found = false;
-    while (j < lines.length) {
-      const attr = lines[j]?.trim() ?? "";
-      if (attr.startsWith("worktree ")) break;
-      if (attr === `branch refs/heads/${branchName}`) {
-        holders.push(lines[i]?.slice("worktree ".length).trim() ?? "");
-        found = true;
-        break;
-      }
-      j++;
-    }
-    if (found) i = j;
-  }
-  return { ok: true, holders };
 }
 
 async function pathExists(p: string): Promise<boolean> {

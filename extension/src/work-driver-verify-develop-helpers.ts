@@ -30,7 +30,7 @@ export function verifyTimeoutMs() {
 export const VERIFY_TIMEOUT_LABEL = "[verify-timeout]";
 
 /** The bound as a person reads it: whole minutes, else seconds. */
-function boundText(ms: number): string {
+export function boundText(ms: number): string {
   return ms >= 60_000 && ms % 60_000 === 0 ? `${ms / 60_000}-min` : `${Math.round(ms / 1000)}s`;
 }
 

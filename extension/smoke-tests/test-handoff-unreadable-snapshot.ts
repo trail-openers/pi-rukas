@@ -19,10 +19,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  consolidateWorktreesToBranch,
-  countAheadOfBase,
-} from "../src/work-driver-handoff-consolidate.ts";
+import { countAheadOfBase } from "../src/work-driver-handoff-ahead.ts";
+import { consolidateWorktreesToBranch } from "../src/work-driver-handoff-consolidate.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
 import { captureCommittedWork } from "../src/work-driver-handoff-post.ts";

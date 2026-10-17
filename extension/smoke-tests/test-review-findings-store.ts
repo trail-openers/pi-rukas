@@ -12,7 +12,6 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { acceptRow } from "../scripts/review-accept-row.ts";
 import { execp } from "../src/exec.ts";
 import { partitionDecisions } from "../src/lens-residuals.ts";
 import type { Finding } from "../src/lens-review-types.ts";
@@ -27,15 +26,10 @@ import {
   titleClassOf,
   titleTokens,
 } from "../src/review-findings-match.ts";
-import type { FindingRun } from "../src/review-findings-store.ts";
+import { acceptFinding as acceptFinding } from "../src/review-findings-store.ts";
 import { readBranchRows, recordFindingRunOutcome } from "../src/review-findings-store.ts";
 import { ledgerPathFor } from "../src/review-ledger-path.ts";
-
-/** A round's decisions, or undefined when nothing was recorded. */
-const decide = async (run: FindingRun) => {
-  const out = await recordFindingRunOutcome(run);
-  return out.ok ? out.decisions : undefined;
-};
+import { decide } from "./lib/review-findings-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -254,12 +248,9 @@ try {
   );
 
   // Accept it by id (the operator path), then a later full round suppresses it.
-  const accepted = await acceptRow({
-    cwd: dir,
-    branch: "feat/x",
-    rowId,
-    reason: "known, tracked in a later issue",
+  const accepted = await acceptFinding(dir, "feat/x", rowId, {
     by: "op@example.com",
+    reason: "known, tracked in a later issue",
   });
   assert(accepted.ok, "accept: an open row can be accepted by id");
   const later = await decide({
@@ -337,23 +328,17 @@ try {
     (await readBranchRows(dir, "feat/x"))[0]?.status === "resolved",
     "resolve: an open row whose cited line is past the end of the file resolves",
   );
-  const refused = await acceptRow({
-    cwd: dir,
-    branch: "feat/x",
-    rowId,
-    reason: "a resolved row cannot be accepted",
+  const refused = await acceptFinding(dir, "feat/x", rowId, {
     by: "op",
+    reason: "a resolved row cannot be accepted",
   });
   assert(!refused.ok, "accept: a resolved row is refused");
   assert(
     !(
-      await acceptRow({
-        cwd: dir,
-        branch: "feat/x",
-        rowId: "ffffffff",
-        reason: "no such row exists here",
-        by: "op",
-      })
+      await acceptFinding(dir, "feat/x", "ffffffff", {
+    by: "op",
+    reason: "no such row exists here",
+  })
     ).ok,
     "accept: an unknown row id is refused",
   );
@@ -397,12 +382,9 @@ try {
     review: "full",
   });
   const nlId = nl?.[0]?.rowId ?? "";
-  await acceptRow({
-    cwd: dir,
-    branch: "feat/nl",
-    rowId: nlId,
-    reason: "file-level gap, tracked elsewhere",
+  await acceptFinding(dir, "feat/nl", nlId, {
     by: "op@example.com",
+    reason: "file-level gap, tracked elsewhere",
   });
   const sibling = await decide({
     cwd: dir,

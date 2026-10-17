@@ -1,21 +1,22 @@
 /**
- * Pure formatting/parsing helpers for the code-review lens roster: the lens
- * roster, prompt construction, report_finding parsing, precedence-based
- * dedup, and the human-readable summary renderer. No `ExtensionAPI`
+ * Pure helpers for the code-review lens roster: the lens roster, prompt
+ * construction, report_finding parsing, precedence-based dedup, the verdict
+ * rule, the severity type, and the `LensReviewSummary` shape. No `ExtensionAPI`
  * coupling — orchestration (spawning, retries, job wiring) lives in
- * lens-review.ts.
+ * lens-review.ts, and the one function that turns a finished summary into the
+ * text an operator reads lives in lens-review-render.ts (#1125 split): this
+ * module declares what a summary CONTAINS, the render module decides how it
+ * reads. AGENTS.md §12's file-size gate is why the two are separate files, not
+ * why they are separate concerns — the seam is data versus presentation.
  */
 
 import os from "node:os";
 import path from "node:path";
-import { neutraliseEvidence } from "./comment-evidence.ts";
-import { type SuppressedFinding, resolvedSection, suppressedSection } from "./lens-residuals.ts";
-import { advisorySection } from "./lens-review-advisory.ts";
-import { deltaFallbackText } from "./lens-review-diff.ts";
+import type { SuppressedFinding } from "./lens-residuals.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
-import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
+import type { Finding, FindingSource, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
-import type { ResolvedNotice } from "./review-findings-file.ts";
+import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
 /** The finding's severity level. Owned here (the pure leaf both the format
@@ -23,17 +24,30 @@ import type { DispatchResult, DispatchUsage } from "./types.ts";
  * lens-review.ts` import no longer carries it (#980 — the cycle was left
  * type-only but the split that broke it is real now). */
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+
+/**
+ * The one description line a finding renders with (#1130): never empty.
+ *
+ * A carried row is re-reported to the operator VERBATIM from the stored row, so
+ * a row whose lens never filled `description` printed a blank line under its own
+ * heading — the #1130 round-3 report that showed five open findings with nothing
+ * to read. Rows recorded from now on store the prose; this is the fallback for a
+ * row that has none, and it invents no claim: it names the evidence that does
+ * exist (the file, the line and the row) and says the description was never
+ * recorded.
+ */
+export function findingDescription(f: Finding): string {
+  const text = f.description?.trim();
+  if (text) return text;
+  return `(no description was recorded for this finding — row ${f.path}:${f.line ?? "?"})`;
+}
+
 /**
  * The skills dir for the lens review (the installed `code-review-*` skills).
  * Moved here from lens-review.ts for the 500-line gate (AGENTS.md §12).
  */
 export function piSkillsDir(): string {
   return process.env.PI_ENSEMBLE_SKILLS_DIR ?? path.join(os.homedir(), ".pi", "agent", "skills");
-}
-
-/** Severity type guard. Moved here from lens-review.ts for the 500-line gate. */
-export function isSeverity(s: string): s is Severity {
-  return s === "CRITICAL" || s === "HIGH" || s === "MEDIUM" || s === "LOW";
 }
 
 /** The lens review's summary. Moved here from lens-review.ts for the 500-line gate. */
@@ -105,7 +119,16 @@ export interface LensReviewSummary {
   memoryNote?: string;
   /** #1125 — rows this round resolved because their cited code is gone, with the reason. */
   resolved?: ResolvedNotice[];
-  /** #1140 — carried rows on files outside the PR's diff: listed, never blocking. */
+  /**
+   * #1125 — rows this round set aside: a malformed row, or an operator acceptance
+   * that lapsed because its cited code changed. Either way a suppression is gone,
+   * so the summary and the residual disclosure name the row rather than leaving
+   * its return to look like a new finding.
+   */
+  setAside?: SetAsideNotice[];
+  /** #1140 (#1125, at LINE level) — reported findings whose cited code is outside
+   * the PR's changed lines: listed under the advisory heading, never counted
+   * toward the verdict, `bySeverity` or the ledger's `hasCritical`. */
   advisory?: Finding[];
 }
 
@@ -188,10 +211,6 @@ When you have finished all findings, write a short prose summary as your final r
 After writing your summary, STOP — no further tool calls. Do not re-read files, re-run commands or re-scan the diff; the summary is your terminal output.`;
 }
 
-// Turning report_finding calls into findings lives in lens-findings-extract.ts
-// (the 500-line gate); re-exported so existing importers keep working.
-export { extractFindings } from "./lens-findings-extract.ts";
-
 /**
  * Deduplicate findings by (normalised path, line, lowercased title). When
  * duplicates exist across lenses, keep the one from the highest-priority lens
@@ -200,6 +219,14 @@ export { extractFindings } from "./lens-findings-extract.ts";
  * know (e.g. stale findings from an older pass) fall back to 99.
  */
 export function dedupeFindings(input: Finding[], lens: RosterEntry[]): Finding[] {
+  // Deterministic under the advisory split (#1125): `bestByKey` is a Map, so
+  // without this sort the emitted order is the input order — which is the lens
+  // fan-in's completion order plus the store's row order, neither of them
+  // stable. The summary, the residual disclosure and every test that reads
+  // "the" reported finding then depend on which of two findings that dedup into
+  // one row survived. Sort first, so the SAME finding survives and is listed
+  // first whatever the input order.
+  const ordered = [...input].sort(sortFindings);
   const precedenceOf = new Map<FindingSource, number>();
   for (const l of lens) {
     if (l.precedence !== undefined) precedenceOf.set(l.name, l.precedence);
@@ -213,7 +240,7 @@ export function dedupeFindings(input: Finding[], lens: RosterEntry[]): Finding[]
   // per pass) — at most a few hundred entries per invocation, and the whole
   // map goes out of scope when this function returns. No explicit cap needed.
   const bestByKey = new Map<string, Finding>();
-  for (const f of input) {
+  for (const f of ordered) {
     const key = `${f.path}::${f.line ?? 0}::${normaliseTitle(f.title)}`;
     const existing = bestByKey.get(key);
     if (!existing) {
@@ -253,15 +280,6 @@ export function bySeverityCounts(findings: Finding[]): Record<Severity, number> 
   for (const f of findings) out[f.severity]++;
   return out;
 }
-
-// The evidence rule (lensProducedEvidence, NO_TEXT_PLACEHOLDER) and the
-// incompleteness rule live in lens-review-incomplete.ts; re-exported here so
-// existing importers keep working.
-export {
-  hasReviewEvidence,
-  lensProducedEvidence,
-  NO_TEXT_PLACEHOLDER,
-} from "./lens-review-incomplete.ts";
 
 /**
  * Map (findings × lens completion state) to a single verdict.
@@ -321,161 +339,3 @@ const SEVERITY_RANK: Record<Severity, number> = {
   MEDIUM: 2,
   LOW: 3,
 };
-
-/**
- * #878 — the suffix that names WHY a blocked lens was stopped, read from
- * `killCause` (plus the loop/token-budget evidence threaded alongside it).
- * Returns "" when no killCause is present so the tag/banner stay
- * byte-identical to pre-#878 output for plain crashes (the #327 regression
- * guard). "not retried: self-inflicted cap, #543" attaches only to the two
- * cap kills that break the retry loop in lens-review-child.ts.
- */
-function killCauseSuffix(r: LensRunResult): string {
-  const cause = r.killCause;
-  if (!cause) return "";
-  if (cause === "loop") {
-    const evidence = r.loopEvidence ? ` — ${r.loopEvidence.tool} ×${r.loopEvidence.count}` : "";
-    return ` (killed: loop${evidence}; not retried: self-inflicted cap, #543)`;
-  }
-  if (cause === "token-budget") {
-    const evidence = r.tokenBudget ? ` — ${r.tokenBudget.used}/${r.tokenBudget.budget} tokens` : "";
-    return ` (killed: token-budget${evidence}; not retried: self-inflicted cap, #543)`;
-  }
-  if (cause === "abort") return " (aborted)";
-  return ` (killed: ${cause})`;
-}
-
-export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): string {
-  // #1127 — a round-budget refusal ran no lens; its note is the whole report.
-  if (s.verdict === "ROUND_CAP_REACHED" || s.verdict === "REVIEW_INCOMPLETE_STREAK") {
-    return s.note ?? s.verdict;
-  }
-  // #973 — the no-review outcome (decision 4): the delta was empty, so no
-  // review ran. This is NOT an approval — the summary must say "NO REVIEW",
-  // never "APPROVED" (a no-review outcome looking like an approval is the
-  // #384 silent-approval class in a new shape).
-  if (s.noReview && s.carriedFrom) {
-    const c = s.carriedFrom;
-    return [
-      `NO NEW CHANGES \u2014 verdict carried from ${c.sha.slice(0, 8)} (${c.verdict}, round ${c.round}); the branch patch-id is unchanged, so no lens review ran. The integrated tree of this head (mainline changes merged in) was not re-reviewed by this branch's lenses.`,
-      "",
-      "Re-run dispatch_lens_review with `full: true` to review the full branch diff.",
-    ].join("\n");
-  }
-  if (s.noReview) {
-    return [
-      `NO REVIEW — no changes since the last lens review (${s.deltaReview?.since.slice(0, 8)} at ${s.deltaReview?.head.slice(0, 8)}) — nothing to review, no verdict rendered.`,
-      "",
-      "The branch is unchanged since the last recorded lens run; re-run dispatch_lens_review with `full: true` (or after a new commit) to review the full branch diff.",
-    ].join("\n");
-  }
-  const blockedLenses = s.lenses.filter((r) => r.blocked);
-  const retriedLenses = s.lenses.filter((r) => !r.blocked && r.attempts > 1);
-
-  const lensLines = s.lenses.map((r: LensRunResult) => {
-    let tag: string;
-    if (r.blocked) {
-      tag = `BLOCKED after ${r.attempts} attempts — ${r.parseError ?? "fail"}${killCauseSuffix(r)}`;
-    } else if (r.ok) {
-      const findingCount = `${r.findings.length} finding${r.findings.length === 1 ? "" : "s"}`;
-      const retryNote =
-        r.attempts > 1 ? ` (succeeded on attempt ${r.attempts}/${maxLensAttempts})` : "";
-      // A call the tool rejected (or one with an unusable severity) records
-      // nothing; say so beside the count, or a finding the lens lists in its
-      // prose but never re-sent is invisible here.
-      const skippedNote = r.parseError ? ` — ${r.parseError}` : "";
-      tag = `${findingCount}${retryNote}${skippedNote}`;
-    } else {
-      tag = r.parseError ?? "fail";
-    }
-    const model = r.model ? ` · ${r.model}` : "";
-    return `  ${r.lens.padEnd(16)} ${(`${r.ms}ms`).padStart(7)}   ${tag}${model}`;
-  });
-  const findingLines = s.findings.map(
-    (f) =>
-      `  [${f.severity}] ${f.lens.padEnd(14)} ${f.path}:${f.line} — ${f.title}\n    ${f.description ?? ""}\n    suggest: ${f.suggestion ?? "(none)"}`,
-  );
-  const sevSummary = (Object.keys(s.bySeverity) as Severity[])
-    .filter((k) => s.bySeverity[k] > 0)
-    .map((k) => `${k}=${s.bySeverity[k]}`)
-    .join(" ");
-  const transcripts = s.lenses
-    .filter((r) => r.transcriptPath)
-    .map((r) => `  ${r.lens}: ${r.transcriptPath}`)
-    .join("\n");
-
-  // Blocked-lens banner — prominent because verdict=REVIEW_INCOMPLETE means
-  // the six-pass review did NOT actually complete six lenses. PM/user MUST
-  // decide whether to retry, override, or halt; never silently downgrade (#3).
-  // #878 — the header wording depends on whether the blocked lenses were
-  // stopped by a self-inflicted dispatch cap (loop / token-budget), by a
-  // mix of causes, or by none of those (plain failure — byte-identical to
-  // pre-#878, so the #327 test keeps passing unchanged).
-  const capKilledCauses = new Set<"loop" | "token-budget">(["loop", "token-budget"]);
-  const capKilledCount = blockedLenses.filter((r) =>
-    r.killCause ? capKilledCauses.has(r.killCause as "loop" | "token-budget") : false,
-  ).length;
-  const blockedHeader =
-    capKilledCount === blockedLenses.length
-      ? "was stopped by a self-inflicted cap (not retried)"
-      : capKilledCount > 0
-        ? "did not complete (see each lens)"
-        : `failed all ${maxLensAttempts} attempts`;
-  const blockedBanner =
-    blockedLenses.length > 0
-      ? [
-          "",
-          `⛔ REVIEW INCOMPLETE: ${blockedLenses.length}/${s.lenses.length} lens(es) ${blockedHeader}:`,
-          ...blockedLenses.map(
-            (r) => `  - ${r.lens}: ${r.parseError ?? "unknown failure"}${killCauseSuffix(r)}`,
-          ),
-          "",
-          "The verdict above is computed from the lenses that DID complete; the failed lens(es) contributed zero findings — they did not approve, they did not run. Re-dispatch dispatch_lens_review to retry, or override and proceed despite the incomplete review.",
-        ]
-      : [];
-
-  const retryNote =
-    retriedLenses.length > 0
-      ? [
-          "",
-          `ℹ Retry note: ${retriedLenses.length} lens(es) needed retries but eventually succeeded — ${retriedLenses
-            .map((r) => `${r.lens}(×${r.attempts})`)
-            .join(", ")}.`,
-        ]
-      : [];
-
-  return [
-    `Code review verdict (${s.lenses.length} lenses): ${s.verdict}`,
-    ...(s.deltaReview
-      ? [
-          `Mode: delta review since ${s.deltaReview.since.slice(0, 8)}${s.deltaReview.auto ? " (automatic — the last recorded lens run)" : ""} — findings below cover only \`git diff ${s.deltaReview.since}..${s.deltaReview.head}\` since the last recorded lens run, not the full branch diff.`,
-          ...(s.deltaReview.fallback
-            ? [
-                `Delta fallback: ${deltaFallbackText({ since: s.deltaReview.since, fallback: s.deltaReview.fallback })}.`,
-              ]
-            : []),
-        ]
-      : ["Mode: full review (the whole branch diff)"]),
-    `Total findings: ${s.totalFindings}  (${sevSummary || "none"})`,
-    ...blockedBanner,
-    ...retryNote,
-    "",
-    "Per-lens results:",
-    ...lensLines,
-    "",
-    s.totalFindings > 0 ? "Findings (deduped, sorted by severity):" : "",
-    ...findingLines,
-    ...suppressedSection(
-      s.suppressed,
-      `Suppressed as already known (${s.suppressed?.length ?? 0}, not re-reported):`,
-    ),
-    ...resolvedSection(s.resolved),
-    ...advisorySection(s.advisory),
-    ...(s.memoryNote ? ["", neutraliseEvidence(s.memoryNote)] : []),
-    "",
-    "Transcripts:",
-    transcripts,
-  ]
-    .filter((l) => l !== "")
-    .join("\n");
-}

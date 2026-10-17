@@ -33,6 +33,8 @@ import { resolveMergeAuthority } from "../src/work-driver-merge-authority.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { realExec } from "./lib/exec-fake.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { isNulDiffRead, isNulStatusRead, nulStatus } from "./lib/nul-porcelain.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -212,6 +214,13 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
 }
 
 // ------------------------------------------------------- porcelain parsing
+//
+// `porcelainPaths` stays the converge gate's non-`-z` reader
+// (work-driver-converge.ts readEndOfDevelopDiff) and is deliberately byte-identical:
+// the develop gate moved to the `-z` module (#1378), the converge read did not. Its
+// quote handling covers only the non-`-z` C-quoted form — which is exactly why the
+// develop gate could not use it for a non-ASCII name — and both directions are pinned
+// here so a future edit has to account for the two consumers.
 
 {
   const paths = porcelainPaths(
@@ -219,6 +228,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
       " M src/index.ts",
       "?? .pi/verify-cmd",
       'A  "docs/with space.md"',
+      'A  ".github/workflows/w\\303\\266rkflows.yml"',
       "R  old/AGENTS.md -> .github/workflows/ci.yml",
       "",
     ].join("\n"),
@@ -231,8 +241,20 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
     "porcelain: a rename yields BOTH sides — moving a doctrine file aside is still an edit",
   );
   assert(
-    protectedPathsIn(paths).length === 2,
+    protectedPathsIn(paths).length === 3,
     "...and the rename's destination is caught by the protected gate",
+  );
+  // #1378 — the defect that moved the develop gate off this function. The outer quotes
+  // come off; the C-escaped bytes do NOT decode. Harmless for converge (which
+  // compares path strings among themselves), fatal for a gate that must name the
+  // path to an operator and match it against a grant.
+  assert(
+    paths.includes(".github/workflows/w\\303\\266rkflows.yml"),
+    "porcelain: a C-escaped name keeps its octal bytes (quote-strip, no decode) — the hole #1378 routes around",
+  );
+  assert(
+    !paths.includes(".github/workflows/wörkflows.yml"),
+    "...and it is NOT the decoded name, which is why the develop gate uses the `-z` reader instead",
   );
 }
 
@@ -243,6 +265,10 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
 // regression would actually bite.
 
 {
+  // The two env vars this block reads are saved and restored: the suite is one
+  // process per file, and a leak would silently change a later block's behaviour.
+  const savedVerify = process.env.PI_ENSEMBLE_VERIFY;
+  const savedProtected = process.env.PI_ENSEMBLE_PROTECTED_PATHS;
   process.env.PI_ENSEMBLE_VERIFY = "1";
   delete process.env.PI_ENSEMBLE_PROTECTED_PATHS;
   const wt = path.join(tmp, "wt");
@@ -255,8 +281,13 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
     host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
     repoRoot: tmp,
     issue: 406,
-    verifyExecFn: async (cmd) => {
-      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: porcelain };
+    // #1378 — the gate reads the change set NUL-separated and argv-shaped, so the fake
+    // matches via commandOf and answers in git's `-z` byte form. Matching the old
+    // plain string would return `{stdout:""}` for the `-z` call and every assertion
+    // below would pass on an empty change set.
+    verifyExecFn: async (cmd, opts) => {
+      if (isNulStatusRead(commandOf(cmd, opts))) return { stdout: nulStatus(...porcelain.split("\n")) };
+      if (isNulDiffRead(commandOf(cmd, opts))) return { stdout: "" };
       return { stdout: "" };
     },
   });
@@ -318,7 +349,10 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
       off.notes.some((n) => /PROTECTED_PATHS=0/.test(n)),
     "PI_ENSEMBLE_PROTECTED_PATHS=0 disables the gate, and says so",
   );
-  delete process.env.PI_ENSEMBLE_PROTECTED_PATHS;
+  if (savedVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
+  else process.env.PI_ENSEMBLE_VERIFY = savedVerify;
+  if (savedProtected === undefined) delete process.env.PI_ENSEMBLE_PROTECTED_PATHS;
+  else process.env.PI_ENSEMBLE_PROTECTED_PATHS = savedProtected;
 }
 
 await fs.rm(tmp, { recursive: true, force: true });

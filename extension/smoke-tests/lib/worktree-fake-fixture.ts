@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { integrateBackupRef } from "../../src/work-driver-integrate-cycle.ts";
 import type { ExecFn } from "../../src/worktree.ts";
 
 /**
@@ -23,7 +24,14 @@ const execFileP = promisify(execFile);
  * program directly (no shell), as the production exec does for JSON-free calls.
  */
 export const realExec: ExecFn = async (cmd, o) => {
-  const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+  const opts = {
+    cwd: o?.cwd,
+    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
+    // #1396 round 3 — the fixture honours the caller's bound, so a test that
+    // asserts a timeout was threaded through is asserting something real about
+    // this executor rather than about an ignored option.
+    ...(o?.timeout !== undefined ? { timeout: o.timeout } : {}),
+  };
   const { stdout } = o?.argv
     ? await execFileP(cmd, o.argv, opts)
     : await execFileP("/bin/sh", ["-c", cmd], opts);
@@ -36,7 +44,7 @@ export const realExec: ExecFn = async (cmd, o) => {
  */
 export const realExecWithStderr = async (
   cmd: string,
-  o?: { cwd?: string; maxBuffer?: number },
+  o?: { cwd?: string; maxBuffer?: number; timeout?: number },
 ): Promise<{ stdout: string }> => {
   try {
     return await realExec(cmd, o);
@@ -66,3 +74,14 @@ export function makeFakeWorktreeDir(root: string, name: string): string {
 export function toplevelAnswer(cwd: string | undefined): { stdout: string } {
   return { stdout: realpathSync(cwd ?? "") + "\n" };
 }
+
+/**
+ * The per-issue integrate backup ref (#1173 / #1396), from the ONE producer
+ * (`integrateBackupRef` in `work-driver-integrate-cycle.ts`) — so a test that
+ * asserts a ref name cannot drift from the ref the code writes. Tests assert
+ * against this rather than a literal.
+ */
+export const integrateBackupRefFor = (issue: number): string => integrateBackupRef(issue);
+
+/** The ref under which every integrate backup for issue 17 lives in the fixtures. */
+export const ISSUE_17_BACKUP_REF = integrateBackupRef(17);

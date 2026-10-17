@@ -100,7 +100,7 @@ With `--json`, stdout carries exactly one JSON document:
 | `buildVersion` | always | The release version of the running build (`extension/package.json`). |
 | `issues[].status` | always | `merged`, `handoff`, `aborted`, `interrupted`, `running` (the driver returned without a terminal state) or `not-started`. |
 | `issues[].cap` | when a cap was hit | The last cap the cycle hit, from the published vocabulary (below). It can be set on a `merged` result too (a cap the cycle recovered from), so a host reads `status` and `exitCode` for the outcome and `cap` for the reason. A cap recorded by a step that a signal then cut off is not reported (see [Exit codes](#exit-codes)). |
-| `issues[].parkReason` | when `cap` is `intent-park` | Why the cycle parked: `underspecified`, `contradicted-by-code`, `already-implemented`, `too-large`, `premise-unsound` or `security-open-point`. |
+| `issues[].parkReason` | when `cap` is `intent-park` | Why the cycle parked: `underspecified`, `contradicted-by-code`, `already-implemented`, `too-large`, `premise-unsound`, `unresolved-critical-open-point` or `blank-issue-body`. |
 | `issues[].handoff` | once the cycle emitted a handoff | `channel` (`forge` or `host`, see [Handoff channel](#handoff-channel)); `marker`, the machine marker that is the first line of the body; `body`, the full handoff markdown, taken from the driver's record of this cycle (never re-read from the file); `bodyError` (`not-recorded`) in place of `body` when the cycle recorded none; `bodyFile`, a path for a person; `commentUrl`, the comment pi-rukas posted (forge channel); `labelApplied`, whether `needs-human-attention` was verified on the issue (and PR). |
 | `issues[].failure` | when `cap` is set and the cycle did not merge | Why the cycle stopped on `cap`, as stable fields (#1367, added in this release). See [The `failure` object](#the-failure-object). |
 | `issues[].failedStep` | when the cycle did not merge and started a step | The step it stopped in: the step a `<template>:<step>` cap names (`verify-failed:`, `verify-timeout:`, `verify-env:`, `verify-baseline-red:`, `pr-not-open:`, `step-failed:`, `driver-crash:`), else the last step started before the cap, else the last step started. It names where the cycle stopped, not necessarily a failure: for `awaiting-human-merge` it is the last step the cycle ran (e.g. `ci`). |
@@ -243,6 +243,41 @@ Only these kinds are a host contract, versioned by `NDJSON_STABLE_VERSION` (1) a
 | `log` | `message`, and `level` when set (on the line, not under `event`) |
 
 Every other line carries `unstable: true`. A host may display it, but must not branch on it. The field lists are typed against the driver's event union, so renaming a stable field fails the build.
+
+## What the runner refuses to accept
+
+The headless runner is the surface a host — not a person — drives, so the two
+things that would let it escalate are refused at argument parsing, before any
+cycle starts (exit 40, `error.code: "bad-arguments"`):
+
+| Refused | Why |
+|---|---|
+| `--merge` (and `--auto-merge`, `--allow-unreviewed`) | `--merge` is the one `AuthoritySource` that bypasses the policy judge. A flag an agent can pass is a flag an agent can pass, so a host that could set it could grant its own cycle permission to merge. Merge authority comes from the project's `AGENTS.md` read at the cycle's **base commit** (#406) and is citation-verified by the judge (#407) — nothing on the command line replaces either. |
+| `--sandboxed` | Would claim a trust mode the sandbox image never granted. Trust is an **environment** fact, not a request: `.devcontainer/Dockerfile` bakes `PI_ENSEMBLE_SANDBOX_MODE=1` into the image, and a caller outside that image gets children that fail closed (hard deny on any `ask`-class tool — see [children fail closed](#children-fail-closed-outside-the-sandbox)). A flag that sets the same variable would let any caller declare itself sandboxed. |
+
+`--capabilities` publishes no `--sandboxed` or `--merge` input for the same
+reason: an unknown name means "not supported", and a host failing closed on it
+is the intended outcome. `PI_ENSEMBLE_SANDBOX_MODE` **is** listed — as scope
+`sandbox`, which the sandbox wrapper and the image set and a host must not.
+
+The practical consequence at the merge step: a cycle parked there in a repository
+whose doctrine grants nothing exits **10** (`awaiting-human-merge`) having run no
+forge merge, even with every `gh` answer green. Authority is decided first, and
+evidence is gathered only when authority granted — a denied cycle does not get
+to ask `gh` whether it may merge. That short-circuit is what "a green PR is not
+permission" (#380) means on this surface.
+
+### Children fail closed outside the sandbox
+
+A specialist child spawned by the runner inherits the runner's environment. If
+neither `PI_ENSEMBLE_SANDBOX_MODE` nor `PI_ENSEMBLE_TRUST_MODE` is set, the
+child's permission guard has no broker socket to escalate to and denies every
+`ask`-class tool outright (`Tool '<name>' denied (subagent ask → no broker
+socket — headless deny)`) rather than waiting for a verdict nobody can give.
+Inside the image, the baked variable passes through untouched and the guard
+short-circuits as it does for any sandboxed session. Mode-independent guards —
+the merge guard, the issue-creation guard — run **before** that short-circuit
+either way, so the container default does not disarm them.
 
 ## Handoff channel
 

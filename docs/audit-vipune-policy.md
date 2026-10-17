@@ -301,25 +301,25 @@ If an identical or very similar entry exists:
 
 2. If it's the same finding (same issue at same location):
    - **Do NOT create a duplicate entry**
-   - Update the existing entry by re-adding with new `last seen` date (if vipune supports updates)
+   - Correct the existing row with `vipune add '<updated text>' --supersedes <old-id> --memory-type <type>` — this is the supported correction; it keeps the original row
    - OR: Create a new entry that references the old one: "See also: <prior entry ID>"
 
 3. If it's the same pattern in a new location:
    - Aggregate if you have 3+ instances now (see "Aggregated recurring drift" section)
    - Or skip if it's just a second instance (not enough for aggregation yet)
 
-### Superseding (if supported by vipune)
+### Superseding a resolved finding
 
 If a previous finding is now fixed:
 
 1. Search for the finding by title/location
-2. If found, mark as superseded or add a new entry:
+2. If found, correct it with `add --supersedes`, which preserves the original row:
    ```bash
-   vipune add '[audit] RESOLVED: <title>. Previously: <date>. Resolution: <how it was fixed>.'
+   vipune add '[audit] RESOLVED: <title>. Previously: <date>. Resolution: <how it was fixed>.' \
+     --supersedes <old-id> --memory-type fact
    ```
-3. Future audits skip superseded entries
-
-**Note**: Vipune's exact superseding semantics depend on the vipune tool implementation. Check `vipune --help` for current support.
+3. Nothing to correct it to? Report the row's id for the operator to remove — do not add a placeholder row.
+4. Future audits skip resolved entries
 
 ---
 

@@ -162,6 +162,28 @@ export interface DriverContext {
    */
   protectedGrant?: readonly string[];
   /**
+   * #1362 — the project's `.pi/dirty-root-exempt` list, parsed once per cycle
+   * before the branch step. Paths here are not repo-root dirt and are never
+   * staged at repoRoot, which is how a tool's own local file
+   * (`.claude/settings.local.json`) stops blocking a cycle.
+   *
+   * Carried on the context rather than read at module scope: up to
+   * `PI_ENSEMBLE_PARALLEL_GROUPS` cycles run concurrently in one process and
+   * each has its own project, so a shared list would leak exemptions between
+   * them. Absent is an empty list — every consumer behaves as it did before
+   * the file existed.
+   */
+  dirtyRootExempt?: readonly string[];
+  /**
+   * #1362 — set when reading `.pi/dirty-root-exempt` FAILED outright (any error
+   * but ENOENT/ENOTDIR), as the error cause. Absent = the file read, or was
+   * absent (the ordinary cases). The branch step's dirty-root block folds this
+   * into its plumb report so the handoff says "the exemption file could not be
+   * read" instead of only "your repo root is dirty"; the cycle log carries the
+   * same event.
+   */
+  dirtyRootExemptReadFailed?: string;
+  /**
    * #1292 — the invoking session has no UI (`!ctx.hasUI`, e.g. `pi -p`). A
    * headless cycle opens its PR as a draft by default — nobody is watching
    * the review window — unless `PI_ENSEMBLE_DRAFT_PR` says otherwise.
@@ -252,6 +274,22 @@ export interface DriverContext {
    * the fallback path without a real `gh` binary.
    */
   forge?: import("./forge.ts").Forge;
+  /**
+   * @internal / test-only. Optional injection point for tests: replace the
+   * merge-authority policy judge built by `judgePolicy` in the merged step.
+   * Production callers omit this and get the real `judgePolicy` (a
+   * `spawnSpecialist` child); tests inject a fake to distinguish "the doctrine
+   * was unreadable" from "the judge is switched off for the whole process" —
+   * which is what made the doctrine-denial case vacuous. Mirrors
+   * `adversarialLoopFn` / `lensReviewFn`.
+   *
+   * NOT a host knob. `runHeadless` forwards this field, so an exported-API
+   * caller could otherwise speak for the merge-authority gate; `runMerged`
+   * honours it only when `PI_ENSEMBLE_FORBID_LIVE_SPAWN=1` (which the offline
+   * suite sets) and traces a warning when it does. See `mergeAuthorityJudge`
+   * in `work-driver-merged.ts`.
+   */
+  policyJudgeFn?: import("./work-driver-policy.ts").PolicyJudgeFn;
   /**
    * #1189 — the driver's in-memory terminal state, handed to the caller for
    * the disk-vs-memory divergence check. The state file lives inside the tree

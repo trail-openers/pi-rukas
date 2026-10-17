@@ -37,6 +37,8 @@ export interface PlanResultFields {
   gaps: PlanGap[];
   priorContext: { source: string; fact: string }[];
   issueUrl?: string;
+  /** #1377: the filed issue's number, when the forge response carried one. */
+  issueNumber?: number;
   filingFailure?: FilingFailure;
   timings: PlanPhaseTiming[];
   capHit?: boolean;
@@ -81,6 +83,7 @@ export function buildPlanResult(f: PlanResultFields): PlanResult {
     priorContext: f.priorContext,
     filed: !!f.issueUrl,
     issueUrl: f.issueUrl,
+    issueNumber: f.issueNumber,
     capHit: f.capHit || undefined,
     capReason: f.capReason,
     residualForDisclosure: f.residualForDisclosure?.length ? f.residualForDisclosure : undefined,

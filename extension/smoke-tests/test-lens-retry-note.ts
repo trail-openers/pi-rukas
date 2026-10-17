@@ -68,7 +68,7 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
 }));
 
 const { runLensReview } = await import("../src/lens-review.ts");
-const { renderSummary } = await import("../src/lens-review-format.ts");
+const { renderSummary } = await import("../src/lens-review-render.ts");
 const { MAX_LENS_ATTEMPTS } = await import("../src/lens-review.ts");
 type LensRunResult = import("../src/lens-review.ts").LensRunResult;
 const { LENS_ROSTER } = await import("../src/lens-roster.ts");

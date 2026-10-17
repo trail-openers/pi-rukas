@@ -22,11 +22,10 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { countAheadOfBase, workNotYetOnBranch } from "../src/work-driver-handoff-ahead.ts";
 import {
   consolidateWorktreesToBranch,
-  countAheadOfBase,
   handoffConsolidationEnabled,
-  workNotYetOnBranch,
 } from "../src/work-driver-handoff-consolidate.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";

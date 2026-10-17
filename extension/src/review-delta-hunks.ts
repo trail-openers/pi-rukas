@@ -25,9 +25,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { execp } from "./exec.ts";
+import { detectMainline } from "./mainline.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import { trace } from "./trace.ts";
-import { detectMainline } from "./work-driver-git.ts";
 
 const execFileP = promisify(execFile);
 /** Matches the other diff reads (lens-review-diff.ts computeRangeDiff). */
@@ -135,7 +135,7 @@ export function subtractReviewedHunks(headDiff: string, prevDiff: string): strin
  */
 export async function resolveMainlineBase(cwd: string): Promise<string | undefined> {
   const mainline = await detectMainline(cwd, execp);
-  if (!("branch" in mainline)) return undefined;
+  if (!mainline.ok) return undefined;
   for (const ref of [`origin/${mainline.branch}`, mainline.branch]) {
     if (await resolveHeadSha(cwd, ref, execp)) return ref;
   }

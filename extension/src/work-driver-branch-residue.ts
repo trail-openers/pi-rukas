@@ -22,16 +22,27 @@
  *
  * Never throws: the existing refusal/degradation paths cover the case
  * where the pass could not resolve the residue.
+ *
+ * #1396 (round 3) has one exception, and it is the fail-open this module used
+ * to be: the listing behind the residue pass is now bounded, so a HANG is a
+ * rejection. Turning that into "no leftovers" (the old `catch → []` plus this
+ * file's blanket non-fatal catch) would report a clean residue pass while a
+ * same-issue tree holding uncommitted work sat untouched. A rejection that is
+ * not "there is no git here" is recorded as a `worktree-listing-unreadable`
+ * cap-hit — a visible park with the git error as its evidence.
  */
 
 import { trace } from "./trace.ts";
 import { detectMainline, freshMainlineTip } from "./work-driver-branch-mechanized.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { dirtyRootExemptReadNotice } from "./work-driver-dirty-root-exempt.ts";
+import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
+import { readDirtyRootExemptBaseline } from "./work-driver-dirty-root-exempt.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 import { handleSameIssueLeftovers } from "./worktree-leftover.ts";
 import type { ExecFn } from "./worktree.ts";
-import { worktreePath } from "./worktree.ts";
+import { WorktreeScanError, isMissingGit, worktreePath } from "./worktree.ts";
 
 /**
  * #746 task-b — the driver-managed paths that do NOT count as repoRoot dirt.
@@ -73,13 +84,67 @@ export function isDriverManagedDirtLine(line: string): boolean {
 export async function readRepoRootDirt(
   execFn: ExecFn,
   repoRoot: string,
+  exempt?: readonly string[],
 ): Promise<string[] | undefined> {
   const { stdout } = await execFn("git status --porcelain -uall", {
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
   });
-  const dirt = stdout.split("\n").filter((l) => l.trim() && !isDriverManagedDirtLine(l));
+  const dirt = stdout
+    .split("\n")
+    .filter(
+      (l) => l.trim() && !isDriverManagedDirtLine(l) && !isConfiguredExemptDirtLine(l, exempt),
+    );
   return dirt.length > 0 ? dirt : undefined;
+}
+
+/**
+ * #1362 — record the paths already untracked under the project's exempt
+ * prefixes, once, at the point where the branch step first reads repoRoot's
+ * dirt (immediately after the residue pass, before the mechanized setup can
+ * write anything). The restore claim reads this back as provenance: after an
+ * abort's mixed reset a staged-new deliverable and a tool's stray are both
+ * `??`, so only "was it already here?" separates them — and only a snapshot
+ * taken before the cycle could write answers that.
+ *
+ * Written once and never recomputed: a resumed cycle keeps the value its first
+ * run captured, because recomputing late would bless the cycle's own output as
+ * pre-existing. No exemption list, or nothing under it, records nothing — and
+ * `undefined` is the answer `isClaimCountedEntry` treats as "name everything".
+ * Best-effort: a failed read is traced and records nothing, which is the safe
+ * direction (a claim that names too much is a false alarm; one that spares the
+ * cycle's own work is the defect this field exists to prevent).
+ */
+export async function recordDirtyRootExemptBaseline(
+  ctx: CycleContext,
+  state: WorkState,
+  execFn: ExecFn,
+): Promise<WorkState> {
+  const ps = state.pipelineState;
+  if (ps.dirtyRootExemptBaseline !== undefined) return state;
+  if (ctx.dirtyRootExempt === undefined || ctx.dirtyRootExempt.length === 0) return state;
+  // Same gate as the residue pass beside it: with worktrees already in the
+  // state this is a re-entry, and repoRoot is no longer the pre-cycle tree the
+  // snapshot is meant to describe.
+  if (Object.keys(ps.worktrees ?? {}).length > 0) return state;
+  try {
+    const baseline = await readDirtyRootExemptBaseline(execFn, ctx.repoRoot, ctx.dirtyRootExempt);
+    if (baseline === undefined) return state;
+    // A cycle with no exempt paths present at all needs no field: leaving it
+    // absent keeps a resumed cycle in the same "name everything" state it would
+    // reach with an empty list, and keeps the state file unchanged for the
+    // overwhelmingly common case of nothing to record.
+    if (baseline.length === 0) return state;
+    return {
+      ...state,
+      pipelineState: { ...ps, dirtyRootExemptBaseline: baseline },
+    };
+  } catch (err) {
+    trace(
+      `work-driver: could not record the exempt baseline (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
+    );
+    return state;
+  }
 }
 
 /**
@@ -107,12 +172,14 @@ export async function runBranchResiduePass(
   // design worth keeping, and the operator's own working tree is not ours
   // to move. A failure of this read degrades to no-op (the post-develop
   // gate still fires) rather than masking a clean root.
-  const rootDirt = await readRepoRootDirt(execFn, ctx.repoRoot).catch((err) => {
-    trace(
-      `work-driver: branch-step dirty-root pre-check failed (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
-    );
-    return undefined;
-  });
+  const rootDirt = await readRepoRootDirt(execFn, ctx.repoRoot, ctx.dirtyRootExempt).catch(
+    (err) => {
+      trace(
+        `work-driver: branch-step dirty-root pre-check failed (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
+      );
+      return undefined;
+    },
+  );
   if (rootDirt !== undefined) {
     const paths = rootDirt.map((l) => l.slice(3).trim());
     const pathsShown = paths.slice(0, 5).join(", ");
@@ -127,7 +194,15 @@ export async function runBranchResiduePass(
       role: "driver",
       body: `Branch step blocked — repoRoot is dirty before any development dispatch:
 ${paths.map((p) => `  - ${p}`).join("\n")}
-This is residue from a previous cycle or the operator's own in-progress work — it is NOT a defect in this cycle's diff. It is preserved (nothing is deleted or stashed); inspect and clear it (commit, move, or add to .gitignore) and re-run the cycle. A previous cycle whose restore could not save the root's state leaves it like this on purpose — its handoff says so and names the tree; state a restore did save is in that cycle's scratch dir as restored-state-*.diff.`,
+This is residue from a previous cycle or the operator's own in-progress work — it is NOT a defect in this cycle's diff. It is preserved (nothing is deleted or stashed); inspect and clear it (commit, move, or add to .gitignore) and re-run the cycle. A previous cycle whose restore could not save the root's state leaves it like this on purpose — its handoff says so and names the tree; state a restore did save is in that cycle's scratch dir as restored-state-*.diff.${
+        // #1362 — when the exemption file could not be read, the operator must
+        // learn it HERE: every path above was judged with an empty list, so a
+        // file the project legitimately exempts reads exactly like residue. The
+        // trace went to stderr at cycle start; the handoff is what is read.
+        ctx.dirtyRootExemptReadFailed === undefined
+          ? ""
+          : `\n\n${dirtyRootExemptReadNotice(ctx.dirtyRootExemptReadFailed)}`
+      }`,
     });
     next = {
       ...next,
@@ -201,6 +276,26 @@ This is residue from a previous cycle or the operator's own in-progress work —
     }
     return next;
   } catch (err) {
+    // #1396 round 3 — "could not read the listing" is not "there was nothing
+    // to clean". Only a git that genuinely cannot run (`ENOENT`) keeps the
+    // long-standing non-fatal degradation; a timeout or a kill parks, because
+    // the alternative is a residue pass that removed nothing and reported
+    // success while a dirty same-issue tree stayed in place for the next
+    // cycle's `worktree add` to refuse on.
+    if (err instanceof WorktreeScanError || !isMissingGit(err)) {
+      const detail = (err as Error).message ?? String(err);
+      trace(
+        `work-driver: same-issue residue pass could not read the worktree list — halting the branch step: ${detail.slice(0, 200)}`,
+      );
+      return appendEvent(state, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "worktree-listing-unreadable",
+        reviewRound: state.pipelineState.reviewRound,
+        nextStep: "handoff",
+        evidence: `same-issue residue pass could not read \`git worktree list\`, so the branch step cannot tell whether a leftover holds work: ${detail.slice(0, 300)}`,
+      });
+    }
     trace(
       `work-driver: same-issue residue pass failed (non-fatal): ${(err as Error).message?.slice(
         0,

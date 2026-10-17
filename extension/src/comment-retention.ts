@@ -21,7 +21,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { type LostComment, classifyHunk, hasWord, parseHunks } from "./comment-retention-hunks.ts";
 import { execp } from "./exec.ts";
-import { countPrCommits, prRange } from "./git-range.ts";
+import { aheadOfBase, prRange, refResolves } from "./git-range.ts";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -112,32 +112,15 @@ async function readLinesAtRef(
     }
     return out;
   } catch (err) {
-    if (execExitCode(err) === 1 && (!ref || (await refResolves(execFn, cwd, ref, timeoutMs))))
+    if (
+      execExitCode(err) === 1 &&
+      (!ref || (await refResolves(execFn, cwd, ref, timeoutMs)).state === "resolves")
+    )
       return new Set<string>();
     trace(
       `comment-retention: readLinesAtRef failed at ${ref ?? "the worktree"}: ${errText(err).slice(0, 120)}`,
     );
     return undefined;
-  }
-}
-
-/** Does `ref` resolve to a commit? Any error counts as unresolved. */
-async function refResolves(
-  execFn: ExecFn,
-  cwd: string,
-  ref: string,
-  timeoutMs: number,
-): Promise<boolean> {
-  try {
-    await execFn("git", {
-      argv: ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`],
-      cwd,
-      timeout: timeoutMs,
-      maxBuffer: 1 * 1024 * 1024,
-    });
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -154,30 +137,27 @@ async function confirmEmptyDiff(
   // a truncated or mis-invoked read could also yield one; cross-check the range
   // scoped to THE SAME validated paths and, if non-empty, report it rather than
   // silently passing as "nothing lost".
-  let changedInRange = Number.NaN;
-  try {
-    // The PR's own commits under paths, from the merge base (#1134: a base that
-    // moved after the branch was cut must not count here).
-    changedInRange = await countPrCommits(execFn, cwd, baseRef, headRef, {
-      pathspec: paths,
-      timeout: timeoutMs,
-    });
-  } catch {
-    changedInRange = Number.NaN; // unreadable — note, not pass
+  // The PR's own commits under paths, from the merge base (#1134: a base that
+  // moved after the branch was cut must not count here).
+  const ahead = await aheadOfBase(execFn, cwd, baseRef, headRef, {
+    pathspec: paths,
+    timeout: timeoutMs,
+  });
+  switch (ahead.kind) {
+    case "empty":
+      return { ok: true, lost: [], exempt: 0 };
+    case "ahead":
+      return {
+        ok: false,
+        reason: `diff empty but range ${baseRef}...${headRef} (under paths) has ${ahead.n} commit(s) (misread) — cannot trust an empty diff`,
+      };
+    default:
+      // Unreadable is not "nothing changed": note, not pass.
+      return {
+        ok: false,
+        reason: `diff empty and range ${baseRef}...${headRef} (under paths) unreadable — cannot establish "nothing changed"`,
+      };
   }
-  if (Number.isNaN(changedInRange)) {
-    return {
-      ok: false,
-      reason: `diff empty and range ${baseRef}...${headRef} (under paths) unreadable — cannot establish "nothing changed"`,
-    };
-  }
-  if (changedInRange > 0) {
-    return {
-      ok: false,
-      reason: `diff empty but range ${baseRef}...${headRef} (under paths) has ${changedInRange} commit(s) (misread) — cannot trust an empty diff`,
-    };
-  }
-  return { ok: true, lost: [], exempt: 0 };
 }
 
 /** Message of a caught value, whatever it is (an `Error`, a string, or junk). */
