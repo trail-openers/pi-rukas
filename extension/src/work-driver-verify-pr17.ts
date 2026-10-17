@@ -165,6 +165,14 @@ export async function verifyStepOutcome(
   /** #1349 — the verify command is red at base and its failures are the only ones. */
   baselineRedOnly?: boolean;
   /**
+   * #1421 fix round — the consolidated gate DECLINED to consolidate because
+   * the root held nothing but untracked, git-ignored build output. Carried
+   * STRUCTURALLY from the result's `kind`/`buildResidueOnly`, so the cap
+   * router never has to substring-match an operator-authored path out of the
+   * failure prose to tell an environment refusal from a verdict.
+   */
+  buildResidueOnly?: boolean;
+  /**
    * #1240 — the consolidated verify did not run because its probe tree is the
    * tree the per-worktree verify already judged. The caller turns this into a
    * `consolidated-verify-skipped` event (`makeConsolidatedVerifySkippedEvent`).
@@ -194,6 +202,10 @@ export async function verifyStepOutcome(
     // Captured here and returned structurally: the caller appends the event,
     // which is where the event log lives.
     let consolidatedVerifySkipped: AlreadyVerifiedTree | undefined;
+    // #1421 fix round — the consolidated gate's structured "declined on
+    // nothing but build residue" signal, captured here and returned on the
+    // result so the cap router reads a boolean rather than a substring.
+    let buildResidueOnly = false;
     await verifyDevelopOutcome(
       ctx,
       state,
@@ -220,6 +232,9 @@ export async function verifyStepOutcome(
       (skipped) => {
         consolidatedVerifySkipped = skipped;
       },
+      () => {
+        buildResidueOnly = true;
+      },
     );
     const flakeRecovered = flakeEvidenceTail !== undefined;
     return {
@@ -231,6 +246,7 @@ export async function verifyStepOutcome(
       ...(consolidatedLogPath !== undefined ? { logPath: consolidatedLogPath } : {}),
       ...(baselineRedOnly ? { baselineRedOnly: true } : {}),
       ...(consolidatedVerifySkipped !== undefined ? { consolidatedVerifySkipped } : {}),
+      ...(buildResidueOnly ? { buildResidueOnly: true } : {}),
       commentEvidence,
     };
   }

@@ -358,7 +358,13 @@ try {
 {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
   const read = (f: string) => readFileSync(path.join(SRC, f), "utf8");
-  const verifySrc = read("work-driver-consolidated-verify.ts");
+  // #1421 fix round — the preflight moved to its own module
+  // (`work-driver-consolidated-verify-preflight.ts`), so the canary follows it.
+  // It still reads the verify's own file too: the exclusion set has to be
+  // reachable from the gate that refuses, whichever file holds the read.
+  const verifySrc =
+    read("work-driver-consolidated-verify-preflight.ts") +
+    read("work-driver-consolidated-verify.ts");
   assert(
     /\.worktrees\//.test(verifySrc) && /\.pi\//.test(verifySrc),
     "the consolidated verify preflight still excludes .worktrees/ and .pi/ (the shared exclusion set)",

@@ -106,6 +106,13 @@ export async function runVerifyCommandGate(opts: {
   fenceViolations?: FenceViolationRecord[];
   /** #1349 — the base run demonstrably fails the way the change's run does. */
   onBaselineAttributed?: () => void;
+  /**
+   * #1421 fix round — the consolidated gate declined on nothing but build
+   * residue (forwarded from the reporting layer, which reads the structured
+   * field on the result). The develop gate turns this into the gate result's
+   * `buildResidueOnly`, which is what `verifyCapFor` routes on.
+   */
+  onBuildResidueOnly?: () => void;
 }): Promise<void> {
   const {
     execFn,
@@ -129,6 +136,7 @@ export async function runVerifyCommandGate(opts: {
     // `consolidatedVerifySkipped` stayed undefined and no skip event was ever
     // appended, while the state file looked explained.
     onConsolidatedVerifySkipped,
+    onBuildResidueOnly,
   } = opts;
   const VALID_SHA_RE = /^[0-9a-f]{40}$/;
   const isValidSha = (s: string | undefined) => typeof s === "string" && VALID_SHA_RE.test(s);
@@ -313,6 +321,9 @@ export async function runVerifyCommandGate(opts: {
     ...(opts.onConsolidatedVerifySkipped !== undefined
       ? { onConsolidatedVerifySkipped: opts.onConsolidatedVerifySkipped }
       : {}),
+    // #1421 fix round — same forwarding rule: without it the structured
+    // decline dies here and the cap router falls back to the prose label.
+    ...(onBuildResidueOnly !== undefined ? { onBuildResidueOnly } : {}),
   });
   // Aggregation: a consolidated FAILURE keeps per-worktree failures as
   // failures. A consolidated PASS does NOT downgrade them (#1005 reverses

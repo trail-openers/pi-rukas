@@ -194,7 +194,12 @@ export async function runConvergeGateHandler(
       );
       const cap2 = conflictText
         ? ("consolidated-verify-conflict" as const)
-        : verifyCapFor("develop", gate2.failures, gate2.baselineRedOnly);
+        : verifyCapFor(
+            "develop",
+            gate2.failures,
+            gate2.baselineRedOnly,
+            gate2.buildResidueOnly === true,
+          );
       next = {
         ...next,
         pipelineState: {
@@ -207,6 +212,7 @@ export async function runConvergeGateHandler(
             failures: gate2.failures,
             at: Date.now(),
             origin: "outcome-gate",
+            ...(gate2.buildResidueOnly === true ? { buildResidueOnly: true } : {}),
             ...(gate2.flakeRecovered ? { retries: 1, recovered: true } : {}),
           },
         },
