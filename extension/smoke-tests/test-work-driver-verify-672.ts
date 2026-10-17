@@ -71,7 +71,9 @@ const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
   if (isNulStatusRead(line)) {
     return { stdout: nulStatus(...status.map((file) => ` M ${file}`)) };
   }
-  if (cmd.startsWith("git rev-list --count")) {
+  // 2d43c44d — the develop fan-out's rev-list probe moved to the argv form, so
+  // it matches on `commandOf` like the reads above rather than the raw cmd.
+  if (line.startsWith("git rev-list --count")) {
     return { stdout: status.length > 0 || committed.length > 0 ? "1\n" : "0\n" };
   }
   if (isNulDiffRead(line)) {

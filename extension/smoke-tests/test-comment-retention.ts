@@ -106,7 +106,7 @@ function gateExec(diff: string, headLines: string): NonNullable<DriverContext["v
     // change set and the assertions below would pass on nothing.
     const line = commandOf(cmd, opts);
     if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/app.ts") };
-    if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
+    if (line.startsWith("git rev-list --count")) return { stdout: "1\n" };
     if (isNulDiffRead(line)) return { stdout: nulNameStatus("src/app.ts") };
     // comment-retention uses a THREE-dot range; the other gates do not.
     if (cmd.includes("...")) return { stdout: diff };

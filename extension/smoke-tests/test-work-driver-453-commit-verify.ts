@@ -126,7 +126,7 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
         const line = commandOf(cmd, opts);
         if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/foo.css") };
-        if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
+        if (line.startsWith("git rev-list --count")) return { stdout: "0\n" };
         return { stdout: "" };
       };
       const failures: string[] = [];
@@ -169,7 +169,7 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
         const line = commandOf(cmd, opts);
         if (isNulStatusRead(line)) return { stdout: "" }; // clean tree
-        if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" }; // 1 commit
+        if (line.startsWith("git rev-list --count")) return { stdout: "1\n" }; // 1 commit
         if (isNulDiffRead(line)) return { stdout: nulNameStatus("src/foo.ts") };
         return { stdout: "" };
       };
@@ -345,7 +345,7 @@ async function mainFalsilyGreen(): Promise<void> {
         const line = commandOf(cmd, opts);
         if (isNulStatusRead(line))
           return { stdout: " M docs/notes.md\n" }; // uncommitted docs
-        if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
+        if (line.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
         if (isNulDiffRead(line)) return { stdout: "" }; // no committed changes
         return { stdout: "" };
       };
@@ -374,7 +374,7 @@ async function mainFalsilyGreen(): Promise<void> {
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
         const line = commandOf(cmd, opts);
         if (isNulStatusRead(line)) return { stdout: "" }; // clean tree
-        if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
+        if (line.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
         if (isNulDiffRead(line)) return { stdout: "" };
         return { stdout: "" };
       };
@@ -409,7 +409,7 @@ async function mainFalsilyGreen(): Promise<void> {
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
         const line = commandOf(cmd, opts);
         if (isNulStatusRead(line)) return { stdout: nulStatus(" M docs/guide.md") }; // uncommitted doc
-        if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
+        if (line.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
         if (isNulDiffRead(line)) return { stdout: "" };
         return { stdout: "" };
       };
@@ -444,7 +444,7 @@ async function mainFalsilyGreen(): Promise<void> {
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
         const line = commandOf(cmd, opts);
         if (isNulStatusRead(line)) return { stdout: "" };
-        if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" }; // 1 commit
+        if (line.startsWith("git rev-list --count")) return { stdout: "1\n" }; // 1 commit
         if (isNulDiffRead(line)) return { stdout: nulNameStatus("src/foo.ts") };
         return { stdout: "" };
       };
