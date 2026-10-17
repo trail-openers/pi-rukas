@@ -140,7 +140,8 @@ export interface CapSession {
     resultText: string,
     isError: boolean,
   ) => void;
-  /** The F6 tracker; call `check`/`onMessageEnd` on every assistant turn end. */
+  /** The F6 tracker; call `check` on every assistant turn end (a no-op once
+   * the budget is crossed) and `poll` on the grace interval. */
   tokenBudgetTracker?: TokenBudgetTracker;
   /** True when the F1 loop kill fired. */
   loopKilled(): boolean;
@@ -206,10 +207,14 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
   let loopKillArmed = false;
   let loopKillArmedAt = 0;
   // #543 (spawn#6) — a DISTINCT fingerprint arriving after trigger resets the
-  // grace clock, aligning with the budget tracker's onMessageEnd reset: the
-  // spec's deferral is "while no new message_end has arrived since trigger",
-  // and a different call is new work — the loop may have ended, and the kill
-  // would discard in-progress work on it (the #296 false-positive shape).
+  // grace clock: the spec's deferral is "while no new message_end has arrived
+  // since trigger", and a different call is new work — the loop may have ended,
+  // and the kill would discard in-progress work on it (the #296 false-positive
+  // shape). This deferral is the LOOP detector's own. It used to be justified
+  // as "aligning with the budget tracker's onMessageEnd reset"; that reset is
+  // gone (see TokenBudgetTracker.poll — deferring a budget kill on new turns
+  // meant a chatty child was never killed), so the two caps deliberately no
+  // longer share a grace clock.
   let armedFingerprint: string | undefined;
   // #772 — which counter armed the grace window: "streak" is the #543
   // strict-adjacent streak counter (armed from loopObserver), "success" is
