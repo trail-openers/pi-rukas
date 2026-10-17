@@ -43,8 +43,12 @@ import {
 import { createEmitSink } from "../src/work-state-emit.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { gitTestEnv, isolateGitEnv } from "./lib/git-test-env.ts";
 
 const execFileP = promisify(execFile);
+
+// #1145 — fixture repos read no host git config; see lib/git-test-env.ts.
+isolateGitEnv();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -58,7 +62,7 @@ function assert(cond: boolean, msg: string) {
 process.env.PI_ENSEMBLE_RESUME = "0";
 process.env.PI_ENSEMBLE_PR_PREFLIGHT = "0";
 
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
 
 /** Real shell exec with `gh`/fetch stubbed, as the sibling branch tests use. */
 function branchExec(): ExecFn {
@@ -67,6 +71,7 @@ function branchExec(): ExecFn {
     if (cmd.startsWith("git fetch")) return { stdout: "" };
     const [file, args] = o?.argv ? [cmd, o.argv] : ["/bin/sh", ["-c", cmd]];
     const { stdout } = await execFileP(file, args, {
+      env: gitTestEnv(),
       cwd: o?.cwd,
       maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
     });

@@ -35,8 +35,17 @@ import type { CycleContext } from "../src/work-driver-context.ts";
 import { createEmitSink } from "../src/work-state-emit.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { realExec } from "./lib/exec-fake.ts";
+import { gitTestEnv, isolateGitEnv } from "./lib/git-test-env.ts";
 
 const execFileP = promisify(execFile);
+
+// #1145 — a fixture repo must not read the host operator's global git config
+// (a `~/.config/git/ignore` line makes an untracked file vanish from
+// `git status --porcelain -uall`, which is what these assertions read). See
+// lib/git-test-env.ts: the env is threaded into every git call below AND set
+// ambiently, because bun 1.3 does not propagate a process.env assignment to a
+// child_process call that omits `env`.
+isolateGitEnv();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -50,7 +59,7 @@ function assert(cond: boolean, msg: string) {
 process.env.PI_ENSEMBLE_RESUME = "0";
 process.env.PI_ENSEMBLE_PR_PREFLIGHT = "0";
 
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
 const gitOut = async (cwd: string, args: string[]): Promise<string> =>
   (await git(cwd, args)).stdout;
 

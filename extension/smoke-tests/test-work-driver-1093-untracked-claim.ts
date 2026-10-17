@@ -15,10 +15,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { restoreClaim, restoreRootToRefPreserving } from "../src/work-driver-restore.ts";
+import { gitTestEnv, isolateGitEnv } from "./lib/git-test-env.ts";
 import { assert, buildRepo, head, realExec, result } from "./lib/restore-start-ref-fixtures.ts";
 
+// #1145 — a fixture repo must not read the host's global git config; see
+// lib/git-test-env.ts for why the env is threaded per call AND set ambiently.
+isolateGitEnv();
+
 const git = (dir: string, args: string[]) =>
-  execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+  execFileSync("git", args, { cwd: dir, encoding: "utf8", env: gitTestEnv() });
 
 // ---- 1. the cycle's own unstaged untracked file is named, never hidden ------
 {
@@ -159,7 +164,8 @@ const git = (dir: string, args: string[]) =>
   const dir = buildRepo();
   const scratch = mkdtempSync(join(tmpdir(), "issue1362-claim-stash-scratch-"));
   try {
-    const g = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+    const g = (args: string[]) =>
+      execFileSync("git", args, { cwd: dir, encoding: "utf8", env: gitTestEnv() });
     g(["checkout", "-q", "feature/merged"]);
     // The cycle's own deliverable, written under a prefix the project happens
     // to list (a tool directory the project exempted that the develop step also
@@ -255,7 +261,8 @@ const git = (dir: string, args: string[]) =>
   const dir = buildRepo();
   const scratch = mkdtempSync(join(tmpdir(), "issue1362-claim-prov-scratch-"));
   try {
-    const g = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+    const g = (args: string[]) =>
+      execFileSync("git", args, { cwd: dir, encoding: "utf8", env: gitTestEnv() });
     g(["checkout", "-q", "feature/merged"]);
     mkdirSync(join(dir, ".claude"), { recursive: true });
     // Written by the develop step, never staged — so it reads `??` both before
@@ -313,7 +320,8 @@ const git = (dir: string, args: string[]) =>
   const dir = buildRepo();
   const scratch = mkdtempSync(join(tmpdir(), "issue1362-claim-nobase-scratch-"));
   try {
-    const g = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+    const g = (args: string[]) =>
+      execFileSync("git", args, { cwd: dir, encoding: "utf8", env: gitTestEnv() });
     g(["checkout", "-q", "feature/merged"]);
     mkdirSync(join(dir, ".claude"), { recursive: true });
     writeFileSync(join(dir, ".claude", "cycle-output.json"), '{"cycle":true}\n');
@@ -337,7 +345,8 @@ const git = (dir: string, args: string[]) =>
     // everything is exempt" reading of the field.
     const dir2 = buildRepo();
     try {
-      const g2 = (args: string[]) => execFileSync("git", args, { cwd: dir2, encoding: "utf8" });
+      const g2 = (args: string[]) =>
+        execFileSync("git", args, { cwd: dir2, encoding: "utf8", env: gitTestEnv() });
       g2(["checkout", "-q", "feature/merged"]);
       mkdirSync(join(dir2, ".claude"), { recursive: true });
       writeFileSync(join(dir2, ".claude", "settings.local.json"), "{}\n");

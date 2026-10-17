@@ -107,6 +107,60 @@ export LC_ALL=C
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX \
   GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
 
+# #1145 — the fixtures are throwaway repos, so git must read NO configuration
+# the operator owns. A host-global entry silently rewrites what a fixture sees:
+# a `~/.config/git/ignore` line for the tool's own local settings file makes it
+# vanish from `git status --porcelain -uall`, and the tests that pin what the
+# dirty-root exemption baseline, the integrate preflight and the restore claim
+# see all read the tree as clean. They were red on a host that had that one
+# line and green on one that did not — the suite's verdict was a property of
+# the machine. Three variables, each closing a different door:
+#
+#   GIT_CONFIG_GLOBAL   — an empty file replaces the per-user config (git >= 2.32).
+#   GIT_CONFIG_NOSYSTEM — the site-wide /etc/gitconfig is not read at all.
+#   HOME                — an empty directory.
+#
+# HOME is the one that is easy to omit, and it is not optional. GIT_CONFIG_GLOBAL
+# replaces the per-user CONFIG, but git derives the global EXCLUDES file from the
+# HOME directory (`$HOME/.config/git/ignore`, XDG), so an empty config still
+# leaves that ignore file in force. Verified on this host with git 2.50.1: with
+# GIT_CONFIG_GLOBAL pointed at an empty file `git check-ignore -v` still
+# attributed the path to ~/.config/git/ignore; with HOME pointed at an empty
+# directory it reported "not ignored". Pinned by
+# smoke-tests/test-git-host-isolation-1145.ts.
+#
+# HOME is also the broader lever, which is the requirement: it isolates ANY
+# host-global git state under the home directory (config, XDG config, XDG
+# ignore), not this one excludesFile. Fixtures never depend on HOME — every
+# commit in every fixture carries its identity locally (`-c user.email=` or an
+# in-fixture `git config user.email`), and ensureGitIdentity in
+# lib/git-worktree-fixture.ts supplies the GIT_AUTHOR/GIT_COMMITTER fallback.
+# A test that genuinely needs the real home reads os.homedir(), which bun
+# snapshots at process start, or PI_ENSEMBLE_TEST_REAL_HOME (lib/git-test-env.ts).
+#
+# Operator escape hatch: PI_ENSEMBLE_SMOKE_HOST_GIT=1 runs the suite against
+# the host's real git config (debugging a fixture that only misbehaves here).
+# It is not a bypass for the gate: .pi/verify-cmd and CI do not set it, so the
+# default for every gate run is isolated.
+if [ "${PI_ENSEMBLE_SMOKE_HOST_GIT:-}" != "1" ]; then
+  _git_iso="$(mktemp -d "${TMPDIR:-/tmp}/verify-loop-gitiso.XXXXXX" 2>/dev/null)" || _git_iso=""
+  if [ -n "$_git_iso" ]; then
+    chmod 700 "$_git_iso" 2>/dev/null || true
+    : "$_git_iso/gitconfig" 2>/dev/null || true
+    mkdir -p "$_git_iso/home" 2>/dev/null || true
+    export GIT_CONFIG_GLOBAL="$_git_iso/gitconfig"
+    export GIT_CONFIG_NOSYSTEM=1
+    export HOME="$_git_iso/home"
+  else
+    # Could not allocate the isolation dir. Falling through to the host config
+    # is the status-quo shape; pointing git at a path that does not exist would
+    # fail every fixture with a confusing git error. But SAY SO — an
+    # unannounced pass on a host whose config corrupts the fixtures is the
+    # failure this block exists to prevent.
+    echo "warn: verify-loop: could not allocate the git-isolation dir — tests run against the HOST's global git config; fixtures that assert on untracked paths may misjudge" >&2
+  fi
+fi
+
 # #1017 — forbid live spawns in every offline test. Any offline test that
 # reaches the real spawn path (spawnSpecialist) fails loudly in ~5s with the
 # FORBID_LIVE_SPAWN error naming the role and the injection point, instead of
