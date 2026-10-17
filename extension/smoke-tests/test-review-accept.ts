@@ -230,7 +230,6 @@ for (const c of agentCommands) {
 for (const c of [
   "git status",
   "bun test smoke-tests/test-review-accept.ts",
-  "echo review-acceptance-notes",
   'git commit -m "feat: review-accept guard"',
   'git commit -m "docs: review-accept flow"',
   // The plain git reads the exemption exists for. `git log -- extension/src/
@@ -249,6 +248,9 @@ for (const c of [
 for (const c of [
   "git show HEAD:README.md --output=/tmp/readme.txt",
   'gh pr create --body "Adds the review-accept acceptance path"',
+  // #1125 fix round: the stem match is a PREFIX, so a word that merely STARTS with the
+  // operator script's stem is refused rather than guessed at (canonical: OVER_REFUSALS).
+  "echo review-acceptance-notes",
 ]) {
   assert(runsReviewAccept(c) !== undefined, `guard: over-refuses rather than guesses — ${c}`);
 }

@@ -60,13 +60,19 @@
  *        A4  (bun|bunx) test <flags-without-values | test paths>
  *        A5  bash …/verify-loop.sh <same argv, plus --digest>
  *        A6  the exact build forms: bun run build, bun run check, bunx tsc --noEmit
- *        A7  git commit -m "<prose>" — protected words only inside a quoted -m
- *        A8  a read tool (ls, cat, head, tail, wc, grep, rg, sed -n, awk, file, stat,
- *            which, basename, dirname, echo, printf, cd, pwd, true) naming nothing
- *            protected
+ *        A7  git commit -m "<prose>" — git at word 0, and one UNQUOTED -m whose
+ *            QUOTED message is the only prose the arm excuses
+ *        A8  a read tool (ls, cat, head, tail, wc, grep, rg, file, stat, which,
+ *            basename, dirname, echo, printf, cd, pwd, true) at word 0, with no
+ *            exec-capable flag (--pre, --pre-glob, --exec, -exec, --command) and
+ *            naming nothing protected. `sed` and `awk` are NOT read tools: each can
+ *            run a shell (`sed -n '1e id'`, `awk BEGIN{system("id")}`) and `sed` can
+ *            write a file (`sed -n 'w /tmp/x'`), so no flag ban turns either one
+ *            into a read.
  *      A segment matching no arm is refused.
  */
 
+import { posix } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   RUNTIME,
@@ -130,7 +136,7 @@ function refusalReason(
 ): string {
   if (opts.target)
     return `The review findings file (${opts.target}) is written only by ${ACCEPT_CLI}. Agents may not edit it.`;
-  const base = `Accepting a review finding is an operator act: agents may not reach the review findings store. Run ${ACCEPT_CLI} from a terminal for an acceptance. Allowed reads: git status/log/diff/show/blame, gh|glab pr|mr view|diff, gh repo view, gh issue view|list, bun|bunx test <test-path.ts>, bash smoke-tests/lib/verify-loop.sh <test-path.ts>, bun run build, bun run check, bunx tsc --noEmit, git commit -m "<message>", or a read tool (cat, grep, rg, sed -n, ...) on a path that is not the findings store.`;
+  const base = `Accepting a review finding is an operator act: agents may not reach the review findings store. Run ${ACCEPT_CLI} from a terminal for an acceptance. Allowed reads: git status/log/diff/show/blame, gh|glab pr|mr view|diff, gh repo view, gh issue view|list, bun|bunx test <test-path.ts>, bash smoke-tests/lib/verify-loop.sh <test-path.ts>, bun run build, bun run check, bunx tsc --noEmit, git commit -m "<message>", or a read tool (cat, grep, rg, ...) on a path that is not the findings store.`;
   // `false` means "this route is not a write-flag one" and must add nothing; only
   // `true` speaks of flags. `opts.vcsWrite` is a three-state value here — undefined
   // when the command names nothing protected — so a truthiness test read as a route.
@@ -278,23 +284,43 @@ export function runsReviewAccept(command: string): string | undefined {
 const FILE_TOOLS = new Set(["edit", "write", "multiedit"]);
 
 /** The target path when an edit-style call would write a protected file, else undefined.
- * Fail-closed like the bash branch: a throw here must not read as "nothing to block". */
+ *
+ * Fail-closed like the bash branch: a throw here must not read as "nothing to block".
+ * The `path` property is read exactly ONCE, inside its own try — a caller whose `path` is
+ * a throwing getter (a Proxy, a lazy field) made the old shape re-read the same getter in
+ * its catch, so the guard's own error escaped and the tool_call handler saw an exception
+ * rather than a refusal. The value is normalised before its basename is taken, so a
+ * trailing `/.` or a `../..` walk out of the store's directory cannot present the store
+ * as some other file: every SEGMENT of the normalised path is asked.
+ */
 export function editsFindingsFile(toolName: string, input: unknown): string | undefined {
+  if (!FILE_TOOLS.has(toolName)) return undefined;
+  let target: unknown;
   try {
-    if (!FILE_TOOLS.has(toolName)) return undefined;
-    const target = (input as { path?: unknown } | null)?.path;
-    if (typeof target !== "string") return undefined;
-    const base = target.split(/[\\/]/).pop() ?? "";
-    return isProtectedToken(base) ? target : undefined;
+    target = (input as { path?: unknown } | null)?.path;
   } catch (err) {
     traceWarn(
-      `review-accept-guard: edit scan threw, refusing fail-open (${
-        err instanceof Error ? err.message : String(err)
-      })`,
+      `review-accept-guard: edit scan threw, refusing fail-open (${err instanceof Error ? err.message : String(err)})`,
     );
-    return typeof (input as { path?: unknown } | null)?.path === "string"
-      ? ((input as { path: string }).path as string)
-      : undefined;
+    // An unreadable `path` is a target the guard cannot rule out, so it is refused rather
+    // than read as "nothing to block" — the string the caller would have handed back.
+    return "<unreadable path>";
+  }
+  if (typeof target !== "string") return undefined;
+  try {
+    // The RAW path is asked SEGMENT-wise BEFORE normalisation: `.normalize` collapses
+    // `<store>/../../src/x.ts` to `/repo/src/index.ts`, which reads as an ordinary file —
+    // yet the bytes a writer following that path touches come from the store's directory, so
+    // the walk itself is the refusal. Normalisation is asked too, for the trailing `/` and
+    // `/.` spellings whose last segment is empty once the separators are gone.
+    const walked = target.split(/[\\/]/).some((segment) => isProtectedToken(segment));
+    if (walked || posix.normalize(target).split("/").some(isProtectedToken)) return target;
+    return undefined;
+  } catch (err) {
+    traceWarn(
+      `review-accept-guard: edit scan threw, refusing fail-open (${err instanceof Error ? err.message : String(err)})`,
+    );
+    return target;
   }
 }
 
