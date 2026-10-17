@@ -32,10 +32,8 @@ import { destinationFor } from "../src/plan-writeback.ts";
 import {
   installNoPlanCacheStub,
   installOfflineVipuneStub,
+  invokePlanToolFull,
   makeJobDeliverer,
-  parseReportDetails,
-  reportBody,
-  waitForJobReport,
 } from "./plan-test-stubs.ts";
 
 let exit = 0;
@@ -165,31 +163,27 @@ interface Registered {
   execute: (...a: unknown[]) => Promise<unknown>;
 }
 const tools: Registered[] = [];
-// biome-ignore lint/suspicious/noExplicitAny: minimal stub; registerTool + delivery only
+// The stub host is a registered-tool recorder plus the shared job deliverer —
+// the two members of ExtensionAPI this file actually exercises, so it is typed
+// structurally instead of cast through `any`.
 registerPlanTool({
   registerTool: (d: Registered) => void tools.push(d),
   // #1044: the tool launches a background job and the job's report is handed
   // to the pi it was registered on — without this the report is WARN'd away.
   ...makeJobDeliverer(),
-} as any);
+} as unknown as Parameters<typeof registerPlanTool>[0]);
 const tool = tools.find((t) => t.name === "start_plan_driver");
-const FAKE_CTX = { cwd: process.cwd() } as never;
 
 /**
  * #1044: `execute()` now returns a launch notice, and the rendered result the
- * pre-#1044 harness read there is the delivered steer's body. These blocks
- * call the tool directly (they assert the RENDERED text, not the pipeline), so
- * they keep their own invoke — the same one plan-test-stubs.ts runs.
+ * pre-#1044 harness read there is the delivered steer's body. #1541 review:
+ * this block no longer keeps its own copy of the invoke — it drives the shared
+ * `invokePlanToolFull`, the one place that knows how a launched job's steer is
+ * awaited and read. The file still registers its own tool (with a delivery
+ * stub) because its dispatch stub varies per block.
  */
 async function invoke(params: Record<string, unknown>) {
-  const out = (await tool?.execute("id", params, undefined, undefined, FAKE_CTX)) as {
-    content: Array<{ type: string; text: string }>;
-    details: Record<string, unknown>;
-  };
-  const jobId = String(out.details?.jobId ?? "");
-  if (!jobId) return { text: out.content[0]?.text ?? "", details: out.details ?? {} };
-  const report = await waitForJobReport(jobId);
-  return { text: reportBody(report), details: parseReportDetails(report, params) };
+  return invokePlanToolFull([tool as never], params);
 }
 
 function angleItem(kind: string, text: string) {
@@ -320,6 +314,9 @@ setPlanDispatch(((
 }
 
 setPlanDispatch(null);
+// The reader tests `=== "none"`, so an empty string is NOT absent here — the
+// property itself must go, as in every other smoke test that clears this one.
+// biome-ignore lint/performance/noDelete: see the line above.
 delete process.env.PI_ENSEMBLE_FORGE;
 
 console.log(`\nexit ${exit}`);

@@ -17,8 +17,8 @@ import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { setPlanForge } from "../src/plan-filing.ts";
 import { setPlanGitStateFn } from "../src/plan-investigation-cache.ts";
 import type { RegisteredPlanTool } from "../src/plan-tool.ts";
-import type { RegisteredResearchTool } from "../src/research-tool.ts";
 import type { PlanDriverInput, PlanResult } from "../src/plan-types.ts";
+import type { RegisteredResearchTool } from "../src/research-tool.ts";
 import type { SearchResult } from "../src/vipune.ts";
 import type { vipuneSearch } from "../src/vipune.ts";
 import { parseReportDetails, reportBody } from "./plan-report-read.ts";
@@ -291,18 +291,13 @@ export interface PlanLaunchReturn {
  * stripped). A test that wants the launch notice reads `launch` instead.
  *
  * A call the tool REFUSES before it launches — an empty descriptor, an invalid
- * label or provenance (#1377) — has no job and therefore no steer: the
- * refusal is the tool's own return, so it is what `text` carries. `started`
- * distinguishes the two paths.
- *
- * `onLaunch` runs after `execute()` returns and before the steer is awaited,
- * which is the only window in which an in-flight assertion (the registry
- * carrying the job, no steer yet) is observable.
+ * label or provenance (#1377), or the registry being at its MAX_JOBS cap
+ * (#1541) — has no job and therefore no steer: the refusal is the tool's own
+ * return, so it is what `text` carries. `started` distinguishes the two paths.
  */
 export async function invokePlanToolFull(
   tools: RegisteredDriverTool[],
   params: Record<string, unknown>,
-  opts: { onLaunch?: (ret: PlanLaunchReturn) => void | Promise<void> } = {},
 ): Promise<{
   text: string;
   details: Record<string, unknown>;
@@ -330,7 +325,6 @@ export async function invokePlanToolFull(
   const jobId = String(launch.details?.jobId ?? "");
   if (!jobId) {
     // Refused pre-launch: no job, no steer, the tool's own text is the result.
-    if (opts.onLaunch) await opts.onLaunch(launch);
     return {
       text: launch.content?.[0]?.text ?? "",
       details: launch.details ?? {},
@@ -339,7 +333,6 @@ export async function invokePlanToolFull(
       report: "",
     };
   }
-  if (opts.onLaunch) await opts.onLaunch(launch);
   const report = await waitForJobReport(jobId, jobSteerInbox);
   return {
     text: reportBody(report),
@@ -360,23 +353,6 @@ export async function invokePlanTool(
 ): Promise<{ text: string; details: Record<string, unknown> }> {
   const { text, details } = await invokePlanToolFull(tools, params);
   return { text, details };
-}
-
-/**
- * Deliver every settled job's report to `pi` and resolve once the job with
- * this id has reported. Shared with the research async test (the delivery
- * mechanics are identical for both compiled drivers).
- */
-export function makeJobPiStub() {
-  const inbox: Array<{ content: string; deliverAs?: string }> = [];
-  /** Reports delivered for this job id, in arrival order. */
-  const forJob = (jobId: string) => inbox.filter((m) => m.content.includes(`(job ${jobId})`));
-  // biome-ignore lint/suspicious/noExplicitAny: minimal stub; only these two are used
-  const pi: any = {
-    ...makeJobDeliverer(inbox),
-    registerTool: () => {},
-  };
-  return { pi, inbox, forJob };
 }
 
 /**

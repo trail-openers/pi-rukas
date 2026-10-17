@@ -20,6 +20,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { startJob } from "./async-jobs.ts";
+import { noticeSubject } from "./plan-tool.ts";
 import { runResearchPipeline } from "./research-driver.ts";
 import type { ResearchClaim, ResearchResult } from "./research-types.ts";
 import { trace } from "./trace.ts";
@@ -48,13 +49,26 @@ export interface RegisteredResearchTool {
  * reasoning: a tool result arrives in seconds, the run takes minutes, so the
  * notice may only assert what every run does whatever it ends up doing).
  */
+/**
+ * #1044 — the launch notice (see `launchNotice` in plan-tool.ts for the same
+ * reasoning: a tool result arrives in seconds, the run takes minutes, so the
+ * notice may only assert what every run does whatever it ends up doing).
+ *
+ * #1541 review (MEDIUM): this used to promise "it says RESEARCH COMPLETE ... and
+ * names the artifact, the provenance sidecar and the verified-finding counts".
+ * Three of those four outcomes never happen on a halt, an abstention or a kill,
+ * so the notice promised content the run may never produce — and a PM that
+ * quoted it had asserted an artifact path that does not exist. The notice now
+ * states both branches: the report says COMPLETE *if* the run completes, and
+ * FAILED/CANCELLED/HALTED if it does not.
+ */
 export function researchLaunchNotice(o: {
   jobId: string;
   topic: string;
   tier: string;
   repoRoot: string;
 }): string {
-  return `pi-rukas: /research driver started for "${o.topic.slice(0, 80)}" (jobId: ${o.jobId}, tier: ${o.tier}, repo: ${o.repoRoot}). When the report arrives it says RESEARCH COMPLETE (or HALTED / an abstention) and names the artifact, the provenance sidecar and the verified-finding counts. The run takes minutes; end your turn — the [ensemble:async] steer carrying the jobId is the result, not this notice. Do not poll, and do not re-call to check progress.`;
+  return `pi-rukas: /research driver started for "${noticeSubject(o.topic)}" (jobId: ${o.jobId}, tier: ${o.tier}, repo: ${o.repoRoot}). The report says one of two things: RESEARCH COMPLETE with the artifact, provenance sidecar and verified-finding counts — if the run finished; or RESEARCH HALTED / RESEARCH CANCELLED / a FAILED report naming the cause, with no artifact. Until it arrives you have neither verdict nor paths: quote neither. The run takes minutes; end your turn — the [ensemble:async] steer carrying the jobId is the result, not this notice. Do not poll, and do not re-call to check progress.`;
 }
 
 export function registerResearchTool(pi: ExtensionAPI) {
@@ -110,32 +124,60 @@ export function registerResearchTool(pi: ExtensionAPI) {
       trace(
         `start_research_driver → topic="${params.topic.slice(0, 60)}" tier=${tier} repoRoot=${repoRoot}`,
       );
+      const runResearchJob = async (signal: AbortSignal) => {
+        const result = await runResearchPipeline(
+          piSessionHost(pi),
+          params,
+          repoRoot,
+          {},
+          {
+            signal,
+          },
+        );
+        return {
+          role: "research-driver",
+          ok: !result.cancelled,
+          // A killed run still owes its report: a silent kill leaves PM waiting
+          // for a steer that never comes.
+          text: renderResearchResult(result),
+          toolUses: [],
+          ms: 0,
+          exitCode: result.cancelled ? 143 : 0,
+          ...(result.cancelled ? { killCause: "abort" as const } : {}),
+        };
+      };
       // #1044 — launch, don't wait (see plan-tool.ts for the full reasoning).
       // The pipeline runs inside the job so a throw anywhere in it reaches the
       // job's rejection path and is delivered as a bounded fail report. The
-      // deck entry STAYS (skipDeck is not set): unlike the work tool's job, a
-      // research job has no deck surface of its own, and the pipeline's angle
-      // children dispatch through dispatchCore, which registers their rows —
-      // so the parent row is the operator's only handle on a 20-minute run.
+      // deck entry STAYS (skipDeck is not set) for the SAME reason plan-tool.ts
+      // gives for omitting its own, applied to the opposite shape: the deck
+      // shows the real children and no umbrella row that masks them. Here the
+      // angle children register their own rows through dispatchCore, and this
+      // job makes no dispatch of its own — so its row is the only handle the
+      // operator has on a 20-minute run, not a mask over rows that already
+      // exist. (plan-tool.ts sets skipDeck because its own job row would sit
+      // over its investigation/gap-gate rows; a research job has no such row.)
       // The job delivers to `pi` — the same host every report-delivering tool
       // uses (work-tool.ts); see plan-tool.ts for the mid-turn delivery note.
-      const { jobId } = startJob(pi, {
-        label: "research-driver",
-        role: "research-driver",
-        subject: params.topic,
-        reportKind: "driver",
-        work: async () => {
-          const result = await runResearchPipeline(piSessionHost(pi), params, repoRoot);
-          return {
-            role: "research-driver",
-            ok: true,
-            text: renderResearchResult(result),
-            toolUses: [],
-            ms: 0,
-            exitCode: 0,
-          };
-        },
-      });
+      let jobId: string;
+      try {
+        jobId = startJob(pi, {
+          label: "research-driver",
+          role: "research-driver",
+          subject: params.topic,
+          reportKind: "driver",
+          // #1541 review (MEDIUM) — the job's OWN AbortSignal (not the tool's
+          // exec signal, which Pi drops when execute() returns) threaded into
+          // the pipeline, so dispatch_kill and session shutdown stop a run at
+          // its phase boundaries instead of waiting out the 30-minute child
+          // bound. A cancelled run is still delivered — see runResearchJob.
+          work: (signal) => runResearchJob(signal),
+        }).jobId;
+      } catch (err) {
+        // #1541 review (LOW) — startJob throws at its MAX_JOBS cap; hand the
+        // caller a named refusal rather than the registry's raw Error.
+        return jobSaturation(err);
+      }
       return {
         content: [
           {
@@ -150,11 +192,32 @@ export function registerResearchTool(pi: ExtensionAPI) {
   });
 }
 
+/**
+ * #1541 review (LOW): the named refusal when `startJob` is at its MAX_JOBS cap
+ * (the plan tool has the identical guard; the registry's raw throw is the
+ * shape the other startJob callers depend on).
+ */
+function jobSaturation(err: unknown) {
+  const detail = err instanceof Error ? err.message : String(err);
+  trace(`start_research_driver refused: ${detail}`);
+  return {
+    content: [{ type: "text" as const, text: `start_research_driver refused: ${detail}` }],
+    details: { started: false, error: "jobs-saturated" },
+  };
+}
+
 function claimLine(c: ResearchClaim): string {
   return `- [${c.confidence}] ${c.text} (${c.source})`;
 }
 
 function renderResearchResult(r: ResearchResult): string {
+  // #1541 review (MEDIUM) — a cancelled run reports the kill, not an outcome it
+  // never reached. Without this branch a kill mid-retrieval renders the
+  // all-angles-failed halt ("RESEARCH HALTED — reporter-silent"), which points
+  // the operator at a reporter extension that was never the problem.
+  if (r.cancelled) {
+    return `RESEARCH CANCELLED — killed by ${r.cancelled.by}${r.cancelled.phase ? ` during the ${r.cancelled.phase} phase` : ""}. No artifact was written. Re-call start_research_driver to run it again.`;
+  }
   if (r.halt) {
     return `RESEARCH HALTED — ${r.halt.reason}: ${r.halt.detail}\n\nAngles: ${r.angles.map((a) => `${a.name} (${a.ok ? "ok" : "failed"})`).join(", ") || "(none)"}${timingsLine(r)}`;
   }
@@ -198,21 +261,4 @@ function fmtMs(ms: number): string {
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s}s`;
   return `${Math.floor(s / 60)}m${s % 60 ? `${s % 60}s` : ""}`;
-}
-
-function resultDetails(r: ResearchResult): Record<string, unknown> {
-  return {
-    started: true,
-    topic: r.topic,
-    tier: r.tier,
-    artifactPath: r.artifactPath,
-    provenancePath: r.provenancePath,
-    pinnedCommit: r.pinnedCommit,
-    claimCount: r.claims.length,
-    abstained: r.abstained,
-    entailment: r.entailment,
-    memory: r.memory,
-    halt: r.halt,
-    timings: r.timings,
-  };
 }

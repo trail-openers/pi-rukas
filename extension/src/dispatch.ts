@@ -6,6 +6,7 @@ import { type RetryNotice, withProviderBackoff } from "./dispatch-retry.ts";
 import { steerChild } from "./dispatch-steer.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLE_NAMES } from "./roles.ts";
+import { sessionShutdownReason } from "./session-shutdown.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
@@ -126,6 +127,26 @@ export function dispatchCore(
   } = {},
 ): Promise<DispatchResult> {
   const stripped = stripModelOverride(spec);
+  // #1541 — an already-aborted job never gets a child. The pipeline's
+  // phase-boundary checks catch a kill between awaits, but a barrier's legs
+  // dispatch CONCURRENTLY: a kill that lands while leg A is in flight has
+  // already queued leg B's dispatch, and microtask ordering decides whether the
+  // boundary check runs first. Refusing here makes "no child spawns after a
+  // kill" a property of the seam rather than a race — the child that is never
+  // started is the one that cannot cost tokens, write a transcript, or file
+  // anything. A synthetic reply, shaped exactly like a killed child, so every
+  // reader's existing killedBy path handles it.
+  if (opts.signal?.aborted) {
+    return Promise.resolve({
+      role: stripped.role,
+      ok: false,
+      text: "",
+      toolUses: [],
+      ms: 0,
+      exitCode: 137,
+      killedBy: sessionShutdownReason() ?? "dispatch_kill (or session shutdown)",
+    });
+  }
   // #573 — derive the transcript path BEFORE dispatch so crash-resume can
   // locate the surviving session file. The driver calls beginDispatch with
   // this path; the spawn-side runId (from spec.runId or freshly minted) is

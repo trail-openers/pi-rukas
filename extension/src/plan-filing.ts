@@ -65,7 +65,13 @@ export interface FilingFailure {
     | "body-too-large"
     | "filing-in-progress"
     | "label-missing"
-    | "label-list-unreadable";
+    | "label-list-unreadable"
+    /**
+     * #1541 review (MEDIUM) — the job was aborted between phases. Not a filing
+     * policy and not a forge fault: nothing was reviewed or drafted to the end,
+     * and the only remedy is to run it again.
+     */
+    | "cancelled";
   detail?: string;
 }
 

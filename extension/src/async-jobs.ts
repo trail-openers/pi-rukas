@@ -1,5 +1,10 @@
 import type { Writable } from "node:stream";
-import { type DispatchHost, deliverOrStandIn, deliverStandIn } from "./async-jobs-lifecycle.ts";
+import {
+  type DispatchHost,
+  deliverOrStandIn,
+  deliverReport,
+  deliverStandIn,
+} from "./async-jobs-lifecycle.ts";
 import {
   MAX_JOBS,
   type SingleJobState,
@@ -155,6 +160,19 @@ interface StartJobInput {
    */
   reportKind?: "subagent" | "driver";
   /**
+   * #1541 review — what the "driver" report shape does when its steer never
+   * reaches the host. `deliverReport` cannot throw but returns `false` when
+   * `sendUserMessage` rejected, and the sibling PM paths all fall back to a
+   * stand-in on that signal. Without an equivalent here the promise PM was
+   * handed — "the result arrives later as one `[ensemble:async]` steer" —
+   * evaporated: a killed or completed run, and nothing in the session.
+   *
+   * Test seam only. Production always runs the real stand-in fallback; a test
+   * passes `false` to prove the branch actually reads the boolean rather than
+   * assuming the send worked.
+   */
+  deliverForTest?: (report: string) => boolean;
+  /**
    * #1044 — the run's identifier as the operator names it (a plan descriptor,
    * a research topic). Used by the "driver" report shape so each report in a
    * concurrent pair names its OWN run; absent → `label`. Rendered into the
@@ -210,6 +228,22 @@ export function startJob(pi: DispatchHost, input: StartJobInput): StartJobHandle
     );
   }
   const ownerKind: "pm" | "driver" = input.ownerKind ?? "pm";
+  // #1541 review (HIGH) — the `reportKind === "driver"` branch below delivers
+  // its steer WITHOUT the `ownerKind === "pm"` gate every sibling path has, so
+  // `ownerKind` decided only the badges and the pending-count for these jobs.
+  // That is safe only while one invariant holds: a driver-shaped report is a
+  // tool-launched pipeline (plan / research) whose ONLY consumer is the PM's
+  // steer, so it is always PM-owned. A `reportKind: "driver"` job marked
+  // driver-owned would deliver a duplicate `[ensemble:async]` to a PM that
+  // never asked for one, or — if the gate were added naively — deliver nothing
+  // at all and leave the caller holding a promise no operator ever reads.
+  // Refuse the combination at the door rather than carry the invariant as
+  // folklore.
+  if (input.reportKind === "driver" && ownerKind !== "pm") {
+    throw new Error(
+      `async-jobs: reportKind "driver" requires ownerKind "pm" (got "${ownerKind}") — a driver-shaped report is delivered to the PM as the run's only result; an in-process caller consumes the completion promise instead.`,
+    );
+  }
   const jobId = newJobId();
   const abort = new AbortController();
   const state: SingleJobState = {
@@ -345,18 +379,27 @@ export function startJob(pi: DispatchHost, input: StartJobInput): StartJobHandle
         // outcome headline entirely. A throw from the formatter still falls
         // through to deliverOrStandIn's stand-in path below.
         if (input.reportKind === "driver") {
-          deliverOrStandIn(
-            pi,
-            `async job ${jobId}`,
-            () =>
-              formatDriverReport(
-                jobId,
-                input.label,
-                input.subject ?? input.label,
-                result.text ?? "",
-              ),
-            (e) => jobStandIn(jobId, input.label, e),
-          );
+          const build = () =>
+            formatDriverReport(jobId, input.label, input.subject ?? input.label, result.text ?? "");
+          // #1541 review (MEDIUM) — `deliverOrStandIn` swallows the boolean
+          // `deliverReport` returns: it falls back only when BUILDING the
+          // report throws, and a `sendUserMessage` that rejects never surfaces
+          // there (it is caught inside `deliverReport`). So the one failure
+          // mode this branch actually has — Pi refusing the steer — produced
+          // a WARN in the trace and silence in the session. Read the return
+          // value and hand the caller the stand-in when it says nothing landed.
+          const deliver = input.deliverForTest ?? ((report: string) => deliverReport(pi, report));
+          const delivered = deliver(build());
+          if (!delivered) {
+            // A stand-in that ALSO fails is what `deliverOrStandIn` guards
+            // against — it never throws, so this path stays swallow-safe.
+            deliverStandIn(
+              pi,
+              `async job ${jobId}`,
+              new Error("sendUserMessage refused the driver report"),
+              (e) => jobStandIn(jobId, input.label, e),
+            );
+          }
           trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) finished (driver)`);
           return result;
         }

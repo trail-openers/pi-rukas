@@ -170,6 +170,13 @@ export async function runGapGateLoop(
   makeGatePrompt: (iteration: number) => string,
   maxIterations: number,
   onCorrective: (blocking: PlanGap[]) => void,
+  // #1541 — the job's signal, checked at the top of every round. The driver's
+  // own phase-boundary checks cannot cover this call: the investigation barrier
+  // dispatches its children in ONE tick, so a kill that lands mid-barrier is
+  // observed only after every leg has already been handed off, and whether the
+  // boundary check beats the loop's first dispatch is microtask luck. A gate
+  // round on an aborted job is a child that should never have been paid for.
+  signal?: AbortSignal,
 ): Promise<GapGateLoopResult> {
   let openPoints: PlanGap[] = [];
   let iterations = 0;
@@ -188,6 +195,15 @@ export async function runGapGateLoop(
   const allNonBlocking: PlanGap[] = [];
 
   while (iterations < maxIterations && !ready) {
+    // #1541: an aborted job does not start another round. Reported as
+    // `gate-unavailable` — the reviewer never saw the spec, which is exactly
+    // what that reason means, and the driver's cancelled branch replaces the
+    // headline before the operator reads it.
+    if (signal?.aborted) {
+      capHit = true;
+      capReason = "gate-unavailable";
+      break;
+    }
     iterations++;
     let gate = await dispatch(
       { role: "adversarial-developer", prompt: makeGatePrompt(iterations) },

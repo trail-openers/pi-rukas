@@ -36,6 +36,7 @@ import {
 import { PLAN_DISPATCH_TIMEOUT_MS, PLAN_MARKER_CHILD_ARGS } from "./plan-investigate.ts";
 import { OPERATOR_SOURCE } from "./plan-prior-context.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
+import { runResearchAngle } from "./research-angle.ts";
 import { anglesForTier } from "./research-angles.ts";
 import {
   type MemoSections,
@@ -45,6 +46,7 @@ import {
   slugify,
   writeArtifact,
 } from "./research-artifact.ts";
+import { killedBy } from "./research-cancel.ts";
 import { dedupResearchClaims } from "./research-dedup.ts";
 import {
   type ParallelOutcome,
@@ -124,7 +126,15 @@ export async function runResearchPipeline(
   input: ResearchDriverInput,
   repoRoot: string,
   deps: ResearchDeps = {},
+  // #1541 review (MEDIUM) — the tool path passes the async job's own signal so
+  // dispatch_kill / session shutdown stop the run at a phase boundary. Optional
+  // so the direct-pipeline tests keep their four-argument calls.
+  opts: { signal?: AbortSignal } = {},
 ): Promise<ResearchResult> {
+  // #1541 review (MEDIUM) — the async job's own abort signal, so dispatch_kill
+  // and session shutdown stop the run at a phase boundary and SIGTERM its live
+  // children rather than waiting out the per-child bound.
+  const signal = opts.signal;
   const dispatch: ResearchDispatchFn = _dispatchOverride ?? dispatchCore;
   const execFn = deps.execFn ?? defaultExec;
   const statFn = deps.statFn ?? (stat as (p: string) => Promise<unknown>);
@@ -137,6 +147,20 @@ export async function runResearchPipeline(
   const date = new Date().toISOString().slice(0, 10);
   const timer = new PhaseTimer();
   const timed = <T>(phase: string, fn: () => Promise<T>) => timer.run(phase, fn);
+  // #1541 review (MEDIUM) — the cancellation halt. `angles` is in scope only
+  // after the retrieval barrier, so the pre-retrieval checks pass an empty set;
+  // the phase name says how far the run got.
+  const cancelledResult = (phase: string, atAngles: AngleRun[] = []): ResearchResult => ({
+    topic,
+    tier,
+    angles: atAngles,
+    claims: [] as ResearchClaim[],
+    pinnedCommit: "unknown",
+    abstained: false,
+    memory: { outcome: "skipped", detail: "run cancelled — nothing durable to point at" },
+    cancelled: { by: killedBy(signal), phase },
+    timings: timer.finish(),
+  });
 
   // Phase 1 — inventory (vipune keywords + context param), briefing only:
   // children are told what is already established so they dive deeper
@@ -160,6 +184,11 @@ export async function runResearchPipeline(
     }
     return prior;
   });
+  // #1541 review (MEDIUM) — phase boundary: every await below is a vipune
+  // read, a fan-out, or an HTTP liveness check. A kill between two of them must
+  // not pay for the next one.
+  if (signal?.aborted) return cancelledResult("inventory");
+
   const priorBlock =
     priorContext.length > 0
       ? `PM has already established (DO NOT re-investigate; dig deeper instead):\n${renderPriorContext(priorContext)}\n${priorContextHasVipune(priorContext) ? `${VIPUNE_PRECEDENCE_NOTE}\n` : ""}\n`
@@ -210,79 +239,18 @@ export async function runResearchPipeline(
       };
     }
   }
-  const runAngle = async (
-    a: (typeof angleSpecs)[number],
-    backend: AngleRun["backend"],
-    reason: ParallelOutcome | undefined,
-  ): Promise<AngleRun & { fullText: string }> => {
-    const prompt =
-      backend === "parallel"
-        ? `${fallbackLine}${priorBlock}${a.prompt}`
-        : `${fallbackLine}${priorBlock}${wigoloAnglePrompt(a, surfaceForAngle(a.name), reason ?? "unparseable")}`;
-    let r: Awaited<ReturnType<ResearchDispatchFn>>;
-    try {
-      r = await dispatch(
-        pi,
-        { role: "explore", prompt, cwd: repoRoot },
-        {
-          label: `research-${a.name}`.slice(0, 24),
-          timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
-          extraArgs: RESEARCH_EXTRA_ARGS,
-        },
-      );
-    } catch (err) {
-      // A rejecting dispatch (or a throwing stub) must never sink the whole
-      // retrieval barrier — the angle stays failed and the other angles and
-      // the artifact survive it.
-      const msg = err instanceof Error ? err.message : String(err);
-      trace(`research-driver: dispatch rejected for ${a.name}: ${msg}`);
-      return {
-        name: a.name,
-        ok: false,
-        summary: `dispatch rejected: ${msg}`,
-        claims: [],
-        backend,
-        failure: msg,
-        fullText: `dispatch rejected: ${msg}`,
-      };
-    }
-    const claims = extractResearchClaims(r.toolUses, a.name);
-    // #893 — raw count of report_research_claim toolUses (schema-valid or
-    // not), keyed off `name` only, distinct from the post-extraction
-    // `claims.length`. Zero raw calls = the reporter tool was never called
-    // (possibly never loaded); >0 with zero valid claims = the calls were
-    // schema-invalid or prose-only.
-    const rawCalls = (r.toolUses ?? []).filter((tu) => {
-      if (!tu || typeof tu !== "object") return false;
-      return (tu as { name?: string }).name === "report_research_claim";
-    }).length;
-    const ok = r.ok && !r.errorStop && claims.length > 0;
-    return {
-      name: a.name,
-      ok,
-      summary: r.text.trim().slice(0, 500),
-      claims,
-      backend,
-      failure: ok
-        ? undefined
-        : !r.ok
-          ? "dispatch failed or timed out"
-          : r.errorStop
-            ? "provider error mid-stream"
-            : rawCalls === 0
-              ? "0 report_research_claim calls — reporter may not have loaded (check pi version / --extension)"
-              : "returned no structured claims",
-      rawClaimCalls: rawCalls,
-      // The parallel-outcome:/backend: markers are the LAST lines of a
-      // reply — classification must see the full text, not the summary.
-      fullText: r.text,
-    };
-  };
   const angles: AngleRun[] = await timed("retrieve", () =>
     Promise.all(
       angleSpecs.map(async (a) => {
-        let run = await runAngle(a, "parallel", undefined);
-        if (!run.ok && fallbackEnabled) {
+        let run = await runResearchAngle(dispatch, pi, a, "parallel", undefined, {
+          priorBlock,
+          fallbackLine,
+          repoRoot,
+          signal,
+        });
+        // #1541 review (MEDIUM) — one re-dispatch per angle, and each is a full
+        // child. A kill mid-barrier must not spend the second one.
+        if (!run.ok && fallbackEnabled && !signal?.aborted) {
           // The markers sit at the END of the reply, so classify on the
           // full text — a 500-char summary silently drops them.
           const outcome: ParallelOutcome = classifyParallelOutcome(run.fullText);
@@ -290,7 +258,12 @@ export async function runResearchPipeline(
           if (decision === "fall-back-to-wigolo") {
             // Re-dispatch ONCE: a second failure is not retried — the angle
             // stays failed and its summary carries both attempts' text.
-            const retry = await runAngle(a, "wigolo", outcome);
+            const retry = await runResearchAngle(dispatch, pi, a, "wigolo", outcome, {
+              priorBlock,
+              fallbackLine,
+              repoRoot,
+              signal,
+            });
             const merged = retry.ok
               ? `${run.summary}\n[wigolo fallback: ${retry.summary}]`
               : `${run.summary}\n[wigolo fallback failed: ${classifyParallelOutcome(retry.fullText)}]`;
@@ -314,6 +287,7 @@ export async function runResearchPipeline(
   // merged claim verifies its survivor's source once, and its `angles`
   // attribute the provenance; the raw vs unique counts land in the
   // artifact + provenance headers.
+  if (signal?.aborted) return cancelledResult("retrieve", angles);
   const rawClaimCount = angles.reduce((sum, a) => sum + a.claims.length, 0);
   const claims = dedupResearchClaims(angles.flatMap((a) => a.claims));
   const base: Omit<ResearchResult, "halt" | "abstained" | "memory"> = {
@@ -358,6 +332,7 @@ export async function runResearchPipeline(
   }
 
   // Phase 3 — deterministic verification, driver-side.
+  if (signal?.aborted) return cancelledResult("retrieve", angles);
   const commit = await pinnedCommit(execFn, repoRoot);
   let verified = await timed("verify", () =>
     verifyClaims(claims, repoRoot, execFn, deps.fetchFn, { pinnedSha: commit }),
@@ -367,7 +342,7 @@ export async function runResearchPipeline(
   // never a silent upgrade; a "none" verdict demotes the finding out of the
   // abstention count (research-verify.ts: isVerifiedFinding).
   let entailment: ResearchResult["entailment"];
-  if (tier === "deep") {
+  if (tier === "deep" && !signal?.aborted) {
     const targets = entailableClaims(verified);
     if (targets.length === 0) {
       entailment = "ran"; // nothing to entail is a completed pass, not a failure
@@ -379,6 +354,7 @@ export async function runResearchPipeline(
           {
             label: "research-entailment",
             timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
+            ...(signal ? { signal } : {}),
             extraArgs: PLAN_MARKER_CHILD_ARGS,
           },
         ),
@@ -405,7 +381,7 @@ export async function runResearchPipeline(
   // child sees only the verified claims; a failed synthesis leaves the
   // memo's decision to the operator — the driver never fabricates one.
   let memo: MemoSections | undefined;
-  if (tier === "adoption") {
+  if (tier === "adoption" && !signal?.aborted) {
     const synth = await timed("memo", () =>
       dispatch(
         pi,
@@ -413,6 +389,7 @@ export async function runResearchPipeline(
         {
           label: "research-memo-synthesis",
           timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
+          ...(signal ? { signal } : {}),
           extraArgs: PLAN_MARKER_CHILD_ARGS,
         },
       ),
@@ -421,6 +398,10 @@ export async function runResearchPipeline(
   }
 
   // Phase 4 — artifact + provenance.
+  // #1541 review (MEDIUM) — the last boundary that matters: past this point the
+  // run writes files, and a killed run must not leave a half-written artifact
+  // the operator believes is a completed report.
+  if (signal?.aborted) return cancelledResult("verify", angles);
   let artifactPath: string | undefined;
   let provenancePath: string | undefined;
   try {
