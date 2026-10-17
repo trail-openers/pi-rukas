@@ -194,12 +194,7 @@ if (violations.length === 0) {
 // with a longer docstring.
 {
   const scanned = listSourceFiles(REPO_ROOT).map((f) => path.relative(REPO_ROOT, f));
-  for (const expected of [
-    "install.sh",
-    "build.sh",
-    ".github/workflows/ci.yml",
-    "bin/pi-rukas",
-  ]) {
+  for (const expected of ["install.sh", "build.sh", ".github/workflows/ci.yml", "bin/pi-rukas"]) {
     assert(
       scanned.includes(expected),
       `canary: ${expected} is in scope — it was invisible to the old extension/-only scan`,

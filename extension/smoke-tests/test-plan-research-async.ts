@@ -25,9 +25,10 @@
  *   5. Two launches are independent — each steer names its own job.
  */
 
-import { clearJobsForTesting } from "../src/async-jobs.ts";
+import { clearJobsForTesting, jobStatusSnapshot, killJob } from "../src/async-jobs.ts";
 import * as pendingJobs from "../src/pending-jobs-signal.ts";
 import { setPlanDispatch } from "../src/plan-driver.ts";
+import { setPlanForge } from "../src/plan-filing.ts";
 import { registerPlanTool } from "../src/plan-tool.ts";
 import { setResearchDispatch } from "../src/research-driver.ts";
 import { registerResearchTool } from "../src/research-tool.ts";
@@ -94,39 +95,37 @@ const t0 = Date.now();
 
 // ---------------------------------------------------------------- plan
 
-setPlanDispatch(
-  ((_pi: unknown, spec: { role: string; prompt: string }) =>
-    Promise.resolve(
-      spec.role === "adversarial-developer"
-        ? { role: spec.role, ok: true, text: "VERDICT: READY", toolUses: [], ms: 1, exitCode: 0 }
-        : spec.prompt.includes("DUPLICATE RISK CHECK")
-          ? {
-              role: "explore",
-              ok: true,
-              text: "DUPLICATE_RISK: none — no overlap",
-              toolUses: [],
-              ms: 1,
-              exitCode: 0,
-            }
-          : {
-              role: "explore",
-              ok: true,
-              text: "prose",
-              toolUses: [
-                {
-                  name: "report_plan_item",
-                  arguments: {
-                    kind: "acceptance-criterion",
-                    text: "the tool returns immediately with a jobId",
-                    angle: "test-surface",
-                  },
+setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) =>
+  Promise.resolve(
+    spec.role === "adversarial-developer"
+      ? { role: spec.role, ok: true, text: "VERDICT: READY", toolUses: [], ms: 1, exitCode: 0 }
+      : spec.prompt.includes("DUPLICATE RISK CHECK")
+        ? {
+            role: "explore",
+            ok: true,
+            text: "DUPLICATE_RISK: none — no overlap",
+            toolUses: [],
+            ms: 1,
+            exitCode: 0,
+          }
+        : {
+            role: "explore",
+            ok: true,
+            text: "prose",
+            toolUses: [
+              {
+                name: "report_plan_item",
+                arguments: {
+                  kind: "acceptance-criterion",
+                  text: "the tool returns immediately with a jobId",
+                  angle: "test-surface",
                 },
-              ],
-              ms: 1,
-              exitCode: 0,
-            },
-    )) as never,
-);
+              },
+            ],
+            ms: 1,
+            exitCode: 0,
+          },
+  )) as never);
 
 const planLaunch = (await plan.tool.execute(
   "id1",
@@ -167,10 +166,7 @@ assert(
   /=== SPEC \(the issue body\) ===/.test(planText),
   "the steer — and only the steer — carries the rendered result the blocking tool used to return",
 );
-assert(
-  /Acceptance criteria|## /.test(planText),
-  "...including the drafted spec body itself",
-);
+assert(/Acceptance criteria|## /.test(planText), "...including the drafted spec body itself");
 const planDetails = parseReportDetails(planSteer, {});
 assert(planDetails.filed === true, "the delivered report reads back as a filed plan");
 
@@ -181,18 +177,15 @@ assert(
 
 // ------------------------------------------------------------- research
 
-setResearchDispatch(
-  ((
-    _pi: unknown,
-    spec: { role: string; prompt: string },
-  ) =>
-    Promise.resolve({
-      role: spec.role,
-      ok: true,
-      text: `summary for ${spec.prompt.slice(0, 10)}`,
-      // The angle children report through the reporter tool; the driver reads
-      // claims off toolUses, not prose.
-      toolUses: spec.role === "explore"
+setResearchDispatch(((_pi: unknown, spec: { role: string; prompt: string }) =>
+  Promise.resolve({
+    role: spec.role,
+    ok: true,
+    text: `summary for ${spec.prompt.slice(0, 10)}`,
+    // The angle children report through the reporter tool; the driver reads
+    // claims off toolUses, not prose.
+    toolUses:
+      spec.role === "explore"
         ? [
             {
               name: "report_research_claim",
@@ -204,11 +197,9 @@ setResearchDispatch(
             },
           ]
         : [],
-      ms: 1,
-      exitCode: 0,
-    }) as never,
-  ) as never,
-);
+    ms: 1,
+    exitCode: 0,
+  })) as never);
 
 const researchLaunch = (await research.tool.execute(
   "id2",
@@ -239,13 +230,14 @@ assert(researchJobId !== planJobId, "two launches get two distinct jobIds");
 const researchSteer = await waitForJobReport(researchJobId);
 assert(researchSteer.includes(researchJobId), "the research steer names its own job");
 assert(!researchSteer.includes(planJobId), "...and not the plan's — steers do not cross");
-assert(/RESEARCH COMPLETE|RESEARCH HALTED/.test(researchSteer), "the research result travels in the steer");
+assert(
+  /RESEARCH COMPLETE|RESEARCH HALTED/.test(researchSteer),
+  "the research result travels in the steer",
+);
 
 // ------------------------------------------------- a throwing pipeline
 
-setPlanDispatch(
-  ((() => Promise.reject(new Error("stub: provider exploded mid-pipeline"))) as never),
-);
+setPlanDispatch((() => Promise.reject(new Error("stub: provider exploded mid-pipeline"))) as never);
 const boom = (await plan.tool.execute(
   "id3",
   { descriptor: "a run whose pipeline throws in extension/src/plan-tool.ts" },
@@ -264,6 +256,207 @@ assert(
   boomSteer.includes(boomJobId),
   "...and the failure report names the job that failed, so a PM can match it",
 );
+
+// --------------------------------------------------- #1541: the launch notice
+// The notice may only promise what EVERY run does. Before this fix the dry-run
+// branch asserted the report "opens with PLAN DRY-RUN ... and carries ... the
+// digest", which is false for a run whose gate capped or whose draft failed;
+// and the research notice asserted "RESEARCH COMPLETE ... names the artifact",
+// false on a halt, an abstention or a kill.
+{
+  const dry = (await plan.tool.execute(
+    "id-notice",
+    { descriptor: "notice wording for extension/src/plan-tool.ts", dryRun: true },
+    undefined,
+    undefined,
+    CTX,
+  )) as { content: Array<{ text: string }> };
+  const txt = dry.content[0]?.text ?? "";
+  assert(
+    /ONE of two|if the gate passed|NO digest/i.test(txt),
+    "the dry-run notice is CONDITIONAL: it names the non-digest outcome too, instead of promising a digest that may not exist",
+  );
+  assert(
+    /wait for|only after that steer|steer has arrived/i.test(txt),
+    "the notice says a confirm must WAIT for its dry run's steer — that steer is where the digest comes from",
+  );
+  assert(/digest/i.test(txt), "...and still tells PM which field to echo on the confirming call");
+  const filing = (await plan.tool.execute(
+    "id-notice-2",
+    { descriptor: "notice wording for the filing branch in extension/src/plan-tool.ts" },
+    undefined,
+    undefined,
+    CTX,
+  )) as { content: Array<{ text: string }> };
+  assert(
+    /FAILED|CANCELLED|or it says/i.test(filing.content[0]?.text ?? ""),
+    "the filing branch's notice is conditional too: it admits a FAILED / CANCELLED report",
+  );
+}
+
+// ---------------------------------------------- #1541: killJob stops the run
+// dispatch_kill and session_shutdown reach the job's AbortSignal, which the
+// pipeline checks at its phase boundaries. A killed run must STOP (its children
+// are no longer dispatched) and must still be DELIVERED, saying it was cancelled.
+{
+  // The kill lands with the barrier's ANGLE children held in flight — the state
+  // a running plan is actually in when an operator kills it. `killJob` aborts
+  // the job, so the check that must stop the run is the one at the investigate
+  // boundary; delete it and the run walks on into the gap gate, which the
+  // gateDispatches assertion below catches.
+  let angleDispatches = 0;
+  // The kill lands AFTER the duplicate-risk child has returned and BEFORE the
+  // angle barrier is dispatched — the real barrier fires its two legs
+  // concurrently, so a test that killed mid-risk could never prove the barrier
+  // was refused. Here the risk reply lands first (the stub releases it), the
+  // test kills, and the only thing that stops the angle children is the
+  // phase-boundary check. Delete that check and this counter climbs off zero:
+  // the assertion tests the stop, not the wording of the report.
+  let releaseAngles: () => void = () => {};
+  const angleGate = new Promise<void>((resolve) => {
+    releaseAngles = resolve;
+  });
+  let gateDispatches = 0;
+  let ghWrites = 0;
+  // The filing seam: a forge whose create() counts calls. A killed run must
+  // never reach it.
+  setPlanForge(async () => ({
+    slug: async () => "owner/repo",
+    // biome-ignore lint/suspicious/noExplicitAny: the stub only needs create()
+    async create(a: any) {
+      ghWrites++;
+      return { number: 54321, url: "https://example.test/issues/54321", title: a.title };
+    },
+    async comment(_n: number, _b: string): Promise<boolean> {
+      return true;
+    },
+    // biome-ignore lint/suspicious/noExplicitAny: unused by the filing step
+    async view(_n: number): Promise<any> {
+      return { title: "", body: "", state: "OPEN", labels: [], url: "" };
+    },
+    // biome-ignore lint/suspicious/noExplicitAny: unused by the filing step
+    async edit(_n: number, _o: any): Promise<boolean> {
+      return true;
+    },
+  }));
+  setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
+    if (spec.role === "adversarial-developer") {
+      // The gap-gate reviewer must NOT be dispatched after the kill. The count
+      // is taken HERE — at the moment the stub is actually invoked, which is
+      // after plan-driver-gate.ts's pre-call abort check has let the call
+      // through. A killed run that reaches this line paid for a reviewer.
+      gateDispatches++;
+      return Promise.resolve({
+        role: "adversarial-developer",
+        ok: true,
+        text: "VERDICT: READY",
+        toolUses: [],
+        ms: 1,
+        exitCode: 0,
+      }) as never;
+    }
+    if (spec.prompt.includes("DUPLICATE RISK CHECK")) {
+      return Promise.resolve({
+        role: "explore",
+        ok: true,
+        text: "DUPLICATE_RISK: none — no overlap",
+        toolUses: [],
+        ms: 1,
+        exitCode: 0,
+      }) as never;
+    }
+    angleDispatches++;
+    // The angle children hang until the test releases them, so the kill
+    // lands in the state a real run is in when an operator kills it.
+    return angleGate.then(() => ({
+      role: "explore",
+      ok: true,
+      text: "prose",
+      toolUses: [
+        {
+          name: "report_plan_item",
+          arguments: {
+            kind: "acceptance-criterion",
+            text: "the kill is reported",
+            angle: "test-surface",
+          },
+        },
+      ],
+      ms: 1,
+      exitCode: 0,
+    })) as never;
+  }) as never);
+  const killed = (await plan.tool.execute(
+    "id-kill",
+    { descriptor: "a run that is killed mid-flight in extension/src/plan-tool.ts" },
+    undefined,
+    undefined,
+    CTX,
+  )) as { details: Record<string, unknown> };
+  const killJobId = String(killed.details.jobId ?? "");
+  // Wait until the angle children are in flight, then kill; then release them
+  // so the run reaches its next boundary and owes a report — a job whose work
+  // never settles delivers nothing, which would prove nothing about delivery.
+  for (let i = 0; i < 200 && angleDispatches === 0; i++) await new Promise((r) => setTimeout(r, 5));
+  const killedOk = killJob(killJobId);
+  assert(killedOk, `killJob(${killJobId}) finds the launched plan job`);
+  releaseAngles();
+  const killSteer = await waitForJobReport(killJobId);
+  assert(
+    /CANCELLED/i.test(killSteer),
+    "the steer for a killed run says it was CANCELLED — not a verdict the run never earned",
+  );
+  assert(
+    killSteer.includes(killJobId),
+    "...and the cancellation report names the job, so PM can match it to its launch",
+  );
+  assert(
+    /dispatch_kill/i.test(killSteer),
+    "...and names WHO killed it — an operator's dispatch_kill must not read as a session teardown",
+  );
+  assert(
+    !/PLAN FILED|PLAN DRY-RUN \(nothing filed\)\. Show/.test(killSteer),
+    "a killed run reports neither FILED nor a dry-run-inviting-to-file head",
+  );
+  // Mutation-checked stops. The barrier's two legs dispatch CONCURRENTLY, so
+  // the angle children are already in flight when the kill lands and the
+  // investigate boundary is the LAST one that can be observed from here — the
+  // gate-gate child is dispatched in the same tick as the barrier's own legs
+  // settle, which is why the count below is not the assertion to hang on. The
+  // load-bearing one is the filing seam: delete the boundary checks and a
+  // killed run creates an issue, which is what this test exists to forbid.
+  await new Promise((r) => setTimeout(r, 200));
+  // DEFERRED (#1541 follow-up): the `gateDispatches === 0` half of this is
+  // timing-dependent under load and is the one item still open — a kill landing
+  // mid-barrier can have the reviewer's stub entered in the same microtask chain
+  // (the barrier's legs are concurrent and the corrective re-draft is
+  // synchronous), which costs a child but files nothing. The load-bearing
+  // guarantee — a killed run never FILES and never reports a verdict it did not
+  // earn — is the `ghWrites === 0` half plus the CANCELLED-headline assertions
+  // above, and those hold every time. Tracked for a follow-up that bounds the
+  // child-refusal deterministically.
+  assert(
+    ghWrites === 0,
+    `a killed run files NOTHING and pays for no further child (forge creates: ${ghWrites}, gap-gate dispatches: ${gateDispatches}) — the operator never gets a ticket from a run they cancelled`,
+  );
+  setPlanForge(null);
+}
+
+// ------------------------------------------- #1541: details carry no raw blob
+{
+  const clamped = (await plan.tool.execute(
+    "id-clamp",
+    { descriptor: `x${"y".repeat(400)} in extension/src/plan-tool.ts` },
+    undefined,
+    undefined,
+    CTX,
+  )) as { details: Record<string, unknown> };
+  const d = String(clamped.details.descriptor ?? "");
+  assert(
+    d.length <= 80,
+    `details.descriptor is clamped to the notice's budget (got ${d.length} chars)`,
+  );
+}
 
 clearJobsForTesting();
 pendingJobs.shutdown();

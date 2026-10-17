@@ -5,7 +5,6 @@
  * mode-independent issue-creation guard (issue-creation-guard.ts) makes
  * the replacement safe: direct `gh issue create` bash is refused for
  * every role in every mode.
- *
  * Phase compilation (each phase's detail lives in its module's header):
  *   0  Classify [plan-types.ts] · 0b Precheck [plan-precheck.ts]
  *   1  Inventory — vipune + `gh issue list`, driver-run [plan-draft.ts]
@@ -20,20 +19,27 @@
  * dryRun. Every phase is timed (PlanResult.timings — measure, then cut).
  * #1043: an identical confirm of a FILEABLE dry run files its reviewed spec
  * verbatim (plan-confirm.ts — no phase below runs).
+ * #1541: the run is cancellable — the async job's AbortSignal reaches every
+ * phase boundary (plan-driver-cancel.ts), every child dispatch, and each round
+ * of the gap gate.
  */
 
 import { dispatchCore } from "./dispatch.ts";
 import { type PlanBase, withPlanBase } from "./plan-base-tree.ts";
 import { confirmVerbatim, heldForReview, settlePlanCache } from "./plan-confirm.ts";
-import { codeIdentifiersIn, draftSpec, mechanicalInventory } from "./plan-draft.ts";
+import { codeIdentifiersIn, mechanicalInventory } from "./plan-draft.ts";
+import { cancelledResult } from "./plan-driver-cancel.ts";
+import { gapGateApplies, runGate } from "./plan-driver-gate.ts";
 import {
   allAnglesFailedHalt,
   buildPlanResult,
-  correctiveRedraftError,
   haltResult,
   phaseTimer,
 } from "./plan-driver-halt.ts";
 import { phase3Draft } from "./plan-driver-phase3.ts";
+import { duplicateRiskHalt, needsClarificationHalt } from "./plan-driver-phases.ts";
+import { draftInvalidHalt } from "./plan-driver-redraft.ts";
+import { correctiveRedraft } from "./plan-driver-redraft.ts";
 import {
   type PlanDispatchFn,
   getPlanDispatchOverride,
@@ -45,9 +51,7 @@ import {
   tracePlanRun,
 } from "./plan-dropped-artifact.ts";
 import { reviewedDigestOf } from "./plan-filing-claim.ts";
-import { filedBodyOf, settledGapsSection } from "./plan-gap-disclosure.ts";
-import { type GapGateLoopResult, runGapGateLoop } from "./plan-gaps.ts";
-import { type CarriedCritical, gapGatePrompt, gapGateVerifyPrompt } from "./plan-gate-prompt.ts";
+import { filedBodyOf } from "./plan-gap-disclosure.ts";
 import { loadPlanImages, planImageLinksSection, withPlanImages } from "./plan-images.ts";
 import {
   type InvestigationResult,
@@ -73,11 +77,8 @@ import {
   planTitle,
 } from "./plan-types.ts";
 import { FORGE_BODY_MAX, parsePinnedSubIssueCount, validateDraft } from "./plan-validate.ts";
-import { type ResolvedDecision, buildResolvedDecisions } from "./plan-writeback.ts";
 import { trace } from "./trace.ts";
 import type { DriverHost } from "./work-driver-host.ts";
-
-const GAP_GATE_MAX_ITERATIONS = 2;
 
 // Phase-4 prompts (round-1 review + round-2 scoped verification) live in
 // plan-gate-prompt.ts; re-exported here for the existing consumers.
@@ -87,23 +88,34 @@ export { gapGatePrompt } from "./plan-gate-prompt.ts";
 // runPlanPipeline
 // ---------------------------------------------------------------------------
 
+const GAP_GATE_MAX_ITERATIONS = 2; // the bound runGapGateLoop iterates to
+
 export async function runPlanPipeline(
   pi: DriverHost,
   input: PlanDriverInput,
   repoRoot: string,
+  // #1541 review (MEDIUM) — the tool path passes the async-job's own signal, so
+  // dispatch_kill / session shutdown stop the run. Optional: the direct-pipeline
+  // tests keep the two-argument shape.
+  opts: { signal?: AbortSignal } = {},
 ): Promise<PlanResult> {
   // #1132: one origin fetch per run; the base tree is removed when the run ends.
   return withPlanBase(repoRoot, async (base) => {
-    const result = await runPipelineOn(pi, input, repoRoot, base);
+    const result = await runPipelineOn(pi, input, repoRoot, base, opts.signal);
     return base.baseFallback ? { ...result, baseFallback: base.baseFallback } : result;
   });
 }
 
+/**
+ * The run body. The cancellation halt lives in plan-driver-cancel.ts and is
+ * checked at every phase boundary below, plus per-round in the gap gate.
+ */
 async function runPipelineOn(
   pi: DriverHost,
   input: PlanDriverInput,
   repoRoot: string,
   base: PlanBase,
+  signal?: AbortSignal,
 ): Promise<PlanResult> {
   // The source issue's images (plan-images.ts): with every child, links in the body.
   const images = await loadPlanImages();
@@ -134,19 +146,17 @@ async function runPipelineOn(
   const pre = precheckDescriptor(type, descriptor, context);
   if (!pre.ok) {
     trace(`plan-driver: precheck fired — descriptor too thin, no dispatch paid (type=${type})`);
-    return haltResult({
+    return needsClarificationHalt({
       type,
-      title: planTitle(descriptor, type),
-      spec: `(spec not drafted — the descriptor is too thin to ground an investigation)\n\nAnswer these and re-run start_plan_driver with a fuller descriptor or a context param:\n${pre.questions.map((q) => `- ${q}`).join("\n")}`,
-      priorContext: [],
-      failure: {
-        reason: "needs-clarification",
-        detail:
-          "the descriptor is under the word floor with no code identifier and no context param — investigation was deliberately skipped before any dispatch",
-      },
+      descriptor,
       timings: finishTimings(),
+      questions: pre.questions,
     });
   }
+
+  // #1541 (MEDIUM) — phase boundary: a kill between two awaits must not pay
+  // for the next one.
+  if (signal?.aborted) return cancelledResult(signal, input, "precheck", [], finishTimings());
 
   // Phase 1. ORDER IS LOAD-BEARING (vipune fixture run): renderPriorContext
   // clips at a fixed budget, so the operator's context-param entries — the
@@ -175,6 +185,8 @@ async function runPipelineOn(
   // FILED-body inventory gets the untyped prose lines only (the typed-block
   // lines consumed by the directive parser render in their section, #858).
   const { priorContext, inventoryContext, directives } = assemblePriorContext(context, inv);
+  if (signal?.aborted)
+    return cancelledResult(signal, input, "inventory", priorContext, finishTimings());
 
   // Phase 1b + Phase 2 — ONE parallel barrier (plan-investigate.ts): the
   // duplicate-risk explore and the type-specialised angle set dispatch
@@ -199,10 +211,14 @@ async function runPipelineOn(
           pinnedSubIssues,
           forbiddenPhrases: directives.neverClaim,
           statFn: getPlanStatFnOverride() ?? undefined,
+          // #1541 review (MEDIUM) — the job's signal reaches the barrier's children.
+          ...(signal ? { signal } : {}),
         }),
       );
 
   const { duplicateRisk, findings, neverClaimDisclosure } = barrier;
+  if (signal?.aborted)
+    return cancelledResult(signal, input, "investigate", priorContext, finishTimings());
 
   // Disclosed downstream (result text, details, drafted body) — a killed
   // child must never vanish silently (vipune fixture run, C3).
@@ -211,19 +227,11 @@ async function runPipelineOn(
     .map((f) => ({ name: f.name, detail: f.failure ?? "failed" }));
 
   if (duplicateRisk && duplicateRisk.level === "high") {
-    // C6: a structured not-filed result instead of a bare throw — the
-    // operator gets the rationale AND the recovery path (acknowledge the
-    // named issue via the context param; the risk child reads it and a
-    // reconciled issue cannot raise the risk above medium).
-    return haltResult({
+    return duplicateRiskHalt({
       type,
-      title: planTitle(descriptor, type),
-      spec: `(spec not drafted — duplicate risk HIGH)\n\nRationale from the risk check:\n${duplicateRisk.rationale}\n\nIf this ticket deliberately reverses or extends the named issue, re-run start_plan_driver with a context param acknowledging it (e.g. "this deliberately reverses #103 because …") — an acknowledged issue is reconciled, not a duplicate. Full rationale: /runs → plan-duplicate-risk.`,
+      descriptor,
+      rationale: duplicateRisk.rationale,
       priorContext,
-      failure: {
-        reason: "duplicate-risk",
-        detail: `duplicate risk HIGH — ${duplicateRisk.rationale.slice(0, 300)}`,
-      },
       failedAngles,
       timings: finishTimings(),
     });
@@ -240,6 +248,8 @@ async function runPipelineOn(
     timings: finishTimings,
   });
   if (allFailed) return allFailed;
+  if (signal?.aborted)
+    return cancelledResult(signal, input, "investigate", priorContext, finishTimings());
 
   // Phase 3 — draft WITHIN the forge body budget (vipune session: four
   // filings hit the 65,536-char wall after clean gates; plan-validate.ts
@@ -292,25 +302,21 @@ async function runPipelineOn(
   });
   if (!draftCheck.ok) {
     trace(`plan-driver: draft validation failed — ${draftCheck.problems.join("; ")}`);
-    return haltResult({
+    return draftInvalidHalt({
       type,
       title,
       spec: body,
       priorContext,
-      failure: {
-        reason: "draft-invalid",
-        detail: `the drafted body failed deterministic validation, so it was not reviewed or filed: ${draftCheck.problems.join("; ")}. Re-run start_plan_driver (the angles are re-dispatched), or supply the missing content via the context param (e.g. an ACCEPTANCE CRITERIA block).`,
-      },
+      problems: draftCheck.problems,
       failedAngles,
       timings: finishTimings(),
     });
   }
 
-  // Phase 4 — gap gate: bug/feature/epic only. Chore/spike are
-  // low-blast-radius and their gate is the deterministic validation above —
-  // no env knob (operator decision 2026-09-09: fewer knobs, better
-  // defaults; this also removes run-to-run gate variance for those types).
-  const gapGateEnabled = type !== "chore" && type !== "spike";
+  // Phase 4 — gap gate: bug/feature/epic only (chore/spike are exempt — see
+  // gapGateApplies). The loop, its prompts and its corrective re-draft are
+  // assembled in plan-driver-gate.ts; the boundary check after it covers a kill
+  // that lands while the loop's own work is settling.
   let gaps: PlanGap[] = [];
   let capHit = false;
   let capReason: PlanResult["capReason"];
@@ -318,75 +324,33 @@ async function runPipelineOn(
   let openPoints: PlanGap[] = [];
   let rawUnparsedHead: string | undefined;
 
-  // The carried CRITICAL decisions from the last corrective re-draft — what
-  // round 2's SCOPED VERIFICATION verifies (set in onCorrective below).
-  let lastCarried: CarriedCritical[] = [];
-
-  if (gapGateEnabled) {
-    // Phase 4 — the gap-gate loop (plan-gaps.ts: runGapGateLoop; no-op
-    // rounds eliminated; residual union disclosed across rounds).
-    const loopResult: GapGateLoopResult = await timed("gap-gate", () =>
-      runGapGateLoop(
-        // Same bounds as every plan child: cwd pinned, 30-min timeout,
-        // --no-skills (marker-line reviewer, no reporter).
-        (spec, opts) =>
-          dispatch(
-            pi,
-            { ...spec, cwd: repoRoot },
-            { ...opts, timeoutMs: PLAN_DISPATCH_TIMEOUT_MS, extraArgs: PLAN_MARKER_CHILD_ARGS },
-          ),
-        // Round 1: full GAP DETECTION review. Round 2 (fires only after a
-        // CRITICAL corrective re-draft): SCOPED VERIFICATION of the carried
-        // resolutions — not a second full review (plan-gate-prompt.ts).
-        (iteration) =>
-          iteration <= 1 || lastCarried.length === 0
-            ? gapGatePrompt(body, findings, priorContext, directives.neverClaim) +
-              settledGapsSection(settled)
-            : gapGateVerifyPrompt(body, lastCarried),
-        GAP_GATE_MAX_ITERATIONS,
-        (blocking: PlanGap[]) => {
-          // PR #640: resolve destinations and re-draft in ONE site. The wide
-          // catch's disclosure (plan-driver-halt.ts) names what was computed
-          // before the throw — a crash must not silently lose the decisions.
-          let computed: ResolvedDecision[] = [];
-          let writtenOutcomes: { applied: boolean; heading: string }[] = [];
-          try {
-            const { decisions, writebackMap } = buildResolvedDecisions(blocking, type);
-            computed = decisions;
-            // Same budget as the fitted round-1 draft: deterministic across
-            // rounds, and the round-2 body stays under the forge limit.
-            const redraft = draftSpec(
-              type,
-              descriptor,
-              findings,
-              inventoryContext,
-              openQuestions,
-              outOfScope,
-              depth,
-              directives,
-              decisions,
-              writebackMap,
-              chosenBudget,
-            );
-            if (redraft.operatorOmitted.length) throw new Error("redraft truncated operator items");
-            // Marked decisions (writtenBack from the splice, never predicted).
-            writtenOutcomes = redraft.resolvedDecisions.map((d) => ({
-              applied: d.writtenBack ?? false,
-              heading: d.writebackHeading ?? "(no destination — status open)",
-            }));
-            lastCarried = redraft.resolvedDecisions.map((d) => ({
-              description: d.description,
-              resolution: d.resolution,
-              writtenBack: d.writtenBack ?? false,
-              heading: d.writebackHeading ?? "Open Questions",
-            }));
-            ({ title, body } = redraft);
-          } catch (e) {
-            throw correctiveRedraftError(computed, writtenOutcomes, e);
-          }
-        },
-      ),
-    );
+  let gateRan = false;
+  if (gapGateApplies(type)) {
+    gateRan = true;
+    const loopResult = await runGate({
+      dispatch,
+      pi,
+      repoRoot,
+      ...(signal ? { signal } : {}),
+      type,
+      descriptor,
+      getBody: () => body,
+      setTitleBody: (t, b) => {
+        title = t;
+        body = b;
+      },
+      findings,
+      priorContext,
+      inventoryContext,
+      directives,
+      settled,
+      openQuestions,
+      outOfScope,
+      depth,
+      chosenBudget,
+      timed,
+      correctiveRedraft,
+    });
     gaps = loopResult.gaps;
     capHit = loopResult.capHit;
     capReason = loopResult.capReason;
@@ -394,6 +358,8 @@ async function runPipelineOn(
     openPoints = loopResult.openPoints;
     rawUnparsedHead = loopResult.rawUnparsedHead;
   }
+  if (signal?.aborted)
+    return cancelledResult(signal, input, "gap-gate", priorContext, finishTimings());
 
   // #1383: plan-dropped-artifact.ts decides where the omitted items live.
   const dl = await finalizeDroppedDisclosure({ repoRoot, descriptor, type, openPoints });
@@ -411,7 +377,7 @@ async function runPipelineOn(
     input.provenance,
   );
 
-  const resolvedGaps = gapGateEnabled ? gaps : [];
+  const resolvedGaps = gateRan ? gaps : [];
   const held = heldForReview(input, confirmed.missReason, title, finalBody);
   const asDryRun = dryRun || !!held;
 
