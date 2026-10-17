@@ -44,6 +44,7 @@ import { draftPrEnabled } from "./work-driver-draft-pr.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
+import { integrateBackupNote } from "./work-driver-integrate-cycle.ts";
 import { type IntegrateResult, cachedIssueTitle, integrate } from "./work-driver-integrate.ts";
 import { renderAssumptions } from "./work-driver-intent.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
@@ -317,9 +318,11 @@ export async function mechanizedCommitPr(
       // marker text.
       // #1173 — the stale integrate tree's kept commits reach the plumb
       // report (and so the handoff), not only the trace.
-      const kept = worktreeRes.backupRef
-        ? ` The stale integrate tree's unpushed commits were kept on ${worktreeRes.backupRef}.`
-        : "";
+      // #1396 (six-lens) — and so does the sha the per-issue ref just
+      // replaced: it is named by nothing after this, so the handoff is the only
+      // place the operator can learn it existed. One wording for both report
+      // sites (#1396 round 3) — `integrateBackupNote`.
+      const kept = integrateBackupNote(worktreeRes.backupRef, worktreeRes.supersededSha);
       return {
         ok: false,
         reason: `${withPatchNote(res.reason, res.conflictPatch)}${kept}`,

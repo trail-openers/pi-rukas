@@ -16,10 +16,17 @@ import type {
   HandoffEmittedEvent,
   LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
+import type {
+  CycleInterruptedEvent,
+  InterruptReason,
+} from "./workflow-state-events-interrupted.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
-import type { LensResidualsPostFailedEvent } from "./workflow-state-events-residuals.ts";
+import type {
+  LensResidualsPostFailedEvent,
+  LensResidualsPostedEvent,
+} from "./workflow-state-events-residuals.ts";
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
 import type { DispatchSlowEvent } from "./workflow-state-events-slow.ts";
 import type {
@@ -37,6 +44,9 @@ export type {
   LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
 export type { DispatchSlowEvent };
+// #1446-size — interrupted / cycle-interrupted members re-exported from the
+// sibling fragment (the 500-line gate, AGENTS.md §12).
+export type { CycleInterruptedEvent, InterruptReason };
 /**
  * Linear step identifiers the driver walks. This union IS the definition
  * of the cycle — #393 deleted the prose flow that used to be its source.
@@ -443,6 +453,7 @@ export type WorkEvent =
   | FenceRecoveryStartedEvent
   | CycleInterruptedEvent
   | LensResidualsPostFailedEvent
+  | LensResidualsPostedEvent
   /**
    * S4a (#1162) — the cycle was interrupted (SIGTERM / SIGINT, via
    * `markInterrupted`). `reason` is the operator-facing why; renderers read
@@ -451,36 +462,6 @@ export type WorkEvent =
    * (absent at a step boundary): its own cap-hits are the abort's doing.
    */
   | { kind: "interrupted"; at: number; reason: InterruptReason; step?: WorkStep };
-/**
- * Why a cycle was interrupted: the runner's SIGTERM / SIGINT / SIGHUP (`signal`)
- * or its own `--timeout` (`timeout`). The one vocabulary for the event field,
- * the abort reason and the exit code (headless/exit-code.ts).
- */
-export type InterruptReason = "signal" | "timeout";
-
-/**
- * The session was shut down under a running cycle (Pi's `session_shutdown`).
- * NOT a failure and never followed by a cap-hit: status stays `running`, and
- * the next `/work <N>` re-enters `step`.
- */
-export type CycleInterruptedEvent = {
-  kind: "cycle-interrupted";
-  at: number;
-  /** The step that was running, or about to start. */
-  step: WorkStep;
-  /**
-   * Pi's shutdown reason. The known values are the `session_shutdown` reasons;
-   * `(string & {})` keeps the union open so a new Pi reason is not a type error.
-   */
-  reason: "quit" | "reload" | "new" | "resume" | "fork" | (string & {});
-  /** Where the work is, when the cycle had got that far. */
-  branch?: string;
-  headSha?: string;
-  /** False when the state on disk is one the re-entry check refuses. */
-  resumable: boolean;
-  /** The error text when the step threw during the shutdown (bounded). */
-  error?: string;
-};
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];
