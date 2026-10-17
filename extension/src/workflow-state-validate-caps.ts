@@ -82,6 +82,9 @@ export const CAP_HIT_FIXED_LITERALS = [
   "intent-park",
   "awaiting-human-merge",
   "lens-diff-unreadable",
+  // #1398 — the review was re-running after the PR had been marked ready and
+  // the driver could not put the PR back to a draft. Deliberate park.
+  "draft-rearm-failed",
   "existing-pr-detected",
   // #844 — the ops-fallback branch path's post-dispatch merge-base check
   // failed: the branch ops created does not sit on the driver-fetched base.
