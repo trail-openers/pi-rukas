@@ -11,16 +11,31 @@
  * So this file asserts the one thing those tests structurally cannot: that each
  * seam is reachable from production, and that every export either has a
  * production caller or sits on a written-down list naming the issue that will
- * wire it.
- *
- * The allowlist is the point. It turns "this is dead" from something nobody
- * notices into a number that has to shrink, and shipping a new export without
- * either wiring it or declaring it becomes a failure rather than a habit.
+ * wire it. The allowlist is the point: it turns "this is dead" from something
+ * nobody notices into a number that has to shrink, and shipping a new export
+ * without wiring or declaring it becomes a failure rather than a habit.
  *
  * Generalised from the vipune-only version after the pattern recurred a third
- * time: `retry-config-check.ts` was written, tested, wired — and the wiring was
- * then reverted by a stray `git checkout`, leaving a module that passed its own
- * suite while doing nothing. One seam is an incident; three is a class.
+ * time: `retry-config-check.ts` was written, tested and wired — and a stray
+ * `git checkout` reverted the wiring, leaving a module that passed its own suite
+ * while doing nothing. One seam is an incident; three is a class.
+ *
+ * The SEAMS table itself lives in `lib/seams-registry.ts` (AGENTS.md §12 size
+ * cap). This file keeps the scanning and the assertions — the parts that can
+ * fail open — so the gate's logic stays where its canaries are.
+ *
+ * **The registry is scanned as a test file.** `testFiles` below is what proves a
+ * `testOnly` export is genuinely exercised, and it used to read the seam's name
+ * straight out of this file's own inlined table. Once the table moved, five
+ * exports (memory-stats `defaultDbPath`, agents-md `runAgentsMd` / `runWrap`,
+ * dispatch-deck `buildJobRows`, review-ledger-lock `runLedgerCriticalSectionHook`,
+ * merge-refusals `ACCEPTED_MERGE_FORM`) went red — the declarations were no
+ * longer in the corpus. That is the correct reading, not a regression: the
+ * strings were the SEAMS entry, never a call. The registry directory joins the
+ * corpus because it is the faithful record of every declaration, so the verdict
+ * is the same either way — but a gate whose "exercised" signal comes from a
+ * declaration rather than a call is the same fail-open shape as the docstring
+ * this file already refuses to count.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -200,11 +215,10 @@ for (const seam of SEAMS) {
 
 // ------------------------- the production fetch default carries its deadline
 //
-// Every explore smoke test injects `ctx.issueBodyFetcherFn`, so the default the
-// driver actually ships with is exercised by none of them. That is the same
-// blind spot this file exists for: a refactor swapping the default for a
-// fetcher without `timeout:` would restore the unbounded `gh issue view` that
-// killed cycle #700, and the whole suite would still pass.
+// Every explore smoke test injects `ctx.issueBodyFetcherFn`, so the shipped
+// default is exercised by none of them — the same blind spot this file exists
+// for: swapping the default for a fetcher without `timeout:` would restore the
+// unbounded `gh issue view` that killed cycle #700 and the suite would pass.
 {
   const exploreRun = readFileSync(path.join(SRC, "work-driver-explore-run.ts"), "utf8");
   const explore = readFileSync(path.join(SRC, "work-driver-explore.ts"), "utf8");

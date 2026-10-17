@@ -302,6 +302,85 @@ export const SEAMS: Seam[] = [
     canary: { symbol: "readMergeTarget", importer: "merge-guard.ts" },
   },
   {
+    // #912/#1417 — the merge guard's refusal PROSE. `renderHold` +
+    // `holdReasonText` (every HELD command) and `GLAB_AUTO_MERGE_REFUSAL` are
+    // called by merge-guard.ts. The MERGE half lost its production caller when
+    // #1417 split hold text from merge refusals: declared test-only rather than
+    // deleted, because docs/troubleshooting.md quotes its wording as the
+    // documented refusal shape and the hold-text suite pins it survives.
+    file: "merge-refusals.ts",
+    pending: {},
+    testOnly: {
+      ACCEPTED_MERGE_FORM:
+        "#1417 — the one accepted shape, inlined into HOLD_FORM_TEXT and MERGE_FORM_REFUSAL; the hold-text suite pins the sentence",
+      MERGE_FORM_REFUSAL:
+        "#1417 — MERGE-half prose, no production caller since holds got their own text; docs quote it, test-merge-guard-hold-text-1417.ts pins it",
+      mergeFormRefusal:
+        "#1417 — composes MERGE_FORM_REFUSAL with a reason code; same status, exercised by the hold-text and allowlist suites",
+    },
+    canary: { symbol: "renderHold", importer: "merge-guard.ts" },
+  },
+  {
+    // #1417 — the guard's size bound (#955). The module-graph import check
+    // cannot protect it: merge-allowlist.ts imports `lexedWhy` from
+    // merge-refusals.ts on the same line block, so deleting the bound's CALL
+    // outright — the mutation four lenses confirmed by live experiment — left
+    // every importer assertion green. The canary is therefore pinned to the
+    // CALL SITE's own text, not the module graph.
+    file: "merge-size.ts",
+    pending: {},
+    testOnly: {
+      // The NUMBER the bound documents, pinned equal to 8000 so a silent
+      // widening cannot move it out from under the troubleshooting entry.
+      MERGE_COMMAND_SIZE_BOUND:
+        "asserted equal to the documented bound by test-merge-size-bound.ts",
+      // The MATCHER's predicate (fail-closed: length + forge word, nothing
+      // else). `readMergeCommand` consults only the classifier's, so the pair
+      // differ on one axis the classifier cannot see — pinned at test-merge-
+      // size-bound.ts's own seam. No production caller today because #1357
+      // deleted the walking matcher; it is the predicate a revived one imports.
+      exceedsAnalysisBound:
+        "the fail-closed predicate; pinned by test-merge-size-bound.ts against the classifier's",
+      // The CLASSIFIER's predicate — reached in production only through
+      // `analysisBound`, and asserted directly so a clause cannot move between
+      // it and the matcher's predicate unnoticed.
+      exceedsClassifierBound:
+        "the classifier predicate; reached via analysisBound and asserted directly by test-merge-size-bound.ts",
+    },
+    canary: { symbol: "analysisBound", importer: "merge-allowlist.ts" },
+  },
+  {
+    // #1417 — step 1 of the classifier (the trigger). Same reasoning: the
+    // module graph stays satisfied by merge-size.ts's import while
+    // `readMergeCommand` quietly stops asking the trigger anything.
+    file: "merge-trigger.ts",
+    pending: {},
+    canary: { symbol: "triggerCode", importer: "merge-allowlist.ts" },
+  },
+  {
+    // #1417 — the command-text views and their patterns. The classifier reaches
+    // this module through the trigger, so that is the call site the canary
+    // pins; the bound's own path runs through `triggerCode` instead.
+    file: "merge-lex-views.ts",
+    pending: {},
+    testOnly: {
+      // The `g`-flagged tokeniser `ansiC` replaces with — shared with a
+      // `.test()` caller it would carry `lastIndex` between calls, which is
+      // why it is exported at all rather than being a module constant.
+      ANSI_ESCAPE_PATTERN:
+        "the tokeniser behind ansiC (its only consumer); pinned exported by the lastIndex comment and exercised through ansiC's suite",
+    },
+    canary: { symbol: "hasComplexCommandWord", importer: "merge-trigger.ts" },
+  },
+  {
+    // #1417 — the bound's refusal wording. Called by exactly one function, so
+    // the canary names that function's module; if the wording stops being
+    // reachable the bound has no refusal left to emit.
+    file: "merge-too-large.ts",
+    pending: {},
+    canary: { symbol: "refuseTooLarge", importer: "merge-size.ts" },
+  },
+  {
     // #1019 — the pi binary version probe. The probe half (getPiResolutionInfo)
     // used to ship with no production caller, so its PATH-source / older-than-
     // verified warnings never fired. spawn.ts now kicks it fire-and-forget on

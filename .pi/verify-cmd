@@ -7,4 +7,4 @@
 # The full §1 gate is `bun run build` too, but build writes into dist/ and this
 # runs once per workstream worktree in parallel; the deeper suite lives in
 # .pi/verify-cmd-full, which the ci step runs once.
-cd extension && bun x tsc --noEmit && cd .. && bun run check && cd extension && bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts
+cd extension && bun x tsc --noEmit && bun x tsc --noEmit -p tsconfig.smoke-tests.json && cd .. && bun run check && cd extension && bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts
