@@ -15,7 +15,6 @@
 
 import { rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { execp } from "../src/exec.ts";
 import {
   APPROVED,
   BINDING_REFUSAL_PREFIXES,
@@ -61,7 +60,10 @@ try {
     const { dir, mergeBase, tip } = setupRepo();
     try {
       const binding = await honestBinding(dir, mergeBase, "HEAD");
-      assert(binding.reviewedBase === mergeBase, "exact merge-base: the capture records the base SHA");
+      assert(
+        binding.reviewedBase === mergeBase,
+        "exact merge-base: the capture records the base SHA",
+      );
       assert(binding.reviewedHead === tip, "exact merge-base: the capture records the head SHA");
       const { row, block } = await toolArm(dir, {
         base: mergeBase,
@@ -129,7 +131,9 @@ try {
         binding: binding as never,
       });
       assert(
-        row.passed === false && startsWithBindingPrefix(row.detail) && (row.detail ?? "").startsWith("range-not-branch"),
+        row.passed === false &&
+          startsWithBindingPrefix(row.detail) &&
+          (row.detail ?? "").startsWith("range-not-branch"),
         `base on a branch the feature never contained: NON-PASSING range-not-branch (got passed=${row.passed}, detail=${JSON.stringify(row.detail)})`,
       );
     } finally {
@@ -178,9 +182,12 @@ try {
       assert(row.passed === false, "base omitted: the row is NON-PASSING");
       assert(
         startsWithBindingPrefix(row.detail) && (row.detail ?? "").startsWith("range-not-branch"),
-        "base omitted: the detail starts \"range-not-branch\"",
+        'base omitted: the detail starts "range-not-branch"',
       );
-      assert(block === true && reason.includes("range-not-branch"), "base omitted: the guard refuses with the detail");
+      assert(
+        block === true && reason.includes("range-not-branch"),
+        "base omitted: the guard refuses with the detail",
+      );
     } finally {
       rmSync(path.dirname(dir), { recursive: true, force: true });
     }
@@ -200,7 +207,9 @@ try {
         binding: binding as never,
       });
       assert(
-        row.passed === false && startsWithBindingPrefix(row.detail) && (row.detail ?? "").startsWith("range-not-branch"),
+        row.passed === false &&
+          startsWithBindingPrefix(row.detail) &&
+          (row.detail ?? "").startsWith("range-not-branch"),
         "base on a non-mainline branch: NON-PASSING range-not-branch",
       );
     } finally {
@@ -223,7 +232,10 @@ try {
         startsWithBindingPrefix(row.detail) && (row.detail ?? "").startsWith("range-unverifiable"),
         `unresolvable base: the detail starts "range-unverifiable" (got ${JSON.stringify(row.detail)})`,
       );
-      assert(block === true && reason.includes("range-unverifiable"), "unresolvable base: the guard refuses with the detail");
+      assert(
+        block === true && reason.includes("range-unverifiable"),
+        "unresolvable base: the guard refuses with the detail",
+      );
     } finally {
       rmSync(path.dirname(dir), { recursive: true, force: true });
     }
@@ -242,10 +254,15 @@ try {
         binding: binding as never,
       });
       assert(
-        row.passed === false && startsWithBindingPrefix(row.detail) && (row.detail ?? "").startsWith("head-moved"),
+        row.passed === false &&
+          startsWithBindingPrefix(row.detail) &&
+          (row.detail ?? "").startsWith("head-moved"),
         `head moved after the approving round: NON-PASSING head-moved (got ${JSON.stringify(row.detail)})`,
       );
-      assert(block === true && reason.includes("head-moved"), "head moved: the guard refuses with the detail");
+      assert(
+        block === true && reason.includes("head-moved"),
+        "head moved: the guard refuses with the detail",
+      );
     } finally {
       rmSync(path.dirname(dir), { recursive: true, force: true });
     }
@@ -267,7 +284,12 @@ try {
     const { dir, mergeBase } = setupRepo();
     try {
       sh(dir, "checkout", "-q", "-b", "old-tip", mergeBase);
-      commitOnBranch(dir, "other.txt", "a different line of work\n", "a commit the feature branch does not contain");
+      commitOnBranch(
+        dir,
+        "other.txt",
+        "a different line of work\n",
+        "a commit the feature branch does not contain",
+      );
       const olderHead = sh(dir, "rev-parse", "HEAD");
       sh(dir, "checkout", "-q", "feature/x");
       const binding = await honestBinding(dir, mergeBase, olderHead);
@@ -277,10 +299,15 @@ try {
         binding: binding as never,
       });
       assert(
-        row.passed === false && startsWithBindingPrefix(row.detail) && (row.detail ?? "").startsWith("head-not-current"),
+        row.passed === false &&
+          startsWithBindingPrefix(row.detail) &&
+          (row.detail ?? "").startsWith("head-not-current"),
         `explicit older head: NON-PASSING head-not-current (got ${JSON.stringify(row.detail)})`,
       );
-      assert(reason.includes("head-not-current"), "explicit older head: the guard quotes the detail");
+      assert(
+        reason.includes("head-not-current"),
+        "explicit older head: the guard quotes the detail",
+      );
     } finally {
       rmSync(path.dirname(dir), { recursive: true, force: true });
     }
@@ -299,7 +326,9 @@ try {
         binding: binding as never,
       });
       assert(
-        row.passed === false && startsWithBindingPrefix(row.detail) && (row.detail ?? "").startsWith("tree-changed"),
+        row.passed === false &&
+          startsWithBindingPrefix(row.detail) &&
+          (row.detail ?? "").startsWith("tree-changed"),
         `tree edited after the review: NON-PASSING tree-changed (got ${JSON.stringify(row.detail)})`,
       );
       assert(reason.includes("tree-changed"), "tree edited: the guard quotes the detail");
@@ -318,7 +347,9 @@ try {
         binding: { bindingUnavailable: "the range/head capture threw (git exploded)" },
       });
       assert(
-        row.passed === false && startsWithBindingPrefix(row.detail) && (row.detail ?? "").startsWith("range-unverifiable"),
+        row.passed === false &&
+          startsWithBindingPrefix(row.detail) &&
+          (row.detail ?? "").startsWith("range-unverifiable"),
         "a check that cannot run: NON-PASSING range-unverifiable, and a row IS written",
       );
       assert(
@@ -339,7 +370,9 @@ try {
     try {
       const { row, ledgerPath } = await toolArm(dir, { base: mergeBase, head: "HEAD" });
       assert(
-        row.passed === false && startsWithBindingPrefix(row.detail) && (row.detail ?? "").startsWith("range-unverifiable"),
+        row.passed === false &&
+          startsWithBindingPrefix(row.detail) &&
+          (row.detail ?? "").startsWith("range-unverifiable"),
         "no capture at all: the tool row is NON-PASSING, never a silent pass",
       );
       const raw = readRawLedgerFile(ledgerPath);
@@ -403,18 +436,20 @@ try {
         // `head-not-current` would be the right refusal (the arm below proves
         // that discrimination still fires).
         const binding = await honestBinding(dir, mergeBase, named);
-        const { row, block, reason } = await toolArm(dir, { baseBranch: "trunk",
+        const { row, block, reason } = await toolArm(dir, {
+          baseBranch: "trunk",
           base: mergeBase,
           head: named,
           binding: binding as never,
         });
         assert(
-          row.passed === true &&
-            row.reviewedBase === mergeBase &&
-            row.reviewedHead === tip,
+          row.passed === true && row.reviewedBase === mergeBase && row.reviewedHead === tip,
           `trunk mainline, head named ${label}: PASSING row bound to the branch range (got passed=${row.passed}, detail=${JSON.stringify(row.detail)})`,
         );
-        assert(block === false, `trunk mainline, head named ${label}: the guard accepts the row (reason=${reason})`);
+        assert(
+          block === false,
+          `trunk mainline, head named ${label}: the guard accepts the row (reason=${reason})`,
+        );
       }
       // And the discrimination still works on a non-main mainline: a head that
       // is NOT the tip is still `head-not-current`, not `head-moved`.
@@ -439,58 +474,18 @@ try {
     }
   }
 
-  // ─────────── the writer's execFn reaches the binding's git reads (one seam)
-  // #1360 lens 6: capture and write share one injectable exec (the shape
-  // `commentExecFn` already sets for the comment check). Counting the git calls
-  // the injected executor sees proves the binding did NOT fall back to the real
-  // executor behind the caller's back.
-  {
-    const { dir, mergeBase } = setupRepo();
-    try {
-      let gitCalls = 0;
-      const real = execp as unknown as (cmd: string, o?: { argv?: string[] }) => Promise<{ stdout: string }>;
-      const { row } = await toolArm(dir, {
-        base: mergeBase,
-        head: "HEAD",
-        binding: (await honestBinding(dir, mergeBase, "HEAD")) as never,
-        execFn: async (cmd, o) => {
-          if (cmd === "git" || cmd.startsWith("git ")) gitCalls++;
-          return real(cmd, o);
-        },
-      });
-      assert(row.passed === true, `injected execFn: the bound row still passes (detail=${JSON.stringify(row.detail)})`);
-      assert(gitCalls > 0, `injected execFn: the write's git reads went through it (${gitCalls} calls)`);
-    } finally {
-      rmSync(path.dirname(dir), { recursive: true, force: true });
-    }
-  }
-
+  // ───── the exec-seam arm lives in test-adversarial-ledger-exec-seam.ts
+  // (the 500-line cap, not a removed assertion): that file counts the git calls
+  // the writer's injected executor sees, so the binding cannot fall back to the
+  // real one behind the caller's back.
   // ───────── the refusal RENDERER lives in test-adversarial-refusal-render.ts
   // (the 500-line cap, not a removed assertion): that file covers the detail
   // quoting, the no-detail row, the legacy non-string detail, the newline/tab
   // collapse, the clamp, and the no-row override mention.
-  // ───────────── a rejected verdict keeps its own detail, not a binding one
-  {
-    const { dir, mergeBase } = setupRepo();
-    try {
-      const { row } = await toolArm(dir, {
-        base: mergeBase,
-        head: "HEAD",
-        result: { ok: false, loopOutcome: "rejected" },
-        binding: {},
-      });
-      assert(
-        row.passed === false && row.detail === "rejected",
-        `a rejected tool review keeps its verdict detail (got ${JSON.stringify(row.detail)})`,
-      );
-      assert(
-        row.reviewedBase === undefined,
-        "a rejected row is not decorated with binding fields it was never checked against",
-      );
-    } finally {
-      rmSync(path.dirname(dir), { recursive: true, force: true });
-    }
-  }
+  // ───── the rejected-verdict arm lives in test-adversarial-refusal-render.ts
+  // (the 500-line cap, not a removed assertion): a tool review whose verdict is
+  // `rejected` keeps its own detail rather than a binding one, and is not
+  // decorated with `reviewedBase`/`reviewedHead` it was never checked against.
 } finally {
   // nothing global to restore — each arm owns its repo and its ledger
 }

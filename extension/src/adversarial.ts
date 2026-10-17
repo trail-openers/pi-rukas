@@ -96,7 +96,7 @@ export async function runAdversarialLoop(
   // dispatched a reviewer: the range SHAs plus the working-tree identity at
   // that moment. `ledgerWrite` threads it into the writer, which refuses the
   // row when the tool-path bindings do not hold.
-  const ledgerBinding: BindingState = { capturedHeadRef: params.head };
+  const ledgerBinding: BindingState = { captured: { binding: {}, headRef: params.head } };
   // #1360 — provenance is the branded marker the tool mints; an untyped caller
   // cannot produce the string, so this narrow IS the provenance check (see
   // `ToolPathProvenance`). The driver path carries none and runs no capture.

@@ -187,7 +187,19 @@ glab [-R GROUP/REPO | --repo GROUP/REPO]                     mr merge [N] [flags
 
 **To satisfy the guard:** run `adversarial_loop` (the `adversarial_loop` tool) and `dispatch_lens_review` (the `dispatch_lens_review` tool) on the branch, let them complete, then merge. The ledger entries are written automatically at completion.
 
-PR: [#912](https://github.com/trail-openers/pi-rukas/issues/912)
+**Binding refusals on an `adversarial_loop` row (#1360).** A tool-path adversarial row now records `passed: false` when the review it claims to attest did not actually cover the branch. The row's `detail` (quoted verbatim in the guard's refusal) starts with one of five prefixes. Each means the same thing underneath — the range the reviewer read is not the range the merge would ship — and the fix is the same for all five: re-run `adversarial_loop` with `base` = the branch's merge-base (`git merge-base origin/<mainline> HEAD`) and `head` = the branch tip, and make no edits while the round is running.
+
+| Prefix | What happened | What to change |
+|---|---|---|
+| `range-not-branch` | The `base` you passed is not the branch's merge-base — typically `base=HEAD~1` (only the last commit reviewed) or a base on a side branch. | Pass `base` = `git merge-base origin/<mainline> HEAD`. |
+| `range-unverifiable` | A check could not run: a ref that does not resolve, no merge-base, a git error, or the round's capture never completed. Fail-closed by design — a check that cannot run is never a pass. | Fix the ref (typo, deleted branch, unpushed tip) and re-run; a capture failure names its own cause in the same detail. |
+| `head-not-current` | The head under review was never the checkout's tip: you named an older commit explicitly, or the ref the round captured no longer resolves to the commit the row is written against (the branch moved elsewhere while the round ran). | Pass `head` = the branch tip (or omit it for `HEAD`) and re-run against the current tip. |
+| `head-moved` | The reviewer approved, then the branch was committed to before the row was written. | Re-run the round after the last commit — review, then merge, with no commits in between. |
+| `tree-changed` | The reviewer approved, then the working tree was edited (an uncommitted fix) before the row was written. | Commit or revert the edits, then re-run — or run the loop last, after the fixes land. |
+
+The cleanest shape, and the one the `/work` driver uses: run the reviews **after** the code is final, with `base` at the merge-base and `head` at the tip, and touch nothing until the row is on file. The lens half of the gate has no equivalent binding yet (known residual — see `adversarial-ledger-binding.ts`), so a lens row still passes on the whole-branch identity regardless of the range it was given.
+
+PR: [#912](https://github.com/trail-openers/pi-rukas/issues/912) · PR: [#1360](https://github.com/trail-openers/pi-rukas/issues/1360)
 
 ### A merge was refused: latest lens passed=false / REVIEW_INCOMPLETE although the review reported APPROVED
 

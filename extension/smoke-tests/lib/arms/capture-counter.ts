@@ -11,8 +11,8 @@
  * alias itself: it calls `captureBinding` in a DIFFERENT module.
  */
 
+import { type LedgerBinding, captureBinding } from "../../../src/adversarial-ledger-binding.ts";
 import type { BindingState } from "../../../src/adversarial-ledger-capture.ts";
-import { captureBinding } from "../../../src/adversarial-ledger-binding.ts";
 import type { VerifyExecFn } from "../../../src/work-driver-git.ts";
 
 export interface CountedCapture {
@@ -37,24 +37,27 @@ export function countedCapture(): CountedCapture {
   let n = 0;
   let poisoned: Record<string, string | undefined> | undefined;
   return {
-    // The body is `captureRound`'s, verbatim: assign the capture, record the
-    // ref it was taken for, and never let a capture failure reach the review.
-    // Only the counter and the poison seam are added.
+    // The body is `captureRound`'s, verbatim: store the capture and the ref it
+    // was taken for as ONE value (`state.captured`), and never let a capture
+    // failure reach the review. Only the counter and the poison seam are added.
     captureRound: async (state, cwd, baseRef, headRef, execFn) => {
       n++;
       if (poisoned) {
-        state.binding = poisoned as BindingState["binding"];
-        state.capturedHeadRef = headRef;
+        state.captured = { binding: poisoned as LedgerBinding, headRef };
         return;
       }
       try {
-        state.binding = await captureBinding(cwd, baseRef, headRef, execFn);
-        state.capturedHeadRef = headRef;
-      } catch (err) {
-        state.binding = {
-          bindingUnavailable: `the round capture failed (${(err instanceof Error ? err.message : String(err)).slice(0, 120)})`,
+        state.captured = {
+          binding: await captureBinding(cwd, baseRef, headRef, execFn),
+          headRef,
         };
-        state.capturedHeadRef = headRef;
+      } catch (err) {
+        state.captured = {
+          binding: {
+            bindingUnavailable: `the round capture failed (${(err instanceof Error ? err.message : String(err)).slice(0, 120)})`,
+          },
+          headRef,
+        };
       }
     },
     calls: () => n,
