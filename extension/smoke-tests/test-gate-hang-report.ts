@@ -26,9 +26,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { boundJoinFailures } from "../src/work-develop-cap-evidence.ts";
+import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
 import {
   GATE_HANG_LABEL,
   type HangProcess,
+  MAX_ARGS_CHARS,
+  MAX_SNAPSHOT_CHARS,
   extractRunningTests,
   gateHangClause,
   isGateHangFailure,
@@ -37,7 +41,11 @@ import {
   reportGateHang,
   walkProcessTree,
 } from "../src/work-driver-gate-hang.ts";
-import { timeoutWhere, verifyTimeoutFailure } from "../src/work-driver-verify-develop-helpers.ts";
+import {
+  timeoutWhere,
+  verifyHangFailure,
+  verifyTimeoutFailure,
+} from "../src/work-driver-verify-develop-helpers.ts";
 import { writeGateHangLog } from "../src/work-driver-verify-flake.ts";
 
 let failures = 0;
@@ -137,7 +145,7 @@ function main() {
     );
     expect(report.includes("git remote-https"), "report: names the orphaned grandchild");
     expect(report.includes("01:15:02"), "report: shows how long it has been sitting there");
-    expect(report.includes("30m"), `report: states the bound it hit`);
+    expect(report.includes("30m"), "report: states the bound it hit");
     expect(report.includes("cargo test"), "report: names the gate's own command");
     expect(report.includes("/work/lantern"), "report: names where it ran");
   }
@@ -194,17 +202,13 @@ function main() {
 
   // ── The failure string still leads with the bound ────────────────────
   {
-    const msg = verifyTimeoutFailure(
-      "cargo test",
-      timeoutWhere("in /work/lantern/.worktrees/issue-1", {
-        output: CARGO_STREAM,
-        cmd: "cargo test",
-        cwd: "/work/lantern",
-        timeoutMs: 1_800_000,
-        tree: tree(STUCK),
-      }),
-      1_800_000,
-    );
+    const msg = verifyHangFailure("cargo test", "in /work/lantern/.worktrees/issue-1", 1_800_000, {
+      output: CARGO_STREAM,
+      cmd: "cargo test",
+      cwd: "/work/lantern",
+      timeoutMs: 1_800_000,
+      tree: tree(STUCK),
+    });
     expect(msg.includes("exceeded its 30-min timeout"), "failure: the bound still leads");
     expect(
       msg.includes("repo::sync::tests::pull_then_fetch") && msg.includes("git remote-https"),
@@ -213,6 +217,86 @@ function main() {
     expect(
       !timeoutWhere("in /x").includes("gate-hang"),
       "failure: a run with nothing to say adds nothing to the sentence",
+    );
+    expect(
+      verifyHangFailure("cargo test", "in /x", 1000) ===
+        verifyTimeoutFailure("cargo test", "in /x", 1000),
+      "failure: no run to describe is exactly the #1324 sentence",
+    );
+  }
+
+  // ── Fix 1 (round 3): names are bounded, and the marker survives ───────
+  //
+  // The case the lantern measurement never produced and a fan-out does: ten
+  // generated-proptest-sized names in one killed run. Two separate defects hid
+  // here. (a) Each name went into the clause verbatim, so the clause grew past
+  // the evidence window; (b) the clause was spliced into the MIDDLE of the
+  // timeout sentence, and `boundFailure` bounds a failure by keeping its TAIL —
+  // so a wide clause pushed `[verify-timeout]` past the 800-char cut and the
+  // cap router read a killed run as an ordinary code failure. Both are asserted
+  // here, and the second is asserted through the real bounder.
+  {
+    const longName = (i: number) =>
+      `generated::proptest::case_${i}::${"very_long_segment_".repeat(20)}${i}`;
+    const tenLongStream = [
+      "running 400 tests",
+      ...Array.from(
+        { length: 10 },
+        (_, i) => `test ${longName(i)} has been running for over 60 seconds`,
+      ),
+    ].join("\n");
+
+    const names = extractRunningTests(tenLongStream);
+    expect(names.length === 10, `bound: all ten names are kept (${names.length})`);
+    expect(
+      names.every((n) => n.length <= 120),
+      `bound: every name is clipped to 120 chars (longest ${Math.max(...names.map((n) => n.length))})`,
+    );
+    expect(
+      names.every((n) => n.endsWith("\u2026")),
+      "bound: a clipped name says it was clipped",
+    );
+    expect(
+      extractRunningTests(`test ${longName(0)} has been running for over 60 seconds`)[0] ===
+        names[0],
+      "bound: the report and the clause clip the name identically",
+    );
+
+    const msg = verifyHangFailure("cargo test", "in /wt/a", 1_800_000, {
+      output: tenLongStream,
+      cmd: "cargo test",
+      cwd: "/wt/a",
+      timeoutMs: 1_800_000,
+    });
+    expect(
+      msg.length < 800,
+      `bound: one killed run's failure string fits the evidence window (${msg.length})`,
+    );
+
+    // The whole-cycle shape: three worktrees, three such failures, joined the
+    // way the cap renders them. `extractAttributedTail` keeps the TAIL of each
+    // failure, so this is where a mid-sentence clause used to lose the marker.
+    const fanout = ["a", "b", "c"].map((w) =>
+      verifyHangFailure("cargo test", `in /wt/${w}`, 1_800_000, {
+        output: tenLongStream,
+        cmd: "cargo test",
+        cwd: `/wt/${w}`,
+        timeoutMs: 1_800_000,
+      }),
+    );
+    const bounded = boundJoinFailures(fanout);
+    const perFailure = fanout.map((f) => extractAttributedTail(f, 800).tail);
+    expect(
+      perFailure.every((t) => t.includes("[verify-timeout]")),
+      "fan-out: [verify-timeout] survives the per-failure tail bound in every failure",
+    );
+    expect(
+      bounded.includes("[verify-timeout]"),
+      "fan-out: [verify-timeout] survives the joined-evidence bound too",
+    );
+    expect(
+      perFailure.every((t) => t.includes(GATE_HANG_LABEL)),
+      "fan-out: and the hang clause itself is still there to read",
     );
   }
 
@@ -250,6 +334,90 @@ function main() {
     );
   }
 
+  // ── Fix 5 (round 3): the walk has a WALL-CLOCK budget, not just a row cap ─
+  //
+  // `MAX_PROCESSES` bounds how many rows the walk returns; it says nothing
+  // about how long it takes. Each level is a separate synchronous `ps`, and a
+  // host whose `ps` is slow (a loaded machine, a fork-exhausted container — the
+  // same conditions that made the gate hang in the first place) turns the
+  // failure path into the slowest thing in the cycle: up to 60 levels at up to
+  // 3 s each is three minutes spent describing a run that already ran out of
+  // time. The walk is a diagnosis; it must not become the second problem, so it
+  // now stops at an aggregate budget and says that is what happened.
+  {
+    // A walker that returns one row per level forever, each level costing a
+    // slice of the budget. With no time bound the walk would run the full
+    // `MAX_PROCESSES` (60) levels.
+    const slow = (ms: number) => (pid: number) => {
+      const until = Date.now() + ms;
+      while (Date.now() < until) {
+        /* spin: stand-in for a `ps` that takes ms to answer */
+      }
+      return { rows: [{ pid: pid + 1, ppid: pid, etime: "1", args: `child ${pid}` }] };
+    };
+    // A linear chain walks one level per `ps`, so with a fast `ps` the binding
+    // limit is the row cap. 60 is that cap (`MAX_PROCESSES`) — the assertion is
+    // that the time budget does NOT pre-empt it when `ps` answers instantly.
+    const cheap = walkProcessTree(1, slow(0));
+    expect(
+      cheap.processes.length === 60,
+      `budget: with a fast ps the row cap is still the binding limit (${cheap.processes.length})`,
+    );
+    const budgeted = walkProcessTree(1, slow(120), { budgetMs: 400 });
+    expect(
+      budgeted.processes.length > 0 && budgeted.processes.length < 25,
+      `budget: a slow ps stops at the wall clock, not at the row cap (${budgeted.processes.length} rows)`,
+    );
+    expect(
+      budgeted.treeUnavailable === "walk budget exhausted",
+      `budget: and the report says the budget ran out (${budgeted.treeUnavailable})`,
+    );
+    // Rows already collected are evidence — the budget truncates the walk, it
+    // does not discard the levels it got (the same rule as a per-level failure).
+    expect(
+      budgeted.processes.length >= 2,
+      `budget: the levels walked before the budget are kept (${budgeted.processes.length})`,
+    );
+  }
+
+  // ── Fix 5 (round 3): MAX_SNAPSHOT_CHARS is enforced, not just documented ──
+  //
+  // The docstring claimed a character bound on the snapshot while the constant
+  // was read by nothing — a cap that cannot fail is worse than no cap, because
+  // it reads like one. Two shapes: a tree too wide to fit the bound is
+  // TRUNCATED and says so; and a tree whose very first row is too big for the
+  // bound yields nothing rather than an empty section that reads like "no
+  // descendants".
+  {
+    const fits = MAX_SNAPSHOT_CHARS / MAX_ARGS_CHARS;
+    const wideArgs = "x".repeat(MAX_ARGS_CHARS);
+    const bigTree = walkProcessTree(1, (pid) =>
+      pid === 1
+        ? {
+            rows: Array.from({ length: 60 }, (_, i) => ({
+              pid: 2 + i,
+              ppid: 1,
+              etime: "10:00",
+              args: `${wideArgs}${i}`.slice(0, MAX_ARGS_CHARS),
+            })),
+          }
+        : { rows: [] },
+    );
+    const chars = bigTree.processes.reduce((n, p) => n + p.args.length, 0);
+    expect(
+      chars <= MAX_SNAPSHOT_CHARS,
+      `snapshot: command text never exceeds the documented cap (${chars} <= ${MAX_SNAPSHOT_CHARS})`,
+    );
+    expect(
+      bigTree.processes.length < 60 && bigTree.processes.length >= 1,
+      `snapshot: a tree wider than the cap is truncated to what fits (${bigTree.processes.length} of 60 rows, ${fits} rows' worth of text)`,
+    );
+    expect(
+      bigTree.treeUnavailable?.includes("bounded"),
+      `snapshot: a truncated tree says so rather than reading as a complete walk (${bigTree.treeUnavailable})`,
+    );
+  }
+
   // ── The written report lands where the cap event will point ───────────
   {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gate-hang-"));
@@ -257,10 +425,7 @@ function main() {
       walk: () => tree(STUCK),
     });
     expect(p !== undefined && fs.existsSync(p), "log: the report is persisted");
-    expect(
-      p !== undefined && p.includes("gate-hang-"),
-      `log: named as a hang report (${p?.split("/").pop()})`,
-    );
+    expect(p?.includes("gate-hang-"), `log: named as a hang report (${p?.split("/").pop()})`);
     const body = p === undefined ? "" : fs.readFileSync(p, "utf8");
     expect(
       body.includes("repo::sync::tests::pull_then_fetch") && body.includes("git remote-https"),

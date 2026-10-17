@@ -234,8 +234,19 @@ async function caseDevelopCap() {
       "handoff: the hang pointer precedes the generic advice",
     );
   }
-  const recorded = ctx.gateHangLogPaths ?? [];
-  assert(recorded.length > 0, `develop: the context recorded the report (${recorded.length})`);
+  // #1427 round 3 — this used to assert on `ctx.gateHangLogPaths`, which no
+  // longer exists. The context field was the defect: it accumulated for the
+  // whole cycle, so a cap from a later gate call named an earlier call's
+  // reports. The structural carrier is now the cap event asserted above
+  // (`capHit.logPaths`), which reads the per-call sink off the gate result —
+  // so re-asserting it here via a context field would be re-asserting nothing.
+  // What IS worth pinning is that the leak is closed: nothing on the context
+  // accumulates, so a second cycle on this context cannot see this one's files.
+  const leaked = (ctx as unknown as { gateHangLogPaths?: string[] }).gateHangLogPaths ?? [];
+  assert(
+    leaked.length === 0,
+    `develop: the cycle context accumulates no report paths (${leaked.length}) — the cap is the only carrier`,
+  );
 }
 
 // ── 3. An ordinary failure writes no report ────────────────────────────────

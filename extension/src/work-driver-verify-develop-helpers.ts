@@ -68,6 +68,60 @@ export function verifyTimeoutFailure(
 }
 
 /**
+ * #1427 round 3 — a timeout failure string that ALSO says what hung.
+ *
+ * The clause goes at the END, after the #1324 sentence, and that position is
+ * load-bearing rather than stylistic. `boundFailure`
+ * (`work-develop-cap-evidence.ts`) bounds each failure to 800 chars by keeping
+ * its TAIL (`extractAttributedTail` → `trimmed.slice(-maxLen)` when there is no
+ * `FAILED:` marker, and a timeout string has none). A hang clause spliced into
+ * the middle of the sentence therefore pushed the `[verify-timeout]` headline
+ * past the 800-char cut in exactly the case the clause exists for — a fan-out
+ * whose ten long test names make the clause wide — and the capped failure then
+ * read as an ordinary verify failure: `verifyCapFor` keys the
+ * `verify-timeout:<step>` cap on that marker, so a killed run was routed to
+ * `verify-failed:develop` and the handoff told the operator to look at the diff
+ * for a run that reached no verdict at all. Appended last, the marker is always
+ * inside the kept tail and the names are what gets clipped — which is the
+ * correct trade: the cap is what makes the cycle legible, the names are a bonus.
+ */
+export function verifyHangFailure(
+  cmd: string,
+  where: string,
+  timeoutMs: number,
+  run?: KilledGateRun,
+  knob = "PI_ENSEMBLE_VERIFY_TIMEOUT_MS",
+): string {
+  const base = verifyTimeoutFailure(cmd, where, timeoutMs, knob);
+  if (run === undefined) return base;
+  return `${base} — ${hangClauseFor(run)}`;
+}
+
+/** The clause half of {@link verifyHangFailure}, composed in one place so the
+ *  failure string and the written report cannot describe the kill differently. */
+function hangClauseFor(run: KilledGateRun): string {
+  const tree =
+    run.tree ??
+    (run.treePid === undefined
+      ? { processes: [] as HangProcess[] }
+      : (run.walk ?? captureProcessTree)(run.treePid));
+  return gateHangClause({
+    runningTests: extractRunningTests(run.output),
+    cmd: run.cmd,
+    cwd: run.cwd,
+    timeoutMs: run.timeoutMs,
+    processes: tree.processes,
+    // The processes deeper in the group are the point of the clause in a
+    // failure string: the test name says what hung, the command lines say what
+    // was holding on (in the measured case, a `git remote-http` orphaned by the
+    // test's own already-killed `git pull`). Bounded: two rows, each already
+    // bounded, and the name list itself is bounded by `gateHangClause`, so the
+    // clause cannot outgrow the window that has to carry the headline.
+    ...(tree.processes.length > 0 ? { detail: deepestCommands(tree.processes) } : {}),
+  });
+}
+
+/**
  * #1427 — the single hang-report gate for every gate seam: a run gets a report
  * ONLY when the wall clock killed it. `killed` alone is not enough — a run that
  * overflowed `maxBuffer` is killed too, and reporting one as a hang tells the
@@ -119,27 +173,21 @@ export interface KilledGateRun {
  * tree and the output tail are too wide for it and go to the scratch log the
  * handoff points the operator at.
  */
+/**
+ * #1427 — the plain `where` of a timeout whose run was observed hanging, with
+ * the run's facts handed to {@link verifyHangFailure}, which appends the clause.
+ *
+ * Kept as its own function because two callers (the per-worktree seam and the
+ * commit-pr probe) compose the `where` phrase before they know whether a clause
+ * exists: this returns the plain phrase, and `verifyHangFailure` puts the clause
+ * after the whole #1324 sentence. A caller that has a run to describe must go
+ * through `verifyHangFailure`, NOT through this function plus a manual append —
+ * that is how the clause ended up inside the bounded region and took the
+ * `[verify-timeout]` marker with it when the tail was cut (#1427 round 3).
+ */
 export function timeoutWhere(where: string, run?: KilledGateRun): string {
   if (run === undefined) return where;
-  const tree =
-    run.tree ??
-    (run.treePid === undefined
-      ? { processes: [] as HangProcess[] }
-      : (run.walk ?? captureProcessTree)(run.treePid));
-  const clause = gateHangClause({
-    runningTests: extractRunningTests(run.output),
-    cmd: run.cmd,
-    cwd: run.cwd,
-    timeoutMs: run.timeoutMs,
-    processes: tree.processes,
-    // The processes deeper in the group are the point of the clause in a
-    // failure string: the test name says what hung, the command lines say what
-    // was holding on (in the measured case, a `git remote-http` orphaned by the
-    // test's own already-killed `git pull`). Bounded: two rows, each already
-    // bounded, so the clause still fits the evidence window.
-    ...(tree.processes.length > 0 ? { detail: deepestCommands(tree.processes) } : {}),
-  });
-  return `${where} — ${clause}`;
+  return `${where} (${run.cwd})`;
 }
 
 export function isVerifyTimeoutFailure(failure: string): boolean {
