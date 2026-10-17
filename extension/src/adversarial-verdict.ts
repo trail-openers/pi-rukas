@@ -121,6 +121,61 @@ export function decideLoopAction(
   return status === "CRITICAL_ISSUES_FOUND" ? "reject" : "pass";
 }
 
+/**
+ * The text of a PASSED round. `PASSED WITH FINDINGS` rather than `APPROVED`
+ * when something is still outstanding — the operator (and the lens gate) must
+ * tell the two apart; `commit-pr` carries the findings into the PR body.
+ *
+ * Extracted from the loop for the file-size gate (#1360); the wording is the
+ * loop's contract with the operator, so it lives with the other verdict prose.
+ */
+export function passedRoundText(i: {
+  clean: boolean;
+  round: number;
+  status: AdversarialVerdictStatus;
+  findings: string;
+  commentsLine: string;
+  notes: string[];
+}): string {
+  const notePrefix = i.notes.length ? `${i.notes.join("\n")}\n\n` : "";
+  return (
+    notePrefix +
+    (i.clean
+      ? `Adversarial APPROVED after round ${i.round}.\n\n${i.findings}\n\n${i.commentsLine}`
+      : `Adversarial PASSED WITH FINDINGS after round ${i.round} (verdict: ${i.status} — non-blocking per agents-base/adversarial-developer.md). These findings are unresolved and travel to the PR body and the lens review; they did not block the commit.\n\n${i.findings}\n\n${i.commentsLine}`)
+  );
+}
+
+/**
+ * The text of the terminal REJECTION: the cap is spent and the last verdict was
+ * blocking. The four options are the loop's contract with the user — they are
+ * presented verbatim and the loop does not pick one. Extracted from the loop for
+ * the file-size gate (#1360).
+ */
+export function rejectedLoopText(i: {
+  maxRounds: number;
+  lastStatus: AdversarialVerdictStatus | undefined;
+  findings: string;
+  commentsLine: string;
+  notes: string[];
+}): string {
+  return [
+    ...i.notes,
+    `❌ Adversarial REJECTED after ${i.maxRounds} rounds. Last verdict: ${i.lastStatus}`,
+    "",
+    i.findings,
+    "",
+    "Surface the following options to the user verbatim and wait for their choice — do not pick on their behalf:",
+    "",
+    "  (a) Authorise another adversarial_loop pass (3 more rounds against the current diff).",
+    "  (b) Accept the current state and proceed to @ops commit. Record the override in vipune.",
+    "  (c) Abandon and rework the approach — return to issue scoping or developer redesign.",
+    "  (d) Take over manually — user steps in to address findings directly.",
+    "",
+    i.commentsLine,
+  ].join("\n");
+}
+
 interface SynthesizeInput {
   ok: boolean;
   text: string;
