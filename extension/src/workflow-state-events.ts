@@ -11,13 +11,13 @@ import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
 import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
-import type { ExitOrigin } from "./workflow-state-events-exit-origin.ts";
 import type { FenceRecoveryStartedEvent } from "./workflow-state-events-fence.ts";
 import type {
   HandoffConsolidatedEvent,
   HandoffEmittedEvent,
   LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
+import type { CycleInterruptedEvent, InterruptReason } from "./workflow-state-events-interrupt.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
@@ -42,6 +42,8 @@ export type {
   LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
 export type { DispatchSlowEvent };
+// The interruption vocabulary re-exported from the sibling fragment.
+export type { CycleInterruptedEvent, InterruptReason } from "./workflow-state-events-interrupt.ts";
 /**
  * Linear step identifiers the driver walks. This union IS the definition
  * of the cycle — #393 deleted the prose flow that used to be its source.
@@ -416,7 +418,12 @@ export type WorkEvent =
       downgrade?: true;
       /** #1016 — a green kept from an interrupted attempt, re-recorded at the start of the resumed window so a second crash still sees it. Not a new attempt. */
       resumed?: true;
-      /** #1016 — the driver REFUSED this workstream; never retried as transient. */
+      /**
+       * #1016 — the driver REFUSED this workstream (no worktree, an unsafe
+       * reuse, a containment violation). A refusal is a driver decision, not a
+       * provider blip: the step router never treats a fan-out containing one as
+       * transient, so it is never retried with backoff.
+       */
       refused?: true;
       crash?: DevelopCrashFragment;
     }
@@ -453,47 +460,5 @@ export type WorkEvent =
    * (absent at a step boundary): its own cap-hits are the abort's doing.
    */
   | { kind: "interrupted"; at: number; reason: InterruptReason; step?: WorkStep };
-/**
- * Why a cycle was interrupted: the runner's SIGTERM / SIGINT / SIGHUP (`signal`)
- * or its own `--timeout` (`timeout`). The one vocabulary for the event field,
- * the abort reason and the exit code (headless/exit-code.ts).
- */
-export type InterruptReason = "signal" | "timeout";
-
-/**
- * The session was shut down under a running cycle (Pi's `session_shutdown`).
- * NOT a failure and never followed by a cap-hit: status stays `running`, and
- * the next `/work <N>` re-enters `step`.
- */
-export type CycleInterruptedEvent = {
-  kind: "cycle-interrupted";
-  at: number;
-  /** The step that was running, or about to start. */
-  step: WorkStep;
-  /**
-   * Pi's shutdown reason. The known values are the `session_shutdown` reasons;
-   * `(string & {})` keeps the union open so a new Pi reason is not a type error.
-   */
-  reason: "quit" | "reload" | "new" | "resume" | "fork" | (string & {});
-  /**
-   * #1247 — where the shutdown actually came from: a signal (`signal:SIGTERM`),
-   * a closed stdin (`stdin-eof`), or `unknown` when nothing observable did. Pi's
-   * `reason` field cannot distinguish these, so this is tracked at the process
-   * level (exit-cause.ts) and recorded here. The vocabulary is a closed union
-   * owned by the schema layer (workflow-state-events-exit-origin.ts), and
-   * `validateDiscriminants` refuses an origin outside it. Additive and OPTIONAL:
-   * state files written before #1247 have no `origin`, and readers must not
-   * assume one.
-   */
-  origin?: ExitOrigin;
-  /** Where the work is, when the cycle had got that far. */
-  branch?: string;
-  headSha?: string;
-  /** False when the state on disk is one the re-entry check refuses. */
-  resumable: boolean;
-  /** The error text when the step threw during the shutdown (bounded). */
-  error?: string;
-};
-
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];
