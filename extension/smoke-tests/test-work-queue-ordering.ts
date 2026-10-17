@@ -48,7 +48,10 @@ function g(id: string, issue: number, paths: string[] = []): IssueGroup {
   return { id, scope: `issue #${issue}`, paths, outOfScope: [], issues: [issue] };
 }
 
-function mkState(issue: number, status: WorkState["pipelineState"]["status"] = "merged"): WorkState {
+function mkState(
+  issue: number,
+  status: WorkState["pipelineState"]["status"] = "merged",
+): WorkState {
   return {
     schemaVersion: 1,
     issue,
@@ -126,14 +129,20 @@ function mkState(issue: number, status: WorkState["pipelineState"]["status"] = "
     },
     readStateFn: async (_r, issue) =>
       issue === 100
-        ? {
+        ? ({
             schemaVersion: 1,
             issue: 100,
             // biome-ignore lint/suspicious/noExplicitAny: only the read fields matter
-            pipelineState: { status: "handoff", currentStep: "plan", lastCompletedStep: "explore" } as any,
+            pipelineState: {
+              status: "handoff",
+              currentStep: "plan",
+              lastCompletedStep: "explore",
+            } as any,
             // biome-ignore lint/suspicious/noExplicitAny: partial fixture
-            eventLog: [{ kind: "cap-hit", at: 1, cap: "round-cap", reviewRound: 1, nextStep: "handoff" }] as any,
-          } as unknown as WorkState
+            eventLog: [
+              { kind: "cap-hit", at: 1, cap: "round-cap", reviewRound: 1, nextStep: "handoff" },
+            ] as any,
+          } as unknown as WorkState)
         : mkState(issue, "merged"),
   });
   assert(!started.includes(101), "the dependent NEVER dispatched — its dependency did not merge");
@@ -173,9 +182,7 @@ function mkState(issue: number, status: WorkState["pipelineState"]["status"] = "
   });
   assert(!started.includes(101), "a dependency that never started does not release its dependent");
   assert(
-    /dependency-parked/.test(
-      summary.entries.find((e) => e.groupId === "group-b")?.reason ?? "",
-    ),
+    /dependency-parked/.test(summary.entries.find((e) => e.groupId === "group-b")?.reason ?? ""),
     "the dependent parks rather than waiting on a cycle that will never merge",
   );
 }
@@ -231,7 +238,11 @@ function mkState(issue: number, status: WorkState["pipelineState"]["status"] = "
             schemaVersion: 1,
             issue: 100,
             // biome-ignore lint/suspicious/noExplicitAny: only the read fields matter
-            pipelineState: { status: "handoff", currentStep: "plan", lastCompletedStep: "plan" } as any,
+            pipelineState: {
+              status: "handoff",
+              currentStep: "plan",
+              lastCompletedStep: "plan",
+            } as any,
             eventLog: [] as any,
           } as unknown as WorkState)
         : mkState(issue, "merged"),
@@ -251,7 +262,11 @@ function mkState(issue: number, status: WorkState["pipelineState"]["status"] = "
   // the ordering gate must be a no-op for groups with no edge.
   let live = 0;
   let peak = 0;
-  const groups = [g("group-a", 100, ["src/a.ts"]), g("group-b", 101, ["src/b.ts"]), g("group-c", 102, ["src/c.ts"])];
+  const groups = [
+    g("group-a", 100, ["src/a.ts"]),
+    g("group-b", 101, ["src/b.ts"]),
+    g("group-c", 102, ["src/c.ts"]),
+  ];
   const summary = await runWorkQueue({
     repoRoot: "/repo",
     groups,
@@ -353,14 +368,21 @@ function mkState(issue: number, status: WorkState["pipelineState"]["status"] = "
             schemaVersion: 1,
             issue: 100,
             // biome-ignore lint/suspicious/noExplicitAny: only the read fields matter
-            pipelineState: { status: "handoff", currentStep: "lens-review", lastCompletedStep: "ci" } as any,
+            pipelineState: {
+              status: "handoff",
+              currentStep: "lens-review",
+              lastCompletedStep: "ci",
+            } as any,
             eventLog: [
               { kind: "cap-hit", at: 1, cap: "round-cap", reviewRound: 3, nextStep: "handoff" },
             ] as any,
           } as unknown as WorkState)
         : mkState(issue, "merged"),
   });
-  assert(started.includes(101), "the overlapping group ran after its sibling PARKED — a park releases the claim");
+  assert(
+    started.includes(101),
+    "the overlapping group ran after its sibling PARKED — a park releases the claim",
+  );
   assert(
     started.indexOf(101) > started.indexOf(100),
     "and it ran after, not alongside (the overlap gate still serialises)",

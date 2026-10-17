@@ -49,20 +49,24 @@ function g(id: string, issue: number, paths: string[] = []): IssueGroup {
 
 // ======================================= 1. The statement scanner is narrow
 {
-  // The words that mean ordering.
-  for (const phrasing of [
-    "Depends-on: #12",
-    "depends on #12",
-    "Depends on #12 before this ships",
-    "blocked by #12",
-    "Blocked-by: #12",
-    "blocked on #12",
-    "requires #12",
-    "Requires: #12",
-    "predecessors are #12",
-  ]) {
+  // The words that mean ordering. `phrasings` is scoped to this block, which is
+  // also the point of the block form: every section gets its own scope, so a
+  // case cannot leak a binding into the next and satisfy an assertion against
+  // another case's state.
+  const phrasings: Array<[string, string]> = [
+    ["depends-on colon", "Depends-on: #12"],
+    ["depends on spaced", "depends on #12"],
+    ["depends on sentence", "Depends on #12 before this ships"],
+    ["blocked by", "blocked by #12"],
+    ["blocked-by colon", "Blocked-by: #12"],
+    ["blocked on", "blocked on #12"],
+    ["requires", "requires #12"],
+    ["requires colon", "Requires: #12"],
+    ["predecessors", "predecessors are #12"],
+  ];
+  for (const [label, phrasing] of phrasings) {
     const deps = orderingDependencies(`title: x\n\n${phrasing} — see the other issue`);
-    assert(deps.includes(12), `ordering statement recognised: "${phrasing}"`);
+    assert(deps.includes(12), `ordering statement recognised: "${phrasing}" (${label})`);
   }
 
   // The words that do NOT mean ordering — R1's vocabulary is wider on purpose
@@ -124,7 +128,10 @@ function g(id: string, issue: number, paths: string[] = []): IssueGroup {
 
   // Same-group: R1 merged them, so the edge is intra-group and moot.
   const merged = planOrderingEdges(
-    [{ id: "group-a", issues: [100, 101] }, { id: "group-b", issues: [102] }],
+    [
+      { id: "group-a", issues: [100, 101] },
+      { id: "group-b", issues: [102] },
+    ],
     { 101: [100] },
   );
   assert(
