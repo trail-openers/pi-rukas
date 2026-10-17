@@ -91,12 +91,45 @@ link_tree() {
 # extension/node_modules made every cycle on this repo record hook-failed.
 # A tree that is absent, empty or not gitignored is skipped — never linked
 # over a tracked directory of the same name.
+#
+# #1394 — the emptiness test runs BEFORE the probe (unchanged order): a tree
+# with nothing in it is not a link candidate, so a fresh clone still falls
+# through to the `linked=0` exit-0 diagnostic below without ever asking git.
+#
+# The three states of `git check-ignore` are three outcomes, not two:
+#   exit 0 -> ignored, link it.  exit 1 -> not ignored, skip silently (never
+#   link over a tracked directory).  anything else -> git itself failed, and
+#   the old `|| continue` read that exactly like "not ignored": the tree went
+#   unlinked, the hook exited 0, and the driver reported a missing tree with
+#   no hint it was a git failure. Die with git's own text instead.
+# `st=$?` is read inside the `||` arm: after `|| continue` it is always 0.
+# POSIX sh only — CI's /bin/sh is dash (#1146 burned a cycle on `builtin`).
+# The diagnostic is tail-capped: the hook's contract is output well under
+# 1 MB and runHookProvisioning runs it with a 1 MiB maxBuffer, so a runaway
+# git stderr must not push the real cause out of the buffer.
+ignored_check_ignore() {
+  rel=$1
+  out=""
+  st=0
+  out=$(git -C "$repo_root" check-ignore -q -- "$rel" 2>&1) || st=$?
+  if [ "$st" -eq 0 ]; then
+    return 0
+  fi
+  if [ "$st" -eq 1 ]; then
+    return 1
+  fi
+  # The caller's `&&` means errexit does NOT fire on a false return, so the
+  # non-zero status must be propagated explicitly or a git error would be
+  # counted as a link and the hook would exit 0 over an un-provisioned tree.
+  die "git check-ignore -- $rel failed (exit $st): $(printf '%s' "$out" | tail -c 300)"
+  return "$st"
+}
+
 linked=0
 for rel in node_modules extension/node_modules; do
   src="$repo_root/$rel"
   [ -n "$(ls -A "$src" 2>/dev/null)" ] || continue
-  git -C "$repo_root" check-ignore -q -- "$rel" || continue
-  link_tree "$rel"
+  ignored_check_ignore "$rel" && link_tree "$rel"
   linked=$((linked + 1))
 done
 
