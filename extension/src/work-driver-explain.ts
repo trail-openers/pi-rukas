@@ -10,6 +10,7 @@ import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainConsolidation } from "./work-driver-explain-consolidation.ts";
 import { explainDetectCaps } from "./work-driver-explain-detect-caps.ts";
+import { explainDevelopCrash } from "./work-driver-explain-develop-crash.ts";
 import { explainLens } from "./work-driver-explain-lens.ts";
 import { adversarialFailureCause, explainOther } from "./work-driver-explain-other.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
@@ -299,6 +300,9 @@ export function explainCap(
     }
     case "fix-pass-park":
       return explainNoVerdictCap(cap, state) as string;
+    case "develop-child-crash":
+      // #1403 — the dead-child sentence lives with its own family module.
+      return explainDevelopCrash(state);
     case "deadline": {
       // #1238 — the caller-set whole-cycle deadline: at a step boundary the
       // deadline was within the handoff grace, so no new step started and

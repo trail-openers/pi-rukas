@@ -92,6 +92,15 @@ export type HandoffConsolidatedEvent = {
    * recorded" and never as "restored".
    */
   restoreClaim?: string;
+  /**
+   * #1421 — the driver's own reason when consolidation was DECLINED (dirty
+   * root, cherry-pick conflict, git error, lock failure). The handoff used to
+   * report one fixed sentence for every failure, so a cycle refused by cargo's
+   * `target/` read exactly like one whose picks conflicted, and nothing said
+   * where the reviewed commits were. Absent on success and on events written
+   * before #1421.
+   */
+  degradedReason?: string;
 };
 
 /**

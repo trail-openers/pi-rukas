@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -61,18 +63,21 @@ let committedByWorktree: Record<string, string[]> | undefined;
 let worktreesForScope: ScopeWorkstream[] = [];
 
 const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+  const line = commandOf(cmd, opts);
   const worktree = opts?.cwd;
   const wsEntry = worktreesForScope.find((entry) => worktree?.endsWith(entry.id));
   const status = filesByWorktree?.[wsEntry?.id ?? ""] ?? [];
   const committed = committedByWorktree?.[wsEntry?.id ?? ""] ?? [];
-  if (cmd === "git status --porcelain --untracked-files=all") {
-    return { stdout: status.map((file) => ` M ${file}`).join("\n") };
+  if (isNulStatusRead(line)) {
+    return { stdout: nulStatus(...status.map((file) => ` M ${file}`)) };
   }
-  if (cmd.startsWith("git rev-list --count")) {
+  // 2d43c44d — the develop fan-out's rev-list probe moved to the argv form, so
+  // it matches on `commandOf` like the reads above rather than the raw cmd.
+  if (line.startsWith("git rev-list --count")) {
     return { stdout: status.length > 0 || committed.length > 0 ? "1\n" : "0\n" };
   }
-  if (cmd.startsWith("git diff --name-only")) {
-    return { stdout: committed.join("\n") };
+  if (isNulDiffRead(line)) {
+    return { stdout: nulNameStatus(...committed) };
   }
   return { stdout: "" };
 };

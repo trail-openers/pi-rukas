@@ -20,7 +20,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { formatLostComments, formatReportLine } from "../src/comment-evidence.ts";
 import { findLostComments as findLostCommentsRaw } from "../src/comment-retention.ts";
-import { asShellForm } from "./lib/argv-shell.ts";
+import { asShellForm, commandOf } from "./lib/argv-shell.ts";
+import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
 
 // #1134 — these stubs match the shell-form command string; asShellForm shows argv calls in that form.
 const findLostComments = (...args: Parameters<typeof findLostCommentsRaw>) => {
@@ -99,10 +100,14 @@ function makeFakePi() {
 // comment and a head-tree read that does NOT contain it.
 /** A fake exec for the develop gate: the diff body and the head-tree grep. */
 function gateExec(diff: string, headLines: string): NonNullable<DriverContext["verifyExecFn"]> {
-  return async (cmd) => {
-    if (cmd === "git status --porcelain") return { stdout: "M src/app.ts\n" };
-    if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
-    if (cmd.startsWith("git diff --name-only")) return { stdout: "src/app.ts\n" };
+  return async (cmd, opts) => {
+    // #1378 — the develop gate's two path reads are NUL-separated and argv-shaped;
+    // matching the plain strings they used to be would silently return an empty
+    // change set and the assertions below would pass on nothing.
+    const line = commandOf(cmd, opts);
+    if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/app.ts") };
+    if (line.startsWith("git rev-list --count")) return { stdout: "1\n" };
+    if (isNulDiffRead(line)) return { stdout: nulNameStatus("src/app.ts") };
     // comment-retention uses a THREE-dot range; the other gates do not.
     if (cmd.includes("...")) return { stdout: diff };
     if (cmd.startsWith("git grep")) return { stdout: headLines };

@@ -20,27 +20,27 @@
  * `git checkout` reverted the wiring, leaving a module that passed its own suite
  * while doing nothing. One seam is an incident; three is a class.
  *
- * The SEAMS table itself lives in `lib/seams-wired-fixtures.ts` (AGENTS.md §12
- * size cap). This file keeps the scanning and the assertions — the parts that
- * can fail open — so the gate's logic stays where its canaries are.
+ * The SEAMS table itself lives in `lib/seams-registry.ts` (AGENTS.md §12 size
+ * cap). This file keeps the scanning and the assertions — the parts that can
+ * fail open — so the gate's logic stays where its canaries are.
  *
- * **The fixture file is itself scanned as a test file.** `testFiles` below is
- * what proves a `testOnly` export is genuinely exercised, and it used to read
- * the seam's name straight out of this file's own inlined table. Once the table
- * moved, five exports (memory-stats `defaultDbPath`, agents-md `runAgentsMd` /
- * `runWrap`, dispatch-deck `buildJobRows`, review-ledger-lock
- * `runLedgerCriticalSectionHook`, merge-refusals `ACCEPTED_MERGE_FORM`) went
- * red — the declarations were no longer in the corpus. That is the correct
- * reading, not a regression: the strings were the SEAMS entry, never a call.
- * The fixture is added back because it is the faithful record of every
- * declaration, so the verdict is the same either way — but a gate whose
- * "exercised" signal comes from a declaration rather than a call is the same
- * fail-open shape as the docstring this file already refuses to count.
+ * **The registry is scanned as a test file.** `testFiles` below is what proves a
+ * `testOnly` export is genuinely exercised, and it used to read the seam's name
+ * straight out of this file's own inlined table. Once the table moved, five
+ * exports (memory-stats `defaultDbPath`, agents-md `runAgentsMd` / `runWrap`,
+ * dispatch-deck `buildJobRows`, review-ledger-lock `runLedgerCriticalSectionHook`,
+ * merge-refusals `ACCEPTED_MERGE_FORM`) went red — the declarations were no
+ * longer in the corpus. That is the correct reading, not a regression: the
+ * strings were the SEAMS entry, never a call. The registry directory joins the
+ * corpus because it is the faithful record of every declaration, so the verdict
+ * is the same either way — but a gate whose "exercised" signal comes from a
+ * declaration rather than a call is the same fail-open shape as the docstring
+ * this file already refuses to count.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { SEAMS } from "./lib/seams-wired-fixtures.ts";
+import { SEAMS } from "./lib/seams-registry.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -66,13 +66,22 @@ function stripComments(src: string): string {
 }
 
 const TESTS = path.resolve(import.meta.dirname);
-const testFiles = readdirSync(TESTS)
-  .filter((f) => f.endsWith(".ts"))
-  .map((f) => stripComments(readFileSync(path.join(TESTS, f), "utf8")));
-// The SEAMS table moved out for the §12 size cap, and this scan is what
-// proves a `testOnly` export is exercised — so the fixture joins the corpus.
-// See the header: its strings are declarations, not calls.
-testFiles.push(stripComments(readFileSync(path.join(TESTS, "lib/seams-wired-fixtures.ts"), "utf8")));
+/**
+ * The sources the "a test-only export must actually be exercised" check reads.
+ * `lib/` is included as well as the top level: the seam registry lives there
+ * (#955 file-size split), and it names each test-only export in the reason
+ * string that says which test exercises it. Without it, moving the registry out
+ * of this file would silently drop every declaration in it out of the check's
+ * view and turn five honest assertions into five false ones.
+ */
+const testFiles = [
+  ...readdirSync(TESTS)
+    .filter((f) => f.endsWith(".ts"))
+    .map((f) => path.join(TESTS, f)),
+  ...readdirSync(path.join(TESTS, "lib"))
+    .filter((f) => f.endsWith(".ts"))
+    .map((f) => path.join(TESTS, "lib", f)),
+].map((f) => stripComments(readFileSync(f, "utf8")));
 
 const allFiles = readdirSync(SRC)
   .filter((f) => f.endsWith(".ts"))

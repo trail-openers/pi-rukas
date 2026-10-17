@@ -275,6 +275,22 @@ export interface DriverContext {
    */
   forge?: import("./forge.ts").Forge;
   /**
+   * @internal / test-only. Optional injection point for tests: replace the
+   * merge-authority policy judge built by `judgePolicy` in the merged step.
+   * Production callers omit this and get the real `judgePolicy` (a
+   * `spawnSpecialist` child); tests inject a fake to distinguish "the doctrine
+   * was unreadable" from "the judge is switched off for the whole process" —
+   * which is what made the doctrine-denial case vacuous. Mirrors
+   * `adversarialLoopFn` / `lensReviewFn`.
+   *
+   * NOT a host knob. `runHeadless` forwards this field, so an exported-API
+   * caller could otherwise speak for the merge-authority gate; `runMerged`
+   * honours it only when `PI_ENSEMBLE_FORBID_LIVE_SPAWN=1` (which the offline
+   * suite sets) and traces a warning when it does. See `mergeAuthorityJudge`
+   * in `work-driver-merged.ts`.
+   */
+  policyJudgeFn?: import("./work-driver-policy.ts").PolicyJudgeFn;
+  /**
    * #1189 — the driver's in-memory terminal state, handed to the caller for
    * the disk-vs-memory divergence check. The state file lives inside the tree
    * agents work in (same user), so the runner needs its own trusted copy.
