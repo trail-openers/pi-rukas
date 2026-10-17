@@ -48,6 +48,7 @@ export const FIXED_CAPS = [
   "cross-group-conflict",
   "deadline",
   "deferred-creation:develop",
+  "develop-child-crash",
   "develop-incomplete-deliverables",
   "developer-timeout",
   // #1398 — the review re-ran after the PR was marked ready and the driver

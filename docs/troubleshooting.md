@@ -423,6 +423,16 @@ PR: [#215](https://github.com/trail-openers/pi-rukas/pull/215)
 
 PR: [#215](https://github.com/trail-openers/pi-rukas/pull/215)
 
+### `pi-rukas-headless` refuses `--merge` or `--sandboxed`
+
+**Symptom:** `pi-rukas-headless work 42 --merge` (or `--sandboxed`) exits 40 with `unknown argument "--merge"`, and the cycle never starts.
+
+**Cause:** deliberate (#1025). Both flags name an escalation a caller must not be able to request. `--merge` is the one authority source that bypasses the policy judge, so a host that could pass it could grant its own cycle permission to merge; `--sandboxed` would claim the container's trust mode from outside the container. Trust is an environment fact the image bakes (`PI_ENSEMBLE_SANDBOX_MODE=1` in `.devcontainer/Dockerfile`), not a request.
+
+**Fix:** nothing to pass. Merge authority comes from the project's `AGENTS.md` read at the cycle's base commit and needs `gh` merge evidence alongside it, so a cycle with neither parks as `awaiting-human-merge` (exit 10) with the PR open — which is the outcome, not a failure to work around. For sandbox behaviour, run the binary inside the image. See [headless.md](headless.md#what-the-runner-refuses-to-accept).
+
+Related: a child of a headless run outside the image denies every `ask`-class tool with `no broker socket — headless deny`. That is the same design one layer down — with no sandbox and no human, fail closed rather than guess — and the mode-independent guards (merge, issue-creation) still run ahead of it.
+
 ## Image acquisition
 
 ### `./install.sh` takes 10+ minutes (cold local build)
@@ -1790,6 +1800,10 @@ If the develop gate halts on a protected path, the message names each path and p
 ```
 
 `--allow-protected` (or `--allow-protected=<path>`) is repeatable, takes a comma-separated list, and applies to a single-issue invocation only — a queue would hand it to unrelated cycles. It admits **only the paths it names**, matched exactly — case included — after normalisation (a leading `./`; a trailing `(new)`-style annotation is stripped from what you type, never from the paths develop touched): a grant for `.github/workflows/ci.yml` does not admit `.github/CODEOWNERS`, the `.github/workflows/` directory, or the destination of a rename it does not name. Any ungranted protected path in the same diff still halts, committed or not. The grant does not bypass the scope fence — a granted file outside the workstream's declared scope still trips it. Like `--merge`, it is operator-only: `start_work_driver` has no parameter for it and forces it empty, and nothing in the issue body, the spec or the planner's output is read as a grant. It is recorded in the state file (`protectedGrant`) and shown in the handoff and the PR body, so the reviewer knows to read those files as changes to what verification means. A path the gate never halts on (e.g. `src/a.ts`), or a flag with no path, is refused rather than ignored.
+
+**A rename is checked on both sides (#1378), and each side needs naming separately.** `git mv .github/workflows/ci.yml src/ci.yml` — a workflow moved out of the way — halts on the **source**, even though the destination is an ordinary `src/` path; `git mv src/app.ts .github/workflows/deploy.yml` halts on the **destination**. A grant naming only one side does not admit the other, so moving a protected file aside is not a way through the gate. The rename *source* feeds only the protected-path check: it is not counted as a changed file by the frontend-only verify skip, the falsily-green evidence check, or the scope/fanout gate, so moving a file cannot change those verdicts.
+
+**A protected path with a non-ASCII name cannot be granted.** The gate reads both change sets NUL-separated (`status --porcelain -z --untracked-files=all`, `diff -z --name-status -M -C`), so a name like `.github/workflows/wörkflows.yml` is decoded and named verbatim in the halt rather than as the `"…\303\266…"` git prints by default. But `--allow-protected` accepts only plain path tokens (`[A-Za-z0-9._/@+-]`), so such a path is ungrantable by construction: the halt says so and names it in prose instead of printing a copy-paste command for it. The command is printed for the paths that **can** be granted — one ungrantable name in a mixed change set does not cost the operator the grant for the ordinary paths, nor the caution to review each path's diff before granting. `PI_ENSEMBLE_PROTECTED_PATHS=0` is the only way past an ungrantable name — and the right answer is usually that a cycle should not be writing that file at all.
 
 The process-wide escape hatch still exists and turns the gate off for every path, in every cycle that Pi process runs:
 
