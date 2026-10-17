@@ -6,9 +6,10 @@
  * Split from test-work-driver-pr4.ts (AGENTS.md §12 file-size limit).
  */
 
+import { appendDevelopVerifyFailure } from "../src/work-develop-verify-failure.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
-import { appendDevelopVerifyFailure } from "../src/work-develop-verify-failure.ts";
+import { humanActionFor } from "../src/work-queue.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -141,7 +142,12 @@ runExplainCapCanaries();
   const gate = {
     failures: [failure],
     fenceViolations: [
-      { kind: "sibling-declared", workstreamId: "task-a", file: "src/main.rs", declaredById: "task-d" },
+      {
+        kind: "sibling-declared",
+        workstreamId: "task-a",
+        file: "src/main.rs",
+        declaredById: "task-d",
+      },
     ],
   } as unknown as Parameters<typeof appendDevelopVerifyFailure>[1];
   let s = initialState(1137, 1_000_000);
@@ -155,6 +161,66 @@ runExplainCapCanaries();
   assert(
     !line.includes("evidence detail missing from state"),
     "explainCap(real develop verify cap) does not report missing evidence",
+  );
+}
+
+// #1398 — `draft-rearm-failed` must render its AUTHORED recovery sentence, not
+// the generic `step failed: …` fallback. The cap was in the union and had a
+// fully written case body in explainLens, but no `case` in explainCap's switch,
+// so the operator's handoff said "step failed: draft-rearm-failed" and lost the
+// one line naming the draft command to run — a dead sentence nobody noticed
+// until the adversarial pass executed it. This canary is the gate.
+{
+  const s1398 = initialState(1398, 1_000_000);
+  let s = {
+    ...s1398,
+    pipelineState: { ...s1398.pipelineState, currentStep: "handoff", prNumber: 42 },
+  };
+  s = appendEvent(s, {
+    kind: "cap-hit",
+    at: 2,
+    cap: "draft-rearm-failed",
+    reviewRound: 1,
+    nextStep: "handoff",
+    evidence: "the forge did not confirm the draft conversion on PR #42",
+  } as Parameters<typeof appendEvent>[1]);
+  const line = explainCap("draft-rearm-failed", s);
+  assert(
+    !line.startsWith("step failed:"),
+    `explainCap(draft-rearm-failed) does NOT fall to the generic 'step failed' fallback (got ${line.slice(0, 60)})`,
+  );
+  assert(
+    line.includes("could not make the PR a draft again"),
+    "explainCap(draft-rearm-failed) renders the authored sentence for the re-arm failure",
+  );
+  assert(
+    line.includes("gh pr ready 42 --undo") && line.includes("glab mr update 42 --draft"),
+    "…and names BOTH forges' draft commands, so the operator has the recovery in the handoff itself",
+  );
+  assert(
+    line.includes("the forge did not confirm the draft conversion on PR #42"),
+    "…and carries the cap's own evidence verbatim (which of the three failure shapes fired)",
+  );
+  // The same text must reach the handoff markdown, not only the formatter.
+  s = { ...s, pipelineState: { ...s.pipelineState, status: "handoff" as const } };
+  assert(
+    renderHandoffMarkdown(s).includes("gh pr ready 42 --undo"),
+    "the handoff markdown renders the draft command for a re-arm halt (the operator sees it without opening the state file)",
+  );
+}
+
+// #1398 (b) — the queue's own humanAction names the draft command rather than
+// the generic `--restart`, which would rebuild the cycle and leave the same
+// PR mergeable.
+{
+  const action = humanActionFor("cap-hit:draft-rearm-failed:lens-review", 1398);
+  assert(
+    /gh pr ready <N> --undo/.test(action) && /glab mr update <N> --draft/.test(action),
+    `humanActionFor(draft-rearm-failed) names both forges' draft command (got ${action})`,
+  );
+  assert(
+    !/^inspect \.pi\/work-state/.test(action),
+    "…and is NOT the generic inspect-the-state-file-and-restart fallback",
   );
 }
 

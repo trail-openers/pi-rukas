@@ -51,6 +51,9 @@ export const FIXED_CAPS = [
   "develop-child-crash",
   "develop-incomplete-deliverables",
   "developer-timeout",
+  // #1398 — the review re-ran after the PR was marked ready and the driver
+  // could not put the PR back to a draft.
+  "draft-rearm-failed",
   "existing-pr-detected",
   "explore-already-complete",
   "explore-bodies-empty",

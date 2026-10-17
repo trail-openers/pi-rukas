@@ -20,10 +20,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Forge } from "../src/forge.ts";
 import {
   MAX_READY_ATTEMPTS_PER_CYCLE,
-  draftPrHandoffLines,
   markDraftPrReady,
   recordFallbackDraftFact,
 } from "../src/work-driver-draft-pr.ts";
+import { draftPrHandoffLines } from "../src/work-driver-draft-pr-handoff.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runMerged } from "../src/work-driver-merged.ts";
 import { runStep } from "../src/work-driver-run-step.ts";
