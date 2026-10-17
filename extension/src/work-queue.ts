@@ -20,35 +20,46 @@
  *   parked  → issue-scoped failure; record why, continue
  *   halted  → systemic; continuing would burn every remaining issue against
  *             the same wall (spend cap, quota window, driver throw)
+ *
+ * #1101 added the fourth thing a group can be waiting for before it ever
+ * starts, and split the module along that seam: the pre-dispatch policy lives
+ * in `work-queue-scheduler.ts` (pure), the claim loop in `work-queue-worker.ts`,
+ * the operator-facing cap text in `work-queue-cap.ts`, and the ordering-edge
+ * discovery in `work-queue-deps.ts`. What stays here is the orchestration, the
+ * summary, and the systemic-failure verdict.
  */
 
-import fs from "node:fs/promises";
-import path from "node:path";
 import { trace } from "./trace.ts";
 import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
 import { captureInvocationStartRef } from "./work-driver-git.ts";
 import type { GroupingResult } from "./work-driver-grouping.ts";
-import { type ParkReason, parkAction } from "./work-driver-intent.ts";
-import {
-  type EvidenceFailureKind,
-  mergeHoldAction,
-  mergeHoldGrantAction,
-} from "./work-driver-merge-authority.ts";
-import { notify } from "./work-notify.ts";
-import { groupPathsOverlap } from "./work-queue-overlap.ts";
-import { HOST_EXHAUSTION_SUFFIX, parkReason } from "./work-queue-park-reason.ts";
-import { deferredLeftoverAction } from "./work-queue-parks.ts";
 import { mergeQueueSummaryEntries } from "./work-queue-summary.ts";
+import { type WorkerState, queueOrderingEnabled, runQueueWorker } from "./work-queue-worker.ts";
+import { type WorkState, readState } from "./workflow-state.ts";
+
 // #753 (six-lens FIX 5) — the renderer moved to work-queue-render.ts to keep
 // this module under the 500-line cap; re-exported so importers keep working.
 export { renderQueueSummary } from "./work-queue-render.ts";
-
-/** One entry of `groupIssues()`'s result — the unit the queue iterates. */
-export type IssueGroup = GroupingResult["groups"][string];
+// #1101 — the operator-facing cap text moved to work-queue-cap.ts; re-exported
+// so importers of work-queue keep working, and so there is exactly one
+// `humanActionFor` for the whole queue to agree on.
+export { humanActionFor, waitCapFor } from "./work-queue-cap.ts";
+// #1101 — the ordering gate's kill switch, re-exported so the env-var surface
+// is discoverable from the module an operator actually reads about.
+export { queueOrderingEnabled } from "./work-queue-scheduler.ts";
+// The types moved to work-queue-types.ts so the scheduler and the worker can
+// import them without importing this module back (a cycle through the worker
+// would otherwise be load-bearing at runtime).
+export type {
+  GroupOutcome,
+  IssueGroup,
+  QueueEntry,
+  QueueSummary,
+} from "./work-queue-types.ts";
+import type { GroupOutcome, IssueGroup, QueueEntry, QueueSummary } from "./work-queue-types.ts";
 // #676 — re-exported so importers of work-queue keep working; the predicates
 // live in work-queue-overlap.ts.
 export { groupPathsOverlap, overlappingSiblingIds } from "./work-queue-overlap.ts";
-import { type WorkState, readState, workStateDir } from "./workflow-state.ts";
 
 /** #368 escape hatch: PI_ENSEMBLE_QUEUE_HALT_ON_FAILURE=1 restores halt-on-first-failure. */
 export function queueHaltOnFailure(): boolean {
@@ -56,37 +67,51 @@ export function queueHaltOnFailure(): boolean {
   return v === "1" || v === "true";
 }
 
-/** What `runGroup` reports back. `started: false` means it never ran. */
-export interface GroupOutcome {
-  started: boolean;
-  reason?: string;
+/**
+ * #1101 — how long a group tolerates waiting on a sibling before the wait
+ * itself becomes the finding.
+ *
+ * 30 minutes is the right production number and it is not a guess: a `/work`
+ * cycle that is genuinely running — explore, plan, develop, the adversarial
+ * loop, six-lens review, CI — routinely takes that long, and the whole point
+ * of the ordering edge is that a dependent waits for its dependency to
+ * MERGE. A cap under an hour would park dependents whose dependency was
+ * healthy and merely slow, which is the failure mode #1101 is fixing. It is
+ * also the same figure `work-driver-path-claims.ts` already treats as the
+ * generous ceiling for a live cycle (`_STALE_MS`), so the queue and the claim
+ * registry do not disagree about how long a cycle may take.
+ *
+ * Two things make the number survivable rather than a hang:
+ *
+ *  - It is **injectable** (`RunQueueOpts.deferCapMs`) and tests pass a few
+ *    hundred ms, so no test pays 30 minutes to prove the cap-out route.
+ *  - It is a **bound, not a poll interval**. Waiters park on an event and are
+ *    woken the instant anything they wait on settles, merges, parks or halts
+ *    (`work-queue-worker.ts`'s `wake`); the timer only covers what no event
+ *    reported. A group that is merely waiting on a healthy sibling does not
+ *    consume the cap at all — it is woken when that sibling finishes.
+ *
+ * `PI_ENSEMBLE_QUEUE_DEFER_CAP_MS` is the operator's override for the same
+ * reason `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` exists: a host where 30 minutes is
+ * the wrong number should not have to patch the extension.
+ */
+export const DEFER_CAP_MS = 30 * 60 * 1000;
+
+/** The env-overridable defer cap; falls back to {@link DEFER_CAP_MS}. */
+export function queueDeferCapMs(): number {
+  const raw = process.env.PI_ENSEMBLE_QUEUE_DEFER_CAP_MS;
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    // A cap of 0 would make every wait a cap-out, which is a silent way to
+    // disable the ordering gate; a negative parse is a typo. Either is ignored
+    // rather than obeyed.
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFER_CAP_MS;
 }
 
-export interface QueueEntry {
-  groupId: string;
-  issues: number[];
-  outcome: "merged" | "parked" | "halted" | "not-started";
-  /** Operator-facing why, for parked/halted. */
-  reason?: string;
-  /** The step the cycle died on, when known. */
-  failedStep?: string;
-  /** What the operator has to do — an action, never "it failed". */
-  humanAction?: string;
-  /** Raw token sum across the group's dispatch-completed/failed events
-   * (input+output+cacheRead+cacheWrite); older summaries predate it. */
-  tokens?: number;
-  cost?: number; // USD, when the total is priced; never estimated when unknown
-}
-
-export interface QueueSummary {
-  entries: QueueEntry[];
-  merged: number;
-  parked: number;
-  refused: number; // #368 — a refusal is not a failure; no operator action
-  notStarted: string[]; // groups the queue never reached — it halted first
-}
-
-/** Decide whether a finished group's failure is systemic.
+/**
+ * Decide whether a finished group's failure is systemic.
  *
  * Systemic means "the next group will hit this too": a spend cap, or a quota
  * window that nothing will get past until it resets. Everything else — a
@@ -102,7 +127,7 @@ export function isSystemicFailure(state: WorkState | undefined): {
   // most recent one of its kind. The driver retries transient faults, so a
   // cycle can hit a quota window, recover, run for another twenty minutes,
   // and then park for an unrelated semantic reason. Reading the last failure
-  // unconditionally found the recovered quota event and halted every
+  // unconditionally found the RECOVERED quota event and halted every
   // remaining group — the exact outcome #368 exists to prevent. A failure
   // followed by a successful `dispatch-completed` was recovered and does not
   // count.
@@ -134,103 +159,6 @@ export function isSystemicFailure(state: WorkState | undefined): {
   return { systemic: false };
 }
 
-/**
- * Human action for a parked group. The SRE rule is that a notification must
- * name what the human should do that the system cannot do itself; "it failed"
- * is not that. If we cannot name an action, we say so plainly rather than
- * inventing one.
- */
-export function humanActionFor(reason: string, primary: number): string {
-  // #753 — a dirty-leftover park (deferred worktree creation refused):
-  // salvage the leftover BEFORE any re-run — --restart would hit the same
-  // refusal.
-  if (reason.includes("deferred-creation:develop")) {
-    return deferredLeftoverAction(reason, primary);
-  }
-  // #378 — intent parks carry their own specific action; the generic
-  // "inspect the state file and --restart" fallback is useless here, because
-  // re-running an unresolvable issue unchanged produces the same park.
-  const intentPark = reason.match(/intent-park(?::([a-z-]+))?/);
-  if (intentPark) {
-    return parkAction((intentPark[1] ?? "underspecified") as ParkReason, primary);
-  }
-  // #380 — the PR is open, green and pushed; the only thing missing is a
-  // human decision. Telling the operator to `--restart` here would rebuild
-  // work that is already done and open a duplicate PR.
-  const heldMerge = reason.match(
-    /awaiting-human-merge:(granted|no-authority):pr(\d+)(?::tooling)?/,
-  );
-  if (heldMerge) {
-    const granted = heldMerge[1] === "granted";
-    const pr = Number(heldMerge[2]) > 0 ? `#${heldMerge[2]}` : `the PR for #${primary}`;
-    // The tag is carried by the reason string itself (`:tooling` suffix in
-    // `parkReason` above), so the queue cannot drift from the state file:
-    // untagged reasons keep the CI-flavoured action, as do pre-#745 files.
-    const failureKind: EvidenceFailureKind = heldMerge[3] === "tooling" ? "tooling" : "ci";
-    return granted
-      ? mergeHoldAction(
-          { granted, source: "doctrine" },
-          Number(heldMerge[2]) || undefined,
-          failureKind,
-        )
-      : mergeHoldGrantAction(pr);
-  }
-  // #380 — `--restart` after a failed merge wipes the state file but NOT the
-  // open PR, so the re-run halts immediately on the pre-flight (#362).
-  if (/step-failed:merged/.test(reason)) {
-    return `review #${primary}'s PR and remove the cause of the merge hold — the grant in AGENTS.md, --merge for this run, or the failing gh evidence (do NOT --restart: the open PR would halt the re-run)`;
-  }
-  if (/lens-diff-unreadable/.test(reason)) {
-    return `check that #${primary}'s branch is pushed and \`git fetch origin --prune\` is current — the review could not read the diff`;
-  }
-  // #1398 — the PR is mergeable while its review re-runs and the driver could
-  // not put it back. `--restart` would rebuild the cycle and leave the PR
-  // mergeable all the same; the one thing missing is the draft the forge
-  // would not set, so the action names the command that sets it.
-  if (/draft-rearm-failed/.test(reason)) {
-    return `make #${primary}'s PR a draft by hand — \`gh pr ready <N> --undo\` (GitHub) or \`glab mr update <N> --draft\` (GitLab), N from the handoff — then re-run \`/work ${primary} --restart\` (do NOT skip the draft: the review re-runs on a mergeable PR)`;
-  }
-  if (/existing-pr-detected/.test(reason))
-    return `decide whether to resume, retarget or close the open PR for #${primary}`;
-  if (/explore-needs-clarification|step-back-revise-spec/.test(reason)) {
-    return `revise the body of #${primary} — the spec is underspecified`;
-  }
-  if (/explore-already-complete/.test(reason)) return `confirm and close #${primary}`;
-  if (/explore-bodies-empty/.test(reason))
-    return "fix the gh setup (`gh auth status`), then re-run";
-  if (/round-cap|adversarial-loop|wall-clock/.test(reason)) {
-    return `review the findings on #${primary}'s PR — the fix loop did not converge`;
-  }
-  if (/\bdeadline\b/.test(reason)) {
-    return `the caller's cycle deadline was reached — raise or clear PI_ENSEMBLE_CYCLE_DEADLINE/PI_ENSEMBLE_CYCLE_BUDGET_MS and re-run \`/work ${primary} --restart\` (the handoff names the branch, PR and round the work reached)`;
-  }
-  // #1421 — checked BEFORE the `verify-env:` rule below: a build-residue park
-  // shares that cap family with the fork failure, and the advice differs.
-  // Anchored to the `:build-residue` suffix `parkReason` writes — the ONLY
-  // carrier this match reads. A bare `[build-residue]` / substring match read
-  // the same advice out of a failure string that merely MENTIONED the tag
-  // (an operator path named `build/[build-residue].log`, a quoted line from
-  // the log), which would send someone to the build for a park the gate
-  // raised on the code.
-  if (/:build-residue\b/.test(reason))
-    return `#${primary}'s cycle was declined by git-ignored build output in the repo root — keep the project's build out of the checkout (CARGO_TARGET_DIR or a .gitignore entry), clear what is there, then re-run \`/work ${primary} --restart\` (the diff was never judged)`;
-  if (reason.includes(HOST_EXHAUSTION_SUFFIX) || /verify-env:/.test(reason)) {
-    return `free processes on the host (it could not fork — the gate never ran on #${primary}), then re-run \`/work ${primary} --restart\``;
-  }
-  if (/verify-timeout/.test(reason))
-    return `the verify command timed out on #${primary} — raise PI_ENSEMBLE_VERIFY_TIMEOUT_MS or reduce concurrency, then re-run \`/work ${primary} --restart\``;
-  // #1349 — parks the gate raised without judging the change.
-  if (/verify-baseline-red/.test(reason))
-    return `the verify command already fails at #${primary}'s base commit — fix the gate on the mainline, then re-run \`/work ${primary} --restart\``;
-  if (/pr-not-open/.test(reason))
-    return `#${primary}'s PR is no longer open — decide whether the work belongs in a new PR`;
-  if (/fix-pass-park/.test(reason))
-    return `read the fix pass's reason in #${primary}'s handoff — the adversarial fix pass parked on its own check`;
-  if (/verify-failed/.test(reason))
-    return `inspect #${primary}'s diff — the outcome gate rejected it`;
-  return `inspect .pi/work-state/${primary}.json and re-run \`/work ${primary} --restart\``;
-}
-
 export interface RunQueueOpts {
   repoRoot: string;
   groups: IssueGroup[];
@@ -249,6 +177,33 @@ export interface RunQueueOpts {
   /** Groups to run at once. Defaults to 1 (strictly sequential). */
   concurrency?: number;
   readStateFn?: (repoRoot: string, issue: number) => Promise<WorkState | undefined>;
+  /**
+   * #1101 — cross-group ordering edges, keyed by the DEPENDENT group id.
+   * `blockingGroupIds` are groups that must reach `merged` before this group
+   * is claimed. Produced by `planOrderingEdges()` from the issues' declared
+   * `Depends-on: #N` / `blocked by #N` statements; the queue does not parse
+   * bodies itself.
+   */
+  dependencies?: Record<string, { blockingGroupIds: string[] }>;
+  /**
+   * How long a group may wait on a sibling before the wait itself becomes the
+   * finding. Injectable so the cap-out route is testable without a 30-minute
+   * test. #1101 changed what a cap-out DOES: it parks with the reason naming
+   * the group that never released, where it used to drop the wait and proceed.
+   * See {@link DEFER_CAP_MS} for why the default is 30 minutes and what keeps
+   * that from being a hang.
+   */
+  deferCapMs?: number;
+  /**
+   * #1101 — group ids that sit inside a dependency cycle, from
+   * `findCyclicGroups()`. Every one of them parks with `dependency-cycle`
+   * BEFORE any dispatch: an ordering loop has no valid order, so running part
+   * of it would build a dependent before the thing it depends on. Detected
+   * pre-flight, which is what makes the runtime waits safe to look forward —
+   * a cycle can only reach the wait cap if the graph changed underneath the
+   * queue, and a cap-out is a named park rather than a hang either way.
+   */
+  cyclic?: string[];
 }
 
 /**
@@ -265,180 +220,79 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
   // order groups actually finish in.
   const entries = new Map<number, QueueEntry>();
   const claimed = new Set<string>();
-  let cursor = 0;
-  let halted = false;
   // #1093 — the operator's checkout, read ONCE before any group starts. A group
   // that leaves repoRoot on its own branch (a failed restore) must not become
   // a sibling's start ref, so every group stamps this value, not a re-read.
   const invocationStartRef = await captureInvocationStartRef(opts.repoRoot);
   const cap = Math.max(1, Math.min(opts.concurrency ?? 1, groups.length || 1));
   /**
-   * One worker: claim the next unclaimed group, run it to completion, repeat.
-   * `cursor++` is atomic because JS is single-threaded — the claim happens
-   * between awaits, never across one. #676 — before claiming, a group whose
-   * extracted paths overlap any in-flight group claimed at an EARLIER position
-   * is deferred (re-tested on each pass) until that sibling reaches a terminal
-   * state, so the reactive plan-time check no longer parks the loser after a
-   * wasted explore+plan dispatch. Looking only at earlier positions avoids a
-   * deadlock when every remaining worker holds a position past every
-   * in-flight group; a deferred group is still claimed, so `finish()` reports
-   * it through the `claimed` set.
+   * The state every worker shares. One object, passed by reference: the claim
+   * is taken between awaits (`cursor++` is atomic because JS is
+   * single-threaded), and the scheduler reasons over `inFlight` / `settled` /
+   * `merged` as a snapshot of exactly this.
    */
-  const inFlight = new Map<string, number>();
-  // #676 lens-findings — a deferred group re-tests every 50ms until the
-  // overlapping sibling settles; a sibling whose runGroup never settles (a
-  // hung driver) would otherwise defer it forever. After this cap the
-  // deferral is dropped and the group proceeds — the reactive plan-time
-  // claim check remains the real safety net, so a false release costs at
-  // most the same park it would have produced, never a silent failure.
-  const deferralStart = new Map<string, number>();
-  const DEFER_CAP_MS = 30 * 60 * 1000;
-  async function worker(): Promise<void> {
-    for (;;) {
-      if (halted) return;
-      const gi = cursor;
-      const g = groups[gi];
-      if (!g) return;
-      // #676 lens-findings — advance the cursor before continuing: a group
-      // with an empty `issues` array (unreachable via groupIssues(), but
-      // possible through the exported hand-built `IssueGroup[]`) would spin
-      // forever on a bare `continue` with no cursor advance and no await.
-      if (g.issues[0] === undefined) {
-        cursor += 1;
-        continue;
-      }
-      const primary = g.issues[0];
-      // #676 — defer if an in-flight group claimed EARLIER (index < gi) has
-      // overlapping extracted paths; a deferred group re-tests its own cursor
-      // position until the overlap clears or the queue halts.
-      const blocked = [...inFlight.entries()].some(([id, idx]) => {
-        if (idx >= gi) return false;
-        const other = groups.find((x) => x?.id === id);
-        return other ? groupPathsOverlap(g, other) : false;
-      });
-      if (blocked) {
-        // #676 lens-findings — cap the total deferral time: a sibling whose
-        // runGroup never settles (a hung driver) must not pin this group to
-        // a 50ms busy-poll for the life of the process. After the cap the
-        // group proceeds and the reactive plan-time claim check decides.
-        const first = deferralStart.get(g.id);
-        if (first === undefined) deferralStart.set(g.id, Date.now());
-        else if (Date.now() - first > DEFER_CAP_MS) deferralStart.delete(g.id);
-        await new Promise((r) => setTimeout(r, 50));
-        continue;
-      }
-      deferralStart.delete(g.id);
-      cursor += 1;
+  const state: WorkerState = {
+    repoRoot: opts.repoRoot,
+    groups,
+    runGroup: opts.runGroup,
+    read,
+    isSystemic: isSystemicFailure,
+    haltOnFailure: queueHaltOnFailure,
+    cursor: 0,
+    halted: false,
+    entries,
+    claimed,
+    // #1101 — who has taken a group. Set alongside `inFlight` on every claim,
+    // read by the scan (to skip) and by `finish()` (to report).
+    owners: new Set<string>(),
+    // #1101 — groups the scan could not claim live here, not on the cursor:
+    // sat-on-at-the-cursor is what let one blocked group wedge the whole
+    // queue. See the module header of work-queue-worker.ts.
+    deferred: [],
+    inFlight: new Map<string, number>(),
+    waiters: [],
+    // Synchronous fan-out to every parked waiter. Reentrancy is fine: a
+    // waiter's continuation runs after the current synchronous step, so the
+    // state the caller just mutated is the state it observes.
+    wake: () => {
+      for (const w of state.waiters.splice(0)) w();
+    },
+    settled: new Set<string>(),
+    resolved: new Set<string>(),
+    merged: new Set<string>(),
+    outcomeOf: new Map<string, QueueEntry["outcome"]>(),
+    deferralStart: new Map<string, number>(),
+    dependencies: opts.dependencies ?? {},
+    orderingEnabled: queueOrderingEnabled(),
+    deferCapMs: opts.deferCapMs ?? queueDeferCapMs(),
+    invocationStartRef,
+  };
+
+  // #1101 — an ordering cycle is decided before a single dispatch. Claiming
+  // these groups here (rather than letting a worker park them) is what makes
+  // the assertion "runGroup was never called for them" true by construction:
+  // they are already accounted for, so no worker can pick one up.
+  if (state.orderingEnabled) {
+    for (const [gi, g] of groups.entries()) {
+      if (g.issues[0] === undefined) continue;
+      if (!(opts.cyclic ?? []).includes(g.id)) continue;
       claimed.add(g.id);
-      inFlight.set(g.id, gi);
-
-      let threw: Error | undefined;
-      let outcome: GroupOutcome | undefined;
-      try {
-        outcome = await opts.runGroup(
-          primary,
-          g.issues.length > 1 ? g.issues : undefined,
-          invocationStartRef,
-        );
-      } catch (err) {
-        threw = err as Error;
-      } finally {
-        inFlight.delete(g.id);
-        deferralStart.delete(g.id);
-      }
-
-      if (threw) {
-        // A driver throw is an unknown-shape failure: we cannot tell whether
-        // it left the repo in a state the next group depends on.
-        halted = true;
-        const crashAction = `inspect .pi/work-state/${primary}.json (or /work-status ${primary}) — the driver threw, so this is a bug worth filing`;
-        entries.set(gi, {
-          groupId: g.id,
-          issues: g.issues,
-          outcome: "halted",
-          reason: `driver crashed: ${threw.message?.slice(0, 200)}`,
-          humanAction: crashAction,
-        });
-        await notify({
-          kind: "crashed",
-          issues: g.issues,
-          reason: threw.message?.slice(0, 160) ?? "driver threw",
-          action: crashAction,
-        });
-        // Return from THIS worker only. Siblings already mid-cycle drain to
-        // completion — abandoning a group halfway through commit-pr would
-        // leave exactly the debris the halt exists to avoid.
-        return;
-      }
-
-      // The driver refused before running. Whatever state file is on disk
-      // belongs to the cycle that is ACTUALLY running, so reading it here
-      // would report a live cycle's mid-flight cap as this group's park
-      // reason — and the park advice is `--restart`, which would race fresh
-      // jobs against live ones on the same issue.
-      if (outcome?.started === false) {
-        entries.set(gi, {
-          groupId: g.id,
-          issues: g.issues,
-          outcome: "not-started",
-          reason: outcome.reason ?? "the driver refused to start this cycle",
-          humanAction: `nothing to do here — ${outcome.reason ?? "this cycle never started"}. Check /work-status ${primary} for the cycle that owns it.`,
-        });
-        continue;
-      }
-
-      const state = await read(opts.repoRoot, primary).catch(() => undefined);
-      if (state?.pipelineState.status === "merged") {
-        entries.set(gi, { groupId: g.id, issues: g.issues, outcome: "merged" });
-        continue;
-      }
-
-      const { reason, failedStep } = parkReason(state);
-      const systemic = isSystemicFailure(state);
-      if (systemic.systemic || queueHaltOnFailure()) {
-        halted = true;
-        const why = systemic.reason ?? reason;
-        entries.set(gi, {
-          groupId: g.id,
-          issues: g.issues,
-          outcome: "halted",
-          reason: why,
-          failedStep,
-          humanAction: humanActionFor(reason, primary),
-        });
-        await notify({
-          kind: "halted",
-          issues: g.issues,
-          reason: why,
-          action: humanActionFor(reason, primary),
-        });
-        return;
-      }
-
-      trace(`work-queue: parking ${g.id} (${reason}) and continuing`);
+      state.settled.add(g.id);
+      state.outcomeOf.set(g.id, "parked");
+      const others = (opts.dependencies?.[g.id]?.blockingGroupIds ?? []).join(", ") || g.id;
       entries.set(gi, {
         groupId: g.id,
         issues: g.issues,
         outcome: "parked",
-        reason,
-        failedStep,
-        humanAction: humanActionFor(reason, primary),
+        reason: `cap dependency-cycle: ${g.id} is part of an ordering cycle (waits on ${others})`,
+        humanAction: `break the declared dependency cycle among ${g.issues.map((n) => `#${n}`).join(", ")} (remove or reverse one \`Depends-on\` / \`blocked by\` statement), then re-run \`/work ${g.issues.join(" ")} --restart\` — this group never started, so nothing was built`,
       });
-      // #388 — one notification per parked group, carrying the action rather
-      // than the event. A merged group is never notified: nothing is asked of
-      // the operator, and a hook that fires on success is noise. #380's hold
-      // is not a failure — the work is done and only the merge is waiting.
-      await notify({
-        kind: /awaiting-human-merge/.test(reason) ? "awaiting-merge" : "parked",
-        issues: g.issues,
-        reason,
-        action: humanActionFor(reason, primary),
-      });
+      trace(`work-queue: ${g.id} parked — it is part of a dependency cycle`);
     }
   }
 
-  await Promise.all(Array.from({ length: cap }, () => worker()));
-  const summary = finish(entries, groups, claimed);
+  await Promise.all(Array.from({ length: cap }, () => runQueueWorker(state)));
+  const summary = finish(entries, groups, claimed, state);
   // #382 — the summary is the most actionable state the run produces: which
   // groups parked, why, and what a human has to do about each. It used to
   // exist only in the scrollback of the session that produced it, so walking
@@ -449,6 +303,19 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
   // this run's groups are replaced; rows for other issues are kept. Best-
   // effort: a failed write must not turn a completed queue into an error.
   await mergeQueueSummaryEntries(opts.repoRoot, summary.entries, summary.notStarted);
+  // #1101 — one line naming the ordering graph whenever a group did not start
+  // for a reason the operator did not choose. Silence here is what made the
+  // original bug look like the driver refusing good work.
+  const capped = summary.entries.filter((e) =>
+    /dependency-parked|dependency-timeout|dependency-cycle|cross-group-conflict/.test(
+      e.reason ?? "",
+    ),
+  );
+  if (capped.length > 0) {
+    trace(
+      `work-queue: ${capped.length} group(s) parked before dispatch: ${capped.map((e) => `${e.groupId} (${e.reason})`).join("; ")}`,
+    );
+  }
   return summary;
 }
 
@@ -456,12 +323,20 @@ function finish(
   entries: Map<number, QueueEntry>,
   groups: IssueGroup[],
   claimed: Set<string>,
+  state: WorkerState,
 ): QueueSummary {
   // Never-claimed, not "everything after the last index". With K workers
   // groups complete out of order, so a positional slice would report groups
   // that actually ran as skipped — and miss ones that genuinely were.
+  // #1101 — a group the queue itself parked (a dependency that never merged, a
+  // wait that outlasted its bound) also counts as started: it has an entry, an
+  // operator action, and belongs in the parked column. Testing only `claimed`
+  // / `owners` double-reported every queue-level park as both `⏸ parked` and
+  // `Not started`, which is the contradiction the operator would rightly
+  // distrust. `resolved` is the honest test — it says the queue gave this group
+  // an answer, however it arrived at one.
   const notStarted = groups
-    .filter((g) => !claimed.has(g.id))
+    .filter((g) => !state.resolved.has(g.id))
     .map((r) => `${r.id} (#${r.issues.join(", #")})`);
   // Ordered by original group index so the report reads the same every run.
   const ordered = [...entries.entries()].sort((a, b) => a[0] - b[0]).map(([, e]) => e);
