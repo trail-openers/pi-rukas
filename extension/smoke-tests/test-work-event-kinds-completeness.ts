@@ -291,7 +291,10 @@ const everyKindEvent: WorkEvent[] = [
     at: 1,
     step: "lens-fix",
     reason: "quit",
-    origin: "unknown",
+    // #1247 round 2 — a signal origin, not just `unknown`: the all-kinds pass
+    // asserts ZERO findings, so a tuple/re-validator that rejected a legal
+    // `signal:SIGTERM` would fail here instead of refusing real state files.
+    origin: "signal:SIGTERM",
     resumable: true,
   },
   {
