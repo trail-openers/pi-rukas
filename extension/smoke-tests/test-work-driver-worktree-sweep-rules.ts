@@ -18,7 +18,8 @@
  * count of commands issued.
  */
 
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import {
   type SweepAction,
@@ -46,6 +47,7 @@ import {
   makeSweepWorktree,
   recordingExec,
   sweepCapHit,
+  writeSweepStateForWorktree,
 } from "./lib/worktree-sweep-fixture.ts";
 
 // ---------------------------------------------------------------------------
@@ -189,11 +191,18 @@ async function testDecideSweepAction() {
 
 async function testExecuteSweepAction() {
   console.log("\n2. executeSweepAction: each arm issues the command it means");
-  const target = {
-    ok: true,
-    realPath: "/repo/.worktrees/issue-7-default",
-    name: "issue-7-default",
-  } as SweepTargetResult;
+  // The targets are REAL worktrees from the fixture: the purge arm now reads the
+  // tree to decide whether a dependency directory is worth keeping, so a fake
+  // `/repo/...` path would fail-close to "keep" and the arm would look inert.
+  const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-exec");
+  const plain = makeSweepWorktree(repoRoot, baseSha, "issue-7-default");
+  // A SEPARATE tree for the remove arm: `git worktree remove` really runs (it is
+  // the operation under test), so it must not run on the tree the later purge
+  // assertion still needs on disk.
+  const removable = makeSweepWorktree(repoRoot, baseSha, "issue-9-default");
+  const withDeps = makeSweepWorktree(repoRoot, baseSha, "issue-8-default", { installDeps: true });
+  const target = (wt: { path: string; name: string }) =>
+    ({ ok: true, realPath: wt.path, name: wt.name }) as SweepTargetResult;
   const calls: { cmd: string; cwd?: string }[] = [];
   const rec: ExecFn = async (cmd, opts) => {
     calls.push({ cmd, cwd: opts?.cwd });
@@ -204,20 +213,28 @@ async function testExecuteSweepAction() {
   assertEquals(skip.stdout, "", "skip issues nothing");
   assertEquals(calls.length, 0, "skip makes no exec call");
 
-  await executeSweepAction({ type: "purge", target } as SweepAction, rec);
-  assertEquals(calls[0]?.cmd, "git clean -fdX", "purge runs git clean -fdX");
-  assertEquals(calls[0]?.cwd, target.realPath, "inside the worktree");
+  await executeSweepAction({ type: "purge", target: target(plain) } as SweepAction, rec);
+  assertEquals(calls[0]?.cmd, "git clean -fdX", "purge runs git clean -fdX on a plain tree");
+  assertEquals(calls[0]?.cwd, plain.path, "inside the worktree");
 
-  await executeSweepAction({ type: "remove", target } as SweepAction, rec);
-  assertEquals(calls[1]?.cwd, "/repo", "remove runs from the repo root, not .worktrees");
+  await executeSweepAction({ type: "remove", target: target(removable) } as SweepAction, rec);
+  assertEquals(calls[1]?.cwd, repoRoot, "remove runs from the repo root, not .worktrees");
   assertTrue(
     (calls[1]?.cmd ?? "").startsWith("git worktree remove --force "),
     "remove forces (the tree is swept by definition)",
   );
   assertTrue(
-    (calls[1]?.cmd ?? "").includes(JSON.stringify(target.realPath)),
+    (calls[1]?.cmd ?? "").includes(JSON.stringify(removable.path)),
     "remove names the registered absolute path, not a cwd-relative one",
   );
+
+  // #1265 round 1 — a tree holding a REAL dependency directory is not `git
+  // clean -fdX`-ed: that flag removes exactly the ignored files, which is the
+  // whole provisioned tree, and rebuilding it is the 30-60 min cost. The arm
+  // returns without running anything, so no further command is recorded.
+  await executeSweepAction({ type: "purge", target: target(withDeps) } as SweepAction, rec);
+  await executeSweepAction({ type: "purge", target: target(withDeps) } as SweepAction, rec);
+  assertEquals(calls.length, 2, "the dependency tree suppressed the clean — no 4th command");
 }
 
 // ---------------------------------------------------------------------------
@@ -331,11 +348,97 @@ async function testSweepEscapeHatches() {
   assertEquals(skipsByPath(none).size, 0, "and nothing skipped");
 }
 
+// ---------------------------------------------------------------------------
+// #1265 round 1 — the two guards the reviewer showed were reachable
+// ---------------------------------------------------------------------------
+
+async function testGroupClaimProtectsSecondaryWorkstream() {
+  console.log("\n5. a RUNNING group's non-primary workstream is never swept");
+  const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-group");
+  // A grouped cycle launched as #10: one state file 10.json with issues
+  // [10, 11], and a workstream tree named by the PRIMARY with 11 in it.
+  const secondary = makeSweepWorktree(repoRoot, baseSha, "issues-10-11-task-b", { dirty: true });
+  const st = initialState(10, PAST);
+  const state = {
+    ...st,
+    issues: [10, 11],
+    // NO owner: the file was persisted at a step boundary before the first
+    // dispatch, so Rule 3a has no pid to test. liveCycles is this process's
+    // group (just the launcher 99) and cannot see the sibling's cycle.
+    pipelineState: { ...st.pipelineState, status: "running", currentStep: "develop" },
+  };
+  writeSweepStateForWorktree(repoRoot, secondary.name, {
+    ownerPid: deadPid(),
+    status: "running",
+    updatedAt: PAST,
+  });
+  // Overwrite with the exact group shape the reviewer used (no owner, issues set).
+  const dir = join(repoRoot, ".pi", "work-state");
+  writeFileSync(join(dir, "10.json"), JSON.stringify(state, null, 2), "utf8");
+
+  const rec = recordingExec();
+  const res = await runWorktreeSweep({
+    repoRoot,
+    launchingCycleIssue: 99,
+    liveCycles: new Set<number>([99]),
+    execFn: rec.exec,
+  });
+  const byPath = skipsByPath(res);
+  assertEquals(res.purged.length, 0, "the live group's sibling workstream is NOT purged");
+  assertTrue(
+    (byPath.get(secondary.path) ?? "").startsWith("group-claimed"),
+    `skipped by the group claim (got: ${byPath.get(secondary.path)})`,
+  );
+  assertEquals(rec.countMatching("git clean"), 0, "no destructive command against a live tree");
+  assertTrue(existsSync(secondary.path), "the tree is intact");
+}
+
+async function testFetchBudgetBoundsTheLaunchSweep() {
+  console.log("\n6. the Rule 5 remote proof fetches at most netProofLimit times");
+  const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-budget");
+  const origin = join(repoRoot, "origin.git");
+  const run = (args: string[], cwd: string) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  run(["init", "--bare", "--initial-branch=main", origin], repoRoot);
+  run(["remote", "add", "origin", origin], repoRoot);
+  run(["push", "-q", "origin", "main"], repoRoot);
+  // Three dead, merged, clean trees each on a pushed branch — all reach Rule 5.
+  const names = ["issue-21-default", "issue-22-default", "issue-23-default"];
+  for (const name of names) {
+    const issue = Number(name.match(/(\d+)/)?.[0]);
+    const branch = `feature/issue-${issue}-dead`;
+    run(["branch", branch, baseSha], repoRoot);
+    run(["push", "-q", "origin", branch], repoRoot);
+    const wt = makeSweepWorktree(repoRoot, baseSha, name);
+    run(["reset", "--hard", branch], wt.path);
+    writeSweepStateForWorktree(repoRoot, name, {
+      ownerPid: deadPid(),
+      status: "merged",
+      currentStep: "merged",
+      branchName: branch,
+      updatedAt: PAST,
+    });
+  }
+  const rec = recordingExec();
+  const res = await runWorktreeSweep({
+    repoRoot,
+    launchingCycleIssue: 999,
+    liveCycles: new Set<number>(),
+    execFn: rec.exec,
+    netProofLimit: 1,
+  });
+  assertEquals(rec.countMatching("git fetch"), 1, "exactly one network fetch, not one per tree");
+  assertEquals(res.removed.length, 1, "one tree fully removed within the budget");
+  assertEquals(res.checked, 3, "all three were still checked");
+}
+
 async function runTests() {
   await testDecideSweepAction();
   await testExecuteSweepAction();
   await testRunWorktreeTeardown();
   await testSweepEscapeHatches();
+  await testGroupClaimProtectsSecondaryWorkstream();
+  await testFetchBudgetBoundsTheLaunchSweep();
   finish();
 }
 
