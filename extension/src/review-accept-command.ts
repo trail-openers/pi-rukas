@@ -93,12 +93,123 @@ export function isProtectedToken(token: string): boolean {
 }
 
 /**
- * Clause (a): does this text name the store anywhere, token-wise? Asked of BOTH the
- * raw command and the normalised one — quote removal must not be able to hide a name
- * that the shell still hands to a program.
+ * Clause (a): does this text name the store anywhere, token-wise? Asked of the text
+ * AS WRITTEN and, inside `namesStore`, of its views — quote removal must not be able
+ * to hide a name that the shell still hands to a program.
  */
 export function namesProtected(text: string): boolean {
   return tokensOf(text).some(isProtectedToken);
+}
+
+/** Every quote, brace and comma character, gone: the text the shell passes when it
+ * performs a concatenation (`'rev''iew-findings.json'`) or a brace expansion
+ * (`rev{iew-findings}.json`). Both spellings name the store although the raw text
+ * never spells it, so the matcher is also asked of THIS view. */
+export function eraseShellPunctuation(text: string): string {
+  return text.replace(/["'`{},]/g, "");
+}
+
+/** The operator script's basename stem. Its own name is protected — running it from an
+ * agent shell is the act the whole guard exists to refuse — while a name that merely
+ * STARTS with it (`review-acceptance-notes`) and the guard module beside it
+ * (`review-accept-guard.ts`) are not: a word is asked for EQUALITY here, not for the
+ * stem prefix the store's own names take. */
+const SCRIPT_STEM = String.fromCharCode(
+  114,
+  101,
+  118,
+  105,
+  101,
+  119,
+  45,
+  97,
+  99,
+  99,
+  101,
+  112,
+  116,
+);
+/** Does a token name the operator's accept script, or the script run by path
+ * (`extension/scripts/review-accept.ts`)? The BASENAME is what decides, so a command
+ * that spells the script by path is in scope; a word that merely starts with the stem
+ * (`review-acceptance-notes`) and the guard module beside it (`review-accept-guard.ts`)
+ * are not. */
+export function isAcceptScriptToken(token: string): boolean {
+  const base = baseName(token)
+    .replace(/["']/g, "")
+    .replace(/^['"]+|['"]+$/g, "")
+    .replace(/[?*\[\]:,;]+$/, "")
+    .toLowerCase();
+  return base === SCRIPT_STEM || base === `${SCRIPT_STEM}.ts` || base === `${SCRIPT_STEM}-row.ts`;
+}
+
+/**
+ * The gate of clause (a): does this command name the findings store — the data file,
+ * the store module, their stems, a `.tmp` / `.corrupt` sibling? Asked of FOUR views,
+ * because each spelling below reaches the store's bytes by a different route, and the
+ * matcher (`isProtectedToken`) supplies its own quote-erasure and case folding:
+ *
+ *  (i)   the RAW text — a name is a name wherever it appears;
+ *  (ii)  the NORMALISED text — quoted spans already folded away, so this is what a
+ *        program receives as an argument;
+ *  (iii) the raw text with every quote, brace and comma REMOVED — the word the shell
+ *        assembles from a concatenation or a brace expansion;
+ *  (iv)  the heredoc body, which is part of the raw text, so (i) already covers it;
+ *  (v)   an `extra` matcher the caller adds — the guard passes the OPERATOR SCRIPT's
+ *        basename, whose path (`extension/scripts/…`) is the route the acceptance runs;
+ *  (vi)  a value ATTACHED to an option, which no tokeniser ever hands out bare: a
+ *        pickaxe / grep value (`git log -Greview-findings-store`, `-S…`, `--grep=…`) or
+ *        an output value (`git show HEAD:x -oreview-findings.json`), where the option
+ *        prefix GLUES the name to the flag. Each is matched case-insensitively because
+ *        the guard asks this of its lowercased view, and git reads such a value exactly
+ *        as written.
+ *
+ * Clause (a) scopes the allowlist to commands that name the store, so this predicate —
+ * not the arms — decides whether the adjudication applies at all. A command that does
+ * not name the store (`mkdir -p tmp/x`, `git add -A`, `npm install`) is an ordinary
+ * agent command and no arm is asked of it.
+ */
+export function namesStore(
+  command: string,
+  normalised: string,
+  extra?: (token: string) => boolean,
+): boolean {
+  const asked = extra ? (t: string): boolean => isProtectedToken(t) || extra(t) : isProtectedToken;
+  return [command, normalised, eraseShellPunctuation(command)].some((text) =>
+    tokensOf(text).some(asked),
+  );
+}
+
+/** An option value ATTACHED to its flag, with the flag removed: `-G<name>`, `-S<name>`,
+ * `--grep=<name>`, `-o<name>`, `--output=<name>`, `-f<name>`. Returns the value, or
+ * `null` for a word that is not an attached value. */
+function attachedValue(word: string): string | null {
+  const bare = word.replace(/^["']+|["']+$/g, "");
+  for (const flag of ["--grep", "--output", "-grep", "--pickaxe"] as const) {
+    if (bare.startsWith(`${flag}=`)) return bare.slice(flag.length + 1);
+  }
+  if (/^-[gsof]/i.test(bare) && bare.length > 2) return bare.slice(2);
+  return null;
+}
+
+/**
+ * Clause (a), part (vi): does an ATTACHED option value name the store? The shapes are
+ * `git log -Greview-findings-store` (a pickaxe regex), `git log -S<name>` / `--grep=<name>`
+ * and `git show HEAD:x -oreview-findings.json` (an output path). None of them ever hands
+ * a tokeniser the bare name — the option prefix glues it to the flag — so the token match
+ * in `namesStore` cannot see them, and the arms cannot either (`-o<name>` is one word,
+ * not the `-o <name>` pair their operand test reads). They are asked case-insensitively:
+ * the guard evaluates this over its LOWERCASED view while git matches such a value
+ * exactly, so a folded name still counts as naming it.
+ */
+export function namesAttachedValue(text: string): boolean {
+  return tokensOf(text).some((token) => {
+    const value = attachedValue(token);
+    if (value === null) return false;
+    return tokensOf(value).some(
+      (t) => isProtectedToken(t.toLowerCase()) || isAcceptScriptToken(t.toLowerCase()),
+    );
+  });
 }
 
 /** Collapse whitespace and newlines to a single space. */
@@ -137,6 +248,31 @@ export function skipHeredoc(command: string, start: number): number | "PARSE_FAI
  * its own segment: the body is text the guard cannot see, so whatever the marker
  * belongs to is refused unless it matches an arm with the marker alone.
  */
+/** The words of a command WITH their quoted contents visible: normalise() replaces a
+ * whole quoted span by a space, which is right for prose but hides a selector or an
+ * option living inside quotes (`python3 -c 'print(1)'` is one word here). Backslash
+ * escapes are removed, because the shell removes them before the program sees them. */
+export function shellVisible(command: string): string {
+  let out = "";
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i] as string;
+    if (ch === "'") {
+      const end = command.indexOf("'", i + 1);
+      out += command.slice(i, end < 0 ? command.length : end + 1);
+      i = end < 0 ? command.length : end + 1;
+      continue;
+    }
+    if (ch === "\\") {
+      i += 1;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
 export function normalise(command: string): string | "PARSE_FAIL" {
   let out = "";
   let i = 0;
