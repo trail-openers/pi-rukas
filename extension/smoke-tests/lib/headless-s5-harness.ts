@@ -126,8 +126,25 @@ export type DriverSeams = Pick<
   "dispatchFn" | "issueBodyFetcherFn" | "verifyExecFn" | "policyJudgeFn"
 >;
 
-/** A state file parked at the merge step, holding a PR the forge says is green. */
-export function readyToMerge(issue: number, baseSha: string): WorkState {
+/**
+ * A state file parked at the merge step, holding a PR the forge says is green.
+ *
+ * `widePrView: true` leaves `prDraft` UNSET. That is the only way a case gets
+ * the forge adapter's wide `gh pr view` read at all: `runMerged` opens with
+ * `markDraftPrReady`, which returns at its `!draft || draft.status === "ready"`
+ * guard when a ready fact is already persisted and never calls `readOwnPr` →
+ * `forge.prView`. With the fact absent, the headless cycle (`headless: true`,
+ * so `draftPrEnabled` holds) reads the PR live to decide whether it is a draft.
+ * The fixture answers `isDraft: false`, so `recordLiveDraftFact` records
+ * nothing, `markDraftPrReady` short-circuits on the same guard, and the merge
+ * step proceeds exactly as it does with `prDraft: {status: "ready"}` — the
+ * case's verdict is unchanged, only the reads the cycle made are more.
+ */
+export function readyToMerge(
+  issue: number,
+  baseSha: string,
+  opts: { widePrView?: boolean } = {},
+): WorkState {
   const base = initialState(issue);
   return {
     ...base,
@@ -150,8 +167,9 @@ export function readyToMerge(issue: number, baseSha: string): WorkState {
       branchName: `feature/issue-${issue}`,
       prNumber: FIXTURE_PR,
       // Already ready: a draft cannot merge and would halt the step for a
-      // reason unrelated to what these cases assert.
-      prDraft: { status: "ready" },
+      // reason unrelated to what these cases assert. `widePrView` leaves the
+      // fact absent instead — see `readyToMerge`.
+      ...(opts.widePrView ? {} : { prDraft: { status: "ready" as const } }),
     },
   };
 }
@@ -175,6 +193,14 @@ export async function mergedRun(opts: {
   forbidLiveSpawn?: boolean;
   /** See `forbidLiveSpawn` — forces `PI_ENSEMBLE_POLICY_JUDGE=0` even when a judge is injected. */
   forcePolicyJudgeOff?: boolean;
+  /**
+   * `true` persists the state file with NO `prDraft` fact, which is what makes
+   * the merged step read the forge's wide `gh pr view` (via
+   * `markDraftPrReady` → `readOwnPr`) instead of short-circuiting on a stored
+   * `ready`. Only a case that asserts on `log.prViewAnswers` wants this — the
+   * assertion is vacuous over an empty answer log.
+   */
+  widePrView?: boolean;
   /**
    * Set to capture what the environment actually said at the moment the case
    * ran, which `withCaseEnv` restores on the way out. The host-inertness case
@@ -208,7 +234,10 @@ export async function mergedRun(opts: {
     // awaited pre-write from case N would still be in the chain when case N+1's
     // driver read its state, and the driver would fall back to `initialState`
     // with no `baseSha` and read doctrine from nowhere.
-    writeStateSync(repo.repoRoot, readyToMerge(opts.issue, repo.baseSha));
+    writeStateSync(
+      repo.repoRoot,
+      readyToMerge(opts.issue, repo.baseSha, { widePrView: opts.widePrView }),
+    );
     const result = await runHeadless({
       repoRoot: repo.repoRoot,
       issues: [opts.issue],

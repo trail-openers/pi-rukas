@@ -168,6 +168,12 @@ function prViewJson(
  * with the gate the case names never consulted. The only voice that says
  * "this PR is not open" is now the evidence gate's own probe, so the refusal
  * can only come from there.
+ *
+ * The wide read is not free on this path: with the usual persisted
+ * `prDraft: {status: "ready"}` it never happens at all, and an exclusivity
+ * assertion over an empty answer log is vacuous. The `unopen` case therefore
+ * runs with `widePrView` (see `readyToMerge`) so the assertion denies against
+ * an answer that really was handed back.
  */
 interface MergeView {
   /** The evidence gate's 3-field `gh pr view` answer. */
