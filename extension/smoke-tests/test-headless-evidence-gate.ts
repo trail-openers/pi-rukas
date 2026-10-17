@@ -200,6 +200,11 @@ initEnv();
     issue: 9005,
     grant: MERGE_GRANT,
     merge: "unopen",
+    // The wide `gh pr view` is only read when no draft fact is persisted
+    // (otherwise `markDraftPrReady` returns before `readOwnPr`) — and an
+    // assertion over an empty `prViewAnswers` is vacuously true, so this case
+    // has to ask for the read to have an answer to deny.
+    widePrView: true,
     judge: judgeThatAnswers("permitted", MERGE_GRANT),
   });
   assert(r.code === EXIT.handoff, `a PR that is CLOSED, not OPEN → exit 10 (got ${r.code})`);
@@ -222,7 +227,14 @@ initEnv();
     // gave back — a JSON blob in a command line is not an answer, so asserting
     // on `calls` could not fail however CLOSED the wide read was. The answers
     // are recorded separately, and the exclusivity lives on the field that
-    // actually carries them: `prViewAnswers`.
+    // actually carries them: `prViewAnswers`. Non-empty FIRST — `.every` over
+    // an empty array is vacuously true, which is what made the same assertion
+    // unfalsifiable while the fixture's `prDraft: {status: "ready"}` kept the
+    // wide read from ever being issued.
+    r.log.prViewAnswers.length > 0,
+    `the merged step actually read the forge's wide \`gh pr view\`, so the exclusivity assertion below has an answer to deny (${r.log.prViewAnswers.length} wide answers)`,
+  );
+  assert(
     r.log.prViewAnswers.every((a) => !a.includes('"state":"CLOSED"')),
     `no wide \`gh pr view\` ANSWER said CLOSED — only the evidence gate's own probe reported the closed PR (${r.log.prViewAnswers.join(" | ") || "no wide prView was asked"})`,
   );
