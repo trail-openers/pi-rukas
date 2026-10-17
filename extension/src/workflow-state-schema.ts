@@ -14,10 +14,15 @@ export type { ConsolidationCompleteness } from "./workflow-state-schema-consolid
 export type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
 // #814 — FenceViolation lives with the other verifyEvidence shapes.
 export type { FenceViolation } from "./workflow-state-schema-verify.ts";
+export type { VerifyOutputTail } from "./workflow-state-schema-verify.ts";
 import type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 import type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
 import type { PlanQualityReason } from "./workflow-state-schema-plan-quality.ts";
-import type { FenceViolation, VerifyEvidenceOrigin } from "./workflow-state-schema-verify.ts";
+import type {
+  FenceViolation,
+  VerifyEvidenceOrigin,
+  VerifyOutputTail,
+} from "./workflow-state-schema-verify.ts";
 import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
 
 // #861 — PlanQualityReason moved to its own fragment (the 500-line cap);
@@ -460,6 +465,14 @@ export interface PipelineState {
      * `FenceViolation` below). Absent = none recorded.
      */
     fenceViolations?: FenceViolation[];
+    /**
+     * #1392 D5 — the bounded RAW output tail of the failed consolidated verify
+     * run, stored so BOTH handoff surfaces print the output itself rather than
+     * only naming a scratch-dir path (cycles 54/60 parked with nothing but
+     * `Raw output: <path>`, which is neither on the issue nor durable).
+     * Absent on pre-#1392 state files and when no tail was captured.
+     */
+    outputTail?: VerifyOutputTail;
   };
   /**
    * Terminal status. "running" while active; flips on `merged` or `handoff`.

@@ -47,6 +47,13 @@ export interface IntegrationVerifyOpts {
   verifyExecFn?: ExecFn;
   verifyTimeoutMs?: number;
   verifyRetry?: IntegrateOpts["verifyRetry"];
+  /**
+   * #1392 D4 — the base the consolidated failure is compared against, and the
+   * issue the probe's temporary worktree is named by. Threaded straight to
+   * `runCommitPrConsolidatedVerify`, which probes only after a failure.
+   */
+  baselineBaseSha?: string;
+  baselineIssue?: number;
   /** Restores repoRoot to the ref `integrate()` recorded; see its docstring. */
   restoreRoot: () => Promise<VerifiedRestoreResult>;
   /** The verified restore post-condition, phrased once (`integrate()`'s). */
@@ -59,7 +66,6 @@ export interface IntegrationVerifyOutcome {
   /** The identity that justified skipping the run, when the run was skipped. */
   skipped?: AlreadyVerifiedTree;
 }
-
 export async function verifyIntegration(
   execFn: ExecFn,
   opts: IntegrationVerifyOpts,
@@ -87,6 +93,8 @@ export async function verifyIntegration(
     // (the cycle's ciRetryCount unset).
     isCiRetry: (opts.verifyRetry?.ciRetryCount ?? 0) > 0,
     onRecover: opts.verifyRetry?.onRecover,
+    ...(opts.baselineBaseSha !== undefined ? { baseSha: opts.baselineBaseSha } : {}),
+    ...(opts.baselineIssue !== undefined ? { issue: opts.baselineIssue } : {}),
     ...(alreadyVerifiedTree !== undefined ? { alreadyVerifiedTree } : {}),
   });
   if (vr.ok === false) {
@@ -97,6 +105,7 @@ export async function verifyIntegration(
         failure: "verify",
         reason: `${vr.classifiedMessage} — it was not pushed. ${opts.claimFor(restore)}.`,
         ...(vr.timedOut ? { timedOut: true } : {}),
+        ...(vr.evidenceNote !== undefined ? { verifyEvidenceNote: vr.evidenceNote } : {}),
       },
     };
   }

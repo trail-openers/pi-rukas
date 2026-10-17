@@ -18,6 +18,7 @@ import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
+import type { VerifyOutputTail } from "./workflow-state-schema-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 // #1134 follow-up — the argv form must be honoured: the previous
@@ -160,6 +161,13 @@ export async function verifyStepOutcome(
    * written (write failure, no consolidated run).
    */
   logPath?: string;
+  /**
+   * #1392 D5 — the bounded RAW output tail of the failed consolidated verify
+   * run, carried STRUCTURALLY so the caller records it on
+   * `verifyEvidence.outputTail` and both handoff surfaces print the output
+   * instead of only naming `logPath`. Absent when no tail was captured.
+   */
+  outputTail?: VerifyOutputTail;
   /** #1040 — the develop gate's comment-loss checks, structured (see `recordCommentEvidence`). */
   commentEvidence?: CommentEvidence[];
   /** #1349 — the verify command is red at base and its failures are the only ones. */
@@ -194,6 +202,8 @@ export async function verifyStepOutcome(
     // Captured here and returned structurally: the caller appends the event,
     // which is where the event log lives.
     let consolidatedVerifySkipped: AlreadyVerifiedTree | undefined;
+    // #1392 D5 — the bounded raw tail of the failed consolidated run.
+    let consolidatedOutputTail: VerifyOutputTail | undefined;
     await verifyDevelopOutcome(
       ctx,
       state,
@@ -206,6 +216,9 @@ export async function verifyStepOutcome(
       fenceViolations,
       (logPath) => {
         consolidatedLogPath = logPath;
+      },
+      (tail) => {
+        consolidatedOutputTail = tail;
       },
       commentEvidence,
       () => {
@@ -229,6 +242,7 @@ export async function verifyStepOutcome(
       ...(fenceViolations.length > 0 ? { fenceViolations } : {}),
       ...(flakeRecovered ? { flakeRecovered: true } : {}),
       ...(consolidatedLogPath !== undefined ? { logPath: consolidatedLogPath } : {}),
+      ...(consolidatedOutputTail !== undefined ? { outputTail: consolidatedOutputTail } : {}),
       ...(baselineRedOnly ? { baselineRedOnly: true } : {}),
       ...(consolidatedVerifySkipped !== undefined ? { consolidatedVerifySkipped } : {}),
       commentEvidence,

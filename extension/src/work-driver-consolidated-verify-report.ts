@@ -33,8 +33,9 @@ import {
 import { isHostForkExhaustion, pidLimitSnapshot } from "./work-driver-exec-error.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyTimeoutFailure, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
-import { rawOutputClause } from "./work-driver-verify-flake.ts";
+import { rawOutputClause, verifyOutputTailRecord } from "./work-driver-verify-flake.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
+import type { VerifyOutputTail } from "./workflow-state-schema-verify.ts";
 
 export interface ConsolidatedVerifyReporting {
   cmd: string;
@@ -49,6 +50,13 @@ export interface ConsolidatedVerifyReporting {
   /** The develop fence's records — #814 attributes a conflict to a sibling. */
   fenceViolations?: FenceViolationRecord[];
   onConsolidatedLogPath?: (logPath: string) => void;
+  /**
+   * #1392 D5 — out-parameter for the bounded RAW output tail of the failed
+   * consolidated run, so the caller records it on `verifyEvidence.outputTail`
+   * and both handoff surfaces PRINT the output rather than only naming the
+   * scratch log the path points at. Called only when a tail was captured.
+   */
+  onConsolidatedOutputTail?: (tail: VerifyOutputTail) => void;
   /** #1240 — the skip's identity, handed to the caller to record as an event. */
   onConsolidatedVerifySkipped?: (skipped: AlreadyVerifiedTree) => void;
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void;
@@ -67,6 +75,7 @@ export function reportConsolidatedVerifyOutcome(
     singlePerAssertion,
     fenceViolations,
     onConsolidatedLogPath,
+    onConsolidatedOutputTail,
     onVerifyFlakeRecovered,
     onConsolidatedVerifySkipped,
   }: ConsolidatedVerifyReporting,
@@ -215,6 +224,22 @@ export function reportConsolidatedVerifyOutcome(
     // return — undefined when the write failed, in which case there is
     // nothing to record structurally).
     if (cons.logPath !== undefined) onConsolidatedLogPath?.(cons.logPath);
+    // #1392 D5 — and the bounded RAW tail behind it. The clause above says
+    // WHERE the output lives; this IS the output. A path inside the cycle's
+    // scratch dir is neither on the issue nor durable, so a handoff that
+    // names only the path leaves the operator with a verdict and no content
+    // (cycles 54 and 60 both parked that way). Bounded here so a multi-MB
+    // stream never reaches the state file; the renderer redacts before it
+    // clips and fences the result.
+    if (cons.rawFailure?.trim()) {
+      const tail = verifyOutputTailRecord(
+        "develop",
+        cons.rawFailure,
+        extractAttributedTail(cons.rawFailure, 800).attributed,
+        cmd,
+      );
+      if (tail !== undefined) onConsolidatedOutputTail?.(tail);
+    }
   } else {
     // #1240 — the probe was skipped because its tree is the tree that just
     // passed the per-worktree run. Recorded as an explicit note rather than

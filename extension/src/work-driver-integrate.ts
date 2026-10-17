@@ -91,6 +91,17 @@ export interface IntegrateOpts {
     ciRetryCount?: number;
     onRecover: (evidenceTail?: string) => void;
   };
+  /**
+   * #1392 D4 — the commit the consolidated failure is compared against. When
+   * set, a FAILED consolidated run probes the verify command on a clean
+   * checkout of it (see `work-driver-verify-baseline.ts`) so the park can say
+   * whether the gate was already red without the change. Absent → no probe,
+   * and the park says the baseline was not established. A GREEN run never pays
+   * for the probe.
+   */
+  verifyBaselineBaseSha?: string;
+  /** Issue number the baseline probe names its temporary worktree by. */
+  verifyBaselineIssue?: number;
 }
 
 /** #492 — worktrees that produced no diff, keyed by id → worktree path. */
@@ -185,6 +196,13 @@ export type IntegrateResult =
       failure?: "dirty-repoRoot" | "apply" | "verify";
       /** #1324 — the `verify` failure was a run killed at its bound. */
       timedOut?: boolean;
+      /**
+       * #1392 D4 — the commit-pr verify's honest-absence + baseline sentence
+       * (`commitPrVerifyBaselineNote`). Set on a `verify` failure the probe had
+       * something to say about; the caller puts it on the cap's `evidence` and
+       * on `verifyEvidence.failures` rather than making a reader re-derive it.
+       */
+      verifyEvidenceNote?: string;
       /** #654 task-c — dirty-preflight porcelain lines (the caller parks with these). */
       porcelain?: string[];
     };
@@ -415,6 +433,10 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       verifyExecFn: opts.verifyExecFn,
       verifyTimeoutMs: opts.verifyTimeoutMs,
       verifyRetry: opts.verifyRetry,
+      // #1392 D4 — threaded to the verify seam, which probes ONLY after the
+      // consolidated run has failed.
+      baselineBaseSha: opts.verifyBaselineBaseSha,
+      baselineIssue: opts.verifyBaselineIssue,
       restoreRoot,
       claimFor,
     });

@@ -129,6 +129,16 @@ export async function mechanizedCommitPr(
        * this state instead of appending a second cap of its own.
        */
       haltedAfter?: WorkState;
+      /**
+       * #1392 D4 — set on the terminal VERIFY failure when the commit-pr
+       * baseline probe produced something the park must state: the honest
+       * absence of an extractable assertion and/or the baseline verdict.
+       * `work-driver-commit-lock.ts` composes it onto the cap's `evidence`
+       * (and onto `verifyEvidence.failures`) so cycle 54's shape —
+       * `integration-verify-failed` with no assertion and no baseline result —
+       * says what it actually knows.
+       */
+      verifyEvidenceNote?: string;
     }
 > {
   const execFn = ctx.verifyExecFn ?? execp;
@@ -261,6 +271,15 @@ export async function mechanizedCommitPr(
       verifiedWorktree:
         followupBase === undefined && ids.length === 1 ? Object.values(worktrees)[0] : undefined,
       verifyTimeoutMs: integrationVerifyTimeoutMs(),
+      // #1392 D4 — the base the consolidated failure is compared against. The
+      // followup round integrates onto the branch's own head, so the baseline
+      // that isolates THIS round's work is that head; the first round compares
+      // against the cycle's recorded base. A followup round whose head could not
+      // be read falls back to `ps.baseSha` above, and `integrate()` passes that
+      // same value down — so the probe always judges the tree the integration
+      // started from.
+      verifyBaselineBaseSha: followupBase ?? ps.baseSha,
+      verifyBaselineIssue: ctx.issue,
       verifyRetry: {
         ciRetryCount: ps.ciRetryCount,
         onRecover: (evidenceTail?: string) => {
@@ -282,6 +301,9 @@ export async function mechanizedCommitPr(
           terminal: true,
           fallbackCause,
           ...(res.timedOut ? { timedOut: true } : {}),
+          ...(res.verifyEvidenceNote !== undefined
+            ? { verifyEvidenceNote: res.verifyEvidenceNote }
+            : {}),
         };
       }
       // #861 — on a non-terminal failure the ops fallback takes over, so

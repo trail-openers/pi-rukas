@@ -27,6 +27,7 @@ import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
 import { openPointsMarkdown } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsMarkdown } from "./work-driver-handoff-recovery.md.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { verifyTailSection } from "./work-driver-handoff-verify-tail.ts";
 import { describeBranchState } from "./work-driver-handoff-view.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import { dispatchDurations } from "./work-status-dispatch-durations.ts";
@@ -128,6 +129,10 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     ...adversarialOutcomeSection(state),
     ...plumbReportSection(state),
     ...consolidationNotesSection(state),
+    // #1392 D5 — the raw gate output itself, not only the scratch path that
+    // names it. Rendered from verifyEvidence.outputTail; absent (no lines)
+    // when the cycle captured no tail.
+    ...verifyTailSection(state),
     "### What was attempted",
     ...dispatchRows,
     "",

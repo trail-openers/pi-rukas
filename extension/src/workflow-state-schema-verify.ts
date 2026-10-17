@@ -52,3 +52,32 @@ export type FenceViolation =
  * gate did.
  */
 export type VerifyEvidenceOrigin = "outcome-gate" | "fix-pass" | "pr-not-open";
+
+/**
+ * #1392 D5 — the RAW output tail behind one consolidated-verify run, stored
+ * STRUCTURALLY so the handoff surfaces can print the output itself instead of
+ * only naming a scratch path. Cycles 54 and 60 both parked with nothing but
+ * `Raw output: <path>` — a path inside the cycle's scratch dir, which is not
+ * on the issue and is gone whenever the workspace is cleaned, so the operator
+ * reading the comment could not see what the gate printed.
+ *
+ * `tail` is bounded by the caller before it is stored (the same
+ * `extractAttributedTail` window the evidence uses). It is UNTRUSTED content —
+ * whatever the project's verify command printed — so the renderers put it in a
+ * fenced block computed from its own backtick run, never inline.
+ *
+ * Absent on every state file written before this field; the renderers then
+ * print nothing extra (a park with no captured tail still says so plainly).
+ */
+export interface VerifyOutputTail {
+  /** Which verify run this tail came from — the same value `verifyEvidence.step` carries. */
+  step: string;
+  /** The raw project gate output this was taken from (its command name). */
+  command?: string;
+  /** The bounded, redacted tail. */
+  tail: string;
+  /** True when the tail starts at a `FAILED:` marker (sound attribution). */
+  attributed?: boolean;
+  /** Epoch ms when the tail was captured. */
+  at: number;
+}

@@ -26,7 +26,9 @@
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { withVerifySlot } from "./host-resources.ts";
+import { redactSecrets } from "./secret-patterns.ts";
 import { trace } from "./trace.ts";
+import type { VerifyOutputTail } from "./workflow-state-schema-verify.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -89,6 +91,48 @@ function boundVerifyLog(raw: string): string {
 export function rawOutputClause(logPath?: string): string {
   return logPath ? ` Raw output: ${logPath}.` : " Raw output: unavailable.";
 }
+
+/**
+ * #1392 D5 — build the STRUCTURED bounded tail of one failed consolidated
+ * verify run for `pipelineState.verifyEvidence.outputTail`.
+ *
+ * Why the record exists: the raw stream is persisted to the cycle's scratch
+ * dir (#841) and the evidence names that path, but a path is not content —
+ * cycles 54 and 60 parked with nothing but `Raw output: <path>`, and the
+ * operator reading the comment could not see what the gate printed. The
+ * handoff renderers read this record and print the tail itself.
+ *
+ * The tail is NOT redacted or clipped here — that is the renderer's job
+ * (`verifyTailSection`), which redacts before it bounds so a clip cannot
+ * create a credential fragment. This function only bounds the STREAM at a
+ * size the state file can carry: `maxChars` is the window the caller already
+ * uses for its evidence tail, so a multi-MB raw stream never reaches the
+ * state file.
+ *
+ * Returns `undefined` when the stream is empty — there is nothing to show,
+ * and the renderer's presence rule then prints no section rather than an
+ * empty fence.
+ */
+export function verifyOutputTailRecord(
+  step: string,
+  raw: string,
+  attributed: boolean,
+  command?: string,
+  maxChars = 4000,
+): VerifyOutputTail | undefined {
+  const chars = Array.from(redactSecrets(raw).text);
+  if (chars.length === 0) return undefined;
+  const tail = chars.slice(0, maxChars).join("");
+  if (!tail.trim()) return undefined;
+  return {
+    step,
+    ...(command !== undefined ? { command } : {}),
+    tail,
+    attributed,
+    at: Date.now(),
+  };
+}
+
 export function writeConsolidatedVerifyLog(
   scratchDir: string,
   timestamp: string,

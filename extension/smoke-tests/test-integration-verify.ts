@@ -252,7 +252,13 @@ try {
     "canary: the terminal branch is checked before the ops fallback is reached",
   );
   assert(
-    /cap: (?:mech\.timedOut \? "verify-timeout:commit-pr" : )?"integration-verify-failed"/.test(combined),
+    /cap:\s*(?:mech\.timedOut \? "verify-timeout:commit-pr" : )?"integration-verify-failed"/.test(
+      combined,
+    ) ||
+      // #1392 D4 — the cap may be hoisted into a local so the evidence
+      // composition sits beside it; the canary's point is that the halt names
+      // a cap, not the spelling of the expression.
+      /const cap[^;]*"integration-verify-failed"/.test(combined),
     "canary: it halts with a named cap rather than failing silently",
   );
 

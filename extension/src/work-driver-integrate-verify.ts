@@ -29,6 +29,14 @@
  * claim in the detail because its message builder reads the whole detail
  * verbatim; the commit-pr seam builds the reason itself and can keep the
  * two concerns separate.
+ *
+ * #1392 D4 — parity with the develop seam on what a park SAYS. The develop
+ * seam probes the base commit after a failure (`work-driver-verify-baseline.ts`);
+ * this seam ran no probe at all, so cycle 54's `integration-verify-failed`
+ * park blamed the combination while the operator could not tell whether the
+ * gate was already red at the base. This seam owns the probe + its honest
+ * sentence (`commitPrVerifyBaselineNote`); `work-driver-commit-lock.ts`
+ * persists it as the cap's `evidence` + `verifyEvidence`.
  */
 
 import { withVerifySlot } from "./host-resources.ts";
@@ -38,8 +46,14 @@ import {
   consolidatedFailureMessage,
 } from "./work-driver-consolidation-classify.ts";
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
+import { NO_SPECIFIC_ASSERTION } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { commitPrSkipDecision } from "./work-driver-integrate-verify-skip.ts";
+import {
+  BASELINE_RED_MARKER,
+  type BaselineVerdict,
+  probeBaselineVerify,
+} from "./work-driver-verify-baseline.ts";
 import { verifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
 import {
   FAST_TIER_LABEL,
@@ -87,7 +101,110 @@ export type CommitPrConsolidatedVerifyResult =
       classifiedMessage: string;
       /** #1324 — the run was killed at its bound: no verdict, so no classification. */
       timedOut?: boolean;
+      /** #1392 D4 — the baseline probe's verdict, or its honest absence. */
+      baseline?: BaselineProbeOutcome;
+      /**
+       * #1392 D4 — the single sentence the caller puts on the cap: the honest
+       * absence of an extractable assertion AND the baseline verify's result.
+       * `undefined` when there is nothing to add — an assertion WAS extracted
+       * (the message already names it) and the base is green (the run below
+       * established that), or the run was killed at its bound (whose message
+       * already says no verdict was reached).
+       */
+      evidenceNote?: string;
     };
+
+/** #1392 D4 — the outcome of the commit-pr baseline probe. */
+export interface BaselineProbeOutcome {
+  /** The probe's own verdict, or `undefined` when it never ran. */
+  verdict?: BaselineVerdict;
+  /** Why no verdict exists: no base recorded, or the probe itself failed. */
+  reason?: string;
+}
+
+/**
+ * #1392 D4 — the sentence that replaces the hole in the park text.
+ *
+ * Two facts the operator needs and the classified message does not carry:
+ *
+ * 1. **The honest absence.** When nothing assertion-shaped could be read from
+ *    the output, the classifier's `[...] specific assertion: (no specific
+ *    assertion could be extracted)` clause is a placeholder, not a finding —
+ *    and the cycle-54/60 parks read as a verdict on the change with no
+ *    content. Say what actually happened: the gate exited non-zero and nothing
+ *    assertion-shaped could be read from its output.
+ * 2. **The baseline verdict.** Whether main was green, red, or unreadable at
+ *    the cycle's base commit decides whether the failure implicates the change
+ *    at all — the distinction #1253 was filed to make. The develop seam states
+ *    it (#1349); this seam never even ran the probe.
+ *
+ * Returns `undefined` only where another sentence already states the fact:
+ * an assertion was extracted AND the base is established green (the classified
+ * message is then a true verdict, and a green base adds nothing); or an
+ * assertion was extracted AND the base is red on that same assertion
+ * (`baselineRedMessage` owns that wording); or the run was killed at its bound
+ * (a timeout message already says nothing judged the code). Never fabricates a
+ * baseline claim: an unestablished probe is reported as unestablished, never
+ * as green.
+ */
+export function commitPrVerifyBaselineNote(opts: {
+  assertionExtracted: boolean;
+  timedOut?: boolean;
+  cmd: string;
+  baseline: BaselineProbeOutcome;
+}): string | undefined {
+  if (opts.timedOut === true) return undefined;
+  const parts: string[] = [];
+  if (!opts.assertionExtracted) {
+    parts.push(
+      `verify command \`${opts.cmd}\` exited non-zero and no assertion could be read from its output — the tail above is the bounded raw stream, not a parsed finding`,
+    );
+  }
+  const v = opts.baseline.verdict;
+  if (v === undefined) {
+    parts.push(
+      `baseline verify not established — ${opts.baseline.reason || "the probe did not run"}, so whether the gate was already failing at the base commit is unknown and the failure cannot be attributed to this change`,
+    );
+  } else if (v.status === "green") {
+    if (opts.assertionExtracted) {
+      // Nothing to add: the message already names the assertion, and a green
+      // base is the shape the classified message is a true verdict on. Filler
+      // here would cost tokens on every ordinary park.
+      return undefined;
+    }
+    parts.push(
+      `baseline verify passed — \`${opts.cmd}\` exits 0 on a clean checkout of the cycle's base commit, so the gate was green before this change and the failure above is attributable to it`,
+    );
+  } else if (v.status === "unknown") {
+    parts.push(
+      `baseline verify not established — ${v.reason}, so whether the gate was already failing at the base commit is unknown and the failure cannot be attributed to this change`,
+    );
+  } else if (v.timedOut) {
+    parts.push(
+      `baseline verify ${BASELINE_RED_MARKER} — \`${opts.cmd}\` also exceeded its bound on a clean checkout of the cycle's base commit, so the gate cannot finish on this host whatever the diff contains`,
+    );
+  } else if (!opts.assertionExtracted || v.assertion === null) {
+    // The base's own finding is not recoverable from the change's tail, so it
+    // has to be said: either the gate emitted nothing assertion-shaped at all
+    // (#807's sentinel — the cycle-54/60 shape), or the base failed on an
+    // assertion the change's tail never shows. That is the attribution #1253
+    // exists to make.
+    parts.push(
+      `baseline verify ${BASELINE_RED_MARKER} — \`${opts.cmd}\` ALSO FAILS on a clean checkout of the cycle's base commit${
+        v.assertion
+          ? ` (assertion at base: ${v.assertion})`
+          : ", with no assertion readable from its output either"
+      }; the gate was red before this change was written, so the failure above cannot be attributed to this diff until the base is green`,
+    );
+  } else {
+    // A red base whose assertion is the one the change's own message already
+    // names is the shape `baselineRedMessage` (the develop seam's wording)
+    // states in `failures[]`; restating it here would let two renderings of
+    // the same fact disagree in one handoff.
+    return undefined;
+  }
+  return parts.join(". ");
+}
 
 /**
  * Run the project's verify command against the CONSOLIDATED tree at
@@ -166,6 +283,16 @@ export async function runCommitPrConsolidatedVerify(
      * identity. A read failure, a mismatch, or no pair → the run happens.
      */
     alreadyVerifiedTree?: AlreadyVerifiedTree;
+    /**
+     * #1392 D4 — the cycle's base commit, supplied so a failure can be
+     * compared against the gate WITHOUT the change (see
+     * `commitPrVerifyBaselineNote`). Absent (or a placeholder) → no probe, and
+     * the honest sentence says the baseline was not established rather than
+     * implying the base was green.
+     */
+    baseSha?: string;
+    /** Issue number the probe names its temporary worktree by. */
+    issue?: number;
   },
 ): Promise<CommitPrConsolidatedVerifyResult> {
   // The single flake retry is allowed only when: (a) this is the first
@@ -288,5 +415,50 @@ export async function runCommitPrConsolidatedVerify(
     return { ok: false, failureTail, attributed, verdict, classifiedMessage, timedOut };
   }
   const classifiedMessage = consolidatedFailureMessage(verdict, ranCmd);
-  return { ok: false, failureTail, attributed, verdict, classifiedMessage };
+  // #1392 D4 — the develop seam's twin, and the reason it lives HERE rather
+  // than beside `integrate()`: a green run must never pay for a probe, and by
+  // this point the run has failed, so the probe can only ADD evidence. The
+  // probe builds its own detached checkout of `baseSha`, so it reads the base
+  // regardless of what repoRoot currently holds.
+  const baseSha = opts.baseSha && !opts.baseSha.startsWith("(") ? opts.baseSha : undefined;
+  let baseline: BaselineProbeOutcome;
+  if (baseSha === undefined) {
+    baseline = { reason: "the cycle did not record a base commit to probe" };
+  } else {
+    try {
+      baseline = {
+        verdict: await probeBaselineVerify(execFn, {
+          repoRoot: opts.repoRoot,
+          baseSha,
+          issue: opts.issue ?? 0,
+          cmd: ranCmd,
+          timeoutMs: opts.timeoutMs ?? 30 * 60_000,
+        }),
+      };
+    } catch (err) {
+      // A probe that throws is an unestablished baseline, never a red one.
+      baseline = { reason: `the probe failed (${(err as Error).message?.slice(0, 160)})` };
+    }
+  }
+  const evidenceNote = commitPrVerifyBaselineNote({
+    // #807's sentinel is an explicit ABSENCE, not a parsed assertion —
+    // treating it as one would suppress the honest sentence for exactly the
+    // shape it exists for.
+    assertionExtracted:
+      verdict.assertion !== "" &&
+      verdict.assertion !== undefined &&
+      verdict.assertion !== NO_SPECIFIC_ASSERTION,
+    timedOut,
+    cmd: ranCmd,
+    baseline,
+  });
+  return {
+    ok: false,
+    failureTail,
+    attributed,
+    verdict,
+    classifiedMessage,
+    ...(evidenceNote !== undefined ? { evidenceNote } : {}),
+    baseline,
+  };
 }

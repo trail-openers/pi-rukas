@@ -45,9 +45,10 @@ import {
 } from "./work-driver-verify-develop-helpers.ts";
 import { developVerifiedTree } from "./work-driver-verify-eligibility.ts";
 import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
-import { rawOutputClause } from "./work-driver-verify-flake.ts";
+import { rawOutputClause, verifyOutputTailRecord } from "./work-driver-verify-flake.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { execp } from "./work-driver-verify.ts";
+import type { VerifyOutputTail } from "./workflow-state-schema-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
@@ -89,6 +90,13 @@ export async function runVerifyCommandGate(opts: {
    * that does not exist on disk).
    */
   onConsolidatedLogPath?: (logPath: string) => void;
+  /**
+   * #1392 D5 — out-parameter for the bounded RAW output tail of the failed
+   * consolidated run, so the caller records it on `verifyEvidence.outputTail`
+   * and both handoff surfaces PRINT the output rather than only naming the
+   * scratch log the path points at. Called only when a tail was captured.
+   */
+  onConsolidatedOutputTail?: (tail: VerifyOutputTail) => void;
   /**
    * #1240 — called with the identity that justified skipping the consolidated
    * run, so the caller can record the `consolidated-verify-skipped` event.
@@ -308,6 +316,7 @@ export async function runVerifyCommandGate(opts: {
     singlePerAssertion,
     fenceViolations,
     onConsolidatedLogPath: opts.onConsolidatedLogPath,
+    onConsolidatedOutputTail: opts.onConsolidatedOutputTail,
     onVerifyFlakeRecovered: opts.onVerifyFlakeRecovered,
     // #1240 review r2 — forwarded, or the skip is invisible to the caller.
     ...(opts.onConsolidatedVerifySkipped !== undefined

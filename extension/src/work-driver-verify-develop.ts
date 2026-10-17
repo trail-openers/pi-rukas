@@ -45,6 +45,7 @@ import { normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
 import { fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
+import type { VerifyOutputTail } from "./workflow-state-schema-verify.ts";
 
 import type { WorkState } from "./workflow-state.ts";
 
@@ -74,6 +75,10 @@ export async function verifyDevelopOutcome(
   // log path (the gate records it when a log was written, so the caller can
   // put it on the cap-hit event structurally instead of regexing prose).
   onConsolidatedLogPath?: (logPath: string) => void,
+  // #1392 D5 — out-parameter for the bounded RAW output tail of the failed
+  // consolidated run (the caller records it on verifyEvidence.outputTail so
+  // both handoff surfaces print the output, not only a scratch path).
+  onConsolidatedOutputTail?: (tail: VerifyOutputTail) => void,
   // #1040 — out-parameter for the structured comment-loss checks (the
   // note and its result), so the caller plumbs them without matching note text.
   commentEvidence: CommentEvidence[] = [],
@@ -461,6 +466,7 @@ export async function verifyDevelopOutcome(
         // decomposition.
         ...(fenceViolations !== undefined ? { fenceViolations } : {}),
         ...(onConsolidatedLogPath !== undefined ? { onConsolidatedLogPath } : {}),
+        ...(onConsolidatedOutputTail !== undefined ? { onConsolidatedOutputTail } : {}),
         onBaselineAttributed: () => {
           attributed = true;
         },

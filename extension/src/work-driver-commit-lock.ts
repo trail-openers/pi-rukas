@@ -66,10 +66,40 @@ async function runCommitPrLocked(
       // dispatch — the #841 defect class, which the strict audit would halt
       // anyway). The prepared state carries the plumb + cap already appended.
       trace(`work-driver: commit-pr halted (terminal mechanized failure): ${mech.reason}`);
+      // #1392 D4 — parity with the develop seam's park (#841): the cap carries
+      // the honest-absence + baseline sentence as its `evidence`, and the same
+      // findings persist on `verifyEvidence` so the handoff renderers read them
+      // structurally. Before this, the commit-pr twin of the develop gate ran
+      // NO baseline probe at all and wrote no evidence, so cycle 54 parked on
+      // `integration-verify-failed` with a hole where the assertion and the
+      // baseline verdict should have been.
+      const evidence = mech.verifyEvidenceNote
+        ? `${mech.reason} — ${mech.verifyEvidenceNote}`
+        : mech.reason;
+      // The cap names WHICH verification refused the push, so it stays in the
+      // `integration-verify-failed` family the handoff's commit-pr sections
+      // (work-driver-handoff-commitpr.ts) and `explainConsolidation` key on —
+      // retagging it `verify-failed:commit-pr` would drop the park out of both.
+      // #1324 keeps its own cap: a run killed at its bound reached no verdict
+      // about the code, so it never shares the code-failure cap.
+      const cap: "verify-timeout:commit-pr" | "integration-verify-failed" = mech.timedOut
+        ? "verify-timeout:commit-pr"
+        : "integration-verify-failed";
       return (
         mech.haltedAfter ??
         appendEvent(
-          state,
+          {
+            ...state,
+            pipelineState: {
+              ...state.pipelineState,
+              verifyEvidence: {
+                step: "commit-pr",
+                failures: [evidence],
+                at: Date.now(),
+                origin: "outcome-gate",
+              },
+            },
+          },
           {
             kind: "plumb-report",
             at: Date.now(),
@@ -80,11 +110,10 @@ async function runCommitPrLocked(
           {
             kind: "cap-hit",
             at: Date.now(),
-            // #1324 — a run killed at its bound reached no verdict about the code.
-            cap: mech.timedOut ? "verify-timeout:commit-pr" : "integration-verify-failed",
+            cap,
             reviewRound: state.pipelineState.reviewRound,
             nextStep: "handoff",
-            ...(mech.timedOut ? { evidence: mech.reason } : {}),
+            evidence,
           },
         )
       );

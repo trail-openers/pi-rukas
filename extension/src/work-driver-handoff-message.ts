@@ -17,6 +17,7 @@ import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
 import { openPointsChat } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsChat } from "./work-driver-handoff-recovery.chat.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { verifyTailSection } from "./work-driver-handoff-verify-tail.ts";
 import { describeBranchState } from "./work-driver-handoff-view.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
@@ -201,6 +202,18 @@ export function renderHandoffUserMessage(
     const rendered = renderLensFindings(lastFindings.findings, lastFindings.verdict);
     if (rendered.length > 0) lines.push("", ...rendered);
   }
+  // #1392 D5 — the raw gate output itself, in the surface the operator
+  // actually reads. Pre-fix this message carried neither the output nor its
+  // path, while the GitHub body carried only `Raw output: <scratch path>`;
+  // cycles 54 and 60 parked on a verify failure with no content in either.
+  // A blank line first: the block is a block, and butting a fence against the
+  // `  0 file(s) modified` line above would fold them into one paragraph. It
+  // is emitted only with the block, so the no-tail case stays byte-identical
+  // to the pre-#1392 message — other handoff tests count blank lines.
+  // Four spaces of indent: the fence has to out-indent the `"  …"` section
+  // lines or markdown treats it as their continuation and prints it raw.
+  const tailSection = verifyTailSection(state, "    ");
+  if (tailSection.length > 0) lines.push("", ...tailSection);
 
   // PR10 — per-issue verdict surface for multi-issue cycles. Shows
   // active (NEEDS_WORK) + dropped (ALREADY_COMPLETE / NEEDS_CLARIFICATION)

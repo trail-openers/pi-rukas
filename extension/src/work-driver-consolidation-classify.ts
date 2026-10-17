@@ -107,6 +107,23 @@ export const NO_SPECIFIC_ASSERTION = "(no specific assertion could be extracted)
 const IS_MARKER_LINE = /^FAILED:/;
 /** #807 — an ECHOED shell command (the verify-cmd chain's `$ …` output, #746). */
 const IS_ECHOED_COMMAND = /^\$ /;
+/**
+ * #1392 D1 — a project gate's own failure line, in the four shapes the issue
+ * names: `FAIL  <name>` / `FAIL <name>` (tehas `scripts/verify.sh` and
+ * pytest-style), TAP's `not ok 3 - <name>`, Go's `--- FAIL: TestFoo`, and
+ * jest/vitest's `✕ <name>` (a different glyph from the smoke loop's `✗`).
+ *
+ * Deliberately NOT `/^FAIL/` — that also matches a tool's own summary prose
+ * (`FAILURE: 3 of 40 checks`, `Failed to start worker: EAGAIN`, the
+ * `FAILED:` marker `isNonAssertionLine` already excludes), and a summary is
+ * a count, not an assertion. The `\s` after `FAIL` means a colon or a second
+ * letter is not an anchor.
+ *
+ * Kept separate from `IS_ASSERTION_LINE` rather than folded into it: see
+ * `extractSpecificAssertion` for why the tier order is load-bearing.
+ */
+const IS_GATE_FAILURE_LINE = /^FAIL\s|^not ok\s\d|--- FAIL:\s|^✕\s/;
+
 /** #807 — a line that carries ACTUAL failure content (priority: `✗` first). */
 const IS_ASSERTION_LINE =
   /^✗\s|^error:?\s|^Error:|error\[E\d+\]|\bTS\d{4,}\b|exit 0 \(got 1\)|zero findings \(got 1\)/;
@@ -143,6 +160,22 @@ function isNonAssertionLine(line: string): boolean {
  * non-empty line (the #746 defect): a field that reports absence honestly
  * beats one that sometimes holds a filename and sometimes a command echo.
  *
+ * #1392 D1 — the tiers are ordered `✗` → error → gate-failure, and that
+ * ordering is load-bearing. A project gate that prints BOTH a compiler error
+ * and its own `FAIL  <name>` line names the compiler error: it is the
+ * specific diagnosis, while `FAIL  <step>` is the harness's verdict about
+ * which step produced it. Only when no error-shaped line exists does the
+ * gate-failure tier answer — which is the cycle-54/60 shape, where tehas's
+ * gate echoed `ok`/`FAIL` lines and carried neither a `✗` nor an `error:` at
+ * all, so the extraction fell to the sentinel and the park read
+ * "specific assertion: (no specific assertion could be extracted)" while the
+ * log plainly said which step failed. Placing this tier FIRST would take
+ * `FAIL  tsc` over the `error TS2345` that explains the failure, so the
+ * sentinel is the only behaviour a re-ordering could change for the worse.
+ *
+ * The #807 exclusions apply to this tier exactly as to the others, so the
+ * `FAILED:` marker, `$ `-echoed commands and secret-shaped lines stay out.
+ *
  * Multi-failure (post-#804) decision, pinned in test-work-driver-verify-
  * extract-assertion.ts: "the specific assertion" is the FIRST real
  * assertion; the count is the summary marker's job, so it is not
@@ -160,6 +193,13 @@ export function extractSpecificAssertion(failureTail: string): string {
   for (const line of lines) {
     if (isNonAssertionLine(line)) continue;
     if (IS_ASSERTION_LINE.test(line)) return line;
+  }
+  // #1392 D1 — last tier, and the reason the gate-failure shape is not folded
+  // into IS_ASSERTION_LINE above: a `FAIL  <step>` line must never outrank an
+  // error-shaped line that already explains the failure.
+  for (const line of lines) {
+    if (isNonAssertionLine(line)) continue;
+    if (IS_GATE_FAILURE_LINE.test(line)) return line;
   }
   return NO_SPECIFIC_ASSERTION;
 }
