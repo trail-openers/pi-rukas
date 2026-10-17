@@ -83,11 +83,6 @@ export function nulNameStatus(...records: string[]): string {
   return out.length === 0 ? "" : `${out.join("\0")}\0`;
 }
 
-/** A `\n`-joined list of changed paths → the committed read's NUL stream. */
-export function nulLines(text: string): string {
-  return nulNameStatus(...text.split("\n"));
-}
-
 /** `-z` names are raw bytes — the non-`-z` form's C-quoting is not in them. */
 function unquote(p: string): string {
   return p.startsWith('"') && p.endsWith('"') ? p.slice(1, -1) : p;

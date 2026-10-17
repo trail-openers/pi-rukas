@@ -202,10 +202,14 @@ function fake(stdout: string, onCall?: (argv: string[]) => void) {
     "fake fidelity: nulNameStatus emits the kind the test spelled (M/A/D survive, R keeps both sides)",
   );
 
-  // A COPY is not a rename: `git cp .github/workflows/ci.yml src/ci.yml` leaves the
+  // A COPY is not a rename: `cp .github/workflows/ci.yml src/ci.yml` leaves the
   // workflow in place and duplicates it, and git reports `C100\0from\0to`. The
   // protected gate must consult the source exactly as it does a rename's, or a
   // developer reads a protected file out and hands it over as their own artifact.
+  // `kind` is `C`, not a re-labelled `R` — the two are different acts, and the
+  // finding the operator reads should say which one git saw. (`C` only ever
+  // appears in production because `PROTECTED_DIFF_ARGV` carries `-C`; `-M` alone
+  // never emits one.)
   const copied = await readCommittedProtectedPaths(
     fake(nulNameStatus(`C\t${CI}\tsrc/copied.yml`)),
     "/wt",
@@ -213,12 +217,12 @@ function fake(stdout: string, onCall?: (argv: string[]) => void) {
   );
   assert(
     copied.ok === true &&
-      copied.targets[0]?.kind === "R" &&
-      copied.targets[0].kind === "R" &&
+      copied.targets[0]?.kind === "C" &&
+      copied.targets[0].kind === "C" &&
       copied.targets[0].score === "100" &&
       copied.targets[0].from === CI &&
       copied.targets[0].to === "src/copied.yml",
-    "diff -z: a `C` record is parsed as a rename-shaped record with its score, source and destination",
+    "diff -z: a `C` record is its own kind, carrying its score, source and destination",
   );
   const copiedLowScore = await readCommittedProtectedPaths(
     fake(nulNameStatus(`C75\t.pi/verify-cmd\tsrc/x`)),
@@ -227,8 +231,8 @@ function fake(stdout: string, onCall?: (argv: string[]) => void) {
   );
   assert(
     copiedLowScore.ok === true &&
-      copiedLowScore.targets[0]?.kind === "R" &&
-      copiedLowScore.targets[0].kind === "R" &&
+      copiedLowScore.targets[0]?.kind === "C" &&
+      copiedLowScore.targets[0].kind === "C" &&
       copiedLowScore.targets[0].score === "75",
     "fake fidelity: nulNameStatus emits a C record with the score the test spelled (C75, not C100)",
   );
@@ -240,6 +244,26 @@ function fake(stdout: string, onCall?: (argv: string[]) => void) {
   assert(
     copyOnlyStream.ok === true && renameSourcePaths(copyOnlyStream.targets).join() === CI,
     "fake fidelity: a copy's SOURCE reaches renameSourcePaths, the list only the protected gate reads",
+  );
+  assert(
+    copyOnlyStream.ok === true && changedPaths(copyOnlyStream.targets).join() === "src/copied.yml",
+    "a copy contributes only its DESTINATION to changedPaths — the source left the tree intact, and it belongs to the protected list alone",
+  );
+  // `R` and `C` side by side: both sources are collected, neither is mistaken
+  // for the other's kind, and the destinations alone reach the change union.
+  const mixed = await readCommittedProtectedPaths(
+    fake(
+      nulNameStatus(`R\t${CI}\tsrc/moved.yml`, `C\t.pi/verify-cmd\tsrc/copied`, "M\tsrc/a.ts"),
+    ),
+    "/wt",
+    BASE,
+  );
+  assert(
+    mixed.ok === true &&
+      mixed.targets.map((t) => t.kind).join(",") === "R,C,M" &&
+      renameSourcePaths(mixed.targets).join("|") === `${CI}|.pi/verify-cmd` &&
+      changedPaths(mixed.targets).join("|") === "src/moved.yml|src/copied|src/a.ts",
+    "R and C are handled wherever each other is: both sources collected, both destinations in the union, kinds preserved",
   );
 
   // The fakes in lib/nul-porcelain.ts match these two reads by comparing the

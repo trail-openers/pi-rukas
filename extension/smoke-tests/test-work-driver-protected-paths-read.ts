@@ -265,6 +265,86 @@ await withEnv({ PI_ENSEMBLE_VERIFY: "1", PI_ENSEMBLE_PROTECTED_PATHS: undefined 
       protectedFailure(grantedDest.failures).includes(CI),
       "a grant naming only the DESTINATION does not admit the rename source",
     );
+
+    // --- a second COPY of a deleted protected file is caught by `-C`
+    //
+    // Measured against real git 2.50.1, and the measurement is the point: git
+    // will NOT report a `C` whose source is an **unmodified** file, so
+    // `cp .github/workflows/ci.yml docs/leak.yml` with the workflow left in place
+    // is a bare `A docs/leak.yml` under `-M` **and** under `-M -C` alike — `-C`
+    // buys nothing there, and a test claiming it did would assert a git behaviour
+    // that does not exist.
+    //
+    // What `-C` does buy is the case where the developer deletes the protected
+    // file and writes its content out to MORE THAN ONE new path. `-M` pairs one
+    // destination (`R100`) and reports the rest as plain additions; `-M -C` pairs
+    // the next as `C100`. Both name the protected source, and the second is the
+    // one only `-C` adds — which is what makes the parser's copy arm reachable in
+    // production rather than dead code.
+    const copied = path.join(root, "copied");
+    mkdirSync(copied, { recursive: true });
+    seedRepo(copied);
+    // The body has to be long enough for git's similarity heuristic to pair it at
+    // all: a 3-line file deleted-and-recopied sits below the `R50` threshold and
+    // comes back `D` + `A` + `A` under BOTH spellings, which would fail the
+    // precondition below for a reason that has nothing to do with `-C`.
+    const PROTECTED_BODY =
+      "runs-on: ubuntu\nsteps:\n  - run: a\n  - run: b\n  - run: c\n  - run: d\n  - run: e\n";
+    writeFileSync(path.join(copied, CI), PROTECTED_BODY);
+    gitIn(copied, ["add", "-A"]);
+    gitIn(copied, ["commit", "-q", "-m", "give the workflow enough content to pair on"]);
+    const bodyBase = gitIn(copied, ["rev-parse", "HEAD"]);
+    gitIn(copied, ["rm", "-q", CI, "src/app.ts"]);
+    mkdirSync(path.join(copied, "docs"), { recursive: true });
+    writeFileSync(path.join(copied, "docs/leak1.txt"), PROTECTED_BODY);
+    writeFileSync(path.join(copied, "docs/leak2.txt"), PROTECTED_BODY);
+    gitIn(copied, ["add", "-A"]);
+    gitIn(copied, ["commit", "-q", "-m", "delete the workflow, write its content out twice"]);
+    // The load-bearing precondition: assert BOTH spellings, so `-C` is shown to
+    // change git's output rather than assumed to.
+    const withoutC = gitIn(copied, [
+      "-c",
+      "core.quotePath=off",
+      "diff",
+      "-z",
+      "--name-status",
+      "-M",
+      "--end-of-options",
+      `${bodyBase}..HEAD`,
+    ]);
+    const withC = gitIn(copied, [
+      "-c",
+      "core.quotePath=off",
+      "diff",
+      "-z",
+      "--name-status",
+      "-M",
+      "-C",
+      "--end-of-options",
+      `${bodyBase}..HEAD`,
+    ]);
+    assert(
+      !withoutC.split("\0").some((t) => t.startsWith("C")) &&
+        withC.split("\0").some((t) => t.startsWith("C100")),
+      "fixture precondition: `-M` emits no C record where `-M -C` emits `C100` — exactly what `-C` buys, and why the parser's copy arm is reachable",
+    );
+    assert(
+      withC.includes(CI),
+      "...and the `C100` record names the PROTECTED source, the path the leak copied out of",
+    );
+    const copiedResult = await verifyStepOutcome(
+      developCtx(),
+      developState(copied, bodyBase),
+      "develop",
+    );
+    assert(
+      protectedFailure(copiedResult.failures).includes(`— ${CI}`),
+      "deleting the workflow and writing its content to two new paths HALTS the gate naming the protected source",
+    );
+    assert(
+      !protectedFailure(copiedResult.failures).includes("git diff"),
+      "...as a protected-path finding, not an unreadable-read failure",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

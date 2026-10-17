@@ -27,6 +27,7 @@ import { SAFE_PATH_RE, isProtectedPath } from "../src/work-driver-doctrine.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
 
 let exit = 0;
@@ -39,9 +40,6 @@ function assert(cond: boolean, msg: string) {
 }
 
 const CI = ".github/workflows/ci.yml";
-
-process.env.PI_ENSEMBLE_VERIFY = "1";
-delete process.env.PI_ENSEMBLE_PROTECTED_PATHS;
 
 function stateWith(extra: Partial<WorkState["pipelineState"]> = {}): WorkState {
   const s = initialState(1378, 1000);
@@ -76,7 +74,13 @@ function ctx(porcelain: string, grant?: string[], committed = ""): DriverContext
 
 const isProtectedFailure = (f: string) => /protected path/.test(f);
 
-{
+// The two switches this file depends on, pinned for the duration of the block
+// and restored after it. A bare `process.env.X = ...` at module scope leaks the
+// pin into every later test file in the same `bun test` run (and into the next
+// invocation of the per-file runner) — `withEnv` puts back exactly what was
+// there, including an absent variable, which is deleted again rather than
+// blanked.
+await withEnv({ PI_ENSEMBLE_VERIFY: "1", PI_ENSEMBLE_PROTECTED_PATHS: undefined }, async () => {
   // #1378 — the source side. `git mv .github/workflows/ci.yml src/ci.yml` moves a
   // workflow out of the way; the destination is an ordinary src path, so a gate
   // that saw only destinations passed. Under `-z` both sides arrive as their own
@@ -202,7 +206,7 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
     quotedHit.includes("PI_ENSEMBLE_PROTECTED_PATHS=0"),
     "#1378: ...and the only escape the message offers is the process-wide one",
   );
-}
+});
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

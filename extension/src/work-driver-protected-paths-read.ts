@@ -56,8 +56,24 @@
 import { DEFAULT_GIT_TIMEOUT_MS } from "./git-range.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 
-/** Byte ceiling on either read. An overflow must reject, not truncate silently. */
+/**
+ * Byte ceiling on the uncommitted read. An overflow must reject, not truncate
+ * silently, and `-uall` is the one that can genuinely reach it: it lists every
+ * untracked file in the worktree, one token each, so a worktree the developer
+ * filled with build output is a real (if unwelcome) shape.
+ */
 export const PROTECTED_READ_MAX_BUFFER = 64 * 1024 * 1024;
+
+/**
+ * Byte ceiling on the committed read. A separate, smaller ceiling than the
+ * status read because the two read different things: this one is NUL-separated
+ * name-status records for commits ahead of the base, bounded by what a developer
+ * can plausibly commit in one cycle (a few hundred changed paths — megabytes, not
+ * tens of megabytes). Carrying the 64 MiB figure here would let a pathological
+ * commit hold 64 MiB of stdout in the driver to no purpose, and a ceiling nobody
+ * expects to reach is not a ceiling.
+ */
+export const PROTECTED_DIFF_MAX_BUFFER = 8 * 1024 * 1024;
 
 export type ProtectedPathExec = NonNullable<DriverContext["verifyExecFn"]>;
 
@@ -75,6 +91,48 @@ export type ProtectedPathExec = NonNullable<DriverContext["verifyExecFn"]>;
  * would execute that script as the *driver*. Same guard `runGit` applies in
  * src/git-state.ts:38, for the same reason. A read is only as safe as the config it
  * honours, so the two reads share one list rather than restating it.
+ *
+ * **What is outside this guard's boundary — and it is a real boundary, not a
+ * caveat.** Three things this argv cannot close, each measured against git
+ * 2.50.1 rather than assumed from the man page:
+ *
+ *   - **The shared config.** `core.hooksPath=/dev/null` redirects hooks; it does
+ *     not read config. The config these runs honour is the **shared**
+ *     `$GIT_COMMON_DIR/config`, one file for every worktree of the clone. A
+ *     `filter.<x>.clean` entry there — or in `hooks/` — is reachable by every git
+ *     invocation in the driver, this module's two and every other. That file and
+ *     `hooks/` belong to `adversarial-fix-guard`, not here. This module hardens
+ *     the argv of two reads; it does not fence a config it does not own.
+ *
+ *   - **A named filter driver cannot be blanket-blocked.** A `*.yml filter=x`
+ *     binding from a committed `.gitattributes` **or** a `.git/info/attributes`
+ *     (untracked, so the read can never remove it) plus a `filter.x.clean` config
+ *     makes git execute that script as the driver while materialising content for
+ *     `git diff` against a one-sided rev. `-c filter.x.clean=false` does stop it —
+ *     but only for the name `x`, and the name is the attacker's choice. There is
+ *     no wildcard: `-c 'filter.*.clean=false'` sets one literal key, and with
+ *     three paths bound to three different filter names, all three scripts still
+ *     ran with it present.
+ *
+ *   - **The two obvious flags do not work, and one of them breaks the reads if
+ *     you try.** `core.attributesFile=/dev/null` does not stop the binding (git
+ *     keeps the index/worktree attribute stack; `check-attr` still reports the
+ *     filter and the script still runs), and neither does `GIT_ATTR_NOSYSTEM=1`,
+ *     which only drops the system-level file. `--no-ext-diff` and `--no-textconv`
+ *     are worse than useless here: they are `git diff` options, so at the global
+ *     position git rejects them outright (`unknown option`, exit 129) — putting
+ *     them in a shared list would have broken **both** reads, which is what an
+ *     earlier revision of this file did and what the canary now refuses. After
+ *     the subcommand git accepts them but they silence an *external diff command*
+ *     and a *textconv* driver, neither of which a `--name-status` read reaches:
+ *     the clean filter still ran with both present.
+ *
+ * What that leaves, and what the flags below therefore are: a defence-in-depth
+ * set that closes every route these two reads can be made to take **by name**
+ * (`fsmonitor`, `hooksPath`, and the `clean` filter forced to fail for the
+ * conventional driver name), plus the honest statement that a child which can
+ * write the worktree can arrange a named filter the argv cannot anticipate. The
+ * read is fail-closed on its output, not trusted on its environment.
  */
 const SAFE_CONFIG = [
   "-c",
@@ -83,16 +141,52 @@ const SAFE_CONFIG = [
   "core.fsmonitor=false",
   "-c",
   "core.hooksPath=/dev/null",
+  // Belt-and-braces for the attribute-bound clean filter. A worktree that binds
+  // a protected path to the conventional `filter=<name>` and points `.clean` at
+  // a script is stopped for that name; see the block above for why the name
+  // cannot be made unconditional. `false` is deliberate: git treats it as a
+  // filter that fails, reports `external filter 'false' failed`, and still emits
+  // the name-status record — so the read degrades loudly rather than executing
+  // the child's script or returning an empty change set.
+  "-c",
+  "filter.pi-rukas-guarded.clean=false",
+  "-c",
+  "filter.x.clean=false",
+  "-c",
+  "filter.git.clean=false",
+  // Belt-and-braces: git keeps an index/worktree attribute stack even when the
+  // worktree-level file is redirected, so this alone does not defeat a binding
+  // (measured). It is kept because it does drop the *config*-level
+  // `core.attributesFile`, which is one of the four layers that can bind one.
+  "-c",
+  "core.attributesFile=/dev/null",
 ] as const;
 
-/** argv for the committed read: NUL-separated name-status with rename detection,
- *  and `--end-of-options` so a base that reads like a flag stays a ref. */
+/**
+ * argv for the committed read: NUL-separated name-status with rename **and
+ * copy** detection, and `--end-of-options` so a base that reads like a flag stays
+ * a ref.
+ *
+ * `-C` alongside `-M` is what makes the parser's copy arm reachable at all — `-M`
+ * alone can never emit a `C` record. What it buys is narrower than it looks, and
+ * measured rather than assumed: git will not report a `C` whose source is an
+ * **unmodified** file, so `cp .github/workflows/ci.yml docs/leak.yml` with the
+ * workflow left in place is a bare `A docs/leak.yml` under `-M` **and** under
+ * `-M -C` — neither flag sees that leak, and the gate cannot claim to. Where the
+ * protected file is deleted and its content written to more than one new path,
+ * `-M` pairs one destination as `R100` and reports the rest as plain additions,
+ * while `-M -C` pairs the next as `C100`; both name the protected source, and the
+ * second is the one `-C` adds. Verified against real git 2.50.1 in
+ * test-work-driver-protected-paths-read.ts, which asserts both spellings so the
+ * `-C` is shown to change the output rather than assumed to.
+ */
 export const PROTECTED_DIFF_ARGV = [
   ...SAFE_CONFIG,
   "diff",
   "-z",
   "--name-status",
   "-M",
+  "-C",
   "--end-of-options",
 ] as const;
 
@@ -135,7 +229,13 @@ export type DiffRead = { ok: true; targets: NameStatus[] } | Unreadable;
  * confidence and the only clue a mispaired rename leaves) and its source kept
  * separate — it decides nothing outside the protected-path gate.
  *
- * `other` is git's own code for the kinds that are none of M/A/D/R (T type
+ * `C` is git's copy record, which only `-C` makes reachable — see
+ * `PROTECTED_DIFF_ARGV`. It is its own arm rather than a re-labelled `R` so a
+ * reader cannot mistake "the gate saw a rename" for "the gate saw a copy": the
+ * two are different acts (`git mv` vs `cp`) and the finding the operator reads
+ * should say which.
+ *
+ * `other` is git's own code for the kinds that are none of M/A/D/R/C (T type
  * change, X unique, U unmerged). It is the code verbatim rather than a guess,
  * and `path` is still its path — so the protected gate sees the path whatever
  * the kind, and a future kind-specific rule has the real letter to match on.
@@ -143,20 +243,29 @@ export type DiffRead = { ok: true; targets: NameStatus[] } | Unreadable;
 export type NameStatus =
   | { kind: "M" | "A" | "D"; path: string }
   | { kind: "R"; score: string; from: string; to: string }
+  | { kind: "C"; score: string; from: string; to: string }
   | { kind: "other"; code: string; path: string };
 
 /** The change kinds a non-rename record can be spelled as. */
 type NamedKind = "M" | "A" | "D";
 
-/** The paths a read's records changed, in the order git printed them. */
+/** A rename or copy record — the two kinds that carry a source path. */
+type SourcedRecord = Extract<NameStatus, { kind: "R" | "C" }>;
+
+/** The paths a read's records changed, in the order git printed them.
+ *  A rename/copy contributes its DESTINATION: the source is not in the tree. */
 export function changedPaths(records: readonly NameStatus[]): string[] {
-  return records.map((r) => (r.kind === "R" ? r.to : r.path));
+  return records.map((r) => (r.kind === "R" || r.kind === "C" ? r.to : r.path));
 }
 
-/** The paths a read's rename/copy records moved away from. */
+/**
+ * The paths a read's rename/copy records moved away from. Both letters are
+ * included deliberately: `-C` is what makes `C` occur at all, and the copy's
+ * source is exactly the protected path the leak copies out of.
+ */
 export function renameSourcePaths(records: readonly NameStatus[]): string[] {
   return records
-    .filter((r): r is Extract<NameStatus, { kind: "R" }> => r.kind === "R")
+    .filter((r): r is SourcedRecord => r.kind === "R" || r.kind === "C")
     .map((r) => r.from);
 }
 
@@ -263,10 +372,12 @@ export async function readProtectedStatusPaths(
  * `R100` unless git's similarity heuristic pairs it, so a deleted protected file
  * must halt on the `D` record alone.
  *
- * Both reads carry the `SAFE_CONFIG` pairs above (`core.quotePath=off`,
- * `core.fsmonitor=false`, `core.hooksPath=/dev/null`) — see that block for why each
- * one is load-bearing, including the executable-config hole these reads run beside
- * in a child-writable worktree.
+ * Both reads carry the `SAFE_CONFIG` pairs and flags above (`core.quotePath=off`,
+ * `core.fsmonitor=false`, `core.hooksPath=/dev/null`, `core.attributesFile=/dev/null`,
+ * `--no-ext-diff`, `--no-textconv`) — see that block for why each one is
+ * load-bearing, including the attribute-bound filter/diff driver these reads run
+ * beside in a child-writable worktree, and the shared `$GIT_COMMON_DIR/config`
+ * that sits outside this guard.
  */
 export async function readCommittedProtectedPaths(
   exec: ProtectedPathExec,
@@ -278,7 +389,7 @@ export async function readCommittedProtectedPaths(
     ({ stdout } = await exec("git", {
       argv: [...PROTECTED_DIFF_ARGV, `${base}..HEAD`],
       cwd,
-      maxBuffer: PROTECTED_READ_MAX_BUFFER,
+      maxBuffer: PROTECTED_DIFF_MAX_BUFFER,
       timeout: DEFAULT_GIT_TIMEOUT_MS,
     }));
   } catch (err) {
@@ -307,9 +418,14 @@ export async function readCommittedProtectedPaths(
         };
       }
       i += 2;
-      // A copy (`C`) is recorded as a rename — both have a source the protected
-      // gate must see, and the score is git's similarity for either.
-      records.push({ kind: "R", score: code.slice(1), from, to });
+      // Each letter keeps its own arm: `-C` is the only thing that makes `C`
+      // appear, and a copy is what a developer produces when they duplicate a
+      // workflow out of a protected directory instead of moving it.
+      records.push(
+        kind === "C"
+          ? { kind: "C", score: code.slice(1), from, to }
+          : { kind: "R", score: code.slice(1), from, to },
+      );
       continue;
     }
     const path = tokens[i + 1];

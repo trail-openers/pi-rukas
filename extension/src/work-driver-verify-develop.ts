@@ -11,6 +11,7 @@
 
 import type { CommentEvidence } from "./comment-evidence.ts";
 import { COMMENT_RETENTION_PATHS } from "./comment-retention.ts";
+import { DEFAULT_GIT_TIMEOUT_MS } from "./git-range.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
@@ -167,6 +168,9 @@ export async function verifyDevelopOutcome(
       declaredSourceByWorkstream.set(wsId, true); // uncertain → treat as source
     }
   }
+  // #1378 — resolved ONCE for the whole run: consulted in three places below, and a
+  // harness that flipped the switch mid-loop would gate one worktree and not the next.
+  const protectedGateOn = protectedPathsEnabled();
   for (const [id, cwd] of Object.entries(worktrees)) {
     let hasCommits = false;
     let hasUncommitted = false;
@@ -186,7 +190,7 @@ export async function verifyDevelopOutcome(
     if (!status.ok) {
       // #1090 — with the protected-path gate on, an unreadable status means this
       // worktree's writes are never inspected: fail closed, do not pass with a note.
-      if (protectedPathsEnabled()) {
+      if (protectedGateOn) {
         failures.push(
           `git status failed in worktree "${id}" (${cwd}) — its changed paths cannot be checked against the protected-path gate: ${status.unreadable}`,
         );
@@ -215,30 +219,37 @@ export async function verifyDevelopOutcome(
     const effBase = effectiveBaseFor(id);
     if (isValidSha(effBase)) {
       try {
-        const { stdout } = await execFn(`git rev-list --count ${effBase}..HEAD`, {
+        // Same bound as the two `-z` reads (#1378): this one used to have none, so a
+        // wedged object store hung the whole develop step. Argv form like every
+        // other git call here — a ref is data, never shell input — which is what
+        // `test-git-range-1153.ts` requires of this file.
+        const { stdout } = await execFn("git", {
+          argv: ["rev-list", "--count", `${effBase}..HEAD`],
           cwd,
           maxBuffer: 64 * 1024,
+          timeout: DEFAULT_GIT_TIMEOUT_MS,
         });
         if (Number.parseInt(stdout.trim(), 10) > 0) hasCommits = true;
         assessed = true;
       } catch (err) {
-        // #725 — an absent baseSha in this worktree's history is not evidence
-        // either way; but a base the code itself resolved and git could not
-        // read IS a degraded measurement — name the ref and error (#384).
-        if (effBase !== baseSha) {
-          notes.push(
-            `rev-list failed against effective base ${effBase} in ${id} — commit count unavailable, the worktree may be undercounted as changed (${(err as Error).message?.slice(0, 100)})`,
-          );
-        }
+        // #1378 — the old `effBase !== baseSha` guard made this note conditional,
+        // so the common case (`effBase === baseSha`) dropped the failure silently
+        // and `assessed` stayed true on a worktree whose commits were never
+        // counted. A base the code resolved that git could not read is a degraded
+        // measurement either way (#384), and the flag below stops a CSS-only union
+        // of the survivors skipping the verify chain.
+        notes.push(
+          `rev-list failed against base ${effBase} in ${id} — commit count unavailable, the worktree may be undercounted as changed (${(err as Error).message?.slice(0, 100)})`,
+        );
+        gitReadFailedAnyWorktree = true;
       }
       const committed = await readCommittedProtectedPaths(execFn, cwd, effBase);
       if (!committed.ok) {
-        // #1378 — the committed read is fail-closed on the same reasoning as the
-        // status read: a rename or a C-quoted name is exactly what this read now
-        // exists to catch, and a `catch {}` that only set the flag let an
-        // unreadable range pass the gate as "nothing protected changed". The
-        // escape hatch keeps the pre-fix behaviour (a note, gate off).
-        if (protectedPathsEnabled()) {
+        // #1378 — fail-closed on the same reasoning as the status read: a rename or
+        // a C-quoted name is exactly what this read exists to catch, and a
+        // `catch {}` that only set the flag let an unreadable range pass the gate
+        // as "nothing protected changed". The escape hatch keeps the old behaviour.
+        if (protectedGateOn) {
           failures.push(
             `git diff failed in worktree "${id}" (${cwd}) — its committed paths cannot be checked against the protected-path gate: ${committed.unreadable}`,
           );
@@ -313,7 +324,7 @@ export async function verifyDevelopOutcome(
   // Policy prose (AGENTS.md, CLAUDE.md) is deliberately NOT halted here — it
   // is neutralised instead, by reading doctrine at baseSha in the merge gate —
   // so that this repo's own "docs ship with the PR" rule keeps working.
-  if (protectedPathsEnabled()) {
+  if (protectedGateOn) {
     // #1378 — the union carries the rename sources; the #285/#1012/#679 gates
     // above consumed `touchedPaths` alone and are byte-identical to before.
     const protectedHits = protectedPathsIn([...touchedPaths, ...protectedOnlyPaths]);
