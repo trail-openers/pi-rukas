@@ -125,28 +125,6 @@ export const COMMAND_WRAPPERS = new Set([
   "env",
 ]);
 
-/**
- * `COMMAND_WRAPPERS` as a single regex alternation. Two rules, both of which
- * were real bugs here once:
- *
- *   - **Longest first.** An alternation takes the FIRST branch that matches at
- *     that position and does not retry later ones, so `timeout|time` matches
- *     `timeout` and `time|timeout` matches `time` and leaves `out vipune …`
- *     behind — which is why `timeout 30 vipune delete 42` slipped past a
- *     length-unsorted list. The secondary alphabetical sort keeps the output
- *     stable regardless of the Set's insertion order.
- *   - **Word boundaries on every branch.** Without them `time` matches inside
- *     `timeshift`, and the wrapper group then eats a word that was not a
- *     wrapper at all.
- *
- * Built once at module load: the set and its regex form can disagree in exactly
- * one place, and it is here.
- */
-export const WRAPPERS_RE = [...COMMAND_WRAPPERS]
-  .sort((a, b) => b.length - a.length || a.localeCompare(b))
-  .map((w) => `${w}(?=[\s=]|$)`)
-  .join("|");
-
 // Multi-subcommand CLI tools: take 2 tokens (e.g. `git commit`, `npm test`).
 // These are tools where the first token alone is too broad to be a useful
 // "Allow always" scope — `git *` would also allow `git push --force`.
@@ -390,7 +368,7 @@ export function matchBashSubcommand(
  * Nothing anywhere stopped it. Gating is bypassed in trust mode (the default
  * on an interactive host), bypassed in sandbox mode, and explicitly allowed
  * even under strict opt-in by the `oo git *` catch-all in agents.json. So this
- * refusal cannot live in the allowlist — like `isDestructiveMemoryWrite`, it
+ * refusal cannot live in the allowlist — like `refusesMemoryWrite`, it
  * sits ahead of it and holds regardless.
  * Deliberately conservative: a false positive makes an agent pick another
  * route, while a false negative destroys work the harness has already paid a

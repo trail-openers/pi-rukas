@@ -2,8 +2,9 @@
  * memory-write-guard — the mode-independent `tool_call` hook that refuses the
  * vipune verbs no role is granted (#1437).
  *
- * The gap: `isDestructiveMemoryWrite` (bash-pattern-wildcard.ts) matched only
- * `vipune update` carrying `-t`/`--text`, and its single caller is
+ * The gap: the old `isDestructiveMemoryWrite` predicate (since removed; it lived
+ * in `bash-pattern-wildcard.ts` and is renamed here) matched only
+ * `vipune update` carrying `-t`/`--text`, and its single caller was
  * `matchBashSubcommand` — reached from the permission layers, which trust mode
  * (the interactive default) and sandbox mode (the container default) both skip,
  * and from `pm-bash-guard.ts`, which is parent-PM only. A trust- or sandbox-mode
@@ -57,10 +58,42 @@
  * hard boundary uses `agents.json` grants plus a confined sandbox, not this
  * hook. Refusal text names the VERB only, so a memory body — which can be
  * anything the agent typed — never reappears in the reason handed back to it.
+ *
+ * TWO further holes the six-pass review named and this guard deliberately does
+ * NOT close, because both are granted verbs doing granted things — the guard's
+ * question is "is this verb ungranted?", not "is this outcome one we like?", and
+ * answering the second would make it a policy engine over the whole CLI:
+ *
+ *   - **Cross-project writes via a granted verb.** `vipune search 'x' -p
+ *     other-project`, and the same `-p` on `add`, read and write a DIFFERENT
+ *     project's store. `search` and `add` are granted, and `-p` is a legitimate
+ *     global option the binary documents; refusing a project flag would refuse
+ *     the feature. The `-p` value is not even the mutating part — `add` is.
+ *   - **Promotion through `add`.** `vipune add '<copy>' --status active` creates
+ *     a row already on the active tier, which is what `promote` — refused — does
+ *     to an existing one. Refusing it would refuse the driver's own writes
+ *     (`memory-write.ts` / `guard-memory-write.ts` pass `--status` on `add`), and
+ *     the row it creates carries lineage a real `promote` does not.
+ *
+ * Both are the operator's `agents.json` and sandbox to decide, and both are
+ * stated here so a future reader finds the decision rather than rediscovering it
+ * as a bug.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { COMMAND_WRAPPERS, stripQuotedSegments } from "./bash-command-parser.ts";
+import {
+  hasMutatingFlag,
+  rawUpdateCarriesMutatingFlag,
+  strayRefusedVerb,
+} from "./memory-write-flags.ts";
+import {
+  SEGMENT_SEPARATOR,
+  collapsedToken,
+  deQuoteKeepingQuotedRuns,
+  optionArity,
+  stripQuotedCommand,
+  verbsIn,
+} from "./memory-write-tokenizer.ts";
 import { traceWarn } from "./trace.ts";
 
 /** Opt-out for an operator who genuinely needs an ungranted verb from an agent. */
@@ -92,141 +125,6 @@ export const REFUSED_VIPUNE_VERBS: readonly string[] = [
  */
 export const EXEMPT_VIPUNE_VERBS: readonly string[] = ["hook"];
 
-/**
- * Flags that change an existing row. `update` alone is inert (it requires at
- * least one of these to do anything), so the clause that tests them binds to
- * the `update` verb first.
- *
- * Measured against vipune 0.15.0 — `vipune update <id> --stat active` answers
- * `error: unexpected argument '--stat' found` — clap does **not** accept an
- * abbreviated long flag. `--stat`, `--imp`, `--mem-t` and `--memorytyp=fact`
- * therefore mutate nothing, and are deliberately NOT matched: refusing a command
- * the binary rejects outright would report a threat that does not exist, and the
- * module header, `docs/troubleshooting.md` and `skill/vipune/SKILL.md` say exact
- * names and `=` forms for the same reason.
- *
- * Clustered short flags are the opposite case and ARE accepted by the binary:
- * measured, `vipune update <id> -tm` reaches the database and rewrites the row
- * with content `m`, because `t` consumes `m` as `--text`'s value. A cluster
- * member can mutate a row invisibly, so clusters are scanned character by
- * character in `hasMutatingFlag` below.
- *
- * The same flag names exist on `add` (`-m`, `--memory-type`, `--status`,
- * `--importance`), which is exactly why they must bind to `update` — a
- * verb-blind flag scan refuses every driver write.
- */
-const MUTATING_UPDATE_FLAGS: readonly string[] = [
-  "-t",
-  "--text",
-  "-m",
-  "--metadata",
-  "--memory-type",
-  "--status",
-  "--importance",
-];
-
-// What counts as a `vipune` invocation, and where the scan may start.
-//
-// The scan walks TOKENS, not one monolithic regex, because the two things that
-// make this predicate correct cannot both live in a pattern: a token-level check
-// can ask "is this token the binary, and was the previous token a command-position
-// starter?" without either question distorting the other. An earlier single-regex
-// version failed both ways — a greedy option-skip group captured `42` as the verb
-// of `vipune --json delete 42`, and its lazy counterpart captured `--json`.
-//
-// Command-position starters are the sibling guards' set (`discardsUncommittedWork`
-// and `createsIssue` scan after `[;&|\n]`) plus `(`, `!` and the compound keywords
-// bash puts before a command. The keywords are matched as WHOLE tokens — `then`,
-// never a `then` inside `todo` — which the token walk gives us for free and a
-// `\b`-anchored pattern does not (`_` is a word character, so `\b` cannot
-// separate `memory__` from `vipune` either).
-const COMMAND_POSITION_STARTERS: readonly string[] = [
-  "then",
-  "do",
-  "else",
-  "elif",
-  "if",
-  "while",
-  "until",
-  "for",
-  "case",
-  "&&",
-  "||",
-  "|||",
-];
-
-// Openers that attach to the token that follows them with no space, so they are
-// stripped from the front of a token before the binary test (`(vipune delete 42)`).
-const TOKEN_OPENERS = /^[(!]+/;
-
-// Between the starter and the binary: process wrappers and KEY=value env
-// assignments (`env FOO=1 vipune …`, `VIPUNE_DEBUG=1 vipune …`, `timeout 30
-// vipune …`, `nice -n 5 vipune …`). The wrapper words are the ONE list in
-// bash-command-parser.ts (`COMMAND_WRAPPERS`), so this guard and the prefix
-// extractor cannot drift into disagreeing about what a wrapper is.
-//
-// A wrapper consumes its own positional arguments (`timeout 30`, `nice -n 5`,
-// `env FOO=1`) — the token after a wrapper is ITS argument, not the command — so
-// the scan stays in command position across them. That is what `env FOO=1 vipune
-// delete 42` and `timeout 30 vipune delete 42` depend on: the wrapper rule is the
-// ONLY difference between those two and `echo x vipune delete 42`, which is
-// correctly not refused.
-function isWrapperToken(token: string): boolean {
-  return COMMAND_WRAPPERS.has(token) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
-}
-
-// Is this token the vipune binary? Bare `vipune`, `oo vipune` (the allowlist's
-// wrapper verb, handled by the wrapper loop), or a path whose FINAL segment is
-// `vipune` (`/usr/local/bin/vipune`, `~/bin/vipune`, `./vipune`). The path form
-// requires a `/`, which — together with the whole-token comparison — is what keeps
-// `mcp__codebase_memory__vipune` unmatchable: it is one token, it is not equal to
-// `vipune`, and it carries no `/`.
-// Matched against a WHOLE token. `mcp__codebase_memory__vipune` is one token, is
-// not equal to `vipune`, and carries no `/`, so no branch reaches it — which is
-// what the leading `(?:^|…)` on the token level buys and a `\b` pattern could not.
-const BINARY_TOKEN = /^(?:[^\s;&|()<>]*\/)vipune$|^vipune$/;
-
-// Global options `vipune` accepts before the verb, with how many SEPARATE-TOKEN
-// values each requires — transcribed from `vipune --help`'s `Options:` block, and
-// that is the whole table on purpose: this is not a clap grammar, it is the four
-// lines the binary prints. `test-memory-write-guard.ts` re-reads the help block
-// and fails if the table and the binary disagree about which take a value.
-//
-// The arity is what makes the verb findable. Without a stopping rule, `vipune -p
-// other delete 42` and `vipune --db-path X delete 42` each leave a bare word
-// between the flag and the verb: a scan that keeps going reads past `delete`, a
-// scan that stops reads `-p` as the verb. clap decides — `vipune -p` alone answers
-// `error: a value is required for '--project <PROJECT>'`, `vipune --json` alone
-// proceeds to "requires a subcommand" — so a `<VALUE>` option consumes one token
-// and a bare flag consumes none.
-const GLOBAL_OPTIONS: readonly { readonly flags: readonly string[]; readonly values: number }[] = [
-  { flags: ["--json"], values: 0 },
-  { flags: ["-h", "--help"], values: 0 },
-  { flags: ["-V", "--version"], values: 0 },
-  { flags: ["-p", "--project"], values: 1 },
-  { flags: ["--db-path"], values: 1 },
-];
-
-/**
- * How many following tokens this option token consumes as its values.
- *
- * `undefined` means "not an option" — that is where the skip stops and the verb
- * begins. An UNKNOWN `-f` flag returns its arity as 0 rather than `undefined`,
- * which is the fail-toward-refusing direction the PM asked for: consuming nothing
- * means the next token is read as the verb, so a `vipune --verbose delete 42`
- * still reports `delete`, while a `vipune search --whatever foo` cannot have a
- * refused verb conjured out of a granted one (the verb still has to literally
- * appear, and it has to be one of the refused names).
- */
-function optionArity(token: string): number | undefined {
-  if (token.length < 2 || token[0] !== "-") return undefined;
-  if (token.includes("=")) return 0; // `--flag=value` carries its own value
-  for (const spec of GLOBAL_OPTIONS) {
-    if (spec.flags.includes(token)) return spec.values;
-  }
-  return 0;
-}
-
 /** The refused verb when this command runs an ungranted vipune command. */
 export function refusesMemoryWrite(command: string): string | undefined {
   // The cheap gate first: almost no bash call mentions vipune at all, and the
@@ -238,144 +136,64 @@ export function refusesMemoryWrite(command: string): string | undefined {
   if (command.indexOf("vipune") < 0) return undefined;
   // Quoted segments are stripped first — scan-not-anchor, exactly like
   // discardsUncommittedWork / createsIssue — so a memory body that merely MENTIONS
-  // `vipune delete` is not refused.
-  const c = stripQuotedSegments(command);
+  // `vipune delete` is not refused. That stripping is also why the quoted flags in
+  // finding 3 need a second pass: `"--status" active` leaves nothing behind, and
+  // clap still sees `--status`.
+  const c = stripQuotedCommand(command);
   // Segment by segment: a verb or flag cannot be borrowed across a shell operator,
   // so `vipune update 12 && cp --status x` is not a mutating update and
   // `vipune search 'x'; vipune delete 42` still refuses the second half.
-  for (const segment of c.split(/[;&|\n]/)) {
+  for (const segment of c.split(SEGMENT_SEPARATOR)) {
     const { tokens, hits } = verbsIn(segment);
-    for (const [i, verb] of hits) {
-      if (REFUSED_VIPUNE_VERBS.includes(verb)) return verb;
-      if (verb === "update" && hasMutatingFlag(tokens.slice(i + 1))) return "update <flag>";
+    const collapsed = tokens.map(collapsedToken);
+    for (const [i, verb, flags, collapsedVerb] of hits) {
+      // The COLLAPSED verb, not `verb`: quote-split and backslash-escaped spellings
+      // reach the binary as the real verb, and the stripped skeleton cannot see them.
+      if (REFUSED_VIPUNE_VERBS.includes(collapsedVerb)) return collapsedVerb;
+      // The tokens an option CONSUMED as its value, not the whole argument span:
+      // `verbsIn` stops its scan at the first non-option, so `-p`'s value never
+      // reaches `flags` and no other check can see it. `vipune update 12 -p export
+      // x` therefore has `export` as `-p`'s VALUE and no scan names it — refused
+      // anyway, conservative per PM, because a destructive verb handed to a
+      // value-taking flag of a mutating verb is not a shape worth trusting.
+      // `vipune update 12 -p other x` still runs: `other` is not a refused verb.
+      // Scan the span the flag check already reads — same boundary, so the
+      // `&&` chain in `vipune update 12 -p export && cp x` still cuts at `&&` and
+      // `vipune update 12 && cp --status x` still does not borrow `--status`.
+      for (const value of flags) {
+        if (REFUSED_VIPUNE_VERBS.includes(value)) return value;
+      }
+      if (verb !== "update") {
+        // Start the stray scan after this invocation's verb: a second command in
+        // the same clause is the only thing it can legitimately find.
+        const stray = strayRefusedVerb(tokens, collapsed, REFUSED_VIPUNE_VERBS, i + 1);
+        if (stray !== undefined) return stray;
+        continue;
+      }
+      // The quote-stripped tokens the verb scan saw catch the bare forms, and the
+      // de-quoted span catches the three ways bash quote-removal hides a flag name
+      // from a token test (`"--status" active`, `--"status" active`,
+      // `"--status active"`) — all three hand clap `--status`, so all three mutate
+      // the row. The span is everything after the binary's own token.
+      if (hasMutatingFlag(tokens.slice(i + 1)) || hasMutatingFlag(flags)) {
+        return "update <flag>";
+      }
+    }
+  }
+  // Second pass on the de-quoted raw command, scanned BEFORE bash's quote removal
+  // deleted the flag names. Same segment discipline, and the clause still has to
+  // name `vipune` and an `update` verb as separate WORDS, so a memory body cannot
+  // forge it: `vipune add 'note: --status is a flag on update' --memory-type fact`
+  // is refused anyway by the primary pass for its real flag, and
+  // `vipune add 'say update --status please'` is not — the quoted body is one word
+  // here, never a `vipune`-then-`update` pair.
+  const raw = deQuoteKeepingQuotedRuns(command);
+  if (raw.indexOf("vipune") >= 0) {
+    for (const segment of raw.split(SEGMENT_SEPARATOR)) {
+      if (rawUpdateCarriesMutatingFlag(segment)) return "update <flag>";
     }
   }
   return undefined;
-}
-
-// Every (tokenIndex, verb) pair in one `;`/`&&`-delimited segment: each position
-// where a vipune binary token appears in command position, paired with the verb
-// that follows it. Returns the segment's token list too, because the update-flag
-// check has to read the same list the scan produced — a single shared mutable
-// would let the two halves disagree whenever a segment is scanned between the
-// call and the check, so the pair travels together.
-function verbsIn(segment: string): { tokens: string[]; hits: [number, string][] } {
-  const tokens = segment.split(/[ \t]+/).filter((t) => t !== "");
-  const hits: [number, string][] = [];
-  // `inPosition` is true at the start of a segment (a `;`-delimited clause begins
-  // in command position) and after any starter token; any other token that is not
-  // the binary clears it, because after `cp foo` the next word is an argument.
-  let inPosition = true;
-  for (let i = 0; i < tokens.length; i++) {
-    const raw = tokens[i] ?? "";
-    // `(vipune`, `!vipune`: openers attach with no space, so they are stripped
-    // before the whole-token comparisons.
-    const token = raw.replace(TOKEN_OPENERS, "");
-    if (token === "") continue;
-    if (COMMAND_POSITION_STARTERS.includes(token) || isOperatorStarter(raw)) {
-      inPosition = true;
-      continue;
-    }
-    if (isWrapperToken(token)) {
-      // `timeout 30`, `nice -n 5`, `env FOO=1`: consume the wrapper's own
-      // arguments, but a NON-wrapper token after a wrapper may be the command
-      // itself (`nohup vipune …`, `exec vipune …`), so only a KEY=value token or
-      // a `-flag`/`-n` option is swallowed. Anything else leaves command position
-      // set for the next token, which is what `nohup vipune delete 42` and the
-      // bare-wrapper shapes depend on.
-      let k = i + 1;
-      while (k < tokens.length) {
-        const next = (tokens[k] ?? "").replace(TOKEN_OPENERS, "");
-        if (next === "-n") {
-          k += 2; // `nice -n 5` — the value after the option
-          continue;
-        }
-        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(next)) {
-          k++; // `env FOO=1` / `VIPUNE_DEBUG=1`
-          continue;
-        }
-        if (/^\d+[smhd]?$/.test(next)) {
-          k++; // `timeout 30`, `timeout 30s` — a duration, never a command
-          continue;
-        }
-        break;
-      }
-      i = k - 1;
-      continue;
-    }
-    // `oo` is the allowlist's wrapper verb and transparent: `oo vipune delete 42`
-    // is the same invocation as `vipune delete 42`, so `oo` neither is the binary
-    // nor ends command position.
-    if (token === "oo") continue;
-    const binary = BINARY_TOKEN.exec(token);
-    if (binary === null) {
-      inPosition = false;
-      continue;
-    }
-    if (!inPosition) continue;
-    // Skip this invocation's leading global options and their required values;
-    // the next token is the verb.
-    let j = i + 1;
-    while (j < tokens.length) {
-      const arity = optionArity(tokens[j] ?? "");
-      if (arity === undefined) break;
-      j += 1 + arity;
-    }
-    hits.push([j, tokens[j] ?? ""]);
-    // Everything after the binary in this clause is an argument, so a second
-    // `vipune` later in the clause is an argument word, not a command.
-    inPosition = false;
-  }
-  return { tokens, hits };
-}
-
-// An operator glued to the front of a token (`&&vipune`, `(vipune`) is still a
-// starter — `;` and `&&` were already split away above, but `(` and `!` attach.
-function isOperatorStarter(token: string): boolean {
-  return token === "(" || token === "!" || token.startsWith("&&") || token.startsWith("||");
-}
-
-// True when the arguments following `vipune update` carry a row-mutating flag,
-// in whole (`--status active`) or `=` (`--status=active`) form, or as a member
-// of a clustered short flag (`-tm`). Tokens arrive already split and already cut
-// at the next shell operator, so a chained command cannot borrow a flag from a
-// different invocation — `vipune update 12 && cp --status x` is not a mutating
-// update.
-//
-// Matching on TOKENS, not on a `(^|\s)flag(\s|=)` regex: the common `&&` chain
-// (`vipune update 12 -t x && git add -A`) leaves trailing `&` characters where a
-// regex anchored on a whitespace-or-`=` boundary would MISS the exact shape the
-// guard exists for. A memory body cannot forge either form, because quoted
-// segments are stripped before this runs.
-//
-// No long-flag prefix matching: measured on vipune 0.15.0, clap rejects every
-// abbreviation (`--stat`, `--imp`, `--mem-t`, `--memorytyp=fact` → `unexpected
-// argument`), so a prefix that merely LOOKS like `--status` mutates nothing.
-function hasMutatingFlag(tokens: readonly string[]): boolean {
-  for (const token of tokens) {
-    const name = token.split("=")[0] ?? "";
-    if (MUTATING_UPDATE_FLAGS.includes(name)) return true;
-    // Clustered short flags: every character is tested, not just the first.
-    // Measured on 0.15.0, each of these reaches the database and rewrites the
-    // row — `-tm` stores content `m` (t consumes m as --text's value), `-mt`
-    // errors on --metadata's missing value, `-ta`/`-at`/`-xm` likewise mutate.
-    // A cluster member is therefore a mutating flag even when the token's first
-    // character is not one, which is the whole reason for the inner loop.
-    //
-    // `=` is not a boundary: `-t=x` is accepted and stores `x` (measured), so
-    // `=` introduces no new flag but must not stop the scan either — stopping at
-    // it would make `-xm=1` read as a harmless `x`.
-    if (name.length > 2 && name.startsWith("-") && !name.startsWith("--")) {
-      for (let i = 1; i < name.length; i++) {
-        const ch = name[i];
-        if (ch === "=") continue;
-        for (const flag of MUTATING_UPDATE_FLAGS) {
-          if (flag.length === 2 && flag.startsWith("-") && flag[1] === ch) return true;
-        }
-      }
-    }
-  }
-  return false;
 }
 
 export function registerMemoryWriteGuard(pi: ExtensionAPI): void {

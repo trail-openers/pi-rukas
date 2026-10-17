@@ -61,11 +61,17 @@ import {
   refusesMemoryWrite,
 } from "../src/memory-write-guard.ts";
 import { searchArgv, vipuneChildEnv } from "../src/vipune.ts";
+import { skipBinaryGate, vipuneHelpOrSkip } from "./lib/vipune-binary-probe.ts";
 
 const execFileAsync = promisify(execFile);
 
 /**
- * The verb list `vipune --help` prints, or null when the binary is absent.
+ * The verb list `vipune --help` prints, or null when the binary is ABSENT.
+ *
+ * When the binary is PRESENT, a failed `--help` or a missing `Commands:` heading
+ * THROWS (see `lib/vipune-binary-probe.ts`) rather than reading as "no binary" —
+ * which is the whole point: the set-equation gate must fail on a broken binary,
+ * not go quietly off.
  *
  * Parsed from the `Commands:` block (two-space indent, name then optional
  * description) rather than from a committed fixture — the same offline/live dual
@@ -73,22 +79,21 @@ const execFileAsync = promisify(execFile);
  * is not installed. Bounded: a hanging binary is a skip, not a hung suite.
  */
 async function listVipuneHelpVerbs(): Promise<Set<string> | null> {
-  try {
-    const { stdout } = await execFileAsync("vipune", ["--help"], { timeout: 10_000 });
-    const lines = stdout.split("\n");
-    const start = lines.findIndex((l) => /^Commands:/.test(l));
-    if (start < 0) return null;
-    const verbs = new Set<string>();
-    for (const line of lines.slice(start + 1)) {
-      if (/^\S/.test(line)) break; // the next top-level section (`Options:`)
-      const m = /^ {2}(\w[\w-]*)/.exec(line);
-      // `help` is clap's own verb, not a vipune capability.
-      if (m?.[1] && m[1] !== "help") verbs.add(m[1]);
-    }
-    return verbs.size > 0 ? verbs : null;
-  } catch {
-    return null;
+  const help = vipuneHelpOrSkip("Commands:", "`vipune --help` verb list");
+  if (help === null) return null;
+  const lines = help.split("\n");
+  const start = lines.findIndex((l) => /^Commands:/.test(l));
+  const verbs = new Set<string>();
+  for (const line of lines.slice(start + 1)) {
+    if (/^\S/.test(line)) break; // the next top-level section (`Options:`)
+    const m = /^ {2}(\w[\w-]*)/.exec(line);
+    // `help` is clap's own verb, not a vipune capability.
+    if (m?.[1] && m[1] !== "help") verbs.add(m[1]);
   }
+  if (verbs.size === 0) {
+    throw new Error("`vipune --help` printed an empty `Commands:` block — the gate cannot run");
+  }
+  return verbs;
 }
 
 /**
@@ -360,9 +365,7 @@ assert(
   // deliberately not refused by code. Both reconciliations are explicit below,
   // and a future agents.json grant of a refused verb fails here instead of
   // silently contradicting the code refusal.
-  const expectedPoliced = new Set(
-    [...VIPUNE_SUBCOMMANDS].filter((v) => !allowedVerbs.has(v)),
-  );
+  const expectedPoliced = new Set([...VIPUNE_SUBCOMMANDS].filter((v) => !allowedVerbs.has(v)));
   const policedDelta = [...expectedPoliced].filter((v) => !VIPUNE_SUBCOMMANDS.has(v));
   assert(
     policedDelta.length === 0,
@@ -371,8 +374,12 @@ assert(
 
   const helpVerbs = await listVipuneHelpVerbs();
   if (helpVerbs === null) {
-    console.log("… vipune absent — skipping the `vipune --help` verb-set assertion (offline fallback in use)");
+    skipBinaryGate("`vipune --help` verb-set assertion");
   } else {
+    // Non-empty is asserted here rather than trusted from the helper: an empty
+    // set makes BOTH deltas below vacuously true, so an unasserted `helpVerbs ===
+    // 0` is a green gate that reviewed nothing.
+    assert(helpVerbs.size > 0, "`vipune --help` yielded at least one verb to compare against");
     const unpoliced = [...helpVerbs].filter((v) => !VIPUNE_SUBCOMMANDS.has(v));
     const phantom = [...VIPUNE_SUBCOMMANDS].filter((v) => !helpVerbs.has(v));
     assert(
