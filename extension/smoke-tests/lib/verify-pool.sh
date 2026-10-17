@@ -54,6 +54,85 @@ fi
 # again in pool_collect against the number of collected tests.
 VERIFY_TEST_JOBS_MAX=16
 
+# host_job_count — the pool width a host can actually use: 4 where the machine
+# reports 8 or more CPUs, 2 otherwise. A small host gains nothing from a wide
+# pool and pays for it in contention.
+#
+# `getconf _NPROCESSORS_ONLN` rather than `nproc`: nproc is GNU coreutils, and
+# `getconf` is in POSIX, so the same call works on macOS and Linux CI images
+# alike. On a host without it the lookup fails and the answer is the narrow
+# default — sizing UP off an unknown host is the wrong direction to guess.
+#
+# NOTE: the count is the raw online CPU count, NOT the cgroup CPU quota — a
+# container limited to 2 CPUs on an 8-core host still reports 8 here. The
+# cgroup-aware authority is `extension/src/host-resources.ts` (`hostBudget`),
+# which lowers `os.availableParallelism()` by the quota; this shell-side number
+# is deliberately the coarse one because the pool only picks between 2 and 4.
+#
+# A function rather than an inline substitution at the call site, so the tests
+# can put a stub `getconf` earlier on PATH and pin all three branches (8+ CPUs,
+# under 8, no working getconf) without owning a machine of each kind.
+host_job_count() {
+  local cpus
+  # No `|| cpus=""`: a getconf that exits non-zero still prints its error to
+  # stderr (discarded) and nothing to stdout, so `$cpus` is already the empty
+  # string the `''` arm below handles — and a non-zero exit that DID print a
+  # count is a count, which the same arms judge on its content either way.
+  cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null)"
+  # `case` rather than `[[ =~ ]]`: an unquoted, unvalidated `$cpus` in an
+  # arithmetic test is the shape that accepts junk, and getconf on a BSD host
+  # can print something that is not a bare count.
+  local width
+  case "$cpus" in
+    '' | *[!0-9]*)
+      # One stderr note, then the narrow default — silently sizing down is the
+      # wrong shape: an operator who asked for host sizing is entitled to know
+      # the host did not answer.
+      echo "warn: verify-loop: could not read CPU count; pool at 2" >&2
+      width=2
+      ;;
+    *) if [ "$cpus" -ge 8 ]; then width=4; else width=2; fi ;;
+  esac
+  # The chosen width is echoed to stdout — it is this function's answer, and
+  # nothing else reads it — and ALSO traced to stderr under a name the caller
+  # cannot produce by accident. Stderr is where the test observes it: stdout is
+  # captured by the command substitution in `apply_host_jobs` and never reaches
+  # the caller's terminal. The trace is what lets
+  # `test-verify-loop-jobs-from-host.ts` assert the width the host sizing
+  # produced (4 on an 8+ CPU stub, 2 below that, 2 on a host where the lookup
+  # fails) rather than inferring it from the peak overlap, which is only ever a
+  # lower bound on the ceiling. The `verify-loop.sh:` segment names the script
+  # the pool belongs to, matching the `verify-loop:` prefix every other line here
+  # carries — the prefix is `verify-loop.sh` because that is the caller's name.
+  echo "note: verify-loop.sh: host_job_count: $width (cpus='${cpus}')" >&2
+  echo "$width"
+}
+
+# apply_host_jobs — the `--jobs-from-host` decision, kept separate from
+# host_job_count so each half is testable on its own: this function answers
+# "should the host be consulted at all?", that one answers "what width?".
+#
+# An explicitly set PI_ENSEMBLE_VERIFY_TEST_JOBS always wins, host or no host:
+# the operator who named a number outranks a guess about the machine, and the
+# flag is there for the case where nobody named one. So the ambient variable is
+# tested HERE rather than relying on the parse above having honoured it.
+apply_host_jobs() {
+  # One `if` rather than two early-return lines: this file is SOURCED, so a
+  # caller running under `set -e` would treat a bare `[ … ] || return 0` whose
+  # test fails as the statement of record. `return 0` at the end keeps the
+  # function's status 0 on every path whichever way the caller's shell is set.
+  if [ "${VERIFY_JOBS_FROM_HOST:-0}" = "1" ]; then
+    # An ambient setting wins; only an UNSET variable lets the host decide.
+    # Deliberately not "unset or unparseable": the parse above already warned
+    # about junk and fell back to 2, and a caller who set the variable at all
+    # said "I want to choose the width, not the machine".
+    if [ -z "${PI_ENSEMBLE_VERIFY_TEST_JOBS:-}" ]; then
+      VERIFY_TEST_JOBS="$(host_job_count)"
+    fi
+  fi
+  return 0
+}
+
 JOB_TESTS=()
 JOB_CAP=()
 JOB_RC=()
@@ -124,6 +203,14 @@ pool_collect() {
   # the test-count clamp on an empty collection, which is the all-live-files
   # case verify-loop.sh reports through its own `no tests ran` exit 3. Warning
   # about 2 jobs for 0 tests there would just contradict that message.
+  #
+  # The host sizing is applied HERE, not at the parse above, because the test-
+  # count clamp below is the last writer to VERIFY_TEST_JOBS: a host-derived 4
+  # applied before this would be silently overwritten for a small collection,
+  # and an applied-after clamp would print its warning naming a number the pool
+  # no longer runs. The operator's explicit value still wins inside
+  # apply_host_jobs.
+  apply_host_jobs
   if [ "${#JOB_TESTS[@]}" -ne 0 ] && [ "${#JOB_TESTS[@]}" -lt "$VERIFY_TEST_JOBS" ]; then
     echo "warn: verify-loop: PI_ENSEMBLE_VERIFY_TEST_JOBS=${VERIFY_TEST_JOBS} clamped to ${#JOB_TESTS[@]} (the number of tests)" >&2
     VERIFY_TEST_JOBS="${#JOB_TESTS[@]}"
