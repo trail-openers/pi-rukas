@@ -58,25 +58,13 @@
  * before it exempts anything.
  */
 
-import { traceWarn } from "./trace.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { isConfiguredExemptDirtLine, normaliseRepoPath } from "./work-driver-dirty-root-exempt.ts";
-import type { ExecFn } from "./worktree.ts";
-
-/**
- * #1421 fix round — does this executor report an exit code at all?
- *
- * `ExecFn`'s declared result carries only `stdout`/`stderr`, and the
- * driver's `execp` attaches the exit `code` to the REJECTION only when it
- * comes from execFile/exec — a fake executor, or a rejection that never had a
- * code (a kill with no code, an injected error), leaves it `undefined`.
- * `checkIgnoreStatus` reads the same field the same way; keeping one shape for
- * the question here means the probe and the deps gate cannot disagree about
- * whether git answered.
- */
-function exitCodeOf(err: unknown): unknown {
-  return (err as { code?: unknown } | undefined)?.code;
-}
+// #1421 fix round (lens) — the two git reads live in their own module so this
+// file stays under the size cap while keeping the classifier, the failure
+// strings and the routing labels together. Re-exported so every caller keeps
+// one import path and cannot drift between the two halves of one answer.
+export { probeIgnored, readIgnoredPaths } from "./work-driver-ignore-probe.ts";
 
 /**
  * Why a repoRoot dirt line is not this cycle's problem. One reason per line,
@@ -130,49 +118,6 @@ function driverArtefactReason(rawPath: string): DirtReason | undefined {
 }
 
 /**
- * The untracked paths git itself declares ignored, normalised for comparison.
- *
- * Two forms, because the status output cannot answer the whole question. With
- * `-uall`, git lists ignored FILES under a tracked directory (`!! build/out.js`)
- * but collapses a wholly-ignored directory to `!! target/` — so a gate reading
- * only that output would classify `?? target/.cargo-lock` as dirt and refuse,
- * which is the incident. Hence the prefix set plus a direct probe per candidate
- * path, which is exact and independent of how git chose to print the tree.
- *
- * Both sources come from `git status`, so `.gitignore`, `core.excludesFile`
- * and `.git/info/exclude` all count, and neither reimplements git's pattern
- * language. `--ignored=matching` keeps git from walking every directory of an
- * ignored tree.
- *
- * Returns `undefined` when the read failed — the caller treats that as "I
- * cannot tell", never as "nothing is ignored".
- */
-export async function readIgnoredPaths(
-  execFn: ExecFn,
-  repoRoot: string,
-): Promise<Set<string> | undefined> {
-  try {
-    const { stdout } = await execFn("git status --ignored=matching --porcelain -uall", {
-      cwd: repoRoot,
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    const ignored = new Set<string>();
-    for (const line of stdout.split("\n")) {
-      if (!line.startsWith("!!")) continue;
-      const norm = normaliseRepoPath(line.slice(2));
-      if (norm.length === 0) continue;
-      ignored.add(norm);
-      // A directory-level ignore (`!! target/`) also covers everything beneath
-      // it; register the prefix form so a descendant path matches by prefix.
-      ignored.add(norm.replace(/\/$/, ""));
-    }
-    return ignored;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
  * One untracked path, judged against the ignored set: itself or any ancestor
  * prefix. `git status` may have reported the ancestor (`!! target/`) rather
  * than the file, so the ancestor check is what makes a `target/.cargo-lock`
@@ -190,12 +135,18 @@ function isUnderIgnored(path: string, ignored: Set<string>): boolean {
 }
 
 /**
- * The dirty-root gate's own filter: the driver-managed prefixes, the
- * project's configured exemptions, and blank lines all drop out. Shared by
- * every gate that reads repoRoot's status, so a line this module classifies is
- * the same line `readRepoRootDirt` would have refused on.
+ * The dirty-root gate's filter: the driver-managed prefixes, the
+ * project's configured exemptions, and blank lines all drop out.
+ *
+ * NOT a shared predicate: this is the classifier's own line filter. The other
+ * gates that read repoRoot's status compose the same two predicates INLINE
+ * (`work-driver-integrate-worktree.ts`'s preflight calls
+ * `isDriverManagedDirtLine` and `isConfiguredExemptDirtLine` itself), so a
+ * gate does not necessarily call this function, and changing it changes only
+ * the classifier. Nothing outside this module calls it, so it stays module
+ * private.
  */
-export function isGateDirtLine(line: string, exempt?: readonly string[]): boolean {
+function isGateDirtLine(line: string, exempt?: readonly string[]): boolean {
   return (
     line.trim().length > 0 &&
     !isDriverManagedDirtLine(line) &&
@@ -319,93 +270,22 @@ export function classifyRootDirt(
       residue.push({ line, reason: "git-ignored" });
     }
   }
-  const dirt = considered.filter((l) => !residue.some((r) => r.line === l));
+  // #1421 fix round (lens) — the residue lines as a Set, so the two scans
+  // below are O(1) per line instead of O(R) each. On a root with a large
+  // build directory the previous `residue.some(...)` pair was quadratic in the
+  // residue count. Membership is by the exact line string either way, so the
+  // result is identical.
+  const residueLines = new Set(residue.map((r) => r.line));
+  const dirt = considered.filter((l) => !residueLines.has(l));
   return {
     dirt,
     residue,
     // The decline needs at least one residue, nothing the gate refused on, and
     // every untracked line it judged accounted for as residue.
-    ...(vetoLines.length === 0 &&
-    residue.length > 0 &&
-    untracked.every((l) => residue.some((r) => r.line === l))
+    ...(vetoLines.length === 0 && residue.length > 0 && untracked.every((l) => residueLines.has(l))
       ? { buildResidueOnly: true }
       : {}),
   };
-}
-
-/**
- * Which of these untracked paths git declares ignored, asked directly
- * (`git check-ignore --no-index -z --stdin`) rather than inferred from the
- * status listing, which collapses wholly-ignored directories.
- *
- * ONE git call per probe, in the argv form: a shell string that merely
- * contains the word `git` is indistinguishable from a verify command to an
- * `ExecFn` that counts them separately, and a piped form here was counted as a
- * second verify run and silenced a flake-recovery test.
- *
- * Returns `undefined` when git could not answer, and the caller then fails
- * closed. Three states, exactly as `checkIgnoreStatus` in
- * work-driver-deps-gate.ts reads them:
- *
- *   - exit 0 — the batch printed the ignored subset;
- *   - exit 1 — git ANSWERED: nothing in the batch is ignored. That is a real
- *     empty set, not a failure, and conflating the two is what made a clean
- *     tree indistinguishable from a broken git;
- *   - anything else (exit ≥ 2, a spawn failure, a kill, a rejection that
- *     reports no code at all) — git could not answer. The set is `undefined`, the reason is traced, and a caller that
- *     cannot tell must charge every path as dirt.
- *
- * `-q` is deliberately absent: it would suppress exactly the list we came for.
- */
-export async function probeIgnored(
-  execFn: ExecFn,
-  repoRoot: string,
-  lines: readonly string[],
-): Promise<Set<string> | undefined> {
-  const candidates: string[] = [];
-  for (const line of lines) {
-    // `!!` lines are git's own answer already — nothing to ask about them.
-    if (!line.trimStart().startsWith("??")) continue;
-    const path = normaliseRepoPath(line.slice(2));
-    if (path.length > 0) candidates.push(path);
-  }
-  const out = new Set<string>();
-  if (candidates.length === 0) return out;
-  try {
-    // `git check-ignore` reads one path per line from --stdin; passing the
-    // batch as trailing pathspec arguments is equivalent, needs no shell, and
-    // keeps the call a single argv-form git invocation. Paths come from git's
-    // own status output, so they are relative and cannot be options; `--` is
-    // the guard that keeps a path beginning with a dash a path.
-    const { stdout } = await execFn("git", {
-      cwd: repoRoot,
-      maxBuffer: 4 * 1024 * 1024,
-      argv: ["check-ignore", "--no-index", "--", ...candidates],
-    });
-    for (const line of stdout.split("\n")) {
-      const norm = normaliseRepoPath(line);
-      if (norm.length > 0) out.add(norm);
-    }
-    return out;
-  } catch (err) {
-    const e = err as Error & { killed?: boolean };
-    const code = exitCodeOf(err);
-    // Exit 1 is git's answer, not git's failure: "none of these are ignored".
-    // The empty set is then correct information, and the caller keeps its
-    // fail-closed dirt list on the strength of the read, not a guess.
-    if (code === 1 && e.killed !== true) return out;
-    const how = typeof code === "number" ? `exit ${code}` : e.killed === true ? "killed" : "error";
-    const detail = e.message ?? String(err);
-    // Loud, not debug-gated: this is the state where the driver's answer to
-    // "is that path git's own output?" is unknowable, and the cycle's outcome
-    // turns on it — the caller charges every untracked path as dirt, so a
-    // finished change can park on a git that would not answer. Silence here
-    // is the #481 defect shape.
-    traceWarn(
-      `work-driver: probeIgnored could not ask git (${how}${typeof code === "undefined" ? ", no exit code reported" : ""}): ${detail.slice(0, 200)} — the ignored set is unknown, so every untracked path is charged as dirt (fail closed)`,
-    );
-    return undefined;
-  }
 }
 
 /**

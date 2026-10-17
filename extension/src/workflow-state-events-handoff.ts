@@ -78,10 +78,11 @@ export type HandoffEmittedEvent = {
   /**
    * #1421 fix round — the producer's own reason when consolidation was
    * DECLINED (dirty root, cherry-pick conflict, git error, lock failure),
-   * carried on the `handoff-emitted` event, which is the one the renderers
-   * read. This is the single carrier: the driver's reason is NOT also written
-   * onto the `handoff-consolidated` event, because a field no writer sets and
-   * no renderer reads is a second place for the same fact to go stale.
+   * carried on the `handoff-emitted` event, which `/work-status` reads for its
+   * `consolid:` line. This is the single carrier: the driver's reason is NOT
+   * also written onto the `handoff-consolidated` event, because a field no
+   * writer sets and no reader reads is a second place for the same fact to go
+   * stale.
    */
   degradedReason?: string;
 };
