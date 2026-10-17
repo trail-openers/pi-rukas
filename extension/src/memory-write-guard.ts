@@ -81,6 +81,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import {
   hasMutatingFlag,
   rawUpdateCarriesMutatingFlag,
@@ -88,8 +89,10 @@ import {
 } from "./memory-write-flags.ts";
 import {
   SEGMENT_SEPARATOR,
+  WORD_SEPARATOR,
   collapsedToken,
   deQuoteKeepingQuotedRuns,
+  isBinaryToken,
   optionArity,
   stripQuotedCommand,
   verbsIn,
@@ -137,8 +140,8 @@ export function refusesMemoryWrite(command: string): string | undefined {
   // Quoted segments are stripped first — scan-not-anchor, exactly like
   // discardsUncommittedWork / createsIssue — so a memory body that merely MENTIONS
   // `vipune delete` is not refused. That stripping is also why the quoted flags in
-  // finding 3 need a second pass: `"--status" active` leaves nothing behind, and
-  // clap still sees `--status`.
+  // finding 3, and the quoted VERBS below, need a second pass: `"--status" active`
+  // and `"delete" 42` each leave nothing behind, and clap still sees them.
   const c = stripQuotedCommand(command);
   // Segment by segment: a verb or flag cannot be borrowed across a shell operator,
   // so `vipune update 12 && cp --status x` is not a mutating update and
@@ -163,7 +166,16 @@ export function refusesMemoryWrite(command: string): string | undefined {
       for (const value of flags) {
         if (REFUSED_VIPUNE_VERBS.includes(value)) return value;
       }
-      if (verb !== "update") {
+      if (verb !== "update" && collapsedVerb !== "update") {
+        // Neither reading of the verb slot is `update`, so this invocation carries
+        // no mutating flag to look for: the stray scan is all it can contribute.
+        // Both readings are tested because `verb` is what the quote-STRIPPED
+        // skeleton sees and `collapsedVerb` is what clap gets: `vipune upd""ate 1
+        // --status active` has an empty string in the skeleton slot — so a
+        // skeleton-only comparison skipped the flag branch entirely and the real
+        // `--status` write ran — while the bare `vipune update 12 && cp --status x`
+        // case still depends on `verb` being the exact word.
+        //
         // Start the stray scan after this invocation's verb: a second command in
         // the same clause is the only thing it can legitimately find.
         const stray = strayRefusedVerb(tokens, collapsed, REFUSED_VIPUNE_VERBS, i + 1);
@@ -180,20 +192,234 @@ export function refusesMemoryWrite(command: string): string | undefined {
       }
     }
   }
-  // Second pass on the de-quoted raw command, scanned BEFORE bash's quote removal
+  // Second pass over the command's raw text, scanned BEFORE bash's quote removal
   // deleted the flag names. Same segment discipline, and the clause still has to
-  // name `vipune` and an `update` verb as separate WORDS, so a memory body cannot
-  // forge it: `vipune add 'note: --status is a flag on update' --memory-type fact`
-  // is refused anyway by the primary pass for its real flag, and
+  // name `vipune` and a verb as separate WORDS, so a memory body cannot forge it:
+  // `vipune add 'note: --status is a flag on update' --memory-type fact` is
+  // refused anyway by the primary pass for its real flag, and
   // `vipune add 'say update --status please'` is not — the quoted body is one word
   // here, never a `vipune`-then-`update` pair.
-  const raw = deQuoteKeepingQuotedRuns(command);
-  if (raw.indexOf("vipune") >= 0) {
-    for (const segment of raw.split(SEGMENT_SEPARATOR)) {
-      if (rawUpdateCarriesMutatingFlag(segment)) return "update <flag>";
+  //
+  // The hole the skeleton pass cannot see, and the reason this pass exists at
+  // all: `stripQuotedSegments` deletes a quoted run while leaving its delimiters
+  // in place, so `vipune "delete" 42` reduces to `vipune  42` — no verb in
+  // existence — and the whole store walked out of the machine (`vipune "export"
+  // rows.jsonl` was verified to export it). Quote removal is the one operation
+  // that turns a quoted word back into an argument clap dispatches on, so the scan
+  // that must see a verb is the one that runs on the raw text. Every quoted form
+  // the lens named is refused here: `vipune "delete" 42`, `vipune 'delete' 42`,
+  // `vipune "export" rows.jsonl`, `vipune "prune"`, `vipune "mcp"`, and the quoted
+  // verb of a second invocation in `vipune search q vipune "delete" 1`.
+  //
+  // The scan runs on the RAW cut — the one rendering in which quoting still
+  // means anything — and qualifies every verb it reads with `singleWordQuoted`: a
+  // token the agent wrapped in quotes as ONE word is an argument clap dispatches
+  // on; a run of quoted words is prose. The obvious implementation, de-quoting the
+  // command and rescanning it, was tried first and is wrong in the direction that
+  // costs the most: `deQuoteKeepingQuotedRuns` removes the quote characters and
+  // leaves the spaces inside the run, so
+  // `vipune add 'vipune delete is denied to every role'` comes back as a run of
+  // bare words, a scan finds a second binary token, and the predicate refuses the
+  // driver's own kind of write. Quoting is the only thing that made that body
+  // inert, so quoting is what this scan reads.
+  //
+  // The classifier is a property of the TOKEN rather than a span over a rendering
+  // of the command, and that is not a style preference: `vipune add 'vipune delete
+  // is denied'` splits to `vipune`, `add`, `'vipune`, `delete`, …, so a scan that
+  // matched a binary token and then tested the token after it for quoting refused
+  // it — the opening quote was on the token BEFORE the word it was classifying.
+  // `quotedTokenSpans` answers "does any quoted run cover any byte of this word",
+  // which is the question the raw text can actually answer.
+  if (command.indexOf("vipune") >= 0) {
+    // Segment on the RAW command: a quoted run is one argument to bash, so an
+    // operator inside quotes cannot delimit a clause and must not split one here
+    // either. De-quoting first would let a `;` inside a memory body cut the clause
+    // in half and re-arrange which words look like a command.
+    for (const cut of command.split(SEGMENT_SEPARATOR)) {
+      if (cut.indexOf("vipune") < 0) continue;
+      if (rawUpdateCarriesMutatingFlag(deQuoteKeepingQuotedRuns(cut))) return "update <flag>";
+      // `verbsIn` itself decides where the binary and the verb are, on the raw
+      // text — the same parser the primary pass uses, so the two cannot disagree
+      // about a token's position or about what an option consumed.
+      const { tokens, hits } = verbsIn(cut);
+      const collapsed = tokens.map(collapsedToken);
+      const consumed = consumedValueIndices(hits, tokens);
+      const { quoted, quotedSingle } = quotedTokenSpans(cut);
+      // The verb slot, read where the primary pass cannot read it. Two rules, both
+      // load-bearing, and both about QUOTING — which is the only thing bash's word
+      // splitting honours and the only thing every other rendering of this command
+      // destroys:
+      //
+      //   - the word after the binary must be a quoted run of exactly ONE word, so
+      //     `vipune "delete" 42` is refused and a memory body is not;
+      //   - the binary token itself must NOT have come out of a quoted run: the raw
+      //     split gives `vipune add 'vipune delete is denied'` the token `'vipune`
+      //     followed by `delete`, a shape that reads as a second invocation and is
+      //     nothing of the kind. A quoted binary is a word inside someone's sentence.
+      //
+      // `quotedSingle` is the only thing in this whole pass that may NAME a verb.
+      // Every other name the verb could be reached by is disabled here on purpose:
+      // `verbsIn`'s hits and `strayRefusedVerb` both read tokens the skeleton pass
+      // had already made inert, and on the raw text those tokens are the words of a
+      // quoted body — `vipune add "gotchas: vipune prune demotes candidates"` hands
+      // `strayRefusedVerb` a bare `vipune` at one index and a bare `prune` at the
+      // next, which is exactly the pair it exists to catch and exactly the row the
+      // driver writes. Bare verbs in command position are the PRIMARY pass's
+      // business; it reads the skeleton, where a quoted body is empty and cannot
+      // produce that pair at all. This pass exists for the one shape the skeleton
+      // erases, and it must read nothing else.
+      for (let k = 0; k < tokens.length; k++) {
+        if (consumed.has(k) || quoted.has(k) || !isBinaryToken(tokens[k] ?? "")) {
+          continue;
+        }
+        // The verb may be one slot further along than `verbsIn` places it. That
+        // scan reads the verb slot off the quote-STRIPPED skeleton, so a quoted
+        // option (`vipune "--json" delete 42`) leaves an empty slot it does not
+        // count, and every slot after it sits one place to the left of the word
+        // clap actually dispatched. Stepping forward over the options clap would
+        // have consumed is the read that matches the binary; it is bounded to
+        // option-shaped tokens, so it can never walk off the end or past the verb.
+        let vSlot = k + 1;
+        while (vSlot < tokens.length && collapsed[vSlot]?.startsWith("-")) vSlot++;
+        const v = collapsed[vSlot] ?? "";
+        if (REFUSED_VIPUNE_VERBS.includes(v) && quotedSingle.has(vSlot)) {
+          return v;
+        }
+        k = vSlot; // the verb slot is this invocation's own argument
+      }
     }
   }
   return undefined;
+}
+
+/**
+ * Token indices an option consumed as its VALUE, for one clause's token list.
+ *
+ * A value slot is data, never a verb — `vipune search --filter delete` names
+ * `delete` as a flag's argument, not as a command — so both the verb scan and
+ * `singleWordQuoted` consult this set rather than each keeping its own idea of
+ * what an option swallowed. The skip follows the arity table `verbsIn` used to
+ * place the verb in the first place; two tables would be two chances to disagree.
+ */
+function consumedValueIndices(
+  hits: readonly (readonly [number, string, readonly string[], string])[],
+  tokens: readonly string[],
+): Set<number> {
+  const consumed = new Set<number>();
+  for (const [i] of hits) {
+    let k = i + 1;
+    while (k < tokens.length) {
+      const arity = optionArity(tokens[k] ?? "");
+      if (arity === undefined) break;
+      for (let v = k + 1; v <= k + arity; v++) consumed.add(v);
+      k += 1 + arity;
+    }
+  }
+  return consumed;
+}
+
+/**
+ * Which tokens of `cut` came out of a quoted run, and which of those are a run of
+ * exactly ONE word. Indices are in `verbsIn`'s space, so they index `tokens`
+ * directly.
+ *
+ * The RAW text is the only rendering where the distinction still exists, and both
+ * of the others destroy it in the direction that costs a canary class:
+ *
+ *   - `stripQuotedSegments` deletes a quoted run outright, which is why the primary
+ *     pass never sees `vipune "delete" 42` at all and the whole store exported;
+ *   - `deQuoteKeepingQuotedRuns` removes the quote characters and LEAVES the spaces
+ *     inside the run, so a scan over it cannot tell `vipune "delete" 42` from the
+ *     seven words of `vipune add 'vipune delete is denied to every role'` —
+ *     measured, a scan over that text refused the driver's own kind of write three
+ *     ways at once.
+ *
+ * `quoted` is the wider set and `quotedSingle` the narrower one, and the caller
+ * needs both: the wider one disqualifies a quoted binary token
+ * (`'vipune` in `vipune add 'vipune delete is denied'`, which the raw split puts
+ * next to `delete`), and the narrower one is the only thing that qualifies a verb.
+ *
+ * A run that opens mid-token (`de""lete`, `vipune'delete'`) is punctuation inside
+ * someone else's word, so it marks nothing — that shape is the collapsed-verb
+ * scan's business, not this one's.
+ *
+ * An unterminated quote marks nothing: the command is malformed,
+ * `deQuoteKeepingQuotedRuns` leaves it as typed, and a classifier that guessed
+ * where the quote ended would be inventing a boundary the agent never wrote.
+ */
+function quotedTokenSpans(cut: string): {
+  quoted: Set<number>;
+  quotedSingle: Set<number>;
+} {
+  const quoted = new Set<number>();
+  const quotedSingle = new Set<number>();
+  const n = cut.length;
+  let i = 0;
+  // The walk mirrors `verbsIn`'s own split — `tokenize` splits the RAW text on
+  // `\s` (quotes included) and drops empties — so `tok` here indexes the same token
+  // `tokens` does there. Two independent tokenisers over one command is how a guard
+  // starts refusing the wrong word.
+  let tok = -1;
+  let opened = false; // has the current token emitted a character yet?
+  while (i < n) {
+    const ch = cut[i];
+    if (ch === undefined) break;
+    if (ch !== "'" && ch !== '"') {
+      if (/\s/.test(ch)) opened = false;
+      else if (!opened) {
+        tok++;
+        opened = true;
+      }
+      i++;
+      continue;
+    }
+    const opensToken = !opened;
+    if (opensToken) {
+      tok++;
+      opened = true;
+    }
+    const quote = ch;
+    i++;
+    let closed = false;
+    let words = 0;
+    let wordOpen = false;
+    while (i < n) {
+      const c = cut[i];
+      if (c === undefined) break;
+      if (c === quote) {
+        closed = true;
+        i++;
+        break;
+      }
+      if (quote === '"' && c === "\\" && i + 1 < n) {
+        // An escaped character inside double quotes is data and cannot close the
+        // run — the same reading `deQuoteKeepingQuotedRuns` gives it.
+        if (!wordOpen) words++;
+        wordOpen = true;
+        i += 2;
+        continue;
+      }
+      if (/\s/.test(c)) {
+        // Literal to bash — the run is still ONE argument — but the tokeniser splits
+        // here, so each piece is its own token, and each of them came out of the run.
+        while (i < n && /\s/.test(cut[i] ?? "")) i++;
+        opened = false;
+        wordOpen = false;
+        continue;
+      }
+      if (!wordOpen) words++;
+      wordOpen = true;
+      i++;
+    }
+    if (!closed) return { quoted: new Set(), quotedSingle: new Set() };
+    if (!opensToken) continue; // mid-token punctuation is not a quoted word
+    // Mark every token this run produced, and only the single-word runs qualify as
+    // a verb slot. The pieces after an interior space belong to the run's first
+    // token index plus one each, which is what the raw split did to them.
+    for (let w = 0; w < words; w++) quoted.add(tok + w);
+    if (words === 1) quotedSingle.add(tok);
+  }
+  return { quoted, quotedSingle };
 }
 
 export function registerMemoryWriteGuard(pi: ExtensionAPI): void {
@@ -207,9 +433,31 @@ export function registerMemoryWriteGuard(pi: ExtensionAPI): void {
     return;
   }
   pi.on("tool_call", async (event, _ctx) => {
-    if (event.toolName !== "bash") return;
-    const command = (event.input as { command?: string })?.command ?? "";
-    const refused = refusesMemoryWrite(command);
+    // The narrowing is Pi's own type guard rather than a `toolName` comparison:
+    // `CustomToolCallEvent.toolName` is `string`, which overlaps every literal, so
+    // a bare comparison does not narrow `input` and the read below would need a
+    // cast. A cast is what this handler must not carry — see the catch.
+    if (!isToolCallEventType("bash", event)) return;
+    const command = event.input.command ?? "";
+    // Fail CLOSED on a parse fault. Every path here is a string match on
+    // untrusted input, and a throw that escaped the handler would be swallowed by
+    // the event emitter the same way a blocked command's `undefined` return is —
+    // the command would run. A guard whose failure mode is "the thing it guards"
+    // is not a guard, so an unexpected throw is reported and refused, exactly as
+    // merge-guard's analyse catches return `block(...)` rather than rethrowing.
+    // The reason names the fault and its length, never the command: a memory body
+    // can be anything the agent typed.
+    let refused: string | undefined;
+    try {
+      refused = refusesMemoryWrite(command);
+    } catch (err) {
+      const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      traceWarn(`memory-write-guard: parse fault — blocking by default (${detail.slice(0, 120)})`);
+      return {
+        block: true,
+        reason: `Memory-write guard could not analyse this command (${detail.slice(0, 120)}) — refusing. Split or simplify the command; if you genuinely need a refused vipune verb, an operator runs it in a terminal or sets PI_ENSEMBLE_ALLOW_MEMORY_WRITES=1.`,
+      };
+    }
     if (!refused) return;
     // traceWarn for the same reason: a refusal an agent then routes around is
     // the single most useful line in the log when a cycle did something it
