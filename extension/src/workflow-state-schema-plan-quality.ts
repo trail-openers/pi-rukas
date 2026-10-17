@@ -42,4 +42,17 @@ export type PlanQualityReason =
   // (same channel as every other reason). It is a quality signal, not a
   // block: the planner was told to preserve dependsOn and it didn't, which
   // is exactly the shape the corrective steer exists to correct.
-  | "dropped-dependencies";
+  | "dropped-dependencies"
+  // #819 — the plan-to-spec gate (`work-driver-plan-spec-coverage.ts`): no
+  // workstream declares any path of a deliverable the spec requires, or the
+  // reply carries more than one `## Workstreams` section (so the workstreams
+  // the driver parsed are the first block's, and nothing says which issue
+  // they are about). Produced by `planSpecMismatchReason`, NOT by
+  // `planQualityReason` — the existing reasons check shape and never see the
+  // spec, and this reason must not disturb their precedence. The first plan
+  // gets the one-shot corrective; the CORRECTIVE halts with the
+  // `plan-spec-mismatch` cap, because a wrong corrective must never reach
+  // develop (the #818 incident: four developers built a fabricated
+  // supply-chain package for 45 minutes). Surfaced through
+  // `pipelineState.planQuality.reason` like every other reason.
+  | "plan-spec-mismatch";

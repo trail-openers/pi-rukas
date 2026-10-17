@@ -13,7 +13,11 @@ import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { extractListField, sliceMarkdownSection } from "./work-driver-plan-parse.ts";
 
 // Re-exported: several modules read plan/spec markdown through this module.
-export { sliceMarkdownSection, splitOutsideParens } from "./work-driver-plan-parse.ts";
+export {
+  countMarkdownSections,
+  sliceMarkdownSection,
+  splitOutsideParens,
+} from "./work-driver-plan-parse.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
@@ -22,11 +26,11 @@ import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-driver-path-claims.ts";
 import {
   foldPortPlan,
-  mergeWithContract,
   portPlanSection,
   portReferenceForCycle,
 } from "./work-driver-plan-contract.ts";
-import { mergeCoupledWorkstreams } from "./work-driver-plan-coupling.ts";
+import { runPlanCouplingPass } from "./work-driver-plan-coupling-pass.ts";
+import { planSpecMismatchReason } from "./work-driver-plan-spec-coverage.ts";
 import { execp } from "./work-driver-verify.ts";
 // #679 — the CANONICAL planQualityReason / correctivePlanSteer / steer builders
 // live in work-driver-plan-helpers.ts; this module re-exports them so existing
@@ -40,11 +44,24 @@ export {
   findDroppedDependencyEdges,
   planQualityEnabled,
   planQualityReason,
+  planCorrectivePrompt,
   planDispatchTimeoutMs,
   planTimeoutCorrective,
 } from "./work-driver-plan-helpers.ts";
-// #849 — parseWorkstreams + maxWorkstreams moved to work-driver-plan-workstreams.ts
 export { maxWorkstreams, parseWorkstreams } from "./work-driver-plan-workstreams.ts";
+export {
+  type ExploreVerdict,
+  parseExploreVerdict,
+  parsePerIssueVerdicts,
+} from "./work-driver-plan-verdicts.ts";
+export {
+  findUncoveredDeliverables,
+  planSpecMismatchReason,
+} from "./work-driver-plan-spec-coverage.ts";
+// #819 round-3 — the gate's HALT is now reachable from `runPlan`'s own tail (the
+// backstop under the `primaryGateRefused` assertion), so a caller that reads the
+// gate's verdict must be able to read the halt it produces from the same module.
+export { planSpecMismatchCap } from "./work-driver-plan-helpers.ts";
 import {
   correctivePlanSteer,
   correctiveTestSubjectSplitSteer,
@@ -53,10 +70,14 @@ import {
   planDispatchTimeoutMs,
   planQualityEnabled,
   planQualityReason,
+  planSpecMismatchCap,
   planTimeoutCorrective,
   planTimeoutKill,
 } from "./work-driver-plan-helpers.ts";
 import { findPathCollisions, findTestSubjectSplits } from "./work-driver-plan-paths.ts";
+// #819 — the cap helper below is typed on the gate's verdict shape.
+import type { PlanSpecMismatch } from "./work-driver-plan-spec-coverage.ts";
+import { planCorrectiveFailureEvent, planCorrectivePrompt } from "./work-driver-plan-timeout.ts";
 import { parseWorkstreams } from "./work-driver-plan-workstreams.ts";
 import { planFindingsCount } from "./work-driver-pr-body-definition.ts";
 import { inlinePlanPrompt } from "./work-driver-prompts-early.ts";
@@ -82,7 +103,10 @@ export function setPlanThrowForTestForTest(fn: (() => void) | undefined): void {
  * always written so downstream iterates `Object.keys(workstreams)` uniformly).
  *
  * Failure modes: 0 workstreams → synthetic `default`; dispatch fails → halt
- * (`dispatch-failed`).
+ * (`dispatch-failed`). Both corrective paths (#754's kill recovery and #290's
+ * quality re-dispatch) END the step on their own failure event, and a plan the
+ * #819 spec gate refuses ends on a `cap-hit` — neither reaches the tail that
+ * writes `workstreams`.
  */
 export async function runPlan(
   ctx: CycleContext,
@@ -168,16 +192,12 @@ export async function runPlan(
   // declared them) against the corrective's RAW map.
   const firstPlanRaw = workstreams;
   let redispatched = false;
-  // #849/#1005 — the first plan's workstreams (and their dependsOn edges),
-  // held aside for the dropped-edge check. Set ONLY when the quality gate
-  // fires on the primary's plan (the #849 pre-#1005 shape): the
-  // kill-triggered corrective is a recovery path with no parsed first plan
-  // to compare against (the primary was killed mid-stream and produced no
-  // structured output), so there is nothing its re-plan could have dropped.
-  // A partial parse of the killed primary (the pre-#1005 defect: the
-  // variable was set to `firstPlanRaw` at declaration, so the kill path
-  // fed the #849 check a map that was never a real first plan) is not a
-  // legitimate comparison target and is not passed to it.
+  // #849/#1005 — held for the dropped-edge check. Set ONLY when the quality
+  // gate fires on the primary's plan: the kill-triggered corrective is a
+  // recovery path with no parsed first plan to compare against, and a partial
+  // parse of a killed primary is not a legitimate comparison target (the
+  // pre-#1005 defect: it was set at declaration, so the kill path fed the
+  // check a map that was never a real first plan).
   let firstPlanWorkstreams: typeof workstreams | undefined;
   // #1005 — the corrective's RAW workstreams (before its own coupling
   // merge), held aside for the #849 dropped-edge check.
@@ -185,6 +205,12 @@ export async function runPlan(
   let droppedEdges: { from: string; to: string }[] | undefined;
 
   const spec = next.pipelineState.normalisedSpec;
+  // #819 round-2 — one read of the knob for every gate site in this step (the
+  // primary spec gate, the gate's own dispatch guard, the corrective's spec
+  // gate and the recorded reason). Four separate calls to a function that
+  // reads `process.env` allowed an operator flip mid-step to make the gate
+  // fire at one site and not the next.
+  const planGateEnabled = planQualityEnabled();
   // #792 — count only the deliverables that are expected to produce a diff.
   // A plan-time no-diff marker (settings toggle, operator action, manual
   // verification) cannot land in any diff, so it must not feed the
@@ -192,22 +218,16 @@ export async function runPlan(
   // toggle reads as 4, not 5 (the #786 phantom-under-decomposition shape).
   const findingsCount = spec ? planFindingsCount(spec) : await countFindingsForCycle(ctx, next);
 
-  // #290 — deterministic plan-quality gate. An under-decomposed plan is the
-  // dominant convergence failure: on lantern #604 an 8.6s plan collapsed six
-  // enumerated findings into ONE workstream, the developer then sprawled
-  // across 11 files, looped 17 failed builds and burned 10.5M tokens before
-  // dying. The check is arithmetic, not judgment — asking the model that just
-  // under-decomposed whether it decomposed well is worthless.
-  // #378 — count DELIVERABLES from the resolved spec, not enumerated markdown.
-  // countEnumeratedFindings counts top-level `- [ ]`, and in a /plan-authored
-  // issue checkboxes are exclusive to `## Acceptance criteria` — so it was
-  // counting test assertions. Measured on real issues: #287→7, #288→6,
-  // #289→7, #366→6, with ZERO of #287's five actual deliverables (`**A.**`–
-  // `**E.**`) seen, because bolded letters are invisible to it. A correctly
-  // planned single-workstream issue therefore triggered a corrective
-  // re-dispatch essentially every time.
-  // #754 — a primary killed at the step's own bound gets the one-shot
-  // corrective re-dispatch below (the kill-triggered half of it).
+  // #290 — deterministic plan-quality gate: an under-decomposed plan is the
+  // dominant convergence failure (lantern #604: an 8.6s plan collapsed six
+  // findings into ONE workstream; the developer sprawled 11 files, looped 17
+  // builds, burned 10.5M tokens). Arithmetic, not judgment — asking the model
+  // that just under-decomposed whether it decomposed well is worthless.
+  // #378 counts DELIVERABLES from the resolved spec, not enumerated markdown:
+  // countEnumeratedFindings saw only `## Acceptance criteria` checkboxes and
+  // none of #287's five `**A.**`–`**E.**` deliverables, so a correct N=1 plan
+  // re-dispatched essentially every time. #754 — a primary killed at the step's
+  // own bound gets the one-shot corrective below (the kill-triggered half).
   if (planKill) {
     const recovered = await planTimeoutCorrective(
       ctx,
@@ -219,43 +239,82 @@ export async function runPlan(
       parseWorkstreams,
       planCorrectivePrompt,
     );
-    if (recovered.ok) {
-      next = recovered.state;
-      workstreams = recovered.workstreams;
-      redispatched = true;
-    }
+    // #819 round-2 — adopt the state even when the corrective did not recover:
+    // `planTimeoutCorrective` appends the corrective's own failure event (its
+    // kill, or the synthesised one for a dispatch that THREW) to the state it
+    // returns, and the pre-round-2 `if (recovered.ok)` discarded it. The step
+    // then ended on a `step-completed` with no failure tail at all, so the
+    // router saw a successful plan step and the cycle went to branch with
+    // `workstreams: {}` — the #754 "ends on its dispatch-failed and the
+    // router's plan-timeout cap halts to handoff" contract was never actually
+    // met on this path. `next` is already this function's local, so the
+    // assignment is safe on both branches; `workstreams` stays `{}` on failure,
+    // which the empty-plan synthetic-default branch below then fills.
+    next = recovered.state;
+    workstreams = recovered.workstreams;
+    redispatched = true;
+    // #819 round-3 — a corrective that was KILLED or whose dispatch THREW ends
+    // the step HERE. Falling through was the defect: the gates below read
+    // `result.text` (the KILLED PRIMARY's text), the claims check registered a
+    // claim for a plan nobody made, and the synthetic `default` workstream was
+    // written into `pipelineState.workstreams` — so a cycle whose only honest
+    // tail is the corrective's `dispatch-failed` still advertised a workstream
+    // for develop. `recovered.state` already carries that tail.
+    if (!recovered.ok) return recovered.state;
   }
-  // #1005 — the coupling merge is a NO-OP on a single-workstream plan; the
-  // gate and the corrective steer reason about the POST-MERGE plan.
-  // #1005 — the coupling merge's rule-3 grep (argv form) needs a real
-  // executor: `ctx.verifyExecFn` is test-only, so fall back to `execp`
-  // (honours `opts.argv` via execFile). The merge runs at plan time, before
-  // the branch step, so the grep runs in `repoRoot` (the 4th arg) — the
-  // empty pre-branch worktrees map alone left rule 3 without a cwd.
+  // #1005 — the coupling merge is a NO-OP on a single-workstream plan; the gate
+  // and the corrective steer reason about the POST-MERGE plan. Its rule-3 grep
+  // needs a real executor (`ctx.verifyExecFn` is test-only, so `execp` — it
+  // honours `opts.argv` via execFile) and a cwd: the merge runs at plan time,
+  // before the branch step, so the grep runs in `repoRoot`.
   const planExecFn = ctx.verifyExecFn ?? execp;
   // #1322 — the port fold and the contract's derived depends-on edges run
   // first; a plan with neither takes exactly the pre-#1322 single pass.
-  const runCouplingMerge = async (raw: typeof workstreams): Promise<typeof workstreams> => {
-    const ws = foldPortPlan(raw, port);
-    if (Object.keys(ws).length <= 1) return ws;
-    const coupling = await mergeWithContract(ws, (w) =>
-      mergeCoupledWorkstreams(w, planExecFn, next.pipelineState.worktrees, ctx.repoRoot),
-    );
-    if (coupling.changed) {
-      for (const m of coupling.merges) {
-        trace(`work-driver: plan coupling merge — ${m.from} → ${m.into} (${m.reason})`);
-      }
-      return coupling.workstreams;
-    }
-    return ws;
-  };
+  // #819 round-3 — the pass lives in work-driver-plan-coupling-pass.ts (the
+  // §12 line cap on this file); same fold, same merge, same executor. `planExecFn`
+  // stays a local so both call sites (the primary plan and the corrective) share
+  // the one test seam.
+  const runCouplingMerge = async (raw: typeof workstreams): Promise<typeof workstreams> =>
+    runPlanCouplingPass(raw, {
+      port,
+      repoRoot: ctx.repoRoot,
+      worktrees: next.pipelineState.worktrees,
+      execFn: planExecFn,
+    });
   workstreams = await runCouplingMerge(workstreams);
   // #290 — deterministic plan-quality gate (arithmetic, not judgment).
   // #378 — count DELIVERABLES from the resolved spec, not enumerated markdown.
   const reason = planQualityReason(workstreams, findingsCount);
-  // #754 — the kill-triggered corrective already spent this cycle's one-shot
-  // corrective budget; the quality gate below must not spend it a second time.
-  if (!planKill && planQualityEnabled() && reason) {
+  // #819 — the plan-to-spec gate, immediately after `planQualityReason` and
+  // before `checkAndRegisterClaims`: pure over (reply text, workstreams, spec),
+  // no dispatch, no I/O. It reads the reply's RAW text because the multi-block
+  // defect is invisible in the parsed map. An existing shape reason takes
+  // precedence in the steer: a collision is a fixable split, wrong work is not.
+  const specMismatch = planGateEnabled
+    ? planSpecMismatchReason(result.text ?? "", workstreams, spec)
+    : undefined;
+  // #819 round-3 — a primary refusal is never silently outlived. Every earlier
+  // path that judges it returns, except one: the shape gate fired too, the
+  // corrective ran, and the corrective's OWN text passed the gate — the tail
+  // would otherwise record `under-decomposed` and hand develop a plan the spec
+  // gate called wrong. So the tail halts on any unresolved refusal; "unresolved"
+  // means no corrective ran for it (a refused corrective caps at its own site).
+  const primaryGateRefused = planGateEnabled && specMismatch !== undefined && !redispatched;
+  // The kill-triggered corrective already spent this cycle's one-shot budget,
+  // so the gate below does not re-dispatch — but #819 must not develop on a
+  // plan nobody checked: halt with the same cap a wrong corrective gets.
+  if (planKill && specMismatch) {
+    return planSpecMismatchCap(
+      next,
+      specMismatch,
+      "the one-shot plan corrective was already spent on the killed primary plan, so this plan was not re-dispatched",
+    );
+  }
+  // #754 — the kill-triggered corrective already spent the one-shot budget;
+  // the gate below must not spend it twice. #819 — a spec mismatch fires the
+  // same one-shot corrective; when only the spec gate fired the steer is the
+  // spec-steer (an existing reason keeps precedence: more specific diagnosis).
+  if (!planKill && planGateEnabled && (reason || specMismatch)) {
     // #849 — the first plan's RAW workstreams, held aside for the dropped-edge
     // check. Set here (the quality gate firing on the primary's plan) so the
     // kill-triggered corrective path leaves it undefined (pre-#1005 shape).
@@ -263,22 +322,24 @@ export async function runPlan(
     // needs: it compares the first plan's declared depends-on edges against
     // the corrective's declared edges.
     firstPlanWorkstreams = firstPlanRaw;
-    trace(`work-driver: plan quality — ${reason}, re-dispatching once`);
+    trace(
+      `work-driver: plan quality — ${reason ?? specMismatch?.kind}, re-dispatching once${
+        reason && specMismatch ? ` (also plan-spec-mismatch: ${specMismatch.kind})` : ""
+      }`,
+    );
     const steer =
       reason === "test-subject-split"
         ? correctiveTestSubjectSplitSteer(findTestSubjectSplits(workstreams))
         : correctivePlanSteer(
-            reason,
+            reason ?? "plan-spec-mismatch",
             findingsCount,
             Object.keys(workstreams).length,
             findPathCollisions(workstreams),
           );
-    // #657 post-mortem — the corrective re-dispatch inherits the original
-    // prompt plus any prior-handoff / prior-conflict context the cycle has
-    // accumulated. A weak model read a stale `cross-group-conflict` (issue
-    // already closed, fix already on base) as a LIVE unsatisfiable
-    // precondition, re-verified it with two gh/git commands 530+ times, and
-    // burned 73.5M cache tokens before the wall-clock kill — twice.
+    // #657 post-mortem — the corrective inherits the original prompt plus any
+    // prior-handoff context; a weak model read a stale `cross-group-conflict`
+    // as a live unsatisfiable precondition and burned 73.5M cache tokens
+    // re-verifying it before the wall-clock kill — twice.
     const correctivePrompt = planCorrectivePrompt(prompt, steer);
     const retry = await dispatch(
       ctx.host,
@@ -289,12 +350,39 @@ export async function runPlan(
         deck: { ...driverDeckOpts(ctx.issue, "plan", "plan:corrective"), label: "plan:corrective" },
       },
     ).catch(() => undefined);
-    if (retry) {
+    // #819 round-3 — a corrective whose dispatch THREW is a failure of the step,
+    // not an absence of one. The pre-round-3 `if (retry)` skipped the whole
+    // block on a rejection, so the step fell through to the tail, recorded the
+    // PRIMARY's completion, kept its defective workstreams and claimed them:
+    // the router saw a clean plan and walked into branch.
+    if (!retry) {
+      return appendEvent(next, {
+        kind: "dispatch-failed",
+        step: "plan",
+        role: "explore",
+        jobId: "unknown",
+        label: "plan:corrective",
+        ms: 0,
+        at: Date.now(),
+        exitCode: null,
+        errorTail: "[pi-rukas] the one-shot corrective plan dispatch threw and produced no result",
+      });
+    }
+    {
+      // #819 round-3 — the kill check runs BEFORE any append and the step
+      // returns right after, so a killed corrective gets exactly ONE
+      // `dispatch-failed`. Pre-round-3 the same result went through
+      // `buildCompletionEvent` (which turns any `killCause` into its own
+      // `dispatch-failed`) AND `planKillFailureEvent`, appending two failure
+      // events for one kill — two competing tails for the same step.
       // #754 — the corrective is NEVER re-dispatched again — exactly one
       // corrective re-dispatch per cycle, whether the trigger was plan-quality
       // findings or the #754 kill above. If it too failed or was killed, the
       // step ends on its dispatch-failed and the router's `plan-timeout` cap
       // halts to handoff.
+      if (retry.killCause) {
+        return appendEvent(next, await planCorrectiveFailureEvent(ctx, "plan:corrective", retry));
+      }
       next = appendEvent(
         next,
         await buildCompletionEvent(ctx, "plan", "explore", "plan:corrective", retry),
@@ -308,29 +396,35 @@ export async function runPlan(
         correctiveRawWorkstreams = reparsed; // #1005 — the corrective's RAW map
       }
       redispatched = true;
-      // #1005 — the coupling merge runs AGAIN on the corrective plan: the
-      // corrective re-plan is free to merge the colliding workstreams (that
-      // is the overlap fix), but it is also free to split coupled work AGAIN
-      // (re-splitting the pair the first merge joined, or introducing a new
-      // depends-on edge between previously-disjoint halves). The merge must
-      // see the corrective's workstreams, not just the first plan's. Cheap:
-      // a depends-on edge (rule 2) short-circuits the grep, so the common
-      // re-split shape costs no exec calls.
+      // #1005 — the coupling merge runs AGAIN on the corrective's plan: it may
+      // merge the colliding workstreams (the overlap fix) but may also re-split
+      // coupled work, so it must see the corrective's map, not just the first
+      // plan's. Cheap: a depends-on edge short-circuits the grep.
       workstreams = await runCouplingMerge(workstreams);
+      // #819 — the gate runs AGAIN on the corrective: #818's wrong work came
+      // from the corrective, not the first plan. A corrective is already the
+      // cycle's one-shot budget, so a failure here HALTS.
+      const correctiveMismatch = planGateEnabled
+        ? planSpecMismatchReason(retry.text ?? "", workstreams, spec)
+        : undefined;
+      if (correctiveMismatch) {
+        return planSpecMismatchCap(
+          next,
+          correctiveMismatch,
+          "this is the one-shot corrective plan — it was not re-dispatched and develop never ran",
+        );
+      }
     }
   }
   // #849 — the one-shot corrective re-plan is free to MERGE the colliding
   // workstreams (the overlap fix) but not to silently drop a dependsOn edge
   // the first plan had. The match is id-priority with a path-set signature
-  // fallback for renamed workstreams; a merged pair never flags.
-  // See findDroppedDependencyEdges for the full rule.
+  // fallback for renamed workstreams; a merged pair never flags. See
+  // findDroppedDependencyEdges for the full rule. `firstPlanWorkstreams` is
+  // set only when the quality gate fired on the PRIMARY's plan (#1005), and
+  // the comparison is against the corrective's RAW map — `workstreams` is by
+  // now the POST-MERGE map, so the RAW one is what the edge check needs.
   if (firstPlanWorkstreams && redispatched) {
-    // #1005 — the dropped-edge check compares the FIRST plan's RAW
-    // workstreams (held aside before the coupling merge) against the
-    // corrective's RAW workstreams. The corrective's own coupling merge
-    // (in the re-dispatch block above) has already run, so `workstreams` is
-    // the POST-MERGE map; the corrective's RAW map is needed for the edge
-    // check. Use the corrective's parsed workstreams (before its merge).
     const dropped = findDroppedDependencyEdges(
       firstPlanWorkstreams,
       correctiveRawWorkstreams ?? workstreams,
@@ -343,9 +437,8 @@ export async function runPlan(
     }
   }
 
-  // #571 — cross-group claim check. Detect path overlaps with sibling cycles
-  // BEFORE registering. Parking early costs one plan dispatch, not a full
-  // develop/adversarial/commit-pr burn. Extracted to a helper (line budget).
+  // #571 — cross-group claim check: detect sibling overlaps BEFORE registering.
+  // Parking early costs one plan dispatch, not a full develop-to-commit burn.
   if (crossGroupConflictsEnabled()) {
     next = await checkAndRegisterClaims(ctx, next, workstreams);
   }
@@ -362,7 +455,30 @@ export async function runPlan(
   // computed once (`dropped-dependencies` wins when the corrective dropped an
   // edge, else the first plan's quality reason) so the mid-function #849
   // check and the return can no longer disagree.
-  const finalReason = droppedEdges && droppedEdges.length > 0 ? "dropped-dependencies" : reason;
+  //
+  // #819 round-3 — a reason a halt path already persisted survives this write
+  // (it is the fallback of `finalReason` below) and trips the assertion under
+  // it: the field's whole purpose is that `lastCapHit` is not the only reader
+  // of the verdict, so a halted cycle never loses it to the tail's object.
+  const haltReason = next.pipelineState.planQuality?.reason;
+  if (haltReason === "plan-spec-mismatch") {
+    throw new Error(
+      "work-driver: runPlan reached its final return with planQuality.reason = plan-spec-mismatch — the plan-to-spec halt must return before the gates, the claims and the synthetic default workstream",
+    );
+  }
+  // The primary's refusal has no earlier `return` when the corrective ran and
+  // was judged on its OWN text (a corrective whose paths cover the spec leaves
+  // `correctiveMismatch` silent). Whatever the shape gate concluded, the cycle
+  // must not reach develop on a plan the spec gate refused: the tail halts.
+  if (primaryGateRefused) {
+    return planSpecMismatchCap(
+      next,
+      specMismatch as PlanSpecMismatch,
+      "the primary plan carried a shape the plan-to-spec gate refuses, and no corrective plan replaced it",
+    );
+  }
+  const finalReason =
+    droppedEdges && droppedEdges.length > 0 ? "dropped-dependencies" : (reason ?? haltReason);
   return {
     ...next,
     pipelineState: {
@@ -377,122 +493,3 @@ export async function runPlan(
     },
   };
 }
-
-/**
- * Enumerated-finding count for this cycle's primary issue, read from the body
- * artifact the explore step cached. Returns 0 when unavailable — the gate then
- * cannot fire on the findings rule, which is the correct conservative
- * behaviour for a body we could not read.
- */
-export type ExploreVerdict = "NEEDS_WORK" | "ALREADY_COMPLETE" | "NEEDS_CLARIFICATION";
-
-export function parseExploreVerdict(text: string): ExploreVerdict | null {
-  const m = text.match(/VERDICT:\s*\**\s*(NEEDS_WORK|ALREADY_COMPLETE|NEEDS_CLARIFICATION)\b/i);
-  const tok = m?.[1];
-  return tok ? (tok.toUpperCase() as ExploreVerdict) : null;
-}
-
-/**
- * PR10 — Multi-issue counterpart to parseExploreVerdict.
- *
- * For `/work N M P`, explore returns a per-issue verdict block like:
- *
- *   ## Verdict
- *   - #561: NEEDS_WORK
- *   - #562: ALREADY_COMPLETE — satisfied by PR #534
- *   - #563: NEEDS_WORK
- *
- * Parses one verdict per requested issue number. The `reason` string
- * captures the trailing prose after `—`/`-` (handoff renderers surface
- * it). When explore omitted a per-issue line for an issue, fall back
- * to the overall verdict via parseExploreVerdict; if even that is
- * absent, default to NEEDS_WORK so the driver proceeds rather than
- * silently dropping the issue.
- */
-export function parsePerIssueVerdicts(
-  text: string,
-  issues: number[],
-): Array<{
-  issue: number;
-  verdict: ExploreVerdict;
-  reason: string;
-  /** Where the verdict came from. `default` means nothing was parsed (#408). */
-  verdictSource: "per-issue" | "overall" | "default";
-}> {
-  const overall = parseExploreVerdict(text);
-  return issues.map((n) => {
-    const re = new RegExp(
-      `#${n}\\s*:\\s*\\**\\s*(NEEDS_WORK|ALREADY_COMPLETE|NEEDS_CLARIFICATION)\\b\\**\\s*[—\\-]?\\s*(.*)`,
-      "i",
-    );
-    const m = text.match(re);
-    const tok = m?.[1];
-    if (tok) {
-      const reason = (m?.[2] ?? "").trim();
-      return {
-        issue: n,
-        verdict: tok.toUpperCase() as ExploreVerdict,
-        reason,
-        verdictSource: "per-issue" as const,
-      };
-    }
-    if (overall) {
-      return {
-        issue: n,
-        verdict: overall as ExploreVerdict,
-        reason: "(no per-issue verdict; using overall)",
-        verdictSource: "overall" as const,
-      };
-    }
-    // #408 — this used to default to NEEDS_WORK, i.e. BUILD IT. Nothing in
-    // the reply said so; the driver invented it. That is the "silence is
-    // permission" shape #378 set out to remove, and it survived here on the
-    // multi-issue path — which #397 then made the ONLY multi-issue path.
-    //
-    // A value the driver made up must not drive an irreversible decision
-    // (the #404 lesson, one step upstream). NEEDS_CLARIFICATION drops the
-    // issue and tells the operator the verdict could not be read, which is
-    // recoverable; building something nobody asked for is not.
-    return {
-      issue: n,
-      verdict: "NEEDS_CLARIFICATION" as ExploreVerdict,
-      reason:
-        "the verdict for this issue could not be read — neither a per-issue marker nor an overall VERDICT was present. Not building on a verdict the driver invented.",
-      verdictSource: "default" as const,
-    };
-  });
-}
-
-/**
- * #657 — the corrective plan re-dispatch prompt. The historical-context note
- * lives here (at the corrective call path, NOT inside the shared steer
- * builders) so it applies ONLY to corrective re-dispatches: a weak model in
- * the #657 post-mortem read a stale `cross-group-conflict` reference as a
- * live unsatisfiable precondition, re-verified it with two gh/git commands
- * 530+ times, and burned 73.5M cache tokens before the wall-clock kill —
- * twice.
- */
-export function planCorrectivePrompt(prompt: string, steer: string): string {
-  const historicalNote = [
-    "NOTE: any prior-handoff or prior-conflict references in your context (e.g. an earlier",
-    "`cross-group-conflict` or overlapping-paths finding from a previous cycle) are HISTORICAL",
-    "records, not live preconditions. Do NOT re-verify them (no `gh issue view`, no `git",
-    "merge-base` checks on them) and do NOT let them block your plan. If the referenced",
-    "issue/commit is no longer relevant, simply proceed with your decomposition. Your job is",
-    "the decomposition itself — emit your final report once it is complete and stop.",
-  ].join(" ");
-  return `${prompt}\n\n${steer}\n\n${historicalNote}`;
-}
-
-/**
- * #290 — count discrete, actionable findings in an issue body.
- *
- * Deliberately deterministic and dumb: top-level numbered items (`1.`, `2)`)
- * and checkboxes (`- [ ]`). Indented continuations are excluded, because a
- * nested sub-point is detail about one finding, not a second finding.
- *
- * This exists to catch under-decomposition without asking a model whether it
- * decomposed well — a model that just produced one workstream is the last
- * thing you should ask. The count is compared against the workstream count
- * and nothing else.
- */

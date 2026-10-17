@@ -13,9 +13,11 @@
  * the next top-level `## ` heading or end of input. Returns `undefined`
  * when the heading isn't present. JS regex has no `\Z`; this helper
  * gives the same effect with explicit string operations.
+ *
+ * `name` is regex-escaped before it reaches the pattern (see `escapeRegExp`).
  */
 export function sliceMarkdownSection(text: string, name: string): string | undefined {
-  const headingRe = new RegExp(`^##\\s+${name}\\s*$`, "m");
+  const headingRe = new RegExp(`^##\\s+${escapeRegExp(name)}\\s*$`, "m");
   const m = text.match(headingRe);
   if (!m || m.index === undefined) return undefined;
   const start = m.index + m[0].length;
@@ -26,6 +28,37 @@ export function sliceMarkdownSection(text: string, name: string): string | undef
   // so it rode along on the section above and surfaced verbatim in the park
   // explanation a human reads ("Resolver's rationale: …\n\n---").
   return body.replace(/\n\s*-{3,}\s*$/, "\n");
+}
+
+/** How many `## <name>` headings a reply carries.
+ *
+ * The count, not the first slice: `sliceMarkdownSection` uses a non-global
+ * regex, so it reports the first match and is silent about whether more
+ * followed. `parseWorkstreams` calls this BEFORE slicing so a reply carrying
+ * two `## Workstreams` blocks is detected rather than quietly resolved to
+ * whichever the model happened to write first (#818: three blocks, the first
+ * one fabricated, and the driver built it).
+ */
+export function countMarkdownSections(text: string, name: string): number {
+  const re = new RegExp(`^##\\s+${escapeRegExp(name)}\\s*$`, "gim");
+  let n = 0;
+  for (const _match of text.matchAll(re)) n += 1;
+  return n;
+}
+
+/**
+ * Escape a literal for embedding in a `new RegExp` pattern.
+ *
+ * `name` is a heading name the CALLER supplies, and every call site so far
+ * passes one that happens to be regex-safe (`"Workstreams"`, `"Spec"`,
+ * `"Worktrees"`, `"Rationale"`). That is an accident of the current call
+ * graph, not a contract: a name containing `(`, `+` or `.` would either throw
+ * inside `new RegExp` or silently match a different heading, and the failure
+ * would land in the parser rather than where the bad name was written. One
+ * line here removes the whole class.
+ */
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**

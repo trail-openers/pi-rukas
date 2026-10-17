@@ -19,6 +19,25 @@
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 
 /**
+ * #819 round-2 — the two rules whose violation is what the #818 incident
+ * actually was, stated once and reused: the planner prompt, the corrective
+ * steer (`correctivePlanSteer`, work-driver-plan-helpers.ts) and the gate's
+ * own operator-facing evidence (work-driver-plan-spec-coverage.ts) all quote
+ * this text. Three sites paraphrasing "exactly one `## Workstreams` section"
+ * is how a reply can satisfy one of them and fail another.
+ */
+export const PLAN_SINGLE_BLOCK_RULE =
+  "Emit EXACTLY ONE `## Workstreams` heading in your reply — two or more make the reply ambiguous, and the driver refuses it because it cannot tell which block is the plan.";
+
+/**
+ * #819 round-2 — the coverage half of the same pair: the plan-to-spec gate
+ * rejects a plan that leaves a deliverable no workstream claims, so the
+ * planner is told the rule before it plans rather than after.
+ */
+export const PLAN_DELIVERABLE_PATH_RULE =
+  "EVERY deliverable that declares `[paths: …]` in the spec must appear in at least one workstream's `paths:` line — a deliverable no workstream claims is a plan-to-spec rejection.";
+
+/**
  * Step 2 (plan) prompt. PR3: asks for `## Workstreams`; single-workstream
  * issues return one `### default` entry (or zero, which the driver synthesises).
  */
@@ -50,6 +69,9 @@ export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): strin
     "For N>1 workstreams, repeat the `###` subheading per workstream (use short ids like `task-a`, `task-b`). The `out-of-scope` line is LOAD-BEARING — issue #553 polluted PR #556 with off-scope files because nothing told the developer what was OUT. Fence the scope explicitly even when you think it's obvious.",
     "",
     "EVERY workstream MUST declare a non-empty `paths:`. The driver checks the committed diff against that list to prove each workstream's slice actually landed; an empty list silently disables that check for the slice. `paths` means files the developer is EXPECTED TO MODIFY: a file you list in `paths` but never edit (e.g. a shared or legacy test whose contract you keep green without touching it) counts as a missing slice at the consolidation gate and parks the cycle. Shared tests, legacy tests, or anything you deliberately keep green without editing go in `out-of-scope` — that is what the out-of-scope line is for.",
+    "",
+    PLAN_DELIVERABLE_PATH_RULE,
+    PLAN_SINGLE_BLOCK_RULE,
     "",
     "If single-workstream, ALWAYS use `### default` so the driver routes through the same code path uniformly.",
     "",

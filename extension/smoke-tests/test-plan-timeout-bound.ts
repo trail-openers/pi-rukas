@@ -18,15 +18,12 @@
  *  1. The PRIMARY plan dispatch receives `timeoutMs` — the 30-min default
  *     and the PI_ENSEMBLE_PLAN_TIMEOUT_MS override (the same bound the
  *     compiled /plan pipeline adopts via PLAN_DISPATCH_TIMEOUT_MS).
- *  2. The corrective re-dispatch is NOT bounded (decision 1: it is the
- *     recovery path; bounding it could kill the 37-second corrective).
- *  3. A primary timeout kill is routed to ONE corrective re-dispatch, the
- *     kill event carries the plan-specific cause + usage (turns), and the
- *     corrective's workstreams are adopted.
- *  4. When the corrective does not recover, the step ends on a
- *     dispatch-failed with `plan-timeout`, which the step router maps to
- *     the `plan-timeout` cap (named plan step, not generic), and
- *     explainCap renders an operator sentence naming the step, the bound
+ *  2/3 (the corrective dispatch itself — its bound, its steer, whether its
+ *     kill survives) moved to test-plan-corrective-dispatch.ts for the §12
+ *     line cap. This file keeps the bound's arithmetic and the ROUTER side of
+ *     the kill: a plan-timeout tail → the `plan-timeout` cap, and explainCap's
+ *     operator sentence.
+ *  4. explainCap renders an operator sentence naming the step, the bound
  *     and the turn count — without blaming the issue.
  *  5. The global backstop is untouched: the plan bound is a separate knob,
  *     shorter than the 2 h backstop, and develop's dispatch is not given
@@ -216,129 +213,6 @@ function stateWithWorkstream(state: WorkState): WorkState {
       Object.keys(next.pipelineState.workstreams ?? {}).length === 1,
       "invariant: a plan under the bound still yields its workstreams",
     );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-// --------------------------------- the corrective dispatch is NOT bounded
-
-{
-  const dir = mkdtempSync(path.join(tmpdir(), "plan-bound-corrective-"));
-  try {
-    const seen: Array<{ label?: string; timeoutMs?: number; prompt?: string }> = [];
-    const ctx = mkCtx(dir, async (_pi, spec, opts) => {
-      seen.push({ ...opts, prompt: spec.prompt });
-      // First call: the primary kill. Second: the corrective, which succeeds.
-      return seen.length === 1 ? primaryKill() : mkResult(WORKSTREAMS);
-    });
-    const next = await runPlan(ctx, initialState(754, 1_000_000), 1_000_000);
-    assert(seen.length === 2, "a primary kill produces exactly one corrective re-dispatch");
-    assert(seen[0]?.timeoutMs === planDispatchTimeoutMs(), "primary carries the bound");
-    assert(
-      seen[1]?.timeoutMs === undefined,
-      "the corrective (label plan:corrective) is NOT bounded — it is the recovery path",
-    );
-    assert(seen[1]?.label === "plan:corrective", "the unbounded dispatch is the corrective");
-    // #754 — the timeout corrective carries the timeout steer, NOT the
-    // under-decomposed steer: a timeout says nothing about decomposition,
-    // and steering a killed planner toward MORE workstreams is the forced-split
-    // pressure that produced the wrong-work shape #819.
-    const correctivePrompt = seen[1]?.prompt ?? "";
-    assert(
-      correctivePrompt.includes("exceeded its wall-clock bound") ||
-        correctivePrompt.includes("Corrective re-dispatch (plan timeout)"),
-      "the corrective prompt carries the timeout steer (exceeded its wall-clock bound)",
-    );
-    assert(
-      !correctivePrompt.includes("That is under-decomposed"),
-      "the corrective prompt does NOT carry the under-decomposed steer",
-    );
-    const killed = next.eventLog.find((e) => e.kind === "dispatch-failed" && e.label === "plan");
-    assert(
-      killed?.kind === "dispatch-failed" && killed.killCause === "plan-timeout",
-      "the primary kill event carries the plan-specific cause, not a generic timeout",
-    );
-    assert(
-      killed?.usage?.turns === 266,
-      "turn count rides the KILL event (decision 2: a killed dispatch never emits dispatch-completed)",
-    );
-    assert(
-      (killed?.errorTail ?? "").includes("PI_ENSEMBLE_PLAN_TIMEOUT_MS"),
-      "the kill event names the env knob that bounded it",
-    );
-    assert(
-      Object.keys(next.pipelineState.workstreams ?? {}).length === 1,
-      "the corrective's workstreams are adopted (the 37-second run's shape)",
-    );
-    assert(
-      next.eventLog.filter((e) => e.kind === "dispatch-failed").length === 1,
-      "a successful corrective leaves exactly the primary's kill on record — no second failure, no loop",
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-// --------------------------- a corrective kill leaves the plan-timeout tail
-
-{
-  const dir = mkdtempSync(path.join(tmpdir(), "plan-bound-norecover-"));
-  try {
-    const seen: Array<{ label?: string; timeoutMs?: number }> = [];
-    const ctx = mkCtx(dir, async (_pi, _spec, opts) => {
-      seen.push(opts);
-      // Both the primary AND the corrective time out — the corrective is the
-      // one dispatch that is never re-dispatched again (decision 1).
-      return mkResult("", {
-        ok: false,
-        exitCode: 143,
-        killCause: "timeout",
-        killBudgetMs: SPAWN_BACKSTOP_MS,
-      });
-    });
-    const next = await runPlan(ctx, initialState(754, 1_000_000), 1_000_000);
-    assert(seen.length === 2, "a failed corrective is never re-dispatched — exactly one per cycle");
-    assert(
-      seen[1]?.timeoutMs === undefined,
-      "the corrective rides the global backstop, not the tight plan bound",
-    );
-    // The corrective's own timeout keeps the generic cause — the plan-specific
-    // rewrite is reserved for the primary (the step router keys the cap on the
-    // TAIL, which is the corrective's failure).
-    const correctiveFail = next.eventLog.find(
-      (e) => e.kind === "dispatch-failed" && e.label === "plan:corrective",
-    );
-    assert(
-      correctiveFail?.kind === "dispatch-failed" &&
-        correctiveFail.killCause === "timeout" &&
-        (correctiveFail.killBudgetMs === SPAWN_BACKSTOP_MS ||
-          correctiveFail.killBudgetMs === undefined),
-      "a corrective that exceeds the GLOBAL backstop is recorded as a generic timeout kill (the plan-specific rewrite is reserved for the primary)",
-    );
-
-    // The step router: plan + tail dispatch-failed (generic timeout, the
-    // corrective's) → the plan step halts via the router. The corrective
-    // deliberately rides the global backstop, so its kill keeps the generic
-    // cause — the router's plan-timeout special case fires only when the
-    // step's OWN bound expired on the tail.
-    const routed = await routeStepOutcome(
-      mkCtx(dir, undefined),
-      next,
-      "plan",
-      { num: 2, total: 9 },
-      1,
-      Date.now() - 100,
-    );
-    const capHit = routed.state.eventLog
-      .slice()
-      .reverse()
-      .find((e) => e.kind === "cap-hit");
-    assert(
-      capHit?.kind === "cap-hit" && capHit.cap === "step-failed:plan",
-      "a corrective-stage tail (generic timeout) still halts the plan step via the router",
-    );
-    assert(routed.retry === true, "the routed cap re-enters the loop for handoff");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
