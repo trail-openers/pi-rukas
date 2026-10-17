@@ -177,6 +177,14 @@ export interface PlanResult {
   reviewedSpecChanged?: { reason: string };
   /** True when the body was compacted to fit the forge's 65,536-char limit. */
   compacted?: boolean;
+  /**
+   * #1383: the durable file under `.pi/plan-dropped/` holding the FULL dropped
+   * list when the bounded `## Dropped investigation items` section omitted part
+   * of it. The body's omission line names the same file. Absent when nothing
+   * was omitted or the write failed (read-only / full checkout), in which case
+   * the omission line states counts and bounds and promises no location.
+   */
+  droppedListFile?: string;
   /** Per-phase wall-clock durations, always present on a completed run. */
   timings?: PlanPhaseTiming[];
 }

@@ -18,7 +18,7 @@ import { promisify } from "node:util";
 import { epicSubIssues } from "./plan-angles.ts";
 import { applyOperatorConflicts } from "./plan-draft-conflicts.ts";
 import { applyOperatorDedupe } from "./plan-draft-dedupe.ts";
-import { droppedSection } from "./plan-dropped-section.ts";
+import { droppedSectionWithHolder } from "./plan-dropped-holder.ts";
 import {
   type MechanicalInventory,
   mechanicalInventory,
@@ -451,7 +451,7 @@ ${testSurface}
 ## Edge cases & pitfalls
 
 ${edgeCases}
-${droppedSection(dropped)}
+${droppedSectionWithHolder(dropped)}
 ## Open Questions
 
 - (none)
