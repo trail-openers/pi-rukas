@@ -13,6 +13,8 @@ import type { ConsolidatedVerifyRetryDecision } from "./work-driver-consolidated
 import type { DirtReason } from "./work-driver-dirty-root-classify.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
+import type { GatePass } from "./workflow-state-schema-gate-reuse.ts";
+
 export type ConsolidatedVerifyResult =
   | {
       status: "passed";
@@ -24,6 +26,18 @@ export type ConsolidatedVerifyResult =
        * caller renders the visible note from it. Absent on every real run.
        */
       skipped?: AlreadyVerifiedTree;
+      /**
+       * #1415 — the WHOLE gate pass was reused, not merely the duplicate run
+       * inside it. `applied` is empty because the probe was never built: the
+       * caller had already proved that the cycle's tree, the verify command and
+       * the bound all match a pass the driver recorded, and that every
+       * workstream holds a current green for the same triple. Kept distinct
+       * from `skipped` because the claim an operator checks differs: for
+       * `skipped`, the picks happened and only the command did not; here nothing
+       * ran, so `applied` being empty is the expected shape and not a workstream
+       * that "contributed nothing".
+       */
+      reused?: GatePass;
       recovered?: boolean;
       retryDecision?: ConsolidatedVerifyRetryDecision;
       /**

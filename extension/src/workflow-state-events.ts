@@ -35,6 +35,10 @@ import type {
   VerifyFlakeRecoveredEvent,
   VerifyFullStatusEvent,
 } from "./workflow-state-events-verify-flake.ts";
+// #1415 — the verify-gate run pair lives in its own fragment rather than in
+// the file above: that one is chartered for verify-TIER-OUTCOME events (what a
+// run concluded); these record that a run happened and what it cost.
+import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 // #539 — single definition in the sibling fragment module.
 export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
@@ -446,6 +450,12 @@ export type WorkEvent =
   | VerifyFullStatusEvent
   | VerifyFlakeRecoveredEvent
   | ConsolidatedVerifySkippedEvent
+  // #1415 — verify-started / verify-completed: the gate announces the run it
+  // is doing, so the ~22-minute consolidated verify is a row, not a silence.
+  | VerifyRunEventFragment
+  // #1415 — verify-started / verify-completed: the gate announces the run it
+  // is doing, so the ~22-minute consolidated verify is a row, not a silence.
+  | VerifyRunEventFragment
   | WideningScanEvent
   | MemoryEventFragment
   | WorktreeProvisionedEvent

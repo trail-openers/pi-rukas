@@ -24,6 +24,14 @@ import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-wor
 // re-exported so existing importers keep their path.
 export type { PlanQualityReason };
 
+// #1415 — the verify-gate reuse records live with the other verify-evidence
+// shapes; re-exported so importers reach them from the schema module.
+// #1415 — the gate-reuse records (the whole-pass verdict and the per-workstream
+// greens) live in their own fragment, beside the verify-evidence shapes, for the
+// 500-line gate; re-exported so importers reach them from the schema module.
+export type { GatePass, WorkstreamGreen } from "./workflow-state-schema-gate-reuse.ts";
+import type { GatePass, WorkstreamGreen } from "./workflow-state-schema-gate-reuse.ts";
+
 export {
   filesPresentFromConsolidation,
   type IncompleteConsolidation,
@@ -42,20 +50,16 @@ export type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts
 import type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
 export { prDraftFindings } from "./workflow-state-schema-pr-draft.ts";
 import type { PrDraftState } from "./workflow-state-schema-pr-draft.ts";
-// #1362 — cycle-start exempt-untracked baseline: type + #533 validator in workflow-state-dirty-root.ts (#540/#861 seam).
 export {
   type DirtyRootExemptBaseline,
   dirtyRootExemptBaselineFindings,
 } from "./workflow-state-dirty-root.ts";
 
 /**
- * Pipeline snapshot — the driver's "where are we" view, reconstructible
- * from eventLog but stored explicitly for O(1) reads. When the two
- * diverge, eventLog is authoritative.
+ * Pipeline snapshot — the driver's "where are we" view, reconstructible from
+ * eventLog (authoritative on divergence) but stored for O(1) reads. (#861:
+ * `PlanQualityReason` lives in `workflow-state-schema-plan-quality.ts`.)
  */
-// #861 — PlanQualityReason lives in workflow-state-schema-plan-quality.ts
-// (re-exported above); the 500-line cap.
-
 export interface PipelineState {
   /** Current step. Drives template selection and transition table. */
   currentStep: WorkStep;
@@ -72,60 +76,53 @@ export interface PipelineState {
   /** Feature branch name once Step 3 completes. */
   branchName?: string;
   /**
-   * Workstreams decomposed by Step 2 (plan). Key = workstream id;
-   * `id`/`scope`/`paths`/`outOfScope` per workstream (see Workstream type).
-   * Optional for back-compat; absent = `{default: …}` synthesised.
+   * Workstreams decomposed by Step 2 (plan). Key = workstream id; per-workstream
+   * `id`/`scope`/`paths`/`outOfScope` (see Workstream). Absent = `{default: …}`.
    */
   workstreams?: Record<string, Workstream>;
   /**
-   * Path to a claim-check artifact holding the cached `gh issue view`
-   * body fetched driver-side in Step 1 (Pattern 1 intra-step fanout).
-   * Downstream steps reference this instead of re-fetching the body
-   * from GitHub.
+   * Path to a claim-check artifact holding the cached `gh issue view` body
+   * fetched driver-side in Step 1 (Pattern 1 intra-step fanout). Downstream
+   * steps reference this instead of re-fetching the body from GitHub.
    */
   issueBodyArtifact?: string;
   /**
-   * Map of workstream id → absolute path of its worktree (or repo root
-   * for the `default` single-task case). Populated by Step 3 (branch);
-   * consumed by Steps 4 (develop), 5 (adversarial), 7 (lens-review),
-   * 8 (ci). Empty map = pre-PR3 state file; readers fall back to
-   * `repoRoot` for the `default` workstream.
+   * Map of workstream id → absolute path of its worktree (or repo root for the
+   * `default` single-task case). Populated by Step 3 (branch); consumed by
+   * Steps 4/5/7/8. Empty map = pre-PR3 state file; readers fall back to
+   * `repoRoot` for `default`.
    */
   worktrees: Record<string, string>;
   /**
-   * #861 — the driver-owned integration worktree (`.worktrees/issue-<N>-integrate`),
-   * recorded when the commit-pr ops-fallback creates it and cleared when the
-   * post-dispatch audit removes it on success. Persists via the normal
-   * state flow (writeState) so a re-entry after a crash recognises a
-   * driver-owned tree at that path and REPLACES it (recording the old HEAD
-   * first — decision (2)) rather than refusing a dirty one. Absent on
-   * pre-#861 state files and on cycles that never created the tree.
+   * #861 — the driver-owned integration worktree (`.worktrees/issue-<N>-integrate`):
+   * recorded when the commit-pr ops-fallback creates it, cleared when the
+   * post-dispatch audit removes it on success. Persists via writeState so a crash
+   * re-entry recognises a driver-owned tree at that path and REPLACES it (old HEAD
+   * recorded first) rather than refusing a dirty one. Absent pre-#861 / never made.
    */
   integrateWorktree?: string;
   /**
    * #679 — the per-workstream EFFECTIVE BASE: the commit the workstream's
-   * worktree was (or will be) created from. See WorkstreamBaseShas for the
-   * full contract (case 2(b) deferred worktree creation, safety-net / verify
-   * gate base resolution, back-compat with pre-#679 state files).
+   * worktree was (or will be) created from. Full contract (deferred creation,
+   * safety-net / verify base resolution, pre-#679 back-compat): WorkstreamBaseShas.
    */
   workstreamBaseShas?: WorkstreamBaseShas;
   /**
-   * Last fetched diff hash — set after Step 5 / Step 7 fix passes. Lets the
-   * user (or future code) detect "the diff hasn't changed between rounds"
-   * which is a signal the developer is stuck.
+   * Last fetched diff hash — set after Step 5 / Step 7 fix passes. Lets the user
+   * (or future code) detect "the diff hasn't changed between rounds" — a signal
+   * the developer is stuck.
    */
   lastDiffHash?: string;
   /**
-   * Six-pass-review round counter; starts at 1 on first lens-review entry.
-   * Hard cap at 3 — see MAX_REVIEW_ROUNDS in work-driver-context.ts.
+   * Six-pass-review round counter; starts at 1 on first lens-review entry; hard
+   * cap 3 — see MAX_REVIEW_ROUNDS in work-driver-context.ts.
    */
   reviewRound: number;
   /**
-   * Number of times the driver has re-entered `develop` from `ci-status:
-   * failure`. Capped at MAX_CI_RETRIES (2 → up to 3 CI attempts total)
-   * before routing to handoff. Distinct from `reviewRound` which caps the
-   * lens-fix loop; this caps the outer "CI keeps failing" loop that
-   * surfaced on issue #553's live run when no PR existed for CI to watch.
+   * Times the driver re-entered `develop` from `ci-status: failure`. Capped at
+   * MAX_CI_RETRIES (2 → up to 3 CI attempts) before routing to handoff. Distinct
+   * from `reviewRound` (the lens-fix loop); this caps the outer "CI keeps
+   * failing" loop from #553, when no PR existed for CI to watch.
    *
    * Optional in the schema so state files written by PR #239 (before this
    * field existed) still load cleanly under the same `schemaVersion: 1`.
@@ -436,16 +433,16 @@ export interface PipelineState {
   /**
    * #453 — per-workstream applied SHAs for crash-safe resume. Maps
    * workstream id → SHA cherry-picked onto the integration branch; updated as
-   * each lands. On crash-resume, matching id+sha entries are skipped. Absent
-   * on pre-#453 state files; readers treat absent as {}.
+   * each lands. On crash-resume, matching id+sha entries are skipped. Absent on
+   * pre-#453 state files means {}.
    */
   appliedShas?: Record<string, string>;
   /**
    * PR17 — outcome-verification gate (verifyStepOutcome) evidence for a
    * `verify-failed:<step>` cap; each failure string is one finding rendered by
-   * explainCap. Optional — absent unless a gate failed.
-   * #782 — optional `retries`/`recovered`: the consolidated-verify gate's single
-   * bounded re-run. Absent pre-#782; absent = no re-run, so schemaVersion stays 1.
+   * explainCap. Optional — absent unless a gate failed. #782 — optional
+   * `retries`/`recovered`: the consolidated gate's single bounded re-run; absent
+   * pre-#782 means no re-run, so schemaVersion stays 1.
    */
   verifyEvidence?: {
     step: WorkStep;
@@ -460,6 +457,20 @@ export interface PipelineState {
      * `FenceViolation` below). Absent = none recorded.
      */
     fenceViolations?: FenceViolation[];
+  };
+  /**
+   * #1415 — the verify gate's reuse records: whole-gate passes this cycle RAN and
+   * PASSED (keyed by `<treeHash>\0<cmd>\0<timeoutMs>`) plus each workstream's own
+   * per-worktree green. A develop pass whose own triple is present, fresh, cheap
+   * enough to skip, and matched by every changed workstream's green runs NOTHING.
+   * Grouped so the two travel together; absent = never a pass. Shape + rule:
+   * `workflow-state-schema-gate-reuse.ts` / `work-driver-verify-gate-reuse.ts`.
+   */
+  gateReuse?: {
+    /** Whole-gate passes RAN and PASSED, keyed by (tree, command, bound). */
+    passes: Record<string, GatePass>;
+    /** Per-workstream greens; the whole-gate skip needs every workstream's. */
+    workstreamGreens: Record<string, WorkstreamGreen>;
   };
   /**
    * Terminal status. "running" while active; flips on `merged` or `handoff`.

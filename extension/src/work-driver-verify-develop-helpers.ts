@@ -27,6 +27,24 @@ export function verifyTimeoutMs() {
   return 10 * 60_000;
 }
 
+/**
+ * #1415 — the bound a develop-pass gate verdict is recorded under, read ONCE
+ * per pass.
+ *
+ * The value is part of the reuse key (`work-driver-verify-gate-reuse.ts`), not
+ * merely a parameter a run happens to receive: a verdict reached in 9 minutes
+ * under a 10-minute bound says nothing about the same tree under a 2-minute
+ * bound, so the operator who tightens `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` gets the
+ * gate back with no stale record to invalidate. Reading it once per pass —
+ * rather than at each of the several `verifyTimeoutMs()` calls a pass makes —
+ * is what keeps the record's bound identical to the bound every run in that
+ * pass actually got; a re-read between the run and the record could otherwise
+ * store a bound no command ever ran under.
+ */
+export function verifyPassTimeoutMs(): number {
+  return verifyTimeoutMs();
+}
+
 /** Leads a failure string for a verify run killed at its bound (#1324). */
 export const VERIFY_TIMEOUT_LABEL = "[verify-timeout]";
 
