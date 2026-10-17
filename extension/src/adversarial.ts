@@ -10,7 +10,11 @@ import {
 import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { makeRunPhase } from "./adversarial-phase.ts";
-import { type ReportPolicy, reportPolicyError } from "./adversarial-policy.ts";
+import {
+  type ReportPolicy,
+  policyInfraFailureText,
+  reportPolicyError,
+} from "./adversarial-policy.ts";
 import {
   type SiblingScope,
   buildAdversarialPrompt,
@@ -169,7 +173,7 @@ export async function runAdversarialLoop(
       synthesizeResult({
         ok: false,
         loopOutcome: "infra-failure",
-        text: `Adversarial loop infrastructure failure: ${policyError} (reportVerdict must be "terminal" or "routed"). No verdict was produced — this is NOT a review rejection.`,
+        text: policyInfraFailureText(policyError),
         ms: Date.now() - start,
         usage,
         transcriptPath: lastTranscript,

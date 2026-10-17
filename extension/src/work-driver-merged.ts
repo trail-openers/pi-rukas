@@ -180,12 +180,20 @@ export async function runMerged(
   // ready halts here, naming why, before any merge is attempted.
   const draft = state.pipelineState.prDraft;
   if (draft && draft.status !== "ready") {
+    // #1398 round 3 — the pr-ready clause is for a ready that failed, not for a
+    // re-arm that did. `rearmError` is the re-arm's own field; on that path the
+    // driver never attempted a ready, and the reason it is holding is that the
+    // PR is still mergeable when it should be a draft. Printing `draft.error`
+    // there reported an attempt that never happened.
+    const rearmHold = draft.rearmError !== undefined;
     const failed = `marking PR ready failed: ${draft.error ?? "no reason recorded"}`;
-    const reason = draft.holdReason
-      ? `PR is still a draft: ${draft.holdReason}${draft.status === "ready-failed" ? `; ${failed}` : ""}`
-      : draft.status === "ready-failed"
-        ? failed
-        : "PR is still a draft: not marked ready";
+    const reason = rearmHold
+      ? `PR is still a draft: ${draft.holdReason ?? draft.rearmError}`
+      : draft.holdReason
+        ? `PR is still a draft: ${draft.holdReason}${draft.status === "ready-failed" ? `; ${failed}` : ""}`
+        : draft.status === "ready-failed"
+          ? failed
+          : "PR is still a draft: not marked ready";
     return appendEvent(
       { ...state, pipelineState: { ...state.pipelineState, currentStep: "merged" } },
       {
@@ -365,7 +373,7 @@ export async function runMerged(
       // branch -d attempt.
       const execFn = ctx.verifyExecFn ?? execp;
       const mainlineResult = await detectMainline(ctx.repoRoot, execFn);
-      const mainline = "branch" in mainlineResult ? mainlineResult.branch : undefined;
+      const mainline = mainlineResult.ok ? mainlineResult.branch : undefined;
       // #1093 — return the operator's checkout to the ref the cycle STARTED on,
       // not to mainline. Without a recorded startRef (pre-#1093 state) the
       // target stays mainline.
@@ -382,6 +390,10 @@ export async function runMerged(
             mergedBranch: state.pipelineState.branchName,
             execFn,
             startRef,
+            dirtyRootExempt: ctx.dirtyRootExempt,
+            // #1362 — the claim this restore builds names only files the cycle
+            // wrote; the cycle-start baseline is what makes that true.
+            dirtyRootExemptBaseline: state.pipelineState.dirtyRootExemptBaseline,
           }),
         );
         for (const note of restorationNotes) {

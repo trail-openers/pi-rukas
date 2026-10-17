@@ -6,7 +6,14 @@
  * code only, the comments verbatim, so the driver keeps the Phase 5
  * section header as the orchestration-visible seam.
  */
-import { type FilingFailure, fileIssue, getPlanForge, planForgeFor } from "./plan-filing.ts";
+import {
+  type FilingFailure,
+  type FilingResult,
+  fileIssue,
+  getPlanForge,
+  planForgeFor,
+} from "./plan-filing.ts";
+import { labelGate } from "./plan-labels.ts";
 import { validateFinalSpec } from "./plan-validate.ts";
 
 export interface Phase5Args {
@@ -18,11 +25,20 @@ export interface Phase5Args {
   context?: string;
   repoRoot: string;
   rawUnparsedHead?: string;
+  /**
+   * #1377: labels to create the issue with. Checked against the repo's label
+   * list BEFORE the create call (a missing label halts filing, nothing is filed
+   * and no label is created); passed to the forge so the issue carries them from
+   * its first moment. Empty/absent → the pre-#1377 code path exactly.
+   */
+  labels?: string[];
   timed: <T>(phase: string, fn: () => Promise<T>) => Promise<T>;
 }
 
 export interface Phase5Result {
   issueUrl?: string;
+  /** #1377: the filed issue's number, when the forge response carried one. */
+  issueNumber?: number;
   filingFailure?: FilingFailure;
 }
 
@@ -37,6 +53,7 @@ export interface Phase5Result {
  */
 export async function phase5FilingFailure(args: Phase5Args): Promise<Phase5Result> {
   let issueUrl: string | undefined;
+  let issueNumber: number | undefined;
   let filingFailure: FilingFailure | undefined;
   // The cap-based skips set filingFailure REGARDLESS of dryRun: they are
   // policy, and the NOT-FILEABLE head + FILING STATUS must render on a dry
@@ -65,16 +82,36 @@ export async function phase5FilingFailure(args: Phase5Args): Promise<Phase5Resul
         detail: `the final spec failed deterministic checks, so it was not filed: ${check.problems.join("; ")}`,
       };
     } else if (!args.dryRun) {
-      const fr = await args.timed("filing", () =>
-        fileIssue(
-          args.title,
-          args.finalBody,
-          getPlanForge() ?? (() => planForgeFor(args.repoRoot)),
-        ),
-      );
+      // #1043: ONE "filing" timed phase, sequenced inside it — the label
+      // existence check, then the create call. Appending two "filing" entries
+      // would double the phase in the operator-visible timings line for a path
+      // that has nothing to do with a second filing.
+      //
+      // #1377: the forge is resolved ONCE and the same adapter object answers
+      // both the label read and the create call. Resolving twice would pay two
+      // `detectForge` git reads for one filing and — with a stubbed seam — let
+      // the gate and the create disagree about which forge they are on.
+      const resolver = getPlanForge() ?? (() => planForgeFor(args.repoRoot));
+      const labels = args.labels ?? [];
+      const fr = await args.timed("filing", async () => {
+        const forge = await resolver();
+        if (!forge) {
+          // Same discriminated reason `fileIssue` gives for an unresolved forge:
+          // the gate has nothing to ask, and guessing would be worse than the
+          // skip the create path already reports.
+          const unresolved: FilingResult = { failure: { reason: "forge-unresolved" } };
+          return unresolved;
+        }
+        const gate = await labelGate(labels, forge);
+        if (gate) return { failure: gate };
+        return fileIssue(args.title, args.finalBody, () => Promise.resolve(forge), {
+          labels,
+        });
+      });
       issueUrl = fr.url;
+      issueNumber = fr.number;
       filingFailure = fr.failure;
     }
   }
-  return { issueUrl, filingFailure };
+  return { issueUrl, issueNumber, filingFailure };
 }

@@ -11,7 +11,8 @@
  * The patchId comes from `workingTreePatchId` (review-ledger.ts) — the ONE
  * shared base/patchId computation both writers use. It diffs the working tree
  * against the merge-base of HEAD and `<remote>/<mainline>` (resolved via
- * detectMainline + the forge remote, never a hardcoded `origin/main`), so
+ * `detectMainline` — mainline.ts since #1387 — plus the forge remote, never a
+ * hardcoded `origin/main`), so
  * the entry covers the uncommitted fixes the loop made; when those fixes are
  * committed unchanged, the id the guard recomputes at merge time matches.
  */

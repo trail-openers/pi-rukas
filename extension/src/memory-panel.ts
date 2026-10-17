@@ -103,9 +103,10 @@ export function renderMemoryPanel(s: MemoryStats): string {
  *
  * The developer brief reads active rows only (#1103), so a candidate the
  * driver wrote influences nothing until someone promotes it — and this is
- * where that someone finds it. `vipune promote` takes no id and promotes on
- * retrieval count, which a `--no-touch` reader never raises, so the per-row
- * hint is a status update. Unpromoted candidates age out via `vipune prune`.
+ * where that someone finds it. The operator's `promote` command takes no id and
+ * promotes on retrieval count, which a `--no-touch` reader never raises, so the
+ * per-row hint is a status update. Unpromoted candidates age out under the
+ * operator's `prune` command.
  */
 function renderCandidates(s: MemoryStats): string[] {
   if (s.candidates.length === 0) return [];
@@ -115,8 +116,9 @@ function renderCandidates(s: MemoryStats): string[] {
     `### Candidates awaiting promotion (${total})`,
     "",
     "Invisible to developer briefs until an operator promotes them. Unpromoted candidates",
-    "age out under `vipune prune`. Promotion is an operator action, not an agent one: no role",
-    "is granted the memory-update verb (see skill/vipune/SKILL.md). Check each row by hand first.",
+    "age out under the operator's prune command. Promotion is an operator action, not an",
+    "agent one: no role is granted the memory-update verb (see skill/vipune/SKILL.md).",
+    "Check each row by hand first.",
     "",
   ];
   // Ids and types only. Candidate content is LLM-derived from untrusted diffs;

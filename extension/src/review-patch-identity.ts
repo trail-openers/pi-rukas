@@ -31,6 +31,20 @@ import type { VerifyExecFn } from "./work-driver-git.ts";
 /** A ref safe to interpolate into a shell command: no leading dash, no metacharacters. */
 const SAFE_REF = /^[A-Za-z0-9_][A-Za-z0-9._/@-]*$/;
 
+/**
+ * #1398 round 3 — the bound on the LOCAL git reads a patch identity is built
+ * from (`git merge-base`, `git diff | git patch-id`). The identity sits on the
+ * ready gate (`work-driver-draft-pr.ts`), the disclosure record
+ * (`work-driver-draft-disclosure.ts`) and the merge guard's own read, and a git
+ * call that parks — a lock, a hung filter driver, an fs that will not answer —
+ * used to park whatever step was waiting on it, with no named cause.
+ *
+ * Exported so every identity reader passes the SAME number through its
+ * injectable executor instead of each inventing its own; callers that already
+ * bound the call (the network-git seam, `runNetGit`) are unaffected.
+ */
+export const LOCAL_GIT_TIMEOUT_MS = 30_000;
+
 /** One `git patch-id` line (`<id> <path>`) → the id, or undefined when empty. */
 function parsePatchId(stdout: string, label: string): string | undefined {
   const id = stdout.trim().split(/\s+/)[0]?.trim();
@@ -48,6 +62,7 @@ export async function patchIdOfRange(
   const { stdout } = await execFn(`git diff ${range} | git patch-id --stable`, {
     cwd,
     maxBuffer: 1024 * 1024,
+    timeout: LOCAL_GIT_TIMEOUT_MS,
   });
   return parsePatchId(stdout, label);
 }
@@ -61,6 +76,7 @@ export async function diffDigestOfRange(
   const { stdout } = await execFn(`git diff --binary ${range}`, {
     cwd,
     maxBuffer: 64 * 1024 * 1024,
+    timeout: LOCAL_GIT_TIMEOUT_MS,
   });
   return createHash("sha256").update(stdout).digest("hex");
 }
@@ -85,7 +101,11 @@ export async function committedPatchIdentity(
   }
   let mergeBase: string;
   try {
-    const { stdout } = await execFn(`git merge-base ${head} ${base}`, { cwd, maxBuffer: 8 * 1024 });
+    const { stdout } = await execFn(`git merge-base ${head} ${base}`, {
+      cwd,
+      maxBuffer: 8 * 1024,
+      timeout: LOCAL_GIT_TIMEOUT_MS,
+    });
     mergeBase = stdout.trim();
   } catch (err) {
     // `git merge-base` exits 1 with no output when the histories share no

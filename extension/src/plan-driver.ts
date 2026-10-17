@@ -33,6 +33,7 @@ import {
   haltResult,
   phaseTimer,
 } from "./plan-driver-halt.ts";
+import { phase3Draft } from "./plan-driver-phase3.ts";
 import {
   type PlanDispatchFn,
   getPlanDispatchOverride,
@@ -58,6 +59,7 @@ import {
 import { phase5FilingFailure } from "./plan-phase5.ts";
 import { precheckDescriptor } from "./plan-precheck.ts";
 import { assemblePriorContext } from "./plan-prior-context-assembly.ts";
+import { withProvenance } from "./plan-provenance.ts";
 import {
   type PlanDriverInput,
   type PlanGap,
@@ -65,12 +67,7 @@ import {
   classifyPlanType,
   planTitle,
 } from "./plan-types.ts";
-import {
-  FORGE_BODY_MAX,
-  fitDraftToBudget,
-  parsePinnedSubIssueCount,
-  validateDraft,
-} from "./plan-validate.ts";
+import { FORGE_BODY_MAX, parsePinnedSubIssueCount, validateDraft } from "./plan-validate.ts";
 import { type ResolvedDecision, buildResolvedDecisions } from "./plan-writeback.ts";
 import { trace } from "./trace.ts";
 import type { DriverHost } from "./work-driver-host.ts";
@@ -242,41 +239,28 @@ async function runPipelineOn(
   // Phase 3 — draft WITHIN the forge body budget (vipune session: four
   // filings hit the 65,536-char wall after clean gates; plan-validate.ts
   // owns the stage-0/compaction/tooLarge policy).
-  const openQuestions: string[] = [];
-  const outOfScope: string[] = [];
-  const fitted = fitDraftToBudget((b) =>
-    draftSpec(
-      type,
-      descriptor,
-      findings,
-      inventoryContext,
-      openQuestions,
-      outOfScope,
-      depth,
-      directives,
-      [],
-      undefined,
-      b,
-    ),
-  );
-  if ("tooLarge" in fitted) {
-    trace(`plan-driver: body too large even after compaction (${fitted.size} chars) — halting`);
-    return haltResult({
-      type,
-      title: planTitle(descriptor, type),
-      spec: `(spec not rendered — the drafted body is ${fitted.size} chars even after compaction; the forge caps issue bodies at ${FORGE_BODY_MAX})\n\nPer-section sizes: ${fitted.breakdown}\n\nTrim the dominant section's source (usually the context param) and re-run start_plan_driver.`,
-      priorContext,
-      failure: {
-        reason: "body-too-large",
-        detail: `the drafted body is ${fitted.size} chars after maximum compaction; the forge caps bodies at ${FORGE_BODY_MAX}. Per-section sizes: ${fitted.breakdown}`,
-      },
-      failedAngles,
-      timings: finishTimings(),
-    });
-  }
-  const chosenBudget = fitted.budget;
-  const compacted = fitted.compacted;
-  let { title, body } = fitted.result;
+  //
+  // #1377: the caller's provenance lines are appended by code AFTER the fitter,
+  // so compaction can never trim them — and their rendered size is reserved out
+  // of the budget up front so the FINAL body still fits the forge cap. The
+  // reservation is 0 with no provenance, so an existing caller's chosen body is
+  // byte-identical. The draft itself is assembled by phase3Draft (one home for
+  // the fitter's 12 positional args and its tooLarge halt).
+  const phase3 = phase3Draft({
+    type,
+    descriptor,
+    findings,
+    inventoryContext,
+    directives,
+    depth,
+    provenance: input.provenance,
+    priorContext,
+    failedAngles,
+    timings: finishTimings,
+  });
+  if (phase3.halt) return phase3.halt;
+  const { chosenBudget, compacted, openQuestions, outOfScope } = phase3;
+  let { title, body } = phase3;
   if (compacted) {
     trace(`plan-driver: body compacted to fit the forge limit (${body.length} chars)`);
     body += `\n\n> Compacted to fit the forge's ${FORGE_BODY_MAX}-char body limit (per-section items capped at ${chosenBudget.maxItemsPerSection}, item text clipped at ${chosenBudget.itemClipChars} chars); full findings live in the run transcripts (/runs).`;
@@ -299,7 +283,7 @@ async function runPipelineOn(
     operatorSupplied: !!context?.trim(),
     pinnedSubIssues,
     forbiddenPhrases: directives.neverClaim,
-    operatorOmitted: fitted.result.operatorOmitted,
+    operatorOmitted: phase3.operatorOmitted,
   });
   if (!draftCheck.ok) {
     trace(`plan-driver: draft validation failed — ${draftCheck.problems.join("; ")}`);
@@ -356,16 +340,14 @@ async function runPipelineOn(
             : gapGateVerifyPrompt(body, lastCarried),
         GAP_GATE_MAX_ITERATIONS,
         (blocking: PlanGap[]) => {
-          // PR #640: resolve destinations here, splice in draftSpec (single site).
-          // Catch is WIDE: covers destination-resolution + re-draft; cause preserves stack.
+          // PR #640: resolve destinations and re-draft in ONE site. The wide
+          // catch's disclosure (plan-driver-halt.ts) names what was computed
+          // before the throw — a crash must not silently lose the decisions.
           let computed: ResolvedDecision[] = [];
-          let writebackMap: Map<string, string[]> | null = null;
           let writtenOutcomes: { applied: boolean; heading: string }[] = [];
           try {
-            ({ decisions: computed, writebackMap: writebackMap } = buildResolvedDecisions(
-              blocking,
-              type,
-            ));
+            const { decisions, writebackMap } = buildResolvedDecisions(blocking, type);
+            computed = decisions;
             // Same budget as the fitted round-1 draft: deterministic across
             // rounds, and the round-2 body stays under the forge limit.
             const redraft = draftSpec(
@@ -377,29 +359,24 @@ async function runPipelineOn(
               outOfScope,
               depth,
               directives,
-              computed,
+              decisions,
               writebackMap,
               chosenBudget,
             );
             if (redraft.operatorOmitted.length) throw new Error("redraft truncated operator items");
-            // Re-draft RETURN: marked decisions (writtenBack from the splice,
-            // not predicted). Body/title re-assigned for round 2.
-            ({ title, body } = redraft);
+            // Marked decisions (writtenBack from the splice, never predicted).
             writtenOutcomes = redraft.resolvedDecisions.map((d) => ({
               applied: d.writtenBack ?? false,
               heading: d.writebackHeading ?? "(no destination — status open)",
             }));
-            // What round 2's scoped verification will check (writtenBack
-            // produced by the splice, never predicted).
             lastCarried = redraft.resolvedDecisions.map((d) => ({
               description: d.description,
               resolution: d.resolution,
               writtenBack: d.writtenBack ?? false,
               heading: d.writebackHeading ?? "Open Questions",
             }));
+            ({ title, body } = redraft);
           } catch (e) {
-            // Disclosure: names what was computed before the throw
-            // (builder in plan-driver-halt.ts).
             throw correctiveRedraftError(computed, writtenOutcomes, e);
           }
         },
@@ -417,9 +394,14 @@ async function runPipelineOn(
   // residual disclosure. Append it HERE, before fileIssue, so the single
   // filing pass below sees the final body.
   // #1132: open points and the base fallback are disclosed in the body too.
-  const finalBody =
+  // #1377: the caller's provenance wraps the whole thing — italic line first,
+  // marker comment last — appended by code, after every LLM stage and after the
+  // budget fitter, so what the operator reviewed is what the forge receives.
+  const finalBody = withProvenance(
     filedBodyOf(body, residualForDisclosure, openPoints, base.baseFallback) +
-    planImageLinksSection(images);
+      planImageLinksSection(images),
+    input.provenance,
+  );
 
   const resolvedGaps = gapGateEnabled ? gaps : [];
   const held = heldForReview(input, confirmed.missReason, title, finalBody);
@@ -432,7 +414,7 @@ async function runPipelineOn(
   // the reason including the forge stderr, without requiring PI_ENSEMBLE_DEBUG.
   // The cap-skip routing + the single filing pass (moved to plan-phase5.ts
   // along the 500-line seam) keep the driver's orchestration visible here.
-  const { issueUrl, filingFailure } = await phase5FilingFailure({
+  const { issueUrl, issueNumber, filingFailure } = await phase5FilingFailure({
     capReason,
     dryRun: asDryRun,
     title,
@@ -440,6 +422,7 @@ async function runPipelineOn(
     context,
     repoRoot,
     rawUnparsedHead,
+    labels: input.labels,
     timed,
   });
 
@@ -457,6 +440,10 @@ async function runPipelineOn(
     spec: finalBody,
     priorContext: inventoryContext.slice(0, 15),
     failedAngles,
+    // #1377: the reviewed entry records what the filing would send beyond the
+    // body, so the verbatim confirm files the same labels and provenance.
+    labels: input.labels,
+    provenance: input.provenance,
   });
 
   // #633: report BOTH how many angles were dispatched and how many produced
@@ -481,8 +468,19 @@ async function runPipelineOn(
     filingFailure,
     failedAngles,
     compacted,
+    issueNumber,
     // #1043: a fileable dry run reports the digest a verbatim filing must echo.
-    reviewedDigest: asDryRun && !filingFailure ? reviewedDigestOf(title, finalBody) : undefined,
+    // #1377: labels and provenance are digest inputs — labels are arguments to
+    // the create call (never body text), and the provenance lines are appended
+    // after the reviewed body by code, so neither is covered by the body hash
+    // alone. Filing the reviewed bytes under different labels is a mismatch.
+    reviewedDigest:
+      asDryRun && !filingFailure
+        ? reviewedDigestOf(title, finalBody, {
+            labels: input.labels,
+            provenance: input.provenance,
+          })
+        : undefined,
     investigationReused: reused ? { ageMs: reused.ageMs } : undefined,
     reviewedSpecChanged: held,
     timings: finishTimings(),

@@ -33,13 +33,11 @@ vipune add 'observed but unconfirmed'     --memory-type observation
 vipune has no built-in TTL. Use `--status`:
 
 - `active` (default) — surfaces in default searches; validated, durable knowledge.
-- `candidate` — hidden from default searches; provisional. Promote to active once the fact survives a second confirmation.
+- `candidate` — hidden from default searches; provisional. An operator promotes it to active once the fact survives a second confirmation — that is their call, not yours.
 
 ```bash
 vipune add 'tentative observation' --memory-type observation --status candidate
-# NOTE: you cannot promote. `vipune update` is denied to every role — it can
-# replace a memory's content in place with no lineage and no undo. Leave the
-# row a candidate; promotion is an operator action.
+# Leave the row a candidate. Promotion is an operator action, not an agent one.
 ```
 
 Default to `candidate` for anything you're not certain will outlast this session.
@@ -77,12 +75,18 @@ Every memory is a snapshot. Code moves, files rename, decisions reverse. **Befor
 | Flag is supported | Check `--help` |
 | Version pinned at X | Read the lockfile |
 
-If verification fails: **supersede or delete the stale memory immediately**. Don't ignore it — the next session hits the same trap.
+If verification fails: **supersede the stale memory immediately**. Don't ignore it — the next session hits the same trap.
 
 ```bash
 vipune add 'corrected statement' --supersedes <old-id> --memory-type fact
-# (`vipune delete` is denied to every role — superseding is the correction.)
+# Superseding is the correction — it preserves the original row. Removal is not
+# yours to do: see the memory-write boundary in Quick reference.
 ```
+
+**Memory-write boundary:** never run vipune update, delete, prune, promote or
+mcp — those are operator actions; correct with `add --supersedes`. The full
+per-mode statement lives under the `Memory-write boundary` heading of the bundled
+skill.
 
 ## Conflict handling — supersede, don't duplicate
 
@@ -121,19 +125,29 @@ vipune add "key finding $(whoami)"   # ❌ never do this
 Every ~10–15 sessions on a project, run a reflection pass:
 
 ```bash
-vipune list --limit 50 --json | jq .
+vipune list --limit 50 --include-candidates --json | jq .
 ```
 
-Look for: duplicates (supersede older), stale facts (delete/supersede), drift across multiple `observation`-typed entries on the same theme (consolidate into one `fact`/`procedure`), candidates that survived ≥5 sessions (promote), candidates untouched for months (delete).
+Look for: duplicates (supersede the older), stale facts (supersede), drift across multiple `observation`-typed entries on the same theme (consolidate into one `fact`/`procedure`).
+
+Two findings you **report rather than act on**, because promotion and removal are operator actions. They are **free prose in your final report to the dispatcher** (PM includes it in its reply to the operator) — there is no parser; each row is one line with the id verbatim and the word naming the wanted action. Report only rows you did not write in this session:
+
+```text
+candidate <id> promote
+candidate <id> prune
+```
+
+`vipune list --include-candidates --json` returns `retrieval_count`, `last_retrieved_at`, `created_at`, `memory_type`, `status` and `importance` per row — that is the evidence for both calls, read it from the same listing you are scanning for duplicates. Pass the flag: without it `list` shows active rows only, so the candidates you are asked to report are not in the listing. The `/audit` memory panel (`extension/src/memory-panel.ts` / `memory-stats.ts`) gives the aggregate picture (rows by status and type, total/max retrievals, never-retrieved count) plus the candidate ids and types; it does not print per-row age. Candidates that survived ≥5 sessions go up for promotion. Report a candidate for pruning when it matches what the operator's `prune` command keys on: `status = 'candidate' AND retrieval_count < N AND age(created_at) > T` (defaults configurable via `prune_count` / `prune_age_days`) — candidate, never (or barely) retrieved, and old. Never propose pruning a `guard` or a row with `importance` high/critical — that command hard-excludes both, so such a row is not a prune candidate no matter how stale it looks. When something is obsolete with nothing to correct it to, report its id for pruning rather than adding a row.
 
 ## Quick reference
 
 ```bash
 vipune search '<term>' --no-hybrid --recency 0.0 --limit 5 --no-touch --json
 vipune add '<distilled fact>' --memory-type <type> [--status candidate] [--supersedes <id>]
-vipune list --limit 50
-# `vipune update` and `vipune delete` are DENIED to every role. To correct a
-# memory, write a new one with `--supersedes <id>`, which preserves the original.
+vipune list --limit 50 --include-candidates
+# MEMORY-WRITE BOUNDARY: never run `vipune update`, `delete`, `prune`, `promote`
+# or `mcp` — operator actions; correct with `add --supersedes <id>`, which
+# preserves the original row. Report one to retire it (Periodic consolidation).
 ```
 
 **One atomic fact per `vipune add` call.** For the full doctrine (deep search recipes, failure-mode catalogue, all examples), load the bundled skill via `--skill <skills-dir>/vipune` (pi-rukas installs it to `~/.pi/agent/skills/vipune`).
