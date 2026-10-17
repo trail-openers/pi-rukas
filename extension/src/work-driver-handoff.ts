@@ -375,6 +375,11 @@ export async function runHandoff(
     consolidatedBranch: consEvent?.branchName,
     consolidatedWorkstreams: consEvent?.workstreams,
     consolidationReason,
+    // #1421 fix round — the driver's cause rides on the SAME event the
+    // renderers read, as its own field (the single carrier for the cause).
+    ...(consolidated.degradedReason !== undefined
+      ? { degradedReason: consolidated.degradedReason }
+      : {}),
     // A repeat delivered nothing this cycle — no provenance to assert.
     delivery: host ? "host" : park.repeatOf ? undefined : delivery,
     repeatOf: park.repeatOf,

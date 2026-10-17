@@ -456,6 +456,15 @@ export interface PipelineState {
     /** Which writer raised this park; see `VerifyEvidenceOrigin`. Absent pre-origin. */
     origin?: VerifyEvidenceOrigin;
     /**
+     * #1421 fix round — the consolidated gate DECLINED to consolidate because
+     * the root held nothing but untracked, git-ignored build output, and
+     * nothing else was in the way. Recorded so the queue's park reason (and
+     * the advice `humanActionFor` renders from it) reads a fact the gate
+     * established, rather than substring-matching a failure string whose path
+     * text an operator or a tool chose.
+     */
+    buildResidueOnly?: boolean;
+    /**
      * #814 — structured develop-scope-fence violations (see
      * `FenceViolation` below). Absent = none recorded.
      */

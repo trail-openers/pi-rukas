@@ -12,15 +12,10 @@
 import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
+import { readRepoRootPreflight } from "./work-driver-consolidated-verify-preflight.ts";
 import { consolidatedVerifySkip } from "./work-driver-consolidated-verify-skip.ts";
 import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
 import type { DriverContext } from "./work-driver-context.js";
-import {
-  buildResidueFailure,
-  classifyRootDirt,
-  probeIgnored,
-  readIgnoredPaths,
-} from "./work-driver-dirty-root-classify.ts";
 import { extractAttributedTail, isHostForkExhaustion } from "./work-driver-exec-error.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
@@ -177,77 +172,12 @@ export async function runConsolidatedVerifyUnlocked(
   const restoreClaimFor = (r: VerifiedRestoreResult) =>
     restoreClaim(r, { label: "the batch was aborted and" });
   try {
-    // Preflight — same as integrate(): repoRoot must be clean before we
-    // touch its checkout, or a dirty root would carry operator residue
-    // onto the probe branch. Refuse to consolidate rather than guess.
-    // `.worktrees/` and `.pi/` scaffolding are not dirt; untracked `??` IS
-    // dirt (see the integrate() preflight comment for the reasoning).
-    // #746 AC5 — `-uall`, same as the branch-step early gate's read
-    // (readRepoRootDirt): plain --porcelain collapses an untracked
-    // directory tree to its top-level entry, so an operator would see a
-    // bare `?? extension/` and have to go hunting; -uall names the
-    // exact files, which is what the dirty-root message is for.
-    const { stdout: rootStatus } = await execFn("git status --porcelain -uall", {
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-    });
-    const candidateLines = rootStatus.split("\n");
-    // #1421 — git's own opinion about which of these paths are ignored output.
-    // `undefined` (the read failed) classifies every path as dirt, so a gate
-    // that cannot tell still refuses: the fail-closed direction is the pre-
-    // #1421 behaviour, never "nothing is ignored".
-    const classified = classifyRootDirt(
-      candidateLines,
-      await readIgnoredPaths(execFn, repoRoot),
-      exempt,
-      await probeIgnored(execFn, repoRoot, candidateLines),
-    );
-    if (classified.dirt.length > 0) {
-      trace("work-driver: consolidated verify — repoRoot dirty, refusing to consolidate");
-      const residueNote =
-        classified.residue.length > 0
-          ? `; ${classified.residue.length} ignored build artifact(s) also present and not counted`
-          : "";
-      return {
-        status: "conflict",
-        kind: "dirty-root",
-        detail: `repoRoot is dirty (${classified.dirt
-          .slice(0, 5)
-          .map((l) => l.slice(3))
-          .join(
-            ", ",
-          )}${residueNote}; consolidated verify skipped — the combination is unverifiable until the root is clean`,
-      };
-    }
-    // Nothing left but build output: the batch runs anyway, and the outcome is
-    // reported so the cycle's gate can tell "the root was dirty" from "the
-    // root held a tool's output" — before #1421 both were
-    // `verify-failed:develop`, and a complete, reviewed change parked on five
-    // cargo lock files (janit/tehas#248 cycle 248).
-    //
-    // Reported HERE, before the checkout, for the same reason the reads are:
-    // everything below mutates repoRoot, and a decline is not a verdict on the
-    // code, so it must not cost a checkout, a cherry-pick or a verify run.
-    if (classified.residue.length > 0) {
-      trace(
-        `work-driver: consolidated verify — repoRoot held ${classified.residue.length} ignored build artifact(s), not dirt: ${classified.residue
-          .slice(0, 5)
-          .map((r) => r.line.slice(3))
-          .join(", ")}`,
-      );
-      const residuePaths = classified.residue.map((r) => r.line.slice(3).trim());
-      return {
-        status: "conflict",
-        kind: "build-residue",
-        residuePaths,
-        residueReasons: classified.residue.map((r) => r.reason),
-        detail: buildResidueFailure(
-          residuePaths,
-          "the consolidated verify was declined because the repo root is not clean",
-        ),
-      };
-    }
-
+    // Preflight — same as integrate(): repoRoot must be clean before we touch
+    // its checkout, or a dirty root would carry operator residue onto the probe
+    // branch. Refuse to consolidate rather than guess; a root holding nothing
+    // but a tool's output is a DECLINE the caller reports, not a refusal.
+    const preflight = await readRepoRootPreflight(execFn, repoRoot, exempt);
+    if (preflight !== undefined) return preflight;
     originalRef = await execFn("git symbolic-ref --quiet --short HEAD", {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,

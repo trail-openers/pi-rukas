@@ -184,6 +184,16 @@ export function makeHandoffEmittedEvent(opts: {
   consolidatedBranch?: string;
   consolidatedWorkstreams?: string[];
   consolidationReason?: string;
+  /**
+   * #1421 fix round — the driver's own reason when consolidation was DECLINED
+   * (dirty root, conflict, git error, lock failure). Kept separately from
+   * `consolidationReason` (the rendered "the work is NOT lost, here is where
+   * it sits" sentence): the cause is the driver's words about why it stopped,
+   * and the renderers print both. This is the ONLY carrier of the cause — the
+   * `handoff-consolidated` event type has no such field, so the fact cannot
+   * live in two places and disagree.
+   */
+  degradedReason?: string;
   /** #775 — provenance of the recorded comment/label state. */
   delivery?: HandoffDelivery;
   /** #798 — explicit target object type (where the comment was posted). */
@@ -219,6 +229,7 @@ export function makeHandoffEmittedEvent(opts: {
   } else if (opts.consolidationReason) {
     ev.consolidationReason = opts.consolidationReason;
   }
+  if (opts.degradedReason !== undefined) ev.degradedReason = opts.degradedReason;
   return ev;
 }
 

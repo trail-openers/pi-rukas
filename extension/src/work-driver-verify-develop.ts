@@ -81,6 +81,14 @@ export async function verifyDevelopOutcome(
   // file, and the event lives where the caller appends so the log stays
   // append-only.
   onConsolidatedVerifySkipped?: (skipped: AlreadyVerifiedTree) => void,
+  /**
+   * #1421 fix round — out-parameter: the consolidated gate declined to
+   * consolidate because the root held nothing but untracked, git-ignored build
+   * output. Read from the result's structured `kind`/`buildResidueOnly`, so
+   * the cap router never decides an environment refusal by substring-matching
+   * a failure string that may contain an operator-authored path.
+   */
+  onBuildResidueOnly?: () => void,
 ): Promise<void> {
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
@@ -421,6 +429,7 @@ export async function verifyDevelopOutcome(
           attributed = true;
         },
         ...(onConsolidatedVerifySkipped !== undefined ? { onConsolidatedVerifySkipped } : {}),
+        ...(onBuildResidueOnly !== undefined ? { onBuildResidueOnly } : {}),
       });
       // #1349 — only a base that fails the way the change does excuses it.
       verifyCmdEnd = before === 0 && attributed ? failures.length : undefined;
