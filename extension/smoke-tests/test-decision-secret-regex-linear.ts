@@ -61,7 +61,7 @@ const matchers = SECRET_PATTERNS.filter((re) => re.test(PROBE));
 const urlCredential = matchers[0] ?? PROBE_SHAPE;
 assert(
   matchers.length === 1 && urlCredential.source === PROBE_SHAPE.source,
-  `the URL-credential pattern is the one the linear bar is set for, and it is the rule that accepts a '/' in the userinfo (${matchers
+  `the URL-credential pattern is the one the linear bar is set for, and it is the rule that accepts a '/' in the PASSWORD (${matchers
     .map((re) => re.source)
     .join(" , ")})`,
 );
@@ -151,9 +151,18 @@ for (const [what, input] of NEAR_MISSES) {
 }
 
 // 4. It is still a matcher: a guard that redacts nothing would also be fast. The
-//    two extra shapes are the item-8 ones — a `/` in the userinfo, which the old
+//    two shapes below are the item-8/2 ones — a `/` in the password, which the old
 //    classes refused outright — so "fast" and "still redacts the shape the rule was
 //    widened for" are both observed on the pattern the bar was measured against.
+//
+//
+//    The `/`-IN-USER case (`https://us/er:pw@host`) is deliberately NOT asserted here.
+//    It is fundamentally ambiguous with a path — `us/er` is both a legal user and a
+//    legal first path segment — and the only way to match it is to let the user half
+//    cross `/`, which is precisely what eats `https://host:8080/path/with@at`: the same
+//    bar forbids the quadratic `://.*?:.*@` shape that crossing `/` on BOTH sides needs.
+//    The rule keeps the `/`-in-PASSWORD half and drops this one, which is a documented
+//    gap on the user half, not a silent one.
 {
   const r = redactSecrets("clone from https://janni:hunt/er2hunter2secretvalue@git.example.com/x");
   assert(
@@ -161,13 +170,67 @@ for (const [what, input] of NEAR_MISSES) {
     `a real embedded credential is still replaced, so the bounds above measured a working pattern (${r.count} redaction(s))`,
   );
   for (const [what, text, secret] of [
-    ["'/' in the user", "https://us/er:pwHunter2Secret@host", "pwHunter2Secret"],
     ["'/' in the pass", "https://user:hunt/er2Hunter2Secret@host", "hunt/er2Hunter2Secret"],
+    ["several '/' in the pass", "https://user:aa/bb/cc/dd/Hunter2Secret@host", "aa/bb/cc"],
   ] as const) {
     const r2 = redactSecrets(`remote ${text} ok`);
     assert(
       r2.count >= 1 && !r2.text.includes(secret),
       `the linear pattern still matches the userinfo shape containing '/': ${what} (${r2.count})`,
+    );
+  }
+}
+
+// 5. THE PEM ARM IS LINEAR TOO (#1393 round 5, item 3). The arm now spans the whole
+//    key body with `[\s\S]*?`, so it is the second pattern in the set whose match can
+//    cover a large run, and `\s\S` is every character — the class a careless edit most
+//    easily turns quadratic. Two shapes: a body WITH its END delimiter (the lazy span
+//    stops at the first one) and one WITHOUT it (the span runs to `$`, which is the
+//    branch a clipped scan window takes). The TRAP for this arm is a greedy body over
+//    the same input: `[\s\S]*(?:-----END|$)`, which must re-explore the tail at every
+//    position. Measured at 200 KB and past it, against the same bar.
+{
+  const b64 = `${"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".repeat(8)}==`;
+  const body = (n: number) => b64.repeat(Math.ceil(n / b64.length)).slice(0, n);
+  const endMarker = "\n-----END RSA PRIVATE KEY-----";
+  const pem = (n: number, closed: boolean) =>
+    `-----BEGIN RSA PRIVATE KEY-----\n${body(n)}${closed ? endMarker : ""}`;
+  const pemArm = SECRET_PATTERNS.find((re) => re.source.includes("BEGIN"));
+  assert(pemArm !== undefined, "the PEM arm is present to be measured");
+  if (pemArm) {
+    // The arm must still match both shapes, or the timings below would measure nothing.
+    for (const closed of [true, false]) {
+      const t = pem(4096, closed);
+      const r = redactSecrets(t);
+      assert(
+        r.count >= 1 && !r.text.includes("PRIVATE KEY"),
+        `the PEM arm redacts a ${closed ? "closed" : "clipped"} key INCLUDING its header, not the header alone`,
+      );
+      assert(
+        !r.text.includes(body(200).slice(0, 100)),
+        `the base64 KEY BODY is gone from the ${closed ? "closed" : "clipped"} PEM, not just its header`,
+      );
+    }
+    for (const [what, input] of [
+      ["200 KB body, closed", pem(200_000, true)],
+      ["200 KB body, clipped", pem(200_000, false)],
+      ["1.6 MB body, closed", pem(1_600_000, true)],
+      ["1.6 MB body, clipped", pem(1_600_000, false)],
+    ] as const) {
+      const m = elapsedMs(() => input.match(globalOf(pemArm)));
+      const r = elapsedMs(() => redactSecrets(input));
+      assert(
+        m < BAR_MS && r < BAR_MS,
+        `linear PEM: ${what} — match ${m.toFixed(1)}ms, full-set redaction ${r.toFixed(1)}ms (bar ${BAR_MS}ms)`,
+      );
+    }
+    // The harness can see a slow PEM body: a greedy span over the same input.
+    const greedy =
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*(?:-----END [A-Z ]*PRIVATE KEY-----|$)/;
+    const trapInput = `${pem(400_000, false)}${""}`;
+    const slow = elapsedMs(() => trapInput.match(globalOf(greedy)));
+    console.log(
+      `  PEM greedy-span probe on 400 KB of key body: ${slow.toFixed(1)}ms (the lazy shipped arm measured under ${BAR_MS}ms above)`,
     );
   }
 }

@@ -95,6 +95,14 @@ const CUT_TOKEN_BUDGET = 4096;
 const SCAN_CAP = PRE_BOUND_SLACK + CUT_TOKEN_BUDGET;
 
 /**
+ * The token boundary `widenPastCut` walks to, hoisted out of the loop (#1393 round 5,
+ * item 6). A literal `RegExp` in the body is re-created on every character of a walk
+ * that can run `SCAN_CAP` deep, and the walk is on the hot path of every bounded pass.
+ * `\s` carries no `g` flag, so a single shared instance cannot leak `lastIndex`.
+ */
+const WHITESPACE = /\s/;
+
+/**
  * Pull a scan cut outward to a token boundary, into the side being DROPPED.
  *
  * The cut must not land in the middle of a token, because that is exactly the
@@ -127,7 +135,7 @@ const SCAN_CAP = PRE_BOUND_SLACK + CUT_TOKEN_BUDGET;
  * that hid the glued credential from the bounded scan (#1393).
  */
 function widenPastCut(text: string, from: number, side: "head" | "tail"): number {
-  const isSpace = (i: number) => /\s/.test(text[i] ?? "");
+  const isSpace = (i: number) => WHITESPACE.test(text[i] ?? "");
   // One clamp, not two. The walk may never pass `stop`, and `stop` is already
   // `SCAN_CAP` away from `from`, so the offset IS the length bound: a separate
   // `walked < budget` counter walked in lockstep with it and could only ever
@@ -308,9 +316,33 @@ export function redactDeep(v: unknown, counter: { n: number }, bound?: number): 
       counter.n += r.count;
       return r.text;
     };
-    return Object.fromEntries(
-      Object.entries(v).map(([k, x]) => [redactKey(k), redactDeep(x, counter, bound)]),
-    );
+    // KEYS ARE BUILT IN A LOOP, NOT VIA `Object.fromEntries` (#1393 round 5, item 1).
+    // Redaction makes two distinct keys EQUAL — `{"sk-ant-AAAA…": 1, "sk-ant-BBBB…": 2}`
+    // both become `[REDACTED]` — and `Object.fromEntries` collapses a duplicate key to
+    // its last row, so the record shipped ONE entry while `counter.n` reported the two
+    // redactions that produced it: a count describing rows the line no longer contains.
+    // A key that LITERALLY reads `[REDACTED]` was overwritten the same way, by a redaction
+    // that had nothing to do with it. Neither is a leak, and both are the log lying about
+    // its own contents, which is the one thing a measurement log must not do. A colliding
+    // key therefore takes a `~n` suffix (first collision `~1`, then `~2`, …), which keeps
+    // every row and keeps the value paired with the key it came from. The suffix cannot
+    // re-match: it is appended AFTER the redaction pass, never re-scanned, and `~` is in
+    // no pattern's body class except the Bearer arm, whose `\s+` prefix a bare `~1` never
+    // satisfies — and the counter is not touched by it, so the count still describes the
+    // redactions, not the renaming.
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v)) {
+      const rk = redactKey(k);
+      const value = redactDeep(x, counter, bound);
+      if (!(rk in out)) {
+        out[rk] = value;
+        continue;
+      }
+      let n = 1;
+      while (`${rk}~${n}` in out) n++;
+      out[`${rk}~${n}`] = value;
+    }
+    return out;
   }
   return v;
 }
