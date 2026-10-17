@@ -52,7 +52,10 @@ export interface HeadlessRunOptions {
   /** Where the runner listens for signals. Defaults to the process. */
   signalTarget?: Pick<NodeJS.Process, "on" | "off">;
   /** Test seams forwarded to the driver (dispatch stub, issue-body fetch stub). */
-  driverSeams?: Pick<DriverContext, "dispatchFn" | "issueBodyFetcherFn">;
+  driverSeams?: Pick<
+    DriverContext,
+    "dispatchFn" | "issueBodyFetcherFn" | "verifyExecFn" | "policyJudgeFn"
+  >;
 }
 
 export interface HeadlessRunResult {

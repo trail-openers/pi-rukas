@@ -11,9 +11,23 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
-import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
-import { WORK_STATE_SCHEMA_VERSION, WORK_STEPS } from "./workflow-state-schema.ts";
-import { isKnownCap } from "./workflow-state-validate-caps.ts";
+import { isKnownExitOrigin } from "./workflow-state-events-exit-origin.ts";
+import { WORK_STEPS, type WorkEvent, type WorkStep } from "./workflow-state-events.ts";
+import { prDraftFindings } from "./workflow-state-schema-pr-draft.ts";
+import { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
+import {
+  CAP_EVIDENCE_KINDS,
+  CAP_HIT_NEXT_STEPS,
+  KNOWN_CAPPED_PARTIAL_ROLES,
+  KNOWN_CAPPED_PARTIAL_TREES,
+  KNOWN_CONSOLIDATION_STATUSES,
+  KNOWN_STATUSES,
+  isKnownCap,
+} from "./workflow-state-validate-caps.ts";
+export { KNOWN_STATUSES } from "./workflow-state-validate-caps.ts";
+// #1362 — the cycle-start exempt-untracked baseline (#533 rule: type-check the
+// untyped cast; predicate + rationale in workflow-state-dirty-root.ts).
+import { dirtyRootExemptBaselineFindings } from "./workflow-state-dirty-root.ts";
 
 /**
  * Known event kinds — a literal `as const` tuple (narrower than the
@@ -68,6 +82,10 @@ export const KNOWN_EVENT_KINDS = [
   "verify-full-status",
   // #782 — the consolidated-verify gate's single-retry recovery marker.
   "verify-flake-recovered",
+  // #1240 — the consolidated-verify gate skipped its run because the probe
+  // tree is the tree the per-worktree verify already judged. A fast `develop`
+  // must be explainable from the state file.
+  "consolidated-verify-skipped",
   // #558 — the branch step's worktree provisioning record (the driver writes
   // it when it symlinks dependencies into a fresh worktree). Absent from the
   // tuple, a cycle that crashed after provisioning refused to resume.
@@ -106,6 +124,9 @@ export const KNOWN_EVENT_KINDS = [
   // A residual-findings disclosure that did not reach the PR (and whether the
   // issue got it instead).
   "lens-residuals-post-failed",
+  // #1398 — a residual-findings disclosure that DID reach the PR, keyed on the
+  // reviewed patch: the fact the draft-ready gate holds on.
+  "lens-residuals-posted",
 ] as const;
 
 // #986 — compile-time exhaustiveness. If the `WorkEvent` union gains a kind
@@ -119,57 +140,6 @@ export const KNOWN_EVENT_KINDS = [
 type MissingEventKinds = Exclude<WorkEvent["kind"], (typeof KNOWN_EVENT_KINDS)[number]>;
 const _eventKindExhaustive: [MissingEventKinds] extends [never] ? true : MissingEventKinds = true;
 void _eventKindExhaustive;
-
-/** `pipelineState.status` vocabulary. */
-export const KNOWN_STATUSES: readonly unknown[] = [
-  "running",
-  "merged",
-  "handoff",
-  "aborted",
-  // S4a (#1162) — resumable; re-entry treats it as running.
-  "interrupted",
-];
-
-/**
- * #540 — `pipelineState.incompleteConsolidation.verdicts[].status`
- * vocabulary. Legacy PR14 entries carry no `status` field at all (they
- * identify themselves by `paths`); the validator tolerates the absent-
- * status + `paths` shape and refuses everything else it does not
- * recognize — the same "extend the union, don't smuggle a field" rule
- * this module applies to event kinds and steps.
- *
- * #778 — `moved` joins the vocabulary: a covered workstream whose declared
- * path was renamed during develop/consolidation, with the move recorded in
- * `movedPaths` (the same "extend the union" move that added `unverifiable`
- * for #540).
- */
-export const KNOWN_CONSOLIDATION_STATUSES: readonly unknown[] = [
-  "complete",
-  "uncovered",
-  "moved",
-  "unverifiable",
-];
-
-/** `cap-hit.nextStep` vocabulary. */
-const CAP_HIT_NEXT_STEPS: readonly unknown[] = ["handoff", "step-back", "ci"];
-
-/** `pipelineState.capEvidence.kind` vocabulary (#543). */
-const CAP_EVIDENCE_KINDS: readonly unknown[] = ["loop", "token-budget"];
-
-/** #543 F5 — `pipelineState.capedPartialState.tree` vocabulary. */
-const KNOWN_CAPPED_PARTIAL_TREES: readonly unknown[] = ["committed", "dirty-uncommitted", "clean"];
-
-/** #543 F5 — `pipelineState.capedPartialState.role` vocabulary. The
- * dispatch-cap kill is attributed to a role the driver can name, so a
- * fabricated `cap-hit.role` is rejected with the same rule. */
-const KNOWN_CAPPED_PARTIAL_ROLES: readonly unknown[] = [
-  "project-manager",
-  "developer",
-  "ops",
-  "explore",
-  "adversarial-developer",
-  "code-review-specialist",
-];
 
 /**
  * Human-readable findings; empty when every discriminant is a known value.
@@ -229,6 +199,17 @@ export function validateDiscriminants(state: unknown): string[] {
         }
       }
     }
+    // #1362 — the cycle-start exempt-untracked baseline: which `??` files under
+    // an exempt prefix a restore claim spares. Checked in its own module; the
+    // same #533 rule as `commitPrRoot` above (the untyped cast is the gate).
+    out.push(...dirtyRootExemptBaselineFindings(ps.dirtyRootExemptBaseline));
+    // #1398 — the PR draft record, the same #533 rule as `commitPrRoot` above:
+    // `markDraftPrReady` reads `status` to decide whether the PR may merge and
+    // `findingsPosted` to decide whether a disclosure licenses that ready, so a
+    // partial or hand-edited record is a confident wrong answer about whether a
+    // PR is mergeable. Predicate + rationale in workflow-state-schema-pr-draft.ts;
+    // absent validates (a cycle that never opened its PR as a draft).
+    out.push(...prDraftFindings(ps.prDraft));
     if (ps.incompleteConsolidation !== undefined) {
       const ic = ps.incompleteConsolidation;
       if (Array.isArray(ic)) {
@@ -398,6 +379,19 @@ export function validateDiscriminants(state: unknown): string[] {
         }
       }
     }
+    // #1153 — `pipelineState.consolidationNotes`, when present, must be an
+    // array of strings: the handoff renders each entry verbatim into a
+    // "checks that did not run" bullet, so a non-string (an object, a number)
+    // would render `[object Object]` where the operator expected a reason, and
+    // a non-array would crash the renderer.
+    if (ps.consolidationNotes !== undefined) {
+      const cn = ps.consolidationNotes;
+      if (!Array.isArray(cn)) {
+        out.push("pipelineState.consolidationNotes is not an array");
+      } else if (cn.some((v) => typeof v !== "string")) {
+        out.push("pipelineState.consolidationNotes contains a non-string entry");
+      }
+    }
     // #543 F5 — `pipelineState.capedPartialState` (the driver-owned
     // checkpoint record) must carry a known role/tree and, when the tree is
     // "committed", the commit it claims: the handoff renders
@@ -477,6 +471,19 @@ export function validateDiscriminants(state: unknown): string[] {
       // a template value). #1263/#753/#973: an unknown cap fails re-entry.
       if (e.kind === "cap-hit" && typeof e.cap === "string" && !isKnownCap(e.cap)) {
         out.push(`eventLog[${i}].cap has unknown value ${JSON.stringify(e.cap)}`);
+      }
+      // #1247 — a `cycle-interrupted` origin must be one the process tracker
+      // can actually write. The field is OPTIONAL (state files pre-#1247 have
+      // none), but when PRESENT it names what closed the session, and the
+      // handoff and `/work-status` render it to the operator as fact. A string
+      // no tracker could produce (`signal:SIGKILL`, a typo, a hand edit) is a
+      // confident wrong cause, so it is reported rather than rendered.
+      if (
+        e.kind === "cycle-interrupted" &&
+        e.origin !== undefined &&
+        !isKnownExitOrigin(e.origin)
+      ) {
+        out.push(`eventLog[${i}].origin has unknown value ${JSON.stringify(e.origin)}`);
       }
     });
   }

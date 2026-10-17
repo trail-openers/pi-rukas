@@ -71,8 +71,32 @@
 # The caller expands the glob; the script receives the file list.
 # Live tests (suffix -live.ts) are skipped in both modes, matching the legacy
 # `case "$t" in *-live.ts) continue;; esac` exclusion.
+#
+# --- #1365 — bounded job pool (lib/verify-pool.sh).
+# Tests run concurrently, at most PI_ENSEMBLE_VERIFY_TEST_JOBS at once
+# (${VERIFY_TEST_JOBS:-2}; 1 restores the strictly sequential pre-#1365
+# shape). The count is clamped to the number of collected tests and to 16,
+# with a warning naming the clamp — more than 16 concurrent `bun` processes
+# compete with each other for CPU and the suite gets slower, not faster.
+# Every job still runs under the per-test watchdog above. Output is replayed
+# in ARGUMENT order after the pool drains, so both modes' output (and the
+# digest) are byte-identical to a sequential run regardless of finish order.
+# All per-job temp files live in one private per-run directory (0700, under
+# TMPDIR) that the EXIT trap removes.
 
 set -u
+
+# Fixed locale for the whole file. Every digit and range test in this script
+# and in verify-pool.sh is written `[0-9]`, and bash's `=~` matches that class
+# through the C library under the active collation — so under a UTF-8 locale
+# `[0-9]` is not ASCII digits alone. Verified on this host under
+# `LC_ALL=en_US.UTF-8`: `[[ "٢" =~ ^[0-9]+$ ]]` (an Arabic-Indic digit) MATCHES,
+# and under `LC_ALL=C` the same test does not. So the two `^[0-9]+$` gates here
+# — the timeout bound and the pool's job count — would have accepted a non-ASCII
+# digit and passed it straight into arithmetic. Set here rather than at each
+# test because this file is both run directly and sourced by the smoke harness,
+# and a script cannot set a variable its caller will not inherit.
+export LC_ALL=C
 
 # The tests build throwaway repositories (`git init --bare <tmp>/origin.git`,
 # `git config user.email "t@t"`). With GIT_DIR in the environment — git sets
@@ -119,162 +143,57 @@ export PI_ENSEMBLE_PLAN_CACHE=0
 # repos and their writer must write to the temp repo's git dir, not a shared
 # env-var path.
 
-# --- #1014 — per-test timeout watchdog.
-#
-# Each test is bounded at ${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-300} seconds.
-#
-# Design (portability-first, no GNU tools):
-#   * No `timeout` (GNU coreutils), no `wait -n` (bash 4.3+), no
-#     process-group kill (no setsid on macOS): the test runs in the
-#     background, a 0.1s poll loop counts wall-clock (bash SECONDS,
-#     second resolution) until the bound, identical on bash 3.2 (macOS)
-#     and 5.x (Linux).
-#   * On timeout the whole descendant tree is killed — a bare `kill <pid>`
-#     would orphan bun's children (`bun run` forks a child for the script,
-#     and a test can spawn grandchildren, e.g. a `sleep`). The tree is found
-#     by a BFS `pgrep -P` walk.
-#   * SIGTERM first, SIGKILL only for survivors, after a 2s grace: a test
-#     with cleanup handlers gets a chance to exit cleanly.
-#   * The watchdog fires at the bound and returns its OWN sentinel (214),
-#     deliberately distinct from 124 — the conventional "timed out" code that
-#     a test can exit on its own. Because the sentinel is 214, the per-test
-#     "(timed out after <N>s)" suffix is emitted only for a true watchdog
-#     kill, never for a coincidental self-exit-124 test (the round-1
-#     finding: the old code keying the suffix on `rc -eq 124` misattributed
-#     those). The `✗ timed out after <N>s` line the watchdog prepends to the
-#     capture is what the #827 echo and extractSpecificAssertion name as the
-#     specific assertion; a self-exit-124 test gets neither.
-#   * The bound must be a positive integer; anything else falls back to 300
-#     with a warning so the silent default is visible.
 
-if [[ "${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-}" =~ ^[1-9][0-9]*$ ]]; then
-  VERIFY_TEST_TIMEOUT_S="$PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S"
-else
-  if [ -n "${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-}" ]; then
-    echo "warn: verify-loop: PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S must be a positive integer; got '${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S}', falling back to 300" >&2
+# #1365 — the watchdog half (#1014: the per-test bound, the descendant-tree
+# kill, and the timeout marker) lives in verify-kill.sh so each file stays under
+# the §12 500-line cap. Sourced FIRST: verify-pool.sh calls run_test_with_timeout
+# and kill_process_tree, and the watchdog calls collect_tree back out of the pool
+# file, so the two halves are mutually dependent and the hard name checks below
+# run only once both are loaded.
+. "$(dirname "${BASH_SOURCE[0]}")/verify-kill.sh"
+for _kill_fn in run_test_with_timeout kill_process_tree mark_timeout prepend_timeout_line; do
+  if [ "$(type -t "$_kill_fn")" != function ]; then
+    echo "error: verify-loop: lib/verify-kill.sh did not define $_kill_fn — the watchdog is broken; refusing to run" >&2
+    exit 2
   fi
-  VERIFY_TEST_TIMEOUT_S=300
-fi
+done
+unset _kill_fn
 
-# Descendant-tree kill: SIGTERM, 2s grace, SIGKILL survivors. Without pgrep
-# only the top-level test process can be killed (descendants are orphaned).
-# The BFS tracks visited PIDs so each is walked once (a pid re-appearing in
-# two parents' child lists would otherwise be re-added).
-# After the grace, SIGKILL goes to EVERY collected pid unconditionally — the
-# kill -0 pre-check is a trap: a zombie satisfies kill -0, but so would a
-# pid that died between the check and the kill, and a pid recycled into an
-# unrelated process would make the check say "no, it's alive" for the wrong
-# reason. SIGKILL to a dead or zombie pid is a harmless no-op.
-# Then wait (bounded ≤5s) until no collected pid is alive; a pid whose exit
-# we cannot reap ourselves is still visible in `ps` as a zombie to its new
-# parent, so polling on liveness here is the right check — and survivors are
-# named so a leak is diagnosable, not silently dropped.
-kill_process_tree() {
-  local root_pid="$1" queue current_pid child_pids pids_to_kill visited alive_count waited
-  pids_to_kill="$root_pid"
-  visited="$root_pid"
-  queue="$root_pid"
-  while [ -n "$queue" ]; do
-    child_pids=""
-    for current_pid in $queue; do
-      child_pids="$child_pids $(pgrep -P "$current_pid" 2>/dev/null)"
-    done
-    child_pids="${child_pids# }"
-    # Prune pids already collected (visited) so each is walked exactly once.
-    local fresh_child
-    fresh_child=""
-    for child_pid in $child_pids; do
-      case " $visited " in
-        *" $child_pid "*) : ;;
-        *) fresh_child="$fresh_child $child_pid" ;;
-      esac
-    done
-    fresh_child="${fresh_child# }"
-    if [ -n "$fresh_child" ]; then
-      pids_to_kill="$pids_to_kill $fresh_child"
-      visited="$visited $fresh_child"
-      queue="$fresh_child"
-    else
-      queue=""
-    fi
-  done
-  for current_pid in $pids_to_kill; do kill -TERM "$current_pid" 2>/dev/null; done
-  sleep 2
-  for current_pid in $pids_to_kill; do kill -KILL "$current_pid" 2>/dev/null; done
-  # Bounded wait (≤5s, 0.1s polls) for the whole tree to actually die; name
-  # survivors so a leaked descendant is visible in the output.
-  waited=0
-  while [ "$waited" -lt 50 ]; do
-    alive_count=0
-    for current_pid in $pids_to_kill; do
-      if kill -0 "$current_pid" 2>/dev/null; then alive_count=$((alive_count + 1)); fi
-    done
-    if [ "$alive_count" -eq 0 ]; then return 0; fi
-    sleep 0.1
-    waited=$((waited + 1))
-  done
-  local survivors=""
-  for current_pid in $pids_to_kill; do
-    if kill -0 "$current_pid" 2>/dev/null; then survivors="$survivors $current_pid"; fi
-  done
-  if [ -n "$survivors" ]; then
-    echo "warn: verify-loop: still alive after SIGKILL: ${survivors# }" >&2
+# #1365 — the bounded job pool (verify-pool.sh) runs the tests collected below.
+# It calls run_test_with_timeout and kill_process_tree, so it is sourced here,
+# after both are defined.
+. "$(dirname "${BASH_SOURCE[0]}")/verify-pool.sh"
+
+# #1365 — the reporting half (summary, digest, #827 echo) lives in
+# verify-report.sh so each file stays under the §12 500-line cap. Sourced
+# unconditionally: `report_results` below is the only exit path for a run that
+# collected tests, so a missing half would otherwise surface as "the suite
+# printed nothing and exited 0". The same named check the pool gets.
+. "$(dirname "${BASH_SOURCE[0]}")/verify-report.sh"
+for _verify_fn in report_results emit_tally; do
+  if [ "$(type -t "$_verify_fn")" != function ]; then
+    echo "error: verify-loop: lib/verify-report.sh did not define $_verify_fn — the reporter is broken; refusing to run" >&2
+    exit 2
   fi
-}
+done
+unset _verify_fn
 
-# Prepend the `✗ timed out after <N>s` line to the capture (front, so
-# extractSpecificAssertion names it; partial output stays after it).
-prepend_timeout_line() {
-  local bound="$1"
-  {
-    echo "✗ timed out after ${bound}s"
-    cat "$CAPTURE" 2>/dev/null
-  } >"$CAPTURE.tmp" 2>/dev/null && mv "$CAPTURE.tmp" "$CAPTURE" 2>/dev/null || {
-    rm -f "$CAPTURE.tmp"
-    echo "warn: verify-loop: could not prepend the timeout line to the capture of this test" >&2
-  }
-}
-
-# Run one test under the watchdog. Returns the test's exit code, or 214 (the
-# watchdog's own sentinel, distinct from a test that exits 124 itself) if the
-# bound fired.
-run_test_with_timeout() {
-  local bound="$1" t="$2" pid=0 start rc=0
-  start=$SECONDS
-  bun run "$t" >"$CAPTURE" 2>&1 &
-  pid=$!
-  # Poll every 0.1s (sleep 0.1 works on macOS and GNU coreutils), comparing
-  # elapsed wall-clock via SECONDS (second resolution — the bound is still
-  # honoured to the second, the fast poll only removes the 1s latency that
-  # previously added ~1s to every fast test). bash 3.2 safe: no associative
-  # arrays, no wait -n, fractional sleep only.
-  while :; do
-    if kill -0 "$pid" 2>/dev/null; then
-      if [ "$((SECONDS - start))" -ge "$bound" ]; then
-        kill_process_tree "$pid"
-        wait "$pid" 2>/dev/null
-        # NB: the timeout path returns 214 on purpose (not 124) — the test's
-        # own wait status (whatever the SIGTERM/SIGKILL left behind) is
-        # intentionally replaced by the sentinel, and 214 is chosen BECAUSE
-        # it is distinct from 124: a test that itself exits 124 (the
-        # conventional "timed out" code) returns through the normal path
-        # below and gets no timeout marker, so the cosmetic "(timed out)"
-        # suffix is emitted only for a true watchdog kill, never for a
-        # coincidental self-exit-124. The `✗ timed out after <N>s` line
-        # prepended to the capture is what the #827 echo /
-        # extractSpecificAssertion surface as the specific assertion.
-        prepend_timeout_line "$bound"
-        return 214
-      fi
-    else
-      break
-    fi
-    sleep 0.1
-  done
-  wait "$pid" 2>/dev/null
-  rc=$?
-  return "$rc"
-}
+# The source above is not optional and not best-effort. If verify-pool.sh is
+# missing, truncated, or a stale copy from before #1365, `set -u` alone will
+# not stop the loop: the missing functions would surface as command-not-found
+# and the tests would still be reported as passing. Each name is checked and
+# the failure is named, so a broken pool is a hard stop rather than a suite
+# whose verdict nobody earned. `collect_tree` is checked too — it is the
+# descendant walk both the watchdog and the interrupt handler depend on, so a
+# pool that loads without it can kill a hung test's top process and orphan the
+# rest of its tree while still reporting the timeout correctly.
+for _pool_fn in pool_collect run_pool interrupt_now collect_tree start_job; do
+  if [ "$(type -t "$_pool_fn")" != function ]; then
+    echo "error: verify-loop: lib/verify-pool.sh did not define $_pool_fn — the test pool is broken; refusing to run" >&2
+    exit 2
+  fi
+done
+unset _pool_fn
 
 # pgrep powers the descendant kill; without it only the top-level test
 # process would be killed (descendants orphaned). Warn, do not fail.
@@ -297,50 +216,103 @@ fi
 
 # Single-execution capture (DECISION 3): every test runs exactly once; its
 # output is captured to a temp file that is removed on every exit path.
-CAPTURE="$(mktemp "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
+# #1365 — one private directory for the whole run instead of a temp file per
+# job. The pool writes $RUN_DIR/<n>.out and $RUN_DIR/<n>.rc into it and the
+# timeout prepend keeps its scratch file there; mktemp -d creates it 0700, so
+# no other user of the host can read a test's output, and cleanup is one
+# recursive removal rather than a list of derived names. The old shape derived
+# `$CAPTURE.<n>` from a single mktemp base, which scattered predictable paths
+# across TMPDIR and needed JOB_FILES to remember them.
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
+chmod 700 "$RUN_DIR" 2>/dev/null || true
 # One trap cleans everything on every exit path: the per-test capture, the
 # #1028/​#827 failure captures, and the #1069 ledger temp dir (empty when an
 # operator-supplied override was honoured).
+# #1365: the per-test capture is now the whole $RUN_DIR, removed as one unit.
 _extra_captures=()
+# #1365 — each statement ends in `|| :`, and that is the load-bearing part.
+# bash takes the EXIT trap's final status as the shell's when the trap does not
+# call `exit` itself, so one non-zero command in the cleanup turns `exit 1` into
+# exit 0: the suite reports a FAILURE and the gate passes. `rm -f` is close to
+# unconditional, but ${_extra_captures[*]} is UNQUOTED (word-splitting is
+# wanted), so an unreadable RUN_DIR or a root-owned ledger temp can reach the
+# tail and decide the verdict.
 _extra_cleanup() {
-  rm -f "$CAPTURE" ${_extra_captures[*]:-}
-  if [ -n "${_ledger_tmp_dir:-}" ]; then rm -rf "${_ledger_tmp_dir}"; fi
+  rm -f ${_extra_captures[*]:-} || :
+  if [ -n "$RUN_DIR" ]; then rm -rf "$RUN_DIR" || :; fi
+  if [ -n "${_ledger_tmp_dir:-}" ]; then rm -rf "${_ledger_tmp_dir}" || :; fi
 }
 trap '_extra_cleanup' EXIT
 
+# #1365 — the interrupt path (interrupt_now, now in lib/verify-tree.sh, reached
+# through lib/verify-pool.sh) calls `_extra_cleanup` for the same reason the EXIT
+# trap just did: RUN_DIR, the #827/#1028 failure captures and the #1069 ledger
+# temp dir have to go. The pool used to reach it through a silent `type -t`
+# probe, so a rename made Ctrl-C look clean while every one of those stayed on
+# disk — the EXIT trap it duplicates never runs on that path. It is now under the
+# same hard name check the pool's own functions get. Checked here rather than
+# with them because a `type -t` test before the definition would fail for the
+# wrong reason. It is not optional, so there is no declared flag and nothing to
+# trace when absent: the pool calls it unconditionally and so does the trap
+# above, so a run without it is broken before the pool starts. The call site
+# names this as the declared hook rather than re-deriving the cleanup.
+if [ "$(type -t _extra_cleanup)" != function ]; then
+  echo "error: verify-loop: _extra_cleanup is missing — the interrupt path cannot clean the run's temp state; refusing to run" >&2
+  exit 2
+fi
+
 names=()
-total=0
-for t in "$@"; do
-  case "$t" in *-live.ts) continue;; esac
-  total=$((total + 1))
-  rc=0
-  run_test_with_timeout "$VERIFY_TEST_TIMEOUT_S" "$t"
-  rc=$?
+# #1365: collect the tests, run them through the pool, then replay each job's
+# result in argument order. RUN_DIR is passed explicitly so the pool never
+# depends on an ambient temp name.
+pool_collect "$RUN_DIR" -- "$@"
+total=${#JOB_TESTS[@]}
+# Interrupt: every running job's process tree is killed, and the loop does not
+# return until each tree is reaped (see interrupt_now).
+trap 'interrupt_now 130' INT
+trap 'interrupt_now 143' TERM
+run_pool "$VERIFY_TEST_JOBS"
+for ((i = 0; i < total; i++)); do
+  t="${JOB_TESTS[$i]}"
+  cap="${JOB_CAP[$i]}"
+  rc="${JOB_EXIT[$i]}"
   if [ "$rc" -eq 0 ]; then
     if [ "$DIGEST" -eq 0 ]; then
-      cat "$CAPTURE"
+      cat "$cap"
     fi
   else
     names+=("$t")
+    # The timeout is the MARKER, not the exit code: rc==214 is an ordinary exit
+    # code a test may return, and only this file says the watchdog fired.
+    timed_out=0
+    if [ -f "$RUN_DIR/$i.timeout" ]; then timed_out=1; fi
     if [ "$DIGEST" -eq 0 ]; then
-      if [ "$rc" -eq 214 ]; then
+      if [ "$timed_out" -eq 1 ]; then
         echo "FAILED: $t (timed out after ${VERIFY_TEST_TIMEOUT_S}s)"
       else
         echo "FAILED: $t"
       fi
-      cat "$CAPTURE"
+      cat "$cap"
     fi
     # #827 — keep this test's capture so its `✗` lines can be repeated
-    # after the summary (below); removed on exit like $CAPTURE. Also used
+    # after the summary (below); removed on exit with $RUN_DIR. Also used
     # by #1028 digest mode to emit ✗ lines + indented detail.
-    capfile="$(mktemp "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
-    if ! cp "$CAPTURE" "$capfile"; then
-      # Capture failed — degrade gracefully: the test has already failed and
-      # its per-test output was printed above, so a missing echo is a
+    # #1365: the source of this copy is the job's own capture, not $CAPTURE.
+    #
+    # #1365 fix round: the copy lives INSIDE $RUN_DIR (this run's private 0700
+    # directory) and a mktemp failure degrades to the empty-placeholder path
+    # instead of `exit 2`. The old shape allocated in ${TMPDIR:-/tmp} with
+    # `|| exit 2`, after every test had already run and been printed — so one
+    # failure of a scratch-file allocation threw away a finished run's verdict
+    # and reported the usage error (2) where the caller expected 0 or 1.
+    capfile="$(mktemp "$RUN_DIR/keep-$i.out.XXXXXX" 2>/dev/null)"
+    if [ -z "$capfile" ] || ! cp "$cap" "$capfile"; then
+      # Could not keep a copy — degrade gracefully: the test has already failed
+      # and its per-test output was printed above, so a missing echo is a
       # cosmetic gap in the tail, not a new failure. Do NOT register the
       # capfile, so the echo loop below skips it.
       echo "warn: verify-loop: could not capture output of $t for the tail echo; its ✗ lines will be absent from the summary tail" >&2
-      rm -f "$capfile"
+      [ -n "$capfile" ] && rm -f "$capfile"
       # Push a placeholder so the digest loop's names/_extra_captures index
       # pairing stays aligned; the digest emits the FAILED: marker with no
       # detail for this test. An empty entry makes the #827 echo loop's
@@ -359,112 +331,23 @@ if [ "$total" -eq 0 ]; then
   exit 3
 fi
 
-# The pass/fail tally line — the one emitter for both digest paths (failure
-# and all-pass). Usage: emit_tally <pass-count> <fail-count>.
-emit_tally() {
-  echo "P: $1  F: $2"
-}
-
-if [ "${#names[@]}" -gt 0 ]; then
-  # Build `FAILED: <n> test(s) — <list>`, capping the name list so the whole
-  # line fits the 800-char tail budget. Names that no longer fit are
-  # collapsed to `…and <m> more` so the count survives even when the list
-  # itself cannot.
-  summary="FAILED: ${#names[@]} test(s) —"
-  # Reserve 20 chars for the `…and NNN more` suffix.
-  budget=780
-  emitted=0
-  for name in "${names[@]}"; do
-    if [ "$emitted" -eq 0 ]; then
-      sep=" "
-    else
-      sep=", "
-    fi
-    if [ $(( ${#summary} + ${#sep} + ${#name} )) -gt "$budget" ]; then
-      summary="$summary… and $(( ${#names[@]} - emitted )) more"
-      break
-    fi
-    summary="$summary$sep$name"
-    emitted=$((emitted + 1))
-  done
-
-  if [ "$DIGEST" -eq 1 ]; then
-    # #1028 — digest mode: emit per-failure markers, every ✗ line with its
-    # indented detail, then the summary. The 3×200 bound from normal mode's
-    # #827 echo does NOT apply here — the digest is the full failure detail.
-    # names and _extra_captures are pushed in lockstep (a cp failure pushes an
-    # empty placeholder), so index $i of each array is the same test.
-    # Filter contract (shared with the #827 tail, see header): a line is
-    # kept when it is a `✗` marker at line start, or when it is an indented
-    # detail line (leading whitespace) following a kept ✗ marker; the
-    # indented-detail attribution stops at the first non-indented line.
-    # Pass/fail counts + exit code are printed below: `FAILED:` is the
-    # canonical failure-count marker (extractAttributedTail anchors on it),
-    # the `P`/`F` tally is the pass/fail summary the acceptance criteria
-    # name, and the exit code (0 all-pass / 1 any failure) is identical to
-    # normal mode.
-    for i in "${!names[@]}"; do
-      echo "FAILED: ${names[$i]}"
-      capfile="${_extra_captures[$i]:-}"
-      if [ -n "$capfile" ] && [ -f "$capfile" ]; then
-        in_block=0
-        while IFS= read -r line; do
-          if [[ "$line" == "✗ "* ]]; then
-            echo "$line"
-            in_block=1
-            continue
-          fi
-          if [ "$in_block" -eq 1 ]; then
-            # Indented detail lines belong to the most recent ✗ block.
-            if [[ "$line" =~ ^[[:space:]]+ ]]; then
-              echo "$line"
-              continue
-            else
-              in_block=0
-            fi
-          fi
-          # Everything else (✓ lines, noise, passing output) is dropped.
-        done < "$capfile"
-      fi
-    done
-    echo "$summary"
-    emit_tally "$((total - ${#names[@]}))" "${#names[@]}"
-    exit 1
-  fi
-
-  echo "$summary"
-  # #827 — repeat each failing test's `✗` lines AFTER the summary. WHY: the
-  # driver's marker-anchored tail window (extractAttributedTail in
-  # work-driver-exec-error.ts, maxLen=800 — the smallest of its call sites)
-  # keeps only what comes at/after the LAST `FAILED:` marker, so with per-test
-  # output first and the summary last, a failing test's real `✗` assertion
-  # lines sat thousands of chars BEFORE the summary and were elided out of
-  # every consumer's window (the #772 shape). Repeating them here, inside the
-  # window, is what makes the tail name the actual assertion; the per-test
-  # output above remains the full first occurrence, this is a bounded echo.
-  # The bound (first 3 ✗ lines per test, each truncated to 200 chars) keeps
-  # a single failing test's echo inside that 800-char window; with several
-  # failing tests the consumer (extractAttributedTail) keeps the summary
-  # marker line plus the LAST part of the echo, eliding the middle — so at
-  # least the last failing test's assertion lines are guaranteed in the
-  # tail. Only `✗` lines qualify — warnings (`!`
-  # lines) and other output are intentionally excluded.
-  for capfile in "${_extra_captures[@]}"; do
-    cap=0
-    while IFS= read -r line; do
-      cap=$((cap + 1))
-      if [ "$cap" -gt 3 ]; then
-        break
-      fi
-      if [ ${#line} -gt 200 ]; then
-        line="${line:0:199}…"
-      fi
-      echo "$line"
-    done < <(grep -F -- "✗" "$capfile" || true)
-  done
+# The pass/fail tally line and the whole reporting half live in
+# verify-report.sh (sourced above) — see that file for the digest/echo
+# contract and the 800-char tail-window rationale.
+#
+# #1365 — `names` and `_extra_captures` are index-aligned (both pushed once per
+# failing test, in order; the digest reads them by shared index in
+# verify-report.sh). A mismatch would attach one test's ✗ lines to another's
+# marker and read as a real assertion failure, so it fails loudly rather than
+# reporting. (An EMPTY placeholder from a cp failure is still paired; a LENGTH
+# mismatch is the bug.)
+#
+# The check runs BEFORE `report_results`, which exits: after that call it is
+# unreachable, so a mispaired digest would already have been printed and the
+# run's verdict handed out before the mismatch was noticed.
+if [ "${#names[@]}" -ne "${#_extra_captures[@]}" ]; then
+  echo "error: verify-loop: internal error — ${#names[@]} failure names against ${#_extra_captures[@]} captured outputs; the summary tail is unreliable" >&2
   exit 1
 fi
-if [ "$DIGEST" -eq 1 ]; then
-  emit_tally "$total" 0
-fi
-exit 0
+
+report_results "$total"

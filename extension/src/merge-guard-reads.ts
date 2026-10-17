@@ -126,6 +126,54 @@ export async function readPrCommentBodies(
 }
 
 /**
+ * #1360 — the adversarial half of the guard's refusal, with the latest row's
+ * `detail` quoted verbatim when the row is non-passing and carries one.
+ *
+ * The ledger write records WHY a review did not count (`range-not-branch:
+ * reviewed 1a2b3c4d..…`, `head-moved: …`, `tree-changed: …`, or the ordinary
+ * verdict outcome). Without it the operator sees "no passing adversarial
+ * review" and re-runs the very review that just ran — the row is on file,
+ * it just refuses to pass. The comparison itself is untouched: this renders
+ * the reason for a refusal the strict rule already made (#1360 settlement —
+ * "no guard change" means the patch-id comparison and `mergeIdentity` are
+ * unchanged; the refusal MESSAGE may carry the row's detail).
+ *
+ * A `detail` that is not a string (a legacy row) renders as no detail, and a
+ * passing row never reaches here.
+ *
+ * The detail is quoted into a single-line refusal, so it is sanitised rather
+ * than pasted: a detail written by an older build, or one whose git error
+ * carried a newline, would otherwise break the line the operator reads (and
+ * any log that parses it). Newlines and tabs collapse to spaces and the text
+ * is clamped — the binding prefix and the SHAs it names are what the operator
+ * needs, and both sit at the front.
+ */
+
+/** Bounds on the quoted detail: long enough for a prefix plus the two short
+ * SHAs every binding refusal carries, short enough that one refusal stays one
+ * readable line. */
+const DETAIL_MAX_CHARS = 200;
+
+/** One-line, bounded rendering of a row's `detail` — "" when it has none. */
+function sanitizeDetail(detail: unknown): string {
+  if (typeof detail !== "string") return "";
+  const oneLine = detail.replace(/[\r\n\t]+/g, " ").trim();
+  if (!oneLine) return "";
+  return oneLine.length > DETAIL_MAX_CHARS ? `${oneLine.slice(0, DETAIL_MAX_CHARS - 1)}…` : oneLine;
+}
+
+export function adversarialRefusal(branch: string, adv: LedgerEntry | undefined): string {
+  const override = " (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)";
+  if (!adv) {
+    return `no passing adversarial review on file for branch \`${branch}\` (latest: none) — run adversarial_loop and let it complete before merging${override}`;
+  }
+  const identity = `passed=${adv.passed}, patchId=${adv.patchId.slice(0, 8)}`;
+  const detailText = sanitizeDetail(adv.detail);
+  const detail = detailText ? `, detail: ${detailText}` : "";
+  return `no passing adversarial review on file for branch \`${branch}\` (latest: ${identity}${detail}) — run adversarial_loop and let it complete before merging${override}`;
+}
+
+/**
  * #1000 — the lens-branch refusal text. The round-cap path was consulted
  * and REFUSED TO APPLY (`applies: false`); the operator must be told that
  * the round-cap path was NOT evaluated — distinct from the `applies: true`

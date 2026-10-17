@@ -1,3 +1,4 @@
+import path from "node:path";
 /**
  * work-status-events — event-log formatting for the `/work-status` snapshot.
  *
@@ -9,6 +10,7 @@
  * registration stay in `work-status.ts`.
  */
 
+import { crashTreeSentence } from "./work-develop-crash.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 
 export function fmtElapsed(ms: number): string {
@@ -72,6 +74,26 @@ export function fmtRecentEvents(log: WorkEvent[], n: number): string[] {
   return log.slice(from).map((e, i) => fmtEvent(e, rounds[from + i]));
 }
 
+/** #1403 — what a crashed pass left in its worktree, in the status line's
+ *  compact register. Shares `crashTreeSentence` with the cap evidence and the
+ *  handoff explanation so the same crash is described the same way wherever an
+ *  operator reads it; only the dirty case is shortened here, to the first
+ *  three paths, because this is a one-line log. */
+function crashTreeText(
+  crash: NonNullable<Extract<WorkEvent, { kind: "branch-completed" }>["crash"]>,
+): string {
+  const paths = crash.paths ?? [];
+  return crashTreeSentence({
+    id: "",
+    tree: crash.tree,
+    paths:
+      crash.tree === "dirty" && paths.length > 3
+        ? [...paths.slice(0, 3), `+${paths.length - 3} more`]
+        : paths,
+    reason: "",
+  });
+}
+
 /** Format an event for the "last N" trailing log. Compact one-liner per event. */
 export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
   switch (e.kind) {
@@ -133,10 +155,21 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       return `  merged · PR #${e.prNumber}${e.mergedByOtherDuring ? ` · by someone else during ${e.mergedByOtherDuring}` : ""}`;
     case "lens-residuals-post-failed":
       return `  lens-residuals-post-failed · round ${e.round}${e.prNumber ? ` · PR #${e.prNumber}` : ""} · issue fallback ${e.issueFallback}${e.detail ? ` · ${e.detail.slice(0, 80)}` : ""}`;
+    case "lens-residuals-posted":
+      return `  lens-residuals-posted · round ${e.round}${e.prNumber ? ` · PR #${e.prNumber}` : ""} · ${e.target} · patch ${e.patchId.slice(0, 12)}`;
     case "branches-fanned-out":
       return `  branches-fanned-out · ${e.step} · ${e.workstreams.length} branches: ${e.workstreams.join(", ")}`;
     case "branch-completed":
-      return `  branch-completed · ${e.step}[${e.workstreamId}] · ${e.ok ? "ok" : "FAIL"} · ${fmtElapsed(e.ms)}${e.error ? ` · ${e.error.slice(0, 40)}` : ""}`;
+      // #1403 — a dead child must not render as an ordinary FAIL: the line is
+      // the only place the operator sees, without opening the state file, that
+      // this pass's engine stopped and what it left uncommitted.
+      return e.crash
+        ? `  branch-completed · ${e.step}[${e.workstreamId}] · CRASHED (engine stopped${
+            e.crash.exitCode === null || e.crash.exitCode === undefined
+              ? ""
+              : `, exit ${e.crash.exitCode}`
+          }) · ${crashTreeText(e.crash)}`
+        : `  branch-completed · ${e.step}[${e.workstreamId}] · ${e.ok ? "ok" : "FAIL"} · ${fmtElapsed(e.ms)}${e.error ? ` · ${e.error.slice(0, 40)}` : ""}`;
     case "branches-converged": {
       const okN = e.verdicts.filter((v) => v.ok).length;
       return `  branches-converged · ${e.step} · ${okN}/${e.verdicts.length} ok`;
@@ -158,6 +191,11 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       return `  verify-full-status · ${e.status}${e.recovered ? " (recovered)" : ""}${e.ms ? ` · ${fmtElapsed(e.ms)}` : ""}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
     case "verify-flake-recovered":
       return `  verify-flake-recovered · ${e.step}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
+    case "consolidated-verify-skipped":
+      // #1240 — the visible record of a gate that did not re-run a check it
+      // proved was already run. Names the tree and the worktree so the claim
+      // is checkable, not just asserted.
+      return `  consolidated-verify-skipped · ${e.step} · tree ${e.treeHash.slice(0, 8)} already passed in ${path.basename(e.worktree)}`;
     case "widening-scan":
       return `  widening-scan · ${e.findings.length} finding(s)`;
     case "memory-write":
@@ -188,6 +226,13 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // S4a (#1162) — the interrupt record; the cycle resumes on re-entry.
       return `  interrupted · ${e.reason.slice(0, 80)}`;
     case "cycle-interrupted":
-      return `  cycle-interrupted · ${e.step} · session shutdown (${e.reason})${e.branch ? ` · ${e.branch}${e.headSha ? ` @ ${e.headSha.slice(0, 8)}` : ""}` : ""} · ${e.resumable ? "resumable" : "NOT resumable"}`;
+      // #1247 — the origin names what closed the session (a signal, a dead
+      // stdin, or nothing observable). Optional: a state file written before
+      // #1247 has no `origin`, and this renders one byte shorter for it.
+      // Tested with `typeof`, not truthiness: `origin` arrives from a state
+      // file on disk, and a falsy-but-present value (an empty string a hand
+      // edit left) is a corrupt record the validator reports, not an absent
+      // field to render around.
+      return `  cycle-interrupted · ${e.step} · session shutdown (${e.reason}${typeof e.origin === "string" ? `, origin: ${e.origin}` : ""})${e.branch ? ` · ${e.branch}${e.headSha ? ` @ ${e.headSha.slice(0, 8)}` : ""}` : ""} · ${e.resumable ? "resumable" : "NOT resumable"}`;
   }
 }

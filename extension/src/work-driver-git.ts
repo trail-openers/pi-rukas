@@ -11,6 +11,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execp } from "./exec.ts";
+// #1387 — the mainline lookup lives in the neutral leaf `mainline.ts` so the
+// review ledger path does not import this module for it. Imported (not only
+// re-exported) because `resolvedTheMainline` below calls it; every driver
+// caller and smoke test still resolves the symbols from this module unchanged.
+import { detectMainline, resolveMainline } from "./mainline.ts";
+export { type MainlineResult, detectMainline, resolveMainline } from "./mainline.ts";
 import { trace } from "./trace.ts";
 import { runNetGit } from "./work-driver-net-git.ts";
 import { restoreRefProblem, restoreRootToRef } from "./work-driver-restore.ts";
@@ -46,104 +52,6 @@ export type VerifyExecFn = (
 // Compile-time seam check: the shared executor must satisfy VerifyExecFn, so an
 // argv-aware executor can never be swapped for one that silently drops `argv`.
 void (execp satisfies VerifyExecFn);
-
-/**
- * Resolve the mainline branch name for the current repo (e.g. "main",
- * "master").
- *
- * Two-step resolution:
- *   1. `git symbolic-ref --short refs/remotes/origin/HEAD` — fast, no
- *      network, returns "origin/main" → stripped to "main" in JS.
- *   2. Fallback: the forge adapter's `repoSettings()` (the network call
- *      behind the old `gh repo view --json defaultBranchRef`), used when
- *      origin/HEAD is absent (some fetch configurations don't set it).
- *
- * Returns `{ branch: string }` on success, `{ ok: false, reason }` on
- * failure. The caller (detectMainline) is designed for use both from
- * verifyStepOutcome (via injected ctx.verifyExecFn) and from
- * restoreCheckout (injected at call site).
- *
- * NOTE on shell safety: `git symbolic-ref` takes a fixed ref with no
- * dynamic arguments. The VerifyExecFn takes a shell string; any future
- * caller that wants to pass dynamic branch/repo names must not interpolate
- * them raw — JSON.stringify for quoting or prefer execFile-style arrays.
- */
-export async function detectMainline(
-  repoRoot: string,
-  execFn: VerifyExecFn,
-): Promise<{ branch: string } | { ok: false; reason: string }> {
-  // 1. git symbolic-ref — no network, instant.
-  try {
-    const { stdout } = await execFn("git symbolic-ref --short refs/remotes/origin/HEAD", {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    const ref = stdout.trim();
-    if (ref) {
-      // Returns "origin/main" — strip the leading origin/.
-      const branch = ref.startsWith("origin/") ? ref.slice(7) : ref;
-      if (branch) return { branch };
-    }
-  } catch {
-    // refs/remotes/origin/HEAD may be absent; fall through.
-  }
-
-  // 2. Fallback: `gh repo view` — the raw-JSON call is kept rather than
-  //    routed through the forge adapter on purpose: the tests inject a
-  //    `git symbolic-ref`-answering fake that answers nothing else, and
-  //    the forge's `repoSettings()` command shape is not what those fakes
-  //    expect. The adapter is the S4 seam for PR operations; this
-  //    mainline probe is a git-side call with a `gh` fallback.
-  try {
-    const { stdout } = await execFn(
-      "gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'",
-      { cwd: repoRoot, maxBuffer: 64 * 1024 },
-    );
-    const branch = stdout.trim();
-    if (branch) return { branch };
-  } catch {
-    // Both methods failed.
-  }
-
-  return {
-    ok: false,
-    reason: "could not resolve mainline branch: both git symbolic-ref and gh repo view failed",
-  };
-}
-
-/**
- * #1134 follow-up — detectMainline as a total function for its callers.
- *
- * A caller that reads `"branch" in mainline` on a value that is undefined, or
- * on an unexpected shape, gets a TypeError rather than a verdict, and a throw
- * from the detector escapes the gate that asked. Both become the same
- * unresolved result a failed detection produces, carrying the reason.
- */
-export async function resolveMainline(
-  repoRoot: string,
-  execFn: VerifyExecFn,
-  detect: typeof detectMainline = detectMainline,
-): Promise<{ branch: string } | { ok: false; reason: string }> {
-  let m: unknown;
-  try {
-    m = await detect(repoRoot, execFn);
-  } catch (err) {
-    const msg = ((err as Error)?.message ?? String(err)).slice(0, 200);
-    return { ok: false, reason: `mainline detection threw: ${msg}` };
-  }
-  if (m && typeof m === "object") {
-    if ("branch" in m && typeof m.branch === "string" && m.branch.length > 0) {
-      return { branch: m.branch };
-    }
-    if ("reason" in m && typeof m.reason === "string" && m.reason.length > 0) {
-      return { ok: false, reason: m.reason };
-    }
-  }
-  return {
-    ok: false,
-    reason: "mainline detection returned an unexpected result",
-  };
-}
 
 /**
  * Restore the operator's checkout after a merge.
@@ -189,8 +97,23 @@ export async function restoreCheckout(opts: {
   execFn: VerifyExecFn;
   /** The cycle-start ref (#1093); absent for pre-#1093 state. */
   startRef?: string;
+  /**
+   * #1362 — the cycle's `.pi/dirty-root-exempt` list and its cycle-start
+   * baseline. Together they decide which untracked files the restore claim
+   * names; the built-in scaffolding exclusions are unchanged.
+   */
+  dirtyRootExempt?: readonly string[];
+  dirtyRootExemptBaseline?: readonly string[];
 }): Promise<string[]> {
-  const { repoRoot, mainline, mergedBranch, execFn, startRef } = opts;
+  const {
+    repoRoot,
+    mainline,
+    mergedBranch,
+    execFn,
+    startRef,
+    dirtyRootExempt,
+    dirtyRootExemptBaseline,
+  } = opts;
   const notes: string[] = [];
 
   // 1. Fetch origin --prune. Every git command here is argv-form (#1093): a
@@ -228,6 +151,8 @@ export async function restoreCheckout(opts: {
     repoRoot,
     ref: target,
     label: "merged",
+    dirtyRootExempt,
+    dirtyRootExemptBaseline,
   });
   if (!restore.checkedOut) {
     notes.push(`repoRoot was NOT restored to ${target}: ${restore.detail ?? "unknown error"}`);
@@ -442,5 +367,5 @@ export async function resolvedTheMainline(
 ): Promise<boolean> {
   if (!branch) return false;
   const mainline = await detectMainline(repoRoot, execFn);
-  return "branch" in mainline && mainline.branch === branch;
+  return mainline.ok && mainline.branch === branch;
 }

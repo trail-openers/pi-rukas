@@ -10,6 +10,7 @@ import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainConsolidation } from "./work-driver-explain-consolidation.ts";
 import { explainDetectCaps } from "./work-driver-explain-detect-caps.ts";
+import { explainDevelopCrash } from "./work-driver-explain-develop-crash.ts";
 import { explainLens } from "./work-driver-explain-lens.ts";
 import { adversarialFailureCause, explainOther } from "./work-driver-explain-other.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
@@ -160,6 +161,10 @@ export function explainCap(
       const paths = hit?.evidence ?? "(no detail recorded)";
       return `the branch step found uncommitted work at the repo root BEFORE any development dispatch: ${paths}. This is residue from a previous cycle or the operator's own in-progress work — NOT a defect in this cycle's diff. The driver preserved it (nothing was deleted or stashed) and halted before paying for a develop dispatch that would only fail at the verification gate roughly 50 minutes later. Inspect the paths (\`git status\` at the repo root), clear them (commit, move, or add to .gitignore), and re-run the cycle.`;
     }
+    case "worktree-listing-unreadable": {
+      const hit = lastCapHit(state, "worktree-listing-unreadable");
+      return `the branch step's same-issue residue pass could not read \`git worktree list\` (${(hit?.evidence ?? "no detail recorded").slice(0, 300)}). The listing is bounded, so this is a git that hung or failed — not an empty list. The driver halted rather than report "nothing to clean" while a same-issue worktree it could not see might hold uncommitted work. Clear whatever is blocking git (a stale \`.git/worktrees\` lock, an I/O wait), then re-run the cycle.`;
+    }
     case "cross-group-conflict": {
       const hit = lastCapHit(state, "cross-group-conflict");
       const ev = hit?.evidence ?? "";
@@ -247,6 +252,14 @@ export function explainCap(
       return explainConsolidation(cap, state);
     case "lens-fix-not-integrated":
       return explainLens(cap, state);
+    case "draft-rearm-failed":
+      // #1398 — the draft re-arm's cap. Its authored sentence lives in
+      // explainLens with the rest of the lens family; WITHOUT this case the
+      // switch fell through to the generic `step failed: draft-rearm-failed`
+      // fallback and the operator lost the one line that names the draft
+      // command to run by hand. The switch is not compile-exhaustive, so
+      // test-work-driver-explaincap.ts is the canary for this case.
+      return explainLens(cap, state);
     case "lens-fix-reposition":
       // #981 — same lens family as the other two caps above; the case
       // bodies live in explainLens (the file-size split), so this delegates
@@ -287,6 +300,9 @@ export function explainCap(
     }
     case "fix-pass-park":
       return explainNoVerdictCap(cap, state) as string;
+    case "develop-child-crash":
+      // #1403 — the dead-child sentence lives with its own family module.
+      return explainDevelopCrash(state);
     case "deadline": {
       // #1238 — the caller-set whole-cycle deadline: at a step boundary the
       // deadline was within the handoff grace, so no new step started and

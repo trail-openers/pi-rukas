@@ -298,10 +298,7 @@ export async function runExplore(
       });
     }
     const finalSpec = resolved
-      ? finaliseSpecVerdict(resolved.spec, primarySettled.value.stdout, {
-          repoRoot: ctx.repoRoot,
-          issues: ctx.issues ?? [ctx.issue],
-        })
+      ? finaliseSpecVerdict(resolved.spec, primarySettled.value.stdout)
       : undefined;
     if (resolved !== undefined && finalSpec !== undefined) {
       next = {
