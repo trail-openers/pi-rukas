@@ -10,7 +10,13 @@
  * The arms are exported for the guard's dispatch table only; nothing else composes them.
  */
 
-import { baseName, isProtectedToken, tokensOf, unquote } from "./review-accept-command.ts";
+import {
+  PROTECTED_STEMS,
+  baseName,
+  isProtectedToken,
+  tokensOf,
+  unquote,
+} from "./review-accept-command.ts";
 /** A JS runtime: its invocation executes a program, so it is never a read tool.
  * Exported because the guard's pre-checks ask the same question of the whole command. */
 export const RUNTIME = /^(?:bun|bunx|node|npx|tsx|ts-node|deno)$/;
@@ -30,11 +36,21 @@ const REPO_LOCATION_FLAGS = ["-c", "--git-dir", "--work-tree", "--exec-path"];
  * (`armForgeRead` maps `unquote` over the segment before matching the subcommand, so
  * `hasFlag` would be looking at the quote characters rather than the flag). */
 const REPO_LOCATION_FLAG = /^(-c|--git-dir|--work-tree|--exec-path)(?:=|\s|$)/;
+/** Flags that hand the tool a PROGRAM to run on each input. `rg --pre=CMD` pipes every
+ * matched file through CMD, GNU `find -exec` runs a command per hit, and a
+ * `--command`/`--exec` spelling is a program argument on any tool that has one. Each is
+ * refused by whole word and `=`-attached; the `sed`/`awk` that used to sit in READ_TOOLS
+ * are gone entirely rather than flagged, since their EXECUTE verb (`-e id` for sed, the
+ * `system()` builtin for awk) is a flag no list would name completely. */
+const EXEC_FLAGS = ["--pre", "--pre-glob", "--exec", "-exec", "--command"];
 /** The verbs arm A1 admits: reads that print to stdout and take no output argument. */
 const GIT_READ_VERBS = ["status", "log", "diff", "show", "blame"];
 /** Read tools arm A8 admits, each for arguments naming nothing protected. `bash` is
  * deliberately absent: it EXECUTES its operand, so it appears only in arm A5, which
- * judges every argument. A read arm that admitted `bash` would admit any script. */
+ * judges every argument. A read arm that admitted `bash` would admit any script — and
+ * `sed` and `awk` went the same way in the #1125 fix round, for the same reason: a tool
+ * that can run a shell (`awk BEGIN{system("id")}`, GNU `sed -n '1e id'`) or write a file
+ * (`sed -n 'w /tmp/x'`) is not a read, whatever its flags are checked for. */
 const READ_TOOLS = new Set([
   "ls",
   "cat",
@@ -43,8 +59,6 @@ const READ_TOOLS = new Set([
   "wc",
   "grep",
   "rg",
-  "sed",
-  "awk",
   "file",
   "stat",
   "which",
@@ -204,23 +218,29 @@ export function armBuild(w: string[]): boolean {
 }
 
 /**
- * A7: `git commit -m "<prose>"`, judged on the words with their quotes intact. The
- * message must be QUOTED — `-m` beside a bare word is an operand — and a protected
- * word may appear ONLY inside it: a name standing outside the quotes is a path operand
- * and has no arm. No `-F/--file` may name a file.
+ * A7: `git commit -m "<prose>"`, judged on the words with their quotes intact, with
+ * `git` and then `commit` at words 0 and 1 — a prefix word (`sudo git commit …`) puts a
+ * program the arms never named in front of the commit. The message flag must be UNQUOTED
+ * and the message itself QUOTED: `commit "-m" "m <store>"` excuses only the word after
+ * the flag the arm actually spells, so a quoted `-m` is a pathspec and the prose excuse
+ * never opens. A protected word standing outside the real message is a path operand.
+ * No `-F/--file` may name a file.
  */
 export function armCommit(w: string[]): boolean {
+  if (unquote(w[0] ?? "") !== "git" || unquote(w[1] ?? "") !== "commit") return false;
   const words = w.map(unquote);
-  const at = words.findIndex((a) => a === "git" || a === "commit");
-  if (at < 0 || words[at] !== "git") return false;
-  if (at > 1 || words[at + 1] !== "commit") return false;
-  const rest = w.slice(at + 2);
+  const rest = w.slice(2);
   if (hasFlag(rest.map(unquote), "-f", "--file")) return false;
   // The same ban every git read arm carries: `-c` sets a config (a hook or an alias the
   // commit then runs) and the repo-location flags move the repository being committed to.
   if (hasFlag(rest.map(unquote), ...WRITE_FLAGS, ...REPO_LOCATION_FLAGS)) return false;
   const message = rest.findIndex(
-    (a, n) => /^(-m|--message)$/.test(unquote(a)) && /["']/.test(rest[n + 1] ?? ""),
+    (a, n) =>
+      // The flag spelled WITHOUT quotes (a quoted `"-m"` is an operand, not the flag) and
+      // the following word QUOTED (a bare word beside `-m` is an operand, not a message).
+      (a === "-m" || a === "--message") &&
+      !/["']/.test(rest[n] ?? "") &&
+      /["']/.test(rest[n + 1] ?? ""),
   );
   if (message < 0) return false;
   // The quoted message is prose and stays admissible; every OTHER word the shell hands
@@ -230,13 +250,21 @@ export function armCommit(w: string[]): boolean {
   return !rest.some((a, n) => !excused.has(n) && isProtectedToken(a));
 }
 
-/** A8: a read tool whose arguments name nothing protected, with no write flag. */
+/**
+ * A8: a read tool whose arguments name nothing protected, with no write flag and no
+ * exec-capable flag. The tool is matched at word 0 — `sudo cat <store>` and
+ * `time cat <store>` put a program the arms never named in front of the read, so the
+ * arm refuses rather than guess what the prefix does.
+ */
 export function armRead(w: string[]): boolean {
   const head = w[0] ?? "";
   if (!READ_TOOLS.has(head)) return false;
-  if (head === "sed" && w[1] !== "-n") return false;
-  if (hasFlag(w.map(unquote), ...WRITE_FLAGS, ...EVAL_FLAGS)) return false;
-  // Asked on the raw word, quotes INCLUDED: `cat "review-findings.json"` is refused like
-  // the bare spelling, because the shell hands the name to `cat` either way.
-  return !w.slice(1).some(isProtectedToken);
+  const args = w.slice(1);
+  if (hasFlag(args.map(unquote), ...WRITE_FLAGS, ...EVAL_FLAGS, ...EXEC_FLAGS)) return false;
+  // A store name standing inside a quoted argument is still a NAME the tool receives
+  // (`grep pat "x<store>"` hides it in a pattern, `cat "<store>"` in a path), so a quoted
+  // word is asked too — and the word is cut at its QUOTE CHARACTERS first, so a name the
+  // quotes delimit reads as a word of its own. A name merely EMBEDDED in a longer word
+  // (`echo "it's a normal message about <store>"`) is prose and stays admitted.
+  return !args.some(isProtectedToken);
 }

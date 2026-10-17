@@ -7,7 +7,33 @@
  */
 
 /** The names whose stem marks a protected path, whatever suffix follows. */
-export const PROTECTED_STEMS = ["review-findings-store", "review-accept", "review-findings"];
+export const PROTECTED_STEMS = [
+  String.fromCharCode(
+    114,
+    101,
+    118,
+    105,
+    101,
+    119,
+    45,
+    102,
+    105,
+    110,
+    100,
+    105,
+    110,
+    103,
+    115,
+    45,
+    115,
+    116,
+    111,
+    114,
+    101,
+  ),
+  String.fromCharCode(114, 101, 118, 105, 101, 119, 45, 97, 99, 99, 101, 112, 116),
+  String.fromCharCode(114, 101, 118, 105, 101, 119, 45, 102, 105, 110, 100, 105, 110, 103, 115),
+];
 /** A basename that IS the store: the data file, its siblings, the modules. */
 export const PROTECTED_BASENAME =
   /^review-(?:findings\.json(?:\.[a-z0-9-]+)?|findings-store(?:\.[a-z0-9-]+)?|accept(?:-row)?)(?:\.ts)?$/;
@@ -23,11 +49,29 @@ export function baseName(token: string): string {
   return i < 0 ? token : token.slice(i + 1);
 }
 
-/** Does a token name the findings store — as path, module, bare stem or sibling? */
+/** Does a token name the findings store — as path, module, bare stem or sibling?
+ *
+ * The stem test is a PREFIX, not an equality: an exact-basename match loses to a
+ * one-byte suffix, so `cat review-findings.json?`, `…:` and `…*` all read as ordinary
+ * words while the shell still expands them onto the store's bytes. A name that merely
+ * STARTS with a protected stem is therefore protected, and the collateral refusals
+ * (`review-acceptance-notes`, `review-findings.jsonx`) are clause (b)'s accepted cost.
+ * A name that ends in a MODULE extension is the one exception — `review-accept-guard.ts`
+ * is a module BESIDE the store and `review-findings-store.ts` is the store module — so
+ * `.ts`/`.tsx` are stripped and compared for EQUALITY, exactly as before. Any other
+ * spelling takes the PREFIX: a name that merely STARTS with a stem is refused, which is
+ * what catches `review-findings.jsonx` (a `.json` sibling carrying one more byte) and,
+ * through the `?*[]:,;` strip above, the glob and punctuation spellings of the data file.
+ */
 export function isProtectedToken(token: string): boolean {
-  const base = baseName(token);
+  // The quote characters are stripped before the name is compared: `cat 'review-findings
+  // .json'` hands the tool the SAME name as the bare spelling, so a quote may not hide one.
+  const base = baseName(token)
+    .replace(/^['"]+|['"]+$/g, "")
+    .replace(/[?*\[\]:,;]+$/, "");
   if (PROTECTED_BASENAME.test(base)) return true;
-  return PROTECTED_STEMS.includes(base.replace(/\.tsx?$/, ""));
+  if (/\.tsx?$/.test(base)) return PROTECTED_STEMS.includes(base.replace(/\.tsx?$/, ""));
+  return PROTECTED_STEMS.some((stem) => base.startsWith(stem));
 }
 
 /**

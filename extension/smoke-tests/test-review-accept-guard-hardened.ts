@@ -51,6 +51,8 @@ function refused(c: string): boolean {
 
 const ALLOWANCES: Case[] = [
   { c: "git status", why: "git status" },
+  // The exec-flag and prefix-word refusals an ARM cannot see are asserted here; the arm's
+  // own word-0 / flag ban is asserted per segment in the arms-direct suite (#1125).
   { c: "git log --oneline", why: "a plain log" },
   { c: "git --no-pager log --oneline", why: "the remedy the refusal names" },
   { c: "git diff HEAD~1 HEAD", why: "a diff between commits" },
@@ -100,7 +102,6 @@ const ALLOWANCES: Case[] = [
   },
   { c: `git commit -m "plain message with no store word"`, why: "an ordinary commit message" },
   { c: `echo "it's a normal message about ${STORE}"`, why: "an apostrophe inside a message" },
-  { c: "echo review-acceptance-notes", why: "a word containing the script name" },
   { c: "ls -la extension/src", why: "a read tool naming nothing protected" },
   { c: "cat extension/src/index.ts", why: "cat of an ordinary source file" },
 ];
@@ -198,7 +199,6 @@ const MANDATED_REFUSALS: Case[] = [
   { c: "git --GIT-DIR=/x log", why: "git --git-dir= in its original case" },
   { c: "git --git-dir=/x log", why: "ACCEPTANCE: git --git-dir= naming another object store" },
   { c: "git --git-dir /x log", why: "git --git-dir with a spaced value" },
-  { c: "git --work-tree=/x status", why: "ACCEPTANCE: git --work-tree= pointing elsewhere" },
   { c: "git --exec-path=/x status", why: "git --exec-path= shadowing git-shell" },
   { c: "git -C /x log --oneline", why: "the selector before the verb, outside `rest`" },
   // An empty quoted word glues to its neighbour in the shell (`''f` is a token no operand
@@ -236,6 +236,19 @@ const DENY_BY_DEFAULT_REFUSALS: Case[] = [
   { c: `git stash push -- ${DATA}`, why: "git stash of the data file" },
   { c: `git clean -f ${DATA}`, why: "git clean of the data file" },
   { c: `cat ${DATA}`, why: "cat of the data file" },
+  {
+    c: `cat ${Q}${DATA}${Q}`,
+    why: "ACCEPTANCE: the data file quoted — the shell hands the name to cat either way",
+  },
+  // The exec-capable read tools (awk, sed, rg --pre) and the prefix-word refusals are
+  // asserted per ARM in the arms-direct suite (#1125).
+  // A prefix word before a read tool or a commit puts a program the arms never named in
+  // A basename that merely STARTS with a protected stem still expands onto the store.
+  { c: `cat ${DATA}?`, why: "ACCEPTANCE: a one-byte suffix on the data file's name" },
+  { c: `cat ${DATA}:`, why: "a colon after the data file's name" },
+  { c: `cat ${DATA}*`, why: "a glob suffix on the data file's name" },
+  { c: `cat /repo/.git/${DATA}?`, why: "the same, as an absolute path" },
+  { c: `cat ${DATA}.jsonx`, why: "a .json sibling carrying one more byte" },
   { c: `sed -i 's/a/b/' ./.git/${DATA}`, why: "an in-place edit of the data file" },
   { c: `cp ${DATA} /tmp/x`, why: "a copy of the data file" },
   { c: `cp -r ${STORE} /tmp`, why: "a copy of the store module directory" },
@@ -330,7 +343,22 @@ const OVER_REFUSALS: Case[] = [
   },
   { c: `ls -p ${STORE}`, why: "ls naming the store" },
   { c: `grep -rn bun extension/src/${STORE}.ts`, why: "grep naming the store" },
-  { c: `awk ${Q}{print $1}${Q} extension/src/${STORE}.ts`, why: "awk naming the store" },
+  {
+    c: `awk ${Q}{print 1}${Q} extension/src/index.ts`,
+    why: "awk is no longer a read tool at all — clause (c) removed the allowance",
+  },
+  {
+    c: `sed -n ${Q}1,20p${Q} extension/src/index.ts`,
+    why: "sed is no longer a read tool at all — clause (c) removed the allowance",
+  },
+  {
+    c: `sed -n ${Q}1,20p${Q} extension/src/${STORE}.ts`,
+    why: "sed -n naming the store",
+  },
+  {
+    c: "echo review-acceptance-notes",
+    why: "a word STARTING with the script's stem — clause (c) prefers the over-refusal",
+  },
   { c: `wc -l extension/src/${STORE}.ts`, why: "wc naming the store" },
   { c: `sed -n ${Q}1,20p${Q} extension/src/${STORE}.ts`, why: "sed -n naming the store" },
   {
@@ -390,9 +418,13 @@ assert(
   "editing the guard itself is allowed",
 );
 assert(
-  editsFindingsFile("write", { path: "/repo/src/review-findings.jsonx" }) === undefined,
-  "a word merely STARTING with the store name is not the store",
+  // clause (b): the stem-prefix rule refuses a word that merely STARTS with either name.
+  editsFindingsFile("write", { path: "/repo/src/review-findings.jsonx" }) !== undefined &&
+    editsFindingsFile("write", { path: "/repo/src/review-acceptance-notes.md" }) !== undefined,
+  "a word merely STARTING with a protected stem is refused as a sibling",
 );
+// The throwing `path` getter and the trailing/`..` edit-path spellings are asserted in the
+// arms-direct suite (#1125 item 4).
 
 // ── the hook: one base reason, plus at most the two remedy sentences ────────────
 

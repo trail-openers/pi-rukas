@@ -10,7 +10,9 @@
  * let through.
  */
 
-import { armCommit, armForgeRead, armGitRead } from "../src/review-accept-arms.ts";
+import { armCommit, armForgeRead, armGitRead, armRead } from "../src/review-accept-arms.ts";
+import { isProtectedToken } from "../src/review-accept-command.ts";
+import { editsFindingsFile } from "../src/review-accept-guard.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -74,5 +76,94 @@ for (const c of ['git commit -m "x" -c y.z=1', 'git commit -m "x" --git-dir=/x']
   assert(!armCommit(words(c)), `arm A7 refuses the write-capable flag — ${c}`);
 for (const c of ['git commit -m "plain message"', 'git commit -m "fix: guard"'])
   assert(armCommit(words(c)), `arm A7 still admits the plain commit — ${c}`);
+
+/**
+ * A7 refuses a PREFIX word before `git` (the arm requires `git` at word 0) and excuses
+ * prose only after an UNQUOTED `-m`: `commit "-m" "m <store>"` quotes the FLAG, so the
+ * prose position never opens and the store name is asked as a path operand.
+ */
+for (const c of [
+  'sudo git commit -m "x review-findings.json"',
+  'time git commit -m "x review-findings.json"',
+  'git commit "-m" "m review-findings.json"',
+  'git commit "--message" "m review-findings.json"',
+])
+  assert(!armCommit(words(c)), `arm A7 refuses the prefix word / quoted -m — ${c}`);
+
+/**
+ * A8 refuses an exec-capable flag on a read tool: `rg --pre=CMD` pipes every matched
+ * file through CMD, so the "read" runs a program no arm named. `sed` and `awk` are not
+ * read tools at all — their execute verb is not a flag any list names — so the arm
+ * refuses them at word 0 whatever their arguments are.
+ */
+for (const c of [
+  "rg --pre=/bin/sh x",
+  "rg --pre cat foo",
+  "rg --pre-glob *.ts foo",
+  "grep --command=x pat f",
+  "find . -exec id ; ",
+  "find . --exec id",
+  'awk BEGIN{system("id")}',
+  "sed -n 1e id x",
+  "sed -n w /tmp/x f",
+  "sed -n 1,20p extension/src/index.ts",
+])
+  assert(!armRead(words(c)), `arm A8 refuses the exec-capable flag / tool — ${c}`);
+for (const c of ["rg foo src/a.ts", "cat extension/src/index.ts", "grep pat src/a.ts"])
+  assert(armRead(words(c)), `arm A8 still admits the plain read — ${c}`);
+
+/**
+ * The protected-name matcher asked directly: an exact-basename match loses to a
+ * one-byte suffix, so each spelling below is a store name the shell expands onto the
+ * store's bytes. The last two are clause (b)'s accepted over-refusals — a word that
+ * merely STARTS with a stem is refused, which is the price of the prefix rule.
+ */
+for (const t of [
+  "review-findings.json?",
+  "review-findings.json:",
+  "review-findings.json*",
+  "review-findings.json[",
+  "review-findings.json,",
+  "review-accept",
+  "review-acceptance-notes",
+  "review-findings.jsonx",
+  "/repo/.git/review-findings.json?",
+])
+  assert(isProtectedToken(t), `matcher: the stem prefix refuses — ${t}`);
+for (const t of ["index.ts", "review-accept-guard.ts", "notes.md", "/repo/src/a.ts"]) {
+  assert(
+    !isProtectedToken(t.split("/").pop() ?? t),
+    `matcher: an ordinary basename is not protected — ${t}`,
+  );
+}
+
+/**
+ * The edit-path checks (#1125 item 4): the target is normalised and asked SEGMENT-wise, so
+ * a trailing `/`, a `/.` or a `../..` walk out of the store's directory cannot present the
+ * store as some other file; and a `path` property that THROWS is refused, not left to
+ * escape the guard's own scan.
+ */
+for (const p of [
+  "/repo/.git/review-findings.json/",
+  "/repo/.git/review-findings.json/.",
+  "/repo/.git/review-findings.json/../../src/index.ts",
+])
+  assert(
+    editsFindingsFile("write", { path: p }) !== undefined,
+    `edit: a trailing or walking path still names the store — ${p}`,
+  );
+for (const p of ["/repo/src/index.ts", "/repo/extension/src/a.ts"])
+  assert(
+    editsFindingsFile("write", { path: p }) === undefined,
+    `edit: an ordinary path stays allowed — ${p}`,
+  );
+assert(
+  editsFindingsFile("edit", {
+    get path() {
+      throw new Error("x");
+    },
+  }) !== undefined,
+  "edit: a throwing path getter is refused and does not throw (#1125)",
+);
 
 process.exit(exit);
