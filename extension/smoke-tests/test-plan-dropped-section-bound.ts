@@ -24,7 +24,7 @@
  *    DROPPED_SECTION_MAX_CHARS` is asserted EXACTLY, no slack constant.
  * 2. The omission line promised the full list "in the run transcripts
  *    (/runs)" — false, because `/runs` truncates tool args and prunes after 5
- *    days. → the pipeline writes the full list to `.pi/plan-dropped/` and the
+ *    days. → the pipeline writes the full list to `.pi/work-state/plan-dropped/` and the
  *    line names that file (or the reopened open-points section, which already
  *    carries the text).
  * 3. The cap is part of the DRAFTED body, not of BODY_BUDGET's 4,096-char

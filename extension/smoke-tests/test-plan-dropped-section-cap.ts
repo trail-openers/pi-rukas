@@ -23,7 +23,8 @@
  *    legal `settled` line, 5,000 items plus the widest pointer).
  * 2. The omission line promised the full list "in the run transcripts
  *    (/runs)" — false, because `/runs` truncates tool args and prunes after 5
- *    days. The pipeline now writes the full list under `.pi/plan-dropped/` and
+ *    days. The pipeline now writes the full list under
+ *    `.pi/work-state/plan-dropped/` and
  *    the line names that file, or the reopened open-points section when that
  *    already carries the text; a pointer naming nothing is the honest fallback.
  * 3. The cap is part of the DRAFTED body, not a share of BODY_BUDGET's 4,096-char
@@ -374,7 +375,7 @@ import { assert, DROPPED_DOMINATED_BODY, finish } from "./plan-dropped-harness.t
     readFileSync(path.resolve(import.meta.dirname, "..", "src", f), "utf8");
   assert(
     /export const DROPPED_ARTIFACT = "[^"]*";/.test(read("plan-dropped-budget.ts")) &&
-      /export const DROPPED_ARTIFACT_DIR = "\.pi\/plan-dropped";/.test(
+      /export const DROPPED_ARTIFACT_DIR = "\.pi\/work-state\/plan-dropped";/.test(
         read("plan-dropped-budget.ts"),
       ),
     "canary: the full-list location is exported constants, not inline prose",
@@ -398,6 +399,11 @@ import { assert, DROPPED_DOMINATED_BODY, finish } from "./plan-dropped-harness.t
       read("plan-driver.ts").includes("finalizeDroppedDisclosure") &&
       read("plan-dropped-artifact.ts").includes("writeFile"),
     "canary: the pipeline actually writes the durable list it points at",
+  );
+  assert(
+    read("plan-dropped-artifact.ts").includes("ensureGitExclude") &&
+      !read("plan-dropped-budget.ts").includes('DROPPED_ARTIFACT_DIR = ".pi/plan-dropped"'),
+    "canary: the artifact directory is excluded via .git/info/exclude and no longer sits at a bare .pi/ sibling (#1451)",
   );
   assert(
     read("plan-dropped-section.ts").includes("DROP_CLAUSE"),

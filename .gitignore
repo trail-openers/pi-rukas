@@ -24,14 +24,14 @@ dist/prompts/
 .pi/permissions.json
 .pi/decisions.json
 
-# /work driver workflow state (per-issue, per-project)
+# /work driver workflow state (per-issue, per-project), and the plan driver's
+# dropped-items artifacts under .pi/work-state/plan-dropped/ (#1383) — the
+# full list behind the bounded `## Dropped investigation items` section, which
+# the filed spec names. Durable per-clone operator state, never committed.
+# In a project that has no .gitignore entry for it, the same tree is kept out
+# of `git status` by the per-clone .git/info/exclude entry the harness writes
+# (work-driver-git-exclude.ts).
 .pi/work-state/
-
-# #1383: the full dropped-items list behind the bounded
-# `## Dropped investigation items` section. Per-clone operator artefact the plan
-# driver writes; the filed spec names the path, so it is durable but never
-# committed.
-.pi/plan-dropped/
 
 # Research artefacts from workflow runs — local working material, not shipped.
 outputs/
