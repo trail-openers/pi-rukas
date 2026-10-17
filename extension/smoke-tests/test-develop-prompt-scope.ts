@@ -18,7 +18,10 @@
  */
 
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
-import { SUITE_TIMEOUT_SECONDS, developTestScopeLine } from "../src/work-driver-verify-fast.ts";
+import {
+  assertDevelopPromptTestScope,
+  assertSuiteBoundDerivation,
+} from "./lib/developer-test-scope.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -250,10 +253,7 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
     prompt2.includes("cargo check --quiet"),
     "#751: a different resolved verify command yields a different prompt",
   );
-  assert(
-    !prompt2.includes("bun run check"),
-    "#751: the first command is not carried over",
-  );
+  assert(!prompt2.includes("bun run check"), "#751: the first command is not carried over");
   assert(
     prompt !== prompt2,
     "#751: the two prompts differ — the command is threaded in, not a constant",
@@ -274,10 +274,7 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
     /no discoverable verify command|no project-level check/i.test(noCmd),
     "#751: no verify command → prompt says so plainly, does not invent one",
   );
-  assert(
-    !noCmd.includes("bun run check"),
-    "#751: no fabricated command when none was resolved",
-  );
+  assert(!noCmd.includes("bun run check"), "#751: no fabricated command when none was resolved");
 }
 
 // --------------------------------------------------------------- #1078: issue body artifact + branch state
@@ -356,124 +353,28 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
 
 // ------------------------------------------- #1156: developer test-scope + suite timeout
 
+// The assertions live in lib/developer-test-scope.ts (shared with
+// test-developer-doc-test-scope.ts for the role-prompt half) — this file was
+// over the AGENTS.md §12 cap once they were inlined here.
+
 {
-  // Measured on a /work fan-out: each developer ran the FULL offline suite in
-  // its own worktree with no wall-clock bound (one stuck ~20 min on a single
-  // suite call), and the driver's own verify ran the whole thing again. The
-  // develop prompt now scopes the child's testing and bounds every suite call.
-  const prompt = inlineDevelopPrompt(
-    [1156],
-    "/tmp/scratch",
-    ws,
-    undefined,
-    undefined,
-    BRIEF,
-    undefined,
-    "bun run check",
-  );
-  assert(
-    /smoke tests for the files you changed/i.test(prompt),
-    "#1156: the developer is told to run only the smoke tests for files it changed",
-  );
-  assert(
-    /typecheck and lint/i.test(prompt),
-    "#1156: typecheck and lint stay in the developer's own scope",
-  );
-  assert(
-    /Do NOT run the full test suite/i.test(prompt),
-    "#1156: the full suite is explicitly the developer's to skip",
-  );
-  assert(
-    /driver runs the full suite once/i.test(prompt),
-    "#1156: the prompt says who does run the full suite (the driver, once)",
-  );
-  assert(
-    prompt.includes(`timeout ${SUITE_TIMEOUT_SECONDS}`),
-    `#1156: every suite command carries \`timeout ${SUITE_TIMEOUT_SECONDS}\` (the number is the exported constant, not a literal in the test only)`,
-  );
-  assert(
-    /timeout 1200/.test(prompt),
-    "#1156: the literal 'timeout 1200' the issue names is in the rendered prompt",
-  );
-  assert(
-    /stuck test|stuck suite/i.test(prompt),
-    "#1156: the timeout rule states the harm it prevents (a stuck test consuming the dispatch)",
-  );
-  // `timeout` is GNU coreutils; macOS ships none. The prompt states the
-  // fallback rather than instructing a command shape that does not exist on
-  // the dev machine half the developers run on.
-  assert(
-    /timeout.{0,80}not available|macOS ships none|no .{0,10}timeout/i.test(
-      developTestScopeLine(),
-    ),
-    "#1156 fallback: the rule names the case where `timeout` is unavailable (macOS ships none)",
-  );
-  assert(
-    /gtimeout/i.test(developTestScopeLine()),
-    "#1156 fallback: gtimeout (Homebrew coreutils) is named as the same tool, not a different rule",
-  );
-  assert(
-    /run the command bare|bare.{0,60}watchdog|watchdog.{0,60}bare/i.test(developTestScopeLine()),
-    "#1156 fallback: with no `timeout` the command runs bare and stays under the tool watchdog",
-  );
-  assert(
-    /run the command bare|macOS ships none/i.test(prompt),
-    "#1156 fallback: the fallback clause reaches the rendered develop prompt, not just the builder",
-  );
-  // The N>1 sibling-injection header below is gated on real siblings, and the
-  // assertion at "N=1 default path has NO sibling block" matches that header's
-  // exact text. The rule must not accidentally print it — hence a direct check
-  // rather than a reword-and-hope.
-  assert(
-    !prompt.includes("Parallel workstreams"),
-    "#1156: the rule does not emit the sibling-injection header (the N=1 byte-identical assertion matches that token)",
-  );
-
-  // The rule is not verifyCmd-dependent: #751's three branches all still
-  // carry it, including the no-discoverable-command branch where there is no
-  // project verify command at all but the child could still run the suite.
-  const noCmd = inlineDevelopPrompt([1156], "/tmp/scratch", ws, undefined, undefined, BRIEF);
-  assert(
-    /no discoverable verify command/i.test(noCmd) &&
-      /Do NOT run the full test suite/i.test(noCmd) &&
-      /timeout 1200/.test(noCmd),
-    "#1156: the rule holds on the no-verify-command branch too",
-  );
-
-  // It also holds with the #1324 fast tier present — the two rules stack
-  // rather than contradict (fast tier for the project command, own smoke
-  // tests for everything else).
-  const withFast = inlineDevelopPrompt(
-    [1156],
-    "/tmp/scratch",
-    ws,
-    undefined,
-    undefined,
-    BRIEF,
-    undefined,
-    "bash smoke-tests/lib/verify-loop.sh test-*.ts",
-    undefined,
-    undefined,
-    undefined,
-    "bunx tsc --noEmit -p .",
-  );
-  assert(
-    /FAST verify tier/i.test(withFast) &&
-      /Do NOT run the full test suite/i.test(withFast) &&
-      /timeout 1200/.test(withFast),
-    "#1156: stacks on the #1324 fast tier without contradicting it",
-  );
-
-  // Mutation canary: the exported builder is what puts the text in the
-  // prompt. If it ever returns an empty string the assertions above fail
-  // loudly rather than passing on stale text.
-  assert(
-    developTestScopeLine().includes("timeout 1200") &&
-      /Do NOT run the full test suite/i.test(developTestScopeLine()) &&
-      /macOS ships none/i.test(developTestScopeLine()) &&
-      /run the command bare/i.test(developTestScopeLine()),
-    "#1156: developTestScopeLine is the single source of the rule's text INCLUDING the macOS fallback (removing the clause from the source fails here)",
-  );
+  const render = (opts?: { verifyCmd?: string; fastCmd?: string }): string =>
+    inlineDevelopPrompt(
+      [1156],
+      "/tmp/scratch",
+      ws,
+      undefined,
+      undefined,
+      BRIEF,
+      undefined,
+      opts?.verifyCmd,
+      undefined,
+      undefined,
+      undefined,
+      opts?.fastCmd,
+    );
+  assertDevelopPromptTestScope(assert, render);
+  assertSuiteBoundDerivation(assert);
 }
 
 console.log(`\nexit ${exit}`);
