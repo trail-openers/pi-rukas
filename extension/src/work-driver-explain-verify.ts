@@ -229,6 +229,14 @@ export function explainNoVerdictCap(cap: Cap, state: WorkState): string | undefi
   const suffix = `${retryLine(ev?.step === step ? ev : undefined)}${rawLogLine(step, lastCapHit(state, cap))}`;
   switch (family) {
     case "verify-env":
+      // #1421 fix round — `verify-env` is now TWO refusals: the host could not
+      // fork, and (since #1421) a gate declined to mutate a root holding build
+      // output. The router picks the cap from the STRUCTURED decline, so the
+      // explainer routes on the same field. Reading prose here would print the
+      // fork advice (pid limits, RLIMIT_NPROC) for a park whose cause was
+      // cargo's `target/`, which is the whole point of the cap split.
+      if (ev?.step === step && ev.buildResidueOnly === true)
+        return buildResidueText(step, bullets(failures), suffix);
       return hostExhaustionText(step, bullets(failures), suffix);
     case "verify-baseline-red":
       return `the ${step} step's verify command already fails at the cycle's base commit, without this change — the gate was red before the change was written, so no change can pass it and it reached no verdict on this one:${bullets(failures)}${suffix}\nFix the gate at the base commit (or the host it runs on) first, then re-run the cycle. The change is not implicated until the base is green. Do not set PI_ENSEMBLE_VERIFY=0 for this: the gate is broken at base, not wrong about the change`;
