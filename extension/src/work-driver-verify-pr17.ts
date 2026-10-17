@@ -243,6 +243,9 @@ export async function verifyStepOutcome(
       onBuildResidueOnly: () => {
         buildResidueOnly = true;
       },
+      // #1427 fix round — the walker is a test seam for the hang reports, and
+      // it has to reach BOTH legs of the gate (per-worktree and consolidated).
+      ...(ctx.walkProcessTree !== undefined ? { walkProcessTree: ctx.walkProcessTree } : {}),
     });
     const flakeRecovered = flakeEvidenceTail !== undefined;
     return {

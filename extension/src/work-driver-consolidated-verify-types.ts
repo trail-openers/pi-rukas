@@ -13,6 +13,60 @@ import type { ConsolidatedVerifyRetryDecision } from "./work-driver-consolidated
 import type { DirtReason } from "./work-driver-dirty-root-classify.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
+/**
+ * The options for the consolidated verify (the locked wrapper and the
+ * unlocked body share this shape; the wrapper only adds the integration
+ * lock, the body does the work). Defined ONCE so the two signatures
+ * cannot drift.
+ */
+export interface ConsolidatedVerifyOpts {
+  repoRoot: string;
+  baseSha: string;
+  branchName?: string;
+  worktrees: Record<string, string>;
+  scratchDir: string;
+  verifyCmd: string;
+  timeoutMs: number;
+  /**
+   * #1427 — called with the path of the hang report this run persisted, so the
+   * caller can record it structurally on the cap-hit event. Absent = the caller
+   * wants no report written (nothing is then written for the consolidated run).
+   */
+  onGateHangLogPath?: (logPath: string) => void;
+  /**
+   * #1427 — injectable process-tree walker for the hang report (tests).
+   */
+  walkProcessTree?: (leaderPid: number) => {
+    processes: import("./work-driver-gate-hang.ts").HangProcess[];
+    treeUnavailable?: string;
+  };
+  /**
+   * #1362 — the cycle's `.pi/dirty-root-exempt` list. Applied to the repoRoot
+   * dirty-root preflight below only: the cherry-pick and staging that follow
+   * run on the driver's own integration branch and are unchanged.
+   */
+  dirtyRootExempt?: readonly string[];
+  workstreamBaseShas?: Record<string, string>;
+  /**
+   * #1240 — the tree that just PASSED the per-worktree verify, established
+   * by the caller (`verifyTreeId(worktree)`), plus the worktree it came from
+   * (the skip note names it). When the cherry-picked probe turns out to be
+   * that SAME tree, running the verify command again at repoRoot proves
+   * nothing, so it is skipped and the equality is reported as `skipped`.
+   * The caller passes this only for the shape where the duplication exists —
+   * one workstream with every per-worktree verify green; absent otherwise.
+   * Read failure on either side means no skip (fail closed toward running).
+   */
+  alreadyVerifiedTree?: AlreadyVerifiedTree;
+  retry?: {
+    canRetry: boolean;
+    onRecover: (evidenceTail?: string) => void;
+    onFirstFailure?: (
+      rawFailure: string,
+    ) => { allowed: boolean; decision: ConsolidatedVerifyRetryDecision } | undefined;
+  };
+}
+
 export type ConsolidatedVerifyResult =
   | {
       status: "passed";

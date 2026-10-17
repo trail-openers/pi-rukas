@@ -51,7 +51,21 @@ export interface ExecTreeOpts {
 
 export type ExecTreeError = Error & {
   code?: number | string | null;
+  /**
+   * True on EITHER kill path: the wall-clock timeout OR a maxBuffer overflow.
+   * Callers that must tell the two apart read {@link timedOutKill} /
+   * {@link overflow}, not this — an oversized-output run is not a hung run, and
+   * calling one a hang accuses the code of a stall that never happened (#1427).
+   */
   killed?: boolean;
+  /**
+   * #1427 — the run was stopped by the wall-clock `timeout`, not by the output
+   * bound. The ONLY shape a hang report describes: the clause, the report and
+   * the `verify-timeout:<step>` gate all key on this.
+   */
+  timedOutKill?: boolean;
+  /** #1427 — which stream exceeded `maxBuffer` when the run was overflow-killed. */
+  overflow?: string;
   signal?: NodeJS.Signals | null;
   cmd?: string;
   stdout?: string;
@@ -62,9 +76,9 @@ export type ExecTreeError = Error & {
    * reports a hang walks the tree under this pid; a caller that killed
    * something else entirely has no business naming processes.
    *
-   * Set on the timeout/maxBuffer kill paths only — a non-zero exit is not a
-   * kill, and `treePid` on one would invite a snapshot of processes the gate
-   * never started.
+   * Set on the TIMEOUT kill path only — a maxBuffer overflow is a kill but not
+   * a hang, and `treePid` on one would invite a snapshot of processes the gate
+   * never stalled on; a non-zero exit is not a kill at all.
    */
   treePid?: number;
 };
@@ -121,12 +135,20 @@ export function execTree(
       if (overflow) err.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
       else if (!spawnError) err.code = code;
       err.killed = killed;
+      // #1427 — the two kill paths are distinct facts and both are reported:
+      // `killed` says the group was signalled, `timedOutKill` says the wall
+      // clock (not the output bound) is what signalled it. An oversized-output
+      // run is not a hung run.
+      err.timedOutKill = killed && overflow === undefined;
+      if (overflow !== undefined) err.overflow = overflow;
       err.signal = exited?.signal ?? null;
       err.cmd = shown;
       err.stdout = stdout;
       err.stderr = stderr;
-      // #1427 — only a run this function KILLED carries the group it killed.
-      if (killed || overflow) err.treePid = child.pid;
+      // #1427 — only a run this function KILLED AT ITS TIMEOUT carries the
+      // group it killed: an overflow kill gets no tree snapshot, because a
+      // report about processes the gate never stalled on is a false claim.
+      if (killed && overflow === undefined) err.treePid = child.pid;
       reject(err);
     };
 

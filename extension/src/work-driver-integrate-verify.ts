@@ -39,13 +39,13 @@ import {
 } from "./work-driver-consolidation-classify.ts";
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
-import {
-  type HangProcess,
-  captureProcessTree,
-  extractRunningTests,
-} from "./work-driver-gate-hang.ts";
+import { type HangProcess, captureProcessTree } from "./work-driver-gate-hang.ts";
 import { commitPrSkipDecision } from "./work-driver-integrate-verify-skip.ts";
-import { timeoutWhere, verifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
+import {
+  isTimedOutKill,
+  timeoutWhere,
+  verifyTimeoutFailure,
+} from "./work-driver-verify-develop-helpers.ts";
 import {
   FAST_TIER_LABEL,
   failedVerifyCmd,
@@ -93,17 +93,13 @@ export type CommitPrConsolidatedVerifyResult =
       /** #1324 — the run was killed at its bound: no verdict, so no classification. */
       timedOut?: boolean;
       /**
-       * #1427 — the names the runner itself flagged as still running when the
-       * run was killed. Present only on a killed run whose stream carried them;
-       * the caller folds them into the cap's evidence so the handoff says
-       * "hung in test X" instead of only "the run timed out".
+       * #1427 — commit-pr carries the hang CLAUSE only. The clause is composed
+       * into `classifiedMessage` (see the timeout branch below), which is what
+       * the caller puts on the cap and the handoff renders; the commit-pr seam
+       * has no scratch dir of its own to persist a full report to, so unlike
+       * the develop seams this result reports no `runningTests` / `processes`
+       * and no caller ever read them (round 1: two dead fields).
        */
-      runningTests?: string[];
-      /**
-       * #1427 — the process tree of the killed run's group, captured before the
-       * kill. Empty when the executor reported no pid or no tree could be read.
-       */
-      processes?: HangProcess[];
     };
 
 /**
@@ -237,8 +233,17 @@ export async function runCommitPrConsolidatedVerify(
       // #841 — classify on stdout AND stderr (the shared helper), not on
       // stderr-with-stdout-dropped: a failure that prints its assertion on
       // stdout and a warning on stderr must still classify on the assertion.
-      const e = err as Error & { stderr?: string; stdout?: string; treePid?: number };
-      timedOut = (e as { killed?: boolean }).killed === true;
+      const e = err as Error & {
+        stderr?: string;
+        stdout?: string;
+        killed?: boolean;
+        timedOutKill?: boolean;
+        overflow?: string;
+        treePid?: number;
+      };
+      // #1427 fix round — a maxBuffer overflow is a kill but not a hang; only
+      // the wall-clock kill earns the hang clause.
+      timedOut = isTimedOutKill(e);
       ranCmd = failedVerifyCmd(err, opts.verifyCmd);
       const stream = combinedExecFailureStream(e);
       if (timedOut) {
@@ -329,7 +334,6 @@ export async function runCommitPrConsolidatedVerify(
   // #1324 — a killed run's stream stops wherever the kill landed: report
   // the bound, never a classification of the code.
   if (timedOut) {
-    const running = extractRunningTests(killedOutput);
     const where = timeoutWhere(`on the CONSOLIDATED tree at ${opts.repoRoot}`, {
       output: killedOutput,
       cmd: ranCmd,
@@ -340,6 +344,9 @@ export async function runCommitPrConsolidatedVerify(
     const bound = opts.timeoutMs ?? 30 * 60_000;
     const knob = "PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS";
     const classifiedMessage = verifyTimeoutFailure(ranCmd, where, bound, knob);
+    // #1427 fix round — no `runningTests` / `processes` on the result: the
+    // clause above is the whole deliverable at this seam (nothing reads a
+    // structured tree here, and no scratch dir exists to write a report to).
     return {
       ok: false,
       failureTail,
@@ -347,10 +354,6 @@ export async function runCommitPrConsolidatedVerify(
       verdict,
       classifiedMessage,
       timedOut,
-      ...(running.length > 0 ? { runningTests: running } : {}),
-      ...(killedTree !== undefined && killedTree.processes.length > 0
-        ? { processes: killedTree.processes }
-        : {}),
     };
   }
   const classifiedMessage = consolidatedFailureMessage(verdict, ranCmd);

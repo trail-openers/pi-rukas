@@ -46,6 +46,15 @@ import { spawnSync } from "node:child_process";
  */
 export const GATE_HANG_LABEL = "[gate-hang]";
 
+/**
+ * #1427 fix round — the clause's "the runner named nothing" marker, exported
+ * because the handoff explainer reads it out of the failure string to decide
+ * whether to tell the operator to fall back to the process tree. A caller must
+ * not have to guess the wording: `gateHangClause` is the only writer and this
+ * is the one name it shares.
+ */
+export const GATE_HANG_NO_NAMED_TEST = "no named test";
+
 /** Bound on the walking ps calls, so a stuck tree cannot make us a second problem. */
 const MAX_PROCESSES = 60;
 
@@ -111,7 +120,12 @@ export interface HangEvidence {
 export interface KilledRunError {
   stdout?: string;
   stderr?: string;
+  /** True on either kill path (timeout OR maxBuffer overflow); see `timedOutKill`. */
   killed?: boolean;
+  /** #1427 — the run was stopped by the wall-clock bound: the hang shape. */
+  timedOutKill?: boolean;
+  /** #1427 — the stream that overflowed when the run was overflow-killed. */
+  overflow?: string;
 }
 
 /**
@@ -290,7 +304,7 @@ function treeSection(e: HangEvidence): string {
  * string, so the parts an operator acts on lead).
  */
 export function gateHangClause(e: HangEvidence): string {
-  const who = e.runningTests.length > 0 ? e.runningTests.join(", ") : "no named test";
+  const who = e.runningTests.length > 0 ? e.runningTests.join(", ") : GATE_HANG_NO_NAMED_TEST;
   const held =
     e.processes.length > 0
       ? `${e.processes.length} process(es) still alive${e.detail === undefined ? "" : ` (${e.detail})`}`

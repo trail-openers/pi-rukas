@@ -14,20 +14,24 @@ import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
 import { readRepoRootPreflight } from "./work-driver-consolidated-verify-preflight.ts";
 import { consolidatedVerifySkip } from "./work-driver-consolidated-verify-skip.ts";
-import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
+import type {
+  ConsolidatedVerifyOpts,
+  ConsolidatedVerifyResult,
+} from "./work-driver-consolidated-verify-types.ts";
 import type { DriverContext } from "./work-driver-context.js";
 import { extractAttributedTail, isHostForkExhaustion } from "./work-driver-exec-error.ts";
+import { writeGateHangReport } from "./work-driver-gate-hang-report-write.ts";
 import type { HangProcess } from "./work-driver-gate-hang.ts";
 import { captureProcessTree } from "./work-driver-gate-hang.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
+import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
 import {
   combinedExecFailureStream,
   rawOutputClause,
   rerunConsolidatedVerifyOnce,
   writeConsolidatedVerifyLog,
-  writeGateHangLog,
 } from "./work-driver-verify-flake.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
@@ -56,60 +60,6 @@ export type ConsolidatedVerifyRetryDecision =
   | "allowed-shared"
   | "allowed-unknown"
   | "suppressed-mismatch";
-
-/**
- * The options for the consolidated verify (the locked wrapper and the
- * unlocked body share this shape; the wrapper only adds the integration
- * lock, the body does the work). Defined ONCE so the two signatures
- * cannot drift.
- */
-export interface ConsolidatedVerifyOpts {
-  repoRoot: string;
-  baseSha: string;
-  branchName?: string;
-  worktrees: Record<string, string>;
-  scratchDir: string;
-  verifyCmd: string;
-  timeoutMs: number;
-  /**
-   * #1427 — called with the path of the hang report this run persisted, so the
-   * caller can record it structurally on the cap-hit event. Absent = the caller
-   * wants no report written (nothing is then written for the consolidated run).
-   */
-  onGateHangLogPath?: (logPath: string) => void;
-  /**
-   * #1427 — injectable process-tree walker for the hang report (tests).
-   */
-  walkProcessTree?: (leaderPid: number) => {
-    processes: import("./work-driver-gate-hang.ts").HangProcess[];
-    treeUnavailable?: string;
-  };
-  /**
-   * #1362 — the cycle's `.pi/dirty-root-exempt` list. Applied to the repoRoot
-   * dirty-root preflight below only: the cherry-pick and staging that follow
-   * run on the driver's own integration branch and are unchanged.
-   */
-  dirtyRootExempt?: readonly string[];
-  workstreamBaseShas?: Record<string, string>;
-  /**
-   * #1240 — the tree that just PASSED the per-worktree verify, established
-   * by the caller (`verifyTreeId(worktree)`), plus the worktree it came from
-   * (the skip note names it). When the cherry-picked probe turns out to be
-   * that SAME tree, running the verify command again at repoRoot proves
-   * nothing, so it is skipped and the equality is reported as `skipped`.
-   * The caller passes this only for the shape where the duplication exists —
-   * one workstream with every per-worktree verify green; absent otherwise.
-   * Read failure on either side means no skip (fail closed toward running).
-   */
-  alreadyVerifiedTree?: AlreadyVerifiedTree;
-  retry?: {
-    canRetry: boolean;
-    onRecover: (evidenceTail?: string) => void;
-    onFirstFailure?: (
-      rawFailure: string,
-    ) => { allowed: boolean; decision: ConsolidatedVerifyRetryDecision } | undefined;
-  };
-}
 
 export async function runConsolidatedVerify(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
@@ -265,7 +215,7 @@ export async function runConsolidatedVerifyUnlocked(
     // not produce a report about processes that are already gone.
     let hangTree: { processes: HangProcess[]; treeUnavailable?: string } | undefined;
     let hangLeaderPid: number | undefined;
-    let hangLogPath: string | undefined;
+    let hang: string | undefined;
     // #1240 — same tree, same verdict: the per-worktree run already executed
     // `verifyCmd` against this exact content, so the probe is not re-run.
     // The restore below still happens (the probe checkout is transient
@@ -280,10 +230,14 @@ export async function runConsolidatedVerifyUnlocked(
           stderr?: string;
           stdout?: string;
           killed?: boolean;
+          timedOutKill?: boolean;
+          overflow?: string;
           treePid?: number;
         };
         verifyFailure = combinedExecFailureStream(e);
-        timedOut = e.killed === true;
+        // #1427 fix round — a maxBuffer overflow is also a `killed` run; only
+        // the wall-clock kill is a hang, and only a hang earns a report.
+        timedOut = isTimedOutKill(e);
         // #1427 — a run killed at its bound gets a hang report alongside the
         // raw log: the runner's own slow-test names, the gate's process tree
         // taken BEFORE the kill, and the output tail. Written only for a killed
@@ -414,29 +368,27 @@ export async function runConsolidatedVerifyUnlocked(
       // #841 — the shared rawOutputClause helper (single home for the
       // sentence so the develop gate and the handoff cannot drift).
       const logClause = rawOutputClause(finalLogPath);
-      // #1427 — the hang report is written here, once, for the run that ended
-      // the run: the tree was walked at its kill (above), and a report written
-      // at the catch would describe the first run after the re-run superseded
-      // it. Written only when the run that decided this outcome was killed.
+      // #1427 fix round — written ONCE here, for the run that ENDED the run
+      // (the flake re-run overwrites `timedOut` / `rawFailure` above), from the
+      // tree that run's catch captured: one walk feeds both this report and the
+      // failure-string clause, so the two cannot describe different snapshots
+      // for one kill. A report written at the catch would describe the FIRST
+      // run after the re-run superseded it, which is why it is not there.
       if (timedOut) {
-        const hangPath = writeGateHangLog(
+        hang = writeGateHangReport({
           scratchDir,
-          runTimestamp,
-          {
-            output: rawFailure ?? verifyFailure ?? "",
-            cmd: verifyCmd,
-            cwd: repoRoot,
-            timeoutMs,
-            ...(hangLeaderPid !== undefined ? { leaderPid: hangLeaderPid } : {}),
-          },
-          hangTree !== undefined
-            ? { walk: () => hangTree as { processes: HangProcess[]; treeUnavailable?: string } }
-            : {},
-        );
-        if (hangPath !== undefined) {
-          hangLogPath = hangPath;
-          opts.onGateHangLogPath?.(hangPath);
-        }
+          timestamp: runTimestamp,
+          rawFailure: rawFailure ?? verifyFailure ?? "",
+          verifyCmd,
+          repoRoot,
+          timeoutMs,
+          tree: hangTree,
+          leaderPid: hangLeaderPid,
+        });
+        // The path is handed to the caller as it is written (not only on the
+        // result): the develop gate records it on the cycle context from this
+        // callback, which is where the cap emit site reads it.
+        if (hang !== undefined) opts.onGateHangLogPath?.(hang);
       }
       // #750 — the verified post-condition rides with every outcome of the
       // probe run (the root is transient either way; an unverified claim
@@ -453,7 +405,7 @@ export async function runConsolidatedVerifyUnlocked(
         // #1427 — the persisted hang report, carried structurally for the same
         // reason `logPath` is: the cap emit site records it on the event, and a
         // reader never has to find the path in prose.
-        ...(hangLogPath !== undefined ? { hangLogPath } : {}),
+        ...(hang !== undefined ? { hangLogPath: hang } : {}),
       };
     }
     if (!restore.restored) {
