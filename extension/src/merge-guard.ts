@@ -161,6 +161,17 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       );
       return rendered;
     };
+    // #1431 round 3 — a BLOCKED MERGE is not a hold, so it does not log as one.
+    // The line keeps the same `reason=` / `commandLength=` fields (the round-2
+    // trace assertions anchor on them); only the verb and the parenthetical
+    // change, because `HELD (not a merge)` for a command the classifier read
+    // as a merge is the mislabel this closes.
+    const blocked = (rendered: { block: true; reason: string }, code: string, cmd: string) => {
+      traceWarn(
+        `merge-guard: BLOCKED (merge, not a hold) reason=${code || "merge"} commandLength=${cmd.length}`,
+      );
+      return rendered;
+    };
     // Fail closed: a throw out of the tool_call hook would let the command
     // run, so anything the reader throws refuses.
     let analysis: MergeCommand;
@@ -232,6 +243,16 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // the forge check below), the refusals DO name the hatch — there the
     // command is a merge and the operator may genuinely override the reviews.
     //
+    // #1431 round 3 — the command the classifier read as kind `merge` whose
+    // PR/MR number would not resolve is a MERGE attempt held fail-closed, not a
+    // read. It used to borrow the `not-a-merge` kind, which printed "a read
+    // needs nothing from the guard" about a `gh pr merge` and logged
+    // `HELD (not a merge)` for the one shape this guard exists to check.
+    // `merge-blocked` names the accepted form as the remedy and still names no
+    // hatch: the reviews were never evaluated, so an operator setting
+    // PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE here would be switching the gate off
+    // to get through something that never reached it.
+    //
     // #1417 round 2 — the trace CODE is a parameter, not a constant. It used
     // to hardcode `unresolved-pr-number`, the code of the one call site that
     // existed when the helper was written, so every later early failure —
@@ -242,9 +263,9 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // `held` above): branch, cwd and command text stay out of the hold
     // telemetry deliberately, because command strings routinely carry tokens
     // and this stream is ungated stderr.
-    const earlyRefuse = (code: string, reason: string) =>
-      held(
-        renderHold({ kind: "not-a-merge", reasonText: reason }, `\`${merging}\` …`),
+    const mergeBlocked = (code: string, reason: string) =>
+      blocked(
+        renderHold({ kind: "merge-blocked", reasonText: reason }, `\`${merging}\` …`),
         code,
         command,
       );
@@ -257,17 +278,19 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // No number in the command → fall back to current-branch resolution.
     // #1417 — everything between here and `readMergeTarget` still only knows
     // the command LOOKED merge-adjacent to the classifier; it has not read a
-    // merge. Those refusals go through `earlyRefuse` and do not name the
-    // hatch. Below `readMergeTarget` the command has parsed as a merge in the
-    // accepted form, so those refusals keep it: there an operator who has
-    // reviewed by other means genuinely decides.
+    // merge. Those refusals do not name the hatch. Below `readMergeTarget` the
+    // command has parsed as a merge in the accepted form, so those refusals
+    // keep it: there an operator who has reviewed by other means genuinely
+    // decides.
     if (prNumber === undefined) {
       prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, repoValue);
     }
     if (prNumber === undefined) {
-      return earlyRefuse(
+      // #1431 round 3 — the classifier said `merge`, so this is a blocked
+      // merge (see `mergeBlocked` above), not a hold on a read.
+      return mergeBlocked(
         "unresolved-pr-number",
-        `its words read like the merge form \`${merging}\`, but the PR/MR number could not be resolved from the command or the current branch (repo: ${repoValue ?? "none"}; fallback cwd: ${cwd})`,
+        `the PR/MR number could not be resolved from the command or the current branch (repo: ${repoValue ?? "none"}; fallback cwd: ${cwd})`,
       );
     }
 

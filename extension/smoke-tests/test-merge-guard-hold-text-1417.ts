@@ -40,6 +40,13 @@ const HELD: Array<[string, string]> = [
   ["gh pr merge 1x", "not-a-number"],
   ["gh pr merge 17 --auto", "unknown-flag"],
   ["gh pr merge 17 extra", "extra-command"],
+  // #1431 round 3 — a verb whose NAME contains a create word is not the create
+  // the read exemption names, and a getopt body form (`-b=`, glued `-b`) is an
+  // inline body. Both used to be answered `none` — the fail-open this pins.
+  "gh release create v1 --notes merge",
+  "gh label create merge-bot --color red",
+  "gh pr create -b=merge",
+  "gh pr create -bmerge",
 ];
 for (const [cmd, code] of HELD) {
   const m = readMergeCommand(cmd);
@@ -114,6 +121,44 @@ assert(
 const bodyIndirect = holdText('gh api graphql -f query="$(cat q.graphql)"');
 assert(bodyIndirect.includes("not a review gate"), "the hold disclaims the review gate");
 assert(bodyIndirect.includes("false hold"), "the hold tells the agent to report a false hold");
+
+// ------------------------------------------- the number-less merge is a merge, not a read
+// #1431 round 3 — the command the classifier ALREADY read as kind `merge` whose
+// PR number would not resolve is a genuine merge attempt held fail-closed. The
+// `not-a-merge` kind is for the classifier's refusals (a read the trigger
+// caught); borrowing it here made the prose say "a read needs nothing from the
+// guard" about `gh pr merge`, and paired that with a trace line that read
+// `HELD (not a merge)` for the one shape the guard exists to check.
+{
+  const text = renderHold(
+    { kind: "merge-blocked", reasonText: "the PR/MR number could not be resolved" },
+    "`gh pr merge` …",
+  ).reason;
+  assert(
+    /^merge blocked:/.test(text),
+    `the number-less merge renders as a blocked merge, not a hold: ${text.slice(0, 60)}…`,
+  );
+  assert(
+    !text.includes("a read needs nothing from the guard"),
+    "…and never tells the agent it was only doing a read",
+  );
+  assert(
+    !text.includes("(not a merge)"),
+    "…and never calls a merge the classifier read as a merge a non-merge",
+  );
+  assert(text.includes("gh pr merge <N>"), "…and names the accepted form as the remedy");
+  assert(
+    !text.includes("PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE"),
+    "…without the hatch: the reviews were never evaluated, so nothing here is overridable",
+  );
+  // The kinds the classifier's refusals use keep the read remedy — the split is
+  // per-kind, so fixing the merge case cannot take the sentence away from a read.
+  const form = renderHold({ kind: "form", reasonText: "a `body-indirect` shape" }, "x").reason;
+  assert(
+    form.includes("a read needs nothing from the guard"),
+    "a classifier hold still says a read needs nothing from the guard",
+  );
+}
 
 // ------------------------------------------- the classifier is still inert for reads
 // (task A owns the `gh api` classification; these pin that no hold creeps in.)
