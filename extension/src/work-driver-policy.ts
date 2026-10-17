@@ -34,7 +34,14 @@
  *     should be allowed — otherwise it can be talked into a yes.
  *   - **Citation-verified.** The judge must quote the sentence that grants the
  *     permission, and the decision seam's evidence check (decision-evidence.ts)
- *     confirms that sentence actually appears in the file the judge named. A fabricated quote is not just ignored, it is
+ *     confirms that quote equals one whole sentence of the file the judge
+ *     named — not merely a substring of it (#1381). A quote of a permission
+ *     clause with its own leading conditional dropped is a partial quote and
+ *     does not grant. The judge may also only cite a document it was actually
+ *     shown: the file branch of the check reads the live tree, and a judge that
+ *     names some other file — a `CONTRIBUTING.md` nobody asked it about, or
+ *     markdown a develop patch wrote during this very cycle — is refused without
+ *     it being read. A fabricated quote is not just ignored, it is
  *     surfaced: a hallucinating judge is a thing the operator should know
  *     about, not something to paper over with a silent fallback.
  *
@@ -64,7 +71,11 @@ import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts"
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
 
-export { citationPresent, normaliseForCitation } from "./decision-evidence.ts";
+export {
+  citationPresent,
+  citationUnits,
+  normaliseForCitation,
+} from "./decision-evidence.ts";
 
 export type PolicyVerdict = "permitted" | "forbidden" | "unstated";
 
@@ -300,9 +311,20 @@ export async function askPolicy(
     },
   };
   const texts = docs.map((d) => ({ name: d.file, text: d.text }));
+  // The names the judge was actually shown. A file citation that is not one of
+  // these is refused unread: the file branch reads the live tree, and at the
+  // `merged` step the live tree holds the cycle's own markdown — a judge must
+  // not be able to grant itself by naming a file nobody put in front of it
+  // (#1381). `docs` is what `readDoctrineAtBase` produced at the base commit.
+  const shownFiles = docs.map((d) => d.file);
   const seam = await decide(
     "policy-judge",
-    { state: { question, documents: texts }, question, rule: "unstated", evidence: { texts } },
+    {
+      state: { question, documents: texts },
+      question,
+      rule: "unstated",
+      evidence: { texts, shownFiles },
+    },
     { timeoutMs: POLICY_JUDGE_TIMEOUT_MS, ...where, backends: [backend] },
   );
   const decision = policyOutcome(seam);

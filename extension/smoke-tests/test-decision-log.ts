@@ -233,6 +233,17 @@ const lines = (f: string) =>
     !(await verifyEvidence(vouched, "short", undefined)).passed,
     "a trivially short quote is not evidence",
   );
+  // #1381 — the whole-sentence rule reaches the file branch too, not only the
+  // vouched-texts one. Every case above quotes Q in full, so before this the
+  // file-cited branch had no partial-quote coverage at all.
+  assert(
+    !(await ok("Agents may merge once CI is green")).passed,
+    "a real-but-partial substring of the file's sentence is not evidence either",
+  );
+  assert(
+    !(await verifyEvidence(vouched, "once CI is green and review approved.", undefined)).passed,
+    "...nor the tail of the vouched text's sentence, quoted without its subject",
+  );
 }
 
 // ----------------------------------- redaction runs on the WHOLE text, then clips
