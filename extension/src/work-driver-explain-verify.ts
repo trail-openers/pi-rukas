@@ -19,6 +19,7 @@
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { BUILD_RESIDUE_LABEL, isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import { HOST_EXHAUSTION_LABEL, isHostExhaustionFailure } from "./work-driver-exec-error.ts";
+import { GATE_HANG_LABEL, isGateHangFailure } from "./work-driver-gate-hang.ts";
 import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
 import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
 import type { VerifyEvidenceOrigin } from "./workflow-state-schema-verify.ts";
@@ -109,9 +110,23 @@ function commitPrGateText(state: WorkState): string {
  */
 function rawLogLine(step: string, capHit: CapHitEvent | undefined): string {
   const logPaths = step === "develop" ? capHit?.logPaths : undefined;
-  return logPaths && logPaths.length > 0
-    ? `\nFull raw verify output: ${logPaths.join(", ")} (scratch dir — inspect it before re-dispatching)`
-    : "";
+  if (!logPaths || logPaths.length === 0) return "";
+  // #1427 — a hang report is a different artefact from a raw verify log: it
+  // names the hung test and the processes the kill left behind, and it is the
+  // thing to read FIRST when the cap is a timeout. Splitting the sentence is
+  // what makes it a pointer rather than one more file in a list.
+  const hang = logPaths.filter((p) => p.includes("gate-hang-"));
+  const raw = logPaths.filter((p) => !p.includes("gate-hang-"));
+  const parts: string[] = [];
+  if (hang.length > 0)
+    parts.push(
+      `\nWhat hung: ${hang.join(", ")} (names the still-running test(s) and the gate's process tree at the kill — read this before anything else)`,
+    );
+  if (raw.length > 0)
+    parts.push(
+      `\nFull raw verify output: ${raw.join(", ")} (scratch dir — inspect it before re-dispatching)`,
+    );
+  return parts.join("");
 }
 
 /**
@@ -266,9 +281,26 @@ export function explainVerifyTimeout(cap: Cap, state: WorkState): string {
         ? [capEvidence]
         : [];
   const findings = failures.map((f) => `\n  - ${f}`).join("") || " (no detail recorded)";
+  // #1427 — a killed run that produced a hang report says WHICH test hung and
+  // how many processes its group still held; render that line too, so the
+  // handoff answers "what hung" rather than only "it was slow". The paths ride
+  // on the cap event (develop) or are absent (the commit-pr seam, which has no
+  // scratch dir of its own to write to).
+  const hangLine = rawLogLine(step, capEvidence === undefined ? undefined : lastCapHit(state, cap));
+  // The runner's own slow-test line is what makes a hang report name a test.
+  // When it printed none, the report's process tree is the only thing the
+  // driver could establish, and the operator should read it before suspecting
+  // the diff. `still running:` is the section the renderer emits when it HAS a
+  // name; its absence is the signal, not the presence of the label.
+  const hangAdvice =
+    failures.some(isGateHangFailure) &&
+    (capEvidence ?? "").includes(GATE_HANG_LABEL) === false &&
+    !failures.some((f) => f.includes("still running:"))
+      ? " The runner printed no slow-test line, so the report's process tree is the only name the driver could establish — read it before suspecting the diff."
+      : "";
   const knob =
     step === "commit-pr"
       ? "PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS"
       : "PI_ENSEMBLE_VERIFY_TIMEOUT_MS";
-  return `the ${step} step's verify command TIMED OUT — the run was killed at its bound (${knob}) and reached no verdict, so this is not a code failure and the change is neither confirmed nor refuted:${findings}${retryLine(evidence?.step === step ? evidence : undefined)}\nGive the gate more time or more of the host, then re-run the cycle: raise ${knob}, or reduce concurrency (fewer workstreams with PI_ENSEMBLE_MAX_WORKSTREAMS, fewer cycles at once with PI_ENSEMBLE_PARALLEL_GROUPS, nothing else heavy on the host). A \`.pi/verify-cmd-fast\` (typecheck/lint) runs before the full command and fails fast on a type error. Do not set PI_ENSEMBLE_VERIFY=0 for this: the gate did not reject the change, it did not finish`;
+  return `the ${step} step's verify command TIMED OUT — the run was killed at its bound (${knob}) and reached no verdict, so this is not a code failure and the change is neither confirmed nor refuted:${findings}${hangLine}${retryLine(evidence?.step === step ? evidence : undefined)}${hangAdvice}\nGive the gate more time or more of the host, then re-run the cycle: raise ${knob}, or reduce concurrency (fewer workstreams with PI_ENSEMBLE_MAX_WORKSTREAMS, fewer cycles at once with PI_ENSEMBLE_PARALLEL_GROUPS, nothing else heavy on the host). A \`.pi/verify-cmd-fast\` (typecheck/lint) runs before the full command and fails fast on a type error. Do not set PI_ENSEMBLE_VERIFY=0 for this: the gate did not reject the change, it did not finish`;
 }
