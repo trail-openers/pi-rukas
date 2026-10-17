@@ -12,7 +12,7 @@
 
 import { armCommit, armForgeRead, armGitRead, armRead } from "../src/review-accept-arms.ts";
 import { isProtectedToken } from "../src/review-accept-command.ts";
-import { editsFindingsFile } from "../src/review-accept-guard.ts";
+import { editsFindingsFile, runsReviewAccept } from "../src/review-accept-guard.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -27,6 +27,7 @@ function assert(cond: boolean, msg: string) {
 const words = (s: string): string[] => s.toLowerCase().split(" ");
 
 const STORE = "review-findings-store";
+const DATA = "review-findings.json";
 const Q = String.fromCharCode(39);
 
 /**
@@ -237,5 +238,20 @@ for (const p of [
     `edit: the guard module stays editable in any case — ${p}`,
   );
 }
+
+/**
+ * Whole-command refusals displaced from test-review-accept-guard-hardened.ts by the §12
+ * 500-line cap (cb90cc5). Each is the ONLY case for its term: `-S` (unlike `-G`) has no
+ * arm test; a redirection is a guard-level pre-check no arm sees; and `wc` naming the
+ * store module is refused where the whole command is asked, not per segment — the `sed -n`
+ * and `.bak` siblings the cap also dropped are already covered in both suites.
+ */
+for (const c of [
+  `git log -S${DATA}`,
+  `git log --oneline > .git/${DATA}`,
+  `git log --oneline < .git/${DATA}`,
+  `wc -l extension/src/${STORE}.ts`,
+])
+  assert(runsReviewAccept(c) !== undefined, `guard refuses the displaced case — ${c}`);
 
 process.exit(exit);
