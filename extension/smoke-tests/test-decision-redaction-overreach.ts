@@ -36,6 +36,7 @@ import { redactBounded, redactDeep, redactSecrets } from "../src/decision-log.ts
 import { PROBE_KEY, leaksKey, makeAssert } from "./lib/decision-fixtures.ts";
 import { MUST_NOT_REDACT } from "./lib/redaction-context-cases.ts";
 import { BODY_CLASS_OVERREACH } from "./lib/redaction-context-cases.ts";
+import { PEM_TAIL_PRESERVES } from "./lib/redaction-context-cases.ts";
 
 const { assert, state } = makeAssert();
 
@@ -73,6 +74,27 @@ for (const { name, text } of MUST_NOT_REDACT) {
 for (const { name, text } of BODY_CLASS_OVERREACH) {
   const r = redactSecrets(text);
   assert(r.count === 0, `${name}: NOTHING is redacted (${r.count} for ${JSON.stringify(text)})`);
+}
+
+// ------- the PEM arm stops at the end of the KEY BODY and does not eat the log after it
+//
+// The old body was `[\s\S]*?(?:-----END|$)`. On a clipped key the lazy span had nothing
+// to stop at, so it ran to end-of-string and the error tail behind the key was erased
+// with it — over-redaction the "the body is gone" assertion cannot see, because a span
+// that swallows the tail also satisfies it. So both sides are asserted here (#1393).
+
+for (const { name, text, mustNotContain, mustContain } of PEM_TAIL_PRESERVES) {
+  const r = redactSecrets(text);
+  assert(r.count >= 1, `${name}: the clipped PEM is redacted (${r.count})`);
+  for (const leak of mustNotContain) {
+    assert(!r.text.includes(leak), `${name}: the KEY BODY is gone (${JSON.stringify(leak)})`);
+  }
+  for (const keep of mustContain) {
+    assert(
+      r.text.includes(keep),
+      `${name}: the log line AFTER a clipped key survives (${JSON.stringify(keep)})`,
+    );
+  }
 }
 
 // ------------------------- redactDeep: the nested-string arm keeps its context too

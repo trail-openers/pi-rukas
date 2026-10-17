@@ -181,14 +181,17 @@ for (const [what, input] of NEAR_MISSES) {
   }
 }
 
-// 5. THE PEM ARM IS LINEAR TOO (#1393 round 5, item 3). The arm now spans the whole
-//    key body with `[\s\S]*?`, so it is the second pattern in the set whose match can
-//    cover a large run, and `\s\S` is every character — the class a careless edit most
-//    easily turns quadratic. Two shapes: a body WITH its END delimiter (the lazy span
-//    stops at the first one) and one WITHOUT it (the span runs to `$`, which is the
-//    branch a clipped scan window takes). The TRAP for this arm is a greedy body over
-//    the same input: `[\s\S]*(?:-----END|$)`, which must re-explore the tail at every
-//    position. Measured at 200 KB and past it, against the same bar.
+// 5. THE PEM ARM IS LINEAR TOO (#1393 round 5, item 3). The arm spans the whole key
+//    body, so it is the second pattern in the set whose match can cover a large run, and
+//    the class a careless edit most easily turns quadratic is `\s\S`. The shipped body is
+//    a GREEDY single class of base64 digits and whitespace — linear by construction, with
+//    no alternation to backtrack over — with the END delimiter optional. It is not
+//    `\s\S` because an any-character body over a CLIPPED key runs to end-of-string and
+//    erases the log after the header (see `PEM_TAIL_PRESERVES`). Two shapes are measured:
+//    a body WITH its END delimiter and one WITHOUT it (the branch a clipped scan window
+//    takes). The TRAP for this arm is the greedy ANY-CHARACTER body over the same input:
+//    `[\s\S]*(?:-----END|$)`, which must re-explore the tail at every position. Measured
+//    at 200 KB and past it, against the same bar.
 {
   const b64 = `${"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".repeat(8)}==`;
   const body = (n: number) => b64.repeat(Math.ceil(n / b64.length)).slice(0, n);
@@ -224,13 +227,15 @@ for (const [what, input] of NEAR_MISSES) {
         `linear PEM: ${what} — match ${m.toFixed(1)}ms, full-set redaction ${r.toFixed(1)}ms (bar ${BAR_MS}ms)`,
       );
     }
-    // The harness can see a slow PEM body: a greedy span over the same input.
+    // The harness can see a slow PEM body: a greedy span over the same input with the
+    // class widened back to every character. That is the shape the shipped arm replaced,
+    // and it is slow AND over-redacting — the two defects in this arm are the same edit.
     const greedy =
       /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*(?:-----END [A-Z ]*PRIVATE KEY-----|$)/;
     const trapInput = `${pem(400_000, false)}${""}`;
     const slow = elapsedMs(() => trapInput.match(globalOf(greedy)));
     console.log(
-      `  PEM greedy-span probe on 400 KB of key body: ${slow.toFixed(1)}ms (the lazy shipped arm measured under ${BAR_MS}ms above)`,
+      `  PEM greedy-span probe on 400 KB of key body: ${slow.toFixed(1)}ms (the shipped base64-class arm measured under ${BAR_MS}ms above)`,
     );
   }
 }
