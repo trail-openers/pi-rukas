@@ -16,7 +16,7 @@
  * These cases pin the coherent behaviour.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -152,6 +152,10 @@ try {
   // (4) The rev-list catch must NOT silently absorb a failed measurement when
   // it resolved a non-global effective base: a note naming the ref lands in
   // `notes` (the #384 silent-degradation class, made diagnosable).
+  //
+  // #1378 round 3 — the wording dropped `effective`: the note names the ref it
+  // actually compared against, whether or not that ref happens to be the global
+  // base. Asserting the sha it resolved is what keeps the note useful.
   {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
       const line = commandOf(cmd, opts);
@@ -165,14 +169,18 @@ try {
     const notes: string[] = [];
     await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes);
     assert(
-      notes.some((n) => n.includes(`rev-list failed against effective base ${DEPS_BASE}`)),
-      `#725 effBase: a rev-list failure against a non-global effective base is recorded in notes (got: ${notes.join("; ")})`,
+      notes.some((n) => n.includes(`rev-list failed against base ${DEPS_BASE} in dep`)),
+      `#1378 round 3: a rev-list read that failed is never silent, #1378 round 3 — the note names the effective base it compared against (got: ${notes.join("; ")})`,
     );
   }
 
-  // (5) The rev-list catch stays silent for the global baseSha (pre-existing
-  // behaviour: an absent global base in the worktree's history is not
-  // evidence either way — no note spam).
+  // (5) #1378 round 3 — the same read failing against the GLOBAL baseSha is
+  // recorded too. It used to be silenced by an `effBase !== baseSha` guard, so
+  // the common case (N=1, effBase === baseSha) left `assessed` true on a
+  // worktree whose commits were never counted, and a CSS-only union of the
+  // survivors could then skip the verify chain. The note is unconditional now,
+  // and the failure counts as a failed git read (which suppresses the
+  // frontend-only skip).
   {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
       const line = commandOf(cmd, opts);
@@ -186,9 +194,79 @@ try {
     const notes: string[] = [];
     await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes);
     assert(
-      !notes.some((n) => /rev-list failed against effective base/.test(n)),
-      `#725 effBase: a rev-list failure against the GLOBAL baseSha stays silent (unchanged) (got: ${notes.join("; ")})`,
+      notes.some((n) => n.includes(`rev-list failed against base ${VALID_SHA_40} in dep`)),
+      `#1378 round 3: a rev-list read that failed is never silent, #1378 round 3 — the note is present at the global baseSha too (got: ${notes.join("; ")})`,
     );
+    // The observable consequence of the flag: the read failure must reach
+    // `gitReadFailedAnyWorktree`, the third argument to
+    // shouldSkipVerifyForFrontendOnly. Observed end-to-end rather than by
+    // poking the helper directly, so the assertion means "the gate set the
+    // flag", not "the helper honours its parameter".
+    //
+    // The control: with the skip ENABLED (globs set + a derived-only command
+    // and no .pi/verify-cmd) the very same CSS-only shape SKIPS. So a green
+    // `skip suppressed` note here cannot be the classifier saying no — it can
+    // only be the failed git read. Without the globs the note reads "not
+    // enabled" and proves nothing about the flag.
+    const cssOnly: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+      const line = commandOf(cmd, opts);
+      if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/ui/hero.css") };
+      if (line.startsWith("git rev-list --count")) return { stdout: "1\n" };
+      if (isNulDiffRead(line)) return { stdout: nulNameStatus("src/ui/hero.css") };
+      return { stdout: "" };
+    };
+    const prevGlobs = process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS;
+    process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = ".css";
+    const ctxDir = mkdtempSync(path.join(tmpdir(), "verify-effbase-ctx-"));
+    writeFileSync(path.join(ctxDir, "Cargo.toml"), "[package]\nname='x'\n");
+    try {
+      const mkCtxAt = (exec: NonNullable<DriverContext["verifyExecFn"]>): DriverContext =>
+        ({
+          host: stubPi,
+          issue: 725,
+          repoRoot: ctxDir,
+          verifyExecFn: exec,
+        }) as unknown as DriverContext;
+      // (a) control — commits read fine, CSS-only union, skip enabled → skip.
+      // Asserting the SKIP fired (not merely that some note exists) is what
+      // makes this a control: the positive branch must be reachable, or a green
+      // assertion here would say nothing about the flag in (b).
+      const controlNotes: string[] = [];
+      await verifyDevelopOutcome(
+        mkCtxAt(cssOnly),
+        makeState({ baseSha: VALID_SHA_40 }),
+        cssOnly,
+        [],
+        controlNotes,
+      );
+      assert(
+        controlNotes.some((n) => /derived verify command skipped/.test(n)),
+        `#1378 round 3: control — the same CSS-only shape DOES skip the derived chain when every git read succeeded (notes: ${controlNotes.join("; ")})`,
+      );
+      // (b) the case under test — the rev-list read throws, the skip is suppressed.
+      const failing: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+        if (commandOf(cmd, opts).startsWith("git rev-list --count"))
+          throw new Error("unknown revision");
+        return cssOnly(cmd, opts);
+      };
+      const notes2: string[] = [];
+      await verifyDevelopOutcome(
+        mkCtxAt(failing),
+        makeState({ baseSha: VALID_SHA_40 }),
+        failing,
+        [],
+        notes2,
+      );
+      assert(
+        notes2.some((n) => /frontend-only skip suppressed: a git read failed/.test(n)),
+        `#1378 round 3: a rev-list read that failed is never silent, #1378 round 3 — the failure counts as a failed git read and suppresses the frontend-only skip (notes: ${notes2.join("; ")})`,
+      );
+    } finally {
+      if (prevGlobs === undefined)
+        Reflect.deleteProperty(process.env, "PI_ENSEMBLE_FRONTEND_ONLY_GLOBS");
+      else process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = prevGlobs;
+      rmSync(ctxDir, { recursive: true, force: true });
+    }
   }
 } finally {
   rmSync(tmpDir, { recursive: true, force: true });
