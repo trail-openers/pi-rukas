@@ -39,6 +39,7 @@ import {
   getPlanDispatchOverride,
   getPlanStatFnOverride,
 } from "./plan-driver-seams.ts";
+import { DROPPED_ARTIFACT } from "./plan-dropped-budget.ts";
 import { reviewedDigestOf } from "./plan-filing-claim.ts";
 import { filedBodyOf, settledGapsSection } from "./plan-gap-disclosure.ts";
 import { type GapGateLoopResult, runGapGateLoop } from "./plan-gaps.ts";
@@ -263,7 +264,7 @@ async function runPipelineOn(
   let { title, body } = phase3;
   if (compacted) {
     trace(`plan-driver: body compacted to fit the forge limit (${body.length} chars)`);
-    body += `\n\n> Compacted to fit the forge's ${FORGE_BODY_MAX}-char body limit (per-section items capped at ${chosenBudget.maxItemsPerSection}, item text clipped at ${chosenBudget.itemClipChars} chars); full findings live in the run transcripts (/runs).`;
+    body += `\n\n> Compacted to fit the forge's ${FORGE_BODY_MAX}-char body limit (per-section items capped at ${chosenBudget.maxItemsPerSection}, item text clipped at ${chosenBudget.itemClipChars} chars); full findings live in ${DROPPED_ARTIFACT}.`;
   }
   // #677 — the NEVER CLAIM post-filter disclosure, appended to the drafted
   // body BEFORE validation (so the filed spec names what was dropped and
