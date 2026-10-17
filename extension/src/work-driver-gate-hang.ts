@@ -55,6 +55,15 @@ export const GATE_HANG_LABEL = "[gate-hang]";
  */
 export const GATE_HANG_NO_NAMED_TEST = "no named test";
 
+/**
+ * #1427 round 4 — what the clause says when the caller handed in no process tree
+ * at all. A distinct string from {@link GATE_HANG_NO_NAMED_TEST} and from
+ * `gateHangClause`'s `no child process`, because the three are three different
+ * claims: no test was named, the group was observed empty, and nobody looked.
+ * The last one must never be rendered as the second.
+ */
+export const NO_TREE_CAPTURED = "no tree was captured";
+
 // #1427 round 3 — the process-tree half of this module (the `ps` walk and its
 // three bounds) lives in `work-driver-gate-hang-tree.ts` for AGENTS.md §12's
 // line cap. Re-exported so the renderer's own consumers, and the smoke tests
@@ -83,6 +92,33 @@ const MAX_TEST_NAME_CHARS = 120;
 
 /** The one-kept-character-of-ellipsis marker on a clipped name. */
 const NAME_ELLIPSIS = "\u2026";
+
+/**
+ * #1427 round 4 — the clause bound is DERIVED from the worst case rather than
+ * chosen to look safe. Every quantity the clause can print is accounted for, so
+ * the 800-char evidence window (`CAP_EVIDENCE_PER_FAILURE_MAX` in
+ * `work-develop-cap-evidence.ts`, which keeps a failure's TAIL and finds no
+ * `FAILED:` marker in a timeout string, so the tail really is `slice(-800)`)
+ * always carries BOTH the `[verify-timeout]` headline that `verifyCapFor` routes
+ * on and everything the clause adds.
+ */
+const EVIDENCE_WINDOW_CHARS = 800;
+/** The longest leaf-command list `deepestCommands` emits: its own `limit = 2`. */
+const MAX_DETAIL_ROWS = 2;
+/** How many characters of the #1324 headline the window must still carry. */
+const TIMEOUT_HEADLINE_RESERVE_CHARS = 96;
+/** The clause's fixed prose around the names and the process count. */
+const CLAUSE_PROSE_OVERHEAD_CHARS =
+  // "[gate-hang] hung in " + "; " + " process(es) still alive (" + ")" — the
+  // populated case is the wider of the two branches — plus the longest reason an
+  // empty tree can be given, which rides in the same parentheses when nothing
+  // was collected.
+  "[gate-hang] hung in ;  process(es) still alive ()".length +
+  "process tree unavailable ()".length +
+  "process snapshot bounded to 4000 characters".length;
+/** Digits the process count can occupy — at most `MAX_PROCESSES`, so two, and
+ *  three is reserved rather than exact so widening the row cap cannot overrun. */
+const PROCESS_COUNT_RESERVE_CHARS = 32;
 
 /**
  * A `ps`-shaped process row. `etime` is `ps`' own elapsed-time column
@@ -128,24 +164,6 @@ export interface HangEvidence {
    * a caller that only composes a one-line clause has nothing to show.
    */
   stdoutTail?: string;
-}
-
-/**
- * What `execTree` reports on a killed run. The type is declared here rather
- * than imported from `exec-tree.ts` because the gate seams reach a killed run
- * through the injected `ExecFn`, whose rejections are produced by test fakes
- * and by `withFastTier`'s rethrow as well as by the real executor — so the
- * caller reads these fields off whatever came back, optionally.
- */
-export interface KilledRunError {
-  stdout?: string;
-  stderr?: string;
-  /** True on either kill path (timeout OR maxBuffer overflow); see `timedOutKill`. */
-  killed?: boolean;
-  /** #1427 — the run was stopped by the wall-clock bound: the hang shape. */
-  timedOutKill?: boolean;
-  /** #1427 — the stream that overflowed when the run was overflow-killed. */
-  overflow?: string;
 }
 
 /**
@@ -234,17 +252,32 @@ function treeSection(e: HangEvidence): string {
  */
 export function gateHangClause(e: HangEvidence): string {
   const who = boundWho(e.runningTests);
+  // Three distinct claims, three distinct strings — an operator who reads "no
+  // child process" believes the group was looked at and found empty. When nobody
+  // looked (or the walk was cut short), the clause says which of those happened
+  // and why. #1427 round 4: the clause composer can no longer walk, so this is
+  // the only honest way to render an absent tree.
   const held =
     e.processes.length > 0
       ? `${e.processes.length} process(es) still alive${e.detail === undefined ? "" : ` (${e.detail})`}`
-      : "no child process";
+      : `process tree unavailable (${e.treeUnavailable ?? "not captured"})`;
   return `${GATE_HANG_LABEL} hung in ${who}; ${held}`;
 }
 
-/** Bound on the joined "hung in …" list, characters. Sized so the clause —
- *  the widest part of a timeout failure string — still leaves the `[verify-
- *  timeout]` headline in front of it inside the 800-char evidence window. */
-const MAX_WHO_CHARS = 480;
+/**
+ * Bound on the joined "hung in …" list, characters. DERIVED from the widest
+ * clause the module can produce — the maximum name list, the process count, and
+ * {@link MAX_DETAIL_ROWS} leaf commands at {@link MAX_ARGS_CHARS} each — so that
+ * the `[verify-timeout]` headline the cap router keys on stays inside the
+ * evidence window in the adversarial case, not merely the measured one. The test
+ * drives exactly that worst case; a bound nothing constructs is not a bound.
+ */
+const MAX_WHO_CHARS =
+  EVIDENCE_WINDOW_CHARS -
+  TIMEOUT_HEADLINE_RESERVE_CHARS -
+  MAX_DETAIL_ROWS * MAX_ARGS_CHARS -
+  PROCESS_COUNT_RESERVE_CHARS -
+  CLAUSE_PROSE_OVERHEAD_CHARS;
 
 /**
  * #1427 round 3 — the bounded `who` of a hang clause: each name is already
@@ -352,20 +385,24 @@ export function isGateHangFailure(failure: string): boolean {
   return failure.includes(GATE_HANG_LABEL);
 }
 
-/** The subset of `DriverContext` the recorder touches. Declared structurally so
- *  this module keeps no import edge to the driver context (which imports it). */
+/**
+ * #1427 — the per-gate-CALL collector for written hang report paths.
+ *
+ * One sink per `verifyStepOutcome` call: `work-driver-verify-pr17.ts` creates it,
+ * `runVerifyCommandGate` feeds it from both writing seams (the per-worktree loop
+ * and the consolidated probe), and the same call returns its contents as
+ * `hangLogPaths` — which is exactly the scope a cap has. It replaced the
+ * cycle-context accumulator, which lived for the whole cycle while the develop
+ * gate runs up to three times (first pass, fence merge-and-retry, sibling-symbol
+ * merge), so a late cap named an early call's reports and the handoff pointed the
+ * operator at a file from a run that had killed nothing (#1427 round 3).
+ *
+ * Structural (declared here, not on the driver context) so this module keeps no
+ * import edge to the context that imports it. Callers push onto the array
+ * directly: the recorder that used to sit here had exactly one reader — a smoke
+ * test's local variable — and an idempotence guarantee nothing calls is dead code
+ * with a docstring on it (#1427 round 4).
+ */
 export interface GateHangPathSink {
   gateHangLogPaths?: string[];
-}
-
-/**
- * #1427 — record a written hang report on the cycle context, which is where the
- * cap emit site looks. Written as a function rather than an assignment at each
- * call site because a develop cycle reaches its verify cap from three places
- * (first pass, fence merge, symbol merge) and each would otherwise have to
- * remember the spread; a recorder is the one shape that cannot be half-applied.
- */
-export function recordGateHangLogPath(sink: GateHangPathSink, logPath: string): void {
-  if (sink.gateHangLogPaths?.includes(logPath)) return;
-  sink.gateHangLogPaths = [...(sink.gateHangLogPaths ?? []), logPath];
 }

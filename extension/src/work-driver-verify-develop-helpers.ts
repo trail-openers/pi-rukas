@@ -19,9 +19,9 @@ import {
   isHostForkExhaustion,
   pidLimitSnapshot,
 } from "./work-driver-exec-error.ts";
-import type { HangProcess } from "./work-driver-gate-hang.ts";
 import {
-  captureProcessTree,
+  type HangProcess,
+  NO_TREE_CAPTURED,
   deepestCommands,
   extractRunningTests,
   gateHangClause,
@@ -98,26 +98,41 @@ export function verifyHangFailure(
 }
 
 /** The clause half of {@link verifyHangFailure}, composed in one place so the
- *  failure string and the written report cannot describe the kill differently. */
+ *  failure string and the written report cannot describe the kill differently.
+ *
+ *  #1427 round 4 — this function NEVER walks. The caller captures the tree once,
+ *  in the window between the executor's kill and its settle, and hands it in; a
+ *  run with no captured tree says so (`no tree was captured`) rather than
+ *  forking `ps` on a group that the kill has usually already reaped. A live walk
+ *  here was a second snapshot of a dead group — different from the one the
+ *  written report describes — paid for on the failure path of a cycle that has
+ *  already run out of time. */
 function hangClauseFor(run: KilledGateRun): string {
-  const tree =
-    run.tree ??
-    (run.treePid === undefined
-      ? { processes: [] as HangProcess[] }
-      : (run.walk ?? captureProcessTree)(run.treePid));
+  const processes = run.tree?.processes ?? [];
+  // #1427 round 4 — with no rows there is nothing to count, and the clause's
+  // second half carries the reason instead: a walk that collected nothing
+  // reports why it collected nothing, and a caller that captured nothing at all
+  // says `no tree was captured`. Rendering `N process(es) still alive` over an
+  // empty snapshot would claim a live count of zero — the exact false positive
+  // this clause is not allowed to make.
+  const treeUnavailable =
+    run.tree === undefined
+      ? NO_TREE_CAPTURED
+      : (run.tree.treeUnavailable ?? "the walk collected no process rows");
   return gateHangClause({
     runningTests: extractRunningTests(run.output),
     cmd: run.cmd,
     cwd: run.cwd,
     timeoutMs: run.timeoutMs,
-    processes: tree.processes,
+    processes,
     // The processes deeper in the group are the point of the clause in a
     // failure string: the test name says what hung, the command lines say what
     // was holding on (in the measured case, a `git remote-http` orphaned by the
     // test's own already-killed `git pull`). Bounded: two rows, each already
     // bounded, and the name list itself is bounded by `gateHangClause`, so the
     // clause cannot outgrow the window that has to carry the headline.
-    ...(tree.processes.length > 0 ? { detail: deepestCommands(tree.processes) } : {}),
+    ...(processes.length > 0 ? { detail: deepestCommands(processes) } : {}),
+    ...(processes.length === 0 ? { treeUnavailable } : {}),
   });
 }
 
@@ -141,53 +156,28 @@ export function isTimedOutKill(e: {
   return e.killed === true;
 }
 
-/** What a gate seam knows about the run it killed, to build a hang report from. */
+/**
+ * What a gate seam knows about the run it killed, to build a hang report from.
+ *
+ * #1427 round 4 — `treePid` and `walk` are GONE from this shape. A caller either
+ * hands in the tree it captured in its own `catch`, or hands in nothing and the
+ * clause says no tree was captured. There is deliberately no way to ask this
+ * module to walk: the seam that killed the run is the only place with a chance of
+ * seeing the group alive, and a second walk from here is a second, later, worse
+ * snapshot of the same kill.
+ */
 export interface KilledGateRun {
   /** The killed run's combined stdout+stderr (the source of the slow-test lines). */
   output: string;
-  /** The leader pid the executor killed, when the executor reported one. */
-  treePid?: number;
   /** The killed run's own command — the fast tier's when that is what hung. */
   cmd: string;
   cwd: string;
   timeoutMs: number;
-  /** Injectable tree walker; production omits it and `ps` is walked. */
-  walk?: (leaderPid: number) => { processes: HangProcess[]; treeUnavailable?: string };
   /**
-   * A tree the caller already walked at the kill. Preferred over `treePid`: by
-   * the time a seam composes its failure string the group may be gone, and
-   * re-walking would give the clause a different snapshot from the report the
-   * same kill produced (#1427 fix round — one walk feeds both).
+   * The tree the caller walked at the kill — the ONLY source of process rows for
+   * a clause. Absent = the clause reports that nothing was captured.
    */
   tree?: { processes: HangProcess[]; treeUnavailable?: string };
-}
-
-/**
- * #1427 — the `where` clause of a timeout whose run was observed hanging: the
- * plain `where` plus the hang clause ("hung in test X, N process(es) still
- * alive"). Falls back to the plain `where` when no run was handed in, so a gate
- * that killed a run it could not describe still says exactly what #1324 said.
- *
- * The CLAUSE goes in the failure string, not the full report: a failure survives
- * an 800-char evidence window and the clause is the part that must, while the
- * tree and the output tail are too wide for it and go to the scratch log the
- * handoff points the operator at.
- */
-/**
- * #1427 — the plain `where` of a timeout whose run was observed hanging, with
- * the run's facts handed to {@link verifyHangFailure}, which appends the clause.
- *
- * Kept as its own function because two callers (the per-worktree seam and the
- * commit-pr probe) compose the `where` phrase before they know whether a clause
- * exists: this returns the plain phrase, and `verifyHangFailure` puts the clause
- * after the whole #1324 sentence. A caller that has a run to describe must go
- * through `verifyHangFailure`, NOT through this function plus a manual append —
- * that is how the clause ended up inside the bounded region and took the
- * `[verify-timeout]` marker with it when the tail was cut (#1427 round 3).
- */
-export function timeoutWhere(where: string, run?: KilledGateRun): string {
-  if (run === undefined) return where;
-  return `${where} (${run.cwd})`;
 }
 
 export function isVerifyTimeoutFailure(failure: string): boolean {

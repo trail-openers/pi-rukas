@@ -22,7 +22,7 @@ import type { DriverContext } from "./work-driver-context.js";
 import { extractAttributedTail, isHostForkExhaustion } from "./work-driver-exec-error.ts";
 import { writeGateHangReport } from "./work-driver-gate-hang-report-write.ts";
 import type { HangProcess } from "./work-driver-gate-hang.ts";
-import { captureProcessTree } from "./work-driver-gate-hang.ts";
+import { NO_TREE_CAPTURED, captureProcessTree } from "./work-driver-gate-hang.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
@@ -244,12 +244,19 @@ export async function runConsolidatedVerifyUnlocked(
         // run, so an ordinary failure writes one file and not two. The tree is
         // walked HERE, before the kill has settled, and carried to the write.
         if (timedOut) {
-          const tree =
-            typeof e.treePid === "number"
-              ? (opts.walkProcessTree ?? captureProcessTree)(e.treePid)
-              : { processes: [] as HangProcess[] };
-          hangTree = tree;
-          hangLeaderPid = typeof e.treePid === "number" ? e.treePid : undefined;
+          // ONE capture per killed run, made HERE — in the window between the
+          // kill and its settle where the group's stragglers can still be alive
+          // (the nessie #1054 case is children that outlive their leader) — and
+          // handed to BOTH the written report and the failure-string clause.
+          // #1427 round 4 removed the clause's ability to walk at all, so this
+          // line is the only thing that produces process rows for this seam.
+          if (typeof e.treePid === "number") {
+            hangTree = (opts.walkProcessTree ?? captureProcessTree)(e.treePid);
+            hangLeaderPid = e.treePid;
+          } else {
+            hangTree = { processes: [] as HangProcess[], treeUnavailable: NO_TREE_CAPTURED };
+            hangLeaderPid = undefined;
+          }
         }
         // #841 — persist the RAW run1 stream before the bounded tail is
         // computed: the run1 log is the operator's only record of what the
@@ -286,11 +293,13 @@ export async function runConsolidatedVerifyUnlocked(
       retryDecision = decision;
       if (allowed) {
         retried = true;
-        // #841 — thread scratchDir + the SAME timestamp into the re-run so
-        // the run2 log is written next to run1 with the matching prefix.
-        // (The commit-pr twin seam in work-driver-integrate-verify.ts passes
-        // neither argument and keeps its pre-#841 behaviour per the ticket's
-        // scope.)
+        // #841 — thread scratchDir + the SAME timestamp into the re-run so the
+        // run2 log is written next to run1 with the matching prefix. (The
+        // commit-pr twin seam in work-driver-integrate-verify.ts passes neither
+        // argument and keeps its pre-#841 behaviour per the ticket's scope.)
+        // #1427 round 4 — no walker argument: the re-run captures its own tree
+        // in its own catch from the executor's `treePid`, which is the only
+        // snapshot that can describe a group that run killed.
         const secondRun = await rerunConsolidatedVerifyOnce(
           execFn,
           verifyCmd,
@@ -298,7 +307,6 @@ export async function runConsolidatedVerifyUnlocked(
           timeoutMs,
           scratchDir,
           runTimestamp,
-          opts.walkProcessTree,
         );
         if (secondRun === undefined) {
           recovered = true;
@@ -388,9 +396,12 @@ export async function runConsolidatedVerifyUnlocked(
           tree: hangTree,
           leaderPid: hangLeaderPid,
         });
-        // The path is handed to the caller as it is written (not only on the
-        // result): the develop gate records it on the cycle context from this
-        // callback, which is where the cap emit site reads it.
+        // The path rides on the result (`hangLogPath`), which is how the caller
+        // records it structurally on the per-gate-call sink and thence the cap
+        // event. #1427 round 4 — the old comment here claimed the develop gate
+        // recorded it "on the cycle context"; that accumulator is gone, and the
+        // result field is the only channel, so this line cannot drift from the
+        // caller again without the two disagreeing loudly.
         if (hang !== undefined) opts.onGateHangLogPath?.(hang);
       }
       // #750 — the verified post-condition rides with every outcome of the
