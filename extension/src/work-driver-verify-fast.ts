@@ -110,14 +110,28 @@ export function developVerifyLine(verifyCmd?: string, fastCmd?: string): string 
  * run for hours.
  *
  * The floor of 1 is load-bearing in a way the ceiling is not. The knob accepts
- * `0`, and a non-numeric value (`""`, `"abc"`) also reads as 0 — and coreutils
- * treats `timeout 0` as *no timeout at all*. So the very shape this bound
- * exists to prevent — a suite running until the watchdog takes the whole child
- * — is what a `timeout 0` in the prompt instructs the child to do. Same reason
- * `withFastTier` above floors its derived bound with `Math.max(1, ...)`.
+ * `0` — coreutils treats `timeout 0` as *no timeout at all* — so the very shape
+ * this bound exists to prevent, a suite running until the watchdog takes the
+ * whole child, is what a `timeout 0` in the prompt instructs the child to do.
+ * Same reason `withFastTier` above floors its derived bound with
+ * `Math.max(1, ...)`.
+ *
+ * The clamp is written as one `Number.isFinite` guard rather than nested
+ * `Math.max`/`Math.min`, because both propagate a non-finite operand —
+ * `Math.max(1, NaN)` is `NaN` and `Math.min(1200, Infinity)` is `Infinity` —
+ * and either would put `timeout NaN` / `timeout Infinity` literally in front of
+ * the child, which is no bound at all. `toolInactivityTimeoutMs` rejects what
+ * `Number()` cannot read (`""`, `"abc"`, `"NaN"`, a negative) to the 60-min
+ * default, so those resolve through the ordinary path; the value that DOES pass
+ * its guard and still derives non-finite is an unparseably large one
+ * (`"1e400"` → Infinity), and that is the case the guard catches. Any
+ * non-finite derivation falls to the 1200 ceiling: the number the default
+ * already gives, so a prompt that could not read the knob carries a real bound
+ * rather than no bound.
  */
 export function suiteTimeoutSeconds(): number {
-  return Math.max(1, Math.min(1200, Math.floor(toolInactivityTimeoutMs() / 1000 / 3)));
+  const s = Math.floor(toolInactivityTimeoutMs() / 3000);
+  return Number.isFinite(s) ? Math.max(1, Math.min(1200, s)) : 1200;
 }
 
 /**

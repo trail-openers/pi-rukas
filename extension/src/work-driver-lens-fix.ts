@@ -156,6 +156,13 @@ export async function runLensFix(
         `RE-DISPATCH — the previous lens-fix dispatch produced no committed fix: no commits ahead of the feature branch in the lens-fix worktree ${JSON.stringify(fixTree)}.`,
         `Either the findings are already resolved in the committed diff (in which case say so with \`nothing-to-fix: <one-line reason>\` and make no changes), or the previous attempt left uncommitted work in that tree that it never committed. Inspect the tree — \`git -C ${fixTree} status\` — and commit any uncommitted fix work there: \`git add -A\` followed by \`git commit -m "<type>(scope): concise subject"\`. Do NOT push.`,
         "",
+        // #1156 — the re-dispatch is the same developer in the same worktree
+        // with the same gates to re-run, so it carries the same test-scope +
+        // suite-bound rule as `inlineLensFixPrompt`. This branch is a separate
+        // inline array built alongside that function, which is exactly where
+        // the rule got dropped once.
+        `  - ${developTestScopeLine()}`,
+        "",
         "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",
         "```json",
         findings,
