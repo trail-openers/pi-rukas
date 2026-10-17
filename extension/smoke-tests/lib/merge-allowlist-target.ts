@@ -9,11 +9,22 @@
  */
 
 import { detectForge } from "../../src/forge-detect.ts";
+import type { ExecResult } from "../../src/exec.ts";
 import { type MergeExecFn, readMergeTarget, resolvePrNumber } from "../../src/merge-target.ts";
 import { assert } from "../merge-guard-helpers.ts";
 
 /** A `git` that never answers: the hang every bound below is measured against. */
 const never: MergeExecFn = () => new Promise(() => {});
+
+/**
+ * The same stalled `git` on the forge-detection seam.
+ *
+ * `DetectForgeOpts.execFn` is typed `typeof execp`, whose `ExecResult` makes
+ * `stderr` REQUIRED — narrower than `MergeExecFn`, which leaves it optional.
+ * Reusing `never` there is a type error, not a behaviour difference: the
+ * promise never settles either way, so the timeout path is still what fires.
+ */
+const neverExecp = (): Promise<ExecResult> => new Promise(() => {});
 
 /** Where the stalled `git` is pretended to run — nowhere, on purpose. */
 const NONEXISTENT = "/nonexistent";
@@ -47,7 +58,7 @@ const NO_FORGE_ENV = {};
 export async function assertStalledGitIsBounded() {
   const t0 = performance.now();
   const d = await detectForge(NONEXISTENT, {
-    execFn: never,
+    execFn: neverExecp,
     env: NO_FORGE_ENV,
     forgeConfigContent: "",
     allowProbe: false,
@@ -64,7 +75,7 @@ export async function assertStalledGitIsBounded() {
   );
 
   const r = await readMergeTarget(never, NONEXISTENT, 17, {
-    execFn: never,
+    execFn: neverExecp,
     env: NO_FORGE_ENV,
     forgeConfigContent: "",
     execTimeoutMs: EXEC_TIMEOUT_MS,
@@ -80,7 +91,7 @@ export async function assertStalledGitIsBounded() {
   // never become "merge whatever is current".
   const t1 = performance.now();
   const n = await resolvePrNumber(never, NONEXISTENT, undefined, {
-    execFn: never,
+    execFn: neverExecp,
     env: NO_FORGE_ENV,
     forgeConfigContent: "",
     execTimeoutMs: EXEC_TIMEOUT_MS,

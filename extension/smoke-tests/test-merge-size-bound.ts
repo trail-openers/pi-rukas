@@ -237,7 +237,13 @@ for (const cmd of longNonCliMergeDoors()) {
     `a long non-gh forge-shaped merge door is bounded under BOTH predicates: ${cmd.slice(0, 45)}…`,
   );
   assert(
-    analysisBound(cmd)?.reason === "too-large",
+    (() => {
+      // Narrow through the discriminated union rather than comparing through
+      // `?.`: had `analysisBound` returned the wrong arm, `b.reason` would be
+      // a COMPILE error here instead of a silent falsy comparison.
+      const b = analysisBound(cmd);
+      return b !== undefined && b.kind === "refused" && b.reason === "too-large";
+    })(),
     `…and the classifier refuses it as too-large rather than reading it: ${cmd.slice(0, 45)}…`,
   );
 }
