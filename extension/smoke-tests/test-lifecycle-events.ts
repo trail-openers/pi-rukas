@@ -100,10 +100,12 @@ function fakeTheme(): { theme: { fg: (style: string, text: string) => string }; 
   return { theme, styles };
 }
 
-// Every LifecycleDetails shape (one per kind) — the full matrix the renderer must
-// handle. `satisfies Record<LifecycleKind, LifecycleDetails>` makes a kind missing
-// from this list a COMPILE error, so the guard cannot lag a new `LifecycleKind`
-// member (which is how `step-notice` shipped unpinned).
+// All 9 LifecycleDetails shapes (one per kind) — the full matrix the
+// renderer must handle, plus the synthetic entries built from them.
+// `satisfies Record<LifecycleKind, LifecycleDetails>` is what keeps the guard
+// from lagging a new `LifecycleKind` member (the #1403 way: `step-notice`
+// shipped unpinned). The notice carries no role, ordinal or elapsed, so the
+// block below pins only `label` and `reason`.
 const ALL_SHAPES_BY_KIND = {
   dispatched: { kind: "dispatched", jobId: "df8a-7r", label: "developer", role: "developer" },
   completed: {
@@ -184,8 +186,6 @@ const ALL_SHAPES_BY_KIND = {
   },
 } satisfies Record<LifecycleKind, LifecycleDetails>;
 
-// The #1403 notice carries no role, ordinal or elapsed: the renderer reads only
-// `label` and `reason`, so those are what these assertions pin.
 {
   const notice = ALL_SHAPES_BY_KIND["step-notice"];
   const line = formatLine(notice);
