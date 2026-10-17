@@ -23,8 +23,8 @@
  * it found them — a fixture that leaves them set leaks a ledger path and a skills
  * dir into every later test in the same process.
  *
- * WHY `sh` PASSES AN EXPLICIT `env` AND AN EXPLICIT `HOME` (#1145)
- * ----------------------------------------------------------------
+ * WHY `sh` PASSES AN EXPLICIT `env` (#1145)
+ * -----------------------------------------
  * Setting `process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE` is necessary but NOT
  * sufficient, because the builder also shells out through the SYNCHRONOUS
  * `child_process` form, and bun (1.3.12) does not propagate a `process.env`
@@ -44,25 +44,23 @@
  * `main` and fetches it, but `git fetch` only creates `origin/HEAD` when
  * `init.defaultBranch` is set (git's own hint: "If your project is in this
  * directory, to create origin/HEAD… run git remote set-head") — and that
- * variable lives in the host's global config. Isolated, `symbolic-ref` fails,
- * `resolveMainline` falls through to `gh repo view`, the stub answers `main`,
- * `origin/main` resolves, and the entry lands in the fixture's ledger. Against
- * a host config that sets `init.defaultBranch`, `origin/HEAD` exists, the write
- * takes the first branch, and no row ever appears at `ledgerFile` — the poll in
+ * variable lives in the host's global config. Against a host config that sets
+ * `init.defaultBranch`, `origin/HEAD` exists, the write takes the first branch,
+ * and no row ever appears at `ledgerFile` — the poll in
  * test-lens-review-advisory.ts then throws ENOENT. Same code, opposite verdict,
- * decided by the machine.
+ * decided by the machine. The fixture now sets the ref itself
+ * (`git remote set-head origin main`) so neither branch of that fork is a
+ * function of the host: the mainline resolves locally and deterministically
+ * whether or not a global config exists to set the variable.
  *
  * `gitTestEnv()` is threaded into every `sh` call so the fixture's git view is
- * the isolated one however the call is transported, and `sh` additionally
- * re-applies `HOME` from `os.homedir()` afterwards: bun snapshots `homedir()`
- * at process start, so the real home stays reachable to a fixture that needs
- * it even while its git children run isolated (the same trade-off
- * lib/git-test-env.ts documents for the ambient env).
+ * the isolated one however the call is transported — the synchronous spawn form
+ * is precisely the one bun 1.3 does not fix with an ambient `process.env`
+ * write, so the isolation has to arrive in the options object.
  */
 
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 import type { LensRunResult } from "../../src/lens-review-types.ts";
 import { LENS_ROSTER } from "../../src/lens-roster.ts";
@@ -165,6 +163,18 @@ export function buildAdvisoryFixture(root: string): AdvisoryFixture {
   sh(`git remote add origin ${path.join(root, "remote.git")}`);
   sh("git push -q origin main");
   sh("git fetch -q origin");
+  // #1145 round 3 — set the remote's HEAD explicitly rather than hoping
+  // `git fetch` creates it. `origin/HEAD` is only created on fetch when
+  // `init.defaultBranch` is set, and that variable lives in the global config:
+  // against a host config that sets it the ref appears and `resolveMainline`
+  // (src/mainline.ts, via the fire-and-forget ledger write's `identityBase`)
+  // takes a different branch than it takes isolated, which is the fork that
+  // made this suite host-dependent. Setting it here makes neither branch a
+  // function of the host. AFTER the push and the fetch, not before: HEAD of a
+  // remote is resolved against the refs it actually advertises, and a brand-new
+  // bare repo has none until `main` lands in it — `set-head` on the empty
+  // remote exits 1 ("No refs in common"), which this fixture treats as fatal.
+  sh("git remote set-head origin main");
   sh("git checkout -q -b feat/x");
   // The one changed line is line 11; lines 1-10 of this file are untouched.
   writeFileSync(path.join(repo, "src", "a.ts"), `${lines(10, "a")}// changed\n`);

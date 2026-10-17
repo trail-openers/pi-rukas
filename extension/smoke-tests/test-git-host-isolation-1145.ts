@@ -324,7 +324,9 @@ const IG = ["ig", "nore"].join("");
   );
 
   const hostile = g({ ...baseEnv(), HOME: home, XDG_CONFIG_HOME: xdg })([
-    "status", "--porcelain", "-uall",
+    "status",
+    "--porcelain",
+    "-uall",
   ]);
   assert(
     !hostile.includes(SENTINEL_FILE),
@@ -341,6 +343,28 @@ const IG = ["ig", "nore"].join("");
 
 // ------------------------------------------------------ 4. the helper is idempotent
 {
+  // The case mutates four of the ambient levers: `isolateGitEnv()` writes
+  // GIT_CONFIG_GLOBAL / GIT_CONFIG_NOSYSTEM / HOME / XDG_CONFIG_HOME into
+  // `process.env`, and the bypass below sets PI_ENSEMBLE_SMOKE_HOST_GIT.
+  // Everything here reads git through an explicit env, so a leaked HOME would
+  // not silently recolour this file — but it leaks into whatever a later `bun`
+  // invocation in the same process inherits, and "the isolated HOME" is not a
+  // value any other test expects to find. Save and restore all four.
+  const saved: Record<string, string | undefined> = {};
+  for (const k of [...GIT_ISOLATION_VARS, "PI_ENSEMBLE_SMOKE_HOST_GIT"]) {
+    saved[k] = process.env[k];
+  }
+  const restore = () => {
+    for (const [k, v] of Object.entries(saved)) {
+      // `delete` is the only correct "reset to unset" — assigning undefined
+      // stores the STRING "undefined" on bun 1.4 (the #997 ratchet). No
+      // biome-ignore: the rule fires only on a COMPUTED key, and `k` here is a
+      // literal from the loop above, so a suppression would be dead weight and
+      // `suppressions/unused` would report it as one.
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
   const a = gitTestEnv().HOME;
   const b = gitTestEnv().HOME;
   assert(
@@ -378,8 +402,7 @@ const IG = ["ig", "nore"].join("");
   // through and no value points at the isolation dir for a NEW process).
   const bypassed = gitTestEnv({ FOO: "bar" });
   assert(bypassed.FOO === "bar", "gitTestEnv() passes the caller's base env through");
-  // biome-ignore lint/performance/noDelete: delete is the correct "reset to unset"
-  delete process.env.PI_ENSEMBLE_SMOKE_HOST_GIT;
+  restore();
 }
 
 // ------------------------------------- 5. production never SETS these (only scrubs)
@@ -395,7 +418,16 @@ const IG = ["ig", "nore"].join("");
       }
       if (!entry.endsWith(".ts")) continue;
       const text = readFileSync(full, "utf8");
-      for (const v of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "XDG_CONFIG_HOME"]) {
+      for (const v of [
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "XDG_CONFIG_HOME",
+        // HOME is the fourth of the isolation set and was the one the scan did
+        // not cover: a production module that SET `process.env.HOME` would move
+        // every git child (and every `~/` path) off the operator's home, which
+        // is the exact boundary this issue must not cross.
+        "HOME",
+      ]) {
         // An ASSIGNMENT (export / process.env write) — a scrub-list string in an
         // array is not one, which is what headless/build.ts legitimately does.
         const re = new RegExp(`(export\\s+${v}|process\\.env\\.${v}\\s*=[^=])`, "m");
