@@ -7,4 +7,15 @@
 # The full §1 gate is `bun run build` too, but build writes into dist/ and this
 # runs once per workstream worktree in parallel; the deeper suite lives in
 # .pi/verify-cmd-full, which the ci step runs once.
-cd extension && bun x tsc --noEmit && bun x tsc --noEmit -p tsconfig.smoke-tests.json && cd .. && bun run check && cd extension && bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts
+#
+# `--jobs-from-host` sizes the smoke pool from the host CPU count when
+# PI_ENSEMBLE_VERIFY_TEST_JOBS is unset: 4 jobs on a host reporting 8+ CPUs, 2
+# otherwise, an explicit ambient setting always winning. Measured on a 10-core
+# host at the suite stage: 4 jobs → 4m49s, versus ~19 min under load at 2 — past
+# the binding bound, the develop gate's PI_ENSEMBLE_VERIFY_TIMEOUT_MS (10 min).
+# It is a flag rather than an inline `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf
+# …)}"` prefix because review-accept-guard A5 admits `bash …/verify-loop.sh` only
+# when every following word is `--digest` or a test path (see
+# test-review-accept-guard-hardened.ts, which checks each arm here against A5).
+# See docs/configuration.md (`PI_ENSEMBLE_VERIFY_TEST_JOBS`).
+cd extension && bun x tsc --noEmit && bun x tsc --noEmit -p tsconfig.smoke-tests.json && cd .. && bun run check && cd extension && bash smoke-tests/lib/verify-loop.sh --jobs-from-host smoke-tests/test-*.ts
