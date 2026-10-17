@@ -327,6 +327,33 @@ export function formatSingleReport(
   return `${head}\n\n${body}\n\n${gitLine ? `${gitLine}\n\n` : ""}${footer}`;
 }
 
+/**
+ * #1044 — the rendered text of a compiled driver that is NOT a subagent.
+ *
+ * `formatSingleReport` renders "Subagent `<label>` … N turns, …" and appends
+ * the developer gate footer. Both are false for a plan / research run: there
+ * is no subagent (the pipeline is in-process TypeScript that dispatches
+ * children of its own), no turn count, and no hand-managed-work gate for the
+ * PM to run on a spec it did not write. What must survive verbatim is the
+ * rendered result the tool used to RETURN — dry-run specs and NOT-FILEABLE
+ * blocks included (the #1044 acceptance criterion).
+ *
+ * The header keeps the two invariants every async report has: the
+ * `[ensemble:async]` prefix and the `(job <id>)` token, which is what
+ * `test-pending-jobs-signal.ts` pins for clients and what correlates a
+ * concurrent pair of launches to its own descriptor/topic.
+ */
+export function formatDriverReport(
+  jobId: string,
+  label: string,
+  subject: string,
+  text: string,
+): string {
+  const head = `[ensemble:async] ${label} \`${subject}\` (job ${jobId}) complete`;
+  const body = text?.trim() || "(no output)";
+  return `${head}\n\n${body}\n\n---\nYou started this driver earlier. Continue the workflow.`;
+}
+
 export function formatFailReport(jobId: string, label: string, err: Error): string {
   const tail = (err.message ?? "").slice(-200);
   return [

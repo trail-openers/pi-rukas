@@ -10,6 +10,7 @@ import {
   newJobId,
 } from "./async-jobs-registry.ts";
 import {
+  formatDriverReport,
   formatFailReport,
   formatSingleReport,
   reportsGitState,
@@ -28,7 +29,7 @@ import { type OnSlowCallback, feedSlowProgress } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
 import { type DispatchResult, isRateLimit429Msg } from "./types.ts";
 
-export { formatSingleReport } from "./async-jobs-report.ts";
+export { formatDriverReport, formatSingleReport } from "./async-jobs-report.ts";
 export { startBatch } from "./async-jobs-batch.ts";
 export {
   getChildHandle,
@@ -142,6 +143,26 @@ interface StartJobInput {
    * See SingleJobState.ownerKind for the full rationale.
    */
   ownerKind?: "pm" | "driver";
+  /**
+   * #1044 — the report shape. Default "subagent": `formatSingleReport`, which
+   * renders the child's turn count, usage, kill-cause headline and (for a
+   * finished developer) the hand-managed-work gate line. Set "driver" for an
+   * in-process compiled pipeline (plan / research) whose work function
+   * returns a pre-rendered `text` and no subagent observables: the report is
+   * then `formatDriverReport` — the standard `[ensemble:async] … (job <id>)`
+   * header plus the rendered text VERBATIM, with no turn count, no usage and
+   * no developer footer, none of which a pipeline produces.
+   */
+  reportKind?: "subagent" | "driver";
+  /**
+   * #1044 — the run's identifier as the operator names it (a plan descriptor,
+   * a research topic). Used by the "driver" report shape so each report in a
+   * concurrent pair names its OWN run; absent → `label`. Rendered into the
+   * header UNTRUSTED and unescaped — it is a caller-supplied string that an
+   * LLM wrote — so the same reasoning that keeps a work-driver label out of a
+   * parsed field applies: read it as prose, never as a marker.
+   */
+  subject?: string;
   /**
    * #799 — invoked by the slow-run watch (slow-notice.ts) on each threshold
    * crossing, before the PM notice and the auto-steer. The driver threads
@@ -317,6 +338,26 @@ export function startJob(pi: DispatchHost, input: StartJobInput): StartJobHandle
               jobStandIn(jobId, input.label, e),
             );
           }
+          return result;
+        }
+        // #1044 — a driver-shaped job has no subagent to describe: its text IS
+        // the report body, so it skips the git-state read and the five-way
+        // outcome headline entirely. A throw from the formatter still falls
+        // through to deliverOrStandIn's stand-in path below.
+        if (input.reportKind === "driver") {
+          deliverOrStandIn(
+            pi,
+            `async job ${jobId}`,
+            () =>
+              formatDriverReport(
+                jobId,
+                input.label,
+                input.subject ?? input.label,
+                result.text ?? "",
+              ),
+            (e) => jobStandIn(jobId, input.label, e),
+          );
+          trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) finished (driver)`);
           return result;
         }
         // Driver-owned jobs skip the steer: the in-process caller is awaiting

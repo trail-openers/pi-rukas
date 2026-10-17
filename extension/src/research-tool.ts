@@ -9,21 +9,60 @@
  * exactly that deterministic spine (research-driver.ts) and leaves
  * judgement — angle choice, and the conversation after the artifact — with
  * PM. The /research slash-command body now instructs PM to call this tool.
+ *
+ * #1044 — the tool LAUNCHES and returns; it does not wait. The pipeline runs
+ * in a background job (`startJob`, `reportKind: "driver"`) and the full
+ * rendered result — the exact text this tool used to return — arrives later as
+ * one `[ensemble:async]` steer naming the jobId, the same contract
+ * `start_work_driver` has. A blocking research run locked the operator out of
+ * the PM for the whole run, which is what they actually complained about.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { startJob } from "./async-jobs.ts";
 import { runResearchPipeline } from "./research-driver.ts";
 import type { ResearchClaim, ResearchResult } from "./research-types.ts";
 import { trace } from "./trace.ts";
 import { piSessionHost } from "./work-driver-host.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
 
+export interface RegisteredResearchTool {
+  name: string;
+  description: string;
+  parameters: { properties?: Record<string, unknown> };
+  // The five execute() arguments are NAMED so the async test
+  // (test-plan-research-async.ts) can pass the ExtensionContext positionally.
+  // The job's report reaches the registered `pi`, not this object — the test
+  // registers a stub whose `sendUserMessage` records the delivery.
+  execute: (
+    id: string,
+    params: Record<string, unknown>,
+    signal: unknown,
+    onUpdate: unknown,
+    ctx: { cwd: string },
+  ) => Promise<unknown>;
+}
+
+/**
+ * #1044 — the launch notice (see `launchNotice` in plan-tool.ts for the same
+ * reasoning: a tool result arrives in seconds, the run takes minutes, so the
+ * notice may only assert what every run does whatever it ends up doing).
+ */
+export function researchLaunchNotice(o: {
+  jobId: string;
+  topic: string;
+  tier: string;
+  repoRoot: string;
+}): string {
+  return `pi-rukas: /research driver started for "${o.topic.slice(0, 80)}" (jobId: ${o.jobId}, tier: ${o.tier}, repo: ${o.repoRoot}). When the report arrives it says RESEARCH COMPLETE (or HALTED / an abstention) and names the artifact, the provenance sidecar and the verified-finding counts. The run takes minutes; end your turn — the [ensemble:async] steer carrying the jobId is the result, not this notice. Do not poll, and do not re-call to check progress.`;
+}
+
 export function registerResearchTool(pi: ExtensionAPI) {
   pi.registerTool({
     name: "start_research_driver",
     label: "Start /research Driver",
     description:
-      "Run the compiled /research pipeline: memory inventory → parallel angle retrieval (structured report_research_claim calls) → deterministic verification (URL liveness + commit-pinned code grounding) → a dated artifact + provenance sidecar under <repo>/outputs/ → a typed vipune row with supersession. Tiers: quick (1 angle, liveness only), standard (default; web + docs + codebase-if-code-named angles, full deterministic verification), deep (standard + ONE scoped LLM entailment pass annotating per-claim source support), adoption (OSS-adoption decision memo: signals/alternatives/integration-fit angles + a synthesis child whose recommendation embeds in the memo — use for 'should we adopt X' topics). Pass your own angle prompts via `angles` to override the derived set; the driver stops at the artifact — presenting, digging deeper and deciding plan-relevance stay with you in the conversation. Zero verified findings still writes an honest abstention artifact.",
+      "Launch the compiled /research pipeline in the BACKGROUND: memory inventory → parallel angle retrieval (structured report_research_claim calls) → deterministic verification (URL liveness + commit-pinned code grounding) → a dated artifact + provenance sidecar under <repo>/outputs/ → a typed vipune row with supersession. RETURNS IMMEDIATELY with a jobId and a launch notice — it does NOT return the findings. The run takes minutes; end your turn and the full result arrives later as one `[ensemble:async]` steer message naming this job (also when you are idle). Never poll or re-call to find out whether it finished. Concurrent launches are allowed; each result names its own topic. Tiers: quick (1 angle, liveness only), standard (default; web + docs + codebase-if-code-named angles, full deterministic verification), deep (standard + ONE scoped LLM entailment pass annotating per-claim source support), adoption (OSS-adoption decision memo: signals/alternatives/integration-fit angles + a synthesis child whose recommendation embeds in the memo — use for 'should we adopt X' topics). Pass your own angle prompts via `angles` to override the derived set; the driver stops at the artifact — presenting, digging deeper and deciding plan-relevance stay with you in the conversation. Zero verified findings still writes an honest abstention artifact.",
     parameters: Type.Object({
       topic: Type.String({ description: "The research topic — one or two sentences." }),
       tier: Type.Optional(
@@ -67,24 +106,46 @@ export function registerResearchTool(pi: ExtensionAPI) {
         };
       }
       const repoRoot = await resolveRepoRoot(ctx.cwd);
+      const tier = params.tier ?? "standard";
       trace(
-        `start_research_driver → topic="${params.topic.slice(0, 60)}" tier=${params.tier ?? "standard"} repoRoot=${repoRoot}`,
+        `start_research_driver → topic="${params.topic.slice(0, 60)}" tier=${tier} repoRoot=${repoRoot}`,
       );
-      try {
-        const result = await runResearchPipeline(piSessionHost(pi), params, repoRoot);
-        return {
-          content: [{ type: "text", text: renderResearchResult(result) }],
-          details: resultDetails(result),
-        };
-      } catch (err) {
-        trace(`start_research_driver failed: ${(err as Error).message}`);
-        return {
-          content: [
-            { type: "text", text: `start_research_driver failed: ${(err as Error).message}` },
-          ],
-          details: { started: false, error: (err as Error).message },
-        };
-      }
+      // #1044 — launch, don't wait (see plan-tool.ts for the full reasoning).
+      // The pipeline runs inside the job so a throw anywhere in it reaches the
+      // job's rejection path and is delivered as a bounded fail report. The
+      // deck entry STAYS (skipDeck is not set): unlike the work tool's job, a
+      // research job has no deck surface of its own, and the pipeline's angle
+      // children dispatch through dispatchCore, which registers their rows —
+      // so the parent row is the operator's only handle on a 20-minute run.
+      // The job delivers to `pi` — the same host every report-delivering tool
+      // uses (work-tool.ts); see plan-tool.ts for the mid-turn delivery note.
+      const { jobId } = startJob(pi, {
+        label: "research-driver",
+        role: "research-driver",
+        subject: params.topic,
+        reportKind: "driver",
+        work: async () => {
+          const result = await runResearchPipeline(piSessionHost(pi), params, repoRoot);
+          return {
+            role: "research-driver",
+            ok: true,
+            text: renderResearchResult(result),
+            toolUses: [],
+            ms: 0,
+            exitCode: 0,
+          };
+        },
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: researchLaunchNotice({ jobId, topic: params.topic, tier, repoRoot }),
+          },
+        ],
+        // #1295 — the async-result contract every report-delivering tool keeps.
+        details: { started: true, async: true, jobId, tier, topic: params.topic },
+      };
     },
   });
 }

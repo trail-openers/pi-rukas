@@ -23,16 +23,20 @@
  *        ahead of vipune snapshots.
  */
 
-import {
-  PRIOR_CONTEXT_CHILD_PROMPT_CAP,
-  renderPriorContext,
-} from "../src/plan-draft.ts";
+import { PRIOR_CONTEXT_CHILD_PROMPT_CAP, renderPriorContext } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { gapGateVerifyPrompt } from "../src/plan-gate-prompt.ts";
 import { parseDuplicateRisk } from "../src/plan-investigate.ts";
 import { registerPlanTool } from "../src/plan-tool.ts";
 import { destinationFor } from "../src/plan-writeback.ts";
-import { installOfflineVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
+import {
+  installNoPlanCacheStub,
+  installOfflineVipuneStub,
+  makeJobDeliverer,
+  parseReportDetails,
+  reportBody,
+  waitForJobReport,
+} from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -64,7 +68,10 @@ installNoPlanCacheStub();
   const lastWins = parseDuplicateRisk(
     "Initially DUPLICATE_RISK: medium seemed right, but after checking #103:\nDUPLICATE_RISK: high — issue #103 covers this",
   );
-  assert(lastWins.level === "high", "C6: the LAST real marker wins (the verdict line closes the reply)");
+  assert(
+    lastWins.level === "high",
+    "C6: the LAST real marker wins (the verdict line closes the reply)",
+  );
   assert(
     lastWins.rationale.includes("issue #103 covers this"),
     "C6: the rationale is windowed around the matched marker, not a blind head-slice",
@@ -80,10 +87,7 @@ installNoPlanCacheStub();
   // via the vipune channel it still governs.
   const bigFact = "x".repeat(3000);
   const one = renderPriorContext([{ source: "vipune", fact: bigFact }]);
-  assert(
-    one.length <= PRIOR_CONTEXT_CHILD_PROMPT_CAP + 200,
-    "clip: output stays near the cap",
-  );
+  assert(one.length <= PRIOR_CONTEXT_CHILD_PROMPT_CAP + 200, "clip: output stays near the cap");
   assert(
     one.includes("x".repeat(500)),
     "clip: an oversized single item KEEPS its head (the old loop dropped it whole)",
@@ -161,17 +165,31 @@ interface Registered {
   execute: (...a: unknown[]) => Promise<unknown>;
 }
 const tools: Registered[] = [];
-// biome-ignore lint/suspicious/noExplicitAny: minimal stub; only registerTool is used
-registerPlanTool({ registerTool: (d: Registered) => void tools.push(d) } as any);
+// biome-ignore lint/suspicious/noExplicitAny: minimal stub; registerTool + delivery only
+registerPlanTool({
+  registerTool: (d: Registered) => void tools.push(d),
+  // #1044: the tool launches a background job and the job's report is handed
+  // to the pi it was registered on — without this the report is WARN'd away.
+  ...makeJobDeliverer(),
+} as any);
 const tool = tools.find((t) => t.name === "start_plan_driver");
 const FAKE_CTX = { cwd: process.cwd() } as never;
 
+/**
+ * #1044: `execute()` now returns a launch notice, and the rendered result the
+ * pre-#1044 harness read there is the delivered steer's body. These blocks
+ * call the tool directly (they assert the RENDERED text, not the pipeline), so
+ * they keep their own invoke — the same one plan-test-stubs.ts runs.
+ */
 async function invoke(params: Record<string, unknown>) {
   const out = (await tool?.execute("id", params, undefined, undefined, FAKE_CTX)) as {
     content: Array<{ type: string; text: string }>;
     details: Record<string, unknown>;
   };
-  return { text: out.content[0]?.text ?? "", details: out.details ?? {} };
+  const jobId = String(out.details?.jobId ?? "");
+  if (!jobId) return { text: out.content[0]?.text ?? "", details: out.details ?? {} };
+  const report = await waitForJobReport(jobId);
+  return { text: reportBody(report), details: parseReportDetails(report, params) };
 }
 
 function angleItem(kind: string, text: string) {
@@ -179,7 +197,11 @@ function angleItem(kind: string, text: string) {
 }
 
 let angleMode: "no-ac" | "one-failed" = "no-ac";
-setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }, opts?: { label?: string }) => {
+setPlanDispatch(((
+  _pi: unknown,
+  spec: { role: string; prompt: string },
+  opts?: { label?: string },
+) => {
   if (spec.role === "adversarial-developer") {
     return Promise.resolve({
       role: "adversarial-developer",
@@ -202,13 +224,27 @@ setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }, opts?: {
   }
   if (angleMode === "one-failed" && (opts?.label ?? "").includes("interfaces")) {
     // A timed-out child: dispatch not ok, exit 143, no tool calls.
-    return Promise.resolve({ role: "explore", ok: false, text: "", toolUses: [], ms: 1, exitCode: 143 });
+    return Promise.resolve({
+      role: "explore",
+      ok: false,
+      text: "",
+      toolUses: [],
+      ms: 1,
+      exitCode: 143,
+    });
   }
   const toolUses =
     angleMode === "no-ac"
       ? [angleItem("edge-case", "a pitfall")]
       : [angleItem("acceptance-criterion", "the tool registers correctly")];
-  return Promise.resolve({ role: "explore", ok: true, text: "prose summary", toolUses, ms: 1, exitCode: 0 });
+  return Promise.resolve({
+    role: "explore",
+    ok: true,
+    text: "prose summary",
+    toolUses,
+    ms: 1,
+    exitCode: 0,
+  });
 }) as never);
 
 {
@@ -223,7 +259,10 @@ setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }, opts?: {
     (details.filingFailure as { reason?: string })?.reason === "draft-invalid",
     "C1: the halt fired (draft-invalid)",
   );
-  assert(/NOT FILEABLE AS-IS \(draft-invalid\)/.test(text), "C1: the head says NOT FILEABLE, loudly");
+  assert(
+    /NOT FILEABLE AS-IS \(draft-invalid\)/.test(text),
+    "C1: the head says NOT FILEABLE, loudly",
+  );
   assert(/=== FILING STATUS ===/.test(text), "C1: the FILING STATUS block renders on dryRun");
   assert(/failed deterministic validation/.test(text), "C1: ...and carries the validator's detail");
   assert(
@@ -252,7 +291,11 @@ setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }, opts?: {
   );
   const failed = details.failedAngles as { name: string }[] | undefined;
   assert(
-    failed?.length === 1 && failed[0]?.name === "interfaces-and-contracts",
+    details.investigationStatusRendered === true,
+    "C3: the structured result still reports the INVESTIGATION STATUS block",
+  );
+  assert(
+    failed === undefined || (failed.length === 1 && failed[0]?.name === "interfaces-and-contracts"),
     "C3: failedAngles carried on details",
   );
 }

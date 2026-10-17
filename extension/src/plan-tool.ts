@@ -31,6 +31,16 @@
  * #1043: an identical confirm of a FILEABLE dry run files the reviewed spec
  * verbatim (plan-confirm.ts) with no investigation, drafting or gate.
  *
+ * **The tool launches; it does not wait (#1044).** The pipeline runs in a
+ * background job (`startJob`, `reportKind: "driver"`) and execute() returns a
+ * launch notice with the `jobId` immediately — the same contract
+ * `start_work_driver` has. A blocking plan run locked the operator out of the
+ * PM for 5–45 minutes, which is what they actually complained about. The full
+ * rendered result — the exact text this tool used to return, dry-run specs and
+ * NOT-FILEABLE blocks included — arrives later as ONE `[ensemble:async]` steer,
+ * whether or not the PM is still mid-turn (`deliverAs: "steer"` is inert when
+ * idle). A throw inside the job is delivered as a fail report, never lost.
+ *
  * The driver's own filing is a child-process exec — exempt from the
  * tool_call guard by construction, exactly like the work driver's
  * mechanized `gh pr create`.
@@ -38,6 +48,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { startJob } from "./async-jobs.ts";
 import { runPlanPipeline } from "./plan-driver.ts";
 import { DROPPED_ARTIFACT } from "./plan-dropped-budget.ts";
 import { truncateForDisclosure } from "./plan-gap-disclosure.ts";
@@ -56,6 +67,37 @@ import { piSessionHost } from "./work-driver-host.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
 
 /**
+ * The head of the dry-run rendering: the sentence the operator-facing result
+ * opens with when nothing was filed and the review completed. Shared with
+ * `launchNotice` so the launch text and the eventual steer promise the SAME
+ * thing — PM must not be told to "show the spec" to a spec that has not been
+ * drafted yet.
+ */
+const DRY_RUN_HEAD =
+  "PLAN DRY-RUN (nothing filed). Show this spec to the operator. reviewedDigest:";
+
+/**
+ * #1044 — the tool's return is a LAUNCH notice, never the spec: a tool result
+ * arrives in seconds, and the pipeline takes minutes. So the only thing this
+ * text may assert is what every run does whatever it ends up doing. The
+ * `dryRun` branch used to say "show this spec to the operator", which read as
+ * an instruction to present text that does not exist yet; it now points at the
+ * steer instead, and the wording of the dry-run head stays in one place with
+ * the renderer below (DRY_RUN_HEAD).
+ */
+export function launchNotice(o: {
+  jobId: string;
+  descriptor: string;
+  dryRun: boolean;
+  repoRoot: string;
+}): string {
+  const next = o.dryRun
+    ? `When the report arrives it opens with "${DRY_RUN_HEAD}" and carries the spec, the gap dispositions and the digest: show those to the operator, then re-call with dryRun omitted and the digest to file.`
+    : "When the report arrives it says whether the issue was filed and carries the issue URL.";
+  return `pi-rukas: /plan driver started for "${o.descriptor.slice(0, 80)}" (jobId: ${o.jobId}, dryRun: ${o.dryRun}, repo: ${o.repoRoot}). ${next} The run takes minutes; end your turn — the [ensemble:async] steer carrying the jobId is the result, not this notice. Do not poll, and do not re-call to check progress.`;
+}
+
+/**
  * The shape of a registered `start_plan_driver` tool def — shared with the
  * test harness (plan-test-stubs.ts: invokePlanTool) so the dry-run e2e
  * blocks can drive the tool without the full ExtensionAPI surface.
@@ -64,7 +106,20 @@ export interface RegisteredPlanTool {
   name: string;
   description: string;
   parameters: { properties?: Record<string, unknown> };
-  execute: (...a: unknown[]) => Promise<unknown>;
+  // The five execute() arguments are NAMED (not `...a: unknown[]`) so the
+  // shared harness — plan-test-stubs.ts, driving every dry-run e2e block —
+  // can pass the ExtensionContext positionally without the `as any` cast it
+  // needed before. #1044 makes the fifth argument matter in a second way: the
+  // tool now launches a background job, and a job's report reaches the
+  // registered `pi`, not this object — so a test that wants to read its own
+  // result registers a stub whose `sendUserMessage` records the delivery.
+  execute: (
+    id: string,
+    params: Record<string, unknown>,
+    signal: unknown,
+    onUpdate: unknown,
+    ctx: { cwd: string },
+  ) => Promise<unknown>;
 }
 
 export function registerPlanTool(pi: ExtensionAPI) {
@@ -72,7 +127,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
     name: "start_plan_driver",
     label: "Start /plan Driver",
     description:
-      "Run the compiled /plan pipeline (classify → inventory → type-specialised investigation → draft → adversarial gap gate → file) and file the resulting GitHub issue. This is the ONLY way to create a GitHub issue: direct `gh issue create` (and `gh api` POST to the issues collection) is structurally refused for every role in every mode — the refusal names this tool. Call with dryRun:true FIRST to return { spec, gaps, priorContext, filed:false } without filing; show the spec + gap dispositions to the operator, and on their confirmation re-call with dryRun omitted to file. The result includes issueUrl on success. A dry run reports a reviewedDigest; re-calling with identical inputs (same descriptor, context, type and origin/<default> commit, within the expiry — 2 hours by default) and that digest files the reviewed spec VERBATIM, with no investigation, drafting or gap gate (the result says FILED FROM REVIEWED DRY RUN). Any other call — a changed input, a missing or wrong digest, an expired or non-fileable dry run — runs the full pipeline, which reuses the investigation and re-runs the gate; when that call carried a reviewedDigest and the pipeline drafts a different spec, nothing is filed and the result says THE REVIEWED SPEC CHANGED — show the new spec and ask again. Epic sub-issues at depth >= 3 get a minimal body with a depth-limit note. Gap gate: runs for bug/feature/epic; chore/spike get deterministic validation only. A too-thin descriptor (below the word floor, no code identifier, no context) returns needs-clarification questions without dispatching anything — answer them and re-call. Non-resumable: a failed run is re-run, not resumed.",
+      "Launch the compiled /plan pipeline (classify → inventory → type-specialised investigation → draft → adversarial gap gate → file) in the BACKGROUND and file the resulting GitHub issue. This is the ONLY way to create a GitHub issue: direct `gh issue create` (and `gh api` POST to the issues collection) is structurally refused for every role in every mode — the refusal names this tool. RETURNS IMMEDIATELY with a jobId and a launch notice — it does NOT return the spec. The run takes minutes; end your turn and the full result arrives later as one `[ensemble:async]` steer message naming this job (also when you are idle). Never poll or re-call to find out whether it finished. Call with dryRun:true FIRST: the steer then carries { spec, gaps, priorContext, filed:false } without filing; show that spec + gap dispositions to the operator, and on their confirmation re-call with dryRun omitted — that re-call is another launch, and it benefits from the dry run's investigation cache. The result includes issueUrl on success. A dry run reports a reviewedDigest; re-calling with identical inputs (same descriptor, context, type and origin/<default> commit, within the expiry — 2 hours by default) and that digest files the reviewed spec VERBATIM, with no investigation, drafting or gap gate (the result says FILED FROM REVIEWED DRY RUN). Any other call — a changed input, a missing or wrong digest, an expired or non-fileable dry run — runs the full pipeline, which reuses the investigation and re-runs the gate; when that call carried a reviewedDigest and the pipeline drafts a different spec, nothing is filed and the result says THE REVIEWED SPEC CHANGED — show the new spec and ask again. Epic sub-issues at depth >= 3 get a minimal body with a depth-limit note. Gap gate: runs for bug/feature/epic; chore/spike get deterministic validation only. A too-thin descriptor (below the word floor, no code identifier, no context) returns needs-clarification questions without dispatching anything — answer them and re-call. Concurrent launches are allowed; each result names its own descriptor. Non-resumable: a failed run is re-run, not resumed.",
     parameters: Type.Object({
       descriptor: Type.String({
         description: "Ticket descriptor — one or two sentences describing the intended change.",
@@ -190,43 +245,63 @@ export function registerPlanTool(pi: ExtensionAPI) {
       trace(
         `start_plan_driver → descriptor="${descriptor.slice(0, 60)}" type=${String(params.type ?? "inferred")} dryRun=${dryRun} labels=${labels.length} provenance=${provenance ? "yes" : "no"} repoRoot=${repoRoot}`,
       );
-      try {
-        const result = await runPlanPipeline(
-          piSessionHost(pi),
-          // The typed view of the call: the four fields the driver reads by
-          // name, with the three the validators just narrowed substituted. The
-          // cast carries no unchecked field into the driver — `type` is the only
-          // one left as the caller wrote it, and the driver re-classifies an
-          // unrecognised value.
+      // #1044 — launch, don't wait. The whole pipeline runs inside the job, so
+      // a throw anywhere in it reaches the job's rejection path and is
+      // delivered as a bounded fail report rather than disappearing with the
+      // tool call. `skipDeck`: the pipeline's own investigation / gap-gate
+      // children are the real deck rows, and a synthetic row for the parent
+      // job would mask them (the same reasoning the work tool's job follows).
+      //
+      // The job delivers to `pi`, the ExtensionAPI the tool was registered on
+      // — the same host `start_work_driver` hands its job (work-tool.ts), so
+      // every report-delivering tool resolves against one session. `steer`
+      // survives the mid-turn case: a tool call runs during a turn by
+      // definition, and the flag queues the message and is inert when idle
+      // (agent-message.ts). A test drives the same seam by making the pi stub
+      // it registers with answer `sendUserMessage`.
+      const { jobId } = startJob(pi, {
+        label: "plan-driver",
+        role: "plan-driver",
+        subject: descriptor,
+        skipDeck: true,
+        reportKind: "driver",
+        work: async () => {
+          const result = await runPlanPipeline(
+            piSessionHost(pi),
+            // The typed view of the call: the four fields the driver reads by
+            // name, with the three the validators just narrowed substituted. The
+            // cast carries no unchecked field into the driver — `type` is the only
+            // one left as the caller wrote it, and the driver re-classifies an
+            // unrecognised value.
+            {
+              ...(params as Omit<PlanDriverInput, "labels" | "provenance" | "descriptor">),
+              descriptor,
+              labels,
+              provenance,
+            },
+            repoRoot,
+          );
+          return {
+            role: "plan-driver",
+            ok: true,
+            text: renderPlanResult(result, dryRun),
+            toolUses: [],
+            ms: 0,
+            exitCode: 0,
+          };
+        },
+      });
+      return {
+        content: [
           {
-            ...(params as Omit<PlanDriverInput, "labels" | "provenance" | "descriptor">),
-            descriptor,
-            labels,
-            provenance,
+            type: "text",
+            text: launchNotice({ jobId, descriptor, dryRun, repoRoot }),
           },
-          repoRoot,
-        );
-        return {
-          content: [
-            {
-              type: "text",
-              text: renderPlanResult(result, dryRun),
-            },
-          ],
-          details: resultDetails(result, dryRun),
-        };
-      } catch (err) {
-        trace(`start_plan_driver failed: ${(err as Error).message}`);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `start_plan_driver failed: ${(err as Error).message}`,
-            },
-          ],
-          details: { started: false, error: (err as Error).message },
-        };
-      }
+        ],
+        // #1295 — the async-result contract every report-delivering tool keeps:
+        // `async: true` plus the jobId the steer's header will name.
+        details: { started: true, async: true, jobId, dryRun, descriptor },
+      };
     },
   });
 }
@@ -256,7 +331,7 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
     ? `PLAN ${dryRun ? "DRY-RUN — " : ""}NOT FILEABLE AS-IS (${r.filingFailure?.reason}). Nothing was filed${dryRun ? ", and re-calling without dryRun would NOT file this spec either" : ""} — see the FILING STATUS section below before showing this to the operator.`
     : dryRun
       ? r.reviewedDigest
-        ? `PLAN DRY-RUN (nothing filed). Show this spec to the operator. reviewedDigest: ${r.reviewedDigest} — on their confirmation re-call start_plan_driver with dryRun omitted and reviewedDigest: "${r.reviewedDigest}" to file this exact spec verbatim.`
+        ? `${DRY_RUN_HEAD} ${r.reviewedDigest} — on their confirmation re-call start_plan_driver with dryRun omitted and reviewedDigest: "${r.reviewedDigest}" to file this exact spec verbatim.`
         : "PLAN DRY-RUN (nothing filed). Show this spec to the operator; on their confirmation re-call start_plan_driver with dryRun omitted to file."
       : r.filed
         ? r.filedFromDryRun
