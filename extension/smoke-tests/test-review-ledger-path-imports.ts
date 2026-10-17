@@ -87,6 +87,14 @@ const SRC = path.resolve(import.meta.dirname, "..", "src");
 const TARGETS = ["review-ledger-path.ts", "review-delta-hunks.ts"];
 /** The neutral module the mainline lookup must come from instead. */
 const NEUTRAL = "mainline.ts";
+/**
+ * The sanitiser leaf `mainline.ts` delegates its failure text to (#1444 r4 —
+ * it moved out when the probe's cause rules grew past the file-size cap). It
+ * is one hop further along the same edge, so the same rule applies to it: a
+ * leaf that forwards to the driver would move the violation one hop and leave
+ * this gate green.
+ */
+const NEUTRAL_LEAF = "probe-cause.ts";
 /** The symbols the driver layer must keep re-exporting (#1387 moved them, not their callers). */
 const MOVED = ["detectMainline", "resolveMainline"] as const;
 
@@ -187,11 +195,24 @@ console.log("1. the review-layer targets are clean");
   }
 
   // The neutral module must not simply forward to the driver — that would
-  // move the violation one hop and leave the gate green.
+  // move the violation one hop and leave the gate green. Same for the leaf it
+  // delegates the failure text to, which is one hop further out.
   const neutralOffenders = driverRefs(neutral);
   assert(
     neutralOffenders.length === 0,
     `mainline.ts imports no work-driver* module (${neutralOffenders.join(", ") || "none"})`,
+  );
+  const leafOffenders = driverRefs(read(NEUTRAL_LEAF));
+  assert(
+    leafOffenders.length === 0,
+    `${NEUTRAL_LEAF} imports no work-driver* module (${leafOffenders.join(", ") || "none"})`,
+  );
+  // …and `mainline.ts` must reach it, not reimplement the sanitiser in place:
+  // the executor type and the cause text both live in the leaf now, and a
+  // second copy of either is the drift this split exists to prevent.
+  assert(
+    localImports(neutral).includes(`./${NEUTRAL_LEAF}`),
+    `mainline.ts imports ./${NEUTRAL_LEAF} for the probe cause and executor type`,
   );
 }
 
