@@ -419,8 +419,9 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   );
   // The angle helper takes `dispatch` as a parameter (a seam, not a site) but
   // makes the cwd decision itself, so the canary reads the spec it builds.
-  // research-driver.ts threads `repoRoot` into the ctx for both the first
-  // attempt and the wigolo fallback re-dispatch.
+  // research-driver.ts builds ONE ctx carrying `repoRoot` per angle and hands
+  // that same object to both the first attempt and the wigolo fallback
+  // re-dispatch — one literal, so the two legs cannot drift apart on cwd.
   const angle = read("research-angle.ts");
   assert(
     /\{ role: "explore", prompt, cwd: ctx\.repoRoot \}/.test(angle),
@@ -428,8 +429,14 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   );
   const driver = read("research-driver.ts");
   assert(
-    /runResearchAngle\(dispatch, pi, a, "(?:parallel|wigolo)",[\s\S]{0,80}?repoRoot,/.test(driver),
-    "canary: ...and research-driver.ts threads repoRoot into BOTH the first attempt and the wigolo fallback re-dispatch — neither can fall back to process.cwd()",
+    /const ctx = \{[^}]*\brepoRoot\b[^}]*\}/.test(driver),
+    "canary: ...and research-driver.ts builds one ctx with repoRoot that BOTH dispatch legs share — neither can fall back to process.cwd()",
+  );
+  assert(
+    /runResearchAngle\(dispatch, pi, a, "parallel", undefined, ctx\)[\s\S]{0,700}?runResearchAngle\(dispatch, pi, a, "wigolo", outcome, ctx\)/.test(
+      driver,
+    ),
+    "canary: both the parallel attempt and the wigolo re-dispatch are handed that same ctx object (by identifier, not a second literal)",
   );
 }
 

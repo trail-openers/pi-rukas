@@ -37,8 +37,12 @@ import {
   phaseTimer,
 } from "./plan-driver-halt.ts";
 import { phase3Draft } from "./plan-driver-phase3.ts";
-import { duplicateRiskHalt, needsClarificationHalt } from "./plan-driver-phases.ts";
-import { draftInvalidHalt } from "./plan-driver-redraft.ts";
+import {
+  correctiveRedraftHalt,
+  draftInvalidHalt,
+  duplicateRiskHalt,
+  needsClarificationHalt,
+} from "./plan-driver-phases.ts";
 import { correctiveRedraft } from "./plan-driver-redraft.ts";
 import {
   type PlanDispatchFn,
@@ -87,8 +91,6 @@ export { gapGatePrompt } from "./plan-gate-prompt.ts";
 // ---------------------------------------------------------------------------
 // runPlanPipeline
 // ---------------------------------------------------------------------------
-
-const GAP_GATE_MAX_ITERATIONS = 2; // the bound runGapGateLoop iterates to
 
 export async function runPlanPipeline(
   pi: DriverHost,
@@ -327,7 +329,7 @@ async function runPipelineOn(
   let gateRan = false;
   if (gapGateApplies(type)) {
     gateRan = true;
-    const loopResult = await runGate({
+    const gate = await runGate({
       dispatch,
       pi,
       repoRoot,
@@ -351,6 +353,21 @@ async function runPipelineOn(
       timed,
       correctiveRedraft,
     });
+    // A corrective re-draft that threw is a PLAN halt, not an exception. Routed
+    // through the same halt shape as the sibling gate failure modes: `startJob`'s
+    // generic fail report would drop the plan-specific rendering and the
+    // carried-decision disclosure the throw message built.
+    if (gate.halted) {
+      return correctiveRedraftHalt({
+        type,
+        descriptor,
+        priorContext,
+        failedAngles,
+        error: gate.error,
+        timings: finishTimings,
+      });
+    }
+    const loopResult = gate.loopResult;
     gaps = loopResult.gaps;
     capHit = loopResult.capHit;
     capReason = loopResult.capReason;
@@ -463,4 +480,9 @@ export { classifyPlanType, planTitle } from "./plan-types.ts";
 export { codeIdentifiersIn, draftSpec } from "./plan-draft.ts";
 // Test seam re-export (the alias now lives in plan-gaps.ts, its home).
 export { parseGapsForTest } from "./plan-gaps.ts";
-export { type PlanDispatchFn, setPlanDispatch, setPlanStatFn } from "./plan-driver-seams.ts";
+export {
+  type PlanDispatchFn,
+  setPlanDispatch,
+  setPlanRedraft,
+  setPlanStatFn,
+} from "./plan-driver-seams.ts";

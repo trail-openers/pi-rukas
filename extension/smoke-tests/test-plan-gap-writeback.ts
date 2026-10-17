@@ -22,11 +22,13 @@
  * Single-round corrective shape only (GAP_GATE_MAX_ITERATIONS = 2). Seam
  * wiring lives in the shared plan-test-stubs.ts.
  *
- * The ERROR_HANDLING block below reads source text, so it names the file the
+ * The ERROR_HANDLING blocks below read source text, so they name the file the
  * code lives in. The corrective re-draft was extracted from plan-driver.ts to
  * plan-driver-redraft.ts (#1044's §12 split) — the widened try/catch and its
  * disclosure call are asserted there, and the disclosure text itself in
- * plan-driver-halt.ts.
+ * plan-driver-halt.ts. What the throw ROUTES to once it escapes the re-draft —
+ * the plan halt it must become — is a separate concern and lives in
+ * test-plan-redraft-throw-halt.ts.
  */
 import { draftSpec } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";

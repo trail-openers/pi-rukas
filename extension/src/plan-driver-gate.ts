@@ -1,5 +1,6 @@
 import type { CorrectiveRedraftCtx } from "./plan-driver-redraft.ts";
 import type { PlanDispatchFn } from "./plan-driver-seams.ts";
+import { getPlanRedraftOverride } from "./plan-driver-seams.ts";
 import { settledGapsSection } from "./plan-gap-disclosure.ts";
 import type { GapGateLoopResult } from "./plan-gaps.ts";
 import { runGapGateLoop } from "./plan-gaps.ts";
@@ -52,6 +53,29 @@ export interface GateRunArgs {
 }
 
 /**
+ * Which re-draft the gate actually runs. Production passes `correctiveRedraft`
+ * from the orchestrator; the seam (plan-driver-seams.ts `setPlanRedraft`) lets a
+ * test force the throw, because the real re-draft is not forceably throwable
+ * through the dispatch stub — every `draftSpec` helper is defensive (see
+ * test-plan-gap-writeback.ts's ERROR_HANDLING note), so the wide catch is a
+ * guard for a future refactor rather than a reachable path. Same shape as the
+ * dispatch/stat seams: the getter is read at the call, so the pipeline itself
+ * (not just `runGate`) is what a test exercises.
+ */
+function redraftFor(fallback: GateRunArgs["correctiveRedraft"]): GateRunArgs["correctiveRedraft"] {
+  return getPlanRedraftOverride() ?? fallback;
+}
+
+/**
+ * What `runGate` hands the orchestrator: the loop's result, OR the halt to
+ * return when the corrective re-draft threw. Discriminated so the driver cannot
+ * read `loopResult` after a halt and cannot silently swallow the throw.
+ */
+export type GateRunResult =
+  | { halted: false; loopResult: GapGateLoopResult }
+  | { halted: true; error: unknown };
+
+/**
  * The chore/spike exemption is deliberate and has no env knob (operator
  * decision 2026-09-09): low blast radius, and the deterministic validation
  * above is their gate. Removing the knob also removes run-to-run gate variance
@@ -69,12 +93,22 @@ export function gapGateApplies(type: PlanType): boolean {
  * one tick, so a kill that lands mid-barrier is observed only after every leg
  * is already handed off, and the orchestrator's boundary check then races the
  * loop's first dispatch.
+ *
+ * The corrective re-draft's throw is CAUGHT here rather than allowed to escape:
+ * `correctiveRedraft` rethrows its wide catch as `correctiveRedraftError`, and a
+ * throw reaching `startJob`'s generic rejection path loses the plan-specific
+ * halt rendering the operator needs (the disclosure of which carried decisions
+ * were computed). The orchestrator turns the carried `error` into a capReason-
+ * bearing halt, exactly as the sibling gate failure modes do.
  */
-export async function runGate(args: GateRunArgs): Promise<GapGateLoopResult> {
+export async function runGate(args: GateRunArgs): Promise<GateRunResult> {
   // The carried CRITICAL decisions from the last corrective re-draft — what
   // round 2's SCOPED VERIFICATION verifies.
   let lastCarried: CarriedCritical[] = [];
-  return args.timed("gap-gate", () =>
+  // Set when the corrective re-draft throws mid-loop, so the disclosure the
+  // re-draft built travels with the halt instead of dying in a stack trace.
+  let redraftThrow: { error: unknown } | undefined;
+  const loopResult = await args.timed("gap-gate", () =>
     runGapGateLoop(
       // Same bounds as every plan child: cwd pinned, 30-min timeout,
       // --no-skills (marker-line reviewer, no reporter).
@@ -85,12 +119,15 @@ export async function runGate(args: GateRunArgs): Promise<GapGateLoopResult> {
         // check and into this dispatch within one microtask chain; the seam
         // guard in dispatchCore is a second line, and the stubbed dispatch a
         // smoke test installs bypasses it. This is the last place both paths pass.
+        // The synthetic reply carries the declared `killCause: "abort"` (the
+        // DispatchResult field every downstream classifier branches on first) —
+        // a `killedBy` string is not on the type and no reader consumes it.
         if (args.signal?.aborted) {
           return Promise.resolve({
             ok: false,
             text: "",
             toolUses: [],
-            killedBy: "dispatch_kill (or session shutdown)",
+            killCause: "abort" as const,
           });
         }
         return args.dispatch(
@@ -117,23 +154,33 @@ export async function runGate(args: GateRunArgs): Promise<GapGateLoopResult> {
             ) + settledGapsSection(args.settled)
           : gapGateVerifyPrompt(args.getBody(), lastCarried),
       GAP_GATE_MAX_ITERATIONS,
-      (blocking: PlanGap[]) =>
-        args.correctiveRedraft(blocking, {
-          type: args.type,
-          descriptor: args.descriptor,
-          findings: args.findings,
-          inventoryContext: args.inventoryContext,
-          openQuestions: args.openQuestions,
-          outOfScope: args.outOfScope,
-          depth: args.depth,
-          directives: args.directives,
-          chosenBudget: args.chosenBudget,
-          setCarried: (c) => {
-            lastCarried = c;
-          },
-          setTitleBody: args.setTitleBody,
-        }),
+      (blocking: PlanGap[]) => {
+        try {
+          redraftFor(args.correctiveRedraft)(blocking, {
+            type: args.type,
+            descriptor: args.descriptor,
+            findings: args.findings,
+            inventoryContext: args.inventoryContext,
+            openQuestions: args.openQuestions,
+            outOfScope: args.outOfScope,
+            depth: args.depth,
+            directives: args.directives,
+            chosenBudget: args.chosenBudget,
+            setCarried: (c) => {
+              lastCarried = c;
+            },
+            setTitleBody: args.setTitleBody,
+          });
+        } catch (err) {
+          // Absorbed HERE (not rethrown) so the loop returns normally and its
+          // timed() entry still lands; the driver sees `halted` and renders the
+          // plan-specific halt from `error`.
+          redraftThrow = { error: err };
+        }
+      },
       args.signal,
     ),
   );
+  if (redraftThrow) return { halted: true, error: redraftThrow.error };
+  return { halted: false, loopResult };
 }
