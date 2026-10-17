@@ -101,6 +101,61 @@ export function assertSuiteBoundDerivation(assert: Assert): void {
       "derived bound: an empty env value reads as 0ms and still floors at 1s — an unset-looking knob must not disable the bound",
     );
   });
+  // A value the parser REJECTS — including the string `"NaN"` (`Number("NaN")`
+  // is NaN) and a negative — is replaced by the 60-min default inside
+  // `toolInactivityTimeoutMs`, so both derive the default's 1200 rather than
+  // reaching the non-finite branch. The expectation is 1200 because that is
+  // what the code does, and it is the right behaviour: a knob nobody can read
+  // falls back to the same bound as no knob at all, never to a missing bound.
+  // The non-finite branch the `Number.isFinite` guard exists for is exercised
+  // by the overflow case below, which IS a value the parser accepts.
+  withWatchdog("NaN", () => {
+    assert(
+      suiteTimeoutSeconds() === 1200,
+      "derived bound: a knob spelled `NaN` yields the 1200s ceiling, NOT NaN — `timeout NaN` is not a bound and would render literally in the prompt",
+    );
+  });
+  withWatchdog("-1", () => {
+    assert(
+      suiteTimeoutSeconds() === 1200,
+      "derived bound: a negative watchdog is rejected by the parser and falls back to the default's 1200s, not to a negative or a no-bound 0",
+    );
+  });
+  // The branch the clamp's `Number.isFinite` guard actually exists for: a
+  // value the parser ACCEPTS (`Number.isFinite` passes `1e400` → Infinity)
+  // that then derives non-finite. `Math.max(1, Math.min(1200, Infinity))` is
+  // Infinity, which would put `timeout Infinity` in front of the child — so it
+  // falls to the ceiling too.
+  withWatchdog("1e400", () => {
+    assert(
+      suiteTimeoutSeconds() === 1200,
+      "derived bound: an unparseably large watchdog (Infinity) yields 1200, not Infinity — Math.max/min propagate it and `timeout Infinity` is no bound",
+    );
+  });
+  // The derivation reads the environment, so a block that set the knob and
+  // then read a stale value would assert one number while the prompt rendered
+  // another. Assert the pin itself is in force inside the body — this is what
+  // makes every `suiteTimeoutSeconds()` comparison above mean what it claims.
+  withWatchdog("60000", () => {
+    assert(
+      process.env[KNOB] === "60000",
+      "derived bound: the watchdog helper really pins the knob for the duration of the body — the assertions above compare against a bound the environment actually holds",
+    );
+    assert(
+      suiteTimeoutSeconds() === 20,
+      "derived bound: inside the pinned block the derived bound and the pinned knob agree (60000ms → 20s)",
+    );
+  });
+  withWatchdog(undefined, () => {
+    assert(
+      process.env[KNOB] === undefined,
+      "derived bound: the `undefined` form really DELETES the knob for the duration of the body, so a 'default' block is not silently reading an ambient value",
+    );
+    assert(
+      suiteTimeoutSeconds() === 1200,
+      "derived bound: with the knob deleted the derivation reads the 60-min default (1200s)",
+    );
+  });
 }
 
 /**
@@ -304,6 +359,40 @@ export function assertLensFixPromptTestScope(
     assert(
       lensFix.includes(developTestScopeLine()),
       "#1156: the lens-fix prompt embeds developTestScopeLine() verbatim — no paraphrase that can drift from the develop prompt",
+    );
+  });
+}
+
+/**
+ * The RE-DISPATCH branch. `runLensFix` builds a second prompt inline — the one
+ * a fixer gets when the previous dispatch produced no committed fix — and that
+ * array is a separate literal from `inlineLensFixPrompt`, so the first pass of
+ * #1156 put the rule in one and not the other. The re-dispatch is the same
+ * developer, the same worktree, and the same gates re-run for a THIRD time,
+ * which is the shape the rule exists to bound most of all.
+ *
+ * `rendered` builds that branch's prompt (the caller drives `runLensFix` to
+ * the resend shape and captures the prompt), and is CALLED inside the watchdog
+ * guard for the same reason as above.
+ */
+export function assertLensFixResendPromptTestScope(
+  assert: Assert,
+  rendered: () => string | Promise<string>,
+): void {
+  withWatchdog(undefined, async () => {
+    const resend = await rendered();
+    assert(
+      /RE-DISPATCH/.test(resend),
+      "#1156: the re-dispatch fixture is really the resend branch (not the ordinary prompt, which would make the assertions below pass vacuously)",
+    );
+    assert(
+      resend.includes(`timeout ${suiteTimeoutSeconds()}`) &&
+        /Do NOT run the full test suite/i.test(resend),
+      "#1156: the lens-fix RE-DISPATCH prompt carries the same test-scope + suite-bound rule — the second attempt re-runs the same gates and was the one that carried none",
+    );
+    assert(
+      resend.includes(developTestScopeLine()),
+      "#1156: the re-dispatch prompt embeds developTestScopeLine() verbatim, so the two lens-fix prompts cannot drift apart",
     );
   });
 }
