@@ -39,8 +39,9 @@ import {
 } from "./work-driver-consolidation-classify.ts";
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import { type HangProcess, NO_TREE_CAPTURED, captureProcessTree } from "./work-driver-gate-hang.ts";
 import { commitPrSkipDecision } from "./work-driver-integrate-verify-skip.ts";
-import { verifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
+import { isTimedOutKill, verifyHangFailure } from "./work-driver-verify-develop-helpers.ts";
 import {
   FAST_TIER_LABEL,
   failedVerifyCmd,
@@ -87,6 +88,14 @@ export type CommitPrConsolidatedVerifyResult =
       classifiedMessage: string;
       /** #1324 — the run was killed at its bound: no verdict, so no classification. */
       timedOut?: boolean;
+      /**
+       * #1427 — commit-pr carries the hang CLAUSE only. The clause is composed
+       * into `classifiedMessage` (see the timeout branch below), which is what
+       * the caller puts on the cap and the handoff renders; the commit-pr seam
+       * has no scratch dir of its own to persist a full report to, so unlike
+       * the develop seams this result reports no `runningTests` / `processes`
+       * and no caller ever read them (round 1: two dead fields).
+       */
     };
 
 /**
@@ -166,6 +175,18 @@ export async function runCommitPrConsolidatedVerify(
      * identity. A read failure, a mismatch, or no pair → the run happens.
      */
     alreadyVerifiedTree?: AlreadyVerifiedTree;
+    /**
+     * #1427 round 3 — no `walkProcessTree` here, deliberately. It was declared
+     * as a test seam and had no caller: neither `verifyIntegration` (its only
+     * production caller) nor any smoke test passes one, so every commit-pr hang
+     * report walked the host's `ps` regardless of what a test injected, and the
+     * parameter's existence claimed a seam that did not work. The behaviour is
+     * driven entirely by `treePid` on the executor's error — which is the real
+     * signal, because the pid is what tells the reporter whether this run had a
+     * group worth describing at all. If a test ever needs to control the walk
+     * here, it injects `verifyExecFn` (which is where `treePid` comes from) and
+     * the seam is added with a caller in the same change.
+     */
   },
 ): Promise<CommitPrConsolidatedVerifyResult> {
   // The single flake retry is allowed only when: (a) this is the first
@@ -193,6 +214,12 @@ export async function runCommitPrConsolidatedVerify(
   }
   let timedOut = false;
   let ranCmd = opts.verifyCmd;
+  // #1427 — the killed run's stream and the tree captured at its kill. The
+  // capture happens in the catch, not after: the lantern #1054 case is children
+  // that outlive their leader, and a walk after the settle would report nothing
+  // about the processes the report exists to name.
+  let killedOutput = "";
+  let killedTree: { processes: HangProcess[]; treeUnavailable?: string } | undefined;
   const runOnce = async (): Promise<string | undefined> => {
     try {
       await withVerifySlot(() =>
@@ -207,9 +234,31 @@ export async function runCommitPrConsolidatedVerify(
       // #841 — classify on stdout AND stderr (the shared helper), not on
       // stderr-with-stdout-dropped: a failure that prints its assertion on
       // stdout and a warning on stderr must still classify on the assertion.
-      timedOut = (err as { killed?: boolean }).killed === true;
+      const e = err as Error & {
+        stderr?: string;
+        stdout?: string;
+        killed?: boolean;
+        timedOutKill?: boolean;
+        overflow?: string;
+        treePid?: number;
+      };
+      // #1427 fix round — a maxBuffer overflow is a kill but not a hang; only
+      // the wall-clock kill earns the hang clause.
+      timedOut = isTimedOutKill(e);
       ranCmd = failedVerifyCmd(err, opts.verifyCmd);
-      return combinedExecFailureStream(err as Error & { stderr?: string; stdout?: string });
+      const stream = combinedExecFailureStream(e);
+      if (timedOut) {
+        killedOutput = stream;
+        // #1427 round 4 — ONE capture, made in this catch while the group's
+        // stragglers can still be alive, and handed to the clause. The clause
+        // can no longer walk (`treePid`/`walk` are gone from `KilledGateRun`),
+        // so a seam that does not capture here gets `no tree was captured`.
+        killedTree =
+          typeof e.treePid === "number"
+            ? captureProcessTree(e.treePid)
+            : { processes: [] as HangProcess[], treeUnavailable: NO_TREE_CAPTURED };
+      }
+      return stream;
     }
   };
 
@@ -234,11 +283,16 @@ export async function runCommitPrConsolidatedVerify(
     // re-run persists no log (out of scope per the ticket's DECISION) and
     // returns the RAW stream; the caller bounds it with the pre-existing
     // `extractAttributedTail` below — nothing multi-MB reaches the evidence.
+    // #1427 round 3 — no walker argument: this seam has no walker to thread
+    // (see the deleted `walkProcessTree` option), and the re-run's tree comes
+    // from the executor's own `treePid` exactly as the first run's does.
     const secondRun = await rerunConsolidatedVerifyOnce(
       verifyExec,
       opts.verifyCmd,
       opts.repoRoot,
       opts.timeoutMs ?? 30 * 60_000,
+      undefined,
+      undefined,
     );
     if (secondRun === undefined) {
       trace(
@@ -257,6 +311,15 @@ export async function runCommitPrConsolidatedVerify(
     // not a flake, so the cycle parks as today).
     firstFailure = secondRun.raw;
     timedOut = secondRun.timedOut;
+    // The re-run's own capture replaces the first run's: the report describes
+    // the run that ended the run.
+    if (secondRun.timedOut) {
+      killedOutput = secondRun.raw;
+      killedTree = secondRun.tree ?? {
+        processes: [] as HangProcess[],
+        treeUnavailable: NO_TREE_CAPTURED,
+      };
+    }
     ranCmd = fastCmd && secondRun.raw.includes(FAST_TIER_LABEL) ? fastCmd : opts.verifyCmd;
   }
 
@@ -281,11 +344,36 @@ export async function runCommitPrConsolidatedVerify(
   // #1324 — a killed run's stream stops wherever the kill landed: report
   // the bound, never a classification of the code.
   if (timedOut) {
-    const where = `on the CONSOLIDATED tree at ${opts.repoRoot}`;
     const bound = opts.timeoutMs ?? 30 * 60_000;
     const knob = "PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS";
-    const classifiedMessage = verifyTimeoutFailure(ranCmd, where, bound, knob);
-    return { ok: false, failureTail, attributed, verdict, classifiedMessage, timedOut };
+    // #1427 round 3 — the clause is APPENDED after the sentence (see
+    // `verifyHangFailure`), so the `[verify-timeout]` marker always survives the
+    // 800-char tail bound the cap evidence applies — with a wide clause it is
+    // the test names that get clipped, not the marker that makes the cap.
+    const classifiedMessage = verifyHangFailure(
+      ranCmd,
+      `on the CONSOLIDATED tree at ${opts.repoRoot}`,
+      bound,
+      {
+        output: killedOutput,
+        cmd: ranCmd,
+        cwd: opts.repoRoot,
+        timeoutMs: bound,
+        ...(killedTree === undefined ? {} : { tree: killedTree }),
+      },
+      knob,
+    );
+    // #1427 fix round — no `runningTests` / `processes` on the result: the
+    // clause above is the whole deliverable at this seam (nothing reads a
+    // structured tree here, and no scratch dir exists to write a report to).
+    return {
+      ok: false,
+      failureTail,
+      attributed,
+      verdict,
+      classifiedMessage,
+      timedOut,
+    };
   }
   const classifiedMessage = consolidatedFailureMessage(verdict, ranCmd);
   return { ok: false, failureTail, attributed, verdict, classifiedMessage };
