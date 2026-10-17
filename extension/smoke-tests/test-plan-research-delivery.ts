@@ -15,7 +15,7 @@
  *    `started: false`, not a throw out of the tool.
  */
 
-import { clearJobsForTesting, killJob, startJob } from "../src/async-jobs.ts";
+import { clearJobsForTesting, startJob } from "../src/async-jobs.ts";
 import * as pendingJobs from "../src/pending-jobs-signal.ts";
 import { registerPlanTool } from "../src/plan-tool.ts";
 import { registerResearchTool } from "../src/research-tool.ts";
@@ -115,12 +115,9 @@ async function main(): Promise<void> {
       standIns.length === 1,
       `the caller reads deliverReport's boolean — a refused steer is DETECTED (${standIns.length} attempt(s) seen)`,
     );
-    // And the stand-in path itself runs: with the host refusing everything, a
-    // job that survived without throwing proves the fallback is swallow-safe.
-    assert(
-      true,
-      "a refused driver report never throws out of the job — the stand-in is swallow-safe",
-    );
+    // Reaching this line at all is the assertion: with the host refusing every
+    // sendUserMessage, a job that awaited clean proved the stand-in path is
+    // swallow-safe — a throw out of `deliverOrStandIn` rejects `job.completion`.
   }
 
   // ------------------------------------------ 3. saturation is a named refusal
@@ -183,7 +180,6 @@ async function main(): Promise<void> {
       !String(pr.details.jobId ?? ""),
       "a saturated refusal carries NO jobId — nothing was launched, so nothing is owed a report",
     );
-    void killJob;
   }
 
   clearJobsForTesting();

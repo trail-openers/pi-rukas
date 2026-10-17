@@ -11,9 +11,9 @@ import type { OperatorDirectives } from "./plan-directives.ts";
  */
 import { draftSpec } from "./plan-draft.ts";
 import type { AngleFindings } from "./plan-draft.ts";
-import { correctiveRedraftError, haltResult } from "./plan-driver-halt.ts";
+import { correctiveRedraftError } from "./plan-driver-halt.ts";
 import type { CarriedCritical } from "./plan-gate-prompt.ts";
-import type { PlanGap, PlanPhaseTiming, PlanResult, PlanType } from "./plan-types.ts";
+import type { PlanGap, PlanType } from "./plan-types.ts";
 import type { RenderBudget } from "./plan-validate.ts";
 import { type ResolvedDecision, buildResolvedDecisions } from "./plan-writeback.ts";
 
@@ -34,33 +34,11 @@ export interface CorrectiveRedraftCtx {
 }
 
 /**
- * Phase 3b — the deterministic body-validation halt. A draft whose load-bearing
- * sections fell back to placeholders never pays a reviewer dispatch and never
- * reaches the forge.
+ * The gate's CRITICAL-only corrective re-draft. Throws `correctiveRedraftError`
+ * (plan-driver-halt.ts) on any failure, whose message carries the writeback
+ * disclosure; plan-driver-gate.ts catches it and the orchestrator renders the
+ * halt (plan-driver-phases.ts `correctiveRedraftHalt`).
  */
-export function draftInvalidHalt(args: {
-  type: PlanType;
-  title: string;
-  spec: string;
-  priorContext: { source: string; fact: string }[];
-  problems: string[];
-  failedAngles: { name: string; detail: string }[];
-  timings: PlanPhaseTiming[];
-}): PlanResult {
-  return haltResult({
-    type: args.type,
-    title: args.title,
-    spec: args.spec,
-    priorContext: args.priorContext,
-    failure: {
-      reason: "draft-invalid",
-      detail: `the drafted body failed deterministic validation, so it was not reviewed or filed: ${args.problems.join("; ")}. Re-run start_plan_driver (the angles are re-dispatched), or supply the missing content via the context param (e.g. an ACCEPTANCE CRITERIA block).`,
-    },
-    failedAngles: args.failedAngles,
-    timings: args.timings,
-  });
-}
-
 export function correctiveRedraft(blocking: PlanGap[], ctx: CorrectiveRedraftCtx): void {
   let computed: ResolvedDecision[] = [];
   let writtenOutcomes: { applied: boolean; heading: string }[] = [];

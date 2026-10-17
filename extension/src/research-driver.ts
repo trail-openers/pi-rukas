@@ -131,9 +131,6 @@ export async function runResearchPipeline(
   // so the direct-pipeline tests keep their four-argument calls.
   opts: { signal?: AbortSignal } = {},
 ): Promise<ResearchResult> {
-  // #1541 review (MEDIUM) — the async job's own abort signal, so dispatch_kill
-  // and session shutdown stop the run at a phase boundary and SIGTERM its live
-  // children rather than waiting out the per-child bound.
   const signal = opts.signal;
   const dispatch: ResearchDispatchFn = _dispatchOverride ?? dispatchCore;
   const execFn = deps.execFn ?? defaultExec;
@@ -242,12 +239,11 @@ export async function runResearchPipeline(
   const angles: AngleRun[] = await timed("retrieve", () =>
     Promise.all(
       angleSpecs.map(async (a) => {
-        let run = await runResearchAngle(dispatch, pi, a, "parallel", undefined, {
-          priorBlock,
-          fallbackLine,
-          repoRoot,
-          signal,
-        });
+        // Built once: both legs (the primary and the wigolo re-dispatch) take the
+        // same prior block, fallback line, cwd and signal — a second literal copy
+        // is a second chance for the two to drift.
+        const ctx = { priorBlock, fallbackLine, repoRoot, signal };
+        let run = await runResearchAngle(dispatch, pi, a, "parallel", undefined, ctx);
         // #1541 review (MEDIUM) — one re-dispatch per angle, and each is a full
         // child. A kill mid-barrier must not spend the second one.
         if (!run.ok && fallbackEnabled && !signal?.aborted) {
@@ -258,12 +254,7 @@ export async function runResearchPipeline(
           if (decision === "fall-back-to-wigolo") {
             // Re-dispatch ONCE: a second failure is not retried — the angle
             // stays failed and its summary carries both attempts' text.
-            const retry = await runResearchAngle(dispatch, pi, a, "wigolo", outcome, {
-              priorBlock,
-              fallbackLine,
-              repoRoot,
-              signal,
-            });
+            const retry = await runResearchAngle(dispatch, pi, a, "wigolo", outcome, ctx);
             const merged = retry.ok
               ? `${run.summary}\n[wigolo fallback: ${retry.summary}]`
               : `${run.summary}\n[wigolo fallback failed: ${classifyParallelOutcome(retry.fullText)}]`;

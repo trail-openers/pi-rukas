@@ -6,7 +6,6 @@ import { type RetryNotice, withProviderBackoff } from "./dispatch-retry.ts";
 import { steerChild } from "./dispatch-steer.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLE_NAMES } from "./roles.ts";
-import { sessionShutdownReason } from "./session-shutdown.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
@@ -134,8 +133,10 @@ export function dispatchCore(
   // boundary check runs first. Refusing here makes "no child spawns after a
   // kill" a property of the seam rather than a race — the child that is never
   // started is the one that cannot cost tokens, write a transcript, or file
-  // anything. A synthetic reply, shaped exactly like a killed child, so every
-  // reader's existing killedBy path handles it.
+  // anything. A synthetic reply, shaped exactly like a killed child: the
+  // declared `killCause: "abort"` is what every downstream reader branches on
+  // first (work-driver-completion-event.ts, work-driver-failure-taxonomy.ts),
+  // so a self-kill is never mistaken for a provider fault.
   if (opts.signal?.aborted) {
     return Promise.resolve({
       role: stripped.role,
@@ -144,7 +145,7 @@ export function dispatchCore(
       toolUses: [],
       ms: 0,
       exitCode: 137,
-      killedBy: sessionShutdownReason() ?? "dispatch_kill (or session shutdown)",
+      killCause: "abort",
     });
   }
   // #573 — derive the transcript path BEFORE dispatch so crash-resume can

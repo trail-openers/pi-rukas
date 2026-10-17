@@ -48,11 +48,6 @@ export interface RegisteredResearchTool {
  * #1044 — the launch notice (see `launchNotice` in plan-tool.ts for the same
  * reasoning: a tool result arrives in seconds, the run takes minutes, so the
  * notice may only assert what every run does whatever it ends up doing).
- */
-/**
- * #1044 — the launch notice (see `launchNotice` in plan-tool.ts for the same
- * reasoning: a tool result arrives in seconds, the run takes minutes, so the
- * notice may only assert what every run does whatever it ends up doing).
  *
  * #1541 review (MEDIUM): this used to promise "it says RESEARCH COMPLETE ... and
  * names the artifact, the provenance sidecar and the verified-finding counts".
@@ -186,7 +181,7 @@ export function registerResearchTool(pi: ExtensionAPI) {
           },
         ],
         // #1295 — the async-result contract every report-delivering tool keeps.
-        details: { started: true, async: true, jobId, tier, topic: params.topic },
+        details: { started: true, async: true, jobId, tier, topic: noticeSubject(params.topic) },
       };
     },
   });
