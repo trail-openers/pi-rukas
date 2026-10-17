@@ -7,4 +7,11 @@
 # The full §1 gate is `bun run build` too, but build writes into dist/ and this
 # runs once per workstream worktree in parallel; the deeper suite lives in
 # .pi/verify-cmd-full, which the ci step runs once.
-cd extension && bun x tsc --noEmit && bun x tsc --noEmit -p tsconfig.smoke-tests.json && cd .. && bun run check && cd extension && bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts
+#
+# PI_ENSEMBLE_VERIFY_TEST_JOBS=4 is a host measurement, not a new default: the
+# pool in lib/verify-pool.sh defaults to 2, which takes ~9 min on the suite here
+# and so lands past the develop gate's 10-min bound (verifyTimeoutMs, #1324).
+# Measured on a 10-core host: JOBS=2 → 8m55s suite, JOBS=4 → 4m49s, same
+# failures at both. Set here rather than in verify-pool.sh so CI keeps the
+# shipped default.
+cd extension && bun x tsc --noEmit && bun x tsc --noEmit -p tsconfig.smoke-tests.json && cd .. && bun run check && cd extension && PI_ENSEMBLE_VERIFY_TEST_JOBS=4 bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts
