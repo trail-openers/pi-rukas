@@ -21,7 +21,7 @@ import { countedCapture } from "./capture-counter.ts";
 function startsWithBindingPrefix(detail: unknown): boolean {
   return (
     typeof detail === "string" &&
-    BINDING_REFUSAL_PREFIXES.some((prefix) => detail.startsWith(`${prefix}:`))
+    BINDING_REFUSAL_PREFIXES.some((prefix) => detail.startsWith(`${prefix}: `))
   );
 }
 
@@ -270,12 +270,33 @@ try {
 
   captureCounter.poison({
     reviewedBase: fixture.mergeBase,
-    reviewedHead: fixture.parent,
+    reviewedHead: "f".repeat(40),
     reviewedTreePatchId: "b".repeat(40),
     reviewedHeadRef: "HEAD",
-    headAtCapture: fixture.parent,
+    headAtCapture: "f".repeat(40),
   });
   captureCounter.reset();
+  // Two independent defects made this arm flake, and the sentinel values only
+  // close one of them.
+  //
+  // (1) The poisoned SHAs below are sentinels rather than `fixture.parent`.
+  // A fixture SHA is only stale relative to whatever HEAD happens to be when
+  // the writer resolves it, so it is not stale *by construction*; a 40-char hex
+  // string no commit object can ever have cannot match the tip. Measured alone
+  // this cut the flake from ~32% to ~3% — a large cut, which is exactly why the
+  // remaining 3% needed a second cause rather than a better value.
+  //
+  // (2) The straggler: the writer is fire-and-forget, so an earlier arm's write
+  // can still be in flight here, and a row's `at` is its OWN creation stamp —
+  // taken when the write began, not when it lands. A straggler can stamp itself
+  // at or after a floor sampled before it finished and be read as this arm's
+  // row: the honest arm-4 row (`passed=true, detail="approved"`) read as this
+  // arm's refusal. A 300ms delay injected into `appendLedgerEntry` drove that
+  // residual to 0/3, which is what identified it. Awaiting the in-flight writes
+  // before stamping the floor means every row that could carry a pre-drain stamp
+  // is already on disk when the floor is taken, so nothing stamped at or after
+  // it can belong to an earlier arm.
+  await drainLedgerWrites();
   const staleStart = Date.now() - 1;
   // The range diff is supplied through the loop's own injectable seam (the 4th
   // argument, the one #859 added) rather than as a `diff` string: a pasted diff
