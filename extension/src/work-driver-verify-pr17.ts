@@ -206,21 +206,18 @@ export async function verifyStepOutcome(
     // nothing but build residue" signal, captured here and returned on the
     // result so the cap router reads a boolean rather than a substring.
     let buildResidueOnly = false;
-    await verifyDevelopOutcome(
-      ctx,
-      state,
-      execFn,
-      failures,
-      notes,
-      (evidenceTail) => {
+    await verifyDevelopOutcome(ctx, state, execFn, failures, notes, {
+      // #782 — the flake callback is wired at this layer: on recovery it
+      // returns a success verdict carrying the flag the caller routes.
+      onVerifyFlakeRecovered: (evidenceTail) => {
         flakeEvidenceTail = evidenceTail;
       },
       fenceViolations,
-      (logPath) => {
+      onConsolidatedLogPath: (logPath) => {
         consolidatedLogPath = logPath;
       },
       commentEvidence,
-      () => {
+      onBaselineRedOnly: () => {
         baselineRedOnly = true;
       },
       // #1240 review r2 — without this callback the identity the probe
@@ -229,13 +226,16 @@ export async function verifyStepOutcome(
       // would stay undefined so no caller appended the event. The note still
       // appeared, which is exactly how the gap hid: the note is rendered from
       // `cons.skipped` independently of the callback.
-      (skipped) => {
+      onConsolidatedVerifySkipped: (skipped) => {
         consolidatedVerifySkipped = skipped;
       },
-      () => {
+      // #1421 fix round — the consolidated gate's structured "declined on
+      // nothing but build residue" signal, captured here and returned on the
+      // result so the cap router reads a boolean rather than a substring.
+      onBuildResidueOnly: () => {
         buildResidueOnly = true;
       },
-    );
+    });
     const flakeRecovered = flakeEvidenceTail !== undefined;
     return {
       ok: failures.length === 0,

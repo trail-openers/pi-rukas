@@ -42,6 +42,7 @@ import {
   runSmokeGate,
 } from "./work-driver-verify-develop-gates.ts";
 import { normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
+import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
 import { fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
@@ -65,38 +66,22 @@ export async function verifyDevelopOutcome(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   failures: string[],
   notes: string[],
-  // #782 — fires when the consolidated-verify flake re-run passed.
-  onVerifyFlakeRecovered?: (evidenceTail?: string) => void,
-  // #814 — out-parameter for structured fence-violation records (see the
-  // scope/fanout gate call below). Mutated in place by runScopeFanoutGate.
-  fenceViolations?: FenceViolationRecord[],
-  // #841 — out-parameter for the consolidated verify's persisted raw-output
-  // log path (the gate records it when a log was written, so the caller can
-  // put it on the cap-hit event structurally instead of regexing prose).
-  onConsolidatedLogPath?: (logPath: string) => void,
-  // #1040 — out-parameter for the structured comment-loss checks (the
-  // note and its result), so the caller plumbs them without matching note text.
-  commentEvidence: CommentEvidence[] = [],
-  // #1349 — fires when the base-commit probe found the verify command red
-  // at base AND the verify command's failures are the gate's only ones, so
-  // the caller can park with verify-baseline-red instead of verify-failed.
-  onBaselineRedOnly?: () => void,
-  // #1240 — out-parameter carrying the identity that justified skipping the
-  // consolidated run (the single workstream's tree, already verified green).
-  // The caller appends the `consolidated-verify-skipped` EVENT from it: a
-  // note would be the one kind of note that never survives to the state
-  // file, and the event lives where the caller appends so the log stays
-  // append-only.
-  onConsolidatedVerifySkipped?: (skipped: AlreadyVerifiedTree) => void,
-  /**
-   * #1421 fix round — out-parameter: the consolidated gate declined to
-   * consolidate because the root held nothing but untracked, git-ignored build
-   * output. Read from the result's structured `kind`/`buildResidueOnly`, so
-   * the cap router never decides an environment refusal by substring-matching
-   * a failure string that may contain an operator-authored path.
-   */
-  onBuildResidueOnly?: () => void,
+  // The out-parameters that used to be trailing positional callbacks now come
+  // as one options object (each field documented in
+  // work-driver-verify-develop-options.ts). Behaviour is unchanged: every
+  // field stays optional, `commentEvidence` still defaults to a fresh array,
+  // and each is still forwarded to exactly the gate it was forwarded to.
+  options: VerifyDevelopOutcomeOptions = {},
 ): Promise<void> {
+  const {
+    onVerifyFlakeRecovered,
+    fenceViolations,
+    onConsolidatedLogPath,
+    commentEvidence = [],
+    onBaselineRedOnly,
+    onConsolidatedVerifySkipped,
+    onBuildResidueOnly,
+  } = options;
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
       ? (state.pipelineState.worktrees ?? {})

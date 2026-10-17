@@ -153,12 +153,10 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
     execFn,
     failures,
     [],
-    undefined,
-    undefined,
-    undefined,
-    [],
-    () => {
-      baselineRedOnly = true;
+    {
+      onBaselineRedOnly: () => {
+        baselineRedOnly = true;
+      },
     },
   );
   return { failures, baselineRedOnly };
