@@ -107,12 +107,17 @@ function namesStoreOperand(a: string, index: number, all: string[]): boolean {
   // two characters and are not separators, so a substring test would send every later
   // operand down the path branch and blind the ones below.
   const dashdash = all.indexOf("--");
-  if (dashdash >= 0 && index > dashdash) return isProtectedToken(a);
   // The segments reach the arms LOWERCASED (`armsOf(raw)` where `raw` is the folded
   // command), so the two case-carrying spellings are matched case-insensitively — a
   // `/^-S/` test silently never fires on `-s<store>`, which is the form the scan sees.
+  // The option values are asked BEFORE the path-limiting `--` branch: `-S`/`-G`/`--grep`
+  // carry a NAME the tool matches, not a path, so `git log --oneline -- -G<store>` is a
+  // search term and not a file. `-G` is the OTHER regex picker: `--pickaxe-regex` makes
+  // `-S` one too, and `-G` matches the DIFF.
   if (/^-s/i.test(a) && isProtectedToken(baseName(a.slice(2)))) return true;
+  if (/^-g/i.test(a) && isProtectedToken(baseName(a.slice(2)))) return true;
   if (/^--grep=/i.test(a) && isProtectedToken(baseName(a.slice(7)))) return true;
+  if (dashdash >= 0 && index > dashdash) return isProtectedToken(a);
   const colon = a.indexOf(":");
   if (colon > 0 && isProtectedToken(baseName(a.slice(colon + 1)))) return true;
   return isProtectedToken(a);
@@ -211,6 +216,9 @@ export function armCommit(w: string[]): boolean {
   if (at > 1 || words[at + 1] !== "commit") return false;
   const rest = w.slice(at + 2);
   if (hasFlag(rest.map(unquote), "-f", "--file")) return false;
+  // The same ban every git read arm carries: `-c` sets a config (a hook or an alias the
+  // commit then runs) and the repo-location flags move the repository being committed to.
+  if (hasFlag(rest.map(unquote), ...WRITE_FLAGS, ...REPO_LOCATION_FLAGS)) return false;
   const message = rest.findIndex(
     (a, n) => /^(-m|--message)$/.test(unquote(a)) && /["']/.test(rest[n + 1] ?? ""),
   );

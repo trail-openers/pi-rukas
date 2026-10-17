@@ -10,7 +10,7 @@
 export const PROTECTED_STEMS = ["review-findings-store", "review-accept", "review-findings"];
 /** A basename that IS the store: the data file, its siblings, the modules. */
 export const PROTECTED_BASENAME =
-  /^review-(?:findings\.json(?:\.(?:tmp|corrupt-[a-z0-9]+))?|findings-store|accept(?:-row)?)(?:\.ts)?$/;
+  /^review-(?:findings\.json(?:\.[a-z0-9-]+)?|findings-store(?:\.[a-z0-9-]+)?|accept(?:-row)?)(?:\.ts)?$/;
 
 /** Tokenise into maximal runs of word / dot / hyphen / slash characters. */
 export function tokensOf(text: string): string[] {

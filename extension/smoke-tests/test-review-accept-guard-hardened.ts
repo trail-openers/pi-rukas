@@ -105,7 +105,20 @@ const ALLOWANCES: Case[] = [
   { c: "cat extension/src/index.ts", why: "cat of an ordinary source file" },
 ];
 
-// The repo's own develop gate must stay allowed, verbatim from .pi/verify-cmd.
+/** Siblings of the protected names that clause (b) refuses on sight, and the `-G` pickaxe
+ * value: a NAME the tool matches, so a store stem on it refuses the arm — including after
+ * the path-limiting `--`, where every other word reads as a path. */
+const SIBLING_REFUSALS: Case[] = [
+  { c: `cat /repo/.git/${DATA}.bak`, why: "ACCEPTANCE: cat of a .bak sibling of the data file" },
+  { c: `cat /repo/.git/${DATA}.corrupt`, why: "cat of a .corrupt sibling with no numeric suffix" },
+  { c: "cat /repo/.git/review-findings-store.tmp", why: "cat of a .tmp sibling of the store" },
+  { c: `git log -G${STORE}`, why: "ACCEPTANCE: git log -G naming the store" },
+  { c: `git log --pickaxe-regex -G${STORE}`, why: "-G with its regex companion flag" },
+  { c: `git log --oneline -- -G${STORE}`, why: "-G after the path-limiting --" },
+  { c: `git diff -G${STORE} HEAD`, why: "-G on a diff" },
+];
+
+/** The repo's own develop gate must stay allowed, verbatim from .pi/verify-cmd. */
 function verifyCmdArms(): string[] {
   const file = join(HERE, "..", "..", ".pi", "verify-cmd");
   const body = readFileSync(file, "utf8");
@@ -138,10 +151,7 @@ const MANDATED_REFUSALS: Case[] = [
     c: `bun <<'SH'${NL}const s = await import("./extension/src/${STORE}.ts")${NL}SH`,
     why: "a quoted here-doc with an async import",
   },
-  {
-    c: `bun <<~EOF${NL}import "${STORE}"${NL}EOF`,
-    why: "a tilde here-doc importing the store",
-  },
+  { c: `bun <<~EOF${NL}import "${STORE}"${NL}EOF`, why: "a tilde here-doc importing the store" },
   // Shell expansion hides the name from a string match, so no arm vouches for a word
   // carrying `$`, a backtick or a backslash: the guard cannot read what the shell will
   // substitute, and `$(…)` / `${V}` can ASSEMBLE a protected name the text never spells.
@@ -177,10 +187,7 @@ const MANDATED_REFUSALS: Case[] = [
   { c: `git log -S${DATA}`, why: "ACCEPTANCE: git log -S naming the data file" },
   { c: `git log --grep=${DATA}`, why: "git log --grep= naming the data file" },
   // A redirection moves bytes to or from a path no arm ever saw.
-  {
-    c: `git log --oneline > .git/${DATA}`,
-    why: "ACCEPTANCE: a redirection writing the data file",
-  },
+  { c: `git log --oneline > .git/${DATA}`, why: "ACCEPTANCE: a redirection writing the data file" },
   { c: `git log --oneline < .git/${DATA}`, why: "a redirection reading the data file" },
   { c: "git status > /tmp/out.txt", why: "a redirection no arm spells" },
   // A git repo-location selector moves the repository the "plain read" runs against, so
@@ -297,6 +304,7 @@ const DENY_BY_DEFAULT_REFUSALS: Case[] = [
   { c: `cd /tmp; git show HEAD:blob -o${DATA}`, why: "chained git with an attached -o" },
   { c: `cd /tmp && git show HEAD:blob -o ${DATA}`, why: "chained git with a spaced -o" },
   { c: `git commit --all -o ${DATA}`, why: "a commit carrying an output flag" },
+  { c: `git commit -m "x" -c y.z=1`, why: "a commit carrying a config override" },
 ];
 
 // ── 4. documented over-refusals — clause (b)'s accepted costs, each asserted ───
@@ -327,7 +335,7 @@ const OVER_REFUSALS: Case[] = [
   { c: `sed -n ${Q}1,20p${Q} extension/src/${STORE}.ts`, why: "sed -n naming the store" },
   {
     c: `git log --oneline -- extension/src/${STORE}.ts`,
-    why: "a git read whose path operand is the store module (#1125 fix round: a path SEGMENT whose last segment is a protected stem is refused; name the module by a path the guard can read, or run the read through a tool)",
+    why: "a git read whose path operand is the store module: a path SEGMENT whose last segment is a protected stem is refused",
   },
   {
     c: `git diff HEAD -- extension/src/${STORE}.ts`,
@@ -335,59 +343,20 @@ const OVER_REFUSALS: Case[] = [
   },
   {
     c: "gh api /repos/o/r --jq .name",
-    why: "gh api is no longer an arm at all: it carries an arbitrary method and body, so every gh api is refused",
+    why: "gh api is no longer an arm at all: it carries an arbitrary method and body",
   },
 ];
 
-// ── assertions ────────────────────────────────────────────────────────────────
-
-// ── the arms, asked DIRECTLY ────────────────────────────────────────────────────
+// ── 3. every case list asserted through the guard ───────────────────────────────
 //
-// The guard's pre-checks refuse `-c` and any quoted word for every command, so a whole
-// command proves only the pre-check. These ask one arm one segment: what the ARM refuses,
-// with nothing above it to catch the fall. The A1/A2 arms are the last line for a git/gh
-// read that the pre-checks let through.
-
-/** Words exactly as an arm receives them: lowercased segment split on spaces. */
-const words = (s: string): string[] => s.toLowerCase().split(" ");
-
-for (const c of [
-  "git -c /repo/.git log",
-  "git --git-dir=/x log",
-  "git --git-dir /x log",
-  "git --work-tree=/x status",
-  "git --exec-path=/x status",
-  "git --exec-path /x blame src/a.ts",
-  "git log --oneline --git-dir=/x",
-  // The empty word AFTER the verb, spelled so nothing else in the segment refuses: an
-  // operand test cannot see through `''`, so this is the case the empty-word refusal is
-  // the only term that makes red.
-  "git log '' review-findings.json",
-  "git log '' extension/src/review-findings-store.ts",
-  // `''` glued to a leading dot: `slice(2)` reads `ts/`, which no operand test owns, so
-  // the empty-word refusal is the only term that can make this red.
-  // `''` glued to a DOT-relative path: the colon branch reads `.git/` (not the store) and
-  // the plain basename test sees `.json`, so ONLY the empty-word term can make this red.
-  "git log '' .git/review-findings.json",
-])
-  assert(!armGitRead(words(c)), `arm A1 refuses the repo-location selector — ${c}`);
-for (const c of ["git log --oneline", "git --no-pager status", "git show HEAD:readme.md"])
-  assert(armGitRead(words(c)), `arm A1 still admits the plain read — ${c}`);
-
-for (const c of [
-  "gh pr view 1 --git-dir=/x",
-  "gh pr view 1 -c x",
-  "gh pr diff 2 --work-tree=/x",
-  "gh repo view --git-dir /x",
-])
-  assert(!armForgeRead(words(c)), `arm A2 refuses the repo-location selector — ${c}`);
-for (const c of ["gh pr view 1105", "glab mr diff 3"])
-  assert(armForgeRead(words(c)), `arm A2 still admits the exact read — ${c}`);
+// The per-ARM predicates are asked one segment at a time in
+// test-review-accept-arms-direct.ts; here each whole command goes through the guard.
 
 for (const t of ALLOWANCES) assert(!refused(t.c), `allowed — ${t.why}`);
 for (const t of MANDATED_REFUSALS) assert(refused(t.c), `mandated refusal — ${t.why}`);
 for (const t of DENY_BY_DEFAULT_REFUSALS) assert(refused(t.c), `refused — ${t.why}`);
 for (const t of OVER_REFUSALS) assert(refused(t.c), `known over-refusal — ${t.why}`);
+for (const t of SIBLING_REFUSALS) assert(refused(t.c), `known over-refusal — ${t.why}`);
 
 // The repo's own develop gate is allowed verbatim.
 for (const arm of verifyCmdArms())
@@ -396,15 +365,17 @@ for (const arm of verifyCmdArms())
 // ── the edit tools ────────────────────────────────────────────────────────────
 
 const storeFile = `/repo/.git/${DATA}`;
+/** A sibling of a protected name: any dotted suffix reaches the store's bytes. */
+const siblingEdits: Array<[string, string]> = [
+  [`${storeFile}.corrupt-123`, "write of a corrupt-copy sibling"],
+  [`${storeFile}.tmp`, "multiedit of a .tmp sibling"],
+  [`${storeFile}.bak`, "a .bak sibling (#1125: any dotted suffix is a sibling)"],
+  [`${storeFile}.corrupt`, "a .corrupt sibling with no numeric suffix"],
+  ["/repo/.git/review-findings-store.tmp", "a .tmp sibling of the store module"],
+];
 assert(editsFindingsFile("edit", { path: storeFile }) === storeFile, "edit of the findings file");
-assert(
-  editsFindingsFile("write", { path: `${storeFile}.corrupt-123` }) !== undefined,
-  "write of a corrupt-copy sibling",
-);
-assert(
-  editsFindingsFile("multiedit", { path: `${storeFile}.tmp` }) !== undefined,
-  "multiedit of a .tmp sibling",
-);
+for (const [path, why] of siblingEdits)
+  assert(editsFindingsFile("write", { path }) !== undefined, `sibling refused — ${why}`);
 assert(
   editsFindingsFile("edit", { path: "/repo/extension/src/review-findings-store.ts" }) !== undefined,
   "edit of the store module's own source is refused (#1125)",
@@ -419,8 +390,8 @@ assert(
   "editing the guard itself is allowed",
 );
 assert(
-  editsFindingsFile("write", { path: `${storeFile}.bak` }) === undefined,
-  "a different file with a similar name is not the store",
+  editsFindingsFile("write", { path: "/repo/src/review-findings.jsonx" }) === undefined,
+  "a word merely STARTING with the store name is not the store",
 );
 
 // ── the hook: one base reason, plus at most the two remedy sentences ────────────
