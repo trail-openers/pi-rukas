@@ -109,9 +109,13 @@ const ROOT_INTENTIONAL_SITES: Array<{ file: string; site: RegExp; label: string;
     why: "the one-shot plan re-dispatch — same step, same reason",
   },
   {
-    file: "work-driver-plan-helpers.ts",
+    // #754's kill-triggered corrective moved with the timeout trio from
+    // work-driver-plan-helpers.ts to work-driver-plan-timeout.ts (the §12
+    // line cap); the decision it records is unchanged — same step, same
+    // reason as the quality-gate corrective, no worktrees exist yet.
+    file: "work-driver-plan-timeout.ts",
     site: /\{\s*role:\s*"explore",\s*prompt:\s*correctivePrompt\s*\}/,
-    label: "plan:corrective (kill-triggered, helpers)",
+    label: "plan:corrective (kill-triggered, plan-timeout)",
     why: "the #754 kill-triggered corrective re-dispatch — same step, same reason as the quality-gate corrective",
   },
   {

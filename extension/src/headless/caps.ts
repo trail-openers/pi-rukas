@@ -69,6 +69,8 @@ export const FIXED_CAPS = [
   "loop-detected",
   "no-review-outcome",
   "ops-merge-base-mismatch",
+  // #819 — the plan-to-spec gate refused the plan before branch/develop.
+  "plan-spec-mismatch",
   "plan-timeout",
   "repeat-finding-seam",
   "repo-root-residue",
