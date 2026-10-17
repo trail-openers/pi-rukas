@@ -135,9 +135,9 @@ export async function parkLensFixOverrun(
 ): Promise<WorkState> {
   if (!reviewEnforceEnabled()) return state;
   const elapsed = reviewElapsedMs(state, now);
-  if (elapsed === undefined || elapsed <= reviewWallClockMs()) return state;
-  const round = state.pipelineState.reviewRound;
   const capMs = reviewWallClockMs();
+  if (elapsed === undefined || elapsed <= capMs) return state;
+  const round = state.pipelineState.reviewRound;
   const evidence = `lens-fix not dispatched: the review loop has run ${Math.round(elapsed / 60_000)}m (round ${round}) against the ${capMs / 60_000}-minute cap, so the fixer was stopped before it started rather than left running past its own printed budget.`;
   trace(`work-driver: lens-fix — review wall-clock cap exceeded — ${evidence}`);
   let next: WorkState = appendEvent(state, {
