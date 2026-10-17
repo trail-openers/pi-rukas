@@ -320,9 +320,17 @@ export function isBuildResidueFailure(failure: string): boolean {
  * record did not: "leftover residue from an earlier cycle" was a guess, and
  * the residue was the driver's own verify run. The source is stated as
  * "untracked and git-ignored", which is what the classifier actually proved.
+ *
+ * The closing sentence is worded so it is true on BOTH paths that produce this
+ * string: the consolidated verify's preflight, which declines before the
+ * checkout so nothing ran, and any caller that reached a verdict-free state
+ * after the run started. #1421 fix round (lens) — it used to assert "the
+ * consolidated verify ran despite them", which was false in the decline path
+ * the preflight takes, and a reader chasing a declined batch went looking for
+ * a verify log that never existed.
  */
 export function buildResidueFailure(paths: readonly string[], where: string): string {
   const named = paths.slice(0, 5).join(", ");
   const more = paths.length > 5 ? ` (+${paths.length - 5} more)` : "";
-  return `${BUILD_RESIDUE_LABEL} ${where} — ${paths.length} untracked, git-ignored build artifact(s) in the root the gate would have mutated: ${named}${more}. These are build output, not source: git itself declares them ignored, nothing was judged, and the change is neither confirmed nor refuted. The consolidated verify ran despite them; to keep the root clean, point the project's build at a directory outside the checkout (e.g. CARGO_TARGET_DIR) or gitignore the output where it lands.`;
+  return `${BUILD_RESIDUE_LABEL} ${where} — ${paths.length} untracked, git-ignored build artifact(s) in the root the gate would have mutated: ${named}${more}. These are build output, not source: git itself declares them ignored, nothing was judged, and the change is neither confirmed nor refuted. The consolidated verify was declined before the checkout, so the code reached no verdict; to keep the root clean, point the project's build at a directory outside the checkout (e.g. CARGO_TARGET_DIR) or gitignore the output where it lands.`;
 }

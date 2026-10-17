@@ -176,13 +176,14 @@ export async function consolidateWorktreesToBranch(
       // sweep (`git add` of untracked files) cannot take it. Refusing here
       // left the incident's three reviewed commits on a scratch worktree
       // while the handoff said only "consolidation infeasible".
-      const ignored = await readIgnoredPaths(execFn, ctx.repoRoot);
-      const classified = classifyRootDirt(
-        candidateLines,
-        ignored,
-        ctx.dirtyRootExempt,
-        await probeIgnored(execFn, ctx.repoRoot, candidateLines),
-      );
+      // #1421 fix round (lens) — the two git reads run CONCURRENTLY: the
+      // probe's candidates are the status lines, so nothing here waits on the
+      // ignored listing, and each read keeps its own fail-closed `undefined`.
+      const [ignored, probed] = await Promise.all([
+        readIgnoredPaths(execFn, ctx.repoRoot),
+        probeIgnored(execFn, ctx.repoRoot, candidateLines),
+      ]);
+      const classified = classifyRootDirt(candidateLines, ignored, ctx.dirtyRootExempt, probed);
       if (classified.dirt.length > 0) {
         return {
           ok: false as const,
