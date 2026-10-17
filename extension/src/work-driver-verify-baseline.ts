@@ -41,12 +41,25 @@ export const BASELINE_RED_MARKER = "[baseline-red]";
 export type BaselineVerdict =
   | { status: "green" }
   /** `assertion` is null when nothing assertion-shaped could be extracted. */
-  | { status: "red"; assertion: string | null; timedOut: boolean }
+  | { status: "red"; assertion: string | null; timedOut: boolean; rawStream?: string }
   | { status: "unknown"; reason: string };
 
 export async function probeBaselineVerify(
   execFn: ExecFn,
-  opts: { repoRoot: string; baseSha: string; issue: number; cmd: string; timeoutMs: number },
+  opts: {
+    repoRoot: string;
+    baseSha: string;
+    /**
+     * The probe tree is `.worktrees/baseline-verify-<issue>`. A string lets a
+     * caller name a distinct probe per seam — the develop step and the
+     * commit-pr step of ONE issue must not share a tree, because one step's
+     * teardown removes the other's checkout. Numbers stay the develop step's
+     * shape and produce byte-identical tree names.
+     */
+    issue: number | string;
+    cmd: string;
+    timeoutMs: number;
+  },
 ): Promise<BaselineVerdict> {
   const { repoRoot, baseSha, cmd, timeoutMs } = opts;
   // Deliberately NOT `issue-<N>-…`: the same-issue leftover scan reads that
@@ -91,11 +104,17 @@ export async function probeBaselineVerify(
           reason: "the base checkout failed for want of dependencies, not on the gate itself",
         };
       }
+      // #1404 — the raw stream rides back on a red verdict. The develop step's
+      // consumers read only the extracted assertion, so this was discarded;
+      // the commit-pr seam's per-test attribution needs the whole stream
+      // (`failingTestNames` parses its `FAILED:` markers, and the 1500-char
+      // assertion window would elide all but the last of them).
       const assertion = extractSpecificAssertion(extractAttributedTail(raw, 1500).tail);
       return {
         status: "red",
         assertion: assertion === NO_SPECIFIC_ASSERTION ? null : assertion.slice(0, 200),
         timedOut: false,
+        rawStream: raw,
       };
     }
   } finally {

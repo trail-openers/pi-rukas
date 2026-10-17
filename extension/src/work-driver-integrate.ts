@@ -22,6 +22,11 @@ export { readDirtyPorcelain, restoreRepoRoot } from "./work-driver-preflight.ts"
 // keep this file under the 500-line gate); the re-exports below preserve
 // every existing import path unchanged.
 
+import type { IntegrateResult } from "./work-driver-integrate-result.ts";
+
+// The result contract lives in work-driver-integrate-result.ts and is re-exported
+// here so every consumer keeps importing it from the module that owns `integrate()`.
+export type { IntegrateResult };
 import { cachedIssueTitle } from "./work-driver-integrate-title.ts";
 export { cachedIssueTitle } from "./work-driver-integrate-title.ts";
 
@@ -76,6 +81,15 @@ export interface IntegrateOpts {
   verifiedWorktree?: string;
   /** Wall-clock for `verifyCmd`. */
   verifyTimeoutMs?: number;
+  /**
+   * #1404 — the cycle's ORIGINAL base commit (`pipelineState.baseSha`), the
+   * commit this cycle's commits are measured against. Threaded to the
+   * commit-pr verify so a consolidated failure earns a baseline probe. The
+   * caller must NOT pass a followup round's `followupBase` — that commit
+   * already carries this cycle's earlier commits, which would excuse every
+   * failure as pre-existing. Absent → no probe, failures park as before.
+   */
+  baselineBaseSha?: string;
   /**
    * #782 — the commit-pr flake re-run. When the consolidated verify at this
    * seam fails and `ciRetryCount` is unset (first consolidated run), the
@@ -145,50 +159,6 @@ export async function isCommitOnBranch(
   }
 }
 
-export type IntegrateResult =
-  | {
-      ok: true;
-      workstreams: string[];
-      empty: false;
-      /** #492 — worktrees that were clean at stage time (the fixer/developer
-       *  produced no diff there). Set only when at least one worktree was
-       *  clean, so a caller can tell "this one wrote nothing" apart from the
-       *  workstreams that did ship. */
-      noDiff?: NoDiff;
-      commitShas?: Record<string, string>;
-      completeness?: ConsolidationCompleteness;
-      /**
-       * #1240 — the commit-pr consolidated verify did not run because the
-       * committed integration tree is the tree the develop step already
-       * verified green. The caller records the visible event from it; absent
-       * on every run that executed the command.
-       */
-      verifySkipped?: AlreadyVerifiedTree;
-    }
-  /** Nothing to integrate — every worktree was clean. Not an error. #492. */
-  | {
-      ok: true;
-      workstreams: [];
-      empty: true;
-      noDiff: NoDiff;
-      /** #749 — empty because every workstream's work was already on the
-       *  branch (tree-hash dedup skip), not because nothing was produced. */
-      skippedAlreadyOnBranch?: string[];
-    }
-  | {
-      ok: false;
-      reason: string;
-      conflictPatch?: string;
-      /** #492 — worktrees that produced no diff (for handoff context). */
-      noDiff?: NoDiff;
-      /** #539 — structured failure discriminator. Cause readers MUST read this, never re-parse `reason`. */
-      failure?: "dirty-repoRoot" | "apply" | "verify";
-      /** #1324 — the `verify` failure was a run killed at its bound. */
-      timedOut?: boolean;
-      /** #654 task-c — dirty-preflight porcelain lines (the caller parks with these). */
-      porcelain?: string[];
-    };
-
 /**
  * Consolidate every worktree onto the feature branch at repoRoot.
  * Fails rather than forces at every step. The dirty-repoRoot preflight runs
@@ -211,6 +181,10 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
   // #1240 — set only when step 4 skipped its verify run; carried on the
   // success result so the caller can record the visible event.
   let verifySkipped: AlreadyVerifiedTree | undefined;
+  // #1404 — set when step 4's verify failed ONLY on tests that already fail
+  // at the cycle's base commit. The push below proceeds on it; the names ride
+  // on the success result so the caller can make them visible.
+  let verifyPreExisting: string[] | undefined;
   // #750 — the restore is verified, not assumed (see work-driver-restore.ts).
   const restoreRoot = async (): Promise<VerifiedRestoreResult> =>
     originalRef
@@ -414,11 +388,13 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       verifyCmd: opts.verifyCmd,
       verifyExecFn: opts.verifyExecFn,
       verifyTimeoutMs: opts.verifyTimeoutMs,
+      baselineBaseSha: opts.baselineBaseSha,
       verifyRetry: opts.verifyRetry,
       restoreRoot,
       claimFor,
     });
     if (integrationVerify.failure !== undefined) return integrationVerify.failure;
+    verifyPreExisting = integrationVerify.preExistingFailures;
     verifySkipped = integrationVerify.skipped;
 
     // 5. Push.
@@ -460,6 +436,9 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       commitShas: Object.keys(cherryPickShas).length > 0 ? cherryPickShas : undefined,
       completeness: orchResult.completeness,
       ...(verifySkipped !== undefined ? { verifySkipped } : {}),
+      ...(verifyPreExisting !== undefined
+        ? { preExistingOnly: true, preExistingFailures: verifyPreExisting }
+        : {}),
     };
   } catch (err) {
     const e = err as Error & { stderr?: string };

@@ -61,6 +61,7 @@ import {
   companionLinesOf,
   fixesLinesOf,
   operatorActionsSectionOf,
+  preExistingFailuresSectionOf,
   tldrSectionOf,
 } from "./work-driver-pr-body-definition.ts";
 import { findOpenPrForBranch } from "./work-driver-pr-preflight.ts";
@@ -261,6 +262,12 @@ export async function mechanizedCommitPr(
       verifiedWorktree:
         followupBase === undefined && ids.length === 1 ? Object.values(worktrees)[0] : undefined,
       verifyTimeoutMs: integrationVerifyTimeoutMs(),
+      // #1404 — ALWAYS the cycle's original base, never `followupBase`: a
+      // second round's base is the branch head, which already carries this
+      // cycle's earlier commits, so probing it would excuse every failure as
+      // pre-existing. The followup probe's base therefore contains commits
+      // this cycle wrote, which is the base the change is measured against.
+      baselineBaseSha: ps.baseSha,
       verifyRetry: {
         ciRetryCount: ps.ciRetryCount,
         onRecover: (evidenceTail?: string) => {
@@ -371,6 +378,11 @@ export async function mechanizedCommitPr(
     // "Automated by" line and before `Fixes #N`. It is the first thing a
     // reviewer sees. Empty when the spec has no usable source.
     const tldr = tldrSectionOf(ps.normalisedSpec);
+    // #1404 — the gate was red and the cycle pushed anyway, because every red
+    // test is red at base too. That fact belongs where review happens: a
+    // silent continue would leave the next reviewer (and the next cycle) to
+    // rediscover that the gate, not this diff, is broken.
+    const preExistingSection = preExistingFailuresSectionOf(res.preExistingFailures);
     const prBody = [
       tldr,
       "",
@@ -383,6 +395,7 @@ export async function mechanizedCommitPr(
       protectedGrantSectionOf(ctx.protectedGrant),
       carriedFindings,
       operatorActions,
+      preExistingSection,
       renderLensFindingsSection(state.eventLog),
     ]
       .filter((l) => l !== "")

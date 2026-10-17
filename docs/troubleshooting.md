@@ -1281,6 +1281,16 @@ Projects with no `.pi/verify-cmd` skip the check entirely and are unaffected.
 
 A run killed at its bound (`PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS`, 15 min by default) is not a verdict that the tree does not build. It parks as `verify-timeout:commit-pr` instead, and nothing is pushed.
 
+**A gate that was already red at your base commit no longer parks the cycle (#1404).** When the consolidated verify fails, the driver runs the SAME command once more against the cycle's original base commit in a throwaway worktree, and compares the failing test names — parsed from the loop's `FAILED:` markers, from the raw stream rather than the bounded tail, which elides all but the summary. Names that fail at base too are **pre-existing**: the gate owns them, not your diff. If every failure is pre-existing the cycle continues, pushes, and opens the PR, with the names listed in the PR body and carried on the plumb-report so the handoff says which red tests the gate had been blaming unfairly. Anything else still parks, and the park reason names **only** the tests that pass at base — an operator told to "fix the consolidated tree" for five red tests, three of which the base already had, wastes three inspections on gate rot.
+
+Three things the probe cannot do, all deliberate:
+
+- **It cannot turn a red gate into a pass.** The continue decision hangs off the caller, and the gate's `ok: false` verdict is what licenses it; a probe that established nothing never sets the flag.
+- **It cannot excuse a failure it cannot name.** No `FAILED:` marker (a `tsc` or biome error prints none), a collapsed `… and N more` summary, a base run killed at its bound, or a base run that exited non-zero while its own tally said `F: 0` — every one of those is `unattributable`, and absence of evidence is never read as evidence of innocence.
+- **It must be given the cycle's ORIGINAL base.** `pipelineState.baseSha`, not a followup round's `followupBase` — the latter already carries this cycle's own commits, which would excuse every failure as pre-existing.
+
+A green gate pays nothing: the probe runs only after a failure, so healthy cycles are untouched. Fix the gate itself at some point — the names in the PR body are the list, and until you do, every cycle on this project carries a red baseline the driver has to work around.
+
 ### How a subagent's life is bounded
 
 Two mechanisms, and only one of them is meant to fire in normal operation.

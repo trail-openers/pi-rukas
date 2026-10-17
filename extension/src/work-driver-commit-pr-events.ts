@@ -281,6 +281,29 @@ export function finalizeCommitPrState(
       evidenceTail: commitPrFlakeEvidence,
     });
   }
+  // #1404 — the gate was red and the cycle pushed: every failing test is red
+  // at the cycle's base commit too. Recorded as a plumbing report, not an
+  // event: `plumbReportSection` already renders that field in the handoff, and
+  // appending to the event log here would move the tail `nextStep()` routes on.
+  // The followup path (a PR already open) builds NO body at all, so on that
+  // exit this record is the only place the pre-existing names survive.
+  if (
+    res.preExistingOnly === true &&
+    res.preExistingFailures &&
+    res.preExistingFailures.length > 0
+  ) {
+    const body = `commit-pr consolidated verify failed on ${res.preExistingFailures.length} test(s) that also fail at the cycle's base commit, so the push proceeded: ${res.preExistingFailures.join(", ")}. These are gate failures owned by the base commit, not by this change — fix the gate at the base (or the host it runs on) or the next cycle parks here too.`;
+    const prior = next.pipelineState.plumbReports ?? [];
+    if (!prior.some((r) => r.body === body)) {
+      next = {
+        ...next,
+        pipelineState: {
+          ...next.pipelineState,
+          plumbReports: [...prior, { step: "commit-pr", role: "driver", body, at: Date.now() }],
+        },
+      };
+    }
+  }
   // Via the shared builder (work-driver-events.ts): unique jobId — the old
   // inline literal "mechanized" appeared twice per fan-out cycle, making
   // jobId useless as a correlation key (census 2026-09-09).
