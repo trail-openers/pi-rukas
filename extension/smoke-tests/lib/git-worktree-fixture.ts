@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { gitTestEnv } from "./git-test-env.ts";
 
 /**
  * The safety net's `git commit` runs through the inherited environment, not
@@ -31,6 +32,13 @@ export function gitIn(cwd: string, args: string[]): string {
   return execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
     cwd,
     encoding: "utf8",
+    // #1145 — `execFileSync` with no `env` inherits the REAL `environ` on bun
+    // 1.3, so a test that never called `gitTestEnv()` itself (or ran outside
+    // lib/verify-loop.sh, which exports the isolated set for the whole run)
+    // built its throwaway repo against the operator's global git config. That
+    // is the same leak the seven host-red fixtures had, one level down: the
+    // helper is shared, so the leak was inherited by every suite importing it.
+    env: gitTestEnv(),
   }).trim();
 }
 

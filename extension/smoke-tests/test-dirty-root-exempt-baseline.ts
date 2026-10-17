@@ -25,8 +25,17 @@ import {
   readDirtyRootExemptBaseline,
 } from "../src/work-driver-dirty-root-exempt.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 
 const execFileP = promisify(execFile);
+
+// #1145 — see lib/git-test-env.ts: a fixture repo must not read the host's
+// global git config. `gitTestEnv()` is threaded into every git call below
+// because bun 1.3 does not propagate a `process.env` assignment to a
+// child_process call that omits `env`; this bare call is the ONE entry point
+// and additionally covers the production seam that reads `process.env`
+// in-process, because the first call writes the four levers ambiently.
+gitTestEnv();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -40,8 +49,9 @@ function assert(cond: boolean, msg: string) {
 /** argv-form exec, matching production's `execp` (never a shell for argv calls). */
 const realExec: ExecFn = (cmd, o) =>
   (o?.argv
-    ? execFileP(cmd, o.argv, { cwd: o.cwd, maxBuffer: o.maxBuffer })
+    ? execFileP(cmd, o.argv, { cwd: o.cwd, maxBuffer: o.maxBuffer, env: gitTestEnv() })
     : execFileP("/bin/sh", ["-c", cmd], {
+        env: gitTestEnv(),
         cwd: o?.cwd,
         maxBuffer: o?.maxBuffer,
       })) as ReturnType<ExecFn>;
@@ -51,7 +61,8 @@ const root = mkdtempSync(join(tmpdir(), "pi-ens-1362-baseline-"));
 /** A fresh single-commit repo with `a.txt` tracked. */
 function makeRepo(): { dir: string; g: (args: string[]) => string } {
   const dir = mkdtempSync(join(root, "repo-"));
-  const g = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8", env: gitTestEnv() });
   g(["init", "-q", "--initial-branch=main"]);
   g(["config", "user.email", "t@example.com"]);
   g(["config", "user.name", "T"]);

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { WorkState } from "../../src/workflow-state.ts";
 import type { ExecFn } from "../../src/worktree.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 export const result = { exit: 0 };
 export function assert(cond: boolean, msg: string) {
@@ -18,11 +19,26 @@ export function assert(cond: boolean, msg: string) {
 
 export const pExec = promisify(exec);
 export const pExecFile = promisify(execFile);
-/** Argv calls run via execFile (no shell), exactly as production's execp does. */
+/** Argv calls run via execFile (no shell), exactly as production's execp does.
+ *
+ * #1145 — `env: gitTestEnv()` on both branches. These are the executors the
+ * driver-under-test is handed, so they are the door through which a fixture's
+ * git reads reach the host: `execFile`/`exec` with no `env` option inherit the
+ * REAL `environ` on bun 1.3, and a test that ran outside lib/verify-loop.sh
+ * (a direct `bun run`, or a developer's single-file invocation) then resolved
+ * the start-ref claim against the operator's `~/.config/git/ignore`. */
 export const realExec: ExecFn = (cmd, opts) =>
   (opts?.argv
-    ? pExecFile(cmd, opts.argv, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer })
-    : pExec(cmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer })) as ReturnType<ExecFn>;
+    ? pExecFile(cmd, opts.argv, {
+        cwd: opts?.cwd,
+        maxBuffer: opts?.maxBuffer,
+        env: gitTestEnv(),
+      })
+    : pExec(cmd, {
+        cwd: opts?.cwd,
+        maxBuffer: opts?.maxBuffer,
+        env: gitTestEnv(),
+      })) as ReturnType<ExecFn>;
 /** The command as a readable line, argv joined by spaces, for assertions. */
 export const shown = (cmd: string, opts?: { argv?: string[] }) =>
   opts?.argv ? [cmd, ...opts.argv].join(" ") : cmd;
@@ -31,7 +47,8 @@ export const shown = (cmd: string, opts?: { argv?: string[] }) =>
  * and `feature/merged` checked out (the state a cycle leaves behind). */
 export function buildRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "issue1093-start-ref-"));
-  const g = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+  const g = (args: string[]) =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8", env: gitTestEnv() });
   g(["init", "-q", "-b", "main"]);
   g(["config", "user.name", "t"]);
   g(["config", "user.email", "t@t"]);
@@ -47,11 +64,13 @@ export const head = (dir: string) =>
   execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
     cwd: dir,
     encoding: "utf8",
+    env: gitTestEnv(),
   }).trim();
 export const sha = (dir: string, ref = "HEAD") =>
   execFileSync("git", ["rev-parse", ref], {
     cwd: dir,
     encoding: "utf8",
+    env: gitTestEnv(),
   }).trim();
 
 export function stateWith(startRef: string | undefined, branchName: string): WorkState {
@@ -75,4 +94,3 @@ export function stateWith(startRef: string | undefined, branchName: string): Wor
     eventLog: [],
   };
 }
-
