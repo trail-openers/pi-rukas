@@ -26,6 +26,7 @@
 
 import type { OperatorDirectives } from "./plan-directives.ts";
 import type { AngleFindings, PlanItemKind, PlanItemKindName } from "./plan-draft.ts";
+import { DROPPED_SOURCE_MAX_CHARS } from "./plan-dropped-budget.ts";
 import { OPERATOR_SOURCE, type PriorContextEntry } from "./plan-prior-context.ts";
 
 /**
@@ -236,24 +237,43 @@ export function filterInvestigationConflicts<T extends InvestigationLine>(
   return { kept: live(), dropped, openQuestions, endorsed };
 }
 
-/** The clause naming why an item was dropped, per reason. */
-const DROP_CLAUSE: Record<
-  DroppedInvestigationItem["reason"],
+export const PLAN_DROP_REASONS = [
+  "operator",
+  "investigation",
+  "settled",
+  "duplicate",
+] as const satisfies readonly DroppedInvestigationItem["reason"][];
+
+/**
+ * The clause naming why an item was dropped, per reason — THE single source of
+ * that wording. plan-dropped-section.ts's renderer calls this and clips every
+ * field BEFORE it reaches the template (the clip constants live in
+ * plan-dropped-budget.ts), so neither module can widen what a filed body
+ * carries without the other noticing. Keeping one copy is what lets
+ * test-plan-operator-conflicts.ts keep asserting the wording through
+ * `draftSpec` while the section that carries it is bounded.
+ */
+export const DROP_CLAUSE: Record<
+  (typeof PLAN_DROP_REASONS)[number],
   (d: DroppedInvestigationItem) => string
 > = {
-  operator: (d) => `conflicts with operator decision "${d.against.slice(0, 160)}"`,
-  duplicate: (d) => `duplicate of operator line "${d.against.slice(0, 160)}"`,
+  operator: (d) =>
+    `conflicts with operator decision "${d.against.slice(0, DROPPED_SOURCE_MAX_CHARS)}"`,
+  duplicate: (d) => `duplicate of operator line "${d.against.slice(0, DROPPED_SOURCE_MAX_CHARS)}"`,
   settled: (d) =>
-    `operator decision "${d.against.slice(0, 160)}" settles its clash with the investigation line "${(d.sibling ?? "").slice(0, 160)}"`,
+    `operator decision "${d.against.slice(0, DROPPED_SOURCE_MAX_CHARS)}" settles its clash with the investigation line "${(d.sibling ?? "").slice(0, DROPPED_SOURCE_MAX_CHARS)}"`,
   investigation: (d) =>
-    `conflicts with another investigation line "${d.against.slice(0, 160)}" that no operator decision settles`,
+    `conflicts with another investigation line "${d.against.slice(0, DROPPED_SOURCE_MAX_CHARS)}" that no operator decision settles`,
 };
 
-/** The disclosure bullet for one dropped item (rendered in the filed body). */
-export function droppedDisclosure(d: DroppedInvestigationItem): string {
-  const { item } = d;
-  return `- dropped: ${DROP_CLAUSE[d.reason](d)} — [${item.angle} / ${item.kind}] ${item.text}`;
-}
+/**
+ * The disclosure bullet for one dropped item. The renderer lives in
+ * plan-dropped-section.ts (it owns how much of a decided disclosure is
+ * rendered, which is a budget question, not a drop decision); it is re-exported
+ * here so the existing consumers that read drops and their disclosure from one
+ * module keep importing from one module.
+ */
+export { droppedDisclosure } from "./plan-dropped-section.ts";
 
 /** Investigation kinds an operator line can contradict (#1132). */
 export const CONFLICTABLE_KINDS: ReadonlySet<PlanItemKindName> = new Set<PlanItemKindName>([
@@ -314,10 +334,4 @@ export function applyOperatorConflicts(
     openQuestions: res.openQuestions,
     endorsed: res.endorsed,
   };
-}
-
-/** #1132: the disclosure section for dropped investigation items ("" when none). */
-export function droppedSection(dropped: DroppedInvestigationItem[]): string {
-  if (dropped.length === 0) return "";
-  return `\n## Dropped investigation items\n\n${dropped.map(droppedDisclosure).join("\n")}\n`;
 }
