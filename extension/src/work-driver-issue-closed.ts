@@ -54,8 +54,8 @@
  */
 
 import { notifyAgent } from "./agent-message.ts";
-import { createForge, type Forge } from "./forge.ts";
 import { detectForge } from "./forge-detect.ts";
+import { type Forge, createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { reportFinalState } from "./work-driver-final-state.ts";
