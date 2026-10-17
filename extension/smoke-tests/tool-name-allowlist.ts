@@ -235,11 +235,14 @@ export const ALLOWLIST = new Set<string>([
   //     `agents-base/developer.md` §Your actual tool surface; "bunx" and "node"
   //     appear there and in project-manager.md to say what the allowlist does
   //     NOT grant — naming an unavailable binary is the point of the sentence,
-  //     not a claim that it is a tool.
+  //     not a claim that it is a tool. "gtimeout" is the Homebrew coreutils
+  //     name for GNU `timeout` (macOS ships none), named in developer.md's
+  //     timeout-binary probe — a binary the probe prints, never a tool.
   "bats",
   "shellcheck",
   "bunx",
   "node",
+  "gtimeout",
   // --- Prose nouns introduced by #1434's tool-surface grounding: words the
   //     table and the PM dispatch section set in backticks as a field or a
   //     concept, not as a callable ("the exact `project` name", "`permission` is
