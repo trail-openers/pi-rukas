@@ -10,7 +10,7 @@
 import { dispatchCore } from "./dispatch.ts";
 import { execp } from "./exec.ts";
 import { slowRecorder } from "./slow-events.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
@@ -20,6 +20,7 @@ import { markDraftPrReady } from "./work-driver-draft-pr.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
+import { mergeAuthorityJudge } from "./work-driver-judge-seam.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import {
   gatherMergeEvidence,
@@ -30,7 +31,12 @@ import {
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
 import { editIssueTldrs } from "./work-driver-merged-tldr.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
-import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
+import {
+  DOCTRINE_FILES,
+  type DoctrineDoc,
+  type PolicyJudgeFn,
+  judgePolicy,
+} from "./work-driver-policy.ts";
 import { inlineMergePrompt } from "./work-driver-prompts-late.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
@@ -236,7 +242,13 @@ export async function runMerged(
     // #407 — the documents are read by a judge and its answer is
     // citation-verified, not matched against English regexes.
     const authority = await resolveMergeAuthority(
-      judgePolicy(ctx.repoRoot, { processGroup: ctx.processGroup === true, signal: ctx.signal }),
+      // #1025 — the injected seam is honoured only under the offline suite's
+      // FORBID_LIVE_SPAWN gate (see `injectedJudgeAllowed`): the headless
+      // runner forwards `policyJudgeFn` to the driver, so without that gate a
+      // caller of `runHeadless` could speak for the merge-authority judge.
+      mergeAuthorityJudge(ctx, () =>
+        judgePolicy(ctx.repoRoot, { processGroup: ctx.processGroup === true, signal: ctx.signal }),
+      ),
       docs,
       ctx.mergeGrant,
       { repoRoot: ctx.repoRoot, issues: ctx.issues ?? [ctx.issue] },

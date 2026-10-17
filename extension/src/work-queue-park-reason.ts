@@ -1,3 +1,4 @@
+import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 /**
  * Why a queued group parked, read from its state file. Moved out of
  * work-queue.ts (#1093) to make room for the once-per-invocation start-ref
@@ -21,6 +22,9 @@ function ownerAlive(state: WorkState): boolean {
 
 /** The reason suffix `humanActionFor` reads for a gate the host could not run. */
 export const HOST_EXHAUSTION_SUFFIX = "host-resource-exhaustion";
+
+/** #1421 — the suffix for a gate declined by git-ignored build output. */
+export const BUILD_RESIDUE_SUFFIX = "build-residue";
 
 export function parkReason(state: WorkState | undefined): { reason: string; failedStep?: string } {
   if (!state) return { reason: "cycle produced no state file" };
@@ -70,6 +74,14 @@ export function parkReason(state: WorkState | undefined): { reason: string; fail
       // The gate never ran (the host could not fork): carry that on the
       // reason so the queue action points at the host, not at the diff.
       suffix = `:${HOST_EXHAUSTION_SUFFIX}`;
+    } else if (
+      cap.cap.startsWith("verify-") &&
+      // #1421 — same treatment for a gate declined by build output: the
+      // reason string is what `humanActionFor` matches on, and without the
+      // suffix it gets the "inspect the diff" advice.
+      state.pipelineState.verifyEvidence?.failures.some(isBuildResidueFailure)
+    ) {
+      suffix = `:${BUILD_RESIDUE_SUFFIX}`;
     }
     return { reason: `cap ${cap.cap}${suffix}`, failedStep: step };
   }

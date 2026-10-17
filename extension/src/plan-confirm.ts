@@ -18,6 +18,13 @@
  * the forge's body limit), because those depend on the current call's context
  * and the forge, not on a model's judgement.
  *
+ * #1383 scope note: the verbatim path is deliberately NOT cap-aware. It files
+ * cached bytes the operator reviewed, so re-running any renderer (including the
+ * bounded dropped-section renderer) would file something other than what was
+ * approved. An over-limit cached body is therefore refused by `validateFinalSpec`,
+ * exactly as before — the operator re-runs `start_plan_driver` to get a bounded
+ * draft to review.
+ *
  * Anything else — a changed input, a moved HEAD, an expired or malformed entry,
  * or a dry run that was not fileable — is a miss, and the driver runs the normal
  * pipeline (plan-driver.ts). When such a miss carried the reviewedDigest and the

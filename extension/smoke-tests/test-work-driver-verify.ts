@@ -17,6 +17,7 @@ import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import { verifyCmdFor, verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { asShellForm } from "./lib/argv-shell.ts";
+import { isNulStatusRead, nulStatus } from "./lib/nul-porcelain.ts";
 
 /**
  * The branch these fixtures put on the cycle.
@@ -185,7 +186,9 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
           pipelineState: { ...s.pipelineState, worktrees: { default: dir }, baseSha: "abc123" },
         };
         const emptyExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-          if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" };
+          // #1378 — the gate's uncommitted read is NUL-separated; matching the old
+          // plain string would return an empty change set and pass vacuously.
+          if (isNulStatusRead(cmd)) return { stdout: "" };
           if (cmd.includes("rev-parse --verify --end-of-options origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
@@ -203,8 +206,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         fsSync.mkdirSync(path.join(dir, ".pi"), { recursive: true });
         fsSync.writeFileSync(path.join(dir, ".pi", "verify-cmd"), "run-verify\n");
         const passExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-          if (cmd === "git status --porcelain --untracked-files=all")
-            return { stdout: " M src/foo.ts\n" };
+          if (isNulStatusRead(cmd)) return { stdout: nulStatus(" M src/foo.ts") };
           if (cmd === "run-verify") return { stdout: "all good" };
           return { stdout: "" };
         };
@@ -219,8 +221,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // refuses), so no consolidation runs and the per-worktree verify
         // failure is the verdict — the E0308 tail surfaces as a failure.
         const failExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-          if (cmd === "git status --porcelain --untracked-files=all")
-            return { stdout: " M src/foo.ts\n" };
+          if (isNulStatusRead(cmd)) return { stdout: nulStatus(" M src/foo.ts") };
           if (cmd.startsWith("git rev-parse HEAD")) return { stdout: "b".repeat(40) + "\n" };
           if (cmd.includes("rev-parse --verify --end-of-options origin/"))
             return { stdout: "a".repeat(40) + "\n" };

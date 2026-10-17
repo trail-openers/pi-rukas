@@ -24,7 +24,12 @@ import {
   fitDraftToBudget,
 } from "../src/plan-validate.ts";
 import { draftSpec } from "../src/plan-draft.ts";
-import { gatePrompts, installForgeStub, installOfflineVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
+import {
+  gatePrompts,
+  installForgeStub,
+  installOfflineVipuneStub,
+  installNoPlanCacheStub,
+} from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -129,6 +134,7 @@ function assert(cond: boolean, msg: string) {
     "tooLarge" in hopeless && /Prior context inventory: \d+ chars/.test(hopeless.breakdown),
     "fit: the halt carries the per-section breakdown",
   );
+
 }
 
 // ------------------------------------------------------------ pipeline
@@ -289,9 +295,6 @@ const MID_CONTEXT = Array.from({ length: 40 }, (_, i) => `fact ${i}: ${"c".repea
     "corrective: the round-2 gate prompt stays under the forge cap",
   );
 }
-
-setPlanDispatch(null);
-delete process.env.PI_ENSEMBLE_FORGE;
 
 // Prompt canary: brevity pressure at the source.
 {

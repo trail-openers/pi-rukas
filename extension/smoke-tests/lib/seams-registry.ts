@@ -1,19 +1,11 @@
 /**
- * seams-wired-fixtures — the SEAMS table the seam-wiring gate asserts over
- * (AGENTS.md §12 size cap; split out of test-seams-wired.ts).
+ * seams-registry — the seam table `test-seams-wired.ts` enforces, split out of
+ * it for the 500-line gate (AGENTS.md §12).
  *
- * The gate is one table of seam declarations plus the assertions over it. The
- * table is data with no behaviour — a file name, its allowlists, and the one
- * symbol that proves it is still reachable — so it lives here and the test
- * keeps the `assert` loops. The split is at the natural seam, not in the middle
- * of an assertion.
- *
- * **Each entry is load-bearing prose, not a fixture to be tidied.** The
- * `pending` / `testOnly` strings name the issue that will wire an export, or
- * the test that exercises it; the canary names the importer whose call the gate
- * pins. Drop an entry and the module it declares stops being guarded against
- * shipping unwired — the exact failure `vipune.ts` and `memory-stats.ts` both
- * shipped through. Move an entry here rather than deleting it.
+ * One entry per module that shipped as a wired seam: which exports are declared
+ * test-only or pending, and the canary symbol whose import proves the seam is
+ * still reachable from production. Adding a module to this list is the whole
+ * of registering it; the assertions live in the test.
  */
 
 export interface Seam {
@@ -37,18 +29,6 @@ export interface Seam {
 
 export const SEAMS: Seam[] = [
   {
-    // #1247 — the process-level origin trackers; index.ts is the production caller.
-    file: "exit-cause.ts",
-    pending: {},
-    testOnly: {
-      // The suite shares one module instance, and a signal / stdin EOF cannot be
-      // injected into it from inside a test.
-      resetExitCauseForTesting: "#1247 — test-exit-cause.ts, test-work-driver-session-shutdown.ts",
-      recordExitCauseForTesting: "#1247 — first-writer-wins case; test-exit-cause.ts",
-    },
-    canary: { symbol: "armExitCause", importer: "index.ts" },
-  },
-  {
     // #1308 — the generic decision seam. The policy judge (S2) is its first
     // production caller; the shadow seams (S3/S4) reach it via decision-shadow.ts.
     file: "decision-seam.ts",
@@ -69,6 +49,18 @@ export const SEAMS: Seam[] = [
     file: "work-driver-host.ts",
     pending: {},
     canary: { symbol: "piSessionHost", importer: "commands.ts" },
+  },
+  {
+    // #1247 — the process-level origin trackers; index.ts is the production caller.
+    file: "exit-cause.ts",
+    pending: {},
+    testOnly: {
+      // The suite shares one module instance, and a signal / stdin EOF cannot be
+      // injected into it from inside a test.
+      resetExitCauseForTesting: "#1247 — test-exit-cause.ts, test-work-driver-session-shutdown.ts",
+      recordExitCauseForTesting: "#1247 — first-writer-wins case; test-exit-cause.ts",
+    },
+    canary: { symbol: "armExitCause", importer: "index.ts" },
   },
   {
     // S4a (#1162) — the workflow-state persistence seam. markInterrupted has
@@ -240,6 +232,30 @@ export const SEAMS: Seam[] = [
         "the #973 round counter; wired in appendLedgerEntry (review-ledger.ts) and exercised by test-review-ledger.ts",
     },
     canary: { symbol: "appendLedgerEntry", importer: "adversarial-ledger.ts" },
+  },
+  {
+    // #1360 — the tool-path binding decision. `decideToolPathRow` and
+    // `toolPathFields` are called by the writer (adversarial-ledger.ts) and
+    // `captureBinding` by the loop's capture (adversarial-ledger-capture.ts);
+    // the two entries below have no production caller by design — the range
+    // check runs inside `decideToolPathRow`, and the prefix list is the shared
+    // vocabulary the spec and the guard's quoted detail are asserted against.
+    file: "adversarial-ledger-binding.ts",
+    pending: {},
+    testOnly: {
+      reviewRangeDecision:
+        "the range half of the decision, exercised through decideToolPathRow and asserted directly by test-adversarial-ledger-range.ts",
+      BINDING_REFUSAL_PREFIXES:
+        "the refusal vocabulary; asserted verbatim by test-adversarial-ledger-range.ts",
+    },
+    canary: { symbol: "decideToolPathRow", importer: "adversarial-ledger.ts" },
+  },
+  {
+    // #1360 — the loop-side capture, split from adversarial.ts for the file-size
+    // gate. Both halves are called by the loop.
+    file: "adversarial-ledger-capture.ts",
+    pending: {},
+    canary: { symbol: "captureRound", importer: "adversarial.ts" },
   },
   {
     // #1071 — the per-clone review-ledger lock (O_EXCL lockfile colocated

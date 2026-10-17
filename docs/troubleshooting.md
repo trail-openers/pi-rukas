@@ -199,7 +199,19 @@ The shapes that defeat them, and what to do:
 
 **To satisfy the guard:** run `adversarial_loop` (the `adversarial_loop` tool) and `dispatch_lens_review` (the `dispatch_lens_review` tool) on the branch, let them complete, then merge. The ledger entries are written automatically at completion.
 
-PR: [#912](https://github.com/trail-openers/pi-rukas/issues/912)
+**Binding refusals on an `adversarial_loop` row (#1360).** A tool-path adversarial row now records `passed: false` when the review it claims to attest did not actually cover the branch. The row's `detail` (quoted verbatim in the guard's refusal) starts with one of five prefixes. Each means the same thing underneath — the range the reviewer read is not the range the merge would ship — and the fix is the same for all five: re-run `adversarial_loop` with `base` = the branch's merge-base (`git merge-base origin/<mainline> HEAD`) and `head` = the branch tip, and make no edits while the round is running.
+
+| Prefix | What happened | What to change |
+|---|---|---|
+| `range-not-branch` | The `base` you passed is not the branch's merge-base — typically `base=HEAD~1` (only the last commit reviewed) or a base on a side branch. | Pass `base` = `git merge-base origin/<mainline> HEAD`. |
+| `range-unverifiable` | A check could not run: a ref that does not resolve, no merge-base, a git error, or the round's capture never completed. Fail-closed by design — a check that cannot run is never a pass. | Fix the ref (typo, deleted branch, unpushed tip) and re-run; a capture failure names its own cause in the same detail. |
+| `head-not-current` | The head under review was never the checkout's tip: you named an older commit explicitly, or the ref the round captured no longer resolves to the commit the row is written against (the branch moved elsewhere while the round ran). | Pass `head` = the branch tip (or omit it for `HEAD`) and re-run against the current tip. |
+| `head-moved` | The reviewer approved, then the branch was committed to before the row was written. | Re-run the round after the last commit — review, then merge, with no commits in between. |
+| `tree-changed` | The reviewer approved, then the working tree was edited (an uncommitted fix) before the row was written. | Commit or revert the edits, then re-run — or run the loop last, after the fixes land. |
+
+The cleanest shape, and the one the `/work` driver uses: run the reviews **after** the code is final, with `base` at the merge-base and `head` at the tip, and touch nothing until the row is on file. The lens half of the gate has no equivalent binding yet (known residual — see `adversarial-ledger-binding.ts`), so a lens row still passes on the whole-branch identity regardless of the range it was given.
+
+PR: [#912](https://github.com/trail-openers/pi-rukas/issues/912) · PR: [#1360](https://github.com/trail-openers/pi-rukas/issues/1360)
 
 ### A read-only command was refused with merge text
 
@@ -453,6 +465,16 @@ PR: [#215](https://github.com/trail-openers/pi-rukas/pull/215)
 **Fix:** Either (a) widen the allowlist in `.pi/permissions.json` for that project, (b) run inside the sandbox where there's no per-call gating, or (c) if you genuinely need an unrestricted automated run, prepend `PI_ENSEMBLE_SANDBOX_MODE=1 pi -p ...` — but understand this disables ALL guard layers and should ONLY be used in a context already sandboxed by other means (Docker, VM).
 
 PR: [#215](https://github.com/trail-openers/pi-rukas/pull/215)
+
+### `pi-rukas-headless` refuses `--merge` or `--sandboxed`
+
+**Symptom:** `pi-rukas-headless work 42 --merge` (or `--sandboxed`) exits 40 with `unknown argument "--merge"`, and the cycle never starts.
+
+**Cause:** deliberate (#1025). Both flags name an escalation a caller must not be able to request. `--merge` is the one authority source that bypasses the policy judge, so a host that could pass it could grant its own cycle permission to merge; `--sandboxed` would claim the container's trust mode from outside the container. Trust is an environment fact the image bakes (`PI_ENSEMBLE_SANDBOX_MODE=1` in `.devcontainer/Dockerfile`), not a request.
+
+**Fix:** nothing to pass. Merge authority comes from the project's `AGENTS.md` read at the cycle's base commit and needs `gh` merge evidence alongside it, so a cycle with neither parks as `awaiting-human-merge` (exit 10) with the PR open — which is the outcome, not a failure to work around. For sandbox behaviour, run the binary inside the image. See [headless.md](headless.md#what-the-runner-refuses-to-accept).
+
+Related: a child of a headless run outside the image denies every `ask`-class tool with `no broker socket — headless deny`. That is the same design one layer down — with no sandbox and no human, fail closed rather than guess — and the mode-independent guards (merge, issue-creation) still run ahead of it.
 
 ## Image acquisition
 
@@ -1068,6 +1090,21 @@ The park has its own cap, `fix-pass-park` (it reused `verify-failed:develop` bef
 **Why:** before a restore resets the repo root it saves what it would discard to `restored-state-*.diff` in the cycle's scratch dir. When that save fails, the root is the only copy of the change, so the restore no longer resets it. Previously a failed save was treated like "nothing to save" and the tree was reset anyway.
 
 **Fix:** the error in the message names the git command that failed and its stderr; fix that first. Then recover the change at the named path by hand (`git status`, `git diff`, `git diff --cached`, and `git cherry-pick --abort` if one is in progress), and clear the root before re-running.
+
+### Build output in the repo root declined the gate (`[build-residue]`, #1421)
+
+**Symptom:** a complete, reviewed, committed change parks as `verify-env:develop` (`verify-failed:develop` before #1421) and the first evidence line starts with `[build-residue]`, naming paths like `target/.rustc_info.json`, `target/CACHEDIR.TAG`, `target/debug/.cargo-lock`, or a `dist/` the bundler wrote. The handoff says the change was never judged. An older build reported the same condition as `verify-failed:develop` with "consolidated verify was refused — repoRoot is dirty (…)", plus a handoff line claiming "consolidation infeasible (work remains on its worktree detached HEADs)" while the commits sat intact in a worktree.
+
+**Why:** every dirty-root gate reads `git status` at the repo root and refuses to mutate a root carrying anything it cannot identify. Build output is untracked and unignored whenever the project's `.gitignore` does not cover where the build actually lands — a cargo workspace whose root is the checkout ignores `console/target/` but not `target/`, so a gate that builds at the root produces the residue that blocks the next gate. Before #1421 that environment refusal carried the code-failure cap, so a finished change was filed alongside diffs the gate had actually rejected.
+
+**Fix:** the named paths are git-ignored, so they are a tool's output — do not inspect the diff first. Keep build output out of the checkout the gate runs in:
+
+- point the build at a directory outside the tree (`CARGO_TARGET_DIR=/tmp/<project>-target`, a persistent target volume, `--out-dir` outside the root);
+- or gitignore the output where it lands (`/target/`, `dist/`) so the classifier's `git status --ignored` read can see it is not source.
+
+Clear what is already there, then re-run. The gate does **not** delete anything — build output is preserved like any other file, because a driver that cleans a tree it does not own is the failure class the dirty-root gate exists to prevent.
+
+**What the classifier exempts, and what it never does:** only untracked paths, and only ones git itself declares ignored (`git status --ignored=matching`, so `.gitignore`, `core.excludesFile` and `.git/info/exclude` all count), plus the driver's own scratch (`tmp/issue-<N>/`, `.worktrees/`, `.pi/work-state/`). A **tracked** modification, staged entry, deletion or rename is dirt whatever `.gitignore` says about the path — a file that became ignored after it was tracked still holds uncommitted source. An ignored read that fails classifies every path as dirt, which is the pre-#1421 behaviour: the narrowing can only ever loosen a refusal it has proven wrong, never weaken a gate that could not answer.
 
 ### `/work` refuses on a dirty repo root caused by a tool's own local files (#1362)
 
@@ -1822,6 +1859,10 @@ If the develop gate halts on a protected path, the message names each path and p
 
 `--allow-protected` (or `--allow-protected=<path>`) is repeatable, takes a comma-separated list, and applies to a single-issue invocation only — a queue would hand it to unrelated cycles. It admits **only the paths it names**, matched exactly — case included — after normalisation (a leading `./`; a trailing `(new)`-style annotation is stripped from what you type, never from the paths develop touched): a grant for `.github/workflows/ci.yml` does not admit `.github/CODEOWNERS`, the `.github/workflows/` directory, or the destination of a rename it does not name. Any ungranted protected path in the same diff still halts, committed or not. The grant does not bypass the scope fence — a granted file outside the workstream's declared scope still trips it. Like `--merge`, it is operator-only: `start_work_driver` has no parameter for it and forces it empty, and nothing in the issue body, the spec or the planner's output is read as a grant. It is recorded in the state file (`protectedGrant`) and shown in the handoff and the PR body, so the reviewer knows to read those files as changes to what verification means. A path the gate never halts on (e.g. `src/a.ts`), or a flag with no path, is refused rather than ignored.
 
+**A rename is checked on both sides (#1378), and each side needs naming separately.** `git mv .github/workflows/ci.yml src/ci.yml` — a workflow moved out of the way — halts on the **source**, even though the destination is an ordinary `src/` path; `git mv src/app.ts .github/workflows/deploy.yml` halts on the **destination**. A grant naming only one side does not admit the other, so moving a protected file aside is not a way through the gate. The rename *source* feeds only the protected-path check: it is not counted as a changed file by the frontend-only verify skip, the falsily-green evidence check, or the scope/fanout gate, so moving a file cannot change those verdicts.
+
+**A protected path with a non-ASCII name cannot be granted.** The gate reads both change sets NUL-separated (`status --porcelain -z --untracked-files=all`, `diff -z --name-status -M -C`), so a name like `.github/workflows/wörkflows.yml` is decoded and named verbatim in the halt rather than as the `"…\303\266…"` git prints by default. But `--allow-protected` accepts only plain path tokens (`[A-Za-z0-9._/@+-]`), so such a path is ungrantable by construction: the halt says so and names it in prose instead of printing a copy-paste command for it. The command is printed for the paths that **can** be granted — one ungrantable name in a mixed change set does not cost the operator the grant for the ordinary paths, nor the caution to review each path's diff before granting. `PI_ENSEMBLE_PROTECTED_PATHS=0` is the only way past an ungrantable name — and the right answer is usually that a cycle should not be writing that file at all.
+
 The process-wide escape hatch still exists and turns the gate off for every path, in every cycle that Pi process runs:
 
 ```bash
@@ -2182,7 +2223,7 @@ The reviewer's dispatch succeeded but its reply carried no `GAP:` findings and n
 
 ### "NOT FILEABLE AS-IS (body-too-large)" — the spec exceeds the forge's body limit
 
-GitHub caps an issue body at 65,536 characters, and body size scales with *investigation volume*, not feature complexity — a quarter-scope ticket can hit the wall if its angles emit essays. The driver now budgets the render deterministically BEFORE the gap gate: the default render caps each section at 20 items with item text clipped at 400 chars; if that overflows the budget (65,536 minus 4,096 headroom for the residual-disclosure and corrective-round appends), ONE compaction pass re-renders at 10 items / 220 chars. Clipping applies to item TEXT only — an epic's sub-issue checkboxes keep their `- [ ] #N —` prefix and `(sub-issue N, from angle)` attribution at every stage (a clipped item ends with `…` mid-text instead of losing its structure). A compacted body carries a visible `> Compacted to fit the forge's 65536-char body limit …` line, the tool result says `COMPACTED`, and the gap gate reviews the compacted body — what it approves is exactly what files. If even compaction cannot fit — typically a very large operator `context` param, which is deliberately never clipped (operator authority) — the run halts as `body-too-large` with a per-section character breakdown (e.g. `Prior context inventory: 70000 chars`) so you know what to trim; nothing is dispatched to the gate and nothing files. Remedy: shrink the named section (usually the `context` you passed) and re-run `start_plan_driver`. There is deliberately no override flag — the forge would reject the body anyway, after the full spend.
+GitHub caps an issue body at 65,536 characters, and body size scales with *investigation volume*, not feature complexity — a quarter-scope ticket can hit the wall if its angles emit essays. The driver now budgets the render deterministically BEFORE the gap gate: the default render caps each section at 20 items with item text clipped at 400 chars; if that overflows the budget (65,536 minus 4,096 headroom for the residual-disclosure and corrective-round appends), ONE compaction pass re-renders at 10 items / 220 chars. Clipping applies to item TEXT only — an epic's sub-issue checkboxes keep their `- [ ] #N —` prefix and `(sub-issue N, from angle)` attribution at every stage (a clipped item ends with `…` mid-text instead of losing its structure). A compacted body carries a visible `> Compacted to fit the forge's 65536-char body limit …` line, the tool result says `COMPACTED`, and the gap gate reviews the compacted body — what it approves is exactly what files. If even compaction cannot fit — typically a very large operator `context` param, which is deliberately never clipped (operator authority) — the run halts as `body-too-large` with a per-section character breakdown (e.g. `Prior context inventory: 70000 chars`) so you know what to trim; nothing is dispatched to the gate and nothing files. **The dominant section in that breakdown is the lever, and it is not always the `context` param**: a `Dropped investigation items: 56738 chars` line meant the disclosure of investigation items the operator's lines contradicted had itself become the oversized section (#1383 — it was the one section the budget never clipped or count-capped, so both compaction stages rendered the same 56k and the fitter gave up). That section is now bounded at both stages (`plan-dropped-budget.ts`: item text clipped to 200 chars, the whole section to 8,000) and its omission line states how many further items were dropped and where the full list lives — the run's `.pi/work-state/plan-dropped/<slug>-<runId>.json`, under the harness's own untracked-state directory and excluded through `.git/info/exclude` (the same mechanism that keeps `.worktrees/` and `/tmp/` out of `git status`), so a `/plan` never leaves untracked files in a project's tree — so a wide investigation can no longer make a spec unfileable. Remedy: shrink the named section (usually the `context` you passed; for a dominant dropped section, narrow the contradicting lines in your `ACCEPTANCE CRITERIA` / `OUT OF SCOPE` blocks, which are what cause items to be dropped) and re-run `start_plan_driver`. There is deliberately no override flag — the forge would reject the body anyway, after the full spend.
 
 ### A "(gate resolution)" bullet in a filed spec — and when a gap stays open instead
 
@@ -2212,6 +2253,18 @@ The acceptance boundary is layered:
 
 Layers 1 and 3 are **advisory in trust mode**. They are environment and string checks, so an agent with a shell can still bypass them. They stop an agent that is not trying to bypass them; the operator's terminal is the real boundary.
 
+#### An ordinary git/gh read got blocked by the accept guard (#1125)
+
+Layer 3 hardening closed three routes, and a legitimate command can be caught by the shape test. It now refuses:
+
+- **a git/gh argument that writes or execs**, naming a protected file — `--output` / `-o` (spaced `-o <file>` or attached `-o<file>`), `-c`, `gh alias set`, `gh config set alias`, `git config alias.`. Those arguments make the tool write a file or run a shell, so they are outside the plain-git exemption that lets a commit message name the store.
+- **a JS runtime invoked in a command that names the store**, on any line — a `bun <<EOF` here-doc importing the module, a program piped into `bun -`, or the `-e` / `-p` / `--print` / `--eval` forms.
+- **a plain git that removes the data file** — `checkout` / `restore` / `rm` / `stash` / `clean` naming `review-findings.json`. The data file dominates the exemption.
+
+Remedy: drop the write-capable argument — `git show HEAD:x` without `--output`, and `git --no-pager log` instead of `git -c core.pager=cat log` — and the read is allowed again. Reading the store **module** is now an accepted over-refusal: `git log -- extension/src/review-findings-store.ts` and `git diff HEAD -- …` are refused because a path segment whose last segment is a protected stem is refused by position, and `grep`/`wc`/`sed -n` on the file are refused the same way (clause (b): over-refusing a harmless read is the accepted cost). Read the module with the `read` tool instead, which is not bash and is not guarded. A commit message stays prose only inside a quoted `-m`; the guard refuses `-F`/`--file` outright, so keep the message in `-m "…"`. Git repo-location selectors (`-C <path>`, `--git-dir`, `--work-tree`, `--exec-path`, spaced or `=`-attached, either case) are refused outright: they move the repository a "plain read" runs against, so no arm can vouch for the tree it reads.
+
+Three shapes are refused **on purpose** and have no workaround inside the guard, because a string match cannot tell them from a command: a fenced `bun run build` line followed by prose naming the store, a quoted markdown table whose cells hold `|` and name the store, and a regex literal `/bun|node|deno/` beside a store path. Write the prose without naming the file, or run the read separately. All three are asserted as refusals in `test-review-accept-guard-hardened.ts`. What the guard does not cover at all is in the module header — most load-bearing: it does not guard writes to the store module's own **source** (`sed -i`, `cp`, `tee`, a redirect, `edit`/`write`), only the findings data file and its `.tmp` / `.corrupt` siblings.
+
 A corrupt `review-findings.json` is never overwritten. The reader and the writer both copy it to `review-findings.json.corrupt-<hash>` — the hash is of the bytes that were copied, so a repeat of the same fault names the same file and never duplicates it — and the round then REFUSES: it does not read the corrupt file as "no memory", because a round recorded on no memory would resolve open rows the unreadable file may still hold. The refusal names the copy and the cause and says `repair or remove <file>, or set PI_ENSEMBLE_REVIEW_LEDGER_FILE to a healthy ledger`; the summary carries it as `findings memory unavailable: …`, and every finding is still reported. Fix or remove the file, then re-run the review. A single malformed row is handled the same way on its own (`<file>.corrupt-<hash of the row>`) while the valid rows carry on.
 
 ## The offline smoke suite
@@ -2226,4 +2279,3 @@ Since #1365 `extension/smoke-tests/lib/verify-loop.sh` runs tests through a boun
 **Fix for both:** `PI_ENSEMBLE_VERIFY_TEST_JOBS=1 bash extension/smoke-tests/lib/verify-loop.sh extension/smoke-tests/test-*.ts` restores strictly sequential execution — the pre-#1365 shape, same output and exit codes (pinned by `test-verify-loop-parallel.ts` cases 1-2, which compare JOBS=1 and JOBS=3 byte-for-byte). If one test still fails alone, it is the test.
 
 The other knob is the per-test bound, unchanged by the pool: `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S` (default 300s, positive integer, else 300 with a warning). A test that hits it is reported `FAILED: <file> (timed out after <N>s)` with a `✗ timed out after <N>s` line prepended to its capture; the whole descendant tree is killed, so a hung test does not take the pool with it. Both variables are read once at startup.
-

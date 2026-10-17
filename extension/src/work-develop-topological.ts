@@ -9,6 +9,7 @@
  */
 import { recordCommentEvidence } from "./comment-evidence.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
+import { parkOnDevelopCrash } from "./work-develop-crash.ts";
 import { runMergeRetryFlow } from "./work-develop-fence-merge-retry.ts";
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import {
@@ -99,6 +100,12 @@ async function runDevelopTopological(
   // the fan-out resolves is the completion timestamp every dependent records.
   const independentCompletedAt = Date.now();
   const failureSource: Record<string, "skipped" | "failed"> = {};
+  // #1403 — the base a crashed pass's worktree is described against. Resolved
+  // lazily (the dependent phase adds entries as it creates worktrees) and
+  // identical to `effectiveBaseForWorkstream` in the #622 safety net, so a
+  // pass judged "done" and a tree the net later commits share one base.
+  const basesFor = (id: string): string | undefined =>
+    next.pipelineState.workstreamBaseShas?.[id] ?? next.pipelineState.baseSha;
   const runOneWorkstream = makeRunOneWorkstream({
     ctx,
     activeIssues,
@@ -107,6 +114,14 @@ async function runDevelopTopological(
     emitBranchCompleted: persister.emit,
     ids,
     dispatch,
+    // #1403 — the fan-out reads the crashed tree with the step's own executor
+    // and the ONE base resolution the step has (`baseFor`: the live
+    // `pipelineState` map with the global fallback, read at classify time), so
+    // "done" is judged against the tree the gates later judge. The classify
+    // seam itself is not threaded: both phases call the real classifier with
+    // these two, which is all they contribute.
+    execFn,
+    baseFor: basesFor,
     // #838 — the develop dispatch's deck tag: the workstream id when N>1
     // (per-workstream rows), "default" for the single-workstream shape.
     deckTagFor: (id) => (ids.length > 1 ? id : "default"),
@@ -258,6 +273,11 @@ async function runDevelopTopological(
           cwdFor: () => cwd,
           baseFor: () => base,
         })(id),
+      execFn,
+      // #1403 — the same single base resolution the independent fan-out uses:
+      // `pipelineState`, which the phase writes through the shared persister
+      // as each dependent's worktree and base are created.
+      baseFor: basesFor,
     },
   );
   await persister.flush();
@@ -312,6 +332,12 @@ async function runDevelopTopological(
     },
   };
   next = withPersistNotes(next, persistNotes);
+  // #1403 — a develop child whose ENGINE DIED is a step outcome, not a
+  // completion; the whole park (verdict filter, console notice, cap-hit with
+  // the leftover paths named) lives in work-develop-crash.ts so this file
+  // stays under the §12 gate and the rule has one home next to its record.
+  const crashPark = parkOnDevelopCrash(next, ctx.issue);
+  if (crashPark) return endStep(crashPark);
   // #849 — the fence recovery reads `stateRef.current` (the shared ref the
   // memory-inject events and the gate operate on); keep it in sync with the
   // local `next` (the branchEvents + worktrees merge just applied).
