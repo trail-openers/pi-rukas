@@ -274,7 +274,7 @@ async function makeWorktreeFixture(root: string, name: string): Promise<string> 
   }
 }
 
-// ------------------------------------- provisioning never fails the step (unchanged)
+// ------------------------------------- provisioning never fails the step
 {
   const { root, wt } = fixture("w");
   try {
@@ -282,14 +282,17 @@ async function makeWorktreeFixture(root: string, name: string): Promise<string> 
     mkdirSync(path.join(root, ".pi"), { recursive: true });
     writeFileSync(path.join(root, ".pi", "worktree-setup"), "exit 1\n");
     mkdirSync(wt, { recursive: true });
-    const fn = (async (cmd: string) => {
+    const fn = (async (cmd: string, opts?: { argv?: string[] }) => {
+      // Only the hook's own call fails: `expectedDepLocations` now runs BEFORE it,
+      // and a rejection from its argv-form probe would read as a probe fault.
+      if (opts?.argv) throw Object.assign(new Error("not a repo"), { code: 128 });
       if (cmd.startsWith("sh ")) throw new Error("hook exited 1");
       return { stdout: "" };
     }) as never;
     const result = await provisionWorktree(fn, root, wt);
     assert(
-      typeof result.problem === "string" && result.problem.includes("failed"),
-      "a failing hook is REPORTED, not thrown — a worktree without deps is the status quo",
+      result.problem?.includes("failed") === true && result.hookFailed === true,
+      `a failing hook is REPORTED, not thrown — no deps is the status quo (problem: ${result.problem}, hookFailed: ${result.hookFailed})`,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
