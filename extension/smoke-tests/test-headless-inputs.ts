@@ -39,7 +39,9 @@ import { claimScanEnabled, evidenceSupplyEnabled } from "../src/lens-evidence.ts
 import { lensRoundCap } from "../src/lens-round-cap.ts";
 import { loopDetectorEnabled } from "../src/loop-detector.ts";
 import { roundCapMergeEnabled } from "../src/merge-guard-round-cap.ts";
+import { pendingShutdownBoundMs } from "../src/pending-jobs-signal.ts";
 import { planCacheTtlMs } from "../src/plan-investigation-cache.ts";
+import { reviewCapMs, reviewWallClockMs } from "../src/review-budget.ts";
 import { transcriptRetentionDays } from "../src/runs-retention.ts";
 import { autoSteerEnabled } from "../src/slow-notice.ts";
 import { slowThresholds } from "../src/slow-notice.ts";
@@ -71,7 +73,6 @@ import { mergeAuthorityEnabled } from "../src/work-driver-merge-authority.ts";
 import { NET_GIT_TIMEOUT_DEFAULT_MS } from "../src/work-driver-net-git.ts";
 import { crossGroupConflictsEnabled } from "../src/work-driver-path-claims.ts";
 import { planContractEnabled } from "../src/work-driver-plan-contract.ts";
-import { pendingShutdownBoundMs } from "../src/pending-jobs-signal.ts";
 import { planQualityEnabled } from "../src/work-driver-plan-helpers.ts";
 import { planDispatchTimeoutMs } from "../src/work-driver-plan-helpers.ts";
 import { maxWorkstreams } from "../src/work-driver-plan-workstreams.ts";
@@ -353,6 +354,8 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_PROTECTED_PATHS", protectedPathsEnabled],
   ["PI_ENSEMBLE_QUEUE_HALT_ON_FAILURE", queueHaltOnFailure],
   ["PI_ENSEMBLE_RESUME", resumeEnabled],
+  ["PI_ENSEMBLE_REVIEW_CAP_MS", () => reviewCapMs()],
+  ["PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS", () => reviewWallClockMs()],
   ["PI_ENSEMBLE_SESSION_REATTACH", sessionReattachEnabled],
   ["PI_ENSEMBLE_TRANSIENT_RETRY", transientRetryEnabled],
 ];

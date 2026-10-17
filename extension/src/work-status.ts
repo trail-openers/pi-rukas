@@ -3,13 +3,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execp } from "./exec.ts";
+import { reviewWallClockMs } from "./review-budget.ts";
 import { trace } from "./trace.ts";
-import {
-  MAX_CI_RETRIES,
-  MAX_REVIEW_ROUNDS,
-  REVIEW_WALL_CLOCK_MS,
-  STEP_ORDINAL,
-} from "./work-driver-context.ts";
+import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS, STEP_ORDINAL } from "./work-driver-context.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
@@ -104,7 +100,7 @@ export function renderRunningStatus(state: WorkState, repoRoot: string): string 
     const capParts: string[] = [`review round ${ps.reviewRound}/${MAX_REVIEW_ROUNDS}`];
     if (ps.reviewCapStartedAt) {
       const capElapsed = Date.now() - ps.reviewCapStartedAt;
-      capParts.push(`wall-clock ${fmtElapsed(capElapsed)}/${fmtElapsed(REVIEW_WALL_CLOCK_MS)}`);
+      capParts.push(`wall-clock ${fmtElapsed(capElapsed)}/${fmtElapsed(reviewWallClockMs())}`);
     }
     lines.push(`  caps: ${capParts.join(" · ")}`);
   }
