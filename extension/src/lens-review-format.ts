@@ -17,6 +17,7 @@ import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
+import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
 /** The finding's severity level. Owned here (the pure leaf both the format
@@ -159,6 +160,22 @@ export type Verdict =
 
 export const LENS_PREFIX = "code-review-";
 
+/** Characters that end a markdown code fence or an angle-bracket tag, and so
+ * end the skill path's backticks and start being prompt text instead of a
+ * path. `lensPromptFor` omits its read instruction rather than interpolating
+ * a path carrying any of them (see the call site). */
+const UNSAFE_PATH_CHARS = /[\n`<>]/;
+
+/** True when `skillPath` is safe to interpolate into the lens prompt.
+ *
+ * Module-private: the ONLY decision this guards is `lensPromptFor`'s own
+ * interpolation, and an exported predicate invites a caller to reuse it as
+ * though "safe to interpolate" meant "safe to open" — it does not.
+ */
+function isPromptSafePath(skillPath: string): boolean {
+  return !UNSAFE_PATH_CHARS.test(skillPath);
+}
+
 export function lensPromptFor(
   lens: RosterEntry,
   diff: string,
@@ -166,6 +183,7 @@ export function lensPromptFor(
   evidence?: string,
   roster: RosterEntry[] = [],
   prior = "",
+  skillPath?: string,
 ): string {
   // The other-lenses list is derived from the FULL roster — every other
   // lens in the configured roster, including blocked ones (a blocked lens
@@ -175,8 +193,43 @@ export function lensPromptFor(
   const others = roster.filter((e) => e.name !== lens.name).map((e) => e.name.toLowerCase());
   const laneList =
     others.length > 0 ? others.join(" / ") : "the other review lenses (each has its own reviewer)";
-  return `You are running the **${lens.name}** review lens.
+  // #995 — the skill file is advertised by Pi's --skill flag but NOT inlined
+  // into the child's context; the child must explicitly `read` it. When
+  // skillPath is provided (the production path in lens-review-child.ts), the
+  // prompt carries an absolute-path instruction and the #882 Skill Load
+  // Status semantics (SUCCESS = read returned content, FAILED = read
+  // failed). When absent (pure-function tests) the section is omitted so
+  // the prompt stays byte-identical to pre-#995 output.
+  //
+  // PR #1530 lens finding (LOW) — the path lands inside backticks in a
+  // prompt that is about to be read by a model, so a path carrying a newline
+  // or a backtick/angle-bracket escapes its fence and becomes prompt text.
+  // Production builds it from `path.join(skillsDir, lens.skill)` and the
+  // roster's skill-name check, so this is a wall rather than a live bug; the
+  // wall is to omit the section and trace, never to interpolate it anyway.
+  const unsafe = skillPath !== undefined && skillPath !== "" && !isPromptSafePath(skillPath);
+  if (unsafe) {
+    // The rejected value is deliberately NOT echoed. It is untrusted text that
+    // already proved it can carry fence-breaking characters, and a trace line
+    // is a transport for exactly those characters — the newline it rejected
+    // would split the log entry, and a path carrying a crafted `\x1b[` would
+    // write terminal escapes into the operator's stderr. The shape of the
+    // rejection is the actionable part; the content is not.
+    trace(
+      `lens prompt: skillPath rejected (contains newline, backtick, '<' or '>') — read instruction omitted`,
+    );
+  }
+  const skillInstruction =
+    skillPath && !unsafe
+      ? `
+Before you begin reviewing, use the \`read\` tool to load your assigned skill file:
 
+  \`${skillPath}\`
+
+The skill file is NOT inlined in your context — you must read it explicitly. If the read succeeds (you see the skill's content), set \`Skill Load Status: SUCCESS\` in your final reply. If the read fails for any reason (file not found, permission error), set \`Skill Load Status: FAILED\` in your final reply and do NOT proceed with the review — a blocked lens is better than an unguided one.
+`
+      : "";
+  return `You are running the **${lens.name}** review lens.${skillInstruction}
 Scope discipline — only flag issues that belong to **${lens.name}**. Do NOT report findings that belong to other lenses (${laneList} have separate reviewers; trust them with their own lanes).
 
 Context for this PR: ${context || "(no extra context)"}
