@@ -239,6 +239,9 @@ export type DiffRead = { ok: true; targets: NameStatus[] } | Unreadable;
  * change, X unique, U unmerged). It is the code verbatim rather than a guess,
  * and `path` is still its path — so the protected gate sees the path whatever
  * the kind, and a future kind-specific rule has the real letter to match on.
+ * Reaching this arm is gated by {@link NAME_STATUS_CODE_RE}: a token that is not
+ * one of those letters is not an unusual kind, it is a **path** sitting in the
+ * code slot, and it is unreadable.
  */
 export type NameStatus =
   | { kind: "M" | "A" | "D"; path: string }
@@ -248,6 +251,26 @@ export type NameStatus =
 
 /** The change kinds a non-rename record can be spelled as. */
 type NamedKind = "M" | "A" | "D";
+
+/**
+ * The only tokens git ever puts in the code slot of a `diff -z --name-status`
+ * record: `M`, `A`, `D`, `T`, `U`, `X`, `R`/`C` with the optional similarity
+ * score git appends (`R100`, `C75`).
+ *
+ * Without this the parser distinguished only an EMPTY code from a real one, so
+ * a **non-empty** token in the code slot — a path — fell to the `other` arm and
+ * `ok: true`. `".github/workflows/ci.yml\0src/ci.yml\0"` (a codeless stream: the
+ * protected path lands in the code slot and the surviving name in the path slot)
+ * parsed as one `other` record for `src/ci.yml`, and the protected path the gate
+ * exists to halt on was gone from the change set while the read claimed to have
+ * seen it. The shape is not hypothetical: git's own `--diff-filter` rejects the
+ * same alphabet, and a stream that lacks a code is the stream a truncated or
+ * hand-constructed fake produces.
+ *
+ * `R` and `C` are included because the arm below dispatches on those letters
+ * first; a bare `R`/`C` with no score is what the fakes emit.
+ */
+const NAME_STATUS_CODE_RE = /^[MADTUCRX]\d*$/;
 
 /** A rename or copy record — the two kinds that carry a source path. */
 type SourcedRecord = Extract<NameStatus, { kind: "R" | "C" }>;
@@ -406,6 +429,15 @@ export async function readCommittedProtectedPaths(
       return {
         ok: false,
         unreadable: `missing status field in name-status record ${JSON.stringify(code.slice(0, 80))}`,
+      };
+    }
+    if (!NAME_STATUS_CODE_RE.test(code)) {
+      // A non-empty token that is not one of git's letters is a PATH in the code
+      // slot, not an exotic kind. Reading on would pair it with the next token as
+      // its "path" and report a change set missing the file the caller must halt on.
+      return {
+        ok: false,
+        unreadable: `unrecognised name-status code ${JSON.stringify(code.slice(0, 80))}`,
       };
     }
     if (kind === "R" || kind === "C") {
