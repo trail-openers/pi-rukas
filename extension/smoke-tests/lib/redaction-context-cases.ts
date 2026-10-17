@@ -27,6 +27,18 @@ const PEM_BODY =
   "rS7tU8vW9xY0zA1bC2dE3fG4hJ5kL6mN7pQ8rS9tU0vW1xY2zA3bC4dE5fG6hJ7kL8" +
   "mN9pQ0rS1tU2vW3xY4zA5bC6dE7fG8hJ9kL0mN1pQ2rS3tU4vW5xY6zA7bC8dE9fG0";
 
+/**
+ * The second body line of the separator cases. Two distinct lines, because the leak
+ * `leaksKey` must catch is the WHOLE body: a fixture with one line cannot tell a redaction
+ * that got the header and its first line from one that got the key.
+ */
+const PEM_BODY_2 =
+  "Wm9vWXhBY0RlRmVnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODlA" +
+  "QmZDeERlRmdIaUprTG1OcFBxcnN0VXZ3eFl6MDEyMzQ1Njc4OTBCQ2Q=";
+
+const PEM_BEGIN = "-----BEGIN RSA PRIVATE KEY-----";
+const PEM_END = "-----END RSA PRIVATE KEY-----";
+
 export const CASES: { name: string; secret: string; body: string }[] = [
   {
     // The URL rule's match is `://user:pass@` -- it ENDS at the `@`, so the
@@ -241,6 +253,128 @@ export const PEM_TAIL_PRESERVES: {
     text: `-----BEGIN RSA PRIVATE KEY-----\n${PEM_BODY}\n${PEM_BODY}\n${PEM_BODY}\nFATAL request-id: 7f3c-91ab exit=1 https://ci.example/run/42`,
     mustNotContain: [PEM_BODY.slice(0, 40)],
     mustContain: ["request-id: 7f3c-91ab", "https://ci.example/run/42", "exit=1"],
+  },
+];
+
+/**
+ * The separator forms the PEM arm must tolerate (#1393 round 6). The arm carried
+ * `\r?\n` as its ONLY line separator, so every form below failed to match past the header:
+ * `redactSecrets` reported `redactions: 1` — the `-----BEGIN` line gone — and shipped both
+ * base64 lines whole. Each case therefore asserts on BOTH lines through `leaksKey`, which
+ * is what distinguishes "the header matched" from "the key was redacted".
+ *
+ * Not in `CASES`: that list wraps each secret in kilobytes of filler and drives it through
+ * the clip sweep, which is the wrong axis here — these leak identically bounded and
+ * unbounded, at every window, because no pattern matches the body at all. The claim under
+ * test is the arm's SEPARATOR, so the fixture is the bare key in each of the six shapes a
+ * key is actually written in.
+ */
+export const PEM_SEPARATORS: { name: string; text: string; bodies: string[] }[] = [
+  {
+    name: "pem-trailing-space",
+    text: `${PEM_BEGIN}\n${PEM_BODY} \n${PEM_BODY_2} \n${PEM_END}`,
+    bodies: [PEM_BODY, PEM_BODY_2],
+  },
+  {
+    name: "pem-trailing-tab",
+    text: `${PEM_BEGIN}\n${PEM_BODY}\t\n${PEM_BODY_2}\t`,
+    bodies: [PEM_BODY, PEM_BODY_2],
+  },
+  {
+    name: "pem-bare-cr",
+    text: `${PEM_BEGIN}\r${PEM_BODY}\r${PEM_BODY_2}\r${PEM_END}`,
+    bodies: [PEM_BODY, PEM_BODY_2],
+  },
+  {
+    name: "pem-crlf",
+    text: `${PEM_BEGIN}\r\n${PEM_BODY}\r\n${PEM_BODY_2}\r\n${PEM_END}`,
+    bodies: [PEM_BODY, PEM_BODY_2],
+  },
+  {
+    // The YAML block-scalar / pasted-into-a-comment shape: every line indented.
+    name: "pem-indented",
+    text: `${PEM_BEGIN}\n    ${PEM_BODY}\n    ${PEM_BODY_2}\n    ${PEM_END}`,
+    bodies: [PEM_BODY, PEM_BODY_2],
+  },
+  {
+    // A key that was `JSON.stringify`-ed into a log field: the line breaks in the stored
+    // string are a literal backslash then `n` — TWO characters — and `\r?\n` is neither.
+    name: "pem-json-escaped",
+    text: `{"key":"${PEM_BEGIN}\\n${PEM_BODY}\\n${PEM_BODY_2}\\n${PEM_END}"}`,
+    bodies: [PEM_BODY, PEM_BODY_2],
+  },
+];
+
+/**
+ * What must survive the span AFTER a key, and what must not (#1393 round 6). The arm's body
+ * reaches the first character its base64 class cannot hold, so on a clipped key it used to
+ * take the newline ending the last base64 line AND the first token of the line after it —
+ * removing the `Bearer ` / `://` context the prefix rules need, which then matched nothing
+ * and shipped the credential sitting right behind the key. The arm is LAST in
+ * `SECRET_PATTERNS` for exactly this. `armOnlyMustNotContain` asserts it BEFORE the other rules
+ * run, so nothing downstream can mask the arm's own over-reach — which is the property that
+ * makes it break-proof. Measured by splicing HEAD's arm and HEAD's ordering back in: the bearer
+ * probe leaks `c2lnbmF0dXJl` under HEAD and is redacted under the shipped arm, so that case
+ * fails RED on the pre-fix shape. `pem-then-url-credentials` is the mirror image that HEAD
+ * already handled (its `https` token is not base64, so HEAD's `*` stopped before it): the
+ * assertion holds, and it is kept because it is the case the ordering exists to protect.
+ */
+export const PEM_AFTER_KEY: {
+  name: string;
+  text: string;
+  mustNotContain: string[];
+  armOnlyMustNotContain?: string[];
+}[] = [
+  {
+    name: "pem-then-bearer",
+    text: `${PEM_BEGIN}\n${PEM_BODY}\n${PEM_BODY_2}\nBearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl`,
+    mustNotContain: ["c2lnbmF0dXJl", PEM_BODY.slice(0, 40)],
+    // Measured against HEAD, where the arm sat FIRST in the set: it ate the `\nBearer ` and
+    // left the prefix rules nothing to match, so the JWT signature shipped. Asserted on the
+    // arm's own output, because through the full redactor the later rules mask it — verified
+    // RED with HEAD's arm spliced back in ahead of the prefix rules (see the file header).
+    armOnlyMustNotContain: ["c2lnbmF0dXJl"],
+  },
+  {
+    name: "pem-then-url-credentials",
+    text: `${PEM_BEGIN}\n${PEM_BODY}\n${PEM_BODY_2}\nhttps://user:Hunt2rSecret@db.internal/x`,
+    mustNotContain: ["Hunt2rSecret", PEM_BODY.slice(0, 40)],
+    armOnlyMustNotContain: ["Hunt2rSecret"],
+  },
+];
+
+/**
+ * Prose that QUOTES an END delimiter, and the line a clipped key is followed by. Both rest on
+ * the arm's separator and on where the arm sits in the set.
+ *
+ * `pem-header-then-prose-end` is a REGRESSION GUARD for the same reason. Both prose cases are
+ * guards, not break-proof probes: measured with HEAD's arm spliced back in as the LAST rule,
+ * each produced byte-identical output to the shipped arm, because the body class already
+ * carried no `-` so the arm never reached a delimiter on its own line. They earn their place by
+ * being the assertions a future widening of the body class would break.
+ */
+export const PEM_PROSE_END: { name: string; text: string; mustContain: string }[] = [
+  {
+    name: "pem-end-in-prose",
+    text: `FATAL failed to parse ${PEM_END}`,
+    mustContain: "FATAL failed to parse",
+  },
+];
+
+/**
+ * A key LONGER than the scan window. `redactBounded(text, 2000, "end")` opens the window
+ * thousands of characters INTO the base64, so the `-----BEGIN` anchor the arm needs is
+ * behind the cut and `widenPastCut` — which walks to a whitespace token boundary and caps at
+ * `SCAN_CAP` — stops inside the body, which is one unbroken token. The result was `count: 0`
+ * and the whole visible body shipped. The scan now backs up to a `-----BEGIN` within
+ * `PEM_HEADER_REACH`. Asserted at the window the repro used.
+ */
+export const PEM_LONG_CLIPPED: { name: string; text: string; body: string; max: number }[] = [
+  {
+    name: "pem-longer-than-window",
+    text: `${PEM_BEGIN}\n${PEM_BODY.repeat(14)}`,
+    body: PEM_BODY.repeat(14),
+    max: 2000,
   },
 ];
 

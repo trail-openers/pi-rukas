@@ -105,6 +105,34 @@ const token = (literal: string, bodyClass: string) =>
 /** A prefix rule whose own text already ends the token (`Bearer `, the PEM arm). */
 const anchored = (literal: string) => new RegExp(literal);
 
+/**
+ * One line separator, shared by the three parts of the PEM arm, so a body line and
+ * the `-----END` line cannot disagree about what separates them (#1393 round 6).
+ *
+ * `\r?\n` — the shape the arm carried — matches ONLY that pair, so a body whose lines
+ * end in a trailing space or tab, use a bare CR (classic Mac and several Java
+ * `System.lineSeparator()` writes), sit indented inside a YAML block scalar or a
+ * comment, or arrive JSON-escaped (a literal backslash then `n`, TWO characters, from
+ * a key that was `JSON.stringify`-ed into a log field) does not match at all. Measured
+ * with `redactions: 1` reported each time: the header was redacted and every base64
+ * line after it shipped whole, because the arm's `*` could not cross the line the
+ * separator did not recognise. The arm's job is the KEY, so the separator is the
+ * alphabet a key is actually written in, not the one that looked tidy.
+ *
+ * Linear despite being an alternation: every branch begins with optional blanks and
+ * then a MANDATORY newline token, and the body class `[A-Za-z0-9+/=]` carries neither
+ * blank nor newline, so no SEP can match what its neighbour matches and a failed
+ * continuation backtracks in one step. `test-decision-secret-regex-linear.ts` measures
+ * the arm at 200 KB and 1.6 MB, closed and clipped.
+ *
+ * In a JS regex SOURCE STRING the escaped branches are a literal backslash followed by
+ * `n`, so each backslash is itself escaped here — `\\\\n` in source is the two characters
+ * `\n` in the pattern. An under-escaped `\\n` silently degenerates to a newline, which
+ * removes the JSON-escaped branch while still matching everything else: the test for it
+ * (`pem-json-escaped`) is the only thing that would notice.
+ */
+const SEP = "[ \\t]*(?:\\r\\n|\\r|\\n|\\\\r\\\\n|\\\\n)[ \\t]*";
+
 export const SECRET_PATTERNS: readonly RegExp[] = [
   // OpenAI and Anthropic both use `sk-` with an infix segment (`sk-proj-`,
   // `sk-ant-api03-`), so the token body is NOT alphanumeric-only. Measured: the
@@ -137,7 +165,11 @@ export const SECRET_PATTERNS: readonly RegExp[] = [
   // The PEM arm spans the WHOLE key, not just its header (#1393 round 5, item 3). The
   // header alone was redacted and the base64 body — the actual secret — shipped in
   // clear. The body is a base64 class and the END delimiter is OPTIONAL; every part of
-  // that shape is load-bearing:
+  // that shape is load-bearing. `SEP` (defined above) is the only separator, and the END
+  // line now requires one before it: an `-----END … PRIVATE KEY-----` quoted in PROSE is
+  // not a key, and the old optional-END arm matched the header-less, separator-less
+  // fragment, so `FATAL failed to parse -----END RSA PRIVATE KEY-----` redacted the
+  // sentence that was reporting the failure. With SEP required, that text matches nothing.
   //
   // * NOT `[\s\S]`: an any-character body over a CLIPPED key (no END, which is what a
   //   scan-window cut produces) runs the lazy span to end-of-string and erases every
@@ -163,9 +195,6 @@ export const SECRET_PATTERNS: readonly RegExp[] = [
   //   tail at every start position; restricting the class removes the need for laziness.
   //   `test-decision-secret-regex-linear.ts` measures both shapes at 200 KB and 1.6 MB and
   //   carries the greedy any-character variant as its TRAP.
-  anchored(
-    "-----BEGIN [A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=]*(?:\\r?\\n[A-Za-z0-9+/=]*)*(?:\\r?\\n[A-Za-z0-9+/=]+)?(?:-----END [A-Z ]*PRIVATE KEY-----)?",
-  ),
   // The key/value rule has NO leading `\b` (see the header: that is the item-9 gap) and
   // no end assertion: its body runs to the end of the token, so a trailing assertion
   // could only ever be satisfied by a body SHORTER than the token — the `\b` bug,
@@ -226,4 +255,19 @@ export const SECRET_PATTERNS: readonly RegExp[] = [
   // TRAP (a nested-quantifier variant over the same input) proves the harness can see
   // the difference: a guard never observed to fail is worthless.
   /:\/\/[^:@\s]*:[^@\s]+@/,
+  // LAST, and the order is load-bearing. `redactSecrets` applies the rules in sequence,
+  // so whichever runs first claims the span: this arm's body reaches the first character
+  // the base64 class cannot hold, and on a clipped key that character is the newline
+  // ending the last base64 line — so the arm used to take the NEWLINE and then the first
+  // token of the line after the key. Measured: `…\nBearer eyJ….c2lnbmF0dXJl` shipped the
+  // JWT signature and `…\nhttps://user:Hunt2rSecret@db.internal/x` shipped the password,
+  // because the arm had removed the `Bearer ` / `://` context the prefix rules need and
+  // they then matched nothing. Putting this arm last lets those rules redact their own
+  // credential first; the PEM arm then sees text it cannot overlap. Nothing else in the
+  // set can claim a `-----BEGIN …` header, so no rule is starved by the demotion, and
+  // `vipune.ts`'s `looksLikeSecret` is `SECRET_PATTERNS.some(re => re.test(text))` — an
+  // order-independent predicate, so refusing a write does not depend on where the arm sits.
+  anchored(
+    `-----BEGIN [A-Z ]*PRIVATE KEY-----(?:${SEP})?[A-Za-z0-9+/=]*(?:${SEP}[A-Za-z0-9+/=]+)*(?:${SEP}-----END [A-Z ]*PRIVATE KEY-----)?`,
+  ),
 ];
