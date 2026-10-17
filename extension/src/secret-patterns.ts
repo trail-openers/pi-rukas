@@ -111,6 +111,22 @@ const token = (literal: string, bodyClass: string) =>
 const anchored = (literal: string) => new RegExp(literal);
 
 /**
+ * The fixed marker every redacted span becomes. Declared here rather than next to
+ * the redactor because the LAST arm of `SECRET_PATTERNS` is built from it: the
+ * pattern set and the marker it sweeps cannot drift apart while the array literal
+ * is still being written.
+ */
+export const REDACTED = "[REDACTED]";
+
+/**
+ * The marker with any credential-class characters welded to its right, as a
+ * global pattern — the tail sweep described at the end of {@link SECRET_PATTERNS}.
+ * Escaping is done once, on the literal marker, so the class cannot disagree with
+ * what the redactor actually writes.
+ */
+const TAIL_SWEEP_SOURCE = `\\${REDACTED}[A-Za-z0-9._+\x2F=]+`;
+
+/**
  * One line separator, shared by the three parts of the PEM arm, so a body line and
  * the `-----END` line cannot disagree about what separates them (#1393 round 6).
  *
@@ -138,6 +154,19 @@ const anchored = (literal: string) => new RegExp(literal);
  */
 const SEP = "[ \\t]*(?:\\r\\n|\\r|\\n|\\\\r\\\\n|\\\\n)[ \\t]*";
 
+//
+// THE TAIL A BOUNDED RULE LEAVES BEHIND (#1393) — see TAIL_SWEEP below, which is
+// applied to the OUTPUT of the loop rather than as one more arm inside it, and the
+// difference is the whole fix: the key/value arm caps its body at `{12,4096}` to
+// keep `String.replace` from exhausting the stack on an 8 MB keyword-first run, so a
+// credential longer than the cap is replaced only for its first 4096 characters. The
+// marker and the uncleared remainder are written by the SAME `replace` call, so a
+// rule that already ran cannot sweep a residue that did not exist when it ran.
+// Measured with the sweep as an arm of this array: `token=` plus 200 repeats of a
+// 53-char base64 run came back `[REDACTED]N2pQ4rS6tU8vW0xY2zA4…` with `count: 1` —
+// it never fired. As a pass over the finished text it takes that tail, along with the
+// `[REDACTED]==` a padded key leaves when its padding falls past the cap.
+//
 export const SECRET_PATTERNS: readonly RegExp[] = [
   // OpenAI and Anthropic both use `sk-` with an infix segment (`sk-proj-`,
   // `sk-ant-api03-`), so the token body is NOT alphanumeric-only. Measured: the
@@ -277,8 +306,22 @@ export const SECRET_PATTERNS: readonly RegExp[] = [
   ),
 ];
 
-/** The fixed marker every redacted span becomes. */
-export const REDACTED = "[REDACTED]";
+/**
+ * The tail sweep, applied to the OUTPUT of the redactor's loop rather than as one
+ * more arm inside it, and the reason is a hole, not a taste: a single replacement
+ * pass cannot catch what a replacement in the same pass creates. The key/value arm caps its body at `{12,4096}`, so a credential longer
+ * than 4096 is replaced only for its first 4096 characters — the marker and the
+ * uncleared remainder are written by the SAME replace call, and a rule that had
+ * already run cannot sweep a residue that did not exist when it ran. Measured with
+ * the sweep inside the array: `token=` + 200 repeats of a 53-char base64 run came
+ * back `[REDACTED]N2pQ4rS6tU8vW0xY2zA4…` with `count: 1`, i.e. it did not fire at
+ * all. As a pass over the finished text it takes that tail.
+ *
+ * It is a `+` over ONE class, so it is linear; `test-decision-secret-regex-linear.ts`
+ * measures the near-miss runs. It is exported so `redactSecrets` is the only place
+ * that applies it and a caller cannot forget it.
+ */
+export const TAIL_SWEEP: RegExp = new RegExp(TAIL_SWEEP_SOURCE, "g");
 
 /** `SECRET_PATTERNS` with the global flag added, so `replace` hits every span. */
 const GLOBAL_PATTERNS: readonly RegExp[] = SECRET_PATTERNS.map(
@@ -288,6 +331,15 @@ const GLOBAL_PATTERNS: readonly RegExp[] = SECRET_PATTERNS.map(
 /**
  * Replace every span matching a {@link SECRET_PATTERNS} rule with {@link REDACTED}
  * and report how many spans were replaced.
+ *
+ * The {@link TAIL_SWEEP} pass runs AFTER the loop, not inside it, and counts toward
+ * the same total. A count that includes it may exceed the number of credential spans
+ * in the input — the sweep claims a residue the arm above left welded to its marker,
+ * which is a second replacement of an already-redacted neighbourhood. That is the
+ * same cosmetic double-count the key/value and prefix arms already accept for a
+ * `ghp_` key inside `{"token":"ghp_…"}`: the claim `redactions` makes is "spans I
+ * replaced", never "secrets in your text", and under-counting a tail would report a
+ * clean line that still carries credential bytes.
  */
 export function redactSecrets(text: string): { text: string; count: number } {
   let count = 0;
@@ -298,5 +350,9 @@ export function redactSecrets(text: string): { text: string; count: number } {
       return REDACTED;
     });
   }
+  out = out.replace(TAIL_SWEEP, () => {
+    count++;
+    return REDACTED;
+  });
   return { text: out, count };
 }

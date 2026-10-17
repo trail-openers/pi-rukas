@@ -155,40 +155,6 @@ export const SEAMS = {
     timeoutMs: 30_000,
     tokenBudget: 4_000,
   },
-  // S4 (#1187) — whether an unresolved CRITICAL open point is a security
-  // decision. main's #1187 made the open-point gate TOPIC-NEUTRAL and deleted
-  // `security-class.ts`, so no production caller fires this seam any more; the
-  // gate keeps the seam's caller contract assertable. It stays registered
-  // because its declared `openPoint` bound is the contract test's proof that a
-  // shadow seam carries per-field bounds (#1393), and its throttle is asserted
-  // per-seam by test-decision-shadow-seams.ts. may-add-only once S5's promotion
-  // bar is met: the model may add a park, never remove one.
-  "security-open-point": {
-    id: "security-open-point",
-    kind: "bool",
-    instructions:
-      "An issue lists an unresolved CRITICAL open point. Is it a security decision (authentication, authorization, credentials, secrets, encryption, input validation, sandboxing, data deletion, privacy) that an automated driver must not settle on its own?",
-    labels: {
-      true: "the point is a security decision",
-      false: "the point is ordinary engineering, not a security decision",
-    },
-    // A point the rule cannot read is treated as security: a missed security
-    // point is worse than an ordinary one that parks (security-class.ts).
-    ruleDefault: "true",
-    passing: ["false"],
-    composition: "may-add-only",
-    defaultMode: "shadow",
-    evidence: "none",
-    // A caller-less seam (main's #1187 retired the open-point classifier), so it
-    // names the module that fires every shadow seam: `decide()` is reached only
-    // through here. The seam's id still occurs in this file (its own registry
-    // key), which is what the contract test's caller-less exemption reads.
-    owner: "decision-shadow.ts",
-    // The point's own text only — never the rest of the issue.
-    fields: { openPoint: { max: 1000 } },
-    timeoutMs: 30_000,
-    tokenBudget: 4_000,
-  },
 } as const satisfies Record<string, SeamSpec>;
 
 export type SeamId = keyof typeof SEAMS;

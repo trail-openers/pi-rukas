@@ -24,26 +24,21 @@
  * Offline: the session model is a stub registry; nothing touches the network.
  */
 
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { __inFlightForTests, __resetShadowForTests } from "../src/decision-shadow.ts";
 import extensionEntry from "../src/index.ts";
 import { classifyFailureCause, shadowFailureCause } from "../src/work-driver-failure-taxonomy.ts";
-import { STUB_MODEL, llmReply, makeAssert, stubRegistry, tmpDir } from "./lib/decision-fixtures.ts";
+import {
+  STUB_MODEL,
+  llmReply,
+  makeAssert,
+  records,
+  stubRegistry,
+  tmpDir,
+} from "./lib/decision-fixtures.ts";
 
 const { assert, state } = makeAssert();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function records(file: string): Record<string, unknown>[] {
-  try {
-    return readFileSync(file, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((l) => JSON.parse(l) as Record<string, unknown>);
-  } catch {
-    return [];
-  }
-}
 
 type Tail = Parameters<typeof classifyFailureCause>[0];
 type Where = Parameters<typeof shadowFailureCause>[2];

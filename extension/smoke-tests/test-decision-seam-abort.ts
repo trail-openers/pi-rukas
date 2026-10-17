@@ -181,6 +181,8 @@ const req = { state: { probe: "value" }, question: "q", rule: "ok" };
     signals: [],
     run: (_input: BackendInput, signal: AbortSignal) => {
       answered.calls++;
+      // No `justification`: BackendResult has no such field (the classifier's
+      // JSON wire format has one; the result type does not).
       // The FIRST run's signal only. The listener-removal case below decides a
       // second time to prove the claim is not carried by history, and that
       // second run's controller is aborted by its own teardown — recording it
@@ -190,7 +192,6 @@ const req = { state: { probe: "value" }, question: "q", rule: "ok" };
       return Promise.resolve<BackendResult>({
         ok: true,
         answer: "flag",
-        justification: "answered before any abort",
       });
     },
   };
@@ -420,7 +421,7 @@ const req = { state: { probe: "value" }, question: "q", rule: "ok" };
     source: "llm",
     run: (_input: BackendInput, signal: AbortSignal) =>
       new Promise<BackendResult>((resolve) => {
-        setTimeout(() => resolve({ ok: true, answer: "ok", justification: "late" }), SETTLE_MS);
+        setTimeout(() => resolve({ ok: true, answer: "ok" }), SETTLE_MS);
         signal.addEventListener("abort", () => resolve({ ok: false, error: "cancelled" }));
       }),
   };

@@ -256,8 +256,12 @@ function writeShadowRecord(
   const release = () => {
     if (exact) exactInFlight = Math.max(0, exactInFlight - 1);
   };
+  // The same own-property lookup `decide()` uses: an unregistered id is not a
+  // seam, and `boundedState(undefined)` would throw out of a path documented
+  // never to throw. No spec means no seam-driven bound, so no state is written.
+  const spec = Object.hasOwn(SEAMS, seam) ? (SEAMS as Record<string, SeamSpec>)[seam] : undefined;
   const bounded =
-    state === undefined ? undefined : boundedState(state, SEAMS[seam] as SeamSpec).state;
+    state === undefined || spec === undefined ? undefined : boundedState(state, spec).state;
   traceWarn(
     exact
       ? `decision-shadow: '${seam}' answered by the exact rule: ${reason}`

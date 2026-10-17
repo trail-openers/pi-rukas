@@ -45,7 +45,7 @@ const { assert, state } = makeAssert();
 const seam = "fixture-exact-storm" as SeamId;
 (SEAMS as Record<string, SeamSpec>)[seam] = {
   id: seam,
-  kind: "classification",
+  kind: "choice",
   instructions: "What caused the failure?",
   labels: { transient: "worth waiting out", fatal: "waiting will not help" },
   ruleDefault: "fatal",
