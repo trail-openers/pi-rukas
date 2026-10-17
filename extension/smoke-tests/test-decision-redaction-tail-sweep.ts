@@ -211,20 +211,40 @@ for (const [name, text, mustNotContain] of [
   // what `CREDENTIAL_RUN`'s class spells. Two claims about the same eleven characters in two
   // files is exactly the drift this suite exists to make visible, so the class literal is
   // exported as source and re-tested here rather than copied into a test and drift anew.
-  const classRe = new RegExp(CREDENTIAL_RUN_CLASS_SOURCE);
+  // A throw here is the finding, not a crash: the class source is the claim, and a malformed
+  // one (an unescaped `]`, a reversed range) must report as a named failing assertion rather
+  // than take the suite down before the assertions below it get a verdict.
+  let malformed = false;
+  let classRe: RegExp;
+  try {
+    classRe = new RegExp(CREDENTIAL_RUN_CLASS_SOURCE);
+  } catch {
+    malformed = true;
+    classRe = /(?!.)/; // never matches: the loop below is skipped and the verdict is `malformed`
+  }
   let mismatch = -1;
-  for (let code = 0; code < 0x80; code++) {
-    const ch = String.fromCharCode(code);
-    if (isCredentialChar(code) !== classRe.test(ch)) {
-      mismatch = code;
-      break;
+  if (!malformed) {
+    for (let code = 0; code < 0x80; code++) {
+      const ch = String.fromCharCode(code);
+      if (isCredentialChar(code) !== classRe.test(ch)) {
+        mismatch = code;
+        break;
+      }
     }
   }
   assert(
-    mismatch === -1,
-    mismatch === -1
+    !malformed,
+    `CREDENTIAL_RUN_CLASS_SOURCE compiles as a one-character class: ${JSON.stringify(
+      CREDENTIAL_RUN_CLASS_SOURCE,
+    )}`,
+  );
+  assert(
+    !malformed && mismatch === -1,
+    !malformed && mismatch === -1
       ? "isCredentialChar agrees with CREDENTIAL_RUN's class for every code unit 0..0x7F"
-      : `isCredentialChar and the class disagree at code ${mismatch} (${JSON.stringify(String.fromCharCode(mismatch))})`,
+      : mismatch === -1
+        ? "isCredentialChar check skipped: the class source did not compile"
+        : `isCredentialChar and the class disagree at code ${mismatch} (${JSON.stringify(String.fromCharCode(mismatch))})`,
   );
 }
 

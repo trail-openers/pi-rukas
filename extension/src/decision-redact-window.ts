@@ -51,8 +51,6 @@ export const CREDENTIAL_RUN_CLASS_SOURCE = `[${CREDENTIAL_RUN_CLASS_MEMBERS}]`;
  * and is replaced. A 64+ hex hash landing in a clipped window is therefore redacted, and that
  * is the accepted cost of the net rather than a defect.
  *
- * question is pinned by the exported `CREDENTIAL_RUN_CLASS_SOURCE` the literal is built from.
- *
  * The `g` flag lives on {@link CREDENTIAL_RUN} rather than at the use site, so the passes
  * below cannot disagree about whether they walk the whole window. A fresh `String.replace`
  * resets `lastIndex`, so one shared instance cannot leak state.
@@ -246,18 +244,18 @@ export function redactUnscannedRuns(kept: string): { text: string; count: number
  * ({@link redactBounded}, #1393).
  *
  * The walk crosses LINE BREAKS — but at most ONE, the reach of {@link CREDENTIAL_RUN} that the
- * net can actually spell ({@link walkRunOneBreak}). It measures a PEM body, and a PEM body is
- * many lines, so a run that stops at the first newline is a run the walk gave up on rather than
- * a short one. The stop
- * at the newline was the whole defect: with the header out of `PEM_HEADER_REACH` (decision-log.ts) the
- * arm cannot anchor, the clip lands mid-body, and the window's last line is a 40-character
- * base64 tail sitting under the 64-character floor. Measured at `redactBounded(text, 600,
- * "end")` on 145 lines of 120-character base64 followed by a 40-character line, the walk
- * started on the `\n` immediately left of the cut, matched none of its class, took ZERO
- * steps, and reported `head: false` — the fragment's 40 characters are all `kept` can see
- * and all the walk saw either, so the fragment shipped while `count` read 5. Stepping across
- * the break and keeping the meter running is what makes the same walk report the truth: the
- * token this fragment belongs to is 120 characters long, and 120 is over the floor.
+ * net can actually spell ({@link walkRunOneBreak}), and the measurement is the one-break contract
+ * the replacement honours: a run that needs a second break to reach the floor is one the net has
+ * no match for, so a walk allowed to cross twice hands the caller a "long run" it cannot replace
+ * and a flag that orders an edge pass over material the class cannot take. The stop at the
+ * newline was the whole defect: with the header out of `PEM_HEADER_REACH` (decision-log.ts) the
+ * arm cannot anchor, the clip lands mid-body, and the window's last line is a short base64 tail
+ * sitting under the 64-character floor. Measured at `redactBounded(text, 600, "end")` on a body
+ * line followed by a short line, the walk started on the `\n` immediately left of the cut,
+ * matched none of its class, took ZERO steps, and reported `head: false` — the fragment is all
+ * `kept` can see and all the walk saw either, so the fragment shipped while `count` read 5.
+ * Stepping across the break and keeping the meter running is what makes the same walk report the
+ * truth: the token this fragment belongs to is over the floor.
  *
  * Crossing costs the walk its characters but not its verdict: each character crossed counts
  * toward `walked`, so an out-of-budget walk still fails closed, and a genuinely short last
@@ -317,12 +315,6 @@ export function edgeRunReaches(
     if (end >= Math.min(src.length, origin + walkCap)) return true;
     return walked >= CREDENTIAL_RUN_MIN;
   };
-  // `windowStart` is the window's first character: the head question is asked of the token
-  // OPENING the window, so it is the character AT `windowStart` that has to be in the class —
-  // a window opening on a space, or on the `[` of a marker, has no head token to sweep and the
-  // edge pass must stay out of it. The walk then starts one back, on the delimiter the run ends
-  // at, so the line leg can find the break there and keep measuring: starting on the run's own
-  // last body character counted it twice and, before the break legs existed, took zero steps.
   // `windowStart` is the window's first character: the head question is asked of the token
   // OPENING the window, so the character AT `windowStart` has to be in the class. The leg then
   // stands on the delimiter just before it (`windowStart - 1`) and walks left: standing on the
