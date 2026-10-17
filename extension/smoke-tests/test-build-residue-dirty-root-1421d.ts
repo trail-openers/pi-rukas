@@ -60,14 +60,32 @@ function untracked(n: number): string[] {
   return out;
 }
 
-/** An executor that answers every `git check-ignore` from its own argv. */
-function echoExec(delayMs = 0): { exec: ExecFn; calls: string[][] } {
+/**
+ * An executor that answers every `git check-ignore` from its own argv.
+ *
+ * `count` is optional: when given, the fake itself tracks how many of its own
+ * calls are open at once. The concurrency assertion has to be made from inside
+ * the argv-honouring fake — a wrapper that counted around it would be a second
+ * executor handed to driver code (`test-exec-argv-fakes.ts`).
+ */
+function echoExec(
+  delayMs = 0,
+  count?: { inFlight: number; peak: number },
+): { exec: ExecFn; calls: string[][] } {
   const calls: string[][] = [];
   const exec: ExecFn = async (_cmd, o) => {
     const argv = o?.argv ?? [];
     calls.push(argv);
-    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
-    return { stdout: argv.filter((a) => a.startsWith("target/")).join("\n") };
+    if (count) {
+      count.inFlight++;
+      count.peak = Math.max(count.peak, count.inFlight);
+    }
+    try {
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+      return { stdout: argv.filter((a) => a.startsWith("target/")).join("\n") };
+    } finally {
+      if (count) count.inFlight--;
+    }
   };
   return { exec, calls };
 }
@@ -77,31 +95,21 @@ function echoExec(delayMs = 0): { exec: ExecFn; calls: string[][] } {
 // drops on settle; the maximum the counter reaches is the real concurrency, so
 // a sequential loop scores 1 and an unbounded fan-out scores the batch count.
 {
-  const { exec, calls } = echoExec(5);
-  let inFlight = 0;
-  let peak = 0;
-  const tracked: ExecFn = async (cmd, o) => {
-    inFlight++;
-    peak = Math.max(peak, inFlight);
-    try {
-      return await exec(cmd, o);
-    } finally {
-      inFlight--;
-    }
-  };
-  const res = await probeIgnored(tracked, "/repo", untracked(2500));
+  const count = { inFlight: 0, peak: 0 };
+  const { exec, calls } = echoExec(5, count);
+  const res = await probeIgnored(exec, "/repo", untracked(2500));
   const gitCalls = calls.filter((a) => a[0] === "check-ignore");
   assert(
     gitCalls.length === 5,
     `A: 2500 candidates are asked in 5 batches (got ${gitCalls.length})`,
   );
   assert(
-    peak > 1,
-    `A: the batches run CONCURRENTLY, not one after another (peak in flight: ${peak})`,
+    count.peak > 1,
+    `A: the batches run CONCURRENTLY, not one after another (peak in flight: ${count.peak})`,
   );
   assert(
-    peak <= IGNORE_PROBE_CONCURRENCY,
-    `A: never more than ${IGNORE_PROBE_CONCURRENCY} batches in flight (peak: ${peak})`,
+    count.peak <= IGNORE_PROBE_CONCURRENCY,
+    `A: never more than ${IGNORE_PROBE_CONCURRENCY} batches in flight (peak: ${count.peak})`,
   );
   assert(
     res !== undefined && res.size === 2500,
