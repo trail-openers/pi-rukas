@@ -1,0 +1,51 @@
+name: cleanup-images
+
+# Prunes per-commit sandbox images from GHCR. publish-image.yml pushes a
+# multi-arch image on nearly every merge to main (`latest` + `sha-<12>`), and
+# nothing ever removed one: the package held ~1,450 versions after a few weeks.
+#
+# Kept forever: `latest` and every release tag (`v*`). Those are what
+# install.sh, bin/pi-rukas and downstream pins (`:vX.Y.Z@sha256:…`) resolve.
+# Pruned: `sha-*` images and untagged versions older than the window below.
+#
+# A pruned image is NOT bit-for-bit rebuildable from its commit: the
+# Dockerfile installs several tools unpinned (vipune, ctx7,
+# codebase-memory-mcp, apt, the Rust toolchain). Anything that must survive
+# should pin a release tag, not a per-commit image or bare digest.
+#
+# The action walks multi-arch indexes, so a tagged image's per-platform
+# manifests (themselves untagged) are never deleted out from under it.
+#
+# Run it by hand with dry-run on first, to see what it would delete.
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Only log what would be deleted'
+        type: boolean
+        default: true
+
+permissions:
+  packages: write
+
+concurrency:
+  group: cleanup-images
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prune old per-commit images
+        # v1.2.2, pinned by commit (§5 supply-chain hygiene).
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f
+        with:
+          package: pi-rukas
+          delete-tags: 'sha-*'
+          delete-untagged: true
+          exclude-tags: 'latest,v*'
+          older-than: 14 days
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
