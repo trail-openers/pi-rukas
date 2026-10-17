@@ -32,14 +32,40 @@
  *     killed mid-flight: `agent_end.messages` holds only the last retry
  *     segment, which is why `observedToolCalls` exists at all).
  *
- * `runLensChild` treats a refutation as FAILED and an unverifiable claim as
- * absent. This module reads paths as DATA and performs no shell parsing of
- * anything it executes: the bash branch tokenises a command string purely to
- * compare paths, never to run it.
+ * SHADOW MODE (`runLensChild`). Round 3 of the #1530 review found a residual
+ * class of false refutations that the abstentions above do not cover, so
+ * `unproven` is currently **traced, not enforced** — the child's own marker
+ * decides, exactly as it did before this check existed (`git revert` of #995's
+ * consumer half restores the enforced behaviour byte-for-byte). Promoting
+ * `unproven` back to a block is the follow-up, and its precondition is the
+ * shadow log showing no false refutations, per the repo's rule that a new
+ * judgement seam starts in shadow and earns enforce.
+ *
+ * KNOWN LIMITATION the enforce follow-up must settle first — the two
+ * `observedToolCalls` abstentions above are WEAKER than they look. The spawn
+ * layer only stamps the live count when the replay carried NOTHING
+ * (`reconcileObservedCounts` in `spawn-support.ts` gates on
+ * `result.toolUses.length === 0`), so for any non-empty `toolUses` the second
+ * guard is dead code and the first never fires: an under-recovered-but-non-empty
+ * replay (live 5, recovered 2, the read among the 3 dropped) reaches `unproven`.
+ * Shadow mode is what makes that survivable — it only ever warns. Enforcing
+ * needs either the live count for every replay, or a rule that never refutes on
+ * a partial array.
+ *
+ * This module reads paths as DATA and performs no shell parsing of anything it
+ * executes: the bash branch tokenises a command string purely to compare paths,
+ * never to run it.
  */
 
-import fs from "node:fs";
 import path from "node:path";
+import {
+  SKILL_FILE_NAME,
+  candidateDirs,
+  lexical,
+  resolveSkillDir,
+  sameFileAsAny,
+  skillFileCandidates,
+} from "./lens-skill-path.ts";
 
 /** The three outcomes of checking a claimed SUCCESS against the tool calls. */
 export type SkillLoadProof = "proven" | "unproven" | "unverifiable";
@@ -56,6 +82,11 @@ export type SkillLoadProof = "proven" | "unproven" | "unverifiable";
  * loaded. The verb is judged as the FIRST word of a command segment, so
  * `grep x cat <skill>` — `cat` as an argument, not a verb — does not read as
  * a file being opened.
+ *
+ * A reader verb is not sufficient on its own: the segment must also be a
+ * READING segment. `cat x > <skill>/SKILL.md` truncates the skill and `sed -i`
+ * rewrites it, and neither puts the file's content in the child's context — so
+ * `REDEDIRECT` / `-i` disqualify the segment (see `segmentReadsFile`).
  */
 const READ_TOOLS = new Set(["read"]);
 const READER_VERBS = new Set(["cat", "sed", "head", "tail", "nl", "less"]);
@@ -82,17 +113,28 @@ const PATH_KEY = "path";
 /** Pi's bash tool declares a single string argument named `command`. */
 const COMMAND_KEY = "command";
 
-/** What the prompt hands the child is a skill DIRECTORY (`path.join(skillsDir,
+/** The name of the file that holds a skill lives with the path logic that
+ * resolves it (`SKILL_FILE_NAME`, lens-skill-path.ts) — the pre-filter below and
+ * the matcher there must not disagree about it.
+ *
+ * What the prompt hands the child is a skill DIRECTORY (`path.join(skillsDir,
  * lens.skill)`), and the thing inside it that holds the skill is always this
- * file. Matching "anything under the directory" would let a read of a sibling
- * — `references/cheatsheet.md`, another skill's notes dropped in the same dir —
- * stand in for the skill itself. */
-const SKILL_FILE_NAME = "SKILL.md";
+ * file — and only this file counts (see `matchesSkillFile`). Matching "anything
+ * under the directory" would let a read of a sibling — `references/cheatsheet.md`,
+ * another skill's notes dropped in the same dir — stand in for the skill itself,
+ * and crediting the bare directory let a read that opened nothing pass. */
 
 /** Shell separators that begin a new segment, so a reader verb and the path it
  * opens are judged within ONE command. Longest first: `&&` must be cut before
- * `&` or the second half arrives as a lone `&` token. */
-const SEGMENT_SPLIT = /&&|\|\||[;&|\n]/;
+ * `&` or the second half arrives as a lone `&` token.
+ *
+ * `>` and `>>` are deliberately NOT separators, even though a shell treats them
+ * as such: this matcher reads the redirect form to *disqualify* the segment (see
+ * `isWriteToken`), and splitting on them would hand `&>` to the verb rule as a
+ * bare `>` segment and leave the append/combined forms invisible to the write
+ * rule — the `&` arm of `REDIRECT_TOKEN` would then be dead code that no test can
+ * observe. They stay inside one segment so both judgements see the same text. */
+const SEGMENT_SPLIT = /&&|\|\||[;|\n]/;
 
 /** Surrounding quote characters the shell removes before the command runs.
  * Stripped as a pair-wise wrap, not globally — a path carrying an interior
@@ -106,6 +148,28 @@ const QUOTE_PAIRS: ReadonlyArray<readonly [string, string]> = [
 /** Backslash escapes, removed after quote-stripping (a shell strips them too).
  * Only a trailing one matters — an escaped final space or quote. */
 const TRAILING_ESCAPES = /\\+$/;
+
+/** A token that sends a command's output somewhere: `>`, `>>`, `2>`, `2>>`,
+ * `&>`, `&>>`. A segment carrying one WRITES, so whatever else it names, it is
+ * not evidence the child read the file — `cat x > <skill>/SKILL.md` destroys it.
+ * The three optional arms each cover a real spelling and each is pinned by a
+ * case, because a matcher missing one silently credits that write as a read:
+ *   - leading digits — the fd form (`2>`), tested by 1am;
+ *   - the doubled `>` — append (`>>`), tested by 1ag;
+ *   - a leading `&` — the combined stdout+stderr form (`&>`), tested by 1ap.
+ * `&` is grouped with the digits rather than appended after the `>` because the
+ * shell spells the combined form `&>`, not `>&`; a `?` in the wrong position
+ * here matches nothing and no test notices unless one pins it. The prefix group
+ * is optional as a whole — a bare `>` is the plain truncate form and the common
+ * case, so a regex that required a prefix would let every ordinary redirect
+ * through as a read.
+ * A false `unproven` on a genuinely-reading command is a judgement the shadow log
+ * has to clear, so erring toward "this is a write" is the safe direction. */
+const REDIRECT_TOKEN = /^(?:\d+|&)?>>?/;
+
+/** `sed`'s in-place flag, in either of the two spellings that reach a shell
+ * (`-i`, `--in-place`). Bare `sed` prints; `sed -i` rewrites the file. */
+const SED_IN_PLACE = /^-i$|^--in-place(?:=|$)/;
 
 /**
  * Did any recorded tool call actually open this lens's skill file?
@@ -131,7 +195,15 @@ export function skillLoadProof(
   // The dir cannot be resolved at all — nothing to match, and a check that
   // could not run is not a refutation of the child.
   if (!dir) return "unverifiable";
-  const want = path.posix.join(dir, SKILL_FILE_NAME);
+  // Every spelling of the skill FILE this check will accept, all of them built
+  // by THIS process from the driver's `skillPath` (`path.join(skillsDir,
+  // lens.skill)`) — never from anything a child wrote. A child-supplied path is
+  // compared against this list lexically, and `realpathSync` is never called on
+  // it (see `canonicalSkillFiles`).
+  const wants = skillFileCandidates(dir);
+  // The directory form of each accepted spelling, so a command that named the
+  // DIRECTORY (an error, not a load) is rejected explicitly.
+  const dirs = candidateDirs(wants);
 
   // A positive match is a POSITIVE: the read is in the array, so it happened,
   // and no gap elsewhere in the replay un-happens it. Proving first is what
@@ -143,7 +215,7 @@ export function skillLoadProof(
       tu.arguments && typeof tu.arguments === "object"
         ? (tu.arguments as Record<string, unknown>)
         : {};
-    if (isSkillRead(name, args, dir, want)) return "proven";
+    if (isSkillRead(name, args, dirs, wants)) return "proven";
   }
   // No match. NOW the completeness of the evidence decides what absence means.
   // The child made calls the replay did not carry, so the read may simply be
@@ -158,23 +230,47 @@ export function skillLoadProof(
 function isSkillRead(
   toolName: string,
   args: Record<string, unknown>,
-  dir: string,
-  want: string,
+  dirs: readonly string[],
+  wants: readonly string[],
 ): boolean {
   if (READ_TOOLS.has(toolName)) {
     const v = args[PATH_KEY];
-    return typeof v === "string" ? matchesSkillFile(v, dir, want) : false;
+    // SKILL.md ONLY. The prompt hands the child a DIRECTORY, but the read it
+    // asks for is `<dir>/SKILL.md`, and crediting the bare directory was the
+    // round-3 finding: it let a read that named the directory and opened
+    // nothing stand in for the file.
+    return typeof v === "string" ? matchesSkillFile(v, dirs, wants) : false;
   }
   if (toolName !== "bash") return false;
   const command = typeof args[COMMAND_KEY] === "string" ? (args[COMMAND_KEY] as string) : "";
   if (command === "") return false;
-  // Cheap substring pre-filter, and a mutation trap. Without it, a matcher
-  // that tested only `command.includes(want)` would pass the positive cases
-  // AND the negative ones, because the segment / verb / whole-token judgements
-  // below would never be reached — so the suite stays green with the parser
-  // deleted. With it, deleting any one of them is observable.
-  if (!command.includes(want) && !command.includes(dir)) return false;
-  return commandReadsSkillFile(command, dir, want);
+  // Cheap substring pre-filter over every spelling the child may have used
+  // (the prompt's own path, or the symlink target it opened), and a mutation
+  // trap. Without it, a matcher that tested only `command.includes(want)` would
+  // pass the positive cases AND the negative ones, because the segment / verb /
+  // whole-token judgements below would never be reached — so the suite stays
+  // green with the parser deleted. With it, deleting any one of them is
+  // observable.
+  // Cheap pre-filter, and a mutation trap. Without it, a matcher that tested
+  // only `command.includes(want)` would pass the positive cases AND the negative
+  // ones, because the segment / verb / whole-token judgements below would never
+  // be reached — so the suite stays green with the parser deleted. With it,
+  // deleting any one of them is observable.
+  //
+  // It tests the FILE NAME only, for three reasons, and the third is the one that
+  // makes it a correctness fix rather than a shortcut:
+  //   1. a child may reach the same file by a `..` detour (`<skill>/../<skill>/
+  //      SKILL.md`, case 1ag) or through a symlink whose canonical prefix the
+  //      driver never spells, and a filter demanding the driver's exact spelling
+  //      would drop those before the matcher ran — which is how the directory
+  //      rejection in `tokenMatches` became untestable;
+  //   2. a command that never mentions `SKILL.md` cannot have opened it, so the
+  //      file name is the cheapest sound necessary condition;
+  //   3. it keeps every real judgement in `commandReadsSkillFile` reachable, so
+  //      each of the verb / write / whole-token rules below can actually be
+  //      violated by a mutation and caught by a test.
+  if (!command.includes(SKILL_FILE_NAME)) return false;
+  return commandReadsSkillFile(command, dirs, wants);
 }
 
 /**
@@ -192,26 +288,92 @@ function isSkillRead(
  * path from the split, and the cost of that is one unproven claim, not a
  * wrong merge.
  */
-function commandReadsSkillFile(command: string, dir: string, want: string): boolean {
+function commandReadsSkillFile(
+  command: string,
+  dirs: readonly string[],
+  wants: readonly string[],
+): boolean {
   for (const segment of command.split(SEGMENT_SPLIT)) {
     const tokens = segment
       .split(/\s+/)
       .map(stripQuotes)
       .filter((t) => t !== "");
     if (tokens.length < 2) continue;
-    // `tokens.length < 2` above makes index 0 safe; the explicit check is what
-    // lets noUncheckedIndexedAccess see it.
+    // The verb itself is skipped when looking for a path — `cat cat` names no
+    // file — so every predicate below is over `tokens.slice(1)` except the
+    // verb check, which is index 0.
     const verb = tokens[0];
     if (verb === undefined || !READER_VERBS.has(verb.toLowerCase())) continue;
-    // The verb itself is skipped — `cat cat` names no file.
-    //
+    const operands = tokens.slice(1);
+    // A segment that WRITES is not a read, even when it names the file.
+    if (operands.some(isWriteToken)) continue;
     // Each token is compared WHOLE after resolution, never as a substring, so
     // `cat <skill>-x/SKILL.md` (a sibling directory whose name starts with
     // this one) and `FOO=<skill>-x cat noop` (an assignment that merely
     // CONTAINS the path) both resolve to something that is not the skill file.
-    if (tokens.slice(1).some((token) => matchesSkillFile(token, dir, want))) return true;
+    if (operands.some((token) => tokenMatches(token, dirs, wants))) return true;
   }
   return false;
+}
+
+/** Does this token make the segment a WRITE? See `REDIRECT_TOKEN` /
+ * `SED_IN_PLACE`. Judged on the raw (quote-stripped) token, so `-i` and
+ * `--in-place` are matched as whole words, not as substrings of a longer flag. */
+function isWriteToken(token: string): boolean {
+  return REDIRECT_TOKEN.test(token) || SED_IN_PLACE.test(token);
+}
+
+/** Does a token inside a bash command name the skill file? Compared WHOLE —
+ * never as a substring — against the driver's own spellings of the file, with
+ * the same inode-identity fallback `matchesSkillFile` uses. */
+function tokenMatches(token: string, dirs: readonly string[], wants: readonly string[]): boolean {
+  const got = lexical(token);
+  if (!got) return false;
+  // A directory naming inside a reader command is not a read of the file: a
+  // `cat <dir>` on a directory is an error, not a load. Every dir spelling is
+  // rejected, not just one.
+  if (dirs.includes(got)) return false;
+  if (wants.includes(got)) return true;
+  return sameFileAsAny(got, wants);
+}
+
+/**
+ * Is this `read` path value the lens's skill FILE?
+ *
+ * Exactly ONE shape counts, and it is the one the prompt can produce: the file
+ * itself. The directory the prompt hands the child is a directory, not a file —
+ * crediting it (the pre-round-3 rule) accepted a read that opened nothing — and
+ * any other value is not the skill file: a sibling inside the directory, a
+ * nested reference doc, a prefix-sharing directory, or a directory whose name
+ * merely ENDS with this skill's.
+ *
+ * Two ways to be the file, and they are deliberately asymmetric in cost:
+ *
+ *   1. the fast, lexical one — the whole normalised path equals one of the
+ *      driver's own spellings. Total, deterministic, no syscall, and it settles
+ *      every case where the child quoted the prompt's path back.
+ *   2. the identity one — the path's inode is the skill file's inode. This is
+ *      the ONLY place a child-supplied string reaches the filesystem, and it is
+ *      gated so it can only ever CONFIRM, never refute: it runs after (1) misses
+ *      and only adds a `proven`. Without it a child that read the symlink target
+ *      under a prefix the driver never spells (`/var` → `/private/var` on macOS
+ *      is the everyday one) is refuted for telling the truth — the false-downgrade
+ *      class that made this check shadow-only.
+ *
+ * Containment is the point of BOTH arms: a bare `basename === "SKILL.md"` proved
+ * `/tmp/zzz/SKILL.md` for a lens whose skill lives elsewhere, so the identity arm
+ * compares against the driver's resolved file, not against a file name.
+ */
+function matchesSkillFile(
+  candidate: string,
+  dirs: readonly string[],
+  wants: readonly string[],
+): boolean {
+  const got = lexical(candidate);
+  if (!got) return false;
+  if (dirs.includes(got)) return false;
+  if (wants.includes(got)) return true;
+  return sameFileAsAny(got, wants);
 }
 
 function stripQuotes(token: string): string {
@@ -224,59 +386,8 @@ function stripQuotes(token: string): string {
   return out.replace(TRAILING_ESCAPES, "");
 }
 
-/**
- * Does this path value name the lens's skill file?
- *
- * Two spellings count, and they are exactly the two the prompt can produce:
- * the file itself, and the directory the prompt names — which is a directory,
- * not a file, so the read the prompt asks for is always `<dir>/SKILL.md` and
- * naming the directory can only ever mean that file. Anything else is not the
- * skill file: a sibling inside the directory, a nested reference doc, a
- * prefix-sharing directory, or a directory whose name merely ENDS with this
- * skill's.
- */
-function matchesSkillFile(candidate: string, dir: string, want: string): boolean {
-  const got = resolvePath(candidate);
-  if (!got) return false;
-  if (got === want) return true;
-  if (got === dir) return true;
-  return path.posix.basename(got) === SKILL_FILE_NAME && path.posix.dirname(got) === dir;
-}
-
 /** Test-only surface: a decision input a behavioural assertion cannot reach,
  * because the `read` branch short-circuits before a rejected key is ever
  * consulted. Declared last so it can name a constant defined above; nothing
  * outside the smoke test reads it. */
 export const __tests__ = { PATH_KEY };
-
-/** The skill DIRECTORY the proof is about, canonicalised — or "" when the
- * driver handed us nothing to match, in which case no tool call can prove it. */
-function resolveSkillDir(skillPath: string): string {
-  return resolvePath(skillPath ?? "");
-}
-
-/**
- * Best-effort canonical form of a path a CHILD reported (or that the driver
- * built).
- *
- * `realpathSync` FIRST, because the skills directory install.sh populates is
- * symlinks into the repo's `skill/` tree — so the path the driver built and
- * the path the child opened are two different strings for the same file. A
- * check that compared the strings would refute every honest child.
- *
- * Then `path.posix.normalize`, which collapses `.` / `..` / duplicate
- * separators without touching the filesystem. Both steps are best-effort:
- * `realpathSync` throws on a path that does not exist (a unit-test fixture, a
- * skill uninstalled between the pre-spawn stat and this check), and this module
- * must never throw its way into blocking a review.
- */
-function resolvePath(p: string): string {
-  const trimmed = p.trim();
-  if (!trimmed) return "";
-  try {
-    return fs.realpathSync(trimmed);
-  } catch {
-    // Fall through to the lexical form.
-  }
-  return path.posix.normalize(trimmed.replace(/\\/g, "/").replace(/\/+$/, ""));
-}

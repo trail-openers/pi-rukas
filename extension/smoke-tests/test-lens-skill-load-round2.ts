@@ -49,9 +49,11 @@ function eq(actual: unknown, expected: unknown, msg: string): boolean {
  * skill — and a refutation blocks a lens, so these are the cases that would
  * have blocked every review. */
 {
-  // A symlinked skills dir — the shape install.sh actually leaves behind (it
-  // symlinks `skill/*` into the skills dir). The driver builds the symlinked
-  // path; a child that opens the canonical target has the same file open.
+  // The symlinked skills dir — what install.sh actually leaves behind (it
+  // `ln -sfn`s `skill/*` into the skills dir, so the entry IS a symlink). The
+  // driver builds the symlinked path; a child that opens the canonical target
+  // has the same file open. The proof resolves the DRIVER's path once and keeps
+  // BOTH spellings as candidates, then compares the child's path lexically.
   const linkRoot = mkdtempSync(path.join(os.tmpdir(), "lens1530-symlink-"));
   const realDir = path.join(linkRoot, "real", "code-review-security");
   mkdirSync(realDir, { recursive: true });
@@ -68,7 +70,7 @@ function eq(actual: unknown, expected: unknown, msg: string): boolean {
       1,
     ),
     "proven",
-    "1w a symlinked skills dir does not refute a child that read the canonical target (realpath both sides)",
+    "1w a symlinked skills dir does not refute a child that read the canonical target (the driver's own path resolves to it)",
   );
   eq(
     skillLoadProof(
@@ -187,13 +189,50 @@ function eq(actual: unknown, expected: unknown, msg: string): boolean {
     "proven",
     "1ag a `..` detour that lands on the skill file is the same file (lexical normalisation)",
   );
+  // Canary for 1ag: normalisation is what makes it prove, so the same detour
+  // landing OUTSIDE the skill dir must be refuted — a matcher that ignored `..`
+  // would pass 1ag by accident via the un-normalised string.
+  eq(
+    skillLoadProof(
+      [
+        {
+          name: "bash",
+          arguments: { command: `cat ${SKILL_RESOLVED}/../other-skill/SKILL.md` },
+        },
+      ],
+      SKILL_RESOLVED,
+      1,
+    ),
+    "unproven",
+    "1ah3 canary for 1ag: the same `..` shape landing on ANOTHER skill's file is refuted (normalisation is real, not decorative)",
+  );
 
-  // The prompt hands the child the DIRECTORY, so naming the directory can only
-  // mean the one skill file inside it.
+  // The prompt hands the child the DIRECTORY, but the read that loads the skill
+  // is `<dir>/SKILL.md`. Naming the bare directory is NOT a read — the pre-round
+  // -3 rule credited it, which accepted a child that named the directory and
+  // opened nothing. Its canary is 1af (the real file, proven) above.
   eq(
     skillLoadProof([{ name: "read", arguments: { path: SKILL_RESOLVED } }], SKILL_RESOLVED, 1),
-    "proven",
-    "1ah naming the skill DIRECTORY the prompt gave counts — the only skill file in it is SKILL.md",
+    "unproven",
+    "1ah naming the skill DIRECTORY the prompt gave is NOT a read of SKILL.md (it is a directory — reading it opens nothing)",
+  );
+  eq(
+    skillLoadProof(
+      [{ name: "read", arguments: { path: `${SKILL_RESOLVED}/` } }],
+      SKILL_RESOLVED,
+      1,
+    ),
+    "unproven",
+    "1ah2 a trailing slash on the directory is still the directory, so still not a read",
+  );
+  eq(
+    skillLoadProof(
+      [{ name: "bash", arguments: { command: `cat ${SKILL_RESOLVED}` } }],
+      SKILL_RESOLVED,
+      1,
+    ),
+    "unproven",
+    "1ah4 `cat <dir>` on a directory is an error, not a load — the directory is never credited in the bash branch either",
   );
 
   // Verb and path must live in the SAME segment.

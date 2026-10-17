@@ -9,10 +9,16 @@
  * the prompt-path refusal live in `test-lens-skill-load-consumer.ts`, and the
  * round-2 false-negative cases in `test-lens-skill-load-round2.ts` — the three
  * are one suite split under AGENTS.md §12, not three suites.
+ *
+ * Since round 3 of the #1530 review the consumer treats `unproven` as a shadow
+ * WARN, not a block, so the outcomes asserted here are the pure predicate's —
+ * still the right thing to pin: the warn and any future block both key off
+ * exactly this three-way value.
  */
 
-import { realpathSync } from "node:fs";
+import path from "node:path";
 import { __tests__, skillLoadProof } from "../src/lens-skill-load-proof.ts";
+import { SKILL_RESOLVED } from "./lib/lens-skill-proof-fixtures.ts";
 import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
 
 // #1069 — isolate before any src import: the real runLensReview write must
@@ -20,13 +26,6 @@ import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
 isolateLedger();
 
 let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
 function eq(actual: unknown, expected: unknown, msg: string): boolean {
   const a = JSON.stringify(actual);
   const e = JSON.stringify(expected);
@@ -37,32 +36,24 @@ function eq(actual: unknown, expected: unknown, msg: string): boolean {
   console.error(`✗ ${msg}\n    actual:   ${a}\n    expected: ${e}`);
   exit = 1;
   return false;
-
 }
 
-const SKILL = "/tmp/skills/code-review-security";
-// The check compares EXACT resolved paths, and macOS resolves `/tmp` to
-// `/private/tmp` — so every fixture below uses the resolved spelling. A
-// fixture written as a literal `/tmp/...` compares equal to itself after
-// normalisation whether or not the delimiter logic works, which is exactly how
-// six of these cases were silently vacuous before this note; the resolved form
-// is what makes the negative cases (1d/1e/1s, 1i/1o/1p/1q) real.
-const SKILL_RESOLVED = realpathSync("/tmp") + SKILL.slice("/tmp".length);
-// A `./` prefix is resolved against the PROCESS CWD by the same normalisation
-// the product uses (deliberately: a child's relative path is not the parent's
-// relative path), so it only equals an absolute path when written as one.
-// What varies in practice — and what this case pins — is the trailing
-// separator, i.e. how a child spells the path versus how the driver built it.
+// A trailing-separator spelling of the same directory. What varies in practice
+// — and what case 1f pins — is that separator: how a child spells the path
+// versus how the driver built it. A `./` prefix would resolve against the
+// PROCESS CWD under the same normalisation the product uses (deliberately: a
+// child's relative path is not the parent's relative path), so it only equals
+// an absolute path when written as one.
 const SLOPPY_SKILL = `${SKILL_RESOLVED}/`;
 
 /* 1 — the pure proof. Each case names the shape it pins, because the
- * `unproven` / `unverifiable` split is the whole safety property: a refutation
- * blocks a lens, an absence of evidence must not. */
+ * `unproven` / `unverifiable` split is the whole safety property: `unproven`
+ * is what a future block keys on, and an absence of evidence must never be it. */
 {
   eq(
     skillLoadProof([{ name: "read", arguments: { path: SKILL_RESOLVED } }], SKILL_RESOLVED),
-    "proven",
-    "1a a `read` of the exact skill path proves the claim",
+    "unproven",
+    "1a a `read` of the bare skill DIRECTORY is not a read of SKILL.md (the prompt hands out a dir; crediting it accepted a read that opened nothing)",
   );
   eq(
     skillLoadProof([], SKILL_RESOLVED),
@@ -97,8 +88,16 @@ const SLOPPY_SKILL = `${SKILL_RESOLVED}/`;
   );
   eq(
     skillLoadProof([{ name: "read", arguments: { path: SLOPPY_SKILL } }], SKILL_RESOLVED),
+    "unproven",
+    "1f a trailing slash on the DIRECTORY normalises away — and is still the directory, so still not a read of the file",
+  );
+  eq(
+    skillLoadProof(
+      [{ name: "read", arguments: { path: `${SKILL_RESOLVED}/SKILL.md` } }],
+      SKILL_RESOLVED,
+    ),
     "proven",
-    "1f a trailing slash normalises away (same file, sloppier spelling)",
+    "1f2 canary for 1a/1f: the SKILL.md itself IS proven (the two above are the directory rule, not a broken match)",
   );
   eq(
     skillLoadProof(
@@ -242,7 +241,6 @@ const SLOPPY_SKILL = `${SKILL_RESOLVED}/`;
     "unproven",
     "1n a non-reader tool naming the path is not a read",
   );
-
 }
 
 console.log(`\nexit ${exit}`);
