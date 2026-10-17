@@ -47,7 +47,10 @@ export type {
 export type { DispatchSlowEvent };
 // #1446-size — interrupted / cycle-interrupted members re-exported from the
 // sibling fragment (the 500-line gate, AGENTS.md §12).
-export type { CycleInterruptedEvent, InterruptReason };
+export type {
+  CycleInterruptedEvent,
+  InterruptReason,
+} from "./workflow-state-events-interrupted.ts";
 /**
  * Linear step identifiers the driver walks. This union IS the definition
  * of the cycle — #393 deleted the prose flow that used to be its source.

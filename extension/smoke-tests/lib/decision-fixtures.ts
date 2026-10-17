@@ -4,7 +4,7 @@
  * registry answers from closures, never from a network.
  */
 
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Backend, BackendResult, DecisionRegistry } from "../../src/decision-backends.ts";
@@ -114,6 +114,90 @@ export function llmReply(text: string, stopReason = "stop") {
   };
 }
 
+/**
+ * Every directory this module hands out, so the process-exit hook below can remove them.
+ * A suite that created its scratch inside a `finally` was one `process.exit()` away from
+ * leaking it anyway — measured at ~1 200 surviving `/tmp/decision-*` dirs per full run —
+ * because an assertion that throws skips the block that would have cleaned up.
+ */
+const made: string[] = [];
+
+/**
+ * A fresh scratch directory under `os.tmpdir()`, prefixed `decision-<tag>-` so the suite's
+ * output is greppable and the sweep below can find its own. Every caller relies on the
+ * removal at process exit rather than on a `finally` it might skip.
+ */
 export function tmpDir(tag: string): string {
-  return mkdtempSync(path.join(os.tmpdir(), `decision-${tag}-`));
+  const dir = mkdtempSync(path.join(os.tmpdir(), `decision-${tag}-`));
+  made.push(dir);
+  return dir;
+}
+
+// `exit` only, no `beforeExit`: every decision test ends with an explicit `process.exit(code)`,
+// which fires `exit` and skips `beforeExit` entirely, so the second hook would be dead weight —
+// and a drain-triggered sweep could delete a directory a still-scheduled async step is writing.
+// `rmSync` is recursive and forceful: a fixture may hold a dangling symlink, which a plain
+// unlink would refuse and which must not turn a green run into a noisy one.
+const sweep = () => {
+  // DRAIN FIRST, then delete: a `rmSync` that throws partway through the loop used to leave
+  // every not-yet-popped directory behind for the rest of the run, so one hostile fixture
+  // (a chmod-000 subdir) turned into a leak of everything else. Draining the list up front
+  // makes each removal independent, and each is best-effort on top of that.
+  const dirs = made.splice(0);
+  for (const d of dirs) {
+    try {
+      rmSync(d, { recursive: true, force: true });
+    } catch {}
+  }
+};
+process.on("exit", sweep);
+
+/**
+ * A credential long enough that any 12-char window of it is recognisable, and
+ * the probe that asks whether any such window survived a clip. A clip that ran
+ * BEFORE redaction leaves a fragment no pattern matches, and a plain
+ * `includes(key)` check would then pass — so this is the only sound leak test.
+ */
+export const PROBE_KEY = `sk-ant-api03-${"aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d"}`;
+
+export function leaksKey(s: string, key: string, window = 12): boolean {
+  for (let i = 0; i + window <= key.length; i++) {
+    if (s.includes(key.slice(i, i + window))) return true;
+  }
+  return false;
+}
+
+/**
+ * Text whose `boundary`th character falls `offset` chars INSIDE `key`, so the
+ * clip keeps the head of a credential whose tail it cut. That is the shape a
+ * clip-before-redaction bug survives: the fragment is not a match for any
+ * pattern, so only `leaksKey` can see it.
+ */
+export function keyAtBoundary(
+  key: string,
+  boundary: number,
+  offset: number,
+  direction: "start" | "end",
+): string {
+  const head = "f".repeat(Math.max(0, boundary - offset - 1));
+  const tail = "t".repeat(Math.max(0, boundary + 100));
+  return direction === "start" ? `${head}${key}${tail}` : `${tail} ${key} ${head}`;
+}
+
+/**
+ * The JSONL records of a decision log, parsed. Absent or unreadable is an EMPTY log, not
+ * an error: the shadow writer is fire-and-forget, so a poll routinely reads the
+ * file before the first append lands, and a test must not need a guard at every
+ * call site to ask "how many so far". This is the ONE reader — a test re-declaring
+ * it drifts (four local copies disagreed on whether a missing file threw).
+ */
+export function records(file: string): Record<string, unknown>[] {
+  try {
+    return readFileSync(file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+  } catch {
+    return [];
+  }
 }
