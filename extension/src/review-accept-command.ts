@@ -125,7 +125,9 @@ export function armsOf(text: string): string[] {
       const end = text.indexOf(c, i + 1);
       const stop = end < 0 ? text.length : end + 1;
       cur += text.slice(i, stop);
-      i = stop;
+      // A quote with no partner leaves `stop` equal to `i`, which would re-enter this
+      // branch forever and OOM the process: the scan must always move forward.
+      i = stop > i ? stop : i + 1;
       continue;
     }
     if (text.startsWith("&&", i) || text.startsWith("||", i)) {
@@ -143,7 +145,10 @@ export function armsOf(text: string): string[] {
       while (text[j] === "<") j++;
       if (j === text.length || /\s/.test(text[j] as string)) {
         cur += " << ";
-        i = j;
+        // A run of `<` that runs off the end of the text still has to advance: the
+        // previous shape left `i` where it was and looped forever, so a trailing `<`
+        // hung the scan (and an unguarded scan is the guard failing open).
+        i = j > i ? j : i + 1;
         continue;
       }
     }
@@ -168,7 +173,17 @@ export function shellWords(text: string): string[] {
       const c = text[i] as string;
       // An operator ends the word AND the segment: `x.ts;rm` is two words in two
       // segments, so a glued operator cannot be mistaken for part of an argument.
-      if (c === "|" || c === ";" || c === "&") break;
+      // The index still has to move: `break` without `i++` handed the same character
+      // straight back to the outer loop, which pushed `""` forever and OOM-killed the
+      // scan on any command carrying `;`, `|` or `&` past the fast path.
+      if (c === "|" || c === ";" || c === "&") {
+        if (word !== "") {
+          words.push(word);
+          word = "";
+        }
+        i++;
+        break;
+      }
       if (c === "'" || c === '"') {
         const end = text.indexOf(c, i + 1);
         if (end >= 0) {
@@ -176,6 +191,10 @@ export function shellWords(text: string): string[] {
           i = end + 1;
           continue;
         }
+        // No closing quote: the character is literal and the walk still has to move
+        // past it. The previous shape fell through to neither branch, so `echo "abc`
+        // spun here until the process ran out of memory — and an unbounded scan is the
+        // guard failing open, not failing closed.
       }
       word += c;
       i++;

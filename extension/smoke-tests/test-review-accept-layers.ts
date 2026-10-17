@@ -106,8 +106,7 @@ assert(
   others.every((f) => !/\b(?:acceptFinding|acceptRow|mutateFindings)\b/.test(srcText(f))),
   "boundary: no src/ module other than the store names acceptFinding or a write primitive",
 );
-// review-findings-file.ts declares the schema (`status: "accepted"` is a type literal
-// there); it assigns nothing, so it is the one src file exempt from the write check.
+// review-findings-file.ts declares the schema; it assigns nothing (the exempt src file).
 const ACCEPT_WRITE =
   /\bstatus\s*=(?!=)\s*["']accepted["']|\bacceptance\s*=(?!=)|\bstatus\s*:\s*["']accepted["']/;
 assert(
@@ -151,14 +150,12 @@ for (const c of [
   "bun test -r ./x.ts smoke-tests/review-findings-store*",
   // The operator script is not a test file, even under a test runner.
   "bun test smoke-tests/review-accept-row.ts",
-  // #1125 — a git/gh command carrying a file-writing (`--output`, `-o`) or
-  // config/alias (`-c`) argument is scanned like any other: those arguments
-  // can create the store or run a shell, so the prose-argument exemption does
-  // not cover them.
+  // #1125 — a file-writing (`--output`, `-o`) or config/alias (`-c`) argument is
+  // scanned like any other: those can create the store or run a shell.
   "git show HEAD:blob --output=review-findings.json",
   "git -c alias.dump='!cat /tmp/payload review-findings.json' dump",
-  // #1125 — the runtime match used to require one line, so a here-doc body or
-  // a program piped into `bun -` reached the store untouched.
+  // #1125 — the runtime match used to require one line, so a here-doc body or a
+  // program piped into `bun -` reached the store untouched.
   'bun <<EOF\nimport { acceptFinding } from "./src/review-findings-store.ts"\nEOF',
   "printf 'import \"./src/review-findings-store.ts\"' | bun -",
 ]) {
@@ -171,17 +168,25 @@ assert(
   runsReviewAccept("bun test smoke-tests/test-review-*.ts") === undefined,
   "guard: a test glob that names no store path is allowed",
 );
-// #1125 — a read-only test run is judged by what it RUNS, not by whether the
-// guard can see a file name: the TEST_RUN exemption is what lets
-// `review-findings-store*` through, and it is conditional (an eval flag runs
-// code; naming the operator's script is a route).
+// #1125 — a read-only test run is judged by what it RUNS: an eval flag runs code.
 assert(
   runsReviewAccept("bun test smoke-tests/test-review-*.ts") === undefined,
   "guard: a test glob that cannot name a protected file is allowed",
 );
+// #1125 clause (b): the three documented OVER-REFUSALS (canonical: OVER_REFUSALS).
+for (const c of [
+  "git show HEAD:README.md --output=/tmp/readme.txt",
+  "cat payload.js | bun -",
+  "bun test smoke-tests/review-findings-store*",
+]) {
+  assert(
+    runsReviewAccept(c) !== undefined,
+    `guard: over-refuses rather than guesses — ${c.slice(0, 44)}`,
+  );
+}
 assert(
-  runsReviewAccept("bun test smoke-tests/review-findings-store*") === undefined,
-  "guard: a test run naming the store by glob is exempt as a read-only run",
+  runsReviewAccept("bun test smoke-tests/test-review-findings-store*.ts") === undefined,
+  "guard: a test arm whose argv are valueless switches and test paths is allowed",
 );
 assert(
   runsReviewAccept('git commit -m "fix: note review-findings.json (#1)"') === undefined,
@@ -192,14 +197,10 @@ for (const c of [
   "git log --oneline -- extension/src/review-findings-store.ts",
   "git diff HEAD -- extension/src/review-accept-guard.ts",
   "gh pr view 1105",
-  // The argument shape alone is not a route: --output that names no store path.
-  "git show HEAD:README.md --output=/tmp/readme.txt",
-  // A runtime that names no store path is not a route either, stdin included.
-  "cat payload.js | bun -",
 ]) {
   assert(
     runsReviewAccept(c) === undefined,
-    `guard: a plain git/gh read or a runtime naming no store path is allowed — ${c.slice(0, 44)}`,
+    `guard: a plain git/gh read is allowed — ${c.slice(0, 44)}`,
   );
 }
 
