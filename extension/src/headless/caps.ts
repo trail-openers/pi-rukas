@@ -81,6 +81,9 @@ export const FIXED_CAPS = [
   // released every worker (`sweepStranded`). Same family as the four above,
   // sorted where the sort puts it.
   "queue-stranded",
+  // #1243 — the step parked on a provider outage; a headless caller re-queues
+  // these itself when the endpoint answers again, so it is a published cap.
+  "provider-unavailable",
   "repeat-finding-seam",
   "repo-root-residue",
   "review-incomplete",

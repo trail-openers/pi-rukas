@@ -207,11 +207,17 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       `#297 T2: 1 attempt + 2 transient retries before halt (got ${branchAttempts})`,
     );
     const capHit = (after?.eventLog ?? []).find((e) => e.kind === "cap-hit");
+    // #1243 — a persistent `terminated` provider stop is an OUTAGE, not a failed
+    // branch, so the exhausted budget parks with the provider cap. The caller
+    // re-queues it when the endpoint answers; nothing about the work was judged.
     assert(
-      capHit?.kind === "cap-hit" && capHit.cap === "step-failed:branch",
-      "#297 T2: exhausted budget routes through cap-hit step-failed:branch",
+      capHit?.kind === "cap-hit" && capHit.cap === "provider-unavailable",
+      `#297 T2: exhausted budget on a provider fault routes through cap-hit provider-unavailable (got ${capHit?.kind === "cap-hit" ? capHit.cap : "no cap"})`,
     );
-    assert(after?.pipelineState.status === "aborted", "#297 T2: cycle ends aborted");
+    assert(
+      after?.pipelineState.status === "handoff",
+      `#297 T2: a provider park terminalizes as a handoff, not an aborted mid-flight crash (got ${after?.pipelineState.status})`,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -265,7 +271,18 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 
     const after = await readState(dir, 952);
     assert(branchAttempts === 1, `#297 T3: opt-out → no retry (got ${branchAttempts})`);
-    assert(after?.pipelineState.status === "aborted", "#297 T3: opt-out halts immediately");
+    // #1243 — the escape hatch restores halt-on-first-failure, not the pre-#1243
+    // cap: the fault is still the endpoint's, so it still parks under the
+    // provider cap and still terminalizes as a resumable handoff.
+    const capHit = (after?.eventLog ?? []).find((e) => e.kind === "cap-hit");
+    assert(
+      capHit?.kind === "cap-hit" && capHit.cap === "provider-unavailable",
+      `#297 T3: opt-out halts at once, still naming the provider as the cause (got ${capHit?.kind === "cap-hit" ? capHit.cap : "no cap"})`,
+    );
+    assert(
+      after?.pipelineState.status === "handoff",
+      `#297 T3: opt-out halts immediately, as a handoff (got ${after?.pipelineState.status})`,
+    );
   } finally {
     if (prev === undefined) delete process.env.PI_ENSEMBLE_TRANSIENT_RETRY;
     else process.env.PI_ENSEMBLE_TRANSIENT_RETRY = prev;

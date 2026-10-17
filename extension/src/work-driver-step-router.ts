@@ -18,20 +18,29 @@ import { trace } from "./trace.ts";
 import { capKilledString } from "./work-driver-cap-killed.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { dispatchTokens } from "./work-driver-cycle-total.ts";
+import { failureEventOf } from "./work-driver-failure-lookup.ts";
 import { STEP_FAILURE_POLICY } from "./work-driver-failure-policy.ts";
 import {
   classifyFailureCause,
   failureCauseReason,
   failureCauseReasonForClass,
   jitteredMs,
+  providerRetryWaitMs,
   shadowFailureCause,
   stepRetryBudget,
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
+import {
+  type DispatchFailureEvent,
+  dispatchFailCapHit,
+  providerParkEvidence,
+  stepParkedOnProvider,
+} from "./work-driver-provider-park.ts";
 import { lostAttemptLine } from "./work-driver-retry-context.ts";
 import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
 import type { CapEvidence } from "./workflow-state-cap.ts";
+import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
 
@@ -61,47 +70,9 @@ export function __setSleepFn(fn: (ms: number) => Promise<void>): () => void {
  * re-entry, both of which already persisted state via `persistCycle`).
  */
 /**
- * The dispatch failure this step ended on, if any.
- *
- * A single-dispatch step ends ON its failure, so the last event is the answer.
- * A FAN-OUT step does not: `runDevelop` finishes by appending a
- * `branch-completed` per workstream and then `branches-converged`, which buries
- * the per-child failures several events back. Reading only the last event
- * therefore classified fan-out failures as nothing at all.
- *
- * Measured consequence: three developers hit a 429 carrying a 59-second
- * retry-after — a delay the taxonomy already knows how to wait out, and does
- * wait out for single dispatches — and the step halted with
- * `transientRetryAttempts: {}`. Never attempted, not exhausted. A transient
- * throttle and "the developer genuinely failed" collapsed into the same
- * `ok:false`, and the cap tripped on the latter's semantics.
- *
- * The scan is bounded by `branches-fanned-out`, the marker that opens the
- * fan-out, so it can never reach back into a previous step. All children must
- * have failed for this to return a failure: if any workstream succeeded, the
- * step's problem is not purely transient and re-running it is not the answer.
+ * The dispatch failure this step ended on lives in
+ * `work-driver-failure-lookup.ts` (AGENTS.md §12 size limit).
  */
-export function failureEventOf(events: readonly WorkEvent[]): WorkEvent | undefined {
-  const last = events[events.length - 1];
-  if (last?.kind === "dispatch-failed" || last?.kind === "dispatch-failed-provider") return last;
-  if (last?.kind !== "branches-converged") return undefined;
-  if (last.verdicts.some((v: { ok: boolean }) => v.ok)) return undefined;
-
-  let failure: WorkEvent | undefined;
-  let refused = false;
-  for (let i = events.length - 2; i >= 0; i--) {
-    const e = events[i];
-    if (!e || e.kind === "branches-fanned-out") break;
-    // #1016 — a driver refusal is not transient, and a fan-out that contains
-    // one is not a transient failure even when a sibling dispatch also failed:
-    // re-running it would re-refuse the same workstream. Decline the retry.
-    if (e.kind === "branch-completed" && e.refused) refused = true;
-    if (!failure && (e.kind === "dispatch-failed" || e.kind === "dispatch-failed-provider")) {
-      failure = e;
-    }
-  }
-  return refused ? undefined : failure;
-}
 
 export async function routeStepOutcome(
   ctx: CycleContext,
@@ -280,7 +251,14 @@ export async function routeStepOutcome(
           // otherwise the linear transient backoff. Full jitter either way, so
           // parallel cycles that trip the same limit don't resynchronise into
           // a thundering herd (#289 makes that concrete).
-          const base = transientRetryBackoffMs() * (used + 1);
+          // #1243 — a provider-class failure waits at least
+          // providerRetryFloorMs() × attempt (bounded by the total), not the
+          // 5s/10s ladder: every sub-minute wait lands inside the same outage.
+          const base = providerRetryWaitMs(
+            classification,
+            used + 1,
+            transientRetryBackoffMs() * (used + 1),
+          );
           const backoff = jitteredMs(base, classification.waitMs ?? 0);
           if (backoff > 0) await sleepFn(backoff);
           return { state, retry: true }; // re-run same step on next loop iteration
@@ -300,6 +278,7 @@ export async function routeStepOutcome(
         // `role` field is what F4(f) requires; explainCap reads capEvidence for
         // the trigger detail.
         const capKilled = tail.kind === "dispatch-failed" ? capKilledString(tail) : undefined;
+        const providerCap = capKilled === undefined && stepParkedOnProvider(state.eventLog);
         const cap =
           capKilled ??
           (step === "develop" && killCause === "timeout"
@@ -310,13 +289,19 @@ export async function routeStepOutcome(
                 //   corrective re-dispatch did not recover, so the operator
                 //   sees a cap that names the plan step, not a generic one.
                 ("plan-timeout" as const)
-              : (`step-failed:${step}` as const));
+              : // #1243 — a park the ENDPOINT caused gets its own cap, so a
+                //   headless caller can re-queue it when the provider answers
+                //   again instead of treating it as a real failure.
+                providerCap
+                ? ("provider-unavailable" as const)
+                : (`step-failed:${step}` as WorkCapLiteral));
         const capEvent: Extract<WorkEvent, { kind: "cap-hit" }> = {
           kind: "cap-hit",
           at: Date.now(),
           cap,
           reviewRound: state.pipelineState.reviewRound,
           nextStep: "handoff",
+          ...(providerCap ? { evidence: providerParkEvidence(tail as DispatchFailureEvent) } : {}),
         };
         if (capEvent.cap === "loop-detected" || capEvent.cap === "token-budget") {
           capEvent.role = (tail as { role?: RoleName }).role;
@@ -395,8 +380,10 @@ export async function routeStepOutcome(
             `work-driver: RETRY_ONCE on step="${step}" (attempt ${used + 2}, budget=${infra ? "transient" : "semantic"}, cause=${classification.cause}) — ${lost}`,
           );
           if (infra) {
+            // #1243 — provider-class failures get the minutes-floor ladder
+            // (see the HALT branch above); everything else keeps the linear one.
             const wait = jitteredMs(
-              transientRetryBackoffMs() * (used + 1),
+              providerRetryWaitMs(classification, used + 1, transientRetryBackoffMs() * (used + 1)),
               classification.waitMs ?? 0,
             );
             if (wait > 0) await sleepFn(wait);
@@ -407,20 +394,15 @@ export async function routeStepOutcome(
         // pattern as the HALT branch above — leave status='running'
         // so the loop runs runHandoff next; runHandoff sets the
         // terminal status based on the cap shape.
-        state = appendEvent(state, {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap: `step-failed:${step}` as const,
-          reviewRound: state.pipelineState.reviewRound,
-          nextStep: "handoff",
-        });
+        const capEvent = dispatchFailCapHit(step, state, tail);
+        state = appendEvent(state, capEvent);
         state = {
           ...state,
           pipelineState: { ...state.pipelineState, currentStep: "handoff" },
         };
         await persistCycle(ctx, state);
         trace(
-          `work-driver: RETRY_ONCE exhausted on step="${step}" (cause=${classification.cause}) → handoff (status set in runHandoff)`,
+          `work-driver: RETRY_ONCE exhausted on step="${step}" (cause=${classification.cause}) → cap="${capEvent.cap}" → handoff (status set in runHandoff)`,
         );
         return { state, retry: true };
       }

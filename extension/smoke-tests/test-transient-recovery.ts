@@ -30,7 +30,7 @@
  */
 
 import { reconcileObservedCounts, willRetryAfter } from "../src/spawn-support.ts";
-import { failureEventOf } from "../src/work-driver-step-router.ts";
+import { failureEventOf } from "../src/work-driver-failure-lookup.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 
 let exit = 0;

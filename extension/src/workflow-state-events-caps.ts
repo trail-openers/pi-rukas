@@ -122,6 +122,20 @@ export type WorkCapLiteral =
   | "ops-merge-base-mismatch"
   // #486 — infra-failure: adversarial loop failed on infra every attempt.
   | "adversarial-infra-failure"
+  // #1243 — the step parked because the PROVIDER was down, not because the
+  // work failed. A transport severance / endpoint timeout / short-burst 429
+  // that survived every retry (and, for the adversarial gate, the fan-out's
+  // own ladder) parks here instead of `step-failed:<step>`, for two reasons.
+  // (1) The caller can act: orchard runs pi-rukas headless and re-queues a
+  // provider park itself when the endpoint answers again — it has nothing to
+  // look at, because nothing about the code was judged. (2) It is NOT a
+  // mid-flight-halt shape: `runHandoff` keys `status: "aborted"` off the
+  // `step-failed:` prefix, and an outage that ends at a step boundary with
+  // committed work on the branch is a handoff a person (or the queue) resumes,
+  // not a crash to post-mortem. A quota window or a spend cap does NOT take
+  // this cap — waiting does not clear those, so they stay `step-failed:<step>`
+  // and go to a person (see `stepParkedOnProvider`).
+  | "provider-unavailable"
   // #571 — sibling cycle holds a path claim; overlap detected at plan
   // time. Two cycles cannot edit the same files in parallel.
   | "cross-group-conflict"

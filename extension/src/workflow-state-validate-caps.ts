@@ -95,6 +95,14 @@ export const CAP_HIT_FIXED_LITERALS = [
   // failed: the branch ops created does not sit on the driver-fetched base.
   "ops-merge-base-mismatch",
   "adversarial-infra-failure",
+  // #1243 — the step parked on a provider outage (an endpoint timeout, a
+  // transport severance, a short-burst 429) rather than on a failure of the
+  // work. A deliberate park terminalized as a handoff — NOT `step-failed:`
+  // (that prefix would read as a mid-flight crash and mark the cycle `aborted`
+  // when the branch may hold finished, committed work). The caller re-queues it
+  // when the endpoint answers again, so the validator must know the literal or
+  // a re-entry of a live parked cycle would halt on "unrecognised value".
+  "provider-unavailable",
   "loop-detected",
   "token-budget",
   // #973 — the lens review produced no review outcome (all lens dispatches

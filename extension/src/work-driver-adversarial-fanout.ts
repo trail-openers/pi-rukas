@@ -42,6 +42,7 @@ import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { fetchDiff } from "./work-driver-diff.ts";
 import {
   jitteredMs,
+  providerRetryWaitMs,
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
@@ -408,12 +409,19 @@ export async function fanOutAdversarial(
     // #486 — retry each failing workstream with the same backoff the
     // step-level router applies: provider-stated delay as floor, full
     // jitter, one shared wait so siblings that share a 429 clear together.
+    // #1243 — a provider-class failure gets the minutes-floor ladder (the 5s
+    // ladder re-spawns inside the same outage); the attempt index scales it and
+    // the total stays bounded, so a fan-out cannot sleep past the incident.
     const waitMs = transientRetryEnabled()
       ? Math.max(
           0,
           ...candidates.map((o) =>
             jitteredMs(
-              transientRetryBackoffMs() * ((localRetries[o.id] ?? 0) + 1),
+              providerRetryWaitMs(
+                classify(o),
+                (localRetries[o.id] ?? 0) + 1,
+                transientRetryBackoffMs() * ((localRetries[o.id] ?? 0) + 1),
+              ),
               classify(o).waitMs ?? 0,
             ),
           ),
