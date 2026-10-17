@@ -145,8 +145,21 @@ export function redactBounded(
     // A key longer than the window opens the scan mid-body, where no pattern anchors
     // (see `PEM_HEADER_REACH`). Back up to the header the clip dropped rather than
     // scanning a body no arm can match.
-    const header = text.lastIndexOf("-----BEGIN", start);
-    if (header >= 0 && start - header <= PEM_HEADER_REACH) start = header;
+    //
+    // BOUNDED, and the bound is what makes the line cheap. `lastIndexOf` with a `fromIndex`
+    // still scans leftward to offset 0 before it answers "nothing", so on a document far larger
+    // than the reach — the multi-megabyte log this function exists to keep off a regex — the
+    // search cost grew with the document while its verdict could only ever be about the last
+    // 16 KB of it. The slice bounds the walk to the only region that can answer the question,
+    // and offsets are carried back by adding `from`, which is 0 on a text shorter than the reach
+    // (`Math.max` there, so the prefix is scanned whole and the answer is identical to the
+    // unbounded search by construction rather than by argument). The `start - found <= reach`
+    // test below then becomes redundant rather than changed: an offset the search could not have
+    // returned is an offset it now does not visit.
+    const from = Math.max(0, start - PEM_HEADER_REACH);
+    const hit = text.slice(from, start).lastIndexOf("-----BEGIN", start - from);
+    const found = hit < 0 ? -1 : from + hit;
+    if (found >= 0 && start - found <= PEM_HEADER_REACH) start = found;
     const { text: clean, count } = redactSecrets(text.slice(start));
     // Exactly `max`, taken from the END of the already-redacted scan window.
     //
@@ -174,7 +187,22 @@ export function redactBounded(
     const edge = edgeRunReaches(text, cut, text.length, SCAN_CAP);
     const net = redactUnscannedRuns(kept);
     const swept = edge.head ? redactEdgeRun(net.text, "head", SCAN_CAP) : net;
-    return { text: swept.text, count: count + net.count + (swept === net ? 0 : swept.count) };
+    // Re-clip, and the reason it is here rather than nowhere is `redactEdgeRun`: it replaces
+    // the edge token with `REDACTED`, which is TEN CHARACTERS, and a token shorter than ten
+    // characters makes the window LONGER than it was. `kept` is exactly `max`, so one such
+    // replacement is enough to break the bound the function's own name promises — measured on
+    // `redactBounded("pre " + <104-char run> + " end", 5, "end")`, which returned 14 characters
+    // for a bound of 5. The clip-after-redaction ordering is the whole point of this function
+    // and the bound is the claim its callers (`boundField`, `redactClip`) pass on, so the sweep
+    // that violates it is followed by the one line that restores it. Taken from the END for
+    // `"end"` and the FRONT for `"start"`, mirroring how `kept` itself was cut.
+    //
+    // The re-clip can cut the marker it follows, which reads as a leak of `[REDACT` and is not
+    // one: no credential byte is in it, and a window that dropped characters is exactly what
+    // the bound asks for. The window is never left longer to avoid that — a `max` that a
+    // redaction is allowed to exceed is not a bound.
+    const out = swept.text.length > max ? swept.text.slice(swept.text.length - max) : swept.text;
+    return { text: out, count: count + net.count + (swept === net ? 0 : swept.count) };
   }
   const tail = widenPastCut(text, max, "tail", SCAN_CAP);
   const { text: clean, count } = redactSecrets(text.slice(0, tail.offset));
@@ -187,7 +215,10 @@ export function redactBounded(
   const net = redactUnscannedRuns(kept);
   const edge = edgeRunReaches(text, 0, max, SCAN_CAP);
   const swept = edge.tail ? redactEdgeRun(net.text, "tail", SCAN_CAP) : net;
-  return { text: swept.text, count: count + net.count + (swept === net ? 0 : swept.count) };
+  // See the `"end"` branch: the edge sweep can GROW the window past `max`, so both branches
+  // re-clip, each from its own side.
+  const out = swept.text.length > max ? swept.text.slice(0, max) : swept.text;
+  return { text: out, count: count + net.count + (swept === net ? 0 : swept.count) };
 }
 
 /** The clip a caller only wants the text for (`headless/failure.ts`). */
@@ -307,18 +338,7 @@ export function redactDeep(v: unknown, counter: { n: number }, bound?: number): 
   return v;
 }
 
-/**
- * The main checkout for a linked worktree; `root` itself otherwise. Memoised
- * per root.
- *
- * #1393 removed `redactState`, the unbounded wrapper over `redactDeep` that
- * stood here. `boundedState` (decision-seam.ts) is the one pre-budget redaction
- * now, and it is bounded: each field the seam declares goes through
- * `redactBounded` over the window its `FieldBound` keeps — scan widened past the
- * cut, then `max` kept — and every other string goes through the same widened
- * pass at the record-wide bound. An unbounded regex pass over a whole-document
- * state, run by up to 16 concurrent shadow callers, is what that seam replaced.
- */
+/** Memoised `mainCheckout` results, keyed by the root that was asked about. */
 const checkouts = new Map<string, string>();
 
 /** The main checkout for a linked worktree; `root` itself otherwise. Memoised per root. */

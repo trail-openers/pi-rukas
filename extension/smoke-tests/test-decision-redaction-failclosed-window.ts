@@ -47,8 +47,8 @@
 
 import { boundField, redactBounded } from "../src/decision-log.ts";
 import { redactUnscannedRuns } from "../src/decision-redact-window.ts";
-import { redactSecrets } from "../src/secret-patterns.ts";
 import { widenPastCut } from "../src/decision-redact-window.ts";
+import { redactSecrets } from "../src/secret-patterns.ts";
 import { leaksKey, makeAssert } from "./lib/decision-fixtures.ts";
 import { MUST_NOT_REDACT } from "./lib/redaction-context-cases.ts";
 
@@ -79,15 +79,17 @@ const SCAN_CAP = 2048 + 4096;
 // ---------------------------------------------------------------------------------------------
 {
   const BODY = b64Line(7, 159);
-  const text =
-    "f".repeat(5000) + " token=abcdefghij1234567890 " + "w ".repeat(300) + " " + BODY + " END";
+  const text = `f${"f".repeat(4999)} token=abcdefghij1234567890 ${"w ".repeat(300)} ${BODY} END`;
   // The premise, asserted rather than narrated: the walk does NOT give up, so the shipped
   // gate would have skipped the net. Without this the test would pass for the wrong reason.
   const walk = widenPastCut(text, text.length - 600, "head", SCAN_CAP);
   assert(walk.gaveUp === false, "premise: the walk found whitespace, so `gaveUp` is false");
 
   const r = redactBounded(text, 600, "end");
-  assert(!leaksKey(r.text, BODY), `lens repro: no 12-char window of the body survives (${r.count})`);
+  assert(
+    !leaksKey(r.text, BODY),
+    `lens repro: no 12-char window of the body survives (${r.count})`,
+  );
   assert(r.text.length <= 600, `...and the bound still holds (${r.text.length})`);
   assert(r.count >= 1, `...and the pass counted what it replaced (${r.count})`);
   assert(
@@ -139,14 +141,42 @@ const SCAN_CAP = 2048 + 4096;
   const LINE = b64Line(3, 186);
   const text = `${PEM_BEGIN}\n${Array(100).fill(LINE).join("\n")}\ntrailing tail words`;
   const r = redactBounded(text, 600, "end");
-  // A fragment short enough to dodge the 64-run net and long enough for `leaksKey`. The
-  // assertion is written as "no line of the kept window is a piece of a body line", which
-  // is the claim, rather than "the window is short", which the leak also satisfied.
+  // A fragment short enough to dodge the 64-run net and long enough for `leaksKey`.
+  //
+  // The assertion used to be written `pieces.filter(s => LINE.includes(s))`, which asks "is
+  // this kept line a substring of a body line" — and a fragment that is not, because it opens
+  // mid-line and runs off the end of what the clip kept, is invisible to it. That filter is
+  // what hid the leak this round found: the window's last line, 40 characters of body, was in
+  // `pieces`, was not `LINE.includes`-able, and the block reported zero fragments while
+  // `leaksKey` on the same string returned true. The claim is "no key material survives", so
+  // it is now made with the leak probe the file already trusts, on every body line, and the
+  // fragment check is stated as "no kept line is a run of body characters at all" rather than
+  // as a substring test against one chosen line.
+  assert(
+    !leaksKey(r.text, LINE),
+    `no 12-char window of a body line survives (${r.count}, ${JSON.stringify(r.text.slice(0, 40))})`,
+  );
   const pieces = r.text
     .split("\n")
     .filter((s) => s.length > 0 && s !== "[REDACTED]" && s !== "trailing tail words");
-  const fromBody = pieces.filter((s) => LINE.includes(s));
-  assert(fromBody.length === 0, `no kept line is a fragment of a body line (${JSON.stringify(pieces)})`);
+  const fromBody = pieces.filter((s) => /^[A-Za-z0-9+/=]{12,}$/.test(s));
+  assert(
+    fromBody.length === 0,
+    `no kept line is a run of body characters (${JSON.stringify(pieces)})`,
+  );
+
+  // The same shape with the header out of `PEM_HEADER_REACH`. Swept over every window because the
+  // leak depends on where the cut falls inside the body.
+  const LINE_FAR = b64Line(3, 186);
+  const far = `${PEM_BEGIN}\n${Array(145).fill(LINE_FAR).join("\n")}`;
+  for (let max = 150; max <= 4000; max += 50) {
+    const f = redactBounded(far, max, "end");
+    assert(
+      !leaksKey(f.text, LINE_FAR),
+      `body past the reach (max ${max}): the tail of the key ships (${f.count}, ${JSON.stringify(f.text.slice(-48))})`,
+    );
+    assert(f.text.length <= max, `...and the ${max} bound holds (${f.text.length})`);
+  }
 
   // The other half of the rule: a token that is genuinely SHORT in the full text keeps its
   // length floor and survives. Same clip, same window shape, ordinary identifiers only —
@@ -182,7 +212,10 @@ const SCAN_CAP = 2048 + 4096;
   // And a window whose marker is not at position 0 was never in the early return's reach at
   // all — a key behind it used to escape by the same argument.
   const mid = redactUnscannedRuns(`key=abc [REDACTED] ${RUN}`);
-  assert(mid.count === 1 && !mid.text.includes(RUN), `a run behind a mid-window marker is taken (${mid.count})`);
+  assert(
+    mid.count === 1 && !mid.text.includes(RUN),
+    `a run behind a mid-window marker is taken (${mid.count})`,
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -216,7 +249,10 @@ const SCAN_CAP = 2048 + 4096;
         // replace the filler around it, and that is the pinned behaviour above, not a
         // regression, so it is excluded from this assertion rather than hidden by it.
         const scan = redactSecrets(probe);
-        assert(scan.count === 0, `${name} ${where} unbounded: no pattern claims it (${scan.count})`);
+        assert(
+          scan.count === 0,
+          `${name} ${where} unbounded: no pattern claims it (${scan.count})`,
+        );
         // Whatever the pass replaced, it replaced only runs of the credential class:
         // a marker is 10 characters of `[A-Z]` and brackets, so "unchanged except for
         // markers" is the check, and it is the one that cannot be satisfied by a pass that
@@ -235,10 +271,7 @@ const SCAN_CAP = 2048 + 4096;
         // (including `as-is`) is the probe's own material, and taking it is over-reach.
         const perShapeRuns = new Map<string, Set<string>>();
         for (const [, p] of shapes(text))
-          perShapeRuns.set(
-            p,
-            new Set(p.match(/[A-Za-z0-9._\-/+=]{64,}/g) ?? []),
-          );
+          perShapeRuns.set(p, new Set(p.match(/[A-Za-z0-9._\-/+=]{64,}/g) ?? []));
         const allRuns = new Set<string>();
         for (const set of perShapeRuns.values()) for (const r of set) allRuns.add(r);
         const own = [...allRuns].filter((r) => [...perShapeRuns.values()].every((s) => s.has(r)));
@@ -282,6 +315,62 @@ const SCAN_CAP = 2048 + 4096;
       `${label} under the floor survives a clipped window (${r.count}, ${JSON.stringify(r.text.slice(0, 40))})`,
     );
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 6. THE BOUND IS A BOUND, whatever the edge sweep did to it (#1393 round 13, item 3).
+//
+// `redactEdgeRun` replaces the edge token with `REDACTED`, which is ten characters, so a token
+// shorter than ten makes the window LONGER than the `max` it was cut to. `redactBounded` returned
+// 14 characters for `max: 5` — measured on `"pre " + <104-char run> + " end"` from both ends.
+// Every caller (`boundField`, `redactClip`) passes the bound on, so a bound that a redaction may
+// exceed is not a bound; both branches now re-clip after the sweep.
+// ---------------------------------------------------------------------------------------------
+{
+  const RUN64 = "aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6dE7fG8hJ9kL0mN1pQ2rS3Zz01";
+  const body = `${RUN64}${"Z".repeat(40)}`;
+  for (const from of ["start", "end"] as const) {
+    for (let max = 1; max <= 40; max++) {
+      const r = redactBounded(`pre ${body} end`, max, from);
+      assert(
+        r.text.length <= max,
+        `bound ${max} from="${from}" is respected after the edge sweep (${r.text.length}, ${JSON.stringify(r.text)})`,
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 7. The marker carve-out is about ADJACENCY, not about the offset 10 (#1393 round 13, item 4).
+//
+// The net skipped the run at `index === REDACTED.length` on the reasoning that `TAIL_SWEEP` owns
+// glue against a marker. The test never asked whether a marker was THERE, so any 64+ run starting
+// at byte 10 was excused — which is where the token after any ten-character prefix starts.
+// ---------------------------------------------------------------------------------------------
+{
+  const KEY64 = "aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6dE7fG8hJ9kL0mN1pQ2rS3Zz01";
+  assert(KEY64.length === 64, `fixture: the run is 64 characters, at the floor (${KEY64.length})`);
+  for (let off = 7; off <= 12; off++) {
+    const kept = `${"y".repeat(off)}${KEY64}${"x".repeat(20)}`;
+    const r = redactUnscannedRuns(kept);
+    assert(
+      r.count === 1 && !r.text.includes(KEY64),
+      `a 64-run starting at offset ${off} is taken (${r.count})`,
+    );
+  }
+  // And the one position that IS TAIL_SWEEP's: a marker opening the window, glue welded to it.
+  const glue = redactUnscannedRuns(`[REDACTED]${KEY64}`);
+  assert(
+    glue.count === 0 && glue.text.includes(KEY64),
+    `...but glue on a marker that opens the window is left to TAIL_SWEEP (${glue.count})`,
+  );
+  // Same offset, no marker before it: the offset alone must not excuse the run. `[REDACTED` is ten
+  // characters that are not the marker.
+  const notGlue = redactUnscannedRuns(`[REDACTED${KEY64}`);
+  assert(
+    notGlue.count === 1 && !notGlue.text.includes(KEY64),
+    `the same offset behind a non-marker prefix is taken (${notGlue.count})`,
+  );
 }
 
 console.log(`\nexit ${state.exit}`);

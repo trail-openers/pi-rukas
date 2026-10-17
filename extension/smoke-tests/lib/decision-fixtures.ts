@@ -150,7 +150,6 @@ export function keyAtBoundary(
   return direction === "start" ? `${head}${key}${tail}` : `${tail} ${key} ${head}`;
 }
 
-/** The `n`th record of a JSONL log, or undefined. */
 /**
  * The records of a JSONL decision log. Absent or unreadable is an EMPTY log, not
  * an error: the shadow writer is fire-and-forget, so a poll routinely reads the

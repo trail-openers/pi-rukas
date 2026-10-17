@@ -281,6 +281,19 @@ export const PEM_SEPARATORS: { name: string; text: string; bodies: string[] }[] 
     bodies: [PEM_BODY, PEM_BODY_2],
   },
   {
+    // The separator a base64 blob actually carries when it passes through a shell variable,
+    // a `tr` invocation, or a copy out of an editor's single-line view: TABS, and no newline
+    // at all. Every other shape in this list keeps `\n` somewhere, so all of them stayed
+    // green on the `\r?\n`-only arm while this one shipped both body lines whole at
+    // `redactions: 1` — unbounded, `from: "start"` and `from: "end"` alike. It is the shape
+    // the `\t` branch of `SEP` exists for, and the reason the list carries it separately from
+    // `pem-trailing-tab` above: there the tab sits BEFORE the newline, so the newline branch
+    // still crosses the line and the case passes without the fix.
+    name: "pem-tab-separated",
+    text: `${PEM_BEGIN}\t${PEM_BODY}\t${PEM_BODY_2}\t${PEM_END}`,
+    bodies: [PEM_BODY, PEM_BODY_2],
+  },
+  {
     name: "pem-bare-cr",
     text: `${PEM_BEGIN}\r${PEM_BODY}\r${PEM_BODY_2}\r${PEM_END}`,
     bodies: [PEM_BODY, PEM_BODY_2],
@@ -369,12 +382,47 @@ export const PEM_PROSE_END: { name: string; text: string; mustContain: string }[
  * and the whole visible body shipped. The scan now backs up to a `-----BEGIN` within
  * `PEM_HEADER_REACH`. Asserted at the window the repro used.
  */
-export const PEM_LONG_CLIPPED: { name: string; text: string; body: string; max: number }[] = [
+export const PEM_LONG_CLIPPED: {
+  name: string;
+  text: string;
+  body: string;
+  max: number;
+  /** Present on the sweep case: assert every window from `sweepFrom` to `sweepTo`. */
+  sweepFrom?: number;
+  sweepTo?: number;
+  sweepStep?: number;
+}[] = [
   {
     name: "pem-longer-than-window",
     text: `${PEM_BEGIN}\n${PEM_BODY.repeat(14)}`,
     body: PEM_BODY.repeat(14),
     max: 2000,
+  },
+  {
+    // A key whose body is LONGER than `PEM_HEADER_REACH`, asserted at the window the repro used.
+    //
+    // 145 lines of 186 base64 characters puts the header 27 030 characters behind a 600-char
+    // window — far past the 16 384 reach — so the backup is declined and no arm anchors: the scan
+    // opens inside the body, where nothing matches, and only the fail-closed net stands between
+    // the clip and the key. Asserted over a SWEEP rather than one window, because the leak depends
+    // on where the cut falls inside the body and a single `max` picks one geometry and stays green
+    // while its neighbours leak.
+    //
+    // DEFERRED, and stated here so the next round does not rediscover it: the FINAL line of this
+    // shape is 40 characters, under the net's 64 floor, and a 40-character line of base64 is
+    // character-for-character identical to a 40-character word — so no rule over the window's own
+    // contents can tell them apart, and every such rule tried this round ate the prose line that
+    // `test-decision-redaction-failclosed-window.ts` requires to survive. The measurement that
+    // would separate them has to come from outside the window, which is the open design question
+    // for #1439 rather than a fix to bolt on here. This case asserts the body lines, which the
+    // net does take.
+    name: "pem-past-reach-sweep",
+    text: `${PEM_BEGIN}\n${Array.from({ length: 145 }, () => PEM_BODY_2.padEnd(186, "Q")).join("\n")}`,
+    body: PEM_BODY_2.padEnd(186, "Q"),
+    max: 150,
+    sweepFrom: 150,
+    sweepTo: 4000,
+    sweepStep: 50,
   },
 ];
 
