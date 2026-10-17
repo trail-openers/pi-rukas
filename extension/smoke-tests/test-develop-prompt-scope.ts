@@ -18,6 +18,7 @@
  */
 
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
+import { SUITE_TIMEOUT_SECONDS, developTestScopeLine } from "../src/work-driver-verify-fast.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -350,6 +351,105 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
   assert(
     noArtifact.includes("gh issue view 1078"),
     "#1078: absent artifact path → falls back to the gh issue view re-fetch",
+  );
+}
+
+// ------------------------------------------- #1156: developer test-scope + suite timeout
+
+{
+  // Measured on a /work fan-out: each developer ran the FULL offline suite in
+  // its own worktree with no wall-clock bound (one stuck ~20 min on a single
+  // suite call), and the driver's own verify ran the whole thing again. The
+  // develop prompt now scopes the child's testing and bounds every suite call.
+  const prompt = inlineDevelopPrompt(
+    [1156],
+    "/tmp/scratch",
+    ws,
+    undefined,
+    undefined,
+    BRIEF,
+    undefined,
+    "bun run check",
+  );
+  assert(
+    /smoke tests for the files you changed/i.test(prompt),
+    "#1156: the developer is told to run only the smoke tests for files it changed",
+  );
+  assert(
+    /typecheck and lint/i.test(prompt),
+    "#1156: typecheck and lint stay in the developer's own scope",
+  );
+  assert(
+    /Do NOT run the full test suite/i.test(prompt),
+    "#1156: the full suite is explicitly the developer's to skip",
+  );
+  assert(
+    /driver runs the full suite once/i.test(prompt),
+    "#1156: the prompt says who does run the full suite (the driver, once)",
+  );
+  assert(
+    prompt.includes(`timeout ${SUITE_TIMEOUT_SECONDS}`),
+    `#1156: every suite command carries \`timeout ${SUITE_TIMEOUT_SECONDS}\` (the number is the exported constant, not a literal in the test only)`,
+  );
+  assert(
+    /timeout 1200/.test(prompt),
+    "#1156: the literal 'timeout 1200' the issue names is in the rendered prompt",
+  );
+  assert(
+    /stuck test|stuck suite/i.test(prompt),
+    "#1156: the timeout rule states the harm it prevents (a stuck test consuming the dispatch)",
+  );
+  // The N>1 sibling-injection header below is gated on real siblings, and the
+  // assertion at "N=1 default path has NO sibling block" matches that header's
+  // exact text. The rule must not accidentally print it — hence a direct check
+  // rather than a reword-and-hope.
+  assert(
+    !prompt.includes("Parallel workstreams"),
+    "#1156: the rule does not emit the sibling-injection header (the N=1 byte-identical assertion matches that token)",
+  );
+
+  // The rule is not verifyCmd-dependent: #751's three branches all still
+  // carry it, including the no-discoverable-command branch where there is no
+  // project verify command at all but the child could still run the suite.
+  const noCmd = inlineDevelopPrompt([1156], "/tmp/scratch", ws, undefined, undefined, BRIEF);
+  assert(
+    /no discoverable verify command/i.test(noCmd) &&
+      /Do NOT run the full test suite/i.test(noCmd) &&
+      /timeout 1200/.test(noCmd),
+    "#1156: the rule holds on the no-verify-command branch too",
+  );
+
+  // It also holds with the #1324 fast tier present — the two rules stack
+  // rather than contradict (fast tier for the project command, own smoke
+  // tests for everything else).
+  const withFast = inlineDevelopPrompt(
+    [1156],
+    "/tmp/scratch",
+    ws,
+    undefined,
+    undefined,
+    BRIEF,
+    undefined,
+    "bash smoke-tests/lib/verify-loop.sh test-*.ts",
+    undefined,
+    undefined,
+    undefined,
+    "bunx tsc --noEmit -p .",
+  );
+  assert(
+    /FAST verify tier/i.test(withFast) &&
+      /Do NOT run the full test suite/i.test(withFast) &&
+      /timeout 1200/.test(withFast),
+    "#1156: stacks on the #1324 fast tier without contradicting it",
+  );
+
+  // Mutation canary: the exported builder is what puts the text in the
+  // prompt. If it ever returns an empty string the assertions above fail
+  // loudly rather than passing on stale text.
+  assert(
+    developTestScopeLine().includes("timeout 1200") &&
+      /Do NOT run the full test suite/i.test(developTestScopeLine()),
+    "#1156: developTestScopeLine is the single source of the rule's text",
   );
 }
 
