@@ -75,6 +75,19 @@ const allFiles = readdirSync(SRC)
     text: stripComments(readFileSync(path.join(SRC, f), "utf8")),
   }));
 
+/**
+ * Every source under src/, subdirectories included, for the export-wiring
+ * check only: a caller in `src/headless/` (the headless subcommands, #1021)
+ * is a production caller too. `name` is the path relative to src/, so a seam
+ * is excluded by its own path ("agents-md/agents-md.ts").
+ */
+const allSources = (readdirSync(SRC, { recursive: true }) as string[])
+  .filter((f) => f.endsWith(".ts"))
+  .map((f) => ({
+    name: f,
+    text: stripComments(readFileSync(path.join(SRC, f), "utf8")),
+  }));
+
 for (const seam of SEAMS) {
   console.log(`\n── ${seam.file}`);
 
@@ -100,7 +113,9 @@ for (const seam of SEAMS) {
     (name) =>
       !(name in seam.pending) &&
       !(name in testOnly) &&
-      !production.some((f) => new RegExp(`\\b${name}\\b`).test(f.text)),
+      !allSources.some(
+        (f) => f.name !== seam.file && new RegExp(`\\b${name}\\b`).test(f.text),
+      ),
   );
   assert(
     unwired.length === 0,

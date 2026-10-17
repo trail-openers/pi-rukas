@@ -21,7 +21,12 @@ import {
   WORK_FLAGS,
   buildCapabilities,
 } from "../src/headless/capabilities.ts";
+import { AGENTS_MD_FLAGS } from "../src/headless/agents-md.ts";
+import { SUBCOMMANDS } from "../src/headless/cli.ts";
 import { EXIT } from "../src/headless/exit-code.ts";
+import { LENS_REVIEW_FLAGS } from "../src/headless/lens-review.ts";
+import { PLAN_FLAGS } from "../src/headless/plan.ts";
+import { RESEARCH_FLAGS } from "../src/headless/research.ts";
 import { NDJSON_VERSION } from "../src/headless/ndjson.ts";
 
 let exit = 0;
@@ -95,6 +100,24 @@ assert(caps.verbs.work.flags.length >= 3, "work flags has at least --restart, --
 assert(caps.verbs.work.flags.includes("--restart"), "work flags includes --restart");
 assert(caps.verbs.work.flags.includes("--json"), "work flags includes --json");
 assert(caps.verbs.work.flags.includes("--timeout"), "work flags includes --timeout");
+
+// ── #1021 — the S6 subcommands are listed with the flags their parsers accept,
+// and every verb the CLI dispatches is listed (and nothing else).
+assert(
+  deepEqual(Object.keys(caps.verbs).sort(), ["work", ...Object.keys(SUBCOMMANDS)].sort()),
+  `verbs lists work plus every CLI subcommand (${Object.keys(caps.verbs).join(", ")})`,
+);
+for (const [verb, flags] of [
+  ["plan", PLAN_FLAGS],
+  ["research", RESEARCH_FLAGS],
+  ["agents-md", AGENTS_MD_FLAGS],
+  ["lens-review", LENS_REVIEW_FLAGS],
+] as const) {
+  assert(
+    deepEqual(caps.verbs[verb].flags, [...flags]) && flags.includes("--json" as never),
+    `${verb} flags match the live array and accept --json`,
+  );
+}
 
 // ── inputs match the live HEADLESS_INPUTS.
 assert(deepEqual(caps.inputs, HEADLESS_INPUTS), "inputs match the live HEADLESS_INPUTS array");

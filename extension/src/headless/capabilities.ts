@@ -29,12 +29,16 @@
 
 import path from "node:path";
 import { type ResourceReport, resourceReport } from "../resource-budget.ts";
+import { AGENTS_MD_FLAGS } from "./agents-md.ts";
 import { INSTALL_ROOT, readBuildCommit, readBuildVersion } from "./build.ts";
 import { capVocabulary } from "./caps.ts";
 import { EXIT, EXIT_CODE_VERSION } from "./exit-code.ts";
 import { FAILURE_KINDS } from "./failure.ts";
 import { HEADLESS_FILES, HEADLESS_INPUTS } from "./inputs.ts";
+import { LENS_REVIEW_FLAGS } from "./lens-review.ts";
 import { NDJSON_STABLE_FIELDS, NDJSON_STABLE_VERSION, NDJSON_VERSION } from "./ndjson.ts";
+import { PLAN_FLAGS } from "./plan.ts";
+import { RESEARCH_FLAGS } from "./research.ts";
 import { RESULT_SCHEMA_VERSION } from "./result.ts";
 
 /**
@@ -43,7 +47,7 @@ import { RESULT_SCHEMA_VERSION } from "./result.ts";
  * (#1306) reads this and re-derives the answer from the live constants.
  * v2 (#1326): every input with type/default/scope, and `files`.
  * Additive, no bump (docs/headless.md versioning rule): `resources` (#1325),
- * `contracts.resultSchema.failureKinds` (#1367).
+ * `contracts.resultSchema.failureKinds` (#1367), the S6 verbs (#1021).
  */
 export const CAPABILITIES_VERSION = 2 as const;
 
@@ -87,6 +91,10 @@ export interface Capabilities {
   };
   verbs: {
     work: { flags: (typeof WORK_FLAGS)[number][] };
+    plan: { flags: (typeof PLAN_FLAGS)[number][] };
+    research: { flags: (typeof RESEARCH_FLAGS)[number][] };
+    "agents-md": { flags: (typeof AGENTS_MD_FLAGS)[number][] };
+    "lens-review": { flags: (typeof LENS_REVIEW_FLAGS)[number][] };
   };
   inputs: typeof HEADLESS_INPUTS;
   files: typeof HEADLESS_FILES;
@@ -119,6 +127,10 @@ export function buildCapabilities(installRoot: string = INSTALL_ROOT): Capabilit
     },
     verbs: {
       work: { flags: [...WORK_FLAGS] },
+      plan: { flags: [...PLAN_FLAGS] },
+      research: { flags: [...RESEARCH_FLAGS] },
+      "agents-md": { flags: [...AGENTS_MD_FLAGS] },
+      "lens-review": { flags: [...LENS_REVIEW_FLAGS] },
     },
     inputs: HEADLESS_INPUTS,
     files: HEADLESS_FILES,
