@@ -25,6 +25,8 @@ export const CAP_TEMPLATES = {
   "verify-baseline-red": "step",
   /** #1349 — the cycle's PR was not open when the step started. */
   "pr-not-open": "step",
+  /** #1472 — a person CLOSED the cycle's issue while the cycle was running. */
+  "issue-closed": "step",
   "step-failed": "step",
   "driver-crash": "step",
   /** The number of commits the local branch is ahead of origin. */

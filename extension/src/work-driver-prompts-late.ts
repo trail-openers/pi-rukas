@@ -1,3 +1,4 @@
+import { handoffOpsPromptWithoutLabel as opsLabellessPrompt } from "./work-driver-handoff-ops-label.ts";
 import type { MergeMethod } from "./work-driver-merged-mechanized.ts";
 import {
   assumptionsBlockOf,
@@ -417,14 +418,14 @@ export function inlineHandoffOpsPrompt(
   prNumber: number | undefined,
   bodyPath: string,
   scratchDirAbs: string,
+  skipAttentionLabel = false,
 ): string {
+  if (skipAttentionLabel) return opsLabellessPrompt(issue, prNumber, bodyPath, scratchDirAbs);
   const target = prNumber ? `pr ${prNumber}` : `issue ${issue}`;
   const commentCmd = prNumber
     ? `gh pr comment ${prNumber} --body-file ${bodyPath}`
     : `gh issue comment ${issue} --body-file ${bodyPath}`;
-  // #798 — option (a): when a PR exists, the label goes on BOTH the issue
-  // (the entry-gate target that /work N reads) and the PR (the review
-  // target). Without the PR, the issue is the only target.
+  // #798 — with a PR the label goes on BOTH the issue (/work N's gate) and the PR.
   const labelCmds: string[] = [];
   if (prNumber) {
     labelCmds.push(`gh issue edit ${issue} --add-label needs-human-attention`);

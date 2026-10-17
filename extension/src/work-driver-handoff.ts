@@ -17,6 +17,7 @@ import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
 import {
   applyIssueLabelDualTarget,
   captureCommittedWork,
+  declinesAttentionLabel,
   makeHandoffEmittedEvent,
   parseHandoffOpsReply,
   verifyHandoffLabel,
@@ -188,13 +189,26 @@ export async function runHandoff(
   let commentUrl = parseHandoffCommentUrl(opsReplyText) ?? priorHandoffCommentUrl(next.eventLog);
   commentUrl ??= park.repeatOf?.commentUrl;
   if (parsed.commentUrl && !commentUrl) commentUrl = parsed.commentUrl;
-  let labelApplied = false;
+  // #1472 — see `labelSkipped` below: a closed-issue park declines the label.
+  let labelApplied = declinesAttentionLabel(next.pipelineState);
   // #798 — per-target label state. When prNumber is set, the driver labels
   // BOTH the issue (the entry-gate target) and the PR (the review target);
   // each is verified independently. When prNumber is absent, only the issue
   // is targeted and issueLabelApplied mirrors labelApplied.
   let issueLabelApplied: boolean | undefined;
   let prLabelApplied: boolean | undefined;
+  // #1472 — a cycle parked because a person CLOSED its issue DECLINES the
+  // attention label: the human already engaged, and `needs-human-attention` is
+  // what stops the NEXT `/work` run, so leaving it on would block a legitimate
+  // reopen-and-rerun. Seeded here so every downstream writer — the in-proc post,
+  // the retry path, the dual-target apply, and the @ops prompt (whose label and
+  // verify commands are suppressed in inlineHandoffOpsPrompt) — sees the label
+  // as settled. It is a deliberate decline, NOT a failure, so the HANDOFF
+  // DISPATCH INCOMPLETE banner stays quiet.
+  if (labelApplied) {
+    issueLabelApplied = true;
+    prLabelApplied = prNumber ? true : undefined;
+  }
   // #775 — provenance of the recorded state. "dispatch" is asserted only
   // when the driver verified it (URL parsed or label read-back succeeded);
   // a reply whose state could not be verified records no provenance.
