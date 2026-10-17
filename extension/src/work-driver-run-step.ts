@@ -11,6 +11,7 @@ import type { CycleContext } from "./work-driver-context.ts";
 import { markDraftPrReady } from "./work-driver-draft-pr.ts";
 import { runExplore } from "./work-driver-explore.ts";
 import { runHandoff } from "./work-driver-handoff.ts";
+import { endIfIssueClosed } from "./work-driver-issue-closed.ts";
 import { runLensFix } from "./work-driver-lens-fix.ts";
 import { runLens } from "./work-driver-lens.ts";
 import { runMerged } from "./work-driver-merged.ts";
@@ -37,39 +38,53 @@ export async function runStep(
 ): Promise<WorkState> {
   const now = Date.now();
   trace(`work-driver: running step "${step}" for issue ${ctx.issue}`);
+  let gatedState = state;
+
+  // #1472 — a person can CLOSE the issue while the cycle is running, and every
+  // step below pays for a fresh agent turn. `endIfPrGone` watches the PR; this
+  // watches the issue. `handoff` is deliberately NOT gated (the park IS a
+  // handoff, so gating it would refuse the renderer the park needs) and
+  // `merged` is NOT (it merges a PR whose review already passed; refusing it
+  // would destroy finished, approved work — `endIfPrGone` is that step's
+  // authority, since a merge acts on the PR).
+  if (step !== "handoff" && step !== "merged") {
+    const gate = await endIfIssueClosed(ctx, state, step);
+    if (gate.ended) return gate.ended;
+    gatedState = gate.state;
+  }
 
   switch (step) {
     case "explore":
-      return runExplore(ctx, state, now);
+      return runExplore(ctx, gatedState, now);
     case "plan":
-      return runPlan(ctx, state, now);
+      return runPlan(ctx, gatedState, now);
     case "branch":
-      return runBranch(ctx, await stampCycleStartRef(ctx, state), now);
+      return runBranch(ctx, await stampCycleStartRef(ctx, gatedState), now);
     case "develop":
-      return runDevelop(ctx, state, now);
+      return runDevelop(ctx, gatedState, now);
     case "adversarial":
-      return runAdversarial(ctx, state, now);
+      return runAdversarial(ctx, gatedState, now);
     case "commit-pr":
-      return runCommitPr(ctx, state, now);
+      return runCommitPr(ctx, gatedState, now);
     // A PR merged or closed under the review ends the cycle before the step.
     case "lens-review": {
-      const gate = await endIfPrGone(ctx, state, step);
+      const gate = await endIfPrGone(ctx, gatedState, step);
       return gate.ended ?? runLens(ctx, gate.state, now);
     }
     case "lens-fix": {
-      const gate = await endIfPrGone(ctx, state, step);
+      const gate = await endIfPrGone(ctx, gatedState, step);
       return gate.ended ?? runLensFix(ctx, gate.state, now);
     }
     case "step-back":
-      return runStepBack(ctx, state, now);
+      return runStepBack(ctx, gatedState, now);
     // #1292 — the review is done: a draft PR is marked ready before CI.
     case "ci": {
-      const gate = await endIfPrGone(ctx, state, step);
+      const gate = await endIfPrGone(ctx, gatedState, step);
       return gate.ended ?? runCi(ctx, await markDraftPrReady(ctx, gate.state), now);
     }
     case "handoff":
-      return runHandoff(ctx, state, now);
+      return runHandoff(ctx, gatedState, now);
     case "merged":
-      return runMerged(ctx, state, now);
+      return runMerged(ctx, gatedState, now);
   }
 }

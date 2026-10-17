@@ -150,6 +150,9 @@ export type WorkCapLiteral =
   // #1349 — the cycle's PR was no longer open when the step started (the
   // commit-pr re-entry refusal, the PR-gone park). Nothing was judged.
   | `pr-not-open:${WorkStep}`
+  // #1472 — a person CLOSED the cycle's issue mid-run: nothing judged, no
+  // child dispatched. Unlike `pr-not-open`, which reads the PR an agent opened.
+  | `issue-closed:${WorkStep}`
   // #1349 — the adversarial fix pass parked on its own checks (scope fence,
   // no-op pass, comment retention, a read that failed closed); the outcome
   // gate rejected nothing.

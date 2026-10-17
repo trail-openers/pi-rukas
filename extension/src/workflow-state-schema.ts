@@ -47,6 +47,8 @@ export {
   type DirtyRootExemptBaseline,
   dirtyRootExemptBaselineFindings,
 } from "./workflow-state-dirty-root.ts";
+export type { IssueClosedState } from "./workflow-state-schema-issue-closed.ts";
+import type { IssueClosedState } from "./workflow-state-schema-issue-closed.ts";
 
 /**
  * Pipeline snapshot — the driver's "where are we" view, reconstructible
@@ -56,7 +58,7 @@ export {
 // #861 — PlanQualityReason lives in workflow-state-schema-plan-quality.ts
 // (re-exported above); the 500-line cap.
 
-export interface PipelineState {
+export interface PipelineState extends IssueClosedState {
   /** Current step. Drives template selection and transition table. */
   currentStep: WorkStep;
   /**

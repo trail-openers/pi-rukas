@@ -224,6 +224,9 @@ export function humanActionFor(reason: string, primary: number): string {
     return `the verify command already fails at #${primary}'s base commit — fix the gate on the mainline, then re-run \`/work ${primary} --restart\``;
   if (/pr-not-open/.test(reason))
     return `#${primary}'s PR is no longer open — decide whether the work belongs in a new PR`;
+  // #1472 — a person closed the issue; the driver stopped, merged nothing.
+  if (/issue-closed/.test(reason))
+    return `#${primary} is CLOSED — a person ended it mid-cycle. If the work is still wanted, reopen it (\`gh issue reopen ${primary}\`) and re-run \`/work ${primary} --restart\``;
   if (/fix-pass-park/.test(reason))
     return `read the fix pass's reason in #${primary}'s handoff — the adversarial fix pass parked on its own check`;
   if (/verify-failed/.test(reason))
