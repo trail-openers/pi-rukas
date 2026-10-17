@@ -1,7 +1,22 @@
 // ---------------------------------------------------------------------------
 // #1043 cache tests — the fixtures shared by test-plan-confirm-reviewed.ts and
 // test-plan-investigation-cache.ts (formerly copied into both).
+//
+// Split out of plan-test-stubs.ts at the 500-line cap (#1044). It is NOT
+// standalone: the seams it installs (dispatch, git-state, forge) live in the
+// stubs module, so it imports them rather than redeclaring them. Consumers keep
+// importing from plan-test-stubs.ts, which re-exports this file.
 // ---------------------------------------------------------------------------
+
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
+import { setPlanGitStateFn } from "../src/plan-investigation-cache.ts";
+import type { PlanDriverInput, PlanResult } from "../src/plan-types.ts";
+import { forgeStub, gatePrompts } from "./plan-test-stubs.ts";
+
+export const DUP_NONE = "DUPLICATE_RISK: none — no overlapping open work";
 
 export const DESC = "add a start_plan_driver tool for the plan pipeline in extension";
 export const REPO = process.cwd();
