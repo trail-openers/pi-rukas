@@ -95,6 +95,27 @@ const CUT_TOKEN_BUDGET = 4096;
 const SCAN_CAP = PRE_BOUND_SLACK + CUT_TOKEN_BUDGET;
 
 /**
+ * How far back a `from: "end"` scan may reach to find a PEM header the clip dropped
+ * (#1393 round 6). 8192-bit RSA bodies are about 6.5 KB in base64, so 16384 covers a
+ * whole key of that size plus the header line, and a `-----BEGIN` further back than
+ * that is not the header of a key whose tail this window holds.
+ *
+ * The problem is specific to the LEFT edge of the scan. A key whose body is longer than
+ * the window is clipped so the window opens in the middle of the base64: the PEM arm
+ * matches on its `-----BEGIN` header, which is now behind the cut, so nothing matched
+ * and `redactBounded(text, 2000, "end")` reported `count: 0` while shipping the whole
+ * body. `widenPastCut` cannot help — it walks to a whitespace-delimited token boundary
+ * and caps at `SCAN_CAP`, and a base64 body is one unbroken token thousands of
+ * characters long, so its walk stops at the cap still inside the body. Pulling the start
+ * back to the nearest header is the only move that reaches the arm's anchor.
+ *
+ * Only the `"end"` direction gets it, because only there is the window's LEFT edge the
+ * cut: for `from: "start"` the scan already begins at offset 0 and the header, if the
+ * text has one, is in front of it.
+ */
+const PEM_HEADER_REACH = 16384;
+
+/**
  * The token boundary `widenPastCut` walks to, hoisted out of the loop (#1393 round 5,
  * item 6). A literal `RegExp` in the body is re-created on every character of a walk
  * that can run `SCAN_CAP` deep, and the walk is on the hot path of every bounded pass.
@@ -208,7 +229,12 @@ export function redactBounded(
   if (text.length <= max) return redactSecrets(text);
   if (from === "end") {
     const cut = text.length - max;
-    const start = widenPastCut(text, cut, "head");
+    let start = widenPastCut(text, cut, "head");
+    // A key longer than the window opens the scan mid-body, where no pattern anchors
+    // (see `PEM_HEADER_REACH`). Back up to the header the clip dropped rather than
+    // scanning a body no arm can match.
+    const header = text.lastIndexOf("-----BEGIN", start);
+    if (header >= 0 && start - header <= PEM_HEADER_REACH) start = header;
     const { text: clean, count } = redactSecrets(text.slice(start));
     // Exactly `max`, taken from the END of the already-redacted scan window.
     //
