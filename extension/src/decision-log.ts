@@ -40,7 +40,12 @@
 import { readFileSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { redactUnscannedRuns, widenPastCut } from "./decision-redact-window.ts";
+import {
+  edgeRunReaches,
+  redactEdgeRun,
+  redactUnscannedRuns,
+  widenPastCut,
+} from "./decision-redact-window.ts";
 import { redactSecrets } from "./secret-patterns.ts";
 import { trace } from "./trace.ts";
 import { ensureGitExclude } from "./work-driver-git-exclude.ts";
@@ -155,18 +160,34 @@ export function redactBounded(
     // window, which the early return above already handled for the ordinary case.
     const keep = Math.min(max, clean.length);
     const kept = clean.slice(clean.length - keep);
-    // The cut opens the window, so a walk that gave up leaves the kept head unscanned.
-    const swept = head.gaveUp ? redactUnscannedRuns(kept) : { text: kept, count: 0 };
-    return { text: swept.text, count: count + swept.count };
+    // The text was CLIPPED (`text.length > max`), so this window is a slice of a scan that
+    // may not have reached it — the net runs whether or not the walk gave up. See
+    // `redactUnscannedRuns`: `gaveUp` reports that the WALK terminated, not that the SCAN
+    // saw the kept window, and a few hundred characters of whitespace filler is enough to
+    // make the walk succeed over a body no arm anchored on.
+    //
+    // The edge probe measures the run in the ORIGINAL `text`, not in `kept`: a fragment's
+    // length lives on the far side of the CLIP, where `kept` cannot see it (see
+    // `edgeRunReaches`). For `"end"` the clip is the window's LEFT edge, so the walk starts
+    // at `cut`; the scan may have started further back still, and a token wholly inside the
+    // scan window is no fragment.
+    const edge = edgeRunReaches(text, cut, text.length, SCAN_CAP);
+    const net = redactUnscannedRuns(kept);
+    const swept = edge.head ? redactEdgeRun(net.text, "head", SCAN_CAP) : net;
+    return { text: swept.text, count: count + net.count + (swept === net ? 0 : swept.count) };
   }
   const tail = widenPastCut(text, max, "tail", SCAN_CAP);
   const { text: clean, count } = redactSecrets(text.slice(0, tail.offset));
   // See the `end` branch: exactly `max` from the FRONT of the scan window.
   const keep = Math.min(max, clean.length);
   const kept = clean.slice(0, keep);
-  // Mirror image: for `"start"` the kept window opens on the cut the walk gave up on.
-  const swept = tail.gaveUp ? redactUnscannedRuns(kept) : { text: kept, count: 0 };
-  return { text: swept.text, count: count + swept.count };
+  // Mirror image of `"end"`, and the same rule: clipped means judged by its own contents,
+  // not by whether the walk happened to find whitespace. For `"start"` the clip is the
+  // window's RIGHT edge, so the walk runs forward from `max`, in the text the keep dropped.
+  const net = redactUnscannedRuns(kept);
+  const edge = edgeRunReaches(text, 0, max, SCAN_CAP);
+  const swept = edge.tail ? redactEdgeRun(net.text, "tail", SCAN_CAP) : net;
+  return { text: swept.text, count: count + net.count + (swept === net ? 0 : swept.count) };
 }
 
 /** The clip a caller only wants the text for (`headless/failure.ts`). */

@@ -73,11 +73,26 @@ for (const { name, text } of MUST_NOT_REDACT) {
       unb.count === 0 && unb.text === probe,
       `${name} ${where}: NOTHING is redacted and the text is unchanged (${unb.count})`,
     );
+    // #1393 final round: the bounded assertions below can no longer ask for `count === 0`.
+    // They used to hold only because the fail-closed net was gated on `widenPastCut`
+    // reporting `gaveUp`, and this fixture's filler is 80-character runs of `f` and `t` —
+    // credential-class characters over the 64 floor. With the net running on every CLIPPED
+    // window (the leak), those runs are replaced on purpose, so the old assertions failed
+    // on the filler rather than on the shape. The unbounded assertion above is the claim
+    // about the PATTERNS, which is what this file is for; the claim about the bounded pass
+    // is that it does not touch the probe's own material, and that is what is asserted now.
+    // The pinned fail-closed behaviour itself lives in the block below and, for the clipped
+    // window, in test-decision-redaction-failclosed-window.ts.
+    const probeRuns = new Set<string>();
+    for (const [, p] of positions)
+      for (const r of p.match(/[A-Za-z0-9._\-/+=]{64,}/g) ?? []) probeRuns.add(r);
+    const own = [...probeRuns].filter((r) => positions.every(([, p]) => p.includes(r)));
     for (const from of ["start", "end"] as const) {
       const b = redactBounded(probe, 200, from);
+      const lost = own.filter((r) => !b.text.includes(r));
       assert(
-        b.count === 0,
-        `${name} ${where} (from="${from}"): the bounded pass reports no redaction either`,
+        lost.length === 0,
+        `${name} ${where} (from="${from}"): the bounded pass leaves the probe's own material alone (${b.count} redaction(s), ${lost.length} lost)`,
       );
     }
   }
