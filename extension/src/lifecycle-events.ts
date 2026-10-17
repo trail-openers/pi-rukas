@@ -33,8 +33,18 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { formatTokens } from "./progress.ts";
+import * as scrollback from "./lifecycle-scrollback.ts";
+import type { EntryRenderTheme } from "./lifecycle-scrollback.ts";
 import { trace } from "./trace.ts";
+
+// The scrollback half (lifecycle-scrollback.ts) owns the line formatter and
+// the theme switch; these re-exports keep every existing importer's path and
+// the offline suite's byte-identity pin pointing at one implementation.
+export {
+  type EntryRenderTheme,
+  formatLine,
+  renderLifecycleEntryLine,
+} from "./lifecycle-scrollback.ts";
 
 const CUSTOM_TYPE = "ensemble:lifecycle";
 
@@ -74,8 +84,7 @@ export interface LifecycleDetails {
   jobId: string;
   /** Display label. For step-* kinds, this is the step name. */
   label: string;
-  /** Role for telemetry; same as label for synthetic orchestrator labels, absent
-   *  on `step-notice` (not a dispatch). */
+  /** Role for telemetry; same as label for synthetic orchestrator labels. */
   role?: string;
   /** Elapsed ms for completed/failed/errored/step-completed/step-failed. */
   elapsedMs?: number;
@@ -83,7 +92,7 @@ export interface LifecycleDetails {
   totalTokens?: number;
   /** Exit code for failed; omitted otherwise. */
   exitCode?: number;
-  /** Truncated for scrollback — set for kind="steered" only. */
+  /** Steer message (truncated for scrollback) — set for kind="steered" only. */
   steerMessage?: string;
   /**
    * #543 F2 — who sent the steer. The PM `dispatch_steer` tool is the original
@@ -101,10 +110,12 @@ export interface LifecycleDetails {
   /** Total step count for step-* kinds. */
   stepTotal?: number;
   /**
-   * The message: the failure reason for step-failed ("subagent ABORT",
-   * "cap-hit: ci-retry"), the whole notice for step-notice. Rendered after the
-   * elapsed metric, so the user knows WHY without opening the state file.
-   */ reason?: string;
+   * Failure reason for step-failed (e.g., "subagent ABORT", "cap-hit:
+   * ci-retry"). Shown after the elapsed metric on the scrollback line so
+   * the user knows WHY the step failed without opening the state file.
+   * For `step-notice` it carries the whole notice.
+   */
+  reason?: string;
   /**
    * #299 — set on step-completed when the step succeeded after one or more
    * retries. The scrollback line appends "recovered after retry" so a
@@ -123,9 +134,12 @@ export interface LifecycleDetails {
    */
   round?: number;
   /**
-   * #288 — which cycle this line belongs to. Without it, two concurrent
-   * cycles entering `develop` emit byte-identical scrollback and a failure
-   * line gives the operator a coin-flip on which issue to investigate.
+   * #288 — which cycle this line belongs to.
+   *
+   * Without it, two concurrent cycles entering `develop` emit byte-identical
+   * scrollback: `▸ ensemble: ▶ step 4/9 develop started`, twice. There is
+   * nothing in the payload, the label or the theme to tell them apart, so a
+   * failure line gives the operator a coin-flip on which issue to investigate.
    * Rendered only when more than one cycle is live, so single-cycle output is
    * unchanged.
    */
@@ -137,14 +151,13 @@ export interface LifecycleDetails {
  * tracks exactly this; lifecycle lines only need the count to decide whether
  * disambiguation is worth the width.
  */
-let liveCycleCount = 0;
+/**
+ * How many cycles are currently live. The renderer (lifecycle-scrollback.ts)
+ * owns the count that decides whether the `#N ` tag is worth its width; this
+ * is the entry point callers (the work-widget) use to update it.
+ */
 export function setLiveCycleCount(n: number): void {
-  liveCycleCount = n;
-}
-
-/** The `#N ` tag, or "" when a single cycle makes it noise. */
-function cycleTag(issue: number | undefined): string {
-  return issue !== undefined && liveCycleCount > 1 ? `#${issue} ` : "";
+  scrollback.setLiveCycleCount(n);
 }
 
 let activePi: ExtensionAPI | undefined;
@@ -153,28 +166,12 @@ function isQuiet(): boolean {
   return process.env.PI_ENSEMBLE_QUIET_LIFECYCLE === "1";
 }
 
-type EntryRenderTheme = { fg: (style: string, text: string) => string };
-
+/** The shape Pi's registerEntryRenderer callback is typed against locally. */
 type EntryRenderFn = (
   entry: { customType: string; data?: unknown },
   options: { expanded: boolean },
   theme: EntryRenderTheme,
 ) => unknown;
-
-/**
- * Compute the styled one-line display for a CustomEntry's data at render time.
- * Exported (test-only in practice) so the offline suite can pin that the
- * registered renderer's output is byte-identical to
- * applyTheme(details, formatLine(details), theme).
- */
-export function renderLifecycleEntryLine(data: unknown, theme: EntryRenderTheme): string {
-  const details = data as LifecycleDetails | undefined;
-  // applyTheme handles the missing-details path (dim render of the fallback
-  // line); formatLine is only reached when data is a well-shaped details
-  // object — an untyped entry.data is not a lifecycle payload.
-  const text = details ? formatLine(details) : "";
-  return applyTheme(details, text, theme);
-}
 
 export function attach(pi: ExtensionAPI): void {
   activePi = pi;
@@ -191,7 +188,7 @@ export function attach(pi: ExtensionAPI): void {
     return;
   }
   piWithEntryApi.registerEntryRenderer(CUSTOM_TYPE, (entry, _options, theme) => {
-    const styled = renderLifecycleEntryLine(entry.data, theme);
+    const styled = scrollback.renderLifecycleEntryLine(entry.data, theme);
     return new Text(styled, 0, 0);
   });
 }
@@ -242,9 +239,10 @@ export function emitErrored(
   emit({ kind: "errored", jobId, label, role, elapsedMs, totalTokens });
 }
 
-/** Emit a steer scrollback entry (#153). The `message` is truncated for
- *  display; the full payload reached the child over RPC stdin. `source`
- *  (#543 F2) tags the steering actor; the PM tool path omits it. */
+/** Emit a steer scrollback entry (#153). The `message` is truncated for display
+ *  but the full payload was delivered to the child via RPC stdin separately.
+ *  `source` (#543 F2) tags the steering actor; the PM tool path omits it so the
+ *  line renders exactly as before. */
 export function emitSteered(
   jobId: string,
   label: string,
@@ -256,11 +254,16 @@ export function emitSteered(
 }
 
 /**
- * Step-level lifecycle events for the work-driver (PR2). The work-driver runs
- * 9 STEPS; adversarial and lens-review call orchestrator functions that bypass
- * startJob, so per-dispatch emitters left those steps invisible (PR #239,
- * issue #553). Step-level emitters surface them uniformly. `stepNumber/
- * stepTotal` render as "5/9".
+ * Step-level lifecycle events for the work-driver (PR2). Distinct from the
+ * per-dispatch events above: the work-driver runs 9 STEPS, each of which
+ * may dispatch one or more subagents. Adversarial and lens-review steps
+ * call into existing orchestrator functions (`runAdversarialLoop` /
+ * `runLensReview`) that bypass startJob → bypass `emitDispatched/Completed`.
+ * The PR #239 live test on issue #553 made those two steps invisible in
+ * scrollback. Step-level emitters surface them uniformly.
+ *
+ * `step` is the step name (e.g. "adversarial"); `stepNumber/stepTotal`
+ * render as "5/9" for at-a-glance progress.
  */
 export function emitStepStarted(
   step: string,
@@ -388,113 +391,5 @@ function emit(details: LifecycleDetails): void {
     piWithEntryApi.appendEntry(CUSTOM_TYPE, details);
   } catch (err) {
     trace(`lifecycle-events: appendEntry failed: ${(err as Error).message}`);
-  }
-}
-
-function fmtElapsed(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const m = Math.floor(ms / 60_000);
-  const s = Math.floor((ms % 60_000) / 1000);
-  return `${m}m${s.toString().padStart(2, "0")}s`;
-}
-
-/** Pure formatter for the scrollback line — string-only, theme-agnostic. */
-export function formatLine(d: LifecycleDetails): string {
-  switch (d.kind) {
-    case "dispatched":
-      return `▸ ensemble: dispatched ${d.label} · ${d.jobId}`;
-    case "completed": {
-      const tokens =
-        d.totalTokens && d.totalTokens > 0 ? ` · ${formatTokens(d.totalTokens)} tokens` : "";
-      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
-      return `▸ ensemble: ✓ ${d.label} finished${elapsed}${tokens}`;
-    }
-    case "failed": {
-      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
-      const exit = d.exitCode != null ? ` · exit ${d.exitCode}` : "";
-      return `▸ ensemble: ✗ ${d.label} failed${elapsed}${exit} — see report`;
-    }
-    case "errored": {
-      const tokens =
-        d.totalTokens && d.totalTokens > 0 ? ` · ${formatTokens(d.totalTokens)} tokens` : "";
-      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
-      // #299 — name the failure class honestly: this shape is a transport-
-      // level verdict from the child's HTTP client (stream severed mid-body
-      // or client retry-exhaustion), not proof the endpoint is down.
-      return `▸ ensemble: ⚠ ${d.label} terminated mid-stream${elapsed}${tokens} — provider/transport error (stream severed or client retry-exhaustion), see report`;
-    }
-    case "steered": {
-      const msg = (d.steerMessage ?? "").replaceAll(/\s+/g, " ").trim();
-      const truncated = msg.length > 80 ? `${msg.slice(0, 79)}…` : msg;
-      const source = d.steerSource ? ` [${d.steerSource}]` : "";
-      return `▸ ensemble: ⤳ steered ${d.label}${source} · "${truncated}"`;
-    }
-    case "step-started": {
-      const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
-      const round = d.round && d.round > 1 ? ` (round ${d.round})` : "";
-      return `▸ ensemble: ${cycleTag(d.issue)}▶ step ${ordinal}${d.label}${round} started`;
-    }
-    case "step-completed": {
-      const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
-      const round = d.round && d.round > 1 ? ` (round ${d.round})` : "";
-      const tokens =
-        d.totalTokens && d.totalTokens > 0 ? ` · ${formatTokens(d.totalTokens)} tokens` : "";
-      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
-      const recovered = d.recovered ? " · recovered after retry" : "";
-      return `▸ ensemble: ${cycleTag(d.issue)}✓ step ${ordinal}${d.label}${round} finished${elapsed}${tokens}${recovered}`;
-    }
-    case "step-failed": {
-      const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
-      const round = d.round && d.round > 1 ? ` (round ${d.round})` : "";
-      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
-      const reason = d.reason ? ` · ${d.reason}` : "";
-      return `▸ ensemble: ${cycleTag(d.issue)}✗ step ${ordinal}${d.label}${round} failed${elapsed}${reason}`;
-    }
-    case "step-notice":
-      // #1403 — the step is not "done"; the message says what died. From inside
-      // the handler, so there is no ordinal to render.
-      return `▸ ensemble: ${cycleTag(d.issue)}! ${d.label}: ${d.reason ?? ""}`;
-    case "step-retry": {
-      const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
-      const attempt = d.round ? ` attempt ${d.round}` : "";
-      const reason = d.reason ? ` · prior failure: ${d.reason}` : "";
-      return `▸ ensemble: ${cycleTag(d.issue)}↻ step ${ordinal}${d.label} retrying${attempt}${reason}`;
-    }
-  }
-}
-
-function applyTheme(
-  details: LifecycleDetails | undefined,
-  content: string,
-  theme: { fg: (style: string, text: string) => string },
-): string {
-  if (!details) return theme.fg("dim", content);
-  switch (details.kind) {
-    case "dispatched":
-      return theme.fg("dim", content);
-    case "completed":
-      return theme.fg("success", content);
-    case "failed":
-      return theme.fg("error", content);
-    case "step-notice":
-      return theme.fg("error", content);
-    case "errored":
-      // Same colour as `failed` — both surface in scrollback as something
-      // gone wrong; the line text itself distinguishes the failure mode.
-      return theme.fg("error", content);
-    case "steered":
-      return theme.fg("warning", content);
-    case "step-started":
-      // Step-level events use a different visual weight than dispatches —
-      // dim for start to keep the eye drawn to the success/failure line.
-      return theme.fg("dim", content);
-    case "step-completed":
-      return theme.fg("success", content);
-    case "step-failed":
-      return theme.fg("error", content);
-    case "step-retry":
-      // Warning colour — transient, not yet a failure but worth noticing.
-      return theme.fg("warning", content);
   }
 }
