@@ -104,10 +104,12 @@ const VCS = /^(?:git|gh|glab)$/;
 /** The one source of truth for the CLI the refusal tells the operator to use. */
 const ACCEPT_CLI = "extension/scripts/review-accept.ts";
 /** Shell expansion characters. A word carrying one is text whose final form the guard
- * cannot read (`$(…)`, `${V}`, backticks, escapes), so no arm vouches for it: clause
- * (a) refuses what it cannot parse, and a protected name assembled by the shell is
- * exactly that. Asked of the RAW word, quotes included. */
-const EXPANSION = /[$`\\]/;
+ * cannot read (`$(…)`, `${V}`, backticks, escapes, and `{a,b}` / `{1..9}` brace
+ * expansion), so no arm vouches for it: clause (a) refuses what it cannot parse, and a
+ * protected name assembled by the shell is exactly that. Braces are expansion too —
+ * `rev{iew-findings}.json` becomes a protected name the text never spells. Asked of the
+ * RAW word, quotes included. */
+const EXPANSION = /[$`\\{}]/;
 /** Redirection characters: an arm word carrying one moves bytes to or from a path the
  * arms never saw. */
 const REDIRECT = /[<>]/;

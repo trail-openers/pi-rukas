@@ -127,6 +127,18 @@ for (const c of ["rg foo src/a.ts", "cat extension/src/index.ts", "grep pat src/
   assert(armRead(words(c)), `arm A8 still admits the plain read — ${c}`);
 
 /**
+ * Brace expansion is substitution the guard cannot read: `rev{iew-findings}.json` becomes a
+ * protected name the text never spells. The arms see bare words and do not test `EXPANSION`
+ * — that is the segment pre-check — so this asserts the word shape the pre-check is
+ * chartered to catch: a brace word is never a vouchable protected token. Whole-command
+ * refusal is asserted in test-review-accept-guard-hardened.ts.
+ */
+const OB = String.fromCharCode(123);
+const CB = String.fromCharCode(125);
+for (const t of [`rev${OB}iew-findings${CB}.json`, "{a,b}", "a{b}c"])
+  assert(!isProtectedToken(t), `brace spelling is not a vouchable protected token — ${t}`);
+
+/**
  * The protected-name matcher asked directly: an exact-basename match loses to a
  * one-byte suffix, so each spelling below is a store name the shell expands onto the
  * store's bytes. The last two are clause (b)'s accepted over-refusals — a word that
