@@ -237,8 +237,11 @@ assert(
 }
 
 {
-  // item 6a — a comment read that THROWS falls back to the persisted fact for
-  // the same patch, and says in the holdReason that the read failed.
+  // item 6a (#1398 round 3, REVERSED) — a comment read that THROWS HOLDS, even
+  // when the persisted fact covers the current patch. Round 2 let the mirror
+  // substitute for the PR; the reviewer showed a hand-edited or corrupt state
+  // file could then license a ready the PR could not show. The mirror is a
+  // cache of a read, not a witness.
   const events: WorkEvent[] = [started("lens-review", 2), issuesFound(3)];
   const ok = mkForge({ isDraft: true, comments: [] });
   ok.forge.prComments = async () => {
@@ -250,11 +253,16 @@ assert(
     async () => undefined,
   );
   assert(
-    out.pipelineState.prDraft?.status === "ready",
-    `a persisted disclosure fact for the CURRENT patch survives a failed comment read (got ${out.pipelineState.prDraft?.status})`,
+    out.pipelineState.prDraft?.status === "draft",
+    `a failed comment read holds even when the mirror covers the CURRENT patch — a state file is not self-authenticating (got ${out.pipelineState.prDraft?.status})`,
+  );
+  assert(
+    /could not be completed/.test(out.pipelineState.prDraft?.holdReason ?? "") &&
+      /retryable/.test(out.pipelineState.prDraft?.holdReason ?? ""),
+    `…and the hold says the READ failed and is retryable, so the operator re-runs rather than blames the reviewer (${out.pipelineState.prDraft?.holdReason})`,
   );
 
-  // …and when no such fact exists, the hold names the failed read.
+  // …and when no fact exists either, the hold still names the failed read.
   const out2 = await markDraftPrReady(
     mkCtx(ok.forge),
     state(events, { status: "draft" }),
@@ -266,8 +274,9 @@ assert(
     `a failed read with no fact to fall back on holds, and the reason says the READ failed rather than blaming the reviewer (${out2.pipelineState.prDraft?.holdReason})`,
   );
 
-  // item 6b — the comment read is SKIPPED when the fact already carries the
-  // current patch: the cheaper already-verified answer, no forge round-trip.
+  // item 6b (#1398 round 3, REVERSED) — the comment read is made EVERY time,
+  // even when the mirror already covers the patch: the PR is the witness, and
+  // the mirror only corroborates a read that succeeded.
   const counted = mkForge({ isDraft: true, comments: [] });
   const out3 = await markDraftPrReady(
     mkCtx(counted.forge),
@@ -275,8 +284,27 @@ assert(
     async () => undefined,
   );
   assert(
-    !counted.calls.includes("comments") && out3.pipelineState.prDraft?.status === "ready",
-    `…and no comment read is made at all when the fact covers the patch (calls: ${counted.calls.join(",")})`,
+    counted.calls.includes("comments"),
+    `the PR is read even when the mirror covers the patch — the mirror alone never licenses a ready (calls: ${counted.calls.join(",")})`,
+  );
+  assert(
+    !counted.calls.includes("ready") && out3.pipelineState.prDraft?.status === "draft",
+    `…and a mirror that the PR cannot corroborate does NOT go ready (got ${out3.pipelineState.prDraft?.status})`,
+  );
+
+  // The corroborated case still works: PR carries the marker ⇒ ready.
+  const both = mkForge({
+    isDraft: true,
+    comments: [`findings\n\n${lensResidualsMarker(BRANCH, PATCH)}`],
+  });
+  const out4 = await markDraftPrReady(
+    mkCtx(both.forge),
+    state(events, { status: "draft", findingsPosted: [{ patchId: PATCH, at: 1, round: 1 }] }),
+    async () => undefined,
+  );
+  assert(
+    both.calls.includes("ready") && out4.pipelineState.prDraft?.status === "ready",
+    `…and when the PR DOES carry it, the ready lands (${out4.pipelineState.prDraft?.status})`,
   );
 }
 

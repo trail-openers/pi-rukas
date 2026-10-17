@@ -180,12 +180,20 @@ export async function runMerged(
   // ready halts here, naming why, before any merge is attempted.
   const draft = state.pipelineState.prDraft;
   if (draft && draft.status !== "ready") {
+    // #1398 round 3 — the pr-ready clause is for a ready that failed, not for a
+    // re-arm that did. `rearmError` is the re-arm's own field; on that path the
+    // driver never attempted a ready, and the reason it is holding is that the
+    // PR is still mergeable when it should be a draft. Printing `draft.error`
+    // there reported an attempt that never happened.
+    const rearmHold = draft.rearmError !== undefined;
     const failed = `marking PR ready failed: ${draft.error ?? "no reason recorded"}`;
-    const reason = draft.holdReason
-      ? `PR is still a draft: ${draft.holdReason}${draft.status === "ready-failed" ? `; ${failed}` : ""}`
-      : draft.status === "ready-failed"
-        ? failed
-        : "PR is still a draft: not marked ready";
+    const reason = rearmHold
+      ? `PR is still a draft: ${draft.holdReason ?? draft.rearmError}`
+      : draft.holdReason
+        ? `PR is still a draft: ${draft.holdReason}${draft.status === "ready-failed" ? `; ${failed}` : ""}`
+        : draft.status === "ready-failed"
+          ? failed
+          : "PR is still a draft: not marked ready";
     return appendEvent(
       { ...state, pipelineState: { ...state.pipelineState, currentStep: "merged" } },
       {

@@ -68,13 +68,19 @@ assert(
 
 // Anything else is refused, naming the field.
 {
-  const cases: [unknown, string][] = [
+  const cases: [unknown, string, boolean?][] = [
     ["draft", "is not an object"],
     [[], "is not an object"],
     [null, "is not an object"],
     [{ status: "merged" }, "prDraft.status has unknown value"],
     [{ status: "" }, "prDraft.status has unknown value"],
-    [{}, "prDraft.status has unknown value"],
+    // #1398 round 3 — an ABSENT status is legal: `recordLensResidualsPosted`
+    // writes the disclosure rows on a cycle that never opened its PR as a draft,
+    // and synthesising `status: "draft"` there made the driver claim a hold it
+    // never took. An empty object is therefore a VALID record (it asserts only
+    // "no disclosure rows yet"); what must still fail is a status that exists
+    // and says nothing recognisable.
+    [{}, "prDraft.status has unknown value", true],
     [{ status: "ready", attempts: "3" }, "prDraft.attempts is not a finite number"],
     [{ status: "ready", attempts: Number.NaN }, "prDraft.attempts is not a finite number"],
     [
@@ -93,8 +99,15 @@ assert(
       "findingsPosted[0].patchId is missing",
     ],
   ];
-  for (const [value, expect] of cases) {
+  for (const [value, expect, legal] of cases) {
     const findings = validateDiscriminants(withDraft(value));
+    if (legal) {
+      assert(
+        findings.length === 0,
+        `a prDraft of ${JSON.stringify(value)} is ACCEPTED with no finding — an absent status is a disclosure-only record (#1398 round 3), not a corrupt one (got ${JSON.stringify(findings)})`,
+      );
+      continue;
+    }
     assert(
       findings.length === 1 && findings[0].includes("prDraft") && findings[0].includes(expect),
       `a prDraft of ${JSON.stringify(value)} is refused with one finding naming the field and "${expect}" (got ${JSON.stringify(findings)})`,

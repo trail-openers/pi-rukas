@@ -37,6 +37,7 @@ import path from "node:path";
 import { adversarialGateApproved } from "./adversarial-findings.ts";
 import { execp } from "./exec.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
+import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { trace } from "./trace.ts";
 import {
   type CycleContext,
@@ -45,6 +46,7 @@ import {
   REVIEW_WALL_CLOCK_MS,
 } from "./work-driver-context.ts";
 import { recordLensResidualsPosted } from "./work-driver-draft-disclosure.ts";
+import { currentPatchIdentity } from "./work-driver-draft-pr.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -57,11 +59,20 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
  * at the same list in the same order, worst first. Empty string when the stored
  * findings blob yields nothing renderable — the caller treats that as a failed
  * disclosure, because an empty comment discloses nothing.
+ *
+ * #1398 round 3 — the caller passes the patch identity in and the marker goes on
+ * the END of the body, exactly as `lens-review-residuals.ts` appends it. The
+ * disclosure is only a disclosure if the PR carries the identity the guard and
+ * the draft gate both compare: a body without the marker is prose that reads
+ * like a disclosure and is invisible to both readers, and the round-cap route
+ * used to post precisely that while recording the `lens-residuals-posted` fact.
+ * The fact then licensed a ready the PR itself could not show.
  */
 export function renderResidualFindings(
   findingsBlob: string | undefined,
   round: number,
   verdict: string,
+  marker?: string,
 ): string {
   const rendered = renderLensFindings(findingsBlob, verdict);
   if (rendered.length === 0) return "";
@@ -74,8 +85,21 @@ export function renderResidualFindings(
     "fixed. Decide them before merging.",
     "",
     ...rendered,
+    // The marker is the renderer's own line (never passed through the
+    // neutraliser, never sourced from a finding) and is what
+    // `prCarriesDisclosure` / `mergeGuardRoundCap` substring-match.
+    ...(marker ? ["", marker, ""] : []),
   ].join("\n");
 }
+
+/**
+ * The round cap's undisclosed-disclosure plumb line, as one constant: the
+ * event body and the `plumbReports` row are the same string, and the dedupe
+ * compares against it. Kept prefix + reason so a test can pin the prefix while
+ * the reason stays whatever the post actually reported.
+ */
+export const ROUND_CAP_DISCLOSURE_PREFIX =
+  "Round cap with non-critical findings: could not post them to the PR (";
 
 /**
  * Post the residual findings to the PR.
@@ -89,11 +113,24 @@ async function discloseResidualFindings(
   round: number,
   findingsBlob: string,
   verdict: string,
+  marker: string | undefined,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const prNumber = state.pipelineState.prNumber;
   if (!prNumber) return { ok: false, reason: "no PR number was captured at commit-pr" };
-  const body = renderResidualFindings(findingsBlob, round, verdict);
+  const body = renderResidualFindings(findingsBlob, round, verdict, marker);
   if (!body) return { ok: false, reason: "the review recorded no renderable findings" };
+  if (!marker) {
+    // item 1 — a body with no marker discloses nothing the guard or the draft
+    // gate can see, so it is a failed disclosure and the cycle parks rather than
+    // carrying findings into CI under a comment that only looks like a
+    // disclosure. Fail closed, named.
+    return {
+      ok: false,
+      reason:
+        "the patch identity could not be computed, so the comment would carry no disclosure marker " +
+        "(git merge-base against the branch/mainline refs is what failed)",
+    };
+  }
   const file = path.join(scratchDir(ctx.repoRoot, ctx.issue), `lens-residual-round-${round}.md`);
   try {
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -150,29 +187,84 @@ export async function appendReviewCapHit(
       verdict === "ISSUES_FOUND" &&
       adversarialGateApproved(state.eventLog)
     ) {
-      const disclosed = await discloseResidualFindings(ctx, state, round, findingsBlob, verdict);
+      // #1398 round 3 — the identity is computed HERE and passed to both the
+      // post and the fact, so the comment the PR carries and the record the
+      // ready gate reads are keyed on the same string by construction. When it
+      // cannot be computed the disclosure FAILS (no marker ⇒ no disclosure ⇒
+      // park) and `recordLensResidualsPosted` records the decline as a
+      // plumb-report, so the handoff explains the hold it is about to cause.
+      const branch = state.pipelineState.branchName;
+      const execFn = ctx.verifyExecFn ?? execp;
+      const identity = branch
+        ? await currentPatchIdentity(execFn, ctx.repoRoot, branch)
+        : ({ ok: false, reason: "the cycle has no branch name" } as const);
+      const marker =
+        identity.ok && branch ? lensResidualsMarker(branch, identity.patchId) : undefined;
+      if (!identity.ok) {
+        trace(`work-driver: round-cap — no patch identity for the disclosure (${identity.reason})`);
+      }
+      const disclosed = await discloseResidualFindings(
+        ctx,
+        state,
+        round,
+        findingsBlob,
+        verdict,
+        marker,
+      );
       if (disclosed.ok) {
         nextStep = "ci";
         // #1398 — the route that DOES disclose now records that it did. This
         // route posted the findings and recorded only its own `cap-hit`, so the
         // draft gate could not tell a disclosed cap from an undisclosed one and
         // had to guess from the cap's NAME. The fact is keyed on the patch
-        // identity, so a later fix push does not inherit it.
+        // identity, so a later fix push does not inherit it. `step` names this
+        // route so the recorded row says which disclosure path produced it.
         next = await recordLensResidualsPosted(ctx, next, {
           round,
+          step: "lens-review",
           ...(state.pipelineState.prNumber !== undefined
             ? { prNumber: state.pipelineState.prNumber }
             : {}),
         });
       } else {
         trace(`work-driver: round-cap — residual findings undisclosed (${disclosed.reason})`);
+        // #1398 round 3 — on BOTH the event log and `plumbReports`: the field is
+        // what `plumbReportSection` in work-driver-handoff-markdown.ts renders,
+        // so an event-only note is the #408 shape — a signal the driver produces
+        // and the handoff never shows. The operator reading a parked round cap
+        // has to be told it parked for want of a disclosure, not for want of a
+        // converging fix loop.
         next = appendEvent(next, {
           kind: "plumb-report",
           at: Date.now(),
           step: "lens-review",
           role: "driver",
-          body: `Round cap with non-critical findings: could not post them to the PR (${disclosed.reason}), so the cycle parks rather than carrying undisclosed findings into CI.`,
+          body: ROUND_CAP_DISCLOSURE_PREFIX + disclosed.reason,
         });
+        const prior = next.pipelineState.plumbReports ?? [];
+        const dup = prior.some(
+          (r) =>
+            r.step === "lens-review" &&
+            r.role === "driver" &&
+            r.body === ROUND_CAP_DISCLOSURE_PREFIX + disclosed.reason,
+        );
+        if (!dup) {
+          next = {
+            ...next,
+            pipelineState: {
+              ...next.pipelineState,
+              plumbReports: [
+                ...prior,
+                {
+                  step: "lens-review",
+                  role: "driver",
+                  body: ROUND_CAP_DISCLOSURE_PREFIX + disclosed.reason,
+                  at: Date.now(),
+                },
+              ],
+            },
+          };
+        }
       }
     }
     return appendEvent(next, {

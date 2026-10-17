@@ -11,6 +11,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Forge } from "../../src/forge.ts";
+import { lensResidualsMarker } from "../../src/merge-guard-round-cap.ts";
 import type { DriverContext } from "../../src/work-driver-context.ts";
 import {
   type WorkEvent,
@@ -84,6 +85,11 @@ export const posted = (n: number, patchId = PATCH): WorkEvent => ({
   prNumber: PR,
   branch: BRANCH,
   patchId,
+  // #1398 round 3 — the marker the disclosure comment carries. Required on the
+  // event: the fact must never license a ready the PR cannot show, and the row
+  // states the bytes the PR was supposed to carry
+  // (test-draft-disclosure-carries-marker-1398.ts audits it).
+  marker: lensResidualsMarker(BRANCH, patchId),
   target: "pr",
 });
 export const dispatchFailed = (n: number): WorkEvent => ({
@@ -112,6 +118,15 @@ export function state(
     },
     ...events,
   );
+}
+
+/**
+ * The same state with `reviewRound` set — the round the draft re-arm's bound
+ * keys on (#1398 round 3). A test of the bound has to name the round it is in,
+ * because the counter is per round rather than per cycle.
+ */
+export function withRound(s: WorkState, reviewRound: number): WorkState {
+  return { ...s, pipelineState: { ...s.pipelineState, reviewRound } };
 }
 
 /** The CI loop, ended where the review is about to run again. */
