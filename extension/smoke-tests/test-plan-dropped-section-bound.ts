@@ -57,6 +57,9 @@ import {
   droppedSectionFrameChars,
 } from "../src/plan-dropped-budget.ts";
 import { lastDroppedRender } from "../src/plan-dropped-holder.ts";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { droppedSection, repointDroppedOmission } from "../src/plan-dropped-section.ts";
 import {
   BODY_BUDGET,
@@ -82,6 +85,22 @@ installNoPlanCacheStub();
 process.env.PI_ENSEMBLE_FORGE = "none";
 
 const DESCRIPTOR = "add a start_plan_driver body budget in extension/src/plan-validate.ts";
+
+/**
+ * The repo root every pipeline run below is handed.
+ *
+ * NOT `process.cwd()`: the driver hands its `repoRoot` straight to
+ * `finalizeDroppedDisclosure` → `writeDroppedArtifact`, which for this fixture
+ * omits 335 of 360 items and so writes a real ~130 KB artifact at
+ * `<repoRoot>/.pi/work-state/plan-dropped/<slug>-<runId>.json`. With the source
+ * tree as the root, running this test dirtied the checkout — the very condition
+ * #1383 moved the artifact under `.pi/work-state/` to keep out of `git status`,
+ * and the condition /work's branch step hard-blocks on. A temp root is the same
+ * seam `test-plan-dropped-artifact-clean-tree.ts` uses; the harness's own
+ * `.gitignore` hides `.pi/work-state/`, so the pin below would not notice the
+ * difference — that is why the file it writes to is a temp dir and not a claim.
+ */
+const REPO_ROOT = await mkdtemp(join(tmpdir(), "plan-dropped-bound-"));
 
 /**
  * The volume driver, produced the way the pipeline produces it: every angle
@@ -187,7 +206,7 @@ function clashingDispatch() {
   const r = await runPlanPipeline(
     {} as never,
     { descriptor: DESCRIPTOR, context: CLASHING_CONTEXT, dryRun: true },
-    process.cwd(),
+    REPO_ROOT,
   );
   assert(
     r.filingFailure?.reason !== "body-too-large",
@@ -261,7 +280,7 @@ function clashingDispatch() {
   const fired = await runPlanPipeline(
     {} as never,
     { descriptor: DESCRIPTOR, context: CLASHING_CONTEXT },
-    process.cwd(),
+    REPO_ROOT,
   );
   assert(
     fired.filed === true,
@@ -320,7 +339,7 @@ function clashingDispatch() {
     context: `ACCEPTANCE CRITERIA:\n- ${SMALL_OP}`,
     dryRun: true,
   } as const;
-  const r = await runPlanPipeline({} as never, { ...input }, process.cwd());
+  const r = await runPlanPipeline({} as never, { ...input }, REPO_ROOT);
   const droppedLines = r.spec.split("\n").filter((l) => l.startsWith("- dropped:"));
   assert(droppedLines.length > 0, "small: the small draft does have dropped items to render");
   assert(
@@ -338,7 +357,7 @@ function clashingDispatch() {
     "small: the line matches the pre-fix renderer byte-for-byte",
   );
   assert(r.compacted === undefined, "small: the body is not compacted");
-  const r2 = await runPlanPipeline({} as never, { ...input }, process.cwd());
+  const r2 = await runPlanPipeline({} as never, { ...input }, REPO_ROOT);
   assert(r2.spec === r.spec, "small: the small-draft body is byte-identical across runs");
 }
 
@@ -472,5 +491,9 @@ delete process.env.PI_ENSEMBLE_FORGE;
   );
   assert(droppedSection([]) === "", "bound: zero drops still render no section at all");
 }
+
+// The temp root is scratch, not a deliverable: removed whichever way the run
+// ends, so a failed assertion cannot leave a directory behind.
+await rm(REPO_ROOT, { recursive: true, force: true });
 
 process.exit(finish());
