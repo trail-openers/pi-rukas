@@ -201,7 +201,13 @@ async function repoShapedFixture(hook: string | undefined): Promise<{ root: stri
   try {
     writeFileSync(path.join(root, ".gitignore"), "extension/node_modules/\n.worktrees/\n");
     rmSync(path.join(root, "extension", "node_modules"), { recursive: true });
-    const failure = await missingDepsFailure(realExec, { eventLog: [] } as WorkState, root, wt, "v");
+    const failure = await missingDepsFailure(
+      realExec,
+      { eventLog: [] } as WorkState,
+      root,
+      wt,
+      "v",
+    );
     assert(
       failure === undefined,
       `an untracked, non-ignored root node_modules is not reported missing (got: ${failure})`,

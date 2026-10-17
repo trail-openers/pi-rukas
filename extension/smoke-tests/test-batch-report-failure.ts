@@ -262,7 +262,9 @@ const succeeded: DispatchResult = {
     "a mixed batch (finished developer + 429-killed developer + explore) shows the gate line exactly once",
   );
   assert(
-    /adversarial_loop\` AND \`dispatch_lens_review|adversarial_loop.*dispatch_lens_review/s.test(mixed),
+    /adversarial_loop\` AND \`dispatch_lens_review|adversarial_loop.*dispatch_lens_review/s.test(
+      mixed,
+    ),
     "...and it names both gates",
   );
 

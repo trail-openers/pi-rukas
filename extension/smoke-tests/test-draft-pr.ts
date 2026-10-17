@@ -97,7 +97,10 @@ const PR = 7;
   process.env.PI_ENSEMBLE_DRAFT_PR = "1";
   assert(draftPrEnabled({ headless: false }), "PI_ENSEMBLE_DRAFT_PR=1 turns it on interactively");
   process.env.PI_ENSEMBLE_DRAFT_PR = "true";
-  assert(draftPrEnabled({ headless: true }), "only 1/0 are read: 'true' is ignored (headless default holds)");
+  assert(
+    draftPrEnabled({ headless: true }),
+    "only 1/0 are read: 'true' is ignored (headless default holds)",
+  );
   assert(!draftPrEnabled({ headless: false }), "…and does not turn drafts on interactively");
   delete process.env.PI_ENSEMBLE_DRAFT_PR;
 }
@@ -390,7 +393,10 @@ async function handoff(state: WorkState, failures = 0) {
   // A ready that failed at ci is retried at a later park even mid-fix.
   const midFix = [...events, started("lens-fix", 5), cap("step-failed:lens-fix", 6)];
   const held = await handoff(reviewState(midFix, { status: "ready-failed", error: "e" }));
-  assert(held.ready.length === 0, "an earlier ready-failed is NOT retried while a fix round is open");
+  assert(
+    held.ready.length === 0,
+    "an earlier ready-failed is NOT retried while a fix round is open",
+  );
   const retried = await handoff(reviewState(events, { status: "ready-failed", error: "e" }));
   assert(retried.ready.length === 1, "…but is retried at a handoff after the review concluded");
 }

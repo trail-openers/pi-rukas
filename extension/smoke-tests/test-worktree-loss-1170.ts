@@ -15,7 +15,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { git, realExec } from "./lib/worktree-fake-fixture.ts";
 import { refuseDirtyCycleTrees } from "../src/work-driver-integrate-cycle.ts";
 import {
   DirtyWorktreeError,
@@ -23,6 +22,7 @@ import {
   inspectWorktreeForLoss,
   worktreeCreate,
 } from "../src/worktree.ts";
+import { git, realExec } from "./lib/worktree-fake-fixture.ts";
 
 const headOf = async (cwd: string) => (await git(cwd, ["rev-parse", "HEAD"])).stdout.trim();
 
@@ -142,10 +142,7 @@ try {
   const nWt = await addWt("issue-9-nm");
   mkdirSync(path.join(nWt, "node_modules"), { recursive: true });
   writeFileSync(path.join(nWt, "node_modules", "x.js"), "//\n");
-  assert(
-    (await inspect(nWt)) === undefined,
-    "1170r3: a root node_modules/ directory is no-loss",
-  );
+  assert((await inspect(nWt)) === undefined, "1170r3: a root node_modules/ directory is no-loss");
 
   // 8. #1170 r3 — a large ignored target/ tree is one collapsed entry (bounded output).
   const tWt = await addWt("issue-9-target");
@@ -188,7 +185,10 @@ try {
     () => true,
     (err: unknown) => err,
   );
-  assert(cycleOk === true, "1170r3: an in-cycle tree with an ignored target/ does not refuse integration");
+  assert(
+    cycleOk === true,
+    "1170r3: an in-cycle tree with an ignored target/ does not refuse integration",
+  );
   writeFileSync(path.join(cWt, "stray.txt"), "x\n");
   const cycleRefused = await refuseDirtyCycleTrees(
     realExec,

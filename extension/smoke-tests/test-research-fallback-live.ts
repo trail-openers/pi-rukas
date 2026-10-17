@@ -64,8 +64,13 @@ async function main() {
   );
   assert(r.ok && !r.errorStop, `dispatch ok (ms=${r.ms})`);
   assert(/backend:\s*wigolo/.test(r.text), "reply carries `backend: wigolo`");
-  const claims = r.toolUses.filter((t) => (t as { name?: string }).name === "report_research_claim");
-  assert(claims.length > 0, `at least one structured claim via the reporter (got ${claims.length})`);
+  const claims = r.toolUses.filter(
+    (t) => (t as { name?: string }).name === "report_research_claim",
+  );
+  assert(
+    claims.length > 0,
+    `at least one structured claim via the reporter (got ${claims.length})`,
+  );
 }
 
 main()

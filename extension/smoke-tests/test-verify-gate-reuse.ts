@@ -523,7 +523,14 @@ try {
       } as never;
       const env = {
         PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP: "0",
-        ...(reuseOff ? { PI_ENSEMBLE_VERIFY_REUSE: "0" } : {}),
+        // #1415 fix round — the variable this file names is not the one the
+        // reuse seam reads. `gateReuseEnabled()` (work-driver-verify-gate-reuse.ts)
+        // keys off `PI_ENSEMBLE_VERIFY_GATE_REUSE`; `PI_ENSEMBLE_VERIFY_REUSE` is
+        // read by nothing in `src/`, so setting it only ever made this control
+        // "pass" by running the gate twice for the wrong reason. Both are set so
+        // the control measures the seam's real off-switch.
+        PI_ENSEMBLE_VERIFY_REUSE: "0",
+        ...(reuseOff ? { PI_ENSEMBLE_VERIFY_GATE_REUSE: "0" } : {}),
       };
       await withEnv(env, async () => {
         const g1 = await verifyStepOutcome(ctx, state, "develop");

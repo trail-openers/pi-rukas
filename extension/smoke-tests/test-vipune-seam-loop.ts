@@ -97,7 +97,9 @@ const haveVipune = await execFileAsync("sh", ["-c", "command -v vipune"])
 
 if (!haveVipune) {
   const required = process.env.PI_ENSEMBLE_VIPUNE_REQUIRED === "1";
-  console.log(required ? "✗ vipune absent and REQUIRED" : "… vipune absent — skipping the binary half");
+  console.log(
+    required ? "✗ vipune absent and REQUIRED" : "… vipune absent — skipping the binary half",
+  );
   if (required) exit = 1;
 } else {
   const dir = mkdtempSync(path.join(tmpdir(), "vipune-seam-loop-"));
@@ -132,7 +134,9 @@ if (!haveVipune) {
       "spawn-probe.ts",
     ]);
     const row = (
-      JSON.parse(stdout) as { results: Array<{ id: string; memory_type?: string; status?: string }> }
+      JSON.parse(stdout) as {
+        results: Array<{ id: string; memory_type?: string; status?: string }>;
+      }
     ).results.find((r) => r.id === written[0]?.id);
     assert(row !== undefined, "the candidate IS in the store (the exclusion below is not vacuous)");
     assert(

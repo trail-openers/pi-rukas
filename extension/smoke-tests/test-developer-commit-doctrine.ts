@@ -29,7 +29,7 @@
  * missing, the test fails rather than passing vacuously.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 
@@ -96,15 +96,13 @@ const devDoc = readFileSync(DEV_DOC, "utf8");
 const DENIED_MARKERS =
   /will be denied|DO NOT attempt|Do NOT attempt|forbidden to commit|denied by design|structurally denied/i;
 
-const commitDeniedLines = devDoc
-  .split("\n")
-  .filter((line) => {
-    if (!/(git commit|git add)/.test(line)) return false;
-    if (DENIED_MARKERS.test(line)) return true;
-    // "❌" bullet items also count as a denial marker.
-    if (/❌.*git (commit|add)/.test(line)) return true;
-    return false;
-  });
+const commitDeniedLines = devDoc.split("\n").filter((line) => {
+  if (!/(git commit|git add)/.test(line)) return false;
+  if (DENIED_MARKERS.test(line)) return true;
+  // "❌" bullet items also count as a denial marker.
+  if (/❌.*git (commit|add)/.test(line)) return true;
+  return false;
+});
 
 assert(
   commitDeniedLines.length === 0,
@@ -151,7 +149,14 @@ const ws = {
   outOfScope: ["extension/src/spawn.ts"],
 };
 
-const developPrompt = inlineDevelopPrompt([621], "/tmp/scratch", ws, undefined, undefined, undefined);
+const developPrompt = inlineDevelopPrompt(
+  [621],
+  "/tmp/scratch",
+  ws,
+  undefined,
+  undefined,
+  undefined,
+);
 assert(
   developPrompt.includes("git add -A"),
   "inlineDevelopPrompt: contains explicit `git add -A` command (AC2)",

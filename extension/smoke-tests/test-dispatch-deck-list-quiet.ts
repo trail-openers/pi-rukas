@@ -188,12 +188,16 @@ const fakeCtxWithUi = {
   const srcPath = join(dirname(import.meta.path), "..", "src", "agent-list.ts");
   const src = readFileSync(srcPath, "utf8");
   if (src.includes("process.exit")) {
-    fail("8e: agent-list.ts contains process.exit (the quiet-gate block re-entered production code)");
+    fail(
+      "8e: agent-list.ts contains process.exit (the quiet-gate block re-entered production code)",
+    );
   } else {
     pass("8e: agent-list.ts contains no process.exit");
   }
   if (src.includes("process.env.PI_ENSEMBLE_QUIET_STATUS =")) {
-    fail("8e: agent-list.ts assigns process.env.PI_ENSEMBLE_QUIET_STATUS (the quiet-gate block re-entered production code)");
+    fail(
+      "8e: agent-list.ts assigns process.env.PI_ENSEMBLE_QUIET_STATUS (the quiet-gate block re-entered production code)",
+    );
   } else {
     pass("8e: agent-list.ts contains no process.env.PI_ENSEMBLE_QUIET_STATUS assignment");
   }

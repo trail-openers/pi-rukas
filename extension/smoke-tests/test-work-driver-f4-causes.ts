@@ -50,7 +50,9 @@ for (const [cause, killCause] of [
 
 // #951 — tool-inactivity self-kill → shouldRetry TRUE, maxRetries 1 (same as inactivity).
 {
-  const cls = classifyFailureCause(mkEvent({ killCause: "tool-inactivity", kind: "dispatch-failed" }));
+  const cls = classifyFailureCause(
+    mkEvent({ killCause: "tool-inactivity", kind: "dispatch-failed" }),
+  );
   assert(
     cls.cause === "self-killed:tool-inactivity" && cls.shouldRetry === true && cls.maxRetries === 1,
     "tool-inactivity → self-killed:tool-inactivity, retries like inactivity",

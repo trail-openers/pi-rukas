@@ -19,8 +19,8 @@
 
 import { decodeInsertable } from "../src/deck-key-decode.ts";
 import {
-  createAgentViewComponent,
   type ViewHeader,
+  createAgentViewComponent,
 } from "../src/dispatch-deck-live-view-component.ts";
 import { dropBuffer, startBuffer } from "../src/dispatch-deck-live.ts";
 
@@ -53,8 +53,13 @@ function makeHeader(over: Partial<ViewHeader> = {}): ViewHeader {
 }
 
 function makeComp(key: string, sent: string[], done: (r: string) => void = () => {}) {
-  const comp = createAgentViewComponent(key, () => makeHeader(), fakeTheme, undefined, done, (t) =>
-    sent.push(t),
+  const comp = createAgentViewComponent(
+    key,
+    () => makeHeader(),
+    fakeTheme,
+    undefined,
+    done,
+    (t) => sent.push(t),
   );
   return comp;
 }
@@ -69,7 +74,10 @@ function makeComp(key: string, sent: string[], done: (r: string) => void = () =>
   assert(decodeInsertable(" ") === " ", "1b: space inserts");
   assert(decodeInsertable("9") === "9", "1c: digit inserts");
   // Kitty CSI-u printable: well-formed and shifted.
-  assert(decodeInsertable("\u001b[97u") === "a", "1d: kitty CSI-u 'a' (\u001b[97u) inserts the character");
+  assert(
+    decodeInsertable("\u001b[97u") === "a",
+    "1d: kitty CSI-u 'a' (\u001b[97u) inserts the character",
+  );
   assert(decodeInsertable("\u001b[97;2u") === "a", "1e: kitty shifted 'A' (\u001b[97;2u) inserts");
   // Non-ASCII via CSI-u (code points 128+): the strict decoder's
   // primary-matching path — the character that was decoded is inserted,
@@ -77,7 +85,9 @@ function makeComp(key: string, sent: string[], done: (r: string) => void = () =>
   // important invariant is that NO raw escape sequence reaches it).
   const eacute = decodeInsertable("\u001b[1101u");
   assert(
-    eacute !== undefined && eacute.length > 0 && [...eacute].every((c) => (c.codePointAt(0) ?? 0) >= 32),
+    eacute !== undefined &&
+      eacute.length > 0 &&
+      [...eacute].every((c) => (c.codePointAt(0) ?? 0) >= 32),
     "1f: kitty non-ASCII CSI-u inserts a printable character (not a raw sequence)",
   );
   // Malformed CSI-u (numeric prefix is not the pressed key's code point):
@@ -101,11 +111,17 @@ function makeComp(key: string, sent: string[], done: (r: string) => void = () =>
   assert(decodeInsertable("\u001b[201~") === undefined, "1o: bracketed-paste end marker swallows");
   assert(decodeInsertable("\u001b") === undefined, "1p: lone ESC swallows");
   assert(decodeInsertable("\x01") === undefined, "1q: control byte swallows");
-  assert(decodeInsertable("\x7f") === undefined, "1r: DEL swallows (component handles it as backspace)");
+  assert(
+    decodeInsertable("\x7f") === undefined,
+    "1r: DEL swallows (component handles it as backspace)",
+  );
   // Paste / IME: newlines collapse to spaces.
   assert(decodeInsertable("hello") === "hello", "1s: multi-char text inserts");
   assert(decodeInsertable("a\nb") === "a b", "1t: newline collapses to a space");
-  assert(decodeInsertable("\u001b[200~abc\u001b[201~") === "abc", "1u: bracketed paste strips the markers");
+  assert(
+    decodeInsertable("\u001b[200~abc\u001b[201~") === "abc",
+    "1u: bracketed paste strips the markers",
+  );
   assert(
     decodeInsertable("\u001b[200~a\nb\u001b[201~") === "a b",
     "1v: bracketed paste with newlines collapses them",
@@ -125,7 +141,10 @@ function makeComp(key: string, sent: string[], done: (r: string) => void = () =>
   // Legacy single-char path: non-ASCII single chars insert as-is.
   assert(decodeInsertable("é") === "é", "1b-1: legacy single char é (U+00E9) inserts");
   assert(decodeInsertable("中") === "中", "1b-2: legacy single char 中 (U+4E2D) inserts");
-  assert(decodeInsertable("😀") === "😀", "1b-3: legacy emoji 😀 (a surrogate-pair string) inserts");
+  assert(
+    decodeInsertable("😀") === "😀",
+    "1b-3: legacy emoji 😀 (a surrogate-pair string) inserts",
+  );
   // Legacy rejects: DEL, C1 (0x80–0x9F), a lone surrogate.
   assert(decodeInsertable("\u007f") === undefined, "1b-4: legacy DEL (\u007f) swallows");
   assert(decodeInsertable("\u0080") === undefined, "1b-5: legacy C1 0x80 swallows");
@@ -135,13 +154,28 @@ function makeComp(key: string, sent: string[], done: (r: string) => void = () =>
   // Kitty CSI-u: é, 中 and emoji (astral — must NOT be rejected by the
   // functional-key guard, which covers only the PUA U+E000–U+F8FF).
   assert(decodeInsertable("\u001b[233u") === "é", "1b-9: kitty CSI-u é (\u001b[233u) inserts");
-  assert(decodeInsertable("\u001b[20013u") === "中", "1b-10: kitty CSI-u 中 (\u001b[20013u) inserts");
-  assert(decodeInsertable("\u001b[128512u") === "😀", "1b-11: kitty CSI-u 😀 (\u001b[128512u, astral) inserts");
+  assert(
+    decodeInsertable("\u001b[20013u") === "中",
+    "1b-10: kitty CSI-u 中 (\u001b[20013u) inserts",
+  );
+  assert(
+    decodeInsertable("\u001b[128512u") === "😀",
+    "1b-11: kitty CSI-u 😀 (\u001b[128512u, astral) inserts",
+  );
   // Kitty CSI-u: functional keys and controls still swallow.
-  assert(decodeInsertable("\u001b[57364u") === undefined, "1b-12: kitty F1 (\u001b[57364u, PUA) swallows");
-  assert(decodeInsertable("\u001b[133u") === undefined, "1b-13: kitty CSI-u C1 (\u001b[133u) swallows");
+  assert(
+    decodeInsertable("\u001b[57364u") === undefined,
+    "1b-12: kitty F1 (\u001b[57364u, PUA) swallows",
+  );
+  assert(
+    decodeInsertable("\u001b[133u") === undefined,
+    "1b-13: kitty CSI-u C1 (\u001b[133u) swallows",
+  );
   // CJK Ext-B (U+20000, astral beyond emoji): still insertable via CSI-u.
-  assert(decodeInsertable("\u001b[131072u") === "\u{20000}", "1b-14: kitty CSI-u CJK Ext-B (U+20000) inserts");
+  assert(
+    decodeInsertable("\u001b[131072u") === "\u{20000}",
+    "1b-14: kitty CSI-u CJK Ext-B (U+20000) inserts",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +190,10 @@ function makeComp(key: string, sent: string[], done: (r: string) => void = () =>
   // Kitty CSI-u letter: 'a' arrives as \u001b[97u — the decoded character
   // inserts, not the raw 5-char sequence.
   comp.handleInput("\u001b[97u");
-  assert(comp.inputValue() === "a", `2a: kitty CSI-u 'a' inserts the character (got ${JSON.stringify(comp.inputValue())})`);
+  assert(
+    comp.inputValue() === "a",
+    `2a: kitty CSI-u 'a' inserts the character (got ${JSON.stringify(comp.inputValue())})`,
+  );
   // Legacy letter alongside: both coexist.
   comp.handleInput("b");
   assert(comp.inputValue() === "ab", "2b: legacy 'b' inserts after the CSI-u char");
@@ -165,7 +202,10 @@ function makeComp(key: string, sent: string[], done: (r: string) => void = () =>
   comp.handleInput("\u001b[57357u"); // kitty F1
   comp.handleInput("\u001b[<0;5;7M"); // mouse press
   comp.handleInput("\u001b[133;1u"); // alt-modified CSI-u
-  assert(comp.inputValue() === before, `2c: unknown escape sequences insert nothing (got ${JSON.stringify(comp.inputValue())})`);
+  assert(
+    comp.inputValue() === before,
+    `2c: unknown escape sequences insert nothing (got ${JSON.stringify(comp.inputValue())})`,
+  );
   // Paste with newlines: collapses to spaces.
   comp.handleInput("\u001b[200~line one\nline two\u001b[201~");
   assert(
@@ -190,15 +230,25 @@ function makeComp(key: string, sent: string[], done: (r: string) => void = () =>
   startBuffer("kv2");
   // 3a: Enter on an empty input sends nothing.
   const sentEmpty: string[] = [];
-  const compEmpty = createAgentViewComponent("kv2", () => makeHeader(), fakeTheme, undefined, () => {}, (t) =>
-    sentEmpty.push(t),
+  const compEmpty = createAgentViewComponent(
+    "kv2",
+    () => makeHeader(),
+    fakeTheme,
+    undefined,
+    () => {},
+    (t) => sentEmpty.push(t),
   );
   compEmpty.handleInput("\r");
   assert(sentEmpty.length === 0, "3a: Enter on empty input sends nothing");
   // 3b: double-Enter → exactly one send of the typed text.
   const sent: string[] = [];
-  const comp2 = createAgentViewComponent("kv2", () => makeHeader(), fakeTheme, undefined, () => {}, (t) =>
-    sent.push(t),
+  const comp2 = createAgentViewComponent(
+    "kv2",
+    () => makeHeader(),
+    fakeTheme,
+    undefined,
+    () => {},
+    (t) => sent.push(t),
   );
   for (const ch of "hi") comp2.handleInput(ch);
   comp2.handleInput("\r");

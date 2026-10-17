@@ -23,10 +23,9 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { git, realExecWithStderr as realExec } from "./lib/worktree-fake-fixture.ts";
 import { ensureIntegrateWorktree } from "../src/work-driver-integrate-worktree.ts";
 import { worktreePath } from "../src/worktree.ts";
-
+import { git, realExecWithStderr as realExec } from "./lib/worktree-fake-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

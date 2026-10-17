@@ -116,7 +116,10 @@ function stateWithArtifact(dir: string, body: string): WorkState {
       return mkResult(calls === 1 ? primaryPlan : correctivePlan);
     });
     const next = await runPlan(ctx, stateWithArtifact(dir, "1. a\n2. b\n"), 1_000_000);
-    assert(calls === 2, "the first plan's quality issue (empty-paths on the post-merge plan) triggers exactly one corrective");
+    assert(
+      calls === 2,
+      "the first plan's quality issue (empty-paths on the post-merge plan) triggers exactly one corrective",
+    );
     assert(
       next.pipelineState.planQuality?.reason === "dropped-dependencies",
       "corrective dropped the edge → the final state says dropped-dependencies (not the stale empty-paths reason)",
@@ -165,7 +168,10 @@ function stateWithArtifact(dir: string, body: string): WorkState {
       return mkResult(primaryPlan);
     });
     const next = await runPlan(ctx, stateWithArtifact(dir, "1. a\n2. b\n"), 1_000_000);
-    assert(calls === 1, "(no-drop): the coupling merge merges task-b into task-a → no corrective is triggered (the post-merge plan has no quality issue)");
+    assert(
+      calls === 1,
+      "(no-drop): the coupling merge merges task-b into task-a → no corrective is triggered (the post-merge plan has no quality issue)",
+    );
     assert(
       next.pipelineState.workstreams && Object.keys(next.pipelineState.workstreams).length === 1,
       "(no-drop): one workstream after the coupling merge",

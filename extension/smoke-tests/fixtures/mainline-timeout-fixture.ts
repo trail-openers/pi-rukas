@@ -104,9 +104,7 @@ export function mkThrowingExec(messageFor: (cmd: string) => string) {
  * case; sanitisation claims (a token on `stderr`, an exit code on `code`) live
  * on the fields, so they need a fake that can put them there.
  */
-export function mkRejectingExec(
-  errorFor: (cmd: string) => Error & Record<string, unknown>,
-): {
+export function mkRejectingExec(errorFor: (cmd: string) => Error & Record<string, unknown>): {
   fn: (cmd: string, opts?: Record<string, unknown>) => Promise<{ stdout: string }>;
   calls: ProbeCall[];
 } {

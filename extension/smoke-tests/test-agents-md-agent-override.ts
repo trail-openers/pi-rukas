@@ -26,11 +26,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  type AgentsMdFs,
-  createAgent,
-  updateAgent,
-} from "../src/agents-md/agents-md.ts";
+import { type AgentsMdFs, createAgent, updateAgent } from "../src/agents-md/agents-md.ts";
 import { parseLedger, parseLegacyMarkdownLedger } from "../src/agents-md/ledger.ts";
 import { gatesBody } from "../src/agents-md/renderer.ts";
 import { presentManagedIds, stripLegacyMarkers } from "../src/agents-md/section-detect.ts";
@@ -104,9 +100,7 @@ function mkFs(today: string): AgentsMdFs {
   const overrideFacts = {
     manifest: "package.json",
     packageManager: "bun",
-    commands: [
-      { name: "bun test", command: "bun test", kind: "test" as const, runner: "bun" },
-    ],
+    commands: [{ name: "bun test", command: "bun test", kind: "test" as const, runner: "bun" }],
     ciWorkflows: [],
     notes: [],
   };
@@ -132,7 +126,10 @@ function mkFs(today: string): AgentsMdFs {
     "agentOverride #1: commands built from override facts",
   );
   // Code-style section is inserted (first-time) after the environment section.
-  assert(presentManagedIds(after1).includes("code-style"), "agentOverride #1: code-style section inserted");
+  assert(
+    presentManagedIds(after1).includes("code-style"),
+    "agentOverride #1: code-style section inserted",
+  );
   const envIdx = after1.indexOf("## Environment");
   const csIdx = after1.indexOf("## Code Style");
   assert(csIdx > envIdx, "agentOverride #1: code-style inserted after environment");
@@ -194,9 +191,7 @@ function mkFs(today: string): AgentsMdFs {
   assert(
     parsedLedger2.every(
       (r) =>
-        r.key !== "omit:quality-gates" &&
-        r.key !== "omit:commands" &&
-        r.key !== "omit:environment",
+        r.key !== "omit:quality-gates" && r.key !== "omit:commands" && r.key !== "omit:environment",
     ),
     "agentOverride #2 (routine): NO omit:* rows for the 3 fact sections in the ledger",
   );
@@ -256,8 +251,7 @@ function mkFs(today: string): AgentsMdFs {
   const ledgerBody = tableStart >= 0 ? lines.slice(tableStart).join("\n") : "";
   const seededParsed = parseLegacyMarkdownLedger(ledgerBody);
   const autoFactRows = seededParsed.filter(
-    (r) =>
-      ["quality-gates", "commands", "environment"].includes(r.key) && r.provenance === "auto",
+    (r) => ["quality-gates", "commands", "environment"].includes(r.key) && r.provenance === "auto",
   );
   assert(
     autoFactRows.length === 3,
@@ -316,14 +310,7 @@ function mkFs(today: string): AgentsMdFs {
   };
   const qgResult = gatesBody(sameFacts);
   const expectedQgBody = typeof qgResult === "string" ? qgResult : "";
-  const seedDetected = [
-    "# T",
-    "",
-    "## Quality Gates",
-    "",
-    expectedQgBody,
-    "",
-  ].join("\n");
+  const seedDetected = ["# T", "", "## Quality Gates", "", expectedQgBody, ""].join("\n");
   writeFileSync(noManifestAgents2, seedDetected);
 
   // Pre-populate the sidecar with a [detected:agent,2026-01-01] row so the
@@ -332,9 +319,12 @@ function mkFs(today: string): AgentsMdFs {
   // sidecar is now the sole source of the ledger).
   const sPathPre = sidecarPath(noManifestDir2);
   mkdirSync(path.dirname(sPathPre), { recursive: true });
-  writeFileSync(sPathPre, JSON.stringify([
-    { key: "quality-gates", value: "agent", provenance: "detected", date: "2026-01-01" },
-  ]));
+  writeFileSync(
+    sPathPre,
+    JSON.stringify([
+      { key: "quality-gates", value: "agent", provenance: "detected", date: "2026-01-01" },
+    ]),
+  );
 
   // Refresh with the SAME body (post normalisation) → the quality-gates row's
   // date is unchanged (no churn).
@@ -349,7 +339,10 @@ function mkFs(today: string): AgentsMdFs {
   const sameParsed = parseLedger(fsSame.readFile(sPathSame));
   const qgSame = sameParsed.find((r) => r.key === "quality-gates");
   assert(qgSame?.date === "2026-01-01", "refresh no-op: quality-gates date unchanged (no churn)");
-  assert(qgSame?.provenance === "detected", "refresh no-op: quality-gates provenance still detected");
+  assert(
+    qgSame?.provenance === "detected",
+    "refresh no-op: quality-gates provenance still detected",
+  );
 
   // Refresh with a DIFFERENT body → section replaced, date bumped to today.
   const diffFacts = {
@@ -381,15 +374,30 @@ function mkFs(today: string): AgentsMdFs {
   const mkd = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-arch-"));
   const agents = path.join(mkd, "AGENTS.md");
   const seed = [
-    "# T", "", "## Quality Gates", "", "- **gate** — `some command`", "",
-    "## Commands", "", "| kind | command |", "| --- | --- |", "| test | `some command` |", "",
-    "## Environment", "", "- CI: no `.github/workflows/` detected", "",
+    "# T",
+    "",
+    "## Quality Gates",
+    "",
+    "- **gate** — `some command`",
+    "",
+    "## Commands",
+    "",
+    "| kind | command |",
+    "| --- | --- |",
+    "| test | `some command` |",
+    "",
+    "## Environment",
+    "",
+    "- CI: no `.github/workflows/` detected",
+    "",
   ].join("\n");
   writeFileSync(agents, seed);
   const facts = {
-    manifest: "package.json", packageManager: "bun",
+    manifest: "package.json",
+    packageManager: "bun",
     commands: [{ name: "bun test", command: "bun test", kind: "test" as const, runner: "bun" }],
-    ciWorkflows: [], notes: [],
+    ciWorkflows: [],
+    notes: [],
   };
 
   // Call 1: facts + codeStyleBullets + architectureBullets.
@@ -411,7 +419,10 @@ function mkFs(today: string): AgentsMdFs {
   const sPath = sidecarPath(mkd);
   const lg1 = parseLedger(fs1.readFile(sPath));
   const archRow = lg1.find((r) => r.key === "architecture-notes");
-  assert(archRow?.provenance === "detected" && archRow?.date === "2026-01-01", "arch #1: [detected:agent] row");
+  assert(
+    archRow?.provenance === "detected" && archRow?.date === "2026-01-01",
+    "arch #1: [detected:agent] row",
+  );
   assert(!lg1.some((r) => r.key.startsWith("omit:")), "arch #1: NO omit:* rows");
 
   // Call 2: routine update, LATER date → byte-identical, no churn.
@@ -419,9 +430,15 @@ function mkFs(today: string): AgentsMdFs {
   const r2 = updateAgent(mkd, agents, fs2);
   const after2 = fs2.readFile(agents);
   assert(r2.exitCode === 0 && r2.plan?.wouldWrite === false, "arch #2: no-op");
-  assert(Buffer.from(after2, "utf8").equals(Buffer.from(after1, "utf8")), "arch #2: byte-identical");
+  assert(
+    Buffer.from(after2, "utf8").equals(Buffer.from(after1, "utf8")),
+    "arch #2: byte-identical",
+  );
   const lg2 = parseLedger(fs2.readFile(sPath));
-  assert(lg2.find((r) => r.key === "architecture-notes")?.date === "2026-01-01", "arch #2: date unchanged");
+  assert(
+    lg2.find((r) => r.key === "architecture-notes")?.date === "2026-01-01",
+    "arch #2: date unchanged",
+  );
 
   // Graceful absence: NO architectureBullets → no section, no omission row.
   const mkd2 = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-arch-absent-"));

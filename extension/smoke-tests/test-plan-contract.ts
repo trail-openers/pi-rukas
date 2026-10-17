@@ -20,7 +20,6 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { runPlan } from "../src/work-driver-plan.ts";
 import {
   deriveContractEdges,
   detectPortReference,
@@ -30,6 +29,7 @@ import {
 } from "../src/work-driver-plan-contract.ts";
 import { mergeCoupledWorkstreams } from "../src/work-driver-plan-coupling.ts";
 import { parseWorkstreams } from "../src/work-driver-plan-workstreams.ts";
+import { runPlan } from "../src/work-driver-plan.ts";
 import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";

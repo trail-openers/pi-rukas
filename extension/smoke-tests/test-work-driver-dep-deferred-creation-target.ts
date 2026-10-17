@@ -5,7 +5,6 @@
  * Split from test-work-driver-dep-deferred-creation.ts for the 500-line cap.
  */
 
-import { commandOf } from "./lib/argv-shell.ts";
 import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +17,7 @@ import { createDependentWorktree } from "../src/work-driver-dep-scheduler.ts";
 import { type WorkEvent, initialState } from "../src/workflow-state.ts";
 import { runCreateGuards } from "../src/worktree-create-guard.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { commandOf } from "./lib/argv-shell.ts";
 
 const execFileP = promisify(execFile);
 

@@ -10,6 +10,7 @@
  * view's full-fidelity storage does not touch transcript-preview-limits.ts.
  */
 
+import { createAgentViewComponent } from "../src/dispatch-deck-live-view-component.ts";
 import {
   LIVE_BUFFER_MAX_CHARS,
   bufferCount,
@@ -27,7 +28,6 @@ import {
   startBuffer,
 } from "../src/dispatch-deck-live.ts";
 import { clearEntry, reset, startEntry } from "../src/dispatch-deck.ts";
-import { createAgentViewComponent } from "../src/dispatch-deck-live-view-component.ts";
 import {
   TOOL_ARGS_PREVIEW_MAX,
   TOOL_RESULT_LINE_MAX,

@@ -15,8 +15,8 @@
 
 import type { ResearchClaim } from "../src/research-types.ts";
 import { LIVENESS_URL_CAP, splitCompoundSource, verifyClaims } from "../src/research-verify.ts";
-import type { ExecFn } from "../src/worktree.ts";
 import { groundCodeSource } from "../src/research-verify.ts";
+import type { ExecFn } from "../src/worktree.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

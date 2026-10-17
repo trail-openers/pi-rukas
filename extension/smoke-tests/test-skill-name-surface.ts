@@ -41,7 +41,16 @@
  * report failures, and against the real repo that must be clean.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildLensRoster } from "../src/lens-roster.ts";
@@ -135,18 +144,26 @@ export interface SkillSurfaceFailure {
  * anti-vacuity floor are repo-only checks — the roster is parsed from the
  * real repo's skill/ dir — so they run inside `checkRepoSurface`.
  */
-export function checkTreeSurface(root: string): { names: Map<string, string>; failures: SkillSurfaceFailure[] } {
+export function checkTreeSurface(root: string): {
+  names: Map<string, string>;
+  failures: SkillSurfaceFailure[];
+} {
   const names = extractSkillNames(root);
   const failures: SkillSurfaceFailure[] = [];
   for (const [name, file] of [...names].sort()) {
     if (!existsSync(path.join(root, "skill", name, "SKILL.md"))) {
-      failures.push({ kind: "phantom", detail: `${file} references \`${name}\` — no skill/${name}/SKILL.md` });
+      failures.push({
+        kind: "phantom",
+        detail: `${file} references \`${name}\` — no skill/${name}/SKILL.md`,
+      });
     }
   }
   const skillDir = path.join(root, "skill");
   let dirs: string[] = [];
   try {
-    dirs = readdirSync(skillDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    dirs = readdirSync(skillDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
   } catch {
     dirs = [];
   }
@@ -155,9 +172,15 @@ export function checkTreeSurface(root: string): { names: Map<string, string>; fa
     if (!existsSync(skillMd)) continue;
     const name = frontmatterField(readFileSync(skillMd, "utf8"), "name");
     if (name === null) {
-      failures.push({ kind: "frontmatter", detail: `skill/${dir}/SKILL.md has no \`name:\` in its first frontmatter block` });
+      failures.push({
+        kind: "frontmatter",
+        detail: `skill/${dir}/SKILL.md has no \`name:\` in its first frontmatter block`,
+      });
     } else if (name !== dir) {
-      failures.push({ kind: "frontmatter", detail: `skill/${dir}/SKILL.md frontmatter name \`${name}\` ≠ directory \`${dir}\`` });
+      failures.push({
+        kind: "frontmatter",
+        detail: `skill/${dir}/SKILL.md frontmatter name \`${name}\` ≠ directory \`${dir}\``,
+      });
     }
   }
   return { names, failures };
@@ -169,11 +192,17 @@ export function checkRepoSurface(repoRoot: string): SkillSurfaceFailure[] {
   const out = [...failures];
   for (const lens of buildLensRoster(path.join(repoRoot, "skill"))) {
     if (!existsSync(path.join(repoRoot, "skill", lens.skill, "SKILL.md"))) {
-      out.push({ kind: "lens", detail: `roster ${lens.name} → \`${lens.skill}\` does not resolve to skill/${lens.skill}/SKILL.md` });
+      out.push({
+        kind: "lens",
+        detail: `roster ${lens.name} → \`${lens.skill}\` does not resolve to skill/${lens.skill}/SKILL.md`,
+      });
     }
   }
   if (names.size < ANTI_VACUITY_FLOOR) {
-    out.push({ kind: "phantom", detail: `anti-vacuity: only ${names.size} distinct names extracted (floor ${ANTI_VACUITY_FLOOR})` });
+    out.push({
+      kind: "phantom",
+      detail: `anti-vacuity: only ${names.size} distinct names extracted (floor ${ANTI_VACUITY_FLOOR})`,
+    });
   }
   return out;
 }
@@ -202,8 +231,14 @@ function assert(cond: boolean, msg: string) {
       "Load the `skill` tool and use the `real-skill` or `phantom-skill` skill here.\n" +
         "Also a `skill/good-skill/SKILL.md` path reference, and `--skill <skills-dir>/good-skill`.\n",
     );
-    writeFileSync(path.join(fixtureRoot, "skill", "good-skill", "SKILL.md"), "---\nname: good-skill\ndescription: fine\n---\n\nbody\n");
-    writeFileSync(path.join(fixtureRoot, "skill", "bad-skill", "SKILL.md"), "---\nname: something-else\ndescription: >\n  folded\n---\n\nbody\n");
+    writeFileSync(
+      path.join(fixtureRoot, "skill", "good-skill", "SKILL.md"),
+      "---\nname: good-skill\ndescription: fine\n---\n\nbody\n",
+    );
+    writeFileSync(
+      path.join(fixtureRoot, "skill", "bad-skill", "SKILL.md"),
+      "---\nname: something-else\ndescription: >\n  folded\n---\n\nbody\n",
+    );
     mkdirSync(path.join(fixtureRoot, "skill", "crlf-skill"), { recursive: true });
     writeFileSync(
       path.join(fixtureRoot, "skill", "crlf-skill", "SKILL.md"),
@@ -243,7 +278,10 @@ const extracted = [...extractSkillNames(REPO_ROOT).keys()].sort();
 console.log(`  distinct names from the real-repo scan (${extracted.length}):`);
 for (const n of extracted) console.log(`    - ${n}`);
 if (repoFailures.length === 0) {
-  assert(true, `every extracted skill name, every SKILL.md frontmatter name and every roster entry resolves (${extracted.length} distinct names)`);
+  assert(
+    true,
+    `every extracted skill name, every SKILL.md frontmatter name and every roster entry resolves (${extracted.length} distinct names)`,
+  );
 } else {
   for (const f of repoFailures) {
     assert(false, f.detail);

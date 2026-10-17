@@ -95,13 +95,8 @@ function cliSpans(body: string): string[] {
   // The worktree step must name all four dispatch types with their cwd/workCwd
   // parameters, so a future regression that drops one of the threads fails the
   // gate rather than silently regressing to the process cwd.
-  const worktreeStepMatch = body.match(
-    /\*\*Create the worktree\.?\*\*[\s\S]*?(?=\n\d+\.\s+\*\*)/,
-  );
-  assert(
-    worktreeStepMatch !== null,
-    "do.md contains the worktree step (Create the worktree)",
-  );
+  const worktreeStepMatch = body.match(/\*\*Create the worktree\.?\*\*[\s\S]*?(?=\n\d+\.\s+\*\*)/);
+  assert(worktreeStepMatch !== null, "do.md contains the worktree step (Create the worktree)");
   if (worktreeStepMatch) {
     const step = worktreeStepMatch[0];
     const fourDispatches = [
@@ -111,19 +106,13 @@ function cliSpans(body: string): string[] {
       "dispatch_lens_review",
     ];
     for (const tool of fourDispatches) {
-      assert(
-        step.includes(tool),
-        `do.md worktree step names ${tool}`,
-      );
+      assert(step.includes(tool), `do.md worktree step names ${tool}`);
     }
     assert(
       step.includes("workCwd"),
       "do.md worktree step names workCwd (adversarial_loop parameter)",
     );
-    assert(
-      step.includes("cwd"),
-      "do.md worktree step names cwd (dispatch parameter)",
-    );
+    assert(step.includes("cwd"), "do.md worktree step names cwd (dispatch parameter)");
   }
 }
 

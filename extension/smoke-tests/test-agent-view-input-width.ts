@@ -17,8 +17,8 @@
 
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
-  createAgentViewComponent,
   type ViewHeader,
+  createAgentViewComponent,
 } from "../src/dispatch-deck-live-view-component.ts";
 import { dropBuffer, startBuffer } from "../src/dispatch-deck-live.ts";
 

@@ -26,7 +26,7 @@ import {
   titleClassOf,
   titleTokens,
 } from "../src/review-findings-match.ts";
-import { acceptFinding as acceptFinding } from "../src/review-findings-store.ts";
+import { acceptFinding } from "../src/review-findings-store.ts";
 import { readBranchRows, recordFindingRunOutcome } from "../src/review-findings-store.ts";
 import { ledgerPathFor } from "../src/review-ledger-path.ts";
 import { decide } from "./lib/review-findings-fixtures.ts";
@@ -336,9 +336,9 @@ try {
   assert(
     !(
       await acceptFinding(dir, "feat/x", "ffffffff", {
-    by: "op",
-    reason: "no such row exists here",
-  })
+        by: "op",
+        reason: "no such row exists here",
+      })
     ).ok,
     "accept: an unknown row id is refused",
   );

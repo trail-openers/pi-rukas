@@ -14,10 +14,10 @@
  */
 
 import {
+  type PipelineStateNormalisedSpec,
   hasTldrSection,
   prependTldr,
   tldrSectionOf,
-  type PipelineStateNormalisedSpec,
 } from "../src/work-driver-pr-body-definition.ts";
 
 let exit = 0;
@@ -188,10 +188,7 @@ const baseSpec: PipelineStateNormalisedSpec = {
 {
   const original = "## Context\n\nThe original body text.";
   const result = prependTldr(original, "## TL;DR\n\nShort summary.");
-  assert(
-    result.startsWith("## TL;DR"),
-    "prepended body starts with the TLDR heading",
-  );
+  assert(result.startsWith("## TL;DR"), "prepended body starts with the TLDR heading");
   assert(result.includes("## Context"), "original heading preserved");
   assert(result.includes("The original body text."), "original text preserved");
 }

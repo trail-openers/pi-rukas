@@ -6,9 +6,9 @@
  */
 
 import type { OperatorDirectives } from "../src/plan-directives.ts";
-import { type AngleFindings, draftSpec } from "../src/plan-draft.ts";
 import { linesConflict } from "../src/plan-draft-conflicts.ts";
 import { dedupeAgainstOperatorLines } from "../src/plan-draft-dedupe.ts";
+import { type AngleFindings, draftSpec } from "../src/plan-draft.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

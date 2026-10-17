@@ -6,13 +6,26 @@
  */
 
 import { exec } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
-import { NEVER_SHARED, SHAREABLE_DEPS, looksLikeMissingDeps, provisionWorktree } from "../src/worktree-provision.ts";
+import {
+  NEVER_SHARED,
+  SHAREABLE_DEPS,
+  looksLikeMissingDeps,
+  provisionWorktree,
+} from "../src/worktree-provision.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { realExec } from "./lib/exec-fake.ts";
@@ -416,17 +429,11 @@ async function makeWorktreeFixture(root: string, name: string): Promise<string> 
     const runs: string[] = [];
     const execFn: ExecFn = async (cmd, opts) => {
       runs.push(commandOf(cmd, opts));
-      if (commandOf(cmd, opts).startsWith("git fetch")) throw new Error("Permission denied (publickey)");
+      if (commandOf(cmd, opts).startsWith("git fetch"))
+        throw new Error("Permission denied (publickey)");
       return realExec(cmd, opts);
     };
-    const setup = await mechanizedBranchSetup(
-      execFn,
-      root,
-      533,
-      [533],
-      ["task-a"],
-      "title",
-    );
+    const setup = await mechanizedBranchSetup(execFn, root, 533, [533], ["task-a"], "title");
     assert(
       runs.some((c) => c.startsWith("git fetch")),
       "the fetch is attempted (a fresh origin/main is still preferred)",

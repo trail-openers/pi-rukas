@@ -50,7 +50,8 @@ async function runGate(diff: string, issue: number) {
       issueBodyFetcherFn: () => ({ stdout: "test-deletion ratchet" }),
       verifyExecFn: async (command, opts) => {
         // #1378 — the gate's uncommitted read is NUL-separated and argv-shaped.
-        if (isNulStatusRead(commandOf(command, opts))) return { stdout: nulStatus(" M src/tests.css") };
+        if (isNulStatusRead(commandOf(command, opts)))
+          return { stdout: nulStatus(" M src/tests.css") };
         if (command.startsWith("git diff")) return { stdout: diff };
         return { stdout: "" };
       },

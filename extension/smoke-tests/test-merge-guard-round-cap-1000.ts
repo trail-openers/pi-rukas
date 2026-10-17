@@ -25,16 +25,16 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { readPrCommentBodies } from "../src/merge-guard-reads.ts";
 import {
   assert,
+  TARGET,
   exit,
+  hookDecision,
   setupLedgerPath,
   teardownLedger,
-  hookDecision,
-  TARGET,
 } from "./merge-guard-helpers.ts";
 import type { LedgerEntry } from "./merge-guard-helpers.ts";
-import { readPrCommentBodies } from "../src/merge-guard-reads.ts";
 
 await setupLedgerPath();
 
@@ -55,8 +55,11 @@ await setupLedgerPath();
   // and the round-cap shape check sees a valid OID.
   const PR_HEAD = "a".repeat(40);
   const TARGET_OVERRIDE = { ...TARGET, headOid: PR_HEAD };
-  const hook = (cmd: string, entries: LedgerEntry[], opts: Parameters<typeof hookDecision>[2] = {}) =>
-    hookDecision(cmd, entries, { fetchedHead: PR_HEAD, target: TARGET_OVERRIDE, ...opts });
+  const hook = (
+    cmd: string,
+    entries: LedgerEntry[],
+    opts: Parameters<typeof hookDecision>[2] = {},
+  ) => hookDecision(cmd, entries, { fetchedHead: PR_HEAD, target: TARGET_OVERRIDE, ...opts });
   const lens = (over: Partial<LedgerEntry> & { at: number }): LedgerEntry => ({
     branch: "feature/x",
     kind: "lens",
@@ -99,7 +102,10 @@ await setupLedgerPath();
         labels: [],
       } as never;
       const bodies = await readPrCommentBodies(fn, dir, T, 12, `o/r;id`);
-      assert(bodies.length === 0, "readPrCommentBodies: an invalid repo value returns [] (fail closed)");
+      assert(
+        bodies.length === 0,
+        "readPrCommentBodies: an invalid repo value returns [] (fail closed)",
+      );
       assert(calls.length === 0, "…with NO exec call (the value is never interpolated)");
       const ok = await readPrCommentBodies(fn, dir, T, 12, "o/r");
       assert(ok.length === 0 && calls.length === 1, "a valid repo value still reaches the exec");
@@ -107,8 +113,11 @@ await setupLedgerPath();
       // #1000 — a malformed PR number (fail closed, mirroring the repo-value
       // check): non-integer and non-positive values are refused before any
       // exec → [] (the marker check fails, the merge is refused).
-      const badPr = await readPrCommentBodies(fn, dir, T, NaN, "o/r");
-      assert(badPr.length === 0 && calls.length === 1, "an invalid PR number (NaN) returns [] with NO new exec");
+      const badPr = await readPrCommentBodies(fn, dir, T, Number.NaN, "o/r");
+      assert(
+        badPr.length === 0 && calls.length === 1,
+        "an invalid PR number (NaN) returns [] with NO new exec",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -199,8 +208,14 @@ await setupLedgerPath();
         ghComments: commentsWith("feature/x", "p1"),
       });
       assert(r.block === true, "malformed detail → refused");
-      assert(/verdict is malformed/.test(r.reason ?? ""), "…naming the malformed verdict (condition-N wording)");
-      assert(!/round-cap path was not evaluated/.test(r.reason ?? ""), "…NOT the 'not evaluated' fall-through");
+      assert(
+        /verdict is malformed/.test(r.reason ?? ""),
+        "…naming the malformed verdict (condition-N wording)",
+      );
+      assert(
+        !/round-cap path was not evaluated/.test(r.reason ?? ""),
+        "…NOT the 'not evaluated' fall-through",
+      );
     }
   }
 }

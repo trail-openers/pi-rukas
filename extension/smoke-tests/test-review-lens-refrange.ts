@@ -110,7 +110,10 @@ async function mkRepoWithBranch(): Promise<{ dir: string; head: string; base: st
   const dir = mkdtempSync(path.join(tmpdir(), "pi-lens-refrange-empty-"));
   // Pin the initial branch to main (machine init.defaultBranch may differ).
   await execp("git init -q -b main", { cwd: dir });
-  await execp('git config user.email "t@t" && git config user.name "T"', { cwd: dir, shell: "/bin/bash" });
+  await execp('git config user.email "t@t" && git config user.name "T"', {
+    cwd: dir,
+    shell: "/bin/bash",
+  });
   writeFileSync(path.join(dir, "base.txt"), "hello\n");
   await execp("git add -A && git commit -q -m initial", { cwd: dir, shell: "/bin/bash" });
   await execp("git update-ref refs/remotes/origin/main HEAD", { cwd: dir });
@@ -118,7 +121,10 @@ async function mkRepoWithBranch(): Promise<{ dir: string; head: string; base: st
   try {
     const r = await computeRangeDiff(dir, "origin/main", "feature/empty");
     assert(!r.ok, "empty range → explicit error, not an approval");
-    assert(r.ok === false && /empty diff/i.test(r.reason), "...is the explicit 'empty diff' reason");
+    assert(
+      r.ok === false && /empty diff/i.test(r.reason),
+      "...is the explicit 'empty diff' reason",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

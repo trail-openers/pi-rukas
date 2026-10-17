@@ -5,8 +5,8 @@
  * dropped, so one long sibling cannot silence the others and no cut is silent.
  */
 
-import { fixRequestEvents, withParsedSiblings } from "../src/work-driver-adversarial-fix.ts";
 import { buildAdversarialPrompt } from "../src/adversarial-prompts.ts";
+import { fixRequestEvents, withParsedSiblings } from "../src/work-driver-adversarial-fix.ts";
 import type { AdversarialOutcome } from "../src/work-driver-adversarial-types.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 

@@ -2,7 +2,18 @@
 // Direct-mapper + parsePrNumberFromResponse shape tests: test-forge-mapping-shapes.ts.
 
 import { composeGlReadiness, createForge, forgeCommands } from "../src/forge.ts";
-import { GL_ISSUE, GL_JOBS, GL_MR, GL_MR_CHECKING, GL_MR_VIEW, GL_PIPELINE_DONE, GL_PIPELINE_RUNNING, GL_PROJECT, glDetection, mkExec } from "./forge-fixtures.ts";
+import {
+  GL_ISSUE,
+  GL_JOBS,
+  GL_MR,
+  GL_MR_CHECKING,
+  GL_MR_VIEW,
+  GL_PIPELINE_DONE,
+  GL_PIPELINE_RUNNING,
+  GL_PROJECT,
+  glDetection,
+  mkExec,
+} from "./forge-fixtures.ts";
 
 let exitCode = 0;
 function check(name: string, fn: () => void | Promise<void>) {
@@ -34,7 +45,9 @@ async function main() {
     }
   });
   await check("prCreateCmd uses --target-branch (no --head flag)", () => {
-    const cmd = forgeCommands.prCreateCmd("gitlab", "T", "branch", "/tmp/b", { baseBranch: "main" });
+    const cmd = forgeCommands.prCreateCmd("gitlab", "T", "branch", "/tmp/b", {
+      baseBranch: "main",
+    });
     assert(cmd.includes("--target-branch main"), `got ${cmd}`);
     assert(!cmd.includes("--head"), `should not have --head: ${cmd}`);
     assert(cmd.includes("glab mr create branch"), `positional source branch: ${cmd}`);
@@ -115,7 +128,10 @@ async function main() {
     await check("issueComment uses POST .../notes", async () => {
       const out = await forge.issueComment(42, "a comment");
       assert(out.includes("id"), `got ${out}`);
-      assert(calls.some((c) => c.includes("/projects/:id/issues/42/notes")), `no notes: ${calls}`);
+      assert(
+        calls.some((c) => c.includes("/projects/:id/issues/42/notes")),
+        `no notes: ${calls}`,
+      );
     });
     await check("issueSearch returns an array", async () => {
       const issues = await forge.issueSearch("bug");
@@ -170,19 +186,19 @@ async function main() {
       "glab issue create": { stdout: "some other output\n" },
     });
     const forgeGarbage = createForge(det, { execFn: fnGarbage });
-    await check("issueCreate rejects (no silent number=0) on non-URL, non-JSON stdout", async () => {
-      let rejected: Error | undefined;
-      try {
-        await forgeGarbage.issueCreate("A new issue", "the body");
-      } catch (e) {
-        rejected = e as Error;
-      }
-      assert(rejected !== undefined, "should have thrown");
-      assert(
-        rejected!.message.includes("could not parse"),
-        `wrong error: ${rejected!.message}`,
-      );
-    });
+    await check(
+      "issueCreate rejects (no silent number=0) on non-URL, non-JSON stdout",
+      async () => {
+        let rejected: Error | undefined;
+        try {
+          await forgeGarbage.issueCreate("A new issue", "the body");
+        } catch (e) {
+          rejected = e as Error;
+        }
+        assert(rejected !== undefined, "should have thrown");
+        assert(rejected!.message.includes("could not parse"), `wrong error: ${rejected!.message}`);
+      },
+    );
   }
 
   // ── MR operations ───────────────────────────────────────────────────────
@@ -256,7 +272,9 @@ async function main() {
   ) => {
     const { fn } = mkExec({
       "glab api /projects/:id/merge_requests/17": {
-        ...("error" in mrPayload ? { error: true, stderr: mrPayload.stderr } : { stdout: JSON.stringify(mrPayload) }),
+        ...("error" in mrPayload
+          ? { error: true, stderr: mrPayload.stderr }
+          : { stdout: JSON.stringify(mrPayload) }),
       },
       "glab api /projects/:id/pipelines/5001/jobs": { stdout: JSON.stringify(GL_JOBS) },
     });
@@ -284,28 +302,48 @@ async function main() {
     ok: true,
     readiness: "UNKNOWN",
   });
-  await readinessCase("readiness DIRTY (has_conflicts)", {
-    ...GL_MR,
-    detailed_merge_status: "has_conflicts",
-    has_conflicts: true,
-  }, { ok: true, readiness: "DIRTY" });
-  await readinessCase("readiness fails closed (discussions unresolved + status blocked)", {
-    ...GL_MR,
-    detailed_merge_status: "blocked_by_discussions",
-    blocking_discussions_resolved: false,
-  }, { ok: false });
-  await readinessCase("readiness fails closed (approvals_left missing)", (() => {
-    const m = { ...GL_MR };
-    delete (m as Record<string, unknown>).approvals_left;
-    return m;
-  })(), { ok: false, reasonIncludes: "approvals_left" });
-  await readinessCase("readiness fails closed (unmapped detailed_merge_status)", {
-    ...GL_MR,
-    detailed_merge_status: "brand_new_state",
-  }, { ok: false, reasonIncludes: "brand_new_state" });
-  await readinessCase("readiness fails closed (API error)", { error: true, stderr: "404 Not Found" }, {
-    ok: false,
-  });
+  await readinessCase(
+    "readiness DIRTY (has_conflicts)",
+    {
+      ...GL_MR,
+      detailed_merge_status: "has_conflicts",
+      has_conflicts: true,
+    },
+    { ok: true, readiness: "DIRTY" },
+  );
+  await readinessCase(
+    "readiness fails closed (discussions unresolved + status blocked)",
+    {
+      ...GL_MR,
+      detailed_merge_status: "blocked_by_discussions",
+      blocking_discussions_resolved: false,
+    },
+    { ok: false },
+  );
+  await readinessCase(
+    "readiness fails closed (approvals_left missing)",
+    (() => {
+      const m = { ...GL_MR };
+      delete (m as Record<string, unknown>).approvals_left;
+      return m;
+    })(),
+    { ok: false, reasonIncludes: "approvals_left" },
+  );
+  await readinessCase(
+    "readiness fails closed (unmapped detailed_merge_status)",
+    {
+      ...GL_MR,
+      detailed_merge_status: "brand_new_state",
+    },
+    { ok: false, reasonIncludes: "brand_new_state" },
+  );
+  await readinessCase(
+    "readiness fails closed (API error)",
+    { error: true, stderr: "404 Not Found" },
+    {
+      ok: false,
+    },
+  );
 
   // ── composeGlReadiness (direct, table-driven) ───────────────────────────
   console.log("composeGlReadiness table:");
@@ -406,15 +444,24 @@ async function main() {
     await check("labelCreate POSTs to /projects/:id/labels", async () => {
       const label = await forge.labelCreate("new-label", "00ff00");
       assert(label?.name === "new-label", `name ${label?.name}`);
-      assert(calls.some((c) => c.includes("/projects/:id/labels")), `no POST labels: ${calls}`);
+      assert(
+        calls.some((c) => c.includes("/projects/:id/labels")),
+        `no POST labels: ${calls}`,
+      );
     });
     await check("labelAdd uses add_labels (auto-creates missing)", async () => {
       await forge.labelAdd("issue", 42, "new-label");
-      assert(calls.some((c) => c.includes("add_labels=new-label")), `no add_labels: ${calls}`);
+      assert(
+        calls.some((c) => c.includes("add_labels=new-label")),
+        `no add_labels: ${calls}`,
+      );
     });
     await check("labelRemove uses remove_labels", async () => {
       await forge.labelRemove("issue", 42, "old-label");
-      assert(calls.some((c) => c.includes("remove_labels=old-label")), `no remove_labels: ${calls}`);
+      assert(
+        calls.some((c) => c.includes("remove_labels=old-label")),
+        `no remove_labels: ${calls}`,
+      );
     });
   }
 
@@ -437,9 +484,14 @@ async function main() {
     await forge.labelAdd("issue", 42, "needs-human-attention");
     await forge.labelAdd("mr", 17, "needs-human-attention");
     await check("create, add to issue AND mr, read back on issue", async () => {
-      assert(calls.some((c) => c.includes("-X POST") && c.includes("/projects/:id/labels")), `create: ${calls}`);
       assert(
-        calls.some((c) => c.includes("add_labels=needs-human-attention") && c.includes("/issues/42")),
+        calls.some((c) => c.includes("-X POST") && c.includes("/projects/:id/labels")),
+        `create: ${calls}`,
+      );
+      assert(
+        calls.some(
+          (c) => c.includes("add_labels=needs-human-attention") && c.includes("/issues/42"),
+        ),
         `issue add: ${calls}`,
       );
       assert(

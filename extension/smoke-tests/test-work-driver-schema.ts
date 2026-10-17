@@ -61,12 +61,17 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   try {
     const state = initialState(547, 1000);
     assert(
-      state.schemaVersion === WORK_STATE_SCHEMA_VERSION && state.resumable === false &&
-        state.pipelineState.currentStep === "explore" && state.pipelineState.status === "running" &&
+      state.schemaVersion === WORK_STATE_SCHEMA_VERSION &&
+        state.resumable === false &&
+        state.pipelineState.currentStep === "explore" &&
+        state.pipelineState.status === "running" &&
         state.eventLog.length === 0,
       "initialState: schemaVersion 1, resumable=false, explore/running, empty eventLog",
     );
-    assert(await readState(dir, 547) === undefined, "readState returns undefined for missing file");
+    assert(
+      (await readState(dir, 547)) === undefined,
+      "readState returns undefined for missing file",
+    );
     await writeState(dir, state);
     const rt = await readState(dir, 547);
     assert(
@@ -103,13 +108,16 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     );
     // Pre-#453 file: strip the fields from the on-disk JSON.
     const file = workStateFile(dir, issue);
-    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { pipelineState: Record<string, unknown> };
+    const onDisk = JSON.parse(readFileSync(file, "utf8")) as {
+      pipelineState: Record<string, unknown>;
+    };
     onDisk.pipelineState.commitShas = undefined;
     onDisk.pipelineState.appliedShas = undefined;
     writeFileSync(file, `${JSON.stringify(onDisk, null, 2)}\n`);
     const legacy = await readState(dir, issue);
     assert(
-      legacy !== undefined && legacy.pipelineState.commitShas === undefined &&
+      legacy !== undefined &&
+        legacy.pipelineState.commitShas === undefined &&
         legacy.pipelineState.appliedShas === undefined &&
         legacy.schemaVersion === WORK_STATE_SCHEMA_VERSION &&
         legacy.pipelineState.currentStep === "explore",
@@ -130,8 +138,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     recorded.pipelineState.workstreams = {
       "task-a": { id: "task-a", scope: "base", paths: ["src/a.ts"], outOfScope: [] },
       "task-b": {
-        id: "task-b", scope: "depends on a", paths: ["src/b.ts"], outOfScope: [],
-        dependsOn: ["task-a"], integrationTest: "smoke-tests/test-int.ts",
+        id: "task-b",
+        scope: "depends on a",
+        paths: ["src/b.ts"],
+        outOfScope: [],
+        dependsOn: ["task-a"],
+        integrationTest: "smoke-tests/test-int.ts",
       },
     };
     await writeState(dir, recorded);
@@ -145,7 +157,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const onDisk = JSON.parse(readFileSync(workStateFile(dir, 679), "utf8")) as {
       pipelineState: Record<string, unknown>;
     };
-    const ws = onDisk.pipelineState.workstreams as Record<string, Record<string, unknown>> | undefined;
+    const ws = onDisk.pipelineState.workstreams as
+      | Record<string, Record<string, unknown>>
+      | undefined;
     if (ws) {
       delete ws["task-b"].dependsOn;
       delete ws["task-b"].integrationTest;
@@ -175,7 +189,11 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   // check was always false and skipped commit-pr — confirmed live on #553).
   let s: WorkState = {
     ...base,
-    pipelineState: { ...base.pipelineState, currentStep: "adversarial", lastCompletedStep: "develop" },
+    pipelineState: {
+      ...base.pipelineState,
+      currentStep: "adversarial",
+      lastCompletedStep: "develop",
+    },
   };
   s = appendEvent(s, { kind: "adversarial-approved", at: 2000, jobId: "j1", rounds: 1 });
   assert(

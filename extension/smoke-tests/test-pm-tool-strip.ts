@@ -8,8 +8,8 @@
  * with a minimal ExtensionAPI stub so the gate is fast and offline.
  */
 
-import { getPmModeStripInfo, stripPmTools } from "../src/commands.ts";
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent";
+import { getPmModeStripInfo, stripPmTools } from "../src/commands.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

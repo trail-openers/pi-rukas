@@ -79,7 +79,10 @@ function assert(cond: boolean, msg: string) {
     tail.startsWith("FAILED: smoke-tests/test-b.ts"),
     "multiple markers: anchors on the LAST FAILED marker (pinned, accepted limitation)",
   );
-  assert(tail.includes("the real last failure detail"), "multiple markers: last failure's detail present");
+  assert(
+    tail.includes("the real last failure detail"),
+    "multiple markers: last failure's detail present",
+  );
   assert(attributed, "multiple markers: still attributed since a marker was found");
 }
 
@@ -117,7 +120,10 @@ function assert(cond: boolean, msg: string) {
   const combined = `FAILED: smoke-tests/test-real.ts\n${setupNoise}${realAssertionFailure}`;
   const { tail, attributed } = extractAttributedTail(combined, 1500);
   assert(attributed, "realistic shape: attributed is true");
-  assert(tail.startsWith("FAILED: smoke-tests/test-real.ts"), "realistic shape: marker line retained");
+  assert(
+    tail.startsWith("FAILED: smoke-tests/test-real.ts"),
+    "realistic shape: marker line retained",
+  );
   assert(
     tail.includes("expected 200 to equal 404"),
     "realistic shape: the real assertion failure text survives truncation",
@@ -134,8 +140,7 @@ function assert(cond: boolean, msg: string) {
   const verboseOutput = "setting up test fixtures...\n".repeat(100); // ~3.4KB, well over 800
   const realAssertion =
     "✗ extension/smoke-tests/test-loop-detector.ts: 667 lines (exceeds 500-line hard limit)";
-  const summaryLine =
-    "FAILED: 1 test(s) — extension/smoke-tests/test-file-size-limit.ts";
+  const summaryLine = "FAILED: 1 test(s) — extension/smoke-tests/test-file-size-limit.ts";
   // Post-fix shape: per-test detail first, then the summary, then the
   // repeated bounded `✗` lines (the fix repeats them under/after the summary).
   const combined = `FAILED: extension/smoke-tests/test-file-size-limit.ts\n${verboseOutput}${realAssertion}\n${summaryLine}\n${realAssertion}`;
@@ -189,7 +194,10 @@ function assert(cond: boolean, msg: string) {
   const summaryLine = "FAILED: 1 test(s) — smoke-tests/test-foo.ts";
   const combined = `FAILED: smoke-tests/test-foo.ts\n${verboseOutput}${realAssertion}\n${summaryLine}\n${realAssertion}`;
   const { tail } = extractAttributedTail(combined, 800);
-  assert(tail.length <= 800, "800-char bound: tail never exceeds maxLen even with repeated ✗ lines");
+  assert(
+    tail.length <= 800,
+    "800-char bound: tail never exceeds maxLen even with repeated ✗ lines",
+  );
   assert(tail.startsWith("FAILED:"), "800-char bound: tail still anchored on the last marker");
 }
 

@@ -468,7 +468,6 @@ function assert(cond: boolean, msg: string) {
   pendingJobs.resetForTesting();
 }
 
-
 clearJobsForTesting();
 clearSlowWatchesForTesting();
 pendingJobs.resetForTesting();

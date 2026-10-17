@@ -96,9 +96,7 @@ try {
   // it had been reading as "no leftovers"), and the `step-failed:branch` cap
   // below it is still the sibling scan's. The scan is what this test is about,
   // so it is selected by name rather than by "the first cap".
-  const cap = out?.eventLog.find(
-    (e) => e.kind === "cap-hit" && e.cap === "step-failed:branch",
-  );
+  const cap = out?.eventLog.find((e) => e.kind === "cap-hit" && e.cap === "step-failed:branch");
   assert(
     cap !== undefined && cap.kind === "cap-hit" && cap.cap === "step-failed:branch",
     "an unreadable sibling listing yields a step-failed:branch cap",

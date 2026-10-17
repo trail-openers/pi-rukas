@@ -24,8 +24,8 @@ import {
   recordProtectedGrant,
   ungrantedProtectedPaths,
 } from "../src/work-driver-protected-grant.ts";
-import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { PROTECTED_READ_MAX_BUFFER } from "../src/work-driver-protected-paths-read.ts";
+import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
@@ -79,7 +79,10 @@ const CI = ".github/workflows/ci.yml";
   assert(!("error" in eq) && eq.protectedGrant.join() === CI, "the `=` form is accepted too");
   for (const empty of ["7 --allow-protected ./", "7 --allow-protected ,", "7 --allow-protected="]) {
     const r = parseWorkArgs(empty);
-    assert("error" in r && /needs a path/.test(r.error), `an empty grant errors, never passes silently: ${empty}`);
+    assert(
+      "error" in r && /needs a path/.test(r.error),
+      `an empty grant errors, never passes silently: ${empty}`,
+    );
   }
   const queue = parseWorkArgs(`7 8 --allow-protected ${CI}`);
   assert(
@@ -171,7 +174,10 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
     hit.includes(`/work 1090 --restart --allow-protected ${CI},.pi/verify-cmd`),
     "the failure names --allow-protected with the exact command for every protected path touched",
   );
-  assert(hit.includes("review each path's diff first"), "...and tells the operator to review before granting");
+  assert(
+    hit.includes("review each path's diff first"),
+    "...and tells the operator to review before granting",
+  );
   assert(
     hit.includes("PI_ENSEMBLE_PROTECTED_PATHS=0"),
     "...and still mentions PI_ENSEMBLE_PROTECTED_PATHS=0",
@@ -193,7 +199,9 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
     "develop",
   );
   assert(
-    (grouped.failures.find(isProtectedFailure) ?? "").includes("/work <issue> --restart --allow-protected"),
+    (grouped.failures.find(isProtectedFailure) ?? "").includes(
+      "/work <issue> --restart --allow-protected",
+    ),
     "a grouped cycle is told to grant on a single-issue run, not given a command that would be refused",
   );
   // #1378: the ungrantable name must not cost the operator the grant command for
@@ -309,12 +317,21 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
   const root = mkdtempSync(path.join(tmpdir(), "grant-dir-"));
   mkdirSync(path.join(root, ".github", "actions"), { recursive: true });
   const parseWith = (p: string) => parseWorkArgs(`7 --allow-protected ${p}`, { repoRoot: root });
-  assert("error" in parseWith(".github/actions"), "a grant naming an on-disk directory is refused at parse time");
+  assert(
+    "error" in parseWith(".github/actions"),
+    "a grant naming an on-disk directory is refused at parse time",
+  );
   assert("error" in parseWith(".github/"), "a grant ending in / is refused at parse time");
-  assert("error" in parseWith(".github"), "a grant naming the .github root is refused at parse time");
+  assert(
+    "error" in parseWith(".github"),
+    "a grant naming the .github root is refused at parse time",
+  );
   assert(!("error" in parseWith(CI)), "a grant naming a file still parses");
   const bare = parseWorkArgs("7 --allow-protected ./");
-  assert("error" in bare && /needs a path/.test(bare.error), "a bare ./ is still a missing path, not a directory");
+  assert(
+    "error" in bare && /needs a path/.test(bare.error),
+    "a bare ./ is still a missing path, not a directory",
+  );
   assert(
     ungrantedProtectedPaths([".github/actions/"], [".github/actions"]).length === 1,
     "a collapsed directory entry is never admitted, even by a grant of its key",
@@ -354,7 +371,11 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
     ungrantedProtectedPaths([BACKSLASH], [CI]).length === 1,
     "a backslash file is not admitted by a real-path grant (raw match, not the folded key)",
   );
-  const backslashRun = await verifyStepOutcome(ctx(`?? ${BACKSLASH}\n`, [CI]), stateWith(), "develop");
+  const backslashRun = await verifyStepOutcome(
+    ctx(`?? ${BACKSLASH}\n`, [CI]),
+    stateWith(),
+    "develop",
+  );
   assert(
     backslashRun.failures.some(isProtectedFailure),
     "a root file literally named with backslashes halts under a grant for the forward-slash path",

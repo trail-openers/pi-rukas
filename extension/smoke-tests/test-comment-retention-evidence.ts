@@ -125,7 +125,9 @@ try {
 
   // Helper edges: an empty or clean diff yields no section.
   assert(
-    renderCommentEvidence(await checkComments(exec, dir, undefined, undefined, ["src"], 5000, "")) === "",
+    renderCommentEvidence(
+      await checkComments(exec, dir, undefined, undefined, ["src"], 5000, ""),
+    ) === "",
     "empty diff → no section",
   );
 

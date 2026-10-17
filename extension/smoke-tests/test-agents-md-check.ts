@@ -30,7 +30,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { type AgentsMdFs, checkAgent } from "../src/agents-md/agents-md.ts";
 import { EXIT_CLEAN, EXIT_FINDINGS, EXIT_REFUSE } from "../src/agents-md/check.ts";
-import { renderLedger, type LedgerRow } from "../src/agents-md/ledger.ts";
+import { type LedgerRow, renderLedger } from "../src/agents-md/ledger.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -76,13 +76,7 @@ function writeSidecar(root: string, rows?: LedgerRow[]): void {
 {
   mkdirSync(path.join(tmp, "src"), { recursive: true });
   writeFileSync(path.join(tmp, "src.txt"), "x");
-  const clean = [
-    "# T",
-    "",
-    "## Quality Gates",
-    "",
-    "- **g** — `bun run test`",
-  ].join("\n");
+  const clean = ["# T", "", "## Quality Gates", "", "- **g** — `bun run test`"].join("\n");
   writeFileSync(path.join(tmp, "clean.md"), clean);
   writeSidecar(tmp);
   const r = checkAgent(tmp, path.join(tmp, "clean.md"), {}, mkFs());
@@ -91,13 +85,7 @@ function writeSidecar(root: string, rows?: LedgerRow[]): void {
 
 // A file that references a path that no longer exists → findings → 1.
 {
-  const stale = [
-    "# T",
-    "",
-    "## Quality Gates",
-    "",
-    "- see `gone-file.ts` for details",
-  ].join("\n");
+  const stale = ["# T", "", "## Quality Gates", "", "- see `gone-file.ts` for details"].join("\n");
   writeFileSync(path.join(tmp, "stale.md"), stale);
   writeSidecar(tmp);
   const r = checkAgent(tmp, path.join(tmp, "stale.md"), {}, mkFs());
@@ -207,9 +195,7 @@ function writeSidecar(root: string, rows?: LedgerRow[]): void {
     `empty code-style section → exit ${EXIT_FINDINGS} (got ${r.check?.code})`,
   );
   assert(
-    r.check?.findings.some(
-      (f) => f.kind === "empty-section" && f.message.includes("code-style"),
-    ),
+    r.check?.findings.some((f) => f.kind === "empty-section" && f.message.includes("code-style")),
     "...with the generic empty-section finding naming code-style",
   );
 }

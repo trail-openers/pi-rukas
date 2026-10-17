@@ -244,14 +244,27 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
     // ISSUES_FOUND (r1) → REVIEW_INCOMPLETE (r2) → ISSUES_FOUND (r3).
     const at = Date.now();
     await appendLedgerEntry(
-      { branch: "feature/x", kind: "lens", patchId: "pa", passed: false, at,
-        detail: "ISSUES_FOUND", hasCritical: false },
+      {
+        branch: "feature/x",
+        kind: "lens",
+        patchId: "pa",
+        passed: false,
+        at,
+        detail: "ISSUES_FOUND",
+        hasCritical: false,
+      },
       execp,
       repo,
     );
     await appendLedgerEntry(
-      { branch: "feature/x", kind: "lens", patchId: "pb", passed: false, at: at + 1000,
-        detail: "REVIEW_INCOMPLETE" },
+      {
+        branch: "feature/x",
+        kind: "lens",
+        patchId: "pb",
+        passed: false,
+        at: at + 1000,
+        detail: "REVIEW_INCOMPLETE",
+      },
       execp,
       repo,
     );
@@ -261,8 +274,15 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
       "aborted run carries the previous round (round 1 after an aborted run)",
     );
     await appendLedgerEntry(
-      { branch: "feature/x", kind: "lens", patchId: "pc", passed: false, at: at + 2000,
-        detail: "ISSUES_FOUND", hasCritical: false },
+      {
+        branch: "feature/x",
+        kind: "lens",
+        patchId: "pc",
+        passed: false,
+        at: at + 2000,
+        detail: "ISSUES_FOUND",
+        hasCritical: false,
+      },
       execp,
       repo,
     );
@@ -273,8 +293,14 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
     );
     // Three COMPLETED runs (an aborted run between them) reach round 3.
     await appendLedgerEntry(
-      { branch: "feature/x", kind: "lens", patchId: "pd", passed: false, at: at + 3000,
-        detail: "REVIEW_INCOMPLETE" },
+      {
+        branch: "feature/x",
+        kind: "lens",
+        patchId: "pd",
+        passed: false,
+        at: at + 3000,
+        detail: "REVIEW_INCOMPLETE",
+      },
       execp,
       repo,
     );
@@ -283,8 +309,15 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
       "an aborted run between completed runs leaves the count unchanged",
     );
     await appendLedgerEntry(
-      { branch: "feature/x", kind: "lens", patchId: "pe", passed: false, at: at + 4000,
-        detail: "ISSUES_FOUND", hasCritical: false },
+      {
+        branch: "feature/x",
+        kind: "lens",
+        patchId: "pe",
+        passed: false,
+        at: at + 4000,
+        detail: "ISSUES_FOUND",
+        hasCritical: false,
+      },
       execp,
       repo,
     );

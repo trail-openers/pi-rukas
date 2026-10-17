@@ -21,8 +21,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ensureIntegrateWorktree } from "../src/work-driver-integrate-worktree.ts";
 import { integrateBackupRef } from "../src/work-driver-integrate-cycle.ts";
+import { ensureIntegrateWorktree } from "../src/work-driver-integrate-worktree.ts";
 import { type ExecFn, WORKTREE_LIST_TIMEOUT_MS, worktreeList } from "../src/worktree.ts";
 import { ISSUE_17_BACKUP_REF, git, realExec } from "./lib/worktree-fake-fixture.ts";
 
@@ -126,7 +126,11 @@ try {
   for (const [tag, garbage, reports] of [
     ["a non-hex ref value is NOT reported as superseded", "refs/heads/whatever", false],
     ["a truncated hex value is not a full object id", "abc123", false],
-    ["an uppercase hex value is not the canonical form", "DEADBEEFCAFE1234567890ABCDEF1234567890AB", false],
+    [
+      "an uppercase hex value is not the canonical form",
+      "DEADBEEFCAFE1234567890ABCDEF1234567890AB",
+      false,
+    ],
   ] as const) {
     const { repo, baseSha, branch, wt, stateFile } = await fixture(
       `superseded-${tag.replace(/\W+/g, "-").slice(0, 40)}`,
@@ -157,7 +161,10 @@ try {
       `(n) ${tag} (${res.ok ? `supersededSha=${String(res.ok ? res.r.supersededSha : "-")}` : (res.err as Error).message.split("\n")[0]})`,
     );
     assert(
-      res.ok && (await git(repo, ["rev-parse", "--verify", "--quiet", ISSUE_17_BACKUP_REF])).stdout.trim() !== "",
+      res.ok &&
+        (
+          await git(repo, ["rev-parse", "--verify", "--quiet", ISSUE_17_BACKUP_REF])
+        ).stdout.trim() !== "",
       `(n) ${tag}: the ref still records the NEW kept commit — dropping the bogus value never skips the write`,
     );
   }

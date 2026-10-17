@@ -19,6 +19,8 @@
  */
 
 import { Container, Text } from "@earendil-works/pi-tui";
+import { type AgentListLine, buildAgentListLines } from "../src/agent-list.ts";
+import { buildCompositeFactory } from "../src/dispatch-deck-composite.ts";
 import {
   type DeckEntry,
   attach,
@@ -33,11 +35,6 @@ import {
   startEntry,
   updateEntry,
 } from "../src/dispatch-deck.ts";
-import {
-  type AgentListLine,
-  buildAgentListLines,
-} from "../src/agent-list.ts";
-import { buildCompositeFactory } from "../src/dispatch-deck-composite.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
 
 let exit = 0;
@@ -305,10 +302,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   // Expected: batch header, standalone (members absent — per-job rows, #834)
   assert(lines.length === 2, "1 batch + 2 members + 1 standalone → 2 lines (#834)");
   assert(lines[0]?.startsWith("⏳ batch["), "batch header first");
-  assert(
-    lines[1]?.startsWith("⏳ explore"),
-    "standalone appears after the batch header",
-  );
+  assert(lines[1]?.startsWith("⏳ explore"), "standalone appears after the batch header");
 }
 
 // 10. buildLines: top-level traversal respects global insertion order — standalone before batch.
@@ -419,7 +413,10 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startEntry("sup-b", { label: "developer[task-B]", role: "developer", batchKey: "sup-761" });
   const lines = buildLines();
   assert(lines.length === 1, "batch-only deck is NOT empty (buildLines has exactly the header)");
-  assert(lines[0]?.includes("batch[developer×2]"), "the batch header is in buildLines (not hidden)");
+  assert(
+    lines[0]?.includes("batch[developer×2]"),
+    "the batch header is in buildLines (not hidden)",
+  );
 }
 
 // 12c. #761 superset invariant, general form: every batch-header row present
@@ -441,7 +438,10 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   assert(batchOnly.length === 2, "batch-only projection has 2 header rows (sanity)");
   const lines = buildLines(now);
   for (const header of batchOnly) {
-    assert(lines.includes(header), `batch-header row in batch-only projection also in buildLines: ${header}`);
+    assert(
+      lines.includes(header),
+      `batch-header row in batch-only projection also in buildLines: ${header}`,
+    );
   }
 }
 

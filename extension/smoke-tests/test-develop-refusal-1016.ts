@@ -11,8 +11,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { refuseMissingWorktrees } from "../src/work-develop-missing-worktree.ts";
-import { failureEventOf, routeStepOutcome } from "../src/work-driver-step-router.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { failureEventOf, routeStepOutcome } from "../src/work-driver-step-router.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
 import { initialState, writeState } from "../src/workflow-state.ts";
 
@@ -41,7 +41,12 @@ function refusedFanOut(extra: WorkEvent[] = []): WorkEvent[] {
     failureSource,
   });
   return [
-    { kind: "branches-fanned-out", step: "develop", workstreams: ["a", ...extra.map(() => "b")], at: 1 },
+    {
+      kind: "branches-fanned-out",
+      step: "develop",
+      workstreams: ["a", ...extra.map(() => "b")],
+      at: 1,
+    },
     ...extra,
     ...branchEvents,
     { kind: "branches-converged", step: "develop", verdicts, at: 3 },
@@ -63,12 +68,18 @@ const transientSibling: WorkEvent = {
 {
   const events = refusedFanOut();
   const bc = events.find((e) => e.kind === "branch-completed");
-  assert(bc?.kind === "branch-completed" && bc.refused === true, "refusal: branch-completed carries refused: true");
+  assert(
+    bc?.kind === "branch-completed" && bc.refused === true,
+    "refusal: branch-completed carries refused: true",
+  );
   assert(
     bc?.kind === "branch-completed" && bc.error === REASON,
     "refusal: branch-completed carries the refusal reason",
   );
-  assert(!events.some((e) => e.kind === "dispatch-failed"), "refusal: no dispatch-failed event is recorded");
+  assert(
+    !events.some((e) => e.kind === "dispatch-failed"),
+    "refusal: no dispatch-failed event is recorded",
+  );
   const conv = events[events.length - 1];
   assert(
     conv?.kind === "branches-converged" && conv.verdicts[0]?.reason === REASON,
@@ -80,7 +91,10 @@ const transientSibling: WorkEvent = {
 // 2. A refusal beside a transient sibling is still not retried.
 {
   const events = refusedFanOut([transientSibling]);
-  assert(failureEventOf(events) === undefined, "refusal + transient sibling: failureEventOf declines");
+  assert(
+    failureEventOf(events) === undefined,
+    "refusal + transient sibling: failureEventOf declines",
+  );
 }
 
 // 3. The step router halts develop with the refusal, with no transient retry.

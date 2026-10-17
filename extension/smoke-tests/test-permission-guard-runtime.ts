@@ -167,32 +167,77 @@ for (const command of gitDiffWithInjectionShouldAsk) {
 // Native-MCP tool naming (the post-#959 convention: the adapter's
 // `codebase_memory_<tool>` direct-tool names are gone; the native MCP
 // registers `mcp__<server>__<tool>` instead).
-const mcpSearchPM = resolveToolPermission("mcp__codebase_memory__search_code", "project-manager", {}, {}, agentsConfig);
+const mcpSearchPM = resolveToolPermission(
+  "mcp__codebase_memory__search_code",
+  "project-manager",
+  {},
+  {},
+  agentsConfig,
+);
 assert(mcpSearchPM === "allow", "PM has explicit mcp__codebase_memory__search_code: allow");
 
-const mcpIndexPM = resolveToolPermission("mcp__codebase_memory__index_repository", "project-manager", {}, {}, agentsConfig);
-assert(mcpIndexPM === "allow", "PM has explicit mcp__codebase_memory__index_repository: allow (first-run admin call)");
+const mcpIndexPM = resolveToolPermission(
+  "mcp__codebase_memory__index_repository",
+  "project-manager",
+  {},
+  {},
+  agentsConfig,
+);
+assert(
+  mcpIndexPM === "allow",
+  "PM has explicit mcp__codebase_memory__index_repository: allow (first-run admin call)",
+);
 
 // Per-role subset: ops gets only 3 of the 7 read-side tools (search_code,
 // get_code_snippet, get_architecture) — the ticket's AC asserts the
 // per-role subsets are preserved. An ungranted tool resolves to ask (the
 // catch-all), not deny — the prompt is the boundary.
-const mcpQueryOps = resolveToolPermission("mcp__codebase_memory__query_graph", "ops", {}, {}, agentsConfig);
+const mcpQueryOps = resolveToolPermission(
+  "mcp__codebase_memory__query_graph",
+  "ops",
+  {},
+  {},
+  agentsConfig,
+);
 assert(
   mcpQueryOps === "ask",
   "#959: ops is NOT granted mcp__codebase_memory__query_graph (per-role subset: search_code, get_code_snippet, get_architecture only) — falls through to ask",
 );
-const mcpSearchOps = resolveToolPermission("mcp__codebase_memory__search_code", "ops", {}, {}, agentsConfig);
+const mcpSearchOps = resolveToolPermission(
+  "mcp__codebase_memory__search_code",
+  "ops",
+  {},
+  {},
+  agentsConfig,
+);
 assert(mcpSearchOps === "allow", "#959: ops IS granted mcp__codebase_memory__search_code");
 
 // Any unknown mcp__ tool from a server the operator has not reviewed asks —
 // the prompt is the security boundary, not silent deny.
-const unknownMcp = resolveToolPermission("mcp__fuzu_staging_db__execute_sql", "project-manager", {}, {}, agentsConfig);
-assert(unknownMcp === "ask", "#959: unknown mcp__<server>__<tool> resolves to ask for PM (catch-all = ask)");
+const unknownMcp = resolveToolPermission(
+  "mcp__fuzu_staging_db__execute_sql",
+  "project-manager",
+  {},
+  {},
+  agentsConfig,
+);
+assert(
+  unknownMcp === "ask",
+  "#959: unknown mcp__<server>__<tool> resolves to ask for PM (catch-all = ask)",
+);
 
 // Any unknown tool — the prompt is the security boundary now, not silent deny.
-const unknownTool = resolveToolPermission("some_random_tool", "project-manager", {}, {}, agentsConfig);
-assert(unknownTool === "ask", "Issue #168: any unknown tool resolves to ask for PM (catch-all = ask)");
+const unknownTool = resolveToolPermission(
+  "some_random_tool",
+  "project-manager",
+  {},
+  {},
+  agentsConfig,
+);
+assert(
+  unknownTool === "ask",
+  "Issue #168: any unknown tool resolves to ask for PM (catch-all = ask)",
+);
 
 // Explicit allows still take precedence over the catch-all.
 const explicitAllow = resolveToolPermission("read", "project-manager", {}, {}, agentsConfig);

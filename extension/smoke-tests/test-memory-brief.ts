@@ -199,11 +199,15 @@ if (!haveVipune) {
     // Seed sequentially: preferNewest tie-breaks on created_at, and a coarse
     // clock could stamp two parallel adds in the same millisecond.
     for (const row of FIXTURE) {
-      const seeded = await execFileAsync(
-        "vipune",
-        [...base, "add", row, "--memory-type", "fact", "--json"],
-      );
-      if (!seeded.stdout.includes("\"added\"")) {
+      const seeded = await execFileAsync("vipune", [
+        ...base,
+        "add",
+        row,
+        "--memory-type",
+        "fact",
+        "--json",
+      ]);
+      if (!seeded.stdout.includes('"added"')) {
         console.error(`✗ fixture seeding failed for: ${row}`);
         console.error(seeded.stdout);
         exit = 1;

@@ -15,10 +15,16 @@
  * entry for the nested call (with a ↳ prefix on the name).
  */
 
-import { InFlightTools } from "../src/spawn-inflight.ts";
-import { pushEvent, startBuffer, getBuffer, bufferCount, dropBuffer } from "../src/dispatch-deck-live.ts";
-import type { PiJsonEvent } from "../src/pi-event-shapes.ts";
+import {
+  bufferCount,
+  dropBuffer,
+  getBuffer,
+  pushEvent,
+  startBuffer,
+} from "../src/dispatch-deck-live.ts";
 import type { LiveEvent } from "../src/dispatch-deck-live.ts";
+import type { PiJsonEvent } from "../src/pi-event-shapes.ts";
+import { InFlightTools } from "../src/spawn-inflight.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -152,10 +158,7 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
     inflight.toolNames().length === 2,
     `3b: one nested closed, two remain (got ${inflight.toolNames().length})`,
   );
-  assert(
-    !inflight.toolNames().includes("bash"),
-    "3c: the closed nested 'bash' span is gone",
-  );
+  assert(!inflight.toolNames().includes("bash"), "3c: the closed nested 'bash' span is gone");
   assert(inflight.toolNames().includes("read"), "3d: the open nested 'read' span remains");
 }
 
@@ -191,10 +194,7 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
     if (buf.length === 1) {
       assert(buf[0].kind === "toolCall", "6b: stored as a toolCall variant");
       if (buf[0].kind === "toolCall") {
-        assert(
-          buf[0].name === "↳ bash",
-          `6c: name is '↳ bash' (got '${buf[0].name}')`,
-        );
+        assert(buf[0].name === "↳ bash", `6c: name is '↳ bash' (got '${buf[0].name}')`);
         // #1032 — the name is stored via sanitizeForStorage (newline-collapsed),
         // like every other storage site: a raw \n in toolName must not survive
         // into the buffer (issue #927 desync shape).
@@ -235,31 +235,25 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
       note: esc + "[31mred text" + esc + "[0m", // raw ANSI CSI escapes
     };
     pushEvent(key, buf, nestedStartEvent("call_top/1", "bash", "call_top", hostileArgs));
-    assert(buf.length === 1, `7c: one event stored for the hostile-args nested call (got ${buf.length})`);
+    assert(
+      buf.length === 1,
+      `7c: one event stored for the hostile-args nested call (got ${buf.length})`,
+    );
     if (buf.length === 1 && buf[0].kind === "toolCall") {
       // JSON.stringify escapes control chars: \n → \\n, ESC → \\u001b.
       // sanitizeForStorage strips actual control chars (none remain) and
       // collapses actual newlines (none remain) — the JSON-escaped text
       // is printable and passes through unchanged. The key invariant:
       // no raw control character survives into the stored string.
-      assert(
-        !buf[0].args.includes("\n"),
-        "7d: stored args contain no raw newline byte",
-      );
+      assert(!buf[0].args.includes("\n"), "7d: stored args contain no raw newline byte");
       assert(
         !buf[0].args.includes(String.fromCharCode(27)),
         "7e: stored args contain no raw ESC byte",
       );
       // The payload content is preserved (sanitisation is idempotent on
       // already-escaped JSON).
-      assert(
-        buf[0].args.includes("red text"),
-        "7f: the payload text survives sanitisation",
-      );
-      assert(
-        buf[0].args.includes("echo hi"),
-        "7g: the command text survives sanitisation",
-      );
+      assert(buf[0].args.includes("red text"), "7f: the payload text survives sanitisation");
+      assert(buf[0].args.includes("echo hi"), "7g: the command text survives sanitisation");
     } else {
       assert(false, "7h: the hostile-args nested call was stored as a toolCall");
     }

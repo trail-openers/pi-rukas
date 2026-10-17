@@ -50,12 +50,18 @@ function assert(cond: boolean, msg: string) {
   const repoRoot = "/home/u`/ro\not`";
   const safe = inlineCodeSafe(repoRoot);
   assert(!safe.includes("`"), "inlineCodeSafe strips every backtick (would close the span)");
-  assert(!safe.includes("\n") && !safe.includes("\r"), "inlineCodeSafe replaces every CR/LF with a visible marker");
+  assert(
+    !safe.includes("\n") && !safe.includes("\r"),
+    "inlineCodeSafe replaces every CR/LF with a visible marker",
+  );
   assert(safe.includes("⏎"), "the newline is replaced with the ⏎ marker, not dropped");
   // The full interpolated command span the operator sees: no raw backtick
   // or newline may survive inside it.
   const span = `git -C ${safe} status`;
-  assert(!span.includes("\n") && !span.includes("\r"), "the interpolated command span has no raw newline");
+  assert(
+    !span.includes("\n") && !span.includes("\r"),
+    "the interpolated command span has no raw newline",
+  );
   assert(!span.includes("`"), "the interpolated command span has no raw backtick");
 }
 

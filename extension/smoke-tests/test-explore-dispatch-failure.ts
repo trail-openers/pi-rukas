@@ -71,7 +71,7 @@ async function guardOrdering() {
   // The helper appends the completion event on the success path and a
   // dispatch-failed event on the catch path, both before it returns.
   const successIdx = helper.indexOf(
-    'const after = appendEvent(clearDispatch(next, begun.jobId), event);',
+    "const after = appendEvent(clearDispatch(next, begun.jobId), event);",
   );
   const catchIdx = helper.indexOf("} catch (err) {");
   const failedIdx = helper.indexOf('kind: "dispatch-failed"', catchIdx);

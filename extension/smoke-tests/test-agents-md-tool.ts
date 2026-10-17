@@ -132,7 +132,16 @@ const run = (raw: Record<string, unknown>) =>
   // sections (Quality Gates, Commands, Environment) use ## headings; the
   // 7 boilerplate sections use # headings.
   const diffLines = reportText.split("\n");
-  const headings = ["## Quality Gates", "## Commands", "## Environment", "# Git Workflow", "# Documentation Policy", "# Code Review Doctrine", "# Context7 Protocol", "# Testing Standards"];
+  const headings = [
+    "## Quality Gates",
+    "## Commands",
+    "## Environment",
+    "# Git Workflow",
+    "# Documentation Policy",
+    "# Code Review Doctrine",
+    "# Context7 Protocol",
+    "# Testing Standards",
+  ];
   for (const h of headings) {
     const count = diffLines.filter((l) => l === `+${h}`).length;
     assert(count === 1, `create diff: heading '${h}' appears exactly once (got ${count})`);
@@ -207,10 +216,7 @@ const run = (raw: Record<string, unknown>) =>
   assert(r.content[0]?.text?.includes("clean"), "clean check renders 'clean'");
 
   // A stale reference → findings, one line per finding.
-  writeFileSync(
-    AGENTS,
-    "# T\n\nsee `gone.ts` for the rest\n",
-  );
+  writeFileSync(AGENTS, "# T\n\nsee `gone.ts` for the rest\n");
   const r2 = await run({ verb: "check" });
   const c2 = r2.details.check as { code: number; findings: { kind: string; message: string }[] };
   assert(r2.details.exitCode === 1 && c2.code === 1, "stale path → exit 1");
@@ -290,10 +296,7 @@ const run = (raw: Record<string, unknown>) =>
     (plan?.newBytes ?? "").length > 0,
     "graceful fallback: newBytes is non-empty (facts derived from detectFacts)",
   );
-  assert(
-    r.content[0]?.text !== undefined,
-    "graceful fallback: report is present (no error)",
-  );
+  assert(r.content[0]?.text !== undefined, "graceful fallback: report is present (no error)");
 }
 
 // ---------------- agentOverride carrying testingNotes (the #667 render thread)
@@ -314,7 +317,10 @@ const run = (raw: Record<string, unknown>) =>
     agentOverride: { facts: { testingNotes: notes } },
   });
   const d = r.details;
-  assert(d.verb === "create" && d.exitCode === 0, "create + testingNotes → { verb: create, exitCode: 0 }");
+  assert(
+    d.verb === "create" && d.exitCode === 0,
+    "create + testingNotes → { verb: create, exitCode: 0 }",
+  );
   const wrote = readFileSync(AGENTS, "utf8");
   assert(
     wrote.includes("**Project-specific**"),
@@ -342,11 +348,13 @@ const run = (raw: Record<string, unknown>) =>
       facts: { testingNotes: ["A completely different note that must not appear"] },
     },
   });
-  const p2 = r2.details.plan as {
-    wouldWrite: boolean;
-    newBytes: string;
-    scaffoldedIds?: string[];
-  } | undefined;
+  const p2 = r2.details.plan as
+    | {
+        wouldWrite: boolean;
+        newBytes: string;
+        scaffoldedIds?: string[];
+      }
+    | undefined;
   assert(
     !p2?.scaffoldedIds?.includes("testing-standards"),
     "update + new testingNotes: testing-standards NOT re-scaffolded (skip-if-present idempotency)",
@@ -382,22 +390,35 @@ const run = (raw: Record<string, unknown>) =>
   const r = await run({
     verb: "create",
     agentOverride: { codeStyleBullets: cs, architectureBullets: arch },
-    answers: { projectIntent: "pi-rukas: orchestration harness for pi subagents; TypeScript + Bun" },
+    answers: {
+      projectIntent: "pi-rukas: orchestration harness for pi subagents; TypeScript + Bun",
+    },
   });
   const d = r.details;
-  assert(d.verb === "create" && d.exitCode === 0, "create + bullets + 5th answer: { verb: create, exitCode: 0 }");
+  assert(
+    d.verb === "create" && d.exitCode === 0,
+    "create + bullets + 5th answer: { verb: create, exitCode: 0 }",
+  );
   const wrote = readFileSync(AGENTS, "utf8");
   assert(wrote.includes("## Code Style"), "create + bullets: ## Code Style in plan.newBytes file");
-  assert(wrote.includes("## Architecture Notes"), "create + bullets: ## Architecture Notes in plan.newBytes file");
+  assert(
+    wrote.includes("## Architecture Notes"),
+    "create + bullets: ## Architecture Notes in plan.newBytes file",
+  );
   for (const b of [...cs, ...arch]) {
     assert(wrote.includes(`- ${b}`), `create + bullets: bullet rendered: ${b}`);
   }
   // The 5th answers field: accepted by the widened TypeBox param and rendered
   // in operator-choices with its dedicated bullet — never in an agent-derived
   // section (provenance separation: operator-authored vs refresh-replaceable).
-  assert(wrote.includes("## Operator choices"), "create + 5th answer: operator-choices section present");
   assert(
-    wrote.includes("- **Project intent & stack:** pi-rukas: orchestration harness for pi subagents"),
+    wrote.includes("## Operator choices"),
+    "create + 5th answer: operator-choices section present",
+  );
+  assert(
+    wrote.includes(
+      "- **Project intent & stack:** pi-rukas: orchestration harness for pi subagents",
+    ),
     "create + 5th answer: the projectIntent bullet renders in operator-choices",
   );
   const archSection = wrote.slice(wrote.indexOf("## Architecture Notes"));
@@ -408,13 +429,27 @@ const run = (raw: Record<string, unknown>) =>
   // Sidecar rows: [detected:agent] for both bullet sections + [asked:operator]
   // for the 5th answer, all distinct keys.
   const sPath = path.join(tmp, ".pi", "agents-md-state.json");
-  const sRaw = JSON.parse(readFileSync(sPath, "utf8")) as { key: string; value: string; provenance: string; date: string }[];
+  const sRaw = JSON.parse(readFileSync(sPath, "utf8")) as {
+    key: string;
+    value: string;
+    provenance: string;
+    date: string;
+  }[];
   const csRow = sRaw.find((x) => x.key === "code-style");
   const archRow = sRaw.find((x) => x.key === "architecture-notes");
   const intentRow = sRaw.find((x) => x.key === "operator:intent");
-  assert(csRow?.provenance === "detected" && csRow?.value === "agent", "create + bullets: code-style [detected:agent] sidecar row");
-  assert(archRow?.provenance === "detected" && archRow?.value === "agent", "create + bullets: architecture-notes [detected:agent] sidecar row");
-  assert(intentRow?.provenance === "asked", "create + 5th answer: operator:intent [asked:operator] sidecar row");
+  assert(
+    csRow?.provenance === "detected" && csRow?.value === "agent",
+    "create + bullets: code-style [detected:agent] sidecar row",
+  );
+  assert(
+    archRow?.provenance === "detected" && archRow?.value === "agent",
+    "create + bullets: architecture-notes [detected:agent] sidecar row",
+  );
+  assert(
+    intentRow?.provenance === "asked",
+    "create + 5th answer: operator:intent [asked:operator] sidecar row",
+  );
   assert(
     !sRaw.some((x) => x.key === "omit:code-style" || x.key === "omit:architecture-notes"),
     "create + bullets: no omit: rows for the agent-derived sections",

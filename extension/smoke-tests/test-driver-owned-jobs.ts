@@ -113,7 +113,10 @@ const theirs = hangingJob({ label: "developer[default]", role: "developer", driv
   const lines = (await text("dispatch_status")).split("\n");
   const mineLine = lines.find((l) => l.includes(mine.jobId)) ?? "";
   const theirLine = lines.find((l) => l.includes(theirs.jobId)) ?? "";
-  assert(/owned by the \/work driver/.test(theirLine), `status names the driver's job (${theirLine})`);
+  assert(
+    /owned by the \/work driver/.test(theirLine),
+    `status names the driver's job (${theirLine})`,
+  );
   assert(!/driver/.test(mineLine), `status leaves the PM's own job unmarked (${mineLine})`);
   const rows = jobStatusSnapshot();
   assert(
@@ -170,7 +173,12 @@ const theirs = hangingJob({ label: "developer[default]", role: "developer", driv
   assert(mine.seen.signal?.aborted === true, "a PM job is killed without force");
   assert(own.startsWith("Sent SIGTERM to job"), "and reports as before");
 
-  const cycle = hangingJob({ label: "work-driver", role: "work-driver", driver: true, skipDeck: true });
+  const cycle = hangingJob({
+    label: "work-driver",
+    role: "work-driver",
+    driver: true,
+    skipDeck: true,
+  });
   const cycleKill = await text("dispatch_kill", { jobId: cycle.jobId, force: true });
   assert(
     /^Refused/.test(cycleKill) && cycle.seen.signal?.aborted === false,
@@ -205,13 +213,19 @@ const theirs = hangingJob({ label: "developer[default]", role: "developer", driv
     }
   };
   const dev = { role: "developer", prompt: "x", cwd: wt };
-  assert(/^Refused.*cycle for #56/.test(throws(() => assertNotDriverWorktree(dev))), "developer refused");
+  assert(
+    /^Refused.*cycle for #56/.test(throws(() => assertNotDriverWorktree(dev))),
+    "developer refused",
+  );
   assert(throws(() => assertNotDriverWorktree({ ...dev, role: "ops" })) !== "", "ops refused");
   assert(
     throws(() => assertNotDriverWorktree({ ...dev, role: "explore" })) === "",
     "explore (read-only) may look inside",
   );
-  assert(throws(() => assertNotDriverWorktree({ ...dev, cwd: "/repo" })) === "", "repo root allowed");
+  assert(
+    throws(() => assertNotDriverWorktree({ ...dev, cwd: "/repo" })) === "",
+    "repo root allowed",
+  );
 
   const viaTool = await tool("dispatch_specialist")
     .execute("t", dev)

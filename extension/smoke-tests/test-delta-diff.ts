@@ -34,8 +34,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { resolveDeltaDiff } from "../src/lens-review-diff.ts";
-import { computeDeltaDiff, computeRangeDiff } from "../src/review-diff.ts";
 import { subtractReviewedHunks } from "../src/review-delta-hunks.ts";
+import { computeDeltaDiff, computeRangeDiff } from "../src/review-diff.ts";
 
 const execp = promisify(exec);
 
@@ -285,7 +285,10 @@ async function mkRepo(): Promise<{ dir: string; c0: string; c1: string; c2: stri
   assert(once.split("+new").length - 1 === 1, "multiset: one of two identical hunks survives");
   // (e) empty prev → everything kept, byte-identical to the input
   const full = file("a.ts", hunkA);
-  assert(subtractReviewedHunks(full, "") === full, "empty previous diff leaves the head diff byte-identical");
+  assert(
+    subtractReviewedHunks(full, "") === full,
+    "empty previous diff leaves the head diff byte-identical",
+  );
   // (f) all hunks reviewed → "" (caller turns this into the no-review outcome)
   assert(subtractReviewedHunks(full, full) === "", "everything already reviewed → empty");
 }

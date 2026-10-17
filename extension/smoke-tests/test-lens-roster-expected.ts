@@ -13,7 +13,7 @@
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildLensRoster, buildExpectedRoster } from "../src/lens-roster.ts";
+import { buildExpectedRoster, buildLensRoster } from "../src/lens-roster.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const REPO_SKILLS = path.join(REPO_ROOT, "skill");

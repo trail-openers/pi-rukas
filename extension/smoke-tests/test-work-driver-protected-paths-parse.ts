@@ -100,11 +100,7 @@ function fake(stdout: string, onCall?: (argv: string[]) => void) {
     diffCalls[0]?.join(" ") === [...PROTECTED_DIFF_ARGV, `${BASE}..HEAD`].join(" "),
     "committed read is argv-shaped with -z, --name-status, -M and --end-of-options",
   );
-  const deletion = await readCommittedProtectedPaths(
-    fake("D\0.pi/verify-cmd\0"),
-    "/wt",
-    BASE,
-  );
+  const deletion = await readCommittedProtectedPaths(fake("D\0.pi/verify-cmd\0"), "/wt", BASE);
   assert(
     deletion.ok === true &&
       changedPaths(deletion.targets).join() === ".pi/verify-cmd" &&
@@ -156,8 +152,7 @@ function fake(stdout: string, onCall?: (argv: string[]) => void) {
     "diff -z: the rejection names the offending code token so the operator sees which record broke",
   );
   assert(
-    (await readCommittedProtectedPaths(fake("agents.json\0src/a.ts\0"), "/wt", BASE)).ok ===
-      false,
+    (await readCommittedProtectedPaths(fake("agents.json\0src/a.ts\0"), "/wt", BASE)).ok === false,
     "diff -z: a protected `agents.json` in the code slot is unreadable too — no non-letter token is accepted as a kind",
   );
   // A score belongs to R/C alone: git appends the similarity percentage to a
@@ -174,11 +169,7 @@ function fake(stdout: string, onCall?: (argv: string[]) => void) {
     (await readCommittedProtectedPaths(fake("M\0src/a.ts\0"), "/wt", BASE)).ok === true,
     "diff -z: the tightened code regex still accepts a bare `M` (the score is only illegal on the unscored letters)",
   );
-  const renamed = await readCommittedProtectedPaths(
-    fake(`R100\0${CI}\0src/ci.yml\0`),
-    "/wt",
-    BASE,
-  );
+  const renamed = await readCommittedProtectedPaths(fake(`R100\0${CI}\0src/ci.yml\0`), "/wt", BASE);
   assert(
     renamed.ok === true && renamed.targets.length === 1 && renamed.targets[0].kind === "R",
     "diff -z: a committed R100 record is typed `R` (the letter dispatch runs before the code-shape check, so a scored rename is never `other`)",
@@ -191,8 +182,7 @@ function fake(stdout: string, onCall?: (argv: string[]) => void) {
   );
   assert(
     verbatim.ok === true &&
-      changedPaths(verbatim.targets).join("|") ===
-        ".github/back\\slash.yml|.github/tab\there.yml",
+      changedPaths(verbatim.targets).join("|") === ".github/back\\slash.yml|.github/tab\there.yml",
     "diff -z: a backslash or a tab in a protected name arrives verbatim, undecoded",
   );
   const verbatimStatus = await readProtectedStatusPaths(
@@ -300,9 +290,7 @@ function fake(stdout: string, onCall?: (argv: string[]) => void) {
   // `R` and `C` side by side: both sources are collected, neither is mistaken
   // for the other's kind, and the destinations alone reach the change union.
   const mixed = await readCommittedProtectedPaths(
-    fake(
-      nulNameStatus(`R\t${CI}\tsrc/moved.yml`, `C\t.pi/verify-cmd\tsrc/copied`, "M\tsrc/a.ts"),
-    ),
+    fake(nulNameStatus(`R\t${CI}\tsrc/moved.yml`, `C\t.pi/verify-cmd\tsrc/copied`, "M\tsrc/a.ts")),
     "/wt",
     BASE,
   );

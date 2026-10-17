@@ -7,17 +7,17 @@
  * test-research-fallback-driver.ts.
  */
 
-import os from "node:os";
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
+  type FallbackDecision,
+  type ParallelOutcome,
+  type WigoloSurface,
   classifyParallelOutcome,
   researchFallbackLine,
   selectFallback,
   surfaceForAngle,
-  type FallbackDecision,
-  type ParallelOutcome,
-  type WigoloSurface,
 } from "../src/research-fallback.ts";
 
 let exit = 0;

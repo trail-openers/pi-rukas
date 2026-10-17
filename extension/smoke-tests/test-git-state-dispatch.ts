@@ -86,7 +86,9 @@ async function waitFor(inbox: unknown[], n: number) {
   await waitFor(inbox, 1);
   assert(inbox.length === 1, "startJob delivers one report");
   assert(
-    inbox[0]?.content.includes(`1 uncommitted/untracked ${UNTRUSTED_NAMES_MARKER}: "zz-dirty-marker.txt"`),
+    inbox[0]?.content.includes(
+      `1 uncommitted/untracked ${UNTRUSTED_NAMES_MARKER}: "zz-dirty-marker.txt"`,
+    ),
     `developer line computed from dispatch cwd (got: ${inbox[0]?.content.slice(0, 400)})`,
   );
 }
@@ -206,7 +208,10 @@ async function waitFor(inbox: unknown[], n: number) {
   });
   await waitFor(inbox, 1);
   await new Promise((r) => setTimeout(r, 100));
-  assert(inbox.length === 1, `single job: throwing git line delivers exactly one report (got ${inbox.length})`);
+  assert(
+    inbox.length === 1,
+    `single job: throwing git line delivers exactly one report (got ${inbox.length})`,
+  );
   assert(!inbox[0]?.content.includes("git state"), "single job: fallback report is unannotated");
 }
 
@@ -225,7 +230,10 @@ async function waitFor(inbox: unknown[], n: number) {
   });
   await waitFor(inbox, 1);
   await new Promise((r) => setTimeout(r, 100));
-  assert(inbox.length === 1, `batch: throwing git line delivers exactly one report (got ${inbox.length})`);
+  assert(
+    inbox.length === 1,
+    `batch: throwing git line delivers exactly one report (got ${inbox.length})`,
+  );
   assert(!inbox[0]?.content.includes("git state"), "batch: fallback report is unannotated");
 }
 

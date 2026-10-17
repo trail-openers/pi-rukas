@@ -199,15 +199,28 @@ setupSpawnGuard();
     "git pull": { stdout: "" },
     "git branch -d": { stdout: "" },
   });
-  await restoreCheckout({ repoRoot: "/fake", mainline: "main", mergedBranch: "feature/issue-100", execFn: fn });
+  await restoreCheckout({
+    repoRoot: "/fake",
+    mainline: "main",
+    mergedBranch: "feature/issue-100",
+    execFn: fn,
+  });
   const pfx = calls.map((c) => c.split(" ").slice(0, 2).join(" "));
   assert(
     JSON.stringify(pfx) ===
-      JSON.stringify(["git fetch", "git checkout", "git status", "git pull", "git check-ref-format", "git branch"]),
+      JSON.stringify([
+        "git fetch",
+        "git checkout",
+        "git status",
+        "git pull",
+        "git check-ref-format",
+        "git branch",
+      ]),
     "restoreCheckout: fetch→checkout→status→pull→validate→branch -d (branch validated once, before -d)",
   );
   assert(
-    calls[calls.length - 1]?.includes("git branch -d") && calls[calls.length - 1]?.includes("feature/issue-100"),
+    calls[calls.length - 1]?.includes("git branch -d") &&
+      calls[calls.length - 1]?.includes("feature/issue-100"),
     "restoreCheckout: step 5 uses lowercase -d",
   );
 }
@@ -219,7 +232,12 @@ setupSpawnGuard();
     "git pull": { stdout: "" },
     "git branch -d": { error: true, stderr: "not fully merged" },
   });
-  const notes = await restoreCheckout({ repoRoot: "/fake", mainline: "main", mergedBranch: "feature/issue-100", execFn: fn });
+  const notes = await restoreCheckout({
+    repoRoot: "/fake",
+    mainline: "main",
+    mergedBranch: "feature/issue-100",
+    execFn: fn,
+  });
   assert(
     notes.some((n) => n.includes("branch -d")),
     "restoreCheckout: branch -d refusal → note, not fatal",
@@ -231,7 +249,12 @@ setupSpawnGuard();
     "git rev-parse": { stdout: "main\n" },
     "git pull": { stdout: "" },
   });
-  await restoreCheckout({ repoRoot: "/fake", mainline: "main", mergedBranch: "feature/issue-100", execFn: fn });
+  await restoreCheckout({
+    repoRoot: "/fake",
+    mainline: "main",
+    mergedBranch: "feature/issue-100",
+    execFn: fn,
+  });
   assert(
     calls.some((c) => c === "git checkout main --"),
     "restoreCheckout: checks out the target even when already on it",
@@ -377,9 +400,12 @@ setupSpawnGuard();
       }
       return base.fn(cmd);
     };
-    const r = await mechanizedMerge({ repoRoot: dir, issue: 100, host: mkPi(), verifyExecFn: exec }, {
-      pipelineState: { prNumber: 999 },
-    } as unknown as WorkState);
+    const r = await mechanizedMerge(
+      { repoRoot: dir, issue: 100, host: mkPi(), verifyExecFn: exec },
+      {
+        pipelineState: { prNumber: 999 },
+      } as unknown as WorkState,
+    );
     assert(
       r.ok === true && r.method === "squash",
       "mechanizedMerge: happy path squash from repo settings",
@@ -411,9 +437,12 @@ setupSpawnGuard();
       }
       return base.fn(cmd);
     };
-    const r = await mechanizedMerge({ repoRoot: dir, issue: 100, host: mkPi(), verifyExecFn: exec }, {
-      pipelineState: { prNumber: 999 },
-    } as unknown as WorkState);
+    const r = await mechanizedMerge(
+      { repoRoot: dir, issue: 100, host: mkPi(), verifyExecFn: exec },
+      {
+        pipelineState: { prNumber: 999 },
+      } as unknown as WorkState,
+    );
     assert(
       r.ok === true && r.method === "rebase",
       "mechanizedMerge: rebase derived from repo settings",

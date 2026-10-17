@@ -10,8 +10,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { DriverContext } from "../src/work-driver-context.ts";
 import { runDependentWorkstreams } from "../src/work-develop-run.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { execp } from "../src/work-driver-verify.ts";
 import { type WorkEvent, initialState } from "../src/workflow-state.ts";
 
@@ -111,8 +111,14 @@ const ws = {
     },
   );
   const bVerdicts = verdicts.filter((v) => v.id === "task-b");
-  assert(calls === 2, "#1016: the recovered dependent was dispatched twice (first pass + one retry)");
-  assert(bVerdicts.length === 1, `#1016: a recovered dependent appears once (got ${bVerdicts.length})`);
+  assert(
+    calls === 2,
+    "#1016: the recovered dependent was dispatched twice (first pass + one retry)",
+  );
+  assert(
+    bVerdicts.length === 1,
+    `#1016: a recovered dependent appears once (got ${bVerdicts.length})`,
+  );
   assert(bVerdicts[0]?.ok === true, "#1016: the recovered dependent's single verdict is ok:true");
   assert(
     existsSync(path.join(res.worktrees["task-b"] ?? "", "b.txt")),

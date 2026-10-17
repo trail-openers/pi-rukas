@@ -188,7 +188,10 @@ const args: ArtifactArgs = {
   const la = renderArtifact({ ...args, claims: [...claims, ...localClaims] });
   assert(la.includes("verification: local-present"), "artifact row: local-present renders");
   assert(la.includes("verification: local-missing"), "artifact row: local-missing renders");
-  assert(la.includes("verification: url skipped-cap"), "artifact row: url skipped-cap renders (the check is kept, the cap is the status)");
+  assert(
+    la.includes("verification: url skipped-cap"),
+    "artifact row: url skipped-cap renders (the check is kept, the cap is the status)",
+  );
 
   // renderProvenance prints `parts` for ANY check kind that carries parts,
   // not only url-liveness.

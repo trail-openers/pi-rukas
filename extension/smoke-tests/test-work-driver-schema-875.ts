@@ -7,8 +7,8 @@
  * Extracted from test-work-driver-schema.ts (AGENTS.md §12 file-size limit).
  */
 
-import { initialState } from "../src/workflow-state.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
+import { initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -30,10 +30,24 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         incompleteConsolidation: { verdicts: [o], filesPresent: [] },
       },
     } as unknown as Record<string, unknown>);
-  assert(ic({ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"], dirty: true }).length === 0, "#875: dirty=true accepted");
-  assert(ic({ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"], dirty: false }).length === 0, "#875: dirty=false accepted");
-  assert(ic({ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"] }).length === 0, "#875: legacy (no dirty) stays valid");
-  assert(ic({ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"], dirty: "yes" }).some((x: string) => x.includes("dirty") && x.includes("not a boolean")), "#875: non-boolean dirty refuses");
+  assert(
+    ic({ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"], dirty: true }).length === 0,
+    "#875: dirty=true accepted",
+  );
+  assert(
+    ic({ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"], dirty: false }).length === 0,
+    "#875: dirty=false accepted",
+  );
+  assert(
+    ic({ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"] }).length === 0,
+    "#875: legacy (no dirty) stays valid",
+  );
+  assert(
+    ic({ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"], dirty: "yes" }).some(
+      (x: string) => x.includes("dirty") && x.includes("not a boolean"),
+    ),
+    "#875: non-boolean dirty refuses",
+  );
 }
 
 console.log(`\nexit ${exit}`);

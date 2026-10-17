@@ -242,7 +242,10 @@ function assert(cond: boolean, msg: string) {
     argv.includes("--memory-type observation") && argv.includes("--status candidate"),
     "invariant-removal rows are observation-typed candidates, so prune can age them out",
   );
-  assert(!argv.includes("guard") && !argv.includes("--force"), "canary: never guard, never --force");
+  assert(
+    !argv.includes("guard") && !argv.includes("--force"),
+    "canary: never guard, never --force",
+  );
 }
 
 console.log(`\nexit ${exit}`);

@@ -27,7 +27,10 @@ function assert(cond: boolean, msg: string) {
 // ------------------------------------------ (a) empty toolUses → undefined
 
 {
-  assert(extractAgentFacts([]) === undefined, "(a) empty toolUses → undefined (no call = no facts)");
+  assert(
+    extractAgentFacts([]) === undefined,
+    "(a) empty toolUses → undefined (no call = no facts)",
+  );
 }
 
 // ----------------------------------- (b) wrong tool name → undefined
@@ -46,16 +49,17 @@ function assert(cond: boolean, msg: string) {
 // ---------------------- (c) malformed arguments object → undefined
 
 {
-  const malformed = [
-    { name: "report_facts", arguments: { commands: "not-an-array" } },
-  ];
+  const malformed = [{ name: "report_facts", arguments: { commands: "not-an-array" } }];
   assert(
     extractAgentFacts(malformed) === undefined,
     "(c) report_facts with a string where an array is expected → undefined (discarded, not coerced)",
   );
 
   const malformed2 = [
-    { name: "report_facts", arguments: { commands: [{ name: "a", command: "b", kind: "deploy" }] } },
+    {
+      name: "report_facts",
+      arguments: { commands: [{ name: "a", command: "b", kind: "deploy" }] },
+    },
   ];
   assert(
     extractAgentFacts(malformed2) === undefined,
@@ -178,12 +182,14 @@ function assert(cond: boolean, msg: string) {
     },
   ];
   const out = extractAgentFacts(partial);
-  assert(out !== undefined, "(partial) a partial call is NOT a failure — it is partial information");
+  assert(
+    out !== undefined,
+    "(partial) a partial call is NOT a failure — it is partial information",
+  );
   assert(out?.codeStyleBullets?.length === 1, "(partial) codeStyleBullets applied");
   assert(
     out?.architectureBullets?.length === 2 &&
-      out?.architectureBullets?.[0] ===
-        "src/index.ts — entrypoint: changes require a smoke run",
+      out?.architectureBullets?.[0] === "src/index.ts — entrypoint: changes require a smoke run",
     "(partial) architectureBullets carried through extractAgentFacts unchanged",
   );
   assert(out?.commands === undefined, "(partial) absent commands stay undefined (not invented)");
@@ -208,7 +214,10 @@ function assert(cond: boolean, msg: string) {
     },
   ];
   const out = extractAgentFacts(multiple);
-  assert(out?.language === "rust", "(multiple) the LAST valid call wins (malformed first call discarded)");
+  assert(
+    out?.language === "rust",
+    "(multiple) the LAST valid call wins (malformed first call discarded)",
+  );
   assert(out?.manifest === "Cargo.toml", "(multiple) the third call's manifest, not the second");
 }
 
@@ -222,13 +231,19 @@ function assert(cond: boolean, msg: string) {
     { name: "report_facts", arguments: { language: "python" } },
   ];
   const out = extractAgentFacts(mixed);
-  assert(out?.language === "python", "(mixed) non-object toolUses entries are skipped, valid call still found");
+  assert(
+    out?.language === "python",
+    "(mixed) non-object toolUses entries are skipped, valid call still found",
+  );
 }
 
 // ------------------------------------- FACTS_EXTRA_ARGS is the load seam
 
 {
-  assert(FACTS_EXTRA_ARGS.length === 3, "FACTS_EXTRA_ARGS has 3 entries (--no-skills, --extension, path)");
+  assert(
+    FACTS_EXTRA_ARGS.length === 3,
+    "FACTS_EXTRA_ARGS has 3 entries (--no-skills, --extension, path)",
+  );
   assert(FACTS_EXTRA_ARGS[0] === "--no-skills", "FACTS_EXTRA_ARGS[0] is --no-skills");
   assert(FACTS_EXTRA_ARGS[1] === "--extension", "FACTS_EXTRA_ARGS[1] is --extension");
   assert(

@@ -16,12 +16,12 @@
  *   - an unsafe headRefName (containing `-->`) is NOT posted (fail closed).
  */
 
-import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { postLensResidualDisclosure } from "../src/lens-review-residuals.ts";
-import { lensResidualsMarker } from "../src/merge-guard-round-cap.ts";
 import type { LensReviewSummary } from "../src/lens-review.ts";
+import { lensResidualsMarker } from "../src/merge-guard-round-cap.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 
 let exit = 0;
@@ -47,7 +47,13 @@ function summary(
   };
 }
 
-const FINDING = { severity: "MEDIUM", path: "src/a.ts", line: 10, title: "a finding", lens: "SIMPLICITY" };
+const FINDING = {
+  severity: "MEDIUM",
+  path: "src/a.ts",
+  line: 10,
+  title: "a finding",
+  lens: "SIMPLICITY",
+};
 const ISSUES = summary("ISSUES_FOUND", [FINDING]);
 
 type Stub = {
@@ -201,7 +207,10 @@ function repoDir(): string {
       stub.calls.some((c) => c.includes("git fetch origin feature/issue-1-x main")),
       "…and the patch-id base/head come from the open PR's refs, not the stale branch",
     );
-    assert(stub.calls.some((c) => c.includes("pr comment 12")), "the post issues a `gh pr comment` call");
+    assert(
+      stub.calls.some((c) => c.includes("pr comment 12")),
+      "the post issues a `gh pr comment` call",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -231,7 +240,10 @@ function repoDir(): string {
     );
     assert(stub.bodyFiles.length === 1, "…and the post wrote exactly one body file");
     const expected = `<!-- pi-rukas:lens-residuals branch=${branch} patch=p42 -->`;
-    assert(stub.bodyFiles[0]?.includes(expected), `the explicit-pr path posts the FULL branch name: ${expected}`);
+    assert(
+      stub.bodyFiles[0]?.includes(expected),
+      `the explicit-pr path posts the FULL branch name: ${expected}`,
+    );
     // End-to-end consistency for the explicit-pr path: the guard's builder
     // with the same (headRefName, patchId) produces the exact posted string.
     assert(
@@ -293,7 +305,7 @@ function repoDir(): string {
 // ------------------------------------------- #1000 — invalid explicit pr
 // (7.5, NaN): NOT posted (fail closed), the note names the refusal
 
-for (const badPr of [7.5, NaN]) {
+for (const badPr of [7.5, Number.NaN]) {
   const dir = repoDir();
   try {
     const stub = stubForBranch("feature/issue-1-x");
@@ -341,7 +353,9 @@ for (const badPr of [7.5, NaN]) {
       // Everything else (fetch, patch-id, pr comment, remote) is a leak —
       // for a bad baseRefName it must never be reached.
       if (cmd.includes("git fetch")) {
-        throw new Error("a git fetch MUST NOT run for an unsafe baseRefName (nothing fetched — fail closed)");
+        throw new Error(
+          "a git fetch MUST NOT run for an unsafe baseRefName (nothing fetched — fail closed)",
+        );
       }
       if (cmd.includes("patch-id")) {
         throw new Error("patch-id MUST NOT run for an unsafe baseRefName");
@@ -359,7 +373,10 @@ for (const badPr of [7.5, NaN]) {
     });
     assert(note !== "", "an unsafe baseRefName returns a note (fail closed)");
     assert(/git-ref-safe/.test(note), "…naming the git-ref-safe refusal");
-    assert(!calls.some((c) => c.includes("git fetch")), "NO fetch exec was issued (nothing fetched)");
+    assert(
+      !calls.some((c) => c.includes("git fetch")),
+      "NO fetch exec was issued (nothing fetched)",
+    );
     assert(
       !calls.some((c) => c.includes("patch-id") || c.includes("pr comment")),
       "…and nothing else (no patch-id, no post)",

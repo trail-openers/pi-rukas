@@ -29,7 +29,9 @@ function assert(cond: boolean, msg: string) {
 {
   let deliverCount = 0;
   const fakePi = {
-    sendUserMessage: () => { deliverCount++; },
+    sendUserMessage: () => {
+      deliverCount++;
+    },
   } as unknown as ExtensionAPI;
 
   let s = initialState(580, 1_000_000);
@@ -65,10 +67,7 @@ function assert(cond: boolean, msg: string) {
     notifyAgent(fakePi, msg);
   }
 
-  assert(
-    deliverCount === 0,
-    "handoffDeliveredAt set → notifyAgent not called (count=0)",
-  );
+  assert(deliverCount === 0, "handoffDeliveredAt set → notifyAgent not called (count=0)");
 }
 
 // ---------------------------------------------------------------------------
@@ -111,15 +110,12 @@ function assert(cond: boolean, msg: string) {
     };
   }
 
-  assert(
-    deliveredMsg.length > 0,
-    "handoffDeliveredAt absent → message delivered",
-  );
+  assert(deliveredMsg.length > 0, "handoffDeliveredAt absent → message delivered");
   assert(
     s.pipelineState.handoffDeliveredAt !== undefined &&
-    typeof s.pipelineState.handoffDeliveredAt === "string" &&
-    s.pipelineState.handoffDeliveredAt.includes("T") &&
-    s.pipelineState.handoffDeliveredAt.endsWith("Z"),
+      typeof s.pipelineState.handoffDeliveredAt === "string" &&
+      s.pipelineState.handoffDeliveredAt.includes("T") &&
+      s.pipelineState.handoffDeliveredAt.endsWith("Z"),
     "handoffDeliveredAt absent → field written as ISO timestamp",
   );
 }
@@ -176,14 +172,8 @@ function assert(cond: boolean, msg: string) {
     firstLine.startsWith("pi-rukas:driver-event v1 kind=handoff issue=580 at="),
     "renderHandoffUserMessage: first line is driver-event envelope",
   );
-  assert(
-    firstLine.includes("kind=handoff"),
-    "envelope: kind=handoff",
-  );
-  assert(
-    firstLine.includes("issue=580"),
-    "envelope: issue=580",
-  );
+  assert(firstLine.includes("kind=handoff"), "envelope: kind=handoff");
+  assert(firstLine.includes("issue=580"), "envelope: issue=580");
   assert(
     firstLine.includes("at=") && firstLine.slice(firstLine.indexOf("at=") + 3).length > 10,
     "envelope: at=<iso timestamp>",
@@ -235,7 +225,9 @@ function assert(cond: boolean, msg: string) {
 {
   let delivered = false;
   const fakePi = {
-    sendUserMessage: () => { delivered = true; },
+    sendUserMessage: () => {
+      delivered = true;
+    },
   } as unknown as ExtensionAPI;
 
   let s = initialState(580, 1_000_000);
@@ -261,7 +253,10 @@ function assert(cond: boolean, msg: string) {
   }
 
   assert(delivered, "aborted + no handoffDeliveredAt → delivers");
-  assert(s.pipelineState.handoffDeliveredAt === "2026-01-01T00:00:00.000Z", "aborted → field set after");
+  assert(
+    s.pipelineState.handoffDeliveredAt === "2026-01-01T00:00:00.000Z",
+    "aborted → field set after",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +265,9 @@ function assert(cond: boolean, msg: string) {
 {
   let delivered = false;
   const fakePi = {
-    sendUserMessage: () => { delivered = true; },
+    sendUserMessage: () => {
+      delivered = true;
+    },
   } as unknown as ExtensionAPI;
 
   let s = initialState(580, 1_000_000);

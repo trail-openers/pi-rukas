@@ -74,7 +74,7 @@ function feedToolResult(
   // 7 green re-runs, with a `cat` after the 3rd (read-only — no reset).
   for (let i = 1; i <= 7; i++) {
     det2.observe([bash("bun test", `u${i}`)], i - 1);
-    let e2 = feedToolResult(det2, `u${i}`, "bash", ok, false);
+    const e2 = feedToolResult(det2, `u${i}`, "bash", ok, false);
     if (e2) ev2.push(e2.kind);
     if (i === 3) det2.observe([bash("cat x", "u-cat")], i); // read-only — no reset
   }
@@ -150,7 +150,10 @@ function feedToolResult(
   det.observe([bash("ls /a/b")], 0);
   // fingerprintOf for the same path must also produce <P1> (same registry)
   const fp = det.fingerprintOf("bash", JSON.stringify({ command: "ls /a/b" }));
-  assert(fp === 'bash {"command":"ls <P1>"}', `#772(w): fingerprintOf shares the detector's registry (got ${fp})`);
+  assert(
+    fp === 'bash {"command":"ls <P1>"}',
+    `#772(w): fingerprintOf shares the detector's registry (got ${fp})`,
+  );
   // A different path gets a different token.
   const fp2 = det.fingerprintOf("bash", JSON.stringify({ command: "ls /c/d" }));
   assert(fp2 === 'bash {"command":"ls <P2>"}', `#772(w): second path → <P2> (got ${fp2})`);
@@ -203,7 +206,14 @@ function feedToolResult(
     det.observe([bash("echo x > out.txt", "z1d")], 3);
     det.observe([bash("bun test", "z1e")], 4);
     ev = feedToolResult(det, "z1e", "bash", ok, false); // count=1 (fresh)
-    if (ev) assert(ev.kind === "steer", "#772(z1): fresh start after redirect reset (unexpected steer)".replace(" (unexpected steer)", ""));
+    if (ev)
+      assert(
+        ev.kind === "steer",
+        "#772(z1): fresh start after redirect reset (unexpected steer)".replace(
+          " (unexpected steer)",
+          "",
+        ),
+      );
     assert(ev === null, "#772(z1): no event after redirect reset (count=1)");
   }
 
@@ -246,7 +256,10 @@ function feedToolResult(
     ev = feedToolResult(det, "z3f", "bash", ok, false); // count=5
     det.observe([bash("bun test", "z3g")], 6);
     ev = feedToolResult(det, "z3g", "bash", ok, false); // count=6 → kill
-    assert(ev?.kind === "kill", "#772(z3): > /dev/null does NOT reset — kill still fires at count 6");
+    assert(
+      ev?.kind === "kill",
+      "#772(z3): > /dev/null does NOT reset — kill still fires at count 6",
+    );
   }
 
   // (z4) ~500-char command containing `->` and `=>` is NOT treated as a
@@ -257,7 +270,7 @@ function feedToolResult(
     const det = createLoopDetector();
     const ok = "All tests passed";
     // Build a ~500-char command full of `->` / `=>` (no real `>` redirect).
-    const filler = ("echo a->b => c; ").repeat(25); // ~500 chars
+    const filler = "echo a->b => c; ".repeat(25); // ~500 chars
     const long = filler.slice(0, 500);
     det.observe([bash("bun test", "z4a")], 0);
     let ev = feedToolResult(det, "z4a", "bash", ok, false);
@@ -275,7 +288,10 @@ function feedToolResult(
     ev = feedToolResult(det, "z4f", "bash", ok, false); // count=5
     det.observe([bash("bun test", "z4g")], 6);
     ev = feedToolResult(det, "z4g", "bash", ok, false); // count=6 → kill
-    assert(ev?.kind === "kill", "#772(z4): -> / => in a long command is NOT a mutation — kill still fires");
+    assert(
+      ev?.kind === "kill",
+      "#772(z4): -> / => in a long command is NOT a mutation — kill still fires",
+    );
   }
 
   // (z5) object args: bashMutation reads args.command DIRECTLY (no
@@ -320,10 +336,16 @@ function feedToolResult(
     const e = feedToolResult(det, `aa-b${i}`, "bash", ok, false);
     if (e) ev = e;
   }
-  assert(ev !== null && (ev as { kind: string }).kind === "kill", "#772(aa): later fingerprint reaches kill");
+  assert(
+    ev !== null && (ev as { kind: string }).kind === "kill",
+    "#772(aa): later fingerprint reaches kill",
+  );
   const evidence = det.current();
   assert(evidence?.kind === "success", "#772(aa): evidence is success-keyed");
-  assert(evidence?.count === 6, `#772(aa): killed entry (count 6) wins over steered (count 3) — got ${evidence?.count}`);
+  assert(
+    evidence?.count === 6,
+    `#772(aa): killed entry (count 6) wins over steered (count 3) — got ${evidence?.count}`,
+  );
   assert(
     evidence?.fingerprint?.includes("cmd-B"),
     `#772(aa): evidence is the KILLED fingerprint (got ${evidence?.fingerprint})`,

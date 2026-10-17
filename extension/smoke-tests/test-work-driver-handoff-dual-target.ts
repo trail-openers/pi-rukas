@@ -62,7 +62,9 @@ function assert(cond: boolean, msg: string) {
     const next = await runHandoff(ctx, cappedState(782, 796), Date.now());
     const emitted = next.eventLog.find((e) => e.kind === "handoff-emitted");
     assert(
-      emitted?.kind === "handoff-emitted" && emitted.targetType === "pr" && emitted.targetNumber === 796,
+      emitted?.kind === "handoff-emitted" &&
+        emitted.targetType === "pr" &&
+        emitted.targetNumber === 796,
       "#798 dual: the event records the explicit target object (pr #796) — no URL parsing needed",
     );
     assert(
@@ -153,7 +155,9 @@ function assert(cond: boolean, msg: string) {
     const next = await runHandoff(ctx, cappedState(626), Date.now());
     const emitted = next.eventLog.find((e) => e.kind === "handoff-emitted");
     assert(
-      emitted?.kind === "handoff-emitted" && emitted.targetType === "issue" && emitted.targetNumber === 626,
+      emitted?.kind === "handoff-emitted" &&
+        emitted.targetType === "issue" &&
+        emitted.targetNumber === 626,
       "#798 no-PR: target is the issue (explicit, not inferred)",
     );
     assert(

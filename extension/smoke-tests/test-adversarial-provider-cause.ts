@@ -18,8 +18,8 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { infraFailureResult, runPhaseWithInfraRetry } from "../src/adversarial-retry.ts";
 import { classifyDispatchOutcome } from "../src/adversarial-classify.ts";
+import { infraFailureResult, runPhaseWithInfraRetry } from "../src/adversarial-retry.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { buildCompletionEvent } from "../src/work-driver-completion-event.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
@@ -136,12 +136,21 @@ async function loopResultFor(script: (string | undefined)[]): Promise<DispatchRe
     `loop text names the provider error and its cause (got: ${loop.text})`,
   );
   const ctx = { repoRoot: "/nonexistent", issue: 1 } as unknown as DriverContext;
-  const ev = await buildCompletionEvent(ctx, "adversarial", "adversarial-loop", "adversarial_loop", loop);
+  const ev = await buildCompletionEvent(
+    ctx,
+    "adversarial",
+    "adversarial-loop",
+    "adversarial_loop",
+    loop,
+  );
   assert(
     ev.kind === "dispatch-failed-provider" && ev.providerMessage === TIMEOUT,
     `step event is dispatch-failed-provider carrying the child's message (got ${ev.kind})`,
   );
-  assert(!classifyFailureCause(ev).shouldRetry, "a repeated provider error is not retried by the router");
+  assert(
+    !classifyFailureCause(ev).shouldRetry,
+    "a repeated provider error is not retried by the router",
+  );
   assert(
     failureCauseReason(ev).includes(TIMEOUT) && failureCauseReason(ev).includes("×2"),
     `reason names the error and the repeat (got: ${failureCauseReason(ev)})`,
@@ -198,9 +207,15 @@ for (const [issue, script, label] of [
   [7902, [MODEL_404], "404 model"],
 ] as const) {
   const { loops, after } = await driverRun(issue, [...script]);
-  assert(loops === 1, `${label}: the step is not re-dispatched into the same fault (loops=${loops})`);
+  assert(
+    loops === 1,
+    `${label}: the step is not re-dispatched into the same fault (loops=${loops})`,
+  );
   const cap = after?.eventLog.findLast((e) => e.kind === "cap-hit");
-  assert(cap?.kind === "cap-hit" && cap.cap === "step-failed:adversarial", `${label}: parks with step-failed:adversarial`);
+  assert(
+    cap?.kind === "cap-hit" && cap.cap === "step-failed:adversarial",
+    `${label}: parks with step-failed:adversarial`,
+  );
   const why = after && cap?.kind === "cap-hit" ? explainCap(cap.cap, after) : "";
   assert(
     why.includes(script[0] === TIMEOUT ? TIMEOUT : "not found") && why.includes("cause="),

@@ -86,9 +86,7 @@ async function cutThenAdvanceBase(
   await git(fx.repo, "fetch", "-q", "origin");
 }
 
-async function withFixture(
-  run: (root: string) => Promise<void>,
-): Promise<void> {
+async function withFixture(run: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(path.join(tmpdir(), "pi-diff-base-moved-"));
   try {
     await run(root);

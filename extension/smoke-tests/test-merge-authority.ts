@@ -220,7 +220,10 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
   );
   const e = await gatherMergeEvidence(fn, "/x", 7);
   assert(!e.ok, "non-array stdout from an exit-0 `gh pr checks` blocks (fail-closed)");
-  assert(e.failureKind !== "tooling", "malformed data is not tagged `tooling` (that would mislead)");
+  assert(
+    e.failureKind !== "tooling",
+    "malformed data is not tagged `tooling` (that would mislead)",
+  );
   assert(
     /data the gate could not read as a check list/.test(e.reason ?? ""),
     "the reason names the data regression, not a broken gh setup",
@@ -243,7 +246,10 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
     "pr check",
   );
   const e = await gatherMergeEvidence(fn, "/x", 7);
-  assert(!e.ok, "an anomalous mergeStateStatus still blocks (fail-closed, not in the blocking set)");
+  assert(
+    !e.ok,
+    "an anomalous mergeStateStatus still blocks (fail-closed, not in the blocking set)",
+  );
   assert(
     (e.reason ?? "").length < 120,
     `the rendered reason is bounded (got ${e.reason?.length}) — mergeStateStatus is truncated on read`,
@@ -256,9 +262,7 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
 {
   const { fn } = fakeGh({
     "pr view": GREEN_STATE,
-    "pr checks": JSON.stringify([
-      { name: "test", state: "FAILURE", bucket: "fail" },
-    ]),
+    "pr checks": JSON.stringify([{ name: "test", state: "FAILURE", bucket: "fail" }]),
   });
   assert(
     contradictsSuccess(await gatherMergeEvidence(fn, "/x", 7)) !== undefined,
@@ -312,7 +316,8 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
     "state files without the tag (pre-#745) keep the CI-flavoured action",
   );
   assert(
-    /tooling failure/.test(mergeHoldAction({ granted: false, source: "none" }, 42, "tooling")) === false,
+    /tooling failure/.test(mergeHoldAction({ granted: false, source: "none" }, 42, "tooling")) ===
+      false,
     "the no-authority action never changes with the tag",
   );
   assert(
@@ -335,18 +340,18 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
   );
 }
 
-  assert(
-    /tooling failure|The gh invocation itself failed/.test(mergeHoldToolingNote(true, "tooling")),
-    "the shared helper renders the tooling note for a tooling refusal",
-  );
-  assert(
-    mergeHoldToolingNote(true, "ci") === "" && mergeHoldToolingNote(true, undefined) === "",
-    "the shared helper is silent for CI-verdict and untagged refusals",
-  );
-  assert(
-    mergeHoldToolingNote(false, "tooling") === "",
-    "the shared helper is silent when authority was not granted (that line already points correctly)",
-  );
+assert(
+  /tooling failure|The gh invocation itself failed/.test(mergeHoldToolingNote(true, "tooling")),
+  "the shared helper renders the tooling note for a tooling refusal",
+);
+assert(
+  mergeHoldToolingNote(true, "ci") === "" && mergeHoldToolingNote(true, undefined) === "",
+  "the shared helper is silent for CI-verdict and untagged refusals",
+);
+assert(
+  mergeHoldToolingNote(false, "tooling") === "",
+  "the shared helper is silent when authority was not granted (that line already points correctly)",
+);
 
 // ------------------------------------------------------------ escape hatch
 

@@ -83,7 +83,11 @@ console.log("1. case-insensitive token shapes");
     ],
     ["TOKEN=", "gh: authentication error TOKEN=AbCdEf123456GhIj789", "AbCdEf123456"],
     ["X-Access-Token", "remote: X-Access-Token:DeadBeefDeadBeefDeadBeef rejected", "DeadBeef"],
-    ["BEARER", "gh: 401 Authorization: BEARER EyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", "EyJhbGciOiJI"],
+    [
+      "BEARER",
+      "gh: 401 Authorization: BEARER EyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+      "EyJhbGciOiJI",
+    ],
     ["glpat upper", "glab: 401 GLPAT-abcdefghijklmnopqrstuvwxyz", "GLPAT-abcdef"],
   ];
   for (const [label, stderr, secret] of cases) assertRedacted(label, stderr, secret);
@@ -120,7 +124,10 @@ console.log("2. tokens glued to a word character");
   const cause = causeOf(
     execErr("gh: env GITHUB_TOKEN=gho_aaaaaaaaaaaaaaaabbbbbbbbbbbbbbbb is invalid"),
   );
-  assert(!cause.includes("gho_aaaaaaaaaaaaaaaa"), `GITHUB_TOKEN=: the value is redacted (${cause})`);
+  assert(
+    !cause.includes("gho_aaaaaaaaaaaaaaaa"),
+    `GITHUB_TOKEN=: the value is redacted (${cause})`,
+  );
   assert(cause.includes("[REDACTED]"), "GITHUB_TOKEN=: a marker is present");
 }
 

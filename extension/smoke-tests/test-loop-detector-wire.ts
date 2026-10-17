@@ -150,7 +150,7 @@ function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
     totalTokens: () => 0,
     timedOut: () => false,
     inactivityKilled: () => false,
-      toolInactivityKilled: () => false,
+    toolInactivityKilled: () => false,
     aborted: () => false,
     capKillGraceMs: 0,
     childExited: () => false,
@@ -200,7 +200,7 @@ function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
     totalTokens: () => 0,
     timedOut: () => false,
     inactivityKilled: () => false,
-      toolInactivityKilled: () => false,
+    toolInactivityKilled: () => false,
     aborted: () => false,
     capKillGraceMs: 0,
     childExited: () => false,
@@ -283,7 +283,10 @@ async function fixture772q(): Promise<void> {
   assert(!s.loopKilled(), "#772(q): kill deferred — grace window open (the report window)");
   const fired = await pollUntilKilled(s, 2000);
   assert(fired.ok, "#772(q): kill fires");
-  assert(fired.at >= qArmedAt + 2000, `#772(q): kill after grace window (${fired.at - qArmedAt}ms >= 2000ms)`);
+  assert(
+    fired.at >= qArmedAt + 2000,
+    `#772(q): kill after grace window (${fired.at - qArmedAt}ms >= 2000ms)`,
+  );
   assert(s.killCause() === "loop", "#772(q): killCause loop");
   assert(s.loopEvidence()?.kind === "success", "#772(q): evidence kind success at kill");
   s?.cleanup();

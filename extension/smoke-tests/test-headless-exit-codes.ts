@@ -12,8 +12,8 @@ import { parseHeadlessArgs } from "../src/headless/cli.ts";
 import { EXIT, exitCodeForGroup, exitCodeForState } from "../src/headless/exit-code.ts";
 import { projectIssue, questionsOf } from "../src/headless/result.ts";
 import { detectDivergence, runHeadless } from "../src/headless/run.ts";
-import { workStateFile } from "../src/workflow-state.ts";
 import type { WorkCapLiteral } from "../src/workflow-state-events-caps.ts";
+import { workStateFile } from "../src/workflow-state.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -147,7 +147,10 @@ assert(exitCodeForGroup([0, 0]) === 0, "group of merged → 0");
     { kind: "merged", at: 5000, prNumber: 7 },
   ]);
   // Identical states → no divergence.
-  assert(detectDivergence(base, structuredClone(base)).length === 0, "identical states → no divergence");
+  assert(
+    detectDivergence(base, structuredClone(base)).length === 0,
+    "identical states → no divergence",
+  );
   // Agent rewrote the status in the file: the file says `merged` but the driver
   // in-memory said `handoff` → divergence.
   const tamperedStatus = structuredClone(base);
@@ -169,19 +172,13 @@ assert(exitCodeForGroup([0, 0]) === 0, "group of merged → 0");
   const tamperedLog = structuredClone(base);
   tamperedLog.eventLog = [...tamperedLog.eventLog, { kind: "merged", at: 9999, prNumber: 42 }];
   const logDiffs = detectDivergence(base, tamperedLog);
-  assert(
-    logDiffs.includes("eventLog"),
-    "appended event in the file → eventLog divergence",
-  );
+  assert(logDiffs.includes("eventLog"), "appended event in the file → eventLog divergence");
   // updatedAt is excluded: the driver's in-memory copy predates the final
   // persist that rewrote it. A file with a different updatedAt is NOT a
   // divergence.
   const tamperedAt = structuredClone(base);
   tamperedAt.updatedAt = base.updatedAt + 10_000;
-  assert(
-    detectDivergence(base, tamperedAt).length === 0,
-    "updatedAt alone → not a divergence",
-  );
+  assert(detectDivergence(base, tamperedAt).length === 0, "updatedAt alone → not a divergence");
 }
 
 // ── Argv parser.
@@ -257,10 +254,7 @@ assert(exitCodeForGroup([0, 0]) === 0, "group of merged → 0");
     // (stubbed, refuses immediately) does not touch it, so the loop reads it
     // back cleanly. The secondary (issue 64) gets a malformed-JSON file.
     mkdirSync(path.join(repo, ".pi", "work-state"), { recursive: true });
-    writeFileSync(
-      workStateFile(repo, 63),
-      JSON.stringify(withStatus(63, "merged")),
-    );
+    writeFileSync(workStateFile(repo, 63), JSON.stringify(withStatus(63, "merged")));
     writeFileSync(workStateFile(repo, 64), "{ not valid json");
     const result = await runHeadless({
       repoRoot: repo,
@@ -291,10 +285,7 @@ assert(exitCodeForGroup([0, 0]) === 0, "group of merged → 0");
         result.error.message.includes("corrupt or unreadable"),
       "corrupt state file: top-level error is state-diverged naming the corrupt issue",
     );
-    assert(
-      result.exitCode === EXIT.crash,
-      `group exit is 30 (got ${result.exitCode})`,
-    );
+    assert(result.exitCode === EXIT.crash, `group exit is 30 (got ${result.exitCode})`);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
@@ -314,22 +305,10 @@ assert(exitCodeForGroup([0, 0]) === 0, "group of merged → 0");
   // The runner's missing-file branch would set these:
   p.exitCode = EXIT.crash;
   p.diverged = true;
-  assert(
-    p.exitCode === 30,
-    "missing file + in-memory: exitCode is 30 (EXIT.crash)",
-  );
-  assert(
-    p.diverged === true,
-    "missing file + in-memory: diverged is true",
-  );
-  assert(
-    p.status === "handoff",
-    "missing file + in-memory: status from inMemory is handoff",
-  );
-  assert(
-    p.status !== "not-started",
-    "missing file + in-memory: status is NOT 'not-started'",
-  );
+  assert(p.exitCode === 30, "missing file + in-memory: exitCode is 30 (EXIT.crash)");
+  assert(p.diverged === true, "missing file + in-memory: diverged is true");
+  assert(p.status === "handoff", "missing file + in-memory: status from inMemory is handoff");
+  assert(p.status !== "not-started", "missing file + in-memory: status is NOT 'not-started'");
 }
 
 process.exit(exit);

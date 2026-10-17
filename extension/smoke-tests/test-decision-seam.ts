@@ -11,8 +11,8 @@
  *   - timeout, token budget and oversized state abstain (never truncate).
  */
 
-import { decide } from "../src/decision-seam.ts";
 import { SEAMS, type SeamSpec, UNDECIDED } from "../src/decision-seam-registry.ts";
+import { decide } from "../src/decision-seam.ts";
 import {
   STUB_MODEL,
   envKey,

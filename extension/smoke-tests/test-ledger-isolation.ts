@@ -29,7 +29,7 @@
  * it; runtime isolation is the primary mechanism.
  */
 
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -117,10 +117,7 @@ const SMOKE_TESTS = import.meta.dirname;
       abs.length > 0 && !/([/\\])\.git([/\\]|$)/.test(abs),
       `suite env: the gate's ledger override (${abs}) is NOT inside a .git directory`,
     );
-    assert(
-      path.isAbsolute(override),
-      "suite env: the gate's ledger override is an absolute path",
-    );
+    assert(path.isAbsolute(override), "suite env: the gate's ledger override is an absolute path");
   }
 }
 
@@ -162,17 +159,17 @@ assert(
   try {
     writeFileSync(
       path.join(fixtureDir, "test-unisolated-fixture.ts"),
-      "const r = await runLensReview({ diff: \"d\" } as never);\nvoid r;\n",
+      'const r = await runLensReview({ diff: "d" } as never);\nvoid r;\n',
     );
     writeFileSync(
       path.join(fixtureDir, "test-isolated-fixture.ts"),
-      "process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = \"/tmp/x.json\";\nconst r = await runLensReview({ diff: \"d\" } as never);\nvoid r;\n",
+      'process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = "/tmp/x.json";\nconst r = await runLensReview({ diff: "d" } as never);\nvoid r;\n',
     );
     // A fixture isolated by the shared findings-memory factory rather than by
     // naming the env var itself: the marker lives in the fixture it imports.
     writeFileSync(
       path.join(fixtureDir, "test-fixture-isolated.ts"),
-      "import { setupReviewFixture } from \"./lib/review-findings-fixtures.ts\";\nconst f = setupReviewFixture({ prefix: \"p\", files: {}, report: () => [] });\nconst r = await runLensReview({ diff: \"d\" } as never);\nvoid r; void f;\n",
+      'import { setupReviewFixture } from "./lib/review-findings-fixtures.ts";\nconst f = setupReviewFixture({ prefix: "p", files: {}, report: () => [] });\nconst r = await runLensReview({ diff: "d" } as never);\nvoid r; void f;\n',
     );
     const found = scanDir(fixtureDir);
     assert(

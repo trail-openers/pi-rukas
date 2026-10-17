@@ -153,11 +153,17 @@ function registerRealJob(jobId: string): AbortController {
 // ---------------------------------------------------------------------------
 {
   const lines = buildAgentListLines(fixtureEntries(), 80, NOW);
-  assert(lines.length === 4, "1a: 4 rows (main + A + B + M; batch headers NOT in the list projection)");
+  assert(
+    lines.length === 4,
+    "1a: 4 rows (main + A + B + M; batch headers NOT in the list projection)",
+  );
   assert(lines[0]?.key === MAIN_ROW_KEY && lines[0]?.text === "main", "1b: leading row is `main`");
   assert(lines[1]?.key === "job-a", "1c: row 2 is job A");
   assert(lines[2]?.key === "job-b", "1d: row 3 is job B");
-  assert(lines[3]?.key === "job-m", "1e: row 4 is batch member M (the batch header renders via the lines() projection)");
+  assert(
+    lines[3]?.key === "job-m",
+    "1e: row 4 is batch member M (the batch header renders via the lines() projection)",
+  );
   const selectable = lines.filter((l) => l.selectable).map((l) => l.key);
   assert(
     JSON.stringify(selectable) === JSON.stringify(["main", "job-a", "job-b", "job-m"]),
@@ -250,10 +256,7 @@ function registerRealJob(jobId: string): AbortController {
   h2.comp.handleInput("\x1b[120;2u"); // shift+x — the kill-all prompt
   h2.comp.handleInput("n");
   const rendered2 = h2.comp.render(80);
-  assert(
-    !rendered2.some((l) => l.includes("Kill ALL")),
-    "4d: `n` cancels the kill-all prompt",
-  );
+  assert(!rendered2.some((l) => l.includes("Kill ALL")), "4d: `n` cancels the kill-all prompt");
   assert(killJob(j3) === true, "4e: the job survived the cancel (nothing killed)");
   clearJobsForTesting();
 
@@ -284,8 +287,14 @@ function registerRealJob(jobId: string): AbortController {
   const promptLine = rendered.find((l) => l.includes("(y/n)"));
   assert(!!promptLine, "4g-pre: the kill-confirm prompt renders");
   if (promptLine) {
-    assert(promptLine.endsWith("(y/n)"), "4g: rendered prompt ends with (y/n) (2000-char label, width 80)");
-    assert(visibleWidth(promptLine) <= width, `4g2: rendered prompt visibleWidth ≤ ${width} (got ${visibleWidth(promptLine)})`);
+    assert(
+      promptLine.endsWith("(y/n)"),
+      "4g: rendered prompt ends with (y/n) (2000-char label, width 80)",
+    );
+    assert(
+      visibleWidth(promptLine) <= width,
+      `4g2: rendered prompt visibleWidth ≤ ${width} (got ${visibleWidth(promptLine)})`,
+    );
   }
   h.comp.handleInput("n");
 }
@@ -347,10 +356,7 @@ function registerRealJob(jobId: string): AbortController {
   h.comp.handleInput("\x1b[B"); // down → main → A's old slot → re-resolves to B
   const rendered = h.comp.render(80);
   const sel = rendered.find((l) => l.startsWith("> "));
-  assert(
-    !!sel && sel.includes("B"),
-    "6a: selection on the successor (B) after A settled",
-  );
+  assert(!!sel && sel.includes("B"), "6a: selection on the successor (B) after A settled");
 
   // All jobs settle → the list closes itself: the projection (main only)
   // fires onSettle once, and done() closes the overlay.
@@ -415,7 +421,6 @@ function registerRealJob(jobId: string): AbortController {
   );
 }
 
-
 // ---------------------------------------------------------------------------
 // 9. The passive-widget hint line names the keys.
 // ---------------------------------------------------------------------------
@@ -423,10 +428,7 @@ function registerRealJob(jobId: string): AbortController {
   const hint = buildAgentListHint();
   assert(hint.startsWith("↓ agents"), "9a: the passive hint mentions the agents");
   assert(hint.includes("Enter view"), "9b: the hint carries the view action");
-  assert(
-    hint.includes(`${STOP_ALL_KEY} stop all`),
-    "9c: the hint names the stop-all key",
-  );
+  assert(hint.includes(`${STOP_ALL_KEY} stop all`), "9c: the hint names the stop-all key");
 }
 
 // ---------------------------------------------------------------------------
@@ -447,7 +449,9 @@ function registerRealJob(jobId: string): AbortController {
   // pi-coding-agent's app-level keybindings (app.* ids). The module is not
   // re-exported from the package root, so we import it via a relative path
   // from the installed package's dist directory.
-  const { KEYBINDINGS: APP_KB } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js");
+  const { KEYBINDINGS: APP_KB } = await import(
+    "../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js"
+  );
   const kb = getKeybindings();
   const tui = kb.getResolvedBindings() as Record<string, string | string[] | undefined>;
   const app = APP_KB as Record<string, { defaultKeys: string | string[] }>;

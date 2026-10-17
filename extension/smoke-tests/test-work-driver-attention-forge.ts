@@ -20,10 +20,7 @@
  */
 
 import type { Forge } from "../src/forge.ts";
-import {
-  ATTENTION_LABEL,
-  checkAttentionLabel,
-} from "../src/work-driver-attention.ts";
+import { ATTENTION_LABEL, checkAttentionLabel } from "../src/work-driver-attention.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -35,9 +32,10 @@ function assert(cond: boolean, msg: string) {
 }
 
 /** A fake Forge with a programmable issueView. */
-function mkFakeForge(
-  responses: Record<number, Array<{ name: string }> | Error>,
-): { forge: Forge; calls: number[] } {
+function mkFakeForge(responses: Record<number, Array<{ name: string }> | Error>): {
+  forge: Forge;
+  calls: number[];
+} {
   const calls: number[] = [];
   const forge = {
     forge: "github" as const,

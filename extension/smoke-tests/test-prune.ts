@@ -15,8 +15,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { pruneOldRuns } from "../src/runs.ts";
 import { transcriptRetentionDays } from "../src/runs-retention.ts";
+import { pruneOldRuns } from "../src/runs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -117,12 +117,19 @@ const root3 = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ensemble-prune-"));
 
 // Test 4: retentionDays 0 → no-op (matches the old "0 disables" semantics)
 const root4 = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ensemble-prune-"));
-await makeFakeRun(root4, today, `bid004-${Math.random().toString(36).slice(2, 8)}`, [
-  "explore",
-], 30 * DAY);
+await makeFakeRun(
+  root4,
+  today,
+  `bid004-${Math.random().toString(36).slice(2, 8)}`,
+  ["explore"],
+  30 * DAY,
+);
 {
   const s = await pruneOldRuns(root4, 0);
-  assert(s.deletedBatches === 0 && s.totalBatches === 0, "retentionDays=0 → no-op (returns zeros without scanning)");
+  assert(
+    s.deletedBatches === 0 && s.totalBatches === 0,
+    "retentionDays=0 → no-op (returns zeros without scanning)",
+  );
 }
 
 // Test 5: empty dir
@@ -156,7 +163,13 @@ const root5 = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ensemble-prune-"));
 
 // Test 7: transcriptsSummary reflects the age rule — no longer "keep last N".
 const root7 = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ensemble-prune-"));
-await makeFakeRun(root7, today, `bid007-${Math.random().toString(36).slice(2, 8)}`, ["explore"], 2 * DAY);
+await makeFakeRun(
+  root7,
+  today,
+  `bid007-${Math.random().toString(36).slice(2, 8)}`,
+  ["explore"],
+  2 * DAY,
+);
 {
   const saved = process.env.PI_ENSEMBLE_RUNS_DIR;
   const savedDays = process.env.PI_ENSEMBLE_TRANSCRIPT_RETENTION_DAYS;
@@ -209,7 +222,10 @@ const root8 = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ensemble-prune-"));
     process.env.PI_ENSEMBLE_TRANSCRIPT_RETENTION_DAYS = "0";
     const { transcriptsSummary } = await import("../src/runs.ts");
     const line = await transcriptsSummary(root7);
-    assert(line.includes("retention off"), `summary says "retention off" when disabled — got: ${line}`);
+    assert(
+      line.includes("retention off"),
+      `summary says "retention off" when disabled — got: ${line}`,
+    );
   } finally {
     if (saved === undefined) delete process.env.PI_ENSEMBLE_RUNS_DIR;
     else process.env.PI_ENSEMBLE_RUNS_DIR = saved;

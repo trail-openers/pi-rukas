@@ -21,7 +21,8 @@ const EXCEPTIONS: Record<string, string> = {
   // MCP server binary loaded via Pi 1.0.0's native MCP (mcp.json), not a PATH
   // CLI. Wired by install.sh step 6 into ~/.pi/agent/mcp.json (issue #959).
   // Never a REQUIRED_CLIS entry.
-  "codebase-memory-mcp": "MCP server binary, not a PATH CLI — preflighted by install.sh step 6 instead",
+  "codebase-memory-mcp":
+    "MCP server binary, not a PATH CLI — preflighted by install.sh step 6 instead",
   // In the README (extension runtime) but never in REQUIRED_CLIS: install.sh
   // uses bun/npm, so requiring it on PATH would warn most hosts. #488.
   bun: "declared in README as extension runtime, not preflighted on PATH — install.sh falls back to npm",
@@ -43,7 +44,8 @@ const EXCEPTIONS: Record<string, string> = {
   "parallel-web-cli":
     "npm package name — installs the `parallel-cli` binary already in REQUIRED_CLIS",
   // #773: wigolo — optional /research fallback (Dockerfile + docs only, not a prerequisite).
-  "wigolo@0.2.1": "optional /research fallback (#773): baked into the image, documented in docs/configuration.md; not a required prerequisite",
+  "wigolo@0.2.1":
+    "optional /research fallback (#773): baked into the image, documented in docs/configuration.md; not a required prerequisite",
 };
 
 let exit = 0;
@@ -239,7 +241,9 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
   assert(
     unknown.length === 0,
     `every Dockerfile global install is in REQUIRED_CLIS or EXCEPTIONS${
-      unknown.length ? ` — unexplained: ${unknown.map((d) => `${d.name} (line ${d.line})`).join(", ")} (add to REQUIRED_CLIS, or to EXCEPTIONS with a reason)` : ""
+      unknown.length
+        ? ` — unexplained: ${unknown.map((d) => `${d.name} (line ${d.line})`).join(", ")} (add to REQUIRED_CLIS, or to EXCEPTIONS with a reason)`
+        : ""
     }`,
   );
 }
@@ -248,7 +252,10 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
   // Forge OR-gate (#608): both surfaces must declare a forge CLI (gh OR glab).
   const installSh = read("install.sh");
   const requiredHasForge = installNames.includes("forge");
-  const forgeBlockOk = /command -v gh[\s\S]{0,200}?command -v glab|command -v glab[\s\S]{0,200}?command -v gh/.test(installSh);
+  const forgeBlockOk =
+    /command -v gh[\s\S]{0,200}?command -v glab|command -v glab[\s\S]{0,200}?command -v gh/.test(
+      installSh,
+    );
   assert(
     requiredHasForge && forgeBlockOk,
     `install.sh declares the forge OR-gate (REQUIRED_CLIS has "forge" AND a "command -v gh"/"command -v glab" pair check is present)`,
@@ -257,15 +264,19 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
   assert(
     forgeInDocker.length >= 1,
     `Dockerfile installs at least one forge CLI (gh OR glab)${
-      forgeInDocker.length === 0 ? " — neither found: the sandbox image would have no forge CLI" : ""
+      forgeInDocker.length === 0
+        ? " — neither found: the sandbox image would have no forge CLI"
+        : ""
     }`,
   );
   // Arch-neutrality scan (#645): every glab .deb line in the real Dockerfile
   // must be a substitution form (containing `$`), not a hard amd64/arm64 pin.
-  const badGlab = read(".devcontainer/Dockerfile").split("\n").filter((l) => {
-    const r = checkGlabArchNeutrality(l);
-    return r.matched && !r.ok;
-  });
+  const badGlab = read(".devcontainer/Dockerfile")
+    .split("\n")
+    .filter((l) => {
+      const r = checkGlabArchNeutrality(l);
+      return r.matched && !r.ok;
+    });
   assert(
     badGlab.length === 0,
     `Dockerfile glab .deb line is arch-neutral (${badGlab.length ? "hard-pinned arch found: " + badGlab.map((l) => l.trim().slice(0, 60)).join(" | ") : "no hardcoded amd64/arm64 pins"})`,
@@ -340,14 +351,29 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
     dockerfile: read(".devcontainer/Dockerfile"),
   });
   if (existsSync(preflightPath))
-    assert(ooFloors.installSh !== "", "install-preflight.sh declares MIN_OO_VERSION (unpinned — the #715 known-gap window is why this gate exists)");
-  assert(ooFloors.readme !== "", "README oo install line pins a version (unpinned — pin --version <floor>)");
-  assert(ooFloors.dockerfile !== "", "Dockerfile oo global install pins a version (unpinned — pin --version <floor>)");
+    assert(
+      ooFloors.installSh !== "",
+      "install-preflight.sh declares MIN_OO_VERSION (unpinned — the #715 known-gap window is why this gate exists)",
+    );
+  assert(
+    ooFloors.readme !== "",
+    "README oo install line pins a version (unpinned — pin --version <floor>)",
+  );
+  assert(
+    ooFloors.dockerfile !== "",
+    "Dockerfile oo global install pins a version (unpinned — pin --version <floor>)",
+  );
   if (ooFloors.installSh && ooFloors.readme && ooFloors.dockerfile) {
     const ooCmp = compareVersions(ooFloors.readme, ooFloors.installSh);
-    assert(ooCmp !== null && ooCmp >= 0, `README oo pin ${ooFloors.readme} ≥ floor ${ooFloors.installSh}${ooCmp === null ? " (unparseable)" : ooCmp < 0 ? " (below floor)" : ""}`);
+    assert(
+      ooCmp !== null && ooCmp >= 0,
+      `README oo pin ${ooFloors.readme} ≥ floor ${ooFloors.installSh}${ooCmp === null ? " (unparseable)" : ooCmp < 0 ? " (below floor)" : ""}`,
+    );
     const ooCmpD = compareVersions(ooFloors.dockerfile, ooFloors.installSh);
-    assert(ooCmpD !== null && ooCmpD >= 0, `Dockerfile oo pin ${ooFloors.dockerfile} ≥ floor ${ooFloors.installSh}${ooCmpD === null ? " (unparseable)" : ooCmpD < 0 ? " (below floor)" : ""}`);
+    assert(
+      ooCmpD !== null && ooCmpD >= 0,
+      `Dockerfile oo pin ${ooFloors.dockerfile} ≥ floor ${ooFloors.installSh}${ooCmpD === null ? " (unparseable)" : ooCmpD < 0 ? " (below floor)" : ""}`,
+    );
   }
 }
 
@@ -478,15 +504,27 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
     readme: fixtureReadme,
     dockerfile: fixtureDocker,
   });
-  assert(fOoFloors.installSh === "0.5.0", `canary: oo floor parses 0.5.0 (got ${JSON.stringify(fOoFloors.installSh)})`);
-  assert(fOoFloors.readme === "0.4.4", `canary: oo README pin parses 0.4.4 (got ${JSON.stringify(fOoFloors.readme)})`);
-  assert(fOoFloors.dockerfile === "1.1.0", `canary: oo Dockerfile pin parses 1.1.0 (got ${JSON.stringify(fOoFloors.dockerfile)})`);
+  assert(
+    fOoFloors.installSh === "0.5.0",
+    `canary: oo floor parses 0.5.0 (got ${JSON.stringify(fOoFloors.installSh)})`,
+  );
+  assert(
+    fOoFloors.readme === "0.4.4",
+    `canary: oo README pin parses 0.4.4 (got ${JSON.stringify(fOoFloors.readme)})`,
+  );
+  assert(
+    fOoFloors.dockerfile === "1.1.0",
+    `canary: oo Dockerfile pin parses 1.1.0 (got ${JSON.stringify(fOoFloors.dockerfile)})`,
+  );
   const fOoCmpR = compareVersions(fOoFloors.readme, fOoFloors.installSh);
   assert(fOoCmpR !== null && fOoCmpR < 0, "canary: below-floor oo README pin detected");
   const fOoCmpD = compareVersions(fOoFloors.dockerfile, fOoFloors.installSh);
   assert(fOoCmpD !== null && fOoCmpD > 0, "canary: above-floor oo Dockerfile pin detected");
   const fOoUnpinned = parseOoFloors({ installSh: fixtureInstall, readme: "", dockerfile: "" });
-  assert(fOoUnpinned.readme === "" && fOoUnpinned.dockerfile === "" && fOoUnpinned.installSh === "", "canary: unpinned oo surfaces parse empty");
+  assert(
+    fOoUnpinned.readme === "" && fOoUnpinned.dockerfile === "" && fOoUnpinned.installSh === "",
+    "canary: unpinned oo surfaces parse empty",
+  );
   // compareVersions edge cases: equal versions are 0; non-dotted input is null (never silently 0).
   assert(compareVersions("0.84.4", "0.84.4") === 0, "canary: equal versions compare 0");
   assert(

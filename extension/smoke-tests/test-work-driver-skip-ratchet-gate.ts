@@ -16,10 +16,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
-import { commandOf } from "./lib/argv-shell.ts";
-import { isNulStatusRead, nulStatus } from "./lib/nul-porcelain.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState } from "../src/workflow-state.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { isNulStatusRead, nulStatus } from "./lib/nul-porcelain.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -112,7 +112,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 baseSha: "abc123",
               },
             };
-            const execWithSkipMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+            const execWithSkipMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (
+              cmd,
+              opts,
+            ) => {
               const line = commandOf(cmd, opts);
               if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/test.css") };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
@@ -157,7 +160,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               },
             };
             // Diff has one addition and one removal, netting to zero — exercises the net-delta arithmetic
-            const execWithNetZeroMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+            const execWithNetZeroMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (
+              cmd,
+              opts,
+            ) => {
               const line = commandOf(cmd, opts);
               if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/test.css") };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
@@ -179,7 +185,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               "PR277: net-zero markers (addition + removal) pass gate — net-delta arithmetic is exercised",
             );
             // Also verify net-negative (more removals than additions) does not fail
-            const execWithNetNegative: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+            const execWithNetNegative: NonNullable<DriverContext["verifyExecFn"]> = async (
+              cmd,
+              opts,
+            ) => {
               const line = commandOf(cmd, opts);
               if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/test.css") };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
@@ -220,7 +229,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 baseSha: "abc123",
               },
             };
-            const execWithFalsePositives: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+            const execWithFalsePositives: NonNullable<DriverContext["verifyExecFn"]> = async (
+              cmd,
+              opts,
+            ) => {
               const line = commandOf(cmd, opts);
               if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/docs.css") };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
@@ -263,7 +275,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 baseSha: "abc123",
               },
             };
-            const execWithMultipleMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+            const execWithMultipleMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (
+              cmd,
+              opts,
+            ) => {
               const line = commandOf(cmd, opts);
               if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/test.css") };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
@@ -311,7 +326,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 baseSha: "abc123",
               },
             };
-            const execFailingSmoke: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+            const execFailingSmoke: NonNullable<DriverContext["verifyExecFn"]> = async (
+              cmd,
+              opts,
+            ) => {
               const line = commandOf(cmd, opts);
               if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/main.css") };
               if (cmd.startsWith("git diff")) return { stdout: "+new code\n" };
@@ -396,7 +414,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                   baseSha: "abc123",
                 },
               };
-              const execSmokeDisabled: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+              const execSmokeDisabled: NonNullable<DriverContext["verifyExecFn"]> = async (
+                cmd,
+                opts,
+              ) => {
                 const line = commandOf(cmd, opts);
                 if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/main.css") };
                 if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
@@ -437,7 +458,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                   baseSha: "abc123",
                 },
               };
-              const execRatchetDisabled: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+              const execRatchetDisabled: NonNullable<DriverContext["verifyExecFn"]> = async (
+                cmd,
+                opts,
+              ) => {
                 const line = commandOf(cmd, opts);
                 if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/test.css") };
                 if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };

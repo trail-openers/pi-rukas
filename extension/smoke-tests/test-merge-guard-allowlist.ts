@@ -13,8 +13,8 @@ import { type MergeCommand, mergeFormRefusal, readMergeCommand } from "../src/me
 import { analyseRefusal } from "../src/merge-guard.ts";
 import { type MergeExecFn, readMergeTarget } from "../src/merge-target.ts";
 import {
-  GOOD_ENTRIES,
   assert,
+  GOOD_ENTRIES,
   exit,
   hookDecision,
   setupLedgerPath,
@@ -37,7 +37,12 @@ const ACCEPTED: Array<[string, "github" | "gitlab", number | undefined, string |
   ['gh pr merge 17 --subject "fix: a b" --body-file x.md', "github", 17, undefined],
   ["gh pr merge 17 --subject 'fix(review): x; y' -b 'z'", "github", 17, undefined],
   ["gh pr merge 17 -t subj -F body.md -A me@example.com", "github", 17, undefined],
-  ["gh pr merge 17 --subject=x --author-email=a@b.c --match-head-commit abc123", "github", 17, undefined],
+  [
+    "gh pr merge 17 --subject=x --author-email=a@b.c --match-head-commit abc123",
+    "github",
+    17,
+    undefined,
+  ],
   ["gh pr merge 17 --match-head-commit=abc123", "github", 17, undefined],
   ["gh pr merge 17 --subject 17", "github", 17, undefined],
   ["gh -R o/r pr merge 17", "github", 17, "o/r"],
@@ -57,8 +62,18 @@ const ACCEPTED: Array<[string, "github" | "gitlab", number | undefined, string |
   ["glab mr merge 12 --auto-merge=false", "gitlab", 12, undefined],
   ["glab mr merge --auto-merge=false", "gitlab", undefined, undefined],
   ["glab mr merge 12 --squash -d --rebase -y --auto-merge=false", "gitlab", 12, undefined],
-  ["glab mr merge 12 -s --remove-source-branch -r --yes --auto-merge=false", "gitlab", 12, undefined],
-  ['glab mr merge 12 -m "msg here" --squash-message s --sha abc --auto-merge=false', "gitlab", 12, undefined],
+  [
+    "glab mr merge 12 -s --remove-source-branch -r --yes --auto-merge=false",
+    "gitlab",
+    12,
+    undefined,
+  ],
+  [
+    'glab mr merge 12 -m "msg here" --squash-message s --sha abc --auto-merge=false',
+    "gitlab",
+    12,
+    undefined,
+  ],
   ["glab mr merge -m 17 --auto-merge=false", "gitlab", undefined, undefined],
   ["glab mr merge 12 --message=x --sha=abc --auto-merge=false", "gitlab", 12, undefined],
   ["glab -R group/sub/proj mr merge 12 --auto-merge=false", "gitlab", 12, "group/sub/proj"],
@@ -77,7 +92,7 @@ for (const [cmd, forge, n, repo] of ACCEPTED) {
 const REFUSED: string[] = [
   // #962 review: GraphQL merges by name (GitHub and GitLab), expansion-named
   // forges, interpreters, GraphQL queries read from a file.
-  "glab api graphql -f query='mutation { mergeRequestAccept(input: {projectPath: \"g/p\", iid: \"12\"}) { mergeRequest { state } } }'",
+  'glab api graphql -f query=\'mutation { mergeRequestAccept(input: {projectPath: "g/p", iid: "12"}) { mergeRequest { state } } }\'',
   "glab api graphql -f query='mutation { acceptMergeRequest(input: {}) { clientMutationId } }'",
   "gh api graphql -f query='mutation { mergePullRequest(input:{pullRequestId:\"x\"}) { clientMutationId } }'",
   "$G api repos/o/r/pulls/17/merge -X PUT",
@@ -196,7 +211,7 @@ const REFUSED: string[] = [
   "gh pr merge 17 --subject é",
   "gh pr merge\v17",
   // Non-read gh verbs carrying a merge word: refused (use --body-file for prose).
-  "gh pr comment 5 --body \"please merge\"",
+  'gh pr comment 5 --body "please merge"',
   "gh pr comment 5 --body 'we will gh pr merge 12 later'",
   "gh pr edit 17 --add-label automerge",
   "gh pr review 17 --body '/merge'",
@@ -284,13 +299,23 @@ for (const cmd of REFUSED) {
   assert(m.kind === "refused", `refused: ${JSON.stringify(cmd)} (${show(m)})`);
 }
 // A glab merge missing the opt-out gets its own refusal, naming the accepted form.
-for (const cmd of ["glab mr merge 12", "glab -R g/p mr merge 3 --squash", "glab mr merge 12 -m --auto-merge=false"]) {
+for (const cmd of [
+  "glab mr merge 12",
+  "glab -R g/p mr merge 3 --squash",
+  "glab mr merge 12 -m --auto-merge=false",
+]) {
   const m = readMergeCommand(cmd);
-  assert(m.kind === "refused" && m.reason === "glab-auto-merge", `glab opt-out refusal: ${JSON.stringify(cmd)} (${show(m)})`);
+  assert(
+    m.kind === "refused" && m.reason === "glab-auto-merge",
+    `glab opt-out refusal: ${JSON.stringify(cmd)} (${show(m)})`,
+  );
 }
 assert(readMergeCommand("gh pr merge 17").kind === "merge", "gh merge needs no opt-out");
 const apiMerge = readMergeCommand("gh api repos/o/r/pulls/1/merge");
-assert(apiMerge.kind === "refused" && apiMerge.reason !== "glab-auto-merge", "other refusals keep the generic form");
+assert(
+  apiMerge.kind === "refused" && apiMerge.reason !== "glab-auto-merge",
+  "other refusals keep the generic form",
+);
 
 // ------------------------------------------------------------ reason codes
 const CODES: Array<[string, string]> = [
@@ -315,15 +340,23 @@ const CODES: Array<[string, string]> = [
 ];
 for (const [cmd, code] of CODES) {
   const m = readMergeCommand(cmd);
-  assert(m.kind === "refused" && m.reason === code, `reason ${code}: ${JSON.stringify(cmd)} (${show(m)})`);
+  assert(
+    m.kind === "refused" && m.reason === code,
+    `reason ${code}: ${JSON.stringify(cmd)} (${show(m)})`,
+  );
 }
-assert(mergeFormRefusal("x").includes("pr merge [N]") && mergeFormRefusal("x").endsWith("[reason: x]"), "the form refusal keeps the accepted form and names the reason");
+assert(
+  mergeFormRefusal("x").includes("pr merge [N]") && mergeFormRefusal("x").endsWith("[reason: x]"),
+  "the form refusal keeps the accepted form and names the reason",
+);
 
 // ------------------------------------------------------------ granted merges
 // Every merge-shaped bash grant in agents.json must be a command the guard
 // accepts; a grant it refuses (e.g. `oo gh pr merge*`) can never be used.
 {
-  const agents = JSON.parse(readFileSync(new URL("../../agents.json", import.meta.url), "utf8")) as {
+  const agents = JSON.parse(
+    readFileSync(new URL("../../agents.json", import.meta.url), "utf8"),
+  ) as {
     agent: Record<string, { permission?: { bash?: Record<string, string> } }>;
   };
   let checked = 0;
@@ -333,10 +366,16 @@ assert(mergeFormRefusal("x").includes("pr merge [N]") && mergeFormRefusal("x").e
       const m = readMergeCommand(key.replace(/\*+$/, "").trimEnd());
       if (m.kind === "none") continue;
       checked += 1;
-      assert(m.kind === "merge", `agents.json ${role} grants a merge the guard refuses: ${JSON.stringify(key)} (${show(m)})`);
+      assert(
+        m.kind === "merge",
+        `agents.json ${role} grants a merge the guard refuses: ${JSON.stringify(key)} (${show(m)})`,
+      );
     }
   }
-  assert(checked >= 1, `agents.json grants at least one merge the guard accepts (${checked} checked)`);
+  assert(
+    checked >= 1,
+    `agents.json grants at least one merge the guard accepts (${checked} checked)`,
+  );
   console.log(`merge-shaped grants in agents.json checked: ${checked}`);
 }
 
@@ -370,16 +409,22 @@ for (const cmd of NOT_MERGES) {
 // ------------------------------------------------------------ the residual
 // A merge assembled entirely from expansions spells no merge word: outside the
 // honest-agent threat model, documented in docs/troubleshooting.md.
-for (const cmd of ["gh pr m$X 17", "$G pr m$X 17", "gh pr m$(echo e)rge 17", "gh pr m?rge 17", "bash x.sh"]) {
-  assert(readMergeCommand(cmd).kind === "none", `documented residual (not read as a merge): ${cmd}`);
+for (const cmd of [
+  "gh pr m$X 17",
+  "$G pr m$X 17",
+  "gh pr m$(echo e)rge 17",
+  "gh pr m?rge 17",
+  "bash x.sh",
+]) {
+  assert(
+    readMergeCommand(cmd).kind === "none",
+    `documented residual (not read as a merge): ${cmd}`,
+  );
 }
 
 // ------------------------------------------------------------ the real hook
 await setupLedgerPath();
-for (const cmd of [
-  "cd x && gh pr merge 17",
-  "gh api repos/o/r/pulls/12/merge",
-]) {
+for (const cmd of ["cd x && gh pr merge 17", "gh api repos/o/r/pulls/12/merge"]) {
   const r = await hookDecision(cmd, GOOD_ENTRIES);
   assert(r.block, `hook refuses even with a passing ledger: ${JSON.stringify(cmd)}`);
   assert(r.calls.length === 0, `…before any forge call: ${JSON.stringify(cmd)}`);
@@ -403,22 +448,34 @@ for (const cmd of [
 {
   const r = await hookDecision("gh pr merge --squash", GOOD_ENTRIES);
   assert(!r.block, "hook resolves a number-less merge from the current branch");
-  assert(r.calls.some((c) => c.includes("--json number")), "…via gh pr view --json number");
+  assert(
+    r.calls.some((c) => c.includes("--json number")),
+    "…via gh pr view --json number",
+  );
 }
 {
   // The PR read follows the repo's forge (github here); a glab merge would act
   // on a GitLab MR the guard never read.
   const r = await hookDecision("glab mr merge 12 --auto-merge=false", GOOD_ENTRIES);
-  assert(r.block && /merges on gitlab but this repo's forge is github/.test(r.reason ?? ""), "hook refuses a merge aimed at the other forge");
+  assert(
+    r.block && /merges on gitlab but this repo's forge is github/.test(r.reason ?? ""),
+    "hook refuses a merge aimed at the other forge",
+  );
 }
 {
   const r = await hookDecision("glab mr merge 12", GOOD_ENTRIES);
-  assert(r.block && /without `--auto-merge=false`/.test(r.reason ?? "") && r.calls.length === 0, "hook refuses a bare glab merge with the accepted form named");
+  assert(
+    r.block && /without `--auto-merge=false`/.test(r.reason ?? "") && r.calls.length === 0,
+    "hook refuses a bare glab merge with the accepted form named",
+  );
 }
 {
   // Fail closed: a reader that throws (here on a non-string command) refuses.
   const r = await hookDecision({} as never, GOOD_ENTRIES);
-  assert(r.block && /could not analyse this command/.test(r.reason ?? ""), "hook refuses when the reader throws");
+  assert(
+    r.block && /could not analyse this command/.test(r.reason ?? ""),
+    "hook refuses when the reader throws",
+  );
 }
 for (const cmd of ["gh pr view 17 --json mergeable", "git merge --ff-only origin/main"]) {
   const r = await hookDecision(cmd, []);
@@ -463,7 +520,10 @@ assert(analyseRefusal(new RangeError("deep")) === "RangeError: deep", "…and an
     execTimeoutMs: 50,
   });
   const dt = performance.now() - t0;
-  assert(d.forge === "unknown" && d.source === "unknown", `stalled git → unknown forge (${d.source})`);
+  assert(
+    d.forge === "unknown" && d.source === "unknown",
+    `stalled git → unknown forge (${d.source})`,
+  );
   assert(dt < 2000, `stalled git is bounded (${dt.toFixed(0)}ms < 2000ms)`);
   const prev = process.env.PI_ENSEMBLE_FORGE;
   delete process.env.PI_ENSEMBLE_FORGE;
@@ -474,7 +534,10 @@ assert(analyseRefusal(new RangeError("deep")) === "RangeError: deep", "…and an
     execTimeoutMs: 50,
   });
   if (prev !== undefined) process.env.PI_ENSEMBLE_FORGE = prev;
-  assert(!r.ok && /could not determine the forge/.test(r.ok ? "" : r.reason), "stalled git → the merge target read refuses");
+  assert(
+    !r.ok && /could not determine the forge/.test(r.ok ? "" : r.reason),
+    "stalled git → the merge target read refuses",
+  );
 }
 
 console.log(`\nexit ${exit}`);

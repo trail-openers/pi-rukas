@@ -10,7 +10,7 @@
 
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
-import { appendEvent, initialState, type WorkState } from "../src/workflow-state.ts";
+import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

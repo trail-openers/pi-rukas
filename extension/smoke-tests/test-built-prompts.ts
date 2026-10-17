@@ -41,7 +41,9 @@ execFileSync("bash", [BUILD], {
 });
 
 // #1031 — codemode module heading, asserted per-manifest below.
-const codemodeHeading = readFileSync(path.join(ROOT, CODEMODE_MODULE), "utf8").match(/^#{1,6} .+$/m)?.[0];
+const codemodeHeading = readFileSync(path.join(ROOT, CODEMODE_MODULE), "utf8").match(
+  /^#{1,6} .+$/m,
+)?.[0];
 
 // The oo prefix ratchet (#1081) lives in test-oo-prompt-hygiene.ts; it replaced
 // the fixed-list oo sweep that used to sit here.
@@ -77,18 +79,16 @@ for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith
       "project-manager: built prompt contains the hand-managed-work gate sentence",
     );
     assert(
-      prompt.slice(prompt.indexOf("## Development Workflow")).includes(
-        "Hand-managed work gets the same gates as /work",
-      ),
+      prompt
+        .slice(prompt.indexOf("## Development Workflow"))
+        .includes("Hand-managed work gets the same gates as /work"),
       "project-manager: the gate sentence is in the Development Workflow section",
     );
     // #1007 — the worktree-bound-dispatch fence must name all four dispatch
     // types with their cwd/workCwd parameters, so a future regression that
     // drops the fence fails the gate rather than surfacing as feature work
     // landing at root.
-    const worktreeSection = prompt.match(
-      /Worktree-bound dispatches[\s\S]*?(?=\n###?\s)/,
-    );
+    const worktreeSection = prompt.match(/Worktree-bound dispatches[\s\S]*?(?=\n###?\s)/);
     assert(
       worktreeSection !== null,
       "project-manager: built prompt contains the worktree-bound-dispatch section",

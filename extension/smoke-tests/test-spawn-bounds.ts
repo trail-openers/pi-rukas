@@ -34,7 +34,12 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnCap } from "../src/spawn-semaphore.ts";
-import { SPAWN_BACKSTOP_MS, inactivityTimeoutMs, spawnBackstopMs, toolInactivityTimeoutMs } from "../src/spawn-support.ts";
+import {
+  SPAWN_BACKSTOP_MS,
+  inactivityTimeoutMs,
+  spawnBackstopMs,
+  toolInactivityTimeoutMs,
+} from "../src/spawn-support.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -137,7 +142,8 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   assert(
     withEnv({ PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS: undefined }, () =>
       toolInactivityTimeoutMs(),
-    ) === 60 * 60_000,
+    ) ===
+      60 * 60_000,
     "canary: the tool-inactivity bound is 60 min (a separate knob from the model-silence budget)",
   );
   assert(
@@ -196,7 +202,10 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     !/PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE/.test(develop),
     "canary: the skip-opt-out is gone — an unread child is not a default worth opting out of",
   );
-  const workDevelopRunSrc = readFileSync(path.join(__dirname, "../src/work-develop-run.ts"), "utf8");
+  const workDevelopRunSrc = readFileSync(
+    path.join(__dirname, "../src/work-develop-run.ts"),
+    "utf8",
+  );
   assert(
     /PI_ENSEMBLE_SPECULATIVE_EXPLORE\s*===\s*"1"/.test(workDevelopRunSrc),
     "canary: the speculative explore is opt-IN — default develop spends one child per workstream",

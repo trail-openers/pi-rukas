@@ -63,7 +63,9 @@ async function main() {
     assert(cmd === "gh pr merge 17 --squash --delete-branch", `got ${cmd}`);
   });
   await check("prCreateCmd uses --head", () => {
-    const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", { baseBranch: "main" });
+    const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", {
+      baseBranch: "main",
+    });
     assert(cmd.includes("--head main...branch"), `got ${cmd}`);
   });
   // #776 — an absent/blank base branch must produce a plain `--head <branch>`,
@@ -98,7 +100,9 @@ async function main() {
     assert(!cmd.includes("--json"), `must not carry --json: ${cmd}`);
   });
   await check("prCreateCmd('github', …) does NOT contain --json", () => {
-    const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", { baseBranch: "main" });
+    const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", {
+      baseBranch: "main",
+    });
     assert(cmd.startsWith("gh pr create"), `got ${cmd}`);
     assert(!cmd.includes("--json"), `must not carry --json: ${cmd}`);
   });
@@ -150,7 +154,9 @@ async function main() {
     });
     const forge = createForge(det, { execFn: fn });
     await check("prCreate maps a plain-text URL stdout (number 17, full url)", async () => {
-      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", { baseBranch: "main" });
+      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", {
+        baseBranch: "main",
+      });
       assert(pr.number === 17, `expected 17, got ${pr.number}`);
       assert(pr.url === "https://github.com/acme/widget/pull/17", `url: ${pr.url}`);
     });
@@ -161,7 +167,9 @@ async function main() {
     });
     const forge = createForge(det, { execFn: fn });
     await check("prCreate tolerates surrounding whitespace and trailing tab", async () => {
-      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", { baseBranch: "main" });
+      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", {
+        baseBranch: "main",
+      });
       assert(pr.number === 77, `expected 77, got ${pr.number}`);
       assert(pr.url === "https://github.com/acme/widget/pull/77", `url: ${pr.url}`);
     });
@@ -348,7 +356,9 @@ async function main() {
     });
     const forge = createForge(det, { execFn: fn });
     await check("prCreate passes --head base...branch and --body-file", async () => {
-      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", { baseBranch: "main" });
+      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", {
+        baseBranch: "main",
+      });
       assert(pr.number === 17, "round-tripped");
       const cmd = calls.find((c) => c.includes("gh pr create"));
       assert(cmd !== undefined, `no create cmd: ${calls}`);

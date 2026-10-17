@@ -48,7 +48,10 @@ function assert(cond: boolean, msg: string) {
 
 {
   const pkg = JSON.parse(readFileSync(EXT_PKG, "utf8")) as { name?: string };
-  assert(typeof pkg.name === "string" && pkg.name.length > 0, "extension/package.json: name present");
+  assert(
+    typeof pkg.name === "string" && pkg.name.length > 0,
+    "extension/package.json: name present",
+  );
   // Anchor to the known identity pair: the constant is a literal string, so
   // the pin is "the const is exactly one of the two identities, and it
   // equals package.json". A drift to any other string fails either arm.

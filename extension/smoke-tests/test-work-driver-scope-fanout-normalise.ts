@@ -50,7 +50,8 @@ function run(ws: WS, changed: string[]) {
 // #814 — the attributed failure strings keep the `declared fence violated`
 // phrase; the workstream id and kind suffix were added for attribution. The
 // normalisation under test is unchanged — the regex pins the phrase.
-const FENCE = /touched out-of-scope path .+ — declared fence violated \((sibling-declared|issue-fenced)\)/;
+const FENCE =
+  /touched out-of-scope path .+ — declared fence violated \((sibling-declared|issue-fenced)\)/;
 
 // ------------------------------------------ annotation stripping — FENCE side
 //
@@ -96,8 +97,7 @@ const FENCE = /touched out-of-scope path .+ — declared fence violated \((sibli
     `in-scope side: "own.ts (new)" still covers own.ts — it is declared, not counted undeclared (got: ${failures.join("; ")})`,
   );
   assert(
-    !!fanout &&
-      fanout.startsWith("scope fanout: 8 undeclared file(s) changed vs 1 declared"),
+    !!fanout && fanout.startsWith("scope fanout: 8 undeclared file(s) changed vs 1 declared"),
     `in-scope side: declared count is 1 for an annotated path entry (got: ${fanout ?? "no fanout failure"})`,
   );
   // #814 — the undeclared warning (a fence-free touched file, no siblings
@@ -120,10 +120,9 @@ const FENCE = /touched out-of-scope path .+ — declared fence violated \((sibli
 {
   const fenceEntry =
     "extension/smoke-tests/test-work-driver-mechanized-commit.ts (any change to what consolidation stages — work-driver-integrate.ts / work-driver-cherry-pick.ts — is out of scope; do not add the “moved”/“covered” schema shape — that is task-c)";
-  const { failures } = run(
-    { id: "a", scope: "x", paths: ["other.ts"], outOfScope: [fenceEntry] },
-    ["extension/smoke-tests/test-work-driver-mechanized-commit.ts"],
-  );
+  const { failures } = run({ id: "a", scope: "x", paths: ["other.ts"], outOfScope: [fenceEntry] }, [
+    "extension/smoke-tests/test-work-driver-mechanized-commit.ts",
+  ]);
   assert(
     failures.some((f) =>
       /touched out-of-scope path extension\/smoke-tests\/test-work-driver-mechanized-commit\.ts/.test(
@@ -144,10 +143,9 @@ const FENCE = /touched out-of-scope path .+ — declared fence violated \((sibli
 {
   const fenceEntry =
     "extension/smoke-tests/test-work-driver-mechanized-commit.ts (any change to what consolidation stages — work-driver-integrate.ts / work-driver-cherry-pick.ts — is out of scope; do not add the moved/covered schema shape — that is task-c";
-  const { failures } = run(
-    { id: "a", scope: "x", paths: ["other.ts"], outOfScope: [fenceEntry] },
-    ["extension/smoke-tests/test-work-driver-mechanized-commit.ts"],
-  );
+  const { failures } = run({ id: "a", scope: "x", paths: ["other.ts"], outOfScope: [fenceEntry] }, [
+    "extension/smoke-tests/test-work-driver-mechanized-commit.ts",
+  ]);
   assert(
     failures.some((f) =>
       /touched out-of-scope path extension\/smoke-tests\/test-work-driver-mechanized-commit\.ts/.test(
@@ -168,10 +166,9 @@ const FENCE = /touched out-of-scope path .+ — declared fence violated \((sibli
 
 {
   const fname = "docs/notes (draft).md";
-  const { failures } = run(
-    { id: "a", scope: "x", paths: ["other.ts"], outOfScope: [fname] },
-    [fname],
-  );
+  const { failures } = run({ id: "a", scope: "x", paths: ["other.ts"], outOfScope: [fname] }, [
+    fname,
+  ]);
   assert(
     failures.some((f) => /touched out-of-scope path docs\/notes \(draft\)\.md/.test(f)),
     `canary: "docs/notes (draft).md" survives the strip (only a TRAILING annotation is stripped) (got: ${failures.join("; ")})`,
@@ -184,10 +181,9 @@ const FENCE = /touched out-of-scope path .+ — declared fence violated \((sibli
 // break trailing-slash handling or directory-prefix fencing.
 
 {
-  const { failures } = run(
-    { id: "a", scope: "x", paths: ["other.ts"], outOfScope: ["src/foo/"] },
-    ["src/foo/bar.ts"],
-  );
+  const { failures } = run({ id: "a", scope: "x", paths: ["other.ts"], outOfScope: ["src/foo/"] }, [
+    "src/foo/bar.ts",
+  ]);
   assert(
     failures.some((f) => /touched out-of-scope path src\/foo\/bar\.ts/.test(f)),
     `directory fence: "src/foo/" (trailing slash) still fences the whole tree (got: ${failures.join("; ")})`,

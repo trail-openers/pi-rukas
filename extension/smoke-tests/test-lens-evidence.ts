@@ -32,10 +32,10 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { buildEvidence } from "../src/lens-evidence.ts";
-import { buildLensRoster } from "../src/lens-roster.ts";
 import { lensPromptFor } from "../src/lens-review-format.ts";
 import { DEFAULT_REVIEW_THRESHOLD, computeVerdict } from "../src/lens-review-format.ts";
 import type { Finding } from "../src/lens-review.ts";
+import { buildLensRoster } from "../src/lens-roster.ts";
 import { resolveReviewThreshold } from "../src/review-threshold.ts";
 import { pathsInDiff, readFileAtBranch } from "../src/work-driver-diff.ts";
 import type { DoctrineDoc } from "../src/work-driver-policy.ts";
@@ -158,7 +158,9 @@ const LENS_SECURITY = EVIDENCE_ROSTER.find((e) => e.name === "SECURITY")!;
     "...and every lens is warned that opening a file yields the pre-change version",
   );
   assert(
-    !lensPromptFor(LENS_SECURITY, diff, "ctx", undefined, EVIDENCE_ROSTER).includes("The default timeout is 30 seconds."),
+    !lensPromptFor(LENS_SECURITY, diff, "ctx", undefined, EVIDENCE_ROSTER).includes(
+      "The default timeout is 30 seconds.",
+    ),
     "...while a prompt built without evidence carries none (not vacuous)",
   );
 
@@ -190,8 +192,7 @@ const LENS_SECURITY = EVIDENCE_ROSTER.find((e) => e.name === "SECURITY")!;
     "#952 canary: clean-lane (no-findings) branch carries the exact stop sentence",
   );
   // Both branches end with the stop sentence as the final non-blank line.
-  const lastLine = (s: string) =>
-    [...s.split("\n").reverse()].find((l) => l.trim() !== "") ?? "";
+  const lastLine = (s: string) => [...s.split("\n").reverse()].find((l) => l.trim() !== "") ?? "";
   assert(
     lastLine(findingsBranch) === STOP_SENTENCE,
     "#952 canary: stop sentence is the LAST line of the findings branch",

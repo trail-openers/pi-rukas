@@ -19,7 +19,6 @@ import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkState, initialState, readState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 
-
 // Minimal ExtensionAPI stub — only the methods runWorkDriver actually calls.
 function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
   const sent: string[] = [];
@@ -201,7 +200,6 @@ function assert(cond: boolean, msg: string) {
     );
   }
 }
-
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

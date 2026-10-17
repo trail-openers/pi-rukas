@@ -6,8 +6,8 @@
  * Sections 5 (steer to a driver-shaped job) and 6 (agent-list projection).
  */
 
-import { childHandles } from "../src/async-jobs-registry.ts";
 import { buildAgentListLines } from "../src/agent-list.ts";
+import { childHandles } from "../src/async-jobs-registry.ts";
 import { steerFromDeck } from "../src/dispatch-deck-interactive.ts";
 import * as dispatchDeck from "../src/dispatch-deck.ts";
 import { steerChild } from "../src/dispatch-steer.ts";
@@ -49,7 +49,11 @@ function assert(cond: boolean, msg: string) {
     "steerChild: stdin line is the {type:'steer', message} envelope",
   );
   const ui = { notify: () => {}, editor: undefined, setStatus: () => {}, editorValue: "" };
-  const r2 = await steerFromDeck(ui as unknown as Parameters<typeof steerFromDeck>[0], "j-driver-838", "hello from deck");
+  const r2 = await steerFromDeck(
+    ui as unknown as Parameters<typeof steerFromDeck>[0],
+    "j-driver-838",
+    "hello from deck",
+  );
   assert(r2.delivered === true, "steerFromDeck: delivered to the driver row");
   assert(lines.length === 2, "steerFromDeck: a second stdin write (total 2)");
   const line1 = lines[1];

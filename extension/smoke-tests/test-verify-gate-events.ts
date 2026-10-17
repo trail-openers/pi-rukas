@@ -47,7 +47,7 @@ import {
   isStableKind,
   validateNdjsonLine,
 } from "../src/headless/ndjson.ts";
-import { fmtEvent, fmtRecentEvents } from "../src/work-status-events.ts";
+import { fmtElapsed, fmtEvent, fmtRecentEvents } from "../src/work-status-events.ts";
 import { makeVerifyRunEvents } from "../src/workflow-state-events-verify.ts";
 import { KNOWN_EVENT_KINDS, validateDiscriminants } from "../src/workflow-state-validate.ts";
 import {
@@ -67,72 +67,65 @@ function assert(cond: boolean, msg: string) {
 }
 
 const CMD = "bash scripts/verify.sh";
+/** The duration the completion carries — the number this pair exists to surface. */
+const MS = 1_234_567;
 /** The two kinds the ticket asks for; resolved against the union, not hardcoded twice. */
 const START = "verify-started";
 const COMPLETE = "verify-completed";
 
 /**
- * Build one of the two events through the codebase's own vocabulary.
+ * Build the pair through the codebase's own vocabulary.
  *
- * Goes through task B's factory, `makeVerifyRunEvents`, imported from the
- * module that DEFINES the pair (`workflow-state-events-verify.ts`). That
- * matters for all three of the ways this function used to fail silently:
+ * Goes through task B's factory, `makeVerifyRunEvents`, imported statically
+ * from the module that DEFINES the pair (`workflow-state-events-verify.ts`) and
+ * CALLED here — which matters for all three of the ways this function used to
+ * fail silently:
  *
  *   - it looked in `workflow-state-events-verify-flake.ts`, which is the
  *     verify-TIER-OUTCOME fragment (`verify-flake-recovered`,
  *     `verify-full-status`, `consolidated-verify-skipped`) and has never
- *     exported a `makeVerifyStartedEvent` / `makeVerifyCompletedEvent`; the
- *     probe therefore always missed and always fell through to the literal;
+ *     exported a verify-run factory; the probe therefore always missed and
+ *     always fell through to a literal;
  *   - the literal used `cmd`, which is not a field of either event — task B
  *     named it `command` — and omitted the required `target` entirely. Smoke
  *     tests are NOT type-checked (`extension/tsconfig.json` includes only
  *     `src/` and `scripts/`), so the cast to `WorkEvent` was load-bearing on
  *     nothing: the `cmd`/`target` mismatch was invisible at compile time and
  *     only surfaced as the renderer throwing on `e.target.kind`;
- *   - the fallback asserted nothing about the shape, so a rename on either
- *     side would have kept it "passing".
+ *   - the literal asserted nothing about the shape, and reading its fields
+ *     through a list of candidate names forgave a rename on either side — so a
+ *     `command`→`cmd` rename kept it "passing" while the renderer broke.
  *
- * A static import is deliberate: if task B renames the factory, this file
- * fails to LOAD and the whole suite reports red, rather than degrading to a
- * literal that quietly asserts the wrong contract. `target` is the
- * consolidated tree — the one the develop gate actually builds — so the
- * fixture carries every required field of the real type.
+ * So: static import (a rename of the factory fails the LOAD and the whole suite
+ * reports red), real call (the fixture IS the product's own shape, not a copy
+ * this file invented), and direct field reads below — `e.command` / `e.ms`, the
+ * names the type declares. `target` is the consolidated tree — the one the
+ * develop gate actually builds.
+ *
+ * `at` is overridden with fixed values so the append-order assertion below has
+ * a start and a completion distinguishable by position alone.
  */
-function build(kind: string, at: number): WorkEvent {
-  const shared = {
-    step: "develop" as const,
+function build(): { started: WorkEvent; completed: WorkEvent } {
+  const pair = makeVerifyRunEvents({
+    step: "develop",
     command: CMD,
-    target: { kind: "consolidated" as const },
+    target: { kind: "consolidated" },
+    status: "success",
+    ms: MS,
+  });
+  return {
+    started: { ...pair.started, at: 1_000 },
+    completed: { ...pair.completed, at: 1_000 + MS },
   };
-  return kind === START
-    ? { kind: START, at, ...shared }
-    : { kind: COMPLETE, at, ...shared, status: "success", ms: 1_234_567 };
-}
-
-/** The field carrying the duration, however it is named (task B owns the name). */
-function durationOf(e: WorkEvent): { field: string; value: unknown } | undefined {
-  const o = e as unknown as Record<string, unknown>;
-  for (const f of ["ms", "durationMs", "elapsedMs"]) {
-    if (o[f] !== undefined) return { field: f, value: o[f] };
-  }
-  return undefined;
-}
-
-/** The field carrying the command, however it is named. */
-function commandOf(e: WorkEvent): string | undefined {
-  const o = e as unknown as Record<string, unknown>;
-  for (const f of ["cmd", "command", "verifyCmd"]) {
-    if (typeof o[f] === "string") return o[f] as string;
-  }
-  return undefined;
 }
 
 let started: WorkEvent | undefined;
 let completed: WorkEvent | undefined;
 
 try {
-  started = build(START, 1_000);
-  completed = build(COMPLETE, 1_000 + 1_234_567);
+  const pair = build();
+  started = pair.started;
+  completed = pair.completed;
 } catch (err) {
   assert(false, `the verify events are constructible from the event module (${String(err)})`);
 }
@@ -156,18 +149,21 @@ if (started === undefined || completed === undefined) {
   assert(completed.kind === COMPLETE, `'${COMPLETE}' survives the WorkEvent union as its own kind`);
 
   // ========================================================= (2) the payload
+  // Read by the names the TYPE declares — a name-probing helper here would
+  // forgive exactly the rename this file exists to catch.
+  const startEvent = started as Extract<WorkEvent, { kind: typeof START }>;
+  const doneEvent = completed as Extract<WorkEvent, { kind: typeof COMPLETE }>;
   assert(
-    commandOf(started) === CMD,
-    `the start event names the command the operator is waiting for (got: ${JSON.stringify(commandOf(started))})`,
+    startEvent.command === CMD,
+    `the start event names the command the operator is waiting for (got: ${JSON.stringify(startEvent.command)})`,
   );
   assert(
-    commandOf(completed) === CMD,
-    `the completion event names the same command (got: ${JSON.stringify(commandOf(completed))})`,
+    doneEvent.command === CMD,
+    `the completion event names the same command (got: ${JSON.stringify(doneEvent.command)})`,
   );
-  const d = durationOf(completed);
   assert(
-    d !== undefined && d.value === 1_234_567,
-    `the completion event carries the duration — that number is the whole point of the pair (fields tried: ms/durationMs/elapsedMs; got: ${JSON.stringify(d)})`,
+    doneEvent.ms === MS,
+    `the completion event carries the duration on its documented \`ms\` field — that number is the whole point of the pair (got: ${JSON.stringify(doneEvent.ms)})`,
   );
 
   // ====================================================== (3) persisted+valid
@@ -227,7 +223,6 @@ if (started === undefined || completed === undefined) {
       !lower.includes("undefined") && !lower.includes("nan") && !lower.includes("[object"),
       `${label}'s line contains no undefined/NaN/[object placeholder (got: ${JSON.stringify(line)})`,
     );
-    const cmd = commandOf(e);
     // Only the START line has to name the command. The pair's own contract
     // says so: `workflow-state-events-verify.ts` documents `verify-started` as
     // "the line that exists for the 22 minutes", and task B's scrollback
@@ -240,15 +235,18 @@ if (started === undefined || completed === undefined) {
     // the completion line is legible above. Both halves still carry `command`
     // on the EVENT (NDJSON_STABLE_FIELDS guarantees it to the host); what the
     // renderer prints is the renderer's call.
-    if (cmd !== undefined && e.kind === START) {
+    if (e.kind === START) {
       assert(
-        text.includes(cmd) || text.includes(cmd.replace(/^bash /, "")),
+        text.includes(CMD) || text.includes(CMD.replace(/^bash /, "")),
         `${label}'s line names the command (got: ${JSON.stringify(line)})`,
       );
     }
   }
   // The duration is the operator-facing number; a render that drops it
   // leaves the reader with "a verify happened" and no way to see the 22 min.
+  // No "any digit" fallback: the completion line carries the step name and the
+  // target, both of which contain digits, so a looser test passes whether or
+  // not the duration is printed at all.
   {
     let line = "";
     try {
@@ -256,10 +254,9 @@ if (started === undefined || completed === undefined) {
     } catch {
       line = "";
     }
-    const human = ["1234567", "20m", "21m", "20 min", "21 min", "1234", "20:34", "1235"];
     assert(
-      human.some((h) => line.includes(h)) || /\d/.test(line),
-      `'${COMPLETE}'s line carries a duration the operator can read (got: ${JSON.stringify(line)})`,
+      fmtElapsed(MS) !== "" && line.includes(fmtElapsed(MS)),
+      `'${COMPLETE}'s line carries the measured duration in the same form fmtElapsed renders it (${JSON.stringify(fmtElapsed(MS))}) (got: ${JSON.stringify(line)})`,
     );
   }
 
@@ -285,6 +282,137 @@ if (started === undefined || completed === undefined) {
     assert(
       lines.every((l) => (l ?? "").trim().length > 0),
       `rendered lines are non-empty (${JSON.stringify(lines.map((l) => l ?? "(undefined)"))})`,
+    );
+  }
+  for (const [label, e] of [
+    [`'${START}'`, started],
+    [`'${COMPLETE}'`, completed],
+  ] as Array<[string, WorkEvent]>) {
+    // The console.warn the throwing arm prints is the only signal an operator
+    // gets that a row was degraded rather than rendered; captured so the
+    // mechanism is pinned, not just the fallback line.
+    const warned: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warned.push(args.map(String).join(" "));
+    };
+    let threw = false;
+    let malformed: string;
+    /** Which shape was fed in, so the assertion below asks the right question. */
+    let shapeKind: "throws" | "coerces" = "coerces";
+    try {
+      // A record `validateDiscriminants` accepts (it checks only `eventLog[].kind`)
+      // and whose fields are the shapes a hand-edited or half-written state file
+      // carries. Two shapes, because only one of them can reach the catch:
+      // a missing `command` really throws, while a non-numeric `ms` and a bogus
+      // `status` merely coerce — so those are guarded inside the case itself and
+      // must be asserted never to fabricate a value rather than to warn.
+      if (e.kind === START) {
+        shapeKind = "throws";
+        malformed = fmtEvent({
+          kind: START,
+          at: 1,
+          step: "develop",
+          target: {},
+        } as unknown as WorkEvent);
+      } else {
+        malformed = fmtEvent({
+          kind: COMPLETE,
+          at: 1,
+          step: "develop",
+          target: [],
+          status: "purple",
+          ms: "22 minutes",
+        } as unknown as WorkEvent);
+      }
+    } catch (err) {
+      threw = true;
+      malformed = '""';
+      shapeKind = "throws";
+      void err;
+    } finally {
+      console.warn = realWarn;
+    }
+    assert(
+      !threw,
+      `${label} with a malformed target/status/ms renders instead of throwing (the #1415 panel crash)`,
+    );
+    if (shapeKind === "throws") {
+      assert(
+        warned.length === 1 && warned[0].includes(e.kind),
+        `${label}'s throwing record is reported to the console naming its kind, not swallowed (warned: ${JSON.stringify(warned)})`,
+      );
+    } else {
+      assert(
+        warned.length === 0,
+        `${label}'s coercing record is handled by its own guards, not by the catch (warned: ${JSON.stringify(warned)})`,
+      );
+    }
+    const malformedText = malformed.trim();
+    assert(
+      malformedText.length > 0 &&
+        malformedText.includes(e.kind) &&
+        !/undefined|nan|\[object/.test(malformedText.toLowerCase()),
+      `${label}'s malformed record degrades to a legible line naming its kind, with no fabricated value (got: ${JSON.stringify(malformed)})`,
+    );
+  }
+  // The `unhandled` marker mechanism itself, pinned: a kind the switch has no
+  // case for must render a line that says so, rather than the blank row (or the
+  // `undefined`) the pre-#1415 switch produced. Without this, a regression that
+  // relabels a well-formed case as `unhandled` — or drops the marker — is
+  // invisible to every test in the suite.
+  {
+    // …and the tree half of the same disk-trust gap. `target` is what this pair
+    // exists to attribute, so a malformed one must read as UNKNOWN rather than
+    // fall through to the affirmative `consolidated` — a corrupt row claiming the
+    // develop gate's own tree is worse than a row admitting it cannot tell.
+    const shape = (target: unknown) =>
+      fmtEvent({
+        kind: COMPLETE,
+        at: 1,
+        step: "develop",
+        command: CMD,
+        status: "success",
+        ms: 10,
+        target,
+      } as unknown as WorkEvent);
+    for (const [label, target] of [
+      ["{}", {}],
+      ["an array", []],
+      ["worktree with no path", { kind: "worktree" }],
+      ["a bare path", { path: "/x" }],
+      ["worktree with an empty path", { kind: "worktree", path: "" }],
+      ["worktree with a whitespace path", { kind: "worktree", path: "   " }],
+    ] as Array<[string, unknown]>) {
+      const line = shape(target);
+      assert(
+        line.includes("(unknown)") && !line.includes("consolidated") && !/·\s+·/.test(line),
+        `a malformed target (${label}) reads as unknown, never as the affirmative 'consolidated' and never as blank padding (got: ${JSON.stringify(line)})`,
+      );
+    }
+    assert(
+      shape({ kind: "consolidated" }).includes("consolidated") &&
+        shape({ kind: "worktree", id: "a", path: "/x/.worktrees/issue-1415-fix" }).includes(
+          "issue-1415-fix",
+        ),
+      `a well-formed target still renders its real tree — 'consolidated' for the probe, the basename for a worktree (got: ${JSON.stringify(shape({ kind: "consolidated" }))} / ${JSON.stringify(shape({ kind: "worktree", id: "a", path: "/x/.worktrees/issue-1415-fix" }))})`,
+    );
+  }
+  {
+    const ghost = fmtEvent({ kind: "totally-new-kind", at: 1 } as unknown as WorkEvent);
+    assert(
+      /^\s*totally-new-kind · unhandled/.test(ghost),
+      `a kind with no case in fmtEvent's switch renders '\`<kind> · unhandled\`' — greppable, not blank (got: ${JSON.stringify(ghost)})`,
+    );
+    assert(
+      !/undefined|nan|\[object/.test(ghost.toLowerCase()),
+      `the fallback line carries no placeholder text (got: ${JSON.stringify(ghost)})`,
+    );
+    // And the arm is total: no kind reaches a `string[]` caller as undefined.
+    const tail = fmtRecentEvents([{ kind: "totally-new-kind", at: 1 } as unknown as WorkEvent], 5);
+    assert(
+      tail.length === 1 && typeof tail[0] === "string" && (tail[0] ?? "").trim().length > 0,
+      `fmtRecentEvents never yields a hole for an unhandled kind (got: ${JSON.stringify(tail)})`,
     );
   }
   for (const [label, e] of [

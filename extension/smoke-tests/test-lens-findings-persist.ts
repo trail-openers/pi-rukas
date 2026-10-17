@@ -8,18 +8,18 @@
  * was indistinguishable from a slow one. This locks in the four fixes.
  */
 
-import { lensTimingsOf } from "../src/work-driver-lens-capkill.ts";
-import { applyLensVerdict } from "../src/work-driver-lens-verdicts.ts";
-import { renderLensFindingsSection } from "../src/work-driver-pr-sections.ts";
+import type { Finding, LensReviewSummary } from "../src/lens-review.ts";
 import {
   __resetSpawnSemaphore,
   lensWaitTraceMessage,
   withSpawnSlot,
 } from "../src/spawn-semaphore.ts";
-import { initialState } from "../src/workflow-state-update.ts";
-import type { Finding, LensReviewSummary } from "../src/lens-review.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { lensTimingsOf } from "../src/work-driver-lens-capkill.ts";
+import { applyLensVerdict } from "../src/work-driver-lens-verdicts.ts";
+import { renderLensFindingsSection } from "../src/work-driver-pr-sections.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
+import { initialState } from "../src/workflow-state-update.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

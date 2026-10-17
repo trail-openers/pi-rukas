@@ -168,10 +168,7 @@ if (minVersion === null) {
     below.includes(minVersion),
     `below-floor message names the floor (${minVersion}): "${below}"`,
   );
-  assert(
-    /0\.3\.1/.test(below),
-    "below-floor message records the reason (the 0.3.1 gap): " + below,
-  );
+  assert(/0\.3\.1/.test(below), "below-floor message records the reason (the 0.3.1 gap): " + below);
 }
 
 // ---------------------------------------------- the missing-oo path

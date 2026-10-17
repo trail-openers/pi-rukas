@@ -30,7 +30,16 @@
  * against the real repo that must be clean.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -84,13 +93,18 @@ function listReferenceFiles(dir: string): string[] {
  * each file in it must be mentioned as `references/<filename>` in that
  * skill's SKILL.md body. Skills without a references/ dir are skipped.
  */
-export function checkReferenceMentions(root: string): { filesFound: number; failures: ReferenceFailure[] } {
+export function checkReferenceMentions(root: string): {
+  filesFound: number;
+  failures: ReferenceFailure[];
+} {
   const failures: ReferenceFailure[] = [];
   let filesFound = 0;
   const skillDir = path.join(root, "skill");
   let dirs: string[] = [];
   try {
-    dirs = readdirSync(skillDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    dirs = readdirSync(skillDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
   } catch {
     dirs = [];
   }
@@ -102,7 +116,10 @@ export function checkReferenceMentions(root: string): { filesFound: number; fail
     if (!existsSync(skillMd)) {
       for (const f of refFiles) {
         filesFound += 1;
-        failures.push({ kind: "unmentioned", detail: `skill/${dir}/SKILL.md is missing but references/${f} exists` });
+        failures.push({
+          kind: "unmentioned",
+          detail: `skill/${dir}/SKILL.md is missing but references/${f} exists`,
+        });
       }
       continue;
     }
@@ -110,7 +127,10 @@ export function checkReferenceMentions(root: string): { filesFound: number; fail
     for (const f of refFiles) {
       filesFound += 1;
       if (!bodyMentions(body, f)) {
-        failures.push({ kind: "unmentioned", detail: `skill/${dir}/references/${f} is not mentioned as references/${f} in skill/${dir}/SKILL.md body` });
+        failures.push({
+          kind: "unmentioned",
+          detail: `skill/${dir}/references/${f} is not mentioned as references/${f} in skill/${dir}/SKILL.md body`,
+        });
       }
     }
   }
@@ -122,7 +142,10 @@ export function checkRepoReferences(repoRoot: string): ReferenceFailure[] {
   const { filesFound, failures } = checkReferenceMentions(repoRoot);
   const out = [...failures];
   if (filesFound < ANTI_VACUITY_FLOOR) {
-    out.push({ kind: "vacuity", detail: `anti-vacuity: only ${filesFound} reference files found (floor ${ANTI_VACUITY_FLOOR}) — the checker may be scanning nothing` });
+    out.push({
+      kind: "vacuity",
+      detail: `anti-vacuity: only ${filesFound} reference files found (floor ${ANTI_VACUITY_FLOOR}) — the checker may be scanning nothing`,
+    });
   }
   return out;
 }
@@ -142,8 +165,14 @@ function assert(cond: boolean, msg: string) {
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "pi-ens-refgate-"));
   try {
     mkdirSync(path.join(fixtureRoot, "skill", "good-skill", "references"), { recursive: true });
-    writeFileSync(path.join(fixtureRoot, "skill", "good-skill", "SKILL.md"), "---\nname: good-skill\ndescription: fine\n---\n\nFor patterns, read `references/alpha.md` before writing code.\n");
-    writeFileSync(path.join(fixtureRoot, "skill", "good-skill", "references", "alpha.md"), "# Alpha\n");
+    writeFileSync(
+      path.join(fixtureRoot, "skill", "good-skill", "SKILL.md"),
+      "---\nname: good-skill\ndescription: fine\n---\n\nFor patterns, read `references/alpha.md` before writing code.\n",
+    );
+    writeFileSync(
+      path.join(fixtureRoot, "skill", "good-skill", "references", "alpha.md"),
+      "# Alpha\n",
+    );
     // The postgres-database shape: two reference files, only one mentioned.
     mkdirSync(path.join(fixtureRoot, "skill", "two-files", "references"), { recursive: true });
     writeFileSync(
@@ -154,13 +183,24 @@ function assert(cond: boolean, msg: string) {
     writeFileSync(path.join(fixtureRoot, "skill", "two-files", "references", "two.md"), "# Two\n");
     // A skill without a references/ dir — must not be flagged.
     mkdirSync(path.join(fixtureRoot, "skill", "no-refs"), { recursive: true });
-    writeFileSync(path.join(fixtureRoot, "skill", "no-refs", "SKILL.md"), "---\nname: no-refs\ndescription: fine\n---\n\nbody with the word references but no pointer\n");
+    writeFileSync(
+      path.join(fixtureRoot, "skill", "no-refs", "SKILL.md"),
+      "---\nname: no-refs\ndescription: fine\n---\n\nbody with the word references but no pointer\n",
+    );
     const { filesFound, failures } = checkReferenceMentions(fixtureRoot);
     const got = failures.map((f) => `${f.kind}:${f.detail}`);
-    assert(filesFound === 3, `canary: fixture discovers the three reference files (got ${filesFound})`);
-    assert(failures.length === 1, `canary: exactly the unmentioned file is reported (got ${JSON.stringify(got)})`);
     assert(
-      failures.some((f) => f.kind === "unmentioned" && f.detail.includes("two-files/references/two.md")),
+      filesFound === 3,
+      `canary: fixture discovers the three reference files (got ${filesFound})`,
+    );
+    assert(
+      failures.length === 1,
+      `canary: exactly the unmentioned file is reported (got ${JSON.stringify(got)})`,
+    );
+    assert(
+      failures.some(
+        (f) => f.kind === "unmentioned" && f.detail.includes("two-files/references/two.md"),
+      ),
       "canary: per-FILE checking — a two-file skill mentioning only one IS reported; a gate never observed to fail is worthless",
     );
     assert(
@@ -177,7 +217,10 @@ function assert(cond: boolean, msg: string) {
       "---\r\nname: two-files\r\ndescription: fine\r\n---\r\n\r\nSee:\r\n- references/one.md\r\n- references/two.md\r\n",
     );
     const fixed = checkReferenceMentions(fixtureRoot);
-    assert(fixed.failures.length === 0, `CRLF + bare-bullet: both mention forms pass (got ${JSON.stringify(fixed.failures.map((f) => f.detail))})`);
+    assert(
+      fixed.failures.length === 0,
+      `CRLF + bare-bullet: both mention forms pass (got ${JSON.stringify(fixed.failures.map((f) => f.detail))})`,
+    );
   } finally {
     rmSync(fixtureRoot, { recursive: true, force: true });
   }
@@ -188,7 +231,10 @@ function assert(cond: boolean, msg: string) {
 const repoFailures = checkRepoReferences(REPO_ROOT);
 const found = checkReferenceMentions(REPO_ROOT).filesFound;
 if (repoFailures.length === 0) {
-  assert(true, `every reference file is mentioned in its SKILL.md body (${found} reference files, floor ${ANTI_VACUITY_FLOOR})`);
+  assert(
+    true,
+    `every reference file is mentioned in its SKILL.md body (${found} reference files, floor ${ANTI_VACUITY_FLOOR})`,
+  );
 } else {
   for (const f of repoFailures) {
     assert(false, f.detail);

@@ -15,14 +15,14 @@
  * when there was no evidence).
  */
 
-import { asShellForm } from "./lib/argv-shell.ts";
 import { exec as cpExec } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { runDevelopTopological } from "../src/work-develop-topological.ts";
 import { replaceDevelopConvergedVerdicts } from "../src/work-develop-fence-verdicts.ts";
+import { runDevelopTopological } from "../src/work-develop-topological.ts";
 import { type WorkEvent, initialState } from "../src/workflow-state.ts";
+import { asShellForm } from "./lib/argv-shell.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

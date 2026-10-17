@@ -395,12 +395,9 @@ function assert(cond: boolean, msg: string) {
   // `attach()`, so a slice that reaches the next declaration would satisfy this
   // from a comment. Bounded on the function's own closing brace instead.
   const attachStart = signalSource.indexOf("export function attach(");
-  const attachBody = signalSource.slice(
-    attachStart,
-    signalSource.indexOf("\n}", attachStart) + 2,
-  );
+  const attachBody = signalSource.slice(attachStart, signalSource.indexOf("\n}", attachStart) + 2);
   assert(attachBody.includes("pending.clear();"), "6b: a re-attach starts its own count");
-  assert(/\n  publish\(\);/.test(attachBody), "6c: a re-attach always publishes its frame");
+  assert(/\n {2}publish\(\);/.test(attachBody), "6c: a re-attach always publishes its frame");
   assert(
     /generation\+\+/.test(attachBody),
     "6d: a re-attach invalidates an arm the previous session scheduled",

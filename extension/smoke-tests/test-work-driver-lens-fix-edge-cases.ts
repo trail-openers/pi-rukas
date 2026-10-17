@@ -90,7 +90,9 @@ setupSpawnGuard();
     });
     const wt = path.join(dir, ".wt");
     await execp(`git worktree add --detach ${JSON.stringify(wt)} HEAD`, { cwd: dir });
-    const { stdout: beforeLog } = await execp("git rev-list --count origin/main..HEAD", { cwd: dir });
+    const { stdout: beforeLog } = await execp("git rev-list --count origin/main..HEAD", {
+      cwd: dir,
+    });
     const beforeCount = Number.parseInt(beforeLog.trim(), 10);
     let s = initialState(306, 1_000_000);
     s = {
@@ -142,11 +144,19 @@ setupSpawnGuard();
         throw new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`);
       },
       adversarialLoopFn: async () =>
-        mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "APPROVED." }),
+        mkResult({
+          role: "adversarial-loop",
+          ok: true,
+          loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
+          text: "APPROVED.",
+        }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
-    const { stdout: afterLog } = await execp("git rev-list --count origin/main..HEAD", { cwd: dir });
+    const { stdout: afterLog } = await execp("git rev-list --count origin/main..HEAD", {
+      cwd: dir,
+    });
     const afterCount = Number.parseInt(afterLog.trim(), 10);
     assert(afterCount === beforeCount, `no empty commit after no-change lens-fix`);
   } finally {
@@ -234,13 +244,20 @@ setupSpawnGuard();
         throw new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`);
       },
       adversarialLoopFn: async () =>
-        mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "APPROVED." }),
+        mkResult({
+          role: "adversarial-loop",
+          ok: true,
+          loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
+          text: "APPROVED.",
+        }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
     const after492 = await readState(root, 492);
-    const cap = after492
-      ?.eventLog.filter((e) => e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated").at(-1);
+    const cap = after492?.eventLog
+      .filter((e) => e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated")
+      .at(-1);
     assert(cap !== undefined, "a no-diff lens-fix parks with the lens-fix-not-integrated cap");
     if (cap && cap.kind === "cap-hit") {
       assert(
@@ -291,7 +308,9 @@ setupSpawnGuard();
       cwd: dir,
       shell: "/bin/bash",
     });
-    const { stdout: beforeLog } = await execp("git rev-list --count origin/main..HEAD", { cwd: dir });
+    const { stdout: beforeLog } = await execp("git rev-list --count origin/main..HEAD", {
+      cwd: dir,
+    });
     const beforeCount = Number.parseInt(beforeLog.trim(), 10);
     let s = initialState(308, 1_000_000);
     s = {
@@ -315,7 +334,15 @@ setupSpawnGuard();
           jobId: "j-lens-1",
           round: 1,
           findings: JSON.stringify([
-            { lens: "SECURITY", severity: "MEDIUM", path: "feature.txt", line: 1, title: "eval() usage", description: "Unsafe eval", suggestion: "Extract to helper module" },
+            {
+              lens: "SECURITY",
+              severity: "MEDIUM",
+              path: "feature.txt",
+              line: 1,
+              title: "eval() usage",
+              description: "Unsafe eval",
+              suggestion: "Extract to helper module",
+            },
           ]),
           verdict: "ISSUES_FOUND" as const,
         },
@@ -329,8 +356,14 @@ setupSpawnGuard();
       issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         if (opts?.label?.startsWith("developer:lens-fix")) {
-          await fs.writeFile(path.join(dir, "safe-helper.ts"), "export const safeParse = (x) => JSON.parse(x);\n");
-          await fs.writeFile(path.join(dir, "feature.txt"), "import { safeParse } from './safe-helper';\n");
+          await fs.writeFile(
+            path.join(dir, "safe-helper.ts"),
+            "export const safeParse = (x) => JSON.parse(x);\n",
+          );
+          await fs.writeFile(
+            path.join(dir, "feature.txt"),
+            "import { safeParse } from './safe-helper';\n",
+          );
           return mkResult({ role: "developer", ok: true, text: "Fixed." });
         }
         if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
@@ -394,14 +427,20 @@ setupSpawnGuard();
     await execp("git push -q -u origin main", { cwd: root });
     await execp("git checkout -qb feature/lens-conflict", { cwd: root });
     const branchShaBefore = (await execp("git rev-parse HEAD", { cwd: root })).stdout.trim();
-    await execp(`git worktree add --detach ${JSON.stringify(wt)} ${JSON.stringify(branchShaBefore)}`, {
-      cwd: root,
-    });
+    await execp(
+      `git worktree add --detach ${JSON.stringify(wt)} ${JSON.stringify(branchShaBefore)}`,
+      {
+        cwd: root,
+      },
+    );
     await fs.writeFile(path.join(wt, "base.txt"), "worktree fixed version\n");
-    await execp('git config user.email "t@t" && git config user.name "T" && git add base.txt && git commit -q -m "lens fix"', {
-      cwd: wt,
-      shell: "/bin/bash",
-    });
+    await execp(
+      'git config user.email "t@t" && git config user.name "T" && git add base.txt && git commit -q -m "lens fix"',
+      {
+        cwd: wt,
+        shell: "/bin/bash",
+      },
+    );
     await fs.writeFile(path.join(root, "base.txt"), "branch version\n");
     await execp("git add base.txt && git commit -q -m 'branch change'", {
       cwd: root,
@@ -434,7 +473,15 @@ setupSpawnGuard();
           jobId: "j-lens-1",
           round: 1,
           findings: JSON.stringify([
-            { lens: "SIMPLICITY", severity: "MEDIUM", path: "base.txt", line: 1, title: "trivial", description: "nothing", suggestion: "leave" },
+            {
+              lens: "SIMPLICITY",
+              severity: "MEDIUM",
+              path: "base.txt",
+              line: 1,
+              title: "trivial",
+              description: "nothing",
+              suggestion: "leave",
+            },
           ]),
           verdict: "ISSUES_FOUND" as const,
         },
@@ -453,14 +500,23 @@ setupSpawnGuard();
         throw new Error(`unexpected dispatch: ${opts?.label}`);
       },
       adversarialLoopFn: async () =>
-        mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "APPROVED." }),
+        mkResult({
+          role: "adversarial-loop",
+          ok: true,
+          loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
+          text: "APPROVED.",
+        }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
-    const cap = (await readState(root, 776))
-      ?.eventLog.filter(
-        (e) => e.kind === "cap-hit" && (e.cap === "lens-fix-not-integrated" || e.cap === "lens-fix-reposition"),
-      ).at(-1);
+    const cap = (await readState(root, 776))?.eventLog
+      .filter(
+        (e) =>
+          e.kind === "cap-hit" &&
+          (e.cap === "lens-fix-not-integrated" || e.cap === "lens-fix-reposition"),
+      )
+      .at(-1);
     assert(cap !== undefined, "a conflicting lens-fix integration parks with the cap");
     if (cap && cap.kind === "cap-hit") {
       assert(

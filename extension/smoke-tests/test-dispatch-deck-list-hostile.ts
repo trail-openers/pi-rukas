@@ -9,9 +9,9 @@
 
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
+  type AgentListLine,
   buildAgentListLines,
   createAgentListComponent,
-  type AgentListLine,
 } from "../src/agent-list.ts";
 import type { DeckEntry } from "../src/dispatch-deck.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";

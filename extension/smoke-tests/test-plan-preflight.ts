@@ -13,12 +13,8 @@
  * coverage); split for the 500-line hard limit (AGENTS.md §12).
  */
 
+import { runPlanPipeline, setPlanDispatch, setPlanStatFn } from "../src/plan-driver.ts";
 import { PLAN_REPORTER_PATH } from "../src/plan-investigate.ts";
-import {
-  runPlanPipeline,
-  setPlanDispatch,
-  setPlanStatFn,
-} from "../src/plan-driver.ts";
 import { setPlanGitStateFn } from "../src/plan-investigation-cache.ts";
 import { reporterMissingError } from "../src/reporter-preflight.ts";
 

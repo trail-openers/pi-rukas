@@ -72,13 +72,7 @@ const TEST_MODEL: ResolvedModelChoice = {
 
 // 3. project-manager (rarely a subagent): no --exclude-tools.
 {
-  const args = buildChildArgs(
-    "project-manager",
-    TEST_PROMPT,
-    TEST_TRANSCRIPT,
-    TEST_MODEL,
-    false,
-  );
+  const args = buildChildArgs("project-manager", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
   const value = excludeToolsValueFromArgs(args);
   assert(
     value === undefined,

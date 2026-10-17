@@ -8,8 +8,18 @@
  */
 
 import { onRowConfirm } from "../src/dispatch-deck-confirm.ts";
-import { bufferCount, dropBuffer, feedRawEvent, getBuffer, hasBuffer, startBuffer } from "../src/dispatch-deck-live.ts";
-import { createAgentViewComponent, type ViewHeader } from "../src/dispatch-deck-live-view-component.ts";
+import {
+  type ViewHeader,
+  createAgentViewComponent,
+} from "../src/dispatch-deck-live-view-component.ts";
+import {
+  bufferCount,
+  dropBuffer,
+  feedRawEvent,
+  getBuffer,
+  hasBuffer,
+  startBuffer,
+} from "../src/dispatch-deck-live.ts";
 import { clearEntry, detach, reset, snapshot, startEntry } from "../src/dispatch-deck.ts";
 
 let exit = 0;
@@ -212,11 +222,21 @@ function headerB1(): ViewHeader {
   // before: 3d pinned done('close') — the shim remapped returnToList→close / after: the new component returns 'returnToList' verbatim (#916 slice B)
   assert(doneResults.includes("returnToList"), "3d: Esc → done('returnToList')");
   // #915: `s` now inserts into the input (no done('steer'))
-  const comp2 = createAgentViewComponent("b1", headerB1, fakeTheme, undefined, (r) => {
-    doneResults.push(`steer-${r}`);
-  }, () => {});
+  const comp2 = createAgentViewComponent(
+    "b1",
+    headerB1,
+    fakeTheme,
+    undefined,
+    (r) => {
+      doneResults.push(`steer-${r}`);
+    },
+    () => {},
+  );
   comp2.handleInput("s");
-  assert((comp2 as unknown as { inputValue: () => string }).inputValue() === "s", "3e: 's' inserts into the input (no done)");
+  assert(
+    (comp2 as unknown as { inputValue: () => string }).inputValue() === "s",
+    "3e: 's' inserts into the input (no done)",
+  );
   dropBuffer("b1");
 }
 

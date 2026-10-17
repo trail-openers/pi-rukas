@@ -383,11 +383,15 @@ for (const command of ghIssueAllowed) {
 // Specialists never had the grant; the guard covers them too.
 const ghIssueCreateCmd = "gh issue create -t 'fix: repro' -b 'acceptance'";
 {
-  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, ghIssueCreateCmd);
-  assert(
-    v === "deny",
-    `#598: \`${ghIssueCreateCmd}\` is denied for project-manager (got: ${v})`,
+  const v = resolveToolPermission(
+    "bash",
+    "project-manager",
+    {},
+    {},
+    agentsConfig,
+    ghIssueCreateCmd,
   );
+  assert(v === "deny", `#598: \`${ghIssueCreateCmd}\` is denied for project-manager (got: ${v})`);
 }
 for (const role of [
   "developer",

@@ -409,7 +409,13 @@ function mkState(issue: number): WorkState {
 // cursor must advance (and the queue must settle) on every continue path.
 {
   let ran = 0;
-  const degenerate: IssueGroup = { id: "group-empty", scope: "", paths: [], outOfScope: [], issues: [] };
+  const degenerate: IssueGroup = {
+    id: "group-empty",
+    scope: "",
+    paths: [],
+    outOfScope: [],
+    issues: [],
+  };
   const groups: IssueGroup[] = [degenerate, g("group-b", 101, []), g("group-c", 102, [])];
   const t0 = Date.now();
   const summary = await runWorkQueue({
@@ -424,7 +430,10 @@ function mkState(issue: number): WorkState {
     readStateFn: async (_r, issue) => mkState(issue),
   });
   assert(ran === 2, "the degenerate group was skipped; the other two groups ran");
-  assert(Date.now() - t0 < 2000, "the queue settled promptly — no busy-spin on the empty-issues group");
+  assert(
+    Date.now() - t0 < 2000,
+    "the queue settled promptly — no busy-spin on the empty-issues group",
+  );
   assert(
     summary.merged === 2,
     "the two valid groups merged; the degenerate group is absent from the report",

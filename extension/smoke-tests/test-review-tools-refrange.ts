@@ -35,12 +35,12 @@
  *     plain `diff` string still works end-to-end, diff delivered verbatim).
  */
 
+import { mock } from "bun:test";
 import { exec } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { mock } from "bun:test";
 
 import { setupSpawnGuard } from "./test-helpers.ts";
 
@@ -81,7 +81,7 @@ if (process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === undefined) {
 type SpawnSpec = { role: string; prompt: string; cwd?: string };
 type SpawnOpts = { tag?: string };
 const spawnCalls: Array<{ role: string; tag: string; prompt: string }> = [];
-let spawnResponder: ((spec: SpawnSpec) => unknown) | null = null;
+const spawnResponder: ((spec: SpawnSpec) => unknown) | null = null;
 mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
   makeRunId: () => "run-refrange",
   spawnSpecialist: async (spec: SpawnSpec, opts?: SpawnOpts) => {
@@ -182,11 +182,30 @@ async function mkRepoWithBranch(): Promise<{ dir: string; head: string; base: st
 }
 
 /** Stub the ExtensionAPI surface and capture registerTool calls. */
-function fakePi(): { pi: object; tools: Map<string, { name: string; description?: string; parameters: unknown; execute: Function }> } {
-  const tools = new Map<string, { name: string; description?: string; parameters: unknown; execute: Function }>();
+function fakePi(): {
+  pi: object;
+  tools: Map<
+    string,
+    { name: string; description?: string; parameters: unknown; execute: Function }
+  >;
+} {
+  const tools = new Map<
+    string,
+    { name: string; description?: string; parameters: unknown; execute: Function }
+  >();
   const pi = {
-    registerTool: (t: { name: string; description?: string; parameters: unknown; execute: Function }) =>
-      tools.set(t.name, { name: t.name, description: t.description, parameters: t.parameters, execute: t.execute }),
+    registerTool: (t: {
+      name: string;
+      description?: string;
+      parameters: unknown;
+      execute: Function;
+    }) =>
+      tools.set(t.name, {
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+        execute: t.execute,
+      }),
     on: () => undefined,
     sendUserMessage: () => undefined,
   };
@@ -208,7 +227,10 @@ registerAdversarialTool(fakePi().pi); // warm any module init
   const diffType = (advProps.diff as { type?: string })?.type;
   // diff is now OPTIONAL: it's no longer in the required[] list (Type.Optional).
   const advRequired = (adv?.parameters as { required?: string[] })?.required ?? [];
-  assert(!advRequired.includes("diff"), "adversarial_loop: `diff` is no longer required (base+head alternative)");
+  assert(
+    !advRequired.includes("diff"),
+    "adversarial_loop: `diff` is no longer required (base+head alternative)",
+  );
   assert(advRequired.includes("context"), "adversarial_loop: `context` is still required");
   // #1104 — reportOnly + workCwd rule are part of the tool contract.
   assert("reportOnly" in advProps, "adversarial_loop schema has optional `reportOnly`");
@@ -258,7 +280,11 @@ registerAdversarialTool(fakePi().pi); // warm any module init
     await execp("git add f.txt && git commit -qm v1", { cwd: d, shell: "/bin/bash" });
     const h = (await execp("git rev-parse HEAD", { cwd: d })).stdout.trim();
     await execp(`git update-ref refs/remotes/origin/feature/r ${h}`, { cwd: d });
-    return { dir: d, head: h, base: (await execp("git rev-parse refs/remotes/origin/main", { cwd: d })).stdout.trim() };
+    return {
+      dir: d,
+      head: h,
+      base: (await execp("git rev-parse refs/remotes/origin/main", { cwd: d })).stdout.trim(),
+    };
   })();
   try {
     const headRef = "origin/feature/r";
@@ -276,7 +302,10 @@ registerAdversarialTool(fakePi().pi); // warm any module init
     const round2 = await computeRangeDiff(dir, base, headRef);
     assert(round2.ok === true, "round-2 re-compute resolves the range again");
     if (round2.ok && before.ok) {
-      assert(round2.diff !== before.diff, "round 2's re-computed diff DIFFERS from round 1 (fix is seen)");
+      assert(
+        round2.diff !== before.diff,
+        "round 2's re-computed diff DIFFERS from round 1 (fix is seen)",
+      );
       assert(/v2-fixed/.test(round2.diff), "...and the new content is present");
     }
     assert(after !== null, "(intermediate compute ran)");
@@ -349,10 +378,10 @@ await (async () => {
       void lens; // the tool registration is exercised in the tool-schema tests;
       // here we drive the same seam the tool uses (runLensReview) directly.
       // Use a sentinel that would NOT appear in the real range diff: if the
-    // range won over the string, the lens children would receive the range
-    // text and none of them would see the sentinel.
-    const sentinel = "SENTINEL_DIFF_WINS_MARKER";
-    const lensDiffs: string[] = [];
+      // range won over the string, the lens children would receive the range
+      // text and none of them would see the sentinel.
+      const sentinel = "SENTINEL_DIFF_WINS_MARKER";
+      const lensDiffs: string[] = [];
       const res = await runLensReview({
         diff: sentinel,
         context: "both supplied",
@@ -416,7 +445,10 @@ await (async () => {
       reviewCalls.every((c) => c.prompt.includes(stringDiff)),
       "string-diff callers unchanged: the reviewer's prompt carries the string diff VERBATIM",
     );
-    assert(r.ok === true, "string-diff-only runAdversarialLoop resolves (existing caller path intact)");
+    assert(
+      r.ok === true,
+      "string-diff-only runAdversarialLoop resolves (existing caller path intact)",
+    );
   } finally {
     // nothing to clean up (no scratch repo for this case)
   }

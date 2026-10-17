@@ -455,24 +455,61 @@ const capHit = (cap: string, at: number): WorkEvent =>
     NDJSON_STABLE_KINDS.every((k) => NDJSON_KINDS.includes(k)),
     "every stable kind is an NDJSON kind",
   );
-  const lines: string[] = [];
-  const host = createHeadlessHost(7, (l) => lines.push(l));
-  host.emit({ kind: "step-started", step: "plan", at: 1 }, 0);
-  host.emit({ kind: "lens-approved", at: 2 }, 1);
-  host.sendUserMessage("hi");
-  const [stable, internal, log] = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
-  assert(stable?.unstable === undefined, "a stable kind is not marked");
-  assert(internal?.unstable === true, "a kind outside the subset is marked unstable");
-  assert(log?.unstable === undefined, "a log line is stable");
+  // One host per line: `log` is a runner line, not a WorkEvent, so it arrives
+  // through sendUserMessage rather than emit().
+  const emit = (event?: WorkEvent): Record<string, unknown> => {
+    const ls: string[] = [];
+    const h = createHeadlessHost(7, (l) => ls.push(l));
+    if (event) h.emit(event, 0);
+    else h.sendUserMessage("hi");
+    return JSON.parse(ls[0] ?? "{}") as Record<string, unknown>;
+  };
+  const stable = emit({ kind: "step-started", step: "plan", at: 1 });
+  const internal = emit({ kind: "lens-approved", at: 2 });
+  const log = emit();
   assert(
-    [stable, internal, log].every((l) => validateNdjsonLine(l).length === 0),
-    "every marked line validates",
+    stable?.unstable === undefined &&
+      internal?.unstable === true &&
+      log?.unstable === undefined &&
+      [stable, internal, log].every((l) => validateNdjsonLine(l).length === 0),
+    "a stable kind is unmarked, a kind outside the subset is marked, and every line validates",
   );
   const now = new Date().toISOString();
   assert(
     validateNdjsonLine({ v: 1, kind: "log", at: now, unstable: true }).length > 0,
     "a stable kind marked unstable is rejected",
   );
+  // #1415 — the verify pair's promotion is only a contract if something outside
+  // ndjson.ts pins it; test-verify-gate-events.ts cannot (it builds its line
+  // from `isStableKind` and asserts `declared || unstable === true`, so it
+  // passes either way). Expectations are LITERAL here and compared against what
+  // --capabilities publishes, which is the same object docs/headless.md's table
+  // describes.
+  const published = buildCapabilities().contracts.ndjson.stable.kinds as unknown as Record<
+    string,
+    readonly string[]
+  >;
+  for (const [kind, fields] of [
+    ["verify-started", ["step", "command", "at"]],
+    ["verify-completed", ["step", "command", "status", "ms", "at"]],
+  ] as const) {
+    assert(
+      NDJSON_STABLE_KINDS.includes(kind) &&
+        JSON.stringify([...(published[kind] ?? [])].sort()) ===
+          JSON.stringify([...fields].sort()) &&
+        validateNdjsonLine({ v: 1, kind, at: now, issue: 1, key: "1:0:0", event: {} }).length ===
+          0 &&
+        emit({
+          kind,
+          step: "develop",
+          command: "verify",
+          at: 1,
+          status: "success",
+          ms: 5,
+        } as WorkEvent).unstable === undefined,
+      `${kind} is published stable with exactly ${JSON.stringify(fields)} and reaches the host unmarked (published: ${JSON.stringify(published[kind])})`,
+    );
+  }
 }
 
 process.exit(exit);

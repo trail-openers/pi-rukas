@@ -69,8 +69,14 @@ const caseSensitive = (() => {
   const patch = existsSync(patchPath) ? readFileSync(patchPath, "utf8") : "";
   assert(patch.includes(".PI/x.json"), "#1016: the untracked .PI/x.json is in the saved patch");
   assert(patch.includes("src/b.ts"), "#1016: the untracked src/b.ts is in the saved patch");
-  assert(patch.includes("src/tmp/n.ts"), "#1016: a nested src/tmp/n.ts is saved (not a driver dir)");
-  assert(!existsSync(path.join(wt, "src", "tmp", "n.ts")), "#1016: nested src/tmp/n.ts is removed by the reset after the save");
+  assert(
+    patch.includes("src/tmp/n.ts"),
+    "#1016: a nested src/tmp/n.ts is saved (not a driver dir)",
+  );
+  assert(
+    !existsSync(path.join(wt, "src", "tmp", "n.ts")),
+    "#1016: nested src/tmp/n.ts is removed by the reset after the save",
+  );
   if (caseSensitive) {
     assert(!existsSync(path.join(wt, ".PI", "x.json")), "#1016: .PI/x.json removed after save");
   }

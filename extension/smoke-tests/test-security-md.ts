@@ -54,7 +54,10 @@ const BAD_CLAIM = "container fence IS the trust boundary";
  * Channel shapes the gate accepts — matched, not hardcoded to one literal:
  * the GitHub private-vulnerability-report URL shape, or a valid email address.
  */
-const CHANNEL_PATTERNS = [/github\.com\/[\w.-]+\/[\w.-]+\/security\/advisories\/new/i, /\b[\w.+-]+@[\w-]+(\.[\w-]+)+\b/];
+const CHANNEL_PATTERNS = [
+  /github\.com\/[\w.-]+\/[\w.-]+\/security\/advisories\/new/i,
+  /\b[\w.+-]+@[\w-]+(\.[\w-]+)+\b/,
+];
 
 /** An acknowledgement-style bound: a time window explicitly tied to
  * acknowledging (or a similar receipt-confirmation) a report. */
@@ -103,7 +106,8 @@ export function checkSecurityMd(root: string): SecurityMdIssue[] {
   if (FIX_DEADLINE.test(text)) {
     issues.push({
       file: "SECURITY.md",
-      problem: "states a FIX deadline — a single-maintainer hobby-cadence alpha must promise acknowledgement, not a fix window",
+      problem:
+        "states a FIX deadline — a single-maintainer hobby-cadence alpha must promise acknowledgement, not a fix window",
     });
   }
   if (text.includes(BAD_CLAIM)) {
@@ -230,7 +234,10 @@ function assert(cond: boolean, msg: string) {
   if (issues.length === 0) {
     const text = readFileSync(path.join(REPO_ROOT, "SECURITY.md"), "utf8");
     const channel = CHANNEL_PATTERNS.some((re) => re.test(text)) ? "a reporting channel" : "none";
-    assert(true, `SECURITY.md is clean: ${channel}, an acknowledgement-style bound, no fix deadline, no "${BAD_CLAIM}"`);
+    assert(
+      true,
+      `SECURITY.md is clean: ${channel}, an acknowledgement-style bound, no fix deadline, no "${BAD_CLAIM}"`,
+    );
   } else if (missingOnly) {
     // Sibling workstream task-a authors SECURITY.md in a separate worktree —
     // see the header. The canary above proves the missing case IS caught, so

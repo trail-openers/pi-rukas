@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { mock } from "bun:test";
 /**
  * #873 (epic #867 sub-issue 3) — the data-driven lens roster.
  * Offline, host-independent; `PI_ENSEMBLE_SKILLS_DIR` / `buildLensRoster`
@@ -16,23 +17,22 @@
  */
 import {
   cpSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
-  mkdirSync,
   writeFileSync,
-  existsSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { mock } from "bun:test";
+import { dedupeFindings } from "../src/lens-review-format.ts";
 import {
-  buildLensRoster,
-  deriveLensName,
   CLAIM_SCAN,
   CLAIM_SCAN_PRECEDENCE,
+  buildLensRoster,
+  deriveLensName,
 } from "../src/lens-roster.ts";
-import { dedupeFindings } from "../src/lens-review-format.ts";
 import { isolateLedger } from "./lib/review-ledger-test-helpers.ts"; // #1069 ledger isolation
 
 // #1069 — isolate before any src import: the real runLensReview write must land in a temp file.

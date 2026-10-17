@@ -21,8 +21,8 @@
  * handler.
  */
 
+import { type DeckNav, type NavListener, createDeckNav } from "../src/dispatch-deck-nav.ts";
 import { attach, detach, reset, startEntry } from "../src/dispatch-deck.ts";
-import { createDeckNav, type DeckNav, type NavListener } from "../src/dispatch-deck-nav.ts";
 
 const NAV_HEAL_MAX = 5; // must match the cap in dispatch-deck.ts
 
@@ -89,9 +89,9 @@ function makeNav(
     nav: createDeckNav(
       {
         // #914 — the deck's navGetters (and this harness) expose ONLY running
-    // job keys: the `main` row must appear only when ≥1 job is running,
-    // so with no jobs the ↓ still belongs to Pi's prompt history.
-    runningKeys: () => keysRef.keys,
+        // job keys: the `main` row must appear only when ≥1 job is running,
+        // so with no jobs the ↓ still belongs to Pi's prompt history.
+        runningKeys: () => keysRef.keys,
         editorText: () => fake.editorText,
         // `focus` simulates the main editor being/not being the focused
         // component (the production probe reads the editor's `focused`

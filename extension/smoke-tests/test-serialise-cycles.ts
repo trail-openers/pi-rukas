@@ -118,12 +118,12 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   );
 
   // And the inactivity watchdog is deliberately sized for the silence shape
-// it owns. #951 moved the model-silence default 25 → 30 min (the in-flight
-// tool-call exemption now covers the ~15-min long-bash gap this budget once
-// defended) and added the tool-inactivity bound (60 min) for silent tools.
-// The structural fixes (#544 dispatch caps + worktree isolation) remove the
-// contention that made it bite; weakening a genuine hang detector to
-// accommodate causes we already fixed would be the wrong repair.
+  // it owns. #951 moved the model-silence default 25 → 30 min (the in-flight
+  // tool-call exemption now covers the ~15-min long-bash gap this budget once
+  // defended) and added the tool-inactivity bound (60 min) for silent tools.
+  // The structural fixes (#544 dispatch caps + worktree isolation) remove the
+  // contention that made it bite; weakening a genuine hang detector to
+  // accommodate causes we already fixed would be the wrong repair.
   const support = readFileSync(path.join(SRC, "spawn-support.ts"), "utf8");
   assert(
     /return 30 \* 60_000;/.test(support),

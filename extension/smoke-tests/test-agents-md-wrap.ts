@@ -157,7 +157,11 @@ assert(
   mkdirSync(path.join(tmp, ".pi"), { recursive: true });
   writeFileSync(
     path.join(tmp, ".pi", "agents-md-state.json"),
-    JSON.stringify([{ key: "brownfield-wrap", value: "wrapped", provenance: "auto", date: FIXED_DATE }], null, 2) + "\n",
+    JSON.stringify(
+      [{ key: "brownfield-wrap", value: "wrapped", provenance: "auto", date: FIXED_DATE }],
+      null,
+      2,
+    ) + "\n",
   );
   const checkRes = checkAgent(
     tmp,
@@ -396,7 +400,8 @@ function stat(p: string): boolean {
   // (b) prose-only body under a managed heading → machine (kept as-is, exit 0).
   // Post-#681 M2 the managed id is named by the heading; the body shape no
   // longer gates classification, so a prose body is kept verbatim, not refused.
-  const proseCs = "# F\n\n## Code Style\n\nWe prefer a minimalist approach to everything.\nSimplicity wins in every case.\n";
+  const proseCs =
+    "# F\n\n## Code Style\n\nWe prefer a minimalist approach to everything.\nSimplicity wins in every case.\n";
   rmSync(AGENTS);
   writeFileSync(AGENTS, proseCs);
   const resProse = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
@@ -417,8 +422,7 @@ function stat(p: string): boolean {
   assert(resLong.exitCode === 0, "code-style 16-line body: machine, kept as-is (exit 0)");
 
   // (d) table-containing body → machine (kept as-is, exit 0): heading-keyed.
-  const tableCs =
-    "# F\n\n## Code Style\n\n| rule | detail |\n| --- | --- |\n| a | b |\n";
+  const tableCs = "# F\n\n## Code Style\n\n| rule | detail |\n| --- | --- |\n| a | b |\n";
   rmSync(AGENTS);
   writeFileSync(AGENTS, tableCs);
   const resTable = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
@@ -463,18 +467,26 @@ function stat(p: string): boolean {
   );
 
   // (b) prose-only body under a managed heading → machine (kept as-is, exit 0).
-  const proseArch = "# F\n\n## Architecture Notes\n\nWe keep the service small and focused.\nSimplicity over cleverness.\n";
+  const proseArch =
+    "# F\n\n## Architecture Notes\n\nWe keep the service small and focused.\nSimplicity over cleverness.\n";
   rmSync(AGENTS);
   writeFileSync(AGENTS, proseArch);
   const resProseArch = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
-  assert(resProseArch.exitCode === 0, "architecture-notes prose body: machine, kept as-is (exit 0)");
+  assert(
+    resProseArch.exitCode === 0,
+    "architecture-notes prose body: machine, kept as-is (exit 0)",
+  );
 
   // (c) table-containing body → machine (kept as-is, exit 0): heading-keyed.
-  const tableArch = "# F\n\n## Architecture Notes\n\n| module | role |\n| --- | --- |\n| src/a.ts | auth |\n";
+  const tableArch =
+    "# F\n\n## Architecture Notes\n\n| module | role |\n| --- | --- |\n| src/a.ts | auth |\n";
   rmSync(AGENTS);
   writeFileSync(AGENTS, tableArch);
   const resTableArch = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
-  assert(resTableArch.exitCode === 0, "architecture-notes table body: machine, kept as-is (exit 0)");
+  assert(
+    resTableArch.exitCode === 0,
+    "architecture-notes table body: machine, kept as-is (exit 0)",
+  );
 
   // (d) id-gating: `## Notes` alone is NOT the managed id.
   const convArch =

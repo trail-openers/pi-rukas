@@ -70,9 +70,12 @@ function assert(cond: boolean, msg: string) {
 // read as "the digest failed" instead of "we could not run bash at all".
 //
 // @returns {status, stdout} are meaningful only when envError is null.
-function runDigest(
-  files: string[],
-): { status: number; stdout: string; stderr: string; envError: string | null } {
+function runDigest(files: string[]): {
+  status: number;
+  stdout: string;
+  stderr: string;
+  envError: string | null;
+} {
   const result = spawnSync("bash", [SCRIPT, "--digest", ...files], {
     cwd: path.join(__dirname, ".."),
     encoding: "utf-8",
@@ -141,7 +144,7 @@ function runDigest(
   const digest = runDigest(files);
   assert(digest.status === 0, "case 2 (digest): exit 0 when all pass");
   assert(
-    /^P: \d+  F: 0$/.test(digest.stdout.trim()) && digest.stdout.trim().split("\n").length === 1,
+    /^P: \d+ {2}F: 0$/.test(digest.stdout.trim()) && digest.stdout.trim().split("\n").length === 1,
     `case 2 (digest): all-pass prints exactly one line P: <n>  F: 0 (got: ${JSON.stringify(digest.stdout)})`,
   );
   assert(!digest.stdout.includes("FAILED:"), "case 2 (digest): no FAILED: marker on all-pass");
@@ -152,7 +155,10 @@ function runDigest(
   const f = (n: number) => path.join(FIXTURES, `fixture-${n}.ts`);
   const files = [f(1), f(2), f(3), f(4), f(5)]; // 1,3,5 fail; 2,4 pass
   const digest = runDigest(files);
-  assert(digest.status !== 0, "case 3 (digest): exit non-zero with failures at head, middle and tail");
+  assert(
+    digest.status !== 0,
+    "case 3 (digest): exit non-zero with failures at head, middle and tail",
+  );
   assert(
     digest.stdout.includes("FAILED: " + f(1)),
     "case 3 (digest): HEAD failure (fixture-1) survives in the digest via its FAILED: marker",
@@ -278,9 +284,7 @@ function runDigest(
   );
 
   // Digest side: every ✗ line of every failing test, in execution order.
-  const digestX = digest.stdout
-    .split("\n")
-    .filter((l) => l.startsWith("✗ "));
+  const digestX = digest.stdout.split("\n").filter((l) => l.startsWith("✗ "));
 
   // #827 side: the bounded tail is everything after the last `FAILED:` line
   // in the normal-mode output (where the ✗ echoes live). The #827 loop
@@ -294,9 +298,7 @@ function runDigest(
     .split("\n")
     .filter((l) => l.startsWith("✗ "))
     .map((l) => (l.length > 200 ? l.slice(0, 199) + "…" : l));
-  const digestXTrunc = digestX.map((l) =>
-    l.length > 200 ? l.slice(0, 199) + "…" : l,
-  );
+  const digestXTrunc = digestX.map((l) => (l.length > 200 ? l.slice(0, 199) + "…" : l));
 
   assert(
     digestX.length === tailX.length,
@@ -319,7 +321,10 @@ function runDigest(
     noFiles.stderr.includes("usage:"),
     `case 7 (digest): no files prints a usage message on stderr (got: ${JSON.stringify(noFiles.stderr)})`,
   );
-  assert(!/P: \d+  F: \d+/.test(noFiles.stdout), "case 7 (digest): no files prints no pass/fail tally");
+  assert(
+    !/P: \d+ {2}F: \d+/.test(noFiles.stdout),
+    "case 7 (digest): no files prints no pass/fail tally",
+  );
 }
 
 // --- Case 8: only *-live.ts (every argument skipped) → exit 3 "no tests ran", in both modes ---

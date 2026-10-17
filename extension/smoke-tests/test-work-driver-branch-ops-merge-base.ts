@@ -29,8 +29,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { DispatchResult } from "../src/types.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
 import { runBranchViaOpsDispatch } from "../src/work-driver-branch-ops.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { realExec } from "./lib/exec-fake.ts";
@@ -161,9 +161,15 @@ try {
     });
     assert(out !== undefined, "ops-fallback does not throw for a branch on the fresh base");
     const cap = out?.eventLog.find((e) => e.kind === "cap-hit");
-    assert(cap === undefined, "NO cap-hit for a branch on the freshly-fetched base (the fix compares against driverBaseSha, not ps.baseSha)");
+    assert(
+      cap === undefined,
+      "NO cap-hit for a branch on the freshly-fetched base (the fix compares against driverBaseSha, not ps.baseSha)",
+    );
     const ps = out?.pipelineState;
-    assert(ps?.branchName === "feature/issue-844-ops", `ps.branchName is the git-resolved branch (got: ${ps?.branchName})`);
+    assert(
+      ps?.branchName === "feature/issue-844-ops",
+      `ps.branchName is the git-resolved branch (got: ${ps?.branchName})`,
+    );
     // ps.baseSha is the branch tip (== originSha == the fresh origin/main
     // tip). The fix compares verifiedBase against driverBaseSha (==
     // originSha), NOT against the incoming ps.baseSha (which could be the
@@ -190,9 +196,15 @@ try {
     });
     assert(out !== undefined, "ops-fallback does not throw for a stale branch");
     const cap = out?.eventLog.find((e) => e.kind === "cap-hit");
-    assert(cap?.kind === "cap-hit", "a cap-hit is recorded for a branch NOT on the freshly-fetched base");
+    assert(
+      cap?.kind === "cap-hit",
+      "a cap-hit is recorded for a branch NOT on the freshly-fetched base",
+    );
     if (cap?.kind === "cap-hit") {
-      assert(cap.cap === "ops-merge-base-mismatch", `the cap is ops-merge-base-mismatch (got: ${cap.cap})`);
+      assert(
+        cap.cap === "ops-merge-base-mismatch",
+        `the cap is ops-merge-base-mismatch (got: ${cap.cap})`,
+      );
       assert(cap.nextStep === "handoff", "the mismatch cap routes to handoff");
       assert(
         typeof cap.evidence === "string" && cap.evidence.includes(staleSha.slice(0, 8)),
@@ -216,7 +228,10 @@ try {
     // main was ff'd to origin in the fixture, so make it diverge instead).
     const localMain = (await git(repo, ["rev-parse", "refs/heads/main"])).stdout.trim();
     await git(repo, ["remote", "remove", "origin"]);
-    assert(localMain === originSha, "fixture sanity: local main == origin/main before the remote was removed");
+    assert(
+      localMain === originSha,
+      "fixture sanity: local main == origin/main before the remote was removed",
+    );
     // Now local main and the branch are equal; with origin gone the base is
     // local — the check must skip, and (crucially) must not crash/halt.
     const ctx = makeCtx(repo, realExec, BRANCH_REPLY);
@@ -225,9 +240,15 @@ try {
       console.error(`fixture 2b threw: ${(e as Error).message}`);
       return undefined;
     });
-    assert(out !== undefined, "ops-fallback does not throw when the base comes from the local mainline ref");
+    assert(
+      out !== undefined,
+      "ops-fallback does not throw when the base comes from the local mainline ref",
+    );
     const cap = out?.eventLog.find((e) => e.kind === "cap-hit");
-    assert(cap === undefined, "NO cap when the base came from the LOCAL ref — the merge-base equality check is skipped (degraded, traced, not halted)");
+    assert(
+      cap === undefined,
+      "NO cap when the base came from the LOCAL ref — the merge-base equality check is skipped (degraded, traced, not halted)",
+    );
   }
 
   // -------------------------------------------------------------

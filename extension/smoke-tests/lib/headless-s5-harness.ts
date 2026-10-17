@@ -17,8 +17,8 @@
 
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import type { DriverContext } from "../../src/work-driver-context.ts";
 import { runHeadless } from "../../src/headless/run.ts";
+import type { DriverContext } from "../../src/work-driver-context.ts";
 import type { PolicyJudgeFn } from "../../src/work-driver-policy.ts";
 import {
   type WorkState,
@@ -225,7 +225,7 @@ export async function mergedRun(opts: {
   };
   let code = -1;
   let state: WorkState | undefined;
-  let env: Record<string, string | undefined> = {};
+  const env: Record<string, string | undefined> = {};
   await withCaseEnv(opts, async () => {
     for (const k of opts.captureEnv ?? []) env[k] = process.env[k];
     mkdirSync(path.join(repo.repoRoot, ".pi", "work-state"), { recursive: true });
@@ -277,10 +277,7 @@ export async function mergedRun(opts: {
  * green PR plus a judge that WANTS to grant still refuses, and the refusal is
  * attributable to the documents it was handed.
  */
-export function judgeThatAnswers(
-  answer: "permitted" | "forbidden",
-  quote?: string,
-): PolicyJudgeFn {
+export function judgeThatAnswers(answer: "permitted" | "forbidden", quote?: string): PolicyJudgeFn {
   return async () => ({
     toolUses: [
       {

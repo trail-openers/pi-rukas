@@ -23,7 +23,11 @@ import { findTestSubjectSplits } from "../src/work-driver-plan-paths.ts";
 // #679 — all plan-quality symbols from the canonical module (the stale
 // duplicate copy in work-driver-plan-helpers.ts was deleted; work-driver-plan.ts
 // re-exports it).
-import { correctivePlanSteer, correctiveTestSubjectSplitSteer, planQualityReason } from "../src/work-driver-plan.ts";
+import {
+  correctivePlanSteer,
+  correctiveTestSubjectSplitSteer,
+  planQualityReason,
+} from "../src/work-driver-plan.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

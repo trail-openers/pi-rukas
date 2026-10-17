@@ -18,8 +18,8 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { armPmMode } from "../../src/pm-mode.ts";
 import { stripPmTools } from "../../src/commands.ts";
+import { armPmMode } from "../../src/pm-mode.ts";
 
 export default function (pi: ExtensionAPI) {
   let armed = false;

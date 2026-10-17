@@ -42,7 +42,8 @@ type WS = {
 // #814 — the attributed failure strings keep the `declared fence violated`
 // phrase; the workstream id and kind suffix were added for attribution. The
 // demotion note (self-fence) wording is unchanged.
-const FENCE_FAIL = /touched out-of-scope path .+ — declared fence violated \((sibling-declared|issue-fenced)\)/;
+const FENCE_FAIL =
+  /touched out-of-scope path .+ — declared fence violated \((sibling-declared|issue-fenced)\)/;
 const DEMOTION_NOTE =
   /fence hit demoted to warning: .+ is declared in this workstream's own paths \(self-fence\)/;
 
@@ -92,7 +93,9 @@ function run(workstreams: Record<string, WS>, changed: Record<string, string[]>)
   // + kind, with the `declared fence violated` phrase preserved.
   assert(
     failures.some((f) =>
-      /touched out-of-scope path src\/a\.ts declared by a — declared fence violated \(sibling-declared\)/.test(f),
+      /touched out-of-scope path src\/a\.ts declared by a — declared fence violated \(sibling-declared\)/.test(
+        f,
+      ),
     ),
     `regression: sibling-declared path (no dependsOn) still FAILS with the attributed string (got: ${failures.join("; ")})`,
   );
@@ -119,7 +122,8 @@ function run(workstreams: Record<string, WS>, changed: Record<string, string[]>)
   // #814 — the second hit (src/other.ts) is fenced but declared by no sibling:
   // `issue-fenced`, still a failure with the attributed string.
   assert(
-    fenceFailures.length === 1 && /src\/other\.ts/.test(fenceFailures[0]) &&
+    fenceFailures.length === 1 &&
+      /src\/other\.ts/.test(fenceFailures[0]) &&
       /issue-fenced/.test(fenceFailures[0]),
     `mixed: exactly ONE failure, for the issue-fenced file (got: ${failures.join("; ")})`,
   );
@@ -151,9 +155,7 @@ function run(workstreams: Record<string, WS>, changed: Record<string, string[]>)
   );
   const note = notes.find((n) => /src\/own\.ts/.test(n));
   assert(
-    !!note &&
-      !/declared fence violated/.test(note) &&
-      /fence hit demoted to warning/.test(note),
+    !!note && !/declared fence violated/.test(note) && /fence hit demoted to warning/.test(note),
     `distinct wording: the note is the demotion wording, not the failure wording (got: ${notes.join("; ")})`,
   );
 }

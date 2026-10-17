@@ -14,9 +14,9 @@
  * coverage comes through test-pi-version-drift.ts, which imports both.
  */
 
-import path from "node:path";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 
 /**
  * Every file git considers part of the repo: tracked (`--cached`) plus
@@ -36,10 +36,24 @@ export function gitRepoFiles(repoRoot: string): string[] {
   // emits unquoted bytes (verified empirically — quoting only applies to the
   // non -z textual path), but the flag guards a config-level surprise in the
   // one place where a quoted path would corrupt the census listing silently.
-  const out = execFileSync("git", ["-c", "core.quotepath=false", "-C", repoRoot, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const out = execFileSync(
+    "git",
+    [
+      "-c",
+      "core.quotepath=false",
+      "-C",
+      repoRoot,
+      "ls-files",
+      "-z",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+    ],
+    {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  );
   return out
     .split("\0")
     .filter((f) => f.length > 0)
@@ -96,7 +110,17 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // grow here too — the gate fails otherwise (a self-census that cannot
     // see its own declaration is the "census that passes by silence"
     // failure mode this gate exists to stop).
-    "test-pi-version-drift.ts": ["0.84.4", "0.82.0", "0.87.0", "0.84.5", "0.82.1", "0.86.0", "1.0.0", "1.0.1", "1.1.0"],
+    "test-pi-version-drift.ts": [
+      "0.84.4",
+      "0.82.0",
+      "0.87.0",
+      "0.84.5",
+      "0.82.1",
+      "0.86.0",
+      "1.0.0",
+      "1.0.1",
+      "1.1.0",
+    ],
     // The preflight floor (MIN_PI_VERSION = 1.0.0) plus the 0.84.4
     // bug-window literal in the §4 provenance comment (the 0.84.3 in the §5
     // embargo comment is 30+ chars from every marker, so it is not a
@@ -150,6 +174,18 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // Declared literals are exactly the detected set — the gate's census
     // block proves declared ⊆ detected, so a literal the detector cannot
     // see is a gate failure, not a silent entry.
-    "pi-version-census.ts": ["0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0", "0.84.4", "0.82.0", "1.0.0"],
+    "pi-version-census.ts": [
+      "0.82.1",
+      "0.84.3",
+      "0.83.9",
+      "0.85.0",
+      "0.84.5",
+      "0.83.0",
+      "0.86.0",
+      "0.87.0",
+      "0.84.4",
+      "0.82.0",
+      "1.0.0",
+    ],
   };
 }

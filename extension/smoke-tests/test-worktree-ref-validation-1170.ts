@@ -10,8 +10,8 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { git, realExec } from "./lib/worktree-fake-fixture.ts";
 import { inspectWorktreeForLoss, worktreeCreate } from "../src/worktree.ts";
+import { git, realExec } from "./lib/worktree-fake-fixture.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {

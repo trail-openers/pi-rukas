@@ -27,10 +27,10 @@
  *     References sections legitimately pool across angles).
  */
 
-import { draftSpec, extractPlanItems, itemsByKind } from "../src/plan-draft.ts";
 import { anglePromptsFor } from "../src/plan-angles.ts";
+import { draftSpec, extractPlanItems, itemsByKind } from "../src/plan-draft.ts";
 import { setPlanDispatch } from "../src/plan-driver.ts";
-import { installOfflineVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
+import { installNoPlanCacheStub, installOfflineVipuneStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -82,7 +82,10 @@ function epicBody(findings: Parameters<typeof draftSpec>[2]) {
   ];
   const section = epicBody(findings);
   const checkboxes = (section.match(/^- \[ \] /gm) ?? []).length;
-  assert(checkboxes === 1, `cross-angle: exactly ONE checkbox for the case/whitespace-different pair (got ${checkboxes})`);
+  assert(
+    checkboxes === 1,
+    `cross-angle: exactly ONE checkbox for the case/whitespace-different pair (got ${checkboxes})`,
+  );
   assert(
     section.includes("(sub-issue 1, from decomposition-surface)"),
     "cross-angle: the surviving copy's provenance suffix names the CHARTED angle (decomposition-surface)",
@@ -92,7 +95,9 @@ function epicBody(findings: Parameters<typeof draftSpec>[2]) {
     "cross-angle: the colliding angle's suffix is gone (it lost the collision)",
   );
   assert(
-    section.includes("Retry backoff config — scope: the retry module (sub-issue 1, from decomposition-surface)"),
+    section.includes(
+      "Retry backoff config — scope: the retry module (sub-issue 1, from decomposition-surface)",
+    ),
     "cross-angle: the surviving checkbox is the CHARTED copy's wording + suffix (only the dedupe key is normalised)",
   );
 }
@@ -168,8 +173,14 @@ function epicBody(findings: Parameters<typeof draftSpec>[2]) {
       ok: true,
       text: "summary",
       toolUses: [
-        ...sub("Importance is computed on the fly from telemetry with no schema change", "decomposition-surface"),
-        ...sub("Importance is a stored TEXT column written by operators via migration v4", "decomposition-surface"),
+        ...sub(
+          "Importance is computed on the fly from telemetry with no schema change",
+          "decomposition-surface",
+        ),
+        ...sub(
+          "Importance is a stored TEXT column written by operators via migration v4",
+          "decomposition-surface",
+        ),
       ],
     },
   ];
@@ -190,11 +201,21 @@ function epicBody(findings: Parameters<typeof draftSpec>[2]) {
   // shared normalisation helper must NOT leak into itemsByKind.
   const items = [
     ...extractPlanItems(
-      [{ name: "report_plan_item", arguments: { kind: "acceptance-criterion", text: "the tool registers", angle: "angle-a" } }],
+      [
+        {
+          name: "report_plan_item",
+          arguments: { kind: "acceptance-criterion", text: "the tool registers", angle: "angle-a" },
+        },
+      ],
       "angle-a",
     ),
     ...extractPlanItems(
-      [{ name: "report_plan_item", arguments: { kind: "acceptance-criterion", text: "the tool registers", angle: "angle-b" } }],
+      [
+        {
+          name: "report_plan_item",
+          arguments: { kind: "acceptance-criterion", text: "the tool registers", angle: "angle-b" },
+        },
+      ],
       "angle-b",
     ),
   ];
@@ -237,7 +258,9 @@ function epicBody(findings: Parameters<typeof draftSpec>[2]) {
     "charter: success-criteria prompt EXPLICITLY instructs NOT to emit the sub-issue kind",
   );
   // No OTHER epic angle invites it.
-  const otherEpic = epicAngles.filter((a) => a.name !== "decomposition-surface" && a.name !== "success-criteria");
+  const otherEpic = epicAngles.filter(
+    (a) => a.name !== "decomposition-surface" && a.name !== "success-criteria",
+  );
   assert(
     otherEpic.every((a) => !/report a sub-issue item|kind "sub-issue"/.test(a.prompt)),
     "charter: no other epic angle prompt invites sub-issue emission",
@@ -264,7 +287,7 @@ function epicBody(findings: Parameters<typeof draftSpec>[2]) {
 {
   // Per-clone cache isolated (no real git common dir under the repo).
   installOfflineVipuneStub();
-installNoPlanCacheStub();
+  installNoPlanCacheStub();
   setPlanDispatch(((pi: unknown, spec: { role: string; prompt: string }) => {
     if (spec.role === "adversarial-developer") {
       return Promise.resolve({
@@ -300,10 +323,14 @@ installNoPlanCacheStub();
   // Import runPlanPipeline directly (it's exported from plan-driver.ts).
   const { runPlanPipeline } = await import("../src/plan-driver.ts");
   const piStub = {};
-  const result = await runPlanPipeline(piStub, {
-    descriptor: "spike: investigate the feasibility of a new approach",
-    dryRun: true,
-  }, process.cwd());
+  const result = await runPlanPipeline(
+    piStub,
+    {
+      descriptor: "spike: investigate the feasibility of a new approach",
+      dryRun: true,
+    },
+    process.cwd(),
+  );
 
   assert(result.filed === false, "Fix 1: all-angles-failed → not filed");
   assert(result.capHit === true, "Fix 1: all-angles-failed → capHit is true (distinct signal)");
@@ -367,8 +394,16 @@ installNoPlanCacheStub();
       ok: true,
       text: "",
       toolUses: [
-        { kind: "sub-issue", text: `${"same head ".repeat(50)}tail A`, angle: "decomposition-surface" },
-        { kind: "sub-issue", text: `${"same head ".repeat(50)}tail B`, angle: "decomposition-surface" },
+        {
+          kind: "sub-issue",
+          text: `${"same head ".repeat(50)}tail A`,
+          angle: "decomposition-surface",
+        },
+        {
+          kind: "sub-issue",
+          text: `${"same head ".repeat(50)}tail B`,
+          angle: "decomposition-surface",
+        },
       ],
     },
   ];

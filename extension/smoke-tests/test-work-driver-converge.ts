@@ -131,8 +131,7 @@ function makeConvergeExec(
     // gate's fail-closed branch (an unreadable read halts rather than passes) does
     // not fire on a fixture that never scripted them. They share the `diffRead`
     // counter because the gate's read sequence spans both spellings.
-    if (isNulStatusRead(cmd))
-      return { stdout: nulStatus(...filesForDiff().map((f) => `M  ${f}`)) };
+    if (isNulStatusRead(cmd)) return { stdout: nulStatus(...filesForDiff().map((f) => `M  ${f}`)) };
     if (isNulDiffRead(cmd)) {
       diffRead += 1;
       return { stdout: nulNameStatus(...filesForDiff()) };

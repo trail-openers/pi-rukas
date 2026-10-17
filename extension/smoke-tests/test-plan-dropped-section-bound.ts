@@ -40,6 +40,9 @@
  * section is already small (the bound is a no-op below its threshold).
  */
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { DroppedInvestigationItem } from "../src/plan-draft-conflicts.ts";
 import { draftSpec } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
@@ -57,9 +60,6 @@ import {
   droppedSectionFrameChars,
 } from "../src/plan-dropped-budget.ts";
 import { lastDroppedRender } from "../src/plan-dropped-holder.ts";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { droppedSection, repointDroppedOmission } from "../src/plan-dropped-section.ts";
 import {
   BODY_BUDGET,

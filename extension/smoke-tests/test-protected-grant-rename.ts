@@ -198,8 +198,7 @@ await withEnv({ PI_ENSEMBLE_VERIFY: "1", PI_ENSEMBLE_PROTECTED_PATHS: undefined 
     "#1378: no C-quoted bytes leak into the operator-facing message",
   );
   assert(
-    quotedHit.includes("cannot be granted") &&
-      !quotedHit.includes("--restart --allow-protected"),
+    quotedHit.includes("cannot be granted") && !quotedHit.includes("--restart --allow-protected"),
     "#1378: no copy-paste grant command is printed for a path the parser would refuse",
   );
   assert(

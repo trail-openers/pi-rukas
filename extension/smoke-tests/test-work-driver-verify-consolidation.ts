@@ -173,12 +173,23 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
     const dir = mkdtempSync(path.join(tmpdir(), "f5-empty-"));
     try {
       await mkGitRepo(dir, []);
-      const state = mkConsolidationState({ a: wsA(["src/a.ts", "src/b.ts"]), b: wsB(["src/b.ts"]) });
-      const res = await verifyConsolidation({ host: makeFakePi().pi, repoRoot: dir, issue: 540 }, state);
+      const state = mkConsolidationState({
+        a: wsA(["src/a.ts", "src/b.ts"]),
+        b: wsB(["src/b.ts"]),
+      });
+      const res = await verifyConsolidation(
+        { host: makeFakePi().pi, repoRoot: dir, issue: 540 },
+        state,
+      );
       const ids = res.missing.map((m) => m.id).sort();
-      assert(JSON.stringify(ids) === JSON.stringify(["a", "b"]), `F5.4: empty diff → all missing (got: ${JSON.stringify(ids)})`);
+      assert(
+        JSON.stringify(ids) === JSON.stringify(["a", "b"]),
+        `F5.4: empty diff → all missing (got: ${JSON.stringify(ids)})`,
+      );
       assert(res.filesPresent.length === 0, "F5.4: empty diff → empty filesPresent");
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 
   // F5.5 — declared path with planner annotation → covered (#744 false positive).
@@ -235,7 +246,9 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
       await fs.writeFile(path.join(dir, ".gitkeep"), "\n");
       await execp2("git add . && git commit -q -m baseline", { cwd: dir, shell: "/bin/bash" });
       await execp2("git update-ref refs/remotes/origin/main HEAD", { cwd: dir });
-      await execp2("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", { cwd: dir });
+      await execp2("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
+        cwd: dir,
+      });
       await execp2("git checkout -qb feature/issue-540-test", { cwd: dir });
       // The developer renames the file (git mv → R100 in --name-status -M).
       await execp2("git mv src/old-name.ts src/new-name.ts", { cwd: dir, shell: "/bin/bash" });
@@ -253,10 +266,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         aVerdict?.status === "complete",
         `F5.6: renamed file (R-code source) is covered (got: ${JSON.stringify(aVerdict)})`,
       );
-      assert(
-        !res.missing.some((m) => m.id === "a"),
-        "F5.6: no missing for the renamed workstream",
-      );
+      assert(!res.missing.some((m) => m.id === "a"), "F5.6: no missing for the renamed workstream");
       // B is genuinely absent → uncovered.
       const bVerdict = res.verdicts.find((v) => v.id === "b");
       assert(
@@ -334,7 +344,9 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
       await fs.writeFile(path.join(dir, ".gitkeep"), "\n");
       await execp2("git add . && git commit -q -m baseline", { cwd: dir, shell: "/bin/bash" });
       await execp2("git update-ref refs/remotes/origin/main HEAD", { cwd: dir });
-      await execp2("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", { cwd: dir });
+      await execp2("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
+        cwd: dir,
+      });
       await execp2("git checkout -qb feature/issue-540-test", { cwd: dir });
       await fs.mkdir(path.join(dir, "docs"), { recursive: true });
       await fs.writeFile(path.join(dir, "docs", "notes (draft).md"), "content\n");

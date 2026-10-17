@@ -352,10 +352,7 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
 {
   const op = "a missing reportVerdict must not return a passing review";
   const restated = "passing review: a missing reportVerdict must not return";
-  const res = dedupeAgainstOperatorLines(
-    [{ kind: "edge-case", text: restated, angle: "e" }],
-    [op],
-  );
+  const res = dedupeAgainstOperatorLines([{ kind: "edge-case", text: restated, angle: "e" }], [op]);
   const dropped = res.dropped[0];
   assert(
     dropped !== undefined &&

@@ -13,8 +13,8 @@
 
 import { childHandles, jobs } from "../src/async-jobs-registry.ts";
 import { formatSingleReport } from "../src/async-jobs.ts";
+import { DECK_UI_STEER_SOURCE, steerFromDeck } from "../src/dispatch-deck-interactive.ts";
 import { steerChild } from "../src/dispatch-steer.ts";
-import { steerFromDeck, DECK_UI_STEER_SOURCE } from "../src/dispatch-deck-interactive.ts";
 import { type LifecycleDetails, emitSteered, formatLine } from "../src/lifecycle-events.ts";
 import type { DispatchResult } from "../src/types.ts";
 

@@ -61,7 +61,9 @@ async function fixture(name: string) {
   mkdirSync(path.dirname(stateFile), { recursive: true });
   writeFileSync(
     stateFile,
-    JSON.stringify({ pipelineState: { branchName: BRANCH, baseSha, worktrees: {}, integrateWorktree: wt } }),
+    JSON.stringify({
+      pipelineState: { branchName: BRANCH, baseSha, worktrees: {}, integrateWorktree: wt },
+    }),
   );
   return { repo, baseSha, wt, stateFile };
 }
@@ -125,7 +127,6 @@ try {
       "(c) the recovery hint never routes the operator to a deleted integrate-worktree reflog",
     );
   }
-
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

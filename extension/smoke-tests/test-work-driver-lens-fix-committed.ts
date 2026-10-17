@@ -79,17 +79,25 @@ async function mkFixture(
   const wt = path.join(dir, "wt");
   await realExec(`git init -q --bare --initial-branch=main origin.git`, { cwd: dir });
   await realExec("git init -q --initial-branch=main root", { cwd: dir });
-  await realExec('git config user.email "t@t" && git config user.name "T"', { cwd: root, shell: "/bin/bash" });
+  await realExec('git config user.email "t@t" && git config user.name "T"', {
+    cwd: root,
+    shell: "/bin/bash",
+  });
   writeFileSync(path.join(root, ".git", "info", "exclude"), "\n.pi/\n");
   await fs.writeFile(path.join(root, "base.txt"), "hello\n");
   await realExec("git add base.txt && git commit -q -m initial", { cwd: root, shell: "/bin/bash" });
   await realExec(`git remote add origin ${JSON.stringify(origin)}`, { cwd: root });
   await realExec("git push -q -u origin main", { cwd: root });
-  await realExec("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", { cwd: root });
+  await realExec("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
+    cwd: root,
+  });
   await realExec(`git checkout -qb ${branch}`, { cwd: root });
   const baseSha = (await realExec("git rev-parse HEAD", { cwd: root })).stdout.trim();
   await fs.writeFile(path.join(root, "feature.txt"), "buggy\n");
-  await realExec(`git add feature.txt && git commit -q -m 'feature' && git push -q -u origin ${branch}`, { cwd: root, shell: "/bin/bash" });
+  await realExec(
+    `git add feature.txt && git commit -q -m 'feature' && git push -q -u origin ${branch}`,
+    { cwd: root, shell: "/bin/bash" },
+  );
   await realExec(`git worktree add --detach ${JSON.stringify(wt)} HEAD`, { cwd: root });
   return { root, wt, baseSha, execp: realExec };
 }
@@ -99,7 +107,11 @@ function mkLensState(
   branch: string,
   baseSha: string,
   wt: string,
-  opts: { currentStep: "adversarial" | "lens-fix"; lastCompletedStep: string; dispatchFn: DriverContext["dispatchFn"] },
+  opts: {
+    currentStep: "adversarial" | "lens-fix";
+    lastCompletedStep: string;
+    dispatchFn: DriverContext["dispatchFn"];
+  },
 ) {
   const s = initialState(issue, 1_000_000);
   return {
@@ -122,7 +134,15 @@ function mkLensState(
         jobId: "j-lens-1",
         round: 1,
         findings: JSON.stringify([
-          { lens: "SECURITY", severity: "MEDIUM", path: "feature.txt", line: 1, title: "bug", description: "needs fix", suggestion: "fix it" },
+          {
+            lens: "SECURITY",
+            severity: "MEDIUM",
+            path: "feature.txt",
+            line: 1,
+            title: "bug",
+            description: "needs fix",
+            suggestion: "fix it",
+          },
         ]),
         verdict: "ISSUES_FOUND" as const,
       },
@@ -149,18 +169,36 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     // content via a DIFFERENT commit, so both trees are identical but the
     // worktree commit is not an ancestor of the branch.
     await fs.writeFile(path.join(wt, "feature.txt"), "fixed\n");
-    await execp("git add feature.txt && git commit -q -m 'lens-fix'", { cwd: wt, shell: "/bin/bash" });
+    await execp("git add feature.txt && git commit -q -m 'lens-fix'", {
+      cwd: wt,
+      shell: "/bin/bash",
+    });
     await execp("git checkout -q feature/lens-committed-landed", { cwd: root });
     await fs.writeFile(path.join(root, "feature.txt"), "fixed\n");
-    await execp("git add feature.txt && git commit -q -m 'lens-fix (same content)' && git push -q origin feature/lens-committed-landed", { cwd: root, shell: "/bin/bash" });
+    await execp(
+      "git add feature.txt && git commit -q -m 'lens-fix (same content)' && git push -q origin feature/lens-committed-landed",
+      { cwd: root, shell: "/bin/bash" },
+    );
     const s = mkLensState(749, "feature/lens-committed-landed", baseSha, wt, {
-      currentStep: "adversarial", lastCompletedStep: "lens-fix", dispatchFn: defaultDispatchFn,
+      currentStep: "adversarial",
+      lastCompletedStep: "lens-fix",
+      dispatchFn: defaultDispatchFn,
     });
     await writeState(root, s);
     const ctx: DriverContext = {
-      host: makeFakePi().pi, repoRoot: root, issue: 749,
-      issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
-      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "Approved." }),
+      host: makeFakePi().pi,
+      repoRoot: root,
+      issue: 749,
+      issueBodyFetcherFn: mockIssueBodyOk,
+      dispatchFn: defaultDispatchFn,
+      adversarialLoopFn: async () =>
+        mkResult({
+          role: "adversarial-loop",
+          ok: true,
+          loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
+          text: "Approved.",
+        }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
@@ -168,7 +206,10 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     const cap = events.find((e) => e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated");
     assert(cap === undefined, "a committed fix already on the branch does NOT park the cycle");
     const approved = events.find((e) => e.kind === "adversarial-approved");
-    assert(approved !== undefined, "the adversarial gate approved (the committed fix was detected)");
+    assert(
+      approved !== undefined,
+      "the adversarial gate approved (the committed fix was detected)",
+    );
   } finally {
     // Do NOT rmSync here — the driver may still have async git operations
     // in flight (the handoff step). The OS cleans /tmp on reboot.
@@ -184,27 +225,46 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     // The lens-fix developer commits a fix in the worktree. The branch
     // does NOT have this fix (the branch still has "buggy\n").
     await fs.writeFile(path.join(wt, "feature.txt"), "fixed\n");
-    await execp("git add feature.txt && git commit -q -m 'lens-fix'", { cwd: wt, shell: "/bin/bash" });
+    await execp("git add feature.txt && git commit -q -m 'lens-fix'", {
+      cwd: wt,
+      shell: "/bin/bash",
+    });
     const s = mkLensState(750, "feature/lens-not-on-branch", baseSha, wt, {
-      currentStep: "adversarial", lastCompletedStep: "lens-fix", dispatchFn: defaultDispatchFn,
+      currentStep: "adversarial",
+      lastCompletedStep: "lens-fix",
+      dispatchFn: defaultDispatchFn,
     });
     await writeState(root, s);
     const ctx: DriverContext = {
-      host: makeFakePi().pi, repoRoot: root, issue: 750,
-      issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
-      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "Approved." }),
+      host: makeFakePi().pi,
+      repoRoot: root,
+      issue: 750,
+      issueBodyFetcherFn: mockIssueBodyOk,
+      dispatchFn: defaultDispatchFn,
+      adversarialLoopFn: async () =>
+        mkResult({
+          role: "adversarial-loop",
+          ok: true,
+          loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
+          text: "Approved.",
+        }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
     const events = (await readState(root, 750))?.eventLog ?? [];
     // The branch CONTENT is the ground truth — not the event log.
-    const { stdout: branchContent } = await execp("git show feature/lens-not-on-branch:feature.txt", { cwd: root });
+    const { stdout: branchContent } = await execp(
+      "git show feature/lens-not-on-branch:feature.txt",
+      { cwd: root },
+    );
     const fixLanded = branchContent.trim() === "fixed";
     const cap = events.find((e) => e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated");
     assert(cap !== undefined || fixLanded, "either the fix was landed or the cycle parked");
     if (!fixLanded && cap && cap.kind === "cap-hit") {
       assert(
-        (cap.evidence ?? "").includes("NOT on branch") || (cap.evidence ?? "").includes("could not be landed"),
+        (cap.evidence ?? "").includes("NOT on branch") ||
+          (cap.evidence ?? "").includes("could not be landed"),
         `the cap evidence names the branch that lacks the fix (got: ${cap.evidence})`,
       );
     }
@@ -220,19 +280,34 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
   try {
     const { root, wt, baseSha } = await mkFixture(dir, "feature/lens-genuinely-empty");
     const s = mkLensState(751, "feature/lens-genuinely-empty", baseSha, wt, {
-      currentStep: "lens-fix", lastCompletedStep: "commit-pr", dispatchFn: defaultDispatchFn,
+      currentStep: "lens-fix",
+      lastCompletedStep: "commit-pr",
+      dispatchFn: defaultDispatchFn,
     });
     await writeState(root, s);
     const ctx: DriverContext = {
-      host: makeFakePi().pi, repoRoot: root, issue: 751,
-      issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
-      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "Approved." }),
+      host: makeFakePi().pi,
+      repoRoot: root,
+      issue: 751,
+      issueBodyFetcherFn: mockIssueBodyOk,
+      dispatchFn: defaultDispatchFn,
+      adversarialLoopFn: async () =>
+        mkResult({
+          role: "adversarial-loop",
+          ok: true,
+          loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
+          text: "Approved.",
+        }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
     const events = (await readState(root, 751))?.eventLog ?? [];
     const cap = events.find((e) => e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated");
-    assert(cap !== undefined, "a genuinely empty followup (no commits, clean worktree) still raises the cap");
+    assert(
+      cap !== undefined,
+      "a genuinely empty followup (no commits, clean worktree) still raises the cap",
+    );
     if (cap && cap.kind === "cap-hit") {
       assert(
         (cap.evidence ?? "").includes("no committed fix"),
@@ -257,18 +332,33 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     const fs = await import("node:fs/promises");
     // The lens-fix developer commits a fix in the worktree.
     await fs.writeFile(path.join(wt, "feature.txt"), "fixed\n");
-    await execp("git add feature.txt && git commit -q -m 'lens-fix'", { cwd: wt, shell: "/bin/bash" });
+    await execp("git add feature.txt && git commit -q -m 'lens-fix'", {
+      cwd: wt,
+      shell: "/bin/bash",
+    });
     // #776 — untracked debris at repoRoot (the #742 incident shape).
     await fs.mkdir(path.join(root, "debris-dir"), { recursive: true });
     await fs.writeFile(path.join(root, "debris-dir", "scratch.txt"), "junk\n");
     const s = mkLensState(776, "feature/lens-untracked-debris", baseSha, wt, {
-      currentStep: "adversarial", lastCompletedStep: "lens-fix", dispatchFn: defaultDispatchFn,
+      currentStep: "adversarial",
+      lastCompletedStep: "lens-fix",
+      dispatchFn: defaultDispatchFn,
     });
     await writeState(root, s);
     const ctx: DriverContext = {
-      host: makeFakePi().pi, repoRoot: root, issue: 776,
-      issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
-      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "Approved." }),
+      host: makeFakePi().pi,
+      repoRoot: root,
+      issue: 776,
+      issueBodyFetcherFn: mockIssueBodyOk,
+      dispatchFn: defaultDispatchFn,
+      adversarialLoopFn: async () =>
+        mkResult({
+          role: "adversarial-loop",
+          ok: true,
+          loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
+          text: "Approved.",
+        }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
@@ -276,10 +366,16 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     const cap = events.find((e) => e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated");
     // The debris must still be on disk (never stashed or deleted).
     const { existsSync } = await import("node:fs");
-    assert(existsSync(path.join(root, "debris-dir", "scratch.txt")), "the untracked debris survived (not stashed or deleted)");
+    assert(
+      existsSync(path.join(root, "debris-dir", "scratch.txt")),
+      "the untracked debris survived (not stashed or deleted)",
+    );
     // The branch content is the ground truth — either the fix landed or
     // the cycle parked with the debris named in the evidence.
-    const { stdout: branchContent53 } = await execp("git show feature/lens-untracked-debris:feature.txt", { cwd: root });
+    const { stdout: branchContent53 } = await execp(
+      "git show feature/lens-untracked-debris:feature.txt",
+      { cwd: root },
+    );
     const fixLanded = branchContent53.trim() === "fixed";
     assert(fixLanded || cap !== undefined, "either the fix was landed or the cycle parked");
     if (!fixLanded && cap && cap.kind === "cap-hit") {
@@ -288,7 +384,10 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
         ev.includes("debris-dir") || ev.includes("scratch") || ev.includes("??"),
         `the park evidence names the untracked debris (got: ${ev})`,
       );
-      assert(!ev.includes("not safely restorable"), "the evidence is not the generic 'not safely restorable' string");
+      assert(
+        !ev.includes("not safely restorable"),
+        "the evidence is not the generic 'not safely restorable' string",
+      );
     }
   } finally {
     // Do NOT rmSync here — the driver may still have async git operations
@@ -321,14 +420,22 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     // The fixture leaves repoRoot on the feature branch (the mkFixture helper
     // checks out the feature branch at the end). Confirm that, then record
     // it as the pre-integration ref.
-    const { stdout: rootRefBefore } = await execp("git symbolic-ref --quiet --short HEAD", { cwd: root });
+    const { stdout: rootRefBefore } = await execp("git symbolic-ref --quiet --short HEAD", {
+      cwd: root,
+    });
     const preIntegrationRef = rootRefBefore.trim();
-    assert(preIntegrationRef === "feature/lens-fix-797", `fixture leaves repoRoot on the feature branch (got '${preIntegrationRef}')`);
+    assert(
+      preIntegrationRef === "feature/lens-fix-797",
+      `fixture leaves repoRoot on the feature branch (got '${preIntegrationRef}')`,
+    );
 
     // The lens-fix worktree (detached at the feature branch head) commits a
     // fix that edits feature.txt.
     await fs.writeFile(path.join(wt, "feature.txt"), "fixed\n");
-    await execp("git add feature.txt && git commit -q -m 'lens-fix commit 1' && git commit -q --allow-empty -m 'lens-fix commit 2' && git commit -q --allow-empty -m 'lens-fix commit 3'", { cwd: wt, shell: "/bin/bash" });
+    await execp(
+      "git add feature.txt && git commit -q -m 'lens-fix commit 1' && git commit -q --allow-empty -m 'lens-fix commit 2' && git commit -q --allow-empty -m 'lens-fix commit 3'",
+      { cwd: wt, shell: "/bin/bash" },
+    );
     const fixSha = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
 
     // Now advance the feature branch to a commit that ALSO edits
@@ -339,20 +446,35 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     // caught by the sweep and removed, but the simpler approach is to just
     // update the branch pointer directly).
     await fs.writeFile(path.join(root, "feature.txt"), "branch-side change\n");
-    await execp("git add feature.txt && git commit -q -m 'branch-side change'", { cwd: root, shell: "/bin/bash" });
+    await execp("git add feature.txt && git commit -q -m 'branch-side change'", {
+      cwd: root,
+      shell: "/bin/bash",
+    });
 
     // The state: the worktree map points at the lens-fix worktree; the
     // driver's landCommittedFix will cherry-pick the fix's commits onto
     // feature/lens-fix-797, which now has a different feature.txt →
     // cherry-pick conflict → git commit fails with "unmerged files".
     const s = mkLensState(797, "feature/lens-fix-797", baseSha, wt, {
-      currentStep: "adversarial", lastCompletedStep: "lens-fix", dispatchFn: defaultDispatchFn,
+      currentStep: "adversarial",
+      lastCompletedStep: "lens-fix",
+      dispatchFn: defaultDispatchFn,
     });
     await writeState(root, s);
     const ctx: DriverContext = {
-      host: makeFakePi().pi, repoRoot: root, issue: 797,
-      issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
-      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "Approved." }),
+      host: makeFakePi().pi,
+      repoRoot: root,
+      issue: 797,
+      issueBodyFetcherFn: mockIssueBodyOk,
+      dispatchFn: defaultDispatchFn,
+      adversarialLoopFn: async () =>
+        mkResult({
+          role: "adversarial-loop",
+          ok: true,
+          loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
+          text: "Approved.",
+        }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
@@ -363,29 +485,49 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     assert(cap !== undefined, "a failed lens-fix integration parks the cycle");
     // 2. repoRoot is on a named ref (the pre-integration ref) — NOT left
     //    on the feature branch mid-merge with unmerged index.
-    const { stdout: rootRefAfter } = await execp("git symbolic-ref --quiet --short HEAD", { cwd: root }).catch(() => ({ stdout: "" }));
-    assert(rootRefAfter.trim() === preIntegrationRef, `repoRoot is on the pre-integration ref (${preIntegrationRef}); got '${rootRefAfter.trim()}'`);
+    const { stdout: rootRefAfter } = await execp("git symbolic-ref --quiet --short HEAD", {
+      cwd: root,
+    }).catch(() => ({ stdout: "" }));
+    assert(
+      rootRefAfter.trim() === preIntegrationRef,
+      `repoRoot is on the pre-integration ref (${preIntegrationRef}); got '${rootRefAfter.trim()}'`,
+    );
     // 3. Porcelain is empty of tracked dirt. The cherry-pick conflict would
     //    have left UU entries if unhandled — the exact #782 incident shape.
     const { stdout: porcelain } = await execp("git status --porcelain", { cwd: root });
     const dirt = porcelain
       .split("\n")
       .filter((l: string) => l.trim() && !l.startsWith("??") && !/^\.\.\s+"?\.worktrees\//.test(l));
-    assert(dirt.length === 0, `repoRoot porcelain is empty of tracked dirt after the restore (got: ${dirt.join(", ") || "(empty)"})`);
+    assert(
+      dirt.length === 0,
+      `repoRoot porcelain is empty of tracked dirt after the restore (got: ${dirt.join(", ") || "(empty)"})`,
+    );
     // 4. No merge or cherry-pick in progress.
-    const hasMergeHead = await execp("git rev-parse MERGE_HEAD", { cwd: root }).then(() => true).catch(() => false);
-    const hasCherryPickHead = await execp("git rev-parse CHERRY_PICK_HEAD", { cwd: root }).then(() => true).catch(() => false);
-    assert(!hasMergeHead && !hasCherryPickHead, "no merge or cherry-pick is in progress at repoRoot after the restore");
+    const hasMergeHead = await execp("git rev-parse MERGE_HEAD", { cwd: root })
+      .then(() => true)
+      .catch(() => false);
+    const hasCherryPickHead = await execp("git rev-parse CHERRY_PICK_HEAD", { cwd: root })
+      .then(() => true)
+      .catch(() => false);
+    assert(
+      !hasMergeHead && !hasCherryPickHead,
+      "no merge or cherry-pick is in progress at repoRoot after the restore",
+    );
     // 5. The worktree's commits survived the restore.
     const { stdout: wtHead } = await execp("git rev-parse HEAD", { cwd: wt });
-    assert(wtHead.trim() === fixSha, "the lens-fix worktree's HEAD is unchanged (the commits survived the restore)");
+    assert(
+      wtHead.trim() === fixSha,
+      "the lens-fix worktree's HEAD is unchanged (the commits survived the restore)",
+    );
     // 6. The cap event names the restore outcome AND records the
     //    pre-integration ref (so the operator can verify the post-condition
     //    without re-deriving it from the event log prose).
     if (cap && cap.kind === "cap-hit") {
       const ev = cap.evidence ?? "";
       assert(
-        ev.includes("repoRoot was verified restored") || ev.includes("repoRoot was restored") || ev.includes("repoRoot was NOT restored"),
+        ev.includes("repoRoot was verified restored") ||
+          ev.includes("repoRoot was restored") ||
+          ev.includes("repoRoot was NOT restored"),
         `the cap evidence names the repoRoot restore outcome (got: ${ev.slice(0, 300)})`,
       );
       assert(
@@ -397,7 +539,10 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     //    deleted or reset by the restore).
     const { stdout: wtCommits } = await execp(`git rev-list --count ${baseSha}..HEAD`, { cwd: wt });
     const commitCount = Number.parseInt(wtCommits.trim(), 10);
-    assert(commitCount >= 3, `the worktree still has ${commitCount} commit(s) ahead of base (expected >=3, the fixer's commits)`);
+    assert(
+      commitCount >= 3,
+      `the worktree still has ${commitCount} commit(s) ahead of base (expected >=3, the fixer's commits)`,
+    );
     // 8. The handoff body (explainCap output) states the repoRoot condition
     //    (not just the cap evidence) and names the specific ref — the
     //    operator following the recovery steps must know the state BEFORE
@@ -406,10 +551,16 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     const state = await readState(root, 797);
     const handoffText = state ? explainCap("lens-fix-not-integrated", state) : "";
     assert(
-      handoffText.includes("repoRoot was verified restored") || handoffText.includes("repoRoot was restored") || handoffText.includes("repoRoot was NOT restored") || handoffText.includes("not recorded"),
+      handoffText.includes("repoRoot was verified restored") ||
+        handoffText.includes("repoRoot was restored") ||
+        handoffText.includes("repoRoot was NOT restored") ||
+        handoffText.includes("not recorded"),
       `the handoff body states the repoRoot condition (got: ${handoffText.slice(0, 200)})`,
     );
-    assert(handoffText.includes(preIntegrationRef), `the handoff body names the pre-integration ref '${preIntegrationRef}'`);
+    assert(
+      handoffText.includes(preIntegrationRef),
+      `the handoff body names the pre-integration ref '${preIntegrationRef}'`,
+    );
   } finally {
     // Do NOT rmSync here — the driver may still have async git operations
     // in flight. The OS cleans /tmp on reboot.

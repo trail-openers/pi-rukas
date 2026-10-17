@@ -448,7 +448,10 @@ async function main() {
       consolidatedAssertion: sharedAssertion,
     });
     const r = await run();
-    assert(r.consolidatedCalls === 1, `case 14 (mismatch): 1 consolidated run (got: ${r.consolidatedCalls})`);
+    assert(
+      r.consolidatedCalls === 1,
+      `case 14 (mismatch): 1 consolidated run (got: ${r.consolidatedCalls})`,
+    );
     assert(
       r.notes.some((n) => n.includes("WITHHELD") && n.includes("per-worktree specific")),
       "case 14: the suppression note names the per-worktree assertion and states the re-run was withheld",

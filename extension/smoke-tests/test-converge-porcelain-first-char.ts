@@ -43,11 +43,7 @@ try {
     ...base,
     pipelineState: { ...base.pipelineState, worktrees: { default: "repoRoot" } },
   };
-  const { files, unreadable } = await readEndOfDevelopDiff(
-    realExec,
-    state,
-    repo,
-  );
+  const { files, unreadable } = await readEndOfDevelopDiff(realExec, state, repo);
   assert(!unreadable, "the worktree is readable");
   assert(files.has("install.sh"), "first ` M` record keeps its first character (install.sh)");
   assert(files.has("lib/config.sh"), "later ` M` record keeps its first character");

@@ -55,7 +55,10 @@ export function cannotFail(src: string): boolean {
 // ---- canaries
 const helper =
   "let exit = 0;\nfunction assert(c: boolean, m: string) {\n  if (c) console.log(`✓ ${m}`);\n  else {\n    console.error(`✗ ${m}`);\n    exit = 1;\n  }\n}\n";
-assert(cannotFail(`${helper}assert(false, "x");\n`), "canary: records failures, never exits → caught");
+assert(
+  cannotFail(`${helper}assert(false, "x");\n`),
+  "canary: records failures, never exits → caught",
+);
 assert(
   cannotFail(`${helper}assert(false, "x");\nprocess.exit(0);\n`),
   "canary: exits with a literal 0 → caught",
@@ -68,7 +71,10 @@ assert(
   !cannotFail(`${helper}assert(false, "x");\nprocess.exitCode = exit;\n`),
   "canary: process.exitCode = … passes",
 );
-assert(!cannotFail('console.log("no assertions here");\n'), "canary: a file with no ✗ line is not in scope");
+assert(
+  !cannotFail('console.log("no assertions here");\n'),
+  "canary: a file with no ✗ line is not in scope",
+);
 
 // ---- the real suite
 const offenders: string[] = [];

@@ -249,10 +249,7 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
     prompt2.includes("cargo check --quiet"),
     "#751: a different resolved verify command yields a different prompt",
   );
-  assert(
-    !prompt2.includes("bun run check"),
-    "#751: the first command is not carried over",
-  );
+  assert(!prompt2.includes("bun run check"), "#751: the first command is not carried over");
   assert(
     prompt !== prompt2,
     "#751: the two prompts differ — the command is threaded in, not a constant",
@@ -273,10 +270,7 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
     /no discoverable verify command|no project-level check/i.test(noCmd),
     "#751: no verify command → prompt says so plainly, does not invent one",
   );
-  assert(
-    !noCmd.includes("bun run check"),
-    "#751: no fabricated command when none was resolved",
-  );
+  assert(!noCmd.includes("bun run check"), "#751: no fabricated command when none was resolved");
 }
 
 // --------------------------------------------------------------- #1078: issue body artifact + branch state

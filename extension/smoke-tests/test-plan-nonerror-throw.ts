@@ -9,8 +9,8 @@
  * the trace and the detail.
  */
 
-import { fileIssue } from "../src/plan-filing.ts";
 import type { Forge } from "../src/forge.ts";
+import { fileIssue } from "../src/plan-filing.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

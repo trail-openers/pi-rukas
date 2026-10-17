@@ -19,10 +19,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { extractFindings } from "../src/lens-findings-extract.ts";
 import { type LensReviewSummary, lensPromptFor } from "../src/lens-review-format.ts";
 import { renderSummary } from "../src/lens-review-render.ts";
-import {
-  LENS_REPORTER_PATH,
-  type LensRunResult,
-} from "../src/lens-review.ts";
+import { LENS_REPORTER_PATH, type LensRunResult } from "../src/lens-review.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

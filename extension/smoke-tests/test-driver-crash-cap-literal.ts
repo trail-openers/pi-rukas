@@ -105,9 +105,7 @@ function assert(cond: boolean, msg: string) {
   const findings = validateDiscriminants(s);
   assert(
     findings.some((f) => f.includes(".cap has unknown value")),
-    `a fabricated something-else:plan is still rejected (got: ${JSON.stringify(
-      findings,
-    )})`,
+    `a fabricated something-else:plan is still rejected (got: ${JSON.stringify(findings)})`,
   );
 }
 

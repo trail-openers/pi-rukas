@@ -23,6 +23,10 @@ import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+// #1039 — the temp-repo helpers moved to lib/review-ledger-test-helpers.ts
+// (still re-exported from here for backward compatibility; the headSha suite
+// imports them from lib/ directly so it does not execute this file's body).
+import { ledgerFile, setupRepo } from "./lib/review-ledger-test-helpers.ts";
 // #984 — the shared helper (lib/wait-for-ledger.ts) with a generous 30 s
 // budget, so a loaded host has headroom for the writer's two git subprocess
 // hops; the poll returns as soon as the file appears (the passing path stays
@@ -31,10 +35,6 @@ import path from "node:path";
 // is the same flake the issue's descriptor names: a fixed short wall-clock
 // budget against a fire-and-forget two-subprocess write chain).
 import { waitForLedger } from "./lib/wait-for-ledger.ts";
-// #1039 — the temp-repo helpers moved to lib/review-ledger-test-helpers.ts
-// (still re-exported from here for backward compatibility; the headSha suite
-// imports them from lib/ directly so it does not execute this file's body).
-import { setupRepo, ledgerFile } from "./lib/review-ledger-test-helpers.ts";
 export { setupRepo, ledgerFile } from "./lib/review-ledger-test-helpers.ts";
 import { runLensReview } from "../src/lens-review.ts";
 import {
@@ -379,7 +379,7 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
     { branch: "", kind: "lens", patchId: "p", passed: true, at: 1 }, // empty branch
     { branch: "f", kind: "both", patchId: "p", passed: true, at: 1 }, // bad kind
     { branch: "f", kind: "lens", patchId: 42, passed: true, at: 1 }, // non-string patchId
-    { branch: "f", kind: "lens", patchId: "p", passed: true, at: NaN }, // NaN at
+    { branch: "f", kind: "lens", patchId: "p", passed: true, at: Number.NaN }, // NaN at
     { branch: "f", kind: "lens", patchId: "p", passed: "yes", at: 1 }, // non-boolean passed
     { branch: "f", kind: "lens", patchId: "p", passed: true }, // missing at
     null,

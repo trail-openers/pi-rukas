@@ -13,6 +13,7 @@
  * unbudgeted shape; and byte-determinism across runs.
  */
 
+import { draftSpec } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import {
   BODY_BUDGET,
@@ -23,12 +24,11 @@ import {
   clipRef,
   fitDraftToBudget,
 } from "../src/plan-validate.ts";
-import { draftSpec } from "../src/plan-draft.ts";
 import {
   gatePrompts,
   installForgeStub,
-  installOfflineVipuneStub,
   installNoPlanCacheStub,
+  installOfflineVipuneStub,
 } from "./plan-test-stubs.ts";
 
 let exit = 0;
@@ -63,7 +63,8 @@ function assert(cond: boolean, msg: string) {
   const midPathRef = `${prefix}${longPath} for the TEST SURFACE and the budget stage table`;
   assert(midPathRef.length === 455, "fixture: the reference is a ~450-char item");
   assert(
-    midPathRef.slice(399, 400) !== " " && midPathRef.slice(0, 399).includes("extension/src/plan-va"),
+    midPathRef.slice(399, 400) !== " " &&
+      midPathRef.slice(0, 399).includes("extension/src/plan-va"),
     "fixture: the 400-boundary lands INSIDE the path token",
   );
   // 400 stage: the path token (chars 377–405) STRADDLES the cut at 399 →
@@ -90,8 +91,14 @@ function assert(cond: boolean, msg: string) {
   );
   // No paths → byte-identical to clipItem (the regression criterion).
   const noPath = "b".repeat(450);
-  assert(clipRef(noPath, 400) === clipItem(noPath, 400), "clipRef: no-path items clip byte-identical to clipItem (400)");
-  assert(clipRef(noPath, 220) === clipItem(noPath, 220), "clipRef: no-path items clip byte-identical to clipItem (220)");
+  assert(
+    clipRef(noPath, 400) === clipItem(noPath, 400),
+    "clipRef: no-path items clip byte-identical to clipItem (400)",
+  );
+  assert(
+    clipRef(noPath, 220) === clipItem(noPath, 220),
+    "clipRef: no-path items clip byte-identical to clipItem (220)",
+  );
   assert(clipRef("short item", 400) === "short item", "clipRef: under the limit unchanged");
 
   // fitDraftToBudget stages.
@@ -134,7 +141,6 @@ function assert(cond: boolean, msg: string) {
     "tooLarge" in hopeless && /Prior context inventory: \d+ chars/.test(hopeless.breakdown),
     "fit: the halt carries the per-section breakdown",
   );
-
 }
 
 // ------------------------------------------------------------ pipeline
@@ -147,7 +153,13 @@ process.env.PI_ENSEMBLE_FORGE = "none";
 const LONG_ITEM = `the verify gate must ${"x".repeat(2950)} end`;
 
 function angleReply(itemText: string, perKind: number) {
-  const kinds = ["acceptance-criterion", "test-surface-item", "edge-case", "reference", "out-of-scope"];
+  const kinds = [
+    "acceptance-criterion",
+    "test-surface-item",
+    "edge-case",
+    "reference",
+    "out-of-scope",
+  ];
   const toolUses = kinds.flatMap((kind) =>
     Array.from({ length: perKind }, (_, i) => ({
       name: "report_plan_item",
@@ -195,7 +207,9 @@ const DESCRIPTOR = "add a start_plan_driver body budget in extension/src/plan-va
 // budget but stage 1 (~13k) fits — the compaction case. (Sub-issue lines
 // render as text-budget + ~55 chars of checkbox/attribution structure,
 // which the 4k BODY_BUDGET headroom absorbs.)
-const MID_CONTEXT = Array.from({ length: 40 }, (_, i) => `fact ${i}: ${"c".repeat(600)}`).join("\n");
+const MID_CONTEXT = Array.from({ length: 40 }, (_, i) => `fact ${i}: ${"c".repeat(600)}`).join(
+  "\n",
+);
 
 {
   gatePrompts.length = 0;
@@ -289,7 +303,10 @@ const MID_CONTEXT = Array.from({ length: 40 }, (_, i) => `fact ${i}: ${"c".repea
     r.spec.length <= FORGE_BODY_MAX,
     `corrective: round-2 body stays under the forge cap (${r.spec.length})`,
   );
-  assert(gatePrompts.length === 2, `corrective: scoped round 2 ran (${gatePrompts.length} gate calls)`);
+  assert(
+    gatePrompts.length === 2,
+    `corrective: scoped round 2 ran (${gatePrompts.length} gate calls)`,
+  );
   assert(
     (gatePrompts[1] ?? "").length < FORGE_BODY_MAX,
     "corrective: the round-2 gate prompt stays under the forge cap",

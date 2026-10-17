@@ -146,24 +146,11 @@ const prompt = [
 // flag re-enables just the MCP built-in so the toolset includes the
 // mcp__<server>__<tool> tools the agents.json overlay grants per role
 // (same argument order as spawn-support.ts childArgsBase() in production).
-const childArgs = [
-  "--mode",
-  "rpc",
-  "--no-extensions",
-  "-e",
-  "builtin:mcp",
-];
+const childArgs = ["--mode", "rpc", "--no-extensions", "-e", "builtin:mcp"];
 if (codemodeEnabled) {
   childArgs.push("-e", "builtin:codemode");
 }
-childArgs.push(
-  "--session",
-  sessionPath,
-  "--extension",
-  extDir,
-  "--extension",
-  fixturePath,
-);
+childArgs.push("--session", sessionPath, "--extension", extDir, "--extension", fixturePath);
 if (liveProvider) {
   childArgs.push("--provider", liveProvider);
 }

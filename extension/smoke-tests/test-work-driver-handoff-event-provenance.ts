@@ -313,4 +313,3 @@ function assert(cond: boolean, msg: string) {
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);
-

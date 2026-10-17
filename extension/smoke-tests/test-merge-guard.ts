@@ -216,7 +216,10 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
   // The gh REST /merge door is refused outright (#962), before any forge call.
   const r = await hookDecision("gh api repos/o/r/pulls/12/merge", GOOD_ENTRIES);
   assert(r.block === true, "the gh REST /merge door is refused even with a passing ledger");
-  assert(/checks only one plain merge command/.test(r.reason ?? ""), "…as outside the accepted form");
+  assert(
+    /checks only one plain merge command/.test(r.reason ?? ""),
+    "…as outside the accepted form",
+  );
   assert(r.calls.length === 0, "…without reading the PR");
 }
 {

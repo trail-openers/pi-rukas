@@ -9,18 +9,18 @@
  * in the sibling test-work-driver-converge.ts.
  */
 
-import path from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import path from "node:path";
 import { type DriverContext, STEP_ORDINAL } from "../src/work-driver-context.ts";
-import { explainCap } from "../src/work-driver-explain.ts";
 import {
   buildConvergeCorrectivePrompt,
   classifyDeliverables,
   runConvergeGate,
 } from "../src/work-driver-converge.ts";
+import { explainCap } from "../src/work-driver-explain.ts";
 import { recoveryStepsForCap } from "../src/work-driver-handoff-recovery.ts";
-import { initialState, type WorkState } from "../src/workflow-state.ts";
+import { type WorkState, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -275,14 +275,19 @@ assert(
     wsMap,
   );
   assert(
-    vSib.deliverables[0].status === "implemented" && vSib.deliverables[0].deliveredBy?.includes("task-a"),
+    vSib.deliverables[0].status === "implemented" &&
+      vSib.deliverables[0].deliveredBy?.includes("task-a"),
     "d2: a deliverable delivered by its owning workstream carries deliveredBy naming that workstream",
   );
   assert(
-    vSib.deliverables[1].status === "implemented" && vSib.deliverables[1].deliveredBy?.includes("task-b"),
+    vSib.deliverables[1].status === "implemented" &&
+      vSib.deliverables[1].deliveredBy?.includes("task-b"),
     "d2: the sibling deliverable is also implemented (not flagged — sibling-delivered criteria pass)",
   );
-  assert(vSib.absent.length === 0, "d2: no deliverable is absent when all paths are in the consolidated diff");
+  assert(
+    vSib.absent.length === 0,
+    "d2: no deliverable is absent when all paths are in the consolidated diff",
+  );
 
   // When task-b's paths are NOT in the diff, d2 is `absent` — the gate flags it.
   const vSibMissing = classifyDeliverables(
@@ -297,7 +302,10 @@ assert(
     vSibMissing.deliverables[1].status === "absent",
     "d2: a deliverable whose paths are NOT in the diff is absent (flagged)",
   );
-  assert(vSibMissing.absent.length === 1 && vSibMissing.absent[0].id === "d2", "d2: the gate flags exactly the undelivered deliverable");
+  assert(
+    vSibMissing.absent.length === 1 && vSibMissing.absent[0].id === "d2",
+    "d2: the gate flags exactly the undelivered deliverable",
+  );
 
   // When no workstream map is provided, `deliveredBy` is not populated (degrade).
   const vNoMap = classifyDeliverables(
@@ -305,7 +313,8 @@ assert(
     new Set(["src/alpha.ts"]),
   );
   assert(
-    vNoMap.deliverables[0].status === "implemented" && vNoMap.deliverables[0].deliveredBy === undefined,
+    vNoMap.deliverables[0].status === "implemented" &&
+      vNoMap.deliverables[0].deliveredBy === undefined,
     "d2: without a workstream map, deliveredBy is absent (pre-#1137 shape)",
   );
 }
@@ -316,7 +325,13 @@ assert(
   const vNd = classifyDeliverables(
     [
       { id: "d1", description: "alpha", paths: ["src/alpha.ts"] },
-      { id: "d5", description: "enable secret scanning", paths: [], noDiff: true, noDiffEvidence: "gh api -X PATCH repos/.../security_and_analysis" },
+      {
+        id: "d5",
+        description: "enable secret scanning",
+        paths: [],
+        noDiff: true,
+        noDiffEvidence: "gh api -X PATCH repos/.../security_and_analysis",
+      },
     ],
     new Set(["src/alpha.ts"]),
   );
@@ -335,7 +350,14 @@ assert(
   // 2. A marked deliverable WITHOUT evidence is NOT honoured → classifies as today.
   //    With paths → absent; without paths → unmeasurable.
   const vNoEv1 = classifyDeliverables(
-    [{ id: "d5", description: "enable secret scanning", paths: ["n/a — repo settings"], noDiff: true }],
+    [
+      {
+        id: "d5",
+        description: "enable secret scanning",
+        paths: ["n/a — repo settings"],
+        noDiff: true,
+      },
+    ],
     new Set(),
   );
   assert(
@@ -358,7 +380,13 @@ assert(
       { id: "d2", description: "beta", paths: ["src/beta.ts"] },
       { id: "d3", description: "gamma", paths: ["src/gamma.ts"] },
       { id: "d4", description: "delta", paths: ["src/delta.ts"] },
-      { id: "d5", description: "enable secret scanning", paths: [], noDiff: true, noDiffEvidence: "gh api -X PATCH repos/.../security_and_analysis" },
+      {
+        id: "d5",
+        description: "enable secret scanning",
+        paths: [],
+        noDiff: true,
+        noDiffEvidence: "gh api -X PATCH repos/.../security_and_analysis",
+      },
     ],
     new Set(["src/alpha.ts", "src/beta.ts", "src/gamma.ts", "src/delta.ts"]),
   );
@@ -375,7 +403,13 @@ assert(
       { id: "d2", description: "beta", paths: ["src/beta.ts"] },
       { id: "d3", description: "gamma", paths: ["src/gamma.ts"] },
       { id: "d4", description: "delta", paths: ["src/delta.ts"] },
-      { id: "d5", description: "enable secret scanning", paths: [], noDiff: true, noDiffEvidence: "gh api -X PATCH repos/.../security_and_analysis" },
+      {
+        id: "d5",
+        description: "enable secret scanning",
+        paths: [],
+        noDiff: true,
+        noDiffEvidence: "gh api -X PATCH repos/.../security_and_analysis",
+      },
     ],
     new Set(["src/alpha.ts", "src/beta.ts", "src/gamma.ts"]), // src/delta.ts missing
   );
@@ -388,7 +422,15 @@ assert(
 
   // 5. Contradictory case: both valid code paths AND no-diff marker → code paths win.
   const vContradict = classifyDeliverables(
-    [{ id: "d1", description: "alpha", paths: ["src/alpha.ts"], noDiff: true, noDiffEvidence: "some evidence" }],
+    [
+      {
+        id: "d1",
+        description: "alpha",
+        paths: ["src/alpha.ts"],
+        noDiff: true,
+        noDiffEvidence: "some evidence",
+      },
+    ],
     new Set(),
   );
   assert(

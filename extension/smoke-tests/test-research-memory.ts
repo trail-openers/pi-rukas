@@ -12,17 +12,17 @@
 
 import path from "node:path";
 import {
-  RESEARCH_MEMORY_MAX_CHARS,
-  RESEARCH_ROW_PREFIX,
-  researchMemoryText,
-  researchTakeawayText,
-} from "../src/research-memory.ts";
-import {
   type ArtifactArgs,
   renderAdoptionMemo,
   renderArtifact,
   renderProvenance,
 } from "../src/research-artifact.ts";
+import {
+  RESEARCH_MEMORY_MAX_CHARS,
+  RESEARCH_ROW_PREFIX,
+  researchMemoryText,
+  researchTakeawayText,
+} from "../src/research-memory.ts";
 import type { ResearchClaim } from "../src/research-types.ts";
 
 let exit = 0;
@@ -57,7 +57,10 @@ const FIXTURE_ARTIFACT = path.join("outputs", "research-vipune-scoring.md");
 
   // Zero verified: the count line alone (no "top findings" clause).
   const none = researchTakeawayText([], 5, 2);
-  assert(none === "0 verified of 5 claims across 2 angles", `takeaway: zero verified (got ${none})`);
+  assert(
+    none === "0 verified of 5 claims across 2 angles",
+    `takeaway: zero verified (got ${none})`,
+  );
 
   // 80-char truncation: each entry capped at 80 chars (79 + ellipsis).
   const long81 = `x`.repeat(81);
@@ -92,7 +95,10 @@ const FIXTURE_ARTIFACT = path.join("outputs", "research-vipune-scoring.md");
   // The supersession signature is unchanged: the `Research: ` prefix plus
   // the `Artifact: outputs/research-` marker (the marker sits AFTER the
   // takeaway, so the takeaway format cannot break it — asserted here).
-  assert(exact.startsWith(RESEARCH_ROW_PREFIX), "supersession: row starts with the `Research: ` prefix");
+  assert(
+    exact.startsWith(RESEARCH_ROW_PREFIX),
+    "supersession: row starts with the `Research: ` prefix",
+  );
   assert(
     exact.includes("Artifact: outputs/research-"),
     "supersession: the artifact marker is present and intact",
@@ -101,7 +107,10 @@ const FIXTURE_ARTIFACT = path.join("outputs", "research-vipune-scoring.md");
   // The whole-row cap is still the FINAL guard: a combination over 700
   // chars truncates (last char an ellipsis).
   const over = researchMemoryText("t".repeat(1000), "x", "outputs/research-x.md", "2026-01-01");
-  assert(over.length === RESEARCH_MEMORY_MAX_CHARS, `row cap: truncated to exactly ${RESEARCH_MEMORY_MAX_CHARS}`);
+  assert(
+    over.length === RESEARCH_MEMORY_MAX_CHARS,
+    `row cap: truncated to exactly ${RESEARCH_MEMORY_MAX_CHARS}`,
+  );
   assert(over.endsWith("…"), "row cap: truncation marked with an ellipsis");
 }
 
@@ -188,7 +197,13 @@ const mixClaims: ResearchClaim[] = [
 ];
 
 const angleRuns = [
-  { name: "web-current", ok: true, summary: "s", claims: mixClaims.slice(0, 3), backend: "parallel" as const },
+  {
+    name: "web-current",
+    ok: true,
+    summary: "s",
+    claims: mixClaims.slice(0, 3),
+    backend: "parallel" as const,
+  },
   {
     name: "codebase",
     ok: false,
@@ -197,7 +212,13 @@ const angleRuns = [
     backend: "wigolo" as const,
     failure: "dispatch failed",
   },
-  { name: "docs-depth", ok: true, summary: "s", claims: mixClaims.slice(5), backend: "parallel" as const },
+  {
+    name: "docs-depth",
+    ok: true,
+    summary: "s",
+    claims: mixClaims.slice(5),
+    backend: "parallel" as const,
+  },
 ];
 
 function metricsArgs(): ArtifactArgs {
@@ -222,7 +243,11 @@ function metricsArgs(): ArtifactArgs {
   const iMetrics = a.indexOf("## Run metrics");
   const iFindings = a.indexOf("## Findings");
   assert(
-    iHeader !== -1 && iMetrics !== -1 && iFindings !== -1 && iHeader < iMetrics && iMetrics < iFindings,
+    iHeader !== -1 &&
+      iMetrics !== -1 &&
+      iFindings !== -1 &&
+      iHeader < iMetrics &&
+      iMetrics < iFindings,
     `artifact: metrics sits between the header and Findings (header=${iHeader}, metrics=${iMetrics}, findings=${iFindings})`,
   );
   // Per-phase + total rows.
@@ -261,8 +286,14 @@ function metricsArgs(): ArtifactArgs {
   assert(p.includes("phase.inventory.ms: 10"), "provenance: phase.inventory.ms line");
   assert(p.includes("phase.retrieve.ms: 500"), "provenance: phase.retrieve.ms line");
   assert(p.includes("total.ms: 900"), "provenance: total.ms line");
-  assert(p.includes("angle.web-current: claims=3 backend=parallel ok=true"), "provenance: per-angle line (ok)");
-  assert(p.includes("angle.codebase: claims=2 backend=wigolo ok=false"), "provenance: per-angle line (failed)");
+  assert(
+    p.includes("angle.web-current: claims=3 backend=parallel ok=true"),
+    "provenance: per-angle line (ok)",
+  );
+  assert(
+    p.includes("angle.codebase: claims=2 backend=wigolo ok=false"),
+    "provenance: per-angle line (failed)",
+  );
   assert(p.includes("verify.url.live: 1"), "provenance: verify.url.live");
   assert(p.includes("verify.url.dead: 1"), "provenance: verify.url.dead");
   assert(p.includes("verify.url.unreachable: 0"), "provenance: verify.url.unreachable");
@@ -299,7 +330,10 @@ function metricsArgs(): ArtifactArgs {
   assert(m.startsWith("# Adoption memo: vipune scoring"), "memo: adoption layout used");
   assert(m.includes("## Run metrics"), "memo: Run metrics section present in the adoption layout");
   assert(m.includes("- **total**: 900 ms"), "memo: total row present");
-  assert(m.includes("- **web-current**: 3 claims reported · backend: parallel · ok"), "memo: per-angle rows present");
+  assert(
+    m.includes("- **web-current**: 3 claims reported · backend: parallel · ok"),
+    "memo: per-angle rows present",
+  );
   assert(m.includes("verification: "), "memo: verification mix present");
 }
 
@@ -308,7 +342,10 @@ function metricsArgs(): ArtifactArgs {
   const plain = renderArtifact({ ...metricsArgs(), timings: undefined });
   assert(!plain.includes("## Run metrics"), "artifact: no metrics section when timings absent");
   const plainProv = renderProvenance({ ...metricsArgs(), timings: undefined });
-  assert(!plainProv.includes("phase.inventory.ms"), "provenance: no metric lines when timings absent");
+  assert(
+    !plainProv.includes("phase.inventory.ms"),
+    "provenance: no metric lines when timings absent",
+  );
 }
 
 console.log(`\nexit ${exit}`);

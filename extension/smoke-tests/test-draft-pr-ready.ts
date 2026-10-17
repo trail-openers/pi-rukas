@@ -18,13 +18,13 @@ import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Forge } from "../src/forge.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
+import { draftPrHandoffLines } from "../src/work-driver-draft-pr-handoff.ts";
 import {
   MAX_READY_ATTEMPTS_PER_CYCLE,
   markDraftPrReady,
   recordFallbackDraftFact,
 } from "../src/work-driver-draft-pr.ts";
-import { draftPrHandoffLines } from "../src/work-driver-draft-pr-handoff.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
 import { runMerged } from "../src/work-driver-merged.ts";
 import { runStep } from "../src/work-driver-run-step.ts";
 import {
@@ -164,7 +164,10 @@ const execStub = (async () => ({ stdout: "" })) as unknown as NonNullable<
     PR,
     execStub,
   );
-  assert(asDraft.pipelineState.prDraft?.status === "draft", "fallback: a draft PR is recorded as draft");
+  assert(
+    asDraft.pipelineState.prDraft?.status === "draft",
+    "fallback: a draft PR is recorded as draft",
+  );
   const asReady = await recordFallbackDraftFact(
     ctxWith(async () => ({ isDraft: false, state: "OPEN", headRefName: BRANCH })),
     base,
@@ -183,7 +186,10 @@ const execStub = (async () => ({ stdout: "" })) as unknown as NonNullable<
     PR,
     execStub,
   );
-  assert(unread.pipelineState.prDraft === undefined, "fallback: an unreadable view records nothing");
+  assert(
+    unread.pipelineState.prDraft === undefined,
+    "fallback: an unreadable view records nothing",
+  );
 }
 
 {
@@ -234,13 +240,27 @@ const execStub = (async () => ({ stdout: "" })) as unknown as NonNullable<
     prView: async () => foreign,
     prReady: async (n: number) => void readyCalls.push(n),
   } as unknown as Forge;
-  const ctx = { host: fakePi, repoRoot: "/nonexistent", issue: ISSUE, headless: true, forge } as DriverContext;
+  const ctx = {
+    host: fakePi,
+    repoRoot: "/nonexistent",
+    issue: ISSUE,
+    headless: true,
+    forge,
+  } as DriverContext;
   const noFactState = reviewState([started("commit-pr", 1), approved]);
   const viaLive = await markDraftPrReady(ctx, noFactState, noSleep);
-  const held = await markDraftPrReady(ctx, reviewState([started("commit-pr", 1), approved], { status: "draft" }), noSleep);
+  const held = await markDraftPrReady(
+    ctx,
+    reviewState([started("commit-pr", 1), approved], { status: "draft" }),
+    noSleep,
+  );
   const viaFallback = await recordFallbackDraftFact(ctx, noFactState, PR, execStub);
   assert(
-    readyCalls.length === 0 && viaLive.pipelineState.prDraft === undefined && held.pipelineState.prDraft?.status === "draft" && /could not be read to verify/.test(held.pipelineState.prDraft?.holdReason ?? "") && viaFallback.pipelineState.prDraft === undefined,
+    readyCalls.length === 0 &&
+      viaLive.pipelineState.prDraft === undefined &&
+      held.pipelineState.prDraft?.status === "draft" &&
+      /could not be read to verify/.test(held.pipelineState.prDraft?.holdReason ?? "") &&
+      viaFallback.pipelineState.prDraft === undefined,
     "a PR whose head is another branch is never recorded, never marked ready",
   );
 }
@@ -273,18 +293,27 @@ const execStub = (async () => ({ stdout: "" })) as unknown as NonNullable<
       throw new Error("prReady must not be called on an unverified PR");
     },
   } as unknown as Forge;
-  const ctx = { host: fakePi, repoRoot: "/nonexistent", issue: ISSUE, headless: true, forge } as unknown as DriverContext;
+  const ctx = {
+    host: fakePi,
+    repoRoot: "/nonexistent",
+    issue: ISSUE,
+    headless: true,
+    forge,
+  } as unknown as DriverContext;
   const state = reviewState([started("commit-pr", 1), approved], { status: "draft" });
   const marked = await markDraftPrReady(ctx, state, noSleep);
   const hold = marked.pipelineState.prDraft?.holdReason ?? "";
   assert(
-    marked.pipelineState.prDraft?.status === "draft" && /could not be read to verify it is this cycle's: .+/.test(hold),
+    marked.pipelineState.prDraft?.status === "draft" &&
+      /could not be read to verify it is this cycle's: .+/.test(hold),
     "an unreadable known draft records an unverified hold reason",
   );
   const halted = await runMerged(ctx as unknown as Parameters<typeof runMerged>[0], state, at(9));
   const last = halted.eventLog[halted.eventLog.length - 1];
   assert(
-    last?.kind === "cap-hit" && last.cap === "step-failed:merged" && String(last.evidence).includes("could not be read to verify"),
+    last?.kind === "cap-hit" &&
+      last.cap === "step-failed:merged" &&
+      String(last.evidence).includes("could not be read to verify"),
     "runMerged's halt evidence names the unverified reason",
   );
 }

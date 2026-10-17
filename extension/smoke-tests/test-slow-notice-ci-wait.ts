@@ -18,12 +18,12 @@
  */
 
 import type { RunningState } from "../src/progress.ts";
+import { isCiWatchCommand } from "../src/slow-notice-ci-wait.ts";
 import {
   clearSlowWatchesForTesting,
   feedSlowProgress,
   watchSlowDispatch,
 } from "../src/slow-notice.ts";
-import { isCiWatchCommand } from "../src/slow-notice-ci-wait.ts";
 
 let exit = 0;
 const assert = (cond: boolean, msg: string): void =>
@@ -89,7 +89,11 @@ const MIN = 60_000;
 
 /** The per-section watch harness: one watch armed with `now` (plus an
  * optional scheduler) and the span-feed seam captured into `feed`. */
-function harness(id: string, now: () => number, opts: { schedule?: (fn: () => void, ms: number) => () => void } = {}) {
+function harness(
+  id: string,
+  now: () => number,
+  opts: { schedule?: (fn: () => void, ms: number) => () => void } = {},
+) {
   const notices: string[] = [];
   const rawRef: { feed?: Feed } = {};
   const watch = watchSlowDispatch({
@@ -107,9 +111,18 @@ function harness(id: string, now: () => number, opts: { schedule?: (fn: () => vo
 
 /** The span open/close fixtures shared by the span-driven sections. */
 const openSpan = (feed: Feed | undefined, id: string, cmd: string): void =>
-  feed?.({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", id, name: "bash", arguments: { command: cmd } }] } });
+  feed?.({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "toolCall", id, name: "bash", arguments: { command: cmd } }],
+    },
+  });
 const closeSpan = (feed: Feed | undefined, id: string, isError = false): void =>
-  feed?.({ type: "message_end", message: { role: "toolResult", toolName: "bash", toolCallId: id, isError } });
+  feed?.({
+    type: "message_end",
+    message: { role: "toolResult", toolName: "bash", toolCallId: id, isError },
+  });
 
 // --------------------------------------------------------- 1. the classifier
 // Accepts the four CI-watch shapes (tolerant of the `oo` prefix and flag
@@ -137,7 +150,8 @@ const closeSpan = (feed: Feed | undefined, id: string, isError = false): void =>
     "timeout 60s glab ci status --live",
     "oo env X=1 gh pr checks 12 --watch",
   ];
-  for (const cmd of accepted) assert(isCiWatchCommand(cmd) === true, `accepts ${JSON.stringify(cmd)}`);
+  for (const cmd of accepted)
+    assert(isCiWatchCommand(cmd) === true, `accepts ${JSON.stringify(cmd)}`);
   const rejected = [
     "gh pr checks 12",
     "gh run list",
@@ -154,7 +168,8 @@ const closeSpan = (feed: Feed | undefined, id: string, isError = false): void =>
     "gh pr views 12 --watch",
     "gh ci status --live",
   ];
-  for (const cmd of rejected) assert(isCiWatchCommand(cmd) === false, `rejects ${JSON.stringify(cmd)}`);
+  for (const cmd of rejected)
+    assert(isCiWatchCommand(cmd) === false, `rejects ${JSON.stringify(cmd)}`);
 }
 
 // ---------------------------------- 2. progress path: excluded elapsed never fires
@@ -198,7 +213,10 @@ await withEnv({}, async () => {
     assert(notices.length === 1, "non-CI: crossing 20m wall → exactly one level-1 notice");
     assert(notices[0]?.includes("triggered by: elapsed") === true, "non-CI: notice names elapsed");
     // No exclusion → no suffix (byte-identical to today's metrics segment).
-    assert(notices[0]?.includes("CI wait excluded") === false, "non-CI: zero exclusion → no suffix");
+    assert(
+      notices[0]?.includes("CI wait excluded") === false,
+      "non-CI: zero exclusion → no suffix",
+    );
   } finally {
     stop();
   }
@@ -228,10 +246,16 @@ await withEnv({}, async () => {
     // level-1 notice (delayed from 20m to 45m wall, not suppressed).
     t += 15 * MIN;
     feedSlowProgress("job-excl-delayed", stateAt(1, 45 * MIN));
-    assert(notices.length === 1, "post-span: exactly ONE level-1 notice at 45m wall (adjusted 20m)");
+    assert(
+      notices.length === 1,
+      "post-span: exactly ONE level-1 notice at 45m wall (adjusted 20m)",
+    );
     // The notice's metrics segment carries the exclusion, right after the
     // elapsed value: `… 45m0s (+25m0s CI wait excluded) · …`.
-    assert(notices[0]?.includes("45m0s (+25m0s CI wait excluded)") === true, "post-span: suffix (+25m0s CI wait excluded) after the elapsed value");
+    assert(
+      notices[0]?.includes("45m0s (+25m0s CI wait excluded)") === true,
+      "post-span: suffix (+25m0s CI wait excluded) after the elapsed value",
+    );
   } finally {
     stop();
   }
@@ -245,7 +269,9 @@ await withEnv({}, async () => {
   setup();
   let t = 4_000_000;
   const sched = fakeScheduler();
-  const { watch, notices, feed, stop } = harness("job-excl-timer", () => t, { schedule: sched.schedule });
+  const { watch, notices, feed, stop } = harness("job-excl-timer", () => t, {
+    schedule: sched.schedule,
+  });
   try {
     // The first (and only) progress feed at 1m wall; the span is already open.
     openSpan(feed.feed, "tm-1", "gh pr checks 12 --watch");
@@ -280,7 +306,9 @@ await withEnv({}, async () => {
   setup();
   let t = 5_000_000;
   const sched = fakeScheduler();
-  const { notices, feed, stop } = harness("job-excl-timer-plain", () => t, { schedule: sched.schedule });
+  const { notices, feed, stop } = harness("job-excl-timer-plain", () => t, {
+    schedule: sched.schedule,
+  });
   try {
     openSpan(feed.feed, "tp-1", "sleep 1200");
     t += 1 * MIN;
@@ -288,7 +316,10 @@ await withEnv({}, async () => {
     t += 19 * MIN;
     sched.arms[0]?.fire();
     assert(notices.length === 1, "timer: silent non-CI child fires at 20m wall (unshifted)");
-    assert(notices[0]?.includes("20m0s · 1 turns · 0 tokens") === true, "timer: zero exclusion → byte-identical metrics segment");
+    assert(
+      notices[0]?.includes("20m0s · 1 turns · 0 tokens") === true,
+      "timer: zero exclusion → byte-identical metrics segment",
+    );
     assert(notices[0]?.includes("CI wait excluded") === false, "timer: zero exclusion → no suffix");
   } finally {
     stop();
@@ -320,7 +351,10 @@ await withEnv({}, async () => {
     t += 40 * MIN;
     feedSlowProgress("job-excl-concurrent", stateAt(1, 61 * MIN));
     assert(notices.length === 1, "concurrent spans: crossing fires once after the spans close");
-    assert(notices[0]?.includes("30m0s CI wait excluded") === true, "concurrent spans: exclusion is the sum of both spans");
+    assert(
+      notices[0]?.includes("30m0s CI wait excluded") === true,
+      "concurrent spans: exclusion is the sum of both spans",
+    );
   } finally {
     stop();
   }
@@ -345,7 +379,10 @@ await withEnv({}, async () => {
     t += 15 * MIN;
     feedSlowProgress("job-excl-err", stateAt(1, 45 * MIN));
     assert(notices.length === 1, "isError result: the notice fires once at the adjusted crossing");
-    assert(notices[0]?.includes("45m0s (+25m0s CI wait excluded)") === true, "isError result: the exclusion is the span's full duration");
+    assert(
+      notices[0]?.includes("45m0s (+25m0s CI wait excluded)") === true,
+      "isError result: the exclusion is the span's full duration",
+    );
   } finally {
     stop();
   }
@@ -378,7 +415,10 @@ await withEnv({}, async () => {
     assert(notices.length === 0, "killed span: no inherited exclusion (15m adjusted → nothing)");
     t += 6 * MIN;
     feedSlowProgress("job-excl-killed-2", stateAt(1, 21 * MIN));
-    assert(notices.length === 1, "killed span: the plain 20m crossing fires (no phantom exclusion)");
+    assert(
+      notices.length === 1,
+      "killed span: the plain 20m crossing fires (no phantom exclusion)",
+    );
   } finally {
     stop2();
   }
@@ -395,15 +435,31 @@ await withEnv({}, async () => {
   const { feed, stop } = harness("job-excl-malformed", now);
   try {
     const f = feed.feed;
-    f?.({ type: "message_end", message: { role: "assistant", content: [
-      { type: "toolCall", id: "mf-1", name: "read", arguments: { command: "gh run watch" } },
-    ] } });
-    f?.({ type: "message_end", message: { role: "assistant", content: [
-      { type: "toolCall", id: "mf-2", name: "bash", arguments: { notCommand: "gh run watch" } },
-    ] } });
-    f?.({ type: "message_end", message: { role: "assistant", content: [
-      { type: "toolCall", name: "bash", arguments: { command: "gh run watch" } },
-    ] } });
+    f?.({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "mf-1", name: "read", arguments: { command: "gh run watch" } },
+        ],
+      },
+    });
+    f?.({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "mf-2", name: "bash", arguments: { notCommand: "gh run watch" } },
+        ],
+      },
+    });
+    f?.({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "bash", arguments: { command: "gh run watch" } }],
+      },
+    });
     t += 30 * MIN; // no span opened — see the fresh watch below
   } finally {
     stop();
@@ -412,7 +468,10 @@ await withEnv({}, async () => {
   try {
     feedSlowProgress("job-excl-malformed-2", stateAt(1, 30 * MIN));
     assert(notices2.length === 1, "malformed blocks: no span → plain crossing fires");
-    assert(notices2[0]?.includes("CI wait excluded") === false, "malformed blocks: zero exclusion → no suffix");
+    assert(
+      notices2[0]?.includes("CI wait excluded") === false,
+      "malformed blocks: zero exclusion → no suffix",
+    );
   } finally {
     stop3();
   }
@@ -427,13 +486,22 @@ await withEnv({}, async () => {
   let t = 10_000_000;
   const now = () => t;
   const notices: string[] = [];
-  const watch = watchSlowDispatch({ id: "job-excl-noseam", role: "ops", label: "ops", pi: fakePi(notices), now });
+  const watch = watchSlowDispatch({
+    id: "job-excl-noseam",
+    role: "ops",
+    label: "ops",
+    pi: fakePi(notices),
+    now,
+  });
   assert(watch.onRawEvent === undefined, "no onRawEvent input → no seam installed");
   try {
     t += 21 * MIN;
     feedSlowProgress("job-excl-noseam", stateAt(1, 21 * MIN));
     assert(notices.length === 1, "no seam: plain 20m crossing still fires");
-    assert(notices[0]?.includes("21m0s · 1 turns · 0 tokens") === true, "no seam: byte-identical metrics segment");
+    assert(
+      notices[0]?.includes("21m0s · 1 turns · 0 tokens") === true,
+      "no seam: byte-identical metrics segment",
+    );
   } finally {
     watch.stop();
   }

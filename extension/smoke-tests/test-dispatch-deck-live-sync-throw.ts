@@ -57,7 +57,7 @@ async function testStartJobSyncThrow() {
   resetBuffers();
   reset();
   const fakePi = { sendUserMessage: () => {} } as never;
-  let threwSync = false;
+  const threwSync = false;
   let completionRejected = false;
   try {
     const handle = startJob(fakePi, {

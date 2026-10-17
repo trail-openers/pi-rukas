@@ -13,11 +13,11 @@
  * them with the same fragment.
  */
 
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, type Text } from "@earendil-works/pi-tui";
+import { MAIN_ROW_KEY, buildAgentListLines } from "../src/agent-list.ts";
 import { buildCompositeFactory } from "../src/dispatch-deck-composite.ts";
 import { type DeckEntry, formatRow } from "../src/dispatch-deck.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
-import { buildAgentListLines, MAIN_ROW_KEY } from "../src/agent-list.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -58,7 +58,10 @@ const fakeTheme = {
   }));
   // Precondition: without the fragment the rows are byte-identical (the
   // bug the fragment fixes) — same label, same role, same-second elapsed.
-  assert(formatRow(entries[0]!, now) === formatRow(entries[1]!, now), "14a: bare formatRow rows are identical (the #835 class)");
+  assert(
+    formatRow(entries[0]!, now) === formatRow(entries[1]!, now),
+    "14a: bare formatRow rows are identical (the #835 class)",
+  );
 
   // #914 — buildAgentListLines is the live projection; the fragment is
   // appended only to rows that would otherwise be byte-identical.
@@ -66,7 +69,10 @@ const fakeTheme = {
   // Skip the leading main row.
   const jobLines = agentLines.slice(1);
   assert(jobLines.length === 2, "14b-pre: 2 job rows after the main row");
-  assert(jobLines[0]?.text !== jobLines[1]?.text, `14b: buildAgentListLines rows distinct (${jobLines[0]?.text} vs ${jobLines[1]?.text})`);
+  assert(
+    jobLines[0]?.text !== jobLines[1]?.text,
+    `14b: buildAgentListLines rows distinct (${jobLines[0]?.text} vs ${jobLines[1]?.text})`,
+  );
   assert(
     (jobLines[0]?.text ?? "").endsWith(" · ") === false &&
       (jobLines[0]?.text ?? "").includes(" · key aaaaaaaa") &&
@@ -113,8 +119,7 @@ const fakeTheme = {
   const advLines = buildAgentListLines(advEntries, 200, now);
   const advFragments = advLines.slice(1).map((r) => r.text.split(" · ").pop() ?? "");
   assert(
-    new Set(advFragments).size === 3 &&
-      advFragments.every((f) => f.startsWith("key abcdefghij")),
+    new Set(advFragments).size === 3 && advFragments.every((f) => f.startsWith("key abcdefghij")),
     `14g: 3 keys sharing 13 chars → pairwise-distinct key-fragments (${advFragments.join(" | ")})`,
   );
 }

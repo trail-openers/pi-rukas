@@ -21,6 +21,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { explainCap } from "../src/work-driver-explain.ts";
 import {
   parseNormalisedSpec,
   reconcileVerdict,
@@ -28,7 +29,6 @@ import {
   specIsComplete,
 } from "../src/work-driver-intent.ts";
 import { inlineExplorePrompt } from "../src/work-driver-prompts-early.ts";
-import { explainCap } from "../src/work-driver-explain.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -201,7 +201,10 @@ if (parsed) {
   assert(parsed826 !== undefined, "the 826 reply parses into a normalised spec");
 
   if (parsed826) {
-    assert(parsed826.intent.length > 0, "the intent is derived from the bold-label `**Intent** — …` line");
+    assert(
+      parsed826.intent.length > 0,
+      "the intent is derived from the bold-label `**Intent** — …` line",
+    );
     assert(
       parsed826.deliverables.length === 5 &&
         parsed826.deliverables.every((d) => d.paths.length > 0),
@@ -277,10 +280,7 @@ if (parsed) {
     assert(parsed984.intent.length > 0, "the intent parses from the `### Intent` subsection");
     assert(parsed984.deliverables.length === 7, "all 7 deliverables are derived");
     assert(parsed984.acceptanceCriteria.length === 10, "all 10 acceptance criteria are derived");
-    assert(
-      parsed984.evidence.length >= 11,
-      "all 11 evidence rows are parsed",
-    );
+    assert(parsed984.evidence.length >= 11, "all 11 evidence rows are parsed");
     assert(
       parsed984.evidence.every((e) => e.verdict === "confirmed"),
       "every 984 evidence row parses as CONFIRMED — the verdict-last `— confirmed (…)` shape (no second em-dash source) is not downgraded",
@@ -374,7 +374,8 @@ if (parsed) {
   assert(n !== undefined && t !== undefined, "both shapes parse");
   if (n && t) {
     assert(
-      n.deliverables.length === t.deliverables.length && n.deliverables[0]?.paths[0] === t.deliverables[0]?.paths[0],
+      n.deliverables.length === t.deliverables.length &&
+        n.deliverables[0]?.paths[0] === t.deliverables[0]?.paths[0],
       "the nested and top-level shapes parse to the same deliverables",
     );
     assert(
@@ -409,7 +410,10 @@ if (parsed) {
   const parsed = parseNormalisedSpec(nestedWithSubs);
   assert(parsed !== undefined, "`### Spec` with `###` subsections parses");
   if (parsed) {
-    assert(parsed.deliverables.length === 1, "...with exactly the deliverables INSIDE the spec block");
+    assert(
+      parsed.deliverables.length === 1,
+      "...with exactly the deliverables INSIDE the spec block",
+    );
     assert(
       !parsed.deliverables.some((d) => d.id === "d2"),
       "and it terminates before the following `## Next section` — no leak",
@@ -451,7 +455,10 @@ if (parsed) {
   } as any;
   const text = explainCap("explore-needs-clarification", state);
   const count = (text.match(/halted before plan ran/g) ?? []).length;
-  assert(count === 1, `evidence present: "halted before plan ran" appears exactly once (got ${count})`);
+  assert(
+    count === 1,
+    `evidence present: "halted before plan ran" appears exactly once (got ${count})`,
+  );
   assert(
     text.includes("no verdict and no spec parsed"),
     "evidence present: the recorded evidence is named in the explanation",
@@ -459,15 +466,18 @@ if (parsed) {
 
   // And the no-evidence fallback (pre-#830 state files) renders the same
   // sentence once as well.
-  const noEv = explainCap(
-    "explore-needs-clarification",
-    {
-      ...state,
-      eventLog: [
-        { kind: "cap-hit", at: 1, cap: "explore-needs-clarification", reviewRound: 0, nextStep: "handoff" },
-      ],
-    },
-  );
+  const noEv = explainCap("explore-needs-clarification", {
+    ...state,
+    eventLog: [
+      {
+        kind: "cap-hit",
+        at: 1,
+        cap: "explore-needs-clarification",
+        reviewRound: 0,
+        nextStep: "handoff",
+      },
+    ],
+  });
   assert(
     (noEv.match(/halted before plan ran/g) ?? []).length === 1,
     'evidence absent: "halted before plan ran" still appears exactly once (fallback path)',

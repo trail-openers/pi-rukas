@@ -8,8 +8,8 @@
  * tested here (#915).
  */
 
-import { dropBuffer, feedRawEvent, startBuffer } from "../src/dispatch-deck-live.ts";
 import { openLiveView } from "../src/dispatch-deck-live-view.ts";
+import { dropBuffer, feedRawEvent, startBuffer } from "../src/dispatch-deck-live.ts";
 import { clearEntry, reset, snapshot, startEntry } from "../src/dispatch-deck.ts";
 
 let exit = 0;

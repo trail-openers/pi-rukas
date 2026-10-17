@@ -93,7 +93,10 @@ const NODE = {
       result.problem === undefined,
       `Cargo-only + hook: no problem — Rust has no linkable tree to be missing (got: ${result.problem})`,
     );
-    assert(event.outcome === "hook-ran", `Cargo-only + hook: recorded hook-ran (got ${event.outcome})`);
+    assert(
+      event.outcome === "hook-ran",
+      `Cargo-only + hook: recorded hook-ran (got ${event.outcome})`,
+    );
     assert(
       !traced.some((l) => l.includes("expects dependencies")),
       "Cargo-only + hook: nothing is traced about expected dependencies",

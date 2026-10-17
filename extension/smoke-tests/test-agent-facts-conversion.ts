@@ -19,9 +19,9 @@
  */
 
 import {
+  type AgentFacts,
   agentFactsToDetectedFacts,
   extractAgentFacts,
-  type AgentFacts,
 } from "../src/agents-md/detect.ts";
 
 let exit = 0;
@@ -44,13 +44,8 @@ function assert(cond: boolean, msg: string) {
       { name: "bundle exec rspec", command: "bundle exec rspec", kind: "test" },
       { name: "rubocop", command: "bundle exec rubocop", kind: "lint" },
     ],
-    codeStyleBullets: [
-      "Use double-quoted symbols in frozen files",
-      "No trailing whitespace",
-    ],
-    architectureBullets: [
-      "src/foo.rb — the classifier: changes require corresponding tests",
-    ],
+    codeStyleBullets: ["Use double-quoted symbols in frozen files", "No trailing whitespace"],
+    architectureBullets: ["src/foo.rb — the classifier: changes require corresponding tests"],
     ciWorkflows: ["ci.yml", "lint.yml"],
   };
   const out = agentFactsToDetectedFacts(input);
@@ -119,8 +114,14 @@ function assert(cond: boolean, msg: string) {
     codeStyleBullets: ["One bullet"],
     architectureBullets: ["src/foo.ts — the critical path: changes require tests"],
   });
-  assert(out.manifest === undefined && out.language === undefined, "partial → unfilled scalars stay undefined");
-  assert(out.commands.length === 0 && out.ciWorkflows.length === 0, "partial → absent arrays become []");
+  assert(
+    out.manifest === undefined && out.language === undefined,
+    "partial → unfilled scalars stay undefined",
+  );
+  assert(
+    out.commands.length === 0 && out.ciWorkflows.length === 0,
+    "partial → absent arrays become []",
+  );
   assert(
     Array.isArray(out.notes) && out.notes.length === 0,
     "partial → notes [] (codeStyleBullets lives on the AgentOverride, not DetectedFacts)",
@@ -172,9 +173,8 @@ function assert(cond: boolean, msg: string) {
   );
 
   assert(
-    extractAgentFacts([
-      { name: "report_facts", arguments: { commands: "bun run test" } },
-    ]) === undefined,
+    extractAgentFacts([{ name: "report_facts", arguments: { commands: "bun run test" } }]) ===
+      undefined,
     "(c) a report_facts call with MALFORMED args (commands a string) is discarded, not coerced",
   );
 

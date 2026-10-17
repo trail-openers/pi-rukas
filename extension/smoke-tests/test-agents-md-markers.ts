@@ -132,9 +132,8 @@ const input =
   const b = spliceManagedSection(a, "quality-gates", "body-v1");
   assert(a === b, "splice applied twice with the same body equals applying it once");
   assert(
-    (managedSectionBody(b, "quality-gates") ?? "")
-      .replace(/^\n/, "")
-      .replace(/\n$/, "") === "body-v1",
+    (managedSectionBody(b, "quality-gates") ?? "").replace(/^\n/, "").replace(/\n$/, "") ===
+      "body-v1",
     "...and the managed section holds the spliced body",
   );
 }

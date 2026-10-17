@@ -207,8 +207,9 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
     // Register the underlying handler via the wrapped pi — the wrapper wraps
     // it and passes the wrapped version to spyPi.on (the spy).
     wrappedPi.on("tool_call", underlying);
-    return handlers.map((wrapped) => async (cmd: string) =>
-      wrapped({ toolName: "bash", input: { command: cmd } }, {}),
+    return handlers.map(
+      (wrapped) => async (cmd: string) =>
+        wrapped({ toolName: "bash", input: { command: cmd } }, {}),
     );
   };
 
@@ -219,7 +220,9 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   const rThrow = await throwing[0]("true");
   const oThrow = rThrow as { block?: boolean; reason?: string } | undefined;
   assert(
-    oThrow?.block === true && /fail-closed/.test(oThrow?.reason ?? "") && /boom-guard/.test(oThrow?.reason ?? ""),
+    oThrow?.block === true &&
+      /fail-closed/.test(oThrow?.reason ?? "") &&
+      /boom-guard/.test(oThrow?.reason ?? ""),
     "fail-closed: a throwing guard → block with the reason naming the error, never a rethrow",
   );
 
@@ -377,9 +380,15 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   // assert it names an existing file ending in child-guards.ts, and canary
   // that the bare-__dirname literal form is gone (bare __dirname does not
   // exist in ESM — it only resolved under the jiti CJS shim).
-  assert(/child-guards\.ts$/.test(CHILD_GUARDS_PATH), "CHILD_GUARDS_PATH ends with child-guards.ts");
+  assert(
+    /child-guards\.ts$/.test(CHILD_GUARDS_PATH),
+    "CHILD_GUARDS_PATH ends with child-guards.ts",
+  );
   assert(existsSync(CHILD_GUARDS_PATH), "CHILD_GUARDS_PATH exists on disk");
-  const src6 = readFileSync(path.resolve(import.meta.dirname, "..", "src", "child-guards.ts"), "utf8");
+  const src6 = readFileSync(
+    path.resolve(import.meta.dirname, "..", "src", "child-guards.ts"),
+    "utf8",
+  );
   assert(
     src6.includes("path.dirname(fileURLToPath(import.meta.url))"),
     "canary: CHILD_GUARDS_PATH is derived via path.dirname(fileURLToPath(import.meta.url))",
@@ -411,7 +420,7 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   );
   assert(
     guardsSrc.includes("statSync(CHILD_GUARDS_PATH)"),
-    "canary: the preflight stat is a plain statSync of the exported CHILD_GUARDS_PATH (no `?? \"\"` fallback)",
+    'canary: the preflight stat is a plain statSync of the exported CHILD_GUARDS_PATH (no `?? ""` fallback)',
   );
   assert(
     guardsSrc.includes("child-guards extension unavailable at ${CHILD_GUARDS_PATH}"),
@@ -438,14 +447,20 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   // the boundary once the branch body contains nested braces) and assert the
   // assignment lies within that block's span.
   const assignIdx = spawnSrc.indexOf('childEnv.PI_ENSEMBLE_SUBAGENT_MODE = "1"');
-  assert(assignIdx > 0, "canary: spawn.ts assigns PI_ENSEMBLE_SUBAGENT_MODE = \"1\" in the childEnv");
+  assert(assignIdx > 0, 'canary: spawn.ts assigns PI_ENSEMBLE_SUBAGENT_MODE = "1" in the childEnv');
   const openerIdx = spawnSrc.lastIndexOf("if (subagentGuardEnabled) {");
-  assert(openerIdx > 0, "canary: spawn.ts contains the `if (subagentGuardEnabled) {` branch opener");
+  assert(
+    openerIdx > 0,
+    "canary: spawn.ts contains the `if (subagentGuardEnabled) {` branch opener",
+  );
   const blockEnd = braceMatchEnd(spawnSrc, openerIdx + "if (subagentGuardEnabled) {".length - 1);
-  assert(blockEnd > assignIdx, "canary: a brace-matched span exists for the subagentGuardEnabled branch");
+  assert(
+    blockEnd > assignIdx,
+    "canary: a brace-matched span exists for the subagentGuardEnabled branch",
+  );
   assert(
     openerIdx < assignIdx && assignIdx < blockEnd,
-    "canary: the PI_ENSEMBLE_SUBAGENT_MODE = \"1\" assignment lies within the subagentGuardEnabled block's span (the trust-mode branch must not set it)",
+    'canary: the PI_ENSEMBLE_SUBAGENT_MODE = "1" assignment lies within the subagentGuardEnabled block\'s span (the trust-mode branch must not set it)',
   );
 }
 
