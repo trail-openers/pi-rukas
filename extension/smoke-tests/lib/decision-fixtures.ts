@@ -133,17 +133,23 @@ export function tmpDir(tag: string): string {
   return dir;
 }
 
-// `beforeExit` fires when the event loop drains and `exit` on an explicit
-// `process.exit(code)` — which every decision test ends with — so both shapes are covered.
+// `exit` only, no `beforeExit`: every decision test ends with an explicit `process.exit(code)`,
+// which fires `exit` and skips `beforeExit` entirely, so the second hook would be dead weight —
+// and a drain-triggered sweep could delete a directory a still-scheduled async step is writing.
 // `rmSync` is recursive and forceful: a fixture may hold a dangling symlink, which a plain
 // unlink would refuse and which must not turn a green run into a noisy one.
 const sweep = () => {
-  while (made.length) {
-    const dir = made.pop();
-    if (dir) rmSync(dir, { recursive: true, force: true });
+  // DRAIN FIRST, then delete: a `rmSync` that throws partway through the loop used to leave
+  // every not-yet-popped directory behind for the rest of the run, so one hostile fixture
+  // (a chmod-000 subdir) turned into a leak of everything else. Draining the list up front
+  // makes each removal independent, and each is best-effort on top of that.
+  const dirs = made.splice(0);
+  for (const d of dirs) {
+    try {
+      rmSync(d, { recursive: true, force: true });
+    } catch {}
   }
 };
-process.on("beforeExit", sweep);
 process.on("exit", sweep);
 
 /**
