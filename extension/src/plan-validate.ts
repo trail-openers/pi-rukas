@@ -277,6 +277,13 @@ export const FORGE_BODY_MAX = 65536;
 /**
  * The render budget: headroom under the cap for the residual-disclosure
  * append and corrective-round writeback bullets that land AFTER drafting.
+ *
+ * #1383 lens round 2: this is the budget the POST-FIT appends get, and nothing
+ * else. A section cap inside the draft (`DROPPED_SECTION_MAX_CHARS`) is a share
+ * of BODY_BUDGET, not of this headroom — the two are spent by different code at
+ * different times, and conflating them is how a bounded section can still file
+ * over the limit. {@link POST_FIT_APPENDS_MAX_CHARS} is the bound on what can
+ * actually be spent here, and the fitter's contract is that the two fit.
  */
 export const BODY_BUDGET = FORGE_BODY_MAX - 4096;
 
