@@ -20,14 +20,16 @@
 import { prDraftCmd, prReadyCmd } from "../src/forge-commands.ts";
 import type { Forge } from "../src/forge.ts";
 import { FIXED_CAPS } from "../src/headless/caps.ts";
+import { MAX_DRAFT_REARM_ATTEMPTS } from "../src/work-driver-draft-pr.ts";
+import { DRAFT_REARM_CAP } from "../src/work-driver-draft-rearm-hold.ts";
 import {
-  DRAFT_REARM_CAP,
   forgeFailureReason,
   lastCapIsRearmFailure,
   rearmDraftForReview,
   recordLensResidualsPosted,
   reviewRerunPending,
 } from "../src/work-driver-draft-rearm.ts";
+
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 import {
@@ -44,6 +46,7 @@ import {
   mkForge,
   started,
   state,
+  withRound,
 } from "./lib/draft-rearm-fixtures.ts";
 
 const { assert, status } = mkAssert();
@@ -322,12 +325,19 @@ for (const [raw, want] of [
   );
   assert(calls.includes("draft"), "…and the draft command is issued");
 
-  // The draft bound itself: past MAX_DRAFT_REARM_ATTEMPTS the cycle parks
-  // rather than keep issuing commands that have not taken.
+  // #1398 round 3 — the counter is scoped to the review round, so a spent
+  // counter must say WHICH round spent it (`rearmRound`), and this fixture's
+  // `initialState` round is 0. A counter from another round counts nothing —
+  // that is what lets a cycle CI-loop four times with four successful re-arms
+  // without running out.
+  //
+  // The round the re-arm reads is the round the cycle is IN, so the fixtures
+  // that exercise the bound set it explicitly — `withRound` is the same state
+  // helper with the one field the bound keys on.
   const spent = mkForge({ isDraft: false });
   const outSpent = await rearmDraftForReview(
     mkCtx(spent.forge),
-    state(ciLoop, { status: "ready", attempts: 1, draftAttempts: 3 }),
+    withRound(state(ciLoop, { status: "ready", attempts: 1, draftAttempts: 3, rearmRound: 0 }), 0),
     Date.now(),
   );
   assert(
@@ -339,21 +349,83 @@ for (const [raw, want] of [
     /3 draft re-arm attempts/.test(outSpent.state.eventLog.at(-1)?.evidence ?? ""),
     "…and the reason names the DRAFT bound, not the ready attempts (the reason a capped cycle is handed off with)",
   );
-}
 
-{
-  // A successful re-arm counts the attempt it made — on the draft counter.
-  const { forge } = mkForge({ isDraft: false });
-  const out = await rearmDraftForReview(
-    mkCtx(forge),
-    state(ciLoop, { status: "ready", attempts: 1, draftAttempts: 1 }),
+  // The same counter, recorded by a DIFFERENT review round, is not spent: the
+  // bound is per round, and a new round is entitled to its own attempts.
+  const fresh = mkForge({ isDraft: false });
+  const outFresh = await rearmDraftForReview(
+    mkCtx(fresh.forge),
+    withRound(state(ciLoop, { status: "ready", attempts: 1, draftAttempts: 3, rearmRound: 7 }), 0),
     Date.now(),
   );
   assert(
-    out.state.pipelineState.prDraft?.status === "draft" &&
-      out.state.pipelineState.prDraft?.draftAttempts === 2 &&
-      out.state.pipelineState.prDraft?.attempts === 1,
-    `a successful re-arm records draft + the DRAFT attempt it spent, ready unchanged (got ${JSON.stringify(out.state.pipelineState.prDraft)})`,
+    outFresh.decision === "re-armed" && !lastCapIsRearmFailure(outFresh.state),
+    `a spent counter belonging to another review round does not halt THIS round (got ${JSON.stringify(outFresh.decision)}) — a per-cycle bound made the bound itself the bug`,
+  );
+}
+
+{
+  // #1398 round 3 (a) — a forge that REFUSES the draft command every time must
+  // stop after MAX_DRAFT_REARM_ATTEMPTS. Pre-fix the counter was charged only
+  // on a confirmed conversion, so a hostile forge kept it at zero and the
+  // driver issued `pr draft` on every lens entry forever: a bound that could
+  // not close is not a bound.
+  const refusing = mkForge({ isDraft: false, draftFails: "gh: HTTP 503 service unavailable" });
+  let s = withRound(state(ciLoop, { status: "ready", attempts: 1 }), 2);
+  let halts = 0;
+  for (let i = 0; i < 8; i++) {
+    const out = await rearmDraftForReview(mkCtx(refusing.forge), s, Date.now());
+    if (lastCapIsRearmFailure(out.state)) halts++;
+    // Reset the hold so the next entry asks the question again, exactly as a
+    // resumed cycle re-entering lens-review does; the COUNTER is what persists.
+    s = {
+      ...out.state,
+      pipelineState: {
+        ...out.state.pipelineState,
+        prDraft: out.state.pipelineState.prDraft && {
+          ...out.state.pipelineState.prDraft,
+          status: "ready",
+        },
+      },
+    };
+  }
+  assert(
+    refusing.draftIssued.n === MAX_DRAFT_REARM_ATTEMPTS,
+    `a forge that refuses every draft command is asked exactly ${MAX_DRAFT_REARM_ATTEMPTS} times, however many lens entries follow (asked ${refusing.draftIssued.n}) — a failure must consume the bound`,
+  );
+  assert(
+    halts >= MAX_DRAFT_REARM_ATTEMPTS,
+    `…and every entry after the bound is spent halts rather than reviewing a mergeable PR (${halts} halts over 8 entries)`,
+  );
+}
+
+{
+  // #1398 round 3 (b) — four successful re-arms across four CI loops each
+  // succeed. The pre-fix per-cycle bound let two succeed and then parked the
+  // cycle on its own exhausted budget, with the PR still mergeable.
+  const cooperative = { isDraft: false };
+  let s = withRound(state(ciLoop, { status: "ready", attempts: 1 }), 0);
+  const decisions: string[] = [];
+  for (let round = 0; round < 4; round++) {
+    const out = await rearmDraftForReview(mkCtx(mkForge(cooperative).forge), s, Date.now());
+    decisions.push(String(out.decision));
+    // What the loop actually does in between: the review concludes, the ready
+    // lands (which is what ends the round and resets its counter), CI fails,
+    // and the cycle comes back to lens-review.
+    s =
+      out.decision === "re-armed"
+        ? {
+            ...out.state,
+            pipelineState: {
+              ...out.state.pipelineState,
+              prDraft: { ...out.state.pipelineState.prDraft, status: "ready", rearmRound: round },
+            },
+          }
+        : out.state;
+  }
+  assert(
+    decisions.every((d) => d === "re-armed"),
+    `four re-arms across four CI loops all succeed when each one WORKS (got ${JSON.stringify(decisions)}) — the bound guards a forge that will not comply, not a cycle that loops`,
   );
 }
 

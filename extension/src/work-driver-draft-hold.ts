@@ -62,8 +62,23 @@ export type ReadyHoldOpts = {
    * could not be checked at the PR. The hold reason says so, which separates
    * "the findings were never posted" (a fact about the review) from "the driver
    * could not read the PR" (a fact about the tooling) in the handoff.
+   *
+   * #1398 round 3 — this now HOLDS outright. It used to be decoration on the
+   * hold text while the caller still passed the persisted mirror through as the
+   * answer, which meant a hand-edited or corrupt state file — a `findingsPosted`
+   * row somebody wrote by hand — could license a ready the PR could not show.
+   * The mirror is a cache of a PR read; when the read cannot be made, the cache
+   * is not evidence.
    */
   disclosureReadFailed?: string;
+  /**
+   * #1398 round 3 — the persisted mirror may be consulted at all. Set by
+   * `markDraftPrReady` only when the PR's comment list was read successfully
+   * (or was skipped BECAUSE the mirror already covered the patch and that
+   * coverage was itself confirmed by a read). With the read unavailable the
+   * mirror alone must never license a ready.
+   */
+  mirrorAcceptable?: boolean;
 };
 
 /**
@@ -89,6 +104,14 @@ export function readyHoldReason(
     return CRITICAL_HOLD;
   }
   if (verdict?.kind !== "lens-issues-found") return undefined;
+  if (opts.disclosureReadFailed) {
+    // The disclosure is a condition and a condition that could not be read is
+    // a refusal, never a pass — the merge guard's own rule for its comment
+    // read, applied here. Deliberately checked BEFORE the patchId branch so a
+    // caller that still hands the mirror through cannot resurrect a pass on a
+    // read that failed.
+    return holdText(opts.disclosureReadFailed);
+  }
   if (opts.patchId !== undefined) {
     return disclosedFor(eventLog, opts, opts.patchId)
       ? undefined
@@ -131,13 +154,23 @@ function holdText(why: string | undefined): string {
  * event log (what survives a resume and what `/work-status` renders) and the
  * `prDraft` mirror (what the handoff renders) — they are written together but
  * read by different callers.
+ *
+ * #1398 round 3 — the mirror is gated. `mirrorAcceptable: false` means the
+ * caller could not confirm the mirror against the PR, and a state file is not
+ * self-authenticating: a hand-edited or corrupt `findingsPosted` row must not
+ * license the ready the PR itself cannot show. The event log is not gated — it
+ * is append-only and validated on read (`workflow-state-validate.ts`) — but it
+ * is the weaker of the two for this purpose precisely because the PR's own
+ * bytes are what the merge guard reads.
  */
 function disclosedFor(
   eventLog: readonly WorkEvent[],
   opts: ReadyHoldOpts,
   patchId: string,
 ): boolean {
-  if ((opts.findingsPosted ?? []).some((fact) => fact.patchId === patchId)) return true;
+  if (opts.mirrorAcceptable !== false) {
+    if ((opts.findingsPosted ?? []).some((fact) => fact.patchId === patchId)) return true;
+  }
   return eventLog.some(
     (e) =>
       e.kind === "lens-residuals-posted" &&

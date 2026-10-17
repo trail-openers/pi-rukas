@@ -55,6 +55,16 @@ export type LensResidualsPostedEvent = {
   /** The reviewed patch the posted findings describe. */
   patchId: string;
   /**
+   * #1398 round 3 — the marker string the posted comment carries, i.e.
+   * `lensResidualsMarker(branch, patchId)` as the poster built it. Carried on
+   * the row so the invariant "every writer of this fact corresponds to a
+   * comment that carries the marker" is checkable against the event itself
+   * (test-draft-disclosure-carries-marker-1398.ts) rather than against a
+   * caller's prose: the fact must never license a ready that the PR cannot show,
+   * and a reader of the state file can now see what the PR was supposed to carry.
+   */
+  marker: string;
+  /**
    * Only `"pr"`. An issue-fallback post is not a disclosure ready purposes
    * count (the merge guard reads PR comments only), and records the failure
    * event instead — the field is here so the event states its own scope

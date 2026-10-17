@@ -23,18 +23,58 @@
  * `attempts` counts `pr ready` calls made this cycle (bounded); `holdReason`
  * says why the driver deliberately left it a draft. Absent = no draft fact
  * recorded (the PR was not opened as a draft).
+ *
+ * #1398 round 3 — `status` is optional because a cycle that never opened its PR
+ * as a draft can still record a disclosure (`findingsPosted`) without claiming a
+ * draft it never made. `recordLensResidualsPosted` is the only writer that ever
+ * produces that shape, and it never invents a status; every draft-direction
+ * writer (`withPrDraft`, `rearmDraftForReview`, the mark points) always sets one.
+ * `markDraftPrReady`'s short-circuit (`!draft || draft.status === "ready"`) and
+ * `rearmDraftForReview`'s gate (`status !== "ready"`) both do nothing on an
+ * absent status, which is the correct reading: the driver is not holding this PR,
+ * so there is nothing to lift or put back.
  */
 export type PrDraftState = {
-  status: "draft" | "ready" | "ready-failed";
+  /**
+   * #1398 round 3 — optional: a disclosure-only record carries the rows and no
+   * claim about the draft. Validated as "a known value or absent" by
+   * `prDraftFindings` (an unrecognised string still fails closed).
+   */
+  status?: "draft" | "ready" | "ready-failed";
   error?: string;
   attempts?: number;
   /**
-   * #1398 — `pr draft` (the draft direction) calls made this cycle, on its OWN
-   * counter. `attempts` is the ready budget the merge spends; a re-arm charged
-   * against it drained the merge's retries, so the two directions count
-   * separately (work-driver-draft-pr.ts's `MAX_DRAFT_REARM_ATTEMPTS`).
+   * #1398 round 3 — why a RE-ARM (the draft direction) held the cycle. Kept
+   * separate from `error` on purpose: `error` is the record of a `pr ready`
+   * attempt that failed, and the handoff line that prints it says "a `pr ready`
+   * attempt also failed". A re-arm halt reusing that field told the operator
+   * the driver had tried to mark the PR ready — the opposite of what it tried
+   * to do — and blamed the merge for a draft-direction failure
+   * (`work-driver-draft-pr-handoff.ts` omits that clause for a re-arm hold).
+   */
+  rearmError?: string;
+  /**
+   * #1398 — `pr draft` (the draft direction) calls made, on its OWN counter.
+   * `attempts` is the ready budget the merge spends; a re-arm charged against it
+   * drained the merge's retries, so the two directions count separately
+   * (work-driver-draft-pr.ts's `MAX_DRAFT_REARM_ATTEMPTS`).
+   *
+   * #1398 round 3 — the counter is scoped to the REVIEW ROUND that is
+   * re-arming (`rearmRound`), and is charged BEFORE the command issues, not on
+   * success. Two defects in one field: a per-cycle bound meant a cycle that
+   * CI-looped four times with four successful re-arms exhausted its budget and
+   * then reviewed a mergeable PR (the bound had become the bug); and charging
+   * only after a confirmed conversion meant a forge that refused every attempt
+   * never moved the counter, so the bound never closed and the driver issued
+   * `pr draft` on every lens entry forever.
    */
   draftAttempts?: number;
+  /**
+   * #1398 round 3 — the `reviewRound` `draftAttempts` belongs to. A counter
+   * whose round is not the current one counts nothing: a new review round is
+   * entitled to its own bound, and the old round's attempts are history.
+   */
+  rearmRound?: number;
   holdReason?: string;
   /**
    * #1398 — the residual findings of THIS patch were disclosed ON the PR and
@@ -81,13 +121,18 @@ export function prDraftFindings(prDraft: unknown): string[] {
   }
   const out: string[] = [];
   const draft = prDraft as Record<string, unknown>;
-  if (!PR_DRAFT_STATUSES.includes(draft.status)) {
+  // An ABSENT status is legal (#1398 round 3, a disclosure-only record); a
+  // present one must be a known value — a string outside the three would read
+  // as "not a draft" at every mark point and silently permit the merge.
+  if (draft.status !== undefined && !PR_DRAFT_STATUSES.includes(draft.status)) {
     out.push(`pipelineState.prDraft.status has unknown value ${JSON.stringify(draft.status)}`);
   }
   // `attempts` (ready calls) and `draftAttempts` (#1398 draft-direction calls)
   // are both optional counters the bounds are compared against: a NaN or a
   // string would make `used >= MAX` false forever, i.e. an unbounded loop.
-  for (const field of ["attempts", "draftAttempts"] as const) {
+  // `rearmRound` is in the same family — a non-number there would make every
+  // round look like a fresh one and turn the per-round bound back off.
+  for (const field of ["attempts", "draftAttempts", "rearmRound"] as const) {
     const v = draft[field];
     if (v !== undefined && (typeof v !== "number" || !Number.isFinite(v))) {
       out.push(`pipelineState.prDraft.${field} is not a finite number`);

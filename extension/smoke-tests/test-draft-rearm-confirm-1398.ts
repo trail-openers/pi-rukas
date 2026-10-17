@@ -16,11 +16,9 @@
 
 import { FIXED_CAPS } from "../src/headless/caps.ts";
 import { recordLensResidualsPosted } from "../src/work-driver-draft-disclosure.ts";
-import {
-  DRAFT_REARM_CAP,
-  lastCapIsRearmFailure,
-  rearmDraftForReview,
-} from "../src/work-driver-draft-rearm.ts";
+import { DRAFT_REARM_CAP } from "../src/work-driver-draft-rearm-hold.ts";
+import { lastCapIsRearmFailure, rearmDraftForReview } from "../src/work-driver-draft-rearm.ts";
+
 import {
   type ForgeOpts,
   PR,

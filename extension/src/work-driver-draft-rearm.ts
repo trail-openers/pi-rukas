@@ -84,11 +84,17 @@ import {
   currentPatchIdentity,
   withPrDraft,
 } from "./work-driver-draft-pr.ts";
+import {
+  DRAFT_REARM_CAP,
+  declineUndisclosedRearm,
+  rearmHold,
+} from "./work-driver-draft-rearm-hold.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { netRefProblem } from "./work-driver-net-git.ts";
 import { WORK_DRIVER_REVIEW_LOOP_STEPS } from "./work-driver-review-loop-steps.ts";
 import { judgePrIdentity } from "./work-driver-verify-pr17.ts";
 import type { EmitSink } from "./work-state-emit.ts";
+import type { WorkStep } from "./workflow-state.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 
 /**
@@ -164,7 +170,9 @@ export async function rearmDraftForReview(
     // The cap-hit is the LAST event the router reads (`nextStep` routes on
     // `lastEvent.nextStep`), so the disclosure row is written FIRST and the halt
     // appends after it — tail-invariance (#533) outranks the prettier ordering.
-    return halt(ctx, decline(state, now, { reason: why }), now, { reason: why });
+    return rearmHold(ctx, declineUndisclosedRearm(state, now, { reason: why }), now, {
+      reason: why,
+    });
   }
   const own = await readOwnPr(forge, state.pipelineState.branchName, prNumber);
   if (!own.ok) {
@@ -178,7 +186,7 @@ export async function rearmDraftForReview(
     // signal the driver produces and nobody reads).
     if (own.kind === "unreadable") {
       return {
-        state: decline(state, now, {
+        state: declineUndisclosedRearm(state, now, {
           reason: `the re-arm could not read PR #${prNumber} to check whether it was mergeable, so it was left as it stands`,
         }),
         decision: { skipped: "unreadable", reason: own.reason },
@@ -191,7 +199,7 @@ export async function rearmDraftForReview(
     // unreadable view: proceed and disclose, do not park.
     if (own.pr.isDraft === undefined) {
       return {
-        state: decline(state, now, {
+        state: declineUndisclosedRearm(state, now, {
           reason: `the forge would not say whether PR #${prNumber} is a draft, so the re-arm could not tell whether it had to run`,
         }),
         decision: "draft-unknown",
@@ -205,19 +213,45 @@ export async function rearmDraftForReview(
   // charged itself to it drained the merge's retries, so a cycle that had
   // re-armed once could not afford to mark its PR ready when its review finally
   // concluded. The bound is still real — the draft direction is bounded at
-  // MAX_DRAFT_REARM_ATTEMPTS per cycle.
-  const drafted = draft.draftAttempts ?? 0;
+  // MAX_DRAFT_REARM_ATTEMPTS.
+  //
+  // #1398 round 3 — the counter is scoped to THIS review round and is charged
+  // BEFORE the command issues. Two defects closed at once:
+  //  - per-CYCLE: a cycle that CI-looped four times, each re-arm succeeding,
+  //    spent its whole budget on conversions that WORKED and then halted — the
+  //    bound had become the bug it was guarding. Each review round gets its own.
+  //  - charged-on-success: a forge that refused the command every time left the
+  //    counter at zero, so the bound never closed and every lens entry issued
+  //    another `pr draft`. `markDraftPrReady`'s `made++` charges before the
+  //    call; this now matches it, so a refusal, a read-back that throws and an
+  //    unconfirmed conversion all consume the bound.
+  const round = state.pipelineState.reviewRound ?? 0;
+  const drafted = draft.rearmRound === round ? (draft.draftAttempts ?? 0) : 0;
+  const chargeDraft = (): WorkState => {
+    const held = withPrDraft(state, {
+      ...draft,
+      draftAttempts: drafted + 1,
+      rearmRound: round,
+    });
+    // Durable before anything long is awaited (the same rule as the confirmed
+    // re-arm's own persist below): an attempt the crash lost is an attempt the
+    // next run re-issues, which is the unbounded shape the counter exists for.
+    return held;
+  };
   if (drafted >= MAX_DRAFT_REARM_ATTEMPTS) {
-    return halt(ctx, state, now, {
-      reason: `this cycle has already made its ${MAX_DRAFT_REARM_ATTEMPTS} draft re-arm attempts, so the driver left PR #${prNumber} as it stands rather than keep issuing forge commands that have not taken`,
+    return rearmHold(ctx, state, now, {
+      reason: `this review round has already made its ${MAX_DRAFT_REARM_ATTEMPTS} draft re-arm attempts, so the driver left PR #${prNumber} as it stands rather than keep issuing forge commands that have not taken`,
     });
   }
+  // Charged first, then issued — see above. Every path below inherits the
+  // charge, including the halts, so the bound is real on a hostile forge.
+  const charged = chargeDraft();
   try {
     await forge.prDraft(prNumber);
   } catch (err) {
     const raw = rawErrorText(err);
     trace(`work-driver: pr draft #${prNumber} (re-arm) failed: ${raw}`);
-    return halt(ctx, state, now, {
+    return rearmHold(ctx, charged, now, {
       reason: `converting PR #${prNumber} back to a draft failed (${forgeFailureReason(raw)})`,
     });
   }
@@ -229,14 +263,14 @@ export async function rearmDraftForReview(
   // the forge says otherwise is a cycle whose review runs on a mergeable PR.
   const confirmed = await readOwnPr(forge, state.pipelineState.branchName, prNumber);
   if (!confirmed.ok) {
-    return halt(ctx, state, now, {
+    return rearmHold(ctx, charged, now, {
       reason: `the draft command on PR #${prNumber} ran, but the PR could not be read back to confirm it (${confirmed.reason})`,
     });
   }
   if (confirmed.pr.isDraft !== true) {
     const said =
       confirmed.pr.isDraft === false ? "it reports the PR is still ready" : "it did not say";
-    return halt(ctx, state, now, {
+    return rearmHold(ctx, charged, now, {
       reason: `the forge did not confirm the draft conversion on PR #${prNumber} — the \`pr draft\` command succeeded and the read-back ${said}`,
     });
   }
@@ -276,36 +310,6 @@ export async function rearmDraftForReview(
 }
 
 /**
- * Record a decline the driver could not act on, so it reaches the handoff.
- *
- * `plumbReports` is the field the handoff renderers read (an event alone is not
- * rendered), and the event is appended too so `/work-status` shows it.
- */
-function decline(state: WorkState, now: number, opts: { reason: string }): WorkState {
-  const pr = state.pipelineState.prNumber ?? "<N>";
-  const body =
-    `Draft re-arm declined: ${opts.reason}. The PR may be mergeable while the review runs — ` +
-    `check it (\`gh pr view ${pr} --json isDraft\`) and make it a draft by hand if it is not.`;
-  const withEvent = appendEvent(state, {
-    kind: "plumb-report",
-    at: now,
-    step: "lens-review",
-    role: "driver",
-    body,
-  });
-  return {
-    ...withEvent,
-    pipelineState: {
-      ...withEvent.pipelineState,
-      plumbReports: [
-        ...(withEvent.pipelineState.plumbReports ?? []),
-        { step: "lens-review", role: "driver", body, at: now },
-      ],
-    },
-  };
-}
-
-/**
  * A verdict that concluded, followed by a review-loop step: the signal that the
  * review has to run again. The scan stops at the FIRST `step-started` walking
  * back from the end — that is the step the cycle is entering now — so a verdict
@@ -321,7 +325,7 @@ export function reviewRerunPending(state: WorkState): boolean {
     const e = log[i];
     if (e?.kind !== "step-started") continue;
     if (e.step !== "lens-review") return false;
-    return REVIEW_LOOP_STEPS.some((step) =>
+    return WORK_DRIVER_REVIEW_LOOP_STEPS.some((step) =>
       log.slice(0, i).some((prior) => prior.kind === "step-started" && prior.step === step),
     );
   }
@@ -329,19 +333,12 @@ export function reviewRerunPending(state: WorkState): boolean {
 }
 
 /**
- * The steps a re-review passes through between two `lens-review` entries.
- * Re-exported from work-driver-review-loop-steps.ts (shared with
- * `reviewConcluded`, which asks the mirror question of the same log) so a
- * reader of this module finds the list where the re-arm reads it.
+ * The steps a re-review passes through between two `lens-review` entries are
+ * `WORK_DRIVER_REVIEW_LOOP_STEPS` (work-driver-review-loop-steps.ts), imported
+ * above and read by `reviewRerunPending`. There used to be a re-export of it
+ * here too, for no importer — a second name for one list is a second thing that
+ * can drift from the question it answers.
  */
-export const REVIEW_LOOP_STEPS = WORK_DRIVER_REVIEW_LOOP_STEPS;
-
-/**
- * The cap a failed re-arm records. Exported so the router, the explainer and
- * the tests name the same string the writer writes — the same discipline
- * `REVIEW_INCOMPLETE_CAP` enforces on the lens cap.
- */
-export const DRAFT_REARM_CAP = "draft-rearm-failed";
 
 /**
  * Did the re-arm halt the cycle? True when the LAST event is this cycle's
@@ -352,38 +349,6 @@ export const DRAFT_REARM_CAP = "draft-rearm-failed";
 export function lastCapIsRearmFailure(state: WorkState): boolean {
   const last = state.eventLog[state.eventLog.length - 1];
   return last?.kind === "cap-hit" && last.cap === DRAFT_REARM_CAP;
-}
-
-/**
- * The halt a failed re-arm produces, in `runMerged`'s draft-hold shape: the
- * reason on `evidence` (the handoff prints it) and on `prDraft.holdReason` (so
- * `draftPrHandoffLines` says the PR is a draft and why). The cap routes to
- * `handoff`, so the cycle never advances to `ci` on this failure.
- */
-function halt(
-  ctx: DriverContext,
-  state: WorkState,
-  now: number,
-  opts: { reason: string },
-): RearmOutcome {
-  trace(`work-driver: the draft re-arm halted the cycle — ${opts.reason}`);
-  const draft = state.pipelineState.prDraft;
-  const held = withPrDraft(state, {
-    ...(draft ?? { status: "draft" as const }),
-    status: "ready-failed" as const,
-    holdReason: opts.reason,
-  });
-  return {
-    state: appendEvent(held, {
-      kind: "cap-hit",
-      at: now,
-      cap: DRAFT_REARM_CAP,
-      reviewRound: state.pipelineState.reviewRound,
-      evidence: opts.reason,
-      nextStep: "handoff",
-    }),
-    decision: { halted: true, reason: opts.reason },
-  };
 }
 
 /** The cycle's forge, or `undefined` (traced) when it cannot be determined. */

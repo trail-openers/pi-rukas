@@ -38,7 +38,24 @@ export function draftPrHandoffLines(ps: WorkState["pipelineState"], forge?: Forg
     forge === "github" || forge === "gitlab"
       ? `\`${prReadyCmd(forge, pr)}\``
       : `\`gh pr ready ${pr}\` (GitHub) or \`glab mr update ${pr} --ready\` (GitLab)`;
-  switch (draft.status) {
+  // #1398 round 3 — an absent `status` is a legal record (a disclosure the
+  // driver noted on a PR it never opened as a draft). It is not "the review is
+  // done and the ready failed", and it is not "the PR is a draft": the driver
+  // holds nothing, so it says nothing rather than guessing a heading.
+  const status = draft.status ?? "unknown";
+  switch (status) {
+    case "unknown":
+      if (draft.findingsPosted?.length) {
+        // The honest line for a disclosure-only record: the findings are on the
+        // PR, and the driver never took the PR into a draft hold.
+        return [
+          "### Review findings were disclosed on the PR",
+          "",
+          `PR #${pr} carries the disclosure of the review's residual findings (${draft.findingsPosted.length} patch record(s)); the driver never held this PR as a draft, so it did not mark it ready.`,
+          "",
+        ];
+      }
+      return [];
     case "ready":
       if (!draft.holdReason) return [];
       return [
@@ -60,11 +77,27 @@ export function draftPrHandoffLines(ps: WorkState["pipelineState"], forge?: Forg
         // failure), the operator's fix is the draft direction, not `pr ready`:
         // telling them to mark a PR ready that the driver just failed to make a
         // draft is the opposite of what the hold asks for.
-        const rearm = /draft conversion|back to a draft|draft re-arm/.test(draft.holdReason);
+        //
+        // #1398 round 3 — a re-arm hold is recognised by its OWN field, not by
+        // pattern-matching the prose. `rearmError` is written by `halt()` and by
+        // nothing else, so the regex below is the fallback for a state written
+        // before the field existed, never the primary signal. With it the
+        // "a `pr ready` attempt also failed" clause is omitted entirely: on this
+        // path the driver never attempted a ready, and `draft.attempts` /
+        // `draft.error` belong to some other attempt — printing them here
+        // invented a ready failure and charged the merge for a draft failure.
+        const rearm =
+          draft.rearmError !== undefined ||
+          /draft conversion|back to a draft|draft re-arm/.test(draft.holdReason);
         const undoCmd =
           forge === "github" || forge === "gitlab"
             ? `\`${prDraftCmd(forge, pr)}\``
             : `\`gh pr ready ${pr} --undo\` (GitHub) or \`glab mr update ${pr} --draft\` (GitLab)`;
+        const readyTried = draft.error !== undefined || (draft.attempts ?? 0) > 0;
+        const triedClause =
+          !rearm && readyTried
+            ? ` A \`pr ready\` attempt also failed (${draft.attempts ?? 0} attempt(s) this cycle; ${draft.error}).`
+            : "";
         const cmd = rearm ? undoCmd : readyCmd;
         const advice = rearm
           ? `The driver could not make it a draft again, so make it one with ${cmd} before the review is trusted.`
@@ -72,7 +105,7 @@ export function draftPrHandoffLines(ps: WorkState["pipelineState"], forge?: Forg
         return [
           "### Pull request is still a draft",
           "",
-          `PR #${pr} stays a draft: ${draft.holdReason}. A \`pr ready\` attempt also failed (${draft.attempts ?? 0} attempt(s) this cycle; ${draft.error ?? "no reason recorded"}). ${advice}`,
+          `PR #${pr} stays a draft: ${draft.holdReason}.${triedClause} ${advice}`,
           "",
         ];
       }
@@ -87,11 +120,11 @@ export function draftPrHandoffLines(ps: WorkState["pipelineState"], forge?: Forg
     default: {
       // Compile-time exhaustiveness only. A corrupt persisted status must render,
       // never throw: the handoff is the one place the operator learns the state.
-      const _unhandled: never = draft.status;
+      const _unhandled: never = status;
       return [
         "### Pull request draft state unrecognised",
         "",
-        `PR #${pr}: draft state unrecognised: ${String(draft.status)}. Check its draft state and mark it ready with ${readyCmd} once the work is finished.`,
+        `PR #${pr}: draft state unrecognised: ${String(status)}. Check its draft state and mark it ready with ${readyCmd} once the work is finished.`,
         "",
       ];
     }
