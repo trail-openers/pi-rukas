@@ -19,6 +19,13 @@ import {
   isHostForkExhaustion,
   pidLimitSnapshot,
 } from "./work-driver-exec-error.ts";
+import {
+  type HangProcess,
+  NO_TREE_CAPTURED,
+  deepestCommands,
+  extractRunningTests,
+  gateHangClause,
+} from "./work-driver-gate-hang.ts";
 
 /** PR17 — bounded wall-clock for the verify command (default 10 min). */
 export function verifyTimeoutMs() {
@@ -39,6 +46,17 @@ export function boundText(ms: number): string {
  * #1324 — the failure string for a verify run killed at its bound. A killed
  * run reached no verdict, so the string names the bound and the knob, never
  * an assertion about the code. `where` completes "exceeded its bound <where>".
+ *
+ * #1427 — `hang` is what the gate observed about the run it killed: the test
+ * names the runner had flagged, the gate's own process tree, and the tail of
+ * its output. It is appended as a clause, so the headline still leads with the
+ * bound (the `verify-timeout:<step>` cap router and the handoff explainer key on
+ * that text), and the operator sees "hung in test X, N process(es) still
+ * alive" where earlier cycles could only say "slow".
+ *
+ * `where` is a string the CALLER composed, so it is the one place a hang report
+ * can be attached without threading a structured argument through every gate
+ * seam's call site: each site appends the report to its own `where`.
  */
 export function verifyTimeoutFailure(
   cmd: string,
@@ -47,6 +65,119 @@ export function verifyTimeoutFailure(
   knob = "PI_ENSEMBLE_VERIFY_TIMEOUT_MS",
 ): string {
   return `${VERIFY_TIMEOUT_LABEL} verify command \`${cmd}\` exceeded its ${boundText(timeoutMs)} timeout ${where} — the run was killed at the bound (${knob}), so it reached no verdict about the code`;
+}
+
+/**
+ * #1427 round 3 — a timeout failure string that ALSO says what hung.
+ *
+ * The clause goes at the END, after the #1324 sentence, and that position is
+ * load-bearing rather than stylistic. `boundFailure`
+ * (`work-develop-cap-evidence.ts`) bounds each failure to 800 chars by keeping
+ * its TAIL (`extractAttributedTail` → `trimmed.slice(-maxLen)` when there is no
+ * `FAILED:` marker, and a timeout string has none). A hang clause spliced into
+ * the middle of the sentence therefore pushed the `[verify-timeout]` headline
+ * past the 800-char cut in exactly the case the clause exists for — a fan-out
+ * whose ten long test names make the clause wide — and the capped failure then
+ * read as an ordinary verify failure: `verifyCapFor` keys the
+ * `verify-timeout:<step>` cap on that marker, so a killed run was routed to
+ * `verify-failed:develop` and the handoff told the operator to look at the diff
+ * for a run that reached no verdict at all. Appended last, the marker is always
+ * inside the kept tail and the names are what gets clipped — which is the
+ * correct trade: the cap is what makes the cycle legible, the names are a bonus.
+ */
+export function verifyHangFailure(
+  cmd: string,
+  where: string,
+  timeoutMs: number,
+  run?: KilledGateRun,
+  knob = "PI_ENSEMBLE_VERIFY_TIMEOUT_MS",
+): string {
+  const base = verifyTimeoutFailure(cmd, where, timeoutMs, knob);
+  if (run === undefined) return base;
+  return `${base} — ${hangClauseFor(run)}`;
+}
+
+/** The clause half of {@link verifyHangFailure}, composed in one place so the
+ *  failure string and the written report cannot describe the kill differently.
+ *
+ *  #1427 round 4 — this function NEVER walks. The caller captures the tree once,
+ *  in the window between the executor's kill and its settle, and hands it in; a
+ *  run with no captured tree says so (`no tree was captured`) rather than
+ *  forking `ps` on a group that the kill has usually already reaped. A live walk
+ *  here was a second snapshot of a dead group — different from the one the
+ *  written report describes — paid for on the failure path of a cycle that has
+ *  already run out of time. */
+function hangClauseFor(run: KilledGateRun): string {
+  const processes = run.tree?.processes ?? [];
+  // #1427 round 4 — with no rows there is nothing to count, and the clause's
+  // second half carries the reason instead: a walk that collected nothing
+  // reports why it collected nothing, and a caller that captured nothing at all
+  // says `no tree was captured`. Rendering `N process(es) still alive` over an
+  // empty snapshot would claim a live count of zero — the exact false positive
+  // this clause is not allowed to make.
+  const treeUnavailable =
+    run.tree === undefined
+      ? NO_TREE_CAPTURED
+      : (run.tree.treeUnavailable ?? "the walk collected no process rows");
+  return gateHangClause({
+    runningTests: extractRunningTests(run.output),
+    cmd: run.cmd,
+    cwd: run.cwd,
+    timeoutMs: run.timeoutMs,
+    processes,
+    // The processes deeper in the group are the point of the clause in a
+    // failure string: the test name says what hung, the command lines say what
+    // was holding on (in the measured case, a `git remote-http` orphaned by the
+    // test's own already-killed `git pull`). Bounded: two rows, each already
+    // bounded, and the name list itself is bounded by `gateHangClause`, so the
+    // clause cannot outgrow the window that has to carry the headline.
+    ...(processes.length > 0 ? { detail: deepestCommands(processes) } : {}),
+    ...(processes.length === 0 ? { treeUnavailable } : {}),
+  });
+}
+
+/**
+ * #1427 — the single hang-report gate for every gate seam: a run gets a report
+ * ONLY when the wall clock killed it. `killed` alone is not enough — a run that
+ * overflowed `maxBuffer` is killed too, and reporting one as a hang tells the
+ * operator the gate stalled when it actually printed too much.
+ *
+ * `timedOutKill` is the field `execTree` stamps; a test fake or a rethrown
+ * fast-tier error that predates it is accepted on the documented shape
+ * (`killed` with no `overflow`), which is what those fakes have always carried.
+ */
+export function isTimedOutKill(e: {
+  killed?: boolean;
+  timedOutKill?: boolean;
+  overflow?: string;
+}): boolean {
+  if (e.overflow !== undefined) return false;
+  if (e.timedOutKill !== undefined) return e.timedOutKill === true;
+  return e.killed === true;
+}
+
+/**
+ * What a gate seam knows about the run it killed, to build a hang report from.
+ *
+ * #1427 round 4 — `treePid` and `walk` are GONE from this shape. A caller either
+ * hands in the tree it captured in its own `catch`, or hands in nothing and the
+ * clause says no tree was captured. There is deliberately no way to ask this
+ * module to walk: the seam that killed the run is the only place with a chance of
+ * seeing the group alive, and a second walk from here is a second, later, worse
+ * snapshot of the same kill.
+ */
+export interface KilledGateRun {
+  /** The killed run's combined stdout+stderr (the source of the slow-test lines). */
+  output: string;
+  /** The killed run's own command — the fast tier's when that is what hung. */
+  cmd: string;
+  cwd: string;
+  timeoutMs: number;
+  /**
+   * The tree the caller walked at the kill — the ONLY source of process rows for
+   * a clause. Absent = the clause reports that nothing was captured.
+   */
+  tree?: { processes: HangProcess[]; treeUnavailable?: string };
 }
 
 export function isVerifyTimeoutFailure(failure: string): boolean {

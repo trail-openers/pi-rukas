@@ -16,6 +16,7 @@ import path from "node:path";
 import { withVerifySlot } from "./host-resources.ts";
 import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
 import { reportConsolidatedVerifyOutcome } from "./work-driver-consolidated-verify-report.ts";
+import type { ConsolidatedVerifyOpts } from "./work-driver-consolidated-verify-types.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import {
   NO_SPECIFIC_ASSERTION,
@@ -35,17 +36,20 @@ import {
   isHostForkExhaustion,
   pidLimitSnapshot,
 } from "./work-driver-exec-error.ts";
+import { captureProcessTree } from "./work-driver-gate-hang.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { compareWithBaseline } from "./work-driver-verify-baseline.ts";
 import {
+  type KilledGateRun,
   formatExecError,
+  isTimedOutKill,
   isVerifyTimeoutFailure,
-  verifyTimeoutFailure,
+  verifyHangFailure,
   verifyTimeoutMs,
 } from "./work-driver-verify-develop-helpers.ts";
 import { developVerifiedTree } from "./work-driver-verify-eligibility.ts";
 import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
-import { rawOutputClause } from "./work-driver-verify-flake.ts";
+import { rawOutputClause, slugName, writeGateHangLog } from "./work-driver-verify-flake.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -107,6 +111,23 @@ export async function runVerifyCommandGate(opts: {
   /** #1349 — the base run demonstrably fails the way the change's run does. */
   onBaselineAttributed?: () => void;
   /**
+   * #1427 — injectable process-tree walker, so a smoke test can assert the
+   * report's shape without forking `ps`. Production omits it and the real
+   * walker runs.
+   */
+  walkProcessTree?: (leaderPid: number) => {
+    processes: import("./work-driver-gate-hang.ts").HangProcess[];
+    treeUnavailable?: string;
+  };
+  /**
+   * #1427 round 3 — the sink this gate call's hang reports are recorded on,
+   * created per `verifyStepOutcome` call and threaded back down: that is what
+   * scopes a cap's `logPaths` to the run that produced it (the old shape
+   * recorded on `ctx`, cycle scope, so a later call capped with an earlier
+   * call's reports attached). Absent = reports are still written.
+   */
+  hangSink?: import("./work-driver-gate-hang.ts").GateHangPathSink;
+  /**
    * #1421 fix round — the consolidated gate declined on nothing but build
    * residue (forwarded from the reporting layer, which reads the structured
    * field on the result). The develop gate turns this into the gate result's
@@ -128,6 +149,8 @@ export async function runVerifyCommandGate(opts: {
     onVerifyFlakeRecovered,
     fenceViolations,
     onConsolidatedLogPath,
+    walkProcessTree,
+    hangSink,
     // #1240 review r2 — the callback must be destructured AND forwarded:
     // `reportConsolidatedVerifyOutcome` is the only caller, and until now it
     // was never passed `onConsolidatedVerifySkipped`, so the skip identity
@@ -141,6 +164,24 @@ export async function runVerifyCommandGate(opts: {
   const VALID_SHA_RE = /^[0-9a-f]{40}$/;
   const isValidSha = (s: string | undefined) => typeof s === "string" && VALID_SHA_RE.test(s);
   const perWorktreeVerifyFailures: string[] = [];
+  // #1427 — the scratch dir a killed run's hang report is persisted to, created
+  // lazily by the write. Named once here so the per-worktree loop and the
+  // consolidated run below share one location (the consolidated run's own logs
+  // already live there).
+  const hangScratchDir = path.join(ctx.repoRoot, "tmp", `issue-${ctx.issue}`);
+  const hangTimestamp = new Date().toISOString();
+  // The walker every hang report of this run uses — the injected one in tests,
+  // the real `ps` walk in production. Read once so both seams below take the
+  // same branch.
+  const walker = opts.walkProcessTree ?? captureProcessTree;
+  // The per-run discriminator in the report's filename: the workstream whose
+  // worktree this gate ran in. `changedWorktrees` are worktree paths, so the
+  // basename is the nearest stable identity, with the cwd's own slug as the
+  // fallback when the map is sparse.
+  const slugFor = (cwd: string): string => {
+    const id = Object.keys(worktrees).find((k) => worktrees[k] === cwd);
+    return slugName(id ?? path.basename(cwd));
+  };
   for (const cwd of changedWorktrees) {
     const depsMissing = await missingDepsFailure(execFn, state, ctx.repoRoot, cwd, cmd); // #1146
     if (depsMissing !== undefined) {
@@ -152,16 +193,77 @@ export async function runVerifyCommandGate(opts: {
         execFn(cmd, { cwd, timeout: verifyTimeoutMs(), maxBuffer: 4 * 1024 * 1024 }),
       );
     } catch (err) {
-      const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
+      const e = err as Error & {
+        stdout?: string;
+        stderr?: string;
+        killed?: boolean;
+        timedOutKill?: boolean;
+        overflow?: string;
+        treePid?: number;
+      };
       // A missing `node_modules` looks like a real defect; in a fresh worktree say so.
       // #1005 — per-worktree failures stay failures; the consolidated run adds its own.
       const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
       const depsHint = looksLikeMissingDeps(output) ? provisionDepsHint(state, cwd) : "";
       const ran = failedVerifyCmd(e, cmd); // #1324 — the fast tier, when it is the one that failed
+      const cwdSlug = slugFor(cwd);
+      // #1427 — a run the wall clock killed gets a hang report: the test names
+      // the runner had already flagged, the gate's process tree, and its output
+      // tail. Built ONLY for a timeout kill — an ordinary failing run pays
+      // nothing, and a maxBuffer overflow (also a `killed` run) claims nothing
+      // about processes it never stalled on.
+      const hung = isTimedOutKill(e);
+      // ONE walk per killed run: the snapshot is captured here, in the window
+      // where the group may still be alive, and handed to BOTH the report and
+      // the failure-string clause so they cannot disagree (#1427 fix round —
+      // they used to walk separately and could report different process sets
+      // for one kill).
+      const killedTree = hung && typeof e.treePid === "number" ? walker(e.treePid) : undefined;
+      const hang: KilledGateRun | undefined = hung
+        ? {
+            output: `${e.stdout ?? ""}\n${e.stderr ?? ""}`,
+            cmd: ran,
+            cwd,
+            timeoutMs: verifyTimeoutMs(),
+            ...(killedTree !== undefined ? { tree: killedTree } : {}),
+          }
+        : undefined;
+      if (hang !== undefined) {
+        const logPath = writeGateHangLog(
+          hangScratchDir,
+          hangTimestamp,
+          {
+            output: hang.output,
+            cmd: hang.cmd,
+            cwd: hang.cwd,
+            timeoutMs: hang.timeoutMs,
+            ...(typeof e.treePid === "number" ? { leaderPid: e.treePid } : {}),
+            ...(killedTree !== undefined
+              ? { processes: killedTree.processes, treeUnavailable: killedTree.treeUnavailable }
+              : {}),
+          },
+          // The name says WHICH run this report belongs to: a fan-out kills one
+          // gate run per workstream and they must not overwrite each other.
+          { tag: cwdSlug },
+        );
+        if (logPath !== undefined) {
+          // #1427 round 3/4 — recorded on THIS gate call's sink, not on `ctx`:
+          // the context is cycle-scoped and the three cap sites are three
+          // separate gate CALLS, which is what let a late cap name an early
+          // run's file. Pushed directly — the recorder it used to call had one
+          // reader, a test, and no other caller.
+          if (hangSink !== undefined) {
+            hangSink.gateHangLogPaths = [...(hangSink.gateHangLogPaths ?? []), logPath];
+          }
+        }
+      }
       perWorktreeVerifyFailures.push(
         formatExecError(
           e,
-          verifyTimeoutFailure(ran, `in ${cwd}`, verifyTimeoutMs()),
+          // #1427 round 3 — `verifyHangFailure` APPENDS the clause after the
+          // whole #1324 sentence, so a wide clause costs the names rather than
+          // the `[verify-timeout]` marker the cap router keys on.
+          verifyHangFailure(ran, `in ${cwd}`, verifyTimeoutMs(), hang),
           `verify command \`${ran}\` failed in ${cwd}${depsHint}`,
         ),
       );
@@ -260,7 +362,11 @@ export async function runVerifyCommandGate(opts: {
     worktrees: state.pipelineState.worktrees ?? {},
     perWorktreeVerifyFailures,
   });
-  const cons = await runConsolidatedVerify(execFn, {
+  // #1427 fix round — the consolidated call is a TYPED literal, so a key that
+  // does not exist on `ConsolidatedVerifyOpts` is a compile error rather than a
+  // silently dropped option (the `{ onWalk: … }` forwarding defect: the walker
+  // never reached the consolidated probe and the real `ps` walked the host).
+  const consOpts: ConsolidatedVerifyOpts = {
     repoRoot: ctx.repoRoot,
     baseSha: baseSha as string,
     worktrees: state.pipelineState.worktrees ?? {},
@@ -276,6 +382,11 @@ export async function runVerifyCommandGate(opts: {
     // #1362 — the repoRoot dirty-root preflight inside honours the project's
     // exemption list, so a tool's local file no longer refuses the batch.
     dirtyRootExempt: ctx.dirtyRootExempt,
+    // #1427 fix round — the walker is forwarded under the field `ConsolidatedVerifyOpts`
+    // actually declares. It used to be spread onto the REPORTING call below under
+    // a name that exists nowhere (`onWalk`), so the probe silently fell back to
+    // the real `ps` and the report described whatever else was on the host.
+    ...(walkProcessTree !== undefined ? { walkProcessTree } : {}),
     retry: {
       canRetry: flakeRetryPrecondition,
       onFirstFailure: (raw) => {
@@ -304,7 +415,8 @@ export async function runVerifyCommandGate(opts: {
         onVerifyFlakeRecovered?.(evidenceTail);
       },
     },
-  });
+  };
+  const cons = await runConsolidatedVerify(execFn, consOpts);
   reportConsolidatedVerifyOutcome(cons, {
     cmd,
     failures,
@@ -324,6 +436,19 @@ export async function runVerifyCommandGate(opts: {
     // #1421 fix round — same forwarding rule: without it the structured
     // decline dies here and the cap router falls back to the prose label.
     ...(onBuildResidueOnly !== undefined ? { onBuildResidueOnly } : {}),
+    // #1427 round 3/4 — the consolidated probe writes its own hang report; its
+    // path lands on the same per-call sink as the per-worktree seam's, so the
+    // one reader (the cap emit site) sees both legs of THIS gate call and
+    // nothing from an earlier one. `runConsolidatedVerify` already reports the
+    // path on its result (`hangLogPath`), which is what this callback carries —
+    // so the sink is the only channel a caller needs, and the extra
+    // `onGateHangLogPath` hop (whose sole reader was a test's local variable)
+    // is gone.
+    onGateHangLogPath: (logPath) => {
+      if (hangSink !== undefined) {
+        hangSink.gateHangLogPaths = [...(hangSink.gateHangLogPaths ?? []), logPath];
+      }
+    },
   });
   // Aggregation: a consolidated FAILURE keeps per-worktree failures as
   // failures. A consolidated PASS does NOT downgrade them (#1005 reverses
