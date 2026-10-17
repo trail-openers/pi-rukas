@@ -247,6 +247,22 @@ PR: [#1417](https://github.com/trail-openers/pi-rukas/issues/1417)
 
 PR: [#1069](https://github.com/trail-openers/pi-rukas/issues/1069)
 
+### A review reported APPROVED and the merge guard still says "no lens review on file"
+
+**Symptom:** `dispatch_lens_review` (or `adversarial_loop`) completed and reported `APPROVED`, its summary showed the expected verdict, and `gh pr merge` is then refused with `no lens review on file for branch \`<branch>\` (latest: none)`. `.git/review-ledger.json` contains no row for the branch — and no one can say whether the review ran.
+
+**Cause (#1449):** `PI_ENSEMBLE_REVIEW_LEDGER_FILE` relocates the ledger, and `ledgerPathFor` honours it *before* any git call. The var is read on every ledger access and inherited through the process tree, so one stale value makes the writer and the #912 guard agree on the same redirected file — and neither side can notice. Nothing was wrong with the review; the row was simply in a file the guard would never open. The leak that produced it was in the test helpers: `isolateLedger` used to honour an already-set value as its own isolation target instead of minting a fresh private one, so a caller adopted an inherited path, never restored it, and `rmSync`'d a directory it did not own on exit. A hand-run review in a process whose environment inherited such a value wrote its rows to a `/tmp` file while the real ledger sat untouched.
+
+**Fix (shipped):** the misdirection is now *reported*, because it cannot be *detected* from the guard. Both writers (`lens-ledger.ts`, `adversarial-ledger.ts`) compare their resolved path against `cloneLedgerPathFor` — the override-BLIND resolver that always reports the clone's own ledger — and when the override is what moved the path they (a) stamp `writtenTo` on the row they did write and (b) add a `⚠ LEDGER WRITE MISDIRECTED` line to the tool summary naming the file and the var. The write still counts as `recorded: true` — it genuinely succeeded — and the round-cap still spends the round, so a redirect never hands the same round to the next run. The guard's refusal gained the matching distinction: a row carrying `writtenTo` produces `a lens review DID run and recorded its entry at the overridden path \`…\` … unset PI_ENSEMBLE_REVIEW_LEDGER_FILE in the reviewing process and re-run` instead of the plain never-reviewed text. With no write-side provenance it says nothing about a redirect — it does not guess.
+
+`isolateLedger()` now always points at a fresh private temp file, saves and restores the env around its own use, and removes only the directory it created. Honouring an operator's scratch ledger is a separate, explicit call — `adoptLedgerOverride()` — which creates nothing and registers no cleanup. `test-ledger-isolation.ts` asserts a second call cannot inherit the first one's path and that the process's env is what it was before.
+
+**What is NOT this bug:** the four legitimate no-write outcomes (`noReview`, carry, no branch, no patch id) write nothing at all and are worded differently on purpose — none of them mention a path. If the summary has no misdirection line and the ledger has no `writtenTo` row, the review really did not record, and the refusal's own reason (`no branch to key the ledger entry on` / `no patch id for the working tree`) says which.
+
+**Recovery:** unset `PI_ENSEMBLE_REVIEW_LEDGER_FILE` in the reviewing process (`env | grep PI_ENSEMBLE_REVIEW_LEDGER_FILE` to find it; check the parent shell and any test helper that exported it), then re-run the review so the round is recorded where the guard reads. The redirected file is the record that the review happened — read it to confirm the verdict before re-running. Do not hand-copy a `writtenTo` row into the real ledger: it stamps a path the guard did not write and would be refused as an unbound row.
+
+PR: [#1449](https://github.com/trail-openers/pi-rukas/issues/1449)
+
 ### `commit-pr-incomplete-consolidation` — check the plan's `paths:` first
 
 Before assuming a workstream's work is genuinely missing, look at how the plan declared its paths. A qualified declaration — `src/config/data.rs (lines 21-44, function body only)` — used to be split on the inner comma into two fragments with unbalanced parentheses, which nothing downstream could normalise back into a path.

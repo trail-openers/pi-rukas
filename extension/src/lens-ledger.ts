@@ -19,7 +19,9 @@ import { resolveReviewBranch } from "./review-branch.ts";
 import {
   type LedgerEntry,
   appendLedgerEntry,
+  ledgerPathFor,
   lensPassed,
+  misdirectedLedgerWrite,
   workingTreePatchId,
 } from "./review-ledger.ts";
 import { trace, traceWarn } from "./trace.ts";
@@ -51,8 +53,26 @@ import { execp } from "./exec.ts";
  * on the ledger, so the budget must not treat it as consumed by a recorded
  * entry (lens-round-cap.ts counts it as an unrecorded round). The promise
  * still never rejects.
+ *
+ * #1449 — `landedAtPath` is the misdirection signal, and it is deliberately NOT
+ * expressed as `recorded: false`. A write redirected by an inherited
+ * `PI_ENSEMBLE_REVIEW_LEDGER_FILE` genuinely succeeded — the file exists and is
+ * writable — so `recorded` stays `true`, the #1127 not-recorded note never
+ * fires, and the row is simply not where the #912 guard will look. A caller
+ * gets FOUR distinguishable shapes, and a by-design no-write must never read as
+ * a misdirection:
+ *
+ *   - `{ recorded: true }` — on the per-clone ledger (the normal case);
+ *   - `{ recorded: true, landedAtPath }` — recorded, at a path outside the
+ *     clone's own ledger (a redirect: the row exists, the guard cannot see it);
+ *   - `{ recorded: false, reason }` — nothing written (no branch, no patch id,
+ *     or the append itself failed — each names its own reason);
+ *   - no outcome at all (`undefined`) — a by-design no-write the caller never
+ *     asks about (`noReview`, carry; see lens-review.ts / lens-review-diff.ts).
  */
-export type LensLedgerOutcome = { recorded: true } | { recorded: false; reason: string };
+export type LensLedgerOutcome =
+  | { recorded: true; landedAtPath?: string }
+  | { recorded: false; reason: string };
 
 export function writeLensLedgerEntry(
   verdict: string,
@@ -105,8 +125,16 @@ export function writeLensLedgerEntry(
       ...(overrideCap ? { overrideCap: true } : {}),
       ...(computed.diffSha256 ? { diffSha256: computed.diffSha256 } : {}),
     };
+    // #1449 — the row carries where it landed when that is not the clone's own
+    // ledger, so a LATER process that reads the real ledger and finds nothing
+    // can still be told a review ran elsewhere (see `LedgerEntry.writtenTo`).
+    // ONE predicate with the adversarial writer, so the two cannot disagree
+    // about what a misdirection is; no override set means no git call, no cost.
+    const landedAtPath = await misdirectedLedgerWrite(execp, c, await appendTargetFor(execp, c));
+    if (landedAtPath) entry.writtenTo = landedAtPath;
     const failure = await appendLedgerEntry(entry, execp, c);
-    return failure ? { recorded: false, reason: failure } : { recorded: true };
+    if (failure) return { recorded: false, reason: failure };
+    return landedAtPath ? { recorded: true, landedAtPath } : { recorded: true };
   };
   // The catch is load-bearing for the fire-and-forget contract: the
   // returned promise MUST resolve (never reject) so an un-awaited caller
@@ -117,4 +145,22 @@ export function writeLensLedgerEntry(
     trace(`lens-review: ledger write failed: ${reason}`);
     return { recorded: false, reason };
   });
+}
+
+/**
+ * #1449 — the path `appendLedgerEntry` resolved for this write.
+ *
+ * The writer does not return it (its contract is a failure reason, shared with
+ * the adversarial writer and the driver), so the caller re-resolves it here —
+ * the same function, same env, same cwd, microseconds later, after the append
+ * released the ledger lock. When it cannot resolve there is no path to compare
+ * and no misdirection is reported: a path this module cannot name is not
+ * evidence that a row went astray.
+ */
+async function appendTargetFor(execFn: typeof execp, cwd: string): Promise<string | undefined> {
+  try {
+    return await ledgerPathFor(execFn, cwd);
+  } catch {
+    return undefined;
+  }
 }
