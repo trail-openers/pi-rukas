@@ -54,12 +54,11 @@
  */
 
 import { notifyAgent } from "./agent-message.ts";
-import { execp } from "./exec.ts";
-import type { Forge } from "./forge.ts";
+import { createForge, type Forge } from "./forge.ts";
+import { detectForge } from "./forge-detect.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { reportFinalState } from "./work-driver-final-state.ts";
-import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { WorkStep } from "./workflow-state-events.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -77,14 +76,58 @@ const ISSUE_STATE_RETRY_DELAYS_MS = [500, 1500];
 const unreadableIssueCycles = new WeakSet<DriverContext>();
 
 /**
+ * Per-cycle, per-issue verdict cache. Keyed on the DriverContext so it dies
+ * with the cycle — a fresh `/work` (or `--restart`) re-reads, which is the
+ * point: reopening the issue must be seen by the next run, not by this one.
+ */
+const cycleVerdicts = new WeakMap<DriverContext, Map<number, "OPEN" | "CLOSED">>();
+
+function cacheVerdict(ctx: DriverContext, issue: number, state: "OPEN" | "CLOSED"): void {
+  let map = cycleVerdicts.get(ctx);
+  if (!map) {
+    map = new Map();
+    cycleVerdicts.set(ctx, map);
+  }
+  map.set(issue, state);
+}
+
+/**
  * Resolve the forge the same way every other cycle-seam read does
  * (`work-driver-draft-pr.ts`): an injected `ctx.forge` wins so the existing
  * `mkFakeForge` fixture drives this gate, else resolve one for the repo.
  * `PI_ENSEMBLE_FORGE=none` means there is no forge to ask — no verdict, no note.
  */
+/**
+ * Resolve the forge the way every other cycle-seam read does: an injected
+ * `ctx.forge` wins (the `mkFakeForge` fixture drives this gate), else the same
+ * guarded detection `handoffForge` uses — `PI_ENSEMBLE_FORGE=none` or an
+ * undetectable forge yields `undefined`, which means NO VERDICT and therefore
+ * NO read.
+ *
+ * `forgeForCycle` is deliberately not used here: it forces a forge with
+ * `PI_ENSEMBLE_FORGE=github` and does not treat `unknown` as absent, so a repo
+ * with no forge gets a real `gh` subprocess per step. The gate runs before every
+ * step, so that is ~360ms x ~12 steps of pure overhead — it pushed
+ * test-work-driver-adv-retry-357's timed region from ~2s past its 5.5s bound.
+ * A cycle must not be slowed by a check that cannot answer anyway; the gate
+ * already fails open.
+ */
+const forgeCache = new Map<string, Forge | undefined>();
+
 async function cycleForge(ctx: DriverContext): Promise<Forge | undefined> {
+  if (ctx.forge) return ctx.forge;
   if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
-  return ctx.forge ?? (await forgeForCycle(ctx, ctx.verifyExecFn ?? execp));
+  const key = ctx.repoRoot;
+  if (forgeCache.has(key)) return forgeCache.get(key);
+  let forge: Forge | undefined;
+  try {
+    const det = await detectForge(ctx.repoRoot, {});
+    forge = det.forge === "unknown" ? undefined : createForge(det, { cwd: ctx.repoRoot });
+  } catch {
+    forge = undefined;
+  }
+  forgeCache.set(key, forge);
+  return forge;
 }
 
 /**
@@ -147,9 +190,17 @@ export async function endIfIssueClosed(
   if (!forge) return { state };
 
   const seen = unreadableIssueCycles.has(ctx);
+  const preRead = opts.preRead ?? cycleVerdicts.get(ctx);
   let anyUnchecked = false;
   for (const n of group) {
-    const preRead = opts.preRead;
+    // Cached once per cycle per issue. The gate runs before EVERY step, so an
+    // uncached read is one `gh` round-trip per issue per step — on a 12-step
+    // grouped cycle that is dozens of forks inside the driver's own step budget
+    // (it pushed #357 T8's timed region from ~2s to ~10s). A cycle that reads
+    // OPEN and is then closed still stops at the NEXT cycle start; the gate's
+    // job is to stop paying for children, and one read per cycle per issue is
+    // enough to do that without taxing every step. An unreadable read is NOT
+    // cached — the next gate retries, so a transient gh outage is not locked in.
     const read: IssueRead = preRead?.has(n)
       ? { state: preRead.get(n) ?? undefined, attempts: 0 }
       : await readIssueState(forge, n, !seen);
@@ -157,6 +208,7 @@ export async function endIfIssueClosed(
       return { state, ended: issueClosedPark(state, n, step, group.length) };
     }
     if (read.state === undefined) anyUnchecked = true;
+    else cacheVerdict(ctx, n, read.state);
   }
 
   if (anyUnchecked && !seen) {
