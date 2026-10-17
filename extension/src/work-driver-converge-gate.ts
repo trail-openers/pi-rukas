@@ -224,6 +224,14 @@ export async function runConvergeGateHandler(
         reviewRound: next.pipelineState.reviewRound,
         nextStep: "handoff",
         ...(conflictText ? { evidence: conflictText } : {}),
+        // #1427 round 3 — the hang reports THIS re-run wrote, on the same
+        // structural channel `appendDevelopVerifyFailure` uses for the first
+        // pass. Without it this cap — reached when the corrective's commit
+        // re-ran the gate and THAT hung — handed off with no pointer to the
+        // report that says what hung, even though the file was on disk.
+        ...(gate2.hangLogPaths !== undefined && gate2.hangLogPaths.length > 0
+          ? { logPaths: [...gate2.hangLogPaths] }
+          : {}),
       });
       return next;
     }

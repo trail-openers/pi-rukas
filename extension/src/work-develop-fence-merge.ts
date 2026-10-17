@@ -450,6 +450,12 @@ export function fenceCapHit(
   state: WorkState,
   evidence: string,
   cap: WorkCapLiteral = FENCE_VIOLATION_CAP,
+  /**
+   * #1427 — the gate-hang reports the re-run's gate persisted, recorded on the
+   * event STRUCTURALLY (the same channel #841 uses for the raw verify logs) so
+   * the handoff names the files without regexing a path out of the evidence.
+   */
+  logPaths?: string[],
 ): Extract<WorkEvent, { kind: "cap-hit" }> {
   return {
     kind: "cap-hit",
@@ -458,6 +464,7 @@ export function fenceCapHit(
     reviewRound: state.pipelineState.reviewRound,
     nextStep: "handoff",
     evidence,
+    ...(logPaths !== undefined && logPaths.length > 0 ? { logPaths } : {}),
   };
 }
 
