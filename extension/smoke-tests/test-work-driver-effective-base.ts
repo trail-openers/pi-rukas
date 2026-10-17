@@ -81,7 +81,7 @@ try {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
       const line = commandOf(cmd, opts);
       if (isNulStatusRead(line)) return { stdout: "" }; // clean tree
-      if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
+      if (line.startsWith("git rev-list --count")) return { stdout: "1\n" };
       if (isNulDiffRead(line)) return { stdout: nulNameStatus("src/foo.ts") };
       return { stdout: "" };
     };
@@ -106,7 +106,7 @@ try {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
       const line = commandOf(cmd, opts);
       if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/foo.css") };
-      if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
+      if (line.startsWith("git rev-list --count")) return { stdout: "0\n" };
       if (isNulDiffRead(line)) return { stdout: "" };
       return { stdout: "" };
     };
@@ -132,7 +132,7 @@ try {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
       const line = commandOf(cmd, opts);
       if (isNulStatusRead(line)) return { stdout: nulStatus(" M src/foo.css") };
-      if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
+      if (line.startsWith("git rev-list --count")) return { stdout: "0\n" };
       if (isNulDiffRead(line)) return { stdout: "" };
       return { stdout: "" };
     };
@@ -156,7 +156,7 @@ try {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
       const line = commandOf(cmd, opts);
       if (isNulStatusRead(line)) return { stdout: "" };
-      if (cmd.startsWith("git rev-list --count")) throw new Error("unknown revision");
+      if (line.startsWith("git rev-list --count")) throw new Error("unknown revision");
       if (isNulDiffRead(line)) return { stdout: "" };
       return { stdout: "" };
     };
@@ -177,7 +177,7 @@ try {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
       const line = commandOf(cmd, opts);
       if (isNulStatusRead(line)) return { stdout: "" };
-      if (cmd.startsWith("git rev-list --count")) throw new Error("unknown revision");
+      if (line.startsWith("git rev-list --count")) throw new Error("unknown revision");
       if (isNulDiffRead(line)) return { stdout: "" };
       return { stdout: "" };
     };
