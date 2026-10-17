@@ -35,6 +35,11 @@
 import { trace } from "./trace.ts";
 import { detectMainline, freshMainlineTip } from "./work-driver-branch-mechanized.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import {
+  classifyRootDirt,
+  probeIgnored,
+  readIgnoredPaths,
+} from "./work-driver-dirty-root-classify.ts";
 import { dirtyRootExemptReadNotice } from "./work-driver-dirty-root-exempt.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import { readDirtyRootExemptBaseline } from "./work-driver-dirty-root-exempt.ts";
@@ -90,12 +95,21 @@ export async function readRepoRootDirt(
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
   });
-  const dirt = stdout
-    .split("\n")
-    .filter(
-      (l) => l.trim() && !isDriverManagedDirtLine(l) && !isConfiguredExemptDirtLine(l, exempt),
-    );
-  return dirt.length > 0 ? dirt : undefined;
+  const dirt = stdout.split("\n");
+  // #1421 — untracked paths git itself declares ignored are build output, not
+  // residue the operator must clear: a Rust workspace at the repo root leaves
+  // `target/` behind from its own gate run, and blocking a cycle on it (or on
+  // the consolidated verify's identical refusal 50 minutes later) parked
+  // finished work. The ignored read failing classifies everything as dirt —
+  // the pre-#1421 shape — so this narrowing can never weaken the gate.
+  const ignored = await readIgnoredPaths(execFn, repoRoot);
+  const classified = classifyRootDirt(
+    dirt,
+    ignored,
+    exempt,
+    await probeIgnored(execFn, repoRoot, dirt),
+  );
+  return classified.dirt.length > 0 ? classified.dirt : undefined;
 }
 
 /**
