@@ -51,7 +51,7 @@ const GIT_READ_VERBS = ["status", "log", "diff", "show", "blame"];
  * `sed` and `awk` went the same way in the #1125 fix round, for the same reason: a tool
  * that can run a shell (`awk BEGIN{system("id")}`, GNU `sed -n '1e id'`) or write a file
  * (`sed -n 'w /tmp/x'`) is not a read, whatever its flags are checked for. */
-const READ_TOOLS = new Set([
+export const READ_TOOLS = new Set([
   "ls",
   "cat",
   "head",

@@ -15,18 +15,22 @@
  * ── THE ADJUDICATION RULE (#1125, operator decision 2026-10-16), in code ────────
  *
  *   (a) ORDERING. One EXACT allowlist of read-only command forms (the arms below) is
- *       authoritative. Every OTHER bash command that names the findings store — the
- *       data file, the store module, their stems, a `.tmp` / `.corrupt` sibling — is
- *       refused. So is any command containing a runtime or a forge CLI, and any
- *       command this module cannot parse: unbalanced quotes, or a heredoc body that
- *       never terminates.
+ *       authoritative FOR THE COMMANDS IT GOVERNS: the ones that name the findings
+ *       store — the data file, the store module, their stems, a `.tmp` / `.corrupt`
+ *       sibling. A command that names none of those is an ordinary agent command and
+ *       the allowlist does not speak to it: `mkdir -p tmp/x`, `git add -A`, `git push`,
+ *       `npm install`, `cargo test`, `python3 -c …` and `sed -n`/`awk`/`gh api` on a
+ *       NON-protected path all pass, and the guard does not consult the arms at all.
+ *       Every command that DOES name the store is refused unless it matches an arm
+ *       exactly; so is any command this module cannot parse: unbalanced quotes, or a
+ *       heredoc body that never terminates.
  *   (b) POLARITY. Fail closed. Over-refusing a harmless read is an ACCEPTED COST —
  *       `--output`/`-o` on any file, `-c` at all, `bun test <non-test-path>`, a read
  *       tool naming the store, a word carrying `$`/backtick/backslash, a redirection.
  *       Each refusal names the flag or operand to drop, or the accept CLI to run instead.
  *   (c) EVOLUTION. A newly discovered bypass spelling is closed by REMOVING AN
  *       ALLOWANCE or ADDING A REFUSAL — never by adding a command scanner. This file
- *       has exactly one parser (`normalise`), one matcher (`namesProtected`) and one
+ *       has exactly one parser (`normalise`), one matcher (`namesStore`) and one
  *       dispatch (`scanCommand`); the parsing helpers themselves live in
  *       review-accept-command.ts and this module composes them with the arms.
  *
@@ -37,16 +41,17 @@
  *      so a commit message may name the store), and each heredoc BODY replaced by the
  *      bare marker `<<` (the body is text this guard cannot read). An odd count of
  *      `'` or `"` is PARSE_FAIL and clause (a) refuses it.
- *   2. `namesProtected()` — TOKEN-wise match against the protected names, their stems
- *      and the `.tmp` / `.corrupt` siblings, asked of BOTH the raw command and the
- *      normalised one; a heredoc marker standing beside a runtime word also counts,
- *      because the guard cannot see what that heredoc feeds the interpreter.
- *   3. THE PRE-CHECKS — an unparseable command is refused here, and the write-flag /
- *      path-operand remedies are decided here. There is NO cheap exit in front of the
- *      allowlist: any command carrying a word that could name a program reaches the
- *      arms, which is every real command. Deny-by-default is not free, and this header
- *      no longer claims it is — the arms are a handful of array tests, and a correct
- *      refusal is worth more than the microseconds a fast path would have saved.
+ *   2. `namesStore()` — TOKEN-wise match against the protected names, their stems and
+ *      the `.tmp` / `.corrupt` siblings, asked of the RAW text, the NORMALISED text and
+ *      the raw text with every quote, brace and comma removed (so `rev{iew-findings}.json`
+ *      and `'rev''iew-findings.json'` both count). A heredoc body is part of the raw
+ *      text, so it is asked too. NOTHING ELSE RUNS IF THIS IS FALSE: a command that
+ *      names no protected token is allowed here, before the segment gates and before the
+ *      arms, because clause (a) scopes the allowlist to commands that name the store.
+ *   3. THE PRE-CHECKS — a command in scope then faces the runner / heredoc / operator
+ *      pre-checks and the write-flag / path-operand remedies are decided here. There is
+ *      no cheap exit in front of the allowlist for a store-naming command: deny-by-
+ *      default is not free, and the arms are a handful of array tests.
  *   4. THE ARMS — the raw command is split into segments on `|`, `;`, `&&`, `||`, `&`
  *      and newlines, and EVERY segment must clear the two segment-wide gates and match
  *      one arm exactly. The segment-wide gates refuse ANY word carrying shell
@@ -76,6 +81,7 @@
 import { posix } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  READ_TOOLS,
   RUNTIME,
   WRITE_FLAGS,
   armBuild,
@@ -90,17 +96,46 @@ import {
 import {
   armsOf,
   baseName,
+  eraseShellPunctuation,
+  isAcceptScriptToken,
   isProtectedToken,
+  namesAttachedValue,
   namesProtected,
+  namesStore,
   normalise,
+  shellVisible,
   shellWords,
   squeeze,
-  tokensOf,
   unquote,
 } from "./review-accept-command.ts";
 import { trace, traceWarn } from "./trace.ts";
 /** The forge CLIs, whose read arms are exact. */
 const VCS = /^(?:git|gh|glab)$/;
+/** Does the command run GIT? A repo-location selector only matters for git — the same
+ * `-c` on `python3` is its inline-code flag and moves no repository. */
+const namesGit = (text: string): boolean =>
+  shellWords(text).some((w) => baseName(unquote(w)) === "git");
+/** Does the command run git, a forge CLI, or a JS runtime? The write-flag scope test
+ * asks this: `-o` / `--output` / `-c` are flags those programs honour as routes to
+ * writing a file, while a test runner's `--reporter junit` is nobody's write route. */
+const namesVcsOrRuntime = (text: string): boolean =>
+  shellWords(text).some((w) => {
+    const t = baseName(unquote(w));
+    return RUNTIME.test(t) || VCS.test(t);
+  });
+/** Does the command run one of the READ TOOLS the arms admit (`cat`, `grep`, `rg`,
+ * `head`, `wc`, …)? Together with `namesVcsOrRuntime` this is the set of programs through
+ * which a store name can reach the guarded bytes at all: the scope test asks the
+ * unreadable-word question of them, and of nobody else — `awk 'BEGIN{system("id")}'` runs
+ * no store-capable program the guard recognises, and clause (a) leaves it alone. */
+const namesReadTool = (text: string): boolean =>
+  shellWords(text).some((w) => READ_TOOLS.has(baseName(unquote(w))));
+/** Does some word of the ORIGINAL command (quotes intact) read as `-`? A runtime with a
+ * bare `-` takes its PROGRAM from stdin, and a program the guard cannot read is the
+ * store's worst unreadable half — which is why `cat payload.js | bun -` is in scope
+ however ordinary each half looks on its own. Asked of the raw words so a quoted "-"
+ still counts: the shell hands that word to the runtime as `-` all the same. */
+const hasStdinDash = (rawWords: string[]): boolean => rawWords.some((w) => unquote(w) === "-");
 /** The one source of truth for the CLI the refusal tells the operator to use. */
 const ACCEPT_CLI = "extension/scripts/review-accept.ts";
 /** Shell expansion characters. A word carrying one is text whose final form the guard
@@ -110,9 +145,34 @@ const ACCEPT_CLI = "extension/scripts/review-accept.ts";
  * `rev{iew-findings}.json` becomes a protected name the text never spells. Asked of the
  * RAW word, quotes included. */
 const EXPANSION = /[$`\\{}]/;
+/** A word carrying a substitution or an escape — `$`, a backtick or a backslash. Braces
+ * are DELIBERATELY absent: they are ordinary punctuation in prose and in `awk '{print
+ * 1}'`, and a store name assembled from braces is caught by the brace-erased view of
+ * `namesStore`. Asked of the RAW text, so the `$` inside a quoted message still counts. */
+const EXPANSION_WORD = /[$`\\]/;
+/** A git repo-location selector (`-C`, `-c`, `--git-dir`, `--work-tree`, `--exec-path`,
+ * attached or spaced, either case). The arms refuse one outright — it moves the
+ * repository a "plain read" runs against — so a command carrying one is IN SCOPE
+ * whatever else it spells: the arms must get the chance to refuse it. `--exec-path` is
+ * the dangerous one (it can shadow `git-shell` with a program of the caller's choosing).
+ * `git -c core.pager=cat log --oneline` falls in here too, which is the over-refusal
+ * clause (b) already documents for `-c`. */
+const REPO_LOCATION =
+  /(?:^|\s)-{1,2}(?:c|C)(?:=|\s)|-{1,2}(?:git-dir|work-tree|exec-path)(?:=|\s)/i;
 /** Redirection characters: an arm word carrying one moves bytes to or from a path the
  * arms never saw. */
 const REDIRECT = /[<>]/;
+/** The write-capable arguments clause (b) refuses and names (`-o`, `--output`, `-c`,
+ * `--ext-diff`), in the ATTACHED spelling where the value is glued to the flag. The
+ * spaced spelling is the arms' own `hasFlag` question; this one covers `-o<name>` /
+ * `--output=<name>`, which is one word and invisible to an arm's `-o <name>` pair test.
+ * `=`-attachment only: a value glued straight onto a flag letter (`-odata`) is not an
+ * option in the tools that take these flags — `git show -odata` reads `data` as a path
+ * operand — and reading it as a flag would brick `bun test --reporter junit …` (`-…er
+ * junit`) and every short-flag command that mentions the store (`bun test … <store>`,
+ * `bash verify-loop.sh … <store>`, `git commit -oreview-findings.json`). Clause (b)'s
+ * "over-refuse a harmless read" is about a READ of the store, not about unrelated flags. */
+const ATTACHED_WRITE = /(?:^|\s)(?:--output=\S|-o\S|--ext-diff=\S|-c\S)/;
 
 /** Does a word carry shell expansion or a redirection character? */
 const unsafeChars = (word: string): boolean => EXPANSION.test(word) || REDIRECT.test(word);
@@ -196,13 +256,12 @@ function unquoteKeepQuotes(segment: string): string {
   return out;
 }
 
-/** Any word that is a program name (`bun`, `git`, `bash`, …), quotes stepped over. */
-function looksLikeProgram(text: string): boolean {
-  return shellWords(text).some((w) => {
-    const t = baseName(unquote(w));
-    return /^[a-z][a-z0-9._-]*$/.test(t) && !/^[._-]/.test(t);
-  });
-}
+/**
+ * Clause (a), part (vi) is implemented in `review-accept-command.ts` as
+ * `namesAttachedValue`, which strips the option prefix (`-G`, `-S`, `--grep=`, `-o`,
+ * `--output=`) before asking the name and matches case-insensitively — the guard asks it
+ * of its lowercased view, so `git log -GReview-Findings-Store` counts too.
+ */
 
 function scanCommand(command: string): string | undefined {
   // The newline is kept here: it is a segment separator, and the SEGMENTS are taken from
@@ -220,30 +279,86 @@ function scanCommand(command: string): string | undefined {
   const norm = normalise(trimmed);
   if (norm === "PARSE_FAIL") return refusalReason({ dataOperand: true });
   const raw = kept;
-
-  const protectedAnywhere = namesProtected(raw) || namesProtected(norm);
-  const heredocRuntime = norm.includes("<<") && namesRunner(norm);
-  // Any operator, redirection or newline opens a segment the shell will run, even inside
-  // quotes, so the pre-checks defer to the arms whenever one appears.
-  const reach = /[|;&<>]/.test(command) || command.includes(String.fromCharCode(10));
-  // The runner test is asked of the NORMALISED text as well as the raw one: normalise
-  // removes quoted spans, and a runner that SURVIVES quote removal is a word the shell
-  // really executes. Asking only the raw text let `bash …` reach the arms by a path the
-  // pre-checks never vetted.
+  // The words as the shell hands them out (`--output=<path>` is ONE word here, which is
+  // precisely what an arm's `-o <name>` pair test cannot see).
+  const words = shellWords(raw);
+  // (The scope tests below ask the write-flag question themselves, per program.)
+  const protectedAnywhere = namesProtected(norm);
+  // THE SCOPE OF THE RULE (#1125). Clause (a) makes the allowlist authoritative for
+  // commands THAT NAME THE STORE; it says nothing about the rest, and the arms refusing
+  // them is the whole agent surface bricked (`mkdir -p tmp/x`, `git add -A`, `git push`,
+  // `npm install`, `cargo test`, `python3 -c …` all spell no protected name). So the
+  // name test runs FIRST and a command that names nothing protected is allowed before
+  // the segment gates and before the arms — which is what the rule says and what the
+  // must-stay-allowed list (`gh api`, `sed -n`, `awk` on non-protected paths) requires.
+  // A PARSE_FAIL is still refused above: an unreadable command is refused whatever it
+  // spells. The name test is asked of the raw text, the normalised text and the
+  // quote/brace/comma-erased text, so an assembled or quoted-split name is in scope.
+  // The exemption reaches only a command NO arm would have admitted: an arm-matching
+  // THE SCOPE OF CLAUSE (a) (#1125) — five tests decide whether the guard speaks to a
+  // command at all. Anything else is an ORDINARY AGENT COMMAND and the allowlist does
+  // not govern it: `mkdir -p tmp/x`, `git add -A`, `git push`, `npm install`,
+  // `cargo test`, `python3 -c …`, `sed -n` / `awk` / `gh api` on a non-protected path
+  // all pass, and neither the segment gates nor the arms are consulted. The arms
+  // refusing those was the whole agent surface bricked.
   //
-  // `looksLikeProgram(flat)` is the term that makes this pre-check unreachable for any
-  // real command — a bare word is all it takes — and that is deliberate: every command
-  // goes through the arms rather than being waved past them. The terms above it are not
-  // dead, they are just no longer sufficient on their own.
-  if (
-    !protectedAnywhere &&
-    !namesRunner(flat) &&
-    !namesRunner(norm) &&
-    !looksLikeProgram(flat) &&
-    !reach &&
-    !heredocRuntime
-  )
-    return undefined;
+  //  (1) the name spelled as a word anywhere — raw, normalised, or with quotes / braces
+  //      / commas erased, so `rev{iew-findings}.json` and `'rev''iew-findings.json'`
+  //      count, and a heredoc body counts (the body is part of the raw text); the
+  //      operator script's basename counts too, since running it is the act the whole
+  //      guard exists to refuse;
+  //  (2) the name ATTACHED to an option (`git log -G<name>`, `-S<name>`, `--grep=<name>`,
+  //      `git show HEAD:x -o<name>`): the option prefix glues the name to the flag, so
+  //      no tokeniser ever hands `isProtectedToken` the bare name and no arm's operand
+  //      test sees the pair — asked of the raw text and of its lowercase view, since git
+  //      reads such a value exactly as written;
+  //  (3) a git repo-location selector (`-c`, `--git-dir`, `--work-tree`, `--exec-path`,
+  //      spaced or `=`-attached, either case, quotes stepped over): the arms refuse one
+  //      outright because it moves the repository a "plain read" runs against, so such a
+  //      command must reach the arms whatever else it spells. It is a GIT shape, so it
+  //      brings a command in only when git itself is the program — `python3 -c '…'` is
+  //      Python's inline-code flag and nothing moves.
+  //  (4) a heredoc marker beside a runtime word: the body is text the guard cannot read
+  //      and the interpreter will execute it, so an unreadable body next to a runner is
+  //      in scope whatever the body spells;
+  //  (5) an UNREADABLE WORD carried by a command that can READ THE STORE — a runtime,
+  //      git / a forge CLI, or one of the read tools the arms enumerate. A word with
+  //      `$`, a backtick or a backslash has no determinable final text, so on one of
+  //      those programs the arms must get the chance to refuse it (`cat {payload.js} |
+  //      bun -`). On a program that is none of those — `awk`, `echo` — a store name can
+  //      never reach the guard's protected bytes, and clause (a) leaves the command
+  //      alone: braces alone are ordinary punctuation (`echo {a,b}`, `awk '{print 1}'`
+  //      pass), and a name assembled from them is caught by (1)'s erased view.
+  //  (6) a WRITE-CAPABLE ARGUMENT on a VCS/forge command: `-o<name>` / `--output=<name>`
+  //      / `--ext-diff=<name>` ATTACHED to the flag, and any SPACED flag the arms' own
+  //      `hasFlag` recognises. Clause (b) refuses these whatever the target, because the
+  //      flag is a route to WRITING the store (`git show HEAD:x --output=f`). Asked only
+  //      of a command that runs git / gh / glab, so `bun test --reporter junit …` and
+  //      `verify-loop.sh --digest-mode on …` — a test runner's flags, on a program that
+  //      writes nothing — stay the ordinary agent commands they are. A value glued to a
+  //      flag letter WITHOUT `=` is not a flag at all (`git show -odata` is the path
+  //      `data`), which is what keeps `bun test … <store>` and `git commit -m x -o<name>`
+  //      adjudicated by the arms rather than by a substring that matches any short flag.
+  //
+  // A PARSE_FAIL is refused above, before any of this: an unreadable command is refused
+  // whatever it spells.
+  const inScope =
+    namesStore(raw, norm, isAcceptScriptToken) ||
+    namesAttachedValue(norm) ||
+    namesAttachedValue(raw) ||
+    (namesGit(raw) && REPO_LOCATION.test(shellVisible(raw))) ||
+    ((norm.includes("<<") || hasStdinDash(words)) && namesRunner(norm)) ||
+    ((namesRunner(norm) || namesReadTool(norm)) && EXPANSION_WORD.test(raw)) ||
+    (namesVcsOrRuntime(norm) &&
+      (ATTACHED_WRITE.test(`${shellVisible(raw)} `) || hasFlag(words, ...WRITE_FLAGS)));
+  // A PARSE_FAIL is refused above: an unreadable command is refused whatever it spells.
+  if (!inScope) return undefined;
+
+  // From here the command is IN SCOPE, so everything the guard knows how to refuse
+  // applies — the segment-wide gates (expansion, braces, a redirection) and the arms,
+  // and a segment matching no arm is refused. There is no cheap exit in front of the
+  // allowlist for a command in scope: deny-by-default is not free, and the arms are a
+  // handful of array tests.
 
   // The write-flag remedy applies only when the command BOTH names the store and
   // carries one of the write-capable arguments; a runtime import of the store is

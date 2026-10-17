@@ -153,9 +153,9 @@ try {
     OPERATOR_ENV,
   ).finally(() => {
     // `Reflect.deleteProperty`, NOT an `undefined` assignment: on `process.env` an
-    // assignment coerces, so `process.env.X = undefined` leaves the STRING "undefined"
-    // in the child's environment — the opposite of removing the variable. Biome's
-    // noDelete rule is why `delete` is not used either.
+    // assignment coerces its value, so assigning the undefined literal leaves the STRING
+    // "undefined" in the child's environment — the opposite of removing the variable.
+    // Biome's noDelete rule is why `delete` is not used either.
     if (savedGlobal === undefined) Reflect.deleteProperty(process.env, "GIT_CONFIG_GLOBAL");
     else process.env.GIT_CONFIG_GLOBAL = savedGlobal;
     if (savedNoSystem === undefined) Reflect.deleteProperty(process.env, "GIT_CONFIG_NOSYSTEM");
