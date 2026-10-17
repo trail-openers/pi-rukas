@@ -3,7 +3,8 @@
  * #1378 (part 1c of 4) — the guarded reads against an attribute-bound filter
  * driver, in a CHILD-WRITABLE worktree. Split out of
  * test-work-driver-protected-paths-read.ts for the 500-line cap; the shared
- * real-git fixtures live in lib/protected-gate-fixture.ts.
+ * real-git helpers are `gitIn` in lib/git-worktree-fixture.ts and `realExec`
+ * in lib/exec-fake.ts (there is no dedicated fixture module for this test).
  *
  * The read is only as safe as what git EXECUTES while producing it. A developer,
  * a lens-fix, or a dependency can drop a script in the worktree, point a

@@ -25,6 +25,7 @@ import {
   ungrantedProtectedPaths,
 } from "../src/work-driver-protected-grant.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
+import { PROTECTED_READ_MAX_BUFFER } from "../src/work-driver-protected-paths-read.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
@@ -357,8 +358,8 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
     "an unreadable status halts the develop step, naming the worktree and the error (gate on)",
   );
   assert(
-    (seen.maxBuffer ?? 0) >= 64 * 1024 * 1024,
-    "the status read allows a large untracked set (-uall) — at least 64 MiB",
+    (seen.maxBuffer ?? 0) >= PROTECTED_READ_MAX_BUFFER,
+    `the status read allows a large untracked set (-uall) — at least the exported PROTECTED_READ_MAX_BUFFER (${PROTECTED_READ_MAX_BUFFER} bytes)`,
   );
   process.env.PI_ENSEMBLE_PROTECTED_PATHS = "0";
   const passNote = await verifyStepOutcome(statusThrows({}), stateWith(), "develop");
