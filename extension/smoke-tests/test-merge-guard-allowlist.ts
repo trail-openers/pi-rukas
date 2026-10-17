@@ -326,6 +326,24 @@ for (const cmd of ["cd x && gh pr merge 17", "gh api repos/o/r/pulls/12/merge"])
       !r.holds.some((h) => /reason=(form|not-a-merge|unknown-flag|too-large)\b/.test(h)),
       "…and never another seam's code for a resolution failure",
     );
+    // #1431 round 3 — and it does NOT reach the hold vocabulary. The classifier
+    // answered kind `merge` for this command; the refusal is of a merge attempt
+    // held before the target read, so neither the rendered text nor the trace
+    // line may claim it is "not a merge", and the text may not tell the agent
+    // "a read needs nothing from the guard" about `gh pr merge`.
+    assert(
+      r.block && /^merge blocked:/.test(r.reason ?? ""),
+      `…rendered as a blocked merge: ${(r.reason ?? "").slice(0, 60)}…`,
+    );
+    assert(
+      !(r.reason ?? "").includes("a read needs nothing from the guard") &&
+        !(r.reason ?? "").includes("(not a merge)"),
+      "…with no read remedy and no not-a-merge claim",
+    );
+    assert(
+      r.holds.length === 1 && /^merge-guard: BLOCKED /.test(r.holds[0] ?? ""),
+      `…and traced as a blocked merge, not a hold: ${JSON.stringify(r.holds)}`,
+    );
   }
 }
 {

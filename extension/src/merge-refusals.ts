@@ -95,8 +95,14 @@ export function lexedWhy(code: string): string {
  * `not-a-merge` — the command read like the accepted merge form, but a step
  * before the merge could be confirmed failed (the PR number would not
  * resolve). Nothing has been shown to merge, so this is a hold too.
+ * `merge-blocked` — #1431 round 3. The classifier ALREADY answered kind
+ * `merge`: this is a merge attempt the guard held fail-closed before the
+ * target read (the PR number would not resolve). It is not a read, so the
+ * text names the accepted form as the remedy and never says "a read needs
+ * nothing from the guard"; and it still names no hatch, because the reviews
+ * were never evaluated — there is nothing here for an operator to override.
  */
-export type HoldKind = "unanalysable" | "form" | "not-a-merge";
+export type HoldKind = "unanalysable" | "form" | "not-a-merge" | "merge-blocked";
 
 /** The guard's own hold, carrying the text that explains it. */
 export interface HoldDetails {
@@ -121,6 +127,16 @@ export interface HoldDetails {
  */
 export function renderHold(details: HoldDetails, held: string): { block: true; reason: string } {
   const quote = held.length > 160 ? `${held.slice(0, 160)}…` : held;
+  // #1431 round 3 — the four kinds answer two questions, and the earlier
+  // three answered the first one the same way: is this a merge? A command the
+  // classifier read as a merge must not be told to the agent as "not a
+  // merge", and must not be pointed at a read remedy.
+  if (details.kind === "merge-blocked") {
+    return {
+      block: true,
+      reason: `merge blocked: the merge guard read this command as a merge and stopped it — ${details.reasonText}. Nothing was merged and the reviews were never evaluated, so there is nothing here to override. Issue the merge in the accepted form, naming the PR/MR number: \`gh pr merge <N>\` / \`glab mr merge <N> --auto-merge=false\`, on its own. The shape the guard does check is ${ACCEPTED_MERGE_FORM}. If this command is genuinely not a merge, report it as a false hold — the guard's classifier is the thing to fix, not the reviews. Held command: ${JSON.stringify(quote)}`,
+    };
+  }
   const what =
     details.kind === "unanalysable"
       ? "the merge guard could not read this command at all"
@@ -135,11 +151,20 @@ export function renderHold(details: HoldDetails, held: string): { block: true; r
     details.kind === "unanalysable"
       ? "split it into simple commands, or run the forge read on its own"
       : details.kind === "not-a-merge"
-        ? "name the PR/MR number in the merge command (`gh pr merge <N>` / `glab mr merge <N> --auto-merge=false`); a read needs nothing from the guard"
+        ? "name the PR/MR number in the merge command (`gh pr merge <N>` / `glab mr merge <N> --auto-merge=false`)"
         : "run the merge as one plain `gh pr merge <N>` / `glab mr merge <N> --auto-merge=false`, on its own; run a read on its own";
+  // #1431 round 3 — the read remedy is what every classifier hold owes the
+  // agent that hit it on a `gh api` read: the twelve refusals of #1417 were
+  // reads, and the sentence that keeps an operator from reaching for the merge
+  // hatch is this one. It is therefore part of the HOLD family, not of one
+  // kind's remedy clause — a classifier hold can name a merge shape in its
+  // remedy and still be a hold on a read. `merge-blocked` returned above and
+  // never reaches here, so the guard is a type-level statement of the same
+  // fact the hold-text suite pins.
+  const readRemedy = "; a read needs nothing from the guard";
   return {
     block: true,
-    reason: `command held (not a merge): ${what} — ${details.reasonText}. ${why}; this hold is not a review gate, and the merge escape hatch would not unblock it. ${how}. The shape the guard does check is ${ACCEPTED_MERGE_FORM}. If this command is genuinely not a merge, report it as a false hold — the guard's classifier is the thing to fix, not the reviews. Held command: ${JSON.stringify(quote)}`,
+    reason: `command held (not a merge): ${what} — ${details.reasonText}. ${why}; this hold is not a review gate, and the merge escape hatch would not unblock it. ${how}${readRemedy}. The shape the guard does check is ${ACCEPTED_MERGE_FORM}. If this command is genuinely not a merge, report it as a false hold — the guard's classifier is the thing to fix, not the reviews. Held command: ${JSON.stringify(quote)}`,
   };
 }
 

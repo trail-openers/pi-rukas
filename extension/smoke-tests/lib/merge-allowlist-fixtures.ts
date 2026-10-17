@@ -237,6 +237,13 @@ export const REFUSED: string[] = [
   "gh run list --workflow merge.yml",
   "gh run rerun 42 --job merge",
   "gh release create v1 --notes merge",
+  // #1431 round 3 — the read exemption is an EXACT noun+verb match, never a
+  // shape that merely CONTAINS a create word. `READ_ONLY_GH` holds `pr create`
+  // and `issue create`, and `label create` / a plugin verb of that shape are
+  // not reads: they mutate the forge, so a merge word in them is judged like
+  // any other prose beside a mutating verb.
+  "gh label create merge-bot --color red --description 'gh pr merge 12'",
+  "gh extension create merge-tool --prefix x",
   // Wrong targets and flags.
   "gh pr merge https://github.com/o/r/pull/17",
   "gh pr merge feature/x",
@@ -317,6 +324,13 @@ export const REFUSED: string[] = [
   'gh pr create --title x --body "merge"',
   'gh pr create --title x -b "merge the branch"',
   'gh issue create --title x --body="please merge"',
+  // #1431 round 3 — getopt short forms of the inline body flag. `-b=merge`
+  // (spaced equals) and `-bmerge` (glued) name a body just as `-b merge` does;
+  // they were read as ordinary words, so the creation kept its read exemption
+  // and a merge word in the body went unseen.
+  "gh pr create -b=merge",
+  "gh pr create -bmerge",
+  'gh pr create -b "gh pr merge 12"',
   // Prose that names a merge next to a forge.
   'echo "gh pr merge 12"',
   'git commit -m "docs: explain gh pr merge 12"',
@@ -360,6 +374,13 @@ export const CODES: Array<[string, string, string?]> = [
   // exempt, so a merge word cannot be smuggled through the one exempt verb
   // whose argument reaches the forge verbatim.
   ['gh pr create --title x --body "gh pr merge 12"', "not-pr-merge", "expected `pr merge` here"],
+  // #1431 round 3 — a verb that merely CONTAINS a create word is not the
+  // create the exemption names, so it reaches the grammar and the code names
+  // the word it stopped at.
+  ["gh label create merge-bot --color red", "not-pr-merge", "expected `pr merge` here"],
+  // …and the getopt body forms reach the same place, having lost the exemption.
+  ["gh pr create -b=merge", "not-pr-merge", "expected `pr merge` here"],
+  ["gh pr create -bmerge", "not-pr-merge", "expected `pr merge` here"],
 ];
 
 /**
@@ -475,7 +496,15 @@ export const NOT_MERGES: string[] = [
   'gh pr create --title "refuse merge shapes" --body-file x.md',
   "gh issue create --title 'merge the thing' --body-file b.md",
   "gh pr create --title x",
-  "",
+  // #1431 round 3 — the two sides of the tightened matcher that must NOT move:
+  // a flag whose name merely starts with the body flag is not the body flag
+  // (an over-tight strip here holds a creation that spells no merge word), and
+  // a creation that carries no inline body at all stays a read.
+  "gh pr create --title x --body-x merge",
+  "gh pr create -bx merge",
+  "gh label list merge",
+  "gh release create v1 --title notes",
+  "gh extension list merge",
 ];
 
 /**
