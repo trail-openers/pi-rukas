@@ -11,6 +11,7 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
+import { isKnownExitOrigin } from "./workflow-state-events-exit-origin.ts";
 import { WORK_STEPS, type WorkEvent, type WorkStep } from "./workflow-state-events.ts";
 import { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
 import {
@@ -459,6 +460,19 @@ export function validateDiscriminants(state: unknown): string[] {
       // a template value). #1263/#753/#973: an unknown cap fails re-entry.
       if (e.kind === "cap-hit" && typeof e.cap === "string" && !isKnownCap(e.cap)) {
         out.push(`eventLog[${i}].cap has unknown value ${JSON.stringify(e.cap)}`);
+      }
+      // #1247 — a `cycle-interrupted` origin must be one the process tracker
+      // can actually write. The field is OPTIONAL (state files pre-#1247 have
+      // none), but when PRESENT it names what closed the session, and the
+      // handoff and `/work-status` render it to the operator as fact. A string
+      // no tracker could produce (`signal:SIGKILL`, a typo, a hand edit) is a
+      // confident wrong cause, so it is reported rather than rendered.
+      if (
+        e.kind === "cycle-interrupted" &&
+        e.origin !== undefined &&
+        !isKnownExitOrigin(e.origin)
+      ) {
+        out.push(`eventLog[${i}].origin has unknown value ${JSON.stringify(e.origin)}`);
       }
     });
   }

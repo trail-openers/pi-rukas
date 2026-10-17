@@ -286,7 +286,17 @@ const everyKindEvent: WorkEvent[] = [
   { kind: "fence-recovery-started", at: 1, workstreamId: "a", owners: ["b"] },
   // S4a (#1162) — the interrupt record.
   { kind: "interrupted", at: 1, reason: "signal" },
-  { kind: "cycle-interrupted", at: 1, step: "lens-fix", reason: "quit", resumable: true },
+  {
+    kind: "cycle-interrupted",
+    at: 1,
+    step: "lens-fix",
+    reason: "quit",
+    // #1247 round 2 — a signal origin, not just `unknown`: the all-kinds pass
+    // asserts ZERO findings, so a tuple/re-validator that rejected a legal
+    // `signal:SIGTERM` would fail here instead of refusing real state files.
+    origin: "signal:SIGTERM",
+    resumable: true,
+  },
   {
     kind: "lens-residuals-post-failed",
     at: 1,
