@@ -52,6 +52,7 @@ import { dedupeLatest } from "./review-ledger-core.ts";
 import { acquireLedgerLock, runLedgerCriticalSectionHook } from "./review-ledger-lock.ts";
 import { mergeAfterRace } from "./review-ledger-merge.ts";
 import { identityBase, ledgerPathFor, remoteName } from "./review-ledger-path.ts";
+import { latestEntry, readLedgerFile, validEntries } from "./review-ledger-read.ts";
 import { bumpLensRound } from "./review-ledger-round.ts";
 import { diffDigestOfRange, patchIdOfRange } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
@@ -108,6 +109,13 @@ export interface LedgerEntry {
   carriedFrom?: string;
   /** #1176 round 2 \u2014 carried entries only: the trust assumption the row states (mainline changes merged in were not re-reviewed by this branch). */
   carryNote?: string;
+  /** #1449 — the path this row's write resolved to, recorded ONLY when it was
+   * NOT this clone's own ledger file (an inherited `PI_ENSEMBLE_REVIEW_LEDGER_FILE`
+   * redirected it). Presence is the whole signal: a row carrying it is a row
+   * the #912 guard's normal read will never open, and the guard's refusal names
+   * it so an operator can tell "never reviewed" from "reviewed, write
+   * misdirected". A row written to the clone's own ledger never carries it. */
+  writtenTo?: string;
   /** #1360 — adversarial entries written from the `adversarial_loop` TOOL only:
    * the base SHA the review resolved, and the head SHA it reviewed. Stored so
    * an audit can see what range a row actually covers (the row's `patchId` is
@@ -119,7 +127,7 @@ export interface LedgerEntry {
   reviewedHead?: string;
 }
 
-interface LedgerFile {
+export interface LedgerFile {
   entries: LedgerEntry[];
 }
 
@@ -127,10 +135,18 @@ export type LedgerExecFn = VerifyExecFn;
 
 /**
  * #955 file-size split: `ledgerPathFor` (and its one-time override trace)
- * live in review-ledger-path.ts; the re-export below keeps importers
- * unchanged.
+ * live in review-ledger-path.ts; the re-exports below keep importers
+ * unchanged. #1449 adds the override-blind twin and the misdirection
+ * predicate/note so every writer reaches them through the same seam it
+ * already imports (`review-ledger.ts`) rather than the path module directly.
  */
-export { ledgerPathFor } from "./review-ledger-path.ts";
+export {
+  cloneLedgerPathFor,
+  LEDGER_OVERRIDE_ENV,
+  ledgerPathFor,
+  MISDIRECTED_LEDGER_NOTE,
+  misdirectedLedgerWrite,
+} from "./review-ledger-path.ts";
 export { bumpLensRound } from "./review-ledger-round.ts";
 export { dedupeLatest } from "./review-ledger-core.ts";
 export { mergeAfterRace } from "./review-ledger-merge.ts";
@@ -417,74 +433,7 @@ export async function appendLedgerEntry(
   }
 }
 
-/** Read the raw ledger (no git involved — the path is supplied). */
-export function readLedgerFile(file: string): LedgerFile {
-  const raw = readFileSync(file, "utf8");
-  const parsed = JSON.parse(raw) as { entries?: unknown };
-  if (!parsed || !Array.isArray(parsed.entries)) return { entries: [] };
-  return { entries: validEntries(parsed.entries) };
-}
-
-/**
- * Validate an untrusted row before the ledger trusts it: `branch` must be
- * a non-empty string, `kind` one of the two review kinds, `patchId` a
- * string, `at` a finite number, `passed` a boolean. Anything else is
- * dropped (and traced) — a corrupt row must not satisfy or shadow a
- * genuine one.
- */
-export function validEntries(entries: unknown[]): LedgerEntry[] {
-  const ok: LedgerEntry[] = [];
-  for (const e of entries) {
-    if (
-      e &&
-      typeof e === "object" &&
-      typeof (e as LedgerEntry).branch === "string" &&
-      (e as LedgerEntry).branch.length > 0 &&
-      ((e as LedgerEntry).kind === "adversarial" || (e as LedgerEntry).kind === "lens") &&
-      typeof (e as LedgerEntry).patchId === "string" &&
-      typeof (e as LedgerEntry).at === "number" &&
-      Number.isFinite((e as LedgerEntry).at) &&
-      typeof (e as LedgerEntry).passed === "boolean"
-    ) {
-      ok.push(e as LedgerEntry);
-    } else {
-      trace(`review-ledger: dropped invalid ledger entry: ${safeJson(e)}`);
-    }
-  }
-  return ok;
-}
-
-/** One line, for the trace: a never-throwing JSON stringify. */
-function safeJson(v: unknown): string {
-  try {
-    return JSON.stringify(v) ?? "undefined";
-  } catch {
-    return "<unserialisable>";
-  }
-}
-
-/**
- * The LATEST entry per kind for a branch (max `at`), or undefined.
- *
- * Adversarial: the guard requires the latest to be `passed` AND its patchId
- * to equal the current one. Lens: the latest must be `passed` (any patchId
- * — a passing lens entry may predate a later commit; a later FAILING lens
- * run is what the latest-ness protects against).
- */
-export function latestEntry(entries: LedgerEntry[], branch: string, kind: ReviewKind) {
-  let best: LedgerEntry | undefined;
-  for (const e of entries) {
-    if (e.branch !== branch || e.kind !== kind) continue;
-    if (!best || e.at >= best.at) best = e;
-  }
-  return best;
-}
-
-/** Read + validate the ledger from a resolved path; never throws. */
-export function readLedgerAt(file: string): LedgerEntry[] {
-  try {
-    return readLedgerFile(file).entries;
-  } catch {
-    return [];
-  }
-}
+// The read side lives in review-ledger-read.ts (file-size limit) and is
+// re-exported here so every existing caller keeps importing from this module —
+// the ledger's public surface is one module, not a hunt for the right file.
+export { latestEntry, readLedgerAt, readLedgerFile, validEntries } from "./review-ledger-read.ts";

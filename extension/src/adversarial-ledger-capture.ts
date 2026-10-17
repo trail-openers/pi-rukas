@@ -11,7 +11,10 @@
  */
 
 import { type LedgerBinding, captureBinding } from "./adversarial-ledger-binding.ts";
-import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
+import {
+  type AdversarialLedgerOutcome,
+  writeAdversarialLedgerEntry,
+} from "./adversarial-ledger.ts";
 import { execp } from "./exec.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -107,6 +110,18 @@ export function roundHeadRef(
  * durable row carries the same text the caller sees (#1104: fence findings),
  * and `note` runs LAST so the not-recorded warning reaches the result and not
  * the row (#980).
+ *
+ * #1449 — the write's outcome now reaches the operator through `onLedgerOutcome`,
+ * the same side-channel shape `runLensReview` uses for its `onLedgerWrite`.
+ * The row itself is unchanged by it (the promise is still fire-and-forget and
+ * still never rejects: a ledger problem never costs a review), and the
+ * synchronous return is preserved for the loop's seven exits — the note is
+ * DELIVERED asynchronously via the optional callback, exactly as `lens-review.ts`
+ * delivers its ledger outcome through the tool's note channel. A caller that
+ * passes no callback gets today's behaviour byte-for-byte. The callback is
+ * awaited, so a caller whose note is async (a dispatch that delivers a steer)
+ * is not raced: the loop returns as soon as it did before, and the delivery
+ * lands while the caller still owns the result.
  */
 export function makeLedgerWrite(opts: {
   state: BindingState;
@@ -123,10 +138,13 @@ export function makeLedgerWrite(opts: {
   execFn?: VerifyExecFn;
   decorate: (raw: DispatchResult) => DispatchResult;
   note: (result: DispatchResult) => DispatchResult;
+  /** #1449 — called with the resolved write outcome (the misdirection report).
+   * Optional: a caller that does not want the report simply does not ask. */
+  onLedgerOutcome?: (outcome: AdversarialLedgerOutcome) => void | Promise<void>;
 }): (raw: DispatchResult) => DispatchResult {
   return (raw) => {
     const result = opts.decorate(raw);
-    writeAdversarialLedgerEntry(result, {
+    const ledgerWrite = writeAdversarialLedgerEntry(result, {
       workCwd: opts.workCwd,
       resolvedBranch: opts.resolvedBranch,
       branch: opts.branch,
@@ -138,6 +156,14 @@ export function makeLedgerWrite(opts: {
       binding: opts.state.captured?.binding,
       execFn: opts.execFn,
     });
+    // The promise never rejects (the writer's own catch), so the only
+    // bookkeeping here is delivering the report; a callback that throws must
+    // not break the loop, hence the swallow. When no caller asked for the
+    // report the promise is dropped exactly as before (fire-and-forget).
+    if (opts.onLedgerOutcome) {
+      const deliver = opts.onLedgerOutcome;
+      void ledgerWrite.then((outcome) => deliver(outcome)).catch(() => undefined);
+    }
     return opts.note(result);
   };
 }

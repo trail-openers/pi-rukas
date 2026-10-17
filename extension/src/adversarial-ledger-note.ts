@@ -1,7 +1,7 @@
 /**
  * adversarial-ledger-note — the #980 "review not recorded in the merge
- * ledger" note for the adversarial loop, split from adversarial.ts (the
- * 500-line gate).
+ * ledger" note and the #1449 "recorded, but at a redirected path" note for the
+ * adversarial loop, split from adversarial.ts (the 500-line gate).
  *
  * The branch is resolved ONCE, up front, via the shared `resolveReviewBranch`
  * helper (the same one the lens review and the ledger writer use): explicit
@@ -14,10 +14,25 @@
  * after the fact. The note fires on EVERY exit — the review was going to be
  * recorded regardless of its verdict (unlike the lens disclosure note,
  * which fires only on ISSUES_FOUND).
+ *
+ * #1449 adds the second, LATER note, and the two are deliberately different
+ * mechanisms because they answer different questions. "Was this review
+ * recordable at all?" is knowable at loop entry, so the not-recorded note above
+ * is computed synchronously and threads into every exit. "Did the row land where
+ * the guard will look?" is knowable only once the write resolves, so
+ * `withMisdirectedNote` is the threader the write's outcome is routed through
+ * (`makeLedgerWrite` in adversarial-ledger-capture.ts calls it with the
+ * resolved `AdversarialLedgerOutcome`). It is a no-op for `{ recorded: true }`
+ * with no `landedAtPath` (the normal case), for a `recorded: false` skip (the
+ * by-design skips name their own reason and are NOT misdirections), and when the
+ * branch never resolved — that run already carries the not-recorded note, and
+ * two notes about no row would be noise.
  */
 
+import type { AdversarialLedgerOutcome } from "./adversarial-ledger.ts";
 import { execp } from "./exec.ts";
 import { NOT_RECORDED_NOTE, resolveReviewBranch } from "./review-branch.ts";
+import { MISDIRECTED_LEDGER_NOTE } from "./review-ledger-path.ts";
 import type { DispatchResult } from "./types.ts";
 
 export interface LedgerNoteHelpers {
@@ -29,6 +44,9 @@ export interface LedgerNoteHelpers {
   /** Thread the note into a result's text at every return (all seven exits
    * share the same wording; a no-op when the branch resolved). */
   withLedgerNote: (r: DispatchResult) => DispatchResult;
+  /** #1449 — thread the misdirected-write note in, ONCE the write resolves.
+   * No-op on every outcome but a row that landed outside the per-clone ledger. */
+  withMisdirectedNote: (r: DispatchResult, outcome: AdversarialLedgerOutcome) => DispatchResult;
 }
 
 /**
@@ -49,5 +67,18 @@ export async function buildLedgerNote(opts: {
   const ledgerNote = resolution.branch ? undefined : NOT_RECORDED_NOTE;
   const withLedgerNote = (r: DispatchResult): DispatchResult =>
     ledgerNote ? { ...r, text: `${r.text}\n\n${ledgerNote}` } : r;
-  return { branch: resolution.branch, withLedgerNote };
+  const withMisdirectedNote = (
+    r: DispatchResult,
+    outcome: AdversarialLedgerOutcome,
+  ): DispatchResult => {
+    // A redirect is `recorded: true` WITH a path (see AdversarialLedgerOutcome).
+    // A `recorded: false` skip is a by-design no-write, not a misdirection; the
+    // branchless run already carries the not-recorded note.
+    if (ledgerNote || outcome.recorded !== true || !outcome.landedAtPath) return r;
+    return {
+      ...r,
+      text: `${r.text}\n\n${MISDIRECTED_LEDGER_NOTE}\n\nWrote to: ${outcome.landedAtPath}`,
+    };
+  };
+  return { branch: resolution.branch, withLedgerNote, withMisdirectedNote };
 }

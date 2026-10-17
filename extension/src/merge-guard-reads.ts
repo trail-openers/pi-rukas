@@ -194,9 +194,35 @@ export function adversarialRefusal(branch: string, adv: LedgerEntry | undefined)
 export function lensNotEvaluatedRefusal(
   branch: string,
   lens: LedgerEntry | undefined,
+  opts: {
+    /** #1449 — the path the last ledger write resolved to, when it was NOT
+     * the per-clone ledger this guard is reading. Naming it is the whole point:
+     * an operator who reads ONLY this refusal must be able to tell "nobody
+     * reviewed this branch" from "a review ran and its row went elsewhere". */
+    redirectedTo?: string;
+  } = {},
 ): { block: true; reason: string } {
   const override = " (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)";
   if (!lens) {
+    // #1449 — the two situations an operator must be able to tell apart from
+    // this text alone. Both refuse identically (the fail-closed rule is
+    // unchanged); only the explanation differs.
+    //
+    // WHY the guard cannot detect this on its own: it reads through the same
+    // `ledgerPathFor` the writer writes through, in the same process, so guard
+    // and writer agree on the redirected file and the comparison a redirect
+    // defeats is invisible from here. What it CAN say is what the write side
+    // recorded at write time — the path provenance the writer persists on the
+    // row it did manage to write (a row in a redirected file carries it; a
+    // never-written row carries nothing), which is read out of the file the
+    // override points at. Absent that provenance, this is the plain
+    // never-reviewed refusal.
+    if (opts.redirectedTo) {
+      return {
+        block: true,
+        reason: `no lens review on file for branch \`${branch}\` (latest: none) — a lens review DID run and recorded its entry at the overridden path \`${opts.redirectedTo}\` rather than this clone's review ledger under the git common dir, so this guard cannot see it; unset PI_ENSEMBLE_REVIEW_LEDGER_FILE in the reviewing process and re-run dispatch_lens_review — the round-cap path was not evaluated (there is no entry to evaluate here)${override}`,
+      };
+    }
     return {
       block: true,
       reason: `no lens review on file for branch \`${branch}\` (latest: none) — the round-cap path was not evaluated (there is no entry to evaluate); run dispatch_lens_review and let it complete before merging${override}`,

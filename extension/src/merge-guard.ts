@@ -84,6 +84,7 @@
  * or error refuses (fail-closed).
  */
 
+import { existsSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
@@ -109,6 +110,7 @@ import {
   latestEntry,
   ledgerPathFor,
   readLedgerAt,
+  readLedgerFile,
   remoteName,
 } from "./review-ledger.ts";
 import { trace, traceWarn } from "./trace.ts";
@@ -367,6 +369,17 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       );
     }
     const entries: LedgerEntry[] = readLedgerAt(ledgerPath);
+    // #1449 — "there is no lens entry" has two causes and the operator must be
+    // able to tell them apart from the refusal alone: nobody reviewed the
+    // branch, or a review ran and its row landed at an overridden path this
+    // guard's read never opens. The guard CANNOT spot the redirect inside the
+    // redirecting process — it resolves through the same `ledgerPathFor`, so
+    // guard and writer agree on the file — so the signal is the write-side
+    // provenance the writer persists on the row (`LedgerEntry.writtenTo`), read
+    // from the file the override points at. Fail-open on the DIAGNOSTIC only:
+    // a second read that throws yields no note and the ordinary refusal, never
+    // a pass — the strict fail-closed rule below is untouched.
+    const redirectedTo = await misdirectedWriteOf(ledgerPath, target.headBranch);
     const branch = target.headBranch;
 
     // Adversarial: latest entry must be passed AND match the current patchId.
@@ -420,8 +433,9 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       // The round-cap path does not apply (no entry, or a passing entry the
       // strict rule should have allowed — unreachable here, or a legacy
       // entry without a verdict detail): the strict rule's original refusal
-      // text, with the branch named for the operator.
-      return lensNotEvaluatedRefusal(branch, lens); // #1000 — "the round-cap path was not evaluated" (see lensNotEvaluatedRefusal)
+      // text, with the branch named for the operator. #1449 — when a review
+      // DID run and its row went elsewhere, the text says so and names the file.
+      return lensNotEvaluatedRefusal(branch, lens, { redirectedTo }); // #1000 — "the round-cap path was not evaluated" (see lensNotEvaluatedRefusal)
     }
 
     trace(`merge-guard: PR #${prNumber} ${branch} — adversarial + lens both pass, merge allowed`);
@@ -430,6 +444,33 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
 
 function block(reason: string) {
   return { block: true, reason };
+}
+
+/**
+ * #1449 — the path a redirected review wrote to, when one did.
+ *
+ * The guard reads the ledger through the same resolver the writer writes
+ * through, so within a redirecting process both agree on the overridden file
+ * and the mismatch is invisible to a comparison. The rows themselves carry the
+ * answer: a writer that noticed its own redirect stamps `writtenTo` on the row
+ * it wrote. So this asks the ONE file the override points at (the guard's own
+ * resolved path) whether any row for this branch carries that stamp, and
+ * returns the first one it finds.
+ *
+ * Best-effort BY DESIGN: any fault returns undefined, which is the ordinary
+ * "never reviewed" refusal. A diagnostic read must never turn a refusal into a
+ * pass, and must never invent a second refusal path.
+ */
+async function misdirectedWriteOf(ledgerPath: string, branch: string): Promise<string | undefined> {
+  try {
+    if (!existsSync(ledgerPath)) return undefined;
+    for (const e of readLedgerFile(ledgerPath).entries) {
+      if (e.branch === branch && typeof e.writtenTo === "string" && e.writtenTo) return e.writtenTo;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
