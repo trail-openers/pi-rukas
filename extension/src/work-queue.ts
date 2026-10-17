@@ -204,6 +204,10 @@ export function humanActionFor(reason: string, primary: number): string {
   if (/\bdeadline\b/.test(reason)) {
     return `the caller's cycle deadline was reached — raise or clear PI_ENSEMBLE_CYCLE_DEADLINE/PI_ENSEMBLE_CYCLE_BUDGET_MS and re-run \`/work ${primary} --restart\` (the handoff names the branch, PR and round the work reached)`;
   }
+  // #1421 — checked BEFORE the `verify-env:` rule below: a build-residue park
+  // shares that cap family with the fork failure, and the advice differs.
+  if (/\[build-residue\]/.test(reason) || /build-residue/.test(reason))
+    return `#${primary}'s cycle was declined by git-ignored build output in the repo root — keep the project's build out of the checkout (CARGO_TARGET_DIR or a .gitignore entry), clear what is there, then re-run \`/work ${primary} --restart\` (the diff was never judged)`;
   if (reason.includes(HOST_EXHAUSTION_SUFFIX) || /verify-env:/.test(reason)) {
     return `free processes on the host (it could not fork — the gate never ran on #${primary}), then re-run \`/work ${primary} --restart\``;
   }

@@ -47,7 +47,11 @@ import { type ForgeDetection, detectForge } from "./forge-detect.ts";
 import { createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
-import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
+import {
+  classifyRootDirt,
+  probeIgnored,
+  readIgnoredPaths,
+} from "./work-driver-dirty-root-classify.ts";
 import { detectMainline, resolveRestoreTarget } from "./work-driver-git.ts";
 import { countAheadOfBase } from "./work-driver-handoff-ahead.ts";
 import { reconcileHandoffConsolidateBranch } from "./work-driver-handoff-consolidate-branch.ts";
@@ -166,21 +170,30 @@ export async function consolidateWorktreesToBranch(
         cwd: ctx.repoRoot,
         maxBuffer: 1024 * 1024,
       });
-      const rootDirt = rootStatus
-        .split("\n")
-        .filter(
-          (l) =>
-            l.trim() &&
-            !/^..\s+"?\.worktrees\//.test(l) &&
-            !isConfiguredExemptDirtLine(l, ctx.dirtyRootExempt),
-        );
-      if (rootDirt.length > 0) {
+      const candidateLines = rootStatus.split("\n");
+      // #1421 — the same split the consolidated verify applies: an untracked
+      // path git itself declares ignored is build output, and this path's
+      // sweep (`git add` of untracked files) cannot take it. Refusing here
+      // left the incident's three reviewed commits on a scratch worktree
+      // while the handoff said only "consolidation infeasible".
+      const ignored = await readIgnoredPaths(execFn, ctx.repoRoot);
+      const classified = classifyRootDirt(
+        candidateLines,
+        ignored,
+        ctx.dirtyRootExempt,
+        await probeIgnored(execFn, ctx.repoRoot, candidateLines),
+      );
+      if (classified.dirt.length > 0) {
         return {
           ok: false as const,
-          reason: `repoRoot has uncommitted changes (including untracked files, which this path can sweep into the parked branch); refusing to consolidate into ${branchName}: ${rootDirt
+          reason: `repoRoot has uncommitted changes (including untracked files, which this path can sweep into the parked branch); refusing to consolidate into ${branchName}: ${classified.dirt
             .slice(0, 5)
             .map((l) => l.slice(3))
-            .join(", ")}`,
+            .join(", ")}${
+            classified.residue.length > 0
+              ? ` (${classified.residue.length} ignored build artifact(s) also present and not counted)`
+              : ""
+          }`,
         };
       }
       // #1093 — the cycle-start ref the branch step recorded wins. Capturing
