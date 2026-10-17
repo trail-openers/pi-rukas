@@ -214,9 +214,22 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
 }
 {
   // The gh REST /merge door is refused outright (#962), before any forge call.
+  // #1417: it is refused as a HOLD, not as an unreviewed merge — the text
+  // names what was held and does not offer the merge escape hatch.
   const r = await hookDecision("gh api repos/o/r/pulls/12/merge", GOOD_ENTRIES);
   assert(r.block === true, "the gh REST /merge door is refused even with a passing ledger");
-  assert(/checks only one plain merge command/.test(r.reason ?? ""), "…as outside the accepted form");
+  assert(
+    /command held \(not a merge\)/.test(r.reason ?? ""),
+    "…as a hold, not an unreviewed merge",
+  );
+  assert(
+    /the offending word is `api`/.test(r.reason ?? ""),
+    "…naming the word the grammar stopped on",
+  );
+  assert(
+    !(r.reason ?? "").includes("PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE"),
+    "…without offering the merge escape hatch",
+  );
   assert(r.calls.length === 0, "…without reading the PR");
 }
 {

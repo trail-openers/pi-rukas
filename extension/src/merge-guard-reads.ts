@@ -1,9 +1,10 @@
 /**
- * merge-guard-reads — the forge reads and refusal texts the merge guard
- * (merge-guard.ts) needs on the lens-decision branch, extracted into their
- * own module to keep the guard under the 500-line file-size limit.
+ * merge-guard-reads — the forge reads and the ledger-branch refusal text the
+ * merge guard (merge-guard.ts) needs on the lens-decision branch, extracted
+ * into their own module to keep the guard under the 500-line file-size limit.
  *
- * Two concerns live here:
+ * Three concerns live here, all of them "read the forge or the ledger, then
+ * say what the ledger shows":
  *
  * - `readPrCommentBodies` (#973): the PR/MR comment bodies the round-cap
  *   path's disclosure check reads (the guard's own exec call through the
@@ -16,6 +17,11 @@
  *   distinct from the `applies: true` path, where the rule WAS evaluated
  *   and a specific condition N failed (that refusal names the condition
  *   verbatim).
+ *
+ * #1417 moved `renderHold` (and `HoldKind` / `HoldDetails`) out of here and
+ * into merge-refusals.ts: a hold is refusal prose, not a forge read, and it
+ * belongs beside the merge refusals it is deliberately worded differently
+ * from.
  */
 
 import { prCommentsCmd } from "./forge-commands.ts";
