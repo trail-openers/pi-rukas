@@ -272,10 +272,14 @@ function refusalReason(
 ): string {
   if (opts.target)
     return `The review findings file (${opts.target}) is written only by ${ACCEPT_CLI}. Agents may not edit it.`;
-  const base = `Accepting a review finding is an operator act: agents may not reach the review findings store. Run ${ACCEPT_CLI} from a terminal for an acceptance. Allowed reads: git status/log/diff/show/blame (no -o/--output/-c), gh|glab pr|mr view|diff, gh repo view, gh api <path>, gh issue view|list, bun|bunx test <test-path.ts>, bash smoke-tests/lib/verify-loop.sh <test-path.ts>, bun run build, bun run check, bunx tsc --noEmit, git commit -m "<message>", or a read tool (cat, grep, rg, sed -n, ...) on a path that is not the findings store.`;
-  const vcs = opts.vcsWrite
-    ? " Drop the write-capable flag (-o/--output/-c): e.g. `git --no-pager log` instead of `git -c core.pager=cat log`."
-    : "";
+  const base = `Accepting a review finding is an operator act: agents may not reach the review findings store. Run ${ACCEPT_CLI} from a terminal for an acceptance. Allowed reads: git status/log/diff/show/blame, gh|glab pr|mr view|diff, gh repo view, gh api <path>, gh issue view|list, bun|bunx test <test-path.ts>, bash smoke-tests/lib/verify-loop.sh <test-path.ts>, bun run build, bun run check, bunx tsc --noEmit, git commit -m "<message>", or a read tool (cat, grep, rg, sed -n, ...) on a path that is not the findings store.`;
+  // `false` means "this route is not a write-flag one" and must add nothing; only
+  // `true` speaks of flags. `opts.vcsWrite` is a three-state value here — undefined
+  // when the command names nothing protected — so a truthiness test read as a route.
+  const vcs =
+    opts.vcsWrite === true
+      ? " Drop the write-capable flag (-o/--output/-c): e.g. `git --no-pager log` instead of `git -c core.pager=cat log`."
+      : "";
   const data =
     opts.dataOperand === true
       ? " Drop the path operand naming the store: it is not an argument any command may take."
@@ -319,7 +323,9 @@ function unquoteKeepQuotes(segment: string): string {
       const end = segment.indexOf(c, i + 1);
       const stop = end < 0 ? segment.length : end + 1;
       out += segment.slice(i, stop).replace(/\s/g, "_");
-      i = stop;
+      // An unpaired quote leaves `stop` at `i`: the walk has to move forward anyway or
+      // the scan spins until the process dies, and a scan that dies is not a guard.
+      i = stop > i ? stop : i + 1;
       continue;
     }
     out += c;
@@ -372,20 +378,24 @@ function scanCommand(command: string): string | undefined {
   )
     return undefined;
 
+  // The write-flag remedy applies only when the command BOTH names the store and
+  // carries one of the write-capable arguments; a runtime import of the store is
+  // neither, and must not be told to drop a flag it never passed.
   const vcsWrite = namesProtected(norm)
     ? shellWords(raw).some((w) => VCS.test(baseName(unquote(w)))) &&
       hasFlag(shellWords(raw), ...WRITE_FLAGS)
     : false;
-  const dataOperand = namesProtected(norm)
-    ? armsOf(norm).some((s) => {
-        const w = shellWords(s);
-        // Two shapes name the store as data: a non-verb word (`cat <store>`,
-        // `git add <store>`), or the VERB of a command that executes text it cannot
-        // read — a heredoc marker (`cat << review-findings-store`). Either way the
-        // remedy is to drop the path.
-        return w.length > 1 && (opensProtected(w.slice(1)) || (w.length > 2 && w.includes("<<")));
-      })
-    : false;
+  const dataOperand =
+    namesProtected(norm) && !vcsWrite
+      ? armsOf(norm).some((s) => {
+          const w = shellWords(s);
+          // Two shapes name the store as data: a non-verb word (`cat <store>`,
+          // `git add <store>`), or the VERB of a command that executes text it cannot
+          // read — a heredoc marker (`cat << review-findings-store`). Either way the
+          // remedy is to drop the path.
+          return w.length > 1 && (opensProtected(w.slice(1)) || (w.length > 2 && w.includes("<<")));
+        })
+      : false;
 
   // The SEGMENTS come from the raw view, where a newline still separates: iterating
   // the folded view would judge one merged segment and never see the second line at all.
@@ -397,7 +407,7 @@ function scanCommand(command: string): string | undefined {
     // the raw segment keeps the two views comparable.
     const rawSegment = rawArms[i] ?? "";
     const words = shellWords(unquoteKeepQuotes(rawSegment));
-    if (false && !segmentAdmitted(words, rawSegment)) return refusalReason({ vcsWrite, dataOperand });
+    if (!segmentAdmitted(words, rawSegment)) return refusalReason({ vcsWrite, dataOperand });
   }
   return undefined;
 }

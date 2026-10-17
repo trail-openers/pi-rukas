@@ -152,9 +152,11 @@ try {
     dir,
     OPERATOR_ENV,
   ).finally(() => {
-    if (savedGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    // `undefined` rather than `delete`: for `process.env` both remove the variable from
+    // the child's environment, and assigning avoids biome's noDelete rule.
+    if (savedGlobal === undefined) process.env.GIT_CONFIG_GLOBAL = undefined;
     else process.env.GIT_CONFIG_GLOBAL = savedGlobal;
-    if (savedNoSystem === undefined) delete process.env.GIT_CONFIG_NOSYSTEM;
+    if (savedNoSystem === undefined) process.env.GIT_CONFIG_NOSYSTEM = undefined;
     else process.env.GIT_CONFIG_NOSYSTEM = savedNoSystem;
   });
   assert(noId.code === 2, "accept: no git identity refuses (the operator must be known)");
@@ -229,15 +231,27 @@ for (const c of [
   "echo review-acceptance-notes",
   'git commit -m "feat: review-accept guard"',
   'git commit -m "docs: review-accept flow"',
-  'gh pr create --body "Adds the review-accept acceptance path"',
-  // #1125 — the plain git/gh reads the exemption exists for: a log and a diff
-  // naming the store's module stay allowed, and a file-writing git argument
-  // that names no store path is just a command.
+  // The plain git/gh reads the exemption exists for: a log and a diff naming the
+  // store's module stay allowed because the QUOTED / path position makes them prose to
+  // the arms, not path operands.
   "git log --oneline -- extension/src/review-findings-store.ts",
   "git diff HEAD -- extension/src/review-accept-guard.ts",
-  "git show HEAD:README.md --output=/tmp/readme.txt",
 ]) {
   assert(runsReviewAccept(c) === undefined, `guard: leaves unrelated commands alone — ${c}`);
+}
+// #1125 clause (b) — POLARITY. Both are documented over-refusals, the accepted cost of
+// failing closed: a write-capable flag is refused wherever it sits, and a forge write
+// subcommand naming the script is refused even in prose. The pre-adjudication draft
+// asserted the opposite polarity for these two; the canonical list is OVER_REFUSALS in
+// test-review-accept-guard-hardened.ts.
+for (const c of [
+  "git show HEAD:README.md --output=/tmp/readme.txt",
+  'gh pr create --body "Adds the review-accept acceptance path"',
+]) {
+  assert(runsReviewAccept(c) !== undefined, `guard: over-refuses rather than guesses — ${c}`);
+}
+for (const c of ["gh pr view 1105", "glab mr view 12"]) {
+  assert(runsReviewAccept(c) === undefined, `guard: leaves the exact forge read arms alone — ${c}`);
 }
 
 const handlers: Record<string, (e: unknown, c: unknown) => Promise<unknown>> = {};
