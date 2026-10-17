@@ -46,12 +46,12 @@ export const FIXED_CAPS = [
   "consolidated-verify-consolidation-created",
   "consolidation-incomplete",
   "cross-group-conflict",
+  "deadline",
+  "deferred-creation:develop",
   // #1101 — queue-raised waits (a group that never dispatched). Sorted with the
   // rest; the sort order is asserted by test-headless-host-contract.ts.
   "dependency-parked",
   "dependency-timeout",
-  "deadline",
-  "deferred-creation:develop",
   "develop-child-crash",
   "develop-incomplete-deliverables",
   "developer-timeout",
