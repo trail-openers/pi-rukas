@@ -75,16 +75,7 @@ export const GIT_ISOLATION_VARS = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "
  * anyway (bun snapshots it at process start), so reading this is the explicit
  * statement of "I mean the host home, not the isolated one".
  */
-export const REAL_HOME =
-  process.env.PI_ENSEMBLE_TEST_REAL_HOME ?? safeHomedir() ?? process.env.HOME ?? "";
-
-function safeHomedir(): string | undefined {
-  try {
-    return process.env.HOME ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
+export const REAL_HOME = process.env.PI_ENSEMBLE_TEST_REAL_HOME ?? process.env.HOME ?? "";
 
 let cached: Record<string, string> | undefined;
 
@@ -117,7 +108,13 @@ function build(): Record<string, string> {
     GIT_CONFIG_NOSYSTEM: "1",
     HOME: join(dir, "home"),
   };
-  // An operator/runner that already chose values wins, exactly as in the runner.
+  // An operator/runner that already chose a value wins — for the two CONFIG
+  // levers only. `HOME` is deliberately excluded: it is always isolated here,
+  // because it is the broad lever (the header) and the one whose host value
+  // silently changes what a fixture's git sees. Honouring an inherited `HOME`
+  // would defeat the whole point — verify-loop.sh exports its own isolated
+  // `HOME` for the run, and re-using it here is harmless, but re-using the
+  // OPERATOR's home is exactly the leak this module exists to close.
   for (const k of GIT_ISOLATION_VARS) {
     const existing = process.env[k];
     if (existing && k !== "HOME") iso[k] = existing;
@@ -139,11 +136,4 @@ export function isolateGitEnv(): void {
     if (v !== undefined) process.env[k] = v;
   }
   process.env.PI_ENSEMBLE_TEST_REAL_HOME = REAL_HOME;
-}
-
-/** Env options to spread into a `child_process` git call so it sees the isolation. */
-export function gitExecOpts(base: Record<string, string | undefined> = process.env): {
-  env: Record<string, string>;
-} {
-  return { env: gitTestEnv(base) };
 }
