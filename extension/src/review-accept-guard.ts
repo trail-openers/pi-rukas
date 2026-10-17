@@ -275,15 +275,15 @@ function scanCommand(command: string): string | undefined {
   // treats a newline as a segment separator exactly as it treats `;`, and the previous
   // shape compared a raw text against a folded one, so the newline check could not be
   // trusted. Folding first makes the operator test below a plain substring scan.
-  const flat = trimmed.toLowerCase();
   const norm = normalise(trimmed);
   if (norm === "PARSE_FAIL") return refusalReason({ dataOperand: true });
   const raw = kept;
   // The words as the shell hands them out (`--output=<path>` is ONE word here, which is
   // precisely what an arm's `-o <name>` pair test cannot see).
   const words = shellWords(raw);
-  // (The scope tests below ask the write-flag question themselves, per program.)
-  const protectedAnywhere = namesProtected(norm);
+  // Does the folded command name a protected file? Both remedy computations below ask
+  // the same question, so it is asked ONCE here and reused rather than re-derived.
+  const namesTheStore = namesProtected(norm);
   // THE SCOPE OF THE RULE (#1125). Clause (a) makes the allowlist authoritative for
   // commands THAT NAME THE STORE; it says nothing about the rest, and the arms refusing
   // them is the whole agent surface bricked (`mkdir -p tmp/x`, `git add -A`, `git push`,
@@ -294,7 +294,6 @@ function scanCommand(command: string): string | undefined {
   // A PARSE_FAIL is still refused above: an unreadable command is refused whatever it
   // spells. The name test is asked of the raw text, the normalised text and the
   // quote/brace/comma-erased text, so an assembled or quoted-split name is in scope.
-  // The exemption reaches only a command NO arm would have admitted: an arm-matching
   // THE SCOPE OF CLAUSE (a) (#1125) — five tests decide whether the guard speaks to a
   // command at all. Anything else is an ORDINARY AGENT COMMAND and the allowlist does
   // not govern it: `mkdir -p tmp/x`, `git add -A`, `git push`, `npm install`,
@@ -363,12 +362,12 @@ function scanCommand(command: string): string | undefined {
   // The write-flag remedy applies only when the command BOTH names the store and
   // carries one of the write-capable arguments; a runtime import of the store is
   // neither, and must not be told to drop a flag it never passed.
-  const vcsWrite = namesProtected(norm)
+  const vcsWrite = namesTheStore
     ? shellWords(raw).some((w) => VCS.test(baseName(unquote(w)))) &&
       hasFlag(shellWords(raw), ...WRITE_FLAGS)
     : false;
   const dataOperand =
-    namesProtected(norm) && !vcsWrite
+    namesTheStore && !vcsWrite
       ? armsOf(norm).some((s) => {
           const w = shellWords(s);
           // Two shapes name the store as data: a non-verb word (`cat <store>`,
@@ -413,9 +412,13 @@ const FILE_TOOLS = new Set(["edit", "write", "multiedit"]);
  */
 export function editsFindingsFile(toolName: string, input: unknown): string | undefined {
   if (!FILE_TOOLS.has(toolName)) return undefined;
+  // A PRESENT key is asked for even when its value is `undefined` / `null` — reading
+  // `input.path` can itself throw (a Proxy, a lazy field), and that is refused below.
+  const obj = (input ?? {}) as Record<string, unknown>;
+  if (!("path" in obj)) return undefined;
   let target: unknown;
   try {
-    target = (input as { path?: unknown } | null)?.path;
+    target = obj.path;
   } catch (err) {
     traceWarn(
       `review-accept-guard: edit scan threw, refusing fail-open (${err instanceof Error ? err.message : String(err)})`,
@@ -424,7 +427,12 @@ export function editsFindingsFile(toolName: string, input: unknown): string | un
     // than read as "nothing to block" — the string the caller would have handed back.
     return "<unreadable path>";
   }
-  if (typeof target !== "string") return undefined;
+  // A `path` that is PRESENT but not a string (a number, an array, an object with a
+  // `toString`) is a target the guard cannot rule out: the writer below would coerce it,
+  // so it is refused rather than read as "nothing to block". Only an ABSENT path — no
+  // property at all, or `undefined` / `null` — means there is nothing to block.
+  if (typeof target !== "string")
+    return target === undefined || target === null ? undefined : "<non-string path>";
   try {
     // The RAW path is asked SEGMENT-wise BEFORE normalisation: `.normalize` collapses
     // `<store>/../../src/x.ts` to `/repo/src/index.ts`, which reads as an ordinary file —
@@ -445,7 +453,12 @@ export function editsFindingsFile(toolName: string, input: unknown): string | un
 export function registerReviewAcceptGuard(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, _ctx) => {
     if (event.toolName === "bash") {
-      const command = (event.input as { command?: string })?.command ?? "";
+      const raw = (event.input as { command?: unknown } | null)?.command;
+      // A `command` that is PRESENT but not a string cannot be scanned, and a scan that
+      // cannot run is not a pass: refused fail-closed, like every other unreadable input.
+      if (raw !== undefined && raw !== null && typeof raw !== "string")
+        return { block: true, reason: refusalReason() };
+      const command = typeof raw === "string" ? raw : "";
       // A scan that throws must not read as "nothing to block": a guard that fails
       // open on its own bug stops being a guard (clause (a) again).
       let reason: string | undefined;
