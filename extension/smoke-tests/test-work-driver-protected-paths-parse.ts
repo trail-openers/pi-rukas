@@ -135,6 +135,40 @@ function fake(stdout: string, onCall?: (argv: string[]) => void) {
     (await readCommittedProtectedPaths(fake("M\0"), "/wt", BASE)).ok === false,
     "diff -z: a status record without its path is unreadable",
   );
+  // A NON-EMPTY token in the code slot is the case the empty check did not cover.
+  // A path there is not an exotic kind — it is a codeless stream, and reading on
+  // would pair it with the NEXT token and drop the protected path from the change
+  // set while returning ok:true, which is the exact failure this gate exists to
+  // prevent.
+  const codelessProtected = await readCommittedProtectedPaths(
+    fake(".github/workflows/ci.yml\0src/ci.yml\0"),
+    "/wt",
+    BASE,
+  );
+  assert(
+    codelessProtected.ok === false,
+    "diff -z: a path in the code slot (codeless stream) is unreadable, not an `other` record that swallows the protected path",
+  );
+  assert(
+    codelessProtected.ok === false &&
+      /unrecognised name-status code/.test(codelessProtected.unreadable) &&
+      codelessProtected.unreadable.includes(CI),
+    "diff -z: the rejection names the offending code token so the operator sees which record broke",
+  );
+  assert(
+    (await readCommittedProtectedPaths(fake("agents.json\0src/a.ts\0"), "/wt", BASE)).ok ===
+      false,
+    "diff -z: a protected `agents.json` in the code slot is unreadable too — no non-letter token is accepted as a kind",
+  );
+  const renamed = await readCommittedProtectedPaths(
+    fake(`R100\0${CI}\0src/ci.yml\0`),
+    "/wt",
+    BASE,
+  );
+  assert(
+    renamed.ok === true && renamed.targets.length === 1 && renamed.targets[0].kind === "R",
+    "diff -z: a committed R100 record is typed `R` (the letter dispatch runs before the code-shape check, so a scored rename is never `other`)",
+  );
   // -z names are verbatim: a backslash or a tab is data, not an escape to decode.
   const verbatim = await readCommittedProtectedPaths(
     fake("A\0.github/back\\slash.yml\0A\0.github/tab\there.yml\0"),
