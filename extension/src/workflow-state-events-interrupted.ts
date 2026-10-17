@@ -5,6 +5,10 @@
  * 500-line gate (AGENTS.md §12); `workflow-state-events.ts` re-exports both
  * types, so importers keep their path. The move is the whole change — the text
  * is byte-identical to the original.
+ *
+ * The imports are type-only, so this module has no runtime edge: the events
+ * module stays free of value imports, which is what keeps the `WORK_STEPS`
+ * tuple's home free of the `headless/caps.ts` cycle documented there.
  */
 import type { ExitOrigin } from "./workflow-state-events-exit-origin.ts";
 import type { WorkStep } from "./workflow-state-events.ts";
