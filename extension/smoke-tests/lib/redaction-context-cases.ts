@@ -224,8 +224,14 @@ export const words = (n: number, tag: string) =>
 import { PEM_BODY } from "./redaction-pem-cases.ts";
 
 export {
+  BODY_CLASS_OVERREACH,
+  MUST_NOT_REDACT,
+  PADDING_LEAKS,
   PEM_AFTER_KEY,
   PEM_BODY,
+  PEM_BODY_2,
+  PEM_BEGIN,
+  PEM_END,
   PEM_LONG_CLIPPED,
   PEM_PROSE_END,
   PEM_SEPARATORS,
