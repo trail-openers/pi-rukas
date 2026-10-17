@@ -69,6 +69,18 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  RUNTIME,
+  WRITE_FLAGS,
+  armBuild,
+  armCommit,
+  armForgeRead,
+  armGitRead,
+  armRead,
+  armTest,
+  armVerifyLoop,
+  hasFlag,
+} from "./review-accept-arms.ts";
+import {
   armsOf,
   baseName,
   isProtectedToken,
@@ -79,16 +91,6 @@ import {
   tokensOf,
   unquote,
 } from "./review-accept-command.ts";
-import {
-  armBuild,
-  armCommit,
-  armForgeRead,
-  armGitRead,
-  armRead,
-  armTest,
-  armVerifyLoop,
-  hasFlag,
-} from "./review-accept-arms.ts";
 import { trace, traceWarn } from "./trace.ts";
 /** The forge CLIs, whose read arms are exact. */
 const VCS = /^(?:git|gh|glab)$/;

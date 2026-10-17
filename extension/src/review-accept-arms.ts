@@ -10,16 +10,13 @@
  * The arms are exported for the guard's dispatch table only; nothing else composes them.
  */
 
-import {
-  baseName,
-  isProtectedToken,
-  tokensOf,
-  unquote,
-} from "./review-accept-command.ts";
-/** A JS runtime: its invocation executes a program, so it is never a read tool. */
-const RUNTIME = /^(?:bun|bunx|node|npx|tsx|ts-node|deno)$/;
-/** The write-capable arguments clause (b) refuses and names. */
-const WRITE_FLAGS = ["-o", "--output", "-c", "--ext-diff"];
+import { baseName, isProtectedToken, tokensOf, unquote } from "./review-accept-command.ts";
+/** A JS runtime: its invocation executes a program, so it is never a read tool.
+ * Exported because the guard's pre-checks ask the same question of the whole command. */
+export const RUNTIME = /^(?:bun|bunx|node|npx|tsx|ts-node|deno)$/;
+/** The write-capable arguments clause (b) refuses and names. Exported for the guard's
+ * remedy sentence, which names the same flags. */
+export const WRITE_FLAGS = ["-o", "--output", "-c", "--ext-diff"];
 /** A runner that executes text rather than a file: no arm admits one. */
 const EVAL_FLAGS = ["-e", "-p", "--print", "--eval", "-r", "--require", "--preload"];
 /** The verbs arm A1 admits: reads that print to stdout and take no output argument. */
