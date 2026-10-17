@@ -31,6 +31,7 @@ import {
   isHostExhaustionFailure,
 } from "./work-driver-exec-error.ts";
 import { isHostForkExhaustion, pidLimitSnapshot } from "./work-driver-exec-error.ts";
+import { describeObservedConsolidationConflict } from "./work-driver-explain-consolidation.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyTimeoutFailure, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { rawOutputClause } from "./work-driver-verify-flake.ts";
@@ -43,6 +44,12 @@ export interface ConsolidatedVerifyReporting {
   /** Only `repoRoot` is read. */
   ctx: { repoRoot: string };
   worktrees: Record<string, string>;
+  /**
+   * #813 — the plan's workstreams, read for their declared `paths` only: the
+   * no-fence conflict text says "likely coupled" when the failure names a
+   * file a sibling declared. Absent → the neutral observed sentence.
+   */
+  workstreams?: Record<string, { paths: string[] } | undefined>;
   perWorktreeFailuresByWs: Record<string, string>;
   singlePerWs: string | undefined;
   singlePerAssertion: string | null | undefined;
@@ -67,6 +74,20 @@ export interface ConsolidatedVerifyReporting {
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void;
 }
 
+/**
+ * #813 — the declared paths per workstream, for the coupled-pair clause.
+ * An absent plan (no `workstreams` on the state) yields `{}`.
+ */
+function declaredPathsByWorkstream(
+  workstreams: ConsolidatedVerifyReporting["workstreams"],
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [id, ws] of Object.entries(workstreams ?? {})) {
+    if (ws && Array.isArray(ws.paths) && ws.paths.length > 0) out[id] = ws.paths;
+  }
+  return out;
+}
+
 export function reportConsolidatedVerifyOutcome(
   cons: ConsolidatedVerifyResult,
   {
@@ -75,6 +96,7 @@ export function reportConsolidatedVerifyOutcome(
     notes,
     ctx,
     worktrees,
+    workstreams,
     perWorktreeFailuresByWs,
     singlePerWs,
     singlePerAssertion,
@@ -139,8 +161,22 @@ export function reportConsolidatedVerifyOutcome(
           `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). The develop scope fence recorded a sibling-declared violation BEFORE this conflict: ${named}. The declared paths are disjoint — the decomposition is fine; the fence was violated and the conflict is its consequence at consolidation. Re-splitting the plan will NOT fix this; restore the fence boundary (the touching workstream's commit must not include that file) and re-run`,
         );
       } else {
+        // #813 — no fence record: report what was OBSERVED (the conflict
+        // detail, which pick failed, what applied cleanly before it) instead
+        // of asserting "two workstreams edited the same lines; the
+        // decomposition is incoherent". #1005 merges coupled workstreams at
+        // plan time, so the pair that still collides is usually coupled
+        // through types with disjoint declared paths — where re-splitting is
+        // not the fix. One renderer's sentence, shared with the cap
+        // explanation via describeObservedConsolidationConflict.
         failures.push(
-          `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). Two workstreams edited the same lines; the decomposition is incoherent, which is distinct from a verify failure`,
+          describeObservedConsolidationConflict({
+            lead: `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail})`,
+            evidence: cons.detail,
+            conflictedWorkstream: cons.conflictedWorkstream,
+            appliedBeforeConflict: cons.appliedBeforeConflict,
+            declaredPathsByWorkstream: declaredPathsByWorkstream(workstreams),
+          }),
         );
       }
     }

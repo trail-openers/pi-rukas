@@ -423,6 +423,9 @@ export async function runVerifyCommandGate(opts: {
     notes,
     ctx,
     worktrees,
+    // #813 — the plan's declared paths let the no-fence conflict text say
+    // "likely coupled" when the failure names a file a sibling declared.
+    workstreams: state.pipelineState.workstreams,
     perWorktreeFailuresByWs,
     singlePerWs,
     singlePerAssertion,
