@@ -184,16 +184,6 @@ export interface DriverContext {
    */
   dirtyRootExemptReadFailed?: string;
   /**
-   * #1427 — the paths of the gate-hang reports this cycle persisted
-   * (`<repoRoot>/tmp/issue-<N>/gate-hang-<ISO>.log`), one per gate run the
-   * driver killed at its bound. Accumulated by the verify seams as they write
-   * and read by the cap emit site, which records them STRUCTURALLY on the
-   * cap-hit event's `logPaths` — the same channel #841 uses for the
-   * consolidated run logs, so the handoff names the files without regexing a
-   * path out of the failure prose. Absent = no hang report was written.
-   */
-  gateHangLogPaths?: string[];
-  /**
    * #1427 — injectable process-tree walker for the gate-hang reports, threaded
    * from the verify seams down to `runVerifyCommandGate` and the consolidated
    * probe. Production leaves it unset and the real `ps` walk runs; smoke tests

@@ -36,7 +36,10 @@
  * failure — it never turns one into a pass, and nothing here may throw.
  */
 
-import { spawnSync } from "node:child_process";
+import {
+  MAX_ARGS_CHARS,
+  captureProcessTree,
+} from "./work-driver-gate-hang-tree.ts";
 
 /**
  * Leading marker of a hang report, the same convention as the other
@@ -55,14 +58,34 @@ export const GATE_HANG_LABEL = "[gate-hang]";
  */
 export const GATE_HANG_NO_NAMED_TEST = "no named test";
 
-/** Bound on the walking ps calls, so a stuck tree cannot make us a second problem. */
-const MAX_PROCESSES = 60;
+// #1427 round 3 — the process-tree half of this module (the `ps` walk and its
+// three bounds) lives in `work-driver-gate-hang-tree.ts` for AGENTS.md §12's
+// line cap. Re-exported so the renderer's own consumers, and the smoke tests
+// that assert the bounds, keep one import path — the bounds are part of what a
+// hang report claims, so they belong to this module's vocabulary.
+export {
+  MAX_ARGS_CHARS,
+  MAX_SNAPSHOT_CHARS,
+  WALK_BUDGET_MS,
+  captureProcessTree,
+  psWalkArgv,
+  walkProcessTree,
+} from "./work-driver-gate-hang-tree.ts";
 
-/** Bound on a single `ps` walk's output, characters. */
-const MAX_SNAPSHOT_CHARS = 4_000;
+/**
+ * #1427 round 3 — bound on ONE still-running test name as it enters a report.
+ * A libtest name is normally 40-80 chars, so the bound never bites in the
+ * measured case; the case it exists for is a 3-worktree fan-out where each of
+ * ten names is a generated-proptest path several hundred characters deep. Ten
+ * of those joined into the clause is more than the 800-char evidence window a
+ * failure string survives (`work-develop-cap-evidence.ts` keeps the TAIL of
+ * each failure, so everything ahead of it is what gets kept — and a long tail
+ * of names is precisely what pushes `[verify-timeout]` out of the string).
+ */
+const MAX_TEST_NAME_CHARS = 120;
 
-/** Bound on one process line's command text. */
-const MAX_ARGS_CHARS = 160;
+/** The one-kept-character-of-ellipsis marker on a clipped name. */
+const NAME_ELLIPSIS = "\u2026";
 
 /**
  * A `ps`-shaped process row. `etime` is `ps`' own elapsed-time column
@@ -156,7 +179,15 @@ export function extractRunningTests(output: string, limit = 10): string[] {
   for (const m of output.matchAll(RUNNING_FOR_RE_GLOBAL)) {
     const name = m[1];
     if (!name) continue;
-    if (!out.includes(name)) out.push(name);
+    // The bound is applied HERE rather than in `gateHangClause` so the report
+    // file and the failure-string clause carry the same clipped name — the
+    // round-2 fix established that one kill describes itself once, and a name
+    // that reads differently in the two places is that defect in new clothing.
+    const clipped =
+      name.length <= MAX_TEST_NAME_CHARS
+        ? name
+        : `${name.slice(0, MAX_TEST_NAME_CHARS - NAME_ELLIPSIS.length)}${NAME_ELLIPSIS}`;
+    if (!out.includes(clipped)) out.push(clipped);
     if (out.length >= limit) break;
   }
   return out;
@@ -177,105 +208,6 @@ export function lastOutputLines(output: string, maxLines = 6): string {
   if (lines.length === 0) return "";
   const window = lines.slice(-maxLines);
   return window.map((l) => l.slice(0, MAX_ARGS_CHARS)).join("\n");
-}
-
-/** Parse one `ps -eo pid,ppid,etime,args` row. Returns null for headers/junk. */
-function parsePsLine(line: string): HangProcess | null {
-  const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
-  if (!m) return null;
-  const pid = Number(m[1]);
-  const ppid = Number(m[2]);
-  if (!Number.isFinite(pid) || !Number.isFinite(ppid)) return null;
-  const args = (m[4] ?? "").trim();
-  if (!args) return null;
-  return { pid, ppid, etime: m[3] ?? "?", args: args.slice(0, MAX_ARGS_CHARS) };
-}
-
-/** The command a `ps` walk runs. Exported so the offline test can drive it. */
-export function psWalkArgv(parentPid: number): string[] {
-  return ["-eo", "pid,ppid,etime,args", "--ppid", String(parentPid)];
-}
-
-/**
- * One level of the tree, via `ps --ppid`. `spawnSync` is used rather than
- * `execFile`: the caller is the failure path of a gate whose executor may be
- * the thing that is misbehaving, and a synchronous spawn of a stdlib binary
- * cannot deadlock on a promise the dying gate is holding.
- */
-function psChildren(
-  parentPid: number,
-  run: typeof spawnSync,
-): { rows: HangProcess[]; error?: string } {
-  let res: ReturnType<typeof spawnSync>;
-  try {
-    res = run("ps", psWalkArgv(parentPid), { encoding: "utf8", timeout: 3_000 });
-  } catch (e) {
-    return { rows: [], error: `ps could not be started (${(e as Error).message?.slice(0, 80)})` };
-  }
-  if (res.error)
-    return { rows: [], error: `ps could not be started (${res.error.message.slice(0, 80)})` };
-  // exit 1 with no output is `ps`' answer to "no such parent", which is a
-  // legitimate empty level, not a failure to snapshot.
-  const stdout = typeof res.stdout === "string" ? res.stdout : "";
-  if (res.status !== 0 && stdout.trim() === "") {
-    return { rows: [], error: `ps exited ${res.status} without output` };
-  }
-  const rows: HangProcess[] = [];
-  for (const line of stdout.split("\n").slice(1)) {
-    const row = parsePsLine(line);
-    if (row) rows.push(row);
-  }
-  return { rows };
-}
-
-/**
- * Walk the gate's process tree breadth-first from its leader, bounded to
- * {@link MAX_PROCESSES} rows and {@link MAX_SNAPSHOT_CHARS} of command text.
- *
- * `childrenOf` is injectable so the walk is testable without forking, and a
- * real `ps` on the host is what production gets. A failure on the FIRST level
- * (no `ps` binary, a host without `--ppid`) is reported as `treeUnavailable`;
- * a failure deeper in is not — the levels already walked are the evidence.
- */
-export function walkProcessTree(
-  leaderPid: number,
-  childrenOf: (pid: number) => { rows: HangProcess[]; error?: string } = (pid) =>
-    psChildren(pid, spawnSync),
-): { processes: HangProcess[]; treeUnavailable?: string } {
-  const processes: HangProcess[] = [];
-  const visited = new Set<number>();
-  const queue: number[] = [leaderPid];
-  let firstLevelError: string | undefined;
-  while (queue.length > 0 && processes.length < MAX_PROCESSES) {
-    const parent = queue.shift() as number;
-    if (visited.has(parent)) continue;
-    visited.add(parent);
-    const level = childrenOf(parent);
-    if (level.error) {
-      if (processes.length === 0 && visited.size === 1) firstLevelError = level.error;
-      continue;
-    }
-    for (const row of level.rows) {
-      if (processes.length >= MAX_PROCESSES) break;
-      processes.push(row);
-      queue.push(row.pid);
-    }
-  }
-  if (processes.length === 0) {
-    return {
-      processes: [],
-      treeUnavailable: firstLevelError ?? "no descendant process answered for the gate's pid",
-    };
-  }
-  return { processes };
-}
-
-/** The default tree walker, kept behind a name so callers stay readable. */
-export function captureProcessTree(leaderPid: number): {
-  processes: HangProcess[];
-  treeUnavailable?: string;
-} {
-  return walkProcessTree(leaderPid);
 }
 
 /** Render the still-running test names, or say the run printed nothing. */
@@ -304,12 +236,31 @@ function treeSection(e: HangEvidence): string {
  * string, so the parts an operator acts on lead).
  */
 export function gateHangClause(e: HangEvidence): string {
-  const who = e.runningTests.length > 0 ? e.runningTests.join(", ") : GATE_HANG_NO_NAMED_TEST;
+  const who = boundWho(e.runningTests);
   const held =
     e.processes.length > 0
       ? `${e.processes.length} process(es) still alive${e.detail === undefined ? "" : ` (${e.detail})`}`
       : "no child process";
   return `${GATE_HANG_LABEL} hung in ${who}; ${held}`;
+}
+
+/** Bound on the joined "hung in …" list, characters. Sized so the clause —
+ *  the widest part of a timeout failure string — still leaves the `[verify-
+ *  timeout]` headline in front of it inside the 800-char evidence window. */
+const MAX_WHO_CHARS = 480;
+
+/**
+ * #1427 round 3 — the bounded `who` of a hang clause: each name is already
+ * clipped by {@link extractRunningTests}, and the JOIN is clipped here so a
+ * fan-out that killed ten long-named tests in one run cannot produce a clause
+ * longer than the evidence window that has to carry it. The tail is what gets
+ * cut, which is why the headline leads.
+ */
+function boundWho(runningTests: string[]): string {
+  if (runningTests.length === 0) return GATE_HANG_NO_NAMED_TEST;
+  const joined = runningTests.join(", ");
+  if (joined.length <= MAX_WHO_CHARS) return joined;
+  return `${joined.slice(0, MAX_WHO_CHARS - NAME_ELLIPSIS.length)}${NAME_ELLIPSIS}`;
 }
 
 /**

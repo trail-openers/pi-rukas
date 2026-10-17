@@ -187,7 +187,13 @@ export async function runMergeRetryFlow(
     gate2.failures.length > 0
       ? `${boundJoinFailures(gate2.failures)}; a second failure after merging hands off`
       : "(no failure string); a second failure after merging hands off";
-  const hangLogPaths = gate2.hangLogPaths ?? ctx.gateHangLogPaths;
+  // #1427 round 3 — ONLY this re-run's own reports. The pre-fix line read
+  // `?? ctx.gateHangLogPaths` when the re-run's result had none, so a merge
+  // re-run that killed nothing capped with the FIRST pass's hang reports
+  // attached — the handoff told the operator to open a file from a run that
+  // had nothing to do with the cap. The per-call sink in `verifyStepOutcome`
+  // makes `gate2.hangLogPaths` the complete and correct list.
+  const hangLogPaths = gate2.hangLogPaths;
   next = {
     ...next,
     pipelineState: {

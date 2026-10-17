@@ -45,8 +45,7 @@ import {
   formatExecError,
   isTimedOutKill,
   isVerifyTimeoutFailure,
-  timeoutWhere,
-  verifyTimeoutFailure,
+  verifyHangFailure,
   verifyTimeoutMs,
 } from "./work-driver-verify-develop-helpers.ts";
 import { developVerifiedTree } from "./work-driver-verify-eligibility.ts";
@@ -129,6 +128,14 @@ export async function runVerifyCommandGate(opts: {
     treeUnavailable?: string;
   };
   /**
+   * #1427 round 3 — the sink this gate call's hang reports are recorded on,
+   * created per `verifyStepOutcome` call and threaded back down: that is what
+   * scopes a cap's `logPaths` to the run that produced it (the old shape
+   * recorded on `ctx`, cycle scope, so a later call capped with an earlier
+   * call's reports attached). Absent = reports are still written.
+   */
+  hangSink?: import("./work-driver-gate-hang.ts").GateHangPathSink;
+  /**
    * #1421 fix round — the consolidated gate declined on nothing but build
    * residue (forwarded from the reporting layer, which reads the structured
    * field on the result). The develop gate turns this into the gate result's
@@ -152,6 +159,7 @@ export async function runVerifyCommandGate(opts: {
     onConsolidatedLogPath,
     onGateHangLogPath,
     walkProcessTree,
+    hangSink,
     // #1240 review r2 — the callback must be destructured AND forwarded:
     // `reportConsolidatedVerifyOutcome` is the only caller, and until now it
     // was never passed `onConsolidatedVerifySkipped`, so the skip identity
@@ -249,18 +257,21 @@ export async function runVerifyCommandGate(opts: {
           { tag: cwdSlug },
         );
         if (logPath !== undefined) {
-          // Recorded on the context as well as handed to the callback: the cap
-          // emit site reads the context, and a develop cycle can reach the cap
-          // from three different places (first pass, fence merge, symbol
-          // merge), so threading a callback through all three is what loses one.
+          // #1427 round 3 — recorded on THIS gate call's sink, not on `ctx`:
+          // the context is cycle-scoped and the three cap sites are three
+          // separate gate CALLS, which is what let a late cap name an early
+          // run's file. The callback still fires for the consolidated leg.
           onGateHangLogPath?.(logPath);
-          recordGateHangLogPath(ctx, logPath);
+          if (hangSink !== undefined) recordGateHangLogPath(hangSink, logPath);
         }
       }
       perWorktreeVerifyFailures.push(
         formatExecError(
           e,
-          verifyTimeoutFailure(ran, timeoutWhere(`in ${cwd}`, hang), verifyTimeoutMs()),
+          // #1427 round 3 — `verifyHangFailure` APPENDS the clause after the
+          // whole #1324 sentence, so a wide clause costs the names rather than
+          // the `[verify-timeout]` marker the cap router keys on.
+          verifyHangFailure(ran, `in ${cwd}`, verifyTimeoutMs(), hang),
           `verify command \`${ran}\` failed in ${cwd}${depsHint}`,
         ),
       );
@@ -433,12 +444,13 @@ export async function runVerifyCommandGate(opts: {
     // #1421 fix round — same forwarding rule: without it the structured
     // decline dies here and the cap router falls back to the prose label.
     ...(onBuildResidueOnly !== undefined ? { onBuildResidueOnly } : {}),
-    // #1427 — the consolidated probe writes its own hang report; its path is
-    // recorded on the context exactly as the per-worktree seam's are, so the
-    // one reader (the cap emit site) sees reports from both seams.
+    // #1427 round 3 — the consolidated probe writes its own hang report; its
+    // path lands on the same per-call sink as the per-worktree seam's, so the
+    // one reader (the cap emit site) sees both legs of THIS gate call and
+    // nothing from an earlier one.
     onGateHangLogPath: (logPath) => {
       onGateHangLogPath?.(logPath);
-      recordGateHangLogPath(ctx, logPath);
+      if (hangSink !== undefined) recordGateHangLogPath(hangSink, logPath);
     },
   });
   // Aggregation: a consolidated FAILURE keeps per-worktree failures as

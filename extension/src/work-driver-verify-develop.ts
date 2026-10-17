@@ -82,6 +82,7 @@ export async function verifyDevelopOutcome(
     onConsolidatedVerifySkipped,
     onBuildResidueOnly,
     walkProcessTree,
+    hangSink, // #1427 r3 — per-call hang sink, threaded to the gate below
   } = options;
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
@@ -460,10 +461,10 @@ export async function verifyDevelopOutcome(
         },
         ...(onConsolidatedVerifySkipped !== undefined ? { onConsolidatedVerifySkipped } : {}),
         ...(onBuildResidueOnly !== undefined ? { onBuildResidueOnly } : {}),
-        // #1427 fix round — the walker is forwarded to the gate, which threads
-        // it to both legs (per-worktree + consolidated). Without this line the
-        // test seam existed and nothing used it.
+        // #1427 — the walker reaches both legs; `hangSink` (round 3) is the
+        // per-call sink this gate's reports land on, scoping a cap's logPaths.
         ...(walkProcessTree !== undefined ? { walkProcessTree } : {}),
+        ...(hangSink !== undefined ? { hangSink } : {}),
       });
       // #1349 — only a base that fails the way the change does excuses it.
       verifyCmdEnd = before === 0 && attributed ? failures.length : undefined;

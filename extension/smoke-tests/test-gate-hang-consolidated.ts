@@ -120,7 +120,9 @@ async function caseConsolidatedWalkerForwarded() {
   const gate = await verifyStepOutcome(ctx, state(f, f.wt), "develop");
   assert(!gate.ok, "consolidated: a killed gate fails the develop verify");
   assert(walks > 0, `consolidated: the injected walker ran (${walks}x)`);
-  const reports = (ctx.gateHangLogPaths ?? []).filter((p) => p.includes("gate-hang-"));
+  // #1427 round 3 — read the GATE RESULT, not the cycle context: the context
+  // field was cycle-scoped, which is what let a late cap name an early run's file.
+  const reports = (gate.hangLogPaths ?? []).filter((p) => p.includes("gate-hang-"));
   assert(reports.length > 0, `consolidated: reports written (${reports.length})`);
   const withSentinel = reports.filter((p) => {
     try {
@@ -156,7 +158,7 @@ async function caseSingleWalk() {
     },
   };
   const gate = await verifyStepOutcome(ctx, state(f, f.wt), "develop");
-  const reports = ctx.gateHangLogPaths ?? [];
+  const reports = gate.hangLogPaths ?? [];
   assert(!gate.ok && reports.length > 0, "one-walk: a killed run both fails and reports");
   assert(
     walks === reports.length,
@@ -206,7 +208,7 @@ async function caseUniqueNames() {
   await git(wtB, ["commit", "-q", "-m", "change b"]);
   const gate = await verifyStepOutcome(ctx, s, "develop");
   Date.prototype.toISOString = realToISOString;
-  const reports = ctx.gateHangLogPaths ?? [];
+  const reports = gate.hangLogPaths ?? [];
   assert(!gate.ok, "unique: the cycle fails");
   assert(reports.length >= 2, `unique: more than one report for a fan-out (${reports.length})`);
   const names = reports.map((p) => path.basename(p));

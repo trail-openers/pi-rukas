@@ -66,4 +66,13 @@ export interface VerifyDevelopOutcomeOptions {
     processes: import("./work-driver-gate-hang.ts").HangProcess[];
     treeUnavailable?: string;
   };
+  /**
+   * #1427 round 3 — the sink every hang report THIS gate call writes is
+   * recorded on. `verifyStepOutcome` creates one per call (rather than the
+   * reports accumulating on the cycle context, which is how a cap came to name
+   * the reports of an earlier gate run of the same cycle) and forwards it here;
+   * `runVerifyCommandGate` threads it to both writing seams. Absent = this
+   * caller does not route on the paths, and the reports are still written.
+   */
+  hangSink?: import("./work-driver-gate-hang.ts").GateHangPathSink;
 }
