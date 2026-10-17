@@ -114,6 +114,17 @@ export async function remoteName(execFn: LedgerExecFn, cwd: string): Promise<str
 }
 
 /**
+ * The successful `identityBase` answer, exported so a caller that resolved it
+ * ONCE can hand the same pair to every consumer of the identity (the patch-id
+ * computation and #1360's range check) rather than asking twice and trusting
+ * two git reads to agree.
+ */
+export interface IdentityBase {
+  remote: string;
+  mainline: string;
+}
+
+/**
  * #1305 — the base every review identity is taken against:
  * `<remote>/<mainline>` (mainline via `resolveMainline`, remote via
  * `remoteName`). The writer (`workingTreePatchId`) and the merge guard
