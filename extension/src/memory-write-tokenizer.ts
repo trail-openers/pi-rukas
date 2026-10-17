@@ -19,6 +19,16 @@
  */
 
 import { COMMAND_WRAPPERS, stripQuotedSegments } from "./bash-command-parser.ts";
+import { GLOBAL_OPTIONS, optionArity } from "./memory-write-cli-surface.ts";
+
+// The binary's own vocabulary lives in `memory-write-cli-surface.ts` and is
+// re-exported here so the guard's parsing dependency stays this one module — the
+// seam documented in the header. Consumers never import the surface directly.
+export {
+  GLOBAL_OPTIONS,
+  MUTATING_UPDATE_FLAGS,
+  optionArity,
+} from "./memory-write-cli-surface.ts";
 
 /**
  * Strip quote characters from a string.
@@ -85,39 +95,6 @@ export function deQuoteKeepingQuotedRuns(s: string): string {
   return out;
 }
 
-/**
- * Flags that change an existing row. `update` alone is inert (it requires at
- * least one of these to do anything), so the clause that tests them binds to
- * the `update` verb first.
- *
- * Measured against vipune 0.15.0 — `vipune update <id> --stat active` answers
- * `error: unexpected argument '--stat' found` — clap does **not** accept an
- * abbreviated long flag. `--stat`, `--imp`, `--mem-t` and `--memorytyp=fact`
- * therefore mutate nothing, and are deliberately NOT matched: refusing a command
- * the binary rejects outright would report a threat that does not exist, and the
- * module header, `docs/troubleshooting.md` and `skill/vipune/SKILL.md` say exact
- * names and `=` forms for the same reason.
- *
- * Clustered short flags are the opposite case and ARE accepted by the binary:
- * measured, `vipune update <id> -tm` reaches the database and rewrites the row
- * with content `m`, because `t` consumes `m` as `--text`'s value. A cluster
- * member can mutate a row invisibly, so clusters are scanned character by
- * character in `hasMutatingFlag` below.
- *
- * The same flag names exist on `add` (`-m`, `--memory-type`, `--status`,
- * `--importance`), which is exactly why they must bind to `update` — a
- * verb-blind flag scan refuses every driver write.
- */
-export const MUTATING_UPDATE_FLAGS: readonly string[] = [
-  "-t",
-  "--text",
-  "-m",
-  "--metadata",
-  "--memory-type",
-  "--status",
-  "--importance",
-];
-
 // Command-position starters are the sibling guards' set (`discardsUncommittedWork`
 // and `createsIssue` scan after `[;&|\n]`) plus `(`, `!` and the compound keywords
 // bash puts before a command. The keywords are matched as WHOLE tokens — `then`,
@@ -166,6 +143,29 @@ function isWrapperToken(token: string): boolean {
     /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)
   );
 }
+
+// Wrappers that LOOK UP a name instead of running it. `command -v vipune` prints
+// `/usr/local/bin/vipune` and exits; the word after `-v` is the option's operand,
+// not a command, so command position ends there. Every other wrapper execs its
+// operand, so its options are consumed and the command still follows — conflating
+// the two is what let `env -i vipune delete 42` reach the binary while
+// `command -v vipune` was wrongly refused.
+const RESOLVING_WRAPPERS = new Set(["command", "builtin", "type"]);
+
+// The resolving wrappers' "the NEXT WORD IS THE NAME" options: `-v`/`-V` print the
+// path (`-V` prints `command`'s own version, which runs nothing either), `-n`
+// suppresses the alias in `type`/`builtin`. A value-taking option that EXECUTES
+// (`command -p PATH cmd` runs `cmd`) is deliberately absent, and that absence is the
+// whole difference between `command -v vipune /usr/bin/vipune` (prints a path) and
+// `command -p /opt/bin vipune delete 42` (deletes a row).
+const RESOLVING_OPERAND_OPTIONS: readonly string[] = ["-v", "-V", "-n"];
+
+// Options on a resolving wrapper that take a separate-token VALUE and then EXECUTE
+// their operand: `command -p /opt/bin vipune delete 42` prepends a path and runs the
+// command, so the path is the option's operand and `vipune` is still the command.
+// `-v`/`-V`/`-n` are NOT here — they print and exit — and `-i`/`-a`/`--foreground`
+// are not either, being valueless flags whose following word stays the command.
+const WRAPPER_OPTIONS_WITH_VALUE: readonly string[] = ["-p", "-P", "-u", "-k"];
 
 // Privilege / session wrappers, kept LOCAL to this guard and deliberately NOT
 // added to the shared `COMMAND_WRAPPERS`. That set drives prefix extraction for
@@ -222,50 +222,6 @@ function privilegeOptionTakesValue(token: string): boolean {
 // violation". `test-memory-write-guard.ts` pins `.global === false`.
 const BINARY_TOKEN = /^(?:[^\s;&|()<>]*\/)vipune$|^vipune$/;
 
-// Global options `vipune` accepts before the verb, with how many SEPARATE-TOKEN
-// values each requires — transcribed from `vipune --help`'s `Options:` block, and
-// that is the whole table on purpose: this is not a clap grammar, it is the four
-// lines the binary prints. `test-memory-write-guard.ts` re-reads the help block
-// and fails if the table and the binary disagree about which take a value.
-//
-// The arity is what makes the verb findable. Without a stopping rule, `vipune -p
-// other delete 42` and `vipune --db-path X delete 42` each leave a bare word
-// between the flag and the verb: a scan that keeps going reads past `delete`, a
-// scan that stops reads `-p` as the verb. clap decides — `vipune -p` alone answers
-// `error: a value is required for '--project <PROJECT>'`, `vipune --json` alone
-// proceeds to "requires a subcommand" — so a `<VALUE>` option consumes one token
-// and a bare flag consumes none.
-type GlobalOption = { readonly flags: readonly string[]; readonly values: number };
-
-export const GLOBAL_OPTIONS: readonly GlobalOption[] = [
-  { flags: ["--json"], values: 0 },
-  { flags: ["-h", "--help"], values: 0 },
-  { flags: ["-V", "--version"], values: 0 },
-  { flags: ["-p", "--project"], values: 1 },
-  { flags: ["--db-path"], values: 1 },
-];
-
-/**
- * How many following tokens this option token consumes as its values.
- *
- * `undefined` means "not an option" — that is where the skip stops and the verb
- * begins. An UNKNOWN `-f` flag returns its arity as 0 rather than `undefined`,
- * which is the fail-toward-refusing direction the PM asked for: consuming nothing
- * means the next token is read as the verb, so a `vipune --verbose delete 42`
- * still reports `delete`, while a `vipune search --whatever foo` cannot have a
- * refused verb conjured out of a granted one (the verb still has to literally
- * appear, and it has to be one of the refused names).
- */
-export function optionArity(token: string): number | undefined {
-  if (token.length < 2 || token[0] !== "-") return undefined;
-  if (token.includes("=")) return 0; // `--flag=value` carries its own value
-  for (const spec of GLOBAL_OPTIONS) {
-    if (spec.flags.includes(token)) return spec.values;
-  }
-  return 0;
-}
-
-// The tokeniser splits on the WHOLE whitespace class, not `[ \t]`: bash separates
 // words on `$' \t\n\v\f\r'`, so `vipune delete\v42` is TWO words to bash — measured
 // (`bash -c $'vipune delete\v42'` → `unrecognized subcommand 'delete42'`, because
 // dash-class shells strip the `\v` in the *second* word too) — and a space-and-tab
@@ -330,13 +286,20 @@ export type VerbHit = readonly [number, string, readonly string[], string];
  * the call and the check, so the pair travels together.
  */
 export function verbsIn(segment: string): { tokens: string[]; hits: VerbHit[] } {
-  const tokens = segment.split(WORD_SEPARATOR).filter((t) => t !== "");
+  const tokens = tokenize(segment);
   const hits: VerbHit[] = [];
   // `inPosition` is true at the start of a segment (a `;`-delimited clause begins
   // in command position) and after any starter token; any other token that is not
   // the binary clears it, because after `cp foo` the next word is an argument.
   let inPosition = true;
+  // Token indices a wrapper consumed as its own argument. A wrapper's arguments are
+  // skipped by BOTH scans — this walk and the guard's raw-text pass — because
+  // "is a wrapper argument" is a property of the word's place in the clause, not of
+  // the state of the scan. Without the set, the outer loop and the wrapper scan
+  // disagree about the same token depending on which of them ran first.
+  const consumed = new Set<number>();
   for (let i = 0; i < tokens.length; i++) {
+    if (consumed.has(i)) continue;
     const raw = tokens[i] ?? "";
     // `(vipune`, `!vipune`, `{vipune`: openers attach with no space, so they are
     // stripped before the whole-token comparisons.
@@ -347,41 +310,91 @@ export function verbsIn(segment: string): { tokens: string[]; hits: VerbHit[] } 
       continue;
     }
     if (isWrapperToken(token)) {
-      // `timeout 30`, `nice -n 5`, `env FOO=1`, `sudo -u postgres`: consume the
-      // wrapper's own arguments, but a NON-wrapper token after a wrapper may be
-      // the command itself (`nohup vipune …`, `exec vipune …`, `sudo vipune …`),
-      // so only a KEY=value token or a `-flag`/`-n` option is swallowed. Anything
-      // else leaves command position set for the next token, which is what
-      // `nohup vipune delete 42` and the bare-wrapper shapes depend on.
+      // A wrapper's arguments are its own, never the command; and unlike the other
+      // two ways a word is disqualified — "after the binary it is an argument",
+      // "after a non-binary command it is an argument" — "is a wrapper argument" is
+      // a property of the word's PLACE in the clause, not of the state of the scan.
+      // So the words this scan consumes are skipped for the OUTER loop as well, via
+      // `consumed`. That is what keeps the two rules that used to fight each other
+      // out of the same token: `i` is advanced one-way past everything claimed, and
+      // nothing here assigns `inPosition` except the `command -v` rule at the foot.
       const privilege = PRIVILEGE_WRAPPERS.includes(token);
       let k = i + 1;
       while (k < tokens.length) {
         const next = (tokens[k] ?? "").replace(TOKEN_OPENERS, "");
         if (next === "-n") {
+          consumed.add(k);
           k += 2; // `nice -n 5` — the value after the option
           continue;
         }
-        if (privilege && next.startsWith("-")) {
-          // `sudo -E -u postgres vipune …`: every option this wrapper owns is its
-          // own, never the command's, and a value-taking one also swallows the
-          // token after it. Without this, `postgres` is read as the command and
-          // the invocation is missed.
-          k += privilegeOptionTakesValue(next) ? 2 : 1;
+        // THE RULE (PM's, and the only shape here that survives both directions of
+        // error): after a wrapper, consume EVERY following `-`-prefixed token and
+        // STAY in command position. Arity is not guessed at all. The pre-fix loop
+        // stopped at the first `-flag` outside its vocabulary and read the word AFTER
+        // it as the command, which is how `env -i vipune delete 42`,
+        // `env --unset=FOO vipune delete 42`, `timeout --foreground 30 vipune delete
+        // 42` and `nohup -a vipune delete 42` each reached the binary — four shapes,
+        // one cause. Guessing arity instead (an earlier draft assumed every bare
+        // short flag took a value) fails the other way and silently: `env -i`
+        // swallowed `vipune`, and a guard that cannot see the binary reports "no
+        // violation". The exceptions below are the two cases where the operand is
+        // provably the wrapper's own data (`sudo -u postgres`, `command -p /opt/bin`)
+        // and so can never be the command.
+        if (next.startsWith("-")) {
+          // The wrapper's own operand, never the command. Which options qualify is
+          // on the two constants the expression reads; the reason a wrong answer
+          // there is survivable in one direction and not the other is on
+          // `WRAPPER_OPTIONS_WITH_VALUE`.
+          const arity =
+            privilege && privilegeOptionTakesValue(next)
+              ? 2
+              : RESOLVING_WRAPPERS.has(token) && WRAPPER_OPTIONS_WITH_VALUE.includes(next)
+                ? 2
+                : 1;
+          for (let m = k; m < k + arity; m++) consumed.add(m);
+          k += arity;
           continue;
         }
         if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(next)) {
+          consumed.add(k);
           k++; // `env FOO=1` / `VIPUNE_DEBUG=1`
           continue;
         }
         if (/^\d+[smhd]?$/.test(next)) {
+          consumed.add(k);
           k++; // `timeout 30`, `timeout 30s` — a duration, never a command
           continue;
         }
         break;
       }
+      // The two resolving wrappers' "the word after the option is a NAME" rule, the
+      // only place in this scan that ends command position. Conditions and the
+      // exec-vs-print split are on the constants it reads.
+      const stoppedOn = k < tokens.length ? (tokens[k] ?? "").replace(TOKEN_OPENERS, "") : "";
+      const operand = k + 1 < tokens.length ? (tokens[k + 1] ?? "") : "";
+      if (
+        !privilege &&
+        RESOLVING_WRAPPERS.has(token) &&
+        RESOLVING_OPERAND_OPTIONS.includes(stoppedOn) &&
+        stoppedOn.startsWith("-") &&
+        !operand.startsWith("-")
+      ) {
+        consumed.add(k);
+        consumed.add(k + 1); // the option and its operand are both lookups, not commands
+        inPosition = false;
+        i = k + 1;
+        continue;
+      }
+      // Hand the token the scan stopped on back to the outer loop — it is the
+      // candidate command, and the scan's whole contract is to stop on it. Tokens the
+      // scan consumed are in `consumed`, so they are never re-read at all; there is
+      // no second pass over a wrapper word to disagree with the first about. Resume
+      // one slot BACK so the outer loop reads `tokens[k]` itself: `for`'s `i++` lands
+      // exactly on it.
       i = k - 1;
       continue;
     }
+
     // `oo` is the allowlist's wrapper verb and transparent: `oo vipune delete 42`
     // is the same invocation as `vipune delete 42`, so `oo` neither is the binary
     // nor ends command position.

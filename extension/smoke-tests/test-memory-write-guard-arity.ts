@@ -38,10 +38,15 @@ function assert(cond: boolean, msg: string) {
   // So the table is not allowed to be remembered — it is re-read from
   // `vipune --help`, the same way the verb sets are, and an upgrade that gives a
   // global option a value fails the gate instead of going quietly blind.
-  // The arity table now lives in the tokenizer (the parse half of the seam);
-  // the guard keeps only the policy. The gate reads whichever file holds it.
+  // The arity table now lives in the CLI-surface module (the binary's own
+  // vocabulary, split out of the tokenizer at the file-size seam); the guard
+  // keeps only the policy. The gate reads whichever file holds it.
   const SRC_DIR = path.resolve(import.meta.dirname, "..", "src");
-  const src = ["memory-write-guard.ts", "memory-write-tokenizer.ts"]
+  const src = [
+    "memory-write-guard.ts",
+    "memory-write-tokenizer.ts",
+    "memory-write-cli-surface.ts",
+  ]
     .map((f) => readFileSync(path.join(SRC_DIR, f), "utf8"))
     .join("\n");
   const tableMatch = /const GLOBAL_OPTIONS[\s\S]*?=\s*\[([\s\S]*?)\n\s*\];/.exec(src);

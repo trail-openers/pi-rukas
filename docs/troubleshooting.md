@@ -1716,18 +1716,30 @@ Before #1437 the only code refusal was `isDestructiveMemoryWrite` (since renamed
 the permission layers that trust mode and sandbox mode both skip and from the
 parent-PM-only bash guard — so on an interactive host (trust mode is the default)
 the whole boundary was doctrine. The predicate now lives in `memory-write-guard.ts`,
-which reads the command through two collaborators at the seam the size ratchet
+which reads the command through three collaborators at the seam the size ratchet
 made explicit: `memory-write-tokenizer.ts` decides *where* a vipune invocation is
-(command position, wrappers, brace groups, global-option arity) and
-`memory-write-flags.ts` decides whether its arguments write a row. The guard itself
+(command position, wrappers, brace groups, global-option arity),
+`memory-write-flags.ts` decides whether its arguments write a row, and
+`memory-write-cli-surface.ts` holds the binary's own vocabulary — the mutating-flag
+names and the global-option arity table, the half that changes when vipune's
+`--help` changes and nothing about how bash tokenises. The guard itself
 holds only the policy — the refused verb set, the `hook` exemption, the refusal
 text. `matchBashSubcommand` calls `refusesMemoryWrite` directly — there is no second
 rule to keep in step with it, and no delegating alias with a duplicate test block.
 
+The handler **fails closed**. Every path above is a string match on a command
+rendered several ways, so a fault in the parse is not evidence of an absence: if the
+predicate throws, the command is refused with the fault named, and the operator's
+opt-out stays the only way through. A guard that reads a *rendering* of the command
+cannot answer "no violation" when it could not build one.
+
 The refusal is **advisory, not a security boundary**: every rule is a string
-match on the quote-stripped command, and an agent determined to bypass it can
-write its own argv. It stops the accidental case — an agent following an outdated
-prompt — and the deliberate bypass is still the operator's terminal.
+match on a rendering of the command, and an agent determined to bypass it can
+write its own argv, put the verb behind an expansion the guard does not expand
+(`vipune $VERB 42`), or write the command to a script and run it. What it stops is
+the accidental case — an agent following an outdated prompt, or reaching for a verb
+it was told not to use and not noticing that the quoting made it real. The
+deliberate bypass is still the operator's terminal.
 
 `vipune hook` is the one listed verb deliberately **not** refused. It is the
 lifecycle-hook handler the binary invokes from a hook; refusing it from inside
