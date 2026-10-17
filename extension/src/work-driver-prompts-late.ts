@@ -1,4 +1,4 @@
-import { handoffOpsPromptWithoutLabel } from "./work-driver-handoff-ops-label.ts";
+import { handoffOpsPromptWithoutLabel as opsLabellessPrompt } from "./work-driver-handoff-ops-label.ts";
 import type { MergeMethod } from "./work-driver-merged-mechanized.ts";
 import {
   assumptionsBlockOf,
@@ -420,7 +420,7 @@ export function inlineHandoffOpsPrompt(
   scratchDirAbs: string,
   skipAttentionLabel = false,
 ): string {
-  if (skipAttentionLabel) return handoffOpsPromptWithoutLabel(issue, prNumber, bodyPath, scratchDirAbs);
+  if (skipAttentionLabel) return opsLabellessPrompt(issue, prNumber, bodyPath, scratchDirAbs);
   const target = prNumber ? `pr ${prNumber}` : `issue ${issue}`;
   const commentCmd = prNumber
     ? `gh pr comment ${prNumber} --body-file ${bodyPath}`
