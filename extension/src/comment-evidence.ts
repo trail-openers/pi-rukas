@@ -67,18 +67,46 @@ const clip = (s: string): string =>
   s.length > MAX_RENDERED_CHARS ? `${s.slice(0, MAX_RENDERED_CHARS)}…` : s;
 
 /**
+ * Fence and marker neutralisation, WITHOUT the length clip.
+ *
+ * Split out of `neutraliseEvidence` for the caller that has already bounded its
+ * own text — `mainline.ts` `causeOf` clips a short stderr tail after redacting,
+ * and re-clipping at `MAX_RENDERED_CHARS` there would be a second, larger bound
+ * than the one the caller just applied. One implementation of the fence/marker
+ * rule, so the two callers cannot drift.
+ *
+ * Single backticks are stripped as well as runs of three: `neutraliseEvidence`
+ * embeds text inside a `<<<` / `>>>` DATA fence where a lone backtick is
+ * inert, but the same text is also pasted into markdown that uses inline code
+ * spans (`mainline.ts`'s cause lands in a handoff bullet), where one backtick
+ * closes the span and puts the remainder under markdown interpretation. Stripping
+ * them is safe for the fence case too — diff evidence never *needs* a backtick.
+ *
+ * `<!--` / `-->` are bracketed for the same reason: they are not caught by the
+ * `<<<` rule, and a cause carrying them could close (or open) a hidden
+ * HTML-comment marker a later reader greps for — the shape
+ * `neutraliseMarkdownField` already refuses for posted fields.
+ */
+export function neutraliseFences(s: string): string {
+  const flat = s
+    .replace(/\s+/g, " ")
+    .replace(/`{3,}/g, "'''")
+    .replace(/`/g, "")
+    .replace(HTML_COMMENT_OPEN, "‹--")
+    .replace(HTML_COMMENT_CLOSE, "--›")
+    .replace(/<{3,}/g, "‹‹‹")
+    .replace(/>{3,}/g, "›››");
+  return flat.replace(MARKER_RE, (m) => `‹${m}›`);
+}
+
+/**
  * Make diff-derived text safe to embed in a prompt or a verdict-bearing reply:
  * one bounded line, no code fences, no fence delimiters, and no marker token a
  * reader would parse. The replacement brackets the token so the reader's own
  * `TOKEN :` / `TOKEN APPROVED` shape can no longer match.
  */
 export function neutraliseEvidence(s: string): string {
-  const flat = s
-    .replace(/\s+/g, " ")
-    .replace(/`{3,}/g, "'''")
-    .replace(/<{3,}/g, "‹‹‹")
-    .replace(/>{3,}/g, "›››");
-  return clip(flat.replace(MARKER_RE, (m) => `‹${m}›`));
+  return clip(neutraliseFences(s));
 }
 
 /** An HTML comment's delimiters: `<!--` opens, `-->` closes, in any spacing. */

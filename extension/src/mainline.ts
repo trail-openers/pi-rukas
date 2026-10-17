@@ -31,7 +31,10 @@
  * cannot report — no reason, no verdict, no merge.
  */
 
+import { neutraliseFences } from "./comment-evidence.ts";
 import type { ExecOpts } from "./exec.ts";
+import { REDACTED, redactSecrets } from "./secret-patterns.ts";
+import { redactThenBound } from "./text-flatten.ts";
 
 /** The executor shape both `detectMainline` and `resolveMainline` accept. */
 export type MainlineExecFn = (
@@ -139,18 +142,166 @@ export async function detectMainline(
 }
 
 /**
- * The cause of a failed probe, in the words of whatever failed.
+ * The cause of a failed probe, in the words of whatever failed — sanitised.
  *
- * `promisify(exec)` puts the shell's own complaint on the error — a timeout
- * carries `command timed out after 30000ms`, a missing `gh` carries
- * `command not found`, a non-zero exit carries the captured stderr. Sliced to
- * 200 chars: this text is embedded in the failure `reason`, which travels into
- * handoff comments and PR bodies, and a chatty `gh` backtrace is not what an
- * operator needs to read there.
+ * `promisify(exec)` puts the shell's own complaint on the error, and this text
+ * is embedded in the failure `reason`, which travels into merge-guard refusals,
+ * handoff comments and PR bodies. An adversarial reviewer saw a `gh` auth error
+ * echo token-shaped text through this path, so the raw message is never copied.
+ * Four steps, in this order:
+ *
+ *   1. **Drop the `Command failed: <cmd>` line.** node's own preamble, which
+ *      echoes the command (and would echo any future argument someone
+ *      interpolates into it). The probe that failed is already named by the
+ *      caller's `git symbolic-ref:` / `gh repo view:` prefix.
+ *   2. **Prefer a classification.** timed out / killed by a signal / exited N /
+ *      not found (ENOENT or the shell's "command not found"), taken from the
+ *      fields exec stamps (`killed`, `signal`, `code`, `err.code`) rather than
+ *      from prose matching wherever a field exists. A timeout, a missing `gh`
+ *      and a non-zero exit must stay distinguishable — that is the whole reason
+ *      the causes exist.
+ *   3. **Redact token-shaped substrings** before the tail is clipped, so a
+ *      bound cannot cut a credential into a fragment no pattern recognises
+ *      (`redactThenBound` applies the same order for the same reason).
+ *   4. **Neutralise markdown and marker characters** — backticks, `<!--`,
+ *      `-->`, `VERDICT:`-shaped tokens — via the one fence/marker rule in
+ *      `comment-evidence.ts`, so failure text cannot close a code span or forge
+ *      a verdict a later reader parses.
  */
 function causeOf(err: unknown): string {
-  const msg = err instanceof Error && err.message ? err.message : String(err);
-  return msg.trim().slice(0, 200);
+  const e = (err ?? {}) as {
+    message?: unknown;
+    stderr?: unknown;
+    killed?: unknown;
+    signal?: unknown;
+    code?: unknown;
+  };
+  const message =
+    typeof e.message === "string" && e.message
+      ? e.message
+      : err instanceof Error
+        ? ""
+        : String(err);
+  const stderr = typeof e.stderr === "string" ? e.stderr : "";
+  const classification = classificationOf(e, message);
+  // `stderr` first when the executor captured it — that is the tool's own
+  // complaint. The message is the fallback, with node's command echo stripped
+  // inside `stderrTail`.
+  const tail = stderrTail(stderr.trim() ? stderr : message);
+  const cause = tail.length > 0 ? `${classification}: ${tail}` : classification;
+  return redactThenBound(neutraliseFences(cause), MAX_CAUSE_CHARS).text;
+}
+
+/** Upper bound on the sanitised cause. The reason embeds two of these. */
+const MAX_CAUSE_CHARS = 160;
+
+/** How short the stderr tail is clipped to, after redaction. */
+const MAX_TAIL_CHARS = 120;
+
+/** node's exec preamble, which echoes the command itself. */
+const COMMAND_FAILED_LINE = /^Command failed:[^\n]*\n?/i;
+
+/**
+ * The token shapes named in #1387 round 3, added to the shared set in
+ * `secret-patterns.ts` rather than replacing it: `secret-patterns` requires
+ * long bodies (`gh[pousr]_…{16,}`) and this text comes from a `gh` error that
+ * may quote a short or truncated value. Over-redaction here costs a reader a
+ * little context; under-redaction publishes a credential.
+ *
+ * NOTE on the `\b` before `token`: `\btoken\b` still matches the `token` inside
+ * `github_pat_…`, so a bare `token[=:]…` rule would shred an already-safe
+ * redaction marker. The negative lookahead requires the word to stand alone.
+ */
+const EXTRA_SECRET_PATTERNS: readonly RegExp[] = [
+  /\b(?:gh[pousr]_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-)[A-Za-z0-9_./+=-]{4,}/g,
+  /\b(?!pat_)token\b\s*[:=]\s*["']?[A-Za-z0-9._\-/+:]{4,}/gi,
+  /\bx-access-token:\s*\S+/gi,
+  /\bBearer\s+\S+/gi,
+];
+
+/** Redact every known and #1387-specific secret span. */
+function redactTokenShapes(s: string): string {
+  let out = redactSecrets(s).text;
+  for (const re of EXTRA_SECRET_PATTERNS) out = out.replace(re, REDACTED);
+  return out;
+}
+
+/**
+ * What kind of failure this is, from the fields exec stamps — not from prose.
+ *
+ * Each arm is a different fault an operator acts on differently: a timeout is a
+ * stalled connection, ENOENT is a missing `gh`, an exit code is the tool's own
+ * complaint. They must never collapse into one sentence.
+ */
+function classificationOf(
+  e: { killed?: unknown; signal?: unknown; code?: unknown },
+  message: string,
+): string {
+  // A bare rejection carries no `code`, so the shell's own exit status is
+  // recovered from the message. `exec` prefixes `Command failed: ` and node
+  // appends the exit code to that first line (with the captured stderr after
+  // it), so the trailing number on that line IS the code — but only on the
+  // command-echo line. Anchoring there (rather than anywhere in the message)
+  // is what keeps a number at the end of the tool's own complaint (`…api rate
+  // limit exceeded 503`) from being read as an exit status: without that
+  // anchor a rate limit classifies as "exit code 503", which is the
+  // misattribution the classification exists to avoid. `gh repo view 127` in
+  // the echoed command is the accepted false positive — the tail still shows
+  // what the tool said, and nobody passes a bare number as a probe argument.
+  const commandEcho = message.match(/^Command failed:[^\n]*\s(\d{1,3})\s*$/im);
+  if (commandEcho) return `exit code ${commandEcho[1]}`;
+  if (/\btimed out\b/i.test(message)) return "timed out";
+  if (e.killed === true) {
+    return typeof e.signal === "string" && e.signal ? `killed by ${e.signal}` : "killed";
+  }
+  // ENOENT is checked BEFORE the numeric-code arm: node's exec errors carry the
+  // shell's exit status on `code` (127 for a missing binary) and the syscall
+  // errno on `err.code` — whichever spelling arrives, "not found" is the fact
+  // an operator acts on, not "exit code 127".
+  if (e.code === "ENOENT") return "not found (ENOENT)";
+  // The message test is anchored (a word boundary before / end after), not a
+  // bare substring: the tail below reproduces the error's own text, so an
+  // unanchored /ENOENT/ would let a message that merely QUOTES the word —
+  // `gh: "ENOENT" is not a real error` — classify as a missing binary and
+  // cross the attribution line from "what the tool said" to "what we
+  // concluded". A shell's or node's own report ends with the phrase; a
+  // quotation of it in the middle of a sentence does not.
+  //
+  // Kept as a sibling to the `e.code` arm rather than folded into it: a test
+  // fake (or a wrapper executor that loses the errno field) rejects with
+  // `new Error("spawn gh ENOENT")` and no `code` at all, and the shell's
+  // `/bin/sh: gh: command not found` carries neither field.
+  if (/\bENOENT\b\s*$/i.test(message.trim())) return "not found (ENOENT)";
+  // Checked before the numeric `code` arm on purpose: a shell that cannot find
+  // its binary exits 127, so `exit code 127` and "not found" describe the same
+  // event, and the sentence the operator acts on is the second one. The tool's
+  // own words still ride along in the tail.
+  if (/\bcommand not found\b\s*$/i.test(message.trim())) return "not found";
+  if (typeof e.code === "number") return `exit code ${e.code}`;
+  if (typeof e.code === "string" && e.code) return e.code;
+  return "failed";
+}
+
+/**
+ * The short stderr tail: node's command echo dropped, one line, redacted,
+ * then clipped. Redaction precedes the clip for the reason `redactThenBound`
+ * documents — a clip first can leave a fragment no pattern matches.
+ */
+function stderrTail(raw: string): string {
+  const stripped = raw.replace(COMMAND_FAILED_LINE, "").trim();
+  if (!stripped) return "";
+  // Every non-empty line, joined — not just the first. `gh` and `glab` print a
+  // usage/help block ahead of the line that actually says what broke
+  // (`Error: Bad credentials …`), and a first-line-only tail would report the
+  // usage banner as the cause while the credential-bearing error line — the
+  // text this function exists to redact — sat below it, redacted but never
+  // shown, so nobody could see that the interesting line was ever there.
+  const joined = stripped
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .join(" | ");
+  return redactThenBound(redactTokenShapes(joined), MAX_TAIL_CHARS).text;
 }
 
 /**
@@ -170,8 +321,9 @@ export async function resolveMainline(
   try {
     m = await detect(repoRoot, execFn);
   } catch (err) {
-    const msg = ((err as Error)?.message ?? String(err)).slice(0, 200);
-    return { ok: false, reason: `mainline detection threw: ${msg}` };
+    // Same sanitisation as a probe cause: a detector that throws hands its
+    // exception text straight to the handoff and the PR body.
+    return { ok: false, reason: `mainline detection threw: ${causeOf(err)}` };
   }
   // #1153 — read the discriminated result by its DISCRIMINANT. A `"branch" in m`
   // test passes for any object carrying a `branch` key, including a failure
