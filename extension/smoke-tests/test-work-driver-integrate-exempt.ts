@@ -30,8 +30,12 @@ import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
 import { integrate, readDirtyPorcelain, restoreRepoRoot } from "../src/work-driver-integrate.ts";
 import { stagePorcelainPaths } from "../src/work-driver-stage.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { gitTestEnv, isolateGitEnv } from "./lib/git-test-env.ts";
 
 const execFileP = promisify(execFile);
+
+// #1145 — fixture repos read no host git config; see lib/git-test-env.ts.
+isolateGitEnv();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -47,13 +51,14 @@ function assert(cond: boolean, msg: string) {
 const realExec: ExecFn = async (cmd, o) => {
   const [file, args] = o?.argv ? [cmd, o.argv] : ["/bin/sh", ["-c", cmd]];
   const { stdout } = await execFileP(file, args, {
+    env: gitTestEnv(),
     cwd: o?.cwd,
     maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
   });
   return { stdout };
 };
 
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
 const gitOut = async (cwd: string, args: string[]): Promise<string> =>
   (await git(cwd, args)).stdout;
 
@@ -69,8 +74,8 @@ const gitOut = async (cwd: string, args: string[]): Promise<string> =>
   const EXEMPT = [".claude"];
 
   try {
-    await execFileP("git", ["init", "--bare", "--initial-branch=main", oE]);
-    await execFileP("git", ["init", "--initial-branch=main", repoE]);
+    await execFileP("git", ["init", "--bare", "--initial-branch=main", oE], { env: gitTestEnv() });
+    await execFileP("git", ["init", "--initial-branch=main", repoE], { env: gitTestEnv() });
     await git(repoE, ["config", "user.email", "t@example.com"]);
     await git(repoE, ["config", "user.name", "T"]);
     writeFileSync(path.join(repoE, "tracked.txt"), "base\n");
@@ -162,7 +167,7 @@ const gitOut = async (cwd: string, args: string[]): Promise<string> =>
           "--initial-branch=main",
           path.join(rootC, "origin.git"),
         ]);
-        await execFileP("git", ["init", "--initial-branch=main", repoC]);
+        await execFileP("git", ["init", "--initial-branch=main", repoC], { env: gitTestEnv() });
         await git(repoC, ["config", "user.email", "t@example.com"]);
         await git(repoC, ["config", "user.name", "T"]);
         writeFileSync(path.join(repoC, "tracked.txt"), "base\n");
@@ -276,6 +281,7 @@ const gitOut = async (cwd: string, args: string[]): Promise<string> =>
       }
       // Whatever the integration committed must not contain the exempt file.
       const inCommit = await execFileP("git", ["ls-tree", "-r", "--name-only", setupE.branchName], {
+        env: gitTestEnv(),
         cwd: repoE,
         encoding: "utf8",
       }).catch(() => ({ stdout: "" }));

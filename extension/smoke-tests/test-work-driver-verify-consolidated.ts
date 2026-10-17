@@ -17,8 +17,16 @@ import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { gitTestEnv, isolateGitEnv } from "./lib/git-test-env.ts";
 
 const execFileP = promisify(execFile);
+
+// #1145 — a fixture repo must not read the host operator's global git config
+// (a `~/.config/git/ignore` line makes an untracked file vanish from
+// `git status`). Runs under verify-loop.sh too, which exports the same
+// isolation; this makes `bun run smoke-tests/<this>.ts` work on its own.
+// `realExec` below passes no `env`, so the ambient vars are what its git sees.
+isolateGitEnv();
 
 // #1012 — empty glob list disables frontend-only classification (also
 // for files that import this module).
@@ -27,7 +35,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
 export const realExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
   try {
     // argv form (#1093) runs the executable directly, as production's execp does.
-    const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+    const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024, env: gitTestEnv() };
     const { stdout } = o?.argv
       ? await execFileP(cmd, o.argv, opts)
       : await execFileP("/bin/sh", ["-c", cmd], opts);
@@ -40,7 +48,7 @@ export const realExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, 
   }
 };
 
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
 
 export async function fixture(
   root: string,
@@ -53,8 +61,10 @@ export async function fixture(
   const repo = path.join(dir, "repo");
   const scratch = path.join(dir, "scratch");
   mkdirSync(scratch, { recursive: true });
-  await execFileP("git", ["init", "--bare", "--initial-branch=main", originDir]);
-  await execFileP("git", ["init", "--initial-branch=main", repo]);
+  await execFileP("git", ["init", "--bare", "--initial-branch=main", originDir], {
+    env: gitTestEnv(),
+  });
+  await execFileP("git", ["init", "--initial-branch=main", repo], { env: gitTestEnv() });
   await git(repo, ["config", "user.email", "t@example.com"]);
   await git(repo, ["config", "user.name", "T"]);
   writeFileSync(path.join(repo, "tracked.txt"), "base\n");
