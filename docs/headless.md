@@ -235,6 +235,8 @@ Only these kinds are a host contract, versioned by `NDJSON_STABLE_VERSION` (1) a
 | `step-started` | `step`, `at`, `round` |
 | `dispatch-started` | `step`, `role`, `jobId`, `at` |
 | `dispatch-completed` | `step`, `role`, `jobId`, `ok`, `ms`, `at`, `usage` |
+| `verify-started` | `step`, `command`, `at` |
+| `verify-completed` | `step`, `command`, `status`, `ms`, `at` |
 | `cap-hit` | `cap`, `at`, `nextStep` |
 | `handoff-emitted` | `at`, `commentUrl`, `labelApplied` |
 | `ci-status` | `at`, `status`, `runUrl` |
