@@ -43,7 +43,8 @@ import {
   shadowSkip,
 } from "../src/decision-shadow.ts";
 import { classifyFailureCause, shadowFailureCause } from "../src/work-driver-failure-taxonomy.ts";
-import { STUB_MODEL, llmReply, makeAssert, records, stubRegistry, tmpDir } from "./lib/decision-fixtures.ts";
+import { STUB_MODEL, llmReply, fixtureSpec, makeAssert, records, registerFixture, stubRegistry, tmpDir } from "./lib/decision-fixtures.ts";
+import type { SeamId } from "../src/decision-seam-registry.ts";
 
 const { assert, state } = makeAssert();
 
@@ -441,15 +442,38 @@ const SHADOW_KEY = `sk-ant-api03-${"aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d"}`;
     t += 10 * SKIP_WINDOW_MS;
     assert(records(log).length === 2, "a closed window with no later skip writes nothing at all");
 
-    // The throttle is per seam: the security seam's burst is not silenced by the
-    // failure-cause seam's open window.
+    // The throttle is per seam: the fixture seam's burst is not silenced by the
+    // failure-cause seam's open window — and it is NOT shared state either, which
+    // is the half an `undefined` lookup would have hidden: before this seam was
+    // registered its window was keyed while its spec was missing, and a single
+    // shared throttle map would have read the same `seam` key for a seam that has
+    // no entry at all. A registered fixture stands in for the caller-less S4 seam
+    // main's #1395 removed from the registry.
+    registerFixture(
+      fixtureSpec({
+        id: "fixture-throttle-other",
+        kind: "bool",
+        labels: { true: "t", false: "f" },
+        ruleDefault: "true",
+        passing: ["false"],
+        composition: "may-add-only",
+      }),
+    );
     t += 10;
     for (let i = 0; i < 20; i++)
-      await shadowSkip("security-open-point", req, where, "skipped: other seam");
-    const secRecs = records(log).filter((r) => r.seam === "security-open-point");
+      await shadowSkip("fixture-throttle-other" as SeamId, req, where, "skipped: other seam");
+    const secRecs = records(log).filter((r) => r.seam === "fixture-throttle-other");
     assert(
       secRecs.length === 1,
       "a burst on one seam does not suppress the other seam's first skip record",
+    );
+    // And the failure-cause window is still its own: the other seam's record did
+    // not open a window that silences this seam's next skip (#1393, per-seam).
+    t += 10 * SKIP_WINDOW_MS;
+    await shadowSkip("failure-cause", req, where, "skipped: after the other seam");
+    assert(
+      records(log).filter((r) => r.seam === "failure-cause").length === 3,
+      "the other seam's burst left this seam's own window untouched",
     );
   } finally {
     restore();

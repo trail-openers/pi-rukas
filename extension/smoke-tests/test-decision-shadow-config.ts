@@ -16,33 +16,27 @@
  * Offline: the session model is a stub registry; nothing touches the network.
  */
 
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { __resetShadowForTests, attach, shadowDecide } from "../src/decision-shadow.ts";
-import { STUB_MODEL, llmReply, makeAssert, stubRegistry, tmpDir } from "./lib/decision-fixtures.ts";
+import path from "node:path";import { __resetShadowForTests, attach, shadowDecide } from "../src/decision-shadow.ts";
+import {
+  STUB_MODEL,
+  llmReply,
+  makeAssert,
+  records,
+  stubRegistry,
+  tmpDir,
+} from "./lib/decision-fixtures.ts";
 
 const { assert, state } = makeAssert();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function records(file: string): Record<string, unknown>[] {
-  try {
-    return readFileSync(file, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((l) => JSON.parse(l) as Record<string, unknown>);
-  } catch {
-    return [];
-  }
-}
-
 /** Wait until a record matching `pred` lands (shadow appends are fire-and-forget). */
-async function awaitRecord<T>(
+async function awaitRecord<T extends Record<string, unknown>>(
   file: string,
   pred: (r: Record<string, unknown>) => r is T,
 ): Promise<T | undefined> {
   for (let i = 0; i < 200; i++) {
     const hit = records(file).find(pred);
-    if (hit !== undefined) return hit as T;
+    if (hit !== undefined) return hit;
     await sleep(10);
   }
   return undefined;

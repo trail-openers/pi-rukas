@@ -13,7 +13,7 @@
  *   3. fail-closed is derived from the rule's default, not declared.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   SEAMS,
@@ -21,33 +21,11 @@ import {
   isFailClosed,
   seamContractViolations,
 } from "../src/decision-seam-registry.ts";
-import { fixtureSpec, makeAssert } from "./lib/decision-fixtures.ts";
+import { boundedState } from "../src/decision-seam.ts";
+import { fixtureSpec, makeAssert, registerFixture } from "./lib/decision-fixtures.ts";
 
 const { assert, state } = makeAssert();
 const SRC = path.resolve(import.meta.dirname, "..", "src");
-
-/**
- * Seams whose PRODUCTION caller main's #1187 deleted (the open-point gate became
- * topic-neutral and `security-class.ts` was removed), so no module fires them.
- * The exemption is not a free pass: `anySourceNamesSeam` still requires the id to
- * occur in some `src/` module, which is what distinguishes a seam retired on
- * purpose from one that is simply dead config.
- */
-const RETIRED_SEAM_CALLERS: ReadonlySet<string> = new Set(["security-open-point"]);
-
-/** Whether any `src/` module still names this seam id. */
-function anySourceNamesSeam(key: string): boolean {
-  const needle = `"${key}"`;
-  for (const name of readdirSync(SRC)) {
-    if (!name.endsWith(".ts")) continue;
-    try {
-      if (readFileSync(path.join(SRC, name), "utf8").includes(needle)) return true;
-    } catch {
-      // Unreadable file: this seam is not named there.
-    }
-  }
-  return false;
-}
 
 // 1 — the real registry.
 const entries = Object.entries(SEAMS as Record<string, SeamSpec>);
@@ -68,13 +46,11 @@ for (const [key, spec] of entries) {
   }
   assert(
     // A shadow seam's owner fires decide() through shadowDecide (decision-shadow.ts).
-    // A seam main's #1187 left with no caller is excused, but only on the
-    // positive evidence that SOME module names it — `git rm` of the last caller
-    // (the #1187 case: `askSecuritySeam` deleted with `security-class.ts`) is a
-    // retired seam, and a seam nothing references at all is dead config.
-    new RegExp(`(?:\\bdecide|\\bshadowDecide)\\(\\s*"${key}"`).test(owner) ||
-      (RETIRED_SEAM_CALLERS.has(key) && anySourceNamesSeam(key)),
-    `seam ${key}: its owner ${spec.owner} calls decide("${key}") or shadowDecide("${key}")${RETIRED_SEAM_CALLERS.has(key) ? " (caller-less seam: some src/ module must still name it)" : ""}`,
+    // There is no caller-less exemption: main's #1395 deleted the last caller of
+    // the retired S4 security seam, and a seam nothing in `src/` fires is dead
+    // config rather than a seam awaiting a caller.
+    new RegExp(`(?:\\bdecide|\\bshadowDecide)\\(\\s*"${key}"`).test(owner),
+    `seam ${key}: its owner ${spec.owner} calls decide("${key}") or shadowDecide("${key}")`,
   );
 }
 
@@ -193,7 +169,7 @@ rejects(
   /unknown direction/,
   "a field bound with an unknown direction",
 );
-// The two shadow seams must actually declare bounds, or the fix is inert: a
+// The shadow seams must actually declare bounds, or the fix is inert: a
 // caller handing over a whole provider message would get the record-wide bound
 // only, with no per-field bound on the seam.
 assert(
@@ -201,10 +177,40 @@ assert(
     SEAMS["failure-cause"].fields?.lastOutput?.from === "end",
   "failure-cause bounds providerMessage and lastOutput, keeping the TAIL of the output",
 );
-assert(
-  SEAMS["security-open-point"].fields?.openPoint !== undefined,
-  "security-open-point bounds its openPoint field",
-);
+// The open-point bound, asserted through a fixture seam rather than a production
+// registry entry: the S4 seam main's #1395 left caller-less is gone from the
+// registry, and a per-field bound is a property of `boundedState` reading the
+// seam's `fields` map — not of one entry. The fixture is a CALLER-CANDIDATE
+// shape (`shadowExactRuleMatch` may pass any seam's `state`), so it is registered
+// through the shared fixture helper rather than asserted as a production seam.
+{
+  const spec = fixtureSpec({
+    id: "fixture-open-point",
+    kind: "bool",
+    labels: { true: "t", false: "f" },
+    ruleDefault: "true",
+    passing: ["false"],
+    composition: "may-add-only",
+    // The point's own text only — never the rest of the issue.
+    fields: { openPoint: { max: 1000 } },
+  });
+  const seam = registerFixture(spec) as string;
+  assert(
+    seam === "fixture-open-point" && seamContractViolations(spec).length === 0,
+    "the open-point fixture seam is a valid registry entry",
+  );
+  const point = `HEADMARKER${"p".repeat(1200)}`;
+  const bounded = boundedState({ openPoint: point }, spec);
+  const kept = String((bounded.state as { openPoint?: string }).openPoint ?? "");
+  assert(
+    kept.length <= 1000 && kept.startsWith("HEADMARKER"),
+    `an openPoint field bound keeps the head the seam declares (${kept.length} chars, head kept=${kept.startsWith("HEADMARKER")})`,
+  );
+  assert(
+    bounded.count === 0,
+    `a plain openPoint is bounded without being redacted (${bounded.count})`,
+  );
+}
 
 console.log(`\nexit ${state.exit}`);
 process.exit(state.exit);
