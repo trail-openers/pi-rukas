@@ -93,10 +93,27 @@ export function explainLens(cap: Cap, state: WorkState): string {
         ? `The worktree inspected was \`${safeWorktree}\` (\`git -C ${safeWorktree} status\`).`
         : "The inspected worktree path was not recorded.";
       const ref = hit?.restoredToRef;
+      // #1391 — a dirty park is not one finding with two causes. When this cycle
+      // lost a lens-fix child into the tree, the dirt is the driver's residue,
+      // the fixer was never dispatched, and the round's findings are still open
+      // on the branch. Telling the operator to "inspect and clear it" without
+      // saying so reads as "someone left work in here", and buries the actual
+      // defect: the retry was defeated by the failure it was retrying after.
+      const driverCaused =
+        hit?.evidence?.includes("left by the lens-fix attempt this cycle already lost") ?? false;
+      const ownership = driverCaused
+        ? " The dirt is NOT operator work: this cycle lost its lens-fix child to an infrastructure failure, and the edits are what the dead child left. The fixer was never dispatched on this round, so the findings it was sent to answer are still open on the branch."
+        : "";
       const backup = ref
         ? ` The backup ref \`${ref}\` points at the worktree's pre-move HEAD (taken before the move / failed checkout) — restoring it (\`git checkout ${ref}\`) returns the tree to the exact state the guard refused to discard, so nothing was lost to the park. Before re-running, inspect the evidence above and decide whether to restore from the backup, commit the unlanded work onto the branch, or clean the tree.`
         : "";
-      return `the lens-fix reposition guard could not establish the correct base for the next round: ${cause}. ${where}${backup} The cycle halted rather than dispatching a fix onto a stale or diverged worktree, because a fix built there would not integrate cleanly (the #978 shape: round 2 built on the old base while the branch advanced by round 1). Inspect the worktree and the evidence above — commit or clean uncommitted work, land the missing commit on the branch, or restore from the backup ref — then re-run the cycle`;
+      // #1391 — the recovery advice splits with the ownership. For the driver's
+      // own residue, hand-cleaning a tree the driver dirtied is busywork the
+      // retry can do itself; what the operator needs is the reason it did not.
+      const action = driverCaused
+        ? "The driver's own preserve-and-clean should have handled this — if the evidence above says the clean did not complete, or names a patch under the cycle's `tmp/` dir, the saved work is there and the tree still needs clearing by hand. Then re-run the cycle"
+        : "Inspect the worktree and the evidence above — commit or clean uncommitted work, land the missing commit on the branch, or restore from the backup ref — then re-run the cycle";
+      return `the lens-fix reposition guard could not establish the correct base for the next round: ${cause}. ${where}${ownership}${backup} The cycle halted rather than dispatching a fix onto a stale or diverged worktree, because a fix built there would not integrate cleanly (the #978 shape: round 2 built on the old base while the branch advanced by round 1). ${action}`;
     }
     default:
       return `unhandled lens cap: ${cap}`;

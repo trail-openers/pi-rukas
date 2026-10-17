@@ -1,4 +1,5 @@
 import { trace } from "./trace.ts";
+import { inlineCodeSafe } from "./work-driver-conflict-evidence.ts";
 /**
  * work-driver-lens-fix-reposition-park — #981 (task-b) — the terminal park
  * for the round-2+ lens-fix reposition guard.
@@ -11,6 +12,13 @@ import { trace } from "./trace.ts";
  * nextStep) and persists it, WITHOUT dispatching. The kind + git detail
  * ride on `evidence`; a backup ref (unlanded / diverged) rides on
  * `restoredToRef`.
+ *
+ * #1391 — the `dirty` kind now knows whether the dirt is the driver's own. When
+ * the cycle has already lost a lens-fix child into this tree, the park says so:
+ * the operator reading the handoff must be able to tell "the driver parked on
+ * work its own dead child left behind" from "someone's in-progress edits are in
+ * the lens-fix worktree", because only the first is a bug in this harness and
+ * only the first says the fix was never dispatched.
  */
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { RepositionResult } from "./work-driver-lens-fix-reposition-gate.ts";
@@ -35,7 +43,18 @@ export async function parkLensFixReposition(
   // operator needs the ref to recover the tree. `backupRef` is present on
   // the unlanded / diverged / git-failed variants of RepositionResult.
   const backupRef = "backupRef" in rep ? rep.backupRef : undefined;
-  const evidence = `${rep.kind}: ${rep.detail}${backupRef ? ` (backed up to ${backupRef})` : ""}`;
+  // #1391 — for a dirty park, the ATTRIBUTION and the SAVED COPY are the two
+  // facts that make it actionable, and both come from the gate's own reads: the
+  // gate decided (after its preserve-and-clean attempt) whether the dirt is
+  // still the driver's, and where the preserved patch went. Never inferred
+  // here.
+  const attemptLost = rep.kind === "dirty" && rep.attemptLost === true;
+  const preservedTo = rep.kind === "dirty" ? rep.preservedTo : undefined;
+  const cleanFailed = rep.kind === "dirty" ? rep.cleanFailed : undefined;
+  const attribution = attemptLost
+    ? ` | #1391 attribution: the dirt is the driver's own — this cycle lost a lens-fix child into ${inlineCodeSafe(fixTree)} on an earlier attempt${preservedTo ? `, and its work is preserved at ${inlineCodeSafe(preservedTo)}` : ""}. The fixer was NOT dispatched, so the round's findings are still open on the branch.${cleanFailed ? ` The driver's attempt to clean the tree did not complete: ${inlineCodeSafe(cleanFailed)}.` : ""}`
+    : "";
+  const evidence = `${rep.kind}: ${rep.detail}${backupRef ? ` (backed up to ${backupRef})` : ""}${attribution}`;
   trace(`work-driver: lens-fix reposition guard parked the cycle — ${evidence}`);
   let next: WorkState = appendEvent(state, {
     kind: "cap-hit",

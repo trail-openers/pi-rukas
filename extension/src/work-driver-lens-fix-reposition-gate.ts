@@ -25,6 +25,16 @@
  *
  * All git commands run through the `ExecFn` argv form (no shell re-parse).
  * Split from work-driver-lens-fix-commit.ts for the 500-line gate.
+ *
+ * #1391 — the `dirty` outcome takes an `attemptLost` flag. A step retry
+ * dispatches a brand-new child into the SAME worktree, and the child the driver
+ * just lost leaves its half-written edits behind: cycle 109 lost its round-2
+ * lens-fix developer at 01:56:00, the router retried, and the gate met
+ * `M DESIGN.md, M host/fun/game-view.css, …` — the dead child's work — and
+ * parked the cycle one second into its third round, never dispatching the fix.
+ * That dirt is the driver's own residue, not the operator's in-progress work,
+ * and the gate now treats it that way: preserve first, then make the tree clean
+ * for the retry (see {@link cleanLensFixTreeAfterLostAttempt}).
  */
 import { trace } from "./trace.ts";
 import { inlineCodeSafe } from "./work-driver-conflict-evidence.ts";
@@ -33,6 +43,7 @@ import {
   enumerateUnlanded,
   parkCherryFailedTree,
 } from "./work-driver-lens-fix-reposition-backup.ts";
+import { cleanLensFixTreeAfterLostAttempt } from "./work-driver-lens-fix-reposition-clean.ts";
 import {
   GIT_TIMEOUT_MS,
   cherryLines,
@@ -58,7 +69,11 @@ import type { ExecFn } from "./worktree.ts";
  *   `movedByPatchEquivalence` is true when the tree was moved because every
  *   commit it held was patch-equivalent to the branch tip (detected with
  *   `git cherry`), rather than by a fast-forward.
- * - `dirty` — uncommitted changes; fixer NOT dispatched.
+ * - `dirty` — uncommitted changes; fixer NOT dispatched. `attemptLost` (the
+ *   #1391 shape) records whether the driver itself lost a lens-fix child into
+ *   this tree, which is what makes the dirt the driver's responsibility rather
+ *   than the operator's. `preservedTo` names the saved patch when the gate
+ *   cleaned the residue; `cleanFailed` says a clean could not be completed.
  * - `unlanded` — clean and AHEAD of the tip (strict ancestor of the tree);
  *   holds commits the tip does not. Moved to backup ref; parks.
  * - `diverged` — holds commits the tip does not and is NOT behind it
@@ -84,12 +99,37 @@ export type RepositionResult =
       /** The backup ref created before the cherry-landed move (the old tree HEAD). */
       backupRef?: string;
     }
-  | { kind: "dirty"; detail: string }
+  | {
+      kind: "dirty";
+      detail: string;
+      /**
+       * #1391 — true when the driver lost a lens-fix child into THIS tree
+       * before re-entering the step, so the dirt it is refusing is the residue
+       * of its own lost attempt rather than the operator's in-progress work.
+       */
+      attemptLost?: boolean;
+      /** The scratch patch the preserve step wrote before cleaning. */
+      preservedTo?: string;
+      /** A clean was attempted and could not be completed — the tree may be half-cleaned. */
+      cleanFailed?: string;
+    }
   | { kind: "unlanded"; detail: string; backupRef?: string; aheadShas?: string[] }
   | { kind: "diverged"; detail: string; backupRef?: string; aheadShas?: string[] }
   | { kind: "git-failed"; detail: string; backupRef?: string };
 
 const TRACE_PREFIX = "lens-fix-reposition";
+
+/** Render the porcelain lines as the `dirty` detail: one backtick-safe item per path. */
+function dirtyPathsDetail(porcelain: string): string {
+  const paths = porcelain
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  // #981 LOW: porcelain paths are operator-supplied data; route them through
+  // inlineCodeSafe (a backtick or newline in a path would break the markdown
+  // span the handoff renders the detail into).
+  return `worktree has uncommitted changes: ${paths.map((p) => inlineCodeSafe(p)).join(", ")}`;
+}
 
 /**
  * #981 — move the lens-fix worktree onto the freshly-fetched branch tip
@@ -112,6 +152,22 @@ export async function repositionLensFixWorktree(
   branchName: string,
   issues: number[],
   issueTitle: string | undefined,
+  /**
+   * #1391 — set when the driver lost a lens-fix child into THIS tree before
+   * re-entering the step (see `lostAttemptOnStep`). With it, a dirty tree is the
+   * driver's own residue: preserved to a scratch patch and cleaned, then
+   * re-read, so the retry reaches the fixer. Without it the gate behaves exactly
+   * as before — nothing is stashed, cleaned, or discarded.
+   */
+  attemptLost = false,
+  /**
+   * #1391 — the cycle's repo root and scratch dir, both required to clean: the
+   * first bounds the clean to `<repoRoot>/.worktrees/`, the second is where the
+   * preserved patch lands. Omitted → no clean is attempted and a dirty tree
+   * parks exactly as it did pre-#1391.
+   */
+  repoRoot?: string,
+  scratchDir = "",
 ): Promise<RepositionResult> {
   // 1. Fetch the branch, then resolve the tip from the local + remote
   //    refs (documented tip selection, module header). A fetch failure or
@@ -155,32 +211,71 @@ export async function repositionLensFixWorktree(
 
   // 2. Dirty check — a worktree with uncommitted changes is never moved
   //    (moving HEAD under an in-flight fix would lose or corrupt it), and
-  //    the fixer is not dispatched onto one either. Nothing is stashed; the
-  //    operator inspects and clears it.
+  //    the fixer is not dispatched onto one either.
+  //
+  //    #1391 — WHOSE dirt it is changes the answer. A step retry dispatches a
+  //    brand-new child into the SAME worktree, and the child the driver just
+  //    lost leaves half-written edits behind. `attemptLost` says the driver
+  //    caused this (it lost a lens-fix child into this tree on a prior attempt),
+  //    and in that case the dirt is the driver's responsibility: preserve it to
+  //    a scratch patch, clean the tree, and re-read below. Dirt the driver did
+  //    not cause is still the operator's and still parks — nothing is ever
+  //    stashed or discarded without a saved copy.
   let porcelain: string;
-  try {
-    const st = await execFn("git", {
-      cwd: tree,
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: 64 * 1024,
-      argv: ["status", "--porcelain"],
+  const dirtyRead = async (): Promise<
+    { ok: true; porcelain: string } | { ok: false; why: string }
+  > => {
+    try {
+      const st = await execFn("git", {
+        cwd: tree,
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: 64 * 1024,
+        argv: ["status", "--porcelain"],
+      });
+      return { ok: true, porcelain: st.stdout.trim() };
+    } catch (e) {
+      return { ok: false, why: `git status --porcelain failed: ${e}` };
+    }
+  };
+  const first = await dirtyRead();
+  if (!first.ok) {
+    trace(`${TRACE_PREFIX}: git-failed (status): ${first.why}`);
+    return { kind: "git-failed", detail: first.why };
+  }
+  porcelain = first.porcelain;
+  let preservedTo: string | undefined;
+  let cleanFailed: string | undefined;
+  if (porcelain !== "" && attemptLost && repoRoot !== undefined) {
+    const cleaned = await cleanLensFixTreeAfterLostAttempt({
+      execFn,
+      repoRoot,
+      tree,
+      scratchDir,
+      id: "lens-fix",
     });
-    porcelain = st.stdout.trim();
-  } catch (e) {
-    trace(`${TRACE_PREFIX}: git-failed (status): ${e}`);
-    return { kind: "git-failed", detail: `git status --porcelain failed: ${e}` };
+    if (cleaned.error !== undefined) cleanFailed = cleaned.error;
+    preservedTo = cleaned.patched;
+    const reread = await dirtyRead();
+    if (!reread.ok) {
+      trace(`${TRACE_PREFIX}: git-failed (status after clean): ${reread.why}`);
+      return { kind: "git-failed", detail: reread.why };
+    }
+    porcelain = reread.porcelain;
   }
   if (porcelain !== "") {
-    const paths = porcelain
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
-    // #981 LOW: porcelain paths are operator-supplied data; route them
-    // through inlineCodeSafe (a backtick or newline in a path would break
-    // the markdown span the handoff renders the detail into).
-    const detail = `worktree has uncommitted changes: ${paths.map((p) => inlineCodeSafe(p)).join(", ")}`;
+    const detail =
+      dirtyPathsDetail(porcelain) +
+      (attemptLost ? " (left by the lens-fix attempt this cycle already lost)" : "") +
+      (preservedTo ? ` — preserved to ${inlineCodeSafe(preservedTo)}` : "") +
+      (cleanFailed ? ` — the driver's clean did not complete: ${inlineCodeSafe(cleanFailed)}` : "");
     trace(`${TRACE_PREFIX}: ${detail}`);
-    return { kind: "dirty", detail };
+    return {
+      kind: "dirty",
+      detail,
+      ...(attemptLost ? { attemptLost: true } : {}),
+      ...(preservedTo ? { preservedTo } : {}),
+      ...(cleanFailed ? { cleanFailed } : {}),
+    };
   }
 
   // 3. Where is the worktree relative to the tip? A clean tree at the tip
