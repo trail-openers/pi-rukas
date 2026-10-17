@@ -52,7 +52,7 @@ Memories are snapshots. **Before acting on a recalled memory, verify against cur
 vipune add 'corrected statement' --supersedes <old-id> --memory-type fact
 ```
 
-Superseding is the correction — it preserves the original row. **Memory-write boundary:** never run vipune update, delete, prune, promote or `vipune mcp` — those are operator actions; correct with `add --supersedes`. Per-mode enforcement is stated under the `Memory-write boundary` heading of the bundled vipune skill.
+Superseding is the correction — it preserves the original row. **Memory-write boundary:** never run vipune update, delete, prune, promote, export, backup, import, reindex, project or mcp — those are operator actions, refused by a mode-independent guard (#1437) that reads the verb bare, behind a wrapper, pathed, or quoted as one whole token, and refuses when it cannot parse at all; correct with `add --supersedes`. Per-mode enforcement is stated under the `Memory-write boundary` heading of the bundled vipune skill.
 
 ## Single-quote safety — non-negotiable
 

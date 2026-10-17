@@ -6,11 +6,8 @@
  * string/token parsing with no Pi API and no filesystem I/O.
  */
 
-import {
-  hasMidWildcard,
-  isDestructiveMemoryWrite,
-  midWildcardPattern,
-} from "./bash-pattern-wildcard.ts";
+import { hasMidWildcard, midWildcardPattern } from "./bash-pattern-wildcard.ts";
+import { refusesMemoryWrite } from "./memory-write-guard.ts";
 import { trace } from "./trace.js";
 
 // Chars that indicate command injection / chaining in a bash *command*. If a
@@ -111,7 +108,12 @@ export function stripQuotedSegments(command: string): string {
 // Process-wrapper tokens to skip when extracting a command prefix.
 // `timeout 30 npm test` should extract to `npm test`, not `timeout`.
 // Matches Claude Code's documented strip set.
-const COMMAND_WRAPPERS = new Set([
+//
+// Exported because `memory-write-guard.ts` (#1437) must skip the same wrappers
+// when it looks for `vipune` in command position — `nohup vipune delete 42` is
+// the same invocation as `vipune delete 42`. One list, so the two consumers
+// cannot drift into disagreeing about what a wrapper is.
+export const COMMAND_WRAPPERS = new Set([
   "timeout",
   "time",
   "nice",
@@ -326,7 +328,11 @@ export function matchBashSubcommand(
   // user can never approve `git X && rm -rf /` as a side-effect of having
   // ever approved `git status && git diff`.
   if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return null;
-  if (isDestructiveMemoryWrite(command)) return "deny";
+  // The mode-independent guard's predicate is the single source of truth for
+  // what a memory write is; there is no second rule here to keep in step with
+  // it (`refusesMemoryWrite` names the verb, so `undefined` is the only
+  // "not a write" signal).
+  if (refusesMemoryWrite(command) !== undefined) return "deny";
   // Sort patterns by length descending so the more specific entry wins.
   const patterns = Object.entries(allowlist)
     .filter(([k]) => k !== "*")
@@ -362,7 +368,7 @@ export function matchBashSubcommand(
  * Nothing anywhere stopped it. Gating is bypassed in trust mode (the default
  * on an interactive host), bypassed in sandbox mode, and explicitly allowed
  * even under strict opt-in by the `oo git *` catch-all in agents.json. So this
- * refusal cannot live in the allowlist — like `isDestructiveMemoryWrite`, it
+ * refusal cannot live in the allowlist — like `refusesMemoryWrite`, it
  * sits ahead of it and holds regardless.
  * Deliberately conservative: a false positive makes an agent pick another
  * route, while a false negative destroys work the harness has already paid a

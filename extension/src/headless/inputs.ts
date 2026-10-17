@@ -129,6 +129,9 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("ALLOW_DESTRUCTIVE_GIT", false),
   flag("ALLOW_DIRECT_ISSUE_CREATE", false),
   flag("ALLOW_LIVE_SPAWN", false, "test"),
+  // #1437 — opens the vipune memory-write refusal (delete/prune/promote/export/
+  // backup/import/reindex/project/mcp, and `update` with a row-mutating flag).
+  flag("ALLOW_MEMORY_WRITES", false),
   flag("ALLOW_UNREVIEWED_MERGE", false),
   list("ALLOWED_ROOTS", ":", null, "sandbox"),
   flag("AUTO_STEER", true),

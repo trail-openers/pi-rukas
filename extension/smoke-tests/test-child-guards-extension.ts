@@ -14,8 +14,8 @@
  *
  * Loads the companion's DEFAULT EXPORT into a fake pi and asserts:
  *
- *   1. Loading with no PI_ENSEMBLE_SUBAGENT_MODE registers THREE tool_call
- *      hooks (destructive-git, issue-creation, merge — the three
+ *   1. Loading with no PI_ENSEMBLE_SUBAGENT_MODE registers FOUR tool_call
+ *      hooks (destructive-git, issue-creation, merge, memory-write — the four
  *      mode-independent guards, same order as the subagent path's shared
  *      block minus the deliberately-excluded oo-rewrite) and no
  *      tools/commands; driving
@@ -28,7 +28,8 @@
  *      extension registers the guards there; a second set would double-run
  *      the merge guard's gh/git exec chain).
  *   4. Canary — the EXACT expected set {registerMergeGuard,
- *      registerIssueCreationGuard, registerDestructiveGitGuard} is the
+ *      registerIssueCreationGuard, registerDestructiveGitGuard,
+ *      registerMemoryWriteGuard} is the
  *      shared block's contents (subagent-guard-guards.ts), the companion
  *      calls that block, and the explicit exclusions {registerPmBashGuard,
  *      registerOoRewriteGuard} are NOT registered by the companion. Fails
@@ -134,8 +135,9 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
 };
 
 // ============================================================
-// 1. Loading with no SUBAGENT_MODE: exactly THREE tool_call hooks (the
-//    three mode-independent guards; oo-rewrite deliberately excluded), no
+// 1. Loading with no SUBAGENT_MODE: exactly FIVE tool_call hooks (the
+//    four mode-independent guards plus review-accept that rides with
+//    issue-creation; oo-rewrite deliberately excluded), no
 //    tools, no commands.
 // ============================================================
 {
@@ -143,8 +145,8 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers["tool_call"]?.length ?? 0;
   assert(
-    n === 4,
-    `registers exactly 4 tool_call hooks (the mode-independent guards incl. #1105 review-accept, oo-rewrite excluded; got ${n})`,
+    n === 5,
+    `registers exactly 5 tool_call hooks (the mode-independent guards incl. #1105 review-accept and #1437 memory-write, oo-rewrite excluded; got ${n})`,
   );
   assert(fake.registeredTools.length === 0, "registers no tools (hook-only companion)");
   assert(fake.registeredCommands.length === 0, "registers no commands");
@@ -300,7 +302,8 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
 
 // ============================================================
 // 5. Canary — the EXACT expected set {registerMergeGuard,
-//    registerIssueCreationGuard, registerDestructiveGitGuard} is the shared
+//    registerIssueCreationGuard, registerDestructiveGitGuard,
+//    registerMemoryWriteGuard} is the shared
 //    block's contents (subagent-guard-guards.ts); the companion calls that
 //    block (no direct guard calls, no duplicates), and the explicit
 //    exclusions {registerPmBashGuard, registerOoRewriteGuard} are NOT
@@ -317,6 +320,7 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
     "registerMergeGuard",
     "registerIssueCreationGuard",
     "registerDestructiveGitGuard",
+    "registerMemoryWriteGuard",
   ];
   // The companion delegates to the shared block — the single list.
   assert(
@@ -333,7 +337,7 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
       `canary: the companion does NOT register ${name} directly (no duplicate of the shared block)`,
     );
   }
-  // The shared block contains EXACTLY the three guards.
+  // The shared block contains EXACTLY the four guards.
   for (const name of expected) {
     assert(
       new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(shared),

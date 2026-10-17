@@ -33,6 +33,7 @@ import {
   tokenizeForPrefix,
 } from "./bash-command-parser.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
+import { registerMemoryWriteGuard } from "./memory-write-guard.ts";
 import { registerMergeGuard } from "./merge-guard.ts";
 import type { BrokerDeps, PermissionRequest } from "./permission-broker.ts";
 import {
@@ -58,6 +59,7 @@ import {
   persistDecisions,
 } from "./permission-decision-cache.ts";
 import { registerSubagentGuard } from "./permission-subagent-guard.ts";
+import { isInTrustMode, parentTrustMode } from "./permission-trust-mode.ts";
 import { registerPmBashGuard } from "./pm-bash-guard.ts";
 import { ROLE_NAMES } from "./roles.js";
 import { trace } from "./trace.js";
@@ -68,6 +70,7 @@ import { trace } from "./trace.js";
 export type { PermPattern, PermVerdict, RoleConfig };
 export { findProjectConfigPath, loadAgentsJson, resolveAgentsJsonPath };
 export { extractCommandPrefix, tokenizeForPrefix };
+export { isInTrustMode, parentTrustMode };
 export {
   bashPatternMatches,
   decisionKey,
@@ -209,41 +212,20 @@ let parentCtx: any = null;
 let brokerDepsFactory: (() => BrokerDeps) | null = null;
 
 /**
- * Trust mode — pi-rukas does NOT enforce per-call permissions when there's
- * no boundary worth enforcing. Three cases:
- *
- *   1. Sandbox (PI_ENSEMBLE_SANDBOX_MODE=1) — container fence isolates; we
- *      already trust the container, not the per-call gate.
- *   2. Interactive host (hasUI=true, no strict opt-in) — the parent runs as
- *      the user's own UID with the user's own credentials. Per-call prompts
- *      provide ZERO meaningful protection (the agent already has full FS /
- *      network / credential access) but emit ~30 prompts/minute, training
- *      users to rubber-stamp and degrading attention on prompts that DO
- *      matter. Honest answer: trust the agent or don't run it.
- *   3. Headless (no UI) — STAYS strict. No human present to consent, so
- *      `ask` verdicts hard-deny. CI/cron contexts where the agent runs
- *      without a person in the loop are genuinely adversarial threat
- *      surfaces; the deny is meaningful.
- *
- * Opt-in escape hatch: PI_ENSEMBLE_STRICT_PERMISSIONS=1 restores the legacy
- * ask-flow for users who actively want it back in interactive host mode.
+ * Trust mode — the three states and their rationale live in
+ * permission-trust-mode.ts (split out to keep this module under the 500-line
+ * cap, AGENTS.md §12). `isInTrustMode` / `parentTrustMode` are re-exported
+ * below unchanged: callers (spawn.ts, index.ts, smoke tests) import them from
+ * "./permission-guard.ts".
  */
-export function isInTrustMode(hasUI: boolean): boolean {
-  if (process.env.PI_ENSEMBLE_SANDBOX_MODE === "1") return true;
-  if (process.env.PI_ENSEMBLE_TRUST_MODE === "1") return true;
-  if (process.env.PI_ENSEMBLE_STRICT_PERMISSIONS === "1") return false;
-  return hasUI;
-}
 
 /**
- * Read parent's trust-mode status for spawn.ts. parentCtx is captured at
- * session_start; if it's missing (very early spawn), assume strict to fail
- * safe — the subagent will then use the broker fallback, which is correct.
+ * Read parent's trust-mode status for spawn.ts, from this module's captured
+ * parent `hasUI` (null in subagent mode, which fails safe to strict — see
+ * parentTrustMode).
  */
 export function isParentInTrustMode(): boolean {
-  if (process.env.PI_ENSEMBLE_SANDBOX_MODE === "1") return true;
-  if (process.env.PI_ENSEMBLE_STRICT_PERMISSIONS === "1") return false;
-  return parentCtx?.hasUI === true;
+  return parentTrustMode(parentCtx?.hasUI === true ? true : undefined);
 }
 
 /**
@@ -279,6 +261,13 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
   // prompt-layer doctrine (adversarial_loop + dispatch_lens_review) alone
   // could not enforce.
   registerMergeGuard(pi);
+  // #1437 — mode-independent memory-write refusal: the ungranted vipune verbs.
+  // The shared block (subagent-guard-guards.ts) also registers this guard, but
+  // it is reached only on the subagent branch, below the sandbox short-circuit
+  // and the subagent-mode firewall. The parent path registers its guards above
+  // all three, so a memory refusal that only lived in the block would be inert
+  // under sandbox mode — the container default.
+  registerMemoryWriteGuard(pi);
   // #600 — PM bash allowlist guard: fires in ALL modes (trust, strict,
   // headless, sandbox) for consistency. PM-only: gated on isPmModeActive
   // inside the hook; registered here (the parent path) only — subagent

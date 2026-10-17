@@ -1677,10 +1677,76 @@ Escape: nothing to disable here — if vipune is missing, slow or broken, the br
 
 ### An agent tried to edit a memory and was refused
 
-`vipune update <id> --text "…"` is denied to every role, and the refusal is enforced in
-`bash-command-parser.ts` ahead of the permission allowlist so it holds even if the allowlist changes.
+Every vipune write verb is refused to every role, in every mode, by a
+mode-independent `tool_call` hook: `registerMemoryWriteGuard` in
+`memory-write-guard.ts`, registered inside `registerModeIndependentGuards` (so the
+child-guards companion loads it into every spawned child) and again on the parent
+path above the sandbox short-circuit. The refused verbs are the ones no role is
+granted — `delete`, `prune`, `promote`, `export`, `backup`, `import`, `reindex`,
+`project`, `mcp` — plus `update` carrying any row-mutating flag (`-t`/`--text`,
+`-m`/`--metadata`, `--memory-type`, `--status`, `--importance`). Flags are
+recognised by **exact name and in `=` form** (`--status active`, `--status=active`)
+and, for short flags, as any character of a **cluster** (`-tm`, `-mt`), since a
+cluster is a mutating flag the token hides — measured on vipune 0.15.0,
+`vipune update <id> -tm` is refused and is also a real write, because `t` consumes
+`m` as `--text`'s value and stores `m` in the row.
 
-The reason is that `update --text` **replaces content in place**: one row before, one row after, no
+Abbreviated long flags are never refused because the binary rejects them outright
+— `vipune update <id> --stat active` is refused by clap as an unexpected argument,
+and so is every other abbreviation (`--imp`, `--mem-t`, `--memorytyp=fact`) — so
+clap takes no long-flag prefix and refusing them would report a threat that does
+not exist. Use the exact flag names, not abbreviations, in prose and in prompts.
+
+The verb is found behind the shapes an agent actually emits: process wrappers
+(`env`, `nohup`, `command`, `exec`, `time`, `timeout 30`, `nice -n 5`), env
+assignments (`VIPUNE_DEBUG=1 vipune …`), a path to the binary
+(`/usr/local/bin/vipune`, `~/bin/vipune`, `./vipune`), the `oo` wrapper, compound
+keywords (`then`/`do`/`else`) and `(`, and vipune's own global options before the
+verb — `vipune --json delete 42`, `vipune -p other delete 42` and `vipune
+--db-path X delete 42` are refused just as a bare `vipune delete 42` is. Command
+position is tracked token by token, so an ungranted verb named only as an
+argument is never refused — `grep vipune delete file.log`, `echo vipune delete 42`
+and `echo vipune delete > notes.txt` all run, because there `vipune` is an
+argument rather than a command. `mcp__codebase_memory__vipune` is an MCP tool name
+and never an invocation. An operator who genuinely needs a refused verb from an agent
+sets `PI_ENSEMBLE_ALLOW_MEMORY_WRITES=1`.
+
+Before #1437 the only code refusal was `isDestructiveMemoryWrite` (since renamed
+`refusesMemoryWrite`), reached from
+the permission layers that trust mode and sandbox mode both skip and from the
+parent-PM-only bash guard — so on an interactive host (trust mode is the default)
+the whole boundary was doctrine. The predicate now lives in `memory-write-guard.ts`,
+which reads the command through three collaborators at the seam the size ratchet
+made explicit: `memory-write-tokenizer.ts` decides *where* a vipune invocation is
+(command position, wrappers, brace groups, global-option arity),
+`memory-write-flags.ts` decides whether its arguments write a row, and
+`memory-write-cli-surface.ts` holds the binary's own vocabulary — the mutating-flag
+names and the global-option arity table, the half that changes when vipune's
+`--help` changes and nothing about how bash tokenises. The guard itself
+holds only the policy — the refused verb set, the `hook` exemption, the refusal
+text. `matchBashSubcommand` calls `refusesMemoryWrite` directly — there is no second
+rule to keep in step with it, and no delegating alias with a duplicate test block.
+
+The handler **fails closed**. Every path above is a string match on a command
+rendered several ways, so a fault in the parse is not evidence of an absence: if the
+predicate throws, the command is refused with the fault named, and the operator's
+opt-out stays the only way through. A guard that reads a *rendering* of the command
+cannot answer "no violation" when it could not build one.
+
+The refusal is **advisory, not a security boundary**: every rule is a string
+match on a rendering of the command, and an agent determined to bypass it can
+write its own argv, put the verb behind an expansion the guard does not expand
+(`vipune $VERB 42`), or write the command to a script and run it. What it stops is
+the accidental case — an agent following an outdated prompt, or reaching for a verb
+it was told not to use and not noticing that the quoting made it real. The
+deliberate bypass is still the operator's terminal.
+
+`vipune hook` is the one listed verb deliberately **not** refused. It is the
+lifecycle-hook handler the binary invokes from a hook; refusing it from inside
+the child that calls it would refuse plumbing, not a memory write.
+
+The reason `update` is refused for its flags rather than as a bare verb is that
+`update --text` **replaces content in place**: one row before, one row after, no
 new row, no `superseded_by` lineage, no undo. The id survives, so any prior citation of that memory
 now points at different text — which makes it quieter than `delete`, and worse.
 
@@ -1708,7 +1774,13 @@ Near-duplicate is judged on content overlap, not on score: two rows that say opp
 
 ### Agents can no longer delete your memories
 
-`agents.json` granted `"vipune *": "allow"` to all six roles. `vipune delete <ID>` takes no confirmation flag, and the wildcard also reached `vipune mcp`. The allowlist is explicit: `search`, `add`, `get`, `list`, `validate`, `doctor`, `version`. `delete`, `update`, `mcp`, `reindex` and `project` are granted to no role — an operator runs those. (`update` was allowed until it was measured to replace content in place with no lineage; see below.)
+`agents.json` granted `"vipune *": "allow"` to all six roles. `delete <ID>` takes
+no confirmation flag, and the wildcard also reached `mcp`. The allowlist is
+explicit: `search`, `add`, `get`, `list`, `validate`, `doctor`, `version`. The
+write verbs are granted to no role — an operator runs them. (`update` was allowed
+until it was measured to replace content in place with no lineage; see above.)
+The allowlist is only one layer, and in trust mode it is the softest one: the
+refusal that actually runs is the mode-independent guard above.
 
 ### False claims in a diff — and why there is no seventh lens
 

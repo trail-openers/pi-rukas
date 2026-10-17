@@ -30,11 +30,125 @@
  *   2. A similarity threshold quoted next to a non-zero `--recency`. Once the
  *      score is `(1-w)·raw + w·decay` it is not a similarity any more, so a
  *      cosine-calibrated band cannot be applied to it.
+ *
+ * ## Rule 3 polices a SET, and the set is derived, not remembered
+ *
+ * Rule 3 forbids prose teaching a vipune verb no role can run. Its verb list
+ * used to be a hand-written 14-entry `Set` — so a prose line teaching
+ * `vipune export rows.jsonl` passed, because `export` had never been added
+ * (#1386 measured it). Now the policed set must EQUAL every verb the installed
+ * `vipune --help` lists minus every verb `agents.json` grants (asserted against
+ * the binary when present, skipped with a notice otherwise), and the guard's
+ * refused set in `memory-write-guard.ts` must equal that same difference plus
+ * `update` — which is refused for its mutating flags, not as a bare verb. A
+ * future `agents.json` grant of a refused verb therefore fails the gate instead
+ * of silently contradicting the code refusal, and a vipune release that adds a
+ * verb eventually breaks the gate instead of going unpoliced.
+ *
+ * The exemption is prohibition grammar in the SAME CLAUSE as the verb (the
+ * text between two clause breaks — `; : — . (newlines`, backticks, brackets —
+ * containing it), not keyword adjacency anywhere on the line: measured, a line
+ * teaching `vipune export` that merely said "the operator" nearby passed.
  */
 
+import { execFile } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
+import {
+  EXEMPT_VIPUNE_VERBS,
+  REFUSED_VIPUNE_VERBS,
+  refusesMemoryWrite,
+} from "../src/memory-write-guard.ts";
 import { searchArgv, vipuneChildEnv } from "../src/vipune.ts";
+import { skipBinaryGate, vipuneHelpOrSkip } from "./lib/vipune-binary-probe.ts";
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * The verb list `vipune --help` prints, or null when the binary is ABSENT.
+ *
+ * When the binary is PRESENT, a failed `--help` or a missing `Commands:` heading
+ * THROWS (see `lib/vipune-binary-probe.ts`) rather than reading as "no binary" —
+ * which is the whole point: the set-equation gate must fail on a broken binary,
+ * not go quietly off.
+ *
+ * Parsed from the `Commands:` block (two-space indent, name then optional
+ * description) rather than from a committed fixture — the same offline/live dual
+ * shape `test-vipune-capability.ts` uses, so the gate still runs where vipune
+ * is not installed. Bounded: a hanging binary is a skip, not a hung suite.
+ */
+async function listVipuneHelpVerbs(): Promise<Set<string> | null> {
+  const help = vipuneHelpOrSkip("Commands:", "`vipune --help` verb list");
+  if (help === null) return null;
+  const lines = help.split("\n");
+  const start = lines.findIndex((l) => /^Commands:/.test(l));
+  const verbs = new Set<string>();
+  for (const line of lines.slice(start + 1)) {
+    if (/^\S/.test(line)) break; // the next top-level section (`Options:`)
+    const m = /^ {2}(\w[\w-]*)/.exec(line);
+    // `help` is clap's own verb, not a vipune capability.
+    if (m?.[1] && m[1] !== "help") verbs.add(m[1]);
+  }
+  if (verbs.size === 0) {
+    throw new Error("`vipune --help` printed an empty `Commands:` block — the gate cannot run");
+  }
+  return verbs;
+}
+
+/**
+ * Does the clause containing the vipune verb also PROHIBIT it?
+ *
+ * A clause is the run of text around the verb up to the nearest break: `;` `:`
+ * `.` `(` `)` `[` `]` a backtick, an em/en dash set off by spaces, or a line
+ * break. Whole-line keyword adjacency was the bug: it exempted a line that
+ * TEACHED `vipune export` and merely mentioned "operator" three clauses away.
+ */
+function prohibitsVerb(text: string, verbEnd: number): boolean {
+  // A backtick OPENS or CLOSES quoting; it is not a boundary you can stop at,
+  // because the prohibition almost always sits on the other side of the closing
+  // one (`` never run `vipune update`, it replaces content ``). So: step over a
+  // backtick and keep scanning, and treat the NEXT non-backtick character as
+  // the real edge of that run.
+  const isBreak = (ch: string): boolean =>
+    /[;:.()\[\]\n\r]/.test(ch) || /\s[\u2014\u2013]\s/.test(ch);
+  const at = (i: number): string => text[i] ?? "";
+  let from = verbEnd;
+  while (from > 0) {
+    const prev = at(from - 1);
+    if (prev !== "`" && !isBreak(prev)) {
+      from--;
+      continue;
+    }
+    if (prev === "`") {
+      from--;
+      // Only a run whose character BEFORE the backtick is still clause-internal
+      // is the same clause; a `.` or `;` before it ends the clause.
+      if (from > 0 && at(from - 1) !== "`" && !isBreak(at(from - 1))) continue;
+      break;
+    }
+    break;
+  }
+  let to = verbEnd;
+  while (to < text.length) {
+    const cur = at(to);
+    if (cur !== "`" && !isBreak(cur)) {
+      to++;
+      continue;
+    }
+    if (cur === "`") {
+      to++;
+      if (at(to) !== "`" && !isBreak(at(to))) continue;
+      break;
+    }
+    break;
+  }
+  const clause = text.slice(from, to);
+  // `deny` covers "denied"/"denies"; `refus` covers refusal/refused.
+  return /denied|deny|denies|cannot|not available|forbidden|refus|never|granted to no|not granted|operator action|operator command|operator's|operator runs|operator reviews|out of scope|do not|don't/i.test(
+    clause,
+  );
+}
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -201,7 +315,12 @@ assert(
     "...and none of `delete`, `update`, `prune` or `promote` is among them",
   );
 
-  /** `vipune --help` as of 0.9.0. A word that is not one of these is prose. */
+  /**
+   * The offline fallback verb set (`vipune --help` as of 0.9.0). A word that is
+   * not one of these is prose. When the binary is installed, the block below
+   * asserts THIS set equals what the binary lists — so a vipune release that
+   * adds a verb breaks the gate here rather than leaving that verb unpoliced.
+   */
   const VIPUNE_SUBCOMMANDS = new Set([
     "validate",
     "add",
@@ -221,7 +340,84 @@ assert(
     // so the prose cannot drift back to teaching them.
     "promote",
     "prune",
+    // #1386 measured the three whole-store verbs as unpoliced: `export`,
+    // `backup` and `import` copy or load every project's plaintext rows, and a
+    // prose line teaching one of them passed because none was ever listed.
+    "export",
+    "backup",
+    "import",
+    // The lifecycle-hook handler. Policed as a verb the prose must not TEACH
+    // (no role needs to invoke it — the binary runs it from a hook), while
+    // EXEMPT_VIPUNE_VERBS keeps it out of the code refusal. The two lists are
+    // deliberately different; the equation below reconciles them.
+    "hook",
   ]);
+
+  // ---------- the two equations the gap gate adopted (#1437)
+  //
+  // policed set == `vipune --help` minus every verb agents.json grants
+  // guard's refused set == that same difference, plus `update`
+  //
+  // `update` is the one verb refused for its FLAGS rather than as a bare verb
+  // (an update with no mutating flag changes nothing), so it is ungranted and
+  // policed but not in the bare-verb refusal list. `hook` is the mirror case:
+  // the binary invokes it from a hook, so it is policed against prose but
+  // deliberately not refused by code. Both reconciliations are explicit below,
+  // and a future agents.json grant of a refused verb fails here instead of
+  // silently contradicting the code refusal.
+  const expectedPoliced = new Set([...VIPUNE_SUBCOMMANDS].filter((v) => !allowedVerbs.has(v)));
+  const policedDelta = [...expectedPoliced].filter((v) => !VIPUNE_SUBCOMMANDS.has(v));
+  assert(
+    policedDelta.length === 0,
+    `the policed set equals every listed verb minus the granted ones${policedDelta.length ? ` — unexpected ${policedDelta.join(", ")}` : ""}`,
+  );
+
+  const helpVerbs = await listVipuneHelpVerbs();
+  if (helpVerbs === null) {
+    skipBinaryGate("`vipune --help` verb-set assertion");
+  } else {
+    // Non-empty is asserted here rather than trusted from the helper: an empty
+    // set makes BOTH deltas below vacuously true, so an unasserted `helpVerbs ===
+    // 0` is a green gate that reviewed nothing.
+    assert(helpVerbs.size > 0, "`vipune --help` yielded at least one verb to compare against");
+    const unpoliced = [...helpVerbs].filter((v) => !VIPUNE_SUBCOMMANDS.has(v));
+    const phantom = [...VIPUNE_SUBCOMMANDS].filter((v) => !helpVerbs.has(v));
+    assert(
+      unpoliced.length === 0,
+      `the policed set covers every verb the installed binary lists${unpoliced.length ? ` — missing ${unpoliced.join(", ")}` : ""}`,
+    );
+    assert(
+      phantom.length === 0,
+      `...and lists nothing the binary does not${phantom.length ? ` — unknown ${phantom.join(", ")}` : ""}`,
+    );
+  }
+
+  const refused = new Set<string>(REFUSED_VIPUNE_VERBS);
+  const expectedRefused = new Set(
+    [...expectedPoliced].filter((v) => v !== "update" && !EXEMPT_VIPUNE_VERBS.includes(v)),
+  );
+  const refusedDelta = [...expectedRefused].filter((v) => !refused.has(v));
+  const refusedExtra = [...refused].filter((v) => !expectedRefused.has(v));
+  assert(
+    refusedDelta.length === 0,
+    `memory-write-guard refuses every ungranted verb the prose polices${refusedDelta.length ? ` — missing ${refusedDelta.join(", ")}` : ""}`,
+  );
+  assert(
+    refusedExtra.length === 0,
+    `...and nothing outside that set${refusedExtra.length ? ` — unexpected ${refusedExtra.join(", ")}` : ""}`,
+  );
+  assert(
+    !refused.has("update"),
+    "`update` is refused for its mutating flags, not as a bare verb (asserted behaviourally in test-memory-write-guard.ts)",
+  );
+  assert(
+    allowedVerbs.size > 0 && !refused.has("add"),
+    "`add` is granted and never refused — the driver writes memory through it",
+  );
+  assert(
+    refusesMemoryWrite("vipune update 1 --status active") !== undefined,
+    "canary: a future agents.json grant of `vipune update` would still leave the mutating-flag refusal standing",
+  );
 
   const taught: string[] = [];
   for (const f of files) {
@@ -242,20 +438,34 @@ assert(
       const verb = m?.[1];
       if (!verb || !VIPUNE_SUBCOMMANDS.has(verb) || allowedVerbs.has(verb)) return;
       // Prose that names the verb in order to FORBID it is the point of the
-      // documentation, not a violation of it.
-      // `deny` covers "denied" and "denies"; `refus` covers refusal/refused.
-      if (
-        /denied|deny|denies|cannot|not available|forbidden|refus|never run|granted to no|not granted|operator command|operator's|operator actions/i.test(
-          text,
-        )
-      )
-        return;
+      // documentation, not a violation of it — but the prohibition has to be
+      // IN THE SAME CLAUSE as the verb. The old test matched its keyword list
+      // against the WHOLE line, so a line teaching `vipune export rows.jsonl`
+      // that merely said "the operator" three clauses away passed (measured).
+      // A clause is the run of text between two breaks — `;` `:` `—` `.`
+      // `(`, brackets, a backtick, or a line break — so the negative wording
+      // has to sit next to the verb it governs.
+      if (prohibitsVerb(text, (m.index ?? 0) + (m[0]?.length ?? 0))) return;
       taught.push(`${path.relative(ROOT, f)}:${i + 1}`);
     });
   }
   assert(
     taught.length === 0,
     `no prose teaches a vipune verb the roles cannot run${taught.length ? ` — ${taught.join(", ")}` : ""}`,
+  );
+
+  // Not vacuous: the whole-line adjacency the previous exemption relied on must
+  // now FAIL. A teaching line that only mentions the operator elsewhere is
+  // exactly the shape that used to slip through.
+  const teachingLine =
+    "Run `vipune export rows.jsonl` before the handoff, the operator reviews the file afterwards.";
+  assert(
+    !prohibitsVerb(teachingLine, teachingLine.indexOf("export") + 6),
+    "canary: a line that TEACHES `vipune export` while merely mentioning the operator elsewhere IS flagged",
+  );
+  assert(
+    prohibitsVerb("Never run `vipune update` - an operator action.", 26),
+    "...and the same verb named inside a prohibition clause is not",
   );
 }
 

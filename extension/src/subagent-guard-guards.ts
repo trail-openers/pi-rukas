@@ -9,6 +9,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
+import { registerMemoryWriteGuard } from "./memory-write-guard.ts";
 import { registerMergeGuard } from "./merge-guard.ts";
 import { registerDestructiveGitGuard } from "./permission-subagent-guard.ts";
 
@@ -37,4 +38,14 @@ export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   // self-report plus CI in trust/sandbox mode. The review ledger is the
   // structural floor; the guard fires before every bypass.
   registerMergeGuard(pi);
+  // #1437 — same mode-independence for the memory-write boundary. The doctrine
+  // (skill/vipune/SKILL.md) had always said the ungranted vipune verbs are
+  // "denied to every role"; the only code refusal was the old
+  // isDestructiveMemoryWrite (since renamed `refusesMemoryWrite`),
+  // reached from the permission layers that trust/sandbox mode skip and from
+  // the parent-PM-only bash guard. So in the default mode a subagent's
+  // `vipune delete <id>` — irreversible, no confirmation flag — reached the
+  // binary with nothing consulted. The refusal now lives at the one registration
+  // every child receives, in every mode.
+  registerMemoryWriteGuard(pi);
 }

@@ -83,10 +83,11 @@ vipune add 'corrected statement' --supersedes <old-id> --memory-type fact
 # yours to do: see the memory-write boundary in Quick reference.
 ```
 
-**Memory-write boundary:** never run vipune update, delete, prune, promote or
-mcp — those are operator actions; correct with `add --supersedes`. The full
-per-mode statement lives under the `Memory-write boundary` heading of the bundled
-skill.
+**Memory-write boundary:** never run vipune update, delete, prune, promote,
+export, backup, import, reindex, project or mcp — those are operator actions, and
+since #1437 a mode-independent guard refuses them in every mode; correct with
+`add --supersedes`. The full per-mode statement lives under the
+`Memory-write boundary` heading of the bundled skill.
 
 ## Conflict handling — supersede, don't duplicate
 
@@ -145,9 +146,10 @@ candidate <id> prune
 vipune search '<term>' --no-hybrid --recency 0.0 --limit 5 --no-touch --json
 vipune add '<distilled fact>' --memory-type <type> [--status candidate] [--supersedes <id>]
 vipune list --limit 50 --include-candidates
-# MEMORY-WRITE BOUNDARY: never run `vipune update`, `delete`, `prune`, `promote`
-# or `mcp` — operator actions; correct with `add --supersedes <id>`, which
-# preserves the original row. Report one to retire it (Periodic consolidation).
+# MEMORY-WRITE BOUNDARY: never run vipune update, delete, prune, promote,
+# export, backup, import, reindex, project or mcp — operator actions refused by
+# a mode-independent guard (#1437); correct with `add --supersedes <id>`,
+# which preserves the original row. Report one to retire it (Periodic consolidation).
 ```
 
 **One atomic fact per `vipune add` call.** For the full doctrine (deep search recipes, failure-mode catalogue, all examples), load the bundled skill via `--skill <skills-dir>/vipune` (pi-rukas installs it to `~/.pi/agent/skills/vipune`).

@@ -400,9 +400,11 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
     // In sandbox mode the legacy permission handler is not registered, but the
     // mode-independent guards ARE (registered ahead of the sandbox short-circuit,
     // #598 issue-creation + #600 PM bash allowlist + #912 merge guard).
-    // #1105 adds the review-accept guard as a fourth mode-independent handler.
+    // #1105 adds the review-accept guard as a fourth mode-independent handler
+    // (it rides inside registerIssueCreationGuard, hence 4 hooks from 4 calls).
+    // #1437 adds the memory-write guard as the fifth.
     assert(
-      toolCallHandlers.length === 4,
+      toolCallHandlers.length === 5,
       `L8: PI_ENSEMBLE_SANDBOX_MODE=1 short-circuits the legacy permission handler — only the mode-independent guards remain (${toolCallHandlers.length} tool_call handler(s))`,
     );
 
