@@ -6,6 +6,12 @@
  *
  *   pi-rukas-headless work <issue> [more issues] [--restart]
  *                          [--timeout <minutes>] [--json]
+ *   pi-rukas-headless plan | research | agents-md | lens-review …   (S6, #1021)
+ *
+ * The S6 subcommands run their pipelines on a headless DriverHost: their
+ * flags and exit codes are documented in their own modules (plan.ts,
+ * research.ts, agents-md.ts, lens-review.ts), and each always prints one JSON
+ * document on stdout.
  *
  * stderr: NDJSON v1 progress lines (ndjson.ts), and nothing else: the driver's
  * own plain-text diagnostics are rerouted as `log` lines (stderr.ts, #1370).
@@ -25,12 +31,47 @@ import { resourceReport } from "../resource-budget.ts";
 import { killLiveProcessGroups } from "../spawn-kill.ts";
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { resolveRepoRoot } from "../work-entry.ts";
+import { runAgentsMdHeadless } from "./agents-md.ts";
 import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { buildCapabilities } from "./capabilities.ts";
 import { EXIT } from "./exit-code.ts";
+import { createVerbHost } from "./host.ts";
+import { runLensReviewVerb } from "./lens-review.ts";
+import { runPlanVerb } from "./plan.ts";
+import { runResearchVerb } from "./research.ts";
 import { resultDocument } from "./result.ts";
 import { runHeadless } from "./run.ts";
 import { type StderrCapture, captureStrayOutput } from "./stderr.ts";
+import type { VerbContext, VerbOutcome } from "./verb.ts";
+
+/** The S6 subcommands (#1021), keyed by verb. */
+export const SUBCOMMANDS: Record<string, Subcommand> = {
+  plan: runPlanVerb,
+  research: runResearchVerb,
+  "agents-md": runAgentsMdHeadless,
+  "lens-review": runLensReviewVerb,
+};
+
+type Subcommand = (argv: readonly string[], ctx: VerbContext) => Promise<VerbOutcome>;
+
+/**
+ * Run one S6 subcommand: NDJSON on stderr through `write`, the JSON document on
+ * stdout. `run` defaults to the verb's entry in SUBCOMMANDS; tests pass one
+ * that injects their seams.
+ */
+export async function runSubcommand(
+  verb: string,
+  argv: readonly string[],
+  repoRoot: string,
+  write: (line: string) => void,
+  run: Subcommand | undefined = Object.hasOwn(SUBCOMMANDS, verb) ? SUBCOMMANDS[verb] : undefined,
+): Promise<number> {
+  if (!run) throw new Error(`unknown subcommand "${verb}"`);
+  const { exitCode, doc } = await run(argv, { repoRoot, host: createVerbHost(write) });
+  const build = { buildCommit: readBuildCommit(), buildVersion: readBuildVersion() };
+  process.stdout.write(`${JSON.stringify({ ...build, ...doc })}\n`);
+  return exitCode;
+}
 
 export interface ParsedArgs {
   issues: number[];
@@ -87,9 +128,13 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(`${JSON.stringify(buildCapabilities())}\n`);
     return EXIT.merged;
   }
+  if (verb !== undefined && Object.hasOwn(SUBCOMMANDS, verb)) {
+    capture = captureStrayOutput();
+    return runSubcommand(verb, rest, await resolveRepoRoot(process.cwd()), capture.write);
+  }
   if (verb !== "work") {
     process.stderr.write(
-      "usage: pi-rukas-headless work <issue...> [--restart] [--timeout <min>] [--json] | --capabilities\n",
+      `usage: pi-rukas-headless work <issue...> [--restart] [--timeout <min>] [--json] | ${Object.keys(SUBCOMMANDS).join(" | ")} … | --capabilities\n`,
     );
     return EXIT.refused;
   }

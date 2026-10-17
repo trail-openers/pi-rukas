@@ -63,11 +63,10 @@ export const SEAMS: Seam[] = [
     canary: { symbol: "armExitCause", importer: "index.ts" },
   },
   {
-    // S4a (#1162) — the workflow-state persistence seam. markInterrupted has
-    // no caller until the headless runner's signal handling lands (#1024).
+    // S4a (#1162) — the workflow-state persistence seam. markInterrupted is
+    // called by the headless runner (headless/run.ts, #1024).
     file: "workflow-state.ts",
     pending: {
-      markInterrupted: "#1024 \u2014 S4 wires SIGTERM/SIGINT to it",
       requestInterrupt: "#1024 \u2014 set by markInterrupted; has no caller of its own",
     },
     testOnly: {
