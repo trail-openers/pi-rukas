@@ -40,6 +40,7 @@ export { WORK_STEPS } from "./workflow-state-events.ts";
 
 export type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
 import type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
+export { prDraftFindings } from "./workflow-state-schema-pr-draft.ts";
 import type { PrDraftState } from "./workflow-state-schema-pr-draft.ts";
 // #1362 — cycle-start exempt-untracked baseline: type + #533 validator in workflow-state-dirty-root.ts (#540/#861 seam).
 export {

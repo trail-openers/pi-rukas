@@ -251,6 +251,14 @@ export function explainCap(
       return explainConsolidation(cap, state);
     case "lens-fix-not-integrated":
       return explainLens(cap, state);
+    case "draft-rearm-failed":
+      // #1398 — the draft re-arm's cap. Its authored sentence lives in
+      // explainLens with the rest of the lens family; WITHOUT this case the
+      // switch fell through to the generic `step failed: draft-rearm-failed`
+      // fallback and the operator lost the one line that names the draft
+      // command to run by hand. The switch is not compile-exhaustive, so
+      // test-work-driver-explaincap.ts is the canary for this case.
+      return explainLens(cap, state);
     case "lens-fix-reposition":
       // #981 — same lens family as the other two caps above; the case
       // bodies live in explainLens (the file-size split), so this delegates

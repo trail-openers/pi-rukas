@@ -47,6 +47,23 @@ export type ReadyHoldOpts = {
   findingsPosted?: PrDraftFindingsFact[];
   /** The cycle's branch — a disclosure fact is per-branch. */
   branch?: string;
+  /**
+   * item 5 (#1398) — with no `patchId` to key on, an `ISSUES_FOUND` HOLDS
+   * instead of falling back to the pre-#1398 cap-name rule. The fallback read
+   * every non-round-cap failure after a verdict as "nothing to hold for", which
+   * is how a PR came to be marked ready over findings nobody posted; a driver
+   * that cannot state WHICH patch it is marking ready cannot state that that
+   * patch's findings were disclosed. Set by `markDraftPrReady` when the patch
+   * identity could not be computed.
+   */
+  failClosedWithoutPatchId?: boolean;
+  /**
+   * item 6 (#1398) — the PR's comment read itself failed, so the disclosure
+   * could not be checked at the PR. The hold reason says so, which separates
+   * "the findings were never posted" (a fact about the review) from "the driver
+   * could not read the PR" (a fact about the tooling) in the handoff.
+   */
+  disclosureReadFailed?: string;
 };
 
 /**
@@ -73,13 +90,21 @@ export function readyHoldReason(
   }
   if (verdict?.kind !== "lens-issues-found") return undefined;
   if (opts.patchId !== undefined) {
-    return disclosedFor(eventLog, opts, opts.patchId) ? undefined : DISCLOSED_HOLD;
+    return disclosedFor(eventLog, opts, opts.patchId)
+      ? undefined
+      : holdText(opts.disclosureReadFailed);
   }
-  // No patch identity to key on: keep the shape that shipped (#1292) — the
-  // round/wall-clock route to handoff is the one known non-disclosing route, so
-  // hold on it and let everything else through. This is the conservative
-  // direction for a driver that cannot compute an identity: it does not block a
-  // review it cannot examine, and it still refuses the one case it CAN prove.
+  if (opts.failClosedWithoutPatchId) {
+    // No identity to key on: the disclosure cannot be established for the patch
+    // being marked ready, so the ready is refused. Fail closed.
+    return holdText(
+      opts.disclosureReadFailed ?? "the patch being marked ready could not be identified",
+    );
+  }
+  // No patch identity AND no fail-closed request (a caller outside the ready
+  // path, e.g. a renderer asking the question of a log): keep the shape that
+  // shipped (#1292) — the round/wall-clock route to handoff is the one known
+  // non-disclosing route, so hold on it and let everything else through.
   const capped = eventLog
     .slice(verdictIdx + 1)
     .some(
@@ -89,6 +114,16 @@ export function readyHoldReason(
         e.nextStep === "handoff",
     );
   return capped ? DISCLOSED_HOLD : undefined;
+}
+
+/**
+ * The disclosure hold's text, naming why the disclosure could not be
+ * established when that reason is something other than "nobody posted".
+ */
+function holdText(why: string | undefined): string {
+  return why
+    ? `${DISCLOSED_HOLD} (${why}; the driver holds rather than passing on a read it could not make)`
+    : DISCLOSED_HOLD;
 }
 
 /**

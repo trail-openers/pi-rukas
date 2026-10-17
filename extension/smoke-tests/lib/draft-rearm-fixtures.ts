@@ -44,8 +44,19 @@ export function mkAssert(): { assert: (cond: boolean, msg: string) => void; stat
 }
 
 // ── the event shapes, in the order `nextStep` actually routes them ──────────
-export type Step = "lens-review" | "develop" | "ci" | "commit-pr" | "adversarial" | "lens-fix" | "handoff";
-export const started = (step: Step, n: number): WorkEvent => ({ kind: "step-started", step, at: at(n) });
+export type Step =
+  | "lens-review"
+  | "develop"
+  | "ci"
+  | "commit-pr"
+  | "adversarial"
+  | "lens-fix"
+  | "handoff";
+export const started = (step: Step, n: number): WorkEvent => ({
+  kind: "step-started",
+  step,
+  at: at(n),
+});
 export const approved = (n: number): WorkEvent => ({
   kind: "lens-approved",
   at: at(n),
@@ -134,37 +145,138 @@ export function gitFake(patchId = PATCH) {
 export type ForgeOpts = {
   isDraft?: boolean;
   draftFails?: string;
+  /**
+   * What the forge reports AFTER the draft command — the read-back. Defaults to
+   * the post-command truth (`true` when the command succeeded, `undefined` when
+   * it failed), which is what makes the re-arm's confirmation step testable:
+   * a CLI that exits 0 without converting the PR reports `false` here.
+   */
+  isDraftAfterDraft?: boolean | "unknown";
   /** The PR's state field — "OPEN" unless a test wants a stale/closed number. */
   state?: string;
   headRefName?: string;
   /** The PR's comment bodies — what the disclosure check reads. */
   comments?: string[];
+  /** Throw from `prView` — an unreadable PR, before any command runs. */
+  viewFails?: string;
+  /**
+   * Throw from the `prView` that runs AFTER the draft command — the read that
+   * is supposed to confirm the conversion. Distinct from `viewFails` because
+   * the pre-command read succeeding is what lets the command run at all.
+   */
+  viewFailsAfterDraft?: boolean;
 };
 
 export function mkForge(opts: ForgeOpts = {}) {
   const calls: string[] = [];
+  // What the NEXT `prView` answers. The draft command flips it, the way the
+  // forge's own state does — so a test that wants the read-back to disagree
+  // with the command sets `isDraftAfterDraft`.
+  let viewIsDraft = opts.isDraft;
+  // How many draft commands have been issued. A test asserting "no command ran"
+  // reads this rather than `calls.includes("draft")`: the draft direction is
+  // the inverse of `prReady`, so the ready path's own commands are counted too
+  // and an earlier phase's `ready` would otherwise read as a re-arm having run.
+  const draftIssued: { n: number } = { n: 0 };
+  // The whole Forge surface is not scripted — only what the draft family
+  // reads — so the stub is asserted against the interface rather than cast
+  // through `unknown` (item 10): if one of these five signatures drifts, tsc
+  // says so here instead of the test quietly calling a method that no longer
+  // exists. Everything the tests never call is an explicit rejecting stub.
+  const stub = (name: string) => async () => {
+    throw new Error(`draft-rearm fixture: ${name} is not scripted`);
+  };
   const forge = {
     forge: "github",
+    host: "github.com",
+    owner: "o",
+    repo: "r",
+    cwd: "/nonexistent",
+    issueView: stub("issueView"),
+    issueCreate: stub("issueCreate"),
+    issueEdit: stub("issueEdit"),
+    issueComment: stub("issueComment"),
+    issueComments: stub("issueComments"),
+    issueSearch: stub("issueSearch"),
+    prList: stub("prList"),
+    prCreate: stub("prCreate"),
+    prMerge: stub("prMerge"),
+    prDiff: stub("prDiff"),
+    prChecks: stub("prChecks"),
+    prComment: stub("prComment"),
+    ciWatch: stub("ciWatch"),
+    ciRun: stub("ciRun"),
+    mergeReadiness: stub("mergeReadiness"),
+    labels: stub("labels"),
     prView: async () => {
       calls.push("prView");
+      if (opts.viewFails) throw new Error(opts.viewFails);
+      // The read-back is the second view of a re-arm: the first answers the
+      // pre-command question, every later one the confirmation.
+      if (opts.viewFailsAfterDraft && calls.filter((c) => c === "prView").length > 1) {
+        throw new Error("gh: HTTP 503 service unavailable");
+      }
       return {
         number: PR,
         state: opts.state ?? "OPEN",
         headRefName: opts.headRefName ?? BRANCH,
-        isDraft: opts.isDraft,
+        isDraft: viewIsDraft,
       };
     },
-    prReady: async () => void calls.push("ready"),
+    prReady: async () => {
+      calls.push("ready");
+      viewIsDraft = false;
+    },
     prDraft: async () => {
       calls.push("draft");
+      draftIssued.n++;
       if (opts.draftFails) throw new Error(opts.draftFails);
+      // "unknown" models the forge CLI that exits 0 and whose view then omits
+      // the draft field entirely — the read-back says nothing.
+      viewIsDraft =
+        opts.isDraftAfterDraft === undefined
+          ? true
+          : opts.isDraftAfterDraft === "unknown"
+            ? undefined
+            : opts.isDraftAfterDraft;
     },
     prComments: async () => {
       calls.push("comments");
       return (opts.comments ?? []).map((body) => ({ body }));
     },
-  } as unknown as Forge;
-  return { forge, calls };
+  } satisfies Partial<Forge> as Forge;
+  return { forge, calls, draftIssued };
+}
+
+/**
+ * A context whose forge cannot be resolved — the `skipped: "forge"` shape the
+ * re-arm HALTS on.
+ *
+ * Why it is shaped this way: `forgeForCycle` hard-overrides detection with
+ * `PI_ENSEMBLE_FORGE=github`, so a fake `verifyExecFn` cannot make detection
+ * return "unknown" — it always builds an adapter. The real forge-less cycle is
+ * one where resolving the adapter THROWS (`createForge` refuses an unknown
+ * detection, and any detection failure lands in `resolveForge`'s catch and
+ * yields `undefined`). A throwing `forge` getter reproduces exactly that: the
+ * read throws inside `resolveForge`, it returns `undefined`, and the re-arm is
+ * left with no adapter, no read and no command to hand the operator — which is
+ * why that decline halts rather than proceeding.
+ */
+export function mkCtxWithoutForge(): DriverContext {
+  const { execFn } = gitFake();
+  const ctx = {
+    host: fakePi,
+    repoRoot: "/nonexistent",
+    issue: ISSUE,
+    verifyExecFn: execFn,
+  } as Record<string, unknown>;
+  Object.defineProperty(ctx, "forge", {
+    get(): never {
+      throw new Error("no forge configured for this repository");
+    },
+    enumerable: true,
+  });
+  return ctx as unknown as DriverContext;
 }
 
 export function mkCtx(forge: Forge, patchId = PATCH): DriverContext {

@@ -28,6 +28,13 @@ export type PrDraftState = {
   status: "draft" | "ready" | "ready-failed";
   error?: string;
   attempts?: number;
+  /**
+   * #1398 — `pr draft` (the draft direction) calls made this cycle, on its OWN
+   * counter. `attempts` is the ready budget the merge spends; a re-arm charged
+   * against it drained the merge's retries, so the two directions count
+   * separately (work-driver-draft-pr.ts's `MAX_DRAFT_REARM_ATTEMPTS`).
+   */
+  draftAttempts?: number;
   holdReason?: string;
   /**
    * #1398 — the residual findings of THIS patch were disclosed ON the PR and
@@ -52,3 +59,57 @@ export type PrDraftFindingsFact = {
   /** The PR the disclosure was made on, when the cycle had one. */
   prNumber?: number;
 };
+
+/**
+ * #533's rule, applied to `pipelineState.prDraft` (#1398): the cast in
+ * `readState` is the only runtime gate, so a partial or hand-edited record must
+ * not reach a mark point. `markDraftPrReady` reads `status` to decide whether
+ * the PR may merge and `findingsPosted` to decide whether a disclosure licenses
+ * the ready — a status outside the three known values would read as "not a
+ * draft", and a findings row without its `patchId` could never be compared
+ * against the patch being marked ready, so a corrupt record would silently
+ * permit the merge the fact exists to hold.
+ *
+ * Returns the findings for `validateDiscriminants` to surface; `[]` when the
+ * field is absent — every state file written before #1292, and every cycle that
+ * never opened its PR as a draft, must still resume.
+ */
+export function prDraftFindings(prDraft: unknown): string[] {
+  if (prDraft === undefined) return [];
+  if (typeof prDraft !== "object" || prDraft === null || Array.isArray(prDraft)) {
+    return ["pipelineState.prDraft is not an object"];
+  }
+  const out: string[] = [];
+  const draft = prDraft as Record<string, unknown>;
+  if (!PR_DRAFT_STATUSES.includes(draft.status)) {
+    out.push(`pipelineState.prDraft.status has unknown value ${JSON.stringify(draft.status)}`);
+  }
+  // `attempts` (ready calls) and `draftAttempts` (#1398 draft-direction calls)
+  // are both optional counters the bounds are compared against: a NaN or a
+  // string would make `used >= MAX` false forever, i.e. an unbounded loop.
+  for (const field of ["attempts", "draftAttempts"] as const) {
+    const v = draft[field];
+    if (v !== undefined && (typeof v !== "number" || !Number.isFinite(v))) {
+      out.push(`pipelineState.prDraft.${field} is not a finite number`);
+    }
+  }
+  const posted = draft.findingsPosted;
+  if (posted !== undefined) {
+    if (!Array.isArray(posted)) {
+      out.push("pipelineState.prDraft.findingsPosted is not an array");
+    } else {
+      posted.forEach((entry, i) => {
+        const fact = entry as Record<string, unknown> | null;
+        if (typeof fact !== "object" || fact === null) {
+          out.push(`pipelineState.prDraft.findingsPosted[${i}] is not an object`);
+        } else if (typeof fact.patchId !== "string") {
+          out.push(`pipelineState.prDraft.findingsPosted[${i}].patchId is missing or not a string`);
+        }
+      });
+    }
+  }
+  return out;
+}
+
+/** `prDraft.status` vocabulary — mirrors the `PrDraftState` union above. */
+const PR_DRAFT_STATUSES: readonly unknown[] = ["draft", "ready", "ready-failed"];
