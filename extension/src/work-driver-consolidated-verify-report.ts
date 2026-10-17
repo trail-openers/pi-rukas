@@ -51,6 +51,14 @@ export interface ConsolidatedVerifyReporting {
   onConsolidatedLogPath?: (logPath: string) => void;
   /** #1240 — the skip's identity, handed to the caller to record as an event. */
   onConsolidatedVerifySkipped?: (skipped: AlreadyVerifiedTree) => void;
+  /**
+   * #1421 fix round — the gate declined to consolidate on nothing but build
+   * residue. Reported STRUCTURALLY (the result's `buildResidueOnly`), never by
+   * matching the label out of the failure prose: a path the operator named
+   * `build/[build-residue].log` is text, not a routing key, and a real verify
+   * failure beside it must still reach `verify-failed:develop`.
+   */
+  onBuildResidueOnly?: () => void;
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void;
 }
 
@@ -69,6 +77,7 @@ export function reportConsolidatedVerifyOutcome(
     onConsolidatedLogPath,
     onVerifyFlakeRecovered,
     onConsolidatedVerifySkipped,
+    onBuildResidueOnly,
   }: ConsolidatedVerifyReporting,
 ): void {
   // The decision is recorded ONCE by the consolidated run (the caller's
@@ -94,7 +103,13 @@ export function reportConsolidatedVerifyOutcome(
       // string carries the `[build-residue]` label the cap router reads
       // (`verify-env:develop`, not `verify-failed:develop`) rather than the
       // conflict wording the router matches on for a decomposition error.
+      //
+      // #1421 fix round — the label in this string is for the OPERATOR; the
+      // cap router reads the structured flag below. Emitting it and nothing
+      // else is what made a prose substring the routing key, so an unrelated
+      // failure whose text happened to contain the tag decided the cap.
       failures.push(cons.detail);
+      if (cons.buildResidueOnly === true) onBuildResidueOnly?.();
     } else if (cons.kind === "host") {
       // The host could not fork, so nothing was combined: neither a conflict
       // nor a verify failure. The message deliberately avoids the conflict
