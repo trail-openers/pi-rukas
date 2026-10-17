@@ -33,8 +33,18 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { formatTokens } from "./progress.ts";
+import * as scrollback from "./lifecycle-scrollback.ts";
+import type { EntryRenderTheme } from "./lifecycle-scrollback.ts";
 import { trace } from "./trace.ts";
+
+// The scrollback half (lifecycle-scrollback.ts) owns the line formatter and
+// the theme switch; these re-exports keep every existing importer's path and
+// the offline suite's byte-identity pin pointing at one implementation.
+export {
+  type EntryRenderTheme,
+  formatLine,
+  renderLifecycleEntryLine,
+} from "./lifecycle-scrollback.ts";
 
 const CUSTOM_TYPE = "ensemble:lifecycle";
 
@@ -53,7 +63,16 @@ export type LifecycleKind =
    * step-failed so the scrollback signals "transient — retrying" vs
    * "permanent — handoff". One event per retry attempt.
    */
-  | "step-retry";
+  | "step-retry"
+  /**
+   * #1403 — a one-line operator notice emitted from INSIDE a step handler,
+   * for the outcome the handler knows and the step-boundary lines do not.
+   * Used for a develop child whose ENGINE DIED: the router emits the cap's
+   * `step-failed` line at the boundary, this line says the pass died while
+   * the handler still knows which workstream and what it left behind — so
+   * the console never reads `develop done` over a dead pass.
+   */
+  | "step-notice";
 
 export interface LifecycleDetails {
   kind: LifecycleKind;
@@ -66,7 +85,7 @@ export interface LifecycleDetails {
   /** Display label. For step-* kinds, this is the step name. */
   label: string;
   /** Role for telemetry; same as label for synthetic orchestrator labels. */
-  role: string;
+  role?: string;
   /** Elapsed ms for completed/failed/errored/step-completed/step-failed. */
   elapsedMs?: number;
   /** Total tokens (input + output + cache); set for completed/errored/step-completed. */
@@ -94,6 +113,7 @@ export interface LifecycleDetails {
    * Failure reason for step-failed (e.g., "subagent ABORT", "cap-hit:
    * ci-retry"). Shown after the elapsed metric on the scrollback line so
    * the user knows WHY the step failed without opening the state file.
+   * For `step-notice` it carries the whole notice.
    */
   reason?: string;
   /**
@@ -131,14 +151,13 @@ export interface LifecycleDetails {
  * tracks exactly this; lifecycle lines only need the count to decide whether
  * disambiguation is worth the width.
  */
-let liveCycleCount = 0;
+/**
+ * How many cycles are currently live. The renderer (lifecycle-scrollback.ts)
+ * owns the count that decides whether the `#N ` tag is worth its width; this
+ * is the entry point callers (the work-widget) use to update it.
+ */
 export function setLiveCycleCount(n: number): void {
-  liveCycleCount = n;
-}
-
-/** The `#N ` tag, or "" when a single cycle makes it noise. */
-function cycleTag(issue: number | undefined): string {
-  return issue !== undefined && liveCycleCount > 1 ? `#${issue} ` : "";
+  scrollback.setLiveCycleCount(n);
 }
 
 let activePi: ExtensionAPI | undefined;
@@ -147,28 +166,12 @@ function isQuiet(): boolean {
   return process.env.PI_ENSEMBLE_QUIET_LIFECYCLE === "1";
 }
 
-type EntryRenderTheme = { fg: (style: string, text: string) => string };
-
+/** The shape Pi's registerEntryRenderer callback is typed against locally. */
 type EntryRenderFn = (
   entry: { customType: string; data?: unknown },
   options: { expanded: boolean },
   theme: EntryRenderTheme,
 ) => unknown;
-
-/**
- * Compute the styled one-line display for a CustomEntry's data at render time.
- * Exported (test-only in practice) so the offline suite can pin that the
- * registered renderer's output is byte-identical to
- * applyTheme(details, formatLine(details), theme).
- */
-export function renderLifecycleEntryLine(data: unknown, theme: EntryRenderTheme): string {
-  const details = data as LifecycleDetails | undefined;
-  // applyTheme handles the missing-details path (dim render of the fallback
-  // line); formatLine is only reached when data is a well-shaped details
-  // object — an untyped entry.data is not a lifecycle payload.
-  const text = details ? formatLine(details) : "";
-  return applyTheme(details, text, theme);
-}
 
 export function attach(pi: ExtensionAPI): void {
   activePi = pi;
@@ -185,7 +188,7 @@ export function attach(pi: ExtensionAPI): void {
     return;
   }
   piWithEntryApi.registerEntryRenderer(CUSTOM_TYPE, (entry, _options, theme) => {
-    const styled = renderLifecycleEntryLine(entry.data, theme);
+    const styled = scrollback.renderLifecycleEntryLine(entry.data, theme);
     return new Text(styled, 0, 0);
   });
 }
@@ -356,6 +359,16 @@ export function emitStepRetry(
   });
 }
 
+/**
+ * #1403 — an in-step operator notice. NOT a `step-failed`: the router emits
+ * that for the cap at the boundary, and two failure lines would double-report
+ * one event. Carries prose only, so a handler can say what it saw while it
+ * still knows which workstream died and what it left behind.
+ */
+export function emitStepNotice(step: string, message: string, issue?: number): void {
+  emit({ kind: "step-notice", issue, jobId: step, label: step, reason: message });
+}
+
 function emit(details: LifecycleDetails): void {
   if (isQuiet()) return;
   if (!activePi) return;
@@ -378,107 +391,5 @@ function emit(details: LifecycleDetails): void {
     piWithEntryApi.appendEntry(CUSTOM_TYPE, details);
   } catch (err) {
     trace(`lifecycle-events: appendEntry failed: ${(err as Error).message}`);
-  }
-}
-
-function fmtElapsed(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const m = Math.floor(ms / 60_000);
-  const s = Math.floor((ms % 60_000) / 1000);
-  return `${m}m${s.toString().padStart(2, "0")}s`;
-}
-
-/** Pure formatter for the scrollback line — string-only, theme-agnostic. */
-export function formatLine(d: LifecycleDetails): string {
-  switch (d.kind) {
-    case "dispatched":
-      return `▸ ensemble: dispatched ${d.label} · ${d.jobId}`;
-    case "completed": {
-      const tokens =
-        d.totalTokens && d.totalTokens > 0 ? ` · ${formatTokens(d.totalTokens)} tokens` : "";
-      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
-      return `▸ ensemble: ✓ ${d.label} finished${elapsed}${tokens}`;
-    }
-    case "failed": {
-      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
-      const exit = d.exitCode != null ? ` · exit ${d.exitCode}` : "";
-      return `▸ ensemble: ✗ ${d.label} failed${elapsed}${exit} — see report`;
-    }
-    case "errored": {
-      const tokens =
-        d.totalTokens && d.totalTokens > 0 ? ` · ${formatTokens(d.totalTokens)} tokens` : "";
-      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
-      // #299 — name the failure class honestly: this shape is a transport-
-      // level verdict from the child's HTTP client (stream severed mid-body
-      // or client retry-exhaustion), not proof the endpoint is down.
-      return `▸ ensemble: ⚠ ${d.label} terminated mid-stream${elapsed}${tokens} — provider/transport error (stream severed or client retry-exhaustion), see report`;
-    }
-    case "steered": {
-      const msg = (d.steerMessage ?? "").replaceAll(/\s+/g, " ").trim();
-      const truncated = msg.length > 80 ? `${msg.slice(0, 79)}…` : msg;
-      const source = d.steerSource ? ` [${d.steerSource}]` : "";
-      return `▸ ensemble: ⤳ steered ${d.label}${source} · "${truncated}"`;
-    }
-    case "step-started": {
-      const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
-      const round = d.round && d.round > 1 ? ` (round ${d.round})` : "";
-      return `▸ ensemble: ${cycleTag(d.issue)}▶ step ${ordinal}${d.label}${round} started`;
-    }
-    case "step-completed": {
-      const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
-      const round = d.round && d.round > 1 ? ` (round ${d.round})` : "";
-      const tokens =
-        d.totalTokens && d.totalTokens > 0 ? ` · ${formatTokens(d.totalTokens)} tokens` : "";
-      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
-      const recovered = d.recovered ? " · recovered after retry" : "";
-      return `▸ ensemble: ${cycleTag(d.issue)}✓ step ${ordinal}${d.label}${round} finished${elapsed}${tokens}${recovered}`;
-    }
-    case "step-failed": {
-      const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
-      const round = d.round && d.round > 1 ? ` (round ${d.round})` : "";
-      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
-      const reason = d.reason ? ` · ${d.reason}` : "";
-      return `▸ ensemble: ${cycleTag(d.issue)}✗ step ${ordinal}${d.label}${round} failed${elapsed}${reason}`;
-    }
-    case "step-retry": {
-      const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
-      const attempt = d.round ? ` attempt ${d.round}` : "";
-      const reason = d.reason ? ` · prior failure: ${d.reason}` : "";
-      return `▸ ensemble: ${cycleTag(d.issue)}↻ step ${ordinal}${d.label} retrying${attempt}${reason}`;
-    }
-  }
-}
-
-function applyTheme(
-  details: LifecycleDetails | undefined,
-  content: string,
-  theme: { fg: (style: string, text: string) => string },
-): string {
-  if (!details) return theme.fg("dim", content);
-  switch (details.kind) {
-    case "dispatched":
-      return theme.fg("dim", content);
-    case "completed":
-      return theme.fg("success", content);
-    case "failed":
-      return theme.fg("error", content);
-    case "errored":
-      // Same colour as `failed` — both surface in scrollback as something
-      // gone wrong; the line text itself distinguishes the failure mode.
-      return theme.fg("error", content);
-    case "steered":
-      return theme.fg("warning", content);
-    case "step-started":
-      // Step-level events use a different visual weight than dispatches —
-      // dim for start to keep the eye drawn to the success/failure line.
-      return theme.fg("dim", content);
-    case "step-completed":
-      return theme.fg("success", content);
-    case "step-failed":
-      return theme.fg("error", content);
-    case "step-retry":
-      // Warning colour — transient, not yet a failure but worth noticing.
-      return theme.fg("warning", content);
   }
 }

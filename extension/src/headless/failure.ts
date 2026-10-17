@@ -30,6 +30,10 @@ export const FAILURE_KINDS = [
   "guard",
   /** The child process failed (non-zero exit) with no structured cause. */
   "process",
+  /** #1403 — a develop child's ENGINE DIED mid-pass (`the engine stopped
+   *  unexpectedly`) and left uncommitted work. Additive: a host treats an
+   *  unknown kind like `cap`. */
+  "crashed",
   /** The verify gate ran and judged the code (or the base commit) red. */
   "verify",
   /** The system refused to start a process, so the gate never ran. */
@@ -79,7 +83,19 @@ const DISPATCH_CAPS: ReadonlySet<string> = new Set([
   "loop-detected",
   "token-budget",
   "plan-timeout",
+  // #1403 — the crash cap's evidence IS the dead dispatch's fact: the failed
+  // dispatch is read from the log so `cause` / `exitCode` / `errorTail` reach
+  // the host, and `capKind` only answers when the child left no event at all.
+  // It is listed in DISPATCH_CAPS for that read, and excluded from the KIND
+  // inference below: a develop child whose engine died printed its own death
+  // notice rather than leaving a structured `dispatch-failed` cause, and the
+  // generic "exited non-zero, no signal" reading would call that `process`.
+  "develop-child-crash",
 ]);
+
+/** Caps whose KIND comes from the cap itself, even when a failed dispatch
+ *  exists to explain them (#1403). */
+const CAP_KIND_WINS: ReadonlySet<string> = new Set(["develop-child-crash"]);
 
 /** The kind a cap implies when no failed dispatch explains it. */
 function capKind(cap: string): FailureKind {
@@ -100,6 +116,13 @@ function capKind(cap: string): FailureKind {
       return "environment";
     case "driver-crash":
       return "driver";
+    // #1403 — a develop child whose own engine died. Not `process` (that is
+    // "the child exited non-zero"), and not `cap`: the driver can name the
+    // work the dead pass left behind, and a host that retries provider
+    // outages must not read this as one — the child is gone, and its work is
+    // sitting uncommitted in a worktree waiting for a person.
+    case "develop-child-crash":
+      return "crashed";
     case "loop-detected":
     case "token-budget":
       return "guard";
@@ -185,7 +208,7 @@ export function failureOf(
   const failed = isDispatchCap(cap) ? failedDispatchBefore(log, capIdx, step) : undefined;
   const evidence = hit?.evidence ? redactClip(hit.evidence, EVIDENCE_MAX) : undefined;
   const f: ResultFailure = {
-    kind: failed ? dispatchKind(failed) : capKind(cap),
+    kind: failed && !CAP_KIND_WINS.has(cap) ? dispatchKind(failed) : capKind(cap),
     message: "",
   };
   if (step !== undefined) f.step = step;

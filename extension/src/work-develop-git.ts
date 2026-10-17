@@ -39,6 +39,11 @@ const SHA_RE = /^[0-9a-f]{40}$/;
  *  #679 — the global base is unusable as a fallback (older state files). */
 export const isValidBaseSha = (s: unknown): s is string => typeof s === "string" && SHA_RE.test(s);
 
+/** The exact string `commitsAheadOfBase` returns when the base itself is the
+ *  reason no count exists. Exported so the ONE place that decides "there was
+ *  no base" reads it from the count rather than re-deriving it (#1403). */
+export const INVALID_BASE_MSG = "base is not a 40-hex sha";
+
 /** A workstream id is used as a path component: letters, digits, `.`, `_`, `-` only. */
 export const WORKSTREAM_ID_RE = /^[A-Za-z0-9._-]+$/;
 
@@ -55,7 +60,7 @@ export async function commitsAheadOfBase(
   cwd: string,
   base: string | undefined,
 ): Promise<CommitCheck> {
-  if (!isValidBaseSha(base)) return { unreadable: "base is not a 40-hex sha" };
+  if (!isValidBaseSha(base)) return { unreadable: INVALID_BASE_MSG };
   try {
     const { stdout } = await git(["rev-list", "--count", `${base}..HEAD`], {
       cwd,
@@ -79,26 +84,11 @@ export interface StatusEntry {
   pairedWith?: string;
 }
 
-/** Every path the worktree has uncommitted, read with `status --porcelain -z`
- *  so git never C-quotes a name (non-ASCII, quotes, control bytes arrive
- *  verbatim). A rename or copy contributes both its new and original path.
- *  Nothing is filtered here: a dropped path is a path the reset would destroy
- *  without saving. Unreadable when git fails. */
-export async function worktreeStatus(
-  git: GitExec,
-  cwd: string,
-): Promise<StatusEntry[] | { unreadable: string }> {
-  let stdout: string;
-  try {
-    // -uall: an untracked directory is listed file by file, so every path is a
-    // file that `git diff --cached --name-only` can later confirm as staged.
-    ({ stdout } = await git(["status", "--porcelain", "-z", "--untracked-files=all"], {
-      cwd,
-      maxBuffer: 16 * 1024 * 1024,
-    }));
-  } catch (err) {
-    return { unreadable: errText(err) };
-  }
+/** Parse the `-z` porcelain stream into entries (the body of `worktreeStatus`,
+ *  split out so a caller that supplies its own bounded git read — the #1403
+ *  crash classifier — parses the same way rather than reimplementing it).
+ *  Unreadable when a line is malformed. */
+export function parseStatus(stdout: string): StatusEntry[] | { unreadable: string } {
   const tokens = stdout.split("\0");
   const out: StatusEntry[] = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -128,6 +118,29 @@ export async function worktreeStatus(
     }
   }
   return out;
+}
+
+/** Every path the worktree has uncommitted, read with `status --porcelain -z`
+ *  so git never C-quotes a name (non-ASCII, quotes, control bytes arrive
+ *  verbatim). A rename or copy contributes both its new and original path.
+ *  Nothing is filtered here: a dropped path is a path the reset would destroy
+ *  without saving. Unreadable when git fails. */
+export async function worktreeStatus(
+  git: GitExec,
+  cwd: string,
+): Promise<StatusEntry[] | { unreadable: string }> {
+  let stdout: string;
+  try {
+    // -uall: an untracked directory is listed file by file, so every path is a
+    // file that `git diff --cached --name-only` can later confirm as staged.
+    ({ stdout } = await git(["status", "--porcelain", "-z", "--untracked-files=all"], {
+      cwd,
+      maxBuffer: 16 * 1024 * 1024,
+    }));
+  } catch (err) {
+    return { unreadable: errText(err) };
+  }
+  return parseStatus(stdout);
 }
 
 /** Driver artefact paths: anything under `.pi/` or `tmp/`. The first segment is

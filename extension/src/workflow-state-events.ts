@@ -5,6 +5,7 @@
  */
 import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
+import type { DevelopCrashFragment } from "./work-develop-crash.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
 import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
 import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
@@ -428,6 +429,8 @@ export type WorkEvent =
        * transient, so it is never retried with backoff.
        */
       refused?: true;
+      /** #1403 — the pass's child engine died mid-flight; absent = it did not crash. */
+      crash?: DevelopCrashFragment;
     }
   | {
       /**
