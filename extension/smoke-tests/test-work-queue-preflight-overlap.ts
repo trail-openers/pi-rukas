@@ -289,11 +289,18 @@ function mkState(issue: number): WorkState {
     g("group-b", 101, ["src/x.ts"]),
     g("group-c", 102, ["src/z.ts"]),
   ];
+  // Concurrency 1, deliberately. The #676 version of this case ran at 3 and
+  // asserted group-c was never claimed, which was true only because a spare
+  // worker happened to be busy elsewhere — with the scan/drain split there is
+  // always somebody awake to take a claimable group, so the assertion would
+  // have been a coin flip. At K=1 the queue is strictly sequential, so the
+  // halt from group-b is guaranteed to land before group-c is ever reached,
+  // and what the case asserts is the contract rather than a scheduling accident.
   const summary = await runWorkQueue({
     repoRoot: "/repo",
     groups,
     restart: false,
-    concurrency: 3,
+    concurrency: 1,
     runGroup: async (primary) => {
       started.push(primary);
       if (primary === 100) {

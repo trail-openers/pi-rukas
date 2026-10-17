@@ -125,6 +125,15 @@ export type WorkCapLiteral =
   // #571 — sibling cycle holds a path claim; overlap detected at plan
   // time. Two cycles cannot edit the same files in parallel.
   | "cross-group-conflict"
+  // #1101 — the QUEUE raised these two, not a cycle: a group waited on a
+  // sibling past its bound and never dispatched. `dependency-timeout` is the
+  // ordering edge that never cleared; `dependency-parked` is its sibling, the
+  // dependency settling on something other than `merged` (waiting cannot fix
+  // that, so it is a park, not a timeout). `cross-group-conflict` above is
+  // reused for a claim wait that capped out — same condition as the plan-time
+  // check, seen earlier and more cheaply. See work-queue-cap.ts.
+  | "dependency-timeout"
+  | "dependency-parked"
   // #543 — fixed literals (NOT `'<role>'` template shapes): a per-role
   // suffix would smuggle a cap the #533 canary doesn't know. Which role's
   // child was killed is carried in the new `role` field + capEvidence.

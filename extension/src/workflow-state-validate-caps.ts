@@ -112,6 +112,13 @@ export const CAP_HIT_FIXED_LITERALS = [
   "deadline",
   // #571 — a sibling cycle holds a path claim that overlaps this plan.
   "cross-group-conflict",
+  // #1101 — the queue, not a cycle, raised these: a group waited on a sibling
+  // past its bound and never dispatched. `dependency-parked` is the dependency
+  // settling non-merged (a wait cannot fix it); `dependency-timeout` is the
+  // wait outlasting its bound. Both name a group that wrote nothing, so the
+  // handoff must not send the operator to a diff.
+  "dependency-parked",
+  "dependency-timeout",
   // #754 — the plan step's own bound expired on the primary plan dispatch.
   "plan-timeout",
   // #819 — the plan-to-spec gate refused the plan (declared paths cover no
