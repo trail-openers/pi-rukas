@@ -26,7 +26,9 @@
 
 import type { OperatorDirectives } from "./plan-directives.ts";
 import type { AngleFindings, PlanItemKind, PlanItemKindName } from "./plan-draft.ts";
+import { DROPPED_ITEM_MAX_CHARS } from "./plan-dropped-budget.ts";
 import { OPERATOR_SOURCE, type PriorContextEntry } from "./plan-prior-context.ts";
+import { clipItem } from "./plan-validate.ts";
 
 /**
  * Minimum shared content tokens for two lines to be about the same thing.
@@ -252,7 +254,7 @@ const DROP_CLAUSE: Record<
 /** The disclosure bullet for one dropped item (rendered in the filed body). */
 export function droppedDisclosure(d: DroppedInvestigationItem): string {
   const { item } = d;
-  return `- dropped: ${DROP_CLAUSE[d.reason](d)} — [${item.angle} / ${item.kind}] ${item.text}`;
+  return `- dropped: ${DROP_CLAUSE[d.reason](d)} — [${item.angle} / ${item.kind}] ${clipItem(item.text, DROPPED_ITEM_MAX_CHARS)}`;
 }
 
 /** Investigation kinds an operator line can contradict (#1132). */
@@ -314,10 +316,4 @@ export function applyOperatorConflicts(
     openQuestions: res.openQuestions,
     endorsed: res.endorsed,
   };
-}
-
-/** #1132: the disclosure section for dropped investigation items ("" when none). */
-export function droppedSection(dropped: DroppedInvestigationItem[]): string {
-  if (dropped.length === 0) return "";
-  return `\n## Dropped investigation items\n\n${dropped.map(droppedDisclosure).join("\n")}\n`;
 }
