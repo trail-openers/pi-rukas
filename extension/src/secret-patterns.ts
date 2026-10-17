@@ -177,7 +177,7 @@ export const SECRET_PATTERNS: readonly RegExp[] = [
   // and for the same fix. The class is still a CREDENTIAL alphabet, not `\S`: `@`, `,`,
   // `"` and whitespace stay out, so a key still stops at the delimiter that ends it and
   // the `kv-identifier` / `kv-token-count` overreach probes keep matching nothing.
-  /(?:api[_-]?key|secret|password|passwd|token)["']?\s*[:=]\s*["']?[A-Za-z0-9._\-/+]{12,4096}/i,
+  /(?:api[_-]?key|secret|password|passwd|token)["']?\s*[:=]\s*["']?[A-Za-z0-9._\-/+={]{12,4096}/i,
   // A password embedded in a URL: scheme://user:pass@host. The `://` before it is
   // already a left boundary no token continues across, so this rule needs none.
   //

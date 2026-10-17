@@ -199,9 +199,45 @@ export const CASES: { name: string; secret: string; body: string }[] = [
     body: "aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0=Q4rS",
   },
   {
+    name: "key-value-base64-pad-exact",
+    secret: "client_secret=aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0=Q4rS",
+    body: "aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0=Q4rS",
+  },
+  {
+    name: "key-value-base64-pad-double",
+    secret: "api_key=QUJDREVGR0hJSktMTU5PUA==",
+    body: "QUJDREVGR0hJSktMTU5PUA==",
+  },
+  {
     name: "url-credentials-slash-pass",
     secret: "https://user:hunt/er2Sup3rSecretValue@origin.internal/x",
     body: "hunt/er2Sup3rSecretValue",
+  },
+];
+
+/**
+ * Exact-string assertions for the base64-`=` arm of the key/value body class
+ * (#1393 round 5, item 4). These are NOT in `CASES`: the looped fixtures wrap the
+ * secret in kilobytes of filler and assert through `leaksKey`, whose 12-character
+ * window is blind to a leak tail shorter than that. The adversarial review proved the
+ * `=` had never been in the class while every looped assertion stayed green, because
+ * the `key-value-base64-pad` leak tail is 5 characters. Here the leaked substring is
+ * compared literally, so the class has to carry `=` for these to pass.
+ */
+export const PADDING_LEAKS: {
+  name: string;
+  text: string;
+  mustNotContain: string[];
+}[] = [
+  {
+    name: "key-value-base64-pad-tail",
+    text: "client_secret=aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0=Q4rS",
+    mustNotContain: ["=Q4rS"],
+  },
+  {
+    name: "key-value-base64-pad-double",
+    text: "api_key=QUJDREVGR0hJSktMTU5PUA==",
+    mustNotContain: ["=="],
   },
 ];
 

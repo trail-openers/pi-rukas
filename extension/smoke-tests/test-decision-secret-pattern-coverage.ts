@@ -32,7 +32,7 @@
 import { REDACTED, redactBounded, redactDeep, redactSecrets } from "../src/decision-log.ts";
 import { SECRET_PATTERNS } from "../src/secret-patterns.ts";
 import { leaksKey, makeAssert } from "./lib/decision-fixtures.ts";
-import { CASES, MUST_NOT_REDACT } from "./lib/redaction-context-cases.ts";
+import { CASES, MUST_NOT_REDACT, PADDING_LEAKS } from "./lib/redaction-context-cases.ts";
 
 const { assert, state } = makeAssert();
 
@@ -107,6 +107,21 @@ for (const { name, secret, body } of CASES) {
     assert(
       !leaksKey(deep.evidence, body) && counter.n >= 1,
       `${name} glued${glue ? " (space)" : ""} via redactDeep(bound 4000): no window survives and the pass counted it (${counter.n})`,
+    );
+  }
+}
+
+// The base64-`=` arm of the key/value body class, asserted on the literal substring
+// rather than through `leaksKey`: the looped fixtures' 12-char window cannot see a
+// 5-character leak tail, which is how the missing `=` stayed green through every other
+// assertion in this file. Removing `=` from the class turns this RED.
+for (const { name, text, mustNotContain } of PADDING_LEAKS) {
+  const r = redactSecrets(text);
+  assert(r.count >= 1, `${name}: the unbounded pass matches it at all (${r.count})`);
+  for (const leak of mustNotContain) {
+    assert(
+      !r.text.includes(leak),
+      `${name}: padding leak ${JSON.stringify(leak)} survived redaction (${JSON.stringify(r.text)})`,
     );
   }
 }
