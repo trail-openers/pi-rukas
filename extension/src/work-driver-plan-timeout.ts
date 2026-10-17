@@ -11,13 +11,14 @@
  * them so importers keep their paths.
  */
 
-import fs from "node:fs/promises";
+import path from "node:path";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { DriverHost } from "./work-driver-host.ts";
-import { buildCompletionEvent } from "./work-driver-merged.ts";
-import { type WorkState, appendEvent } from "./workflow-state.ts";
+import { buildCompletionEvent, overrideEnvForKillCause } from "./work-driver-merged.ts";
+import { withUsage } from "./workflow-state-events-usage.ts";
+import { type WorkEvent, type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 
 // #754 — the steer for the corrective re-dispatch after a PRIMARY plan
 // dispatch killed at the step's own bound. A timeout says nothing about
@@ -86,6 +87,77 @@ export function planTimeoutKill(
 }
 
 /**
+ * #754 — the structured cause `buildCompletionEvent` renders for a killed
+ * dispatch, widened (from the primary's "the plan step's own bound") to any
+ * kill cause, so the corrective's kill names the trigger that actually fired
+ * (backstop / loop / token-budget / abort) instead of a misleading bound.
+ */
+export function planKillDetail(result: DispatchResult): string {
+  const knob = overrideEnvForKillCause(result.killCause ?? "timeout");
+  switch (result.killCause) {
+    case "loop": {
+      const ev = result.loopEvidence;
+      const what = ev
+        ? `${ev.tool} × ${ev.count} (normalised args)`
+        : "the same tool call after normalisation";
+      return `[pi-rukas] killed on loop — it kept re-issuing ${what} (override: ${knob})`;
+    }
+    case "token-budget": {
+      const tb = result.tokenBudget;
+      const budgetClause = tb
+        ? `${Math.round(tb.used).toLocaleString()} of ${Math.round(tb.budget).toLocaleString()} tokens`
+        : "its cumulative token budget";
+      return `[pi-rukas] killed on token-budget — ${budgetClause} (override: ${knob})`;
+    }
+    case "abort":
+      return "[pi-rukas] cancelled (abort signal)";
+    case "plan-timeout":
+      return `[pi-rukas] killed after ${result.killBudgetMs}ms — the plan step's own wall-clock bound expired (override: ${knob})`;
+    default:
+      return `[pi-rukas] killed after ${result.killBudgetMs}ms ${result.killCause} (override: ${knob})`;
+  }
+}
+
+/**
+ * #819 round-2 — the failure event a plan dispatch carries when it was KILLED
+ * by one of the driver's own caps. `buildCompletionEvent` already turns a
+ * `killCause` into a `dispatch-failed`, but it derives that event from the
+ * result it is handed; the corrective path needs the same shape for causes the
+ * plan bound did not set. Kept as a helper (rather than reusing
+ * `buildCompletionEvent`) because the kill branch there keys its prose on
+ * `killCause === "plan-timeout"` and this call site must name the ACTUAL
+ * trigger — a loop kill must not be reported as the plan bound expiring.
+ */
+export function planKillFailureEvent(
+  step: WorkStep,
+  role: string,
+  label: string,
+  result: DispatchResult,
+): Extract<WorkEvent, { kind: "dispatch-failed" }> {
+  return withUsage(
+    {
+      kind: "dispatch-failed",
+      step,
+      role,
+      jobId: result.transcriptPath ? path.basename(result.transcriptPath, ".json") : "unknown",
+      label,
+      ms: result.ms,
+      at: Date.now(),
+      exitCode: result.exitCode ?? null,
+      errorTail: planKillDetail(result),
+      killCause: result.killCause,
+      ...(result.killCause === "loop" && result.loopEvidence
+        ? { loopEvidence: result.loopEvidence }
+        : {}),
+      ...(result.killCause === "token-budget" && result.tokenBudget
+        ? { tokenBudget: result.tokenBudget }
+        : {}),
+    },
+    result.usage,
+  );
+}
+
+/**
  * #754 — the one-shot corrective re-dispatch after a PRIMARY plan dispatch
  * killed at the step's own bound. A killed child has no structured output
  * (parseWorkstreams would return nothing), so the corrective is the recovery
@@ -121,7 +193,7 @@ export async function planTimeoutCorrective(
 }> {
   let state = workState;
   trace(
-    `work-driver: plan dispatch killed at ${planKill.killBudgetMs}ms bound — corrective re-dispatch (timeout steer)`,
+    `work-driver: plan dispatch killed (${planKill.killCause ?? "unknown cause"}, bound ${planKill.killBudgetMs}ms) — corrective re-dispatch (timeout steer)`,
   );
   const steer = correctivePlanTimeoutSteer(planKill.killBudgetMs ?? 0);
   const correctivePrompt = planCorrectivePrompt(prompt, steer);
@@ -130,7 +202,35 @@ export async function planTimeoutCorrective(
     { role: "explore", prompt: correctivePrompt },
     { label: "plan:corrective" },
   ).catch(() => undefined);
-  if (retry) {
+  // #819 round-2 — a corrective that was KILLED (any structured cause) or
+  // whose dispatch THREW must route like the PRIMARY's kill, not be judged as
+  // a plan. `ok: false` alone is not enough: the quality and plan-to-spec
+  // gates below used to run over `retry.text` regardless, so a killed
+  // corrective — which by definition produced no structured output — was fed
+  // to `planSpecMismatchReason` and capped as `plan-spec-mismatch` on the
+  // silence of a child we killed mid-stream. That is the "silence is not a
+  // wrong plan" rule (#378) inverted: the gate's rejection would be an
+  // invention of the driver, not a finding about the planner. The step ends on
+  // a `dispatch-failed` tail so the router's plan caps own it.
+  if (retry?.killCause) {
+    state = appendEvent(state, planKillFailureEvent("plan", "explore", "plan:corrective", retry));
+    return { ok: false, state, workstreams: {} };
+  }
+  if (!retry) {
+    state = appendEvent(state, {
+      kind: "dispatch-failed",
+      step: "plan",
+      role: "explore",
+      jobId: "unknown",
+      label: "plan:corrective",
+      ms: 0,
+      at: Date.now(),
+      exitCode: null,
+      errorTail: "[pi-rukas] the one-shot corrective plan dispatch threw and produced no result",
+    });
+    return { ok: false, state, workstreams: {} };
+  }
+  {
     state = appendEvent(
       state,
       await buildCompletionEvent(ctx, "plan", "explore", "plan:corrective", retry),
@@ -139,7 +239,6 @@ export async function planTimeoutCorrective(
     const workstreams = Object.keys(reparsed).length > 0 ? reparsed : ({} as typeof reparsed);
     return { ok: true, state, workstreams };
   }
-  return { ok: false, state, workstreams: {} };
 }
 
 /**

@@ -19,6 +19,10 @@ import {
   planCorrectivePrompt,
 } from "../src/work-driver-plan.ts";
 import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
+import {
+  PLAN_DELIVERABLE_PATH_RULE,
+  PLAN_SINGLE_BLOCK_RULE,
+} from "../src/work-driver-prompts-plan.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -302,6 +306,18 @@ assert(
 
 {
   const p = inlinePlanPrompt([290], "/tmp/scratch");
+  // #819 round-2 — the two rules whose violation was the #818 incident are in
+  // the PLANNER prompt, not only in the gate's rejection: a planner that was
+  // never told "one `## Workstreams` heading" and "every deliverable with
+  // paths must be claimed" cannot fix a rejection it was never warned about.
+  assert(
+    p.includes(PLAN_SINGLE_BLOCK_RULE),
+    "#819 round-2: the planner prompt states the single-`## Workstreams`-block rule (the shared constant)",
+  );
+  assert(
+    p.includes(PLAN_DELIVERABLE_PATH_RULE),
+    "#819 round-2: the planner prompt states the deliverable-coverage rule (every `[paths: …]` deliverable claimed by some workstream)",
+  );
   assert(
     !/Bias toward SINGLE-WORKSTREAM/i.test(p),
     "the old 'bias toward SINGLE-WORKSTREAM' instruction is GONE — it was the inversion of this doctrine",
@@ -381,8 +397,11 @@ assert(
     "#819: the steer forbids the #818 failure — the corrective re-choosing WHAT gets built",
   );
   assert(
-    /ONE `## Workstreams` section/.test(s),
-    "#819: the steer states the one-`## Workstreams`-block rule",
+    // #819 round-2 — the rule is one exported constant quoted verbatim by the
+    // planner prompt, the steer and the gate's evidence, so the assertion
+    // targets the constant rather than a paraphrase of it.
+    s.includes(PLAN_SINGLE_BLOCK_RULE),
+    "#819: the steer states the one-`## Workstreams`-block rule (the shared constant)",
   );
 }
 

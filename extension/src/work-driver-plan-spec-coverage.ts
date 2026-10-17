@@ -35,8 +35,11 @@
  *    `unmeasurable` and `no-diff` for the same reason), so a spec whose
  *    deliverables all lack paths is not checkable and is not rejected.
  *
- * 2. `countWorkstreamBlocks` + the ambiguous-reply branch of
- *    `planSpecMismatchReason` — a reply carrying more than one `##
+ * 2. The multi-block branch of `planSpecMismatchReason` — which reads its
+ *    `## Workstreams` count through `countMarkdownSections` (work-driver-plan-parse.ts,
+ *    the ONE definition of that counter; an earlier draft of this module grew
+ *    a second copy and the two drifted silently) — rejects a reply carrying
+ *    more than one `##
  *    Workstreams` heading is REJECTED. Last-wins was considered and refused:
  *    the #818 reply's three blocks were emitted in no semantic order, so the
  *    "last" block is as likely to be fabricated as the first, and either
@@ -48,8 +51,19 @@
  * `"extension/smoke-tests/"` are all real shapes seen in state files, and
  * comparing un-normalised strings on one side reintroduces false mismatches
  * (the #875 lesson).
+ *
+ * #819 round-2 — this module no longer re-exports `countMarkdownSections`.
+ * It used to carry a SECOND copy of that counter (byte-identical to the parse
+ * module's, but a second copy is exactly the drift hazard the round removed)
+ * and re-exported it, so importers of *this* module got the coverage copy.
+ * Anything that wants the counter now imports it from
+ * `work-driver-plan-parse.ts` directly — or from `work-driver-plan.ts`, which
+ * re-exports the one definition.
  */
 
+import { countMarkdownSections } from "./work-driver-plan-parse.ts";
+import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
+import { PLAN_SINGLE_BLOCK_RULE } from "./work-driver-prompts-plan.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
 /** The deliverable shape the gate reads (structural subset of SpecDeliverable). */
@@ -104,23 +118,81 @@ function coveredBy(path: string, workstreamPaths: string[]): boolean {
 
 /**
  * A deliverable participates in the comparison only when it carries concrete
- * paths to point at. Empty paths (prose-only) and an HONORED no-diff marker
- * (#792: `noDiff` AND non-empty evidence AND no code paths — a contradictory
- * marker with paths lets the paths win, exactly as `classifyDeliverables`
- * does) both mean "nothing to measure", so neither can make a plan look wrong.
+ * paths to point at. Three shapes mean "nothing to measure", so none of them
+ * can make a plan look wrong:
+ *
+ * 1. EMPTY paths after normalisation — a prose deliverable, or one whose only
+ *    `paths:` slot was blank/whitespace. `classifyDeliverables` calls this
+ *    `unmeasurable` for the same reason.
+ * 2. A path that is not a plain repo-relative path at all (`"tbd"`, `"TBD"`,
+ *    `"N/A"`, `"none"`, or a whole sentence). `isPlainRepoRelativePath` is
+ *    deliberately a DANGEROUS-CHARACTER check (its job is the shell-injection
+ *    surface in the coupling merge's grep), so it alone lets `"n/a"` through as
+ *    a syntactically fine relative path — which is exactly the slot shape real
+ *    specs carry. The placeholder list below is the second, complementary
+ *    check: a slot that is a known filler word is not an ownership claim
+ *    either. Between the two, `"n/a"` and `"will land somewhere sensible"` are
+ *    both excluded, and a genuine filename is not. Measured against a
+ *    workstream union either shape would be UNCOVERED by construction, which is
+ *    a rejection the planner cannot act on — the defect is in the spec's slot,
+ *    not in the plan. The shape gate calls the same `isPlainRepoRelativePath`
+ *    predicate `invalid-path` on the workstream side, so the dangerous half of
+ *    the rule is shared verbatim.
+ * 3. An HONORED no-diff marker (#792: `noDiff` AND non-empty evidence AND no
+ *    code paths). A contradictory marker with paths lets the paths win, exactly
+ *    as `classifyDeliverables` does.
+ *
+ * #819 round-2 — the `noDiff` + real-paths case is handled by clause 3 NOT
+ * firing (its `paths.length === 0` guard) and the paths then winning, so there
+ * is no separate "no diff" branch here to keep in sync; the earlier draft of
+ * this function had an unreachable one that duplicated clause 3's condition.
  */
 function measurable(d: SpecCoverageDeliverable, paths: string[]): boolean {
   if (paths.length === 0) return false;
-  // The contradictory case (a marker AND real paths) is judged by its PATHS,
-  // byte-for-byte the rule in `classifyDeliverables` — which honours the
-  // marker only when `paths.length === 0`. An earlier draft of this gate
-  // exempted a marker regardless of paths, which is how a fabricated
-  // `noDiff: true` on a deliverable that names four files would have walked
-  // the fabricated work straight past the gate.
+  // Not a path → not measurable. Any non-path slot disqualifies the whole
+  // deliverable: a partial list cannot be honestly judged either, since the
+  // EVERY-path rule would reject the plan for the prose half anyway.
+  if (!paths.every((p) => isPlainRepoRelativePath(p) && !isPlaceholderPath(p))) return false;
   if (d.noDiff === true && (d.noDiffEvidence ?? "").trim().length > 0 && paths.length === 0) {
     return false;
   }
   return true;
+}
+
+/**
+ * Placeholder `paths:` slots a real spec has been seen to carry when the
+ * resolver had no file to name. Compared case-insensitively and after
+ * stripping punctuation, because the same intent arrives as `n/a`, `N/A`,
+ * `n.a.` and `"—"`.
+ *
+ * Why a list and not a heuristic: the dangerous-character check alone is not
+ * enough ("n/a" has no metacharacters and is a legal relative path), and a
+ * heuristic like "no dot → not a file" would drop `extension/smoke-tests/`,
+ * which is a legitimate DIRECTORY and one of the #818 fixture's deliverables.
+ * A short explicit set cannot misfire on a filename, and a slot that is not in
+ * the set is judged by the rules the converge gate already uses.
+ */
+const PLACEHOLDER_PATHS = new Set([
+  "n/a",
+  "na",
+  "none",
+  "null",
+  "nil",
+  "tbd",
+  "todo",
+  "tentative",
+  "unknown",
+  "unspecified",
+  "placeholder",
+  "prose",
+  "-",
+  "—",
+  ".",
+  "…",
+]);
+
+function isPlaceholderPath(p: string): boolean {
+  return PLACEHOLDER_PATHS.has(p.trim().toLowerCase().replace(/[.]+$/, ""));
 }
 
 /**
@@ -144,9 +216,19 @@ export function findUncoveredDeliverables(
   const workstreamPaths = normalisedPaths(
     Object.values(workstreams).flatMap((ws) => ws?.paths ?? []),
   );
+  // #819 round-2 — an HONORED no-diff deliverable (#792) is excluded from the
+  // comparison so it neither produces an uncovered row nor counts as judged.
+  // `measurable` already decides that, with the SAME three clauses
+  // `classifyDeliverables` uses: empty paths, a non-path slot, and the
+  // honoured marker (which requires `paths.length === 0`, so a CONTRADICTORY
+  // marker + real paths falls through and the paths win — deterministic, and
+  // byte-for-byte the converge gate's rule).
+  const measurableDeliverables = deliverables.filter((d) =>
+    measurable(d, normalisedPaths(d.paths)),
+  );
   const uncovered: UncoveredDeliverable[] = [];
   let checkedCount = 0;
-  for (const d of deliverables) {
+  for (const d of measurableDeliverables) {
     const paths = normalisedPaths(d.paths);
     if (!measurable(d, paths)) continue;
     checkedCount += 1;
@@ -154,14 +236,6 @@ export function findUncoveredDeliverables(
     uncovered.push({ id: d.id, paths });
   }
   return { uncovered, checkedCount };
-}
-
-/** How many `## <name>` headings a reply carries. */
-export function countMarkdownSections(text: string, name: string): number {
-  const re = new RegExp(`^##\\s+${name}\\s*$`, "gim");
-  let n = 0;
-  for (const _match of text.matchAll(re)) n += 1;
-  return n;
 }
 
 /** The two ways a plan reply can fail the plan-to-spec gate. */
@@ -199,7 +273,7 @@ export function planSpecMismatchReason(
     return {
       kind: "multiple-workstream-blocks",
       blockCount: blocks,
-      evidence: `the plan reply contains ${blocks} '## Workstreams' sections; the driver read the first and would have built only that one. Emit exactly one '## Workstreams' section.`,
+      evidence: `the plan reply contains ${blocks} '## Workstreams' sections; the driver read the first and would have built only that one. ${PLAN_SINGLE_BLOCK_RULE}`,
     };
   }
   // A reply with NO `## Workstreams` section at all is not a plan the gate can
