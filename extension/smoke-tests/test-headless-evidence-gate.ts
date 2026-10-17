@@ -35,9 +35,11 @@ import { EXIT } from "../src/headless/exit-code.ts";
 import { MERGE_GRANT } from "./lib/headless-s5-fixture.ts";
 import {
   assertEvidenceProbe,
+  assertEvidenceReason,
   assertLogClean,
   initEnv,
   judgeThatAnswers,
+  judgeThatRecords,
   mergedRun,
   restoreEnv,
 } from "./lib/headless-s5-harness.ts";
@@ -164,6 +166,7 @@ initEnv();
     `authority WAS granted, so the refusal came from the evidence gate (authoritySource ${r.state?.pipelineState.mergeHold?.authoritySource})`,
   );
   assertEvidenceProbe(assert, r);
+  assertEvidenceReason(assert, r, "mergeStateStatus is BLOCKED", "BLOCKED");
   assert(
     r.state?.pipelineState.mergeHold?.evidenceReason?.includes("BLOCKED") === true,
     `the hold names the BLOCKED verdict as the reason (got ${r.state?.pipelineState.mergeHold?.evidenceReason})`,
@@ -184,6 +187,7 @@ initEnv();
     "authority WAS granted, so the failing checks are what stopped it",
   );
   assertEvidenceProbe(assert, r);
+  assertEvidenceReason(assert, r, "required checks failing", "failing-checks");
   assert(
     r.state?.pipelineState.mergeHold?.evidenceReason?.includes("checks failing") === true,
     `the hold names the failing check (got ${r.state?.pipelineState.mergeHold?.evidenceReason})`,
@@ -204,11 +208,126 @@ initEnv();
     "authority WAS granted, so the PR's own state is what stopped it",
   );
   assertEvidenceProbe(assert, r);
+  // The prefix — not `includes("CLOSED")` — is the load-bearing assertion. The
+  // fixture's wide `gh pr view` no longer says CLOSED for this verdict either,
+  // so a hold reason merely CONTAINING the word could come from somewhere else;
+  // the exact prefix `gatherMergeEvidence` builds can only come from the gate.
+  assertEvidenceReason(assert, r, "PR is CLOSED, not OPEN", "not-OPEN");
   assert(
     r.state?.pipelineState.mergeHold?.evidenceReason?.includes("CLOSED") === true,
     `the hold names the CLOSED state as the reason (got ${r.state?.pipelineState.mergeHold?.evidenceReason})`,
   );
+  assert(
+    // The fixture's `prViewJson` always emits `"state"`, so a line carrying
+    // `"state":"CLOSED"` is a wide-prView answer; the evidence probe's own
+    // stdout is not recorded as a line. Asserting no wide read said CLOSED is
+    // what makes "the gate refused" exclusive to the gate.
+    r.log.calls.every((c) => !c.includes('"state":"CLOSED"')),
+    "no wide `gh pr view` answer said CLOSED — only the evidence gate's own probe reported the closed PR",
+  );
   assert(r.log.mergeCmds.length === 0, "a PR that is not OPEN is never merged");
+  assertLogClean(assert, r.log);
+}
+
+// ── 4. The positive control: everything green → exactly one merge, and the
+// forge then says MERGED.
+// Every refusal case above asserts `mergeCmds.length === 0`. A field that is
+// always zero cannot falsify anything — this case drives the SAME field to 1
+// under the same harness, so a fixture whose merge matcher never fired would
+// fail HERE rather than flattering every refusal case below it. The post-merge
+// `gh pr view` answer flips to MERGED only after the merge was asked for, so
+// `executeAndVerifyMerge`'s verification is a real confirmation, not a
+// hardcoded answer.
+{
+  const r = await mergedRun({
+    issue: 9006,
+    grant: MERGE_GRANT,
+    merge: "merged",
+    judge: judgeThatAnswers("permitted", MERGE_GRANT),
+  });
+  assert(r.code === EXIT.merged, `grant + permitting judge + green → exit 0 (got ${r.code})`);
+  assert(
+    r.state?.pipelineState.status === "merged",
+    `the cycle reaches merged (got ${r.state?.pipelineState.status})`,
+  );
+  assert(
+    r.log.mergeCmds.length === 1,
+    `exactly one forge merge was issued (${r.log.mergeCmds.join(" | ") || "none"})`,
+  );
+  const merges = r.log.mergeCmds.length;
+  // The forge adapter's wide `gh pr view` is the only read whose ANSWER carries
+  // `"state":"MERGED"`; the exec seam records command lines, so the ordering
+  // assertion below is made on the command stream and the content assertion on
+  // what the seam actually handed back (`prViewAnswers` records them).
+  assert(
+    r.log.prViewAnswers.some((a) => a.includes('"state":"MERGED"')),
+    `the forge's post-merge prView was consulted, and it says MERGED (merge cmd rows: ${merges})`,
+  );
+  assert(
+    // Ordered: the wide MERGED answer must come AFTER the merge was asked for.
+    // A fixture that hardcoded MERGED from the start would satisfy the check
+    // above without any merge having happened.
+    r.log.prViewAnswers.findIndex((a) => a.includes('"state":"MERGED"')) > 0 &&
+      r.log.prViewAnswers[0]?.includes('"state":"OPEN"') === true,
+    "the first prView said OPEN and a later one said MERGED — the flip followed the merge command",
+  );
+  assert(
+    r.log.mergeCmds.length === 1,
+    "and the merged outcome is not an accident of a merge that never ran",
+  );
+  assertLogClean(assert, r.log);
+}
+
+// ── 5. The judge seam is test-only: outside the offline harness an injected
+// judge is IGNORED (#1025 security).
+// `runHeadless` forwards `policyJudgeFn` to the driver, so without a gate an
+// exported-API caller could speak for the merge-authority judge. The gate is
+// `PI_ENSEMBLE_FORBID_LIVE_SPAWN=1` — the offline suite's own setting, under
+// which the real spawn-side judge could not answer anyway. With the ban dropped
+// the eager judge that WANTS to grant must never be consulted: its call counter
+// stays at zero and the cycle denies.
+//
+// `forcePolicyJudgeOff` sets `PI_ENSEMBLE_POLICY_JUDGE=0` for this case, which
+// is what keeps it OFF the real judge — the real path would spawn a live child,
+// and an offline test must never do that. With the switch set, `askPolicy`
+// denies at its first line, so the deny below is attributed to the injected
+// judge being ignored (counter 0) plus the real judge being switched off, not
+// to a spawn.
+{
+  const calls: Array<{ prompt: string }> = [];
+  const r = await mergedRun({
+    issue: 9007,
+    grant: MERGE_GRANT,
+    merge: "merged",
+    judge: judgeThatRecords(calls, "permitted", MERGE_GRANT),
+    forbidLiveSpawn: false,
+    forcePolicyJudgeOff: true,
+    captureEnv: ["PI_ENSEMBLE_FORBID_LIVE_SPAWN", "PI_ENSEMBLE_POLICY_JUDGE"],
+  });
+  // The harness really did drop the ban for this case — without this, the case
+  // would pass because the variable was never unset rather than because the
+  // merged step ignored the seam.
+  assert(
+    r.env.PI_ENSEMBLE_FORBID_LIVE_SPAWN === undefined,
+    `the harness dropped the live-spawn ban for this case (env saw ${JSON.stringify(r.env.PI_ENSEMBLE_FORBID_LIVE_SPAWN)})`,
+  );
+  assert(
+    r.env.PI_ENSEMBLE_POLICY_JUDGE === "0",
+    `the real judge was switched off so the offline case never spawns (env saw ${JSON.stringify(r.env.PI_ENSEMBLE_POLICY_JUDGE)})`,
+  );
+  assert(
+    calls.length === 0,
+    `the injected judge was never asked (it was called ${calls.length} time(s))`,
+  );
+  assert(
+    r.code === EXIT.handoff,
+    `an injected judge with no harness to authorise it grants nothing → exit 10 (got ${r.code})`,
+  );
+  assert(
+    r.state?.pipelineState.mergeHold?.authorityGranted === false,
+    `the hold records that authority was NOT granted (got ${r.state?.pipelineState.mergeHold?.authorityGranted})`,
+  );
+  assert(r.log.mergeCmds.length === 0, "and nothing was merged on an unauthorised judge");
   assertLogClean(assert, r.log);
 }
 

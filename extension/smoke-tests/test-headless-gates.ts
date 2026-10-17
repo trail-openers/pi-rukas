@@ -18,7 +18,7 @@
  *      with numbered questions.
  *
  * The merge-gate cases (a cycle parked at `merged`, green `gh`, no doctrine
- * grant → refused) live in `test-headless-merge-authority.ts`; they were split
+ * grant → refused) live in `test-headless-evidence-gate.ts`; they were split
  * out when the file grew past the 500-line cap. Both files share
  * `lib/headless-s5-harness.ts`.
  *

@@ -5,7 +5,7 @@
  * The suite was one file until the merge-authority cases grew past the 500-line
  * cap (AGENTS.md §12). The harness lives here so the two test files
  * (`test-headless-gates.ts` for the CLI / env / exit-code contracts and
- * `test-headless-merge-authority.ts` for the merge-gate contracts) share one
+ * `test-headless-evidence-gate.ts` for the merge-gate contracts) share one
  * copy of the environment setup, the parked-at-merged cycle runner, and the
  * assertion helpers, without either file carrying the other's cases.
  *
@@ -18,8 +18,8 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import type { DriverContext } from "../../src/work-driver-context.ts";
-import type { PolicyJudgeFn } from "../../src/work-driver-policy.ts";
 import { runHeadless } from "../../src/headless/run.ts";
+import type { PolicyJudgeFn } from "../../src/work-driver-policy.ts";
 import {
   type WorkState,
   initialState,
@@ -35,40 +35,86 @@ import {
   okResult,
 } from "./headless-s5-fixture.ts";
 
-/** The env the runner and the merged step read; restored by `restoreEnv` at the end. */
-const ENV_KEYS = [
-  "PI_ENSEMBLE_SANDBOX_MODE",
-  "PI_ENSEMBLE_TRUST_MODE",
-  "PI_ENSEMBLE_MERGE_AUTHORITY",
-  "PI_ENSEMBLE_POLICY_JUDGE",
-  "PI_ENSEMBLE_HANDOFF_CHANNEL",
-] as const;
+/**
+ * Every env key this harness WRITES, and the baseline value it writes.
+ *
+ * One table, used by both mechanisms: `initEnv` sets each key and captures the
+ * host value under it, and `mergedRun` re-asserts the same baseline per case (a
+ * sibling case that left one of these set cannot change what the next one
+ * sees). Restoring from the same list `initEnv` wrote from is what makes the
+ * file leave the process as it found it — the earlier list was a hand-maintained
+ * subset that had drifted from what was actually written, so `QUIET_STATUS`,
+ * `VERIFY`, `TRANSIENT_RETRY_BACKOFF_MS` and `FORBID_LIVE_SPAWN` leaked into
+ * every later test file in the same bun process.
+ */
+const HARNESS_BASELINE: Readonly<Record<string, string>> = {
+  PI_ENSEMBLE_QUIET_STATUS: "1",
+  PI_ENSEMBLE_VERIFY: "0",
+  PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS: "0",
+  // Nothing in the offline suite reaches a provider or a forge.
+  PI_ENSEMBLE_FORBID_LIVE_SPAWN: "1",
+  // The handoff channel is not what these cases assert; `host` keeps the cycle
+  // off the real forge (no comment, no label, no gh).
+  PI_ENSEMBLE_HANDOFF_CHANNEL: "host",
+  // Consolidation shells git at repoRoot and is not what any case here asserts;
+  // a handoff that consolidated would answer git reads this fixture does not
+  // serve and show up as `unexpected` rather than as the contract.
+  PI_ENSEMBLE_HANDOFF_CONSOLIDATE: "0",
+};
 
 const savedEnv: Record<string, string | undefined> = {};
 
 /**
  * Put the process in the offline-suite baseline: no forge, no live spawn, no
- * per-call gating chatter. Each test file calls this once at the top and
- * `restoreEnv` at the bottom.
+ * per-call gating chatter, no handoff consolidation. Each test file calls this
+ * once at the top and `restoreEnv` at the bottom.
  */
 export function initEnv(): void {
-  process.env.PI_ENSEMBLE_QUIET_STATUS = "1";
-  process.env.PI_ENSEMBLE_VERIFY = "0";
-  process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
-  // Nothing in the offline suite reaches a provider or a forge.
-  process.env.PI_ENSEMBLE_FORBID_LIVE_SPAWN = "1";
-  // The handoff channel is not what these cases assert; `host` keeps the cycle
-  // off the real forge (no comment, no label, no gh).
-  process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "host";
-  for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
+  for (const [key, value] of Object.entries(HARNESS_BASELINE)) {
+    savedEnv[key] = process.env[key];
+    process.env[key] = value;
+  }
 }
 
-/** Undo `initEnv`'s `ENV_KEYS` capture so a sibling test file sees a clean process. */
+/** Undo `initEnv`'s capture so a sibling test file sees a clean process. */
 export function restoreEnv(): void {
   for (const [k, v] of Object.entries(savedEnv)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
+}
+
+/**
+ * The per-case env, restored in the `finally` so no case leaks into the next.
+ *
+ * The baseline is re-asserted first (not relied upon from `initEnv`), then the
+ * two keys a case may legitimately move: `PI_ENSEMBLE_POLICY_JUDGE`, which is
+ * forced OFF unless the case injected a judge, and
+ * `PI_ENSEMBLE_FORBID_LIVE_SPAWN`, which a case may drop to prove the merged
+ * step ignores an injected judge outside the offline harness.
+ */
+function withCaseEnv(
+  opts: { judge?: PolicyJudgeFn; forbidLiveSpawn?: boolean; forcePolicyJudgeOff?: boolean },
+  run: () => Promise<void>,
+): Promise<void> {
+  const keys = [...Object.keys(HARNESS_BASELINE), "PI_ENSEMBLE_POLICY_JUDGE"];
+  const before: Record<string, string | undefined> = {};
+  for (const k of keys) before[k] = process.env[k];
+  for (const [key, value] of Object.entries(HARNESS_BASELINE)) process.env[key] = value;
+  // `forcePolicyJudgeOff` is what keeps an offline case OFF the real judge: with
+  // the injected seam suppressed for the reason under test, the real
+  // `judgePolicy` would otherwise spawn a live child. `askPolicy` denies at its
+  // first line instead, so the case asserts the deny without a spawn.
+  if (opts.judge === undefined || opts.forcePolicyJudgeOff === true)
+    process.env.PI_ENSEMBLE_POLICY_JUDGE = "0";
+  else delete process.env.PI_ENSEMBLE_POLICY_JUDGE;
+  if (opts.forbidLiveSpawn === false) delete process.env.PI_ENSEMBLE_FORBID_LIVE_SPAWN;
+  return run().finally(() => {
+    for (const k of keys) {
+      if (before[k] === undefined) delete process.env[k];
+      else process.env[k] = before[k];
+    }
+  });
 }
 
 /** A process that never signals — these cases assert the cycle, not a Ctrl-C. */
@@ -118,17 +164,44 @@ export async function mergedRun(opts: {
   refuseDoctrine?: boolean;
   /** A judge to put in front of whatever doctrine the read produced. */
   judge?: PolicyJudgeFn;
-}): Promise<{ code: number; state: WorkState | undefined; log: MergeExecLog; baseSha: string }> {
+  /**
+   * `false` drops `PI_ENSEMBLE_FORBID_LIVE_SPAWN` for this case, which is how a
+   * case asks what the merged step does with an injected judge when it is NOT
+   * running inside the offline harness. Pair it with `forcePolicyJudgeOff`,
+   * which sets `PI_ENSEMBLE_POLICY_JUDGE=0`: the offline suite must never reach
+   * the real judge, because that spawns a live child — the switch makes the
+   * real path deny at its first line instead.
+   */
+  forbidLiveSpawn?: boolean;
+  /** See `forbidLiveSpawn` — forces `PI_ENSEMBLE_POLICY_JUDGE=0` even when a judge is injected. */
+  forcePolicyJudgeOff?: boolean;
+  /**
+   * Set to capture what the environment actually said at the moment the case
+   * ran, which `withCaseEnv` restores on the way out. The host-inertness case
+   * asserts against the harness having dropped the live-spawn ban, and an
+   * assertion that reads the env AFTER the case would read the restored value.
+   */
+  captureEnv?: string[];
+}): Promise<{
+  code: number;
+  state: WorkState | undefined;
+  log: MergeExecLog;
+  baseSha: string;
+  env: Record<string, string | undefined>;
+}> {
   const repo = headlessRepo(opts.grant);
-  const log: MergeExecLog = { calls: [], mergeCmds: [], unexpected: [], doctrineReads: [] };
-  // The judge child is a real `spawnSpecialist`. The offline suite never
-  // spawns, so the switch is forced OFF for every run that did not inject a
-  // judge — and explicitly ON for a run that did, so an injected judge's answer
-  // is what the gate acted on rather than the first line of `askPolicy`.
-  const judgeWas = process.env.PI_ENSEMBLE_POLICY_JUDGE;
-  if (opts.judge === undefined) process.env.PI_ENSEMBLE_POLICY_JUDGE = "0";
-  else delete process.env.PI_ENSEMBLE_POLICY_JUDGE;
-  try {
+  const log: MergeExecLog = {
+    calls: [],
+    mergeCmds: [],
+    prViewAnswers: [],
+    unexpected: [],
+    doctrineReads: [],
+  };
+  let code = -1;
+  let state: WorkState | undefined;
+  let env: Record<string, string | undefined> = {};
+  await withCaseEnv(opts, async () => {
+    for (const k of opts.captureEnv ?? []) env[k] = process.env[k];
     mkdirSync(path.join(repo.repoRoot, ".pi", "work-state"), { recursive: true });
     // Synchronous on purpose. `writeState` queues behind every prior write to
     // the same file NAME, and each case gets its own throwaway repoRoot — so an
@@ -158,17 +231,11 @@ export async function mergedRun(opts: {
       } satisfies DriverSeams,
       write: () => undefined,
     });
-    return {
-      code: result.exitCode,
-      state: await readState(repo.repoRoot, opts.issue),
-      log,
-      baseSha: repo.baseSha,
-    };
-  } finally {
-    if (judgeWas === undefined) delete process.env.PI_ENSEMBLE_POLICY_JUDGE;
-    else process.env.PI_ENSEMBLE_POLICY_JUDGE = judgeWas;
-    repo.dispose();
-  }
+    code = result.exitCode;
+    state = await readState(repo.repoRoot, opts.issue);
+  });
+  repo.dispose();
+  return { code, state, log, baseSha: repo.baseSha, env };
 }
 
 /**
@@ -193,6 +260,25 @@ export function judgeThatAnswers(
       },
     ],
   });
+}
+
+/**
+ * A judge that records that it was asked, and answers `permitted`.
+ *
+ * The host-inertness case needs the call itself observed: "the injected judge
+ * was ignored" is only falsifiable if an injected judge that WAS honoured would
+ * have shown up here.
+ */
+export function judgeThatRecords(
+  calls: Array<{ prompt: string }>,
+  answer: "permitted" | "forbidden" = "permitted",
+  quote?: string,
+): PolicyJudgeFn {
+  const inner = judgeThatAnswers(answer, quote);
+  return async (prompt: string, signal?: AbortSignal) => {
+    calls.push({ prompt });
+    return inner(prompt, signal);
+  };
 }
 
 /**
@@ -226,5 +312,28 @@ export function assertEvidenceProbe(
   assert(
     r.log.calls.some((c) => c.includes("mergeStateStatus,mergeable,state")),
     "the evidence gate ran its 3-field `gh pr view` probe — the refusal is attributable to that gate",
+  );
+}
+
+/**
+ * The hold's `evidenceReason` starts with the exact prefix `gatherMergeEvidence`
+ * writes for this refusal, read from that function and not paraphrased.
+ *
+ * `includes("CLOSED")` passed while the string was carried by the wide `prView`
+ * answer rather than by the gate; a prefix assertion against the reason the gate
+ * actually builds is what ties the hold to the gate. `reasonFromEvidence` in
+ * `work-driver-merge-authority.ts` routes on the same prefixes — a rename that
+ * breaks this assertion breaks that routing too, which is the point.
+ */
+export function assertEvidenceReason(
+  assert: (cond: boolean, msg: string) => void,
+  r: { state: WorkState | undefined },
+  prefix: string,
+  label: string,
+) {
+  const reason = r.state?.pipelineState.mergeHold?.evidenceReason;
+  assert(
+    typeof reason === "string" && reason.startsWith(prefix),
+    `the ${label} hold's evidenceReason starts with the gate's own \`${prefix}\` (got ${JSON.stringify(reason)})`,
   );
 }

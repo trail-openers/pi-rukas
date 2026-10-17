@@ -224,6 +224,13 @@ const isolatedDirs: string[] = [];
 }
 
 // ── 7. A socket the broker never listens on still fails closed.
+// The probe is an `ask`-class tool the mode-independent guards never look at:
+// `registerDestructiveGitGuard` / the issue-creation guard / the merge guard all
+// `return` unless `event.toolName === "bash"` carries a matching command, so
+// with `websearch` there is exactly one guard left that can answer — the broker
+// path. That is what makes the assertion below non-vacuous: a reason naming the
+// broker can only have come from `escalateAsk`, not from one of the
+// mode-independent guards that run ahead of it.
 {
   resetChildEnv("developer");
   process.env.PI_ENSEMBLE_PERM_SOCKET = path.join(tmpdir(), "s5-no-such-listener.sock");
@@ -235,6 +242,17 @@ const isolatedDirs: string[] = [];
       typeof blocked.reason === "string" &&
       blocked.reason.includes("denied"),
     `an unreachable broker still denies (got: ${blocked?.reason})`,
+  );
+  // The reason must name the BROKER, not merely say "denied": the destructive-git
+  // and merge guards also emit reasons containing that word, and a reason from
+  // one of them would mean this case was never testing the broker path at all.
+  assert(
+    typeof blocked?.reason === "string" && /broker/.test(blocked.reason),
+    `the deny names the broker as the thing that failed, so the destructive-git guard is not what blocked it (got: ${blocked?.reason})`,
+  );
+  assert(
+    typeof blocked?.reason === "string" && !/discards uncommitted work|editor or terminal prompt/.test(blocked.reason),
+    "the reason is not the destructive-git guard's wording (the ordering trap in case 3)",
   );
 }
 
