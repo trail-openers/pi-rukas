@@ -20,11 +20,8 @@ import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
-import {
-  lastCapIsRearmFailure,
-  rearmDraftForReview,
-  recordLensResidualsPosted,
-} from "./work-driver-draft-rearm.ts";
+import { recordLensResidualsPosted } from "./work-driver-draft-disclosure.ts";
+import { lastCapIsRearmFailure, rearmDraftForReview } from "./work-driver-draft-rearm.ts";
 import { lensCapKillEvent, lensTimingsOf } from "./work-driver-lens-capkill.ts";
 import { applyLensVerdict } from "./work-driver-lens-verdicts.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";

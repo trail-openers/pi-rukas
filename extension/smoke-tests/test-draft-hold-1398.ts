@@ -25,12 +25,12 @@ import { markDraftPrReady } from "../src/work-driver-draft-pr.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
 import {
   BRANCH,
+  OTHER_PATCH,
+  PATCH,
   issuesFound,
   mkAssert,
   mkCtx,
   mkForge,
-  OTHER_PATCH,
-  PATCH,
   posted,
   started,
   state,
@@ -84,7 +84,10 @@ assert(
     branch: BRANCH,
     findingsPosted: [{ patchId: PATCH, at: 1, round: 1 }],
   });
-  assert(mirror === undefined, "…the `prDraft.findingsPosted` mirror counts on its own (the resume shape)");
+  assert(
+    mirror === undefined,
+    "…the `prDraft.findingsPosted` mirror counts on its own (the resume shape)",
+  );
 }
 
 // The PR's own bytes are the last word — the marker the merge guard reads.
@@ -180,6 +183,100 @@ assert(
   assert(
     out.pipelineState.prDraft?.status === "draft",
     "a PR whose comments cannot be read stays a draft — an unreadable disclosure is not a disclosed one",
+  );
+}
+
+{
+  // item 5 — with NO patch identity to key on, an ISSUES_FOUND HOLDS. The
+  // pre-#1398 rule (fall back to the cap-name shape) is what let
+  // `dispatch-failed` / `verify-failed:*` / a kill cause after a verdict read
+  // as "nothing to hold for". A driver that cannot name the patch it is
+  // marking ready cannot claim that patch's findings were disclosed.
+  const events: WorkEvent[] = [started("lens-review", 2), issuesFound(3)];
+  assert(
+    readyHoldReason(events, { failClosedWithoutPatchId: true, branch: BRANCH }) !== undefined,
+    "no patch identity + ISSUES_FOUND + fail-closed ⇒ HOLD (the shipped bug was the opposite)",
+  );
+  assert(
+    readyHoldReason(events, {
+      failClosedWithoutPatchId: true,
+      branch: BRANCH,
+      findingsPosted: [{ patchId: "whatever", at: 1, round: 1 }],
+    }) !== undefined,
+    "…a disclosure fact for an UNKNOWN patch does not lift it — with no identity there is nothing to match it against",
+  );
+  assert(
+    readyHoldReason([...events, posted(5)], { patchId: PATCH, branch: BRANCH }) === undefined,
+    "…with an identity and its disclosure, the ready is still allowed (the hold is not a blanket refusal)",
+  );
+  {
+    // End to end: the ready path itself fails closed when git cannot compute
+    // the identity (no remote, no mainline, an unreadable merge-base).
+    const { forge, calls } = mkForge({ isDraft: true, comments: ["nothing here"] });
+    const noIdentity = mkCtx(forge) as Record<string, unknown>;
+    noIdentity.verifyExecFn = (async (cmd: string) => {
+      // Answer the remote/config probes, then fail the merge-base: that is the
+      // shape of a clone whose refs the fetch never landed.
+      if (cmd.startsWith("git merge-base")) throw new Error("fatal: not something we can merge");
+      return { stdout: cmd.startsWith("git symbolic-ref") ? "main\n" : "" };
+    }) as never;
+    const out = await markDraftPrReady(
+      noIdentity as never,
+      state([started("lens-review", 2), issuesFound(3)], { status: "draft" }),
+      async () => undefined,
+    );
+    assert(
+      !calls.includes("ready") && out.pipelineState.prDraft?.status === "draft",
+      `an uncomputable patch identity holds the PR as a draft rather than falling back to the cap-name rule (${out.pipelineState.prDraft?.holdReason})`,
+    );
+    assert(
+      /could not be identified/.test(out.pipelineState.prDraft?.holdReason ?? ""),
+      "…and the holdReason says the patch could not be identified, so the handoff does not blame the reviewer",
+    );
+  }
+}
+
+{
+  // item 6a — a comment read that THROWS falls back to the persisted fact for
+  // the same patch, and says in the holdReason that the read failed.
+  const events: WorkEvent[] = [started("lens-review", 2), issuesFound(3)];
+  const ok = mkForge({ isDraft: true, comments: [] });
+  ok.forge.prComments = async () => {
+    throw new Error("gh: HTTP 503 service unavailable");
+  };
+  const out = await markDraftPrReady(
+    mkCtx(ok.forge),
+    state(events, { status: "draft", findingsPosted: [{ patchId: PATCH, at: 1, round: 1 }] }),
+    async () => undefined,
+  );
+  assert(
+    out.pipelineState.prDraft?.status === "ready",
+    `a persisted disclosure fact for the CURRENT patch survives a failed comment read (got ${out.pipelineState.prDraft?.status})`,
+  );
+
+  // …and when no such fact exists, the hold names the failed read.
+  const out2 = await markDraftPrReady(
+    mkCtx(ok.forge),
+    state(events, { status: "draft" }),
+    async () => undefined,
+  );
+  assert(
+    out2.pipelineState.prDraft?.status === "draft" &&
+      /could not be completed/.test(out2.pipelineState.prDraft?.holdReason ?? ""),
+    `a failed read with no fact to fall back on holds, and the reason says the READ failed rather than blaming the reviewer (${out2.pipelineState.prDraft?.holdReason})`,
+  );
+
+  // item 6b — the comment read is SKIPPED when the fact already carries the
+  // current patch: the cheaper already-verified answer, no forge round-trip.
+  const counted = mkForge({ isDraft: true, comments: [] });
+  const out3 = await markDraftPrReady(
+    mkCtx(counted.forge),
+    state(events, { status: "draft", findingsPosted: [{ patchId: PATCH, at: 1, round: 1 }] }),
+    async () => undefined,
+  );
+  assert(
+    !counted.calls.includes("comments") && out3.pipelineState.prDraft?.status === "ready",
+    `…and no comment read is made at all when the fact covers the patch (calls: ${counted.calls.join(",")})`,
   );
 }
 

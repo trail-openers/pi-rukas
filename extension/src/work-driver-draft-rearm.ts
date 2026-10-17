@@ -34,7 +34,10 @@
  *    `pipelineState` can diverge silently and no mark point notices. The
  *    decision reads the live `isDraft` and acts only when it says the PR
  *    really is mergeable; an `undefined` (the view did not say) is not
- *    evidence and re-arms nothing.
+ *    evidence and re-arms nothing. The SAME read runs again AFTER the draft
+ *    command: a successful re-arm is recorded only when the forge confirms the
+ *    PR is a draft, because the command's exit code is not evidence and a
+ *    silently-unconfirmed re-arm is the same hole the module closes.
  *  - **Identity first, same rule as every other write.** The PR must be this
  *    cycle's own OPEN PR (`judgePrIdentity`, the develop gate's check) before
  *    a forge command is issued, and nothing is recorded on an unreadable view.
@@ -57,7 +60,17 @@
  * over findings nobody ever posted. `lens-residuals-posted` is the positive
  * fact, recorded by the ordinary disclosure path and the round-cap route alike,
  * keyed on the PATCH IDENTITY the disclosure carries — so a fact recorded for a
- * pre-fix patch never licenses marking the new patch ready.
+ * pre-fix patch never licenses marking the new patch ready. A decline the driver
+ * cannot act on (no forge, an unverifiable PR identity, or a forge that will not
+ * say whether the PR is a draft) is recorded as a plumb-report so it reaches the
+ * A cycle that cannot name its forge cannot re-arm, cannot read the PR back,
+ * and cannot hand the operator a command to run: a ready PR under a re-running
+ * review with no route to a draft is the exact window #1292 exists to close, so
+ * the forge-undetectable decline HALTS. The three the forge itself causes — an
+ * unreadable view, a view that will not say, an identity that cannot be
+ * verified — are transient-blip shapes: they proceed (the pre-#1398 code made
+ * the same single read and proceeded) and are recorded as plumb-reports so the
+ * decline reaches the handoff rather than vanishing.
  */
 
 import { execp } from "./exec.ts";
@@ -65,20 +78,38 @@ import type { NormalizedPullRequest } from "./forge-types.ts";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { MAX_READY_ATTEMPTS, currentPatchIdentity, withPrDraft } from "./work-driver-draft-pr.ts";
+import { CRITICAL_HOLD, readyHoldReason } from "./work-driver-draft-hold.ts";
+import {
+  MAX_DRAFT_REARM_ATTEMPTS,
+  currentPatchIdentity,
+  withPrDraft,
+} from "./work-driver-draft-pr.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
+import { netRefProblem } from "./work-driver-net-git.ts";
+import { WORK_DRIVER_REVIEW_LOOP_STEPS } from "./work-driver-review-loop-steps.ts";
 import { judgePrIdentity } from "./work-driver-verify-pr17.ts";
 import type { EmitSink } from "./work-state-emit.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 
-/** Why a re-arm decided what it did — traced, and named in a halt. */
+/**
+ * Why a re-arm decided what it did — traced, and named in a halt.
+ *
+ * `{ halted: true }` is distinct from `{ skipped }`: a skip means the re-arm
+ * had nothing to do and the cycle continues; a halt means the PR is mergeable,
+ * the review is about to run, and the driver could not put it back — the
+ * caller must stop (work-driver-lens.ts returns the state, the router reads the
+ * cap and routes to handoff). Collapsing the two into one `skipped` shape is
+ * what let a needed re-arm that failed be treated as a no-op.
+ */
 export type RearmDecision =
   | "re-armed"
   | "no-draft-fact"
   | "review-open"
   | "forge-says-draft"
   | "draft-unknown"
-  | { skipped: "identity" | "unreadable" | "forge"; reason: string };
+  | "critical-hold"
+  | { skipped: "identity" | "unreadable" | "forge"; reason: string }
+  | { halted: true; reason: string };
 
 export type RearmOutcome = { state: WorkState; decision: RearmDecision };
 
@@ -103,29 +134,82 @@ export async function rearmDraftForReview(
   // nothing to re-arm, and `ready-failed` is already a hold.
   if (!draft || draft.status !== "ready") return { state, decision: "no-draft-fact" };
   if (!reviewRerunPending(state)) return { state, decision: "review-open" };
+  // #1398 adversarial (a) — a CRITICAL verdict is never marked ready over
+  // (work-driver-draft-hold.ts), so a `ready` under a CRITICAL tail is a state
+  // the ready path produced outside that hold, and the review that follows is
+  // refused whatever the draft says. Checked WITHOUT a patch identity: with a
+  // patchId the function consults the disclosure facts, which is the question
+  // the ready gate answers, not this one — the CRITICAL branch short-circuits
+  // before them either way. Re-arming would spend a forge round-trip to
+  // manufacture a `draft-rearm-failed` handoff for a cycle that was holding
+  // anyway. The CRITICAL hold wins; the re-arm stands down.
+  if (readyHoldReason(state.eventLog) === CRITICAL_HOLD) {
+    trace(
+      "work-driver: the draft re-arm stands down — a CRITICAL finding holds the ready regardless",
+    );
+    return { state, decision: "critical-hold" };
+  }
   const prNumber = state.pipelineState.prNumber;
   if (prNumber === undefined) return { state, decision: "no-draft-fact" };
   const forge = await resolveForge(ctx);
   if (!forge) {
-    return {
-      state,
-      decision: {
-        skipped: "forge",
-        reason: "the forge for this repo could not be determined",
-      },
-    };
+    // #1398 item 3 — a cycle that cannot name its forge cannot re-arm, cannot
+    // read the PR back, and cannot hand the operator a command to run: a ready
+    // PR under a re-running review with no route to a draft is the exact window
+    // #1292 exists to close, so this one HALTS. The record goes to the handoff
+    // as well, because `explainCap` renders the cap's evidence but a plumb row
+    // is what `/work-status` and the queue's own report show.
+    const why =
+      "the forge for this repo could not be determined, so the PR could not be made a draft again";
+    // The cap-hit is the LAST event the router reads (`nextStep` routes on
+    // `lastEvent.nextStep`), so the disclosure row is written FIRST and the halt
+    // appends after it — tail-invariance (#533) outranks the prettier ordering.
+    return halt(ctx, decline(state, now, { reason: why }), now, { reason: why });
   }
   const own = await readOwnPr(forge, state.pipelineState.branchName, prNumber);
   if (!own.ok) {
+    // #1398 adversarial (c) — the two declines are NOT the same shape. A forge
+    // that cannot be determined at all (`skipped: "forge"`, below) leaves a
+    // mergeable PR under a running review with no route to a draft, so it
+    // halts. An unreadable PR view is the SAME read that already gates the
+    // cached-fact path, and a transient `gh` blip must not park a cycle whose
+    // review would otherwise run: it proceeds, with a plumb-report so the
+    // decline reaches the handoff rather than vanishing (the #408 lesson — a
+    // signal the driver produces and nobody reads).
+    if (own.kind === "unreadable") {
+      return {
+        state: decline(state, now, {
+          reason: `the re-arm could not read PR #${prNumber} to check whether it was mergeable, so it was left as it stands`,
+        }),
+        decision: { skipped: "unreadable", reason: own.reason },
+      };
+    }
     return { state, decision: { skipped: own.kind, reason: own.reason } };
   }
   if (own.pr.isDraft !== false) {
-    return { state, decision: own.pr.isDraft === undefined ? "draft-unknown" : "forge-says-draft" };
+    // A forge that will not say is the same transient-blip shape as an
+    // unreadable view: proceed and disclose, do not park.
+    if (own.pr.isDraft === undefined) {
+      return {
+        state: decline(state, now, {
+          reason: `the forge would not say whether PR #${prNumber} is a draft, so the re-arm could not tell whether it had to run`,
+        }),
+        decision: "draft-unknown",
+      };
+    }
+    return { state, decision: "forge-says-draft" };
   }
-  const used = draft.attempts ?? 0;
-  if (used >= MAX_READY_ATTEMPTS) {
+  // #1398 round 2 — the draft direction has its OWN counter. `attempts` counts
+  // `pr ready` calls and is the budget the MERGE spends (work-driver-draft-pr.ts
+  // bounds ready at MAX_READY_ATTEMPTS per mark point / per cycle); a re-arm that
+  // charged itself to it drained the merge's retries, so a cycle that had
+  // re-armed once could not afford to mark its PR ready when its review finally
+  // concluded. The bound is still real — the draft direction is bounded at
+  // MAX_DRAFT_REARM_ATTEMPTS per cycle.
+  const drafted = draft.draftAttempts ?? 0;
+  if (drafted >= MAX_DRAFT_REARM_ATTEMPTS) {
     return halt(ctx, state, now, {
-      reason: `this cycle has already made its ${MAX_READY_ATTEMPTS} \`pr ready\` attempts and re-arming the draft would need another, so the driver left PR #${prNumber} as it stands rather than spend the merge's retries`,
+      reason: `this cycle has already made its ${MAX_DRAFT_REARM_ATTEMPTS} draft re-arm attempts, so the driver left PR #${prNumber} as it stands rather than keep issuing forge commands that have not taken`,
     });
   }
   try {
@@ -137,18 +221,87 @@ export async function rearmDraftForReview(
       reason: `converting PR #${prNumber} back to a draft failed (${forgeFailureReason(raw)})`,
     });
   }
+  // #1398 round 2 — the command is not evidence. `prDraft` resolves whenever the
+  // forge CLI exits 0, and an exit-0-without-effect is exactly the failure this
+  // module exists for (the forge's own adapter comment says so). So the PR is
+  // read back and the state records `draft` ONLY when the forge confirms it;
+  // anything else halts, because a cycle that believes its PR is a draft while
+  // the forge says otherwise is a cycle whose review runs on a mergeable PR.
+  const confirmed = await readOwnPr(forge, state.pipelineState.branchName, prNumber);
+  if (!confirmed.ok) {
+    return halt(ctx, state, now, {
+      reason: `the draft command on PR #${prNumber} ran, but the PR could not be read back to confirm it (${confirmed.reason})`,
+    });
+  }
+  if (confirmed.pr.isDraft !== true) {
+    const said =
+      confirmed.pr.isDraft === false ? "it reports the PR is still ready" : "it did not say";
+    return halt(ctx, state, now, {
+      reason: `the forge did not confirm the draft conversion on PR #${prNumber} — the \`pr draft\` command succeeded and the read-back ${said}`,
+    });
+  }
   trace(
-    `work-driver: PR #${prNumber} re-armed as a draft — the review runs again after the PR was marked ready`,
+    `work-driver: PR #${prNumber} re-armed as a draft (verified by the forge) — the review runs again after the PR was marked ready`,
   );
+  const rearmed = withPrDraft(state, {
+    ...draft,
+    status: "draft",
+    draftAttempts: drafted + 1,
+    holdReason:
+      "the review was re-run after the PR was marked ready, so the driver made it a draft again",
+  });
+  // #1398 adversarial (c) — persisted HERE, not only at the next step boundary.
+  // The caller's very next act is the six-way lens dispatch, which runs for
+  // minutes and can be killed (cap, inactivity, provider). A crash before the
+  // boundary write lost the only record that the PR was put back. Same rule as
+  // `recordLensResidualsPosted`: a fact a step writes is durable before that
+  // step awaits anything long. A write fault is traced and swallowed — the
+  // in-memory state is correct and the boundary write retries — because a disk
+  // fault is not a reason to leave the PR mergeable or skip the review.
+  try {
+    await persistCycle(
+      {
+        repoRoot: ctx.repoRoot,
+        emitSink: ctx.emitSink ?? silentSink,
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+      },
+      rearmed,
+    );
+  } catch (err) {
+    trace(
+      `work-driver: the re-arm could not be persisted — ${rawErrorText(err)} (the cycle's state carries it; the next step boundary writes it)`,
+    );
+  }
+  return { state: rearmed, decision: "re-armed" };
+}
+
+/**
+ * Record a decline the driver could not act on, so it reaches the handoff.
+ *
+ * `plumbReports` is the field the handoff renderers read (an event alone is not
+ * rendered), and the event is appended too so `/work-status` shows it.
+ */
+function decline(state: WorkState, now: number, opts: { reason: string }): WorkState {
+  const pr = state.pipelineState.prNumber ?? "<N>";
+  const body =
+    `Draft re-arm declined: ${opts.reason}. The PR may be mergeable while the review runs — ` +
+    `check it (\`gh pr view ${pr} --json isDraft\`) and make it a draft by hand if it is not.`;
+  const withEvent = appendEvent(state, {
+    kind: "plumb-report",
+    at: now,
+    step: "lens-review",
+    role: "driver",
+    body,
+  });
   return {
-    state: withPrDraft(state, {
-      ...draft,
-      status: "draft",
-      attempts: used + 1,
-      holdReason:
-        "the review was re-run after the PR was marked ready, so the driver made it a draft again",
-    }),
-    decision: "re-armed",
+    ...withEvent,
+    pipelineState: {
+      ...withEvent.pipelineState,
+      plumbReports: [
+        ...(withEvent.pipelineState.plumbReports ?? []),
+        { step: "lens-review", role: "driver", body, at: now },
+      ],
+    },
   };
 }
 
@@ -175,14 +328,13 @@ export function reviewRerunPending(state: WorkState): boolean {
   return false;
 }
 
-/** The steps a re-review passes through between two `lens-review` entries. */
-const REVIEW_LOOP_STEPS = [
-  "develop",
-  "adversarial",
-  "commit-pr",
-  "lens-fix",
-  "lens-review",
-] as const;
+/**
+ * The steps a re-review passes through between two `lens-review` entries.
+ * Re-exported from work-driver-review-loop-steps.ts (shared with
+ * `reviewConcluded`, which asks the mirror question of the same log) so a
+ * reader of this module finds the list where the re-arm reads it.
+ */
+export const REVIEW_LOOP_STEPS = WORK_DRIVER_REVIEW_LOOP_STEPS;
 
 /**
  * The cap a failed re-arm records. Exported so the router, the explainer and
@@ -230,7 +382,7 @@ function halt(
       evidence: opts.reason,
       nextStep: "handoff",
     }),
-    decision: { skipped: "unreadable", reason: opts.reason },
+    decision: { halted: true, reason: opts.reason },
   };
 }
 
@@ -277,7 +429,7 @@ async function readOwnPr(
 }
 
 /** The raw text of a failure — for the trace only, never the public handoff. */
-function rawErrorText(err: unknown): string {
+export function rawErrorText(err: unknown): string {
   const stderr =
     err instanceof Error && "stderr" in err && typeof err.stderr === "string" ? err.stderr : "";
   const message = err instanceof Error ? err.message : String(err);
@@ -306,104 +458,6 @@ const FORGE_FAILURE_REASONS: ReadonlyArray<readonly [RegExp, string]> = [
  */
 export function forgeFailureReason(raw: string): string {
   return FORGE_FAILURE_REASONS.find(([re]) => re.test(raw))?.[1] ?? "the forge command failed";
-}
-
-/**
- * The findings-posted fact: the residual findings of THIS patch were disclosed
- * ON the PR. An issue-only fallback post does not count — the merge guard reads
- * PR comments only (merge-guard-round-cap.ts), so a disclosure that landed on
- * the issue has not disclosed anything for ready purposes.
- *
- * The EVENT log is the record (it is what survives a resume and what
- * `/work-status` renders); `prDraft.findingsPosted` is its mirror on the state.
- * Both are checked: a cycle whose disclosure event was recorded before a crash
- * and whose `prDraft` was rewritten afterwards still holds.
- */
-export function findingsPostedForCurrentPatch(state: WorkState, patchId: string): boolean {
-  const branch = state.pipelineState.branchName;
-  const posted = (state.pipelineState.prDraft?.findingsPosted ?? []).some(
-    (fact) => fact.patchId === patchId,
-  );
-  if (posted) return true;
-  return state.eventLog.some(
-    (e) =>
-      e.kind === "lens-residuals-posted" &&
-      e.target === "pr" &&
-      e.patchId === patchId &&
-      (branch === undefined || e.branch === branch),
-  );
-}
-
-/**
- * Record that a round's residual findings reached the PR.
- *
- * The ordinary disclosure goes through lens-review-residuals.ts, which posts
- * with the merge-guard marker and returns a note naming a failure (empty on
- * success); the round-cap route posts the findings itself. Both call this, so
- * the gate and the disclosure cannot disagree about what happened — that pair
- * used to be two independent inferences, which is how a failed post came to
- * look like nothing at all.
- *
- * The patch identity is computed here, against the refs the disclosure
- * compares, and the fact is written to `pipelineState` AND persisted before this
- * returns: the caller's next act is an awaited dispatch, and a re-arm or a ready
- * decided after a crash must see the fact the pre-crash run recorded. An
- * identity that cannot be computed records nothing — an unanchored fact would
- * license a ready for a patch nobody verified.
- */
-export async function recordLensResidualsPosted(
-  ctx: DriverContext,
-  state: WorkState,
-  opts: { round: number; prNumber?: number; note?: string },
-): Promise<WorkState> {
-  // A note means the disclosure FAILED (that is the convention of
-  // postLensResidualDisclosure's return) — the failure event belongs to
-  // recordResidualsPost, which also runs the issue fallback.
-  if (opts.note) return state;
-  const branch = state.pipelineState.branchName;
-  if (!branch) return state;
-  const execFn = ctx.verifyExecFn ?? execp;
-  const identity = await currentPatchIdentity(execFn, ctx.repoRoot, branch);
-  if (!identity.ok) {
-    trace(`work-driver: the residual-disclosure fact was not recorded — ${identity.reason}`);
-    return state;
-  }
-  const at = Date.now();
-  const fact = {
-    patchId: identity.patchId,
-    at,
-    round: opts.round,
-    ...(opts.prNumber !== undefined ? { prNumber: opts.prNumber } : {}),
-  };
-  const next = appendEvent(
-    withPrDraft(state, {
-      ...(state.pipelineState.prDraft ?? { status: "draft" as const }),
-      findingsPosted: [...(state.pipelineState.prDraft?.findingsPosted ?? []), fact],
-    }),
-    {
-      kind: "lens-residuals-posted",
-      at,
-      round: opts.round,
-      ...(opts.prNumber !== undefined ? { prNumber: opts.prNumber } : {}),
-      branch,
-      patchId: identity.patchId,
-      target: "pr",
-    },
-  );
-  // Persisted through `persistCycle` (never `writeState`, which the #1162 seam
-  // reserves for workflow-state.ts so the emit watermark never sees a persist
-  // outside the sink). This helper takes a DriverContext — a step handler may
-  // have no sink of its own — so the sink is supplied only when the cycle has
-  // one; the write is durable either way, which is the property it exists for.
-  await persistCycle(
-    {
-      repoRoot: ctx.repoRoot,
-      emitSink: ctx.emitSink ?? silentSink,
-      ...(ctx.signal ? { signal: ctx.signal } : {}),
-    },
-    next,
-  );
-  return next;
 }
 
 /** A sink that emits nothing — for a persist whose caller has no emit stream. */

@@ -25,18 +25,22 @@ import {
   forgeFailureReason,
   lastCapIsRearmFailure,
   rearmDraftForReview,
+  recordLensResidualsPosted,
   reviewRerunPending,
 } from "../src/work-driver-draft-rearm.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 import {
+  BRANCH,
   type ForgeOpts,
+  PR,
   approved,
   ciFailure,
   ciLoop,
   issuesFound,
   mkAssert,
   mkCtx,
+  mkCtxWithoutForge,
   mkForge,
   started,
   state,
@@ -145,7 +149,12 @@ assert(
     },
     {
       what: "a verdict that concluded with NO review step in progress pays nothing (the ci/merged mark points)",
-      events: [started("commit-pr", 1), started("lens-review", 2), issuesFound(3), started("ci", 4)],
+      events: [
+        started("commit-pr", 1),
+        started("lens-review", 2),
+        issuesFound(3),
+        started("ci", 4),
+      ],
       prDraft: { status: "ready", attempts: 1 },
       forge: { isDraft: false },
       want: "review-open",
@@ -214,7 +223,10 @@ assert(
 }
 
 {
-  // An unreadable PR: nothing is recorded and nothing is issued.
+  // An unreadable PR before any command: the cycle PROCEEDS (item 3, and the
+  // adversarial's judgement that a transient `gh` blip must not park a review
+  // that would otherwise run). Nothing is issued and the cached fact is not
+  // rewritten — only the disclosure row is added.
   const forge = {
     forge: "github",
     prView: async () => {
@@ -229,8 +241,12 @@ assert(
     `an unreadable PR skips (${JSON.stringify(out.decision)})`,
   );
   assert(
-    out.state === before,
-    "…and the state is returned UNCHANGED — nothing is recorded on a read that failed",
+    out.state.pipelineState.prDraft === before.pipelineState.prDraft,
+    "…and the cached draft fact is not rewritten on a read that failed",
+  );
+  assert(
+    !lastCapIsRearmFailure(out.state),
+    "…and a blip on the pre-command read does not park the cycle",
   );
 }
 
@@ -284,39 +300,62 @@ for (const [raw, want] of [
 }
 
 {
-  // The spent-attempt bound: re-arming would need an attempt the cycle lacks.
+  // #1398 round 2 (item 4) — the draft direction has its OWN counter, so
+  // spending the ready budget never blocks a re-arm, and a re-arm never drains
+  // the budget the merge needs.
   const { forge, calls } = mkForge({ isDraft: false });
   const out = await rearmDraftForReview(
     mkCtx(forge),
-    state(ciLoop, { status: "ready", attempts: 3 }),
+    // `attempts: 6` = the whole per-cycle ready budget spent (markDraftPrReady
+    // would refuse a ready). The re-arm still runs and the ready count is
+    // untouched, so the merge's arithmetic is exactly as it was.
+    state(ciLoop, { status: "ready", attempts: 6 }),
     Date.now(),
   );
   assert(
-    lastCapIsRearmFailure(out.state),
-    "a cycle that has spent its pr ready attempts parks rather than spend the merge's retries",
+    !lastCapIsRearmFailure(out.state) && out.state.pipelineState.prDraft?.status === "draft",
+    "a re-arm is NOT bounded by the ready budget — a cycle that spent its pr ready attempts still re-arms",
   );
-  assert(!calls.includes("draft"), "…and no draft command is issued past the bound");
+  assert(
+    out.state.pipelineState.prDraft?.attempts === 6,
+    "…and the re-arm leaves the ready counter alone (the merge's retries are not drained)",
+  );
+  assert(calls.includes("draft"), "…and the draft command is issued");
+
+  // The draft bound itself: past MAX_DRAFT_REARM_ATTEMPTS the cycle parks
+  // rather than keep issuing commands that have not taken.
+  const spent = mkForge({ isDraft: false });
+  const outSpent = await rearmDraftForReview(
+    mkCtx(spent.forge),
+    state(ciLoop, { status: "ready", attempts: 1, draftAttempts: 3 }),
+    Date.now(),
+  );
+  assert(
+    lastCapIsRearmFailure(outSpent.state),
+    "a cycle that has spent its draft re-arm attempts parks on a named cap",
+  );
+  assert(!spent.calls.includes("draft"), "…and no draft command is issued past the bound");
+  assert(
+    /3 draft re-arm attempts/.test(outSpent.state.eventLog.at(-1)?.evidence ?? ""),
+    "…and the reason names the DRAFT bound, not the ready attempts (the reason a capped cycle is handed off with)",
+  );
 }
 
 {
-  // A successful re-arm counts the attempt it made.
+  // A successful re-arm counts the attempt it made — on the draft counter.
   const { forge } = mkForge({ isDraft: false });
   const out = await rearmDraftForReview(
     mkCtx(forge),
-    state(ciLoop, { status: "ready", attempts: 1 }),
+    state(ciLoop, { status: "ready", attempts: 1, draftAttempts: 1 }),
     Date.now(),
   );
   assert(
     out.state.pipelineState.prDraft?.status === "draft" &&
-      out.state.pipelineState.prDraft?.attempts === 2,
-    `a successful re-arm records draft + the attempt it spent (got ${JSON.stringify(out.state.pipelineState.prDraft)})`,
+      out.state.pipelineState.prDraft?.draftAttempts === 2 &&
+      out.state.pipelineState.prDraft?.attempts === 1,
+    `a successful re-arm records draft + the DRAFT attempt it spent, ready unchanged (got ${JSON.stringify(out.state.pipelineState.prDraft)})`,
   );
 }
-
-assert(
-  (FIXED_CAPS as readonly string[]).includes(DRAFT_REARM_CAP),
-  `the published fixed-cap vocabulary includes ${DRAFT_REARM_CAP} (a headless operator sees what the driver can emit)`,
-);
 
 const code = status();
 console.log(`\nexit ${code}`);

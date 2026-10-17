@@ -183,6 +183,13 @@ export function humanActionFor(reason: string, primary: number): string {
   if (/lens-diff-unreadable/.test(reason)) {
     return `check that #${primary}'s branch is pushed and \`git fetch origin --prune\` is current — the review could not read the diff`;
   }
+  // #1398 — the PR is mergeable while its review re-runs and the driver could
+  // not put it back. `--restart` would rebuild the cycle and leave the PR
+  // mergeable all the same; the one thing missing is the draft the forge
+  // would not set, so the action names the command that sets it.
+  if (/draft-rearm-failed/.test(reason)) {
+    return `make #${primary}'s PR a draft by hand — \`gh pr ready <N> --undo\` (GitHub) or \`glab mr update <N> --draft\` (GitLab), N from the handoff — then re-run \`/work ${primary} --restart\` (do NOT skip the draft: the review re-runs on a mergeable PR)`;
+  }
   if (/existing-pr-detected/.test(reason))
     return `decide whether to resume, retarget or close the open PR for #${primary}`;
   if (/explore-needs-clarification|step-back-revise-spec/.test(reason)) {

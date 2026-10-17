@@ -44,7 +44,7 @@ import {
   MAX_REVIEW_ROUNDS,
   REVIEW_WALL_CLOCK_MS,
 } from "./work-driver-context.ts";
-import { recordLensResidualsPosted } from "./work-driver-draft-rearm.ts";
+import { recordLensResidualsPosted } from "./work-driver-draft-disclosure.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";

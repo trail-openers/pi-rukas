@@ -12,6 +12,7 @@
  */
 
 import { WORK_STEPS, type WorkEvent, type WorkStep } from "./workflow-state-events.ts";
+import { prDraftFindings } from "./workflow-state-schema-pr-draft.ts";
 import { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
 import {
   CAP_EVIDENCE_KINDS,
@@ -201,6 +202,13 @@ export function validateDiscriminants(state: unknown): string[] {
     // an exempt prefix a restore claim spares. Checked in its own module; the
     // same #533 rule as `commitPrRoot` above (the untyped cast is the gate).
     out.push(...dirtyRootExemptBaselineFindings(ps.dirtyRootExemptBaseline));
+    // #1398 — the PR draft record, the same #533 rule as `commitPrRoot` above:
+    // `markDraftPrReady` reads `status` to decide whether the PR may merge and
+    // `findingsPosted` to decide whether a disclosure licenses that ready, so a
+    // partial or hand-edited record is a confident wrong answer about whether a
+    // PR is mergeable. Predicate + rationale in workflow-state-schema-pr-draft.ts;
+    // absent validates (a cycle that never opened its PR as a draft).
+    out.push(...prDraftFindings(ps.prDraft));
     if (ps.incompleteConsolidation !== undefined) {
       const ic = ps.incompleteConsolidation;
       if (Array.isArray(ic)) {
