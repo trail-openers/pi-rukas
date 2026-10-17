@@ -3,9 +3,20 @@
  * #807 — extractSpecificAssertion must return the REAL failing
  * assertion, never a marker, never an echoed command, and must report
  * absence honestly when no assertion-shaped line exists.
+ *
+ * #1392 D1 — a project gate's own failure line (`FAIL  <name>`, `not ok`,
+ * `--- FAIL:`, `✕`) is an assertion-shaped line too: cases 18-23 pin that it
+ * is extracted instead of falling to the sentinel, that the #807 exclusions
+ * still hold on it, and that it never outranks a `✗` or an error line.
  */
 
-import { extractSpecificAssertion, NO_SPECIFIC_ASSERTION } from "../src/work-driver-consolidation-classify.ts";
+import {
+  NO_SPECIFIC_ASSERTION,
+  classifyConsolidatedVerifyFailure,
+  consolidatedFailureMessage,
+  extractSpecificAssertion,
+} from "../src/work-driver-consolidation-classify.ts";
+import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -250,6 +261,104 @@ error TS2345: Argument of type 'string' is not assignable to parameter of type '
     a === "✗ use single quotes (style/useTemplate)",
     `case 17 (#827 biome unchanged): chain-stage biome failure still returns the ✗ assertion (got: ${JSON.stringify(a)})`,
   );
+}
+
+// --- Case 18 (#1392 D1, the cycle-60 shape): the project gate's own FAIL line.
+// tehas's `scripts/verify.sh` prints `ok  <step>` / `FAIL  <step>` and carries
+// neither a `✗` nor an `error:` line, so before D1 extraction fell to the
+// sentinel and cycle 60's park read "specific assertion: (no specific
+// assertion could be extracted)" while its own log said which step failed.
+{
+  const tail = `ok    no product or host names in platform files
+FAIL  shellcheck and the shell tests
+ok    the console's tests`;
+  const a = extractSpecificAssertion(tail);
+  assert(a === "FAIL  shellcheck and the shell tests", `case 18 (#1392 D1 cycle-60): the gate's FAIL line is extracted, not the sentinel (got: ${JSON.stringify(a)})`);
+  assert(a !== NO_SPECIFIC_ASSERTION, "case 18 (#1392 D1 cycle-60): NOT honest-absence — the log named the failing step");
+  assert(!a.startsWith("ok"), "case 18 (#1392 D1 cycle-60): never a passing `ok` line");
+}
+
+// --- Case 19 (#1392 D1): the other three anchor shapes the issue names.
+{
+  const tap = extractSpecificAssertion("1..3\nok 1 - boot\nnot ok 2 - the console's tests\n  ---\n  at: lib/console.ts:12");
+  assert(tap === "not ok 2 - the console's tests", `case 19a (TAP): 'not ok <n> - <name>' is extracted (got: ${JSON.stringify(tap)})`);
+
+  const go = extractSpecificAssertion("=== RUN   TestRestore\n--- FAIL: TestRestore (0.42s)\n    restore_test.go:31: got nil");
+  assert(go === "--- FAIL: TestRestore (0.42s)", `case 19b (go test): '--- FAIL: <name>' is extracted (got: ${JSON.stringify(go)})`);
+
+  const jest = extractSpecificAssertion("Tests       1 failed, 39 passed\n✕ restores the deleted row");
+  assert(jest === "✕ restores the deleted row", `case 19c (jest ✕): the cross glyph is extracted (got: ${JSON.stringify(jest)})`);
+
+  const single = extractSpecificAssertion("running gate\nFAIL the console's tests");
+  assert(single === "FAIL the console's tests", `case 19d (single space): 'FAIL <name>' is extracted (got: ${JSON.stringify(single)})`);
+}
+
+// --- Case 20 (#1392 D1, the #807 exclusions still hold on the new tier):
+// the `FAILED:` marker must not become an anchor, an echoed command must not,
+// and a secret-shaped FAIL line must be skipped in favour of the next
+// qualifying line — the extracted assertion reaches a GitHub comment.
+{
+  const a = extractSpecificAssertion("FAILED: smoke-tests/test-mystery.ts");
+  assert(a === NO_SPECIFIC_ASSERTION, `case 20a (marker still excluded): a bare FAILED: marker reports absence (got: ${JSON.stringify(a)})`);
+
+  const b = extractSpecificAssertion("$ bash scripts/verify.sh");
+  assert(b === NO_SPECIFIC_ASSERTION, `case 20b (echo still excluded): an echoed command reports absence (got: ${JSON.stringify(b)})`);
+
+  const tail = `ok    lint
+FAIL  auth check: api_key = a9f2k3j8f2j9f2j9f2j9f2
+FAIL  the console's tests`;
+  const c = extractSpecificAssertion(tail);
+  assert(c === "FAIL  the console's tests", `case 20c (secret FAIL skipped): the secret-shaped FAIL line is skipped (got: ${JSON.stringify(c)})`);
+  assert(!/api_key/i.test(c), "case 20c (secret FAIL skipped): the returned line carries no api_key token");
+}
+
+// --- Case 21 (#1392 D1, tier order): an error-shaped line OUTRANKS a gate
+// FAIL line, because the FAIL names which step failed while the error says
+// why. A re-ordering of the tiers — putting the gate anchor first — is what
+// this case exists to catch.
+{
+  const tail = `ok    no product or host names in platform files
+FAIL  typecheck the extension
+error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.`;
+  const a = extractSpecificAssertion(tail);
+  assert(a === "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.", `case 21 (#1392 D1 tier order): the error line wins over the gate's FAIL line (got: ${JSON.stringify(a)})`);
+
+  const b = extractSpecificAssertion("FAIL  build step\n✗ expected 5 got 6");
+  assert(b === "✗ expected 5 got 6", `case 21b (#1392 D1 tier order): the ✗ assertion still wins (got: ${JSON.stringify(b)})`);
+}
+
+// --- Case 22 (#1392 D1, over-broad FAIL avoided): a tool's summary prose must
+// not be mistaken for an assertion. `/^FAIL/` would match every one of these;
+// the `\\s` after FAIL is what keeps them out, and absence stays honest.
+{
+  const cases: Array<[string, string]> = [
+    ["FAILURE: 3 of 40 checks failed", "summary prose `FAILURE: …`"],
+    ["Failed to start worker: EAGAIN", "host error prose `Failed to …`"],
+    ["failed checks: 3", "lowercase tally prose"],
+  ];
+  for (const [tail, label] of cases) {
+    const a = extractSpecificAssertion(tail);
+    assert(a === NO_SPECIFIC_ASSERTION, `case 22 (#1392 D1 over-broad FAIL): ${label} reports absence, never becomes the assertion (got: ${JSON.stringify(a)})`);
+  }
+}
+
+// --- Case 23 (#1392 D1, full consumer path): the cycle-60 tail through
+// extractAttributedTail → extractSpecificAssertion → classifyConsolidatedVerify
+// Failure, N=1 — the exact shape of the reported park (single workstream
+// `default`, an unattributed consolidated failure). The rendered message must
+// name the failing step, not the sentinel.
+{
+  const raw = `ok    no product or host names in platform files
+FAIL  shellcheck and the shell tests
+ok    the console's tests`;
+  const { tail } = extractAttributedTail(raw, 800);
+  const assertion = extractSpecificAssertion(tail);
+  const verdict = classifyConsolidatedVerifyFailure(1, ["default"], tail, {});
+  const message = consolidatedFailureMessage(verdict, "bash scripts/verify.sh");
+  assert(assertion === "FAIL  shellcheck and the shell tests", `case 23 (#1392 D1 consumer path): tail → extractor names the step (got: ${JSON.stringify(assertion)})`);
+  assert(verdict.classification === "needs-human-decision", `case 23 (#1392 D1 consumer path): still an unattributed N=1 park (got: ${verdict.classification})`);
+  assert(message.includes("FAIL  shellcheck and the shell tests"), `case 23 (#1392 D1 consumer path): the handoff message names the failing step (got: ${JSON.stringify(message)})`);
+  assert(!message.includes(NO_SPECIFIC_ASSERTION), "case 23 (#1392 D1 consumer path): the handoff message carries no sentinel");
 }
 
 console.log(`\nexit ${exit}`);

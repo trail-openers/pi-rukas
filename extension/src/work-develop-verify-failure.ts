@@ -69,6 +69,10 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
         at: Date.now(),
         origin: "outcome-gate",
         ...(gate.fenceViolations ? { fenceViolations: gate.fenceViolations } : {}),
+        // #1392 D5 — the bounded RAW tail of the failed consolidated run, so
+        // the handoff bodies can print the output itself. The path alone
+        // (#841) was a scratch-dir file the comment reader could not open.
+        ...(gate.outputTail ? { outputTail: gate.outputTail } : {}),
         ...(gate.flakeRecovered ? { retries: 1, recovered: true } : {}),
       },
     },
