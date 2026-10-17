@@ -17,11 +17,14 @@
  * the step handler.
  */
 
+import fs from "node:fs/promises";
 import { trace } from "./trace.ts";
 import { foldPortPlan, mergeWithContract } from "./work-driver-plan-contract.ts";
 import { mergeCoupledWorkstreams } from "./work-driver-plan-coupling.ts";
+import { unfenceIssueNamedPaths } from "./work-driver-plan-unfence.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
+import type { WorkState } from "./workflow-state.ts";
 
 /** The argv-form grep seam (planner-controlled paths, no shell) — the same
  * shape `mergeCoupledWorkstreams` takes; declared here because the coupling
@@ -62,4 +65,57 @@ export async function runPlanCouplingPass(
     return coupling.workstreams;
   }
   return ws;
+}
+
+/**
+ * #1167 — the plan-time unfence pass, in the same position in the step as the
+ * coupling pass above and for the same reason: both rewrite `outOfScope`, and
+ * the order between them is load-bearing. This one runs SECOND because the
+ * fold and the merge union fence lists (`foldTwo` drops the merged half's
+ * paths from the fence, and the ceiling fold unions them) — an unfence that
+ * ran before them can have its work reintroduced.
+ *
+ * It reads the issue body the explore step cached. A missing or unreadable
+ * artifact is an EMPTY body: no decision sections, so nothing is extracted and
+ * nothing is unfenced. A lost cache file must never widen a scope.
+ *
+ * `defaultToSingle` is the N=1 shape (the sole workstream owns the whole
+ * issue, so a path the issue names belongs to it even with no shared
+ * directory). With N>1 placement needs a real shared prefix — a path sharing
+ * no directory with any workstream is left fenced rather than handed to an
+ * arbitrary developer, which is how a removed fence becomes a scope fanout.
+ */
+export async function runPlanUnfencePass(
+  workstreams: Record<string, Workstream>,
+  state: WorkState,
+  opts: { repoRoot: string; execFn?: GrepExecFn },
+): Promise<Record<string, Workstream>> {
+  const body = await readIssueBody(state);
+  const result = await unfenceIssueNamedPaths(workstreams, body, {
+    execFn: opts.execFn ?? execp,
+    repoRoot: opts.repoRoot,
+    ref: state.pipelineState.baseSha ?? "HEAD",
+    defaultToSingle: Object.keys(workstreams).length === 1,
+  });
+  for (const note of [...result.notes, ...result.warnings]) trace(`work-driver: ${note}`);
+  return result.workstreams;
+}
+
+/**
+ * #1167 — the issue body the unfence pass reads, from the artifact explore
+ * cached. An unreadable or missing artifact is an EMPTY body: no sections,
+ * so nothing is extracted and nothing is unfenced. A memory problem or a
+ * lost cache file must never widen a scope.
+ */
+async function readIssueBody(state: WorkState): Promise<string> {
+  const artifact = state.pipelineState.issueBodyArtifact;
+  if (!artifact) return "";
+  try {
+    return await fs.readFile(artifact, "utf8");
+  } catch (err) {
+    trace(
+      `work-driver: plan unfence could not read issue body artifact: ${(err as Error).message?.slice(0, 120)}`,
+    );
+    return "";
+  }
 }

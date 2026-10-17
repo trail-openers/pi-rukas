@@ -55,4 +55,16 @@ export type PlanQualityReason =
   // develop (the #818 incident: four developers built a fabricated
   // supply-chain package for 45 minutes). Surfaced through
   // `pipelineState.planQuality.reason` like every other reason.
-  | "plan-spec-mismatch";
+  | "plan-spec-mismatch"
+  // #1167 — a workstream's `outOfScope` fence contradicts its OWN `paths`
+  // (the same file declared as both "yours" and "don't touch"), or an
+  // `out-of-scope:` entry names a path the SAME workstream also declares.
+  // Surfaced at develop as `declared fence violated` — the #776 / #1020
+  // shape, where the (correct) change had to be finished by hand. This
+  // reason covers contradictions the #1167 plan-time unfence did NOT remove:
+  // a fence the issue never named. An issue-named contradiction is repaired
+  // silently by `unfenceIssueNamedPaths` before this gate runs, so the
+  // re-dispatch is reserved for fences the issue does not speak to.
+  // Precedence: fires where `overlapping-paths` cannot — an out-of-scope
+  // entry is not a `paths` entry, so no two workstreams' lists can collide.
+  | "contradictory-fence";
