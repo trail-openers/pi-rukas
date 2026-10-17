@@ -343,7 +343,9 @@ function clashingDispatch() {
 }
 
 setPlanDispatch(null);
-process.env.PI_ENSEMBLE_FORGE = undefined;
+// `delete`, never `= undefined`: on Bun 1.4 the assignment stores the literal
+// string "undefined" (test-env-clear-gate.ts, #997).
+delete process.env.PI_ENSEMBLE_FORGE;
 
 // ---------------------------------------------------------------- draftSpec
 // The bound holds through the real renderer, across BOTH drop-producing stages
