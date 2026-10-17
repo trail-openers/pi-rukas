@@ -67,14 +67,24 @@ import * as git from "../src/work-driver-git.ts";
 let failures = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`  ✓ ${msg}`);
+  // Failures go to STDERR. The verify-loop's digest mode (`lib/ci-log-digest.sh`
+  // / `verify-loop.sh --digest`) reads stderr for the failure lines, so a gate
+  // that prints its `✗` lines to stdout reports a green suite with a red body.
   else {
-    console.log(`  ✗ ${msg}`);
+    console.error(`  ✗ ${msg}`);
     failures++;
   }
 }
 
 const SRC = path.resolve(import.meta.dirname, "..", "src");
-const TARGET = "review-ledger-path.ts";
+/**
+ * Every review-layer file that must reach the mainline through the neutral
+ * leaf rather than the driver. `review-ledger-path.ts` is #1387's own move;
+ * `review-delta-hunks.ts` came in round 3 of #1444 — it resolved the delta base
+ * with `detectMainline` from `work-driver-git.ts` for the same single git read,
+ * and a gate that names one file blesses the other's edge by omission.
+ */
+const TARGETS = ["review-ledger-path.ts", "review-delta-hunks.ts"];
 /** The neutral module the mainline lookup must come from instead. */
 const NEUTRAL = "mainline.ts";
 /** The symbols the driver layer must keep re-exporting (#1387 moved them, not their callers). */
@@ -83,12 +93,18 @@ const MOVED = ["detectMainline", "resolveMainline"] as const;
 /**
  * A reference to a driver-layer module through any of the four ways to load one.
  *
- * `(?<![\w./-])` keeps a word like `my_work-driver-notes.ts` or a relative
- * jump `../work-driver-x.ts` from being read as anything other than what it
- * is: the module IS the driver layer whichever path spelling reaches it.
+ * **Anchored on the basename, not on a known prefix.** The first version
+ * matched `(?:\.\/|\.\.\/src\/)?` before `work-driver` — which caught `./` and
+ * `../src/` and MISSED a plain `"../work-driver-git.ts"`, the spelling any
+ * relative rewrite reaches for. Anchoring instead on the last path separator
+ * before the basename (`(?:[^"']*\/)?` inside the quotes) makes every prefix
+ * spelling the same violation: `./`, `../`, `../src/`, `../../src/` and a bare
+ * `work-driver-x.ts` all match, and a name that merely ENDS in the basename
+ * (`./my-work-driver-git.ts`) still does not, because the separator (or the
+ * opening quote) sits immediately before `work-driver`.
  */
 const DRIVER_REF =
-  /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s+)(["'])(?:\.\/|\.\.\/src\/)?(work-driver[^"']*\.ts)\1/g;
+  /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s+)(["'])(?:[^"']*\/)?work-driver[^"']*\.ts\1/g;
 
 /**
  * Comments are not imports. Without this, a commented-out driver import — or a
@@ -105,9 +121,9 @@ function stripComments(src: string): string {
 }
 
 /** The driver-layer modules this source reaches, by any load mechanism. */
-function driverRefs(src: string): string[] {
-  return [...stripComments(src).matchAll(DRIVER_REF)].map((m) => m[2] as string);
-}
+const driverRefs = (src: string): string[] => [
+  ...stripComments(src).matchAll(DRIVER_REF),
+].map((m) => (m[1] as string).split("/").pop() as string);
 
 /** Local `./x.ts` specifiers this source imports from. */
 function localImports(src: string): string[] {
@@ -145,20 +161,30 @@ function reexportsFromNeutral(source: string, symbol: string): boolean {
   return forms.some((re) => (typeof re === "object" ? re : re.test(code)));
 }
 
-const target = read(TARGET);
 const neutral = read(NEUTRAL);
 const driver = read("work-driver-git.ts");
 
-console.log("1. review-ledger-path.ts is clean");
+console.log("1. the review-layer targets are clean");
 {
-  const offenders = driverRefs(target);
-  assert(offenders.length === 0, `no work-driver* import (${offenders.join(", ") || "none"})`);
-
-  const imports = localImports(target);
-  assert(
-    imports.includes(`./${NEUTRAL}`),
-    `…and it still imports ./${NEUTRAL} for the mainline lookup (imports: ${imports.join(", ")})`,
-  );
+  // The mainline lookup every review-layer file takes must come from the
+  // neutral leaf. Each target is checked for both halves of the contract: no
+  // driver reference at all, and a positive import of `./mainline.ts` — a file
+  // that simply dropped the driver import and got its mainline from somewhere
+  // else would otherwise pass on absence alone.
+  const expectedImport = `./${NEUTRAL}`;
+  for (const target of TARGETS) {
+    const src = read(target);
+    const offenders = driverRefs(src);
+    assert(
+      offenders.length === 0,
+      `${target}: no work-driver* import (${offenders.join(", ") || "none"})`,
+    );
+    const imports = localImports(src);
+    assert(
+      imports.includes(expectedImport),
+      `…${target} still imports ${expectedImport} for the mainline lookup (imports: ${imports.join(", ")})`,
+    );
+  }
 
   // The neutral module must not simply forward to the driver — that would
   // move the violation one hop and leave the gate green.
@@ -188,6 +214,16 @@ console.log("2. the gate can fail — every way to reach a module");
       'import { detectMainline } from "../src/work-driver-git.ts";',
       "a path that leaves src/ and comes back",
     ],
+    // #1444 round 3: the old pattern's prefix group matched only `./` and
+    // `../src/`, so a plain `../work-driver-git.ts` — the spelling a file in a
+    // subdirectory or a sibling-layer rewrite reaches for — slipped through.
+    // The rule is anchored on the basename now, which makes every `…/` prefix
+    // the same violation.
+    ['import { x } from "../work-driver-git.ts";', "a bare ../ path with no src/ segment"],
+    [
+      'import { x } from "../../src/work-driver-git.ts";',
+      "a ../../src/ path from one level deeper",
+    ],
     [
       'import "./work-driver-side-effects.ts";',
       "a bare side-effect import (no `from` to anchor on)",
@@ -216,6 +252,9 @@ console.log("2. the gate can fail — every way to reach a module");
       'const note = "the ledger used to import work-driver-git.ts";',
       "prose inside a string that names a driver module",
     ],
+    // Adjacent-name hygiene: the basename anchor must not sweep in a module
+    // whose name merely ends with the driver's.
+    ['import { x } from "./my-work-driver-git.ts";', "a non-driver module ending in the basename"],
     ['import { resolveMainline } from "./mainline.ts";', "the neutral module itself"],
     ['import { execp } from "./exec.ts";', "an unrelated neutral module"],
   ];

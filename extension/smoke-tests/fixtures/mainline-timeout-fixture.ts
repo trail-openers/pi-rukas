@@ -41,11 +41,21 @@ export function execTimeoutError(cmd: string): Error & { killed: boolean; signal
  * A fake executor that records each call and rejects with the exec timeout
  * shape for the probes `hangWhich` selects.
  *
- * @param hangWhich which probes fail. `"both"` is the case that matters: the
- *                  `gh` fallback only runs after the `git symbolic-ref`
- *                  rejection, so a bound plumbed into only the call the finding
- *                  named leaves the other unbounded — and the second call never
- *                  reaches the executor at all, which `calls` then shows.
+ * @param hangWhich which probes fail. `"both"` is the case that matters for the
+ *                  BOUND: the `gh` fallback only runs after the `git
+ *                  symbolic-ref` probe returns, so if only the first probe is
+ *                  bounded and the second hangs, the second call still reaches
+ *                  this executor — it just never settles. Recording the
+ *                  `timeout` option each call CARRIED (rather than waiting for a
+ *                  rejection) is what makes that shape observable at all: a
+ *                  hanging probe that never returns would hide the second call
+ *                  from a `calls.length` assertion, and "the second call is
+ *                  missing" is indistinguishable from "the second call hung".
+ *                  `"symbolic-ref"` exercises the other half — the first probe
+ *                  failing is the only thing that makes the `gh` fallback run,
+ *                  so an attribution bug that blamed the timeout on the probe
+ *                  that ANSWERED is only visible when the two probes fail
+ *                  differently.
  */
 export function mkFailingExec(hangWhich: "both" | "symbolic-ref" | "gh" = "both"): {
   fn: (cmd: string, opts?: Record<string, unknown>) => Promise<{ stdout: string }>;
@@ -76,9 +86,38 @@ export function mkGreenExec(stdout: string) {
  * An executor that rejects every probe with a caller-supplied message — the
  * three faults the finding says were indistinguishable (a timeout, a missing
  * `gh`, a non-zero exit) differ only in this text.
+ *
+ * The `opts` parameter is unused; it is here so the fake matches the
+ * `MainlineExecFn` signature the probe calls with.
  */
 export function mkThrowingExec(messageFor: (cmd: string) => string) {
-  return async (cmd: string, opts: Record<string, unknown> = {}) => {
+  return async (cmd: string, _opts: Record<string, unknown> = {}) => {
     throw new Error(messageFor(cmd));
   };
+}
+
+/**
+ * An executor that rejects with a caller-supplied ERROR OBJECT, so the fields
+ * `exec` stamps (`stderr`, `code`, `killed`, `signal`) can be set explicitly.
+ *
+ * `mkThrowingExec` carries only a message, which is enough for the three-faults
+ * case; sanitisation claims (a token on `stderr`, an exit code on `code`) live
+ * on the fields, so they need a fake that can put them there.
+ */
+export function mkRejectingExec(
+  errorFor: (cmd: string) => Error & Record<string, unknown>,
+): {
+  fn: (cmd: string, opts?: Record<string, unknown>) => Promise<{ stdout: string }>;
+  calls: ProbeCall[];
+} {
+  const calls: ProbeCall[] = [];
+  const fn = async (cmd: string, opts: Record<string, unknown> = {}) => {
+    calls.push({
+      cmd,
+      timeout: opts.timeout as number | undefined,
+      cwd: opts.cwd as string,
+    });
+    throw errorFor(cmd);
+  };
+  return { fn, calls };
 }
