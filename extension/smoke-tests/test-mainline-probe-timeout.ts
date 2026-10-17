@@ -294,7 +294,10 @@ console.log("7. markdown and marker characters in the cause are neutralised");
   const result = await detectMainline(REPO, mkRejectingExec(() => err).fn);
   assert(result.ok === false, "the probe fails");
   if (!result.ok) {
-    assert(!result.reason.includes("VERDICT:"), "a VERDICT token cannot be read as a marker");
+    assert(
+      !result.reason.includes("VERDICT"),
+      `no VERDICT token survives at all — readMarker matches a bracketed one (${result.reason})`,
+    );
     assert(!result.reason.includes("```"), "no triple backtick can open a code fence");
     assert(
       !/<!--/.test(result.reason),
@@ -306,6 +309,37 @@ console.log("7. markdown and marker characters in the cause are neutralised");
       `no lone backtick can close an inline code span (${result.reason})`,
     );
   }
+}
+
+console.log("7a. the cause-local neutralisation does NOT leak into the shared evidence rule");
+{
+  // #1444 round 3 regression: the lone-backtick / `<!--` / `-->` rule was put
+  // in `comment-evidence.ts`'s shared `neutraliseFences`, so lens evidence,
+  // residual posts and every other caller started losing single backticks too.
+  // The rule now lives in this module alone; the shared one must be unchanged.
+  const { neutraliseEvidence } = await import("../src/comment-evidence.ts");
+  const withBackticks = "rename `src/a.ts` and remove ``` old fence <!-- x -->";
+  assert(
+    neutraliseEvidence(withBackticks).includes("`src/a.ts`"),
+    `neutraliseEvidence still keeps single backticks (${neutraliseEvidence(withBackticks)})`,
+  );
+  assert(
+    neutraliseEvidence(withBackticks).includes("<!--"),
+    "…and does not bracket HTML comments — that is not its contract",
+  );
+  assert(
+    !neutraliseEvidence(withBackticks).includes("```"),
+    "…while still neutralising the triple run it always did",
+  );
+  // And the cause text this module produces DOES strip them — the two rules
+  // are deliberately different, so a change to one must not move the other.
+  const err = Object.assign(new Error("Command failed: gh repo view\n"), {
+    code: 1,
+    stderr: "gh: bad `path` <!-- hidden -->",
+  });
+  const r = await detectMainline(REPO, mkRejectingExec(() => err).fn);
+  assert(!r.ok && !r.reason.includes("`"), "the mainline cause strips lone backticks");
+  assert(!r.ok && !r.reason.includes("<!--"), "…and brackets HTML comment delimiters");
 }
 
 console.log("7b. a multi-line error keeps the informative line, not the usage banner");
@@ -327,7 +361,10 @@ console.log("7b. a multi-line error keeps the informative line, not the usage ba
       result.reason.includes("Bad credentials"),
       `the tool's own error line survives (${result.reason})`,
     );
-    assert(result.reason.includes("Usage:"), "…alongside the banner, not instead of it");
+    assert(
+      !result.reason.includes("-w, --web"),
+      `the usage banner is dropped in favour of it (${result.reason})`,
+    );
     assert(result.reason.includes("exit code 1"), "…and the classification is intact");
   }
 
