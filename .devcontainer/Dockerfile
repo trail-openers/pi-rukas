@@ -177,7 +177,37 @@ RUN npm install -g parallel-web-cli || true
 RUN npm install -g --ignore-scripts wigolo@0.2.1 || true
 
 # -----------------------------------------------------------------------------
-# 6. Copy pi-rukas repo + run install.sh
+# 6. Pre-fetch vipune's embedding model so it doesn't need network at first run
+#    Sits ABOVE the repo COPY on purpose: nothing here reads the checkout, so
+#    placed after it the pip install, the model download and the seed copy
+#    re-ran (and their layers were re-pushed, per arch) on every merge.
+# -----------------------------------------------------------------------------
+# Vipune downloads BAAI/bge-small-en-v1.5 from HuggingFace on first
+# semantic-search call. The pinned revision currently returns 404 from
+# vipune's HTTP client (URLs work via curl — likely a redirect / User-Agent
+# handling quirk), so vipune fails with "Failed to download embedding
+# model" on every fresh container. Fix: pre-fetch at build time. Cached at
+# /opt/hf-cache-seed/ AND copied into the vscode user's standard HF cache
+# location. The entrypoint script seeds the named-volume cache from
+# /opt/hf-cache-seed/ on container start, so users with existing
+# pi-ensemble-cache volumes don't need to `pi-rukas prune` after the
+# upgrade — first launch of the new image automatically populates.
+USER root
+RUN pip3 install --no-cache-dir --break-system-packages "huggingface_hub>=0.20"
+USER vscode
+RUN huggingface-cli download \
+      BAAI/bge-small-en-v1.5 \
+      --revision 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a \
+      --cache-dir /home/vscode/.cache/huggingface/hub \
+    || echo "WARNING: pre-fetch of BAAI/bge-small-en-v1.5 failed at image build; vipune may need network at first use"
+USER root
+RUN if [ -d /home/vscode/.cache/huggingface ]; then \
+      cp -r /home/vscode/.cache/huggingface /opt/hf-cache-seed \
+      && chown -R vscode:vscode /opt/hf-cache-seed; \
+    fi
+
+# -----------------------------------------------------------------------------
+# 7. Copy pi-rukas repo + run install.sh
 #    Layout chosen so the repo is read-only image content; user state lives
 #    in volumes (bind-mounted by the wrapper / devcontainer.json).
 # -----------------------------------------------------------------------------
@@ -261,43 +291,16 @@ USER root
 RUN mkdir -p /commandhistory && chown vscode:vscode /commandhistory
 USER vscode
 
-# -----------------------------------------------------------------------------
-# 7. Workspace + sandbox-mode env
-# -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-# 8. Pre-fetch vipune's embedding model so it doesn't need network at first run
-# -----------------------------------------------------------------------------
-# Vipune downloads BAAI/bge-small-en-v1.5 from HuggingFace on first
-# semantic-search call. The pinned revision currently returns 404 from
-# vipune's HTTP client (URLs work via curl — likely a redirect / User-Agent
-# handling quirk), so vipune fails with "Failed to download embedding
-# model" on every fresh container. Fix: pre-fetch at build time. Cached at
-# /opt/hf-cache-seed/ AND copied into the vscode user's standard HF cache
-# location. The entrypoint script seeds the named-volume cache from
-# /opt/hf-cache-seed/ on container start, so users with existing
-# pi-ensemble-cache volumes don't need to `pi-rukas prune` after the
-# upgrade — first launch of the new image automatically populates.
-USER root
-RUN pip3 install --no-cache-dir --break-system-packages "huggingface_hub>=0.20"
-USER vscode
-RUN huggingface-cli download \
-      BAAI/bge-small-en-v1.5 \
-      --revision 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a \
-      --cache-dir /home/vscode/.cache/huggingface/hub \
-    || echo "WARNING: pre-fetch of BAAI/bge-small-en-v1.5 failed at image build; vipune may need network at first use"
-USER root
-RUN if [ -d /home/vscode/.cache/huggingface ]; then \
-      cp -r /home/vscode/.cache/huggingface /opt/hf-cache-seed \
-      && chown -R vscode:vscode /opt/hf-cache-seed; \
-    fi
-
 # Entrypoint: seed ~/.cache/huggingface from the image's /opt/hf-cache-seed
 # if the user's mounted cache is empty (handles named-volume masking).
+# The image's final USER must stay root: the entrypoint does root-only
+# fixups and drops to vscode itself (see ENTRYPOINT below).
+USER root
 COPY --chown=vscode:vscode .devcontainer/entrypoint.sh /usr/local/bin/pi-rukas-entrypoint
 RUN chmod +x /usr/local/bin/pi-rukas-entrypoint
 
 # -----------------------------------------------------------------------------
-# 9. Workspace + sandbox-mode env + entrypoint
+# 8. Workspace + sandbox-mode env + entrypoint
 # -----------------------------------------------------------------------------
 WORKDIR /workspace
 ENV PI_ENSEMBLE_SANDBOX_MODE=1
