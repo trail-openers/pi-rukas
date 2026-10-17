@@ -14,7 +14,7 @@
  * assertion asks about the KEY and not about its header (#1393 round 5, item 3).
  * Declared before `CASES` because the cases read it in their initialiser.
  */
-const PEM_BODY =
+export const PEM_BODY =
   "MIIEowIBAAKCAQEA" +
   "aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6dE7fG8hJ9kL0mN1pQ2rS3tU4v" +
   "W5xY6zA7bC8dE9fG0hJ1kL2mN3pQ4rS5tU6vW7xY8zA9bC0dE1fG2hJ3kL4mN5pQ6" +
@@ -26,12 +26,12 @@ const PEM_BODY =
  * `leaksKey` must catch is the WHOLE body: a fixture with one line cannot tell a redaction
  * that got the header and its first line from one that got the key.
  */
-const PEM_BODY_2 =
+export const PEM_BODY_2 =
   "Wm9vWXhBY0RlRmVnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODlA" +
   "QmZDeERlRmdIaUprTG1OcFBxcnN0VXZ3eFl6MDEyMzQ1Njc4OTBCQ2Q=";
 
-const PEM_BEGIN = "-----BEGIN RSA PRIVATE KEY-----";
-const PEM_END = "-----END RSA PRIVATE KEY-----";
+export const PEM_BEGIN = "-----BEGIN RSA PRIVATE KEY-----";
+export const PEM_END = "-----END RSA PRIVATE KEY-----";
 
 /**
  * Exact-string assertions for the CLIPPED-PEM over-redaction (#1393 round 5, item 3
