@@ -194,6 +194,17 @@ export interface DriverContext {
    */
   gateHangLogPaths?: string[];
   /**
+   * #1427 — injectable process-tree walker for the gate-hang reports, threaded
+   * from the verify seams down to `runVerifyCommandGate` and the consolidated
+   * probe. Production leaves it unset and the real `ps` walk runs; smoke tests
+   * inject one so a report's tree section is an assertion rather than whatever
+   * else happens to be running on the host.
+   */
+  walkProcessTree?: (leaderPid: number) => {
+    processes: import("./work-driver-gate-hang.ts").HangProcess[];
+    treeUnavailable?: string;
+  };
+  /**
    * #1292 — the invoking session has no UI (`!ctx.hasUI`, e.g. `pi -p`). A
    * headless cycle opens its PR as a draft by default — nobody is watching
    * the review window — unless `PI_ENSEMBLE_DRAFT_PR` says otherwise.

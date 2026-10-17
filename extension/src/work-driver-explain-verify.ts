@@ -19,7 +19,11 @@
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { BUILD_RESIDUE_LABEL, isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import { HOST_EXHAUSTION_LABEL, isHostExhaustionFailure } from "./work-driver-exec-error.ts";
-import { GATE_HANG_LABEL, isGateHangFailure } from "./work-driver-gate-hang.ts";
+import {
+  GATE_HANG_LABEL,
+  GATE_HANG_NO_NAMED_TEST as NO_NAMED_TEST,
+  isGateHangFailure,
+} from "./work-driver-gate-hang.ts";
 import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
 import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
 import type { VerifyEvidenceOrigin } from "./workflow-state-schema-verify.ts";
@@ -288,14 +292,17 @@ export function explainVerifyTimeout(cap: Cap, state: WorkState): string {
   // scratch dir of its own to write to).
   const hangLine = rawLogLine(step, capEvidence === undefined ? undefined : lastCapHit(state, cap));
   // The runner's own slow-test line is what makes a hang report name a test.
-  // When it printed none, the report's process tree is the only thing the
-  // driver could establish, and the operator should read it before suspecting
-  // the diff. `still running:` is the section the renderer emits when it HAS a
-  // name; its absence is the signal, not the presence of the label.
+  // When it printed none, `gateHangClause` renders "hung in no named test" —
+  // that is the string to look for, not "still running:", which only ever
+  // appears in the full report file (which the failure string never carries).
+  // The clause's own no-name marker is what the advice keys on (#1427 fix
+  // round: it keyed on a string no failure ever contains, so the advice
+  // printed for every hang, named test or not).
+  const noNamedTest = failures.some((f) =>
+    f.includes(`${GATE_HANG_LABEL} hung in ${NO_NAMED_TEST}`),
+  );
   const hangAdvice =
-    failures.some(isGateHangFailure) &&
-    (capEvidence ?? "").includes(GATE_HANG_LABEL) === false &&
-    !failures.some((f) => f.includes("still running:"))
+    failures.some(isGateHangFailure) && noNamedTest
       ? " The runner printed no slow-test line, so the report's process tree is the only name the driver could establish — read it before suspecting the diff."
       : "";
   const knob =

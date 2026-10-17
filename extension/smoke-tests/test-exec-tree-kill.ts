@@ -180,6 +180,35 @@ async function main() {
     );
     expect(big?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", "maxBuffer overflow keeps its code");
 
+    // ── #1427: an overflow kill is NOT a timeout kill ─────────────────
+    // Both kill paths set `killed`, so `killed` cannot be the hang gate: a
+    // run that printed too much is reported as hung otherwise, and the cap
+    // becomes `verify-timeout` for a gate that simply produced a wall of text.
+    expect(big?.killed === true, "overflow: the run was still killed");
+    expect(
+      big?.timedOutKill === false,
+      `overflow: NOT reported as a timeout kill (timedOutKill=${String(big?.timedOutKill)})`,
+    );
+    expect(
+      big?.overflow === "stdout",
+      `overflow: names the stream that overflowed (${String(big?.overflow)})`,
+    );
+    expect(
+      big?.treePid === undefined,
+      "overflow: reports NO gate pid, so no caller builds a hang report from it",
+    );
+
+    const slow = await execTree("sleep 5", { timeout: 80, killGraceMs: 40 }).then(
+      () => undefined,
+      (e: ExecTreeError) => e,
+    );
+    expect(slow?.timedOutKill === true, "timeout: reported as a timeout kill");
+    expect(
+      typeof slow?.treePid === "number",
+      `timeout: still reports the group it killed (${String(slow?.treePid)})`,
+    );
+    expect(slow?.overflow === undefined, "timeout: names no overflow");
+
     const cwd = await execTree("pwd", { cwd: tmp });
     expect(fs.realpathSync(cwd.stdout.trim()) === fs.realpathSync(tmp), "cwd is honoured");
   }

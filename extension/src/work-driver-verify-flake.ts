@@ -27,8 +27,11 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
-import type { GateHangInput, HangProcess } from "./work-driver-gate-hang.ts";
-import { captureProcessTree, reportGateHang } from "./work-driver-gate-hang.ts";
+import type { HangProcess } from "./work-driver-gate-hang.ts";
+import { captureProcessTree } from "./work-driver-gate-hang.ts";
+export { slugName, writeGateHangLog } from "./work-driver-gate-hang-log.ts";
+import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
+import { boundVerifyLog } from "./work-driver-verify-log-bounds.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -60,22 +63,6 @@ function consolidatedVerifyLogName(timestamp: string, run: 1 | 2): string {
   return `consolidated-verify-${timestamp.replace(/[:.]/g, "-")}-run${run}.log`;
 }
 
-// #841 — bound on a persisted run log. The raw stream can be large (the
-// 8 MiB maxBuffer), and the log is diagnostic, not load-bearing: past the
-// cap the operator still has the bounded tail in the evidence, so truncate
-// with a marker instead of writing multi-MB scratch files.
-const VERIFY_LOG_MAX_BYTES = 2 * 1024 * 1024;
-
-// #841 — apply the size cap to a raw run stream before it is persisted.
-function boundVerifyLog(raw: string): string {
-  if (Buffer.byteLength(raw, "utf8") <= VERIFY_LOG_MAX_BYTES) return raw;
-  const marker = "\n…[truncated — full output exceeded the 2 MiB log cap]\n";
-  const max = VERIFY_LOG_MAX_BYTES - Buffer.byteLength(marker, "utf8");
-  let out = raw;
-  while (Buffer.byteLength(out, "utf8") > max) out = out.slice(0, Math.floor(out.length / 2));
-  return out + marker;
-}
-
 /**
  * #841 — write the combined raw stdout+stderr of one consolidated verify run
  * to `<scratchDir>/consolidated-verify-<ISO timestamp>-run<1|2>.log`.
@@ -92,50 +79,6 @@ export function rawOutputClause(logPath?: string): string {
   return logPath ? ` Raw output: ${logPath}.` : " Raw output: unavailable.";
 }
 
-/**
- * #1427 — the filename of one gate-hang report, relative to `scratchDir`.
- * Its own prefix rather than the consolidated-verify one because a hang report
- * is written by every gate seam (per-worktree, consolidated, commit-pr, the
- * baseline probe), not only the consolidated run: an operator looking for the
- * report of a per-worktree hang should not have to know which seam produced it.
- */
-function gateHangLogName(timestamp: string): string {
-  return `gate-hang-${timestamp.replace(/[:.]/g, "-")}.log`;
-}
-
-/**
- * #1427 — persist a killed gate run's hang report and return the path, or
- * `undefined` when nothing could be written. Never fails the step (same
- * contract as `writeConsolidatedVerifyLog`, whose size bound it shares):
- * the hang report is diagnosis, and the verify outcome is unchanged whether or
- * not the file exists.
- *
- * The full report — tree, output tail, every name — is too wide for the
- * 800-char failure-string window, which is why it lives here and only the
- * clause rides in the evidence. The handoff names this path.
- */
-export function writeGateHangLog(
-  scratchDir: string,
-  timestamp: string,
-  input: GateHangInput,
-  deps: {
-    walk?: (leaderPid: number) => { processes: HangProcess[]; treeUnavailable?: string };
-  } = {},
-): string | undefined {
-  const file = path.join(scratchDir, gateHangLogName(timestamp));
-  try {
-    mkdirSync(scratchDir, { recursive: true });
-    writeFileSync(file, boundVerifyLog(reportGateHang(input, deps)), "utf8");
-    chmodSync(file, 0o600);
-    trace(`work-driver: gate hang — report written to ${file}`);
-    return file;
-  } catch (err) {
-    trace(
-      `work-driver: gate hang — could not write the report: ${(err as Error).message?.slice(0, 160)}`,
-    );
-    return undefined;
-  }
-}
 export function writeConsolidatedVerifyLog(
   scratchDir: string,
   timestamp: string,
@@ -229,10 +172,14 @@ export async function rerunConsolidatedVerifyOnce(
       stderr?: string;
       stdout?: string;
       killed?: boolean;
+      timedOutKill?: boolean;
+      overflow?: string;
       treePid?: number;
     };
     rawFailure = combinedExecFailureStream(e);
-    timedOut = e.killed === true;
+    // #1427 fix round — only the wall-clock kill is a hang (an overflow kill
+    // sets `killed` too, and is not one).
+    timedOut = isTimedOutKill(e);
     // #1427 — walked synchronously in the catch, while the killed run's
     // grandchildren may still be alive: the nessie #1054 case is precisely
     // children that outlive the leader, and a walk after the settle would

@@ -54,4 +54,16 @@ export interface VerifyDevelopOutcomeOptions {
    * a failure string that may contain an operator-authored path.
    */
   onBuildResidueOnly?: () => void;
+  /**
+   * #1427 — injectable process-tree walker for the hang reports this gate
+   * writes. Forwarded to `runVerifyCommandGate`, which threads it to BOTH the
+   * per-worktree seam and the consolidated probe. Production omits it and the
+   * real `ps` walk runs; a test that injects one must have the seam actually
+   * honour it (the round-1 defect: the consolidated leg was handed the option
+   * under a key that does not exist, so the walker never ran).
+   */
+  walkProcessTree?: (leaderPid: number) => {
+    processes: import("./work-driver-gate-hang.ts").HangProcess[];
+    treeUnavailable?: string;
+  };
 }

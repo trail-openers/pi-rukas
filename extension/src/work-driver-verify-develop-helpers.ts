@@ -67,6 +67,26 @@ export function verifyTimeoutFailure(
   return `${VERIFY_TIMEOUT_LABEL} verify command \`${cmd}\` exceeded its ${boundText(timeoutMs)} timeout ${where} — the run was killed at the bound (${knob}), so it reached no verdict about the code`;
 }
 
+/**
+ * #1427 — the single hang-report gate for every gate seam: a run gets a report
+ * ONLY when the wall clock killed it. `killed` alone is not enough — a run that
+ * overflowed `maxBuffer` is killed too, and reporting one as a hang tells the
+ * operator the gate stalled when it actually printed too much.
+ *
+ * `timedOutKill` is the field `execTree` stamps; a test fake or a rethrown
+ * fast-tier error that predates it is accepted on the documented shape
+ * (`killed` with no `overflow`), which is what those fakes have always carried.
+ */
+export function isTimedOutKill(e: {
+  killed?: boolean;
+  timedOutKill?: boolean;
+  overflow?: string;
+}): boolean {
+  if (e.overflow !== undefined) return false;
+  if (e.timedOutKill !== undefined) return e.timedOutKill === true;
+  return e.killed === true;
+}
+
 /** What a gate seam knows about the run it killed, to build a hang report from. */
 export interface KilledGateRun {
   /** The killed run's combined stdout+stderr (the source of the slow-test lines). */
@@ -80,9 +100,10 @@ export interface KilledGateRun {
   /** Injectable tree walker; production omits it and `ps` is walked. */
   walk?: (leaderPid: number) => { processes: HangProcess[]; treeUnavailable?: string };
   /**
-   * A tree the caller already walked at the kill. Preferred over `treePid`:
-   * by the time a seam composes its failure string the group may be gone, so
-   * the capture has to come from the catch block that saw it alive.
+   * A tree the caller already walked at the kill. Preferred over `treePid`: by
+   * the time a seam composes its failure string the group may be gone, and
+   * re-walking would give the clause a different snapshot from the report the
+   * same kill produced (#1427 fix round — one walk feeds both).
    */
   tree?: { processes: HangProcess[]; treeUnavailable?: string };
 }

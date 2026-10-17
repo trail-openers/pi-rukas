@@ -81,6 +81,7 @@ export async function verifyDevelopOutcome(
     onBaselineRedOnly,
     onConsolidatedVerifySkipped,
     onBuildResidueOnly,
+    walkProcessTree,
   } = options;
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
@@ -459,6 +460,10 @@ export async function verifyDevelopOutcome(
         },
         ...(onConsolidatedVerifySkipped !== undefined ? { onConsolidatedVerifySkipped } : {}),
         ...(onBuildResidueOnly !== undefined ? { onBuildResidueOnly } : {}),
+        // #1427 fix round — the walker is forwarded to the gate, which threads
+        // it to both legs (per-worktree + consolidated). Without this line the
+        // test seam existed and nothing used it.
+        ...(walkProcessTree !== undefined ? { walkProcessTree } : {}),
       });
       // #1349 — only a base that fails the way the change does excuses it.
       verifyCmdEnd = before === 0 && attributed ? failures.length : undefined;
