@@ -36,10 +36,7 @@
  * failure — it never turns one into a pass, and nothing here may throw.
  */
 
-import {
-  MAX_ARGS_CHARS,
-  captureProcessTree,
-} from "./work-driver-gate-hang-tree.ts";
+import { MAX_ARGS_CHARS, captureProcessTree } from "./work-driver-gate-hang-tree.ts";
 
 /**
  * Leading marker of a hang report, the same convention as the other

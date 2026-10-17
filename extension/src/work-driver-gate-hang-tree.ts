@@ -137,7 +137,10 @@ export function walkProcessTree(
   let budgetExhausted = false;
   const commit = (rows: HangProcess[]) => {
     for (const row of rows) {
-      if (collected.length >= MAX_PROCESSES || snapshotChars + row.args.length > MAX_SNAPSHOT_CHARS) {
+      if (
+        collected.length >= MAX_PROCESSES ||
+        snapshotChars + row.args.length > MAX_SNAPSHOT_CHARS
+      ) {
         snapshotTruncated = true;
         break;
       }
