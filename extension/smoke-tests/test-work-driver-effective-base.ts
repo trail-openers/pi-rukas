@@ -22,12 +22,17 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { verifyDevelopOutcome } from "../src/work-driver-verify-develop.ts";
+import type { VerifyDevelopOutcomeOptions } from "../src/work-driver-verify-develop-options.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 type StubPi = Pick<ExtensionAPI, "sendUserMessage">;
 const stubPi: DriverContext["host"] = { sendUserMessage: () => {} } as StubPi;
+
+// The out-parameters are now one options object; these cases drive the gates
+// that need none of them.
+const NO_OPTIONS: VerifyDevelopOutcomeOptions = {};
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -88,7 +93,7 @@ try {
     const s = makeState({ baseSha: undefined, workstreamBaseShas: { dep: DEPS_BASE } });
     const failures: string[] = [];
     const notes: string[] = [];
-    await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes);
+    await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes, NO_OPTIONS);
     assert(
       failures.length === 0,
       `#725 effBase: dependent with valid workstreamBaseShas + absent global baseSha, committed work → no failures (got: ${failures.join("; ")})`,
@@ -113,7 +118,7 @@ try {
     const s = makeState({ baseSha: undefined, workstreamBaseShas: { dep: DEPS_BASE } });
     const failures: string[] = [];
     const notes: string[] = [];
-    await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes);
+    await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes, NO_OPTIONS);
     const diag = failures.find((f) => /uncommitted changes but no commit/.test(f));
     assert(
       diag !== undefined,
@@ -139,7 +144,7 @@ try {
     const s = makeState({ baseSha: VALID_SHA_40, workstreamBaseShas: { dep: VALID_SHA_40 } });
     const failures: string[] = [];
     const notes: string[] = [];
-    await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes);
+    await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes, NO_OPTIONS);
     const diag = failures.find((f) => /uncommitted changes but no commit/.test(f));
     assert(
       diag !== undefined &&
@@ -167,7 +172,7 @@ try {
     const s = makeState({ baseSha: undefined, workstreamBaseShas: { dep: DEPS_BASE } });
     const failures: string[] = [];
     const notes: string[] = [];
-    await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes);
+    await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes, NO_OPTIONS);
     assert(
       notes.some((n) => n.includes(`rev-list failed against base ${DEPS_BASE} in dep`)),
       `#1378 round 3: a rev-list read that failed is never silent, #1378 round 3 — the note names the effective base it compared against (got: ${notes.join("; ")})`,
@@ -192,7 +197,7 @@ try {
     const s = makeState({ baseSha: VALID_SHA_40 });
     const failures: string[] = [];
     const notes: string[] = [];
-    await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes);
+    await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes, NO_OPTIONS);
     assert(
       notes.some((n) => n.includes(`rev-list failed against base ${VALID_SHA_40} in dep`)),
       `#1378 round 3: a rev-list read that failed is never silent, #1378 round 3 — the note is present at the global baseSha too (got: ${notes.join("; ")})`,
@@ -238,6 +243,7 @@ try {
         cssOnly,
         [],
         controlNotes,
+        NO_OPTIONS,
       );
       assert(
         controlNotes.some((n) => /derived verify command skipped/.test(n)),
@@ -256,6 +262,7 @@ try {
         failing,
         [],
         notes2,
+        NO_OPTIONS,
       );
       assert(
         notes2.some((n) => /frontend-only skip suppressed: a git read failed/.test(n)),
