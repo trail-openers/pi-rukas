@@ -12,15 +12,27 @@
  * code has never seen).
  *
  * The range/HEAD/tree BINDING arms live in `test-adversarial-ledger-range.ts`;
- * those decide `passed`, this one only says why.
+ * those decide `passed`, this one only says why. The rejected-verdict arm also
+ * lives here — it is about which `detail` the row carries.
  */
 
+import { rmSync } from "node:fs";
+import path from "node:path";
+import { adversarialRefusal } from "../src/merge-guard-reads.ts";
+import type { LedgerEntry } from "../src/review-ledger.ts";
 import {
   BINDING_REFUSAL_PREFIXES,
   BRANCH,
+  setupRepo,
+  toolArm,
 } from "./lib/adversarial-ledger-harness.ts";
-import type { LedgerEntry } from "../src/review-ledger.ts";
-import { adversarialRefusal } from "../src/merge-guard-reads.ts";
+
+// Env pins in assignment form: biome's noDelete rule refuses the
+// `delete process.env.X` shape, and "" is equivalent for every reader (the
+// ledger override is read via `?.trim()`, the merge guard's via `=== "1"`).
+process.env.PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE = "";
+process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = "";
+process.env.PI_ENSEMBLE_FORGE = "github";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -88,6 +100,34 @@ assert(
   none.includes("latest: none") && none.includes("PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE"),
   "adversarialRefusal: no row on file still names the override",
 );
+
+// ─── a REJECTED tool review keeps its verdict detail, not a binding one
+// Moved here from `test-adversarial-ledger-range.ts` for the 500-line cap. A
+// rejection under `reportVerdict: "terminal"` maps to a passing-shaped result
+// downstream but records `passed: false`, and the row must keep the verdict's
+// own detail — a binding refusal would overwrite the reason the reviewer gave —
+// and must not be decorated with range SHAs the decision never confirmed.
+{
+  const { dir, mergeBase } = setupRepo();
+  try {
+    const { row } = await toolArm(dir, {
+      base: mergeBase,
+      head: "HEAD",
+      result: { ok: false, loopOutcome: "rejected" },
+      binding: {},
+    });
+    assert(
+      row.passed === false && row.detail === "rejected",
+      `a rejected tool review keeps its verdict detail (got ${JSON.stringify(row.detail)})`,
+    );
+    assert(
+      row.reviewedBase === undefined,
+      "a rejected row is not decorated with binding fields it was never checked against",
+    );
+  } finally {
+    rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

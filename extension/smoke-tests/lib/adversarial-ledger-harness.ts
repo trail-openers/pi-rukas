@@ -23,7 +23,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { LedgerBinding } from "../../src/adversarial-ledger-binding.ts";
 import { writeAdversarialLedgerEntry } from "../../src/adversarial-ledger.ts";
+import type { VerifyExecFn } from "../../src/work-driver-git.ts";
 // The refusal vocabulary is re-exported so an arm asserts "this detail is one
 // of the prefixes the guard knows" without importing the module under test
 // directly — the harness is the test's only window into the binding side.
@@ -132,10 +134,7 @@ export function latest(repo: string, kind: "adversarial" | "lens"): LedgerEntry 
  * path for a writer that degraded (lock contention, a slow subprocess hop).
  * MUST await between ticks — the writer's subprocess callbacks run on the event
  * loop, so a blocking wait starves them (#984). */
-export async function waitForRow(
-  repo: string,
-  kind: "adversarial" | "lens",
-): Promise<LedgerEntry> {
+export async function waitForRow(repo: string, kind: "adversarial" | "lens"): Promise<LedgerEntry> {
   const deadline = Date.now() + 30_000;
   for (;;) {
     const now = latest(repo, kind);
@@ -224,7 +223,7 @@ export async function toolArm(
   params: {
     base?: string;
     head?: string;
-    binding?: Record<string, string | undefined>;
+    binding?: Partial<LedgerBinding>;
     /** true → the /work driver's shape: no provenance marker, so the binding
      * gates do not apply and the row keeps its pre-#1360 form. */
     driverPath?: boolean;
@@ -233,7 +232,7 @@ export async function toolArm(
     result?: { ok: boolean; loopOutcome: string };
     /** The git executor the writer uses. Defaults to the real one — every arm
      * runs real git; this exists for the arm that counts calls (#1360 lens 6). */
-$    execFn?: (cmd: string, o?: { argv?: string[] }) => Promise<{ stdout: string }>;
+    execFn?: VerifyExecFn;
     /** The PR's base branch the guard's forge stub reports, so its `git fetch`
      * names a ref the repo actually has. Defaults to `main`; a `trunk` fixture
      * passes `"trunk"` (#1360 lens 2). */
@@ -248,8 +247,8 @@ $    execFn?: (cmd: string, o?: { argv?: string[] }) => Promise<{ stdout: string
     base: params.base,
     head: params.head,
     toolPath: params.driverPath !== true,
-    binding: (params.binding ?? {}) as never,
-    execFn: params.execFn as never,
+    binding: params.binding ?? {},
+    execFn: params.execFn,
   });
   const row = await waitForRow(repo, "adversarial");
   const g = await guard(repo, pr, params.baseBranch ?? "main");

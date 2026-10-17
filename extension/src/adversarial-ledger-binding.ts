@@ -16,7 +16,7 @@
  * ## The rule (tool-path rows only)
  *
  * A row written from the `adversarial_loop` tool may record `passed: true`
- * only when all three bindings hold:
+ * only when all four bindings hold:
  *
  *   - **range** — the resolved `base` SHA equals
  *     `merge-base(<reviewed head>, <remote>/<mainline>)`, resolved with the
@@ -28,9 +28,18 @@
  *     HEAD when the row is written. A caller that named an older head at loop
  *     entry is `head-not-current` (nothing moved); a HEAD that changed AFTER
  *     that round's dispatch is `head-moved`.
+ *   - **captured ref** — the ref the capture resolved must STILL resolve to that
+ *     HEAD at write time. The two head comparisons below both use
+ *     `currentHeadSha`, so a capture taken under ref A and a write made while
+ *     the checkout stands at ref B match each other whenever A and B happen to
+ *     name the same commit (a detached checkout of the reviewed commit, a
+ *     worktree switched onto it) — and the row's patch id would come from a
+ *     tree the reviewer never saw.
  *   - **tree** — the working-tree patch id captured when the approving round's
  *     diff was read equals the id at write time. Edits made after the reviewer
  *     looked at the tree are `tree-changed`.
+ *
+ * ## Why it fails closed
  *
  * Any other failure — a check that throws, a capture that never ran — is
  * `range-unverifiable`, never a silent skip: skipping would leave an OLDER
@@ -39,9 +48,10 @@
  *
  * ## Provenance
  *
- * The discriminator is the explicit `toolPath: true` the tool entry point
- * (`adversarial-tool.ts`) sets AFTER the raw params spread, so a caller cannot
- * set or clear it. The `/work` driver path (`work-driver-adversarial-fanout.ts`:
+ * The discriminator is the branded marker `ToolPathProvenance` — the literal
+ * `"adversarial-loop-tool"` (`adversarial-loop-params.ts`) — that the tool
+ * entry point (`adversarial-tool.ts`) mints AFTER the raw params spread, so a
+ * caller can neither set nor clear it. The `/work` driver path (`work-driver-adversarial-fanout.ts`:
  * a `diff` string + `getDiff`, `reportVerdict: "routed"`) never sets it, keeps
  * its existing identity, and keeps recording passing rows. Provenance is never
  * inferred from the presence of a `diff` string. The driver path also runs no
@@ -62,9 +72,9 @@
 
 import { execp } from "./exec.ts";
 import { type IdentityBase, identityBase } from "./review-ledger-path.ts";
-import { workingTreePatchId } from "./review-ledger.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
-import { trace } from "./trace.ts";
+import { workingTreePatchId } from "./review-ledger.ts";
+import { traceWarn } from "./trace.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 
 /** The detail prefixes a binding refusal may carry. The merge guard quotes the
@@ -360,6 +370,43 @@ export async function decideToolPathRow(opts: {
       `reviewed ${binding.headAtCapture}, workCwd at ${opts.currentHeadSha}`,
     );
   }
+  // #1360 round 3 — the write must re-resolve the SAME ref the capture resolved.
+  // The two checks above both compare against `currentHeadSha`, so a capture
+  // taken under ref A and a write made while the checkout stands at ref B pass
+  // each other whenever A and B happen to name the same commit — a detached
+  // checkout of the reviewed commit, or a worktree switched to it while the
+  // branch moved on. The row's patch id would then be taken from a tree the
+  // reviewer never saw. `reviewedHeadRef` is only recorded when the range check
+  // resolved a head, so its absence is the never-captured case, not this one.
+  if (binding.reviewedHeadRef !== undefined) {
+    let capturedRefSha = "";
+    try {
+      capturedRefSha = await revParse(opts.workCwd, binding.reviewedHeadRef, execFn);
+    } catch (err) {
+      const msg = (err instanceof Error ? err.message : String(err)).slice(0, 120);
+      return refuse(
+        "range-unverifiable",
+        `the captured head ref ${binding.reviewedHeadRef} could not be re-resolved (${msg})`,
+      );
+    }
+    // A capture that resolved one of the tip's spellings can only have resolved
+    // the tip itself — which is exactly the SHA the two comparisons above just
+    // confirmed equals `currentHeadSha`. Re-reading the ref would ask whether
+    // `<remote>/<mainline>` still names the local tip, and a branch ahead of its
+    // own remote ref (unpushed, or pushed between the round and the write) is a
+    // review OF the tip, not a stale capture. So the spelling is accepted on the
+    // rule that produced it (`namedHeadIsTip`), not on a second git read; a ref
+    // that is not a tip-spelling is still re-resolved and still refused.
+    if (
+      !namedHeadIsTip(binding.reviewedHeadRef, mainline) &&
+      capturedRefSha !== opts.currentHeadSha
+    ) {
+      return refuse(
+        "head-not-current",
+        `the captured head ref ${binding.reviewedHeadRef} is ${capturedRefSha || "unresolvable"}, workCwd is ${opts.currentHeadSha}`,
+      );
+    }
+  }
   if (!binding.reviewedTreePatchId) {
     return refuse("range-unverifiable", "the reviewed working-tree identity was never captured");
   }
@@ -442,7 +489,7 @@ export async function captureBinding(
     };
   } catch (err) {
     const msg = (err instanceof Error ? err.message : String(err)).slice(0, 120);
-    trace(`adversarial: ledger binding capture failed: ${msg}`);
+    traceWarn(`adversarial: ledger binding capture failed: ${msg}`);
     return { bindingUnavailable: `the range/head capture threw (${msg})` };
   }
 }

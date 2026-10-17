@@ -12,12 +12,8 @@
 import { mock } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
+import { BINDING_REFUSAL_PREFIXES, ledgerFile, setupRepo } from "../adversarial-ledger-harness.ts";
 import { countedCapture } from "./capture-counter.ts";
-import {
-  BINDING_REFUSAL_PREFIXES,
-  ledgerFile,
-  setupRepo,
-} from "../adversarial-ledger-harness.ts";
 
 /** A detail is a binding refusal iff it opens with one of the prefixes the
  * module itself exports — the same array the merge guard's renderer reads, so
@@ -164,9 +160,7 @@ async function waitForRows(n: number): Promise<Array<Record<string, unknown>>> {
 
 /** The most recent adversarial row written at or after `since` — the row this
  * arm caused, with earlier arms' in-flight writes excluded. */
-async function waitForRowWrittenAfter(
-  since: number,
-): Promise<Record<string, unknown> | undefined> {
+async function waitForRowWrittenAfter(since: number): Promise<Record<string, unknown> | undefined> {
   const deadline = Date.now() + 20_000;
   for (;;) {
     const rows = (await readRows()).filter((r) => ((r.at as number) ?? 0) >= since);
@@ -258,11 +252,13 @@ try {
   // range it bound, the driver row carries none. That is the whole point of
   // #1360, and it is observable without reaching into any mock.
   assert(
-    typeof toolRow?.reviewedBase === "string" && /^[0-9a-f]{40}$/.test(String(toolRow.reviewedBase)),
+    typeof toolRow?.reviewedBase === "string" &&
+      /^[0-9a-f]{40}$/.test(String(toolRow.reviewedBase)),
     `tool path: its row carries the verified base SHA (got ${JSON.stringify(toolRow?.reviewedBase)})`,
   );
   assert(
-    typeof toolRow?.reviewedHead === "string" && /^[0-9a-f]{40}$/.test(String(toolRow.reviewedHead)),
+    typeof toolRow?.reviewedHead === "string" &&
+      /^[0-9a-f]{40}$/.test(String(toolRow.reviewedHead)),
     `tool path: its row carries the verified head SHA (got ${JSON.stringify(toolRow?.reviewedHead)})`,
   );
 
@@ -271,7 +267,6 @@ try {
   // end-to-end counterpart to the writer-level arms in
   // `test-adversarial-ledger-range.ts` — it proves the refusal travels the
   // loop's own path (capture → state → writer → row), not just the writer's.
-
 
   captureCounter.poison({
     reviewedBase: fixture.mergeBase,
@@ -330,7 +325,7 @@ try {
   // identity base, the range refs, the merge-base, the HEAD and the patch id —
   // not just the first helper that happens to take one.
   const seen: string[] = [];
-  const state: { binding?: unknown; capturedHeadRef?: string } = {};
+  const state: { captured?: { binding?: unknown; headRef?: string } } = {};
   const real = await captureRound(state, repo, "main", "HEAD", async (cmd, o) => {
     seen.push(`${cmd} ${(o?.argv ?? []).join(" ")}`.trim());
     return { stdout: `${"a".repeat(40)}\n` };
@@ -339,7 +334,7 @@ try {
   // installed by the mock is what `captureRound` resolves to here. The counter
   // wrapper writes the state identically to production — but assert on what IT
   // produced rather than trusting the delegation.
-  const binding = (state.binding ?? real) as {
+  const binding = (state.captured?.binding ?? real) as {
     reviewedTreePatchId?: string;
     headAtCapture?: string;
     reviewedHeadRef?: string;
@@ -354,15 +349,24 @@ try {
     "captureRound reaches the injected executor for every exec — no read slips past it to the real one",
   );
   assert(
-    state.capturedHeadRef === "HEAD",
+    state.captured?.headRef === "HEAD",
     "captureRound records the head ref the round reviewed alongside the capture",
+  );
+  // The pairing is the #1360 round-3 fix: the binding and the head ref it was
+  // taken for land in ONE object, so an interrupted round cannot leave the
+  // writer pairing one round's capture with another round's ref.
+  assert(
+    state.captured !== undefined &&
+      Object.keys(state.captured).sort().join(",") === "binding,headRef",
+    `captureRound stores the binding and its head ref as ONE paired value (got ${JSON.stringify(Object.keys(state.captured ?? {}))})`,
   );
   // The point of threading the executor is that the CAPTURE IS REAL: every git
   // read went through the seam, so what landed in the state is what the seam
   // answered. A capture that silently fell back to the real executor would
   // still leave the counter at 1 and the state non-empty.
   assert(
-    typeof binding.reviewedTreePatchId === "string" && /^[0-9a-f]{40}$/.test(binding.reviewedTreePatchId),
+    typeof binding.reviewedTreePatchId === "string" &&
+      /^[0-9a-f]{40}$/.test(binding.reviewedTreePatchId),
     `captureRound populated the working-tree identity from the threaded executor (got ${JSON.stringify(binding.reviewedTreePatchId)})`,
   );
   assert(

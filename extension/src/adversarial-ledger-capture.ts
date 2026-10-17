@@ -13,18 +13,28 @@
 import { type LedgerBinding, captureBinding } from "./adversarial-ledger-binding.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { execp } from "./exec.ts";
+import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 
-/** The loop's ledger-binding state: the last capture, and the head it was taken for. */
-export interface BindingState {
+/** One round's capture and the head ref it was taken for, written together. */
+export interface RoundCapture {
   /** The capture the NEXT ledger write must carry (the approving round's, since
    * the write runs on the same exit as the round that set it). */
-  binding?: LedgerBinding;
+  binding: LedgerBinding;
   /** The head ref `binding` describes. Threaded to the writer as `head`, so the
    * row's headSha and its reviewedHead resolve from the same ref — the writer
    * must never resolve a head the loop did not review. */
-  capturedHeadRef?: string;
+  headRef: string | undefined;
+}
+
+/** The loop's ledger-binding state: the last round's capture, as ONE value. */
+export interface BindingState {
+  /** The capture the NEXT ledger write must carry — together with the head ref
+   * it was taken for. One field on purpose: both halves of a round's capture are
+   * set in ONE assignment, so an interrupted round can never leave the writer
+   * pairing round N's binding with round N+1's head ref. */
+  captured?: RoundCapture;
 }
 
 /**
@@ -35,6 +45,15 @@ export interface BindingState {
  * the review either. A round whose capture could not run still reviews — the
  * fail-closed consequence lands on the LEDGER ROW (the writer refuses a
  * tool-path pass it cannot verify), not on the reviewer's dispatch.
+ *
+ * The capture and its head ref are stored as ONE object (`state.captured`),
+ * never as two sibling fields: an abort or a throw between two assignments
+ * would leave a fresh binding next to the previous round's ref, and the writer
+ * would pair them into one row.
+ *
+ * Both capture failures are WARNINGS, not debug traces: a round whose capture
+ * did not run is invisible otherwise, and its row is refused on the tool path —
+ * an outcome change the operator should see without `PI_ENSEMBLE_DEBUG`.
  */
 export async function captureRound(
   state: BindingState,
@@ -44,13 +63,18 @@ export async function captureRound(
   execFn: VerifyExecFn = execp,
 ): Promise<void> {
   try {
-    state.binding = await captureBinding(cwd, baseRef, headRef, execFn);
-    state.capturedHeadRef = headRef;
+    const captured = await captureBinding(cwd, baseRef, headRef, execFn);
+    if (captured.bindingUnavailable) {
+      traceWarn(`adversarial: round capture unavailable — ${captured.bindingUnavailable}`);
+    }
+    state.captured = { binding: captured, headRef };
   } catch (err) {
-    state.binding = {
-      bindingUnavailable: `the round capture failed (${(err instanceof Error ? err.message : String(err)).slice(0, 120)})`,
+    const reason = (err instanceof Error ? err.message : String(err)).slice(0, 120);
+    traceWarn(`adversarial: round capture threw — ${reason}`);
+    state.captured = {
+      binding: { bindingUnavailable: `the round capture failed (${reason})` },
+      headRef,
     };
-    state.capturedHeadRef = headRef;
   }
 }
 
@@ -106,12 +130,12 @@ export function makeLedgerWrite(opts: {
       workCwd: opts.workCwd,
       resolvedBranch: opts.resolvedBranch,
       branch: opts.branch,
-      head: opts.state.capturedHeadRef,
+      head: opts.state.captured?.headRef,
       callerSuppliedDiff: opts.callerSuppliedDiff === true,
       // #1360 — the tool path's provenance marker and its round capture.
       base: opts.baseRef,
       toolPath: opts.toolPath === true,
-      binding: opts.state.binding,
+      binding: opts.state.captured?.binding,
       execFn: opts.execFn,
     });
     return opts.note(result);
