@@ -66,6 +66,15 @@ export type ConsolidatedVerifyResult =
        * the bound, not an assertion extracted from a truncated stream.
        */
       timedOut?: boolean;
+      /**
+       * #1427 — the path of the persisted gate-hang report for this run (the
+       * still-running test names, the process tree captured at the kill, the
+       * output tail). Present only when the run that decided this outcome was
+       * KILLED at `timeoutMs` AND the write succeeded — absence means either no
+       * kill or an unwritable scratch dir, and the caller's failure string says
+       * so rather than naming a file that is not there.
+       */
+      hangLogPath?: string;
     }
   // #725 — the caller distinguishes a genuine cherry-pick / patch-apply
   // conflict from a dirty-repoRoot preflight refusal via `kind`, not by

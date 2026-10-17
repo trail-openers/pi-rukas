@@ -27,6 +27,8 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
+import type { GateHangInput, HangProcess } from "./work-driver-gate-hang.ts";
+import { captureProcessTree, reportGateHang } from "./work-driver-gate-hang.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -89,6 +91,51 @@ function boundVerifyLog(raw: string): string {
 export function rawOutputClause(logPath?: string): string {
   return logPath ? ` Raw output: ${logPath}.` : " Raw output: unavailable.";
 }
+
+/**
+ * #1427 — the filename of one gate-hang report, relative to `scratchDir`.
+ * Its own prefix rather than the consolidated-verify one because a hang report
+ * is written by every gate seam (per-worktree, consolidated, commit-pr, the
+ * baseline probe), not only the consolidated run: an operator looking for the
+ * report of a per-worktree hang should not have to know which seam produced it.
+ */
+function gateHangLogName(timestamp: string): string {
+  return `gate-hang-${timestamp.replace(/[:.]/g, "-")}.log`;
+}
+
+/**
+ * #1427 — persist a killed gate run's hang report and return the path, or
+ * `undefined` when nothing could be written. Never fails the step (same
+ * contract as `writeConsolidatedVerifyLog`, whose size bound it shares):
+ * the hang report is diagnosis, and the verify outcome is unchanged whether or
+ * not the file exists.
+ *
+ * The full report — tree, output tail, every name — is too wide for the
+ * 800-char failure-string window, which is why it lives here and only the
+ * clause rides in the evidence. The handoff names this path.
+ */
+export function writeGateHangLog(
+  scratchDir: string,
+  timestamp: string,
+  input: GateHangInput,
+  deps: {
+    walk?: (leaderPid: number) => { processes: HangProcess[]; treeUnavailable?: string };
+  } = {},
+): string | undefined {
+  const file = path.join(scratchDir, gateHangLogName(timestamp));
+  try {
+    mkdirSync(scratchDir, { recursive: true });
+    writeFileSync(file, boundVerifyLog(reportGateHang(input, deps)), "utf8");
+    chmodSync(file, 0o600);
+    trace(`work-driver: gate hang — report written to ${file}`);
+    return file;
+  } catch (err) {
+    trace(
+      `work-driver: gate hang — could not write the report: ${(err as Error).message?.slice(0, 160)}`,
+    );
+    return undefined;
+  }
+}
 export function writeConsolidatedVerifyLog(
   scratchDir: string,
   timestamp: string,
@@ -148,20 +195,52 @@ export async function rerunConsolidatedVerifyOnce(
   timeoutMs: number,
   scratchDir?: string,
   timestamp?: string,
-): Promise<{ raw: string; logPath?: string; timedOut: boolean } | undefined> {
+  /**
+   * #1427 — injectable process-tree walker. The tree is walked here, in the
+   * window between the executor's kill and the caller's classification: after
+   * this function returns, the processes it must describe are gone.
+   */
+  walk?: (leaderPid: number) => { processes: HangProcess[]; treeUnavailable?: string },
+): Promise<
+  | {
+      raw: string;
+      logPath?: string;
+      timedOut: boolean;
+      /** #1427 — the tree captured at the kill, when this run was killed. */
+      tree?: { processes: HangProcess[]; treeUnavailable?: string };
+      /** #1427 — the leader pid whose group was killed, when the executor said. */
+      treeLeaderPid?: number;
+    }
+  | undefined
+> {
   trace(`work-driver: verify-flake — re-running \`${cmd}\` once in ${cwd}`);
   let rawFailure: string | undefined;
   // `killed` is how the executor reports its own timeout: the re-run was
   // stopped at the bound, so its stream ends wherever it happened to be.
   let timedOut = false;
+  let tree: { processes: HangProcess[]; treeUnavailable?: string } | undefined;
+  let treeLeaderPid: number | undefined;
   try {
     await withVerifySlot(() =>
       execFn(cmd, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }),
     );
   } catch (err) {
-    const e = err as Error & { stderr?: string; stdout?: string; killed?: boolean };
+    const e = err as Error & {
+      stderr?: string;
+      stdout?: string;
+      killed?: boolean;
+      treePid?: number;
+    };
     rawFailure = combinedExecFailureStream(e);
     timedOut = e.killed === true;
+    // #1427 — walked synchronously in the catch, while the killed run's
+    // grandchildren may still be alive: the lantern #1054 case is precisely
+    // children that outlive the leader, and a walk after the settle would
+    // report nothing about them.
+    if (timedOut && typeof e.treePid === "number") {
+      treeLeaderPid = e.treePid;
+      tree = (walk ?? captureProcessTree)(e.treePid);
+    }
   }
   if (rawFailure === undefined) return undefined;
   // #841 — persist the RAW run2 stream before the bounded tail is computed:
@@ -171,7 +250,18 @@ export async function rerunConsolidatedVerifyOnce(
   // a precomputed path that does not exist on disk.
   if (scratchDir !== undefined && timestamp !== undefined) {
     const logPath = writeConsolidatedVerifyLog(scratchDir, timestamp, 2, rawFailure);
-    return { raw: rawFailure, logPath, timedOut };
+    return {
+      raw: rawFailure,
+      logPath,
+      timedOut,
+      ...(tree !== undefined ? { tree } : {}),
+      ...(treeLeaderPid !== undefined ? { treeLeaderPid } : {}),
+    };
   }
-  return { raw: rawFailure, timedOut };
+  return {
+    raw: rawFailure,
+    timedOut,
+    ...(tree !== undefined ? { tree } : {}),
+    ...(treeLeaderPid !== undefined ? { treeLeaderPid } : {}),
+  };
 }

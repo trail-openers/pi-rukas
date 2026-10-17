@@ -173,6 +173,14 @@ export async function verifyStepOutcome(
    */
   buildResidueOnly?: boolean;
   /**
+   * #1427 — the gate-hang reports this gate persisted, one per gate run it
+   * killed at its bound (per-worktree, consolidated, or both). Carried
+   * STRUCTURALLY so the cap emit site records them on the cap-hit event's
+   * `logPaths` — the handoff then names the files, and no renderer has to find
+   * a path in prose. Absent when no run was killed or nothing could be written.
+   */
+  hangLogPaths?: string[];
+  /**
    * #1240 — the consolidated verify did not run because its probe tree is the
    * tree the per-worktree verify already judged. The caller turns this into a
    * `consolidated-verify-skipped` event (`makeConsolidatedVerifySkippedEvent`).
@@ -247,6 +255,12 @@ export async function verifyStepOutcome(
       ...(baselineRedOnly ? { baselineRedOnly: true } : {}),
       ...(consolidatedVerifySkipped !== undefined ? { consolidatedVerifySkipped } : {}),
       ...(buildResidueOnly ? { buildResidueOnly: true } : {}),
+      // #1427 — read from the context the gate wrote as it ran, not threaded
+      // back through four callbacks: the same list is what the three cap emit
+      // sites (first pass, fence merge, symbol merge) all need to see.
+      ...(ctx.gateHangLogPaths !== undefined && ctx.gateHangLogPaths.length > 0
+        ? { hangLogPaths: [...ctx.gateHangLogPaths] }
+        : {}),
       commentEvidence,
     };
   }

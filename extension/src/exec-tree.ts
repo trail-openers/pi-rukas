@@ -56,6 +56,17 @@ export type ExecTreeError = Error & {
   cmd?: string;
   stdout?: string;
   stderr?: string;
+  /**
+   * #1427 — the pid of the process whose GROUP was killed: the leader this
+   * executor spawned (`detached`), whose pid is also its pgid. A caller that
+   * reports a hang walks the tree under this pid; a caller that killed
+   * something else entirely has no business naming processes.
+   *
+   * Set on the timeout/maxBuffer kill paths only — a non-zero exit is not a
+   * kill, and `treePid` on one would invite a snapshot of processes the gate
+   * never started.
+   */
+  treePid?: number;
 };
 
 /** Signal the child's whole process group; fall back to the child alone. */
@@ -114,6 +125,8 @@ export function execTree(
       err.cmd = shown;
       err.stdout = stdout;
       err.stderr = stderr;
+      // #1427 — only a run this function KILLED carries the group it killed.
+      if (killed || overflow) err.treePid = child.pid;
       reject(err);
     };
 

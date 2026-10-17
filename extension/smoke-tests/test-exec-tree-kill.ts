@@ -128,6 +128,36 @@ async function main() {
     if (fs.existsSync(pidFile)) process.kill(Number(fs.readFileSync(pidFile, "utf8")), "SIGKILL");
   }
 
+  // ── #1427 — a killed run reports WHICH pid's group it took down ───────
+  // The hang reporter walks that pid's tree; without the field it can only say
+  // "timed out", which is the report the operator cannot act on.
+  {
+    const g = gate("leader");
+    const err = await execTree(g.cmd, { timeout: 400 }).then(
+      () => undefined,
+      (e: ExecTreeError) => e,
+    );
+    const pid = await grandchildPid(g.pidFile);
+    expect(err?.killed === true, "treePid: a timeout rejects with killed=true");
+    expect(
+      typeof err?.treePid === "number" && err.treePid > 0 && err.treePid !== pid,
+      `treePid: the killed leader pid is reported (${err?.treePid})`,
+    );
+    expect(await goneWithin(pid, 2000), "treePid: the grandchild is gone after the timeout");
+  }
+
+  // ── A non-killed failure reports no leader pid ─────────────────────────
+  // The hang report is only ever built from a run the executor actually
+  // killed; a failing run must not acquire a claim about processes it held
+  // briefly and normally.
+  {
+    const fail = await execTree("exit 3").then(
+      () => undefined,
+      (e: ExecTreeError) => e,
+    );
+    expect(fail?.treePid === undefined, "treePid: a non-zero exit reports no gate pid");
+  }
+
   // ── The exec contract callers read is unchanged ───────────────────────
   {
     const ok = await execTree("printf out; printf err >&2");
