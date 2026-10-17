@@ -160,6 +160,20 @@ function fake(stdout: string, onCall?: (argv: string[]) => void) {
       false,
     "diff -z: a protected `agents.json` in the code slot is unreadable too — no non-letter token is accepted as a kind",
   );
+  // A score belongs to R/C alone: git appends the similarity percentage to a
+  // rename or a copy and to nothing else, so `M100` is not a token git emits. It
+  // was legal under the old `[MADTUCRX]\d*` class and landed in the `other` arm
+  // as a real record — a malformed stream the read should refuse.
+  for (const bogus of ["M100", "A0", "D9", "T1", "U7", "X3"]) {
+    assert(
+      (await readCommittedProtectedPaths(fake(`${bogus}\0src/a.ts\0`), "/wt", BASE)).ok === false,
+      `diff -z: \`${bogus}\` — a score on a letter git never scores (${bogus[0]}) is unreadable, not an \`other\` record`,
+    );
+  }
+  assert(
+    (await readCommittedProtectedPaths(fake("M\0src/a.ts\0"), "/wt", BASE)).ok === true,
+    "diff -z: the tightened code regex still accepts a bare `M` (the score is only illegal on the unscored letters)",
+  );
   const renamed = await readCommittedProtectedPaths(
     fake(`R100\0${CI}\0src/ci.yml\0`),
     "/wt",

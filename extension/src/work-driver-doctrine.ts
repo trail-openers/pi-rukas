@@ -199,7 +199,10 @@ export async function readDoctrineAtBase(
  * is the kind of message that sends an operator digging through a diff. A
  * developer re-dispatch can never satisfy this gate, so the remedy is the
  * operator's: the exact `/work` command that grants every protected path the
- * patch touched (#1090), or the process-wide escape hatch.
+ * patch touched (#1090), or the process-wide escape hatch. Grantable and
+ * ungrantable paths are partitioned (#1378): an ungrantable name is called out
+ * and excluded from the command, and the command and the review caution still
+ * cover the paths that CAN be granted.
  */
 export function explainProtectedPaths(
   ungranted: readonly string[],
@@ -220,16 +223,25 @@ export function explainProtectedPaths(
   // only when every one is a plain path token, and only for a single issue —
   // the one shape `--allow-protected` accepts. A name outside that token set
   // (non-ASCII, a space, a quote) is ungrantable by construction: the grant
-  // parser rejects it, so no command is offered and the operator is told why (#1378).
+  // parser rejects it. It is named and set aside, NOT allowed to suppress the
+  // command for the paths that ARE grantable (#1378): one exotic filename in a
+  // mixed change set used to cost the operator the copy-paste grant for every
+  // ordinary path in the same patch, and the "review each path's diff first"
+  // caution that travels with it.
   const plain = (p: string) => SAFE_PATH_RE.test(p) && !p.split("/").includes("..");
   const ungrantable = paths.filter((p) => !plain(p));
-  if (ungrantable.length > 0) {
-    return `${head}; ${ungrantable.join(", ")} cannot be granted with --allow-protected (a grant accepts only plain ASCII path tokens), so no grant command is printed (${env}).`;
+  const grantable = paths.filter(plain);
+  const ungrantableNote =
+    ungrantable.length > 0
+      ? ` ${ungrantable.join(", ")} cannot be granted with --allow-protected (a grant accepts only plain ASCII path tokens), so none is listed in the command.`
+      : "";
+  if (grantable.length === 0) {
+    return `${head}; every protected path in the change set is ungrantable${ungrantableNote.replace(/^ /, " —")} (${env}).`;
   }
   if (issues.length !== 1) {
-    return `${head}; or, if it is genuinely the work you asked for, grant the paths for one single-issue cycle with \`/work <issue> --restart --allow-protected <path>[,<path>]\` (${env}).`;
+    return `${head}; or, if it is genuinely the work you asked for, grant the paths for one single-issue cycle with \`/work <issue> --restart --allow-protected ${grantable.join(",")}\`${ungrantableNote} (${env}).`;
   }
-  return `${head}; or, if it is genuinely the work you asked for, review each path's diff first — a granted path is trusted for the whole cycle, so grant none you did not mean to change — then grant the protected paths this patch touched, for one cycle only, with \`/work ${issues[0]} --restart --allow-protected ${paths.join(",")}\` (${env}).`;
+  return `${head}; or, if it is genuinely the work you asked for, review each path's diff first — a granted path is trusted for the whole cycle, so grant none you did not mean to change — then grant the protected paths this patch touched, for one cycle only, with \`/work ${issues[0]} --restart --allow-protected ${grantable.join(",")}\`${ungrantableNote} (${env}).`;
 }
 
 /** A path safe to print inside a copy-paste `/work` command (and to grant). */

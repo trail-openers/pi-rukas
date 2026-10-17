@@ -19,7 +19,7 @@
  * Both reads are NUL-separated here, where git emits names verbatim and rename
  * sides arrive as their own tokens. The layouts are deliberately NOT parsed by one
  * loop: `status --porcelain -z` puts the NEW name first (`R  new\0orig\0`) while
- * `diff -z --name-status -M` puts the status code first (`R100\0from\0to`). The
+ * `diff -z --name-status -M -C` puts the status code first (`R100\0from\0to`). The
  * `worktreeStatus` precedent in work-develop-git.ts is the uncommitted-side shape;
  * `workstreamTouchedSet` in work-driver-verify.ts is the committed-side one, but
  * without `-z`, so there was nothing to import.
@@ -266,7 +266,7 @@ type NamedKind = "M" | "A" | "D";
 
 /**
  * The only tokens git ever puts in the code slot of a `diff -z --name-status`
- * record: `M`, `A`, `D`, `T`, `U`, `X`, `R`/`C` with the optional similarity
+ * record: `M`, `A`, `D`, `T`, `U`, `X` bare, and `R`/`C` with the similarity
  * score git appends (`R100`, `C75`).
  *
  * Without this the parser distinguished only an EMPTY code from a real one, so
@@ -279,10 +279,15 @@ type NamedKind = "M" | "A" | "D";
  * same alphabet, and a stream that lacks a code is the stream a truncated or
  * hand-constructed fake produces.
  *
- * `R` and `C` are included because the arm below dispatches on those letters
- * first; a bare `R`/`C` with no score is what the fakes emit.
+ * A digit is legal **only** on `R`/`C`, which is why the alternation is
+ * `(?:[RC]\d*|[MADTUX])` and not `[MADTUCRX]\d*`: the score is git's rename/copy
+ * confidence and git appends it to those two letters alone, so `M100` is not a
+ * git token. Scoring it in would let a malformed record — or a fake that
+ * mistypes the letter — through the very arm this regex exists to close, and the
+ * `other` arm would report a path git never said. A bare `R`/`C` (no score) is
+ * what the fakes emit and stays legal.
  */
-const NAME_STATUS_CODE_RE = /^[MADTUCRX]\d*$/;
+const NAME_STATUS_CODE_RE = /^(?:[RC]\d*|[MADTUX])$/;
 
 /** A rename or copy record — the two kinds that carry a source path. */
 type SourcedRecord = Extract<NameStatus, { kind: "R" | "C" }>;
@@ -390,7 +395,7 @@ export async function readProtectedStatusPaths(
 }
 
 /**
- * Read the committed change set with `diff -z --name-status -M <base>..HEAD`.
+ * Read the committed change set with `diff -z --name-status -M -C <base>..HEAD`.
  *
  * `-M` is what the bug needed: without rename detection the record for a moved
  * protected file is a bare `A src/ci.yml` and the protected side never appears.
@@ -429,7 +434,7 @@ export async function readCommittedProtectedPaths(
       timeout: DEFAULT_GIT_TIMEOUT_MS,
     }));
   } catch (err) {
-    return { ok: false, unreadable: `git diff -z --name-status -M failed: ${errText(err)}` };
+    return { ok: false, unreadable: `git diff -z --name-status -M -C failed: ${errText(err)}` };
   }
   const tokens = stdout.split("\0");
   const records: NameStatus[] = [];

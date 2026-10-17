@@ -196,6 +196,28 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
     (grouped.failures.find(isProtectedFailure) ?? "").includes("/work <issue> --restart --allow-protected"),
     "a grouped cycle is told to grant on a single-issue run, not given a command that would be refused",
   );
+  // #1378: the ungrantable name must not cost the operator the grant command for
+  // the ordinary paths in the same change set — one exotic filename used to
+  // suppress both the command and the review caution for every grantable path.
+  const mixed = await verifyStepOutcome(
+    ctx('?? ".github/workflows/x `y`.yml"\n?? .pi/verify-cmd\n'),
+    stateWith(),
+    "develop",
+  );
+  const mixedHit = mixed.failures.find(isProtectedFailure) ?? "";
+  assert(
+    mixedHit.includes("cannot be granted") &&
+      mixedHit.includes("/work 1090 --restart --allow-protected .pi/verify-cmd"),
+    "a mixed change set still gets the grant command for the grantable path",
+  );
+  assert(
+    mixedHit.includes("review each path's diff first"),
+    "...and the review-before-granting caution survives the ungrantable name",
+  );
+  assert(
+    !mixedHit.includes("--allow-protected .github"),
+    "...and the ungrantable name is named in prose, never pasted into the command",
+  );
 
   const ok = await verifyStepOutcome(ctx(`?? ${CI}\n`, [CI]), stateWith(), "develop");
   assert(

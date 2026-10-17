@@ -101,6 +101,42 @@ function developCtx(): DriverContext {
 const protectedFailure = (f: readonly string[]) => f.find((x) => /protected path/.test(x)) ?? "";
 
 /**
+ * Force git to re-read a file's CONTENT, so a `clean` filter bound to it is
+ * guaranteed to run.
+ *
+ * `git status` does not read a worktree file's bytes when its stat data still
+ * matches the index entry — it takes the "assume clean" shortcut and never
+ * consults the attribute stack, so no clean filter runs. The fixture writes the
+ * protected file in the same second (sometimes the same inode-timestamp
+ * granularity) as the commit that created the index entry, and on a filesystem
+ * with second- — or coarse — timestamp resolution that write can be stat-equal
+ * to the index. Measured: the `childchose` DOCUMENTED-LIMIT assertions below
+ * failed ~15% of runs, and the failure was git not executing the script, not the
+ * guard blocking it. A test that asserts "the child's script DOES run" cannot be
+ * green on a coin flip about whether git bothers to read the file.
+ *
+ * Rebuilding the index from HEAD re-stats every tracked file, so every index
+ * entry carries a stat taken strictly *after* the fixture's write; the next
+ * `git status` sees a mismatch and re-reads the content, which runs the filter.
+ * Measured **30/30** the same way the flake was measured. Two alternatives were
+ * tried on the same harness and rejected:
+ *
+ *   - `utimesSync` bumping mtime a fixed 10 s into the future: **28/30** — the
+ *     same rate as doing nothing, so the shortcut is not gated on mtime alone
+ *     (git compares the whole stat tuple, ctime included).
+ *   - `git update-index --really-refresh`: **exit 1** on this fixture
+ *     (`needs update`), because the file is deliberately dirty.
+ *
+ * Deleting the index and `git reset -q` is the shape that works, and it is
+ * contained to the throwaway fixture. It fails loudly if the index cannot be
+ * rebuilt (git throws) rather than leaving the run on the coin flip.
+ */
+function forceGitToReread(dir: string): void {
+  rmSync(path.join(dir, ".git", "index"), { force: true });
+  gitIn(dir, ["reset", "-q"]);
+}
+
+/**
  * Run the two exported argv constants verbatim, through the real executor. A
  * test-local reconstruction of the command line would let the guard under test
  * drift out of what the assertion exercises — the vacuous-fake class
@@ -137,8 +173,10 @@ await withEnv({ PI_ENSEMBLE_VERIFY: "1", PI_ENSEMBLE_PROTECTED_PATHS: undefined 
       opts.bind(dir);
       gitIn(dir, ["config", `filter.${opts.filterName}.clean`, script]);
       // Leave the protected file DIRTY: a clean worktree gives git nothing to
-      // materialise and the case would pass without exercising anything.
+      // materialise and the case would pass without exercising anything. The
+      // index rebuild is what makes "dirty" mean "git will actually read it".
       writeFileSync(path.join(dir, CI), "runs-on: ubuntu\nchild-wrote-this\n");
+      forceGitToReread(dir);
 
       // (a) The counterfactual, run FIRST and always: an UNGUARDED one-sided
       //     `git diff` in this same fixture must run the script. Without it the
@@ -258,6 +296,7 @@ await withEnv({ PI_ENSEMBLE_VERIFY: "1", PI_ENSEMBLE_PROTECTED_PATHS: undefined 
       writeFileSync(path.join(dir, ".git", "info", "attributes"), "*.yml filter=childchose\n");
       gitIn(dir, ["config", "filter.childchose.clean", script]);
       writeFileSync(path.join(dir, CI), "runs-on: ubuntu\nchild-wrote-this\n");
+      forceGitToReread(dir);
       rmSync(marker, { force: true });
       await readBothGuardedReads(dir, base);
       // Both guarded reads run a `filter.childchose` they cannot force off, so
@@ -299,6 +338,7 @@ await withEnv({ PI_ENSEMBLE_VERIFY: "1", PI_ENSEMBLE_PROTECTED_PATHS: undefined 
       gitIn(dir, ["commit", "-q", "-m", "commit the textconv binding"]);
       gitIn(dir, ["config", "diff.x.textconv", script]);
       writeFileSync(path.join(dir, CI), "runs-on: ubuntu\nchild-wrote-this\n");
+      forceGitToReread(dir);
       rmSync(marker, { force: true });
       await readBothGuardedReads(dir, base);
       const textconvRan = existsSync(marker);
