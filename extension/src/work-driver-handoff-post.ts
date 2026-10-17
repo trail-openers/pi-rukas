@@ -243,6 +243,17 @@ export function makeHandoffEmittedEvent(opts: {
  * verified independently via `verifyHandoffLabel`. Returns `true` when the
  * label was successfully applied AND verified on the issue.
  */
+/**
+ * #1472 — does this handoff deliberately decline `needs-human-attention`?
+ * A person CLOSED the issue, so telling them to look at it is noise; every
+ * label writer consults this so the decline holds on all four paths, including
+ * the @ops prompt. Returns false for any cycle not parked by the closed-issue
+ * gate, so normal handoffs are unaffected.
+ */
+export function declinesAttentionLabel(ps: { handoffLabelSkipped?: boolean }): boolean {
+  return ps.handoffLabelSkipped === true;
+}
+
 export async function applyIssueLabelDualTarget(forge: Forge, issue: number): Promise<boolean> {
   try {
     await forge.labelCreate(HANDOFF_LABEL, "FFAA00").catch(() => {});

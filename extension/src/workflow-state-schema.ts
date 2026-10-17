@@ -50,6 +50,7 @@ export {
   type DirtyRootExemptBaseline,
   dirtyRootExemptBaselineFindings,
 } from "./workflow-state-dirty-root.ts";
+import type { IssueClosedState } from "./workflow-state-schema-issue-closed.ts";
 
 /**
  * Pipeline snapshot — the driver's "where are we" view, reconstructible
@@ -57,7 +58,7 @@ export {
  * diverge, eventLog is authoritative.
  */
 
-export interface PipelineState {
+export interface PipelineState extends IssueClosedState {
   /** Current step. Drives template selection and transition table. */
   currentStep: WorkStep;
   /**
