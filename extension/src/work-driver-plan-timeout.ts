@@ -91,9 +91,20 @@ export function planTimeoutKill(
  * dispatch, widened (from the primary's "the plan step's own bound") to any
  * kill cause, so the corrective's kill names the trigger that actually fired
  * (backstop / loop / token-budget / abort) instead of a misleading bound.
+ *
+ * #819 round-3 — the parameter is NARROWED to a result that actually carries a
+ * `killCause`. The `default` branch renders `${result.killCause}` verbatim, so
+ * an uncaused result produced the operator-facing sentence
+ * `"killed after undefinedms undefined"` — a detail that names no cause and no
+ * bound. Making that shape unrepresentable is better than a runtime guard: the
+ * only caller (`planKillFailureEvent`) is reached from behind a `retry.killCause`
+ * test, so it already holds a caused result and there is no call site that
+ * needs the wider type.
  */
-export function planKillDetail(result: DispatchResult): string {
-  const knob = overrideEnvForKillCause(result.killCause ?? "timeout");
+function planKillDetail(
+  result: DispatchResult & { killCause: NonNullable<DispatchResult["killCause"]> },
+): string {
+  const knob = overrideEnvForKillCause(result.killCause);
   switch (result.killCause) {
     case "loop": {
       const ev = result.loopEvidence;
@@ -127,12 +138,17 @@ export function planKillDetail(result: DispatchResult): string {
  * `buildCompletionEvent`) because the kill branch there keys its prose on
  * `killCause === "plan-timeout"` and this call site must name the ACTUAL
  * trigger — a loop kill must not be reported as the plan bound expiring.
+ *
+ * #819 round-3 — PRIVATE. It had exactly one caller and exposing it is what let
+ * two events be built from one kill (`buildCompletionEvent` plus this one); the
+ * only way out of `planCorrectiveFailureEvent` is through the kill check, so a
+ * caller cannot reach both shapes for the same result.
  */
-export function planKillFailureEvent(
+function planKillFailureEvent(
   step: WorkStep,
   role: string,
   label: string,
-  result: DispatchResult,
+  result: DispatchResult & { killCause: NonNullable<DispatchResult["killCause"]> },
 ): Extract<WorkEvent, { kind: "dispatch-failed" }> {
   return withUsage(
     {
@@ -213,7 +229,9 @@ export async function planTimeoutCorrective(
   // invention of the driver, not a finding about the planner. The step ends on
   // a `dispatch-failed` tail so the router's plan caps own it.
   if (retry?.killCause) {
-    state = appendEvent(state, planKillFailureEvent("plan", "explore", "plan:corrective", retry));
+    // #819 round-3 — one event, built through the same seam the quality-gate
+    // corrective uses, so the two corrective paths cannot diverge on shape.
+    state = appendEvent(state, await planCorrectiveFailureEvent(ctx, "plan:corrective", retry));
     return { ok: false, state, workstreams: {} };
   }
   if (!retry) {
@@ -242,6 +260,66 @@ export async function planTimeoutCorrective(
 }
 
 /**
+ * #819 round-3 — the failure tail of a plan dispatch that ran and then FAILED,
+ * shared by both corrective call sites (`runPlan`'s quality-gate corrective and
+ * `planTimeoutCorrective`'s recovery corrective) so neither can append a second
+ * event for the same kill.
+ *
+ * `buildCompletionEvent` turns a `killCause` into its own `dispatch-failed`, so
+ * a caller that appended it AND then rendered the kill here recorded the same
+ * failure twice — two `dispatch-failed` events with the same `label`, each a
+ * plausible tail for the step router. This decides once, on the structured
+ * facts, and the caller returns with the result: the kill branch never reaches
+ * a completion builder. A provider-side stop is the one failure shape left to
+ * `buildCompletionEvent`, so it is narrowed out of that union at the one place
+ * that can prove it (the `errorStop` test above) rather than at the call sites.
+ */
+export async function planCorrectiveFailureEvent(
+  ctx: CycleContext,
+  label: string,
+  retry: DispatchResult,
+): Promise<Extract<WorkEvent, { kind: "dispatch-failed" | "dispatch-failed-provider" }>> {
+  if (retry.killCause) {
+    return planKillFailureEvent("plan", "explore", label, {
+      ...retry,
+      killCause: retry.killCause,
+    });
+  }
+  if (retry.errorStop) {
+    // A provider-side stop is not a kill: `buildCompletionEvent` owns that
+    // shape (a `dispatch-failed-provider`), and the plan step's carve-out is
+    // specifically that a KILL is never routed through it twice.
+    const event = await buildCompletionEvent(ctx, "plan", "explore", label, retry);
+    // The union `buildCompletionEvent` returns is wider than what an
+    // `errorStop` result can produce. The kill branch above has already taken
+    // the only cause that yields a `dispatch-failed` there, so the provider
+    // member is the answer and is asserted rather than assumed — a completion
+    // for a stopped child is a mapper bug, and saying so beats writing a
+    // `dispatch-completed` into a failure tail.
+    if (event.kind !== "dispatch-failed-provider") {
+      throw new Error(
+        `work-driver: a corrective plan dispatch with an error stop produced a '${event.kind}' event (label ${label})`,
+      );
+    }
+    return event;
+  }
+  return withUsage(
+    {
+      kind: "dispatch-failed",
+      step: "plan",
+      role: "explore",
+      jobId: retry.transcriptPath ? path.basename(retry.transcriptPath, ".json") : "unknown",
+      label,
+      ms: retry.ms,
+      at: Date.now(),
+      exitCode: retry.exitCode ?? null,
+      errorTail: retry.text?.slice(-200),
+    },
+    retry.usage,
+  );
+}
+
+/**
  * #657 — the corrective plan re-dispatch prompt. The historical-context note
  * lives here (at the corrective call path, NOT inside the shared steer
  * builders) so it applies ONLY to corrective re-dispatches: a weak model in
@@ -260,4 +338,20 @@ export function planCorrectivePrompt(prompt: string, steer: string): string {
     "the decomposition itself — emit your final report once it is complete and stop.",
   ].join(" ");
   return `${prompt}\n\n${steer}\n\n${historicalNote}`;
+}
+
+/**
+ * #819 round-3 — the offline gate's window on `planKillDetail`'s prose.
+ *
+ * The helper itself is private (its exposure was what let two events be built
+ * from one kill), and its parameter is narrowed so an uncaused result cannot be
+ * passed at all. The prose is still worth pinning — it is operator-facing, and
+ * the sentence `"killed after undefinedms undefined"` is exactly what the
+ * narrowing was added to prevent — so the gate reaches it through this one
+ * named, caused-shaped accessor rather than through the event builder.
+ */
+export function planKillDetailForTest(
+  result: DispatchResult & { killCause: NonNullable<DispatchResult["killCause"]> },
+): string {
+  return planKillDetail(result);
 }

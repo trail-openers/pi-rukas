@@ -142,21 +142,27 @@ function coveredBy(path: string, workstreamPaths: string[]): boolean {
  *    code paths). A contradictory marker with paths lets the paths win, exactly
  *    as `classifyDeliverables` does.
  *
- * #819 round-2 — the `noDiff` + real-paths case is handled by clause 3 NOT
- * firing (its `paths.length === 0` guard) and the paths then winning, so there
- * is no separate "no diff" branch here to keep in sync; the earlier draft of
- * this function had an unreachable one that duplicated clause 3's condition.
+ * #819 round-3 — the marker clause is GONE, along with the third branch that
+ * used to spell it out. It tested `noDiff && evidence && paths.length === 0`
+ * two lines after line 1 had already returned for `paths.length === 0`, so it
+ * could not fire: the earlier draft carried it as a separate "no diff" branch
+ * duplicating clause 3's condition, and a branch that cannot be entered is not
+ * a rule, it is a reader's burden. What the behaviour needs is exactly two
+ * tests — "no paths at all" and "a slot that is not a path" — because
+ * `noDiff` (the plan-time #792 marker) is only ever honoured when the
+ * deliverable declares no code paths, and that is the first test. The docblock
+ * above describes the code that is here: a deliverable with REAL paths is
+ * measurable whatever its marker claims, and the paths win.
  */
 function measurable(d: SpecCoverageDeliverable, paths: string[]): boolean {
+  // Clause 1 — nothing to point at. This is also what makes an honoured no-diff
+  // marker (clause 3) unmeasurable: the marker is only honoured when the
+  // deliverable declares no paths, so it never needs its own branch.
   if (paths.length === 0) return false;
-  // Not a path → not measurable. Any non-path slot disqualifies the whole
-  // deliverable: a partial list cannot be honestly judged either, since the
-  // EVERY-path rule would reject the plan for the prose half anyway.
-  if (!paths.every((p) => isPlainRepoRelativePath(p) && !isPlaceholderPath(p))) return false;
-  if (d.noDiff === true && (d.noDiffEvidence ?? "").trim().length > 0 && paths.length === 0) {
-    return false;
-  }
-  return true;
+  // Clause 2 — Not a path → not measurable. Any non-path slot disqualifies the
+  // whole deliverable: a partial list cannot be honestly judged either, since
+  // the EVERY-path rule would reject the plan for the prose half anyway.
+  return paths.every((p) => isPlainRepoRelativePath(p) && !isPlaceholderPath(p));
 }
 
 /**
