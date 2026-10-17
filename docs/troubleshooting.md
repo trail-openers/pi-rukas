@@ -1060,6 +1060,21 @@ The park has its own cap, `fix-pass-park` (it reused `verify-failed:develop` bef
 
 **Fix:** the error in the message names the git command that failed and its stderr; fix that first. Then recover the change at the named path by hand (`git status`, `git diff`, `git diff --cached`, and `git cherry-pick --abort` if one is in progress), and clear the root before re-running.
 
+### Build output in the repo root declined the gate (`[build-residue]`, #1421)
+
+**Symptom:** a complete, reviewed, committed change parks as `verify-env:develop` (`verify-failed:develop` before #1421) and the first evidence line starts with `[build-residue]`, naming paths like `target/.rustc_info.json`, `target/CACHEDIR.TAG`, `target/debug/.cargo-lock`, or a `dist/` the bundler wrote. The handoff says the change was never judged. An older build reported the same condition as `verify-failed:develop` with "consolidated verify was refused — repoRoot is dirty (…)", plus a handoff line claiming "consolidation infeasible (work remains on its worktree detached HEADs)" while the commits sat intact in a worktree.
+
+**Why:** every dirty-root gate reads `git status` at the repo root and refuses to mutate a root carrying anything it cannot identify. Build output is untracked and unignored whenever the project's `.gitignore` does not cover where the build actually lands — a cargo workspace whose root is the checkout ignores `console/target/` but not `target/`, so a gate that builds at the root produces the residue that blocks the next gate. Before #1421 that environment refusal carried the code-failure cap, so a finished change was filed alongside diffs the gate had actually rejected.
+
+**Fix:** the named paths are git-ignored, so they are a tool's output — do not inspect the diff first. Keep build output out of the checkout the gate runs in:
+
+- point the build at a directory outside the tree (`CARGO_TARGET_DIR=/tmp/<project>-target`, a persistent target volume, `--out-dir` outside the root);
+- or gitignore the output where it lands (`/target/`, `dist/`) so the classifier's `git status --ignored` read can see it is not source.
+
+Clear what is already there, then re-run. The gate does **not** delete anything — build output is preserved like any other file, because a driver that cleans a tree it does not own is the failure class the dirty-root gate exists to prevent.
+
+**What the classifier exempts, and what it never does:** only untracked paths, and only ones git itself declares ignored (`git status --ignored=matching`, so `.gitignore`, `core.excludesFile` and `.git/info/exclude` all count), plus the driver's own scratch (`tmp/issue-<N>/`, `.worktrees/`, `.pi/work-state/`). A **tracked** modification, staged entry, deletion or rename is dirt whatever `.gitignore` says about the path — a file that became ignored after it was tracked still holds uncommitted source. An ignored read that fails classifies every path as dirt, which is the pre-#1421 behaviour: the narrowing can only ever loosen a refusal it has proven wrong, never weaken a gate that could not answer.
+
 ### `/work` refuses on a dirty repo root caused by a tool's own local files (#1362)
 
 **Symptom:** `/work N` halts at step 3 (branch) with cap `repo-root-residue` and a plumb report naming a file you never wrote — `.claude/settings.local.json`, an editor's workspace file, an agent's local config. The same file also trips the consolidated-verify and integrate dirty-root gates, so clearing it once by hand only moves the refusal to the next cycle.

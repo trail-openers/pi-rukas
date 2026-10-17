@@ -86,8 +86,15 @@ export function reportConsolidatedVerifyOutcome(
     // `kind`, not the detail prose; a dirty root is cleared with git status.
     if (cons.kind === "dirty-root") {
       failures.push(
-        `consolidated verify was refused — repoRoot is dirty (${cons.detail}). Leftover residue from an earlier cycle, NOT a workstream conflict or verify failure: run \`git status\` at the repo root, clear the residue, and re-run the cycle`,
+        `consolidated verify was refused — repoRoot is dirty (${cons.detail}). NOT a workstream conflict or a verify failure: the named paths are tracked or unignored content the probe's checkout would carry onto the scratch branch (yours, or a previous cycle's — the gate cannot tell and preserves both). Run \`git status\` at the repo root, decide what each one is (commit, move, or gitignore it), and re-run the cycle. A cycle that left the root like this on purpose says so in its own handoff and names the tree it saved`,
       );
+    } else if (cons.kind === "build-residue") {
+      // #1421 — the gate DECLINED to refuse: every path was untracked and
+      // git-ignored, i.e. build output. Nothing was judged, so the failure
+      // string carries the `[build-residue]` label the cap router reads
+      // (`verify-env:develop`, not `verify-failed:develop`) rather than the
+      // conflict wording the router matches on for a decomposition error.
+      failures.push(cons.detail);
     } else if (cons.kind === "host") {
       // The host could not fork, so nothing was combined: neither a conflict
       // nor a verify failure. The message deliberately avoids the conflict
