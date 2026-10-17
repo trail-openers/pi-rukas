@@ -93,26 +93,38 @@ export type ProtectedPathExec = NonNullable<DriverContext["verifyExecFn"]>;
  * honours, so the two reads share one list rather than restating it.
  *
  * **What is outside this guard's boundary — and it is a real boundary, not a
- * caveat.** Three things this argv cannot close, each measured against git
- * 2.50.1 rather than assumed from the man page:
+ * caveat.** The `fsmonitor`/`hooksPath` pairs and the named-`filter` entries
+ * below are **defence-in-depth for common names only**. They are not the safety
+ * boundary of these reads, and nothing here should be read as saying otherwise.
+ * Two things this argv cannot close, each measured against git 2.50.1 rather
+ * than assumed from the man page:
  *
  *   - **The shared config.** `core.hooksPath=/dev/null` redirects hooks; it does
  *     not read config. The config these runs honour is the **shared**
  *     `$GIT_COMMON_DIR/config`, one file for every worktree of the clone. A
  *     `filter.<x>.clean` entry there — or in `hooks/` — is reachable by every git
- *     invocation in the driver, this module's two and every other. That file and
- *     `hooks/` belong to `adversarial-fix-guard`, not here. This module hardens
- *     the argv of two reads; it does not fence a config it does not own.
+ *     invocation in the driver, this module's two and every other. This module
+ *     hardens the argv of two reads; it does not fence a config it does not own.
  *
- *   - **A named filter driver cannot be blanket-blocked.** A `*.yml filter=x`
- *     binding from a committed `.gitattributes` **or** a `.git/info/attributes`
- *     (untracked, so the read can never remove it) plus a `filter.x.clean` config
- *     makes git execute that script as the driver while materialising content for
- *     `git diff` against a one-sided rev. `-c filter.x.clean=false` does stop it —
- *     but only for the name `x`, and the name is the attacker's choice. There is
- *     no wildcard: `-c 'filter.*.clean=false'` sets one literal key, and with
+ *   - **A named filter driver cannot be blanket-blocked, and the name is the
+ *     attacker's choice.** A `*.yml filter=x` binding from a committed
+ *     `.gitattributes` **or** a `.git/info/attributes` (untracked, so the read can
+ *     never remove it) plus a `filter.x.clean` config makes git execute that
+ *     script as the driver while materialising content for `git diff` against a
+ *     one-sided rev. `-c filter.x.clean=false` does stop it — but only for the
+ *     name `x`. Any other name still runs: verified against a worktree-written
+ *     filter called `childchose`, which executed under both guarded reads. There
+ *     is no wildcard: `-c 'filter.*.clean=false'` sets one literal key, and with
  *     three paths bound to three different filter names, all three scripts still
- *     ran with it present.
+ *     ran with it present. **The develop path currently has no owner for that
+ *     case** — the same is true of the skip-ratchet's separate `-U0` content diff
+ *     (`git diff <baseRef> -U0` in work-driver-verify-develop-gates.ts, plain-string
+     argv with no `SAFE_CONFIG` at all), which runs
+ *     the foreign-named filter too. Transport-level isolation of executable git
+ *     config is a separate concern from #1378's NUL-separated reads and is
+ *     **tracked separately**; do not treat any code in this repo as closing it.
+ *     The "DOCUMENTED LIMIT" case in
+ *     test-work-driver-protected-paths-filter.ts is the pin on all of this.
  *
  *   - **The two obvious flags do not work, and one of them breaks the reads if
  *     you try.** `core.attributesFile=/dev/null` does not stop the binding (git
@@ -395,12 +407,13 @@ export async function readProtectedStatusPaths(
  * `R100` unless git's similarity heuristic pairs it, so a deleted protected file
  * must halt on the `D` record alone.
  *
- * Both reads carry the `SAFE_CONFIG` pairs and flags above (`core.quotePath=off`,
- * `core.fsmonitor=false`, `core.hooksPath=/dev/null`, `core.attributesFile=/dev/null`,
- * `--no-ext-diff`, `--no-textconv`) — see that block for why each one is
- * load-bearing, including the attribute-bound filter/diff driver these reads run
- * beside in a child-writable worktree, and the shared `$GIT_COMMON_DIR/config`
- * that sits outside this guard.
+ * Both reads carry the `SAFE_CONFIG` pairs above (`core.quotePath=off`,
+ * `core.fsmonitor=false`, `core.hooksPath=/dev/null`, `core.attributesFile=/dev/null`
+ * and the per-name `filter.<name>.clean=false` entries). `--no-ext-diff` and
+ * `--no-textconv` are **deliberately absent**: they are `git diff` options, so at
+ * the global position git rejects them outright (exit 129) and they would break
+ * this read — see the `SAFE_CONFIG` block for the measurement, and for why the
+ * per-name filter entries are defence-in-depth rather than the safety boundary.
  */
 export async function readCommittedProtectedPaths(
   exec: ProtectedPathExec,
