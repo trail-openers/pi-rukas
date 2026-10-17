@@ -33,17 +33,41 @@ function spent(e: FailureEvent): string {
   return parts.join(", ");
 }
 
+/** What a retry is dispatching into, said once the driver has cleaned it. */
+export type RetryTreeAccount = string | undefined;
+
 /**
  * The operator-facing account of what a retry discards. `attempt` is the
- * attempt that FAILED (1-based). `develop` differs from every other step: its
- * worktree outlives the child, so only the conversation is lost.
+ * attempt that FAILED (1-based). The kept clause is per-step, because what
+ * survives a lost child is genuinely different per step: `develop` runs the
+ * #622 safety net per worktree before the step returns, so a lost attempt's
+ * edits are commits on disk and the retry builds on them; `lens-fix` had no
+ * such net, which is the #1391 shape — its uncommitted residue was read by the
+ * next round as operator dirt and parked the cycle. `tree` is the #1391
+ * account of what the lost attempt left in the retry's worktree and what the
+ * driver did with it (see work-retry-tree-clean.ts).
  */
-export function lostAttemptLine(step: WorkStep, attempt: number, e: FailureEvent): string {
+export function lostAttemptLine(
+  step: WorkStep,
+  attempt: number,
+  e: FailureEvent,
+  tree?: RetryTreeAccount,
+): string {
   const kept =
     step === "develop"
-      ? "its conversation is gone, files it left in the worktree are kept"
-      : "the step restarts from the beginning";
-  return `${step} attempt ${attempt} lost: ${spent(e)} — ${kept}`;
+      ? // The develop step runs the #622 safety net per worktree before it
+        // returns, so a lost attempt's edits are ON DISK as commits — the
+        // retry builds on them (cycle 60: "files it left are kept").
+        "its conversation is gone, files it left in the worktree are kept"
+      : step === "lens-fix"
+        ? // #1391 — lens-fix had no such net: its uncommitted residue was read
+          // by the next round as operator dirt and parked the cycle. The clean
+          // seam says what happened to it, so this half stays true either way.
+          "its conversation is gone and the fix work it left is handled below"
+        : "the step restarts from the beginning";
+  const parts = [`${step} attempt ${attempt} lost: ${spent(e)} — ${kept}`];
+  if (tree !== undefined) parts.push(tree);
+  return parts.join(" · ");
 }
 
 /**

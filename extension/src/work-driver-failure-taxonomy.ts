@@ -82,7 +82,7 @@ type FailureTail = {
   providerRepeats?: number;
 };
 
-type FailureClass = {
+export type FailureClass = {
   cause: DispatchFailureCause;
   shouldRetry: boolean;
   maxRetries: number;
