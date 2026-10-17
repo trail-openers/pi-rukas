@@ -44,11 +44,33 @@
  * `mcp_skill` is the canonical case. PI_BUILTINS is version-pinned; a Pi bump
  * that renames a tool must update it (same doctrine as the "Last verified
  * against" line in docs/pi-compatibility.md).
+ *
+ * **Three properties this file asserts beyond "the repo is clean"** (each is a
+ * regression an earlier revision of this gate had). They live in
+ * `tool-name-invariants.ts` — the 500-line cap again — and are called in
+ * sequence below:
+ *
+ *   1. **Host independence.** The roster is identical with `PI_AGENT_DIR` and
+ *      `HOME` pointed at temp dirs, and no roster source resolves outside the
+ *      checkout. The first revision read `$PI_AGENT_DIR/mcp.json`, so CI and a
+ *      laptop disagreed.
+ *   2. **No real tools filed as nouns.** Nothing in the "not tools" allowlist is
+ *      supplied by a roster source. Twelve real tools (`read`, `write`, `edit`,
+ *      `list`, `rg`, `multiedit`, `webfetch`, `websearch`, `question`,
+ *      `search_code`, `trace_path`, `detect_changes`) sat in that block.
+ *   3. **No silent fallback on a bad roster source.** Malformed or unreadable
+ *      `agents.json` throws a named `RosterSourceError`; it does not degrade to
+ *      an empty roster that quietly turns phantom failures on or off.
  */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+  assertHostIndependence,
+  assertNoRealToolsFiledAsNouns,
+  assertNoSilentFallbackOnBadRoster,
+} from "./tool-name-invariants.ts";
 import {
   AGENTS_JSON,
   ALLOWLIST,
@@ -91,7 +113,9 @@ function assert(cond: boolean, msg: string) {
     // the shape of the codebase-memory names #1434 grounds the developer prompt
     // in. `mcp__srv__short_tool` makes BOTH `srv` and `short_tool` known, which is
     // how the doctrine names one MCP tool at a time. A bash subcommand key must
-    // NOT become a tool name.
+    // NOT become a tool name. `granted_alias` is granted here (and is also a real
+    // `agents.json` key in the real repo) so the fixture tests a real tool through
+    // the roster WITHOUT leaning on the allowlist.
     writeFileSync(
       agentsFile,
       JSON.stringify({
@@ -100,6 +124,7 @@ function assert(cond: boolean, msg: string) {
             permission: {
               "*": "ask",
               granted_tool: "allow",
+              granted_alias: "allow",
               mcp__some__call: "allow",
               mcp__srv__short_tool: "allow",
               "gh issue create*": "deny",
@@ -116,7 +141,7 @@ function assert(cond: boolean, msg: string) {
         "Use the `read` tool to load skills.",
         "Call the `real_tool` tool to dispatch.",
         "Search via `mcp__codebase_memory__search_code`.",
-        "Find code with the `rg` tool.",
+        "Find code with the `granted_alias` tool.",
         "Call `granted_tool` — a name the runtime map grants.",
         "Call the `short_tool` tool on the `srv` server by its bare names.",
         "Memory types are a closed enum: `fact`, `guard`, `observation`.",
@@ -160,6 +185,10 @@ function assert(cond: boolean, msg: string) {
       "canary: an MCP tool's bare tool name and server name are known from the mcp__<server>__<tool> key",
     );
     assert(
+      !has("granted_alias"),
+      "canary: a real tool supplied by a roster source is known with no allowlist entry (the twelve real tools came out of the allowlist for exactly this reason)",
+    );
+    assert(
       has("no_such_index_tool"),
       "canary: an MCP-shaped name granted to NO role and published by NO server IS reported — the granted roster is per-key, not a rubber stamp",
     );
@@ -178,6 +207,17 @@ function assert(cond: boolean, msg: string) {
     rmSync(agentsDir, { recursive: true, force: true });
   }
 }
+
+// ------------------------------------------------------------- the roster itself
+
+// Where the roster reads from, what it refuses to contain, and what it does when
+// a source is broken. Those three assertion blocks live in
+// `tool-name-invariants.ts` (the AGENTS.md §12 500-line cap) and each carries a
+// mutation-checked canary. The calls stay in sequence so a failure prints in the
+// order a reader expects: canary fixture, then roster integrity, then the repo.
+assertHostIndependence(assert, SRC, REPO_ROOT);
+assertNoRealToolsFiledAsNouns(assert, SRC);
+assertNoSilentFallbackOnBadRoster(assert, SRC);
 
 // ---------------------------------------------------------------- and the repo is clean
 

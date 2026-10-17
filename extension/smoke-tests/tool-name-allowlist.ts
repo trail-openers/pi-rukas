@@ -10,6 +10,14 @@
  * Separated from the roster module because the gate plus its decision record
  * outruns the 500-line file cap.
  *
+ * **The admission test is "is this a tool?" — not "does the gate go red?".**
+ * A name that any roster source supplies (a Pi builtin, a `pi.registerTool`
+ * call, an `agents.json` tool key, an MCP server/tool in the committed doctrine
+ * registry) must NOT be listed here: it belongs in the roster, and listing it
+ * here also makes this file's own heading false. `allowlistEntriesThatAreRealTools`
+ * in `tool-name-roster.ts` returns the overlap and `test-tool-name-surface.ts`
+ * asserts it is empty, so the two cannot drift back into disagreement.
+ *
  * Adding an entry: name the category, and say which doctrine file names the
  * token and why it is not a tool. An entry with no sentence behind it is the
  * gate being quietly turned off.
@@ -93,7 +101,6 @@ export const ALLOWLIST = new Set<string>([
   "pr",
   "issue",
   "view",
-  "list",
   "comment",
   "create",
   "close",
@@ -121,9 +128,11 @@ export const ALLOWLIST = new Set<string>([
   "check",
   "open",
   // --- Prose nouns and generic words (not tools)
-  "read",
-  "write",
-  "edit",
+  //     (#995 adversarial round: `read`, `write`, `edit`, `list`, `rg`,
+  //     `multiedit`, `webfetch`, `websearch`, `question`, `search_code`,
+  //     `trace_path`, `detect_changes` were removed from this block — all twelve
+  //     are real tools already supplied by a roster source, so keeping them here
+  //     was both redundant and a false label on the block.)
   "cwd",
   "base",
   "context",
@@ -145,7 +154,6 @@ export const ALLOWLIST = new Set<string>([
   "start",
   "do",
   "research",
-  "question",
   "label",
   "ask",
   "restart",
@@ -154,26 +162,21 @@ export const ALLOWLIST = new Set<string>([
   "deny",
   "ticket",
   "timeout",
-  // --- MCP method shorthands (codebase-memory-mcp.md: "search_code,
-  //     trace_path, detect_changes, etc. refer to the full tool names
-  //     mcp__codebase_memory__search_code, …"). Kept alongside the server-derived
-  //     names so the gate stays green on a clone with no MCP config at all.
-  "search_code",
-  "trace_path",
-  "detect_changes",
+  // --- MCP parameter names (NOT tool names): the shape of a codebase-memory
+  //     call, named in the doctrine to show which arguments a call takes. The
+  //     tool names themselves are in the committed registry,
+  //     `tool-name-doctrine-mcp.json`, not here.
   "repo_path",
   "files_only",
-  // --- Legit aliases called out by the #995 allow-set (available at runtime)
-  "rg",
+  // --- CLI binaries called out by the #995 allow-set (available at runtime).
+  //     The tool-shaped aliases `rg`, `multiedit`, `webfetch`, `websearch` are
+  //     gone from this block — they are real tools, granted in `agents.json`.
   "ctx7",
   "parallel-cli",
   "ruff",
   "pytest",
   "mypy",
   "vipune",
-  "multiedit",
-  "webfetch",
-  "websearch",
   // --- Extension / MCP tool names (not `mcp__`-prefixed but the bare name)
   "codebase-memory-mcp",
   "permission-guard",
@@ -216,17 +219,14 @@ export const ALLOWLIST = new Set<string>([
   "fuzu-production-db_query",
   "barona-production-db_query",
   // --- codebase-memory MCP tools named by the doctrine but NOT granted to any
-  //     role in agents.json, so the permission-map leg cannot see them. Each is
-  //     a real tool on the `codebase_memory` server; three of them are named in
+  //     role in agents.json. These moved to the committed registry
+  //     `tool-name-doctrine-mcp.json` (#995 adversarial round) where each carries
+  //     its server and a per-entry reason: they are real tools on the
+  //     `codebase_memory` server, and several are named in
   //     `agents-base/developer.md` §Your actual tool surface precisely to FORBID
   //     the call (#1434's "six of them are named in no role prompt anywhere"
   //     row). A gate that called an accurate prohibition a phantom would punish
   //     accurate doctrine — which is the failure #995 is about.
-  "compare_graphs",
-  "delete_project",
-  "index_status",
-  "list_projects",
-  "manage_adr",
   // --- git sub-verbs the doctrine names as bare tokens (the git-verbs block
   //     above covers the common ones; this is `blame`, named individually in
   //     #1434's tool-surface table as a granted read)
