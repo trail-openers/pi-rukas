@@ -36,8 +36,10 @@
  */
 
 import { boundField, redactBounded, redactSecrets } from "../src/decision-log.ts";
+import { CREDENTIAL_RUN_CLASS_SOURCE } from "../src/decision-redact-window.ts";
 import { REDACTED, SECRET_PATTERNS, TAIL_SWEEP } from "../src/secret-patterns.ts";
 import { looksLikeSecret } from "../src/vipune.ts";
+import { isCredentialChar } from "../src/credential-walk.ts";
 import { leaksKey, makeAssert } from "./lib/decision-fixtures.ts";
 
 const { assert, state } = makeAssert();
@@ -199,6 +201,30 @@ for (const [name, text, mustNotContain] of [
   assert(
     !looksLikeSecret("the value is [REDACTED] and the sentence continues"),
     "a line carrying a marker is not newly refused on the sweep's account",
+  );
+}
+
+// --------- the walk's character class is pinned against the net's own class source
+
+{
+  // `isCredentialChar` is the eleven-comparison chain the walks step with; the net replaces
+  // what `CREDENTIAL_RUN`'s class spells. Two claims about the same eleven characters in two
+  // files is exactly the drift this suite exists to make visible, so the class literal is
+  // exported as source and re-tested here rather than copied into a test and drift anew.
+  const classRe = new RegExp(CREDENTIAL_RUN_CLASS_SOURCE);
+  let mismatch = -1;
+  for (let code = 0; code < 0x80; code++) {
+    const ch = String.fromCharCode(code);
+    if (isCredentialChar(code) !== classRe.test(ch)) {
+      mismatch = code;
+      break;
+    }
+  }
+  assert(
+    mismatch === -1,
+    mismatch === -1
+      ? "isCredentialChar agrees with CREDENTIAL_RUN's class for every code unit 0..0x7F"
+      : `isCredentialChar and the class disagree at code ${mismatch} (${JSON.stringify(String.fromCharCode(mismatch))})`,
   );
 }
 
