@@ -216,6 +216,35 @@ export const CASES: { name: string; secret: string; body: string }[] = [
 ];
 
 /**
+ * Exact-string assertions for the CLIPPED-PEM over-redaction (#1393 round 5, item 3
+ * follow-up). The old body was `[\s\S]*?(?:-----END|$)`: with no END line the lazy span
+ * ran to end-of-string and erased every log line after the header — a 1950-char error
+ * tail came back as 38 chars, with the request id, the git SHA and the CI URL gone.
+ * The body is a base64 class now, so prose stops it. These assert BOTH sides: the key
+ * body is gone AND the tail survives, which is the half the old fixture could not see
+ * (a body that consumes the tail also satisfies "the body is gone").
+ *
+ * The lines asserted are the ones whose first character is outside the class. The body
+ * is LINE-ORIENTED — base64 runs whole-line before each newline, plus one trailing
+ * base64-only line — so the most a clipped key can take past the last base64 line is a
+ * single all-base64 token. Prose never looks like that: `:`, `.`, `-` and `,` all stop it
+ * outright, which is why `request-id:` and the URL survive while the key body does not.
+ */
+export const PEM_TAIL_PRESERVES: {
+  name: string;
+  text: string;
+  mustNotContain: string[];
+  mustContain: string[];
+}[] = [
+  {
+    name: "pem-clipped-error-tail-survives",
+    text: `-----BEGIN RSA PRIVATE KEY-----\n${PEM_BODY}\n${PEM_BODY}\n${PEM_BODY}\nFATAL request-id: 7f3c-91ab exit=1 https://ci.example/run/42`,
+    mustNotContain: [PEM_BODY.slice(0, 40)],
+    mustContain: ["request-id: 7f3c-91ab", "https://ci.example/run/42", "exit=1"],
+  },
+];
+
+/**
  * Exact-string assertions for the base64-`=` arm of the key/value body class
  * (#1393 round 5, item 4). These are NOT in `CASES`: the looped fixtures wrap the
  * secret in kilobytes of filler and assert through `leaksKey`, whose 12-character

@@ -136,12 +136,36 @@ export const SECRET_PATTERNS: readonly RegExp[] = [
   anchored("Bearer\\s+[A-Za-z0-9._~=+/-]{20,}"),
   // The PEM arm spans the WHOLE key, not just its header (#1393 round 5, item 3). The
   // header alone was redacted and the base64 body — the actual secret — shipped in
-  // clear. `\s\S` is every character, so this is the second arm whose match can cover a
-  // large run, and the span is LAZY against the END delimiter rather than greedy: a
-  // greedy body over a clipped key (no END, which is what a scan-window cut produces)
-  // re-explores the tail at every start position. `test-decision-secret-regex-linear.ts`
-  // measures both shapes at 200 KB and 1.6 MB and carries the greedy variant as its TRAP.
-  anchored("-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)"),
+  // clear. The body is a base64 class and the END delimiter is OPTIONAL; every part of
+  // that shape is load-bearing:
+  //
+  // * NOT `[\s\S]`: an any-character body over a CLIPPED key (no END, which is what a
+  //   scan-window cut produces) runs the lazy span to end-of-string and erases every
+  //   log line after the header. Measured: a 1950-char error tail after a clipped key
+  //   came back as 38 chars — the request id, the git SHA and the CI URL were gone.
+  //   A base64-alphabet body stops where prose begins, because `.`, `:`, `-` and `,`
+  //   are not in the class, so the tail after the key survives. The class carries no
+  //   `-`, so it cannot run past an `-----END` line either — which is what lets the
+  //   delimiter be optional rather than required.
+  // * NOT `\s` IN THE BODY CLASS AT ALL: a greedy class that carries `\s` backtracks
+  //   across newlines to keep going, so it eats the token welded to the body's last
+  //   newline. Measured with `[A-Za-z0-9+/=\s]*` verbatim: `…\nFATAL request-id: 7f3c-91ab`
+  //   → `[REDACTED]-id: 7f3c-91ab` — `FATAL request` gone with the newline. The body is
+  //   therefore LINE-ORIENTED: base64 characters run whole-line (`[A-Za-z0-9+/=]*` before
+  //   each `\n`), and the trailing line is admitted by its own `+`, so at most one token
+  //   past the last base64 line can be taken, and only when it is entirely base64. The
+  //   class carries no `-`, so no part of it can cross an `-----END` line — which is what
+  //   makes the delimiter optional rather than required.
+  // * LINEAR: the body is a star over base64-with-newline, the tail is a `+` over base64,
+  //   and neither can match a character the other cannot extend across, so a failed
+  //   continuation backtracks in one step rather than re-exploring the span. The
+  //   any-character body was lazy precisely because a greedy `\s\S` span re-explores the
+  //   tail at every start position; restricting the class removes the need for laziness.
+  //   `test-decision-secret-regex-linear.ts` measures both shapes at 200 KB and 1.6 MB and
+  //   carries the greedy any-character variant as its TRAP.
+  anchored(
+    "-----BEGIN [A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=]*(?:\\r?\\n[A-Za-z0-9+/=]*)*(?:\\r?\\n[A-Za-z0-9+/=]+)?(?:-----END [A-Z ]*PRIVATE KEY-----)?",
+  ),
   // The key/value rule has NO leading `\b` (see the header: that is the item-9 gap) and
   // no end assertion: its body runs to the end of the token, so a trailing assertion
   // could only ever be satisfied by a body SHORTER than the token — the `\b` bug,
