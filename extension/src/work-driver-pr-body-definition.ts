@@ -151,6 +151,34 @@ export function operatorActionsSectionOf(spec: PipelineStateNormalisedSpec | und
 }
 
 /**
+ * #1404 — the pre-existing-test-failures section for the PR body.
+ *
+ * When the commit-pr consolidated verify failed only on tests that ALSO fail
+ * at the cycle's base commit, the cycle continues and pushes — but a PR whose
+ * gate was red says nothing about that on its own, and the next person to
+ * hit the red gate will spend their afternoon on this diff. The names are
+ * printed so the record says plainly which failures the change did not cause.
+ *
+ * Returns "" when there is nothing to show (the section must not appear at
+ * all in its absence, same contract as the operator-actions section). The
+ * followup path — where the PR already exists and no body is built — records
+ * the same text on `plumbReports` instead, which the handoff renders.
+ */
+export function preExistingFailuresSectionOf(names: readonly string[] | undefined): string {
+  if (!names || names.length === 0) return "";
+  return [
+    "",
+    "## Pre-existing test failures",
+    "",
+    `The commit-pr consolidated verify failed, but every failing test \u2014 ${names.length} of them \u2014 also fails on a clean checkout of this PR's base commit, so none of them is caused by this change:`,
+    "",
+    ...names.map((n) => `- \`${n}\``),
+    "",
+    "These are gate failures owned by the base commit, not by this PR. They are listed rather than excused silently so the next reviewer (and the next cycle, which parks on the same red gate) can tell the two apart.",
+  ].join("\n");
+}
+
+/**
  * Generate the carried adversarial findings section from the event log.
  * Returns empty string if no findings.
  */

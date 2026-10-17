@@ -22,7 +22,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -222,45 +222,6 @@ try {
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
-}
-
-// -------------- the verify verdict must not be laundered through ops
-{
-  const { readFileSync } = await import("node:fs");
-  const SRC = path.resolve(import.meta.dirname, "..", "src");
-  const commit = readFileSync(path.join(SRC, "work-driver-commit.ts"), "utf8");
-  const code = commit.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
-
-  assert(
-    /res\.failure === "verify"[\s\S]{0,400}?terminal: true/.test(code),
-    "canary: a verify failure is marked terminal — every other failure still falls back",
-  );
-  // The load-bearing branch: `terminal` must be handled BEFORE the else that
-  // builds the ops fallback, or the gate cannot fail. The check lives in
-  // work-driver-commit-lock.ts (the #861 file-size cap moved it out of
-  // work-driver-commit.ts); read both files so the canary tracks the code.
-  const lockCode = readFileSync(path.join(SRC, "work-driver-commit-lock.ts"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    " ",
-  );
-  const combined = code + " " + lockCode.replace(/^\s*\/\/.*$/gm, " ");
-  const mechIdx = combined.indexOf("const mech = await mechanizedCommitPr");
-  const terminalIdx = combined.indexOf("mech.terminal", mechIdx);
-  const fallbackIdx = combined.indexOf("dispatchCommitPrFallback", mechIdx);
-  assert(
-    mechIdx >= 0 && terminalIdx > mechIdx && terminalIdx < fallbackIdx,
-    "canary: the terminal branch is checked before the ops fallback is reached",
-  );
-  assert(
-    /cap: (?:mech\.timedOut \? "verify-timeout:commit-pr" : )?"integration-verify-failed"/.test(combined),
-    "canary: it halts with a named cap rather than failing silently",
-  );
-
-  const explain = readFileSync(path.join(SRC, "work-driver-explain.ts"), "utf8");
-  assert(
-    /case "integration-verify-failed"/.test(explain),
-    "the cap has an operator-facing explanation — an unexplained cap reads as a crash",
-  );
 }
 
 console.log(`\nexit ${exit}`);

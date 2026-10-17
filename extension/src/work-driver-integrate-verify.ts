@@ -41,6 +41,7 @@ import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-cl
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { type HangProcess, NO_TREE_CAPTURED, captureProcessTree } from "./work-driver-gate-hang.ts";
 import { commitPrSkipDecision } from "./work-driver-integrate-verify-skip.ts";
+import { type FailureAttribution, attributeAgainstBase } from "./work-driver-verify-attribution.ts";
 import { isTimedOutKill, verifyHangFailure } from "./work-driver-verify-develop-helpers.ts";
 import {
   FAST_TIER_LABEL,
@@ -88,6 +89,29 @@ export type CommitPrConsolidatedVerifyResult =
       classifiedMessage: string;
       /** #1324 — the run was killed at its bound: no verdict, so no classification. */
       timedOut?: boolean;
+      /**
+       * #1404 — every consolidated failure the base-commit probe accounted
+       * for: each failing test also fails at `baseSha`, so NONE is caused by
+       * this change. The caller may continue (push, open the PR) and must
+       * carry `preExistingFailures` as a visible note. Absent whenever the
+       * probe did not run, could not establish a red base, or any failure is
+       * change-caused / unattributable — absence is the park, never an
+       * omission to read as approval.
+       */
+      preExistingOnly?: boolean;
+      /**
+       * #1404 — the failing test names the base run also produced. Present
+       * whenever the probe ran and named them, including the mixed case
+       * (some pre-existing, some change-caused) where the cycle still parks.
+       */
+      preExistingFailures?: string[];
+      /**
+       * #1404 — the failing test names the base run did NOT produce, i.e. the
+       * ones this change caused. Set on a mixed verdict; the park reason
+       * names these alone, so an operator is not sent to inspect tests that
+       * were already red before the cycle started.
+       */
+      changeCausedFailures?: string[];
       /**
        * #1427 — commit-pr carries the hang CLAUSE only. The clause is composed
        * into `classifiedMessage` (see the timeout branch below), which is what
@@ -175,6 +199,25 @@ export async function runCommitPrConsolidatedVerify(
      * identity. A read failure, a mismatch, or no pair → the run happens.
      */
     alreadyVerifiedTree?: AlreadyVerifiedTree;
+    /**
+    /**
+     * #1404 — the cycle's ORIGINAL base commit, the commit this cycle's
+     * commits were measured against. When set, a consolidated failure earns a
+     * baseline probe: the verify command re-runs ONCE in a detached worktree
+     * at this sha, and the failing-test-name sets decide which failures the
+     * change caused. Absent → no probe, every failure parks as before
+     * (fail-closed). The CALLER supplies `ps.baseSha` and never a followup
+     * round's `followupBase` — that commit already carries this cycle's
+     * earlier commits, which would excuse every failure as pre-existing.
+     */
+    baseSha?: string;
+    /**
+     * #1404 — the probe tree's name suffix. The develop step's probe is
+     * `baseline-verify-<issue>`; this seam must not share that name (one
+     * step's teardown would destroy the other's tree), so the caller passes a
+     * distinct one. Defaults to the issue number alone.
+     */
+    baselineProbeLabel?: string;
     /**
      * #1427 round 3 — no `walkProcessTree` here, deliberately. It was declared
      * as a test seam and had no caller: neither `verifyIntegration` (its only
@@ -345,8 +388,7 @@ export async function runCommitPrConsolidatedVerify(
   // the bound, never a classification of the code.
   if (timedOut) {
     const bound = opts.timeoutMs ?? 30 * 60_000;
-    const knob = "PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS";
-    // #1427 round 3 — the clause is APPENDED after the sentence (see
+    const knob = "PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS"; // #1427 round 3 — the clause is APPENDED after the sentence (see
     // `verifyHangFailure`), so the `[verify-timeout]` marker always survives the
     // 800-char tail bound the cap evidence applies — with a wide clause it is
     // the test names that get clipped, not the marker that makes the cap.
@@ -376,5 +418,55 @@ export async function runCommitPrConsolidatedVerify(
     };
   }
   const classifiedMessage = consolidatedFailureMessage(verdict, ranCmd);
+
+  // #1404 — before this parks, ask the question the commit-pr seam never
+  // asked: does the SAME command fail WITHOUT the change? The probe runs
+  // exactly here — after the #782 flake retry, on the classified (second)
+  // failure, never on a run already known `timedOut` (a killed base run
+  // would tell us nothing about test names) — and at most once per call.
+  // It re-runs the project's own command under the SAME bound the failed
+  // run got, in a throwaway detached worktree the probe removes. The probe
+  // can only EXCUSE failures, never turn this verdict into a pass: only the
+  // caller — which alone owns the push — treats `preExistingOnly` as a
+  // reason to continue.
+  if (opts.baseSha !== undefined && !timedOut) {
+    const outcome = await attributeAgainstBase(execFn, opts, failure);
+    if (outcome) {
+      const pre = outcome.preExistingFailures;
+      const caused = outcome.changeCausedFailures;
+      // The park reason names ONLY what the change caused. A cycle where three
+      // tests are red and two were red at base is a defect in one test, and an
+      // operator told to "fix the consolidated tree" for all three would waste
+      // two of those inspections on gate rot the base commit already owns.
+      const message =
+        caused.length > 0
+          ? `${classifiedMessage} — ${pre.length + caused.length} test(s) fail; ${pre.length} also fail at the cycle's base commit (${pre.join(", ") || "none"}) and are pre-existing; the failures this change CAUSED are: ${caused.join(", ")}`
+          : classifiedMessage;
+      // Every failure the base accounts for: nothing here is the change's
+      // doing, so the caller may push. This is the only shape the settlement
+      // allows to continue, and it still reports `ok: false` — the probe has
+      // no authority to turn the gate's verdict into a pass.
+      if (caused.length === 0 && pre.length > 0) {
+        return {
+          ok: false,
+          failureTail,
+          attributed,
+          verdict,
+          classifiedMessage: message,
+          preExistingOnly: true,
+          preExistingFailures: pre,
+        };
+      }
+      return {
+        ok: false,
+        failureTail,
+        attributed,
+        verdict,
+        classifiedMessage: message,
+        ...(pre.length > 0 ? { preExistingFailures: pre } : {}),
+        ...(caused.length > 0 ? { changeCausedFailures: caused } : {}),
+      };
+    }
+  }
   return { ok: false, failureTail, attributed, verdict, classifiedMessage };
 }
