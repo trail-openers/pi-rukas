@@ -195,4 +195,18 @@ export type WorkCapLiteral =
   // so the handoff posts before the caller kills the process (the orchard `docker stop` shape: a mid-step kill, no
   // handoff, state left `running`). Emitted at the step boundary only — no
   // mid-step hard kill.
-  | "deadline";
+  | "deadline"
+  // #1403 — a develop child's ENGINE DIED mid-pass (`the engine stopped
+  // unexpectedly (exit code N)`, no `errorStop`, no `killCause`) and its
+  // worktree was left with uncommitted work that its pass never committed.
+  // Pre-fix the step reported `step-completed … recovered: false` and the
+  // dead pass's fix stayed off the branch entirely (orchard #238: `M scripts/stop.sh`,
+  // 56 insertions, reviewed by adversarial round 3 and then dropped).
+  //
+  // NOT a template and NOT `step-failed:develop`: that prefix terminalizes as
+  // `aborted` and reads as "the dispatch failed", which is the shape the
+  // router's transient-retry branch owns. This cap says something narrower and
+  // different — the child died, and the driver can NAME the paths it left
+  // behind — so the cycle parks as a handoff with the leftover list rather
+  // than advancing on a tree whose state it does not know.
+  | "develop-child-crash";

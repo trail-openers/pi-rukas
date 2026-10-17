@@ -53,7 +53,16 @@ export type LifecycleKind =
    * step-failed so the scrollback signals "transient — retrying" vs
    * "permanent — handoff". One event per retry attempt.
    */
-  | "step-retry";
+  | "step-retry"
+  /**
+   * #1403 — a one-line operator notice emitted from INSIDE a step handler,
+   * for the outcome the handler knows and the step-boundary lines do not.
+   * Used for a develop child whose ENGINE DIED: the router emits the cap's
+   * `step-failed` line at the boundary, this line says the pass died while
+   * the handler still knows which workstream and what it left behind — so
+   * the console never reads `develop done` over a dead pass.
+   */
+  | "step-notice";
 
 export interface LifecycleDetails {
   kind: LifecycleKind;
@@ -73,7 +82,7 @@ export interface LifecycleDetails {
   totalTokens?: number;
   /** Exit code for failed; omitted otherwise. */
   exitCode?: number;
-  /** Steer message (truncated for scrollback) — set for kind="steered" only. */
+  /** Truncated for scrollback — set for kind="steered" only. */
   steerMessage?: string;
   /**
    * #543 F2 — who sent the steer. The PM `dispatch_steer` tool is the original
@@ -114,12 +123,9 @@ export interface LifecycleDetails {
    */
   round?: number;
   /**
-   * #288 — which cycle this line belongs to.
-   *
-   * Without it, two concurrent cycles entering `develop` emit byte-identical
-   * scrollback: `▸ ensemble: ▶ step 4/9 develop started`, twice. There is
-   * nothing in the payload, the label or the theme to tell them apart, so a
-   * failure line gives the operator a coin-flip on which issue to investigate.
+   * #288 — which cycle this line belongs to. Without it, two concurrent
+   * cycles entering `develop` emit byte-identical scrollback and a failure
+   * line gives the operator a coin-flip on which issue to investigate.
    * Rendered only when more than one cycle is live, so single-cycle output is
    * unchanged.
    */
@@ -236,10 +242,9 @@ export function emitErrored(
   emit({ kind: "errored", jobId, label, role, elapsedMs, totalTokens });
 }
 
-/** Emit a steer scrollback entry (#153). The `message` is truncated for display
- *  but the full payload was delivered to the child via RPC stdin separately.
- *  `source` (#543 F2) tags the steering actor; the PM tool path omits it so the
- *  line renders exactly as before. */
+/** Emit a steer scrollback entry (#153). The `message` is truncated for
+ *  display; the full payload reached the child over RPC stdin. `source`
+ *  (#543 F2) tags the steering actor; the PM tool path omits it. */
 export function emitSteered(
   jobId: string,
   label: string,
@@ -251,16 +256,11 @@ export function emitSteered(
 }
 
 /**
- * Step-level lifecycle events for the work-driver (PR2). Distinct from the
- * per-dispatch events above: the work-driver runs 9 STEPS, each of which
- * may dispatch one or more subagents. Adversarial and lens-review steps
- * call into existing orchestrator functions (`runAdversarialLoop` /
- * `runLensReview`) that bypass startJob → bypass `emitDispatched/Completed`.
- * The PR #239 live test on issue #553 made those two steps invisible in
- * scrollback. Step-level emitters surface them uniformly.
- *
- * `step` is the step name (e.g. "adversarial"); `stepNumber/stepTotal`
- * render as "5/9" for at-a-glance progress.
+ * Step-level lifecycle events for the work-driver (PR2). The work-driver runs
+ * 9 STEPS; adversarial and lens-review call orchestrator functions that bypass
+ * startJob, so per-dispatch emitters left those steps invisible (PR #239,
+ * issue #553). Step-level emitters surface them uniformly. `stepNumber/
+ * stepTotal` render as "5/9".
  */
 export function emitStepStarted(
   step: string,
@@ -356,6 +356,16 @@ export function emitStepRetry(
   });
 }
 
+/**
+ * #1403 — an in-step operator notice. NOT a `step-failed`: the router emits
+ * that for the cap at the boundary, and two failure lines would double-report
+ * one event. Carries prose only, so a handler can say what it saw while it
+ * still knows which workstream died and what it left behind.
+ */
+export function emitStepNotice(step: string, message: string, issue?: number): void {
+  emit({ kind: "step-notice", issue, jobId: step, label: step, role: step, reason: message });
+}
+
 function emit(details: LifecycleDetails): void {
   if (isQuiet()) return;
   if (!activePi) return;
@@ -441,6 +451,9 @@ export function formatLine(d: LifecycleDetails): string {
       const reason = d.reason ? ` · ${d.reason}` : "";
       return `▸ ensemble: ${cycleTag(d.issue)}✗ step ${ordinal}${d.label}${round} failed${elapsed}${reason}`;
     }
+    case "step-notice":
+      // #1403 — the step is not "done"; the message says what died.
+      return `▸ ensemble: ${cycleTag(d.issue)}! ${d.label}: ${d.reason ?? ""}`;
     case "step-retry": {
       const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
       const attempt = d.round ? ` attempt ${d.round}` : "";
@@ -462,6 +475,8 @@ function applyTheme(
     case "completed":
       return theme.fg("success", content);
     case "failed":
+      return theme.fg("error", content);
+    case "step-notice":
       return theme.fg("error", content);
     case "errored":
       // Same colour as `failed` — both surface in scrollback as something
