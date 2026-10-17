@@ -236,6 +236,29 @@ const everyKindEvent: WorkEvent[] = [
   },
   { kind: "verify-full-status", at: 1, status: "success", ms: 100 },
   { kind: "verify-flake-recovered", at: 1, step: "develop" },
+  // #1415 — the verify-gate run pair. These two were the kinds this fixture
+  // set omitted, which is how a consolidated cycle reached its gate with a
+  // renderer that threw on them: the tuple was extended (so the forward and
+  // resume assertions stayed green) but the fixture list was not, and the
+  // reverse assertion below counts entries rather than naming which are
+  // missing. `target` is the consolidated probe — the tree the develop gate
+  // actually builds — so the fixture is a full instance of the required shape.
+  {
+    kind: "verify-started",
+    at: 1,
+    step: "develop",
+    command: "bash scripts/verify.sh",
+    target: { kind: "consolidated" },
+  },
+  {
+    kind: "verify-completed",
+    at: 1,
+    step: "develop",
+    command: "bash scripts/verify.sh",
+    target: { kind: "consolidated" },
+    status: "success",
+    ms: 100,
+  },
   // #1240 — the consolidated verify skipped its duplicate run. Its kind must
   // be in the fixture set or KNOWN_EVENT_KINDS reads as carrying a stale entry.
   {

@@ -11,6 +11,7 @@ import path from "node:path";
  */
 
 import { crashTreeSentence } from "./work-develop-crash.ts";
+import type { VerifyTarget } from "./workflow-state-events-verify.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 
 export function fmtElapsed(ms: number): string {
@@ -94,8 +95,84 @@ function crashTreeText(
   });
 }
 
+/** #1415 — the tree a verify run was executed against, in the status line's
+ *  compact register: a basename, because an absolute worktree path costs the
+ *  width a reader needs for the duration and the command.
+ *
+ *  `target` is typed OPTIONAL here on purpose, and the read is guarded. The
+ *  field is required on both halves of the pair (`VerifyTarget`), but this
+ *  value reaches the renderer from a state file on disk and
+ *  `validateDiscriminants` checks `eventLog[].kind` only — never these two
+ *  kinds' fields. So a record with no `target` is one the driver both accepts
+ *  and renders, and dereferencing `e.target.kind` unguarded raised a
+ *  TypeError that took down the WHOLE `/work-status` panel: one unreadable row
+ *  is not allowed to erase the rows around it that the operator came to read.
+ *  `"?"` is deliberately not a plausible tree — it reads as unknown. The
+ *  driver's own emit sites go through `makeVerifyRunEvents`, which always
+ *  supplies `target`, so this branch is for half-written or hand-edited state
+ *  rather than a run the code performed. */
+function verifyTargetText(e: { target?: VerifyTarget | null }): string {
+  const t = e.target;
+  if (typeof t !== "object" || t === null) return "?";
+  return t.kind === "worktree" && typeof t.path === "string"
+    ? path.basename(t.path)
+    : "consolidated";
+}
+
+/**
+ * #1415 — the fallback line for a kind this switch does not handle, and for a
+ * case that throws on a malformed record.
+ *
+ * `fmtEvent`'s switch used to have no `default:` arm at all, so a kind added
+ * to the closed `WorkEvent` union without a matching case fell off the end of
+ * the function and returned `undefined`. The callers type the result as
+ * `string[]`, so that surfaced as a blank row or a `.trim()`-on-`undefined`
+ * TypeError — never as "this kind is not rendered". `test-work-event-kinds-
+ * completeness.ts` pins the VALIDATOR's kind tuple against the union; nothing
+ * pinned this switch, so a missing case was only ever caught by an operator
+ * noticing a row had gone missing.
+ *
+ * Honesty contract: this must not make an unhandled kind look intentional. It
+ * prints the raw `kind` verbatim with an explicit `unhandled` marker and
+ * applies NO per-kind formatting (no `fmtElapsed`, no target basename, no
+ * truncated command). The kind name is the useful content — it is exactly the
+ * token you grep `fmtEvent`'s switch for when you go and add the real case.
+ */
+function fmtUnhandledEvent(e: WorkEvent): string {
+  const o = e as unknown as Record<string, unknown>;
+  const parts: string[] = [`  ${String(e.kind)} · unhandled`];
+  for (const f of ["step", "status", "outcome"] as const) {
+    const v = o[f];
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+      parts.push(String(v));
+    } else if (Array.isArray(v)) {
+      // Summarised, never stringified: a fallback line must not read
+      // `[object Object]` and invite the reader to trust it.
+      parts.push(`${v.length} item(s)`);
+    }
+  }
+  return parts.join(" · ");
+}
+
 /** Format an event for the "last N" trailing log. Compact one-liner per event. */
 export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
+  try {
+    return fmtEventCase(e, derivedRound);
+  } catch {
+    // #1415 — a per-kind case that throws on a record `validateDiscriminants`
+    // let through degrades to the fallback rather than aborting the panel:
+    // `/work-status` renders an operator's whole picture of a live cycle in
+    // one call, and one unreadable row must not erase the rows around it. The
+    // kind is reported, not swallowed, so the gap is diagnosable. `console` is
+    // the only surface here — this renderer has no tracer, and the offending
+    // state file is itself the evidence.
+    console.warn(`work-status: fmtEvent('${e.kind}') threw — rendering the fallback line`);
+    return fmtUnhandledEvent(e);
+  }
+}
+
+/** The per-kind switch. Total by its `default:` arm; wrapped by `fmtEvent`. */
+function fmtEventCase(e: WorkEvent, derivedRound?: number): string {
   switch (e.kind) {
     case "step-started": {
       // #657 — a step-started with round > 1 is a loop re-entry (adversarial /
@@ -196,6 +273,15 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // proved was already run. Names the tree and the worktree so the claim
       // is checkable, not just asserted.
       return `  consolidated-verify-skipped · ${e.step} · tree ${e.treeHash.slice(0, 8)} already passed in ${path.basename(e.worktree)}`;
+    case "verify-started":
+      // #1415 — the gate announcing itself BEFORE it runs: this is the line
+      // that exists for the 22 minutes the operator used to watch empty.
+      return `  verify-started · ${e.step} · ${verifyTargetText(e)} · ${e.command.slice(0, 60)}${e.tier ? ` · ${e.tier}` : ""}${e.retried ? " · re-run" : ""}`;
+    case "verify-completed":
+      // The verdict + the cost. `timeout` reads differently from `failure`
+      // because a killed run judged nothing (#1324); `reused` says no command
+      // was executed for this verdict at all.
+      return `  verify-completed · ${e.step} · ${verifyTargetText(e)} · ${e.status}${e.ms !== undefined ? ` · ${fmtElapsed(e.ms)}` : ""}${e.reused ? " (reused)" : ""}${e.tier ? ` · ${e.tier}` : ""}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
     case "widening-scan":
       return `  widening-scan · ${e.findings.length} finding(s)`;
     case "memory-write":
@@ -234,5 +320,18 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // edit left) is a corrupt record the validator reports, not an absent
       // field to render around.
       return `  cycle-interrupted · ${e.step} · session shutdown (${e.reason}${typeof e.origin === "string" ? `, origin: ${e.origin}` : ""})${e.branch ? ` · ${e.branch}${e.headSha ? ` @ ${e.headSha.slice(0, 8)}` : ""}` : ""} · ${e.resumable ? "resumable" : "NOT resumable"}`;
+    default:
+      // #1415 — the arm this switch never had. Without it, a kind added to the
+      // closed `WorkEvent` union with no case here fell off the end of the
+      // function and returned `undefined`; the `string[]`-typed callers
+      // (`fmtRecentEvents` → `work-status.ts`, the headless status tail)
+      // rendered that as a blank row or threw on `.trim()` — never as
+      // "unhandled". `test-work-event-kinds-completeness.ts` pins the
+      // VALIDATOR's kind tuple against the union; nothing pinned this switch,
+      // so a missing case was only ever caught by an operator noticing a row
+      // was gone. Delegates to the shared fallback, which prints the kind and
+      // an explicit `unhandled` marker — greppable, and not mistaken for a
+      // kind anyone intended to render this way.
+      return fmtUnhandledEvent(e);
   }
 }

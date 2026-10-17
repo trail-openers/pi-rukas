@@ -99,6 +99,35 @@ export function formatLine(d: LifecycleDetails): string {
       // #1403 — the step is not "done"; the message says what died. From inside
       // the handler, so there is no ordinal to render.
       return `▸ ensemble: ${cycleTag(d.issue)}! ${d.label}: ${d.reason ?? ""}`;
+    case "verify-started": {
+      // #1415 — the gate's own line, and the reason this pair exists: without
+      // it the operator sees `▶ develop started`, then nothing, then
+      // `✓ develop finished in 2491s`. The command is truncated to the same
+      // 60 chars the event-log line uses, so a `.pi/verify-cmd` of two chained
+      // `cd`s does not eat the row.
+      const cmd = (d.command ?? "").replaceAll(/\s+/g, " ").trim();
+      const truncated = cmd.length > 60 ? `${cmd.slice(0, 59)}…` : cmd;
+      const tier = d.tier ? ` · ${d.tier}` : "";
+      return `▸ ensemble: ${cycleTag(d.issue)}⏳ ${d.label} verify · ${d.target ?? "?"} · ${truncated}${tier}`;
+    }
+    case "verify-completed": {
+      // The verdict leads, then the cost — the two things the operator wants
+      // from a gate that just spent 22 minutes. `timeout` gets its own glyph
+      // because a killed run judged nothing (#1324), and `reused` says no
+      // command ran for this verdict at all.
+      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
+      const tier = d.tier ? ` · ${d.tier}` : "";
+      const reused = d.reused ? " (reused)" : "";
+      const glyph =
+        d.status === "success"
+          ? "✓"
+          : d.status === "timeout"
+            ? "⏱"
+            : d.status === "skipped"
+              ? "○"
+              : "✗";
+      return `▸ ensemble: ${cycleTag(d.issue)}${glyph} ${d.label} verify · ${d.target ?? "?"} · ${d.status ?? "?"}${elapsed}${reused}${tier}`;
+    }
     case "step-retry": {
       const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
       const attempt = d.round ? ` attempt ${d.round}` : "";
@@ -123,6 +152,18 @@ function applyTheme(
       return theme.fg("error", content);
     case "step-notice":
       return theme.fg("error", content);
+    case "verify-started":
+      // #1415 — dim, like `step-started`: this is a beginning, and the eye
+      // should land on the verdict line, not on the announcement.
+      return theme.fg("dim", content);
+    case "verify-completed":
+      // The verdict decides the colour, not the kind: a gate that failed is an
+      // error wherever the operator reads it, and a green gate is success.
+      return details?.status === "failure"
+        ? theme.fg("error", content)
+        : details?.status === "timeout"
+          ? theme.fg("warning", content)
+          : theme.fg("success", content);
     case "errored":
       // Same colour as `failed` — both surface in scrollback as something
       // gone wrong; the line text itself distinguishes the failure mode.
