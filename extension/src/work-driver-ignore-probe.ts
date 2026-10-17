@@ -64,8 +64,15 @@ function exitCodeOf(err: unknown): unknown {
  * bound and rejects it `killed` with no exit `code`, which is exactly the shape
  * both readers below treat as "git could not answer" — so the timeout lands on
  * the existing fail-closed path rather than a new one.
+ *
+ * #1421 round 3 — EXPORTED, because the bare `git status --porcelain -uall`
+ * reads in work-driver-branch-residue.ts and
+ * work-driver-consolidated-verify-preflight.ts are the same kind of question
+ * asked of the same tree, inside the same integration lock, and had no bound
+ * at all. One number for all four reads means one knob for the operator and no
+ * chance of the three disagreeing about how long a git may take.
  */
-const IGNORE_PROBE_TIMEOUT_MS = 30_000;
+export const IGNORE_PROBE_TIMEOUT_MS = 30_000;
 
 /**
  * #1421 fix round (lens) — how many paths one `git check-ignore` call is
@@ -225,14 +232,20 @@ export async function probeIgnored(
   // so the fail-closed contract does not depend on the order the batches
   // settle in. Each worker catches its own rejection so a pool member never
   // becomes an unhandled rejection while its siblings are still running.
+  // #1421 round 3 — the FIRST failure is the one worth reading. With four
+  // workers settling out of order, a last-writer-wins `lastFailure` reported
+  // whichever batch happened to lose the race: an E2BIG whose siblings then
+  // timed out printed a timeout, and the operator optimized for the wrong
+  // thing. `failed` is a plain latch now (no `undefined`/`true` sentinel — the
+  // reason lives in `firstFailure`, and a rejection whose only payload is
+  // `code: undefined` still voids the answer because `firstFailureSet` says a
+  // batch failed); `failedCount` says how many did, which is what tells a
+  // single pathological batch apart from a git that will not answer at all.
   let next = 0;
-  // `undefined` = no batch has failed; `true` = one did. A sentinel rather
-  // than the error itself, because a rejection whose only payload is `code:
-  // undefined` must still void the answer — the same three-state discipline
-  // the rest of this module keeps. `lastFailure` carries the reason the trace
-  // prints.
   let failed = false;
-  let lastFailure: unknown;
+  let failedCount = 0;
+  let firstFailureSet = false;
+  let firstFailure: unknown;
   const runBatch = async (batch: string[]): Promise<Set<string>> => {
     const found = new Set<string>();
     try {
@@ -260,8 +273,12 @@ export async function probeIgnored(
       // The empty set is then correct information, and the caller keeps its
       // fail-closed dirt list on the strength of the read, not a guess.
       if (code === 1 && e.killed !== true) return found;
-      lastFailure = err;
-      failed = true;
+      failedCount++;
+      if (!firstFailureSet) {
+        firstFailureSet = true;
+        failed = true;
+        firstFailure = err;
+      }
       return found;
     }
   };
@@ -280,7 +297,7 @@ export async function probeIgnored(
   await Promise.all(pool);
   if (failed) {
     traceWarn(
-      `work-driver: probeIgnored could not ask git ${ignoreProbeFailure(lastFailure)} — the ignored set is unknown, so every untracked path is charged as dirt (fail closed)`,
+      `work-driver: probeIgnored could not ask git — ${failedCount} of ${batches.length} batch(es) failed; first: ${ignoreProbeFailure(firstFailure)} — the ignored set is unknown, so every untracked path is charged as dirt (fail closed)`,
     );
     // Fail CLOSED on the whole answer, not the batch: a union of the batches
     // that answered would exempt paths on a partial read.

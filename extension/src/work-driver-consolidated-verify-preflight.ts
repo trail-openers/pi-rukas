@@ -37,6 +37,7 @@ import {
   residuePathText,
 } from "./work-driver-dirty-root-classify.ts";
 import { normaliseRepoPath } from "./work-driver-dirty-root-exempt.ts";
+import { IGNORE_PROBE_TIMEOUT_MS } from "./work-driver-ignore-probe.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -59,9 +60,20 @@ export async function readRepoRootPreflight(
   // to its top-level entry, so an operator would see a bare `?? extension/` and
   // have to go hunting; -uall names the exact files, which is what the
   // dirty-root message is for.
+  // #1421 round 3 — the read is BOUNDED. It runs inside the integration lock
+  // (`consolidatedVerify` is invoked under it), so a git that hangs on a lock
+  // another process holds or a filesystem that stopped answering did not merely
+  // stall this cycle: it held the lock, and every other worktree's
+  // consolidation behind it. The two probes below already carried
+  // IGNORE_PROBE_TIMEOUT_MS; this one — the read that gates all of them — had
+  // none. A kill rejects with no exit code, which is exactly the shape the
+  // caller's fail-closed path already handles (an unclassified read charges
+  // every path as dirt), so the bound lands on an existing branch rather than
+  // a new one.
   const { stdout: rootStatus } = await execFn("git status --porcelain -uall", {
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
+    timeout: IGNORE_PROBE_TIMEOUT_MS,
   });
   const candidateLines = rootStatus.split("\n");
   // #1421 fix round (lens) — the candidate paths, built ONCE. Both the probe
