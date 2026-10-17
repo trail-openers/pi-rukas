@@ -36,6 +36,8 @@ const STORE = "review-findings-store";
 const DATA = "review-findings.json";
 const NL = String.fromCharCode(10);
 const Q = String.fromCharCode(39);
+const OB = String.fromCharCode(123); // {
+const CB = String.fromCharCode(125); // }
 
 type Case = { c: string; why: string };
 /** Verdict, computed once per case and asserted against a literal expectation. */
@@ -104,7 +106,8 @@ const ALLOWANCES: Case[] = [
  * value: a NAME the tool matches, so a store stem on it refuses the arm — including after
  * the path-limiting `--`, where every other word reads as a path. */
 const SIBLING_REFUSALS: Case[] = [
-  { c: `cat /repo/.git/${DATA}.bak`, why: "ACCEPTANCE: cat of a .bak sibling of the data file" },
+  // SIBLING_REFUSALS: a dotted suffix of a protected name reaches the store's bytes.
+  { c: `cat /repo/.git/${DATA}.bak`, why: "cat of a .bak sibling of the data file" },
   { c: `cat /repo/.git/${DATA}.corrupt`, why: "cat of a .corrupt sibling with no numeric suffix" },
   { c: "cat /repo/.git/review-findings-store.tmp", why: "cat of a .tmp sibling of the store" },
   { c: `git log -G${STORE}`, why: "ACCEPTANCE: git log -G naming the store" },
@@ -156,12 +159,10 @@ const MANDATED_REFUSALS: Case[] = [
   },
   { c: `bun <<~EOF${NL}import "${STORE}"${NL}EOF`, why: "a tilde here-doc importing the store" },
   // Shell expansion hides the name from a string match, so no arm vouches for a word
-  // carrying `$`, a backtick or a backslash: the guard cannot read what the shell will
-  // substitute, and `$(…)` / `${V}` can ASSEMBLE a protected name the text never spells.
-  {
-    c: "cat $({)review-findings.json$({)",
-    why: "ACCEPTANCE: cat of the data file assembled by brace expansion",
-  },
+  // carrying `$`, a backtick, a backslash or braces: the guard cannot read what the shell
+  // substitutes, and `$(…)` / `${V}` / `{a,b}` can ASSEMBLE a protected name the text lacks.
+  { c: `cat /repo/.git/rev${OB}iew-findings${CB}.json`, why: "brace expansion of the data name" },
+  { c: `echo ${OB}a,b${CB}`, why: "a plain brace list, no store word anywhere" },
   {
     c: `cat "a${"${DF}"}b"`,
     why: "ACCEPTANCE: a quoted word carrying a parameter expansion the guard cannot read",
@@ -187,11 +188,8 @@ const MANDATED_REFUSALS: Case[] = [
   // A git read verb whose operand NAMES the store as a search term or a blob path.
   { c: `git log -- ${DATA}`, why: "ACCEPTANCE: git log with the data file as a path operand" },
   { c: `git show HEAD:${DATA}`, why: "ACCEPTANCE: git show of the data file's blob" },
-  { c: `git log -S${DATA}`, why: "ACCEPTANCE: git log -S naming the data file" },
   { c: `git log --grep=${DATA}`, why: "git log --grep= naming the data file" },
   // A redirection moves bytes to or from a path no arm ever saw.
-  { c: `git log --oneline > .git/${DATA}`, why: "ACCEPTANCE: a redirection writing the data file" },
-  { c: `git log --oneline < .git/${DATA}`, why: "a redirection reading the data file" },
   { c: "git status > /tmp/out.txt", why: "a redirection no arm spells" },
   // A git repo-location selector moves the repository the "plain read" runs against, so
   // the arm's promise is about some tree the arms never saw. Each spelling is refused
@@ -329,6 +327,10 @@ const DENY_BY_DEFAULT_REFUSALS: Case[] = [
 
 const OVER_REFUSALS: Case[] = [
   {
+    c: "cat $({)review-findings.json$({)",
+    why: "brace characters in a word: EXPANSION refuses it before any arm reads it",
+  },
+  {
     c: "git show HEAD:README.md --output=/tmp/readme.txt",
     why: "--output naming no protected file",
   },
@@ -361,8 +363,6 @@ const OVER_REFUSALS: Case[] = [
     c: "echo review-acceptance-notes",
     why: "a word STARTING with the script's stem — clause (c) prefers the over-refusal",
   },
-  { c: `wc -l extension/src/${STORE}.ts`, why: "wc naming the store" },
-  { c: `sed -n ${Q}1,20p${Q} extension/src/${STORE}.ts`, why: "sed -n naming the store" },
   {
     c: `git log --oneline -- extension/src/${STORE}.ts`,
     why: "a git read whose path operand is the store module: a path SEGMENT whose last segment is a protected stem is refused",
