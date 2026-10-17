@@ -133,6 +133,11 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       return `  merged · PR #${e.prNumber}${e.mergedByOtherDuring ? ` · by someone else during ${e.mergedByOtherDuring}` : ""}`;
     case "lens-residuals-post-failed":
       return `  lens-residuals-post-failed · round ${e.round}${e.prNumber ? ` · PR #${e.prNumber}` : ""} · issue fallback ${e.issueFallback}${e.detail ? ` · ${e.detail.slice(0, 80)}` : ""}`;
+    case "lens-fix-attempt-preserved":
+      // #1391 — the retry save: where the lost attempt's work went. The ref is
+      // the recovery handle (a preserved thing the operator cannot locate is a
+      // preserved thing they will not find), so it renders in full.
+      return `  lens-fix-attempt-preserved · ${e.step}[${e.workstreamId}] attempt ${e.attempt} · ${e.files.length} file(s) · ${e.commitSha.slice(0, 7)} · ${e.preservedRef}${e.patchPath ? ` · patch ${e.patchPath}` : ""}`;
     case "branches-fanned-out":
       return `  branches-fanned-out · ${e.step} · ${e.workstreams.length} branches: ${e.workstreams.join(", ")}`;
     case "branch-completed":

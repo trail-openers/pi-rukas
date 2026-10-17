@@ -100,6 +100,10 @@ export {
   WORK_STEPS,
 } from "./workflow-state-schema.ts";
 export { appendEvent, detectInconsistencies, initialState } from "./workflow-state-update.ts";
+// #986's membership tuple, re-exported so readers of the state module keep one
+// import path for the vocabulary the resume gate checks (#1391 split for the
+// AGENTS.md §12 line cap).
+export { KNOWN_EVENT_KINDS } from "./workflow-state-event-kinds.ts";
 /**
  * Resolve the project-local state directory. We anchor on `cwd` rather than
  * the worktree path because state must live at the project root so
