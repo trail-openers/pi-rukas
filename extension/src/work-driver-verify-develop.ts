@@ -1,12 +1,12 @@
 /**
  * work-driver-verify-develop — develop-branch outcome verification.
  *
- * Extracted from work-driver-verify.ts (issue #338, file-size cap).
- * Checks diff evidence, verify command, skip-ratchet, and product smoke gates.
- * Import chain: work-driver-verify.ts → this file → work-driver-verify-cmd.ts
- * (acyclic). The #679 falsily-green check lives in work-driver-falsily-green.ts.
- * Exec-error formatting and verify-cmd gate helpers (timeout, path
- * normaliser, tolerance) live in work-driver-verify-develop-helpers.ts.
+ * Extracted from work-driver-verify.ts (issue #338, file-size cap). Checks diff
+ * evidence, verify command, skip-ratchet, and product smoke gates. Import chain:
+ * work-driver-verify.ts → this file → work-driver-verify-cmd.ts (acyclic). The
+ * #679 falsily-green check lives in work-driver-falsily-green.ts; exec-error
+ * formatting and verify-cmd gate helpers (timeout, path normaliser, tolerance) in
+ * work-driver-verify-develop-helpers.ts.
  */
 
 import type { CommentEvidence } from "./comment-evidence.ts";
@@ -43,6 +43,7 @@ import {
 } from "./work-driver-verify-develop-gates.ts";
 import { normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
 import { fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
+import type { GateRecorded } from "./work-driver-verify-gate-reuse.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
 
@@ -68,26 +69,31 @@ export async function verifyDevelopOutcome(
   // #782 — fires when the consolidated-verify flake re-run passed.
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void,
   // #814 — out-parameter for structured fence-violation records (see the
-  // scope/fanout gate call below). Mutated in place by runScopeFanoutGate.
+  // scope/fanout gate below). Mutated in place by runScopeFanoutGate.
   fenceViolations?: FenceViolationRecord[],
-  // #841 — out-parameter for the consolidated verify's persisted raw-output
-  // log path (the gate records it when a log was written, so the caller can
-  // put it on the cap-hit event structurally instead of regexing prose).
+  // #841 — out-parameter for the consolidated verify's persisted raw-output log
+  // path (recorded when a log was written, so the caller can put it on the
+  // cap-hit event structurally instead of regexing prose).
   onConsolidatedLogPath?: (logPath: string) => void,
-  // #1040 — out-parameter for the structured comment-loss checks (the
-  // note and its result), so the caller plumbs them without matching note text.
+  // #1040 — out-parameter for the structured comment-loss checks (note + result),
+  // so the caller plumbs them without matching note text.
   commentEvidence: CommentEvidence[] = [],
-  // #1349 — fires when the base-commit probe found the verify command red
-  // at base AND the verify command's failures are the gate's only ones, so
-  // the caller can park with verify-baseline-red instead of verify-failed.
+  // #1349 — fires when the base probe found the verify command red at base AND
+  // its failures are the gate's only ones, so the caller can park with
+  // verify-baseline-red instead of verify-failed.
   onBaselineRedOnly?: () => void,
   // #1240 — out-parameter carrying the identity that justified skipping the
-  // consolidated run (the single workstream's tree, already verified green).
-  // The caller appends the `consolidated-verify-skipped` EVENT from it: a
-  // note would be the one kind of note that never survives to the state
-  // file, and the event lives where the caller appends so the log stays
-  // append-only.
+  // consolidated run (the single workstream's tree, already verified green). The
+  // caller appends the `consolidated-verify-skipped` EVENT from it: a note is the
+  // one kind of note that never survives to the state file, and the event lives
+  // where the caller appends so the log stays append-only.
   onConsolidatedVerifySkipped?: (skipped: AlreadyVerifiedTree) => void,
+  // #1415 — gate reuse bookkeeping, threaded to the gate. **NOT YET WIRED:** no
+  // caller passes it, so `pipelineState.gateReuse` stays absent and reuse never
+  // fires — the cycle behaves as before #1415 (fail-open default). Post-integration:
+  // the develop caller merges it into `gateReuse` via `writeState` (seam:
+  // `onConsolidatedVerifySkipped`). Absent is never a pass.
+  onGateRecorded?: GateRecorded,
 ): Promise<void> {
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
@@ -432,14 +438,12 @@ export async function verifyDevelopOutcome(
     if (skipDecision.skip) {
       notes.push(skipDecision.reason ?? "frontend-only skip");
     } else {
-      // #1012 — a non-skip `reason` is diagnostic (git-failure suppression,
-      // probe error, opt-in disabled): record it but still run the gate.
-      // Only an actual skip suppresses the derived chain.
+      // #1012 — a non-skip `reason` is diagnostic (git-failure suppression, probe
+      // error, opt-in disabled): record it but still run the gate. Only an actual
+      // skip suppresses the derived chain.
       if (skipDecision.reason) notes.push(skipDecision.reason);
-      // #794 — the per-worktree loop + consolidated run + classification is
-      // extracted to work-driver-verify-verify-cmd.ts (500-line gate); the
-      // failure messages, the flake-retry precondition and the aggregation
-      // semantics all live there unchanged.
+      // #794 — the per-worktree loop + consolidated run + classification live in
+      // work-driver-verify-verify-cmd.ts (500-line gate), unchanged.
       const before = failures.length;
       let attributed = false;
       await runVerifyCommandGate({
@@ -455,16 +459,15 @@ export async function verifyDevelopOutcome(
         failures,
         notes,
         onVerifyFlakeRecovered,
-        // #814 — the fence records the gate just wrote (the scope gate runs
-        // before the consolidated verify) — so a conflict the fence already
-        // recorded is attributed, not re-diagnosed as an incoherent
-        // decomposition.
+        // #814 — the fence records the scope gate wrote before the consolidated
+        // verify, so a conflict it recorded is attributed, not re-diagnosed.
         ...(fenceViolations !== undefined ? { fenceViolations } : {}),
         ...(onConsolidatedLogPath !== undefined ? { onConsolidatedLogPath } : {}),
         onBaselineAttributed: () => {
           attributed = true;
         },
         ...(onConsolidatedVerifySkipped !== undefined ? { onConsolidatedVerifySkipped } : {}),
+        ...(onGateRecorded !== undefined ? { onGateRecorded } : {}),
       });
       // #1349 — only a base that fails the way the change does excuses it.
       verifyCmdEnd = before === 0 && attributed ? failures.length : undefined;
