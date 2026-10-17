@@ -20,23 +20,27 @@
  * the file from the working tree. Anything reading doctrine off disk sees
  * nothing; the real path the test drives still sees the grant.
  *
- * ## Why the policy judge is faked at the `exec` seam
+ * ## Why the policy judge has its own seam
  *
  * The merge gate's authority read is `judgePolicy` → `spawnSpecialist`, whose
- * `report_policy` tool call is `askPolicy`'s **only** backend — DriverContext
- * has no seam for it, so injecting `dispatchFn` does not reach it. Faking the
- * child would mean faking Pi. Instead the gate's *other* seam — the `verifyExecFn`
- * every merge-gate consumer already injects — answers the whole doctrine +
- * evidence read, and the assertion is that the composition still refuses. The
- * citation-verified grant itself is covered by test-policy-judge.ts; repeating
- * it here would test `decide()`, not the headless composition.
+ * `report_policy` tool call is `askPolicy`'s only backend. `DriverContext` now
+ * carries `policyJudgeFn` so a case can put an ANSWER in front of the doctrine
+ * it supplied — otherwise the only offline option is
+ * `PI_ENSEMBLE_POLICY_JUDGE=0`, which denies for the whole process and makes a
+ * "denied because the doctrine could not be read" case indistinguishable from
+ * "denied because the judge was switched off". The citation-verified grant
+ * itself is covered by test-policy-judge.ts; repeating it here would test
+ * `decide()`, not the headless composition.
  */
 
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { DispatchResult } from "../../src/types.ts";
 import type { VerifyExecFn } from "../../src/work-driver-git.ts";
+import type { WorkCapLiteral } from "../../src/workflow-state-events-caps.ts";
+import type { WorkEvent } from "../../src/workflow-state.ts";
 
 /**
  * The sentence a `permitted` judge would have to quote verbatim. Kept here so
@@ -102,22 +106,92 @@ export function headlessRepo(grant: string | undefined, dirName = "headless-s5-"
 /** What `gh` says about the PR when the cycle reaches the merge gate. */
 export type MergeVerdict = "green" | "blocked" | "failing" | "unopen";
 
-function evidenceView(verdict: MergeVerdict): string {
-  if (verdict === "unopen")
-    return '{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"CLOSED"}';
-  if (verdict === "blocked")
-    return '{"mergeStateStatus":"BLOCKED","mergeable":"UNKNOWN","state":"OPEN"}';
-  return '{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"OPEN"}';
+/**
+ * One row of the fixture's per-verdict `gh` answers.
+ *
+ * Each verdict is decided in ONE place, and the construction is an EXHAUSTIVE
+ * switch with a `never` default rather than a chain of `if`s ending in a green
+ * fallback. The pre-fix shape answered `"failing"` with
+ * `mergeStateStatus: "CLEAN"` and only the checks read disagreed, so the
+ * evidence gate's own 3-field probe reported a mergeable PR for a verdict that
+ * is supposed to block; and the wide `gh pr view` answer hardcoded
+ * `state: "OPEN"` for every verdict, so the `unopen` case was refused by the
+ * PR-identity check rather than by the gate. Both reads now derive from the one
+ * row, so no gate can be handed a CLEAN answer for a verdict that blocks.
+ */
+interface MergeView {
+  /** The evidence gate's 3-field `gh pr view` answer. */
+  evidence: string;
+  /** The `gh pr checks` rows. */
+  checks: string;
+  /** The forge adapter's wide `gh pr view` answer for the same PR. */
+  prView: string;
 }
 
-function checksJson(verdict: MergeVerdict): string {
-  if (verdict === "failing") {
-    return JSON.stringify([
-      { name: "typecheck", bucket: "pass", state: "SUCCESS" },
-      { name: "test", bucket: "FAIL", state: "FAILURE" },
-    ]);
+function mergeView(verdict: MergeVerdict, pr: number): MergeView {
+  const passing = [{ name: "typecheck", bucket: "pass", state: "SUCCESS" }];
+  const failing = [
+    { name: "typecheck", bucket: "pass", state: "SUCCESS" },
+    { name: "test", bucket: "FAIL", state: "FAILURE" },
+  ];
+  switch (verdict) {
+    case "green":
+      return {
+        evidence: '{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"OPEN"}',
+        checks: JSON.stringify(passing),
+        prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "CLEAN" }),
+      };
+    case "blocked":
+      return {
+        evidence: '{"mergeStateStatus":"BLOCKED","mergeable":"UNKNOWN","state":"OPEN"}',
+        checks: JSON.stringify(passing),
+        prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "BLOCKED" }),
+      };
+    case "failing":
+      // The checks read is the ONLY thing that stops this merge, so the case
+      // can tell "the failing-checks gate refused" from "the state blocklist
+      // refused". A `BLOCKED` state short-circuits in `gatherMergeEvidence`
+      // before the check rows are ever read, so a BLOCKED answer here would
+      // make this case pass even with the failing-checks branch deleted — the
+      // exact vacuity the mutation check exists to catch. GitHub leaves
+      // `mergeStateStatus` at its last-computed value while a required check
+      // flips to FAILURE, so CLEAN-plus-failing-row is the platform-accurate
+      // shape where the checks read is load-bearing.
+      return {
+        evidence: '{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"OPEN"}',
+        checks: JSON.stringify(failing),
+        prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "CLEAN" }),
+      };
+    case "unopen":
+      return {
+        evidence: '{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"CLOSED"}',
+        checks: JSON.stringify(passing),
+        prView: prViewJson(pr, { state: "CLOSED", mergeStateStatus: "CLEAN" }),
+      };
+    default: {
+      const unhandled: never = verdict;
+      throw new Error(`no fixture view for MergeVerdict ${String(unhandled)}`);
+    }
   }
-  return JSON.stringify([{ name: "typecheck", bucket: "pass", state: "SUCCESS" }]);
+}
+
+function prViewJson(
+  pr: number,
+  facts: { state: "OPEN" | "CLOSED"; mergeStateStatus: "CLEAN" | "BLOCKED" },
+): string {
+  return JSON.stringify({
+    number: pr,
+    title: "feat(s5): headless gates",
+    state: facts.state,
+    url: `https://github.com/s5/s5/pull/${pr}`,
+    headRefName: "feature/issue-9001",
+    baseRefName: "main",
+    mergeable: facts.mergeStateStatus === "CLEAN" ? "MERGEABLE" : "UNKNOWN",
+    mergeStateStatus: facts.mergeStateStatus,
+    // Always false: a draft cannot merge and would halt the step for a reason
+    // unrelated to what these cases assert.
+    isDraft: false,
+  });
 }
 
 /** Everything the seam was asked, and the merges it was asked to perform. */
@@ -126,6 +200,27 @@ export interface MergeExecLog {
   calls: string[];
   /** The forge merge invocations it was asked to run, verbatim. */
   mergeCmds: string[];
+  /**
+   * Every doctrine read the seam was handed, verbatim, in whatever exec shape
+   * arrived (`git show <sha>:AGENTS.md`, or the argv form).
+   *
+   * A separate field rather than a `calls` filter: the case asserts the gate
+   * ASKED for the doctrine at its base commit, and that question should not
+   * hinge on which of the two exec shapes `readDoctrineAtBase` happens to use.
+   * A doctrine read that stops arriving is this array going empty.
+   */
+  doctrineReads: string[];
+  /**
+   * Commands the seam had no answer for, plus every `git rev-parse` it was
+   * handed (recorded whether or not it was anticipated).
+   *
+   * An unrecognised read used to return an empty stdout and be recorded only in
+   * `calls` — indistinguishable from a step the test intended. A `git`/`gh` read
+   * the fixture does not know is a change in the production path, and every case
+   * asserts this stays empty, so such a change fails loudly instead of being
+   * answered "nothing".
+   */
+  unexpected: string[];
 }
 
 /** The PR number the fixture's state file carries, so replies can name it. */
@@ -141,21 +236,55 @@ export function isForgeMerge(line: string): boolean {
 }
 
 /**
+ * The git subcommands the seam answers from the fixture's own repo.
+ *
+ * A whitelist, not "starts with git": each entry is a read the merge step
+ * genuinely makes. Anything outside it is an unexpected read the case never
+ * meant to ask about, and running it against the fixture repo would answer a
+ * question nobody asked.
+ */
+const KNOWN_GIT_SUBCOMMANDS = new Set(["show", "rev-parse", "remote", "config", "symbolic-ref"]);
+
+/**
+ * The blob spec of a doctrine read, in either exec shape, or undefined when the
+ * command is not one.
+ *
+ * `readDoctrineAtBase` builds `git show <sha>:<file>` as one string; the argv
+ * form (#1005 exec contract) would deliver the same read as `show <sha>:<file>`.
+ * Both are the same question and the fixture answers both identically, so a
+ * change in the exec shape cannot quietly turn the doctrine read into "nothing".
+ */
+function doctrineSpec(cmd: string, o?: { argv?: string[] }): string | undefined {
+  if (o?.argv) {
+    if (cmd !== "git") return undefined;
+    if ((o.argv[0] ?? "") !== "show") return undefined;
+    return o.argv[o.argv[1] === "--" ? 2 : 1];
+  }
+  if (!cmd.startsWith("git show ")) return undefined;
+  return cmd.slice("git show ".length).trim().split(/\s+/)[0];
+}
+
+/**
  * The exec seam for a cycle parked at the merge step.
  *
- * `merge: "refuse-judge"` makes every doctrine read fail, which is how a cycle
- * with no written grant is simulated: the judge's child cannot read the
- * documents, `askPolicy` abstains, the rule (`unstated`) stands, and the merge
- * is denied. That is the composition under test, not the citation check.
+ * `refuseDoctrine: true` makes every doctrine read fail, which is how a cycle
+ * whose doctrine the gate cannot read is simulated: `readDoctrineAtBase` gets no
+ * text, the judge is handed no documents, `askPolicy` abstains, the rule
+ * (`unstated`) stands, and the merge is denied. That is the composition under
+ * test, not the citation check.
  *
- * Unrecognised commands return an empty stdout and are still recorded in
- * `log.calls`, so a step the test did not intend is visible rather than green.
+ * Commands the seam has no answer for are recorded in `log.unexpected` and still
+ * return an empty stdout — the case decides whether that is fatal, and every case
+ * asserts `unexpected` is empty. The last-resort `git`/`gh`/`glab` catch-alls
+ * that used to swallow them are gone; without them an unexpected command is the
+ * only way this fixture stays honest about the reads a cycle actually made.
  */
 export function mergeExec(
   opts: { merge: MergeVerdict; repoRoot: string; prNumber?: number; refuseDoctrine?: boolean },
   log: MergeExecLog,
 ): VerifyExecFn {
   const pr = opts.prNumber ?? FIXTURE_PR;
+  const view = mergeView(opts.merge, pr);
   const runGit = (args: string[]) => {
     const child = spawnSync("git", args, { cwd: opts.repoRoot, encoding: "utf8" });
     if (child.status !== 0) {
@@ -169,45 +298,45 @@ export function mergeExec(
   return async (cmd: string, o?: { argv?: string[]; cwd?: string }) => {
     const line = o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
     log.calls.push(line);
-    if (cmd === "git" && o?.argv) return runGit(o.argv);
-    // The doctrine read arrives as one string `<exe> show <sha>:<path>`. Split
-    // the revision from the path and pass `--` so a path that also names a rev
-    // cannot read as ambiguous.
-    if (line.startsWith("git show ")) {
+
+    const spec = doctrineSpec(cmd, o);
+    if (spec !== undefined) {
+      log.doctrineReads.push(line);
       if (opts.refuseDoctrine) {
         throw Object.assign(new Error("no doctrine at the base commit"), {
           stdout: "",
           stderr: "",
         });
       }
-      const spec = line.slice("git show ".length).trim().split(/\s+/)[0] ?? "";
       const colon = spec.indexOf(":");
       if (colon <= 0) {
         throw Object.assign(new Error(`not a blob spec: ${spec}`), { stdout: "", stderr: "" });
       }
       return runGit(["show", "--", spec.slice(0, colon), spec.slice(colon + 1)]);
     }
-    // The evidence gate's 3-field probe — distinct from the forge adapter's
-    // wide prView field list, which also mentions `mergeStateStatus`.
+
+    if (cmd === "git" && o?.argv) {
+      const sub = o.argv[0] ?? "";
+      if (!KNOWN_GIT_SUBCOMMANDS.has(sub)) {
+        log.unexpected.push(line);
+        return { stdout: "" };
+      }
+      if (sub === "rev-parse") {
+        // A rev-parse matcher that answers every rev-parse is fine, but each one
+        // is recorded: `restoreCheckout` / `detectMainline` / the preflight read
+        // a ref, and which ref they read is part of the contract.
+        log.unexpected.push(`(recorded) ${line}`);
+      }
+      return runGit(o.argv);
+    }
+
+    // The evidence gate's 3-field probe — distinct from the forge adapter's wide
+    // prView field list, which also mentions `mergeStateStatus`.
     if (line.includes("--json mergeStateStatus,mergeable,state")) {
-      return { stdout: evidenceView(opts.merge) };
+      return { stdout: view.evidence };
     }
-    if (line.includes("gh pr checks")) return { stdout: checksJson(opts.merge) };
-    if (line.includes("gh pr view")) {
-      return {
-        stdout: JSON.stringify({
-          number: pr,
-          title: "feat(s5): headless gates",
-          state: "OPEN",
-          url: `https://github.com/s5/s5/pull/${pr}`,
-          headRefName: "feature/issue-9001",
-          baseRefName: "main",
-          mergeable: "MERGEABLE",
-          mergeStateStatus: opts.merge === "blocked" ? "BLOCKED" : "CLEAN",
-          isDraft: false,
-        }),
-      };
-    }
+    if (line.includes("gh pr checks")) return { stdout: view.checks };
+    if (line.includes("gh pr view")) return { stdout: view.prView };
     if (isForgeMerge(line)) {
       log.mergeCmds.push(line);
       if (opts.merge === "blocked" || opts.merge === "unopen") {
@@ -229,10 +358,7 @@ export function mergeExec(
     }
     if (line.includes("git remote")) return { stdout: "origin\n" };
     if (line.includes("git symbolic-ref")) return { stdout: "refs/remotes/origin/main\n" };
-    if (line.includes("git rev-parse")) return { stdout: "feature/issue-9001\n" };
-    if (line.startsWith("git ") || line.startsWith("gh ") || line.startsWith("glab ")) {
-      return { stdout: "" };
-    }
+    log.unexpected.push(line);
     return { stdout: "" };
   };
 }
@@ -240,18 +366,44 @@ export function mergeExec(
 /**
  * The reduced `DispatchResult` a stubbed `dispatchFn` returns.
  *
- * Typedef'd structurally rather than imported from `../src/types.ts` so the
- * fixture stays a leaf: importing the types module pulls the dispatch surface
- * into every test that loads this file.
+ * Typed as the real `DispatchResult` rather than structurally duck-typed, so the
+ * cases never cast the seam through `as never`: a field the driver starts reading
+ * off a dispatch result (`.summary`, for the mechanized-vs-LLM merge-commit
+ * parse) is then a compile error here rather than an undefined at runtime.
  */
-export function okResult(text = "") {
+export function okResult(
+  text = "",
+  over: Partial<Pick<DispatchResult, "role" | "ok" | "exitCode">> = {},
+): DispatchResult {
   return {
-    role: "ops",
-    ok: true,
+    role: over.role ?? "ops",
+    ok: over.ok ?? true,
     text,
     toolUses: [],
     ms: 10,
-    exitCode: 0,
+    exitCode: over.exitCode ?? 0,
     transcriptPath: "/tmp/s5.json",
+  };
+}
+
+/**
+ * A `cap-hit` event shaped the way the driver writes one.
+ *
+ * The exit-code cases used to build these with two `as never` casts — a cap
+ * literal and the whole event object — which is exactly where a renamed or newly
+ * required field stops being a compile error. If the event's shape changes, this
+ * helper fails to type-check instead of silently projecting the wrong exit code.
+ */
+export function capHitEvent(
+  cap: WorkCapLiteral,
+  opts: { at: number; evidence?: string },
+): WorkEvent {
+  return {
+    kind: "cap-hit",
+    at: opts.at,
+    cap,
+    reviewRound: 0,
+    nextStep: "handoff",
+    ...(opts.evidence !== undefined ? { evidence: opts.evidence } : {}),
   };
 }

@@ -236,7 +236,8 @@ export async function runMerged(
     // #407 — the documents are read by a judge and its answer is
     // citation-verified, not matched against English regexes.
     const authority = await resolveMergeAuthority(
-      judgePolicy(ctx.repoRoot, { processGroup: ctx.processGroup === true, signal: ctx.signal }),
+      ctx.policyJudgeFn ??
+        judgePolicy(ctx.repoRoot, { processGroup: ctx.processGroup === true, signal: ctx.signal }),
       docs,
       ctx.mergeGrant,
       { repoRoot: ctx.repoRoot, issues: ctx.issues ?? [ctx.issue] },
