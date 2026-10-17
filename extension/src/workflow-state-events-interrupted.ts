@@ -1,10 +1,10 @@
 /**
- * /work workflow state — the two interruption events (#1162, #1247, #1371).
+ * /work workflow state — the `interrupted` + `cycle-interrupted` event types.
  *
- * Split from `workflow-state-events.ts` for the 500-line gate (AGENTS.md §12),
- * which main's #1247 pushed over: the `origin` field it added to
- * `cycle-interrupted` is additive and these two members are the largest block in
- * the union. That module re-exports both types, so importers keep their path.
+ * Moved VERBATIM from workflow-state-events.ts so that file stays under the
+ * 500-line gate (AGENTS.md §12); `workflow-state-events.ts` re-exports both
+ * types, so importers keep their path. The move is the whole change — the text
+ * is byte-identical to the original.
  *
  * The imports are type-only, so this module has no runtime edge: the events
  * module stays free of value imports, which is what keeps the `WORK_STEPS`
