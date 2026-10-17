@@ -199,7 +199,13 @@ assert(
     seam === "fixture-open-point" && seamContractViolations(spec).length === 0,
     "the open-point fixture seam is a valid registry entry",
   );
-  const point = `HEADMARKER${"p".repeat(1200)}`;
+  // The fixture used to be `HEADMARKER` + 1 200 `p`, which the fail-closed net now takes
+  // for exactly the reason it exists: a single credential-class run of 1 210 characters is
+  // indistinguishable from a key body to a window the scan did not reach. That is the right
+  // behaviour and the wrong fixture for THIS claim, which is that a field bound clips to
+  // the head the seam declares without redacting anything. Words do that job, and they are
+  // what an open point actually is — prose, not a blob.
+  const point = `HEADMARKER ${Array.from({ length: 300 }, (_, i) => `word${i}`).join(" ")}`;
   const bounded = boundedState({ openPoint: point }, spec);
   const kept = String((bounded.state as { openPoint?: string }).openPoint ?? "");
   assert(
