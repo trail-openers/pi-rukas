@@ -156,6 +156,34 @@ const protectedFailure = (f: string[]) => f.find((x) => /protected path/.test(x)
       has(argv, "core.hooksPath=/dev/null"),
       `canary: ${name} carries \`-c core.hooksPath=/dev/null\` — a child-written hook path cannot run code in the driver`,
     );
+    // The attribute-bound executable: a committed `.gitattributes`, or a
+    // `.git/info/attributes` the read cannot delete, binds a path to
+    // `filter=<x>` and git runs that driver's `clean` script **as the driver**
+    // while materialising content. Measured on git 2.50.1: `core.attributesFile=
+    // /dev/null` and `GIT_ATTR_NOSYSTEM=1` do NOT defeat it, and `-c
+    // filter.<name>.clean=false` does — for the named filter only. The argv
+    // therefore forces the conventional names off and the module jsdoc states the
+    // per-name limit; the real-git fixtures in
+    // test-work-driver-protected-paths-read.ts assert both halves.
+    assert(
+      has(argv, "core.attributesFile=/dev/null"),
+      `canary: ${name} carries \`-c core.attributesFile=/dev/null\` — one of the layers that can bind a path to a filter driver`,
+    );
+    assert(
+      argv.filter((a) => a.startsWith("filter.") && a.endsWith(".clean=false")).length >= 3,
+      `canary: ${name} forces the conventional filter driver names off — the only measured blocker for an attribute-bound clean filter`,
+    );
+    assert(
+      !argv.includes("--no-ext-diff") && !argv.includes("--no-textconv"),
+      `canary: ${name} does NOT carry \`--no-ext-diff\`/\`--no-textconv\` — they are \`git diff\` options, so at the global position git rejects them with exit 129 and this read would fail outright (and they never blocked a clean filter anyway)`,
+    );
+    const sub = argv.findIndex((a) => a === "diff" || a === "status");
+    assert(
+      sub > 0 &&
+        argv.indexOf("core.attributesFile=/dev/null") < sub &&
+        argv.findIndex((a) => a.startsWith("filter.") && a.endsWith(".clean=false")) < sub,
+      `canary: ${name} carries its hardening BEFORE its subcommand (at ${sub}) — every \`-c\` pair must precede it or git treats it as a pathspec`,
+    );
   }
   assert(
     has(PROTECTED_DIFF_ARGV, "--end-of-options"),
@@ -167,8 +195,13 @@ const protectedFailure = (f: string[]) => f.find((x) => /protected path/.test(x)
       has(PROTECTED_STATUS_ARGV, "--untracked-files=all") &&
       has(PROTECTED_DIFF_ARGV, "diff") &&
       has(PROTECTED_DIFF_ARGV, "--name-status") &&
-      has(PROTECTED_DIFF_ARGV, "-M"),
-    "canary: both argv constants carry their subcommand and the flags that make the read complete",
+      has(PROTECTED_DIFF_ARGV, "-M") &&
+      // `-M` alone can never yield a `C` record, so the parser's copy arm is
+      // dead code in production without `-C` — and the dead arm is exactly the
+      // case `cp .github/workflows/ci.yml docs/leak.yml` produces, the one
+      // `git mv` does not cover. Asserted on the constant so it cannot rot.
+      has(PROTECTED_DIFF_ARGV, "-C"),
+    "canary: both argv constants carry their subcommand and the flags that make the read complete (the committed read detects renames AND copies)",
   );
 
   // The gate must not reach a SECOND reader for the protected check. A stray

@@ -30,7 +30,7 @@ import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
-import { PROTECTED_STATUS_ARGV } from "../src/work-driver-protected-paths-read.ts";
+import { PROTECTED_DIFF_ARGV, PROTECTED_STATUS_ARGV } from "../src/work-driver-protected-paths-read.ts";
 
 const execFileP = promisify(execFile);
 
@@ -280,7 +280,7 @@ try {
       const line = commandOf(cmd, o);
       if (isNulStatusRead(line))
         return { stdout: cwd === wtA ? nulStatus(" M a.css") : nulStatus(" M b.ts") };
-      if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
+      if (line.startsWith("git rev-list --count")) return { stdout: "1\n" };
       if (isNulDiffRead(line)) return { stdout: cwd === wtA ? nulNameStatus("a.css") : nulNameStatus("b.ts") };
       if (cmd.startsWith("git diff")) return { stdout: "" };
       return { stdout: "" };
@@ -416,9 +416,16 @@ try {
           return { stdout };
         }
         if (isNulDiffRead(cmd)) {
-          const at = cmd.indexOf("--end-of-options") + "--end-of-options".length;
-          const range = cmd.slice(at).trim();
-          const { stdout } = await execFileP("git", ["diff", "-z", "--name-status", "-M", "--end-of-options", range], { cwd: o?.cwd, maxBuffer: 8 * 1024 * 1024 });
+          // Replay the PRODUCTION argv, not a hand-written copy. The range is the
+          // one element the reader appends at its call site, so it is taken from
+          // the tail of the argv the gate actually sent; everything before it is
+          // the exported constant. A literal argv here silently kept passing
+          // while `-M`/`-C`/the filter hardening drifted out of what this test ran.
+          const range = o?.argv?.[o.argv.length - 1] ?? "";
+          const { stdout } = await execFileP("git", [...PROTECTED_DIFF_ARGV, range], {
+            cwd: o?.cwd,
+            maxBuffer: 8 * 1024 * 1024,
+          });
           return { stdout };
         }
         if (cmd.startsWith("git rev-list --count ")) {

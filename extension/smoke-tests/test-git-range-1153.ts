@@ -44,16 +44,43 @@ const LISTED = [
   // #1378 — the protected-path reads take `DEFAULT_GIT_TIMEOUT_MS` from here so a
   // hung git cannot hang the develop step; both its git calls are argv-form.
   "work-driver-protected-paths-read.ts",
+  // #1378 (round 3) — the develop gate's `git rev-list --count` read used to have
+  // no timeout at all, so a wedged object store hung the whole step. It now takes
+  // the same bound from here.
+  "work-driver-verify-develop.ts",
 ];
 
 /** A git command string handed to an exec call: a `(` then a literal beginning `git `. */
 const COMMAND_STRING = /\([ \t]*["'`]git[ \t]/;
 
+/**
+ * Lines whose `git `-leading literal is operator-facing prose, not a command.
+ *
+ * The develop gate builds its failure and note text from template literals that
+ * open with the word `git` — `` `git status failed in worktree "${id}" …` `` and
+ * its `git diff` twin — and the scanner cannot tell those from a command string
+ * without parsing the literal. Naming them is deliberate rather than clever: an
+ * in-file allowlist with a reason per line fails LOUDLY when one is deleted or
+ * reworded (the line stops matching and the string is flagged again), where a
+ * "does this read like a sentence?" heuristic fails silently in whichever
+ * direction it gets it wrong. Anything genuinely new stays flagged.
+ */
+const PROSE_GIT_LITERALS = [
+  "git status failed in worktree",
+  "git status failed in ${id}",
+  "git diff failed in worktree",
+  "git diff failed in ${id}",
+  // Operator guidance, not a call: the develop gate tells a developer what to run
+  // in their worktree when it has uncommitted work and no commit ahead of base.
+  "git add -A && git commit",
+];
+
 function commandStringLines(source: string): string[] {
   return source.split("\n").filter((line) => {
     const t = line.trim();
     if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) return false;
-    return COMMAND_STRING.test(line);
+    if (!COMMAND_STRING.test(line)) return false;
+    return !PROSE_GIT_LITERALS.some((p) => line.includes(p));
   });
 }
 
