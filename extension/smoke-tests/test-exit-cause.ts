@@ -23,24 +23,44 @@
  *      remove the guard and G1 goes red (it reads `stdin-eof`, the mislabel the
  *      issue is about) while A stays green — A's stdin is a pipe, which the
  *      guard admits either way. Verified by mutation.
- *   B. stdin EOF, with the extension's `end` listener registered LAST — the
- *      rpc-mode ordering. Pi attaches its own `end` listener first (it reads
- *      commands from stdin), so Pi's shutdown runs before this module's
- *      listener is reached, and the value must already be right at that moment.
- *      That is what `process.stdin.readableEnded` buys: a fact on the stream
- *      that needs no listener of ours to have fired.
- *      MEASURED, so these claims are load-bearing and were re-checked rather
- *      than inherited. Two mutations of `exit-cause.ts`, run in full:
- *        • the `readableEnded` READ removed — **B1 is the only red case**.
- *          A, B2, C and D stay green: B2 and C reach the origin through the
- *          `end` LISTENER, which records it before anything reads it, so the
- *          listener carries them and they cannot falsify the stream read. B1 is
- *          the only case that reads from a handler installed BEFORE this
- *          module's, which is why it is the only one that reddens.
+ *   B. stdin EOF, read at the instant the shutdown hook reads it. Pi attaches
+ *      its own `end` listener first (it reads commands from stdin) and does `void
+ *      shutdown()`, which awaits before the hook fires, so the value must already
+ *      be right at that moment — and it must NOT be asserted against a flag, because
+ *      which flag a runtime stamps is a property of the runtime, not of this
+ *      module. That assertion is exactly the CI-only failure: bun 1.3.13 (CI's
+ *      `quality-gate` pin) never sets `readableEnded` or `_readableState.ended`, so
+ *      the old B1 could only be red on the runner and green locally. The stream's
+ *      own EOF state is the backstop — `readableEnded`, the readable state's
+ *      `ended`, and `readable === false` with `readableDidRead` for the runtimes
+ *      that stamp none of the first two — and the `end` listener is the carrier.
+ *      MEASURED on both runtimes, so these claims were re-checked rather than
+ *      inherited. Two mutations of `exit-cause.ts`, run in full:
+ *        • the stream EOF READ removed (whole predicate → `false`), listener intact
+ *          — B1 and B2 STAY GREEN. The listener has already written the origin by
+ *          the time anything reads, so neither case can falsify the read on its own.
+ *          The old header claimed B1 was the only red case here; that was inherited
+ *          from a shape (a synchronous read inside a prepended `end` listener) that
+ *          no runtime satisfies, and re-measuring it is what this block now records.
  *        • the `end` LISTENER removed — **C is the only red case**, and B2
  *          STAYS GREEN. B2 passed the old header's claim that it falsified the
  *          listener, and the reason is this module's own read: with the listener
- *          gone, `exitOrigin()` still answers `stdin-eof` from `readableEnded`,
+ *          gone, `exitOrigin()` still answers `stdin-eof` from the stream's EOF
+ *          state,
+ *          so the case cannot tell "the listener recorded it" from "the stream
+ *          flag said so". C does falsify it, because its `AFTER_LATE_SIGNAL`
+ *          line only holds when the listener wrote the first origin. So the
+ *          listener path is under test by C, not by B2 — a claim about which
+ *          cases a mutation reddens has to be re-measured whenever the fix
+ *          changes shape, or it becomes doctrine nobody can falsify.
+ *        • BOTH removed (listener gone AND read → `false`) — B1 reddens with B2 and
+ *          C. That pair is what makes B1 falsifiable by the read: it reddens
+ *          precisely when the listener cannot carry it.
+ *        • the `end` LISTENER removed — **C is the only red case**, and B2
+ *          STAYS GREEN. B2 passed the old header's claim that it falsified the
+ *          listener, and the reason is this module's own read: with the listener
+ *          gone, `exitOrigin()` still answers `stdin-eof` from the stream's EOF
+ *          state,
  *          so the case cannot tell "the listener recorded it" from "the stream
  *          flag said so". C does falsify it, because its `AFTER_LATE_SIGNAL`
  *          line only holds when the listener wrote the first origin. So the
@@ -174,47 +194,71 @@ const IMPORT = `import { armExitCause, exitOrigin, recordExitCauseForTesting } f
 }
 
 // ---------------------------------------------------------------------------
-// B. stdin EOF yields stdin-eof THROUGH the readableEnded read.
+// B. stdin EOF: the shutdown hook's read must already be right.
 //
-// B1 is the case #1247 is about, and the only one that can prove the fix. The
-// listener path alone proves nothing: a listener that fires and then reads the
-// origin has already recorded it, so the read is checking a value the same
-// mechanism wrote. The child therefore installs a PREPENDED `end` handler — the
-// rpc-mode shape, where Pi's own stdin `end` listener runs first and calls
-// `shutdown()` — and that handler reads the origin SYNCHRONOUSLY and exits
-// before this module's listener can ever be reached. `origin` is still
-// undefined at that instant; only `process.stdin.readableEnded`, Node's own
-// record on the stream that needs no listener of ours, can answer. The handler
-// prints `readableEnded` on the same line, so a red B1 means the read is gone
-// from `exitOrigin()` rather than the stream having behaved differently.
-// Verified by mutation: with the `readableEnded` branch removed, B1 is the only
-// red case — A, B2, C and D stay green. B2 and C do NOT falsify the read: both
-// reach the origin through this module's own `end` LISTENER, which has already
-// recorded it by the time anything reads it, so the listener carries them. Only
-// B1 reads before that listener can run, which is exactly why it is the case
-// that reddens. (Measured, not assumed — see the header.)
+// B1 is the case #1247 is about. The child installs no stdin listener of its own
+// and reads the origin on a timer — the instant the real shutdown hook reads at,
+// since `rpc-mode.js` does `void shutdown()`, which awaits before the hook fires.
+// By then this module's `end` listener has delivered, so in the shipped shape
+// `origin` is already set and the read is the backstop rather than the carrier.
 //
-// B2 keeps the listener path itself under test — MEASURED, it does not: with
-// this module's `end` listener removed from `exit-cause.ts` B2 still passes,
-// because `exitOrigin()` answers from `readableEnded` regardless. C is the case
-// that actually falsifies the listener (its `AFTER_LATE_SIGNAL` line needs the
-// listener to have written the first origin). B2 stays as the plain-stream check.
+// The assertion is on `exitOrigin()`, never on a flag — and that distinction IS
+// the CI-only bug. The old B1 additionally required `readableEnded === true` and
+// ran its read SYNCHRONOUSLY inside a prepended `end` listener. On bun 1.3.13 —
+// the version `quality-gate` pins — that window is empty: measured across nine
+// observations on two runtimes, 1.3.13 leaves `readableEnded`,
+// `_readableState.ended` and `endEmitted` all `false` for the WHOLE life of the
+// stream, including inside a later `end` listener and a tick after the shutdown it
+// triggers, and inside the first listener even `readable` is still `true`. A
+// synchronous polling read cannot advance the stream either. So no predicate over
+// the stream could have satisfied the old B1 on the runner: it was red there for a
+// reason no fix to `exitOrigin()` could answer, while passing locally on 1.4.3,
+// which stamps every flag before emitting `end`.
+//
+// Which half of this seam carries the EOF is therefore a property of the runtime,
+// and the test says so plainly rather than pretending otherwise:
+//   • the `end` LISTENER carries it on both runtimes — that is the mechanism that
+//     cannot fail, and it is what the real flow depends on (probe-verified: our
+//     listener runs before Pi's async shutdown on 1.3.13 AND 1.4.3).
+//   • the stream READ carries it where a runtime stamps a flag at all: 1.4.3 sets
+//     `readableEnded`/`ended`/`endEmitted`; 1.3.13 sets none of those and leaves
+//     only `readable === false` with `readableDidRead`, which appears one tick
+//     after `end`. `stdinReachedEof()` is the disjunction that holds on both.
+// Mutation matrix, measured on BOTH runtimes (so the earlier "B1 is the only red
+// case for the read" claim, inherited from a shape neither runtime fully supports,
+// is corrected rather than repeated):
+//   • read stubbed to `false`, listener intact — B1 and B2 stay green: the
+//     listener carries them. That is the point of the listener, not a gap in it.
+//   • `end` listener removed, read intact — B2 stays green and C reddens.
+//   • `end` listener removed AND read stubbed — B1 reddens along with B2 and C:
+//     B1 falsifies the read exactly when the listener cannot carry it, which is
+//     the property the case was written to hold.
 // ---------------------------------------------------------------------------
 {
   const script = `${IMPORT}armExitCause();
 process.stdin.on("data", () => {});
-// Pi's listener runs first (rpc-mode.js attaches it before extensions load).
-// It reads the origin synchronously and exits, so nothing after it ever runs.
-process.stdin.prependListener("end", () => {
-  process.stdout.write("ENDED:" + process.stdin.readableEnded + "\\n");
+// No stdin listener of this child's own: the read is taken on a plain timer, at
+// the instant the real shutdown hook reads at, so the answer comes from whatever
+// the stream and this module's tracker leave behind — not from a handler this
+// case installed to feed it. The FLAGS line is printed for diagnosis only and is
+// deliberately not asserted (see the block header).
+setTimeout(() => {
+  const rs = (process.stdin as unknown as { _readableState?: { ended?: boolean } })._readableState;
+  process.stdout.write("FLAGS:" + JSON.stringify({ re: process.stdin.readableEnded, ended: rs?.ended, readable: process.stdin.readable }) + "\\n");
   process.stdout.write("SHUTDOWN:" + exitOrigin() + "\\n");
   process.exit(0);
-});
+}, 60);
 setTimeout(() => { process.stdout.write("TIMEOUT\\n"); process.exit(1); }, 3000);`;
   const r = await runChild(script, { endStdin: true, feed: true });
+  // Only the origin is asserted. The readableEnded / _readableState.ended flags
+  // are deliberately NOT asserted: bun 1.3.13 (CI's pin) leaves both false for
+  // the whole life of the stream, so an assertion on them would be a claim about
+  // the runtime, not about this module — and it is exactly the assertion that
+  // made this case red on the runner while exitOrigin() was answering correctly
+  // on the local one.
   assert(
-    r.out.includes("ENDED:true") && r.out.includes("SHUTDOWN:stdin-eof"),
-    `B1: read before this module's listener can run, EOF still yields stdin-eof via readableEnded (got ${JSON.stringify(r.out || r.err)})`,
+    r.out.includes("SHUTDOWN:stdin-eof"),
+    `B1: at the shutdown hook's read instant, a caller-closed stdin yields stdin-eof (got ${JSON.stringify(r.out || r.err)})`,
   );
 }
 {
@@ -404,8 +448,8 @@ setTimeout(() => { process.stdout.write("TIMEOUT:" + exitOrigin() + "\\n"); proc
     "F: index.ts arms the trackers (registration-time call and/or session_start)",
   );
   assert(
-    /readableEnded/.test(await Bun.file(MOD).text()),
-    "F: exit-cause.ts reads process.stdin.readableEnded — the listener-independent path",
+    /stdinReachedEof/.test(await Bun.file(MOD).text()),
+    "F: exit-cause.ts reads the stream's own EOF state — the listener-independent path",
   );
   // The two guards the read depends on, pinned at the source: a refactor that
   // drops either silently re-opens the mislabel G1 is the counterexample for.
