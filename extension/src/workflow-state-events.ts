@@ -420,15 +420,6 @@ export type WorkEvent =
        * transient, so it is never retried with backoff.
        */
       refused?: true;
-      /**
-       * #1403 — this branch's child ENGINE DIED mid-pass (Pi printed
-       * `the engine stopped unexpectedly (exit code N)` and the process left
-       * no structured failure signal). Absent on every other branch-completed;
-       * its presence is what makes a dead child distinguishable, in the step
-       * accounting and the handoff, from one that finished. The record names
-       * the exit code and the dirty paths the dead pass left uncommitted, so
-       * the crash never survives only as free text beside an unrelated cap.
-       */
       crash?: DevelopCrashFragment;
     }
   | {
