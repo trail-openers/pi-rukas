@@ -144,6 +144,20 @@ for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith
     !prompt.includes("oo-command-runner"),
     `${role}: assembled prompt contains no oo-command-runner reference`,
   );
+  // #995 — the doctrine must not name a tool the runtime does not register.
+  // `mcp_skill` sat in the developer prompt for the whole v0.1.x–v0.12.x series
+  // because nothing read the BUILT prompt for tool names: the source gate in
+  // `test-tool-name-surface.ts` scans `agents-base/` + `modules/`, and a module
+  // edit could reintroduce the name under a path that gate does not scan. This
+  // is the cheap backstop on the assembled artefact every role actually runs.
+  assert(
+    !prompt.includes("mcp_skill"),
+    `${role}: assembled prompt names no \`mcp_skill\` tool (Pi registers none)`,
+  );
+  assert(
+    !/the `skill` tool/.test(prompt),
+    `${role}: assembled prompt does not tell the model to load a skill with a \`skill\` tool`,
+  );
 }
 
 // #1031 — the codemode module's token budget: the ≤60-line cap is asserted on

@@ -155,8 +155,15 @@ A per-lens `statSync` of `<skills dir>/<skill>` immediately before spawning repe
 
 Each lens child self-reports its skill load in its closing reply: `Skill Load Status: [SUCCESS/FAILED]` (the format in `agents-base/code-review-specialist.md`), and the parent parses it (`readEnumMarker`).
 
-- `FAILED` **blocks that lens** — the verdict can never be `APPROVED` (`REVIEW_INCOMPLETE`), while the lens's findings are **kept** (a failed skill load doesn't invalidate evidence the child already gathered). The block's reason reads `skill load reported FAILED by the child (<skill>)`.
-- An **absent or unknown** marker does **not** block: the pre-spawn `stat` above is the executed evidence the skill existed, so an unexercised honor system is only traced (`PI_ENSEMBLE_DEBUG=1`), never a verdict input.
+What the two values mean is defined by the prompt, and since #995 it is defined in terms of a `read` the child performs rather than a tool call that never happened. Pi's `--skill <path>` only **advertises** a skill — `formatSkillsForPrompt` emits name, description and location, and the SKILL.md body is never inlined (only the `/skill:name` slash command expands a body, which `--skill` does not invoke). So `lensPromptFor` threads the same absolute path the spawn already passed to `--skill` and instructs the child to load it with the `read` tool before reviewing:
+
+- **`SUCCESS`** — the read of that path returned content.
+- **`FAILED`** — the read errored (missing, unreadable). The child is told not to proceed with the review.
+
+It remains a **child self-report**: the driver does not verify the read against the child's transcript events. The change is prompt-side only.
+
+- `FAILED` **blocks that lens** — the verdict can never be `APPROVED` (`REVIEW_INCOMPLETE`), while the lens's findings are **kept** (a failed skill load doesn't invalidate evidence the child already gathered). The block's reason reads `skill load reported FAILED by the child (<skill>)`. Before #995 the same marker could be raised for calling a `skill` tool Pi does not register, which blocked a lens on a phantom; the semantics above are what make the #882 path coherent.
+- An **absent or unknown** marker does **not** block: the pre-spawn `stat` above is the executed evidence the skill existed, so an unexercised honor system is only traced (`PI_ENSEMBLE_DEBUG=1`), never a verdict input. This `onAbsence` policy is unchanged by #995.
 
 ### Adding a review lens
 
