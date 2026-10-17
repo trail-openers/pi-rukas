@@ -166,8 +166,13 @@ export const LENS_PREFIX = "code-review-";
  * a path carrying any of them (see the call site). */
 const UNSAFE_PATH_CHARS = /[\n`<>]/;
 
-/** True when `skillPath` is safe to interpolate into the lens prompt. */
-export function isPromptSafePath(skillPath: string): boolean {
+/** True when `skillPath` is safe to interpolate into the lens prompt.
+ *
+ * Module-private: the ONLY decision this guards is `lensPromptFor`'s own
+ * interpolation, and an exported predicate invites a caller to reuse it as
+ * though "safe to interpolate" meant "safe to open" — it does not.
+ */
+function isPromptSafePath(skillPath: string): boolean {
   return !UNSAFE_PATH_CHARS.test(skillPath);
 }
 
@@ -204,8 +209,14 @@ export function lensPromptFor(
   // wall is to omit the section and trace, never to interpolate it anyway.
   const unsafe = skillPath !== undefined && skillPath !== "" && !isPromptSafePath(skillPath);
   if (unsafe) {
+    // The rejected value is deliberately NOT echoed. It is untrusted text that
+    // already proved it can carry fence-breaking characters, and a trace line
+    // is a transport for exactly those characters — the newline it rejected
+    // would split the log entry, and a path carrying a crafted `\x1b[` would
+    // write terminal escapes into the operator's stderr. The shape of the
+    // rejection is the actionable part; the content is not.
     trace(
-      `lens prompt: skillPath rejected (contains newline, backtick, '<' or '>'): ${JSON.stringify(skillPath)} — read instruction omitted`,
+      `lens prompt: skillPath rejected (contains newline, backtick, '<' or '>') — read instruction omitted`,
     );
   }
   const skillInstruction =

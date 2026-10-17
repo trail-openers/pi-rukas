@@ -26,7 +26,7 @@ import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts"
 import type { SlowWatchInput } from "./slow-notice.ts";
 import { feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { spawnSpecialist } from "./spawn.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { jitteredMs } from "./work-driver-failure-taxonomy.ts";
 
@@ -364,12 +364,24 @@ export async function runLensChild(opts: {
   ]);
   let skillLoadDowngrade: string | undefined;
   if (skillLoadStatus === "SUCCESS") {
-    const proof = skillLoadProof(result.toolUses, skillPath);
+    // `observedToolCalls` is passed so an under-recovered replay abstains
+    // rather than refutes: the child made calls the replay did not carry, so
+    // the absence of a read from `toolUses` says nothing about whether it read
+    // the skill (lens-skill-load-proof.ts).
+    const proof = skillLoadProof(result.toolUses, skillPath, result.observedToolCalls);
     if (proof === "unproven") {
+      // traceWarn, not trace: this line changes an OUTCOME (a lens goes from
+      // reviewed to blocked) and it is a judgement this module makes about
+      // another module's tool-call records, so the operator has to be able to
+      // see it — and the tool NAMES and PATHS it saw — without PI_ENSEMBLE_DEBUG
+      // on and without re-running the review to learn what was matched against.
+      traceWarn(
+        `skill load SUCCESS not corroborated (${lens.skill}): no read of ${skillPath} among ${describeToolCalls(result.toolUses)} — treated as FAILED`,
+      );
       skillLoadDowngrade = `skill load reported SUCCESS by the child (${lens.skill}) but no read of ${skillPath} appears in its tool calls — treated as FAILED`;
     } else if (proof === "unverifiable") {
       trace(
-        `skill load SUCCESS unverifiable (${lens.skill}): the child recorded no tool calls; treated as absent, not refuted`,
+        `skill load SUCCESS unverifiable (${lens.skill}): the child recorded no usable tool calls; treated as absent, not refuted`,
       );
     }
   }
@@ -407,6 +419,33 @@ export async function runLensChild(opts: {
     // #534 — was previously dropped at this return; the cycle total needs it.
     usage: result.usage,
   };
+}
+
+/** A compact, bounded summary of what the proof actually looked at, for the
+ * downgrade warning: the tool names it saw and the path-shaped arguments those
+ * calls carried. Nothing is executed and no argument content beyond paths is
+ * echoed; the list is capped so a chatty child cannot make the warning the
+ * longest line in the run. */
+function describeToolCalls(toolUses: readonly unknown[]): string {
+  const names: string[] = [];
+  const paths: string[] = [];
+  for (const tu of toolUses ?? []) {
+    if (!tu || typeof tu !== "object") continue;
+    const call = tu as Record<string, unknown>;
+    const name = typeof call.name === "string" ? call.name : "?";
+    if (names.length < 8 && !names.includes(name)) names.push(name);
+    const args =
+      call.arguments && typeof call.arguments === "object"
+        ? (call.arguments as Record<string, unknown>)
+        : {};
+    const v = args.path;
+    if (typeof v === "string" && v.trim() && paths.length < 8 && !paths.includes(v)) {
+      paths.push(v);
+    }
+  }
+  const seen = names.length > 0 ? names.join(", ") : "(none)";
+  const withPaths = paths.length > 0 ? `; paths ${paths.join(", ")}` : "";
+  return `${toolUses?.length ?? 0} tool call(s) [tools ${seen}]${withPaths}`;
 }
 
 // #872 — honor-system absence is traced, not blocked: the marker was not
