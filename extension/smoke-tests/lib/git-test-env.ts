@@ -66,11 +66,11 @@
  * — and it RETURNS the env, which is what a fixture threads into a child
  * options object it does control. One call, one rule: ask for the env, and the
  * process you are running in has already been pointed at the same directory.
- *
- * `isolateGitEnv()` is a thin alias for the ambient half, for the call site
- * that genuinely wants only that (a test file's top-of-file statement, whose
- * author is not threading an env anywhere). It is the same `ensure()` behind
- * both, so mixing the two forms cannot produce two isolation dirs.
+ * There is no second verb for the ambient half: a test that wants only the
+ * side effect calls `gitTestEnv()` at the top of the file and drops the return
+ * value, because the ambient write is the same `ensure()` either way and a
+ * separate `isolateGitEnv()` export would be a second name for one behaviour —
+ * and a second place to keep in step with the four levers.
  *
  * WHY THE EXPORTS ARE RE-APPLIED TO EVERY GIT CALL, AND NOT ONLY TO `process.env`
  * -------------------------------------------------------------------------
@@ -212,7 +212,7 @@ let isolationMode: "isolated" | "host-git" | undefined;
 
 /** The ambient half: write the four variables into `process.env` so a child
  * that inherits the env (rather than being handed one) gets the isolated view.
- * Called once from `gitTestEnv()` on its first call, and from `isolateGitEnv()`.
+ * Called once from `gitTestEnv()` on its first call — the only caller.
  *
  * `XDG_CONFIG_HOME` is SET to the empty dir rather than deleted from
  * `process.env`, although "isolated" would accept either. The reason is the bun
@@ -244,18 +244,4 @@ function ensure(): void {
       `isolated git view — HOME=${process.env.HOME} XDG_CONFIG_HOME=${process.env.XDG_CONFIG_HOME}`,
     );
   }
-}
-
-/**
- * Isolate the CURRENT process, and only that — the thin alias over the ambient
- * half of `gitTestEnv()`, for the call site that wants the ambient statement
- * and has no child env to thread (a test file's top-of-file isolation).
- *
- * A call site that DOES spawn a child should call `gitTestEnv()` and thread the
- * return value — the ambient write alone does NOT reach a `child_process` call
- * that omits `env` on bun 1.3 (see the header), and this returns nothing
- * precisely so that mistake is a type error rather than a silent host read.
- */
-export function isolateGitEnv(): void {
-  ensure();
 }

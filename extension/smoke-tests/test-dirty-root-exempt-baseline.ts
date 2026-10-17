@@ -25,16 +25,17 @@ import {
   readDirtyRootExemptBaseline,
 } from "../src/work-driver-dirty-root-exempt.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import { gitTestEnv, isolateGitEnv } from "./lib/git-test-env.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 
 const execFileP = promisify(execFile);
 
 // #1145 — see lib/git-test-env.ts: a fixture repo must not read the host's
 // global git config. `gitTestEnv()` is threaded into every git call below
 // because bun 1.3 does not propagate a `process.env` assignment to a
-// child_process call that omits `env`; `isolateGitEnv()` additionally covers
-// the production seam that reads `process.env` in-process.
-isolateGitEnv();
+// child_process call that omits `env`; this bare call is the ONE entry point
+// and additionally covers the production seam that reads `process.env`
+// in-process, because the first call writes the four levers ambiently.
+gitTestEnv();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

@@ -20,6 +20,7 @@ import { FINDINGS_FILE } from "../../src/review-findings-store.ts";
 import type { LedgerEntry } from "../../src/review-ledger.ts";
 import { latestEntry, readLedgerAt } from "../../src/review-ledger.ts";
 import { hookDecision } from "../merge-guard-helpers.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 import { waitForLedger } from "./wait-for-ledger.ts";
 
 /** A stored row's invariant fields: the test's rows are all open, unmatched,
@@ -275,7 +276,15 @@ export function buildPrRepo(
   files: Record<string, string>,
   final: Record<string, string>,
 ): void {
-  const g = (...args: string[]) => execFileSync("git", ["-C", repoDir, ...args], { stdio: "pipe" });
+  // #1145 — `env: gitTestEnv()` on every git child. This is the synchronous
+  // spawn form, which bun 1.3 does not fix with an ambient `process.env` write,
+  // and the branch this helper cuts is what the review and the merge guard read
+  // their range from: a host `~/.config/git/ignore` or `init.defaultBranch`
+  // changes what `git status`/`origin/HEAD` report here, so the scenario's
+  // verdict would be a property of the machine (see lib/git-test-env.ts).
+  const gitEnv = gitTestEnv();
+  const g = (...args: string[]) =>
+    execFileSync("git", ["-C", repoDir, ...args], { stdio: "pipe", env: gitEnv });
   g("checkout", "-q", "-b", branch, "main");
   for (const [name, content] of Object.entries(files)) {
     writeFileSync(path.join(repoDir, name), content);

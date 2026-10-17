@@ -15,12 +15,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { restoreClaim, restoreRootToRefPreserving } from "../src/work-driver-restore.ts";
-import { gitTestEnv, isolateGitEnv } from "./lib/git-test-env.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 import { assert, buildRepo, head, realExec, result } from "./lib/restore-start-ref-fixtures.ts";
 
 // #1145 — a fixture repo must not read the host's global git config; see
-// lib/git-test-env.ts for why the env is threaded per call AND set ambiently.
-isolateGitEnv();
+// lib/git-test-env.ts for why the env is threaded per call AND set ambiently
+// (one call does both — the first `gitTestEnv()` writes the four levers into
+// `process.env` as well as returning them).
+gitTestEnv();
 
 const git = (dir: string, args: string[]) =>
   execFileSync("git", args, { cwd: dir, encoding: "utf8", env: gitTestEnv() });
