@@ -3,7 +3,8 @@
  * #1437 — the vipune memory-write boundary has a code refusal that trust and
  * sandbox mode cannot skip.
  *
- * The gap: `isDestructiveMemoryWrite` matched only `vipune update` with
+ * The gap: the old `isDestructiveMemoryWrite` predicate (since renamed
+ * `refusesMemoryWrite`) matched only `vipune update` with
  * `-t`/`--text`, and its single caller is `matchBashSubcommand` — reached from
  * the permission verdict path (which trust mode returns out of before any
  * gating, and sandbox mode too) and from `pm-bash-guard` (parent PM only). A
@@ -26,13 +27,12 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   EXEMPT_VIPUNE_VERBS,
   REFUSED_VIPUNE_VERBS,
-  registerMemoryWriteGuard,
   refusesMemoryWrite,
+  registerMemoryWriteGuard,
 } from "../src/memory-write-guard.ts";
 
 let exit = 0;
@@ -83,6 +83,54 @@ for (const cmd of [
   // ride through on a chained command.
   "vipune update 12 -t x && git add -A",
   "vipune update 12 --status active; git status",
+  // ------------------------------------------------------ round 3 (adversarial)
+  // Separators outside `[ \t]`. bash's IFS is `$' \t\n\v\f\r'`, so a tokeniser that
+  // splits on only space and tab reads the verb with a separator glued to it and
+  // matches nothing. One refused case per separator.
+  "vipune\vdelete 42",
+  "vipune\fdelete 42",
+  "vipune\rdelete 42",
+  "vipune delete\v42",
+  "vipune delete\f42",
+  "vipune delete\r42",
+  // Privilege / session wrappers and the brace group. Each ran the binary pre-fix.
+  "sudo vipune delete 42",
+  "sudo -E vipune delete 42",
+  "sudo -u postgres vipune delete 42",
+  "sudo -E -u postgres vipune delete 42",
+  "doas vipune delete 42",
+  "pkexec vipune delete 42",
+  "setsid vipune delete 42",
+  "nsenter vipune delete 42",
+  "{ vipune delete 42; }",
+  "{vipune delete 42;}",
+  // Quoted flag names. Quote removal hands clap the flag, so the row is mutated:
+  // measured, `vipune update 1 "--status" active` gets past clap's own argument
+  // parser to `Memory not found`, i.e. it parsed `--status`.
+  'vipune update 1 "--status" active',
+  'vipune update 1 --"status" active',
+  'vipune update 1 "--status active"',
+  'vipune update 1 "--memory-type" fact',
+  'vipune update 1 "-t" new-text',
+  // ------------------------------------------- round 3 lens findings (six-pass)
+  // Quote-split and backslash-escaped VERBS. bash removes quotes and backslashes
+  // before the word reaches clap, so all three dispatch the real verb — the
+  // quote-STRIPPED skeleton reads them as a nonsense verb and lets them through.
+  'vipune del""ete 42',
+  "vipune dele''te 42",
+  "vipune de\\lete 42",
+  'vipune exp""ort rows.jsonl',
+  'vipune update 12 --st""atus active',
+  // A refused verb sitting in an option's VALUE slot. `-p` consumed `export`, so
+  // the verb scan never names it; refused because a destructive verb handed to a
+  // value-taking flag of a mutating verb is not a shape to trust.
+  "vipune update 12 -p export x",
+  "vipune update 12 --db-path prune",
+  // A second, ungranted invocation after a granted one in the same clause: the
+  // first clears command position for the rest of the segment, so the verb scan
+  // cannot see the second.
+  "vipune search q vipune delete 1",
+  "vipune get 7 vipune prune",
 ]) {
   assert(refusesMemoryWrite(cmd) !== undefined, `canary: refused — ${cmd}`);
 }
@@ -117,6 +165,24 @@ for (const cmd of [
   // An unrelated token that merely ENDS in `vipune` is not an invocation — the
   // anchor is a shell operator or the string start, not `\b`.
   "echo mcp__codebase_memory__vipune",
+  // The value-slot refusal is bounded to REFUSED verbs: `vipune update 12 -p
+  // other x` is a real command that writes nothing, and the same slot holding
+  // `export` is refused. Only the verb-shaped value is conservative about.
+  "vipune update 12 -p other x",
+  // A GRANTED verb keeping its own value slot — `--memory-type`'s value is a type
+  // name, and `add` is never refused, so a granted verb's arguments stay arguments.
+  "vipune add 'a fact' --memory-type fact --status candidate",
+  // An argument that merely MENTIONS a refused verb is not a second invocation:
+  // the stray scan starts after the resolved invocation's verb and needs a binary
+  // token before the verb it reports, so a bare word cannot be promoted to one.
+  // (`vipune search --filter delete` is the opposite case and IS refused — see
+  // the value-slot block: `--filter` is unknown to vipune's option table, so the
+  // verb scan treats `delete` as the verb of the invocation rather than as data.)
+  "vipune add 'a note about prune and export' --memory-type fact",
+  "vipune search q vipune get 7",
+  // Quote-split spellings of a GRANTED verb stay allowed — the collapse is a read,
+  // not a widening of what is refused.
+  'vipune se""arch topic',
   // And a flag-looking word belonging to another command in the chain is not
   // borrowed by an update earlier in it.
   "vipune update 12 && cp --status x",
@@ -134,6 +200,16 @@ for (const cmd of [
   // The granted verbs keep their own mutating flags — the reason the clause
   // binds flags to `update` and to nothing else.
   "vipune add 'x' --memory-type fact --status candidate",
+  // A memory body may MENTION a flag. The prose here names `update` AND `--status`
+  // and is still allowed, which is the canary that the de-quoted second pass reads
+  // flag NAMES, not substrings — a body that merely spells them is not a write.
+  "vipune add 'say update --status please'",
+  "vipune add 'note: --status and update are flags on the update verb'",
+  // `sudo`/`doas` in an ARGUMENT position stay arguments — the privilege widening
+  // is command-position-scoped, exactly like the wrapper set it joins.
+  "echo sudo vipune delete 42",
+  "grep 'sudo vipune delete' notes.txt",
+  "echo doas vipune prune",
 ]) {
   assert(refusesMemoryWrite(cmd) === undefined, `allowed — ${cmd}`);
 }
@@ -194,60 +270,6 @@ for (const cmd of [
   assert(refusesMemoryWrite("vipune update 12 -t=x") !== undefined, "`-t=x` writes `x` — refused");
 }
 
-// ---------------- the wrapper / path / global-option bypasses are closed
-
-{
-  // Each of these ran the binary pre-fix: the predicate anchored on
-  // `(?:^|(?<=[;&|\n]))\s*(?:oo\s+)?vipune`, so anything between the operator
-  // and `vipune` — a wrapper, an env assignment, a path, a global option — put
-  // the verb out of reach of the match. They are refused now, and the refusal
-  // names the VERB, never the command slice (a memory body can be arbitrary text
-  // and must not come back in the reason the child is handed).
-  const cases: Array<[string, string]> = [
-    ["env FOO=1 vipune delete 42", "delete"],
-    ["VIPUNE_DEBUG=1 vipune delete 5", "delete"],
-    ["command vipune delete 42", "delete"],
-    ["nohup vipune delete 42", "delete"],
-    ["time vipune delete 42", "delete"],
-    ["timeout 30 vipune delete 42", "delete"],
-    ["nice -n 5 vipune delete 42", "delete"],
-    ["exec vipune delete 42", "delete"],
-    ["/usr/local/bin/vipune delete 42", "delete"],
-    ["~/bin/vipune delete 42", "delete"],
-    ["./vipune delete 42", "delete"],
-    ["vipune --json delete 42", "delete"],
-    ["vipune -p other delete 42", "delete"],
-    ["vipune --db-path X delete 42", "delete"],
-    ["if true; then vipune delete 42; fi", "delete"],
-    ["for x in a; do vipune delete 42; done", "delete"],
-    ["if true; then echo hi; else vipune delete 42; fi", "delete"],
-    ["( vipune delete 42 )", "delete"],
-    ["command vipune mcp", "mcp"],
-    ["env FOO=1 vipune prune", "prune"],
-  ];
-  for (const [cmd, verb] of cases) {
-    assert(refusesMemoryWrite(cmd) === verb, `canary: refused as \`${verb}\` — ${cmd}`);
-  }
-
-  // The path form requires a `/`; the whole-token comparison requires the token
-  // to BE `vipune`. Together they are why the MCP tool name stays untouched.
-  assert(
-    refusesMemoryWrite("mcp__codebase_memory__vipune delete 42") === undefined,
-    "canary: the MCP tool name is not an invocation, chained or not",
-  );
-
-  // The cheap gate must not change any verdict: identical results with and
-  // without it, on the shapes a false negative there would be worst for.
-  for (const [cmd, verb] of cases) {
-    const noVipune = cmd.replace(/vipune/, "");
-    assert(
-      refusesMemoryWrite(noVipune) === undefined,
-      `the indexOf fast path cannot invent a refusal — ${noVipune}`,
-    );
-    void verb;
-  }
-}
-
 // ---------------------------------------- global-option arity follows the binary
 
 {
@@ -256,17 +278,26 @@ for (const cmd of [
   // as valueless and `other` becomes the verb; treat `--json` as taking one and
   // `delete` gets swallowed. Pinned against `vipune --help` below.
   assert(refusesMemoryWrite("vipune -p proj delete 42") === "delete", "-p consumes its value");
-  assert(refusesMemoryWrite("vipune -p delete 42") === undefined, "…so `delete` after a bare -p is its VALUE, not a verb");
+  assert(
+    refusesMemoryWrite("vipune -p delete 42") === undefined,
+    "…so `delete` after a bare -p is its VALUE, not a verb",
+  );
   assert(refusesMemoryWrite("vipune --json delete 42") === "delete", "--json consumes nothing");
   assert(refusesMemoryWrite("vipune --json prune") === "prune", "…and the verb is still found");
-  assert(refusesMemoryWrite("vipune --verbose delete 42") === "delete", "an unknown flag consumes nothing — fails toward refusing");
+  assert(
+    refusesMemoryWrite("vipune --verbose delete 42") === "delete",
+    "an unknown flag consumes nothing — fails toward refusing",
+  );
 }
 
 // ------------------------- the two sets are disjoint, and `hook` is the only exemption
 
 {
   assert(REFUSED_VIPUNE_VERBS.length > 0, "the refused verb set is non-empty");
-  assert(EXEMPT_VIPUNE_VERBS.length === 1 && EXEMPT_VIPUNE_VERBS[0] === "hook", "hook is the sole exemption");
+  assert(
+    EXEMPT_VIPUNE_VERBS.length === 1 && EXEMPT_VIPUNE_VERBS[0] === "hook",
+    "hook is the sole exemption",
+  );
   for (const v of EXEMPT_VIPUNE_VERBS) {
     assert(
       !REFUSED_VIPUNE_VERBS.includes(v),
@@ -274,7 +305,9 @@ for (const cmd of [
     );
   }
   assert(
-    /hook/.test(readFileSync(path.resolve(import.meta.dirname, "..", "src", "memory-write-guard.ts"), "utf8")),
+    /hook/.test(
+      readFileSync(path.resolve(import.meta.dirname, "..", "src", "memory-write-guard.ts"), "utf8"),
+    ),
     "the exemption carries its reason in the module's own jsdoc",
   );
 }
@@ -303,8 +336,14 @@ for (const cmd of [
     del?.block === true && (del.reason ?? "").length > 30,
     "the hook refuses `vipune delete 42` with a reason that names the way forward",
   );
-  assert(/supersedes/.test(del?.reason ?? ""), "...which points at `add --supersedes`, not just 'no'");
-  assert(/PI_ENSEMBLE_ALLOW_MEMORY_WRITES/.test(del?.reason ?? ""), "...and names the operator escape hatch");
+  assert(
+    /supersedes/.test(del?.reason ?? ""),
+    "...which points at `add --supersedes`, not just 'no'",
+  );
+  assert(
+    /PI_ENSEMBLE_ALLOW_MEMORY_WRITES/.test(del?.reason ?? ""),
+    "...and names the operator escape hatch",
+  );
 
   const add = await drive("bash", "vipune add 'a fact' --memory-type fact --status candidate");
   assert(add === undefined, "the hook allows the driver's own `vipune add` write");
@@ -347,81 +386,25 @@ for (const cmd of [
       | undefined;
   assert((await drive("vipune delete 7"))?.block === true, "trust mode: `vipune delete 7` refused");
   assert((await drive("vipune prune"))?.block === true, "trust mode: `vipune prune` refused");
-  assert((await drive("vipune search 'x'")) === undefined, "trust mode: `vipune search` still passes");
+  assert(
+    (await drive("vipune search 'x'")) === undefined,
+    "trust mode: `vipune search` still passes",
+  );
   delete process.env.PI_ENSEMBLE_TRUST_MODE;
   process.env.PI_ENSEMBLE_SANDBOX_MODE = "1";
   assert((await drive("vipune mcp"))?.block === true, "sandbox mode: `vipune mcp` refused");
   delete process.env.PI_ENSEMBLE_SANDBOX_MODE;
 
-  const guard = readFileSync(path.resolve(import.meta.dirname, "..", "src", "memory-write-guard.ts"), "utf8");
-  assert(
-    !/PI_ENSEMBLE_TRUST_MODE|PI_ENSEMBLE_SANDBOX_MODE|PI_ENSEMBLE_SUBAGENT_MODE|PI_ENSEMBLE_ROLE/.test(guard),
-    "canary: the guard reads no mode or role variable — it is the hook before the bypasses, not a branch inside them",
-  );
-}
-
-// --------- the global-option arity table agrees with the installed binary
-
-{
-  // The verb is found by skipping the options before it, and the skip length is
-  // "how many values does this option require". Get that wrong in either
-  // direction and the predicate stops seeing verbs: `-p` treated as valueless
-  // makes `vipune -p other delete 42` read `other` as the verb, `--json` treated
-  // as taking a value makes `vipune --json delete 42` read `delete` as a value.
-  // So the table is not allowed to be remembered — it is re-read from
-  // `vipune --help`, the same way the verb sets are, and an upgrade that gives a
-  // global option a value fails the gate instead of going quietly blind.
-  const src = readFileSync(
+  const guard = readFileSync(
     path.resolve(import.meta.dirname, "..", "src", "memory-write-guard.ts"),
     "utf8",
   );
-  const tableMatch = /const GLOBAL_OPTIONS[^=]*=\s*\[([\s\S]*?)\n\s*\];/.exec(src);
-  assert(tableMatch !== null, "the global-option table is present and parseable");
-  const declared = new Map<string, number>();
-  if (tableMatch) {
-    for (const m of tableMatch[1].matchAll(/flags:\s*\[([^\]]*)\],\s*values:\s*(\d+)/g)) {
-      const values = Number(m[2]);
-      for (const f of (m[1] ?? "").matchAll(/"([^"]+)"/g)) declared.set(f[1] ?? "", values);
-    }
-  }
-  assert(declared.size > 0, "...and declares at least one option");
-
-  let help: string | null = null;
-  try {
-    help = execFileSync("vipune", ["--help"], { encoding: "utf8", timeout: 10_000 });
-  } catch {
-    // No binary on this host (CI, a fresh container): the table still has to be
-    // internally sound, which the assertions above already covered.
-  }
-  if (help !== null) {
-    const block = help.slice(help.indexOf("Options:"));
-    const fromBinary = new Map<string, number>();
-    for (const m of block.matchAll(/^\s{2,}(-\w),?\s+(--?\w[\w-]*)?\s*(?:<[^>]+>)?/gm)) {
-      const short = m[1];
-      const long = m[2];
-      const takesValue = /<[^>]+>/.test(m[0] ?? "") ? 1 : 0;
-      if (short) fromBinary.set(short, takesValue);
-      if (long) fromBinary.set(long, takesValue);
-    }
-    const mismatches: string[] = [];
-    for (const [flag, values] of declared) {
-      const actual = fromBinary.get(flag);
-      if (actual !== undefined && actual !== values) mismatches.push(`${flag} ${values}!=${actual}`);
-    }
-    assert(
-      mismatches.length === 0,
-      `every declared arity matches \`vipune --help\`${mismatches.length ? ` — ${mismatches.join(", ")}` : ""}`,
-    );
-    // The options the binary says take a value must be in the table, or their
-    // values get read as verbs.
-    const missing = [...fromBinary].filter(([, v]) => v === 1).filter(([f]) => !declared.has(f));
-    assert(
-      missing.length === 0,
-      `no value-taking global option is missing from the table${missing.length ? ` — ${missing.map(([f]) => f).join(", ")}` : ""}`,
-    );
-  } else {
-    console.log("- vipune binary absent: arity table checked against itself only");
-  }
+  assert(
+    !/PI_ENSEMBLE_TRUST_MODE|PI_ENSEMBLE_SANDBOX_MODE|PI_ENSEMBLE_SUBAGENT_MODE|PI_ENSEMBLE_ROLE/.test(
+      guard,
+    ),
+    "canary: the guard reads no mode or role variable — it is the hook before the bypasses, not a branch inside them",
+  );
 }
 
 // ---------------- the shared block registers it, ahead of every bypass

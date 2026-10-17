@@ -40,7 +40,8 @@ export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   registerMergeGuard(pi);
   // #1437 — same mode-independence for the memory-write boundary. The doctrine
   // (skill/vipune/SKILL.md) had always said the ungranted vipune verbs are
-  // "denied to every role"; the only code refusal was isDestructiveMemoryWrite,
+  // "denied to every role"; the only code refusal was the old
+  // isDestructiveMemoryWrite (since renamed `refusesMemoryWrite`),
   // reached from the permission layers that trust/sandbox mode skip and from
   // the parent-PM-only bash guard. So in the default mode a subagent's
   // `vipune delete <id>` — irreversible, no confirmation flag — reached the

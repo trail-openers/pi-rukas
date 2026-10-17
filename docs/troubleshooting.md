@@ -1711,11 +1711,17 @@ argument rather than a command. `mcp__codebase_memory__vipune` is an MCP tool na
 and never an invocation. An operator who genuinely needs a refused verb from an agent
 sets `PI_ENSEMBLE_ALLOW_MEMORY_WRITES=1`.
 
-Before #1437 the only code refusal was `isDestructiveMemoryWrite`, reached from
+Before #1437 the only code refusal was `isDestructiveMemoryWrite` (since renamed
+`refusesMemoryWrite`), reached from
 the permission layers that trust mode and sandbox mode both skip and from the
 parent-PM-only bash guard — so on an interactive host (trust mode is the default)
-the whole boundary was doctrine. The predicate now lives in `memory-write-guard.ts`
-and `matchBashSubcommand` calls `refusesMemoryWrite` directly — there is no second
+the whole boundary was doctrine. The predicate now lives in `memory-write-guard.ts`,
+which reads the command through two collaborators at the seam the size ratchet
+made explicit: `memory-write-tokenizer.ts` decides *where* a vipune invocation is
+(command position, wrappers, brace groups, global-option arity) and
+`memory-write-flags.ts` decides whether its arguments write a row. The guard itself
+holds only the policy — the refused verb set, the `hook` exemption, the refusal
+text. `matchBashSubcommand` calls `refusesMemoryWrite` directly — there is no second
 rule to keep in step with it, and no delegating alias with a duplicate test block.
 
 The refusal is **advisory, not a security boundary**: every rule is a string
