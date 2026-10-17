@@ -17,7 +17,10 @@ import type {
   HandoffEmittedEvent,
   LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
-import type { CycleInterruptedEvent, InterruptReason } from "./workflow-state-events-interrupt.ts";
+import type {
+  CycleInterruptedEvent,
+  InterruptReason,
+} from "./workflow-state-events-interrupted.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
@@ -42,8 +45,9 @@ export type {
   LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
 export type { DispatchSlowEvent };
-// The interruption vocabulary re-exported from the sibling fragment.
-export type { CycleInterruptedEvent, InterruptReason } from "./workflow-state-events-interrupt.ts";
+// #1446-size — interrupted / cycle-interrupted members re-exported from the
+// sibling fragment (the 500-line gate, AGENTS.md §12).
+export type { CycleInterruptedEvent, InterruptReason };
 /**
  * Linear step identifiers the driver walks. This union IS the definition
  * of the cycle — #393 deleted the prose flow that used to be its source.
@@ -425,6 +429,7 @@ export type WorkEvent =
        * transient, so it is never retried with backoff.
        */
       refused?: true;
+      /** #1403 — the pass's child engine died mid-flight; absent = it did not crash. */
       crash?: DevelopCrashFragment;
     }
   | {
@@ -460,5 +465,6 @@ export type WorkEvent =
    * (absent at a step boundary): its own cap-hits are the abort's doing.
    */
   | { kind: "interrupted"; at: number; reason: InterruptReason; step?: WorkStep };
+
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];
