@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
@@ -41,8 +41,20 @@ export function resolveSweepTarget(
   repoRoot: string,
   candidate: string,
 ): SweepTargetResult | SweepTargetError {
-  // Use realpathSync for validation to match how git worktree resolves symlinks
-  const validationPath = realpathSync(candidate);
+  // Every realpathSync/lstatSync below is GUARDED, because this function's
+  // contract is a discriminated result, not a throw. It matters most for
+  // `runWorktreeTeardown`, which feeds it paths straight out of
+  // `pipelineState.worktrees` — a map written at `branch` and routinely stale by
+  // handoff (crash, external `git worktree remove`, operator cleanup). An
+  // unguarded realpathSync threw ENOENT there, escaping through `runHandoff`
+  // and losing the teardown pass with the `retainedWorktrees` report. A path
+  // that is not there is `unresolvable`, which the caller already handles.
+  let validationPath: string;
+  try {
+    validationPath = realpathSync(candidate);
+  } catch {
+    return { ok: false, reason: "unresolvable" };
+  }
   let validationStats: ReturnType<typeof lstatSync>;
   try {
     validationStats = lstatSync(validationPath);
@@ -51,18 +63,16 @@ export function resolveSweepTarget(
     return { ok: false, reason: "unresolvable" };
   }
 
-  // Use realpathSync for repo paths to match how git worktree resolves symlinks
-  const worktreesDir = realpathSync(resolve(repoRoot, ".worktrees"));
-  let worktreesStats: ReturnType<typeof lstatSync>;
+  let worktreesDir: string;
+  let repoRootPath: string;
+  let repoGitPath: string;
   try {
-    worktreesStats = lstatSync(worktreesDir);
-  } catch (err) {
-    console.error(`resolveSweepTarget: lstatSync failed for ${worktreesDir}: ${err}`);
+    worktreesDir = realpathSync(resolve(repoRoot, ".worktrees"));
+    repoRootPath = realpathSync(repoRoot);
+    repoGitPath = realpathSync(resolve(repoRoot, ".git"));
+  } catch {
     return { ok: false, reason: "unresolvable" };
   }
-
-  const repoRootPath = realpathSync(repoRoot);
-  const repoGitPath = realpathSync(resolve(repoRoot, ".git"));
 
   // For the returned realPath, use resolve() to match test expectations
   const resultPath = resolve(candidate);
@@ -85,7 +95,7 @@ export function resolveSweepTarget(
   const gitFile = join(validationPath, ".git");
   let gitFileContent: string;
   try {
-    gitFileContent = require("node:fs").readFileSync(gitFile, "utf8");
+    gitFileContent = readFileSync(gitFile, "utf8");
   } catch {
     return { ok: false, reason: "not-our-worktree" };
   }
@@ -96,6 +106,46 @@ export function resolveSweepTarget(
 
   const name = basename(validationPath);
   return { ok: true, realPath: resultPath, name };
+}
+
+/**
+ * The issue a worktree directory name encodes, or undefined when it does not
+ * name a driver worktree at all.
+ *
+ * #1265 — this lookup was the whole bug. The sweep used to read
+ * `.pi/work-state/<basename>.json`, but a basename is `issue-<N>-<id>`
+ * (`work-driver-branch-mechanized.ts`; `issues-<N>-<M>-<id>` for a grouped
+ * cycle, `issue-<N>-integrate` for the driver-owned tree) while a state file is
+ * `<N>.json` (`workflow-state.ts` `workStateFile`). No worktree has ever been
+ * named like a state file, so EVERY candidate fell through to
+ * `state-unreadable` and the decision engine below Rules 1–2 never ran: a
+ * killed cycle's leftovers accumulated forever, holding branches that the next
+ * cycle then tripped over. The one test only exercised `enabled: false`, so the
+ * sweep was dark in production and dark in the suite at the same time.
+ *
+ * The FIRST number is the primary issue — the key of the state file, which
+ * `claimCycle` keys on every issue in the group anyway.
+ */
+export function parseWorktreeIssue(name: string): number | undefined {
+  const m = /^(?:issue|issues)-(\d+)-/.exec(name);
+  if (!m) return undefined;
+  const issue = Number(m[1]);
+  return Number.isSafeInteger(issue) && issue > 0 ? issue : undefined;
+}
+
+/**
+ * Whether a worktree directory belongs to the cycle that launched this sweep.
+ *
+ * #1265 — the guard compared the basename against `${issue}-default`, a string
+ * no directory is ever named (the prefix is missing, so it never matched and
+ * the launching cycle's own tree was swept like anyone else's). A tree the
+ * launching cycle is about to reuse is not a leftover; removing or purging it
+ * out from under the cycle that just claimed the issue destroys in-progress
+ * work. The rule is therefore the basename's issue, not a name pattern: the
+ * same issue the state file is keyed on.
+ */
+export function isLaunchingCycleOwnWorktree(name: string, launchingCycleIssue: number): boolean {
+  return parseWorktreeIssue(name) === launchingCycleIssue;
 }
 
 /**
@@ -240,16 +290,16 @@ export async function executeSweepAction(
         cwd: action.target.realPath,
         maxBuffer: 256 * 1024,
       });
-    case "remove": {
-      // We need to run the command from the parent directory of the worktree
-      const worktreeDir = action.target.realPath;
-      const parentDir = resolve(worktreeDir, "..");
-      const relativePath = relative(parentDir, worktreeDir);
-      return await execFn(`git worktree remove --force ${JSON.stringify(relativePath)}`, {
-        cwd: parentDir,
+    case "remove":
+      // From the repo root, the path a worktree was registered with — which is
+      // what `git worktree remove` matches, and what `worktreeRemove` in
+      // worktree.ts already uses for the same operation. Running it from
+      // `.worktrees/` instead and handing it a relative path made this
+      // dependent on the cwd the sweep happened to scan from.
+      return await execFn(`git worktree remove --force ${JSON.stringify(action.target.realPath)}`, {
+        cwd: resolve(action.target.realPath, "..", ".."),
         maxBuffer: 256 * 1024,
       });
-    }
     default:
       return { stdout: "" };
   }
@@ -280,7 +330,7 @@ export async function runWorktreeSweep(opts: {
   const worktreesDir = join(repoRoot, ".worktrees");
   let dirs: string[];
   try {
-    const entries = require("node:fs").readdirSync(worktreesDir) as string[];
+    const entries = readdirSync(worktreesDir);
     dirs = entries.filter((entry) => {
       const full = join(worktreesDir, entry);
       return lstatSync(full).isDirectory();
@@ -304,11 +354,26 @@ export async function runWorktreeSweep(opts: {
     }
     checked.push(resolved.realPath);
 
-    // Read the state file for this worktree
-    const stateFilePath = join(repoRoot, ".pi", "work-state", `${resolved.name}.json`);
+    // The launching cycle's own tree is not a leftover, whatever its state file
+    // says. Checked BEFORE the state read so a cycle is never at the mercy of
+    // its own (possibly mid-write, possibly corrupt) state file.
+    if (isLaunchingCycleOwnWorktree(resolved.name, launchingCycleIssue)) {
+      skipped.push({ path: resolved.realPath, reason: "launching-cycle-own" });
+      continue;
+    }
+
+    // Read the state file this worktree's NAME points at: `issue-<N>-<id>` ->
+    // `<N>.json`. A name that encodes no issue has no state file to consult,
+    // and a sweep that cannot say what a tree's cycle decided keeps the tree.
+    const worktreeIssue = parseWorktreeIssue(resolved.name);
+    if (worktreeIssue === undefined) {
+      skipped.push({ path: resolved.realPath, reason: "name-has-no-issue" });
+      continue;
+    }
+    const stateFilePath = join(repoRoot, ".pi", "work-state", `${worktreeIssue}.json`);
     let state: WorkState | null = null;
     try {
-      const stateContent = require("node:fs").readFileSync(stateFilePath, "utf8");
+      const stateContent = readFileSync(stateFilePath, "utf8");
       state = JSON.parse(stateContent) as WorkState;
     } catch {
       // Unreadable state file - skip
@@ -316,11 +381,14 @@ export async function runWorktreeSweep(opts: {
       continue;
     }
 
-    // Exclude the launching cycle's own state file
-    if (resolved.name === `${opts.launchingCycleIssue}-default`) {
-      // Note: the spec says the launch sweep excludes the launching cycle's own state file by path.
-      // We'll skip it here.
-      skipped.push({ path: resolved.realPath, reason: "launching-cycle-own" });
+    // The state file is keyed by issue, so a stale file for the same issue also
+    // answers for a re-run's tree. Require it to name the issue the directory
+    // name decodes, or the decision below runs on some other cycle's verdict.
+    if (state.issue !== worktreeIssue) {
+      skipped.push({
+        path: resolved.realPath,
+        reason: `state-issue-mismatch ${state.issue}!=${worktreeIssue}`,
+      });
       continue;
     }
 
@@ -423,18 +491,4 @@ export async function runWorktreeTeardown(opts: {
   }
 
   return retained;
-}
-
-// Helper function to compute relative path
-function relative(from: string, to: string): string {
-  const fromParts = from.split(/[\\/]/);
-  const toParts = to.split(/[\\/]/);
-  let i = 0;
-  while (i < fromParts.length && i < toParts.length && fromParts[i] === toParts[i]) {
-    i++;
-  }
-  const upSteps = fromParts.length - i;
-  const downParts = toParts.slice(i);
-  const parts = Array(upSteps).fill("..").concat(downParts);
-  return parts.length === 0 ? "." : parts.join("/");
 }

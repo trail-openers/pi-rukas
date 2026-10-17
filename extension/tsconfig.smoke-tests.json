@@ -12,6 +12,10 @@
     "src/**/*",
     "scripts/**/*",
     "smoke-tests/lib/merge-allowlist-target.ts",
-    "smoke-tests/test-merge-size-bound.ts"
+    "smoke-tests/lib/worktree-sweep-assert.ts",
+    "smoke-tests/lib/worktree-sweep-fixture.ts",
+    "smoke-tests/test-merge-size-bound.ts",
+    "smoke-tests/test-work-driver-worktree-sweep.ts",
+    "smoke-tests/test-work-driver-worktree-sweep-rules.ts"
   ]
 }
