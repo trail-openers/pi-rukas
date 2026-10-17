@@ -277,6 +277,11 @@ try {
   // the BRANCH changed, outside that delta. It blocks — the round's ranges are
   // the PR's `base...head`, not the delta's.
   seedStore([{ severity: "MEDIUM", path: "src/a.ts", line: 11, title: "branch-line medium" }]);
+  // #1145 — the round just finished and its ledger write is still in flight on a
+  // thread the summary did not wait for. Everything below mutates the clone, and
+  // the writer runs `git status`/`git diff` against it, so the two race for
+  // `.git/index.lock`. Drain it first (see `awaitLedgerWrite`).
+  await fixture.awaitLedgerWrite();
   const deltaHead = sh("git rev-parse HEAD");
   writeFileSync(path.join(repo, "src", "b.ts"), "export const z = 1;\n");
   sh("git add -A");
@@ -296,6 +301,8 @@ try {
     `a delta round keeps a carried MEDIUM on a branch-changed line blocking (verdict ${rDelta.verdict})`,
   );
   setReport([]);
+  // The delta round's own write must settle before the rename mutates the clone.
+  await fixture.awaitLedgerWrite();
 
   // 5c-ter. RENAME AGREEMENT (#1125 round 3): the two sources of changed lines —
   // the diff the review computed and the `base...head` git read — must answer the

@@ -22,13 +22,51 @@
  * and `PI_ENSEMBLE_SKILLS_DIR`) and hands back a `restore` that puts BOTH back as
  * it found them — a fixture that leaves them set leaks a ledger path and a skills
  * dir into every later test in the same process.
+ *
+ * WHY `sh` PASSES AN EXPLICIT `env` AND AN EXPLICIT `HOME` (#1145)
+ * ----------------------------------------------------------------
+ * Setting `process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE` is necessary but NOT
+ * sufficient, because the builder also shells out through the SYNCHRONOUS
+ * `child_process` form, and bun (1.3.12) does not propagate a `process.env`
+ * assignment to a synchronous child that is spawned without an `env` option.
+ * Measured on this host: after `process.env.FOO = "VALUE"`, async
+ * `execFile`/`exec` children DO see `VALUE`, while `execSync`, `execFileSync`
+ * and `spawnSync` children do not. So the fixture's own `sh("git init …")` calls
+ * ran against the host environment: the isolation dir that
+ * lib/verify-loop.sh and lib/git-test-env.ts arrange (an empty `GIT_CONFIG_GLOBAL`
+ * and, decisively, a `HOME` with no `.config/git/ignore`) never reached them,
+ * and the throwaway clone inherited the operator's global git config.
+ *
+ * That is what made this suite host-dependent. The review's fire-and-forget
+ * ledger write runs `workingTreePatchId` (src/review-ledger.ts), which resolves
+ * the identity base through `identityBase` → `resolveMainline` →
+ * `git symbolic-ref --short refs/remotes/origin/HEAD`. The fixture pushes
+ * `main` and fetches it, but `git fetch` only creates `origin/HEAD` when
+ * `init.defaultBranch` is set (git's own hint: "If your project is in this
+ * directory, to create origin/HEAD… run git remote set-head") — and that
+ * variable lives in the host's global config. Isolated, `symbolic-ref` fails,
+ * `resolveMainline` falls through to `gh repo view`, the stub answers `main`,
+ * `origin/main` resolves, and the entry lands in the fixture's ledger. Against
+ * a host config that sets `init.defaultBranch`, `origin/HEAD` exists, the write
+ * takes the first branch, and no row ever appears at `ledgerFile` — the poll in
+ * test-lens-review-advisory.ts then throws ENOENT. Same code, opposite verdict,
+ * decided by the machine.
+ *
+ * `gitTestEnv()` is threaded into every `sh` call so the fixture's git view is
+ * the isolated one however the call is transported, and `sh` additionally
+ * re-applies `HOME` from `os.homedir()` afterwards: bun snapshots `homedir()`
+ * at process start, so the real home stays reachable to a fixture that needs
+ * it even while its git children run isolated (the same trade-off
+ * lib/git-test-env.ts documents for the ambient env).
  */
 
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import type { LensRunResult } from "../../src/lens-review-types.ts";
 import { LENS_ROSTER } from "../../src/lens-roster.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 /** One seeded/stub finding as the test states it. */
 export type Raw = { severity: string; path: string; line: number; title: string };
@@ -46,7 +84,24 @@ export interface AdvisoryFixture {
   setReport: (rows: Raw[]) => void;
   /** The stub `lensChildFn` handed to `runLensReview`. */
   stubLens: (args: { lens: { name: string } }) => Promise<LensRunResult>;
-  /** The `runLensReview` options every round in the suite shares. */
+  /** Await the ledger write of the most recent `runLensReview` this suite ran.
+   *
+   * #1145 — the write is fire-and-forget by contract (#912: the summary is never
+   * gated on it), and it runs `git status --porcelain` and two `git diff` reads
+   * (`workingTreePatchId`, src/review-ledger.ts) in the SAME clone the test then
+   * mutates. A test that goes straight from a review into `git mv`/`git commit`
+   * races that writer for `.git/index.lock` and loses about one run in ten with
+   * git's "Another git process seems to be running" (status 128). Polling the
+   * ledger file is NOT sufficient: the row is written by an atomic rename at the
+   * END of the write, but `waitForLedger` returns as soon as the file parses, and
+   * the pre-rename `git status` can still be in flight against a file left over
+   * from an earlier round. `onLedgerWrite` (the #984 seam) hands back the write's
+   * own promise, and awaiting IT is the only thing that proves the writer's git
+   * children have finished. It is a test-side side-channel — production still
+   * discards the promise, so the fire-and-forget contract is unchanged. */
+  awaitLedgerWrite: () => Promise<void>;
+  /** `runLensReview` options every round in the suite shares, including the
+   * `onLedgerWrite` hook that feeds `awaitLedgerWrite`. */
   common: Record<string, unknown>;
   /** Restore the two env vars this fixture set (a `finally` seam): each one goes
    * back to its exact prior value, including "was not set at all". */
@@ -85,8 +140,17 @@ export function buildAdvisoryFixture(root: string): AdvisoryFixture {
   process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = ledgerFile;
   process.env.PI_ENSEMBLE_SKILLS_DIR = skills;
 
+  // The isolation env, merged over the current process env, handed to EVERY git
+  // child this builder shells out to — see the module header for why an
+  // explicit `env` is required on the synchronous spawn form.
+  const gitEnv = gitTestEnv();
   const sh = (cmd: string): string =>
-    execSync(cmd, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    execSync(cmd, {
+      cwd: repo,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: gitEnv,
+    }).trim();
   sh("git init -q -b main");
   sh("git config user.email dev@example.com");
   sh("git config user.name dev");
@@ -94,7 +158,10 @@ export function buildAdvisoryFixture(root: string): AdvisoryFixture {
   writeFileSync(path.join(repo, "src", "other.ts"), lines(10, "other"));
   sh("git add -A");
   sh("git commit -qm base");
-  execSync(`git init -q --bare -b main ${path.join(root, "remote.git")}`);
+  execSync(`git init -q --bare -b main ${path.join(root, "remote.git")}`, {
+    encoding: "utf8",
+    env: gitEnv,
+  });
   sh(`git remote add origin ${path.join(root, "remote.git")}`);
   sh("git push -q origin main");
   sh("git fetch -q origin");
@@ -107,6 +174,18 @@ export function buildAdvisoryFixture(root: string): AdvisoryFixture {
   // The lens's own findings for the round (the fresh half of the reported list);
   // the carried half arrives from the findings store.
   let report: Raw[] = [];
+  // The most recent round's ledger-write promise (#984 seam), drained once so a
+  // second `awaitLedgerWrite()` does not re-await a settled write. Initialised
+  // resolved so awaiting before any review is a no-op rather than a hang.
+  let pendingWrite: Promise<unknown> = Promise.resolve();
+  const drainWrite = (): Promise<void> => {
+    const w = pendingWrite;
+    pendingWrite = Promise.resolve();
+    return w.then(
+      () => undefined,
+      () => undefined,
+    );
+  };
   const stubLens = async (args: { lens: { name: string } }): Promise<LensRunResult> =>
     ({
       lens: args.lens.name,
@@ -147,12 +226,18 @@ export function buildAdvisoryFixture(root: string): AdvisoryFixture {
       if (priorSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
       else process.env.PI_ENSEMBLE_SKILLS_DIR = priorSkills;
     },
+    awaitLedgerWrite: drainWrite,
     common: {
       cwd: repo,
       branch: "feat/x",
       head: "feat/x",
       diff: CHANGED_LINE_DIFF,
       lensChildFn: stubLens as never,
+      // #984 — capture the fire-and-forget write's promise on every round so the
+      // suite can await it before mutating the clone (see `awaitLedgerWrite`).
+      onLedgerWrite: (w: Promise<unknown>) => {
+        pendingWrite = w;
+      },
     },
   };
 }
