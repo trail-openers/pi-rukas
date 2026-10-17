@@ -27,8 +27,10 @@ export { findDroppedDependencyEdges } from "./work-driver-plan-deps.ts";
 // keep this module's path.
 export {
   correctivePlanTimeoutSteer,
+  planCorrectiveFailureEvent,
   planCorrectivePrompt,
   planDispatchTimeoutMs,
+  planKillDetailForTest,
   planTimeoutCorrective,
   planTimeoutKill,
 } from "./work-driver-plan-timeout.ts";
@@ -114,7 +116,21 @@ export function planSpecMismatchCap(
   whyNotReplanned: string,
 ): WorkState {
   trace(`work-driver: plan to-spec gate — ${mismatch.kind}, halting before branch`);
-  const evidence = `${mismatch.evidence} — ${whyNotReplanned}`.slice(0, 500);
+  // #819 round-3 — the truncation order is the reason this sentence is readable.
+  // `${mismatch.evidence} — ${whyNotReplanned}`.slice(0, 500) clipped the
+  // CONCATENATION, so on a wide spec (an uncovered-deliverables verdict lists
+  // every deliverable with all of its paths — kilobytes) the operator's
+  // sentence — "this is the one-shot corrective plan; develop never ran" — was
+  // the part that fell off the end, and the state file kept 500 characters of
+  // deliverable list that says nothing about why the cycle stopped. The
+  // variable part is capped FIRST so the fixed part always survives.
+  const EVIDENCE_CAP = 500;
+  const clause = ` — ${whyNotReplanned}`;
+  const head =
+    mismatch.evidence.length > EVIDENCE_CAP - clause.length
+      ? `${mismatch.evidence.slice(0, Math.max(0, EVIDENCE_CAP - clause.length - 1))}…`
+      : mismatch.evidence;
+  const evidence = `${head}${clause}`.slice(0, EVIDENCE_CAP);
   const withReason: WorkState = {
     ...state,
     pipelineState: {

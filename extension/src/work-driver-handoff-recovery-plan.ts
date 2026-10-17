@@ -13,9 +13,35 @@
  */
 
 import type { ForgeType } from "./forge-detect.ts";
+import { LINE_TERMINATORS, dropC0Controls } from "./work-driver-consolidation-note.ts";
 import { type RecoveryStep, forgeRecoveryLines } from "./work-driver-handoff-recovery.ts";
 import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
 import type { WorkState } from "./workflow-state.ts";
+
+/**
+ * #819 round-3 — the cap's evidence is UNTRUSTED text rendered inside the
+ * handoff's ```bash fence.
+ *
+ * `plan-spec-mismatch` evidence is composed from the issue's own deliverable
+ * text and the planner's reply (`planSpecMismatchReason` concatenates
+ * deliverable ids and declared paths), so a hostile issue body — or a planner
+ * that echoed one — is the source. A line terminator in it ends the fence and
+ * the remainder is then markdown the operator's client renders, not a command
+ * it shows them: `"\n```\nrm -rf ~"` closed the block and printed the next line
+ * as prose (or, on a client that copies a fence's contents wholesale, as a line
+ * to paste). Backticks are the quieter half of the same defect: an *inline*
+ * code span opened inside a `#` comment line swallows the lines that follow it.
+ *
+ * Three rewrites, in this order, and the order matters — controls first would
+ * leave `\n` in place for the terminator pass to see, and a backtick left
+ * unescaped is still a fence opener after the newlines are gone. The result is
+ * guaranteed one line, with no fence or code-span delimiter in it. It is not
+ * truncation: `recoveryStepsForCap` already clips the rendered line, and a
+ * clipped payload is a payload the operator cannot read.
+ */
+export function sanitizeRecoveryEvidence(text: string): string {
+  return dropC0Controls(text.replace(LINE_TERMINATORS, " ")).replaceAll("`", "'");
+}
 
 /**
  * #819 — the plan-to-spec gate halted BEFORE the branch step: no branch, no
@@ -31,7 +57,10 @@ export function planSpecMismatchSteps(
   forge: ForgeType,
 ): RecoveryStep[] {
   const hit: CapHitEvent | undefined = lastCapHit(state, "plan-spec-mismatch");
-  const evidence = hit?.evidence ?? "(no detail recorded)";
+  // #819 round-3 — sanitised BEFORE it is interpolated: see
+  // `sanitizeRecoveryEvidence` for what an unescaped newline costs inside a
+  // ```bash fence.
+  const evidence = sanitizeRecoveryEvidence(hit?.evidence ?? "(no detail recorded)");
   return [
     {
       section: "plan-spec-mismatch",

@@ -2133,6 +2133,28 @@ When a compiler-enforced invariant dies (e.g. `T` → `Option<T>`, removed `read
 - **No guard memories written** — check that `PI_ENSEMBLE_INVARIANT_MEMORY` is not set to `0`, and that the widening scan found findings (check the `widening-scan` event). If vipune is not installed, `defaultVipuneWrite` returns empty silently — the guard write is additive value, not structural.
 - **Duplicate guard memories across cycles** — dedup is per-cycle, not cross-cycle. If the same widening fires across multiple cycles, each writes its own guard. A future improvement could add cross-cycle dedup.
 
+## The plan-to-spec gate halted the cycle (`plan-spec-mismatch`)
+
+### Symptom
+
+A `/work` cycle stops at `plan` — no branch, no worktree, no PR — and the handoff names the cap `plan-spec-mismatch`. The state file's last events are the plan `dispatch-completed` followed by a `cap-hit` with `cap: "plan-spec-mismatch"` and `nextStep: "handoff"`, and `pipelineState.planQuality.reason` is `"plan-spec-mismatch"`.
+
+### What the gate judged
+
+`planSpecMismatchReason` (work-driver-plan-spec-coverage.ts) is a pure function of the plan reply's raw text, the parsed workstreams, and the resolved spec. It rejects two shapes: a reply carrying more than one `## Workstreams` section (the driver reads the first, and #818 shipped three blocks of which the first was fabricated), and a plan that declares none of the paths of at least one *measurable* spec deliverable. A deliverable whose `paths:` slot is empty, prose, or a filler word (`n/a`, `tbd`, `none`) is not measurable and rejects nothing — the gate has nothing to say about a spec that names no files.
+
+### Fix
+
+Read the cap's `evidence` in the handoff first: it names the uncovered deliverables (or the block count). Then either revise the issue body when the spec's deliverable paths are stale (files renamed, or the work already landed on main — a spec pointing at files that no longer exist rejects every honest plan), or re-run `/work <issue> --restart` and let the gate re-judge a fresh plan. Nothing was written, so a restart costs only the one planning dispatch it already spent.
+
+### If the gate itself is wrong
+
+Only when the deliverables genuinely name files this issue is about but the planner had no way to reach them: set `PI_ENSEMBLE_PLAN_QUALITY=0` in the **pi process's** environment (restart pi with it, or export it in the shell pi was started from) and re-run. `/work` is a Pi slash command, so a shell env prefix pasted in front of it is literal text and the command does not resolve. The variable disables BOTH plan-step gates — the shape gate and this one — so fix the spec afterwards: the next cycle hits the same wall.
+
+### Related
+
+- A corrective plan killed by one of the driver's own caps is NOT judged by this gate: a killed child produced no plan, and capping on that silence would be the driver inventing a finding about a kill it caused. Those route as a `dispatch-failed` carrying the structured cause and cap as `plan-timeout` / `loop-detected` / `token-budget` / `step-failed:plan` instead ([#819](https://github.com/trail-openers/pi-rukas/issues/819)).
+
 ## /plan pipeline latency and timeouts
 
 ### What changed
