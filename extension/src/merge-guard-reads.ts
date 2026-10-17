@@ -1,9 +1,10 @@
 /**
- * merge-guard-reads — the forge reads and refusal texts the merge guard
- * (merge-guard.ts) needs on the lens-decision branch, extracted into their
- * own module to keep the guard under the 500-line file-size limit.
+ * merge-guard-reads — the forge reads and the ledger-branch refusal text the
+ * merge guard (merge-guard.ts) needs on the lens-decision branch, extracted
+ * into their own module to keep the guard under the 500-line file-size limit.
  *
- * Two concerns live here:
+ * Three concerns live here, all of them "read the forge or the ledger, then
+ * say what the ledger shows":
  *
  * - `readPrCommentBodies` (#973): the PR/MR comment bodies the round-cap
  *   path's disclosure check reads (the guard's own exec call through the
@@ -16,12 +17,17 @@
  *   distinct from the `applies: true` path, where the rule WAS evaluated
  *   and a specific condition N failed (that refusal names the condition
  *   verbatim).
+ *
+ * #1417 moved `renderHold` (and `HoldKind` / `HoldDetails`) out of here and
+ * into merge-refusals.ts: a hold is refusal prose, not a forge read, and it
+ * belongs beside the merge refusals it is deliberately worded differently
+ * from.
  */
 
 import { prCommentsCmd } from "./forge-commands.ts";
 import { extractCommentRows } from "./forge-comments.ts";
+import { isValidRepoValue } from "./merge-allowlist.ts";
 import type { MergeExecFn, MergeTarget } from "./merge-target.ts";
-import { isValidRepoValue } from "./merge-tokens.ts";
 import { identityBase } from "./review-ledger-path.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
 import { committedPatchIdentity } from "./review-patch-identity.ts";
@@ -123,6 +129,54 @@ export async function readPrCommentBodies(
     trace(`merge-guard: comment read failed: ${(err as Error).message?.slice(0, 120)}`);
     return [];
   }
+}
+
+/**
+ * #1360 — the adversarial half of the guard's refusal, with the latest row's
+ * `detail` quoted verbatim when the row is non-passing and carries one.
+ *
+ * The ledger write records WHY a review did not count (`range-not-branch:
+ * reviewed 1a2b3c4d..…`, `head-moved: …`, `tree-changed: …`, or the ordinary
+ * verdict outcome). Without it the operator sees "no passing adversarial
+ * review" and re-runs the very review that just ran — the row is on file,
+ * it just refuses to pass. The comparison itself is untouched: this renders
+ * the reason for a refusal the strict rule already made (#1360 settlement —
+ * "no guard change" means the patch-id comparison and `mergeIdentity` are
+ * unchanged; the refusal MESSAGE may carry the row's detail).
+ *
+ * A `detail` that is not a string (a legacy row) renders as no detail, and a
+ * passing row never reaches here.
+ *
+ * The detail is quoted into a single-line refusal, so it is sanitised rather
+ * than pasted: a detail written by an older build, or one whose git error
+ * carried a newline, would otherwise break the line the operator reads (and
+ * any log that parses it). Newlines and tabs collapse to spaces and the text
+ * is clamped — the binding prefix and the SHAs it names are what the operator
+ * needs, and both sit at the front.
+ */
+
+/** Bounds on the quoted detail: long enough for a prefix plus the two short
+ * SHAs every binding refusal carries, short enough that one refusal stays one
+ * readable line. */
+const DETAIL_MAX_CHARS = 200;
+
+/** One-line, bounded rendering of a row's `detail` — "" when it has none. */
+function sanitizeDetail(detail: unknown): string {
+  if (typeof detail !== "string") return "";
+  const oneLine = detail.replace(/[\r\n\t]+/g, " ").trim();
+  if (!oneLine) return "";
+  return oneLine.length > DETAIL_MAX_CHARS ? `${oneLine.slice(0, DETAIL_MAX_CHARS - 1)}…` : oneLine;
+}
+
+export function adversarialRefusal(branch: string, adv: LedgerEntry | undefined): string {
+  const override = " (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)";
+  if (!adv) {
+    return `no passing adversarial review on file for branch \`${branch}\` (latest: none) — run adversarial_loop and let it complete before merging${override}`;
+  }
+  const identity = `passed=${adv.passed}, patchId=${adv.patchId.slice(0, 8)}`;
+  const detailText = sanitizeDetail(adv.detail);
+  const detail = detailText ? `, detail: ${detailText}` : "";
+  return `no passing adversarial review on file for branch \`${branch}\` (latest: ${identity}${detail}) — run adversarial_loop and let it complete before merging${override}`;
 }
 
 /**

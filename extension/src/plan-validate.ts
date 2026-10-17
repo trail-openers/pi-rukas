@@ -277,6 +277,13 @@ export const FORGE_BODY_MAX = 65536;
 /**
  * The render budget: headroom under the cap for the residual-disclosure
  * append and corrective-round writeback bullets that land AFTER drafting.
+ *
+ * #1383 lens round 2: this is the budget the POST-FIT appends get, and nothing
+ * else. A section cap inside the draft (`DROPPED_SECTION_MAX_CHARS`) is a share
+ * of BODY_BUDGET, not of this headroom — the two are spent by different code at
+ * different times, and conflating them is how a bounded section can still file
+ * over the limit. {@link POST_FIT_APPENDS_MAX_CHARS} is the bound on what can
+ * actually be spent here, and the fitter's contract is that the two fit.
  */
 export const BODY_BUDGET = FORGE_BODY_MAX - 4096;
 
@@ -425,20 +432,29 @@ export type FittedDraft<T extends { body: string }> =
   | { tooLarge: true; size: number; breakdown: string };
 
 /**
- * Try stage 0; over BODY_BUDGET → re-render at stage 1; still over →
+ * Try stage 0; over the budget → re-render at stage 1; still over →
  * tooLarge (the caller halts with the breakdown — e.g. an operator context
  * so large no compaction can fit it, which is the operator's call to trim).
  * Pure: at most two cheap string re-renders, byte-deterministic.
+ *
+ * #1377: `reserve` is the size of content the caller appends to the body AFTER
+ * this fitter has chosen it — the caller's provenance lines (plan-provenance.ts),
+ * which are deliberately invisible to compaction so nothing can trim them. The
+ * budget shrinks by that amount so the FINAL body still fits the forge cap.
+ * The default 0 leaves the comparison at BODY_BUDGET exactly, which is what
+ * every existing caller passes — its chosen body is byte-identical.
  */
 export function fitDraftToBudget<T extends { body: string }>(
   draftAt: (budget: RenderBudget) => T,
+  reserve = 0,
 ): FittedDraft<T> {
+  const budget = BODY_BUDGET - reserve;
   const stage0 = RENDER_BUDGETS[0] as RenderBudget;
   const first = draftAt(stage0);
-  if (first.body.length <= BODY_BUDGET) return { result: first, budget: stage0, compacted: false };
+  if (first.body.length <= budget) return { result: first, budget: stage0, compacted: false };
   const stage1 = RENDER_BUDGETS[1] as RenderBudget;
   const second = draftAt(stage1);
-  if (second.body.length <= BODY_BUDGET) return { result: second, budget: stage1, compacted: true };
+  if (second.body.length <= budget) return { result: second, budget: stage1, compacted: true };
   return {
     tooLarge: true,
     size: second.body.length,

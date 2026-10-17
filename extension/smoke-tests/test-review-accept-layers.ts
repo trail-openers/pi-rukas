@@ -17,25 +17,21 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { acceptRow } from "../scripts/review-accept-row.ts";
 import { agentContext, runReviewAccept } from "../scripts/review-accept.ts";
 import { suppressedSection } from "../src/lens-residuals.ts";
-import {
-  type LensReviewSummary,
-  type LensRunResult,
-  renderSummary,
-} from "../src/lens-review-format.ts";
+import type { LensReviewSummary, LensRunResult } from "../src/lens-review-format.ts";
 import { isReviewIncomplete } from "../src/lens-review-incomplete.ts";
+import { renderSummary } from "../src/lens-review-render.ts";
 import type { Finding } from "../src/lens-review-types.ts";
 import { editsFindingsFile, runsReviewAccept } from "../src/review-accept-guard.ts";
+import { capRows } from "../src/review-findings-file.ts";
 import {
-  type FindingRun,
   type StoredFinding,
   acceptFinding,
-  capRows,
   readBranchRows,
   recordFindingRunOutcome,
 } from "../src/review-findings-store.ts";
+import { decide } from "./lib/review-findings-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -47,12 +43,6 @@ function assert(cond: boolean, msg: string) {
 }
 
 const repoExt = path.join(import.meta.dir, "..");
-
-/** A round's decisions, or undefined when nothing was recorded. */
-const decide = async (run: FindingRun) => {
-  const out = await recordFindingRunOutcome(run);
-  return out.ok ? out.decisions : undefined;
-};
 
 // ── layer 1: agent context ──────────────────────────────────────────────────
 
@@ -88,7 +78,9 @@ assert(
 
 const srcFiles = readdirSync(path.join(repoExt, "src")).filter((f) => f.endsWith(".ts"));
 const importers = srcFiles.filter((f) =>
-  /from\s+["'][^"']*review-accept-row/.test(readFileSync(path.join(repoExt, "src", f), "utf8")),
+  /from\s+["'][^"']*scripts\/review-accept/.test(
+    readFileSync(path.join(repoExt, "src", f), "utf8"),
+  ),
 );
 assert(importers.length === 0, "boundary: no src/ module imports the acceptance write path");
 const storeSrc = readFileSync(path.join(repoExt, "src", "review-findings-store.ts"), "utf8");
@@ -106,8 +98,7 @@ assert(
   others.every((f) => !/\b(?:acceptFinding|acceptRow|mutateFindings)\b/.test(srcText(f))),
   "boundary: no src/ module other than the store names acceptFinding or a write primitive",
 );
-// review-findings-file.ts declares the schema (`status: "accepted"` is a type literal
-// there); it assigns nothing, so it is the one src file exempt from the write check.
+// review-findings-file.ts declares the schema; it assigns nothing (the exempt src file).
 const ACCEPT_WRITE =
   /\bstatus\s*=(?!=)\s*["']accepted["']|\bacceptance\s*=(?!=)|\bstatus\s*:\s*["']accepted["']/;
 assert(
@@ -139,7 +130,6 @@ assert(
 for (const c of [
   `cat ${storeFile}`,
   'bun -e \'require("fs").writeFileSync("review-findings-store", "")\'',
-  "bun extension/scripts/review-accept-row.ts",
   // A multi-line command starting with git is scanned, not waved through as plain git.
   'git status\nbun -e \'require("fs").writeFileSync("review-findings-store", "")\'',
   // A git/gh command with a shell operator is not plain: its store mention is scanned.
@@ -151,6 +141,15 @@ for (const c of [
   "bun test -r ./x.ts smoke-tests/review-findings-store*",
   // The operator script is not a test file, even under a test runner.
   "bun test smoke-tests/review-accept-row.ts",
+  "bun test smoke-tests/review-accept.ts",
+  // #1125 — a file-writing (`--output`, `-o`) or config/alias (`-c`) argument is
+  // scanned like any other: those can create the store or run a shell.
+  "git show HEAD:blob --output=review-findings.json",
+  "git -c alias.dump='!cat /tmp/payload review-findings.json' dump",
+  // #1125 — the runtime match used to require one line, so a here-doc body or a
+  // program piped into `bun -` reached the store untouched.
+  'bun <<EOF\nimport { acceptFinding } from "./src/review-findings-store.ts"\nEOF',
+  "printf 'import \"./src/review-findings-store.ts\"' | bun -",
 ]) {
   assert(
     runsReviewAccept(c) !== undefined,
@@ -161,14 +160,37 @@ assert(
   runsReviewAccept("bun test smoke-tests/test-review-*.ts") === undefined,
   "guard: a test glob that names no store path is allowed",
 );
+// #1125 — a read-only test run is judged by what it RUNS: an eval flag runs code.
 assert(
-  runsReviewAccept("bun test smoke-tests/review-findings-store*") === undefined,
-  "guard: a read-only test run may name the store's stem by glob",
+  runsReviewAccept("bun test smoke-tests/test-review-*.ts") === undefined,
+  "guard: a test glob that cannot name a protected file is allowed",
+);
+// #1125 clause (b): the three documented OVER-REFUSALS (canonical: OVER_REFUSALS).
+for (const c of [
+  "git show HEAD:README.md --output=/tmp/readme.txt",
+  "cat payload.js | bun -",
+  "bun test smoke-tests/review-findings-store*",
+]) {
+  assert(
+    runsReviewAccept(c) !== undefined,
+    `guard: over-refuses rather than guesses — ${c.slice(0, 44)}`,
+  );
+}
+assert(
+  runsReviewAccept("bun test smoke-tests/test-review-findings-store*.ts") === undefined,
+  "guard: a test arm whose argv are valueless switches and test paths is allowed",
 );
 assert(
   runsReviewAccept('git commit -m "fix: note review-findings.json (#1)"') === undefined,
   "guard: a git commit message naming the findings file is allowed",
 );
+// #1125 — the hardening must not swallow the reads the exemption exists for.
+for (const c of ["git diff HEAD -- extension/src/review-accept-guard.ts", "gh pr view 1105"]) {
+  assert(
+    runsReviewAccept(c) === undefined,
+    `guard: a plain git/gh read is allowed — ${c.slice(0, 44)}`,
+  );
+}
 
 // ── temp clone for the store-backed rules ───────────────────────────────────
 
@@ -207,12 +229,9 @@ try {
     review: "full",
   });
   const critId = crit?.[0]?.rowId ?? "";
-  const critRefused = await acceptRow({
-    cwd: dir,
-    branch: "feat/x",
-    rowId: critId,
-    reason: "a long enough reason to pass the rule",
+  const critRefused = await acceptFinding(dir, "feat/x", critId, {
     by: "op@example.com",
+    reason: "a long enough reason to pass the rule",
   });
   assert(
     !critRefused.ok && critRefused.reason.includes("CRITICAL"),
@@ -243,20 +262,14 @@ try {
         review: "full",
       })
     )?.[0]?.rowId ?? "";
-  const shortReason = await acceptRow({
-    cwd: dir,
-    branch: "feat/x",
-    rowId,
-    reason: "short",
+  const shortReason = await acceptFinding(dir, "feat/x", rowId, {
     by: "op",
+    reason: "short",
   });
   assert(!shortReason.ok, "accept: acceptRow itself refuses a short reason");
-  const secret = await acceptRow({
-    cwd: dir,
-    branch: "feat/x",
-    rowId,
-    reason: "token=abcdefghijklmnop123456 is what we use here",
+  const secret = await acceptFinding(dir, "feat/x", rowId, {
     by: "op",
+    reason: "token=abcdefghijklmnop123456 is what we use here",
   });
   assert(!secret.ok, "accept: acceptRow itself refuses a secret-shaped reason");
   assert(
@@ -314,12 +327,9 @@ try {
 
   // A file that does not parse at all is fail-closed: never overwritten, no memory.
   writeFileSync(findingsFile, "{not json");
-  const unparseable = await acceptRow({
-    cwd: dir,
-    branch: "feat/x",
-    rowId,
-    reason: "a long enough reason to pass the rule",
+  const unparseable = await acceptFinding(dir, "feat/x", rowId, {
     by: "op@example.com",
+    reason: "a long enough reason to pass the rule",
   });
   assert(
     !unparseable.ok && unparseable.reason.includes("copied to"),

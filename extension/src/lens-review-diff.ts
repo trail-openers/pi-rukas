@@ -12,16 +12,22 @@
  *
  * Blocked rows use the EXPECTED (installed + bundled) roster the caller
  * already built — a diff error is a review-level failure, so the blocked
- * rows name the lenses the review would have run. The skills-dir problem
- * case uses `installBlockRowsForRoster` (lens-review-skills.ts) instead,
- * which derives its rows from the BUNDLED `LENS_ROSTER` (falling back to a
- * single "LENSES" row when the bundled set is unreadable) and carries the
- * install-oriented message as `parseError`.
+ * rows name the lenses the review would have run. Building those rows and the
+ * blocked SUMMARY that scores them lives in `lens-review-diff-blocked.ts` (the
+ * 500-line gate, and the rule that an unreviewed round is never an approval
+ * belongs with the shape it is scored through); the skills-dir problem case uses
+ * `installBlockRowsForRoster` (lens-review-skills.ts) instead, which derives its
+ * rows from the BUNDLED `LENS_ROSTER` (falling back to a single "LENSES" row when
+ * the bundled set is unreadable) and carries the install-oriented message as
+ * `parseError`.
+ *
+ * The delta's disclosure fields (`AutoDeltaInfo`, the fallback sentence, the
+ * `deltaReview` summary field) are built by `lens-review-delta-disclose.ts`:
+ * this module PRODUCES the delta, those name what it says about itself.
  */
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { neutraliseEvidence } from "./comment-evidence.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./exec.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
@@ -31,10 +37,8 @@ import {
   resolveDeltaSince,
   writeCarriedEntry,
 } from "./lens-review-auto-delta.ts";
-import { bySeverityCounts, computeVerdict, dedupeFindings } from "./lens-review-format.ts";
-import type { LensRunResult, Severity, Verdict } from "./lens-review.ts";
-import type { Finding } from "./lens-review.ts";
-import type { RosterEntry } from "./lens-roster.ts";
+import type { AutoDeltaInfo } from "./lens-review-delta-disclose.ts";
+import type { Verdict } from "./lens-review.ts";
 import { resolveAutoHunkDelta, resolveMainlineBase } from "./review-delta-hunks.ts";
 import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
@@ -45,10 +49,14 @@ const execFileP = promisify(execFile);
  * Resolve the review's diff from either a pasted string or a ref range.
  *
  * - `diff` present → wins (even when base+head are also present; the
- *   "diff string wins" rule, traced by the caller).
+ *   "diff string wins" rule, traced by the caller); because the review did NOT
+ *   compute it, the caller sees `diffSource: "caller"` and the advisory split
+ *   declines to judge it as the reviewed range (lens-review-advisory.ts);
  * - no `diff`, base+head present → `computeRangeDiff(cwd ?? process.cwd(),
  *   base, head)`; an error becomes a problem (never an empty-string
- *   approval).
+ *   approval). The review computed this value itself, so it carries
+ *   `diffSource: "computed"` plus the `base` it was read from — the one shape
+ *   whose diff text is trustworthy evidence of the changed lines.
  * - neither → a problem (a caller error, not an approval).
  */
 export async function resolveLensDiff(opts: {
@@ -56,7 +64,7 @@ export async function resolveLensDiff(opts: {
   base?: string;
   head?: string;
   cwd?: string;
-}): Promise<{ diff?: string; problem?: string }> {
+}): Promise<{ diff?: string; base?: string; diffSource?: "computed"; problem?: string }> {
   if (opts.diff) return { diff: opts.diff };
   if (opts.base && opts.head) {
     const range = await computeRangeDiff(opts.cwd ?? process.cwd(), opts.base, opts.head);
@@ -65,7 +73,7 @@ export async function resolveLensDiff(opts: {
         problem: `lens review: cannot compute diff for ${opts.base}...${opts.head}: ${range.reason}`,
       };
     }
-    return { diff: range.diff };
+    return { diff: range.diff, base: opts.base, diffSource: "computed" };
   }
   return {
     problem: "lens review: no diff supplied (pass `diff`, or both `base` and `head`)",
@@ -154,44 +162,6 @@ export async function resolveDeltaDiff(
   return { noReview: false, since, head: resolvedHead, diff: d.diff, problem: undefined };
 }
 
-/** The delta a review ran against. `fallback` is set when an automatic delta
- * could not use its hunk-level method and reviewed the two-dot range instead
- * (the reason is disclosed in the context, the summary and the residuals). */
-export interface AutoDeltaInfo {
-  since: string;
-  head: string;
-  auto?: boolean;
-  fallback?: string;
-}
-
-/** The fallback sentence, built once for every surface that discloses it (the
- * lens context, the review summary, the PR residuals). The reason is
- * neutralised here, so a marker-like token in it cannot forge a verdict on any
- * surface. */
-export function deltaFallbackText(delta: { since: string; fallback: string }): string {
-  return `this delta review covers the full two-dot range since ${delta.since.slice(0, 8)} because ${neutraliseEvidence(delta.fallback)}`;
-}
-
-/** The DELTA FALLBACK note appended to the lens context when an automatic delta
- * fell back to the two-dot range; empty when there is no fallback. */
-export function deltaFallbackNote(delta: AutoDeltaInfo | undefined): string {
-  if (!delta?.fallback) return "";
-  return `\n\nDELTA FALLBACK: ${deltaFallbackText({ since: delta.since, fallback: delta.fallback })}. Main's hunks merged into the branch since then may be included; do not report them as branch-authored defects.`;
-}
-
-/** The `deltaReview` field of the review summary; carries the fallback when set. */
-export function deltaReviewOf(delta: AutoDeltaInfo): {
-  since: string;
-  head: string;
-  fallback?: string;
-} {
-  return {
-    since: delta.since,
-    head: delta.head,
-    ...(delta.fallback ? { fallback: delta.fallback } : {}),
-  };
-}
-
 /**
  * #973 — the unified review-diff resolver. Single entry point for
  * `runLensReview` (lens-review.ts): resolves which mode the review runs in
@@ -204,6 +174,14 @@ export function deltaReviewOf(delta: AutoDeltaInfo): {
  * SHA is a strict ancestor of the reviewed head); then base+head full
  * range. An empty delta is the no-review outcome (decision 4 — no fan-out,
  * no ledger entry); a problem is a block.
+ *
+ * Every `ok` outcome says WHO produced its diff. `diffSource: "caller"` is the
+ * pasted-string arm — a value the review never read from git, which the advisory
+ * split therefore does not judge findings against; `"computed"` is every
+ * ref-resolved arm (full range, delta, automatic delta), with `base` naming the
+ * base of the range it covers and `head` its head. (That the pasted arm is
+ * labelled is what makes the lie impossible: a caller cannot hand the split a
+ * string and have it read as the PR's changed lines.)
  */
 export async function resolveReviewDiff(opts: {
   diff?: string;
@@ -214,7 +192,18 @@ export async function resolveReviewDiff(opts: {
   branch?: string;
   cwd?: string;
 }): Promise<
-  | { kind: "ok"; diff: string; delta?: AutoDeltaInfo }
+  | {
+      kind: "ok";
+      diff: string;
+      delta?: AutoDeltaInfo;
+      /** Who produced `diff` — see the header: only a `computed` range is the
+       * split's source of truth for what the PR changed. */
+      diffSource: "caller" | "computed";
+      /** The base of the range `diff` covers, when the review resolved one. */
+      base?: string;
+      /** The head of that range, when the review resolved one. */
+      head?: string;
+    }
   | { kind: "blocked"; problem: string }
   | { kind: "noReview"; since: string; head: string; reason: string }
   | {
@@ -229,7 +218,9 @@ export async function resolveReviewDiff(opts: {
 > {
   const hasDiffString = typeof opts.diff === "string" && opts.diff.length > 0;
   if (hasDiffString) {
-    return { kind: "ok", diff: opts.diff as string };
+    // The caller pasted this text: the review never read it from git, so it is
+    // not trustworthy evidence of the PR's changed lines (see the header).
+    return { kind: "ok", diff: opts.diff as string, diffSource: "caller" };
   }
   // #973 — the automatic delta base (design decision 6): without an
   // explicit `since`, a named branch, and no `full: true` opt-out, `since`
@@ -252,7 +243,14 @@ export async function resolveReviewDiff(opts: {
     if (d.problem) {
       return { kind: "blocked", problem: d.problem };
     }
-    return { kind: "ok", diff: d.diff ?? "", delta: { since: d.since, head: d.head } };
+    return {
+      kind: "ok",
+      diff: d.diff ?? "",
+      delta: { since: d.since, head: d.head },
+      diffSource: "computed",
+      base: d.since,
+      head: d.head,
+    };
   }
   const resolution = await resolveLensDiff(opts);
   if (resolution.problem) {
@@ -266,7 +264,13 @@ export async function resolveReviewDiff(opts: {
       problem: "lens review: the full diff returned no content; it is not treated as empty (#384)",
     };
   }
-  return { kind: "ok", diff: resolution.diff };
+  return {
+    kind: "ok",
+    diff: resolution.diff,
+    diffSource: resolution.diffSource ?? "caller",
+    ...(resolution.base !== undefined ? { base: resolution.base } : {}),
+    ...(opts.head !== undefined ? { head: opts.head } : {}),
+  };
 }
 
 type ReviewDiffOutcome = Awaited<ReturnType<typeof resolveReviewDiff>>;
@@ -294,7 +298,14 @@ async function resolveAutoDelta(
     if (r.kind === "problem" && opts.base) return { kind: "blocked", problem: r.problem };
     if (r.kind === "empty") return emptyAutoDelta(opts, base, since, h.head, r.reason);
     if (r.kind === "diff") {
-      return { kind: "ok", diff: r.diff, delta: { since, head: h.head, auto: true } };
+      return {
+        kind: "ok",
+        diff: r.diff,
+        delta: { since, head: h.head, auto: true },
+        diffSource: "computed",
+        base,
+        head: h.head,
+      };
     }
     fallback = r.kind === "problem" ? r.problem : r.reason;
   }
@@ -305,6 +316,9 @@ async function resolveAutoDelta(
     kind: "ok",
     diff: d.diff ?? "",
     delta: { since: d.since, head: d.head, auto: true, fallback },
+    diffSource: "computed",
+    base: d.since,
+    head: d.head,
   };
 }
 
@@ -352,85 +366,12 @@ async function emptyAutoDelta(
       problem: "lens review: the full diff returned no content; it is not treated as empty (#384)",
     };
   }
-  return { kind: "ok", diff: full.diff };
-}
-
-/**
- * Build the blocked rows for an unresolvable diff from the EXPECTED roster
- * (one blocked row per lens the review would have run). Feeds the
- * REVIEW_INCOMPLETE verdict — the review is incomplete, not approved.
- */
-export function blockedRowsForRoster(roster: RosterEntry[], problem: string): LensRunResult[] {
-  // #966 — an empty roster must NEVER yield zero blocked rows: `computeVerdict`
-  // over zero rows returns APPROVED (the silent-approval this guard closes).
-  // A review whose expected set is unknown (roster unavailable) or empty still
-  // produces one named blocked row so the verdict is REVIEW_INCOMPLETE.
-  if (roster.length === 0) {
-    return [
-      {
-        lens: "LENSES",
-        ok: false,
-        ms: 0,
-        startMs: Date.now(),
-        findings: [],
-        attempts: 0,
-        blocked: true,
-        parseError: problem,
-      },
-    ];
-  }
-  return roster.map((e) => ({
-    lens: e.name,
-    ok: false,
-    ms: 0,
-    startMs: Date.now(),
-    findings: [],
-    attempts: 0,
-    blocked: true,
-    parseError: problem,
-  }));
-}
-
-/**
- * The single blocked-review summary for an unresolvable diff: dedup the
- * extra findings against the expected roster, score the verdict with the
- * resolved threshold, and bump the deck's batch row once per blocked lens so
- * the pass shows as finished (no spawn happened — the lens "completed" as a
- * block). Keeping the shape here (rather than in runLensReview) is what keeps
- * lens-review.ts under the 500-line gate.
- */
-export function blockedReviewSummary(
-  runId: string,
-  extraFindings: Finding[] | undefined,
-  roster: RosterEntry[],
-  blockRows: LensRunResult[],
-  threshold: Severity,
-): {
-  verdict: ReturnType<typeof computeVerdict>;
-  totalFindings: number;
-  bySeverity: Record<Severity, number>;
-  lenses: LensRunResult[];
-  findings: Finding[];
-  usage: undefined;
-} {
-  const batchKey = `${runId}/batch`;
-  dispatchDeck.startBatchEntry(batchKey, {
-    label: `code-review-specialist×${blockRows.length}`,
-    size: blockRows.length,
-  });
-  for (let i = 1; i <= blockRows.length; i++) {
-    dispatchDeck.updateBatchProgress(batchKey, i);
-  }
-  dispatchDeck.clearBatchEntry(batchKey);
-  const all = [...(extraFindings ?? [])];
-  const deduped = dedupeFindings(all, roster);
   return {
-    verdict: computeVerdict(deduped, blockRows, threshold),
-    totalFindings: deduped.length,
-    bySeverity: bySeverityCounts(deduped),
-    lenses: blockRows,
-    findings: deduped,
-    usage: undefined,
+    kind: "ok",
+    diff: full.diff,
+    diffSource: "computed",
+    base,
+    head,
   };
 }
 

@@ -28,9 +28,14 @@
  *  (j) an UNRECORDED stale tree on a different branch with unique commits is
  *      refused too (one admission rule on both paths), and a kept backup ref
  *      is returned to the commit-pr caller;
- *  (k) a creation failure after the backup still names the kept ref.
+ *  (k) a creation failure after the backup still names the kept ref;
+ *  (l) the halt's plumb report names the kept ref even when the error truncates;
+ *  (m) #1396 — repeated re-entries that each keep a DIFFERENT unpushed HEAD
+ *      leave exactly ONE ref under `refs/pi-rukas/integrate-backup/issue-17`
+ *      (the namespace holds at most one ref per issue, overwritten in place),
+ *      and the docs naming that namespace agree with the ref the code writes.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ensureIntegrateWorktreeOrHalt } from "../src/work-driver-commit-fallback.ts";
@@ -39,7 +44,12 @@ import { ensureIntegrateWorktree } from "../src/work-driver-integrate-worktree.t
 import { inlineCommitPrPrompt } from "../src/work-driver-prompts-late.ts";
 import { initialState } from "../src/workflow-state-update.ts";
 import { DirtyWorktreeError, worktreePath } from "../src/worktree.ts";
-import { git, realExecWithStderr as realExec } from "./lib/worktree-fake-fixture.ts";
+import {
+  ISSUE_17_BACKUP_REF,
+  git,
+  integrateBackupRefFor,
+  realExec,
+} from "./lib/worktree-fake-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -157,7 +167,7 @@ try {
       `${tag} re-entry over the cycle's own unpushed commit does not refuse (${res.ok ? "ok" : (res.err as Error).message.split(" Inspect")[0]})`,
     );
     const refs = await reachable(repo, sha);
-    const backup = `refs/pi-rukas/integrate-backup/issue-17/${sha}`;
+    const backup = ISSUE_17_BACKUP_REF;
     assert(refs.includes(backup), `${tag} the unpushed commit is kept on ${backup}`);
     assert(
       res.ok && res.r.backupRef === backup,
@@ -285,7 +295,7 @@ try {
     const ctx = { repoRoot: repo, issue: 17 } as unknown as CycleContext;
     const res = await ensureIntegrateWorktreeOrHalt(ctx, state, BRANCH, realExec, "conflict");
     assert(
-      "backupRef" in res && res.backupRef === `refs/pi-rukas/integrate-backup/issue-17/${sha}`,
+      "backupRef" in res && res.backupRef === ISSUE_17_BACKUP_REF,
       "(j) ensureIntegrateWorktreeOrHalt hands the backup ref to commit-pr (for the plumb report)",
     );
   }
@@ -307,8 +317,7 @@ try {
       (err: unknown) => String((err as Error).message),
     );
     assert(
-      res.includes("simulated add failure") &&
-        res.includes(`refs/pi-rukas/integrate-backup/issue-17/${sha}`),
+      res.includes("simulated add failure") && res.includes(ISSUE_17_BACKUP_REF),
       `(k) the creation error names the kept backup ref (${res.slice(0, 160)})`,
     );
   }
@@ -330,7 +339,7 @@ try {
     const plumb =
       "halted" in res ? res.halted.eventLog.find((e) => e.kind === "plumb-report") : undefined;
     const body = (plumb as { body?: string } | undefined)?.body ?? "";
-    const ref = `refs/pi-rukas/integrate-backup/issue-17/${sha}`;
+    const ref = ISSUE_17_BACKUP_REF;
     assert(
       "halted" in res && body.includes(ref) && body.includes("simulated add failure"),
       `(l) the halt plumb report names the kept backup ref (${body.slice(0, 80)})`,
@@ -338,6 +347,132 @@ try {
     assert(
       body.length < 1200,
       `(l) the creation error in the halt body is bounded (${body.length} chars)`,
+    );
+  }
+
+  // (m) #1396 — the ref namespace holds AT MOST ONE ref per issue. Before the
+  // fix the ref was keyed by HEAD SHA (`…/issue-17/<sha>`), so every re-entry
+  // whose stale tree held a NEW unpushed commit added a ref and nothing ever
+  // deleted one: five re-entries left six refs. Each round below makes a real
+  // detached stale tree with its own commit, runs the re-entry, and repeats.
+  {
+    const { repo, baseSha, wt, stateFile } = await fixture("ref-growth", { recordTree: true });
+    assert(
+      integrateBackupRefFor(17) === ISSUE_17_BACKUP_REF,
+      `(m) the test's ref and the producer's helper agree (${integrateBackupRefFor(17)})`,
+    );
+    const shas: string[] = [];
+    let prevKept: string | undefined;
+    for (let round = 1; round <= 3; round++) {
+      // The driver recreates its tree ATTACHED, so a re-entry whose commit is
+      // on the branch has nothing to keep (case (f)). The accumulation this
+      // case pins is the pre-fix driver leaving a DETACHED tree whose commit
+      // reaches neither the branch nor origin — so each round first removes
+      // the tree the previous round left, then rebuilds that residue shape
+      // with unique content (a distinct HEAD sha each round: the pre-fix code
+      // wrote one new `…/issue-17/<sha>` ref per round and deleted none).
+      await git(repo, ["worktree", "remove", "--force", wt]).catch(() => undefined);
+      await git(repo, ["update-ref", `refs/heads/${BRANCH}`, baseSha]).catch(() => undefined);
+      await staleDetachedWithCommit(repo, wt, baseSha);
+      writeFileSync(path.join(wt, "a.txt"), `base\nconsolidated round ${round}\n`);
+      await git(wt, ["commit", "-q", "-am", `consolidation ${round}`]);
+      const head = (await git(wt, ["rev-parse", "HEAD"])).stdout.trim();
+      shas.push(head);
+      // #1396 six-lens — the ref is replaced in place, so every round after
+      // the first must name the sha it just overwrote. Round 1 has no prior
+      // ref, so it names nothing. `shas[]` is the stale tree's HEAD, which is
+      // NOT the surviving ref's sha: the ref also keeps the tree's
+      // `consolidation` base commit, so the backup names an earlier commit on
+      // that branch. Compare against what the ref actually held, read back
+      // before this round runs — that is the sha whose only reference is being
+      // dropped, which is the fact the handoff has to carry.
+      let expectedSuperseded: string | undefined;
+      try {
+        const prior = (
+          await git(repo, ["rev-parse", "--verify", "--quiet", ISSUE_17_BACKUP_REF])
+        ).stdout.trim();
+        expectedSuperseded = prior || undefined;
+      } catch {
+        expectedSuperseded = undefined;
+      }
+      const res = await run(repo, baseSha, stateFile);
+      // What this round actually wrote to the ref — read back from git, not
+      // taken from the tree's HEAD (the backup names the first commit the base
+      // lacks, which is not necessarily HEAD itself).
+      const keptSha = res.ok
+        ? (await git(repo, ["rev-parse", ISSUE_17_BACKUP_REF])).stdout.trim()
+        : undefined;
+      assert(
+        res.ok && res.r.backupRef === ISSUE_17_BACKUP_REF,
+        `(m) round ${round} keeps HEAD on the single per-issue ref (${res.ok ? res.r.backupRef : (res.err as Error).message.split("\n")[0]})`,
+      );
+      // #1396 six-lens — the ref is replaced in place, so every round after
+      // the first must name the sha it just overwrote. Round 1 has no prior
+      // ref, so it names nothing.
+      assert(
+        res.ok && res.r.supersededSha === expectedSuperseded,
+        `(m) round ${round} names the superseded backup sha ${
+          expectedSuperseded ? `(${expectedSuperseded.slice(0, 8)})` : "(none — first round)"
+        } — got ${String(res.ok ? (res.r.supersededSha ?? "none") : "-")}`,
+      );
+      // And the superseded sha is really the previous round's kept value, so
+      // the chain is: each round's kept sha becomes the next round's superseded.
+      if (round > 1) {
+        assert(
+          res.ok && res.r.supersededSha === prevKept,
+          `(m) round ${round} supersedes exactly what round ${round - 1} kept (${String(prevKept).slice(0, 8)})`,
+        );
+      }
+      prevKept = res.ok ? keptSha : undefined;
+    }
+    const refs = (
+      await git(repo, ["for-each-ref", "--format=%(refname)", "refs/pi-rukas/integrate-backup"])
+    ).stdout
+      .split("\n")
+      .filter(Boolean);
+    assert(
+      refs.length === 1 && refs[0] === "refs/pi-rukas/integrate-backup/issue-17",
+      `(m) three re-entries with three different unpushed HEADs leave exactly ONE ref (${refs.join(", ") || "none"})`,
+    );
+    const surviving = (await git(repo, ["rev-parse", ISSUE_17_BACKUP_REF])).stdout.trim();
+    assert(
+      surviving === shas[shas.length - 1],
+      `(m) the surviving ref names the NEWEST kept HEAD (${surviving.slice(0, 8)} = ${shas[shas.length - 1]?.slice(0, 8)})`,
+    );
+    // The discarded backup's commit is still in the object database reachable
+    // from the surviving ref's history only when it truly was an ancestor; the
+    // point of the assertion is that the replaced ref is GONE, not that the
+    // commit is — the driver force-removed the tree that held it.
+    assert(
+      shas.length === 3 && shas[0] !== shas[2],
+      "(m) the three rounds really were distinct HEADs",
+    );
+  }
+
+  // (m2) #1396 — the docs state the one-ref-per-issue rule and name the
+  // ref shape the code actually writes (they used to document the SHA-keyed
+  // namespace and "never pruned automatically" as intended behaviour).
+  {
+    const docs = readFileSync(new URL("../../docs/troubleshooting.md", import.meta.url), "utf8");
+    assert(
+      docs.includes("refs/pi-rukas/integrate-backup/issue-<N>"),
+      "(m2) docs/troubleshooting.md names the per-issue ref shape the code writes",
+    );
+    assert(
+      !docs.includes("refs/pi-rukas/integrate-backup/issue-<N>/<sha>"),
+      "(m2) the docs no longer document the SHA-keyed (unbounded) namespace",
+    );
+    assert(
+      !docs.includes("never pruned automatically"),
+      "(m2) the docs no longer present unbounded ref growth as intended behaviour",
+    );
+    assert(
+      docs.includes("git update-ref -d refs/pi-rukas/integrate-backup/issue-<N>"),
+      "(m2) the docs name the cleanup command for the single ref",
+    );
+    assert(
+      docs.includes("WorktreeScanError") && docs.includes("git worktree list"),
+      "(m2) the docs state the failed-listing refusal",
     );
   }
 } finally {

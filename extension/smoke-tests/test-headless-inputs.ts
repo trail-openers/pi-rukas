@@ -17,7 +17,10 @@
  *                       key fails, because the scan cannot see what it reads.
  *
  * A family entry (`PI_ENSEMBLE_MODEL_<ROLE>`) covers a literal name only when
- * the name is its prefix plus an upper-case role or seam id. Comment lines
+ * the name is its prefix plus one of its `members` (or, for an entry without
+ * members, any upper-case id). An entry read only by the sandbox wrapper
+ * (lib/wrapper-env-reads.ts) is not stale; test-headless-inputs-wrapper.ts
+ * checks that side. Comment lines
  * are skipped. Every rule is also run against a planted fixture, so each is
  * observed to fail (a gate never observed to fail is worthless). Numeric,
  * list and boolean defaults of the inputs named in LIVE are checked against
@@ -68,6 +71,7 @@ import { mergeAuthorityEnabled } from "../src/work-driver-merge-authority.ts";
 import { NET_GIT_TIMEOUT_DEFAULT_MS } from "../src/work-driver-net-git.ts";
 import { crossGroupConflictsEnabled } from "../src/work-driver-path-claims.ts";
 import { planContractEnabled } from "../src/work-driver-plan-contract.ts";
+import { pendingShutdownBoundMs } from "../src/pending-jobs-signal.ts";
 import { planQualityEnabled } from "../src/work-driver-plan-helpers.ts";
 import { planDispatchTimeoutMs } from "../src/work-driver-plan-helpers.ts";
 import { maxWorkstreams } from "../src/work-driver-plan-workstreams.ts";
@@ -77,6 +81,7 @@ import { resumeEnabled, sessionReattachEnabled } from "../src/work-driver-resume
 import { stepNoticeThresholdMs } from "../src/work-driver-step-notice.ts";
 import { testDeleteTolerance, verifyTimeoutMs } from "../src/work-driver-verify-develop-helpers.ts";
 import { queueHaltOnFailure } from "../src/work-queue.ts";
+import { wrapperEnvReads } from "./lib/wrapper-env-reads.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -109,7 +114,9 @@ const DYNAMIC_KEYS: Record<string, string> = {
   PI_ENSEMBLE_DECISION_MODE: "PI_ENSEMBLE_DECISION_MODE_<SEAM>",
   PI_ENSEMBLE_DECISION_TIMEOUT_MS: "PI_ENSEMBLE_DECISION_TIMEOUT_MS_<SEAM>",
   PI_ENSEMBLE_MODEL_: "PI_ENSEMBLE_MODEL_<ROLE>",
+  PI_ENSEMBLE_MODEL_LENS_: "PI_ENSEMBLE_MODEL_LENS_<LENS>",
   PI_ENSEMBLE_PROVIDER_: "PI_ENSEMBLE_PROVIDER_<ROLE>",
+  PI_ENSEMBLE_PROVIDER_LENS_: "PI_ENSEMBLE_PROVIDER_LENS_<LENS>",
   PI_ENSEMBLE_TOKEN_BUDGET_: "PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>",
 };
 
@@ -161,11 +168,13 @@ function scan(root: string): Scan {
   return out;
 }
 
-/** Whether `name` is the entry, or a member of its family (prefix + upper-case id). */
+/** Whether `name` is the entry, or a member of its family (prefix + a listed id). */
 function covers(entry: HostInput, name: string): boolean {
   const i = entry.name.indexOf("<");
   if (i < 0) return entry.name === name;
-  return new RegExp(`^${entry.name.slice(0, i)}[A-Z][A-Z0-9_]*$`).test(name);
+  const prefix = entry.name.slice(0, i);
+  if (entry.members) return entry.members.some((m) => name === prefix + m);
+  return new RegExp(`^${prefix}[A-Z][A-Z0-9_]*$`).test(name);
 }
 
 /** The problems a scan shows against an inventory: unlisted reads and unapproved dynamic keys. */
@@ -202,14 +211,16 @@ assert(
 
 // ── Every entry, and every approved dynamic key, is still used.
 {
+  const wrapper = wrapperEnvReads();
   const stale = HEADLESS_INPUTS.filter(
     (e) =>
+      !wrapper.has(e.name) &&
       ![...found.exact.keys()].some((n) => covers(e, n)) &&
       ![...found.dynamic.keys()].some((k) => DYNAMIC_KEYS[k] === e.name),
   );
   assert(
     stale.length === 0,
-    `every HEADLESS_INPUTS entry is read in src/${stale.length ? ` — stale: ${stale.map((e) => e.name).join(", ")}` : ""}`,
+    `every HEADLESS_INPUTS entry is read in src/ or by the wrapper${stale.length ? ` — stale: ${stale.map((e) => e.name).join(", ")}` : ""}`,
   );
   const unused = Object.keys(DYNAMIC_KEYS).filter((k) => !found.dynamic.has(k));
   assert(unused.length === 0, `every approved dynamic key is used (${unused.join(", ")})`);
@@ -256,6 +267,8 @@ assert(
       'const g = process.env["PI_ENSEMBLE_MODEL_"];',
       "const h = process.env.PI_ENSEMBLE_MODEL_DEVELOPER;",
       "const i = process.env.PI_ENSEMBLE_MODEL_developer;",
+      // Not a role: a typo the family's members refuse.
+      "const j = process.env.PI_ENSEMBLE_MODEL_REVIEWER;",
     ].join("\n"),
     "planted.ts",
     planted,
@@ -264,6 +277,7 @@ assert(
   const want = [
     "unapproved dynamic key PI_ENSEMBLE_ (planted.ts)",
     "unapproved dynamic key PI_ENSEMBLE_PLANTED_ (planted.ts)",
+    "unlisted PI_ENSEMBLE_MODEL_REVIEWER (planted.ts)",
     "unlisted PI_ENSEMBLE_MODEL_developer (planted.ts)",
     "unlisted PI_ENSEMBLE_PLANTED_DESTRUCTURED (planted.ts)",
     "unlisted PI_ENSEMBLE_PLANTED_INDEXED (planted.ts)",
@@ -302,6 +316,7 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LENS_ROUND_CAP", () => lensRoundCap()],
   ["PI_ENSEMBLE_MAX_WORKSTREAMS", maxWorkstreams],
   ["PI_ENSEMBLE_PARALLEL_GROUPS", resolvedParallelGroups],
+  ["PI_ENSEMBLE_PENDING_SHUTDOWN_MS", pendingShutdownBoundMs],
   ["PI_ENSEMBLE_PLAN_CACHE_TTL_MS", planCacheTtlMs],
   ["PI_ENSEMBLE_PLAN_TIMEOUT_MS", planDispatchTimeoutMs],
   ["PI_ENSEMBLE_RATE_LIMIT_BURST_MAX_S", burstThresholdSeconds],

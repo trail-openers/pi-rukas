@@ -8,11 +8,9 @@ import { drainSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { settleDraftPrAtHandoff } from "./work-driver-draft-pr.ts";
+import { countAheadOfBase, workNotYetOnBranch } from "./work-driver-handoff-ahead.ts";
 import { handoffChannel, withHandoffMarker } from "./work-driver-handoff-channel.ts";
-import {
-  consolidateWorktreesToBranch,
-  workNotYetOnBranch,
-} from "./work-driver-handoff-consolidate.ts";
+import { handoffConsolidateWorktrees } from "./work-driver-handoff-consolidate-step.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { runHandoffOpsDispatch } from "./work-driver-handoff-ops.ts";
 import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
@@ -78,10 +76,10 @@ export async function runHandoff(
   // completes either way.
   const consolidated =
     process.env.PI_ENSEMBLE_HANDOFF_CONSOLIDATE === "0"
-      ? false
+      ? {}
       : await handoffConsolidateWorktrees(ctx, state);
-  if (consolidated) {
-    next = appendEvent(next, consolidated);
+  if (consolidated.event) {
+    next = appendEvent(next, consolidated.event);
   }
   // PR5: capture the worktree snapshot FIRST so handoff surfaces (in-chat
   // sendUserMessage, GitHub body, /work-status terminal) can answer
@@ -344,6 +342,29 @@ export async function runHandoff(
       (e): e is Extract<WorkEvent, { kind: "handoff-consolidated" }> =>
         e.kind === "handoff-consolidated",
     );
+  // #1421 — WHY consolidation did not happen. The event carried a single
+  // fixed sentence, "consolidation infeasible (work remains on its worktree
+  // detached HEADs)", for every failure including one where the only thing in
+  // the root was cargo's `target/`: the operator was told the work was
+  // unreachable, with no cause named and nothing saying where the commits
+  // actually are. The real reason is traced by runHandoffConsolidate; read
+  // it back from the trace-carrying event log entry when present, and always
+  // name the worktrees and their HEADs. The work's location was already in
+  // the recovery steps — the reason line now says so too.
+  const consolidationReason = consEvent
+    ? undefined
+    : snap.committedWork?.length
+      ? `consolidation did not run — the committed work is NOT lost: ${snap.committedWork
+          .map(
+            (w) =>
+              `worktree ${w.worktreeId} at ${w.path} (HEAD ${w.headSha.slice(0, 8)}, ${w.ahead} commit(s) ahead of the base)`,
+          )
+          .join("; ")}. See the recovery steps below for the cherry-pick commands${
+          consolidated.degradedReason !== undefined
+            ? `; driver's reason: ${consolidated.degradedReason}`
+            : ""
+        }`
+      : undefined;
   const emitted = makeHandoffEmittedEvent({
     at: Date.now(),
     commentUrl,
@@ -353,11 +374,7 @@ export async function runHandoff(
     consolidated: consEvent !== undefined,
     consolidatedBranch: consEvent?.branchName,
     consolidatedWorkstreams: consEvent?.workstreams,
-    consolidationReason: consEvent
-      ? undefined
-      : snap.committedWork?.length
-        ? "consolidation infeasible (work remains on its worktree detached HEADs)"
-        : undefined,
+    consolidationReason,
     // A repeat delivered nothing this cycle — no provenance to assert.
     delivery: host ? "host" : park.repeatOf ? undefined : delivery,
     repeatOf: park.repeatOf,
@@ -416,52 +433,6 @@ export async function runHandoff(
     next = { ...next, eventLog: [...next.eventLog, ...slowEvents] };
   }
   return next;
-}
-/** #674 — consolidate the parked cycle's workstream work onto its feature branch BEFORE the handoff body is rendered (item 1+2 preferred fix direction). Delegates to work-driver-handoff-consolidate.ts for the actual integration (which runs under withIntegrationLock, respects integrate()'s dirty-repoRoot preflight, and degrades to a failure outcome rather than throwing). Returns the `handoff-consolidated` event to append, or undefined when consolidation was not possible (no branch, no work, no baseSha, dirty repoRoot, conflict, or git error). The caller degrades to the accurate per-worktree recovery in that case. */
-export async function handoffConsolidateWorktrees(
-  ctx: { repoRoot: string; issue: number },
-  state: WorkState,
-): Promise<WorkEvent | undefined> {
-  if (process.env.PI_ENSEMBLE_HANDOFF_CONSOLIDATE === "0") return undefined;
-  if (!state.pipelineState.branchName) return undefined;
-  const worktrees = state.pipelineState.worktrees ?? {};
-  if (Object.keys(worktrees).length === 0) return undefined;
-  // Re-entry guard: a second runHandoff (crash-resume re-post) must not
-  // re-consolidate work that is already on the local branch.
-  const notYet = await workNotYetOnBranch(
-    execp,
-    ctx.repoRoot,
-    state.pipelineState.branchName,
-    state.pipelineState.baseSha,
-    worktrees,
-  );
-  if (!notYet) {
-    trace("work-driver: handoff consolidation skipped — work already on the local branch");
-    return undefined;
-  }
-  const scratch = scratchDir(ctx.repoRoot, ctx.issue);
-  const result = await consolidateWorktreesToBranch(
-    { repoRoot: ctx.repoRoot, issue: ctx.issue, scratchDir: scratch },
-    state,
-  );
-  if (!result.ok) {
-    trace(`work-driver: handoff consolidation degraded: ${result.reason}`);
-    return undefined;
-  }
-  const branch = result.branchName ?? state.pipelineState.branchName;
-  if (!branch) return undefined; // no branchName — cannot consolidate
-  return {
-    kind: "handoff-consolidated",
-    at: Date.now(),
-    branchName: branch,
-    workstreams: result.workstreams ?? [],
-    // #968 — the success path now restores repoRoot to the operator's
-    // original checkout (branch checkout when originalRef is one); the claim
-    // rides in the event so both renderers print the verified post-condition
-    // or the loud not-restored failure. Absent when the restore was not run
-    // (the nothing-applied short-circuit predates the capture on some paths).
-    ...(result.restoreClaim !== undefined ? { restoreClaim: result.restoreClaim } : {}),
-  };
 }
 export function parseHandoffCommentUrl(text: string | undefined): string | undefined {
   if (!text) return undefined;

@@ -29,11 +29,16 @@
 
 import path from "node:path";
 import { type ResourceReport, resourceReport } from "../resource-budget.ts";
+import { AGENTS_MD_FLAGS } from "./agents-md.ts";
 import { INSTALL_ROOT, readBuildCommit, readBuildVersion } from "./build.ts";
 import { capVocabulary } from "./caps.ts";
 import { EXIT, EXIT_CODE_VERSION } from "./exit-code.ts";
+import { FAILURE_KINDS } from "./failure.ts";
 import { HEADLESS_FILES, HEADLESS_INPUTS } from "./inputs.ts";
+import { LENS_REVIEW_FLAGS } from "./lens-review.ts";
 import { NDJSON_STABLE_FIELDS, NDJSON_STABLE_VERSION, NDJSON_VERSION } from "./ndjson.ts";
+import { PLAN_FLAGS } from "./plan.ts";
+import { RESEARCH_FLAGS } from "./research.ts";
 import { RESULT_SCHEMA_VERSION } from "./result.ts";
 
 /**
@@ -41,7 +46,8 @@ import { RESULT_SCHEMA_VERSION } from "./result.ts";
  * answer's shape (added/removed top-level fields); the caller's drift test
  * (#1306) reads this and re-derives the answer from the live constants.
  * v2 (#1326): every input with type/default/scope, and `files`.
- * Additive, no bump (docs/headless.md versioning rule): `resources` (#1325).
+ * Additive, no bump (docs/headless.md versioning rule): `resources` (#1325),
+ * `contracts.resultSchema.failureKinds` (#1367), the S6 verbs (#1021).
  */
 export const CAPABILITIES_VERSION = 2 as const;
 
@@ -61,6 +67,10 @@ export const HEADLESS_FEATURES = {
   handoffChannel: true,
   /** #1327 — `--restart` overrides the attention gate and clears `needs-human-attention`. */
   restartClearsAttention: true,
+  /** #1367 — the result's `failure` gives the reason behind its `cap` as stable fields. */
+  failureReason: true,
+  /** #1368 — the result's `usage.byRole` sums usage per role, failed dispatches included. */
+  usageByRole: true,
 } as const;
 
 export interface Capabilities {
@@ -69,7 +79,11 @@ export interface Capabilities {
   commit: string | null;
   contracts: {
     exitCodes: { version: number; values: typeof EXIT };
-    resultSchema: { version: number; caps: ReturnType<typeof capVocabulary> };
+    resultSchema: {
+      version: number;
+      caps: ReturnType<typeof capVocabulary>;
+      failureKinds: typeof FAILURE_KINDS;
+    };
     ndjson: {
       version: number;
       stable: { version: number; kinds: typeof NDJSON_STABLE_FIELDS };
@@ -77,6 +91,10 @@ export interface Capabilities {
   };
   verbs: {
     work: { flags: (typeof WORK_FLAGS)[number][] };
+    plan: { flags: (typeof PLAN_FLAGS)[number][] };
+    research: { flags: (typeof RESEARCH_FLAGS)[number][] };
+    "agents-md": { flags: (typeof AGENTS_MD_FLAGS)[number][] };
+    "lens-review": { flags: (typeof LENS_REVIEW_FLAGS)[number][] };
   };
   inputs: typeof HEADLESS_INPUTS;
   files: typeof HEADLESS_FILES;
@@ -97,7 +115,11 @@ export function buildCapabilities(installRoot: string = INSTALL_ROOT): Capabilit
     commit: readBuildCommit(installRoot),
     contracts: {
       exitCodes: { version: EXIT_CODE_VERSION, values: EXIT },
-      resultSchema: { version: RESULT_SCHEMA_VERSION, caps: capVocabulary() },
+      resultSchema: {
+        version: RESULT_SCHEMA_VERSION,
+        caps: capVocabulary(),
+        failureKinds: FAILURE_KINDS,
+      },
       ndjson: {
         version: NDJSON_VERSION,
         stable: { version: NDJSON_STABLE_VERSION, kinds: NDJSON_STABLE_FIELDS },
@@ -105,6 +127,10 @@ export function buildCapabilities(installRoot: string = INSTALL_ROOT): Capabilit
     },
     verbs: {
       work: { flags: [...WORK_FLAGS] },
+      plan: { flags: [...PLAN_FLAGS] },
+      research: { flags: [...RESEARCH_FLAGS] },
+      "agents-md": { flags: [...AGENTS_MD_FLAGS] },
+      "lens-review": { flags: [...LENS_REVIEW_FLAGS] },
     },
     inputs: HEADLESS_INPUTS,
     files: HEADLESS_FILES,

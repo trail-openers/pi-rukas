@@ -8,7 +8,6 @@
 import { notifyAgent } from "./agent-message.ts";
 import { trace } from "./trace.ts";
 import { runArtifactSweep } from "./work-driver-artifact-sweep.ts";
-import { checkAttentionLabel } from "./work-driver-attention.ts";
 import { checkpointCapedDispatch } from "./work-driver-cap-checkpoint.ts";
 import {
   type CycleContext,
@@ -21,6 +20,11 @@ import { enterCycle } from "./work-driver-cycle-entry.ts";
 import { parkAtDeadlineBoundary } from "./work-driver-deadline.ts";
 import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
+import {
+  noticeDirtyRootExemptReadFailure,
+  withDirtyRootExemptReadFailure,
+} from "./work-driver-dirty-root-exempt-notice.ts";
+import { DIRTY_ROOT_EXEMPT_FILE, readDirtyRootExempt } from "./work-driver-dirty-root-exempt.ts";
 import { reportFinalState } from "./work-driver-final-state.ts";
 import { recordHostHandoffOnCrash } from "./work-driver-handoff-channel.ts";
 import { interruptIfRequested, recordStepCrash } from "./work-driver-interrupt.ts";
@@ -46,17 +50,16 @@ import {
 import { reenterInterrupted } from "./work-driver-resume.ts";
 import { runStep } from "./work-driver-run-step.ts";
 import { interruptedAfter, interruptedByShutdown, sessionEnding } from "./work-driver-shutdown.ts";
+import { refuseAttentionLabelled, refuseInvalidState } from "./work-driver-state-guards.ts";
 import { routeStepOutcome } from "./work-driver-step-router.ts";
 import { deliverTerminalLine } from "./work-driver-terminal-delivery.ts";
 import { scratchDir, setupWorkspaceTmp, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import { runWorktreeSweep } from "./work-driver-worktree-sweep.ts";
 import * as workWidget from "./work-widget.ts";
-import { validateDiscriminants } from "./workflow-state-validate.ts";
 import { type WorkEvent, appendEvent } from "./workflow-state.ts";
 import {
   type WorkState,
   type WorkStep,
-  detectInconsistencies,
   initialState,
   persistCycle,
   readState,
@@ -92,6 +95,22 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
   }
   try {
     const cycleCtx = enterCycle(ctx);
+    // #1362 — the project's `.pi/dirty-root-exempt` list is read ONCE per cycle,
+    // before any step runs, and carried on the context for every consumer; see
+    // work-driver-dirty-root-exempt.ts for why once, and why the read never
+    // throws. Set only when absent: a resumed state or a test harness carrying
+    // its own list keeps it, so there is exactly one read point.
+    if (cycleCtx.dirtyRootExempt === undefined) {
+      const exempt = await readDirtyRootExempt(cycleCtx.repoRoot);
+      cycleCtx.dirtyRootExempt = exempt.entries;
+      // #1362 — a read that FAILED (not an absent file) is recorded, not just
+      // traced: `traceWarn` reaches the cycle log, the operator reads the
+      // handoff — and when the branch step then blocks on residue, every path it
+      // names was judged against the empty list this failure produced.
+      if (exempt.readFailed !== undefined) {
+        noticeDirtyRootExemptReadFailure(cycleCtx, exempt.readFailed);
+      }
+    }
     // #838 — the per-cycle deck header ("/work #N"): created when the cycle
     // starts, cleared on EVERY terminal path via the finally — merged,
     // handoff, park, halt, thrown error all unwind through it. A second
@@ -126,6 +145,15 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
   // #1090 — record this invocation's grant; a resume without the flag clears it.
   state = recordProtectedGrant(state, ctx.protectedGrant);
 
+  // #1362 — an exemption file that could not be read is carried into the first
+  // persist. `noticeDirtyRootExemptReadFailure` already wrote it when a state
+  // file existed; on a first run there was none to write into, and that helper
+  // must not create one (this function owns the first snapshot). Idempotent, so
+  // a resumed cycle whose file already carries the record is left byte-identical.
+  if (ctx.dirtyRootExemptReadFailed !== undefined) {
+    state = withDirtyRootExemptReadFailure(state, ctx.dirtyRootExemptReadFailed);
+  }
+
   // PR12 — surface a clear notify when state is already terminal and no --restart.
   if (state.pipelineState.status !== "running" && ctx.restart !== true) {
     const terminalStatus = state.pipelineState.status;
@@ -140,22 +168,11 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     return { started: false, reason: `already terminated as ${terminalStatus}` };
   }
 
-  // #408 — the driver has always WRITTEN `needs-human-attention` and never read
-  // it back, so /work on a handed-off issue quietly reran the whole pipeline
-  // and produced the same handoff again. Checked before any dispatch is paid
-  // for. `--restart` is the override: it already means "I revised the issue".
   {
-    const attention = await checkAttentionLabel(ctx.repoRoot, ctx.issue, {
-      restart: ctx.restart === true,
-      issues: ctx.issues,
-    });
-    if (attention.refuse && attention.message) {
-      notifyAgent(ctx.host, attention.message);
+    const refused = await refuseAttentionLabelled(ctx);
+    if (refused) {
       reportFinalState(ctx, state);
-      return { started: false, reason: "issue carries the needs-human-attention label" };
-    }
-    if (!attention.checked) {
-      trace(`work-driver: needs-human-attention check did not run for #${ctx.issue}`);
+      return { started: false, reason: refused };
     }
   }
 
@@ -221,30 +238,9 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     }
   }
 
-  // #533 — refuse on unrecognised discriminant in `running` state only.
-  if (state.pipelineState.status === "running") {
-    const unknowns = validateDiscriminants(state);
-    if (unknowns.length > 0) {
-      const detail = unknowns.map((u) => `  - ${u}`).join("\n");
-      trace(`work-driver: state discriminant validation failed for issue ${ctx.issue}:\n${detail}`);
-      notifyAgent(
-        ctx.host,
-        `pi-rukas /work driver halted on issue #${ctx.issue}: state file carries an unrecognised value.\n${detail}\nInspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh (your git work is unaffected; only the workflow tracker state is removed).`,
-      );
-      return { started: false, reason: "state-file discriminant validation failed" };
-    }
-  }
-
-  // Detect half-written state (resume hazard).
-  const inconsistencies = detectInconsistencies(state);
-  if (inconsistencies.length > 0) {
-    const detail = inconsistencies.join("\n  - ");
-    trace(`work-driver: state inconsistencies detected for issue ${ctx.issue}:\n  - ${detail}`);
-    notifyAgent(
-      ctx.host,
-      `pi-rukas /work driver halted on issue #${ctx.issue}: state-file inconsistencies detected.\n  - ${detail}\nInspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh (your git work is unaffected; only the workflow tracker state is removed).`,
-    );
-    return { started: false, reason: "state-file inconsistencies detected" };
+  {
+    const invalid = refuseInvalidState(ctx, state);
+    if (invalid) return { started: false, reason: invalid };
   }
 
   // Persist the initial state on first run so the user can see the file
@@ -311,7 +307,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       // is still a crash. An abort that makes the step throw is the interrupt.
       state = recordStepCrash(state, step, err);
       if (ctx.signal?.aborted === true) {
-        state = await interruptIfRequested(ctx, state);
+        state = await interruptIfRequested(ctx, state, step);
         break;
       }
       if (err instanceof DriverNotImplementedError) {
@@ -402,11 +398,11 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       await persistCycle(ctx, state);
       continue;
     }
-    // Headless S4 (#1024): an interrupt that fired during the step ends the
-    // cycle here, without routing. The step's events stay in the log (they
-    // happened); the router never sees its outcome, so no handoff follows.
+    // Headless S4 (#1024): an interrupt during the step ends the cycle here, unrouted, so
+    // no handoff follows. The step's events stay in the log; the interrupt names the step,
+    // so a cap it hit (the abort's doing) is not reported as the cycle's cap (#1371).
     if (ctx.signal?.aborted === true) {
-      state = await interruptIfRequested(ctx, state);
+      state = await interruptIfRequested(ctx, state, step);
       break;
     }
     // Route step outcome (work-driver-step-router.ts); `retry: true` means

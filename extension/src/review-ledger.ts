@@ -108,6 +108,15 @@ export interface LedgerEntry {
   carriedFrom?: string;
   /** #1176 round 2 \u2014 carried entries only: the trust assumption the row states (mainline changes merged in were not re-reviewed by this branch). */
   carryNote?: string;
+  /** #1360 — adversarial entries written from the `adversarial_loop` TOOL only:
+   * the base SHA the review resolved, and the head SHA it reviewed. Stored so
+   * an audit can see what range a row actually covers (the row's `patchId` is
+   * the working-tree identity against the mainline merge-base, which a narrowed
+   * `base` did not change). Absent on the /work driver's rows, which never ran
+   * the range check. */
+  reviewedBase?: string;
+  /** #1360 — see `reviewedBase`: the reviewed head SHA (a resolved 40-char OID). */
+  reviewedHead?: string;
 }
 
 interface LedgerFile {

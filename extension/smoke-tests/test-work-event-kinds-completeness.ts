@@ -236,6 +236,16 @@ const everyKindEvent: WorkEvent[] = [
   },
   { kind: "verify-full-status", at: 1, status: "success", ms: 100 },
   { kind: "verify-flake-recovered", at: 1, step: "develop" },
+  // #1240 — the consolidated verify skipped its duplicate run. Its kind must
+  // be in the fixture set or KNOWN_EVENT_KINDS reads as carrying a stale entry.
+  {
+    kind: "consolidated-verify-skipped",
+    at: 1,
+    step: "develop",
+    treeHash: "0".repeat(40),
+    worktree: "/tmp/wt-default",
+    workstreamCount: 1,
+  },
   { kind: "widening-scan", at: 1, findings: [] },
   {
     kind: "memory-write",
@@ -276,7 +286,17 @@ const everyKindEvent: WorkEvent[] = [
   { kind: "fence-recovery-started", at: 1, workstreamId: "a", owners: ["b"] },
   // S4a (#1162) — the interrupt record.
   { kind: "interrupted", at: 1, reason: "signal" },
-  { kind: "cycle-interrupted", at: 1, step: "lens-fix", reason: "quit", resumable: true },
+  {
+    kind: "cycle-interrupted",
+    at: 1,
+    step: "lens-fix",
+    reason: "quit",
+    // #1247 round 2 — a signal origin, not just `unknown`: the all-kinds pass
+    // asserts ZERO findings, so a tuple/re-validator that rejected a legal
+    // `signal:SIGTERM` would fail here instead of refusing real state files.
+    origin: "signal:SIGTERM",
+    resumable: true,
+  },
   {
     kind: "lens-residuals-post-failed",
     at: 1,
@@ -285,6 +305,17 @@ const everyKindEvent: WorkEvent[] = [
     reason: "residual-findings disclosure FAILED: x",
     issueFallback: "posted",
     detail: "https://example.invalid/issues/1#issuecomment-1",
+  },
+  {
+    // #1398 — the positive counterpart: a disclosure that DID reach the PR,
+    // keyed on the patch it describes. The draft-ready gate holds on this.
+    kind: "lens-residuals-posted",
+    at: 1,
+    round: 1,
+    prNumber: 7,
+    branch: "feature/issue-1398-x",
+    patchId: "3f2a9c1e0b7d4a58f6c1e0d9b8a7c6d5e4f3a2b1",
+    target: "pr",
   },
 ];
 

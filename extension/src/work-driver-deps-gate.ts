@@ -12,9 +12,15 @@
  * Fail-open: an unreadable location never blocks — the verify command runs
  * as it did before, and its own failure (plus `provisionDepsHint`) is the
  * backstop. A location whose ignore status `git check-ignore` cannot give is
- * NAMED as undetermined, never silently dropped: exit 0 = ignored (provisioning
- * would link it), exit 1 = not ignored (never linked), anything else = unknown.
+ * NAMED as undetermined, never silently dropped. Since #1394 the verdict comes
+ * from the ONE shared probe (`ignoredStatus` in `worktree-provision.ts`) that
+ * the provisioning path itself uses, computed once per candidate by
+ * `missingDepLocations` — this module used to carry its own `checkIgnoreStatus`
+ * with its own exit-code table and probe each candidate a second time, so the
+ * two could disagree about what "unknown" meant and disagree with provisioning
+ * too.
  */
+import { traceWarn } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { provisionDepsHint } from "./work-driver-deps-hint.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -30,46 +36,46 @@ export async function missingDepsFailure(
   cmd: string,
 ): Promise<string | undefined> {
   try {
-    const missing = await missingDepLocations(repoRoot, await packageDirsAt(repoRoot), cwd);
+    const { missing, faults } = await missingDepLocations(
+      repoRoot,
+      await packageDirsAt(repoRoot),
+      cwd,
+      execFn,
+    );
     const named: string[] = [];
     for (const m of missing) {
       // Only what provisioning links: a tree that is not gitignored is
       // never linked, so its absence is not a provisioning failure.
-      const status = await checkIgnoreStatus(execFn, repoRoot, m.rel);
-      if (status === "not-ignored") continue;
+      if (m.status === "not-ignored") continue;
       const base = `${m.rel} missing in ${cwd} (source: ${m.source})`;
+      // The verdict came from the shared probe, once. `unreadable` is the
+      // fourth state — `readdir` faulted, so the probe never ran — and it is
+      // named with its errno rather than reported as "missing".
       named.push(
-        status === "ignored"
+        m.status === "ignored"
           ? base
-          : `${base}; ignore status could not determine (git error: ${status.error})`,
+          : m.status === "git-error"
+            ? `${base}; ignore status could not determine (git check-ignore${m.detail ?? " reported a git error"})`
+            : `${base}; could not be inspected (${m.fault ?? "probe fault"}, ignore status unknown)`,
       );
     }
     if (named.length === 0) return undefined;
     return `verify command \`${cmd}\` not run — dependencies missing: ${named.join("; ")}${provisionDepsHint(state, cwd)}`;
-  } catch {
-    return undefined;
-  }
-}
-
-type IgnoreStatus = "ignored" | "not-ignored" | { error: string };
-
-/** `git check-ignore -q`: exit 0 ignored, exit 1 not ignored, anything else unknown. */
-async function checkIgnoreStatus(
-  execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  repoRoot: string,
-  rel: string,
-): Promise<IgnoreStatus> {
-  try {
-    await execFn("git", {
-      cwd: repoRoot,
-      argv: ["check-ignore", "-q", "--", rel],
-      maxBuffer: 64 * 1024,
-    });
-    return "ignored";
   } catch (err) {
-    const code = (err as { code?: unknown })?.code;
-    if (code === 1) return "not-ignored";
-    const detail = (err as Error)?.message ?? String(err);
-    return { error: `${typeof code === "number" ? `exit ${code}: ` : ""}${detail.slice(0, 160)}` };
+    // Fail-open is the contract: an unreadable location never blocks, the
+    // verify command runs, and its own failure plus `provisionDepsHint` is the
+    // backstop. What must NOT stay is silence. The bare `return undefined` made
+    // "the gate threw" indistinguishable from "the gate found nothing to
+    // report", so a cycle could run a verify command into its 10-minute
+    // timeout with no clue that the gate meant to fail it fast had been
+    // disabled by a filesystem fault. Same verdict, now audible.
+    const detail =
+      typeof (err as Error)?.message === "string" && (err as Error).message.trim() !== ""
+        ? (err as Error).message
+        : String(err);
+    traceWarn(
+      `worktree: deps gate could not run for ${cwd} — verify command \`${cmd}\` proceeds unchecked (${detail.slice(0, 200)})`,
+    );
+    return undefined;
   }
 }

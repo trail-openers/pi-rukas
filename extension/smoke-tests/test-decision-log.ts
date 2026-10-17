@@ -13,15 +13,21 @@
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { MAX_EVIDENCE_FILE_BYTES, verifyEvidence } from "../src/decision-evidence.ts";
-import { REDACTED, decisionLogPath, redactSecrets } from "../src/decision-log.ts";
+import { LOG_STRING_CHARS, REDACTED, decisionLogPath, redactSecrets } from "../src/decision-log.ts";
 import { decide } from "../src/decision-seam.ts";
 import { looksLikeSecret } from "../src/vipune.ts";
 import {
+  PROBE_KEY,
+  STUB_MODEL,
   envKey,
   fixtureSpec,
+  keyAtBoundary,
+  leaksKey,
+  llmReply,
   makeAssert,
   registerFixture,
   stubBackend,
+  stubRegistry,
   tmpDir,
 } from "./lib/decision-fixtures.ts";
 
@@ -226,6 +232,127 @@ const lines = (f: string) =>
   assert(
     !(await verifyEvidence(vouched, "short", undefined)).passed,
     "a trivially short quote is not evidence",
+  );
+}
+
+// ----------------------------------- redaction runs on the WHOLE text, then clips
+
+{
+  // The order is the whole point of #1393: clip-then-redact leaves a credential
+  // FRAGMENT that no pattern matches, and a plain `includes(secret)` check then
+  // passes while the secret is still readable. `leaksKey` asks whether ANY
+  // 12-char window of the key survived, which is the only sound question.
+  const root = tmpDir("clip-order");
+  const clipped = registerFixture(
+    fixtureSpec({ id: "fixture-clip", fields: { tail: { max: 600, from: "end" } } }),
+  );
+  process.env[envKey("PI_ENSEMBLE_DECISION_MODE", "fixture-clip")] = "enforce";
+  // A key placed so that a 600-char clip from the END would cut into it: the
+  // head of the credential survives a clip-before-redaction bug.
+  const tail = keyAtBoundary(PROBE_KEY, 600, 10, "start");
+  const b = stubBackend({ ok: true, answer: "ok" });
+  await decide(
+    clipped,
+    { state: { tail }, question: "q", rule: "ok" },
+    {
+      repoRoot: root,
+      backends: [b],
+    },
+  );
+  const raw = readFileSync(path.join(root, ".pi", "decisions.jsonl"), "utf8");
+  assert(
+    !leaksKey(raw, PROBE_KEY),
+    "no 12-char window of a key that straddles the clip boundary reaches the log",
+  );
+
+  // The #1393 redaction-vs-clip order is only half the claim: a redaction that
+  // runs on an UNBOUNDED string is a regex scan over however much text a caller
+  // supplied. A 200 KB single string must still land as ONE bounded line, not a
+  // multi-hundred-kilobyte one — the log's growth must be bounded by the field
+  // bound, not by the input length.
+  const giantRoot = tmpDir("giant");
+  await decide(
+    seam,
+    { state: { blob: "z".repeat(200_000) }, question: "q", rule: "ok" },
+    { repoRoot: giantRoot, backends: [stubBackend({ ok: true, answer: "ok" })] },
+  );
+  const giant = readFileSync(path.join(giantRoot, ".pi", "decisions.jsonl"), "utf8");
+  assert(
+    giant.split("\n").filter(Boolean).length === 1 &&
+      Buffer.byteLength(giant, "utf8") < 8 * LOG_STRING_CHARS,
+    `a 200 KB state string produces one bounded record of ${Buffer.byteLength(giant, "utf8")} bytes, not one of 200 KB`,
+  );
+
+  // Same placement at the seam-wide bound for an UNDECLARED field, which used
+  // to be redacted only in the log line — so the record looked clean while the
+  // backend saw the credential.
+  const undeclared = registerFixture(fixtureSpec({ id: "fixture-undeclared" }));
+  process.env[envKey("PI_ENSEMBLE_DECISION_MODE", "fixture-undeclared")] = "enforce";
+  let sent = "";
+  const { registry } = stubRegistry({
+    llm: (ctx) => {
+      sent = `${ctx.systemPrompt}${String(ctx.messages[0]?.content ?? "")}`;
+      return llmReply(JSON.stringify({ label: "ok", justification: "x" }));
+    },
+  });
+  await decide(
+    undeclared,
+    { state: { anything: `failed: ${PROBE_KEY}` }, question: "q", rule: "ok" },
+    { repoRoot: root, modelRegistry: registry, model: STUB_MODEL },
+  );
+  assert(
+    sent.length > 0 && !leaksKey(sent, PROBE_KEY),
+    "an undeclared field's credential never reaches the backend (#1393: redaction is centralised, not per-caller)",
+  );
+
+  // Nested strings too — the recursive path, not just the top level.
+  let sent2 = "";
+  const { registry: reg2 } = stubRegistry({
+    llm: (ctx) => {
+      sent2 = `${ctx.systemPrompt}${String(ctx.messages[0]?.content ?? "")}`;
+      return llmReply(JSON.stringify({ label: "ok", justification: "x" }));
+    },
+  });
+  await decide(
+    undeclared,
+    { state: { a: { b: [`nested ${PROBE_KEY}`] } }, question: "q", rule: "ok" },
+    { repoRoot: root, modelRegistry: reg2, model: STUB_MODEL },
+  );
+  assert(
+    sent2.length > 0 && !leaksKey(sent2, PROBE_KEY),
+    "a credential nested in the state never reaches the backend either",
+  );
+}
+
+// ----------------------------------- the state is bounded BEFORE the budget check
+
+{
+  // Pre-#1393 a 600-char `lastOutput` was serialised whole, then regex-scanned
+  // whole, then handed to `truncateToBudget`, which re-serialised per candidate.
+  // A state far past the record's byte bound must still produce exactly one
+  // record, inside the bound, with the reason — and must not be abstained for
+  // being "oversized" when the seam's own bounds make it small.
+  const root = tmpDir("bounded-input");
+  const wide = registerFixture(fixtureSpec({ id: "fixture-wide", fields: { doc: { max: 500 } } }));
+  process.env[envKey("PI_ENSEMBLE_DECISION_MODE", "fixture-wide")] = "enforce";
+  const b = stubBackend({ ok: true, answer: "ok" });
+  const huge = "y".repeat(200_000);
+  const d = await decide(
+    wide,
+    { state: { doc: huge }, question: "q", rule: "ok" },
+    {
+      repoRoot: root,
+      backends: [b],
+    },
+  );
+  const f = path.join(root, ".pi", "decisions.jsonl");
+  const recs = lines(f).map((l) => JSON.parse(l) as Record<string, unknown>);
+  assert(b.calls === 1 && d.answer === "ok", "a huge bounded field still reaches the backend once");
+  assert(
+    recs.length === 1 &&
+      String(recs[0]?.state).length < 2_000 &&
+      Buffer.byteLength(readFileSync(f, "utf8"), "utf8") < 16_384,
+    "the record is bounded by construction, so no re-serialise pass is needed to keep it small",
   );
 }
 

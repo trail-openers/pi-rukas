@@ -10,10 +10,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type JobKind, childHandles, jobs } from "./async-jobs-registry.ts";
 import { reset as resetDeck } from "./dispatch-deck.ts";
+import { exitOrigin } from "./exit-cause.ts";
 import { incrementNotice } from "./notice-counter.ts";
 import * as pendingJobs from "./pending-jobs-signal.ts";
 import { markSessionShutdown } from "./session-shutdown.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 
 /** The narrow host surface startJob / dispatch need: steer delivery only. */
 export interface DispatchHost {
@@ -25,38 +26,71 @@ export interface DispatchHost {
  * message during a streaming turn (delivered before the next LLM call) or
  * directly if the agent is idle.
  * #916 SLICE B: counts the delivery for the live view's "N new notices"
- * badge (reset on view open).
+ * badge (reset on view open). The badge counts an ATTEMPTED delivery: the
+ * increment runs before the send, so a host whose send throws still badges.
+ *
+ * #1389: the catch used to be a debug-gated `trace()` only, so a dropped report
+ * was indistinguishable from a delivered one — to every caller and to the
+ * pending count, which is how "0" came to be published for a report nobody
+ * received. Pi makes this worse than it looks: the `ExtensionAPI` binding turns
+ * a rejection from `AgentSession.prompt` into `runner.emitError` (agent-message
+ * .ts), so the common failure never reaches a caller's try/catch either. Two
+ * things now survive the swallow: an unconditional WARN (`traceWarn`, not
+ * `PI_ENSEMBLE_DEBUG`-gated — an operator must see a report that changed an
+ * outcome), and the return value — `true` when the send did not throw, `false`
+ * when the host rejected it. The caller that made this send reads its own
+ * result; no out-of-band tally is needed to answer a question this call
+ * already knows the answer to.
+ * Still never throws: `deliverStandIn` / `deliverOrStandIn` and the batch
+ * settle are documented never to throw and depend on it.
  */
-export function deliverReport(host: DispatchHost, report: string): void {
+export function deliverReport(host: DispatchHost, report: string): boolean {
   incrementNotice();
   try {
     host.sendUserMessage(report, { deliverAs: "steer" });
+    return true;
   } catch (err) {
-    trace(`async report delivery failed: ${(err as Error).message}`);
+    traceWarn(`async report delivery failed: ${String(err)}`);
+    return false;
   }
 }
 
 /**
  * The one stand-in path for a settle that could not hand its report to Pi: deliver
  * `standIn(failure)` (naming the job or batch) so the caller's releaseAfter never drops
- * a count without a report. Never throws — a stand-in that also fails is traced with
- * both errors, so the caller can still release.
+ * a count without a report. Never throws — a stand-in that also fails is reported
+ * with both errors (unconditionally: it is the last thing this path can say), so
+ * the caller can still release.
+ *
+ * #1389 — it REPORTS whether the stand-in reached the host. `deliverReport` cannot
+ * throw, so a caller that must decide whether anything was handed over has no
+ * try/catch to write; without a return value the batch settle could not tell "the
+ * PM has been told something" from "nothing reached the PM and the count is about
+ * to print 0". `false` is what the batch tail's last-resort WARN reads.
  */
 export function deliverStandIn(
   host: DispatchHost,
   label: string,
   failure: unknown,
   standIn: (failure: unknown) => string,
-): void {
+): boolean {
   try {
-    deliverReport(host, standIn(failure));
+    return deliverReport(host, standIn(failure));
   } catch (err) {
-    trace(`${label} stand-in report also failed: ${String(err)} (original: ${String(failure)})`);
+    traceWarn(
+      `${label} stand-in report also failed: ${String(err)} (original: ${String(failure)})`,
+    );
+    return false;
   }
 }
 
 /**
  * Deliver `build()`; if building throws, fall back to the stand-in. Never throws.
+ *
+ * #1389: the build-failure line is a `traceWarn`, not a debug-gated `trace` — a
+ * report the PM was promised and did not get is a fault, not a diagnostic, and
+ * the criterion this closes is that no path publishes "0" with nothing handed
+ * over.
  */
 export function deliverOrStandIn(
   host: DispatchHost,
@@ -70,7 +104,7 @@ export function deliverOrStandIn(
     return;
   } catch (err) {
     failure = err;
-    trace(`${label} report failed: ${String(err)}`);
+    traceWarn(`${label} report failed: ${String(err)}`);
   }
   deliverStandIn(host, label, failure, standIn);
 }
@@ -196,10 +230,14 @@ export function registerAsyncJobsLifecycle(pi: ExtensionAPI): void {
     // FIRST, and synchronously: the /work driver reads this flag when its
     // aborted child comes back, and must find the reason already there — or
     // it blames the step for the abort below and starts a handoff it cannot
-    // finish (session-shutdown.ts).
-    markSessionShutdown(event?.reason ?? "not given");
-    // Name what ended and why Pi says it ended: the bare count left an
-    // operator with "aborted 1 in-flight async jobs" and no cause.
+    // finish (session-shutdown.ts). The origin is what actually closed the
+    // session (a signal, a dead stdin, or nothing observable): Pi's `reason`
+    // is only `quit`/`reload` and does not say where the quit came from.
+    const origin = exitOrigin();
+    markSessionShutdown(event?.reason ?? "not given", origin);
+    // Name what ended, why Pi says it ended, and where it came from: the bare
+    // count and the bare reason left an operator with "aborted 1 in-flight
+    // async jobs (reason: quit)" and no cause.
     const labels = [...jobs.values()].map((j) => j.label).join(", ");
     let n = 0;
     try {
@@ -211,7 +249,7 @@ export function registerAsyncJobsLifecycle(pi: ExtensionAPI): void {
     }
     if (n > 0) {
       trace(
-        `session_shutdown (reason: ${event?.reason ?? "not given"}): aborted ${n} in-flight async jobs — ${labels}`,
+        `session_shutdown (reason: ${event?.reason ?? "not given"}, origin: ${origin}): aborted ${n} in-flight async jobs — ${labels}`,
       );
     }
   });

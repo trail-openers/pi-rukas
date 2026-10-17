@@ -21,7 +21,8 @@ import {
   isFailClosed,
   seamContractViolations,
 } from "../src/decision-seam-registry.ts";
-import { fixtureSpec, makeAssert } from "./lib/decision-fixtures.ts";
+import { boundedState } from "../src/decision-seam.ts";
+import { fixtureSpec, makeAssert, registerFixture } from "./lib/decision-fixtures.ts";
 
 const { assert, state } = makeAssert();
 const SRC = path.resolve(import.meta.dirname, "..", "src");
@@ -45,6 +46,9 @@ for (const [key, spec] of entries) {
   }
   assert(
     // A shadow seam's owner fires decide() through shadowDecide (decision-shadow.ts).
+    // There is no caller-less exemption: main's #1395 deleted the last caller of
+    // the retired S4 security seam, and a seam nothing in `src/` fires is dead
+    // config rather than a seam awaiting a caller.
     new RegExp(`(?:\\bdecide|\\bshadowDecide)\\(\\s*"${key}"`).test(owner),
     `seam ${key}: its owner ${spec.owner} calls decide("${key}") or shadowDecide("${key}")`,
   );
@@ -142,6 +146,77 @@ assert(
   isFailClosed(SEAMS["policy-judge"]),
   "the policy judge is fail-closed (it defaults to unstated)",
 );
+
+// 4 — the per-field bounds (#1393) are part of the contract: a typo'd bound
+// makes the seam rule-only rather than leaving a model-visible text unbounded.
+assert(
+  seamContractViolations(fixtureSpec({ fields: { tail: { max: 600, from: "end" } } })).length === 0,
+  "a well-formed field bound is accepted",
+);
+assert(
+  seamContractViolations(fixtureSpec({ fields: { tail: { max: 600 } } })).length === 0,
+  "a bound with no direction is accepted (it defaults to the head)",
+);
+rejects({ fields: { tail: { max: 0 } } }, /positive max/, "a field bound with a zero max");
+rejects({ fields: { tail: { max: -5 } } }, /positive max/, "a field bound with a negative max");
+rejects(
+  { fields: { tail: {} as { max: number } } },
+  /positive max/,
+  "a field bound with no max at all",
+);
+rejects(
+  { fields: { tail: { max: 10, from: "middle" as "start" } } },
+  /unknown direction/,
+  "a field bound with an unknown direction",
+);
+// The shadow seams must actually declare bounds, or the fix is inert: a
+// caller handing over a whole provider message would get the record-wide bound
+// only, with no per-field bound on the seam.
+assert(
+  Object.keys(SEAMS["failure-cause"].fields ?? {}).length >= 2 &&
+    SEAMS["failure-cause"].fields?.lastOutput?.from === "end",
+  "failure-cause bounds providerMessage and lastOutput, keeping the TAIL of the output",
+);
+// The open-point bound, asserted through a fixture seam rather than a production
+// registry entry: the S4 seam main's #1395 left caller-less is gone from the
+// registry, and a per-field bound is a property of `boundedState` reading the
+// seam's `fields` map — not of one entry. The fixture is a CALLER-CANDIDATE
+// shape (`shadowExactRuleMatch` may pass any seam's `state`), so it is registered
+// through the shared fixture helper rather than asserted as a production seam.
+{
+  const spec = fixtureSpec({
+    id: "fixture-open-point",
+    kind: "bool",
+    labels: { true: "t", false: "f" },
+    ruleDefault: "true",
+    passing: ["false"],
+    composition: "may-add-only",
+    // The point's own text only — never the rest of the issue.
+    fields: { openPoint: { max: 1000 } },
+  });
+  const seam = registerFixture(spec) as string;
+  assert(
+    seam === "fixture-open-point" && seamContractViolations(spec).length === 0,
+    "the open-point fixture seam is a valid registry entry",
+  );
+  // The fixture used to be `HEADMARKER` + 1 200 `p`, which the fail-closed net now takes
+  // for exactly the reason it exists: a single credential-class run of 1 210 characters is
+  // indistinguishable from a key body to a window the scan did not reach. That is the right
+  // behaviour and the wrong fixture for THIS claim, which is that a field bound clips to
+  // the head the seam declares without redacting anything. Words do that job, and they are
+  // what an open point actually is — prose, not a blob.
+  const point = `HEADMARKER ${Array.from({ length: 300 }, (_, i) => `word${i}`).join(" ")}`;
+  const bounded = boundedState({ openPoint: point }, spec);
+  const kept = String((bounded.state as { openPoint?: string }).openPoint ?? "");
+  assert(
+    kept.length <= 1000 && kept.startsWith("HEADMARKER"),
+    `an openPoint field bound keeps the head the seam declares (${kept.length} chars, head kept=${kept.startsWith("HEADMARKER")})`,
+  );
+  assert(
+    bounded.count === 0,
+    `a plain openPoint is bounded without being redacted (${bounded.count})`,
+  );
+}
 
 console.log(`\nexit ${state.exit}`);
 process.exit(state.exit);

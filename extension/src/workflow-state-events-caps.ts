@@ -108,6 +108,13 @@ export type WorkCapLiteral =
   // empty-diff guard APPROVED on it, merging code unreviewed. Halting
   // is cheap; approving on the absence of evidence is not.
   | "lens-diff-unreadable"
+  // #1398 — the review was about to run again after the PR had been marked
+  // ready, and putting the PR back to a draft failed (or the cycle's
+  // `pr ready` attempts are spent). Continuing would run a review on a PR
+  // anyone could merge while it is under review — the exact window #1292
+  // closes — so the cycle parks with the reason rather than reviewing a
+  // mergeable PR.
+  | "draft-rearm-failed"
   | "existing-pr-detected"
   // #844 — the ops-fallback branch path's post-dispatch merge-base check
   // failed: the branch ops created does not sit on the driver-resolved
@@ -195,4 +202,25 @@ export type WorkCapLiteral =
   // so the handoff posts before the caller kills the process (the tehas `docker stop` shape: a mid-step kill, no
   // handoff, state left `running`). Emitted at the step boundary only — no
   // mid-step hard kill.
-  | "deadline";
+  | "deadline"
+  // #1403 — a develop child's ENGINE DIED mid-pass (`the engine stopped
+  // unexpectedly (exit code N)`, no `errorStop`, no `killCause`) and its
+  // worktree was left with uncommitted work that its pass never committed.
+  // Pre-fix the step reported `step-completed … recovered: false` and the
+  // dead pass's fix stayed off the branch entirely (tehas #238: `M libexec/stop`,
+  // 56 insertions, reviewed by adversarial round 3 and then dropped).
+  //
+  // NOT a template and NOT `step-failed:develop`: that prefix terminalizes as
+  // `aborted` and reads as "the dispatch failed", which is the shape the
+  // router's transient-retry branch owns. This cap says something narrower and
+  // different — the child died, and the driver can NAME the paths it left
+  // behind — so the cycle parks as a handoff with the leftover list rather
+  // than advancing on a tree whose state it does not know.
+  | "develop-child-crash"
+  // #1396 (round 3) — the branch step's same-issue residue pass could not read
+  // `git worktree list` (the listing is bounded since #1396, so a hang is a
+  // rejection). The pass cannot tell whether a same-issue tree holds work, and
+  // "could not look" must not degrade to "nothing to clean" — the branch step
+  // parks with the git error as evidence rather than removing nothing and
+  // reporting a clean pass.
+  | "worktree-listing-unreadable";

@@ -1,11 +1,18 @@
 import { GLOBAL_KEY, type ModelChoice, getOverride } from "./model-config.ts";
-import { ROLE_NAMES, type RoleName } from "./roles.ts";
+import { type RoleName, SUBAGENT_ROLE_NAMES } from "./roles.ts";
 
 /**
  * Model selection for spawned specialists.
  *
  * Resolution order (first hit wins):
  *   1. Per-call override   — `model` field on a DispatchSpec (string)
+ *   1b. Per-lens env vars  — `PI_ENSEMBLE_MODEL_LENS_<LENS>` plus the optional
+ *                            `PI_ENSEMBLE_PROVIDER_LENS_<LENS>`, for a lens
+ *                            child of the code review (`lens` set: the lens
+ *                            name, e.g. `SECURITY`). Lets the six lenses,
+ *                            which all run as one role, use different models.
+ *                            Same pairing rule as the per-role vars.
+ *                            Applies to `code-review-specialist` only.
  *   2. /ensemble-model     — per-role choice saved to ensemble-models.json
  *                            (or its all-subagents default). Carries both
  *                            `provider` and `model` for custom OpenAI-
@@ -37,7 +44,14 @@ import { ROLE_NAMES, type RoleName } from "./roles.ts";
 export interface ResolvedModelChoice {
   provider: string | undefined;
   model: string | undefined;
-  source: "spec" | "config" | "config-default" | "role-env" | "subagent-env" | "default";
+  source:
+    | "spec"
+    | "lens-env"
+    | "config"
+    | "config-default"
+    | "role-env"
+    | "subagent-env"
+    | "default";
   envVar?: string;
   configKey?: string;
 }
@@ -49,6 +63,16 @@ function roleProviderEnvKey(role: string): string {
   return `PI_ENSEMBLE_PROVIDER_${role.toUpperCase().replaceAll("-", "_")}`;
 }
 
+const LENS_ROLE = "code-review-specialist";
+
+/** `lens` is a lens name (`ERROR_HANDLING`) or its tag form (`error-handling`). */
+function lensEnvKey(lens: string): string {
+  return `PI_ENSEMBLE_MODEL_LENS_${lens.toUpperCase().replaceAll("-", "_")}`;
+}
+function lensProviderEnvKey(lens: string): string {
+  return `PI_ENSEMBLE_PROVIDER_LENS_${lens.toUpperCase().replaceAll("-", "_")}`;
+}
+
 function envValue(key: string): string | undefined {
   const raw = process.env[key];
   if (!raw) return undefined;
@@ -56,13 +80,27 @@ function envValue(key: string): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-export function resolveModel(role: string, override?: string): ResolvedModelChoice {
+export function resolveModel(role: string, override?: string, lens?: string): ResolvedModelChoice {
   if (override && override.trim().length > 0) {
     return {
       provider: undefined,
       model: override.trim(),
       source: "spec",
     };
+  }
+  // Only a lens child of the code review has a lens tier; any other role
+  // ignores `lens`, so it can never borrow a lens's model.
+  if (lens && role === LENS_ROLE) {
+    const lensKey = lensEnvKey(lens);
+    const lensModel = envValue(lensKey);
+    if (lensModel) {
+      return {
+        provider: envValue(lensProviderEnvKey(lens)),
+        model: lensModel,
+        source: "lens-env",
+        envVar: lensKey,
+      };
+    }
   }
   const cfg = getOverride(role);
   if (cfg.choice) {
@@ -98,7 +136,7 @@ export function resolveModel(role: string, override?: string): ResolvedModelChoi
 
 /** Snapshot of the current resolution for every role — used by /ensemble-debug. */
 export function modelConfigSnapshot(): Array<{ role: RoleName; choice: ResolvedModelChoice }> {
-  return ROLE_NAMES.filter((r) => r !== "project-manager").map((role) => ({
+  return SUBAGENT_ROLE_NAMES.map((role) => ({
     role,
     choice: resolveModel(role),
   }));

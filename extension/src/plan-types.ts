@@ -10,6 +10,7 @@
  */
 import type { FilingFailure } from "./plan-filing.ts";
 import type { GapGateLoopCapReason } from "./plan-gaps.ts";
+import type { PlanProvenance } from "./plan-provenance.ts";
 
 export const PLAN_TYPES = ["bug", "feature", "epic", "chore", "spike"] as const;
 export type PlanType = (typeof PLAN_TYPES)[number];
@@ -84,6 +85,12 @@ export interface PlanResult {
   priorContext: { source: string; fact: string }[];
   filed: boolean;
   issueUrl?: string;
+  /**
+   * #1377: the filed issue's number, when the forge response carried one.
+   * Callers used to parse it out of `issueUrl`; the driver parses it by code so
+   * they do not have to. Absent on a dry run or when the URL carried no number.
+   */
+  issueNumber?: number;
   /**
    * #1132: why investigators read the local checkout instead of origin/<default>
    * (a failed fetch or base tree). Absent when the run read the base. Disclosed
@@ -170,6 +177,14 @@ export interface PlanResult {
   reviewedSpecChanged?: { reason: string };
   /** True when the body was compacted to fit the forge's 65,536-char limit. */
   compacted?: boolean;
+  /**
+   * #1383: the durable file under `.pi/work-state/plan-dropped/` holding the FULL dropped
+   * list when the bounded `## Dropped investigation items` section omitted part
+   * of it. The body's omission line names the same file. Absent when nothing
+   * was omitted or the write failed (read-only / full checkout), in which case
+   * the omission line states counts and bounds and promises no location.
+   */
+  droppedListFile?: string;
   /** Per-phase wall-clock durations, always present on a completed run. */
   timings?: PlanPhaseTiming[];
 }
@@ -184,6 +199,19 @@ export interface PlanDriverInput {
    * reviewed spec verbatim, but only when the cached title + body still hash to it.
    */
   reviewedDigest?: string;
+  /**
+   * #1377: labels to create the filed issue with, in the one forge call. Validated
+   * in plan-tool.ts BEFORE any dispatch; verified to exist on the repo before
+   * filing (see plan-labels.ts). Empty or absent → today's behaviour exactly.
+   */
+  labels?: string[];
+  /**
+   * #1377: the caller's provenance — an italic line as the body's FIRST line and
+   * an HTML-comment marker as its LAST line. Appended by code after drafting
+   * (plan-provenance.ts), never by an LLM stage, and reserved out of the body
+   * budget so compaction cannot trim it.
+   */
+  provenance?: PlanProvenance;
   /** Internal: epic recursion depth. Never agent-settable. */
   depth?: number;
 }

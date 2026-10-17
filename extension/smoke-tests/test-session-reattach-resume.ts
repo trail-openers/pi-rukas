@@ -13,20 +13,18 @@
  * the test with canned outputs.
  */
 
-import {
-  attemptReattach,
-} from "../src/work-driver-resume-reattach.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { attemptReattach } from "../src/work-driver-resume-reattach.ts";
 import {
   beginDispatch,
   clearDispatch,
   resolveReattach,
   sessionReattachEnabled,
 } from "../src/work-driver-resume.ts";
+import { classifyRunningState, clearForResume } from "../src/work-driver-resume.ts";
 import { initialState } from "../src/workflow-state.ts";
-import {
-  classifyRunningState,
-  clearForResume,
-} from "../src/work-driver-resume.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -41,15 +39,11 @@ function assert(cond: boolean, msg: string) {
 // Test 1: flag off → resolveReattach returns re-dispatch
 // ---------------------------------------------------------------------------
 {
-  delete process.env.PI_ENSEMBLE_SESSION_REATTACH;
+  Reflect.deleteProperty(process.env, "PI_ENSEMBLE_SESSION_REATTACH");
   const state = initialState(123);
   const verdict = classifyRunningState({
     ...state,
     owner: { pid: 99999, at: Date.now() - 60000 },
-    pipelineState: {
-      ...state.pipelineState,
-      currentStep: "explore",
-    },
     eventLog: [
       {
         kind: "dispatch-started",
@@ -108,7 +102,8 @@ function assert(cond: boolean, msg: string) {
   process.env.PI_ENSEMBLE_SESSION_REATTACH = "1";
   const mockSpawn = async () => ({
     exitCode: 0,
-    stdout: '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Work done — summary of changes."}]}}',
+    stdout:
+      '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Work done — summary of changes."}]}}',
     stderr: "",
   });
   const result = await attemptReattach(
@@ -120,10 +115,7 @@ function assert(cond: boolean, msg: string) {
   );
   assert("result" in result && result.reattach, "injected spawn → reattach succeeds");
   if ("result" in result && result.reattach) {
-    assert(
-      result.result.ok === true,
-      "reattached result is ok=true",
-    );
+    assert(result.result.ok === true, "reattached result is ok=true");
     assert(
       result.result.text.includes("Work done"),
       "reattached result carries the assistant text",
@@ -144,17 +136,16 @@ function assert(cond: boolean, msg: string) {
     300_000,
     mockFail,
   );
-  assert(
-    "reattach" in result && !result.reattach,
-    "non-zero exit → reattach fails (re-dispatch)",
-  );
+  assert("reattach" in result && !result.reattach, "non-zero exit → reattach fails (re-dispatch)");
 }
 
 // ---------------------------------------------------------------------------
 // Test 5: injected spawnReattach throws → re-dispatch
 // ---------------------------------------------------------------------------
 {
-  const mockThrow = async () => { throw new Error("spawn failed"); };
+  const mockThrow = async () => {
+    throw new Error("spawn failed");
+  };
   const result = await attemptReattach(
     "/tmp/test-transcript.json",
     "explore",
@@ -162,10 +153,7 @@ function assert(cond: boolean, msg: string) {
     300_000,
     mockThrow,
   );
-  assert(
-    "reattach" in result && !result.reattach,
-    "spawn throws → reattach fails (re-dispatch)",
-  );
+  assert("reattach" in result && !result.reattach, "spawn throws → reattach fails (re-dispatch)");
 }
 
 // ---------------------------------------------------------------------------
@@ -235,10 +223,13 @@ function assert(cond: boolean, msg: string) {
 // Test 9: beginDispatch records transcriptPath in dispatch-started
 // ---------------------------------------------------------------------------
 {
-  let state = initialState(123);
+  // #1365: a per-run repo root. A fixed /tmp path is shared across runs and
+  // accounts (it fails with EACCES when another user created it).
+  const repoRoot = mkdtempSync(path.join(tmpdir(), "reattach-repo-"));
+  const state = initialState(123);
   state.pipelineState.currentStep = "explore";
   const begun = await beginDispatch(
-    { repoRoot: "/tmp/test-repo" },
+    { repoRoot },
     state,
     "explore",
     "explore",
@@ -246,6 +237,7 @@ function assert(cond: boolean, msg: string) {
     Date.now(),
     "/tmp/test-transcript.json",
   );
+  rmSync(repoRoot, { recursive: true, force: true });
   const startedEvt = begun.state.eventLog.find((e) => e.kind === "dispatch-started");
   assert(startedEvt !== undefined, "beginDispatch emits dispatch-started event");
   if (startedEvt && "transcriptPath" in startedEvt) {
@@ -264,7 +256,7 @@ function assert(cond: boolean, msg: string) {
 // Test 10: clearDispatch removes the jobId from inFlightJobIds
 // ---------------------------------------------------------------------------
 {
-  let state = initialState(123);
+  const state = initialState(123);
   state.pipelineState.currentStep = "explore";
   state.pipelineState.inFlightJobIds = ["j1", "j2"];
   const cleared = clearDispatch(state, "j1");
@@ -272,14 +264,11 @@ function assert(cond: boolean, msg: string) {
     cleared.pipelineState.inFlightJobIds.length === 1,
     "clearDispatch removes the correct jobId",
   );
-  assert(
-    cleared.pipelineState.inFlightJobIds[0] === "j2",
-    "only the specified jobId is removed",
-  );
+  assert(cleared.pipelineState.inFlightJobIds[0] === "j2", "only the specified jobId is removed");
 }
 
 // Restore the env for the rest of the suite.
-delete process.env.PI_ENSEMBLE_SESSION_REATTACH;
+Reflect.deleteProperty(process.env, "PI_ENSEMBLE_SESSION_REATTACH");
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

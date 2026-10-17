@@ -108,8 +108,8 @@ async function spawnSpecialistInner(
   const transcriptPath = transcriptPathFor(spec.role, runId, opts.seq, opts.tag);
   await fs.mkdir(path.dirname(transcriptPath), { recursive: true });
 
-  // Resolve which model this child should run on (spec > role env > global env > Pi default).
-  const modelChoice = resolveModel(spec.role, spec.model);
+  // Resolve which model this child should run on (spec > lens env > role > global env > Pi default).
+  const modelChoice = resolveModel(spec.role, spec.model, spec.lens);
 
   // Subagent-permission plumbing: per-spawn Unix socket + broker. The
   // subagent's pi-rukas (forwarded below via --extension and gated by

@@ -8,14 +8,19 @@
  *
  * vipune maintains the answer: `retrieval_count` and `last_retrieved_at` are
  * real columns, kept up to date on every read that does not pass
- * `--no-touch`. Since v0.15.0 `search --json` returns them per hit (upstream
- * randomm/vipune#179, closed) — but only for rows a query matched, and no
- * command aggregates a whole project.
+ * `--no-touch`. `vipune list --json` returns both per row, and `search --json`
+ * returns them per hit (upstream randomm/vipune#179, closed) — but no command
+ * aggregates a whole project, which is what the operator's condition needs.
  *
- * So this reads the SQLite file directly, **read-only**, and computes what the
- * CLI will not. That is a deliberate and bounded exception to "go through the
- * seam": the seam spawns a binary that does not answer this question, and opening
- * the database `mode=ro` cannot alter a byte of it.
+ * So this reads the SQLite file directly, **read-only**, and computes the
+ * aggregates the CLI will not: rows by status and type, total and max
+ * retrievals, the never-retrieved count, median content length, and the newest
+ * candidate ids with their types. Per-row `last_retrieved_at` is not among
+ * them — the panel is an aggregate view, and the per-row age lives in
+ * `vipune list --json`. That direct read is a deliberate and bounded exception
+ * to "go through the seam": the seam spawns a binary that does not answer the
+ * aggregate question, and opening the database `mode=ro` cannot alter a byte
+ * of it.
  *
  * Measured on the live store for `randomm/pi-rukas`: 111 rows (103 active,
  * 2 candidate, 6 superseded), 1186 retrievals, max 31, and only 8 rows never

@@ -43,6 +43,17 @@
  *   4. Structural canary: the post-develop consolidated verify STILL refuses
  *      on a dirty root (the late gate must not regress or be relaxed), passes
  *      on a clean root, and shares the same exclusion set as the branch step.
+ *
+ * #1362 adds the opt-in `.pi/dirty-root-exempt` list, and this file is where
+ * its two hardest repo-root cases are pinned against real git:
+ *
+ *   5. A tool's own local file (`.claude/settings.local.json`, UNTRACKED)
+ *      blocks the branch step with no config — the bug — and blocks nothing
+ *      once the project lists `.claude/`. The built-in set is untouched: the
+ *      same fixture with no config still blocks, so the exemption is additive.
+ *   6. The exemption is UNTRACKED-only. The very same path, as a MODIFIED
+ *      tracked file, still blocks with the list in place: hiding real
+ *      uncommitted source is exactly what the Settlement forbids.
  */
 
 import { execFile } from "node:child_process";
@@ -52,8 +63,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { DispatchResult } from "../src/types.ts";
 import { runBranch } from "../src/work-driver-branch-develop.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
 import { runConsolidatedVerify } from "../src/work-driver-consolidated-verify.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { realExec } from "./lib/exec-fake.ts";
 
@@ -81,7 +92,21 @@ const gitOut = async (cwd: string, args: string[]): Promise<string> =>
 const STRAY_REL = path.join("extension", "src", "work-driver-converge.ts");
 
 /** A minimal driver context for runBranch against the real-git fixture. */
-function branchCtx(repo: string, execFn: ExecFn, dispatchFn?: () => Promise<DispatchResult>) {
+/**
+ * A minimal driver context for runBranch against the real-git fixture.
+ *
+ * `dirtyRootExempt` mirrors what `runWorkDriver` stamps on the real cycle
+ * context before any step runs (work-driver.ts): the branch step receives the
+ * list on its context and never reads the file itself, so a fixture that wants
+ * the exemption to apply has to carry it. Omitted = no config file, which is
+ * the byte-identical case.
+ */
+function branchCtx(
+  repo: string,
+  execFn: ExecFn,
+  dispatchFn?: () => Promise<DispatchResult>,
+  dirtyRootExempt?: readonly string[],
+) {
   return {
     // biome-ignore lint/suspicious/noExplicitAny: driver fixture
     host: {} as any,
@@ -93,6 +118,7 @@ function branchCtx(repo: string, execFn: ExecFn, dispatchFn?: () => Promise<Disp
     labelOverride: undefined,
     verifyExecFn: execFn,
     dispatchFn,
+    dirtyRootExempt,
   } as unknown as DriverContext;
 }
 

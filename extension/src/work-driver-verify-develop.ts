@@ -11,17 +11,23 @@
 
 import type { CommentEvidence } from "./comment-evidence.ts";
 import { COMMENT_RETENTION_PATHS } from "./comment-retention.ts";
+import { DEFAULT_GIT_TIMEOUT_MS } from "./git-range.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
   doctrineProsePathsIn,
   explainProtectedPaths,
-  porcelainPaths,
   protectedPathsEnabled,
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
 import { ungrantedProtectedPaths } from "./work-driver-protected-grant.ts";
+import {
+  changedPaths,
+  readCommittedProtectedPaths,
+  readProtectedStatusPaths,
+  renameSourcePaths,
+} from "./work-driver-protected-paths-read.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
@@ -37,13 +43,15 @@ import {
 } from "./work-driver-verify-develop-gates.ts";
 import { normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
 import { fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
 
 import type { WorkState } from "./workflow-state.ts";
 
-/** PR338 — validate a git SHA before shell interpolation. */
+/** PR338 — validate a git SHA before shell interpolation. A type guard, so a
+ *  caller that has checked one does not re-cast it to satisfy the diff reader. */
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;
-function isValidSha(s: string | undefined) {
+function isValidSha(s: string | undefined): s is string {
   return typeof s === "string" && VALID_SHA_RE.test(s);
 }
 
@@ -73,6 +81,13 @@ export async function verifyDevelopOutcome(
   // at base AND the verify command's failures are the gate's only ones, so
   // the caller can park with verify-baseline-red instead of verify-failed.
   onBaselineRedOnly?: () => void,
+  // #1240 — out-parameter carrying the identity that justified skipping the
+  // consolidated run (the single workstream's tree, already verified green).
+  // The caller appends the `consolidated-verify-skipped` EVENT from it: a
+  // note would be the one kind of note that never survives to the state
+  // file, and the event lives where the caller appends so the log stays
+  // append-only.
+  onConsolidatedVerifySkipped?: (skipped: AlreadyVerifiedTree) => void,
 ): Promise<void> {
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
@@ -91,6 +106,13 @@ export async function verifyDevelopOutcome(
   // protected-path gate below sees the whole change set rather than one
   // worktree's slice of it.
   const touchedPaths: string[] = [];
+  // #1378 — the paths a rename moved AWAY from, across all worktrees. They reach
+  // ONLY the protected-path check below: `touchedPaths` (above) and
+  // `changedPathsByWorkstream` feed the frontend-only verify skip, the
+  // falsily-green check and the #285 scope/fanout gate, none of which may see a
+  // source the change no longer contains — `git mv .github/workflows/ci.yml
+  // src/ci.yml` must halt, and must not classify as CSS-only.
+  const protectedOnlyPaths: string[] = [];
   // #285 scope/fanout map + #453 uncommitted-only count (suppresses the
   // hollow-diff message when per-worktree failures already explain it).
   let assessedCount = 0;
@@ -146,39 +168,49 @@ export async function verifyDevelopOutcome(
       declaredSourceByWorkstream.set(wsId, true); // uncertain → treat as source
     }
   }
+  // #1378 — resolved ONCE for the whole run: consulted in three places below, and a
+  // harness that flipped the switch mid-loop would gate one worktree and not the next.
+  const protectedGateOn = protectedPathsEnabled();
   for (const [id, cwd] of Object.entries(worktrees)) {
     let hasCommits = false;
     let hasUncommitted = false;
     let assessed = false;
-    try {
-      // `--untracked-files=all`: without it a wholly untracked directory is
-      // one `?? dir/` entry, and the protected-path gate would see a directory
-      // rather than the files it contains (#1090).
-      // maxBuffer: `-uall` lists every untracked file, so a large untracked set
-      // exceeds 1 MiB; an overflow must not silently skip the protected-path
-      // inspection of that worktree (see the catch below).
-      const { stdout } = await execFn("git status --porcelain --untracked-files=all", {
-        cwd,
-        maxBuffer: 64 * 1024 * 1024,
-      });
-      assessed = true;
-      if (stdout.trim().length > 0) hasUncommitted = true;
-      const statusPaths = porcelainPaths(stdout);
-      touchedPaths.push(...statusPaths);
-      const ownSet = changedPathsByWorkstream.get(id);
-      if (ownSet) for (const file of statusPaths) ownSet.add(normaliseScopePath(file));
-    } catch (err) {
-      const msg = (err as Error).message?.slice(0, 200) ?? String(err).slice(0, 200);
+    // #1378 — one NUL-separated read serves both consumers, and each half keeps
+    // its own semantics. The protected-path gate wants BOTH sides of every rename
+    // and a name that is not C-quoted (`-z`); the change-detection half (hasUncommitted,
+    // `assessed`, the #679 frontend-only union) keeps the pre-fix shape exactly —
+    // rename destinations only, `assessed` set only when git answered.
+    // `--untracked-files=all`: without it a wholly untracked directory is one
+    // `?? dir/` entry, and the protected-path gate would see a directory rather
+    // than the files it contains (#1090).
+    // maxBuffer: `-uall` lists every untracked file, so a large untracked set
+    // exceeds 1 MiB; an overflow must not silently skip the protected-path
+    // inspection of that worktree (see the fail-closed branch below).
+    const status = await readProtectedStatusPaths(execFn, cwd);
+    if (!status.ok) {
       // #1090 — with the protected-path gate on, an unreadable status means this
       // worktree's writes are never inspected: fail closed, do not pass with a note.
-      if (protectedPathsEnabled()) {
+      if (protectedGateOn) {
         failures.push(
-          `git status failed in worktree "${id}" (${cwd}) — its changed paths cannot be checked against the protected-path gate: ${msg}`,
+          `git status failed in worktree "${id}" (${cwd}) — its changed paths cannot be checked against the protected-path gate: ${status.unreadable}`,
         );
       } else {
-        notes.push(`git status failed in ${id} (${msg.slice(0, 100)})`);
+        notes.push(`git status failed in ${id} (${status.unreadable.slice(0, 100)})`);
       }
       gitReadFailedAnyWorktree = true;
+    } else {
+      assessed = true;
+      // Non-empty output is "has uncommitted work", the pre-fix `stdout.trim()`
+      // test: a rename whose destination is empty string is still a change.
+      if (status.paths.some((p) => p.trim().length > 0)) hasUncommitted = true;
+      const ownSet = changedPathsByWorkstream.get(id);
+      for (const file of status.paths) {
+        // `porcelainPaths` never emitted a blank path, so the change-detection
+        // union keeps only non-blank ones; blanks are the rename-pairing probe.
+        if (file.trim().length === 0) continue;
+        touchedPaths.push(file);
+        if (ownSet) ownSet.add(normaliseScopePath(file));
+      }
     }
     // #725 — diff against THIS workstream's effective base, not the cycle-
     // global baseSha: a dependent's worktree is created from its dependency's
@@ -187,34 +219,52 @@ export async function verifyDevelopOutcome(
     const effBase = effectiveBaseFor(id);
     if (isValidSha(effBase)) {
       try {
-        const { stdout } = await execFn(`git rev-list --count ${effBase}..HEAD`, {
+        // Same bound as the two `-z` reads (#1378): this one used to have none, so a
+        // wedged object store hung the whole develop step. Argv form like every
+        // other git call here — a ref is data, never shell input — which is what
+        // `test-git-range-1153.ts` requires of this file.
+        const { stdout } = await execFn("git", {
+          argv: ["rev-list", "--count", `${effBase}..HEAD`],
           cwd,
           maxBuffer: 64 * 1024,
+          timeout: DEFAULT_GIT_TIMEOUT_MS,
         });
         if (Number.parseInt(stdout.trim(), 10) > 0) hasCommits = true;
         assessed = true;
       } catch (err) {
-        // #725 — an absent baseSha in this worktree's history is not evidence
-        // either way; but a base the code itself resolved and git could not
-        // read IS a degraded measurement — name the ref and error (#384).
-        if (effBase !== baseSha) {
-          notes.push(
-            `rev-list failed against effective base ${effBase} in ${id} — commit count unavailable, the worktree may be undercounted as changed (${(err as Error).message?.slice(0, 100)})`,
-          );
-        }
-      }
-      try {
-        const { stdout } = await execFn(`git diff --name-only ${effBase}..HEAD`, {
-          cwd,
-          maxBuffer: 4 * 1024 * 1024,
-        });
-        const diffPaths = stdout.split("\n").filter((l) => l.trim().length > 0);
-        touchedPaths.push(...diffPaths);
-        const ownSet = changedPathsByWorkstream.get(id);
-        if (ownSet) for (const file of diffPaths) ownSet.add(normaliseScopePath(file));
-      } catch {
-        // Same as above — an absent baseSha in this worktree is not evidence.
+        // #1378 — the old `effBase !== baseSha` guard made this note conditional,
+        // so the common case (`effBase === baseSha`) dropped the failure silently
+        // and `assessed` stayed true on a worktree whose commits were never
+        // counted. A base the code resolved that git could not read is a degraded
+        // measurement either way (#384), and the flag below stops a CSS-only union
+        // of the survivors skipping the verify chain.
+        notes.push(
+          `rev-list failed against base ${effBase} in ${id} — commit count unavailable, the worktree may be undercounted as changed (${(err as Error).message?.slice(0, 100)})`,
+        );
         gitReadFailedAnyWorktree = true;
+      }
+      const committed = await readCommittedProtectedPaths(execFn, cwd, effBase);
+      if (!committed.ok) {
+        // #1378 — fail-closed on the same reasoning as the status read: a rename or
+        // a C-quoted name is exactly what this read exists to catch, and a
+        // `catch {}` that only set the flag let an unreadable range pass the gate
+        // as "nothing protected changed". The escape hatch keeps the old behaviour.
+        if (protectedGateOn) {
+          failures.push(
+            `git diff failed in worktree "${id}" (${cwd}) — its committed paths cannot be checked against the protected-path gate: ${committed.unreadable}`,
+          );
+        } else {
+          notes.push(`git diff failed in ${id} (${committed.unreadable.slice(0, 100)})`);
+        }
+        gitReadFailedAnyWorktree = true;
+      } else {
+        const ownSet = changedPathsByWorkstream.get(id);
+        for (const file of changedPaths(committed.targets)) {
+          touchedPaths.push(file);
+          if (ownSet) ownSet.add(normaliseScopePath(file));
+        }
+        // Rename sources stay out of the union above (#1378).
+        protectedOnlyPaths.push(...renameSourcePaths(committed.targets));
       }
     }
     if (assessed) assessedCount++;
@@ -274,8 +324,10 @@ export async function verifyDevelopOutcome(
   // Policy prose (AGENTS.md, CLAUDE.md) is deliberately NOT halted here — it
   // is neutralised instead, by reading doctrine at baseSha in the merge gate —
   // so that this repo's own "docs ship with the PR" rule keeps working.
-  if (protectedPathsEnabled()) {
-    const protectedHits = protectedPathsIn(touchedPaths);
+  if (protectedGateOn) {
+    // #1378 — the union carries the rename sources; the #285/#1012/#679 gates
+    // above consumed `touchedPaths` alone and are byte-identical to before.
+    const protectedHits = protectedPathsIn([...touchedPaths, ...protectedOnlyPaths]);
     // #1090 — only the operator's invocation grant (ctx), never the state file.
     const ungranted = ungrantedProtectedPaths(protectedHits, ctx.protectedGrant);
     if (ungranted.length > 0) {
@@ -285,7 +337,7 @@ export async function verifyDevelopOutcome(
     if (granted.length > 0) {
       notes.push(`operator grant (--allow-protected) admitted ${granted.join(", ")}`);
     }
-    const prose = doctrineProsePathsIn(touchedPaths);
+    const prose = doctrineProsePathsIn([...touchedPaths, ...protectedOnlyPaths]);
     if (prose.length > 0) {
       notes.push(
         `develop changed policy prose (${prose.join(", ")}) — allowed, and inert for this cycle: merge authority is read at the base commit, so a grant added here cannot take effect until an operator merges it`,
@@ -412,6 +464,7 @@ export async function verifyDevelopOutcome(
         onBaselineAttributed: () => {
           attributed = true;
         },
+        ...(onConsolidatedVerifySkipped !== undefined ? { onConsolidatedVerifySkipped } : {}),
       });
       // #1349 — only a base that fails the way the change does excuses it.
       verifyCmdEnd = before === 0 && attributed ? failures.length : undefined;
