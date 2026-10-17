@@ -11,10 +11,10 @@
  * was asking one of them of the wrong set:
  *
  *  - *Has anybody taken this group?* `owners`. Written in the same synchronous
- *    step that writes `inFlight`, on both claim paths. `claimed` cannot answer
- *    it (the drain marks a group claimed before it dispatches anything) and
- *    `inFlight` cannot either (a finished group has left it but must still not
- *    be re-scanned).
+ *    step that writes `inFlight`, on both claim paths. A separate `claimed`
+ *    set tried to answer it and could not (it was stamped before a group
+ *    dispatched anything), and `inFlight` cannot either (a finished group has
+ *    left it but must still not be re-scanned).
  *  - *Is this group still somebody's business?* `deferred` plus `resolved`.
  *    A group stays in the wait list for its whole life — including while it
  *    runs — so a group waiting behind it can see that the overlapping claim is

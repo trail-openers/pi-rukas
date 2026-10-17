@@ -14,8 +14,11 @@
  * Escape hatch: PI_ENSEMBLE_CROSS_GROUP_CONFLICTS=0 disables the check.
  *
  * #1101 — `claimWaitsForIssues` is the boundary between the two kinds of
- * sibling this registry sees. A claim held by ANOTHER process is a genuinely
- * uncoordinated second opinion: nothing in this invocation can wait it down, so
+ * sibling this registry sees, and `setSiblingClaimWait` is what opens that
+ * boundary: the queue declares the issue set it coordinates before any group
+ * starts (see `runGroupedIssues` in work-entry.ts) and clears it on every exit
+ * path. A claim held by ANOTHER process is a genuinely uncoordinated second
+ * opinion: nothing in this invocation can wait it down, so
  * today's immediate `cross-group-conflict` park is correct and unchanged. A
  * claim held by THIS process belongs to a sibling group of the same queue, which
  * the queue can hold back until that sibling settles — parking it here is the
@@ -59,7 +62,22 @@ const _STALE_MS = 3_600_000; // 1 hour — generous: a /work cycle rarely exceed
  */
 let siblingWaitIssues: Set<number> | null = null;
 
-/** Declare (or with `null`, clear) which issues are same-process siblings. */
+/**
+ * Declare (or with `null`, clear) which issues are same-process siblings.
+ *
+ * #1101 fix-round — until this had no caller the whole sibling filter was
+ * inert: `siblingWaitIssues` stayed `null`, so `claimWaitsForIssues` answered
+ * `false` for every claim and an in-invocation sibling's plan-time claim parked
+ * the dependent at plan with `cross-group-conflict`, which is precisely the
+ * dispatch the queue's ordering edge exists to prevent. Its caller is
+ * `runGroupedIssues`, which sets the full invocation issue set before workers
+ * start and clears it in a `finally`.
+ *
+ * Module-level state, like the registry file it filters: one /work queue per
+ * process is the assumption the rest of this module already makes (`PID` is a
+ * module constant), and a second concurrent queue would see the other queue's
+ * groups as siblings of its own — which is the same answer, not a wrong one.
+ */
 export function setSiblingClaimWait(issues: Iterable<number> | null): void {
   siblingWaitIssues = issues === null ? null : new Set(issues);
 }
@@ -73,8 +91,28 @@ export function claimWaitsForIssues(issue: number, pid: number): boolean {
 }
 
 /**
+ * The sibling set currently in force, for the tests that have to prove the
+ * filter is LIVE rather than merely installed.
+ *
+ * `readClaims` is the production reader and it is what the wiring must fool, so
+ * asserting through it is right — but a filter that always answered "sibling"
+ * would satisfy that too. This is the negative half: `null` outside a queue,
+ * the invocation's issues inside one. Test-only; no production caller reads
+ * what a caller just wrote.
+ */
+export function siblingClaimWaitSnapshot(): number[] {
+  return siblingWaitIssues === null ? [] : [...siblingWaitIssues];
+}
+
+/**
  * Whether the cross-group conflict check is enabled.
  * Override: `PI_ENSEMBLE_CROSS_GROUP_CONFLICTS=0`.
+ *
+ * #1101 fix-round — this is the check that reads the registry, so it is also
+ * the switch that makes the sibling filter load-bearing. When it is disabled
+ * there is nothing to wait down: the caller does not park on a conflict at all,
+ * so hiding a sibling's claim from it changes nothing except what `readClaims`
+ * reports. `readClaims` stays on this switch for that reason.
  */
 export function crossGroupConflictsEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS;

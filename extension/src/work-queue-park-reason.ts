@@ -37,6 +37,23 @@ export const BUILD_RESIDUE_SUFFIX = "build-residue";
  * that walks in expecting `cap <cycle-cap>` + a step to inspect will send the
  * operator to a diff that was never written. `isQueueLevelPark` is the single
  * test for that, shared so the two places cannot drift.
+ *
+ * #1101 fix-round — `cross-group-conflict` was deliberately left out of this
+ * list on the reasoning that only the queue's *sighting* of it produces no
+ * state file, and that `work-queue-cap.ts` distinguishes the two by route.
+ * Under the sibling filter that reasoning is now backwards: `readClaims` hides
+ * every same-process sibling's claim, so the plan-time check can no longer
+ * raise `cross-group-conflict` for an in-invocation pair at all — the only
+ * route left that writes it is `waitCapFor`, i.e. the queue. Listing it here is
+ * #1101 fix-round — `cross-group-conflict` shares its name with the reactive
+ * plan-time check, which raises it from inside a cycle that HAD dispatched, so
+ * the name alone cannot answer the question the renderer asks and the bare word
+ * must not earn the never-dispatched treatment: that cycle has a diff to read.
+ * The queue's own route (`waitCapFor`) always writes an
+ * `in-flight sibling(s) …` detail, and no reactive reason carries that text —
+ * which is the provenance `QUEUE_SIDE_CONFLICT` reads. Keeping it out of the
+ * name list below is what lets `parkReason`'s state-file guard and the
+ * `at <step>` suffix stay correct for the cycle-side sighting.
  */
 export const QUEUE_PARK_REASONS = [
   "dependency-parked",
@@ -45,16 +62,21 @@ export const QUEUE_PARK_REASONS = [
 ] as const;
 
 /**
+ * The queue's own `cross-group-conflict`, recognised by the detail only the
+ * queue writes (`waitCapFor`'s `in-flight sibling(s) …` clause).
+ */
+const QUEUE_SIDE_CONFLICT = /\bcap cross-group-conflict\b.*in-flight sibling\(s\)/;
+
+/**
  * Was this reason raised by the queue about a group it never dispatched?
  *
- * `cross-group-conflict` is deliberately NOT in the list: the same cap name is
- * raised by the reactive plan-time check, which runs INSIDE a cycle that had
- * already dispatched. Only the queue-level sighting of it produces no state
- * file, and `work-queue-cap.ts` distinguishes those by route, not by name — so
- * this predicate stays honest by naming only the reasons no cycle ever raises.
+ * `cross-group-conflict` is the one name with a cycle-side twin, so it is
+ * classified by provenance through `QUEUE_SIDE_CONFLICT` rather than by the
+ * bare word: a plan-time collision inside a cycle that ran keeps its step.
  */
 export function isQueueLevelPark(reason: string | undefined): boolean {
   if (!reason) return false;
+  if (QUEUE_SIDE_CONFLICT.test(reason)) return true;
   return QUEUE_PARK_REASONS.some((cap) => new RegExp(`\\bcap ${cap}\\b`).test(reason));
 }
 

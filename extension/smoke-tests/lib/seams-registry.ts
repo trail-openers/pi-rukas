@@ -455,4 +455,30 @@ export const SEAMS: Seam[] = [
     },
     canary: { symbol: "redactUnscannedRuns", importer: "decision-log.ts" },
   },
+  {
+    // #1101 fix-round — the path-claim registry. Registered because the issue
+    // shipped a declared, documented, never-called half of it (`setSiblingClaimWait`
+    // and the `claimWaitsForIssues` filter it drives) — the exact shape this file
+    // exists to make visible. The remaining exports are all wired from the plan
+    // step (`work-driver-plan.ts` reads the registry and registers claims) and
+    // from the terminal steps that release them.
+    file: "work-driver-path-claims.ts",
+    pending: {},
+    testOnly: {
+      // Read by the plan step's conflict path and by the terminal steps; exported
+      // so those callers batch one disk read across the workstreams rather than
+      // one per cycle.
+      readClaims: "#1101 — batched read; work-driver-plan.ts + test-work-driver-cross-group-conflicts.ts",
+      checkCrossGroupClaims: "#571 — the async entry to the overlap check; test-asserted",
+      checkCrossGroupClaimsSync: "#571 — the pure core the batched read feeds; test-asserted",
+      registerClaim: "#571 — registers a plan-declared claim; test-asserted",
+      claimWaitsForIssues: "#1101 — the sibling filter readClaims consults; test-asserted",
+      // The negative control for the sibling filter: `readClaims` is the
+      // production reader and asserting only through it could not tell "filter
+      // works" from "filter always says sibling". No production caller reads
+      // back what its own setter just wrote.
+      siblingClaimWaitSnapshot: "#1101 — test-work-entry-queue-wiring.ts",
+    },
+    canary: { symbol: "setSiblingClaimWait", importer: "work-entry-queue.ts" },
+  },
 ];
