@@ -55,7 +55,8 @@
  *          changes shape, or it becomes doctrine nobody can falsify.
  *        • BOTH removed (listener gone AND read → `false`) — B1 reddens with B2 and
  *          C. That pair is what makes B1 falsifiable by the read: it reddens
- *          precisely when the listener cannot carry it.
+ *          precisely when no mechanism can carry it. Measured matrix (three
+ *          mechanisms — `end`, `close`, the read) is in the B block below.
  *        • the `end` LISTENER removed — **C is the only red case**, and B2
  *          STAYS GREEN. B2 passed the old header's claim that it falsified the
  *          listener, and the reason is this module's own read: with the listener
@@ -224,15 +225,26 @@ const IMPORT = `import { armExitCause, exitOrigin, recordExitCauseForTesting } f
 //     `readableEnded`/`ended`/`endEmitted`; 1.3.13 sets none of those and leaves
 //     only `readable === false` with `readableDidRead`, which appears one tick
 //     after `end`. `stdinReachedEof()` is the disjunction that holds on both.
-// Mutation matrix, measured on BOTH runtimes (so the earlier "B1 is the only red
-// case for the read" claim, inherited from a shape neither runtime fully supports,
-// is corrected rather than repeated):
-//   • read stubbed to `false`, listener intact — B1 and B2 stay green: the
-//     listener carries them. That is the point of the listener, not a gap in it.
-//   • `end` listener removed, read intact — B2 stays green and C reddens.
-//   • `end` listener removed AND read stubbed — B1 reddens along with B2 and C:
-//     B1 falsifies the read exactly when the listener cannot carry it, which is
-//     the property the case was written to hold.
+// Mutation matrix, measured on BOTH runtimes by removing mechanisms from
+// `exit-cause.ts` and running the file in full (so the earlier "B1 is the only
+// red case for the read" claim, inherited from a shape neither runtime fully
+// supports, is corrected rather than repeated). Three mechanisms carry the EOF:
+// the `end` listener, the `close` listener, and the stream read.
+//   • read stubbed to `false`, both listeners intact — nothing reddens: a
+//     listener has already written the origin, so no case can falsify the read
+//     on its own. That is the point of the listeners, not a gap in them.
+//   • the `end` listener removed, read + `close` intact — on 1.3.13 B2 and C
+//     redden; on 1.4.3 only C does. B2 never falsifies either mechanism alone.
+//   • `close` removed alone — nothing reddens on either runtime: `end` already
+//     recorded. `close` is redundancy for the ordering the read cannot cover.
+//   • BOTH listeners removed, read intact — same as above (B2,C on 1.3.13; C on
+//     1.4.3): the read alone carries B2, which is why B2 cannot falsify it.
+//   • ALL THREE removed — **B1 reddens along with B2 and C**, on both runtimes.
+//     That is the pair that makes B1 falsifiable: it dies exactly when nothing
+//     can carry the EOF, and survives each single-mechanism removal because
+//     another mechanism covers it. B1's job is the shutdown hook's read instant,
+//     not the attribution of which mechanism answered — the FLAGS line it prints
+//     is diagnosis for a human, never an assertion.
 // ---------------------------------------------------------------------------
 {
   const script = `${IMPORT}armExitCause();
