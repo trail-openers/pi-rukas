@@ -23,8 +23,14 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { reviewCapMs } from "./review-budget.ts";
 
-const REVIEW_CAP_MS = 90 * 60 * 1000; // 90 minutes
+// #1429 — this file used to carry its own `const REVIEW_CAP_MS = 90 * 60 *
+// 1000`, a second copy of the driver's ceiling that no knob reached. It is
+// gone deliberately: `reviewCapMs()` in work-driver-context.ts is now the only
+// place this ceiling is stated, so the tool's answer, the tool description and
+// the driver's own budget cannot drift apart again.
+
 // Hard cap on distinct keys. A long PM session that called check_review_cap
 // for many issues would otherwise grow the Map unbounded. 100 is well above
 // realistic usage (concurrent /work cycles are rare; each adds one key) and
@@ -89,6 +95,9 @@ interface CheckResult {
  */
 export function checkReviewCap(key: string, opts: { reset?: boolean } = {}): CheckResult {
   const now = Date.now();
+  // Resolved per call, so the operator's PI_ENSEMBLE_REVIEW_CAP_MS applies to
+  // a check made mid-cycle rather than being frozen at module load.
+  const capMs = reviewCapMs();
   // Validate before any state mutation — invalid keys must not pollute the
   // map. Empty/long keys are almost always a misuse (PM sending a payload
   // instead of an identifier). Return ok=true with a clear diagnostic so
@@ -99,7 +108,7 @@ export function checkReviewCap(key: string, opts: { reset?: boolean } = {}): Che
       key,
       startedAt: now,
       elapsedMs: 0,
-      capMs: REVIEW_CAP_MS,
+      capMs,
       reset: false,
       message: `Invalid cap key (${key.length === 0 ? "empty" : `${key.length} chars; max ${MAX_KEY_LENGTH}`}) — pass a short identifier like "issue-42". Timer not started; cap not enforced for this call.`,
     };
@@ -112,24 +121,24 @@ export function checkReviewCap(key: string, opts: { reset?: boolean } = {}): Che
       key,
       startedAt: now,
       elapsedMs: 0,
-      capMs: REVIEW_CAP_MS,
+      capMs,
       reset: true,
-      message: `Started review wall-clock timer for "${key}" — cap is ${REVIEW_CAP_MS / 60_000} minutes.`,
+      message: `Started review wall-clock timer for "${key}" — cap is ${capMs / 60_000} minutes.`,
     };
   }
   const startedAt = caps.get(key) ?? now;
   const elapsedMs = now - startedAt;
-  const ok = elapsedMs <= REVIEW_CAP_MS;
+  const ok = elapsedMs <= capMs;
   return {
     ok,
     key,
     startedAt,
     elapsedMs,
-    capMs: REVIEW_CAP_MS,
+    capMs,
     reset: false,
     message: ok
-      ? `Within cap: ${Math.floor(elapsedMs / 60_000)}m elapsed of ${REVIEW_CAP_MS / 60_000}m budget.`
-      : `Cap exceeded: ${Math.floor(elapsedMs / 60_000)}m elapsed (cap is ${REVIEW_CAP_MS / 60_000}m). Halt the fix loop and escalate to the user per Step 7 doctrine.`,
+      ? `Within cap: ${Math.floor(elapsedMs / 60_000)}m elapsed of ${capMs / 60_000}m budget.`
+      : `Cap exceeded: ${Math.floor(elapsedMs / 60_000)}m elapsed (cap is ${capMs / 60_000}m). Halt the fix loop and escalate to the user per Step 7 doctrine.`,
   };
 }
 
@@ -138,7 +147,11 @@ export function registerCheckReviewCapTool(pi: ExtensionAPI) {
     name: "check_review_cap",
     label: "Check Step 7 Wall-Clock Cap",
     description:
-      "Check whether the 90-minute wall-clock cap for a /work Step 7 fix loop has been exceeded. Call with a per-loop key (typically `issue-<N>` or `pr-<N>`) on first entry to Step 7 with `reset: true` to start the timer, then before each new round in 7f WITHOUT `reset` to check elapsed. Returns `{ok: false, ...}` when 90 minutes have elapsed since the timer started — halt the loop and escalate to the user. Returns `{ok: true, ...}` otherwise.",
+      // #1429 — the advertised number follows the configured ceiling, so the
+      // tool no longer tells the agent "90 minutes" while enforcing something
+      // else. `registerTool` runs once at session start, so this reflects the
+      // environment as the operator set it for this session.
+      `Check whether the ${reviewCapMs() / 60_000}-minute wall-clock cap for a /work Step 7 fix loop has been exceeded. Call with a per-loop key (typically \`issue-<N>\` or \`pr-<N>\`) on first entry to Step 7 with \`reset: true\` to start the timer, then before each new round in 7f WITHOUT \`reset\` to check elapsed. Returns \`{ok: false, ...}\` when ${reviewCapMs() / 60_000} minutes have elapsed since the timer started — halt the loop and escalate to the user. Returns \`{ok: true, ...}\` otherwise.`,
     parameters: Type.Object({
       key: Type.String({
         description:
