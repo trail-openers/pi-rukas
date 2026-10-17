@@ -72,7 +72,17 @@ export type LifecycleKind =
    * the handler still knows which workstream and what it left behind — so
    * the console never reads `develop done` over a dead pass.
    */
-  | "step-notice";
+  | "step-notice"
+  /**
+   * #1415 — the driver's own verify gate, announced while it runs. The
+   * step-boundary lines bracket the STEP; a develop step that dispatches for
+   * 19 minutes and then verifies for 22 showed one `started` and one
+   * `finished` with 22 minutes of nothing between them (tehas cycle 261), so
+   * an operator watching a live cycle could not tell the gate from a hang.
+   * These two are the gate's own pair, emitted before and after the exec.
+   */
+  | "verify-started"
+  | "verify-completed";
 
 export interface LifecycleDetails {
   kind: LifecycleKind;
@@ -144,6 +154,31 @@ export interface LifecycleDetails {
    * unchanged.
    */
   issue?: number;
+  /**
+   * #1415 — the verify command, on the `verify-*` kinds only. Truncated for
+   * display by the formatter; the full command lives on the event-log entry.
+   */
+  command?: string;
+  /**
+   * #1415 — what the gate ran against (`"consolidated"` or a worktree
+   * basename), on the `verify-*` kinds only. Without it two `verify-completed
+   * · success` lines from one develop round — the per-worktree leg and the
+   * consolidated probe — are the same line.
+   */
+  target?: string;
+  /**
+   * #1415 — which tier of the project's gate this run is (`"full"`,
+   * `"fast"`, `"full-second-tier"`). Optional: a caller that does not classify
+   * its command leaves it absent rather than guessing.
+   */
+  tier?: string;
+  /**
+   * #1415 — the run's verdict, on `verify-completed` only. `timeout` is kept
+   * distinct from `failure`: a run killed at its bound judged nothing (#1324).
+   */
+  status?: "success" | "failure" | "skipped" | "timeout";
+  /** #1415 — the verdict came from a previous passing run, not a new exec. */
+  reused?: boolean;
 }
 
 /**
@@ -367,6 +402,59 @@ export function emitStepRetry(
  */
 export function emitStepNotice(step: string, message: string, issue?: number): void {
   emit({ kind: "step-notice", issue, jobId: step, label: step, reason: message });
+}
+
+/**
+ * #1415 — the driver's verify gate is about to execute `command`. Emitted
+ * BEFORE the exec so the console carries a line for the whole duration of a
+ * multi-minute gate, not only after it returns.
+ *
+ * `jobId` is the step: the gate has no dispatch of its own (it is driver
+ * code, not a child), so the step is the only correlation key that exists.
+ */
+export function emitVerifyStarted(args: {
+  step: string;
+  command: string;
+  target: string;
+  tier?: string;
+  issue?: number;
+}): void {
+  emit({
+    kind: "verify-started",
+    jobId: args.step,
+    label: args.step,
+    role: args.step,
+    command: args.command,
+    target: args.target,
+    tier: args.tier,
+    issue: args.issue,
+  });
+}
+
+/** #1415 — the gate returned from `command` after `ms`. See `emitVerifyStarted`. */
+export function emitVerifyCompleted(args: {
+  step: string;
+  command: string;
+  target: string;
+  tier?: string;
+  status: "success" | "failure" | "skipped" | "timeout";
+  ms: number;
+  reused?: boolean;
+  issue?: number;
+}): void {
+  emit({
+    kind: "verify-completed",
+    jobId: args.step,
+    label: args.step,
+    role: args.step,
+    command: args.command,
+    target: args.target,
+    tier: args.tier,
+    status: args.status,
+    elapsedMs: args.ms,
+    reused: args.reused,
+    issue: args.issue,
+  });
 }
 
 function emit(details: LifecycleDetails): void {
