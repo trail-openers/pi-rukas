@@ -19,11 +19,11 @@
  * as a failed dispatch.
  */
 
+import { mock } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { mock } from "bun:test";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

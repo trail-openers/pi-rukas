@@ -198,7 +198,10 @@ try {
       "classify: the failure is tagged `verify` — callers must distinguish a verdict from env variance",
     );
     assert(
-      !r.ok && /\[consolidation-created\]|\[per-workstream-defect\]|\[needs-human-decision\]/.test(r.reason),
+      !r.ok &&
+        /\[consolidation-created\]|\[per-workstream-defect\]|\[needs-human-decision\]/.test(
+          r.reason,
+        ),
       `classify: the reason carries the classification label (got "${r.ok ? "" : r.reason.slice(0, 120)}")`,
     );
     assert(
@@ -214,7 +217,9 @@ try {
       "classify: the restore claim is still present after classification",
     );
     // The branch still must not reach origin.
-    const { stdout: remoteBranches } = await execFileP("git", ["branch", "-a"], { cwd: f.originDir });
+    const { stdout: remoteBranches } = await execFileP("git", ["branch", "-a"], {
+      cwd: f.originDir,
+    });
     assert(
       !remoteBranches.includes("feature/classified"),
       "classify: the branch never reached origin",
@@ -252,7 +257,9 @@ try {
     "canary: the terminal branch is checked before the ops fallback is reached",
   );
   assert(
-    /cap: (?:mech\.timedOut \? "verify-timeout:commit-pr" : )?"integration-verify-failed"/.test(combined),
+    /cap: (?:mech\.timedOut \? "verify-timeout:commit-pr" : )?"integration-verify-failed"/.test(
+      combined,
+    ),
     "canary: it halts with a named cap rather than failing silently",
   );
 

@@ -14,8 +14,8 @@
 
 import {
   SPEC_FIELD_NAMES,
-  sliceSpecSectionH2OrH3,
   sliceSpecField,
+  sliceSpecSectionH2OrH3,
 } from "../src/work-driver-intent-spec-slice.ts";
 import { sliceMarkdownSection } from "../src/work-driver-plan.ts";
 
@@ -50,7 +50,10 @@ function assert(cond: boolean, msg: string) {
   const section = sliceSpecSectionH2OrH3(h2, "Spec");
   assert(section !== undefined, "h2: finds a level-2 Spec");
   assert(section !== undefined && section.includes("Do the thing"), "h2: includes the content");
-  assert(section !== undefined && !section.includes("## Next"), "h2: terminates at the next level-2 heading");
+  assert(
+    section !== undefined && !section.includes("## Next"),
+    "h2: terminates at the next level-2 heading",
+  );
 }
 
 {
@@ -59,7 +62,10 @@ function assert(cond: boolean, msg: string) {
   const section = sliceSpecSectionH2OrH3(h3, "Spec");
   assert(section !== undefined, "h3: finds a level-3 Spec nested under an h2");
   assert(section !== undefined && section.includes("Do the thing"), "h3: includes the content");
-  assert(section !== undefined && !section.includes("## Rationale"), "h3: terminates at the next level-2 heading");
+  assert(
+    section !== undefined && !section.includes("## Rationale"),
+    "h3: terminates at the next level-2 heading",
+  );
 }
 
 {
@@ -112,7 +118,10 @@ function assert(cond: boolean, msg: string) {
   // The body with no trailing heading — extends to end of text.
   const noTrailing = "## Intent resolution\n\n### Spec\n\n**Intent** — The last section";
   const section = sliceSpecSectionH2OrH3(noTrailing, "Spec");
-  assert(section !== undefined && section.includes("The last section"), "no-trailing: extends to end of text");
+  assert(
+    section !== undefined && section.includes("The last section"),
+    "no-trailing: extends to end of text",
+  );
 }
 
 // ============================================================================
@@ -124,23 +133,38 @@ function assert(cond: boolean, msg: string) {
   const text = "### Intent\nDo the thing\n\n### Deliverables\n- d1: x\n";
   const intent = sliceSpecField(text, "Intent");
   assert(intent !== undefined && intent.includes("Do the thing"), "### heading: finds the field");
-  assert(intent !== undefined && !intent.includes("Deliverables"), "### heading: terminates at next ###");
+  assert(
+    intent !== undefined && !intent.includes("Deliverables"),
+    "### heading: terminates at next ###",
+  );
 }
 
 {
   // A bare bold-label line (674-report.md shape).
   const text = "**Deliverables**\n\n- d1: x\n- d2: y\n\n**Acceptance criteria**\n- ac1\n";
   const deliv = sliceSpecField(text, "Deliverables");
-  assert(deliv !== undefined && deliv.includes("d1: x") && deliv.includes("d2: y"), "bare label: finds the field");
-  assert(deliv !== undefined && !deliv.includes("Acceptance criteria"), "bare label: terminates at next bare bold label");
+  assert(
+    deliv !== undefined && deliv.includes("d1: x") && deliv.includes("d2: y"),
+    "bare label: finds the field",
+  );
+  assert(
+    deliv !== undefined && !deliv.includes("Acceptance criteria"),
+    "bare label: terminates at next bare bold label",
+  );
 }
 
 {
   // An inline bold-label (the #826 shape: `**Intent** — content`).
   const text = "**Intent** — Do the thing\n\n**Deliverables**\n- d1: x\n";
   const intent = sliceSpecField(text, "Intent");
-  assert(intent !== undefined && intent.includes("Do the thing"), "inline label: finds the field with content on same line");
-  assert(intent !== undefined && !intent.includes("Deliverables"), "inline label: terminates at next bold label");
+  assert(
+    intent !== undefined && intent.includes("Do the thing"),
+    "inline label: finds the field with content on same line",
+  );
+  assert(
+    intent !== undefined && !intent.includes("Deliverables"),
+    "inline label: terminates at next bold label",
+  );
 }
 
 {
@@ -151,14 +175,19 @@ function assert(cond: boolean, msg: string) {
   // thing` into the Deliverables slice.
   const compact = "### Intent\nDo the thing\n### Deliverables\n- d1: x\n";
   const compactIntent = sliceSpecField(compact, "Intent");
-  assert(compactIntent !== undefined && compactIntent.includes("Do the thing"), "compact: finds the field");
+  assert(
+    compactIntent !== undefined && compactIntent.includes("Do the thing"),
+    "compact: finds the field",
+  );
   assert(
     compactIntent !== undefined && !compactIntent.includes("Deliverables"),
     "compact: terminates at the next ### heading with NO blank line before it",
   );
   const compactDeliv = sliceSpecField(compact, "Deliverables");
   assert(
-    compactDeliv !== undefined && compactDeliv.includes("d1: x") && !compactDeliv.includes("Do the thing"),
+    compactDeliv !== undefined &&
+      compactDeliv.includes("d1: x") &&
+      !compactDeliv.includes("Do the thing"),
     "compact: the next field starts clean — no bleed from the previous one",
   );
 
@@ -166,7 +195,9 @@ function assert(cond: boolean, msg: string) {
   const compactBold = "**Intent** — Do the thing\n**Deliverables**\n- d1: x\n";
   const compactBoldIntent = sliceSpecField(compactBold, "Intent");
   assert(
-    compactBoldIntent !== undefined && compactBoldIntent.includes("Do the thing") && !compactBoldIntent.includes("Deliverables"),
+    compactBoldIntent !== undefined &&
+      compactBoldIntent.includes("Do the thing") &&
+      !compactBoldIntent.includes("Deliverables"),
     "compact bold: terminates at the next bold label with no blank line before it",
   );
 }
@@ -192,7 +223,10 @@ function assert(cond: boolean, msg: string) {
   ].join("\n");
   const deliv = sliceSpecField(text, "Deliverables");
   assert(deliv !== undefined && deliv.includes("fix the thing"), "bold note: finds the field");
-  assert(deliv !== undefined && deliv.includes("keep me"), "bold note: a `**Note**` line inside the body is kept");
+  assert(
+    deliv !== undefined && deliv.includes("keep me"),
+    "bold note: a `**Note**` line inside the body is kept",
+  );
   assert(
     deliv !== undefined && !deliv.includes("Acceptance criteria"),
     "bold note: still terminates at the next field heading",
@@ -205,9 +239,15 @@ function assert(cond: boolean, msg: string) {
   // the field is not found via the heading path.
   const text = "### Intent\nDo the thing\n\n## Deliverables\n- d1: x\n";
   const deliv = sliceSpecField(text, "Deliverables");
-  assert(deliv === undefined, "h2 inside spec: a `## <field>` line is not a field heading (undefined)");
+  assert(
+    deliv === undefined,
+    "h2 inside spec: a `## <field>` line is not a field heading (undefined)",
+  );
   const intent = sliceSpecField(text, "Intent");
-  assert(intent !== undefined && !intent.includes("Deliverables"), "h2 inside spec: the h2 line terminates the preceding field");
+  assert(
+    intent !== undefined && !intent.includes("Deliverables"),
+    "h2 inside spec: the h2 line terminates the preceding field",
+  );
 }
 
 // ============================================================================
@@ -218,14 +258,20 @@ function assert(cond: boolean, msg: string) {
   // A level-3 Spec is NOT found by sliceMarkdownSection (the shared helper).
   const h3 = "## Intent resolution\n\n### Spec\n\nSome content\n";
   const section = sliceMarkdownSection(h3, "Spec");
-  assert(section === undefined, "sliceMarkdownSection: does NOT find a level-3 Spec (unchanged behaviour)");
+  assert(
+    section === undefined,
+    "sliceMarkdownSection: does NOT find a level-3 Spec (unchanged behaviour)",
+  );
 }
 
 {
   // A level-2 Spec IS found by sliceMarkdownSection.
   const h2 = "## Spec\n\nSome content\n\n## Next\n";
   const section = sliceMarkdownSection(h2, "Spec");
-  assert(section !== undefined && section.includes("Some content"), "sliceMarkdownSection: finds a level-2 Spec (unchanged)");
+  assert(
+    section !== undefined && section.includes("Some content"),
+    "sliceMarkdownSection: finds a level-2 Spec (unchanged)",
+  );
 }
 
 console.log(`\nexit ${exit}`);

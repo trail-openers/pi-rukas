@@ -89,13 +89,13 @@ const verifyFull = (status: "success" | "failure"): WorkEvent =>
 // re-run (ciRetryCount bump) is skipped — the flake cost one re-run, not a cycle.
 {
   // biome-ignore lint/suspicious/noExplicitAny: partial fixture
-  const recovered: WorkEvent = ({
+  const recovered: WorkEvent = {
     kind: "verify-full-status",
     at: 1,
     status: "success",
     recovered: true,
     ms: 1000,
-  }) as any as WorkEvent;
+  } as any as WorkEvent;
   assert(
     stepOf(atCi(recovered)) === "merged",
     "a RECOVERED verify-full (recovered:true) routes to merged — no ciRetryCount bump, no develop re-run",

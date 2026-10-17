@@ -8,8 +8,8 @@
 
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { buildAgentListLines } from "../src/agent-list.ts";
-import { buildCompositeWidgetFactory } from "../src/dispatch-deck-confirm-row.ts";
 import { buildCompositeFactory } from "../src/dispatch-deck-composite.ts";
+import { buildCompositeWidgetFactory } from "../src/dispatch-deck-confirm-row.ts";
 import type { DeckEntry } from "../src/dispatch-deck.ts";
 
 let exit = 0;

@@ -279,30 +279,27 @@ async function main() {
     assert(read.truncated === false, "just under the page is the honest whole set");
   });
 
-  await check(
-    "truncated is judged on the RAW rows, not the name-filtered list",
-    async () => {
-      // The page is full, but some rows carry no usable `name` — a CLI that
-      // answers `{}` or `{name: null}` for a row still filled the page, so more
-      // may follow. Comparing the FILTERED count would report this as the honest
-      // whole set, and an `auto-filed` living past the page would then be read as
-      // MISSING: the wrong answer in the direction the driver cannot correct.
-      const rows: unknown[] = Array.from({ length: GH_LABEL_LIST_LIMIT }, (_, i) =>
-        i % 10 === 0 ? {} : { name: `l${i}` },
-      );
-      const { run } = runStub({ [labelListCmd("github")]: JSON.stringify(rows) });
-      const ops = labelOps({ forge: "github", run });
-      const read = await ops.labelList();
-      assert(
-        read.names.length < GH_LABEL_LIST_LIMIT,
-        `the fixture must actually drop rows (names: ${read.names.length})`,
-      );
-      assert(
-        read.truncated === true,
-        "a page-full read with dropped rows is still truncated (raw row count, not names)",
-      );
-    },
-  );
+  await check("truncated is judged on the RAW rows, not the name-filtered list", async () => {
+    // The page is full, but some rows carry no usable `name` — a CLI that
+    // answers `{}` or `{name: null}` for a row still filled the page, so more
+    // may follow. Comparing the FILTERED count would report this as the honest
+    // whole set, and an `auto-filed` living past the page would then be read as
+    // MISSING: the wrong answer in the direction the driver cannot correct.
+    const rows: unknown[] = Array.from({ length: GH_LABEL_LIST_LIMIT }, (_, i) =>
+      i % 10 === 0 ? {} : { name: `l${i}` },
+    );
+    const { run } = runStub({ [labelListCmd("github")]: JSON.stringify(rows) });
+    const ops = labelOps({ forge: "github", run });
+    const read = await ops.labelList();
+    assert(
+      read.names.length < GH_LABEL_LIST_LIMIT,
+      `the fixture must actually drop rows (names: ${read.names.length})`,
+    );
+    assert(
+      read.truncated === true,
+      "a page-full read with dropped rows is still truncated (raw row count, not names)",
+    );
+  });
 
   await check("a failing list read propagates — it is a halt, not an empty set", async () => {
     const { run } = runStub({});
@@ -345,7 +342,7 @@ async function main() {
   console.log("readLabelNames:");
 
   await check("a good read returns the names on the ok arm", async () => {
-    const read = await readLabelNames(fakeForge([{ names: ["a", "b"], truncated: false }]))
+    const read = await readLabelNames(fakeForge([{ names: ["a", "b"], truncated: false }]));
     assert(
       read.ok === true && JSON.stringify(read.names) === '["a","b"]',
       `got ${JSON.stringify(read)}`,
@@ -354,10 +351,7 @@ async function main() {
 
   await check("a page-full read is its own arm, not a read failure", async () => {
     const read = await readLabelNames(fakeForge([{ names: [], truncated: true }]));
-    assert(
-      read.ok === false && read.reason === "truncated",
-      `got ${JSON.stringify(read)}`,
-    );
+    assert(read.ok === false && read.reason === "truncated", `got ${JSON.stringify(read)}`);
   });
 
   await check("a throwing CLI is read-failed AND carries the CLI's own message", async () => {
@@ -418,7 +412,10 @@ async function main() {
   });
 
   await check("labelGate passes when every label exists, and never reads with none", async () => {
-    const ok = await labelGate(["a", "b"], fakeForge([{ names: ["a", "b", "main"], truncated: false }]));
+    const ok = await labelGate(
+      ["a", "b"],
+      fakeForge([{ names: ["a", "b", "main"], truncated: false }]),
+    );
     assert(ok === undefined, `all-present labels pass (got ${JSON.stringify(ok)})`);
     let calls = 0;
     const none = await labelGate([], {

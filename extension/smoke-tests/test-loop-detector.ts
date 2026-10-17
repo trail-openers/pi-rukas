@@ -123,7 +123,10 @@ const STEER_BASH_5 =
   assert(steer?.count === 5, "F1(a): steer at 5th repeat");
   assert(kill?.count === 10, "F1(a): kill at 10th repeat");
   assert(kill?.tool === "bash", "F1(a): kill names bash");
-  assert(events.filter((e) => e.kind === "steer").length === 1, "F1(a): one steer across 20 repeats");
+  assert(
+    events.filter((e) => e.kind === "steer").length === 1,
+    "F1(a): one steer across 20 repeats",
+  );
   assert(det.killTriggered() && det.steerTriggered(), "F1(a): flags sticky");
   assert(det.current()?.count === 20, "F1(a): evidence reaches 20");
 }
@@ -137,24 +140,23 @@ const STEER_BASH_5 =
 /* (b) healthy stream: inert */
 {
   const det = createLoopDetector();
-  const cmds =
-    [
-      "bun run build",
-      "bunx tsc --noEmit",
-      "ls src/",
-      "bun test smoke-tests/test-a.ts",
-      "git diff --stat",
-      "cat src/foo.ts",
-      "bun run lint",
-      "git status --porcelain",
-      "bun test smoke-tests/test-a.ts",
-      'rg "normalizeFingerprint" src/',
-      "wc -l src/bar.ts",
-      "git log --oneline -3",
-      "bun test smoke-tests/test-b.ts",
-      'grep -n "TODO" src/bar.ts',
-      "bun run check",
-    ] as const;
+  const cmds = [
+    "bun run build",
+    "bunx tsc --noEmit",
+    "ls src/",
+    "bun test smoke-tests/test-a.ts",
+    "git diff --stat",
+    "cat src/foo.ts",
+    "bun run lint",
+    "git status --porcelain",
+    "bun test smoke-tests/test-a.ts",
+    'rg "normalizeFingerprint" src/',
+    "wc -l src/bar.ts",
+    "git log --oneline -3",
+    "bun test smoke-tests/test-b.ts",
+    'grep -n "TODO" src/bar.ts',
+    "bun run check",
+  ] as const;
   let any = false;
   for (let t = 0; t < cmds.length; t++) {
     any = det.observe([bash(cmds[t])], t) !== null || any;
@@ -248,7 +250,7 @@ const STEER_BASH_5 =
     totalTokens: () => 0,
     timedOut: () => false,
     inactivityKilled: () => false,
-      toolInactivityKilled: () => false,
+    toolInactivityKilled: () => false,
     aborted: () => false,
     capKillGraceMs: 0,
     childExited: () => false,

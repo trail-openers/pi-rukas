@@ -32,9 +32,9 @@ import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { fetchDiff } from "../src/work-driver-diff.ts";
 import { verifyDevelopOutcome } from "../src/work-driver-verify-develop.ts";
+import { initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
-import { initialState } from "../src/workflow-state.ts";
 
 const execFileP = promisify(execFile);
 
@@ -343,8 +343,7 @@ async function mainFalsilyGreen(): Promise<void> {
     {
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
         const line = commandOf(cmd, opts);
-        if (isNulStatusRead(line))
-          return { stdout: " M docs/notes.md\n" }; // uncommitted docs
+        if (isNulStatusRead(line)) return { stdout: " M docs/notes.md\n" }; // uncommitted docs
         if (line.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
         if (isNulDiffRead(line)) return { stdout: "" }; // no committed changes
         return { stdout: "" };

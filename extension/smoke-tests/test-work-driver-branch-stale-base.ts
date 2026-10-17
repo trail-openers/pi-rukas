@@ -41,14 +41,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { WorkState } from "../src/workflow-state.ts";
-import { initialState } from "../src/workflow-state.ts";
 import {
   BranchAheadError,
   branchSlug,
   mechanizedBranchSetup,
   reconcileExistingLocalBranch,
 } from "../src/work-driver-branch-mechanized.ts";
+import type { WorkState } from "../src/workflow-state.ts";
+import { initialState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { realExec } from "./lib/exec-fake.ts";
@@ -173,11 +173,17 @@ try {
     await git(repo, ["branch", BRANCH, firstSha]);
     const newSha = await advanceOrigin("advanced\n", "advance main");
     const setup = await mechanizedBranchSetup(realExec, repo, 844, [844], [], TITLE);
-    assert(setup.baseSha === newSha, `baseSha == freshly-fetched origin/main tip (${newSha.slice(0, 8)})`);
+    assert(
+      setup.baseSha === newSha,
+      `baseSha == freshly-fetched origin/main tip (${newSha.slice(0, 8)})`,
+    );
     assert(setup.branchName === BRANCH, `branchName is the resolved slug (${BRANCH})`);
     {
       const { stdout } = await git(repo, ["rev-parse", BRANCH]);
-      assert(stdout.trim() === newSha, `local branch was force-moved from ${firstSha.slice(0, 8)} to ${newSha.slice(0, 8)}`);
+      assert(
+        stdout.trim() === newSha,
+        `local branch was force-moved from ${firstSha.slice(0, 8)} to ${newSha.slice(0, 8)}`,
+      );
     }
     {
       const wt = setup.worktrees.default ?? "";
@@ -186,7 +192,10 @@ try {
         assert(stdout.trim() === newSha, "worktree is detached at the freshly-fetched base");
       }
     }
-    assert(setup.resetFromSha === firstSha, `resetFromSha records the pre-reset old tip (${firstSha.slice(0, 8)})`);
+    assert(
+      setup.resetFromSha === firstSha,
+      `resetFromSha records the pre-reset old tip (${firstSha.slice(0, 8)})`,
+    );
   }
   // ----------------------------------------------------------------
   // 2. Local branch checked out at repoRoot → reset (update-ref)
@@ -200,9 +209,15 @@ try {
     const setup = await mechanizedBranchSetup(realExec, repo, 844, [844], [], TITLE);
     {
       const { stdout } = await git(repo, ["rev-parse", BRANCH]);
-      assert(stdout.trim() === newSha, "a stale branch CHECKED OUT at repoRoot is also reset (update-ref)");
+      assert(
+        stdout.trim() === newSha,
+        "a stale branch CHECKED OUT at repoRoot is also reset (update-ref)",
+      );
     }
-    assert(setup.resetFromSha === firstSha, "resetFromSha records the old tip even when the branch is checked out");
+    assert(
+      setup.resetFromSha === firstSha,
+      "resetFromSha records the old tip even when the branch is checked out",
+    );
   }
   // ----------------------------------------------------------------
   // 3. Local branch AHEAD of origin/main → BranchAheadError, no reset
@@ -228,24 +243,38 @@ try {
     assert(aheadErr?.aheadCount === 1, "the error carries the ahead count (1)");
     {
       const { stdout } = await git(repo, ["rev-parse", BRANCH]);
-      assert(stdout.trim() === oldAheadSha, "nothing was reset — the ahead branch's tip is unchanged");
+      assert(
+        stdout.trim() === oldAheadSha,
+        "nothing was reset — the ahead branch's tip is unchanged",
+      );
     }
-    }
+  }
   // 10. #1189 — local branch AHEAD of origin/main BUT fully pushed (local tip
   //     == origin/<branch>) → reset to fresh base, no halt.
   {
     const { repo, pushedSha, newSha } = await pushedAheadFixture("pushed-ahead", "pushed work\n");
-    const aheadCount = (await git(repo, ["rev-list", "--count", `origin/main..${BRANCH}`])).stdout.trim();
+    const aheadCount = (
+      await git(repo, ["rev-list", "--count", `origin/main..${BRANCH}`])
+    ).stdout.trim();
     assert(aheadCount === "1", "fixture built: local branch is 1 commit ahead of origin/main");
     const { stdout: remoteSha } = await git(repo, ["rev-parse", `origin/${BRANCH}`]);
-    assert(remoteSha.trim() === pushedSha, "fixture built: remote branch tip equals local tip (fully pushed)");
+    assert(
+      remoteSha.trim() === pushedSha,
+      "fixture built: remote branch tip equals local tip (fully pushed)",
+    );
     const setup = await mechanizedBranchSetup(realExec, repo, 844, [844], [], TITLE);
-    assert(setup.baseSha === newSha, "the fully-pushed ahead branch proceeds (no BranchAheadError)");
+    assert(
+      setup.baseSha === newSha,
+      "the fully-pushed ahead branch proceeds (no BranchAheadError)",
+    );
     {
       const { stdout } = await git(repo, ["rev-parse", BRANCH]);
       assert(stdout.trim() === newSha, "the pushed ahead branch is RESET to the fresh base");
     }
-    assert(setup.resetFromSha === pushedSha, "resetFromSha records the old (pushed) tip as the recovery handle");
+    assert(
+      setup.resetFromSha === pushedSha,
+      "resetFromSha records the old (pushed) tip as the recovery handle",
+    );
   }
   // 11. #1189 — local branch AHEAD of origin/main and pushed, but the local
   //     tip DIVERGES from the remote branch's tip → the ahead halt stands.
@@ -262,7 +291,10 @@ try {
     await git(repo, ["commit", "-q", "-m", "local-only commit"]);
     const localSha = (await git(repo, ["rev-parse", BRANCH])).stdout.trim();
     const { stdout: remoteSha } = await git(repo, ["rev-parse", `origin/${BRANCH}`]);
-    assert(localSha !== remoteSha.trim(), "fixture built: local tip diverges from the remote branch's tip");
+    assert(
+      localSha !== remoteSha.trim(),
+      "fixture built: local tip diverges from the remote branch's tip",
+    );
     let threw = false;
     let aheadErr: BranchAheadError | undefined;
     try {
@@ -273,16 +305,25 @@ try {
     }
     assert(threw, "a pushed-but-diverged ahead branch still halts (genuine unpushed work)");
     assert(aheadErr?.branchName === BRANCH, `the error names the branch (${BRANCH})`);
-    assert(aheadErr?.aheadCount === 2, "the error carries the ahead count (2: pushed + local-only)");
+    assert(
+      aheadErr?.aheadCount === 2,
+      "the error carries the ahead count (2: pushed + local-only)",
+    );
     {
       const { stdout } = await git(repo, ["rev-parse", BRANCH]);
-      assert(stdout.trim() === localSha, "nothing was reset — the diverged branch's tip is unchanged");
+      assert(
+        stdout.trim() === localSha,
+        "nothing was reset — the diverged branch's tip is unchanged",
+      );
     }
   }
   // 12. runBranch end-to-end: fully-pushed ahead branch → proceeds (the #1189
   //     incident shape), branch-reset event, no cap-hit.
   {
-    const { repo, pushedSha, newSha } = await pushedAheadFixture("runbranch-pushed-ahead", "pushed work\n");
+    const { repo, pushedSha, newSha } = await pushedAheadFixture(
+      "runbranch-pushed-ahead",
+      "pushed work\n",
+    );
     const out = await e2eRun(repo);
     assert(out !== undefined, "runBranch does not throw for a fully-pushed ahead branch");
     const cap = out?.eventLog.find((e) => e.kind === "cap-hit");
@@ -314,9 +355,15 @@ try {
     const setup = await mechanizedBranchSetup(realExec, repo, 844, [844], [], TITLE);
     {
       const { stdout } = await git(repo, ["rev-parse", BRANCH]);
-      assert(stdout.trim() === newSha, "a branch whose commits are all in origin/main is RESET (rebase-able), not halted");
+      assert(
+        stdout.trim() === newSha,
+        "a branch whose commits are all in origin/main is RESET (rebase-able), not halted",
+      );
     }
-    assert(setup.resetFromSha === midSha, "resetFromSha records the old tip for the rebase-able case");
+    assert(
+      setup.resetFromSha === midSha,
+      "resetFromSha records the old tip for the rebase-able case",
+    );
   }
   // ----------------------------------------------------------------
   // 5. No existing local branch → no reset (normal path)
@@ -326,7 +373,10 @@ try {
     const newSha = await advanceOrigin("advanced\n", "advance main");
     const setup = await mechanizedBranchSetup(realExec, repo, 844, [844], [], TITLE);
     assert(setup.baseSha === newSha, "a fresh cycle resolves baseSha from origin/main");
-    assert(setup.resetFromSha === undefined, "no resetFromSha when no existing local branch was touched");
+    assert(
+      setup.resetFromSha === undefined,
+      "no resetFromSha when no existing local branch was touched",
+    );
   }
   // ----------------------------------------------------------------
   // 6. Local branch already AT the fresh base → no reset needed
@@ -335,7 +385,10 @@ try {
     const { repo, firstSha } = await fixture("at-base");
     await git(repo, ["branch", BRANCH, firstSha]);
     const setup = await mechanizedBranchSetup(realExec, repo, 844, [844], [], TITLE);
-    assert(setup.resetFromSha === undefined, "no resetFromSha when the local branch is already at the base");
+    assert(
+      setup.resetFromSha === undefined,
+      "no resetFromSha when the local branch is already at the base",
+    );
   }
   // ----------------------------------------------------------------
   // 7. runBranch end-to-end: stale branch → branch-reset event in log
@@ -349,12 +402,21 @@ try {
     const resetEvent = out?.eventLog.find((e) => e.kind === "branch-reset");
     assert(resetEvent !== undefined, "a branch-reset event is recorded in the event log");
     if (resetEvent?.kind === "branch-reset") {
-      assert(resetEvent.oldSha === firstSha, "branch-reset event carries the OLD tip SHA (recovery handle)");
-      assert(resetEvent.newSha === newSha, "branch-reset event carries the NEW tip SHA (= freshly-fetched base)");
+      assert(
+        resetEvent.oldSha === firstSha,
+        "branch-reset event carries the OLD tip SHA (recovery handle)",
+      );
+      assert(
+        resetEvent.newSha === newSha,
+        "branch-reset event carries the NEW tip SHA (= freshly-fetched base)",
+      );
       assert(resetEvent.branch === BRANCH, `branch-reset event names the branch (${BRANCH})`);
     }
     const cap = out?.eventLog.find((e) => e.kind === "cap-hit");
-    assert(cap === undefined, "no cap-hit for a stale-behind branch (the cycle proceeds after reset)");
+    assert(
+      cap === undefined,
+      "no cap-hit for a stale-behind branch (the cycle proceeds after reset)",
+    );
   }
   // ----------------------------------------------------------------
   // 8. runBranch end-to-end: ahead branch → cap-hit, no reset, no fallback
@@ -370,13 +432,22 @@ try {
     const out = await e2eRun(repo);
     assert(out !== undefined, "runBranch does not throw for an ahead branch (returns a cap)");
     const cap = out?.eventLog.find((e) => e.kind === "cap-hit");
-    assert(cap !== undefined && cap.kind === "cap-hit", "a cap-hit is recorded for an ahead branch");
+    assert(
+      cap !== undefined && cap.kind === "cap-hit",
+      "a cap-hit is recorded for an ahead branch",
+    );
     if (cap?.kind === "cap-hit") {
-      assert(cap.cap.startsWith("branch-ahead:"), `the cap is a branch-ahead cap (got: ${cap.cap})`);
+      assert(
+        cap.cap.startsWith("branch-ahead:"),
+        `the cap is a branch-ahead cap (got: ${cap.cap})`,
+      );
       assert(cap.nextStep === "handoff", "the ahead cap routes to handoff (not ops fallback)");
     }
     const resetEvent = out?.eventLog.find((e) => e.kind === "branch-reset");
-    assert(resetEvent === undefined, "no branch-reset event for an ahead branch (nothing was reset)");
+    assert(
+      resetEvent === undefined,
+      "no branch-reset event for an ahead branch (nothing was reset)",
+    );
     {
       const { stdout } = await git(repo, ["rev-parse", BRANCH]);
       assert(stdout.trim() === aheadSha, "the ahead branch's tip is unchanged (nothing was reset)");
@@ -402,16 +473,30 @@ try {
     };
     let aheadErr: BranchAheadError | undefined;
     try {
-      await reconcileExistingLocalBranch(stubExec, repo, BRANCH, (await git(repo, ["rev-parse", "origin/main"])).stdout.trim());
+      await reconcileExistingLocalBranch(
+        stubExec,
+        repo,
+        BRANCH,
+        (await git(repo, ["rev-parse", "origin/main"])).stdout.trim(),
+      );
     } catch (err) {
       if (err instanceof BranchAheadError) aheadErr = err;
     }
-    assert(aheadErr !== undefined, "a twice-failing ancestry probe on an existing branch halts (BranchAheadError)");
-    assert(aheadErr?.aheadCount === null, `the ahead count is null, not a fabricated number (got: ${aheadErr?.aheadCount})`);
+    assert(
+      aheadErr !== undefined,
+      "a twice-failing ancestry probe on an existing branch halts (BranchAheadError)",
+    );
+    assert(
+      aheadErr?.aheadCount === null,
+      `the ahead count is null, not a fabricated number (got: ${aheadErr?.aheadCount})`,
+    );
     assert(probeCalls === 2, `the probe was retried exactly once (calls: ${probeCalls})`);
     {
       const { stdout } = await git(repo, ["rev-parse", BRANCH]);
-      assert(stdout.trim() === firstSha, "NO reset — the branch tip is unchanged after a probe failure");
+      assert(
+        stdout.trim() === firstSha,
+        "NO reset — the branch tip is unchanged after a probe failure",
+      );
     }
   }
   // ----------------------------------------------------------------
@@ -435,14 +520,23 @@ try {
       "../src/work-driver-handoff-consolidate-branch.ts"
     );
     const resetFrom = await reconcileHandoffConsolidateBranch(realExec, repo, BRANCH);
-    assert(resetFrom === firstSha, `the stale local branch was force-moved to the freshly-fetched origin/main (old tip ${firstSha.slice(0, 8)} recorded)`);
+    assert(
+      resetFrom === firstSha,
+      `the stale local branch was force-moved to the freshly-fetched origin/main (old tip ${firstSha.slice(0, 8)} recorded)`,
+    );
     {
       const { stdout } = await git(repo, ["rev-parse", BRANCH]);
-      assert(stdout.trim() === newSha, "the stale local branch is now at the freshly-fetched origin/main");
+      assert(
+        stdout.trim() === newSha,
+        "the stale local branch is now at the freshly-fetched origin/main",
+      );
     }
     {
       const { stdout } = await git(repo, ["merge-base", `refs/heads/${BRANCH}`, newSha]);
-      assert(stdout.trim() === newSha, `the consolidated branch's merge-base equals origin/main (${newSha.slice(0, 8)}), not the stale tip`);
+      assert(
+        stdout.trim() === newSha,
+        `the consolidated branch's merge-base equals origin/main (${newSha.slice(0, 8)}), not the stale tip`,
+      );
     }
     {
       const { stdout } = await git(repo, ["status", "--porcelain"]);
@@ -456,7 +550,11 @@ try {
   }
 } finally {
   rmSync(rootBase, { recursive: true, force: true });
-  try { rmSync(TITLE_ARTIFACT, { force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(TITLE_ARTIFACT, { force: true });
+  } catch {
+    /* ignore */
+  }
 }
 console.log(`\nexit ${exit}`);
 process.exit(exit);

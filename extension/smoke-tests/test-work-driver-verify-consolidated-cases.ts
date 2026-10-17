@@ -12,14 +12,14 @@
  * (fixture/commitIn/realExec) imported here.
  */
 
-import { rmSync, writeFileSync, mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
-import { fixture, commitIn, realExec } from "./test-work-driver-verify-consolidated.ts";
+import { commitIn, fixture, realExec } from "./test-work-driver-verify-consolidated.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

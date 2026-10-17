@@ -184,7 +184,80 @@ const ALL_SHAPES_BY_KIND = {
     label: "develop",
     reason: "a developer child's engine stopped unexpectedly",
   },
+  // #1415 — the verify pair. These two were the matrix's two gaps: the
+  // `satisfies Record<LifecycleKind, LifecycleDetails>` below cannot fire, because
+  // smoke tests are not type-checked (`extension/tsconfig.json` includes only
+  // `src/` and `scripts/`), so a new kind shipped with no renderer coverage and
+  // no compile error. The `NaN` defect the fix round closed was in exactly this
+  // blind spot.
+  "verify-started": {
+    kind: "verify-started",
+    jobId: "develop",
+    label: "develop",
+    role: "develop",
+    command: "bash scripts/verify.sh --full",
+    target: "consolidated",
+    tier: "full",
+  },
+  "verify-completed": {
+    kind: "verify-completed",
+    jobId: "develop",
+    label: "develop",
+    role: "develop",
+    command: "bash scripts/verify.sh --full",
+    target: "consolidated",
+    tier: "full",
+    status: "success",
+    elapsedMs: 1_320_000,
+  },
 } satisfies Record<LifecycleKind, LifecycleDetails>;
+
+{
+  // #1415 — the two guards the fix round added, pinned against the exact shapes
+  // the reviewer measured. Both are values a hand-edited or stale state file
+  // produces, and NEITHER throws — so no try/catch downstream can catch them:
+  // `fmtElapsed(NaN)` returns `"NaNmNaNs"` and `fmtElapsed(Infinity)` returns
+  // `"InfinitymNaNs"`. Left unguarded, a fabricated duration prints on a line
+  // whose glyph says failure and whose colour says success.
+  const base = ALL_SHAPES_BY_KIND["verify-completed"];
+  const bad = formatLine({ ...base, elapsedMs: "22 minutes" as unknown as number });
+  assert(
+    !bad.includes("NaN") && !bad.includes("Infinity"),
+    `verify-completed never renders a fabricated duration (got ${JSON.stringify(bad)})`,
+  );
+  const finite = formatLine(base);
+  assert(
+    finite.includes("22m00s"),
+    `a measured duration still renders (got ${JSON.stringify(finite)})`,
+  );
+  // An unknown status is neither the failure glyph nor a green — it is its own
+  // answer, and it must not be coloured as one.
+  const unknown = formatLine({ ...base, status: "purple" as unknown as "success" });
+  assert(
+    unknown.includes("?") && !unknown.includes("✗"),
+    `an unrecognised verify status gets a distinct marker, never the failure glyph (got ${JSON.stringify(unknown)})`,
+  );
+  const { theme: t2, styles: s2 } = fakeTheme();
+  const styledUnknown = renderLifecycleEntryLine(
+    { ...base, status: "purple" as unknown as "success" },
+    t2,
+  );
+  // The exported composition is what `applyTheme` is reached through in
+  // production; the fake theme records the style it was asked for.
+  assert(
+    s2[0] === "dim",
+    `an unrecognised verify status is not coloured success (got ${JSON.stringify(s2[0])})`,
+  );
+  assert(styledUnknown.length > 0, "the unknown-status line still renders through the pair");
+  const started = formatLine(ALL_SHAPES_BY_KIND["verify-started"]);
+  assert(
+    started.includes("⏳") &&
+      started.includes("consolidated") &&
+      started.includes("full") &&
+      !formatLine({ ...base, command: "x".repeat(200) }).includes("x".repeat(61)),
+    `verify-started renders the announcement with target + tier and truncates a long command (got ${JSON.stringify(started)})`,
+  );
+}
 
 {
   const notice = ALL_SHAPES_BY_KIND["step-notice"];
@@ -229,12 +302,15 @@ const KINDS = ALL_SHAPES.map((d) => d.kind);
     elapsedMs: 151000,
     totalTokens: 14300,
   });
-  assert(text.includes("✓"), "completed line uses ✓");
-  assert(text.includes("developer"), "completed line includes label");
-  assert(text.includes("2m31s"), "completed line includes formatted elapsed");
   // formatTokens rounds 14300 → "14k" (≥10k uses no decimals — see progress.ts).
-  assert(text.includes("14k tokens"), "completed line includes formatted token count");
-  assert(text.includes("finished"), "completed line says finished");
+  assert(
+    text.includes("✓") &&
+      text.includes("developer") &&
+      text.includes("2m31s") &&
+      text.includes("14k tokens") &&
+      text.includes("finished"),
+    "completed line uses ✓ with label, formatted elapsed, token count and 'finished'",
+  );
 }
 
 // 3. formatLine — completed with zero tokens drops the token suffix.
@@ -384,6 +460,11 @@ const KINDS = ALL_SHAPES.map((d) => d.kind);
     "step-retry": "warning",
     // #1403 — a dead child's notice is an error line, not a dim footnote.
     "step-notice": "error",
+    // #1415 — the announcement is dim (a beginning); the verdict line is green
+    // for the matrix's success-carrying shape. The unknown-status arm (dim) is
+    // pinned in the block above, not here — this map is one style per KIND.
+    "verify-started": "dim",
+    "verify-completed": "success",
   };
   if (renderer) {
     for (const details of ALL_SHAPES) {

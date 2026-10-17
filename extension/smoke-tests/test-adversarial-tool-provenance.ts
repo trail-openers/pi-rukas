@@ -59,7 +59,10 @@ for (const [label, rel] of children) {
   });
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   const failed = out.split("\n").filter((l) => l.startsWith("✗"));
-  assert(r.status === 0, `${label} — child exited 0${failed.length ? `\n${failed.join("\n")}` : `\n${out.slice(-800)}`}`);
+  assert(
+    r.status === 0,
+    `${label} — child exited 0${failed.length ? `\n${failed.join("\n")}` : `\n${out.slice(-800)}`}`,
+  );
 }
 
 console.log(`\nexit ${exit}`);

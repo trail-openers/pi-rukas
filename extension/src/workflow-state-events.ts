@@ -453,9 +453,6 @@ export type WorkEvent =
   // #1415 — verify-started / verify-completed: the gate announces the run it
   // is doing, so the ~22-minute consolidated verify is a row, not a silence.
   | VerifyRunEventFragment
-  // #1415 — verify-started / verify-completed: the gate announces the run it
-  // is doing, so the ~22-minute consolidated verify is a row, not a silence.
-  | VerifyRunEventFragment
   | WideningScanEvent
   | MemoryEventFragment
   | WorktreeProvisionedEvent

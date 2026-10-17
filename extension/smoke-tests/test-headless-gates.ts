@@ -32,15 +32,15 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { WorkCapLiteral } from "../src/workflow-state-events-caps.ts";
-import { parseHeadlessArgs } from "../src/headless/cli.ts";
 import { buildCapabilities } from "../src/headless/capabilities.ts";
+import { parseHeadlessArgs } from "../src/headless/cli.ts";
 import { EXIT } from "../src/headless/exit-code.ts";
 import { projectIssue } from "../src/headless/result.ts";
 import { runHeadless } from "../src/headless/run.ts";
-import { appendEvent, initialState, type WorkState } from "../src/workflow-state.ts";
+import type { WorkCapLiteral } from "../src/workflow-state-events-caps.ts";
+import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
 import { MERGE_GRANT, capHitEvent, headlessRepo, okResult } from "./lib/headless-s5-fixture.ts";
-import { initEnv, noSignals, restoreEnv, type DriverSeams } from "./lib/headless-s5-harness.ts";
+import { type DriverSeams, initEnv, noSignals, restoreEnv } from "./lib/headless-s5-harness.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

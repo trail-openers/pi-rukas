@@ -23,10 +23,7 @@ import { formatBatchRow } from "../src/dispatch-deck-rows.ts";
 import * as dispatchDeck from "../src/dispatch-deck.ts";
 import { dispatchCore } from "../src/dispatch.ts";
 import type { DispatchResult, DispatchSpec } from "../src/types.ts";
-import {
-  acquireWorkDeckHeader,
-  headerToken,
-} from "../src/work-driver-deck-header.ts";
+import { acquireWorkDeckHeader, headerToken } from "../src/work-driver-deck-header.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { readState } from "../src/workflow-state.ts";
 import {
@@ -121,10 +118,14 @@ function fakeResult(role: string, text = "done", ok = true): DispatchResult {
   assert(inbox.length === 0, "deck option: NO PM steer-back emitted (ownerKind driver)");
   // WITHOUT the deck option (skipDeck true): deck untouched.
   clearJobsForTesting();
-  const p2 = dispatchCore(pi, { role: "explore", prompt: "work", cwd: "/tmp" }, {
-    skipDeck: true,
-    timeoutMs: 100,
-  });
+  const p2 = dispatchCore(
+    pi,
+    { role: "explore", prompt: "work", cwd: "/tmp" },
+    {
+      skipDeck: true,
+      timeoutMs: 100,
+    },
+  );
   p2.catch(() => undefined);
   await sleep(10);
   assert(dispatchDeck.snapshot().length === 0, "no deck option: deck untouched (skipDeck path)");
@@ -183,15 +184,19 @@ function fakeResult(role: string, text = "done", ok = true): DispatchResult {
   dispatchDeck.reset();
   clearJobsForTesting();
   const { pi } = makePiStub();
-  dispatchCore(pi, { role: "developer", prompt: "work", cwd: "/tmp" }, {
-    label: "developer[task-a]",
-    deck: {
-      cycleKey: "work:838",
-      label: "#838 develop · task-a",
-      deckLabel: "#838 develop · task-a",
+  dispatchCore(
+    pi,
+    { role: "developer", prompt: "work", cwd: "/tmp" },
+    {
+      label: "developer[task-a]",
+      deck: {
+        cycleKey: "work:838",
+        label: "#838 develop · task-a",
+        deckLabel: "#838 develop · task-a",
+      },
+      timeoutMs: 100,
     },
-    timeoutMs: 100,
-  }).catch(() => undefined);
+  ).catch(() => undefined);
   await sleep(50);
   // The deck entry (display) carried the row label under the cycle key.
   const deckSnap = dispatchDeck.snapshot();

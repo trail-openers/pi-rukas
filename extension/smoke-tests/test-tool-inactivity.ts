@@ -62,18 +62,17 @@ function writeFakePi(body: string) {
 
 /** The JSONL one-liner an assistant message_end carrying a toolCall block.
  * Wrapped in echo so the shell script emits it as stdout, not executes it. */
-const toolCallEnd =
-  `echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"sleep 30"}}]}}'`;
+const toolCallEnd = `echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"sleep 30"}}]}}'`;
 
 /** The JSONL one-liner a toolResult message for call_1. */
-const toolResultLine =
-  `echo '{"type":"message_end","message":{"role":"toolResult","toolName":"bash","toolCallId":"call_1","toolResults":[]}}'`;
+const toolResultLine = `echo '{"type":"message_end","message":{"role":"toolResult","toolName":"bash","toolCallId":"call_1","toolResults":[]}}'`;
 
 /** Restore the process-wide env even when a case above throws. */
 function restoreEnv() {
   process.env.PATH = savedPath;
   process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "";
-  if (savedInactivity !== undefined) process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = savedInactivity;
+  if (savedInactivity !== undefined)
+    process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = savedInactivity;
   else delete process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
   if (savedToolInactivity !== undefined)
     process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS = savedToolInactivity;
@@ -173,10 +172,8 @@ try {
   // Case (e) — two concurrent toolCalls where one result arrives keeps the
   // span open (the second tool is still in flight).
   {
-    const twoCalls =
-      `echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"a"}},{"type":"toolCall","id":"call_2","name":"read","arguments":{"path":"x"}}]}}'`;
-    const res1 =
-      `echo '{"type":"message_end","message":{"role":"toolResult","toolName":"bash","toolCallId":"call_1","toolResults":[]}}'`;
+    const twoCalls = `echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"a"}},{"type":"toolCall","id":"call_2","name":"read","arguments":{"path":"x"}}]}}'`;
+    const res1 = `echo '{"type":"message_end","message":{"role":"toolResult","toolName":"bash","toolCallId":"call_1","toolResults":[]}}'`;
     process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "1500";
     process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS = "3000";
     writeFakePi(`${twoCalls}\n${res1}\nsleep 30`);

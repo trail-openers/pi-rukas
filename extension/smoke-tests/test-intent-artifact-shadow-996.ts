@@ -22,10 +22,7 @@
  */
 
 import { resolveIntentVerdict } from "../src/work-driver-intent-artifact.ts";
-import {
-  type NormalisedSpec,
-  reconcileVerdict,
-} from "../src/work-driver-intent.ts";
+import { type NormalisedSpec, reconcileVerdict } from "../src/work-driver-intent.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

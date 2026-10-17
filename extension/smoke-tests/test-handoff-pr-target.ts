@@ -84,7 +84,10 @@ async function run(opts: { prLabelWorks: boolean; prCommentWorks: boolean }) {
 {
   const { emitted, calls } = await run({ prLabelWorks: false, prCommentWorks: true });
   const commentTargets = calls.filter((c) => c.method === "prComment").map((c) => c.args[0]);
-  assert(commentTargets.length === 1, "the comment is posted once (no retries burnt on a wrong id)");
+  assert(
+    commentTargets.length === 1,
+    "the comment is posted once (no retries burnt on a wrong id)",
+  );
   assert(commentTargets[0] === PR, `the comment goes to PR #${PR}, not issue #${ISSUE}`);
   assert(
     emitted?.commentUrl === `https://github.com/acme/widget/pull/${PR}#issuecomment-9001`,

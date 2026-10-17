@@ -153,8 +153,7 @@ const isolatedDirs: string[] = [];
   registerSubagentGuard(mock.pi);
   const blocked = await mock.callToolCall("bash", { command: "git reset --hard HEAD" });
   assert(
-    blocked?.block === true &&
-      !(blocked.reason ?? "").includes("no broker socket"),
+    blocked?.block === true && !(blocked.reason ?? "").includes("no broker socket"),
     "the mode-independent destructive-git guard runs ahead of the broker path (the probe must stay ask-class)",
   );
 }
@@ -251,7 +250,8 @@ const isolatedDirs: string[] = [];
     `the deny names the broker as the thing that failed, so the destructive-git guard is not what blocked it (got: ${blocked?.reason})`,
   );
   assert(
-    typeof blocked?.reason === "string" && !/discards uncommitted work|editor or terminal prompt/.test(blocked.reason),
+    typeof blocked?.reason === "string" &&
+      !/discards uncommitted work|editor or terminal prompt/.test(blocked.reason),
     "the reason is not the destructive-git guard's wording (the ordering trap in case 3)",
   );
 }

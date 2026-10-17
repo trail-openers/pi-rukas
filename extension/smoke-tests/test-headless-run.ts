@@ -181,10 +181,7 @@ function parseLines(lines: string[]): Record<string, unknown>[] {
     );
     assert(before === after, "the refused invocation leaves the state file untouched");
     // #1326 — a live owner holds the cycle: re-running cannot resume it.
-    assert(
-      result.results[0]?.resumable === false,
-      "a refused (exit 40) result is not resumable",
-    );
+    assert(result.results[0]?.resumable === false, "a refused (exit 40) result is not resumable");
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

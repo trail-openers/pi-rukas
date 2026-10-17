@@ -25,12 +25,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import {
+  PROTECTED_DIFF_ARGV,
+  PROTECTED_STATUS_ARGV,
+} from "../src/work-driver-protected-paths-read.ts";
 import { pathsAreFrontendOnly } from "../src/work-driver-verify-cmd.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
-import { PROTECTED_DIFF_ARGV, PROTECTED_STATUS_ARGV } from "../src/work-driver-protected-paths-read.ts";
 
 const execFileP = promisify(execFile);
 
@@ -57,18 +60,31 @@ try {
   // ---------------------------------------------------------------- unit —
   // pure classifier: closed-world, extension-only, no fs/git.
   const GLOBS = [".css", ".html", ".svg", ".woff", ".woff2", ".ttf", ".otf"];
-  {
-    assert(pathsAreFrontendOnly(["src/ui/hero.css"], GLOBS) === true, "classifier: all-CSS → true");
-    assert(pathsAreFrontendOnly(["a.css", "b.html", "c.woff2"], GLOBS) === true, "classifier: mixed frontend types → true");
-    assert(pathsAreFrontendOnly(["src/app.ts"], GLOBS) === false, "classifier: a .ts file → false");
-    assert(pathsAreFrontendOnly(["a.css", "b.ts"], GLOBS) === false, "classifier: CSS + TS mixed → false");
-    assert(pathsAreFrontendOnly(["docs/readme.md"], GLOBS) === false, "classifier: .md-only → false");
-    assert(pathsAreFrontendOnly(["Makefile"], GLOBS) === false, "classifier: no-dot path → false");
-    assert(pathsAreFrontendOnly(["a.css"], []) === false, "classifier: empty glob list → false");
-    assert(pathsAreFrontendOnly([], GLOBS) === false, "classifier: empty path list → false (no evidence)");
-    assert(pathsAreFrontendOnly(["acss"], GLOBS) === false, "classifier: extension without dot boundary (a.css ≠ acss) → false");
-    assert(pathsAreFrontendOnly(["src/Hero.CSS"], GLOBS) === true, "classifier: extension match is case-insensitive");
-  }
+  assert(pathsAreFrontendOnly(["src/ui/hero.css"], GLOBS) === true, "classifier: all-CSS → true");
+  assert(
+    pathsAreFrontendOnly(["a.css", "b.html", "c.woff2"], GLOBS) === true,
+    "classifier: mixed frontend types → true",
+  );
+  assert(pathsAreFrontendOnly(["src/app.ts"], GLOBS) === false, "classifier: a .ts file → false");
+  assert(
+    pathsAreFrontendOnly(["a.css", "b.ts"], GLOBS) === false,
+    "classifier: CSS + TS mixed → false",
+  );
+  assert(pathsAreFrontendOnly(["docs/readme.md"], GLOBS) === false, "classifier: .md-only → false");
+  assert(pathsAreFrontendOnly(["Makefile"], GLOBS) === false, "classifier: no-dot path → false");
+  assert(pathsAreFrontendOnly(["a.css"], []) === false, "classifier: empty glob list → false");
+  assert(
+    pathsAreFrontendOnly([], GLOBS) === false,
+    "classifier: empty path list → false (no evidence)",
+  );
+  assert(
+    pathsAreFrontendOnly(["acss"], GLOBS) === false,
+    "classifier: extension without dot boundary (a.css ≠ acss) → false",
+  );
+  assert(
+    pathsAreFrontendOnly(["src/Hero.CSS"], GLOBS) === true,
+    "classifier: extension match is case-insensitive",
+  );
 
   // ---------------------------------------------------------------- helper —
   // a fake-exec repo whose worktree reports a fixed porcelain/diff shape.
@@ -85,12 +101,22 @@ try {
     if (opts.rust) writeFileSync(path.join(dir, "Cargo.toml"), "[package]\nname='x'\n");
     if (opts.pkg) writeFileSync(path.join(dir, "package.json"), JSON.stringify(opts.pkg));
     const commands: string[] = [];
-    const verifyCommands = ["cargo check --quiet", "npm run test", "bun run test", "pnpm run test", "bun run typecheck", "npm run typecheck", "echo explicit-verify"];
+    const verifyCommands = [
+      "cargo check --quiet",
+      "npm run test",
+      "bun run test",
+      "pnpm run test",
+      "bun run typecheck",
+      "npm run typecheck",
+      "echo explicit-verify",
+    ];
     const exec: NonNullable<DriverContext["verifyExecFn"]> = async (argvCmd, o) => {
       const cmd = commandOf(argvCmd, o);
       if (verifyCommands.includes(cmd)) commands.push(cmd);
-      if (isNulStatusRead(cmd)) return { stdout: nulStatus(...porcelain.split("\n").filter(Boolean)) };
-      if (cmd.startsWith("git rev-list --count")) return { stdout: porcelain.trim() ? "1\n" : "0\n" };
+      if (isNulStatusRead(cmd))
+        return { stdout: nulStatus(...porcelain.split("\n").filter(Boolean)) };
+      if (cmd.startsWith("git rev-list --count"))
+        return { stdout: porcelain.trim() ? "1\n" : "0\n" };
       if (isNulDiffRead(cmd)) return { stdout: nulNameStatus(...diffPaths) };
       if (cmd.startsWith("git diff")) return { stdout: "" };
       return { stdout: "" };
@@ -98,7 +124,10 @@ try {
     return { dir, exec, commands };
   };
 
-  const ctxFor = (dir: string, exec: NonNullable<DriverContext["verifyExecFn"]>): DriverContext => ({
+  const ctxFor = (
+    dir: string,
+    exec: NonNullable<DriverContext["verifyExecFn"]>,
+  ): DriverContext => ({
     host: makeFakePi().pi,
     repoRoot: dir,
     issue: 1012,
@@ -227,29 +256,54 @@ try {
   // command unchanged — no behaviour change for non-frontend work.
   {
     process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = ".css,.html,.svg,.woff,.woff2,.ttf,.otf";
-    const mixed = makeFakeRepo(" M src/ui/hero.css\n M src/app.ts\n", ["src/ui/hero.css", "src/app.ts"], {
-      rust: true,
-    });
-    const g1 = await verifyStepOutcome(ctxFor(mixed.dir, mixed.exec), stateFor({ default: mixed.dir }, { default: ws("default", "mixed") }), "develop");
+    const mixed = makeFakeRepo(
+      " M src/ui/hero.css\n M src/app.ts\n",
+      ["src/ui/hero.css", "src/app.ts"],
+      {
+        rust: true,
+      },
+    );
+    const g1 = await verifyStepOutcome(
+      ctxFor(mixed.dir, mixed.exec),
+      stateFor({ default: mixed.dir }, { default: ws("default", "mixed") }),
+      "develop",
+    );
     assert(g1.ok, "#1012: CSS + TS mixed diff → ok (derived chain ran)");
-    assert(mixed.commands.includes("cargo check --quiet"), "#1012: mixed diff ran the derived cargo check");
+    assert(
+      mixed.commands.includes("cargo check --quiet"),
+      "#1012: mixed diff ran the derived cargo check",
+    );
     assert(!g1.notes.some((n) => /frontend-only/.test(n)), "#1012: mixed diff → no skip note");
     rmSync(mixed.dir, { recursive: true, force: true });
 
     const md = makeFakeRepo(" M docs/readme.md\n", ["docs/readme.md"], {
       pkg: { scripts: { test: "true" } },
     });
-    const g2 = await verifyStepOutcome(ctxFor(md.dir, md.exec), stateFor({ default: md.dir }, { default: ws("default", "docs") }), "develop");
+    const g2 = await verifyStepOutcome(
+      ctxFor(md.dir, md.exec),
+      stateFor({ default: md.dir }, { default: ws("default", "docs") }),
+      "develop",
+    );
     assert(g2.ok, "#1012: .md-only diff → ok (full chain ran)");
-    assert(md.commands.includes("npm run test"), "#1012: .md-only diff ran the derived test script (no skip for docs)");
+    assert(
+      md.commands.includes("npm run test"),
+      "#1012: .md-only diff ran the derived test script (no skip for docs)",
+    );
     rmSync(md.dir, { recursive: true, force: true });
 
     const rb = makeFakeRepo(" M src/lib.rb\n", ["src/lib.rb"], {
       pkg: { scripts: { test: "true" } },
     });
-    const g3 = await verifyStepOutcome(ctxFor(rb.dir, rb.exec), stateFor({ default: rb.dir }, { default: ws("default", "rb") }), "develop");
+    const g3 = await verifyStepOutcome(
+      ctxFor(rb.dir, rb.exec),
+      stateFor({ default: rb.dir }, { default: ws("default", "rb") }),
+      "develop",
+    );
     assert(g3.ok, "#1012: .rb-only diff → ok (full chain ran)");
-    assert(rb.commands.includes("npm run test"), "#1012: .rb (unlisted extension) ran the derived chain");
+    assert(
+      rb.commands.includes("npm run test"),
+      "#1012: .rb (unlisted extension) ran the derived chain",
+    );
     rmSync(rb.dir, { recursive: true, force: true });
 
     // Unset env var: even a .rb diff runs the full chain (no skip fired).
@@ -257,7 +311,11 @@ try {
     const rb2 = makeFakeRepo(" M src/lib.rb\n", ["src/lib.rb"], {
       pkg: { scripts: { test: "true" } },
     });
-    const g3b = await verifyStepOutcome(ctxFor(rb2.dir, rb2.exec), stateFor({ default: rb2.dir }, { default: ws("default", "rb") }), "develop");
+    const g3b = await verifyStepOutcome(
+      ctxFor(rb2.dir, rb2.exec),
+      stateFor({ default: rb2.dir }, { default: ws("default", "rb") }),
+      "develop",
+    );
     assert(g3b.ok, "#1013: .rb-only diff with unset env var → ok (full chain ran)");
     rmSync(rb2.dir, { recursive: true, force: true });
   }
@@ -281,7 +339,8 @@ try {
       if (isNulStatusRead(line))
         return { stdout: cwd === wtA ? nulStatus(" M a.css") : nulStatus(" M b.ts") };
       if (line.startsWith("git rev-list --count")) return { stdout: "1\n" };
-      if (isNulDiffRead(line)) return { stdout: cwd === wtA ? nulNameStatus("a.css") : nulNameStatus("b.ts") };
+      if (isNulDiffRead(line))
+        return { stdout: cwd === wtA ? nulNameStatus("a.css") : nulNameStatus("b.ts") };
       if (cmd.startsWith("git diff")) return { stdout: "" };
       return { stdout: "" };
     };
@@ -289,7 +348,10 @@ try {
     const s = stateFor({ a: wtA, b: wtB }, { a: ws("a", "css"), b: ws("b", "ts") });
     const gate = await verifyStepOutcome(ctx, s, "develop");
     assert(gate.ok, "#1012: CSS worktree + TS worktree → ok (derived chain ran on the union)");
-    assert(commands.includes("cargo check --quiet"), "#1012: union containing a .ts path ran the derived cargo check");
+    assert(
+      commands.includes("cargo check --quiet"),
+      "#1012: union containing a .ts path ran the derived cargo check",
+    );
     assert(!gate.notes.some((n) => /frontend-only/.test(n)), "#1012: mixed union → no skip note");
     rmSync(dir, { recursive: true, force: true });
   }
@@ -312,7 +374,10 @@ try {
     const ctx = ctxFor(r.dir, wrapped);
     const s = stateFor({ default: r.dir }, { default: ws("default", "css-only") });
     const gate = await verifyStepOutcome(ctx, s, "develop");
-    assert(!gate.ok, "#1012: skip-ratchet violation on a CSS-only diff → NOT ok (gate not skipped)");
+    assert(
+      !gate.ok,
+      "#1012: skip-ratchet violation on a CSS-only diff → NOT ok (gate not skipped)",
+    );
     assert(
       gate.failures.some((f) => /skip.*marker/.test(f)),
       "#1012: the skip-ratchet failure is present despite the frontend-only skip",
@@ -336,7 +401,10 @@ try {
     const ctx = ctxFor(dir, exec);
     const s = stateFor({ default: dir }, { default: ws("default", "css") });
     const gate = await verifyStepOutcome(ctx, s, "develop");
-    assert(!gate.ok, "#1012: smoke-cmd failure on a CSS-only diff → NOT ok (smoke gate not skipped)");
+    assert(
+      !gate.ok,
+      "#1012: smoke-cmd failure on a CSS-only diff → NOT ok (smoke gate not skipped)",
+    );
     assert(
       gate.failures.some((f) => /smoke/i.test(f)),
       `#1012: the smoke failure is present despite the frontend-only skip (failures: ${gate.failures.join("; ")})`,
@@ -352,14 +420,20 @@ try {
     const s = stateFor({ default: r.dir }, { default: ws("default", "xhtml") });
     const g1 = await verifyStepOutcome(ctx, s, "develop");
     assert(g1.ok, "#1012: custom .xhtml glob + .xhtml diff → ok (derived chain skipped)");
-    assert(!r.commands.includes("cargo check --quiet"), "#1012: custom glob diff did not run the derived command");
+    assert(
+      !r.commands.includes("cargo check --quiet"),
+      "#1012: custom glob diff did not run the derived command",
+    );
     rmSync(r.dir, { recursive: true, force: true });
 
     const r2 = makeFakeRepo(" M index.html\n", ["index.html"], { rust: true });
     const ctx2 = ctxFor(r2.dir, r2.exec);
     const s2 = stateFor({ default: r2.dir }, { default: ws("default", "html") });
     const g2 = await verifyStepOutcome(ctx2, s2, "develop");
-    assert(r2.commands.includes("cargo check --quiet"), "#1012: with globs=[.xhtml], a .html diff runs the derived chain (default not additive)");
+    assert(
+      r2.commands.includes("cargo check --quiet"),
+      "#1012: with globs=[.xhtml], a .html diff runs the derived chain (default not additive)",
+    );
     assert(g2.ok, "#1012: .html under a .xhtml-only glob list → ok (chain ran)");
     rmSync(r2.dir, { recursive: true, force: true });
   }
@@ -430,7 +504,10 @@ try {
         }
         if (cmd.startsWith("git rev-list --count ")) {
           const range = cmd.slice("git rev-list --count ".length).trim();
-          const { stdout } = await execFileP("git", ["rev-list", "--count", range], { cwd: o?.cwd, maxBuffer: 64 * 1024 });
+          const { stdout } = await execFileP("git", ["rev-list", "--count", range], {
+            cwd: o?.cwd,
+            maxBuffer: 64 * 1024,
+          });
           return { stdout };
         }
         // Consolidated-verify git machinery — real git. Every other command
@@ -443,7 +520,9 @@ try {
           const argv = cmd
             .slice(4)
             .split(" ")
-            .map((a) => (a.length > 1 && a.startsWith('"') && a.endsWith('"') ? a.slice(1, -1) : a));
+            .map((a) =>
+              a.length > 1 && a.startsWith('"') && a.endsWith('"') ? a.slice(1, -1) : a,
+            );
           const { stdout } = await execFileP("git", argv, {
             cwd: o?.cwd,
             maxBuffer: 8 * 1024 * 1024,

@@ -24,13 +24,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { branchHolders } from "../src/work-driver-branch-holder.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
 import { runBranchResiduePass } from "../src/work-driver-branch-residue.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState } from "../src/workflow-state.ts";
-import {
-  type ExecFn,
-  WORKTREE_LIST_TIMEOUT_MS,
-} from "../src/worktree.ts";
+import { type ExecFn, WORKTREE_LIST_TIMEOUT_MS } from "../src/worktree.ts";
 import { git, realExec } from "./lib/worktree-fake-fixture.ts";
 
 let exit = 0;

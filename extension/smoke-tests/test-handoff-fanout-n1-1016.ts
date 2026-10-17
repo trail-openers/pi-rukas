@@ -16,17 +16,17 @@ function assert(cond: boolean, msg: string) {
 
 const { fanoutVerdictLines } = await import("../src/work-driver-handoff-fanout.ts");
 
-const stateWith = (eventLog: WorkEvent[], verdicts?: Array<{ id: string; ok: boolean; reason?: string }>) =>
+const stateWith = (
+  eventLog: WorkEvent[],
+  verdicts?: Array<{ id: string; ok: boolean; reason?: string }>,
+) =>
   ({
     schemaVersion: 1,
     issue: 1,
     updatedAt: 0,
     pipelineState: { currentStep: "handoff", inFlightJobIds: [] },
     eventLog: verdicts
-      ? [
-          ...eventLog,
-          { kind: "branches-converged", step: "develop", verdicts, at: 99 },
-        ]
+      ? [...eventLog, { kind: "branches-converged", step: "develop", verdicts, at: 99 }]
       : eventLog,
   }) as unknown as WorkState;
 
@@ -40,17 +40,22 @@ const stateWith = (eventLog: WorkEvent[], verdicts?: Array<{ id: string; ok: boo
     [{ id: "default", ok: true }],
   );
   const texts = fanoutVerdictLines(s).map((l) => l.text);
-  assert(texts.join() === "default: ok", `#1016 N=1: a fresh green reads "ok" (got ${texts.join()})`);
+  assert(
+    texts.join() === "default: ok",
+    `#1016 N=1: a fresh green reads "ok" (got ${texts.join()})`,
+  );
 }
 
 // N=1 failed then green-free: unchanged FAIL wording.
 {
-  const s = stateWith(
-    [{ kind: "step-started", step: "develop", at: 1 }] as WorkEvent[],
-    [{ id: "default", ok: false, reason: "boom" }],
-  );
+  const s = stateWith([{ kind: "step-started", step: "develop", at: 1 }] as WorkEvent[], [
+    { id: "default", ok: false, reason: "boom" },
+  ]);
   const texts = fanoutVerdictLines(s).map((l) => l.text);
-  assert(texts.join() === "default: FAIL — boom", `#1016 N=1: a failure keeps its reason (got ${texts.join()})`);
+  assert(
+    texts.join() === "default: FAIL — boom",
+    `#1016 N=1: a failure keeps its reason (got ${texts.join()})`,
+  );
 }
 
 // A crash-resume re-record is the only "kept (ok)".
@@ -58,12 +63,23 @@ const stateWith = (eventLog: WorkEvent[], verdicts?: Array<{ id: string; ok: boo
   const s = stateWith(
     [
       { kind: "step-started", step: "develop", at: 1 },
-      { kind: "branch-completed", step: "develop", workstreamId: "task-a", ok: true, ms: 0, at: 2, resumed: true },
+      {
+        kind: "branch-completed",
+        step: "develop",
+        workstreamId: "task-a",
+        ok: true,
+        ms: 0,
+        at: 2,
+        resumed: true,
+      },
     ] as WorkEvent[],
     [{ id: "task-a", ok: true }],
   );
   const texts = fanoutVerdictLines(s).map((l) => l.text);
-  assert(texts.join() === "task-a: kept (ok)", `#1016: a resumed green reads "kept (ok)" (got ${texts.join()})`);
+  assert(
+    texts.join() === "task-a: kept (ok)",
+    `#1016: a resumed green reads "kept (ok)" (got ${texts.join()})`,
+  );
 }
 
 console.log(`\nexit ${exit}`);

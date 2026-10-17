@@ -13,7 +13,14 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveRestoreTarget, restoreCheckout } from "../src/work-driver-git.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import { assert, buildRepo, head, realExec, result, shown } from "./lib/restore-start-ref-fixtures.ts";
+import {
+  assert,
+  buildRepo,
+  head,
+  realExec,
+  result,
+  shown,
+} from "./lib/restore-start-ref-fixtures.ts";
 
 function recordingExec(calls: string[]): ExecFn {
   return (cmd, opts) => {
@@ -188,7 +195,10 @@ function recordingExec(calls: string[]): ExecFn {
       "dirt-after-checkout: no pull runs on a tree with tracked changes",
     );
     assert(
-      execFileSync("git", ["branch", "--list", "feature/merged"], { cwd: dir, encoding: "utf8" }).trim() === "",
+      execFileSync("git", ["branch", "--list", "feature/merged"], {
+        cwd: dir,
+        encoding: "utf8",
+      }).trim() === "",
       "dirt-after-checkout: the merged branch is deleted (HEAD is off it)",
     );
   } finally {

@@ -107,16 +107,28 @@ function crashTreeText(
  *  and renders, and dereferencing `e.target.kind` unguarded raised a
  *  TypeError that took down the WHOLE `/work-status` panel: one unreadable row
  *  is not allowed to erase the rows around it that the operator came to read.
- *  `"?"` is deliberately not a plausible tree — it reads as unknown. The
- *  driver's own emit sites go through `makeVerifyRunEvents`, which always
- *  supplies `target`, so this branch is for half-written or hand-edited state
- *  rather than a run the code performed. */
+ *  `"(unknown)"` is not a tree any workstream is ever named — the driver's
+ *  worktrees are `.worktrees/issue-<N>-<slug>` — so an unreadable target is
+ *  never mistaken for a real one. A bare `"?"` would have been: a path ending
+ *  in that character is a legal tree name, and the tree is the one field this
+ *  pair exists to attribute. Which is also why a malformed `target` is NOT
+ *  reported as `"consolidated"`: that is a positive claim about the tree the
+ *  develop gate judged, and `{}`, `[]` or `{kind:"worktree"}` with no `path`
+ *  are evidence of nothing. The three cases stay distinguishable — a real
+ *  `consolidated` target, a worktree basename, and `"(unknown)"` for the rest.
+ *  The driver's own emit sites go through `makeVerifyRunEvents`, which always
+ *  supplies `target`, so these branches are for half-written or hand-edited
+ *  state rather than a run the code performed. */
 function verifyTargetText(e: { target?: VerifyTarget | null }): string {
   const t = e.target;
-  if (typeof t !== "object" || t === null) return "?";
-  return t.kind === "worktree" && typeof t.path === "string"
-    ? path.basename(t.path)
-    : "consolidated";
+  if (typeof t !== "object" || t === null) return "(unknown)";
+  if (t.kind === "consolidated") return "consolidated";
+  // `String()` first: a whitespace-only path survives `path.basename`, and
+  // `'   '` renders as blank padding the reader cannot tell from an absent
+  // field — the same lie `"consolidated"` would be.
+  const basename =
+    t.kind === "worktree" && typeof t.path === "string" ? path.basename(String(t.path)).trim() : "";
+  return basename === "" ? "(unknown)" : basename;
 }
 
 /**
@@ -281,7 +293,12 @@ function fmtEventCase(e: WorkEvent, derivedRound?: number): string {
       // The verdict + the cost. `timeout` reads differently from `failure`
       // because a killed run judged nothing (#1324); `reused` says no command
       // was executed for this verdict at all.
-      return `  verify-completed · ${e.step} · ${verifyTargetText(e)} · ${e.status}${e.ms !== undefined ? ` · ${fmtElapsed(e.ms)}` : ""}${e.reused ? " (reused)" : ""}${e.tier ? ` · ${e.tier}` : ""}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
+      // `ms` is guarded the same way `target` is: a non-number reaching here
+      // through a state file would render `NaNmNaNs` (or `InfinitymNaNs`) with
+      // no exception thrown, so the fallback arm above would never see it and
+      // the operator would read a fabricated duration as a measured one. An
+      // unmeasurable duration is omitted, never invented.
+      return `  verify-completed · ${e.step} · ${verifyTargetText(e)} · ${e.status}${typeof e.ms === "number" && Number.isFinite(e.ms) ? ` · ${fmtElapsed(e.ms)}` : ""}${e.reused ? " (reused)" : ""}${e.tier ? ` · ${e.tier}` : ""}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
     case "widening-scan":
       return `  widening-scan · ${e.findings.length} finding(s)`;
     case "memory-write":

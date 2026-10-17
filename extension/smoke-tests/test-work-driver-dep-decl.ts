@@ -64,7 +64,8 @@ function assert(cond: boolean, msg: string) {
     "depends-on: comma-separated multi-dep parsed into 2-element array",
   );
   assert(
-    parsed["task-c"]?.dependsOn?.includes("task-a") && parsed["task-c"]?.dependsOn?.includes("task-b"),
+    parsed["task-c"]?.dependsOn?.includes("task-a") &&
+      parsed["task-c"]?.dependsOn?.includes("task-b"),
     "depends-on: both deps present in the array",
   );
 }
@@ -201,10 +202,7 @@ function assert(cond: boolean, msg: string) {
     ].join("\n");
     const parsed = parseWorkstreams(block);
     const ids = Object.keys(parsed);
-    assert(
-      ids.length === 2,
-      "fold: 3 workstreams folded to ceiling of 2",
-    );
+    assert(ids.length === 2, "fold: 3 workstreams folded to ceiling of 2");
     // The folded workstream's depends-on IS preserved by the shared fold
     // (workstream-fold.ts: union of dependsOn minus the two merged ids).
     // c depends on a; c is folded into b; the merged workstream (b) keeps

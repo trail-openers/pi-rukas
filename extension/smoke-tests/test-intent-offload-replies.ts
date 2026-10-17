@@ -35,14 +35,14 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  SPEC_ARTIFACT_GATE_VERSION,
+  parseNormalisedSpecArtifact,
+} from "../src/work-driver-intent-artifact.ts";
+import {
   parseNormalisedSpec,
   reconcileVerdict,
   specIsActionable,
 } from "../src/work-driver-intent.ts";
-import {
-  SPEC_ARTIFACT_GATE_VERSION,
-  parseNormalisedSpecArtifact,
-} from "../src/work-driver-intent-artifact.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPLY = path.join(__dirname, "fixtures", "explore-replies", "674.txt");
@@ -126,10 +126,7 @@ assert(
     );
 
     // --- the intent is non-empty and grounded ---
-    assert(
-      parsed.intent.trim().length > 0,
-      "intent is non-empty",
-    );
+    assert(parsed.intent.trim().length > 0, "intent is non-empty");
     assert(
       /handoff|worktree|consolidat|retry/i.test(parsed.intent),
       "intent is about the handoff/worktree/consolidation topic (not empty or garbage)",
@@ -175,7 +172,8 @@ assert(
 // ---------------------------------------------------------------------------
 
 {
-  const noSpecFile = "INTENT-VERDICT: proceed-with-assumptions\n\nSome prose with no ## Spec block at all.\n";
+  const noSpecFile =
+    "INTENT-VERDICT: proceed-with-assumptions\n\nSome prose with no ## Spec block at all.\n";
   const parsed = parseNormalisedSpec(noSpecFile);
   assert(
     parsed === undefined,
@@ -210,7 +208,11 @@ assert(
     intent: "Add a SECURITY.md and enable secret scanning",
     deliverables: [
       { id: "d1", description: "Create SECURITY.md", paths: ["SECURITY.md"] },
-      { id: "d2", description: "Enable secret scanning via gh api", paths: ["n/a — repo settings"] },
+      {
+        id: "d2",
+        description: "Enable secret scanning via gh api",
+        paths: ["n/a — repo settings"],
+      },
     ],
     acceptanceCriteria: ["SECURITY.md exists"],
     outOfScope: [],

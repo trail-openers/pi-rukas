@@ -10,8 +10,8 @@
  *   (e) multiple active issues → each is edited
  */
 
-import type { Forge } from "../src/forge.ts";
 import type { NormalizedIssue } from "../src/forge-types.ts";
+import type { Forge } from "../src/forge.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { editIssueTldrs } from "../src/work-driver-merged-tldr.ts";
 import type { WorkState } from "../src/workflow-state.ts";
@@ -31,10 +31,9 @@ function makeFakeForge(
   initialBodies: Record<number, string>,
   opts?: { failEditFor?: Set<number> },
 ): { forge: Forge; calls: Array<{ op: string; issue: number; body?: string }> } {
-  const bodies = new Map<number, string>(Object.entries(initialBodies).map(([k, v]) => [
-    Number(k),
-    v,
-  ]));
+  const bodies = new Map<number, string>(
+    Object.entries(initialBodies).map(([k, v]) => [Number(k), v]),
+  );
   const calls: Array<{ op: string; issue: number; body?: string }> = [];
 
   const forge: Forge = {
@@ -214,10 +213,7 @@ function mkState(
     assert(false, `(c) editIssueTldrs threw: ${(e as Error).message}`);
   }
   assert(notes.length === 1, "(c) exactly one error note recorded");
-  assert(
-    notes[0]?.includes("#102"),
-    "(c) the note names the failed issue #102",
-  );
+  assert(notes[0]?.includes("#102"), "(c) the note names the failed issue #102");
 }
 
 // ---------------------------------------------------------------------------

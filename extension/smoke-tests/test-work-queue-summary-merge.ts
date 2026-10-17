@@ -20,16 +20,16 @@
  *   8. recordSingleCycleOutcome swallows an internal error (best-effort)
  */
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { recordSingleCycleOutcome } from "../src/work-entry.ts";
 import {
   mergeQueueSummaryEntries,
   mergeQueueSummaryEntry,
   readQueueSummary,
   writeQueueSummary,
 } from "../src/work-queue-summary.ts";
-import { recordSingleCycleOutcome } from "../src/work-entry.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -124,12 +124,18 @@ try {
         humanAction: "inspect the state file",
       });
       const back = (await readQueueSummary(dir2))!;
-      assert(back.entries.length === 1 && back.entries[0]?.groupId === "single-765",
-        "single-issue cycle leaves a row in queue-summary.json");
-      assert(back.parked === 1 && back.merged === 0 && back.refused === 0,
-        "single-issue row counts in the summary totals");
-      assert(Array.isArray(back.notStarted) && back.notStarted.length === 0,
-        "single-issue row leaves no phantom notStarted groups");
+      assert(
+        back.entries.length === 1 && back.entries[0]?.groupId === "single-765",
+        "single-issue cycle leaves a row in queue-summary.json",
+      );
+      assert(
+        back.parked === 1 && back.merged === 0 && back.refused === 0,
+        "single-issue row counts in the summary totals",
+      );
+      assert(
+        Array.isArray(back.notStarted) && back.notStarted.length === 0,
+        "single-issue row leaves no phantom notStarted groups",
+      );
     } finally {
       rmSync(dir2, { recursive: true, force: true });
     }

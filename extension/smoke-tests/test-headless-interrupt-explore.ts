@@ -183,7 +183,10 @@ const GRACE_MS = 20_000;
     });
     const elapsed = Date.now() - started;
     const state = (await readState(repo, 72)) as WorkState;
-    assert(result.exitCode === 21, `a failed fetch under SIGTERM exits 21 (got ${result.exitCode})`);
+    assert(
+      result.exitCode === 21,
+      `a failed fetch under SIGTERM exits 21 (got ${result.exitCode})`,
+    );
     assert(result.results[0]?.cap === undefined, "and names no cap");
     assert(!kindsOf(state).includes("cap-hit"), "no explore-bodies-empty cap-hit");
     assert(calls === 1, `no retry after the abort (got ${calls} attempts)`);

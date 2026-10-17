@@ -138,8 +138,9 @@ const fs: AgentsMdFs = {
   // budget. The demarcation is a bold lead-in line, not a ## sub-heading, so
   // the density gate's bodyLines() keeps measuring the full section.
   assert(
-    testingStandardsBody("90%+", ["Integration tests live in tests/, unit tests colocated in-module"])
-      .startsWith(testingStandardsBody("90%+")),
+    testingStandardsBody("90%+", [
+      "Integration tests live in tests/, unit tests colocated in-module",
+    ]).startsWith(testingStandardsBody("90%+")),
     "testingNotes: populated body starts byte-identical to the static doctrine",
   );
   const withNotes = testingStandardsBody("90%+", [
@@ -151,8 +152,14 @@ const fs: AgentsMdFs = {
   ]);
   const withNotesLines = withNotes.split("\n").length;
   console.log(`  Testing Standards body (5 notes) = ${withNotesLines} lines`);
-  assert(withNotesLines <= 20, `Testing Standards body with 5 notes ≤ 20 lines (got ${withNotesLines})`);
-  assert(withNotes.includes("**Project-specific**"), "testingNotes: 'Project-specific' demarcation present");
+  assert(
+    withNotesLines <= 20,
+    `Testing Standards body with 5 notes ≤ 20 lines (got ${withNotesLines})`,
+  );
+  assert(
+    withNotes.includes("**Project-specific**"),
+    "testingNotes: 'Project-specific' demarcation present",
+  );
   assert(
     withNotes.includes("- Network-dependent tests marked #[ignore] with a reason"),
     "testingNotes: bullets appended after the static doctrine, verbatim",
@@ -213,13 +220,17 @@ const fs: AgentsMdFs = {
   const withNotes = computeScaffold(new Set(), {
     scaffold: true,
     answers: { coverageThreshold: "60%" },
-    agentOverride: { testingNotes: ["Unit tests in-module via #[cfg(test)]", "Integration tests in tests/"] },
+    agentOverride: {
+      testingNotes: ["Unit tests in-module via #[cfg(test)]", "Integration tests in tests/"],
+    },
   });
-  const withNotesBody =
-    withNotes.sections.find((s) => s.id === "testing-standards")?.body ?? "";
+  const withNotesBody = withNotes.sections.find((s) => s.id === "testing-standards")?.body ?? "";
   assert(
     withNotesBody.startsWith(
-      testingStandardsBody("60%", ["Unit tests in-module via #[cfg(test)]", "Integration tests in tests/"]),
+      testingStandardsBody("60%", [
+        "Unit tests in-module via #[cfg(test)]",
+        "Integration tests in tests/",
+      ]),
     ) && withNotesBody.includes("**Project-specific**"),
     "computeScaffold: testingNotes supplement appended after the static doctrine",
   );

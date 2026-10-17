@@ -16,14 +16,14 @@
  */
 
 import {
-  mapGlIssue,
-  mapGlMr,
-  mapGlPipelineJobs,
-  mapGlRepo,
   mapGhIssue,
   mapGhPr,
   mapGhRepo,
   mapGhRun,
+  mapGlIssue,
+  mapGlMr,
+  mapGlPipelineJobs,
+  mapGlRepo,
   parsePrNumberFromResponse,
 } from "../src/forge-mapping.ts";
 import { GH_REPO, GH_RUN_DONE, GL_JOBS, GL_MR, GL_PROJECT } from "./forge-fixtures.ts";
@@ -63,9 +63,14 @@ async function main() {
     assert(parsed!.url === "https://github.com/acme/widget/issues/42", `url ${parsed!.url}`);
   });
   await check("plain URL: gl merge request (no anchor)", () => {
-    const parsed = parsePrNumberFromResponse("https://gitlab.com/acme/widget/-/merge_requests/17\n");
+    const parsed = parsePrNumberFromResponse(
+      "https://gitlab.com/acme/widget/-/merge_requests/17\n",
+    );
     assert(parsed !== undefined && parsed.number === 17, `got ${JSON.stringify(parsed)}`);
-    assert(parsed!.url === "https://gitlab.com/acme/widget/-/merge_requests/17", `url ${parsed!.url}`);
+    assert(
+      parsed!.url === "https://gitlab.com/acme/widget/-/merge_requests/17",
+      `url ${parsed!.url}`,
+    );
   });
   await check("JSON payload: number + web_url (GitLab)", () => {
     const parsed = parsePrNumberFromResponse(

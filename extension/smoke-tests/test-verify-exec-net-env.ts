@@ -10,13 +10,13 @@
  * that records its argv and exits non-zero at once (no network needed).
  */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync } from "node:fs";
+import { exec } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { execp as verifyExecp } from "../src/work-driver-verify.ts";
 import { runNetGit } from "../src/work-driver-net-git.ts";
+import { execp as verifyExecp } from "../src/work-driver-verify.ts";
 
 const execp = promisify(exec);
 let failures = 0;

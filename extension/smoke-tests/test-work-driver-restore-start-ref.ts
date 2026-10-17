@@ -30,12 +30,25 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { captureCycleStartRef, recordCycleStartRef, restoreCheckout } from "../src/work-driver-git.ts";
+import {
+  captureCycleStartRef,
+  recordCycleStartRef,
+  restoreCheckout,
+} from "../src/work-driver-git.ts";
 import { consolidateWorktreesToBranch } from "../src/work-driver-handoff-consolidate.ts";
 import { restoreRootToRef } from "../src/work-driver-restore.ts";
-import { WorkState, readState, writeState } from "../src/workflow-state.ts";
+import { type WorkState, readState, writeState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import { assert, realExec, shown, buildRepo, head, sha, stateWith, result } from "./lib/restore-start-ref-fixtures.ts";
+import {
+  assert,
+  buildRepo,
+  head,
+  realExec,
+  result,
+  sha,
+  shown,
+  stateWith,
+} from "./lib/restore-start-ref-fixtures.ts";
 
 // ---- 1. capture + record --------------------------------------------------
 {

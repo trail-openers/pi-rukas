@@ -115,16 +115,27 @@ console.log("3. the three faults read differently");
     ["non-zero exit", "gh: api rate limit exceeded"],
   ];
   const results = await Promise.all(
-    faults.map(([, message]) => detectMainline(REPO, mkThrowingExec(() => message))),
+    faults.map(([, message]) =>
+      detectMainline(
+        REPO,
+        mkThrowingExec(() => message),
+      ),
+    ),
   );
-  assert(results.every((r) => r.ok === false), "all three faults fail");
-  const reasons = results.map((r) => (r.ok ? "" : r.reason));
-  assert(new Set(reasons).size === 3, `each failure reason is distinct: ${JSON.stringify(reasons)}`);
   assert(
-    reasons[1].includes("command not found"),
-    "a missing gh is readable as a missing gh",
+    results.every((r) => r.ok === false),
+    "all three faults fail",
   );
-  assert(reasons[2].includes("api rate limit exceeded"), "a non-zero exit carries the tool's own complaint");
+  const reasons = results.map((r) => (r.ok ? "" : r.reason));
+  assert(
+    new Set(reasons).size === 3,
+    `each failure reason is distinct: ${JSON.stringify(reasons)}`,
+  );
+  assert(reasons[1].includes("command not found"), "a missing gh is readable as a missing gh");
+  assert(
+    reasons[2].includes("api rate limit exceeded"),
+    "a non-zero exit carries the tool's own complaint",
+  );
   assert(reasons[0].includes("timed out"), "a timeout is readable as a timeout");
   assert(
     reasons.every((r) => r.includes("git symbolic-ref") && r.includes("gh repo view")),
@@ -145,7 +156,10 @@ console.log("4. the cause is bounded, and the result shape is untouched");
       result.reason.length < 900,
       `the reason stays bounded despite a 5 000-char error (${result.reason.length} chars)`,
     );
-    assert(result.reason.includes("could not resolve mainline branch"), "…without dropping the prefix");
+    assert(
+      result.reason.includes("could not resolve mainline branch"),
+      "…without dropping the prefix",
+    );
   }
 
   // The shape every caller reads: `ok` is the only discriminator, and nothing a
@@ -168,7 +182,7 @@ console.log("4. the cause is bounded, and the result shape is untouched");
   );
 }
 
-console.log("5. hangWhich: \"symbolic-ref\" — the probe that answered is not blamed");
+console.log('5. hangWhich: "symbolic-ref" — the probe that answered is not blamed');
 {
   // The mirrored case to section 2 (which hangs `gh`). Here the FIRST probe
   // fails and the `gh` fallback answers with empty stdout — which is the only
@@ -299,10 +313,7 @@ console.log("7. markdown and marker characters in the cause are neutralised");
       `no VERDICT token survives at all — readMarker matches a bracketed one (${result.reason})`,
     );
     assert(!result.reason.includes("```"), "no triple backtick can open a code fence");
-    assert(
-      !/<!--/.test(result.reason),
-      `no HTML comment can open (${result.reason})`,
-    );
+    assert(!/<!--/.test(result.reason), `no HTML comment can open (${result.reason})`);
     assert(!/-->/.test(result.reason), "…or close");
     assert(
       !result.reason.includes("`"),
@@ -428,10 +439,11 @@ console.log("8. the Command failed: <cmd> echo is dropped, and exit codes stay d
     REPO,
     mkRejectingExec(
       () =>
-        new Error("Command failed: gh repo view\n") as Error & Record<string, unknown> & {
-          killed: boolean;
-          signal: string;
-        },
+        new Error("Command failed: gh repo view\n") as Error &
+          Record<string, unknown> & {
+            killed: boolean;
+            signal: string;
+          },
     ).fn,
   );
   // `execTimeoutError` is the fixture's own timeout shape — proven here as well

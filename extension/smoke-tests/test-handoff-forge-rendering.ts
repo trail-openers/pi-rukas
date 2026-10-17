@@ -136,7 +136,12 @@ for (const s of surfaces) {
 // ---- 2. forge: "gitlab" through BOTH presenters
 
 {
-  const chat = renderHandoffUserMessage(awaitingMergeState(), REPO, `${REPO}/tmp/issue-337`, "gitlab");
+  const chat = renderHandoffUserMessage(
+    awaitingMergeState(),
+    REPO,
+    `${REPO}/tmp/issue-337`,
+    "gitlab",
+  );
   const md = renderHandoffMarkdown(awaitingMergeState(), "gitlab");
   for (const [name, out] of [
     ["chat", chat],

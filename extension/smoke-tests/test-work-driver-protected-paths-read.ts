@@ -84,7 +84,6 @@ function developCtx(grant?: readonly string[]): DriverContext {
 
 const protectedFailure = (f: string[]) => f.find((x) => /protected path/.test(x)) ?? "";
 
-
 // ============================ the gate against real git
 //
 // Each case builds a real repo, does the real `git mv` / commit, and drives

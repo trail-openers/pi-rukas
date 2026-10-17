@@ -231,7 +231,10 @@ const fakePi = { sendUserMessage: () => {} } as unknown as ExtensionAPI;
       typeof checkpointCapedDispatch
     >[0];
     const out = await checkpointCapedDispatch(ctx, s, "develop");
-    assert(out.pipelineState.capedPartialState?.tree === "committed", "#1190: checkpoint committed");
+    assert(
+      out.pipelineState.capedPartialState?.tree === "committed",
+      "#1190: checkpoint committed",
+    );
     const committed = git(repo, "show", "--name-only", "--format=", "HEAD").split("\n");
     assert(committed.includes("seed.txt"), "#1190: the first ` M` record is committed whole");
     assert(committed.includes("zz-new.ts"), "#1190: the later record is committed too");

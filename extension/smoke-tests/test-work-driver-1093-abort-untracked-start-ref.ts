@@ -22,7 +22,14 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { captureInvocationStartRef } from "../src/work-driver-git.ts";
 import { restoreClaim, restoreRootToRefPreserving } from "../src/work-driver-restore.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import { assert, buildRepo, head, realExec, result, stateWith } from "./lib/restore-start-ref-fixtures.ts";
+import {
+  assert,
+  buildRepo,
+  head,
+  realExec,
+  result,
+  stateWith,
+} from "./lib/restore-start-ref-fixtures.ts";
 
 const git = (dir: string, args: string[]) =>
   execFileSync("git", args, { cwd: dir, encoding: "utf8" });

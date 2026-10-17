@@ -94,7 +94,10 @@ try {
       }) as never,
   });
   const since = (result as { deltaReview?: { since: string } }).deltaReview?.since;
-  assert(since === c1, `SHA-head second round gets the delta since c1 (got ${since ?? "none — full review"})`);
+  assert(
+    since === c1,
+    `SHA-head second round gets the delta since c1 (got ${since ?? "none — full review"})`,
+  );
 } finally {
   process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = "";
   rmSync(base, { recursive: true, force: true });

@@ -22,27 +22,16 @@
  * "hand-edit survival of managed sections" (#664).
  */
 
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  type AgentsMdFs,
-  createAgent,
-  updateAgent,
-} from "../src/agents-md/agents-md.ts";
+import { type AgentsMdFs, createAgent, updateAgent } from "../src/agents-md/agents-md.ts";
+import type { OperatorAnswers } from "../src/agents-md/scaffold.ts";
 import {
   managedSectionBody,
   presentManagedIds,
   spliceManagedSection as spliceSectionBody,
 } from "../src/agents-md/section-detect.ts";
-import { type OperatorAnswers } from "../src/agents-md/scaffold.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -101,7 +90,10 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
 {
   const fs = mkFs();
   createAgent(tmp, AGENTS, fs, { scaffold: true });
-  assert(presentManagedIds(fs.readFile(AGENTS)).includes("minimalist-engineering"), "scaffold: minimalist-engineering is a heading-delimited section");
+  assert(
+    presentManagedIds(fs.readFile(AGENTS)).includes("minimalist-engineering"),
+    "scaffold: minimalist-engineering is a heading-delimited section",
+  );
   const edited = spliceSectionBody(
     fs.readFile(AGENTS),
     "minimalist-engineering",
@@ -111,7 +103,10 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   rmSync(path.join(tmp, ".github", "workflows", "ci.yml"));
   const res = updateAgent(tmp, AGENTS, fs, {});
   assert(res.exitCode === 0, "hand-edit (boilerplate): the forcing update exits 0");
-  assert(res.plan?.wouldWrite === true, "hand-edit (boilerplate): the forcing update genuinely wrote (ci.yml deletion is a real change)");
+  assert(
+    res.plan?.wouldWrite === true,
+    "hand-edit (boilerplate): the forcing update genuinely wrote (ci.yml deletion is a real change)",
+  );
   const boilerplateBody = managedSectionBody(fs.readFile(AGENTS), "minimalist-engineering");
   assert(
     boilerplateBody === "\nHand-edited by operator.\n",
@@ -130,7 +125,10 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   const answers: OperatorAnswers = { coverageThreshold: "85%+", reviewBlockingSeverity: "HIGH" };
   const fs = mkFs();
   createAgent(tmp, AGENTS, fs, { scaffold: true, answers });
-  assert(presentManagedIds(fs.readFile(AGENTS)).includes("operator-choices"), "scaffold + answers: operator-choices is a heading-delimited section");
+  assert(
+    presentManagedIds(fs.readFile(AGENTS)).includes("operator-choices"),
+    "scaffold + answers: operator-choices is a heading-delimited section",
+  );
   const edited = spliceSectionBody(
     fs.readFile(AGENTS),
     "operator-choices",
@@ -140,7 +138,10 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   rmSync(path.join(tmp, ".github", "workflows", "ci.yml"));
   const res = updateAgent(tmp, AGENTS, fs, {});
   assert(res.exitCode === 0, "hand-edit (operator-choices): the forcing update exits 0");
-  assert(res.plan?.wouldWrite === true, "hand-edit (operator-choices): the forcing update genuinely wrote");
+  assert(
+    res.plan?.wouldWrite === true,
+    "hand-edit (operator-choices): the forcing update genuinely wrote",
+  );
   const opBody = managedSectionBody(fs.readFile(AGENTS), "operator-choices");
   assert(
     opBody === "\n- **Review-blocking severity:** CRITICALED\n",

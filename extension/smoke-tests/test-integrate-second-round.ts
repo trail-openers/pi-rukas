@@ -43,7 +43,10 @@ const ISSUE = 46;
 
 /** One crossing recorded during `step`, as the slow watch would push it. */
 function crossSlow(step: WorkStep) {
-  slowRecorder(ISSUE, step)({
+  slowRecorder(
+    ISSUE,
+    step,
+  )({
     step,
     role: "adversarial-developer",
     jobId: "slow-job",
@@ -138,7 +141,10 @@ const stepOf = (s: WorkState) => {
     folded.length === 2 && folded[1]?.kind === "adversarial-approved",
     "foldSlowEvents without a step-started keeps the verdict last",
   );
-  assert(foldSlowEvents([], [slowEv], "adversarial").length === 1, "…and an empty log just holds it");
+  assert(
+    foldSlowEvents([], [slowEv], "adversarial").length === 1,
+    "…and an empty log just holds it",
+  );
 }
 
 // ----------------------------------------------------------- 2. handoff text

@@ -34,18 +34,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { DispatchResult } from "../src/types.ts";
 import type { Forge } from "../src/forge.ts";
-import { type DriverContext } from "../src/work-driver-context.ts";
+import type { DispatchResult } from "../src/types.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { setHandoffThrowForTestForTest } from "../src/work-driver-handoff.ts";
 import { setPlanThrowForTestForTest } from "../src/work-driver-plan.ts";
-import {
-  type WorkState,
-  initialState,
-  readState,
-  writeState,
-} from "../src/workflow-state.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
+import { type WorkState, initialState, readState, writeState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -203,10 +198,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     assert(hasHandoffEmitted, "event log contains a handoff-emitted event");
 
     // The issue's assertion: the fake forge received labelAdd.
-    assert(
-      labelAdds.length > 0,
-      `forge received labelAdd (got ${labelAdds.length} call(s))`,
-    );
+    assert(labelAdds.length > 0, `forge received labelAdd (got ${labelAdds.length} call(s))`);
     assert(
       labelAdds.some((l) => l.name === "needs-human-attention"),
       "labelAdd was for 'needs-human-attention'",
@@ -314,9 +306,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     // but the persisted state file carries zero handoff-emitted events.
     // A re-routed second handoff would loop (and re-post); exactly one
     // post of each is the correct terminal outcome.
-    const emittedCount = (final?.eventLog ?? []).filter(
-      (e) => e.kind === "handoff-emitted",
-    ).length;
+    const emittedCount = (final?.eventLog ?? []).filter((e) => e.kind === "handoff-emitted").length;
     assert(
       emittedCount === 0,
       `guard's direct-abort persist omits the handoff-emitted event — got: ${emittedCount}`,

@@ -243,7 +243,9 @@ function mkFakeForge(opts: {
   );
   assert(r1.labelConfirmed === true, "parseHandoffOpsReply: label=applied marker is recognized");
 
-  const r2 = parseHandoffOpsReply("posted. https://github.com/acme/widget/issues/626#issuecomment-1");
+  const r2 = parseHandoffOpsReply(
+    "posted. https://github.com/acme/widget/issues/626#issuecomment-1",
+  );
   assert(
     r2.commentUrl === "https://github.com/acme/widget/issues/626#issuecomment-1",
     "parseHandoffOpsReply: URL parsed even without the marker (back-compat replies)",

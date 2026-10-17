@@ -20,19 +20,19 @@
 
 import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import { tmpdir } from "node:os";
+import path from "node:path";
+import type { DispatchResult } from "../src/types.ts";
+import { runDevelopTopological } from "../src/work-develop-topological.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import {
+  type StepNoticeParams,
   armStepNotice,
   clearStepNoticeForTesting,
   stepNoticeThresholdMs,
-  type StepNoticeParams,
 } from "../src/work-driver-step-notice.ts";
-import { formatNotification, type Notification } from "../src/work-notify.ts";
-import { runDevelopTopological } from "../src/work-develop-topological.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
-import type { DispatchResult } from "../src/types.ts";
-import { initialState, type WorkState } from "../src/workflow-state.ts";
+import { type Notification, formatNotification } from "../src/work-notify.ts";
+import { type WorkState, initialState } from "../src/workflow-state.ts";
 import { realExec } from "./lib/exec-fake.ts";
 
 let exit = 0;
@@ -440,7 +440,14 @@ await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "150", async () => {
   try {
     await runDevelopTopological(
       // biome-ignore lint/suspicious/noExplicitAny: driver fixture — the pi binding is never touched on this path
-      ({ host: {}, issue: 799, issues: [799], repoRoot: repo, dispatchFn, verifyExecFn: realExec }) as any,
+      {
+        host: {},
+        issue: 799,
+        issues: [799],
+        repoRoot: repo,
+        dispatchFn,
+        verifyExecFn: realExec,
+      } as any,
       state,
       ["default"],
       state.pipelineState.workstreams as never,
@@ -454,7 +461,10 @@ await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "150", async () => {
     if (prev === undefined) delete process.env.PI_ENSEMBLE_NOTIFY_CMD;
     else process.env.PI_ENSEMBLE_NOTIFY_CMD = prev;
   }
-  assert(true, "W3: a broken hook did not throw and the step completed (no exception reached here)");
+  assert(
+    true,
+    "W3: a broken hook did not throw and the step completed (no exception reached here)",
+  );
 });
 
 console.log(`\nexit ${exit}`);

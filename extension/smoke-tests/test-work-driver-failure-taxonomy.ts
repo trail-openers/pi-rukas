@@ -99,7 +99,10 @@ async function testFailureCauseTaxonomy() {
     const cls = classifyFailureCause(
       mkEvent({ killCause: "tool-inactivity", kind: "dispatch-failed" }),
     );
-    assert(cls.cause === "self-killed:tool-inactivity", "tool-inactivity → self-killed:tool-inactivity");
+    assert(
+      cls.cause === "self-killed:tool-inactivity",
+      "tool-inactivity → self-killed:tool-inactivity",
+    );
     assert(cls.shouldRetry === true, "tool-inactivity → shouldRetry=true");
     assert(cls.maxRetries === 1, "tool-inactivity → maxRetries=1");
   }

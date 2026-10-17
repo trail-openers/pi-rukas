@@ -23,10 +23,10 @@
  *   H. body is empty (missing body file) → no false match; fallback posts
  */
 
+import { exec as _exec } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { exec as _exec } from "node:child_process";
 import { promisify as _promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Forge } from "../src/forge.ts";
@@ -97,10 +97,17 @@ function mkScriptedForge(opts: {
     repo: "widget",
     cwd: "/repo",
     issueView: async (n: number) => ({
-      number: n, title: "t", body: "", state: "OPEN" as const,
-      url: `https://github.com/acme/widget/issues/${n}`, author: "x",
-      labels: label ? [{ name: "needs-human-attention", id: 1, color: "FFAA00", description: "" }] : [],
-      createdAt: undefined, updatedAt: undefined,
+      number: n,
+      title: "t",
+      body: "",
+      state: "OPEN" as const,
+      url: `https://github.com/acme/widget/issues/${n}`,
+      author: "x",
+      labels: label
+        ? [{ name: "needs-human-attention", id: 1, color: "FFAA00", description: "" }]
+        : [],
+      createdAt: undefined,
+      updatedAt: undefined,
     }),
     prView: NOT_USED,
     issueComment: async (n: number, body: string) => {
@@ -114,24 +121,37 @@ function mkScriptedForge(opts: {
     labelAdd: async (target: "issue" | "mr", n: number, name: string) => {
       labelAddAttempts += 1;
       calls.push({ method: "labelAdd", args: [target, n, name] });
-      if (labelAddAttempts <= (opts.labelAddFailures ?? 0)) throw new Error("simulated labelAdd hiccup");
+      if (labelAddAttempts <= (opts.labelAddFailures ?? 0))
+        throw new Error("simulated labelAdd hiccup");
       label = true;
     },
     labelRemove: async () => {},
     issueComments: async (n: number) => {
       issueCommentsAttempts += 1;
       calls.push({ method: "issueComments", args: [n] });
-      if (issueCommentsAttempts <= (opts.issueCommentsFailures ?? 0)) throw new Error("simulated read failure");
+      if (issueCommentsAttempts <= (opts.issueCommentsFailures ?? 0))
+        throw new Error("simulated read failure");
       return (opts.comments ?? []).map((c, i) => ({
-        id: i + 1, body: c.body,
+        id: i + 1,
+        body: c.body,
         url: c.url ?? `https://github.com/acme/widget/issues/${n}#issuecomment-${100 + i}`,
         createdAt: undefined,
       }));
     },
-    prComments: NOT_USED, prComment: NOT_USED, issueCreate: NOT_USED, issueEdit: NOT_USED,
-    issueSearch: NOT_USED, prList: NOT_USED, prCreate: NOT_USED, prMerge: NOT_USED,
-    prDiff: NOT_USED, prChecks: NOT_USED, ciWatch: NOT_USED, ciRun: NOT_USED,
-    mergeReadiness: NOT_USED, repoSettings: NOT_USED,
+    prComments: NOT_USED,
+    prComment: NOT_USED,
+    issueCreate: NOT_USED,
+    issueEdit: NOT_USED,
+    issueSearch: NOT_USED,
+    prList: NOT_USED,
+    prCreate: NOT_USED,
+    prMerge: NOT_USED,
+    prDiff: NOT_USED,
+    prChecks: NOT_USED,
+    ciWatch: NOT_USED,
+    ciRun: NOT_USED,
+    mergeReadiness: NOT_USED,
+    repoSettings: NOT_USED,
   };
   return { forge, calls };
 }
@@ -150,8 +170,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       dispatchFn: async () => ({
         role: "ops",
         ok: true,
-        text:
-          "Label applied and confirmed present.\nHANDOFF-RESULT: comment=https://github.com/acme/widget/issues/730#issuecomment-999 label=applied",
+        text: "Label applied and confirmed present.\nHANDOFF-RESULT: comment=https://github.com/acme/widget/issues/730#issuecomment-999 label=applied",
         toolUses: [],
         ms: 10,
         exitCode: 0,
@@ -171,7 +190,10 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       "A: verified label recorded as applied (never the hard-coded false)",
     );
     const msg = renderHandoffUserMessage(next, dir, `${dir}/tmp/issue-730`);
-    assert(!msg.includes("HANDOFF DISPATCH INCOMPLETE"), "A: no banner on a fully delivered handoff");
+    assert(
+      !msg.includes("HANDOFF DISPATCH INCOMPLETE"),
+      "A: no banner on a fully delivered handoff",
+    );
     assert(!msg.includes("Post manually now"), "A: no 'Post manually now' on success");
     assert(
       !calls.some((c) => c.method === "issueComment" || c.method === "labelAdd"),
@@ -318,7 +340,10 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       "E: no delivery provenance (fallback structurally impossible)",
     );
     const msg = renderHandoffUserMessage(next, dir, `${dir}/tmp/issue-759`);
-    assert(msg.includes("HANDOFF DISPATCH INCOMPLETE"), "E: banner fires (the one true last resort)");
+    assert(
+      msg.includes("HANDOFF DISPATCH INCOMPLETE"),
+      "E: banner fires (the one true last resort)",
+    );
     assert(msg.includes("Post manually now"), "E: banner carries the manual recovery");
   } finally {
     delete process.env.PI_ENSEMBLE_FORGE;
@@ -350,7 +375,10 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
     out.commentUrl === "https://github.com/acme/widget/issues/775#issuecomment-1234",
     "F: existing comment's URL is reused (not a fresh post)",
   );
-  assert(!calls.some((c) => c.method === "issueComment"), "F: no re-post (body-matching short-circuit)");
+  assert(
+    !calls.some((c) => c.method === "issueComment"),
+    "F: no re-post (body-matching short-circuit)",
+  );
 }
 
 // G. Idempotency: body does NOT match → fallback posts exactly once.
@@ -403,7 +431,10 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
     typeof out.commentUrl === "string" && out.commentUrl.endsWith("#issuecomment-4242"),
     "H: empty-bodied comment NOT treated as a match (no false idempotent skip)",
   );
-  assert(calls.filter((c) => c.method === "issueComment").length === 1, "H: fallback posts exactly once");
+  assert(
+    calls.filter((c) => c.method === "issueComment").length === 1,
+    "H: fallback posts exactly once",
+  );
 }
 
 // I. End-to-end idempotency: dispatch posted the comment (URL lost in the
@@ -422,9 +453,13 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       repoRoot: dir,
       issue: 775,
       dispatchFn: async (): Promise<DispatchResult> => ({
-        role: "ops", ok: true,
+        role: "ops",
+        ok: true,
         text: "posted but the URL is garbled and not in this reply",
-        toolUses: [], ms: 10, exitCode: 0, transcriptPath: "/tmp/stub.json",
+        toolUses: [],
+        ms: 10,
+        exitCode: 0,
+        transcriptPath: "/tmp/stub.json",
       }),
       forge: f1,
     };
@@ -440,16 +475,22 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
     // The fallback reads the SAME file, so the body it would post matches the
     // seeded comment → the idempotency check must reuse the URL and skip the post.
     const { forge: f2, calls: c2 } = mkScriptedForge({
-      comments: [{ body: fileBody, url: "https://github.com/acme/widget/issues/775#issuecomment-100" }],
+      comments: [
+        { body: fileBody, url: "https://github.com/acme/widget/issues/775#issuecomment-100" },
+      ],
     });
     const ctx2: DriverContext = {
       host: fakePi,
       repoRoot: dir,
       issue: 775,
       dispatchFn: async (): Promise<DispatchResult> => ({
-        role: "ops", ok: true,
+        role: "ops",
+        ok: true,
         text: "posted but the URL is garbled and not in this reply",
-        toolUses: [], ms: 10, exitCode: 0, transcriptPath: "/tmp/stub.json",
+        toolUses: [],
+        ms: 10,
+        exitCode: 0,
+        transcriptPath: "/tmp/stub.json",
       }),
       forge: f2,
     };
@@ -464,7 +505,10 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       emitted2[0]?.kind === "handoff-emitted" && typeof emitted2[0].commentUrl === "string",
       "I: the fallback delivered a comment (URL is set)",
     );
-    assert(c2.filter((c) => c.method === "issueComments").length === 1, "I: existing-comment check ran once");
+    assert(
+      c2.filter((c) => c.method === "issueComments").length === 1,
+      "I: existing-comment check ran once",
+    );
     const msg = renderHandoffUserMessage(next2, dir, `${dir}/tmp/issue-775`);
     assert(!msg.includes("Post manually now"), "I: no manual recovery — handoff WAS delivered");
 
@@ -477,9 +521,13 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       repoRoot: dir,
       issue: 775,
       dispatchFn: async (): Promise<DispatchResult> => ({
-        role: "ops", ok: true,
+        role: "ops",
+        ok: true,
         text: "posted but the URL is garbled and not in this reply",
-        toolUses: [], ms: 10, exitCode: 0, transcriptPath: "/tmp/stub.json",
+        toolUses: [],
+        ms: 10,
+        exitCode: 0,
+        transcriptPath: "/tmp/stub.json",
       }),
       forge: f3,
     };

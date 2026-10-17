@@ -15,9 +15,9 @@
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type EmitSink, createEmitSink } from "../src/work-state-emit.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { interruptIfRequested } from "../src/work-driver-interrupt.ts";
+import { type EmitSink, createEmitSink } from "../src/work-state-emit.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 import type { WorkState } from "../src/workflow-state-schema.ts";
 import { appendEvent } from "../src/workflow-state-update.ts";
@@ -174,7 +174,10 @@ function tmpFiles(repo: string): string[] {
     // Only repoRoot, emitSink and signal are read on this path.
     const ctx = { repoRoot: repo, emitSink: sink, signal: ac.signal } as unknown as DriverContext;
     const interrupted = await interruptIfRequested(ctx, running);
-    assert(interrupted.pipelineState.status === "interrupted", "the driver records its own interrupt");
+    assert(
+      interrupted.pipelineState.status === "interrupted",
+      "the driver records its own interrupt",
+    );
     const again = await interruptIfRequested(ctx, interrupted);
     assert(again === interrupted, "a second driver check adds no second interrupted event");
     const later = appendEvent(interrupted, { kind: "step-started", step: "plan", at: 60 });

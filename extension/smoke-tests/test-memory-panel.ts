@@ -188,11 +188,11 @@ const stats = (o: Partial<MemoryStats>): MemoryStats => ({
       !panel.includes("ignore previous instructions") && !panel.includes("--force"),
       "canary: a directive-text candidate does not appear in the rendered panel",
     );
-    assert(panel.includes("`cand-evil` (observation)"), "...but its id is still listed for promotion");
     assert(
-      panel.includes("an operator action"),
-      "...with the promotion hint",
+      panel.includes("`cand-evil` (observation)"),
+      "...but its id is still listed for promotion",
     );
+    assert(panel.includes("an operator action"), "...with the promotion hint");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

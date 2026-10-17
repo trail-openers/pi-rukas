@@ -32,8 +32,8 @@ import {
 import { resolveMergeAuthority } from "../src/work-driver-merge-authority.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
-import { realExec } from "./lib/exec-fake.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import { realExec } from "./lib/exec-fake.ts";
 import { isNulDiffRead, isNulStatusRead, nulStatus } from "./lib/nul-porcelain.ts";
 
 let exit = 0;
@@ -286,7 +286,8 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
     // plain string would return `{stdout:""}` for the `-z` call and every assertion
     // below would pass on an empty change set.
     verifyExecFn: async (cmd, opts) => {
-      if (isNulStatusRead(commandOf(cmd, opts))) return { stdout: nulStatus(...porcelain.split("\n")) };
+      if (isNulStatusRead(commandOf(cmd, opts)))
+        return { stdout: nulStatus(...porcelain.split("\n")) };
       if (isNulDiffRead(commandOf(cmd, opts))) return { stdout: "" };
       return { stdout: "" };
     },

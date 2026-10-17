@@ -18,8 +18,8 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { openAgentListWithReturn } from "../src/agent-list-nav.ts";
-import { startEntry, clearEntry } from "../src/dispatch-deck.ts";
 import { dropBuffer, startBuffer } from "../src/dispatch-deck-live.ts";
+import { clearEntry, startEntry } from "../src/dispatch-deck.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -36,7 +36,9 @@ function assert(cond: boolean, msg: string) {
   let viewOpens = 0;
   let listDone: (() => void) | undefined;
   let viewDone: ((v: string | undefined) => void) | undefined;
-  let currentList: { handleInput: (d: string) => void; render: (w: number) => string[] } | undefined;
+  let currentList:
+    | { handleInput: (d: string) => void; render: (w: number) => string[] }
+    | undefined;
   const theme = { fg: (_c: string, s: string) => s, bg: (_c: string, s: string) => s };
   // Deck entry started first so the real snapshot() returns it (the list
   // overlay now uses the production openAgentListWithReturn which calls
@@ -51,7 +53,7 @@ function assert(cond: boolean, msg: string) {
   // (openLiveView's contract).
   const fakeCtx = {
     ui: {
-      custom: <T,>(
+      custom: <T>(
         f: (tui: unknown, theme: unknown, kb: unknown, done: (v: T) => void) => unknown,
         o?: { overlayOptions?: unknown },
       ) => {
@@ -66,7 +68,12 @@ function assert(cond: boolean, msg: string) {
         const p = new Promise<T>((r) => {
           listDone = () => (r as (x: T) => void)(undefined as T);
         });
-        currentList = f({ terminal: { columns: 80 } }, theme, {}, () => (listDone?.(), undefined as T)) as unknown as {
+        currentList = f(
+          { terminal: { columns: 80 } },
+          theme,
+          {},
+          () => (listDone?.(), undefined as T),
+        ) as unknown as {
           handleInput: (d: string) => void;
           render: (w: number) => string[];
         };

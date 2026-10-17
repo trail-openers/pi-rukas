@@ -115,9 +115,23 @@ export function formatLine(d: LifecycleDetails): string {
       // from a gate that just spent 22 minutes. `timeout` gets its own glyph
       // because a killed run judged nothing (#1324), and `reused` says no
       // command ran for this verdict at all.
-      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
+      // #1415 — `elapsedMs` is guarded exactly as `/work-status` guards its `ms`
+      // (`work-status-events.ts`): a non-number arriving through a state file
+      // makes `fmtElapsed` return `"NaNmNaNs"` / `"InfinitymNaNs"` WITHOUT
+      // throwing, so no try/catch downstream can catch it — the operator would
+      // read a fabricated duration as a measured one. An unmeasurable duration
+      // is omitted, never invented.
+      const elapsed =
+        typeof d.elapsedMs === "number" && Number.isFinite(d.elapsedMs)
+          ? ` · ${fmtElapsed(d.elapsedMs)}`
+          : "";
       const tier = d.tier ? ` · ${d.tier}` : "";
       const reused = d.reused ? " (reused)" : "";
+      // The verdict decides the glyph, and the set is CLOSED: an unknown status
+      // (a value a future `VerifyStatus` or a hand-edited state file could
+      // carry) gets its own marker rather than falling into the failure glyph.
+      // Defaulting an unrecognised verdict to `✗`/`✗`-coloured is how a gate
+      // that judged nothing reads as a gate that judged red.
       const glyph =
         d.status === "success"
           ? "✓"
@@ -125,7 +139,9 @@ export function formatLine(d: LifecycleDetails): string {
             ? "⏱"
             : d.status === "skipped"
               ? "○"
-              : "✗";
+              : d.status === "failure"
+                ? "✗"
+                : "?";
       return `▸ ensemble: ${cycleTag(d.issue)}${glyph} ${d.label} verify · ${d.target ?? "?"} · ${d.status ?? "?"}${elapsed}${reused}${tier}`;
     }
     case "step-retry": {
@@ -159,11 +175,16 @@ function applyTheme(
     case "verify-completed":
       // The verdict decides the colour, not the kind: a gate that failed is an
       // error wherever the operator reads it, and a green gate is success.
+      // The set is CLOSED like the glyph switch above — an unrecognised status
+      // renders dim (`neutral`) rather than inheriting the `success` colour, so
+      // an unknown verdict never reads green while its glyph reads failure.
       return details?.status === "failure"
         ? theme.fg("error", content)
         : details?.status === "timeout"
           ? theme.fg("warning", content)
-          : theme.fg("success", content);
+          : details?.status === "success"
+            ? theme.fg("success", content)
+            : theme.fg("dim", content);
     case "errored":
       // Same colour as `failed` — both surface in scrollback as something
       // gone wrong; the line text itself distinguishes the failure mode.

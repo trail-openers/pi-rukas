@@ -202,7 +202,12 @@ const result = (over: Partial<DispatchResult> & { turns?: number }): DispatchRes
 
   // Non-developer roles: the line is about developer completions, not every
   // successful job.
-  for (const role of ["explore", "ops", "code-review-specialist", "adversarial-developer"] as const) {
+  for (const role of [
+    "explore",
+    "ops",
+    "code-review-specialist",
+    "adversarial-developer",
+  ] as const) {
     const r = result({ role, text: "Task complete", turns: 5 });
     assert(
       !formatSingleReport(`j-${role}`, role, r).includes("Hand-managed work"),
@@ -236,7 +241,10 @@ const result = (over: Partial<DispatchResult> & { turns?: number }): DispatchRes
   // finished. Keying on result.ok would emit the gate line here.
   const rateLimited = result({
     ok: true,
-    errorStop: { reason: "error", message: "Server requested 59s retry delay (max: 10s). 429 status code (no body)" },
+    errorStop: {
+      reason: "error",
+      message: "Server requested 59s retry delay (max: 10s). 429 status code (no body)",
+    },
     text: "",
     turns: 1,
   });

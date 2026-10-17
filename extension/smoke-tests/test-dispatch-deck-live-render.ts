@@ -21,8 +21,8 @@
  */
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { buildCompositeFactory, buildSteerPrompt } from "../src/dispatch-deck-composite.ts";
 import { buildAgentListLines } from "../src/agent-list.ts";
+import { buildCompositeFactory, buildSteerPrompt } from "../src/dispatch-deck-composite.ts";
 import {
   NEWLINE_SEP,
   boundedLine,
@@ -31,9 +31,9 @@ import {
   toTerminalLine,
   toTerminalLines,
 } from "../src/dispatch-deck-line.ts";
-import { dropBuffer, feedRawEvent, getBuffer, startBuffer } from "../src/dispatch-deck-live.ts";
 import { createAgentViewComponent } from "../src/dispatch-deck-live-view-component.ts";
 import type { ViewHeader } from "../src/dispatch-deck-live-view-component.ts";
+import { dropBuffer, feedRawEvent, getBuffer, startBuffer } from "../src/dispatch-deck-live.ts";
 import { formatRow } from "../src/dispatch-deck-rows.ts";
 import type { DeckEntry } from "../src/dispatch-deck.ts";
 
@@ -135,14 +135,20 @@ function assert(cond: boolean, msg: string) {
   const big = "x".repeat(512 * 1024) + "\u001b[31m" + "tail".repeat(100_000);
   const t0 = Date.now();
   const line = boundedLine(big, 80);
-  assert(visibleWidth(line) <= 80, `4b-a: 1 MB input → visibleWidth ≤ 80 (got ${visibleWidth(line)})`);
+  assert(
+    visibleWidth(line) <= 80,
+    `4b-a: 1 MB input → visibleWidth ≤ 80 (got ${visibleWidth(line)})`,
+  );
   assert(!line.includes("\u001b"), "4b-b: no ESC in the bounded line");
   assert(line.includes("…"), "4b-c: ellipsis marks the truncation");
   assert(line.startsWith("x"), "4b-d: the head is preserved");
   assert(!line.includes("tail"), "4b-e: the tail beyond the truncation point is gone");
   assert(Date.now() - t0 < 2000, "4b-f: bounded input → no O(full string) scan");
   // Short inputs are byte-identical to the unbounded pipeline.
-  assert(boundedLine("short input", 40) === truncateToWidth(sanitizeText("short input"), 40, "…"), "4b-g: short input byte-identical to the unbounded form");
+  assert(
+    boundedLine("short input", 40) === truncateToWidth(sanitizeText("short input"), 40, "…"),
+    "4b-g: short input byte-identical to the unbounded form",
+  );
   assert(boundedLine("a b c d", 80) === "a b c d", "4b-h: short input untruncated, verbatim");
 }
 

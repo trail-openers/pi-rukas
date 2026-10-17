@@ -5,8 +5,8 @@
  * Moved verbatim from test-dispatch-caps.ts (file-size split).
  */
 
-import { pollUntilKilled } from "./lib/poll-until-killed.ts";
 import { createCapSession } from "../src/spawn-caps.ts";
+import { pollUntilKilled } from "./lib/poll-until-killed.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -85,7 +85,10 @@ function assert(cond: boolean, msg: string) {
     // slow runners — #846). The clock check below still proves the kill
     // fired AFTER the grace window, not before.
     const fired = await pollUntilKilled(session, 2000);
-    assert(fired.ok, `#772: success-keyed kill fires (kill did not fire within ${2000 + 5000} ms of polling)`);
+    assert(
+      fired.ok,
+      `#772: success-keyed kill fires (kill did not fire within ${2000 + 5000} ms of polling)`,
+    );
     assert(
       fired.at >= armedAt + 2000,
       `#772: success-keyed kill fires after the grace window (kill at ${fired.at - armedAt}ms vs grace 2000ms)`,

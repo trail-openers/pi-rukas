@@ -39,6 +39,7 @@ import { claimScanEnabled, evidenceSupplyEnabled } from "../src/lens-evidence.ts
 import { lensRoundCap } from "../src/lens-round-cap.ts";
 import { loopDetectorEnabled } from "../src/loop-detector.ts";
 import { roundCapMergeEnabled } from "../src/merge-guard-round-cap.ts";
+import { pendingShutdownBoundMs } from "../src/pending-jobs-signal.ts";
 import { planCacheTtlMs } from "../src/plan-investigation-cache.ts";
 import { transcriptRetentionDays } from "../src/runs-retention.ts";
 import { autoSteerEnabled } from "../src/slow-notice.ts";
@@ -71,7 +72,6 @@ import { mergeAuthorityEnabled } from "../src/work-driver-merge-authority.ts";
 import { NET_GIT_TIMEOUT_DEFAULT_MS } from "../src/work-driver-net-git.ts";
 import { crossGroupConflictsEnabled } from "../src/work-driver-path-claims.ts";
 import { planContractEnabled } from "../src/work-driver-plan-contract.ts";
-import { pendingShutdownBoundMs } from "../src/pending-jobs-signal.ts";
 import { planQualityEnabled } from "../src/work-driver-plan-helpers.ts";
 import { planDispatchTimeoutMs } from "../src/work-driver-plan-helpers.ts";
 import { maxWorkstreams } from "../src/work-driver-plan-workstreams.ts";

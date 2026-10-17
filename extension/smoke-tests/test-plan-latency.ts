@@ -22,7 +22,7 @@
 
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { PLAN_DISPATCH_TIMEOUT_MS } from "../src/plan-investigate.ts";
-import { installOfflineVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
+import { installNoPlanCacheStub, installOfflineVipuneStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

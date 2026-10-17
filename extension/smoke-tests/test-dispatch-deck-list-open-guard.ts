@@ -105,7 +105,10 @@ function makeHarness(
     threw = true;
   }
   assert(!threw, "1a: a throwing view opener does not escape handleInput (try/catch guard)");
-  assert(h.opens.length === 1 && h.opens[0] === "job-a", "1b: the opener was called with A's key before the throw");
+  assert(
+    h.opens.length === 1 && h.opens[0] === "job-a",
+    "1b: the opener was called with A's key before the throw",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -120,8 +123,10 @@ function makeHarness(
   };
   process.on("unhandledRejection", onUnhandled);
   try {
-    const h = makeHarness(fixtureEntries(), 80, () =>
-      new Promise<void>((_, reject) => reject(new Error("async boom"))),
+    const h = makeHarness(
+      fixtureEntries(),
+      80,
+      () => new Promise<void>((_, reject) => reject(new Error("async boom"))),
     );
     h.comp.handleInput("\x1b[B"); // down → A
     h.comp.handleInput("\r"); // Enter on A — the opener rejects
@@ -131,7 +136,10 @@ function makeHarness(
   } finally {
     process.removeListener("unhandledRejection", onUnhandled);
   }
-  assert(unhandled.length === 0, "2a: a rejecting view opener never becomes an unhandled rejection");
+  assert(
+    unhandled.length === 0,
+    "2a: a rejecting view opener never becomes an unhandled rejection",
+  );
 }
 
 // ---------------------------------------------------------------------------

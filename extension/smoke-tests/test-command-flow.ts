@@ -159,10 +159,7 @@ assert(rec.registeredCommands.includes("runs"), "/runs registered");
   // #911 — the explicit merge step names BOTH gates as preconditions, carries
   // the single consolidated carve-out and the /work pointer, and the old
   // "be explicit with the user before bypassing PR review" sentence is gone.
-  const mergeStep = doBody.slice(
-    doBody.indexOf("**Merge.**"),
-    doBody.indexOf("**CI watch"),
-  );
+  const mergeStep = doBody.slice(doBody.indexOf("**Merge.**"), doBody.indexOf("**CI watch"));
   assert(mergeStep.length > 0, "pi-prompts/do.md has an explicit Merge step");
   assert(
     mergeStep.includes("adversarial_loop") && mergeStep.includes("dispatch_lens_review"),

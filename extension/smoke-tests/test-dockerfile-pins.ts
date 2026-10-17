@@ -109,7 +109,10 @@ if (process.env.PI_ENSEMBLE_DOCKERFILE_PINS === "0") {
   const section = ghcrTroubleshootingSection(read("docs/troubleshooting.md"));
   assert(section.length > 0, "docs/troubleshooting.md has the GHCR pull-failure (denied) entry");
   if (section.length > 0) {
-    assert(/`?denied`?/.test(section), "GHCR troubleshooting entry names the `denied` daemon error string");
+    assert(
+      /`?denied`?/.test(section),
+      "GHCR troubleshooting entry names the `denied` daemon error string",
+    );
     assert(
       /`?unauthorized`?/.test(section),
       "GHCR troubleshooting entry names the `unauthorized` symptom variant (both point at the private-package fix)",

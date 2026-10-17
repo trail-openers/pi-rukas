@@ -121,23 +121,27 @@ const DRIVER_REF =
  * first false alarm trains everyone to set the gate aside.
  */
 function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/^[ \t]*\/\/.*$/gm, " ")
-    // A line comment trailing code: `const x = 1; // see work-driver-git.ts`.
-    .replace(/(^|[^:"'\\])\/\/[^\n]*$/gm, "$1");
+  return (
+    src
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/^[ \t]*\/\/.*$/gm, " ")
+      // A line comment trailing code: `const x = 1; // see work-driver-git.ts`.
+      .replace(/(^|[^:"'\\])\/\/[^\n]*$/gm, "$1")
+  );
 }
 
 /** The driver-layer modules this source reaches, by any load mechanism. */
-const driverRefs = (src: string): string[] => [
-  ...stripComments(src).matchAll(DRIVER_REF),
-].map((m) => (m[1] as string).split("/").pop() as string);
+const driverRefs = (src: string): string[] =>
+  [...stripComments(src).matchAll(DRIVER_REF)].map(
+    (m) => (m[1] as string).split("/").pop() as string,
+  );
 
 /** Local `./x.ts` specifiers this source imports from. */
 function localImports(src: string): string[] {
   return [
-    ...stripComments(src)
-      .matchAll(/(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s+)(["'])(\.\/[^"']+)\1/g),
+    ...stripComments(src).matchAll(
+      /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s+)(["'])(\.\/[^"']+)\1/g,
+    ),
   ].map((m) => m[2] as string);
 }
 
@@ -158,7 +162,9 @@ function reexportsFromNeutral(source: string, symbol: string): boolean {
   const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const forms = [
     // export { a, symbol, b } from "./mainline.ts"  (and export type { … })
-    new RegExp(`export\\s+(?:type\\s+)?\\{[^}]*\\b${escaped}\\b[^}]*\\}\\s*from\\s*["']\\./mainline\\.ts["']`),
+    new RegExp(
+      `export\\s+(?:type\\s+)?\\{[^}]*\\b${escaped}\\b[^}]*\\}\\s*from\\s*["']\\./mainline\\.ts["']`,
+    ),
     // export * from "./mainline.ts" — re-exports every public symbol, this included
     /export\s*\*\s*from\s*["']\.\/mainline\.ts["']/.test(code),
     // export { symbol as alias } / re-export through a local binding
@@ -219,10 +225,7 @@ console.log("1. the review-layer targets are clean");
 console.log("2. the gate can fail — every way to reach a module");
 {
   const caught: Array<[string, string]> = [
-    [
-      'import { resolveMainline } from "./work-driver-git.ts";',
-      "a value-level driver import",
-    ],
+    ['import { resolveMainline } from "./work-driver-git.ts";', "a value-level driver import"],
     [
       'import type { VerifyExecFn } from "./work-driver-git.ts";',
       "a TYPE-ONLY driver import (erased at runtime, still a dependency)",
@@ -249,14 +252,8 @@ console.log("2. the gate can fail — every way to reach a module");
       'import "./work-driver-side-effects.ts";',
       "a bare side-effect import (no `from` to anchor on)",
     ],
-    [
-      'const m = await import("./work-driver-lazy.ts");',
-      "a dynamic import()",
-    ],
-    [
-      'const m = require("./work-driver-legacy.ts");',
-      "a require()",
-    ],
+    ['const m = await import("./work-driver-lazy.ts");', "a dynamic import()"],
+    ['const m = require("./work-driver-legacy.ts");', "a require()"],
     [
       'export { runNetGit } from "../src/work-driver-net-git.ts";',
       "a re-export through the driver layer",
@@ -296,7 +293,9 @@ console.log("3. the driver side keeps its re-export — per symbol, any form");
       `work-driver-git.ts re-exports ${symbol} from the neutral module`,
     );
     assert(
-      !new RegExp(`^export\\s+(?:async\\s+)?function\\s+${symbol}\\b`, "m").test(stripComments(driver)),
+      !new RegExp(`^export\\s+(?:async\\s+)?function\\s+${symbol}\\b`, "m").test(
+        stripComments(driver),
+      ),
       `…and does not define ${symbol} itself — one definition, not a copy`,
     );
   }

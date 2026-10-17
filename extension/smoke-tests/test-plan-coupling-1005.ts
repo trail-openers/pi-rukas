@@ -229,10 +229,8 @@ const ws = (e: Record<string, Partial<CouplingWorkstream>>): Record<string, Coup
     // (4th arg) — the shape runPlan actually passes. The per-worktree tree
     // map (dirA/dirB) is retained here to exercise the per-workstream
     // override (the API-compat path for tests).
-    const prodExecFn: NonNullable<Parameters<typeof mergeCoupledWorkstreams>[1]> = (
-      cmd,
-      opts,
-    ) => execp(cmd, opts);
+    const prodExecFn: NonNullable<Parameters<typeof mergeCoupledWorkstreams>[1]> = (cmd, opts) =>
+      execp(cmd, opts);
 
     // Case A: shared symbol alpha between alpha.ts and beta.ts → MERGED.
     const rA = await mergeCoupledWorkstreams(
@@ -356,10 +354,8 @@ const ws = (e: Record<string, Partial<CouplingWorkstream>>): Record<string, Coup
     writeFileSync(path.join(repoRoot, "src/beta.ts"), "import { alpha } from './alpha';\n");
 
     const { execp } = await import("../src/work-driver-verify.ts");
-    const prodExecFn: NonNullable<Parameters<typeof mergeCoupledWorkstreams>[1]> = (
-      cmd,
-      opts,
-    ) => execp(cmd, opts);
+    const prodExecFn: NonNullable<Parameters<typeof mergeCoupledWorkstreams>[1]> = (cmd, opts) =>
+      execp(cmd, opts);
 
     // The EXACT shape runPlan uses: empty worktrees map + repoRoot (4th arg).
     const rPlan = await mergeCoupledWorkstreams(

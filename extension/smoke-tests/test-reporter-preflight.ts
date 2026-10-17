@@ -17,32 +17,28 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { runLensChild } from "../src/lens-review-child.ts";
+import { LENS_REPORTER_PATH } from "../src/lens-review.ts";
+import type { RosterEntry } from "../src/lens-roster.ts";
+import { runPlanPipeline, setPlanDispatch, setPlanStatFn } from "../src/plan-driver.ts";
+import { PLAN_REPORTER_PATH } from "../src/plan-investigate.ts";
+import {
+  reporterMissingError,
+  reporterPathFromArgs,
+  statReporterPath,
+} from "../src/reporter-preflight.ts";
 import {
   RESEARCH_REPORTER_PATH,
   runResearchPipeline,
   setResearchDispatch,
 } from "../src/research-driver.ts";
 import {
-  judgePolicy,
-  askPolicy,
   MERGE_POLICY_QUESTION,
+  askPolicy,
+  judgePolicy,
   policyReporterPath,
 } from "../src/work-driver-policy.ts";
-import { runLensChild } from "../src/lens-review-child.ts";
-import { LENS_REPORTER_PATH } from "../src/lens-review.ts";
-import {
-  reporterMissingError,
-  reporterPathFromArgs,
-  statReporterPath,
-} from "../src/reporter-preflight.ts";
-import { PLAN_REPORTER_PATH } from "../src/plan-investigate.ts";
-import {
-  runPlanPipeline,
-  setPlanDispatch,
-  setPlanStatFn,
-} from "../src/plan-driver.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import type { RosterEntry } from "../src/lens-roster.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -291,7 +287,9 @@ function claimCall(kind: string, text: string, source: string, sourceKind: strin
       role: "explore",
       ok: true,
       text: isSilent ? "nothing to report" : "found a claim",
-      toolUses: isSilent ? [] : [claimCall("finding", `a valid claim ${claimIdx}`, "https://a/live", "url")],
+      toolUses: isSilent
+        ? []
+        : [claimCall("finding", `a valid claim ${claimIdx}`, "https://a/live", "url")],
       ms: 1,
       exitCode: 0,
     });
@@ -370,7 +368,10 @@ function claimCall(kind: string, text: string, source: string, sourceKind: strin
   );
 
   assert(!r.halt, "failed angle (1 of 3) → no halt (the other 2 reported)");
-  assert(r.claims.length === 2, `2 valid claims from the 2 reporting angles (got ${r.claims.length})`);
+  assert(
+    r.claims.length === 2,
+    `2 valid claims from the 2 reporting angles (got ${r.claims.length})`,
+  );
   const failedRun = r.angles.find((a) => a.name === "custom-2");
   assert(failedRun !== undefined, "failed angle present in result");
   assert(failedRun?.ok === false, "failed angle marked not-ok");
@@ -395,7 +396,7 @@ function claimCall(kind: string, text: string, source: string, sourceKind: strin
 
 {
   // judgePolicy with a rejecting statFn → the named error, no spawn.
-  let spawnCount = 0;
+  const spawnCount = 0;
   const rejectStat = async () => {
     const err = new Error("ENOENT") as NodeJS.ErrnoException;
     err.code = "ENOENT";

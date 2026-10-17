@@ -159,7 +159,10 @@ interface ArmResult {
   events: AnyEvent[];
 }
 
-async function runArm(label: string, opts: { exclude: boolean; sessionPath: string }): Promise<ArmResult> {
+async function runArm(
+  label: string,
+  opts: { exclude: boolean; sessionPath: string },
+): Promise<ArmResult> {
   const childArgs = childArgvFor(opts);
   console.log(`[test] spawning ${label} child: pi ${childArgs.join(" ")}`);
   const child = spawn("pi", childArgs, {
@@ -308,7 +311,10 @@ try {
   const excludeSessionPath = path.join(workDir, `exclude-${process.pid}.json`);
   const controlSessionPath = path.join(workDir, `control-${process.pid}.json`);
 
-  const excludeResult = await runArm("exclusion", { exclude: true, sessionPath: excludeSessionPath });
+  const excludeResult = await runArm("exclusion", {
+    exclude: true,
+    sessionPath: excludeSessionPath,
+  });
   const sentinelExclude = path.join(workDir, "sentinel.txt");
 
   // A backstop that had to fire means the child did not exit on its own —
@@ -351,7 +357,10 @@ try {
   // The child must actually have the DEFAULT tool set — if write/edit are
   // absent because --tools (or similar) stripped everything, the test
   // proves nothing. read and bash are the proof the default set is live.
-  assert(preTools.includes("read"), "[exclusion] read PRESENT in active tools (default tool set live)");
+  assert(
+    preTools.includes("read"),
+    "[exclusion] read PRESENT in active tools (default tool set live)",
+  );
   assert(
     preTools.includes("bash"),
     "[exclusion] bash PRESENT in active tools (default tool set live, only --exclude-tools applies)",
@@ -422,16 +431,18 @@ try {
         e.type === "message" && (e.message as { role?: string } | undefined)?.role === "assistant",
     );
   const lastText =
-    (lastAssistant?.message as { content?: Array<{ type?: string; text?: string }> })?.content?.find(
-      (b) => b.type === "text",
-    )?.text ?? "";
+    (
+      lastAssistant?.message as { content?: Array<{ type?: string; text?: string }> }
+    )?.content?.find((b) => b.type === "text")?.text ?? "";
   assert(
     lastText.toUpperCase().includes("PONG"),
     `[exclusion] last assistant text contains PONG (actual: "${lastText.slice(0, 60)}")`,
   );
 
   console.log(`\n[test] [exclusion] pre-script tools (${preTools.length}): ${preTools.join(", ")}`);
-  console.log(`[test] [exclusion] post-script tools (${postTools.length}): ${postTools.join(", ")}`);
+  console.log(
+    `[test] [exclusion] post-script tools (${postTools.length}): ${postTools.join(", ")}`,
+  );
   console.log(`[test] [exclusion] session: ${excludeSessionPath}`);
 
   // --- ARM B: positive control — same argv WITHOUT --exclude-tools ---
@@ -439,7 +450,10 @@ try {
   // the default tool set and nothing removes it. If this arm does NOT
   // write the sentinel, the test cannot fail, and a gate that cannot
   // fail is worthless — fail the whole test.
-  const controlResult = await runArm("control", { exclude: false, sessionPath: controlSessionPath });
+  const controlResult = await runArm("control", {
+    exclude: false,
+    sessionPath: controlSessionPath,
+  });
   const sentinelControl = path.join(workDir, "sentinel.txt");
 
   assert(

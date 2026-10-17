@@ -168,8 +168,16 @@ const fnSeen = (fn: ExecFn) => (fn as ExecFn & { seen?: string[] }).seen ?? [];
     (await groundCodeSource(ok, "/r", "src/x.ts", "abc1234def")) === "grounded",
     "path present at sha alone → grounded",
   );
-  assert(fnSeen(ok).at(-1)?.includes('git cat-file -e abc1234def:"src/x.ts"') === true, "grounding pins to the commit");
-  assert(fnSeen(ok).filter((c) => c.includes("git grep")).some((c) => c.includes('abc1234def -- "src/x.ts"')) === true, "symbol grep is scoped to the file at the sha");
+  assert(
+    fnSeen(ok).at(-1)?.includes('git cat-file -e abc1234def:"src/x.ts"') === true,
+    "grounding pins to the commit",
+  );
+  assert(
+    fnSeen(ok)
+      .filter((c) => c.includes("git grep"))
+      .some((c) => c.includes('abc1234def -- "src/x.ts"')) === true,
+    "symbol grep is scoped to the file at the sha",
+  );
 
   const noSym = groundExecStub({
     catFileOk: ["src/x.ts"],
@@ -481,7 +489,10 @@ function verifyExecStub(grepHits: boolean): ExecFn {
     source: "lib@1.2 docs",
     verification: { check: "none", status: "unchecked", derivedKinds: ["doc"] },
   });
-  assert(entailableClaims([docClaim]).length === 1, "doc-derived claim with no check IS entailable");
+  assert(
+    entailableClaims([docClaim]).length === 1,
+    "doc-derived claim with no check IS entailable",
+  );
   const noKinds = claim({
     sourceKind: "url",
     verification: { check: "none", status: "unchecked" },

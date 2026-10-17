@@ -84,7 +84,9 @@ const prevOverride = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
   process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = relOverride;
   try {
     const expected = path.resolve(CWD, relOverride);
-    const p = await ledgerPathFor(async () => { throw new Error("should not be called"); }, CWD);
+    const p = await ledgerPathFor(async () => {
+      throw new Error("should not be called");
+    }, CWD);
     assert(p === expected, `relative override → resolved against cwd (${p})`);
   } finally {
     if (prevOverride === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;

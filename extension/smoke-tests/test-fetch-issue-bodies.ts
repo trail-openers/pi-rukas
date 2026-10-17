@@ -33,9 +33,10 @@ function assert(cond: boolean, msg: string) {
 }
 
 /** A fake Forge with a programmable issueView. */
-function mkFakeForge(
-  responses: Record<number, { title: string; body: string } | Error>,
-): { forge: Forge; calls: number[] } {
+function mkFakeForge(responses: Record<number, { title: string; body: string } | Error>): {
+  forge: Forge;
+  calls: number[];
+} {
   const calls: number[] = [];
   const forge = {
     forge: "github" as const,

@@ -10,7 +10,15 @@
  * rewrites).
  */
 
-import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { confirmRow } from "../src/dispatch-deck-confirm-row.ts";
+import { onRowConfirm } from "../src/dispatch-deck-confirm.ts";
+import {
+  type ViewHeader,
+  createAgentViewComponent,
+  getViewScrollState,
+} from "../src/dispatch-deck-live-view-component.ts";
+import { type LiveViewTheme, openLiveView } from "../src/dispatch-deck-live-view.ts";
 import {
   dropBuffer,
   feedRawEvent,
@@ -21,20 +29,9 @@ import {
   onBufferAppend,
   startBuffer,
 } from "../src/dispatch-deck-live.ts";
-import {
-  createAgentViewComponent,
-  getViewScrollState,
-  type ViewHeader,
-} from "../src/dispatch-deck-live-view-component.ts";
-import {
-  openLiveView,
-  type LiveViewTheme,
-} from "../src/dispatch-deck-live-view.ts";
-import { onRowConfirm } from "../src/dispatch-deck-confirm.ts";
-import { confirmRow } from "../src/dispatch-deck-confirm-row.ts";
 import { clearEntry, reset, snapshot, startEntry } from "../src/dispatch-deck.ts";
-import { pmActive, setPmActive } from "../src/pm-active.ts";
 import { getNotices, incrementNotice, resetNotices } from "../src/notice-counter.ts";
+import { pmActive, setPmActive } from "../src/pm-active.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -89,7 +86,14 @@ function resetKeys(keys: string[]): void {
       content: [{ type: "toolCall", name: "bash", arguments: args }],
     },
   });
-  const comp = createAgentViewComponent("v1", () => makeHeader(), fakeTheme, { terminal: { rows: 500 } }, () => {}, () => {});
+  const comp = createAgentViewComponent(
+    "v1",
+    () => makeHeader(),
+    fakeTheme,
+    { terminal: { rows: 500 } },
+    () => {},
+    () => {},
+  );
   for (const w of [40, 120]) {
     const lines = comp.render(w);
     let allFit = true;
@@ -127,12 +131,27 @@ function resetKeys(keys: string[]): void {
     type: "message_end",
     message: {
       role: "assistant",
-      content: [{ type: "thinking", thinking: thinkText } as unknown as { type: "thinking"; thinking: string }],
+      content: [
+        { type: "thinking", thinking: thinkText } as unknown as {
+          type: "thinking";
+          thinking: string;
+        },
+      ],
     },
   });
-  const comp = createAgentViewComponent("v2", () => makeHeader(), fakeTheme, undefined, () => {}, () => {});
+  const comp = createAgentViewComponent(
+    "v2",
+    () => makeHeader(),
+    fakeTheme,
+    undefined,
+    () => {},
+    () => {},
+  );
   let flat = comp.render(80).join("\n");
-  assert(flat.includes(`▸ thinking (${thinkText.length} chars)`), "2a: thinking collapsed by default");
+  assert(
+    flat.includes(`▸ thinking (${thinkText.length} chars)`),
+    "2a: thinking collapsed by default",
+  );
   assert(!flat.includes(thinkText), "2b: thinking text not visible when collapsed");
   // #915: `t` now inserts into the input; ctrl+t (\x14) toggles thinking
   comp.handleInput("\x14"); // ctrl+t — toggle expand
@@ -140,7 +159,10 @@ function resetKeys(keys: string[]): void {
   assert(flat.includes(thinkText), "2c: thinking expanded after ctrl+t");
   comp.handleInput("\x14"); // ctrl+t — toggle back
   flat = comp.render(80).join("\n");
-  assert(flat.includes(`▸ thinking (${thinkText.length} chars)`), "2d: thinking collapsed after second ctrl+t");
+  assert(
+    flat.includes(`▸ thinking (${thinkText.length} chars)`),
+    "2d: thinking collapsed after second ctrl+t",
+  );
   dropBuffer("v2");
 }
 
@@ -158,7 +180,14 @@ function resetKeys(keys: string[]): void {
     });
   }
   const tui: { terminal?: { rows?: number } } = { terminal: { rows: 10 } };
-  const comp1 = createAgentViewComponent("v3", () => makeHeader(), fakeTheme, tui, () => {}, () => {});
+  const comp1 = createAgentViewComponent(
+    "v3",
+    () => makeHeader(),
+    fakeTheme,
+    tui,
+    () => {},
+    () => {},
+  );
   let flat = comp1.render(80).join("\n");
   assert(flat.includes("line-29"), "3a: following shows the newest event");
   // ↑ → pause
@@ -192,7 +221,14 @@ function resetKeys(keys: string[]): void {
   assert(!flat.includes("another-line"), "3f: new event does NOT auto-scroll when paused");
   // State persists across re-creation: create a second component for the
   // same key and verify the scroll state is restored.
-  const comp2 = createAgentViewComponent("v3", () => makeHeader(), fakeTheme, tui, () => {}, () => {});
+  const comp2 = createAgentViewComponent(
+    "v3",
+    () => makeHeader(),
+    fakeTheme,
+    tui,
+    () => {},
+    () => {},
+  );
   const state = getViewScrollState("v3");
   assert(state.scroll > 0, "3g: scroll state persisted (scroll > 0 after re-creation)");
   // End → follow on
@@ -297,8 +333,14 @@ function resetKeys(keys: string[]): void {
   resetKeys(["v6"]);
   startBuffer("v6");
   const results: string[] = [];
-  const comp = createAgentViewComponent("v6", () => makeHeader(), fakeTheme, undefined, (r) =>
-    results.push(r), () => {});
+  const comp = createAgentViewComponent(
+    "v6",
+    () => makeHeader(),
+    fakeTheme,
+    undefined,
+    (r) => results.push(r),
+    () => {},
+  );
   // #915: `s` now inserts into the input; the steer path is the Enter key
   comp.handleInput("s");
   assert(comp.inputValue() === "s", "6a: 's' inserts into the input (no done)");
@@ -357,7 +399,14 @@ function resetKeys(keys: string[]): void {
     type: "message_end",
     message: { role: "assistant", content: [{ type: "text", text: "x".repeat(2000) }] },
   });
-  const comp = createAgentViewComponent("v8", () => makeHeader(), fakeTheme, undefined, () => {}, () => {});
+  const comp = createAgentViewComponent(
+    "v8",
+    () => makeHeader(),
+    fakeTheme,
+    undefined,
+    () => {},
+    () => {},
+  );
   for (const w of [40, 120]) {
     const lines = comp.render(w);
     let hasRawEsc = false;
@@ -434,7 +483,11 @@ function resetKeys(keys: string[]): void {
     {
       getEntry: (k) => snapshot().find((e) => e.key === k),
     },
-    { onReturnToList: () => { returnCalled = true; } },
+    {
+      onReturnToList: () => {
+        returnCalled = true;
+      },
+    },
   );
   assert(returnCalled, "10a: onReturnToList invoked on Esc when provided");
   // Without onReturnToList: just closes, no callback.
@@ -468,7 +521,11 @@ function resetKeys(keys: string[]): void {
       getEntry: (k) => snapshot().find((e) => e.key === k),
       steer: () => {},
     },
-    { onReturnToList: () => { returnCalled = true; } },
+    {
+      onReturnToList: () => {
+        returnCalled = true;
+      },
+    },
   );
   assert(returnCalled, "11a: confirmRow threads onReturnToList through");
   clearEntry("deck-job-11");

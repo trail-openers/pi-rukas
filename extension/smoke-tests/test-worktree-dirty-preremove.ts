@@ -35,9 +35,9 @@ import { runBranch } from "../src/work-driver-branch-develop.ts";
 import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { runCreateGuards } from "../src/worktree-create-guard.ts";
 import { DirtyWorktreeError, inspectWorktreeForLoss, worktreeCreate } from "../src/worktree.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import { runCreateGuards } from "../src/worktree-create-guard.ts";
 import {
   git,
   makeFakeRepoRoot,
@@ -242,7 +242,10 @@ try {
 
     writeFileSync(path.join(wt, "a.txt"), "base\nuncommitted edit on the same tree\n");
     const dirty = await inspectWorktreeForLoss(realExec, repo, wt, baseSha);
-    assert(dirty?.uncommittedFiles.length === 1, "#1170: tree-identical + uncommitted edits is loss");
+    assert(
+      dirty?.uncommittedFiles.length === 1,
+      "#1170: tree-identical + uncommitted edits is loss",
+    );
 
     await git(wt, ["checkout", "-q", "--", "a.txt"]);
     writeFileSync(path.join(wt, "untracked.txt"), "x\n");

@@ -39,7 +39,10 @@ try {
     "a directory holding only a node_modules (no manifest) is NOT a package dir",
   );
   assert(!dirs.includes(".hidden"), "dot directories stay excluded");
-  assert(dirs.length === 2, `exactly the two manifest-bearing directories (got: ${dirs.join(", ")})`);
+  assert(
+    dirs.length === 2,
+    `exactly the two manifest-bearing directories (got: ${dirs.join(", ")})`,
+  );
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

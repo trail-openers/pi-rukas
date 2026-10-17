@@ -21,7 +21,6 @@
  * fence-recovery-started event (nothing was discarded).
  */
 
-import { commandOf } from "./lib/argv-shell.ts";
 import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,6 +31,7 @@ import { runDevelopTopological } from "../src/work-develop-topological.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { commandOf } from "./lib/argv-shell.ts";
 
 const execFileP = promisify(execFile);
 

@@ -8,8 +8,8 @@
  * restored from that entry on session_start.
  */
 
-import { armPmMode, isPmModeActive, resetPmMode } from "../src/pm-mode.ts";
 import { PM_MODE_ENTRY, registerPmModePersistence } from "../src/pm-mode-persist.ts";
+import { armPmMode, isPmModeActive, resetPmMode } from "../src/pm-mode.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

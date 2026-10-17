@@ -52,10 +52,7 @@ assert(
     ]),
   "rpc: every option carries its description, empty when it has none",
 );
-assert(
-  rpc.content[0].text.includes("End your turn"),
-  "rpc: the agent is told to end its turn",
-);
+assert(rpc.content[0].text.includes("End your turn"), "rpc: the agent is told to end its turn");
 
 const none = await tool.execute(
   "call-2",

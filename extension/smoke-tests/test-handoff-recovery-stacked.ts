@@ -18,8 +18,8 @@
  *    byte-identical to the pre-#794 behaviour.
  */
 
-import { dependencyLeaves } from "../src/work-driver-leaf-selection.ts";
 import { recoveryStepsForCap } from "../src/work-driver-handoff-recovery.ts";
+import { dependencyLeaves } from "../src/work-driver-leaf-selection.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -228,7 +228,10 @@ function stackedState(): WorkState {
     .filter((s) => s.section === "worktree-work-fallback")
     .flatMap((s) => s.lines)
     .filter((l) => l.includes("git cherry-pick"));
-  assert(pickLines.length === 4, "fallback: no dependsOn map → one pick per worktree (pre-#679 shape)");
+  assert(
+    pickLines.length === 4,
+    "fallback: no dependsOn map → one pick per worktree (pre-#679 shape)",
+  );
   assert(
     !pickLines.join("\n").includes(".."),
     "fallback: per-leaf picks are single-SHA picks, not a range",
@@ -342,7 +345,10 @@ function stackedState(): WorkState {
     .filter((st) => st.section === "worktree-work-fallback")
     .flatMap((st) => st.lines)
     .filter((l) => l.includes("git cherry-pick"));
-  assert(pickLines.length === 2, "disjoint: one cherry-pick per worktree when no dependsOn is declared");
+  assert(
+    pickLines.length === 2,
+    "disjoint: one cherry-pick per worktree when no dependsOn is declared",
+  );
   assert(
     !pickLines.join("\n").includes(".."),
     "disjoint: per-leaf picks are single-SHA picks, not a range",
@@ -356,7 +362,10 @@ function stackedState(): WorkState {
     "disjoint: task-b's HEAD is picked",
   );
   const allLines = steps.flatMap((st) => [...st.comment, ...st.lines]).join("\n");
-  assert(!allLines.includes("applies every commit of the stack in order"), "disjoint: no stack-only explanation is printed");
+  assert(
+    !allLines.includes("applies every commit of the stack in order"),
+    "disjoint: no stack-only explanation is printed",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -378,19 +387,13 @@ function stackedState(): WorkState {
 // 4. dependencyLeaves unit checks: chain, diamond, and independent sets.
 // ---------------------------------------------------------------------------
 {
-  const chain = dependencyLeaves(
-    ["a", "b", "c"],
-    { a: [], b: ["a"], c: ["b"] },
-  );
+  const chain = dependencyLeaves(["a", "b", "c"], { a: [], b: ["a"], c: ["b"] });
   assert(
     chain.length === 1 && chain[0] === "c",
     "dependencyLeaves: a 3-deep chain yields the single leaf 'c'",
   );
 
-  const diamond = dependencyLeaves(
-    ["a", "b", "c", "d"],
-    { a: [], b: [], c: ["a", "b"], d: ["c"] },
-  );
+  const diamond = dependencyLeaves(["a", "b", "c", "d"], { a: [], b: [], c: ["a", "b"], d: ["c"] });
   assert(
     diamond.length === 1 && diamond[0] === "d",
     "dependencyLeaves: a diamond yields the single leaf 'd'",
@@ -403,7 +406,10 @@ function stackedState(): WorkState {
   );
 
   const absentMap = dependencyLeaves(["a", "b"], undefined);
-  assert(absentMap.length === 2, "dependencyLeaves: absent dependsOn map → every workstream is a leaf");
+  assert(
+    absentMap.length === 2,
+    "dependencyLeaves: absent dependsOn map → every workstream is a leaf",
+  );
 
   // Ids present in the map but not in the picked set are ignored.
   const subset = dependencyLeaves(["b"], { a: [], b: ["a"] });

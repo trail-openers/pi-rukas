@@ -39,10 +39,7 @@ const ROOT = path.resolve(import.meta.dirname, "..", "..");
  * ("Direct `gh issue create` is structurally denied…"); issue-workflow.md
  * keeps the same shape in its creation section.
  */
-const ALLOWLIST = [
-  "agents-base/project-manager.md",
-  "modules/workflows/issue-workflow.md",
-];
+const ALLOWLIST = ["agents-base/project-manager.md", "modules/workflows/issue-workflow.md"];
 
 /**
  * Files where `gh issue create` must be absent as a positive prose

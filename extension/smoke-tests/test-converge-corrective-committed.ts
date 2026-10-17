@@ -41,10 +41,7 @@ try {
   );
 
   writeFileSync(path.join(repo, "a.sh"), "two\n");
-  assert(
-    (await correctiveChange(ctx, repo, before)) === "changed",
-    "uncommitted edit → changed",
-  );
+  assert((await correctiveChange(ctx, repo, before)) === "changed", "uncommitted edit → changed");
 
   git("commit", "-q", "-am", "corrective work");
   assert(git("status", "--porcelain") === "", "fixture: the tree is clean after the commit");

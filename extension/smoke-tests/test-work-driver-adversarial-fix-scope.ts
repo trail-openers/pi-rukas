@@ -9,17 +9,17 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { namedPaths } from "../src/work-driver-adversarial-fix-scope.ts";
+import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
+import type { WorkState } from "../src/workflow-state.ts";
 import {
   devCommit,
   devWrite,
   fixCtx,
   fixState,
-  repoWithFile,
   git,
+  repoWithFile,
 } from "./lib/adversarial-fix-fixtures.ts";
-import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
-import { namedPaths } from "../src/work-driver-adversarial-fix-scope.ts";
-import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

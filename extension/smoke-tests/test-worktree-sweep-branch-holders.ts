@@ -122,10 +122,7 @@ try {
     // The branch exists and is checked out at repoRoot, but no worktree holds it.
     await git(repo, ["checkout", "-q", "-b", "feature/issue-654-task-d", baseSha]);
     const removed = await sweepBranchHolders(realExec, repo, "feature/issue-654-task-d");
-    assert(
-      removed === false,
-      "sweep: a branch held only by repoRoot is a no-op (returns false)",
-    );
+    assert(removed === false, "sweep: a branch held only by repoRoot is a no-op (returns false)");
   }
 
   // ------------------- real git: an unrelated worktree is never touched

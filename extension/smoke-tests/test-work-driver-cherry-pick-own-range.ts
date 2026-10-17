@@ -24,9 +24,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { runConsolidatedVerify } from "../src/work-driver-consolidated-verify.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
-import { runConsolidatedVerify } from "../src/work-driver-consolidated-verify.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 

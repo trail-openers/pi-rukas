@@ -12,8 +12,8 @@
  */
 
 import { parseOperatorDirectivesWithLines } from "../src/plan-directives.ts";
-import { assemblePriorContext } from "../src/plan-prior-context-assembly.ts";
 import type { MechanicalInventory } from "../src/plan-inventory.ts";
+import { assemblePriorContext } from "../src/plan-prior-context-assembly.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -34,15 +34,22 @@ const EMPTY_INV: MechanicalInventory = { memory: [], related: [], errors: [] };
   const { inventoryContext } = assemblePriorContext(ctx, EMPTY_INV);
   const facts = inventoryContext.map((e) => e.fact);
   assert(facts.includes("Decisions:"), "unrecognised heading: heading line kept in inventory");
-  assert(facts.includes("- use the retry seam"), "unrecognised heading: first bullet kept in inventory");
-  assert(facts.includes("- keep the old flag"), "unrecognised heading: second bullet kept in inventory");
+  assert(
+    facts.includes("- use the retry seam"),
+    "unrecognised heading: first bullet kept in inventory",
+  );
+  assert(
+    facts.includes("- keep the old flag"),
+    "unrecognised heading: second bullet kept in inventory",
+  );
 }
 
 {
   const ctx = "ACCEPTANCE CRITERIA:\n- a criterion\nDecisions:\n- b decision";
   const { directives } = parseOperatorDirectivesWithLines(ctx);
   assert(
-    directives.acceptanceCriteria.length === 1 && directives.acceptanceCriteria[0] === "a criterion",
+    directives.acceptanceCriteria.length === 1 &&
+      directives.acceptanceCriteria[0] === "a criterion",
     "unrecognised label closes the open AC block (no `Decisions:` item)",
   );
   const { inventoryContext } = assemblePriorContext(ctx, EMPTY_INV);
@@ -68,7 +75,10 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
     directives.decomposition?.length === 2 && directives.decomposition[0] === "split by surface",
     `slash heading ${JSON.stringify(heading)} populates the decomposition channel`,
   );
-  assert(consumedLines.length === 3, `slash heading ${JSON.stringify(heading)}: heading and items consumed`);
+  assert(
+    consumedLines.length === 3,
+    `slash heading ${JSON.stringify(heading)}: heading and items consumed`,
+  );
 }
 
 {

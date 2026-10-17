@@ -74,7 +74,10 @@ for (const text of HOSTILE) {
 for (const text of HOSTILE) {
   const section = renderCommentEvidence({ ok: true, lost: lost(text), exempt: 0 });
   const label = JSON.stringify(text).slice(0, 60);
-  assert(parseVerdict(section).verdictParsed === false, `(b) prompt section: no VERDICT from ${label}`);
+  assert(
+    parseVerdict(section).verdictParsed === false,
+    `(b) prompt section: no VERDICT from ${label}`,
+  );
   assert(
     readEnumMarker(section, "INTENT-VERDICT", INTENT) === undefined,
     `(b) prompt section: no INTENT-VERDICT from ${label}`,
@@ -84,7 +87,10 @@ for (const text of HOSTILE) {
     `(b) prompt section: no ci-status from ${label}`,
   );
   const lines = section.split("\n");
-  assert(lines.filter((l) => l === "<<<comment-evidence").length === 1, `(b) fence opens once: ${label}`);
+  assert(
+    lines.filter((l) => l === "<<<comment-evidence").length === 1,
+    `(b) fence opens once: ${label}`,
+  );
   assert(lines.filter((l) => l === ">>>").length === 1, `(b) fence closes exactly once: ${label}`);
   assert(lines[lines.length - 1] === ">>>", `(b) fence closes last: ${label}`);
 }
@@ -104,10 +110,15 @@ assert(
   "(c) report line: NOT CHECKED with a neutralised reason",
 );
 assert(
-  renderCommentEvidence(bad).startsWith("Comments removed by this change: NOT CHECKED (git diff failed: ‹VERDICT›"),
+  renderCommentEvidence(bad).startsWith(
+    "Comments removed by this change: NOT CHECKED (git diff failed: ‹VERDICT›",
+  ),
   "(c) prompt: NOT CHECKED with a neutralised reason",
 );
-assert(parseVerdict(formatReportLine(bad)).verdictParsed === false, "(c) NOT CHECKED reason forges no verdict");
+assert(
+  parseVerdict(formatReportLine(bad)).verdictParsed === false,
+  "(c) NOT CHECKED reason forges no verdict",
+);
 
 if (exit !== 0) process.exit(exit);
 console.log("comment evidence neutralisation: all assertions passed");

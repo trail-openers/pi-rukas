@@ -11,7 +11,7 @@
  */
 
 import assert from "node:assert";
-import { mkdirSync, utimesSync, existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -73,8 +73,14 @@ async function runTests() {
     const res = await runArtifactSweep({ repoRoot: root, execFn });
 
     assertTrue(res.ran, "sweep ran");
-    assertTrue(res.swept.length === 1 && res.swept[0] === "200", `only "200" swept, got [${res.swept}]`);
-    assertTrue(res.checked === 4, `checked 4 dirs (100, 200, 300, issue-553-notes), got ${res.checked}`);
+    assertTrue(
+      res.swept.length === 1 && res.swept[0] === "200",
+      `only "200" swept, got [${res.swept}]`,
+    );
+    assertTrue(
+      res.checked === 4,
+      `checked 4 dirs (100, 200, 300, issue-553-notes), got ${res.checked}`,
+    );
     assertTrue(sweptNames.length === 1, `one rm issued, got ${sweptNames.length}`);
     assertTrue(
       sweptNames[0]?.includes(JSON.stringify(bDir)) === true,

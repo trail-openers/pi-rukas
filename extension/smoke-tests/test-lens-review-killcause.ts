@@ -8,8 +8,8 @@
  * and the three-branch banner header — exact strings, offline, no spawns.
  */
 
-import type { LensRunResult } from "../src/lens-review.ts";
 import { renderSummary } from "../src/lens-review-render.ts";
+import type { LensRunResult } from "../src/lens-review.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -230,7 +230,9 @@ const _bs = (l: LensRunResult, ...r: LensRunResult[]) =>
   );
   assert(r.includes("was stopped by a self-inflicted cap (not retried)"), "#878: all-cap header");
   assert(
-    r.includes("⛔ REVIEW INCOMPLETE: 2/6 lens(es) was stopped by a self-inflicted cap (not retried):"),
+    r.includes(
+      "⛔ REVIEW INCOMPLETE: 2/6 lens(es) was stopped by a self-inflicted cap (not retried):",
+    ),
     "#878: all-cap full header line",
   );
   assert(!r.includes("failed all"), "#878: all-cap no failed-all");
@@ -279,11 +281,12 @@ const _bs = (l: LensRunResult, ...r: LensRunResult[]) =>
   );
   assert(!r.includes("(killed:"), "#878: no killCause no suffix");
   assert(
-    r.includes("⛔ REVIEW INCOMPLETE: 1/1 lens(es) failed all 4 attempts:\n  - SECURITY: attempt 1/4: exit 143"),
+    r.includes(
+      "⛔ REVIEW INCOMPLETE: 1/1 lens(es) failed all 4 attempts:\n  - SECURITY: attempt 1/4: exit 143",
+    ),
     "#878: no killCause banner byte-identical (line + old header)",
   );
 }
-
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

@@ -14,6 +14,12 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import {
+  type DeckRows,
+  buildCompositeFactory,
+  buildSteerPrompt,
+} from "../src/dispatch-deck-composite.ts";
+import { DECK_UI_STEER_SOURCE } from "../src/dispatch-deck-interactive.ts";
+import {
   type DeckEntry,
   attach,
   clearEntry,
@@ -24,12 +30,6 @@ import {
   startBatchEntry,
   startEntry,
 } from "../src/dispatch-deck.ts";
-import { DECK_UI_STEER_SOURCE } from "../src/dispatch-deck-interactive.ts";
-import {
-  buildCompositeFactory,
-  buildSteerPrompt,
-  type DeckRows,
-} from "../src/dispatch-deck-composite.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
 
 let exit = 0;

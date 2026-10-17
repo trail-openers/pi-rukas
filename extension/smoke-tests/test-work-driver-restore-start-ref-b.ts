@@ -10,7 +10,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stampCycleStartRef } from "../src/work-driver-branch-develop.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { captureCycleStartRef, hasCaptureFailure, recordCycleStartRef, restoreCheckout } from "../src/work-driver-git.ts";
+import {
+  captureCycleStartRef,
+  hasCaptureFailure,
+  recordCycleStartRef,
+  restoreCheckout,
+} from "../src/work-driver-git.ts";
 import { restoreRootToRefPreserving } from "../src/work-driver-restore.ts";
 import { readState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
@@ -46,13 +51,18 @@ import {
       scratchDir: scratch,
       label: "test",
     });
-    assert(r.restored && head(dir) === "feature/x", "abort: the cycle's edit is stashed, then the checkout lands on feature/x");
+    assert(
+      r.restored && head(dir) === "feature/x",
+      "abort: the cycle's edit is stashed, then the checkout lands on feature/x",
+    );
     assert(
       readFileSync(join(dir, "tracked.txt"), "utf8") === "x\n",
       "abort: the working tree holds the target's content, not the cycle's edit",
     );
     assert(
-      execFileSync("git", ["stash", "list"], { cwd: dir, encoding: "utf8" }).includes("pi-rukas #1093"),
+      execFileSync("git", ["stash", "list"], { cwd: dir, encoding: "utf8" }).includes(
+        "pi-rukas #1093",
+      ),
       "abort: the cycle's edit is recoverable from the stash list",
     );
     assert(
@@ -121,7 +131,10 @@ import {
       !existsSync(marker),
       "metachar: a `$(…)` in the start ref is not executed by the restore",
     );
-    assert(head(dir) === "main", "metachar: the unusable ref is never checked out (falls back to main)");
+    assert(
+      head(dir) === "main",
+      "metachar: the unusable ref is never checked out (falls back to main)",
+    );
     assert(
       notes.some((n) => n.includes("cycle start ref not used")),
       `metachar: the note says why (got ${JSON.stringify(notes)})`,

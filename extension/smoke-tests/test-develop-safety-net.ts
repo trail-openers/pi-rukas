@@ -21,8 +21,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { applySafetyNet } from "../src/work-driver-safety-net.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { applySafetyNet } from "../src/work-driver-safety-net.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 const execFileP = promisify(execFile);
@@ -147,7 +147,7 @@ async function caseA_uncommittedOnly(): Promise<void> {
       `${baseSha}..HEAD`,
     ]);
     assert(
-      parseInt(ahead.trim(), 10) === 1,
+      Number.parseInt(ahead.trim(), 10) === 1,
       `(a) worktree has exactly 1 commit ahead of baseSha (got: ${ahead.trim()})`,
     );
   } finally {
@@ -415,7 +415,7 @@ async function caseH_perWorktreeBase_dependent(): Promise<void> {
       `${aSha}..HEAD`,
     ]);
     assert(
-      parseInt(bAheadOfA.trim(), 10) === 1,
+      Number.parseInt(bAheadOfA.trim(), 10) === 1,
       `(h) task-b has 1 commit ahead of its (A's) base (got: ${bAheadOfA.trim()})`,
     );
   } finally {

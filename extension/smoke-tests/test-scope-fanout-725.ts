@@ -240,9 +240,7 @@ try {
     };
     const gate = await verifyStepOutcome(ctx, s, "develop");
     assert(
-      gate.failures.some((fl) =>
-        /out-of-scope path extension\/src\/deck\.ts/.test(fl),
-      ),
+      gate.failures.some((fl) => /out-of-scope path extension\/src\/deck\.ts/.test(fl)),
       `#679 true positive: a dependent's OWN commit touching a fenced path still fails (got: ${gate.failures.join("; ")})`,
     );
   }
@@ -312,7 +310,9 @@ try {
     const notes: string[] = [];
     runScopeFanoutGate(
       { default: { id: "default", scope: "x", paths: ["a.ts"], outOfScope: [] } },
-      new Map([["default", new Set(["a.ts", "b.ts"])] as [string, Set<string>] as [string, Set<string>]]),
+      new Map([
+        ["default", new Set(["a.ts", "b.ts"])] as [string, Set<string>] as [string, Set<string>],
+      ]),
       failures,
       notes,
     );
@@ -378,10 +378,7 @@ try {
       verifyExecFn: realExec,
     };
     const gate = await verifyStepOutcome(ctx, s, "develop");
-    assert(
-      !gate.ok,
-      `dirty root: the cycle is not ok (got: ${gate.failures.join("; ")})`,
-    );
+    assert(!gate.ok, `dirty root: the cycle is not ok (got: ${gate.failures.join("; ")})`);
     const dirtyFailure = gate.failures.find((fl) => /repoRoot is dirty/.test(fl));
     assert(
       dirtyFailure !== undefined,

@@ -279,7 +279,10 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
       dirtWriteError === undefined,
       "#968 forced-restore-failure: the dirt writeFileSync did not throw (write failures fail on their own terms)",
     );
-    assert(dirtWritten, "#968 forced-restore-failure: the stub intercepted the restore checkout and wrote the dirt");
+    assert(
+      dirtWritten,
+      "#968 forced-restore-failure: the stub intercepted the restore checkout and wrote the dirt",
+    );
     assert(
       dirtSurvived,
       "#968 forced-restore-failure: the tracked dirt survived to the restore's post-condition read (the intercept did not drift)",

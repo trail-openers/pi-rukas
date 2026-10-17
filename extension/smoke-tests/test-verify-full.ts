@@ -252,10 +252,7 @@ async function testRunVerifyFullFlakeStillFails() {
   assert.strictEqual(result.outcome, "failure", "two failures is a genuine failure");
   assert.strictEqual(result.recovered, undefined, "no recovered flag on genuine failure");
   assert.ok(result.output.includes("run 2"), "most recent tail is the primary evidence");
-  assert.ok(
-    result.firstRunOutput?.includes("run 1"),
-    "first run's failing tail preserved",
-  );
+  assert.ok(result.firstRunOutput?.includes("run 1"), "first run's failing tail preserved");
   assert.strictEqual(trackCalls.length, 2, "exactly one re-run, never a loop");
   console.log("✓ testRunVerifyFullFlakeStillFails");
 }
@@ -267,10 +264,7 @@ async function testRunVerifyFullFlakeStillFails() {
  */
 async function testRunVerifyFullNoRetryWhenOptOut() {
   const trackCalls: Array<{ cmd: string; cwd?: string }> = [];
-  const mockExec = createMockExecFn(
-    [{ stdout: "", stderr: "error: test failed" }],
-    trackCalls,
-  );
+  const mockExec = createMockExecFn([{ stdout: "", stderr: "error: test failed" }], trackCalls);
   const result = await runVerifyFull("cargo test", tmpDir, 5000, mockExec);
   assert.strictEqual(result.outcome, "failure");
   assert.strictEqual(result.recovered, undefined);

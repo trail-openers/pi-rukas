@@ -19,12 +19,7 @@ import { verifyCmdFor, verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
-import {
-  isNulDiffRead,
-  isNulStatusRead,
-  nulNameStatus,
-  nulStatus,
-} from "./lib/nul-porcelain.ts";
+import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

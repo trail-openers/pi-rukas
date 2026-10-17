@@ -41,11 +41,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { __resetIntegrationLock } from "../src/work-driver-lock.ts";
 import {
   runConsolidatedVerify,
   runConsolidatedVerifyUnlocked,
 } from "../src/work-driver-consolidated-verify.ts";
+import { __resetIntegrationLock } from "../src/work-driver-lock.ts";
 
 const execFileP = promisify(execFile);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -147,7 +147,8 @@ async function runOne(
  * appears strictly after the other call's restore (the section-end region).
  * Returns which call ran first (0 or 1) or -1 if boundaries are missing. */
 function serialized(order: Array<{ kind: Boundary; seq: 0 | 1 }>): 0 | 1 | -1 {
-  const idx = (kind: Boundary, seq: 0 | 1) => order.findIndex((e) => e.kind === kind && e.seq === seq);
+  const idx = (kind: Boundary, seq: 0 | 1) =>
+    order.findIndex((e) => e.kind === kind && e.seq === seq);
   const p0 = idx("preflight", 0);
   const r0 = idx("restore", 0);
   const p1 = idx("preflight", 1);
@@ -163,7 +164,8 @@ function serialized(order: Array<{ kind: Boundary; seq: 0 | 1 }>): 0 | 1 | -1 {
 /** True when the two calls' spans overlap: one call's preflight landed
  * between the other call's preflight and its restore (or vice versa). */
 function spansOverlap(order: Array<{ kind: Boundary; seq: 0 | 1 }>): boolean {
-  const idx = (kind: Boundary, seq: 0 | 1) => order.findIndex((e) => e.kind === kind && e.seq === seq);
+  const idx = (kind: Boundary, seq: 0 | 1) =>
+    order.findIndex((e) => e.kind === kind && e.seq === seq);
   const p0 = idx("preflight", 0);
   const r0 = idx("restore", 0);
   const p1 = idx("preflight", 1);
@@ -192,10 +194,7 @@ try {
       winner >= 0,
       `#861 AC: two concurrent runConsolidatedVerify calls serialize — one call's preflight begins strictly after the other's restoreRoot (order: ${orderDesc(order)})`,
     );
-    assert(
-      !spansOverlap(order),
-      "#861 AC: the two repoRoot sections did not overlap at all",
-    );
+    assert(!spansOverlap(order), "#861 AC: the two repoRoot sections did not overlap at all");
   }
 
   // -------------------- anti-vacuity: the same harness MUST see overlap
@@ -208,8 +207,12 @@ try {
     const f = await makeRepo("unlocked");
     const order: Array<{ kind: Boundary; seq: 0 | 1 }> = [];
     await Promise.all([
-      runOne(f, 0, order, 200, (execFn, opts) => runConsolidatedVerifyUnlocked(execFn, opts as never)),
-      runOne(f, 1, order, 200, (execFn, opts) => runConsolidatedVerifyUnlocked(execFn, opts as never)),
+      runOne(f, 0, order, 200, (execFn, opts) =>
+        runConsolidatedVerifyUnlocked(execFn, opts as never),
+      ),
+      runOne(f, 1, order, 200, (execFn, opts) =>
+        runConsolidatedVerifyUnlocked(execFn, opts as never),
+      ),
     ]);
     assert(
       spansOverlap(order),

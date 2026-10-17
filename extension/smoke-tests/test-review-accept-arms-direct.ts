@@ -12,7 +12,11 @@
 
 import { armCommit, armForgeRead, armGitRead, armRead } from "../src/review-accept-arms.ts";
 import { isProtectedToken } from "../src/review-accept-command.ts";
-import { editsFindingsFile, registerReviewAcceptGuard, runsReviewAccept } from "../src/review-accept-guard.ts";
+import {
+  editsFindingsFile,
+  registerReviewAcceptGuard,
+  runsReviewAccept,
+} from "../src/review-accept-guard.ts";
 
 /** Run the REAL tool_call hook over one bash input, as the hardened suite does. */
 async function registerBashCall(input: unknown): Promise<{ block?: boolean } | undefined> {
@@ -23,9 +27,7 @@ async function registerBashCall(input: unknown): Promise<{ block?: boolean } | u
     },
   } as never);
   if (!captured) throw new Error("hook: the guard registered no tool_call handler");
-  return (await captured({ toolName: "bash", input }, {})) as
-    | { block?: boolean }
-    | undefined;
+  return (await captured({ toolName: "bash", input }, {})) as { block?: boolean } | undefined;
 }
 
 let exit = 0;

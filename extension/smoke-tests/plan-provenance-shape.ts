@@ -128,7 +128,15 @@ export async function provenanceShapeScenarios(assert: Assert): Promise<void> {
       `provenance: ${name} is refused by the TypeBox schema pattern too (${JSON.stringify(line)}) — the second net must be as wide as the first`,
     );
   }
-  for (const nl of ["line\nwith\nnews", "a\rb", "ok\u0000nul", "ok\u0001ctl", "ok\u001funit", "ok\u007fdel", "ok\ttab"]) {
+  for (const nl of [
+    "line\nwith\nnews",
+    "a\rb",
+    "ok\u0000nul",
+    "ok\u0001ctl",
+    "ok\u001funit",
+    "ok\u007fdel",
+    "ok\ttab",
+  ]) {
     assert(
       validateProvenance({ line: nl, marker: {} }).ok === false,
       `provenance: a control character in the line is refused (${JSON.stringify(nl.slice(0, 18))})`,
@@ -142,9 +150,7 @@ export async function provenanceShapeScenarios(assert: Assert): Promise<void> {
   // Every character the class refuses, enumerated by code point rather than as a
   // literal byte (see LINE_BREAKS for why). One assertion per character so a
   // regression names the character instead of failing an all-or-nothing `every`.
-  for (const cp of [
-    0x00, 0x01, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1f, 0x7f, 0x85, 0x2028, 0x2029,
-  ]) {
+  for (const cp of [0x00, 0x01, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1f, 0x7f, 0x85, 0x2028, 0x2029]) {
     const ch = String.fromCodePoint(cp);
     assert(
       FORBIDDEN_LINE_CHARS.test(ch) === true,

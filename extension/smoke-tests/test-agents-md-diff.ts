@@ -18,7 +18,7 @@
  *   - edge cases (empty/empty, identical, trailing-newline-only diff)
  */
 
-import { unifiedDiff, toLines, DIFF_MAX_LINES, DIFF_MAX_CELLS } from "../src/agents-md-diff.ts";
+import { DIFF_MAX_CELLS, DIFF_MAX_LINES, toLines, unifiedDiff } from "../src/agents-md-diff.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -30,9 +30,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 function countLines(text: string, prefix: string): number {
-  return text
-    .split("\n")
-    .filter((l) => l.startsWith(prefix)).length;
+  return text.split("\n").filter((l) => l.startsWith(prefix)).length;
 }
 
 function lcsCount(a: string[], b: string[]): number {
@@ -71,13 +69,19 @@ assert(JSON.stringify(toLines("\n")) === '[""]', "toLines: single \\n → one bl
 // ------------------------------------------------------- acceptance criteria
 
 const d1 = unifiedDiff("", "a\nb\nc");
-assert(d1 === "+a\n+b\n+c", `unifiedDiff("", "a\\nb\\nc") yields exactly +a, +b, +c (got ${JSON.stringify(d1)})`);
+assert(
+  d1 === "+a\n+b\n+c",
+  `unifiedDiff("", "a\\nb\\nc") yields exactly +a, +b, +c (got ${JSON.stringify(d1)})`,
+);
 assert(countLines(d1, "-") === 0, "empty-old: no - lines");
 assert(countLines(d1, " ") === 0, "empty-old: no context lines");
 assert(countLines(d1, "+") === 3, "empty-old: exactly 3 + lines");
 
 const d2 = unifiedDiff("a\nb\nc\n", "a\nb\nc\nd\n");
-assert(countLines(d2, "+") === 1 && d2.includes("+d"), `append: exactly one +d (got ${JSON.stringify(d2)})`);
+assert(
+  countLines(d2, "+") === 1 && d2.includes("+d"),
+  `append: exactly one +d (got ${JSON.stringify(d2)})`,
+);
 assert(countLines(d2, "-") === 0, "append: no - lines");
 
 // ------------------------------------------------- property check over pairs
@@ -103,11 +107,26 @@ const markerIdx = truncLines.findIndex((l) => l.includes("more lines"));
 assert(markerIdx !== -1, "truncation: marker present");
 if (markerIdx !== -1) {
   const rendered = truncLines.slice(0, markerIdx);
-  assert(rendered.length === DIFF_MAX_LINES, `truncation: exactly ${DIFF_MAX_LINES} rendered lines (got ${rendered.length})`);
-  assert(markerIdx === DIFF_MAX_LINES, `truncation: marker at position ${DIFF_MAX_LINES} (got ${markerIdx})`);
-  assert(countLines(rendered.join("\n"), "+") === 100, `truncation: all 100 adds rendered (got ${countLines(rendered.join("\n"), "+")})`);
-  assert(countLines(rendered.join("\n"), "-") === 100, `truncation: all 100 dels rendered (got ${countLines(rendered.join("\n"), "-")})`);
-  assert(truncLines[markerIdx] === "… 2 more lines", `truncation: marker says 2 more lines (got ${JSON.stringify(truncLines[markerIdx])})`);
+  assert(
+    rendered.length === DIFF_MAX_LINES,
+    `truncation: exactly ${DIFF_MAX_LINES} rendered lines (got ${rendered.length})`,
+  );
+  assert(
+    markerIdx === DIFF_MAX_LINES,
+    `truncation: marker at position ${DIFF_MAX_LINES} (got ${markerIdx})`,
+  );
+  assert(
+    countLines(rendered.join("\n"), "+") === 100,
+    `truncation: all 100 adds rendered (got ${countLines(rendered.join("\n"), "+")})`,
+  );
+  assert(
+    countLines(rendered.join("\n"), "-") === 100,
+    `truncation: all 100 dels rendered (got ${countLines(rendered.join("\n"), "-")})`,
+  );
+  assert(
+    truncLines[markerIdx] === "… 2 more lines",
+    `truncation: marker says 2 more lines (got ${JSON.stringify(truncLines[markerIdx])})`,
+  );
 } else {
   assert(false, `truncation: no marker found, got ${truncLines.length} lines`);
 }
@@ -123,7 +142,10 @@ if (markerIdx !== -1) {
   const startedAt = Date.now();
   const big = unifiedDiff(bigA, bigB);
   const elapsed = Date.now() - startedAt;
-  assert(big === "… diff too large to render (3000 → 3000 lines)", `oversized: explicit marker line (got ${JSON.stringify(big)})`);
+  assert(
+    big === "… diff too large to render (3000 → 3000 lines)",
+    `oversized: explicit marker line (got ${JSON.stringify(big)})`,
+  );
   assert(elapsed < 1000, `oversized: returned in ${elapsed}ms (<1s, no table built)`);
   assert(3000 * 3000 > DIFF_MAX_CELLS, "oversized: test inputs actually exceed the cell budget");
 }

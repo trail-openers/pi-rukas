@@ -22,7 +22,7 @@
  * telling the author to rename it — because as named it would be silently
  * excluded.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 const SMOKE_DIR = path.resolve(import.meta.dirname);
@@ -65,8 +65,7 @@ const LIVE_HELPER_MARKERS = ["runAbortProbe(", "runTimeoutProbe("];
 
 function hasLiveSpawnMarker(src: string): boolean {
   return (
-    LIVE_MARKERS.some((m) => src.includes(m)) ||
-    LIVE_HELPER_MARKERS.some((m) => src.includes(m))
+    LIVE_MARKERS.some((m) => src.includes(m)) || LIVE_HELPER_MARKERS.some((m) => src.includes(m))
   );
 }
 
@@ -79,7 +78,8 @@ function hasLiveSpawnMarker(src: string): boolean {
 {
   const noMarker = "function f() { return 1 + 2; }\nconsole.log('offline only');\n";
   assert(!hasLiveSpawnMarker(noMarker), "1a: predicate rejects a source with no spawn marker");
-  const withMarker = "import { spawnSpecialist } from \"../src/spawn.ts\";\nconst r = await spawnSpecialist(spec);\n";
+  const withMarker =
+    'import { spawnSpecialist } from "../src/spawn.ts";\nconst r = await spawnSpecialist(spec);\n';
   assert(hasLiveSpawnMarker(withMarker), "1b: predicate accepts a source with a spawn marker");
 }
 
@@ -94,7 +94,7 @@ function hasLiveSpawnMarker(src: string): boolean {
     .filter((f) => f.endsWith("-live.ts"))
     .sort();
   assert(liveFiles.length > 0, `2a: found ${liveFiles.length} -live.ts files (sanity: not zero)`);
-  let offenders: string[] = [];
+  const offenders: string[] = [];
   for (const name of liveFiles) {
     const src = readFileSync(path.join(SMOKE_DIR, name), "utf8");
     if (!hasLiveSpawnMarker(src)) {

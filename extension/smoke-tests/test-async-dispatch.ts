@@ -13,8 +13,8 @@
  * No Pi process spawned, no network.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Writable } from "node:stream";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   clearJobsForTesting,
   getOrchestratorActiveChild,

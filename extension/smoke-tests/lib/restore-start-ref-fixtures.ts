@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { WorkState } from "../../src/workflow-state.ts";
+import type { WorkState } from "../../src/workflow-state.ts";
 import type { ExecFn } from "../../src/worktree.ts";
 
 export const result = { exit: 0 };
@@ -75,4 +75,3 @@ export function stateWith(startRef: string | undefined, branchName: string): Wor
     eventLog: [],
   };
 }
-

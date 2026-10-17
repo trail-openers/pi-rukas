@@ -22,11 +22,11 @@
  * Run: cd extension && bun run smoke-tests/test-forge-exec-timeout.ts
  */
 
-import { createForge, type ForgeExecFn } from "../src/forge.ts";
-import { ghDetection } from "./forge-fixtures.ts";
+import { type ForgeExecFn, createForge } from "../src/forge.ts";
 import { checkAttentionLabel } from "../src/work-driver-attention.ts";
-import { verifyHandoffLabel } from "../src/work-driver-handoff-post.ts";
 import { postHandoffWithRetry } from "../src/work-driver-handoff-post-retry.ts";
+import { verifyHandoffLabel } from "../src/work-driver-handoff-post.ts";
+import { ghDetection } from "./forge-fixtures.ts";
 
 let exitCode = 0;
 function check(name: string, fn: () => void | Promise<void>) {
@@ -93,10 +93,7 @@ async function main() {
     const forge = createForge(det, { execFn: fn });
     await forge.issueView(42);
     assert(calls.length === 1, `expected 1 call, got ${calls.length}`);
-    assert(
-      calls[0].timeout === 60_000,
-      `expected default timeout 60_000, got ${calls[0].timeout}`,
-    );
+    assert(calls[0].timeout === 60_000, `expected default timeout 60_000, got ${calls[0].timeout}`);
   });
 
   await check("caller-supplied execOpts.timeout overrides the default", async () => {
@@ -189,7 +186,6 @@ async function main() {
     assert(result.commentUrl === undefined, "should not have a comment URL");
     assert(result.labelApplied === false, "should not have the label applied");
   });
-
 }
 
 main().then(() => process.exit(exitCode));

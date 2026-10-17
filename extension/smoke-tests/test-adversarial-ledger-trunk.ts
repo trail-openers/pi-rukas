@@ -17,8 +17,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  type BindingDecision,
   BINDING_REFUSAL_PREFIXES,
+  type BindingDecision,
   decideToolPathRow,
   reviewRangeDecision,
 } from "../src/adversarial-ledger-binding.ts";

@@ -480,7 +480,9 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       ...st,
       pipelineState: {
         ...st.pipelineState,
-        plumbReports: [{ step: "develop", role: "driver", body: "[ensemble:plumb] old question", at: 1 }],
+        plumbReports: [
+          { step: "develop", role: "driver", body: "[ensemble:plumb] old question", at: 1 },
+        ],
       },
     };
     const out = await runAdversarialFixPass(ctx, stale, pendingFixes(stale.eventLog), Date.now());

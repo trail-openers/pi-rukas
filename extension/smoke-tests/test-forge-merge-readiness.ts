@@ -9,9 +9,17 @@
  * Run: cd extension && bun run smoke-tests/test-forge-merge-readiness.ts
  */
 
-import { createForge } from "../src/forge.ts";
 import { READINESS_TIMEOUT_MS } from "../src/forge-merge.ts";
-import { GH_CHECKS, GH_PR, GL_JOBS, GL_MR, ghDetection, glDetection, mkExec } from "./forge-fixtures.ts";
+import { createForge } from "../src/forge.ts";
+import {
+  GH_CHECKS,
+  GH_PR,
+  GL_JOBS,
+  GL_MR,
+  ghDetection,
+  glDetection,
+  mkExec,
+} from "./forge-fixtures.ts";
 
 /** Node's exec-timeout shape: killed with SIGTERM and an empty message. */
 function timeoutErr(): Error {
@@ -113,18 +121,22 @@ async function main() {
       "gh pr checks 17": { stdout: JSON.stringify(GH_CHECKS) },
     });
     const forge = createForge(det, { execFn: fn });
-    await check("gh pr view and gh pr checks are called with timeout=READINESS_TIMEOUT_MS", async () => {
-      const result = await forge.mergeReadiness(17);
-      assert(result.ok, "ok");
-      assert(opts.length === 2, `expected 2 calls, got ${opts.length}`);
-      for (const o of opts) {
-        assert(o !== undefined, "opts recorded");
-        assert(o.timeout === READINESS_TIMEOUT_MS, `timeout ${o.timeout}`);
-      }
-    });
+    await check(
+      "gh pr view and gh pr checks are called with timeout=READINESS_TIMEOUT_MS",
+      async () => {
+        const result = await forge.mergeReadiness(17);
+        assert(result.ok, "ok");
+        assert(opts.length === 2, `expected 2 calls, got ${opts.length}`);
+        for (const o of opts) {
+          assert(o !== undefined, "opts recorded");
+          assert(o.timeout === READINESS_TIMEOUT_MS, `timeout ${o.timeout}`);
+        }
+      },
+    );
   }
-  {
-    await check("killed pr view (Node exec-timeout shape) fails closed with a timeout-named reason", async () => {
+  await check(
+    "killed pr view (Node exec-timeout shape) fails closed with a timeout-named reason",
+    async () => {
       const forge2 = createForge(det, {
         execFn: async (cmd: string) => {
           if (cmd.includes("pr view")) throw timeoutErr();
@@ -136,10 +148,11 @@ async function main() {
       if (!result.ok) {
         assert(/timed out after \d+ms/.test(result.reason), `reason ${result.reason}`);
       }
-    });
-  }
-  {
-    await check("killed pr checks (Node exec-timeout shape) fails closed with a timeout-named reason", async () => {
+    },
+  );
+  await check(
+    "killed pr checks (Node exec-timeout shape) fails closed with a timeout-named reason",
+    async () => {
       const forge2 = createForge(det, {
         execFn: async (cmd: string) => {
           if (cmd.includes("pr view")) return { stdout: JSON.stringify(GH_PR) };
@@ -152,8 +165,8 @@ async function main() {
       if (!result.ok) {
         assert(/timed out after \d+ms/.test(result.reason), `reason ${result.reason}`);
       }
-    });
-  }
+    },
+  );
 
   // ── #636: GitLab readiness exec calls (same feature, shared coverage) ─
   const glDet = glDetection("acme", "widget");
@@ -163,18 +176,22 @@ async function main() {
       "glab api /projects/:id/pipelines/5001/jobs": { stdout: JSON.stringify(GL_JOBS) },
     });
     const forge = createForge(glDet, { execFn: fn });
-    await check("glab merge_requests and pipelines/jobs are called with timeout=READINESS_TIMEOUT_MS", async () => {
-      const result = await forge.mergeReadiness(17);
-      assert(result.ok, "ok");
-      assert(opts.length === 2, `expected 2 calls, got ${opts.length}`);
-      for (const o of opts) {
-        assert(o !== undefined, "opts recorded");
-        assert(o.timeout === READINESS_TIMEOUT_MS, `timeout ${o.timeout}`);
-      }
-    });
+    await check(
+      "glab merge_requests and pipelines/jobs are called with timeout=READINESS_TIMEOUT_MS",
+      async () => {
+        const result = await forge.mergeReadiness(17);
+        assert(result.ok, "ok");
+        assert(opts.length === 2, `expected 2 calls, got ${opts.length}`);
+        for (const o of opts) {
+          assert(o !== undefined, "opts recorded");
+          assert(o.timeout === READINESS_TIMEOUT_MS, `timeout ${o.timeout}`);
+        }
+      },
+    );
   }
-  {
-    await check("killed glab merge_requests (Node exec-timeout shape) fails closed with a timeout-named reason", async () => {
+  await check(
+    "killed glab merge_requests (Node exec-timeout shape) fails closed with a timeout-named reason",
+    async () => {
       const forge2 = createForge(glDet, {
         execFn: async (cmd: string) => {
           if (cmd.includes("merge_requests")) throw timeoutErr();
@@ -186,25 +203,26 @@ async function main() {
       if (!result.ok) {
         assert(/timed out after \d+ms/.test(result.reason), `reason ${result.reason}`);
       }
+    },
+  );
+  await check("killed glab pipelines/jobs (best-effort) keeps ok:true with checks=[]", async () => {
+    const forge2 = createForge(glDet, {
+      execFn: async (cmd: string) => {
+        if (cmd.includes("merge_requests")) return { stdout: JSON.stringify(GL_MR) };
+        if (cmd.includes("/jobs")) throw timeoutErr();
+        return { stdout: "[]" };
+      },
     });
-  }
-  {
-    await check("killed glab pipelines/jobs (best-effort) keeps ok:true with checks=[]", async () => {
-      const forge2 = createForge(glDet, {
-        execFn: async (cmd: string) => {
-          if (cmd.includes("merge_requests")) return { stdout: JSON.stringify(GL_MR) };
-          if (cmd.includes("/jobs")) throw timeoutErr();
-          return { stdout: "[]" };
-        },
-      });
-      const result = await forge2.mergeReadiness(17);
-      assert(result.ok, `ok: ${result.ok ? "" : result.reason}`);
-      if (result.ok) {
-        assert(result.readiness === "CLEAN", `readiness ${result.readiness}`);
-        assert(Array.isArray(result.checks) && result.checks.length === 0, `checks ${JSON.stringify(result.checks)}`);
-      }
-    });
-  }
+    const result = await forge2.mergeReadiness(17);
+    assert(result.ok, `ok: ${result.ok ? "" : result.reason}`);
+    if (result.ok) {
+      assert(result.readiness === "CLEAN", `readiness ${result.readiness}`);
+      assert(
+        Array.isArray(result.checks) && result.checks.length === 0,
+        `checks ${JSON.stringify(result.checks)}`,
+      );
+    }
+  });
 
   console.log("");
   if (exitCode !== 0) {

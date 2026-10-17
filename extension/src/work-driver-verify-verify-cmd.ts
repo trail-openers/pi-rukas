@@ -49,14 +49,17 @@ import { developVerifiedTree } from "./work-driver-verify-eligibility.ts";
 import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
 import { rawOutputClause } from "./work-driver-verify-flake.ts";
 import {
-  type GatePass,
   type GateRecorded,
-  combinedWorktreeTree,
   gatePassPlan,
-  gatePassRecord,
   greenForWorktree,
-  reusableGatePass,
 } from "./work-driver-verify-gate-reuse.ts";
+import {
+  announceVerifyGateRun,
+  decideVerifiedPassRecords,
+  recordVerifiedGatePass,
+  reusableWholeGatePass,
+  verifyRunStatus,
+} from "./work-driver-verify-gate-wiring.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { WorkstreamGreen } from "./workflow-state-schema-gate-reuse.ts";
@@ -165,27 +168,22 @@ export async function runVerifyCommandGate(opts: {
   // the record a claim about a run that never happened. Read here, before the
   // first run, and passed to every run in the pass.
   const passTimeoutMs = verifyPassTimeoutMs();
-  // #1415 — the whole-gate reuse, decided BEFORE a single command runs. When
-  // the cycle's combined tree, the verify command and the bound are all
-  // unchanged since a pass the driver itself recorded, AND every changed
-  // workstream holds a current green for that same triple, this pass has a
-  // verdict already: the per-worktree loop is skipped and the consolidated
-  // probe is not built. Anything short of that conjunction — no record, a moved
-  // tree, an edited `.pi/verify-cmd`, a tightened bound, an unreadable tree id,
-  // a workstream without a green — falls through and runs, exactly as before.
-  // The join of the two halves, and why one missing green collapses reuse to a
-  // full run, is `gatePassPlan`, kept beside the rest of the reuse rule.
+  // #1415 — the whole-gate reuse is decided BEFORE a single command runs; anything
+  // short of the full conjunction (no record, moved tree, edited `.pi/verify-cmd`,
+  // tightened bound, unreadable tree, a workstream without a green) falls through
+  // and runs. The join is `gatePassPlan`, beside the rest of the reuse rule.
   const gateReuseState = state.pipelineState.gateReuse;
-  const reuseDecision = await reusableGatePass(ctx.verifyExecFn ?? execp, {
+  // #1415 fix round — the read side of the wiring, through the helper that
+  // also writes, so both halves share one key format. `gatePassPlan` still
+  // collapses a reuse to a full run unless every changed worktree holds its own
+  // current green.
+  const wholeGate = await reusableWholeGatePass(ctx.verifyExecFn ?? execp, state, {
     cmd,
     timeoutMs: passTimeoutMs,
-    worktrees: state.pipelineState.worktrees ?? {},
     changedWorktrees,
-    recorded: gateReuseState?.passes,
-    greens: gateReuseState?.workstreamGreens,
   });
   const plan = await gatePassPlan(ctx.verifyExecFn ?? execp, {
-    wholeGate: reuseDecision.reuse,
+    wholeGate,
     cmd,
     timeoutMs: passTimeoutMs,
     worktrees: state.pipelineState.worktrees ?? {},
@@ -346,6 +344,17 @@ export async function runVerifyCommandGate(opts: {
   // 30-second gate from a 9-minute one — the difference between a verdict worth
   // reusing and one whose run the bound exists to cap.
   const consolidatedStartedAt = Date.now();
+  // #1415 fix round — the announcement goes out BEFORE the probe is built, so a
+  // ~22-minute gate is a visible row for its whole duration rather than a
+  // silence between `develop started` and `develop finished`. Emitted for the
+  // reused pass too, with the completion saying `(reused)` — an operator who
+  // sees no line at all cannot distinguish "skipped" from "hung".
+  announceVerifyGateRun({
+    step: "develop",
+    command: cmd,
+    target: { kind: "consolidated" },
+    ...(ctx.issue !== undefined ? { issue: ctx.issue } : {}),
+  });
   const cons: ConsolidatedVerifyResult = reusedWholeGate
     ? { status: "passed", applied: [], reused: plan.wholeGateHeld }
     : await runConsolidatedVerify(execFn, {
@@ -398,38 +407,33 @@ export async function runVerifyCommandGate(opts: {
   // reused pass has no duration, because it ran nothing.
   const consolidatedDurationMs = reusedWholeGate ? undefined : Date.now() - consolidatedStartedAt;
   // #1415 — record the verdict the moment it exists, in the seam that decided
-  // it: a caller that had to thread the result outward could drop it, and the
-  // symptom of a dropped record is only "the cycle is slow again". A pass that
-  // reused records NOTHING — refreshing `at` every round would keep a stale
-  // verdict permanently "fresh", and no new duration was measured to record.
-  // The combined tree is re-read AFTER the probe (whose checkout the probe has
-  // since restored) with the same function the reuse check used, so the record
-  // and the decision cannot describe different content; an unreadable tree
-  // records nothing (no record, no reuse).
-  if (cons.status === "passed" && !reusedWholeGate) {
-    const combined = await combinedWorktreeTree(
-      ctx.verifyExecFn ?? execp,
-      state.pipelineState.worktrees ?? {},
-    );
-    // A passing pass whose combined tree could not be read records no verdict:
-    // an entry needs a tree, and one guessed from a partial read is the record
-    // a later skip would stand on. Its greens are still recorded — each was
-    // read from its own worktree at the moment its command passed.
-    onGateRecorded?.(
-      combined === undefined
-        ? undefined
-        : gatePassRecord(combined, cmd, passTimeoutMs, consolidatedDurationMs),
-      greensRecorded,
-      greensRefuted,
-    );
-  } else if (reusedWholeGate) {
-    // A reused pass records nothing: it measured no duration, and refreshing a
-    // record's `at` every round would keep a stale verdict permanently "fresh".
-    onGateRecorded?.(undefined, [], []);
-  } else if (greensRefuted.length > 0) {
-    // A failed pass records no verdict, but a green the command just refuted
-    // must not survive to license the next round's skip.
-    onGateRecorded?.(undefined, [], greensRefuted);
+  // it, and #1415 fix round — persist it and print the console pair. Until the
+  // fix round this call site did not exist: `onGateRecorded` was declared and
+  // invoked by nobody, so `pipelineState.gateReuse` stayed empty and the reuse
+  // above could never fire. A gate that runs but cannot record is a gate that
+  // runs every round. What the pass records / refutes / omits is the rule in
+  // `decideVerifiedPassRecords` (beside the verdict rule it pairs with).
+  // Rule + WHY: `decideVerifiedPassRecords` / `recordVerifiedGatePass`.
+  const reported = await decideVerifiedPassRecords({
+    execFn: ctx.verifyExecFn ?? execp,
+    worktrees: state.pipelineState.worktrees ?? {},
+    cmd,
+    timeoutMs: passTimeoutMs,
+    reusedWholeGate,
+    durationMs: consolidatedDurationMs,
+    greensRecorded,
+    greensRefuted,
+  });
+  if (reported !== undefined) {
+    onGateRecorded?.(reported.pass, reported.greens, reported.refuted);
+    recordVerifiedGatePass(state, reported, {
+      step: "develop",
+      command: cmd,
+      target: { kind: "consolidated" },
+      ...(consolidatedDurationMs !== undefined ? { ms: consolidatedDurationMs } : {}),
+      status: verifyRunStatus(cons, perWorktreeVerifyFailures),
+      ...(ctx.issue !== undefined ? { issue: ctx.issue } : {}),
+    });
   }
   reportConsolidatedVerifyOutcome(cons, {
     cmd,

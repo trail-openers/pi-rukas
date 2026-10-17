@@ -41,10 +41,10 @@
  * variable that the installed `spawnSpecialist` closure reads.
  */
 
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mock } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { mock } from "bun:test";
 import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
 
 // #1069 — isolate before any src import: the real runLensReview write must

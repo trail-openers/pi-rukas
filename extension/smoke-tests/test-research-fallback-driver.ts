@@ -12,8 +12,8 @@
  */
 
 import { readFileSync } from "node:fs";
-import os from "node:os";
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { runResearchPipeline, setResearchDispatch } from "../src/research-driver.ts";
 import type { ExecFn } from "../src/worktree.ts";
@@ -344,7 +344,7 @@ async function freshRepo(): Promise<string> {
   // Non-web classified failure (unparseable) → no wigolo re-dispatch, even
   // for a web-capable custom angle (selectFallback keeps parallel).
   seen.length = 0;
-  let unparseableSeen: string[] = [];
+  const unparseableSeen: string[] = [];
   setResearchDispatch(((_pi: unknown, spec: { prompt: string }, opts?: { label?: string }) => {
     const label = opts?.label ?? "";
     const isWigolo = spec.prompt.includes("WIGOLO CLI");

@@ -22,9 +22,9 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { verifyDevelopOutcome } from "../src/work-driver-verify-develop.ts";
+import { initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
-import { initialState } from "../src/workflow-state.ts";
 
 type StubPi = Pick<ExtensionAPI, "sendUserMessage">;
 const stubPi: DriverContext["host"] = { sendUserMessage: () => {} } as StubPi;

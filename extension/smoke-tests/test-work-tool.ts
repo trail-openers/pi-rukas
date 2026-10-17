@@ -14,12 +14,12 @@
  * such parameter, and no path through it can set the grant.
  */
 
-import { readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { mkdtempSync } from "node:fs";
-import { registerWorkTools, mergeAuthorityNotice } from "../src/work-tool.ts";
-import { doctrinePresence, DOCTRINE_FILES } from "../src/work-driver-policy.ts";
+import { DOCTRINE_FILES, doctrinePresence } from "../src/work-driver-policy.ts";
+import { mergeAuthorityNotice, registerWorkTools } from "../src/work-tool.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -138,13 +138,15 @@ registerWorkTools(fakePi);
   );
   const absent = await run("absent");
   assert(
-    absent === "no AGENTS.md/CLAUDE.md found — auto-merge is off; the cycle will park as awaiting-human-merge",
+    absent ===
+      "no AGENTS.md/CLAUDE.md found — auto-merge is off; the cycle will park as awaiting-human-merge",
     "neither file present → auto-merge off / will park wording: " + absent,
   );
   if (process.getuid?.() !== 0) {
     const unreadable = await run("unreadable");
     assert(
-      unreadable === "doctrine file unreadable (AGENTS.md) — the policy judge will retry at merge time",
+      unreadable ===
+        "doctrine file unreadable (AGENTS.md) — the policy judge will retry at merge time",
       "unreadable file → retry-at-merge wording (not 'will park'): " + unreadable,
     );
   } else {
@@ -154,7 +156,10 @@ registerWorkTools(fakePi);
 
   // The helper spans all of DOCTRINE_FILES and probes each file (stat, plus
   // a bounded read-probe for the unreadable branch) without loading contents.
-  const helper = readFileSync(path.resolve(import.meta.dirname, "..", "src", "work-driver-policy.ts"), "utf8");
+  const helper = readFileSync(
+    path.resolve(import.meta.dirname, "..", "src", "work-driver-policy.ts"),
+    "utf8",
+  );
   const helperBody = helper.slice(
     helper.indexOf("export async function doctrinePresence"),
     helper.indexOf("export async function readDoctrineFromDisk"),

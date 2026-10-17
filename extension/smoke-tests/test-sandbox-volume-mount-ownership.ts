@@ -99,7 +99,7 @@ export function wrapperVolumeMountsLine(wrapper: string): string {
 
 /** Whether the wrapper's mount parser excludes bind mounts (path-/socket-sourced sources). */
 export function wrapperExcludesBindMounts(wrapper: string): boolean {
-  return wrapper.includes('*/*) ;;');
+  return wrapper.includes("*/*) ;;");
 }
 
 /** The index of the entrypoint chown loop within its source, or -1. */
@@ -113,7 +113,7 @@ export function setprivIndex(entrypoint: string): number {
 }
 
 export function entrypointAllowlist(entrypoint: string): string {
-  const i = entrypoint.indexOf('read -r -a _vol_targets');
+  const i = entrypoint.indexOf("read -r -a _vol_targets");
   if (i === -1) return "";
   const block = entrypoint.slice(i, i + 700);
   return block;
@@ -135,18 +135,16 @@ if (process.env.PI_ENSEMBLE_VOLUME_OWNERSHIP === "0") {
     "Dockerfile bakes the three state mount points in via a vscode `RUN mkdir -p …` line",
   );
   const mkdirLine = dockerfileMkdirLine(dockerfile);
-  for (const t of ["/home/vscode/.pi/agent/sessions", "/home/vscode/.pi/agent/ensemble-runs", "/home/vscode/.vipune"]) {
-    assert(
-      mkdirLine.includes(t),
-      `Dockerfile vscode mkdir includes state target \`${t}\``,
-    );
+  for (const t of [
+    "/home/vscode/.pi/agent/sessions",
+    "/home/vscode/.pi/agent/ensemble-runs",
+    "/home/vscode/.vipune",
+  ]) {
+    assert(mkdirLine.includes(t), `Dockerfile vscode mkdir includes state target \`${t}\``);
   }
   // ... plus the always-on cache volumes whose mount points are absent.
   for (const t of ["/home/vscode/.cache", "/home/vscode/.bun", "/home/vscode/.cargo"]) {
-    assert(
-      mkdirLine.includes(t),
-      `Dockerfile vscode mkdir includes cache target \`${t}\``,
-    );
+    assert(mkdirLine.includes(t), `Dockerfile vscode mkdir includes cache target \`${t}\``);
   }
   // The mkdir must run as vscode, not root, so the volume inherits UID 1000.
   const mkdirIdx = dockerfile.indexOf("RUN mkdir -p");
@@ -180,8 +178,10 @@ if (process.env.PI_ENSEMBLE_VOLUME_OWNERSHIP === "0") {
   const chownIdx = entrypointChownIndex(entrypoint);
   const dropIdx = setprivIndex(entrypoint);
   assert(chownIdx !== -1, "entrypoint contains the named-volume chown loop");
-  assert(dropIdx !== -1 && chownIdx !== -1 && chownIdx < dropIdx,
-    "entrypoint chown loop runs in the root phase BEFORE `setpriv --reuid=vscode`");
+  assert(
+    dropIdx !== -1 && chownIdx !== -1 && chownIdx < dropIdx,
+    "entrypoint chown loop runs in the root phase BEFORE `setpriv --reuid=vscode`",
+  );
 
   const allow = entrypointAllowlist(entrypoint);
   for (const t of VOLUME_TARGETS) {
@@ -198,15 +198,22 @@ if (process.env.PI_ENSEMBLE_VOLUME_OWNERSHIP === "0") {
 {
   // Canary: Dockerfile mkdir helper finds all three state targets in a fixture,
   // and misses a fixture that dropped one.
-  const good = "RUN mkdir -p /home/vscode/.pi/agent/sessions \\\n" +
+  const good =
+    "RUN mkdir -p /home/vscode/.pi/agent/sessions \\\n" +
     "  /home/vscode/.pi/agent/ensemble-runs \\\n" +
     "  /home/vscode/.vipune \\\n" +
     "  /home/vscode/.cache \\\n" +
     "  /home/vscode/.bun \\\n" +
     "  /home/vscode/.cargo";
-  assert(dockerfileMkdirLine(good) !== "", "canary: mkdir fixture with all state dirs parses present");
+  assert(
+    dockerfileMkdirLine(good) !== "",
+    "canary: mkdir fixture with all state dirs parses present",
+  );
   const bad = "RUN mkdir -p /home/vscode/.cache";
-  assert(dockerfileMkdirLine(bad) === "", "canary: mkdir fixture missing a state dir parses absent");
+  assert(
+    dockerfileMkdirLine(bad) === "",
+    "canary: mkdir fixture missing a state dir parses absent",
+  );
 
   // Canary: the wrapper derive lines are only matched when the -e assignment exists.
   assert(
@@ -220,8 +227,8 @@ if (process.env.PI_ENSEMBLE_VOLUME_OWNERSHIP === "0") {
 
   // Canary: an entrypoint whose chown loop appears after setpriv is caught.
   const lateEntrypoint =
-    "echo root\nsetpriv --reuid=vscode --regid=vscode --init-groups -- \"$0\" \"$@\"\n" +
-    "IFS=: read -r -a _vol_targets <<<\"$PI_ENSEMBLE_VOLUME_MOUNTS\"\nfor _t in \"${_vol_targets[@]}\"; do :; done";
+    'echo root\nsetpriv --reuid=vscode --regid=vscode --init-groups -- "$0" "$@"\n' +
+    'IFS=: read -r -a _vol_targets <<<"$PI_ENSEMBLE_VOLUME_MOUNTS"\nfor _t in "${_vol_targets[@]}"; do :; done';
   const lateChown = entrypointChownIndex(lateEntrypoint);
   const lateDrop = setprivIndex(lateEntrypoint);
   assert(

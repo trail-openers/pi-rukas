@@ -22,7 +22,7 @@ import {
   bodyContainsForbiddenPhrase,
   validateDraft,
 } from "../src/plan-validate.ts";
-import { installOfflineVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
+import { installNoPlanCacheStub, installOfflineVipuneStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

@@ -16,10 +16,7 @@
  * "assistant"` (the old behaviour) silently dropped this spend.
  */
 
-import type {
-  PiJsonEvent,
-  PiMessage,
-} from "../../src/pi-event-shapes.ts";
+import type { PiJsonEvent, PiMessage } from "../../src/pi-event-shapes.ts";
 
 /** The assistant message: the model call that ISSUED the codemode script. */
 export const assistantMessage: PiMessage & { role: "assistant" } = {

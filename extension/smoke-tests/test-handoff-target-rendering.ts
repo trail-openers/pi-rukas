@@ -18,8 +18,8 @@
  * the readers must not claim knowledge they don't have.
  */
 
-import { renderStatus } from "../src/work-status.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
+import { renderStatus } from "../src/work-status.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -34,16 +34,14 @@ function assert(cond: boolean, msg: string) {
 const REPO = "/Users/x/repo";
 
 /** A cycle that parked after opening PR #796 (the #782 shape). */
-function parkedWithPr(
-  ev: {
-    issueLabelApplied?: boolean;
-    prLabelApplied?: boolean;
-    targetType?: "issue" | "pr";
-    targetNumber?: number;
-    /** Override for legacy events (pre-#798, no per-target fields). */
-    labelApplied?: boolean;
-  },
-): WorkState {
+function parkedWithPr(ev: {
+  issueLabelApplied?: boolean;
+  prLabelApplied?: boolean;
+  targetType?: "issue" | "pr";
+  targetNumber?: number;
+  /** Override for legacy events (pre-#798, no per-target fields). */
+  labelApplied?: boolean;
+}): WorkState {
   const labelApplied =
     ev.labelApplied !== undefined
       ? ev.labelApplied
@@ -94,7 +92,10 @@ function parkedWithPr(
   assert(/label applied:/.test(out), "chat (dual ok): states the label block per-target");
   assert(/issue #782: applied/.test(out), "chat (dual ok): issue label verified on the issue");
   assert(/PR #796: applied/.test(out), "chat (dual ok): PR label verified on the PR");
-  assert(/comment target: pr #796/.test(out), "chat (dual ok): the comment target is explicit (no URL parsing)");
+  assert(
+    /comment target: pr #796/.test(out),
+    "chat (dual ok): the comment target is explicit (no URL parsing)",
+  );
 }
 
 // ── 2. In-chat message: partial failure (issue ok, PR not) ─────────────────
@@ -110,8 +111,14 @@ function parkedWithPr(
     `${REPO}/tmp/issue-782`,
   );
   assert(/issue #782: applied/.test(out), "chat (partial): the issue label is applied");
-  assert(/PR #796: NOT verified/.test(out), "chat (partial): the PR label is NOT verified (distinguished from success)");
-  assert(!/label applied to/.test(out), "chat (partial): does not use the single-target 'applied to' phrasing");
+  assert(
+    /PR #796: NOT verified/.test(out),
+    "chat (partial): the PR label is NOT verified (distinguished from success)",
+  );
+  assert(
+    !/label applied to/.test(out),
+    "chat (partial): does not use the single-target 'applied to' phrasing",
+  );
 }
 
 // ── 3. In-chat message: pre-#798 event (no per-target fields) ──────────────
@@ -125,7 +132,10 @@ function parkedWithPr(
     /label applied to pr 796/.test(out),
     "chat (legacy event): the old single-target 'label applied to pr 796' line is unchanged",
   );
-  assert(!/comment target:/.test(out), "chat (legacy event): no 'comment target' line invented from nothing");
+  assert(
+    !/comment target:/.test(out),
+    "chat (legacy event): no 'comment target' line invented from nothing",
+  );
 }
 
 // ── 4. /work-status terminal: dual-target + explicit target line ───────────
@@ -139,8 +149,14 @@ function parkedWithPr(
     }),
     REPO,
   );
-  assert(/target:  pr #796 \(explicit, #798\)/.test(out), "status (dual ok): the target line is explicit");
-  assert(/on issue #782 \/ on PR #796/.test(out), "status (dual ok): per-target label state, both verified");
+  assert(
+    /target: {2}pr #796 \(explicit, #798\)/.test(out),
+    "status (dual ok): the target line is explicit",
+  );
+  assert(
+    /on issue #782 \/ on PR #796/.test(out),
+    "status (dual ok): per-target label state, both verified",
+  );
 }
 
 // ── 5. /work-status terminal: partial failure ───────────────────────────────
@@ -162,7 +178,7 @@ function parkedWithPr(
 {
   const out = renderStatus(parkedWithPr({ labelApplied: true }), REPO);
   assert(
-    /label:   needs-human-attention applied/.test(out),
+    /label: {3}needs-human-attention applied/.test(out),
     "status (legacy event): the old single-boolean label line is unchanged",
   );
 }
@@ -178,7 +194,10 @@ function parkedWithPr(
   s.pipelineState.prNumber = undefined;
   const out = renderHandoffUserMessage(s, REPO, `${REPO}/tmp/issue-782`);
   assert(/issue #782: applied/.test(out), "chat (no PR): issue label line is present");
-  assert(!/PR #/.test(out.split("label applied:")[1] ?? ""), "chat (no PR): no PR label line when prLabelApplied is absent");
+  assert(
+    !/PR #/.test(out.split("label applied:")[1] ?? ""),
+    "chat (no PR): no PR label line when prLabelApplied is absent",
+  );
   assert(/comment target: issue #782/.test(out), "chat (no PR): the target names the issue");
 }
 

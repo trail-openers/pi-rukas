@@ -256,15 +256,22 @@ async function passOf(
     writeFileSync(path.join(dir, "extension", "src", "x.ts"), "export {};\n");
     git(dir, "add -A");
     git(dir, 'commit -q -m "protected"');
-    const tracked = ["a.txt", "b.txt", "agents.json", ".github/workflows/ci.yml", "extension/src/x.ts"];
+    const tracked = [
+      "a.txt",
+      "b.txt",
+      "agents.json",
+      ".github/workflows/ci.yml",
+      "extension/src/x.ts",
+    ];
     const findings = "agents.json .github/workflows/ci.yml extension/src/x.ts b.txt a.txt";
     const widened = namedPaths(findings, tracked, ["a.txt"]).join(",");
     // The repo root is not an anchor: a root-declared a.txt widens nothing.
-    assert(
-      widened === "",
-      `C: a root-level anchor widens no root file (got ${widened})`,
+    assert(widened === "", `C: a root-level anchor widens no root file (got ${widened})`);
+    const st = fixState(
+      dir,
+      ["a.txt"],
+      "a.txt: fix it; agents.json: and this; extension/src/x.ts: and that",
     );
-    const st = fixState(dir, ["a.txt"], "a.txt: fix it; agents.json: and this; extension/src/x.ts: and that");
     const r = await passOf(dir, st, (d) => {
       writeFileSync(path.join(d, "a.txt"), "two\n");
       writeFileSync(path.join(d, "agents.json"), '{"auto": true}\n');

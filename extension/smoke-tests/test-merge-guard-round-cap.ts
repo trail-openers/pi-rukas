@@ -9,16 +9,16 @@
  * the escape hatch restores the strict rule.
  */
 
+import { evaluateRoundCapMerge } from "../src/merge-guard-round-cap.ts";
 import {
   assert,
+  TARGET,
   exit,
+  hookDecision,
   setupLedgerPath,
   teardownLedger,
-  hookDecision,
-  TARGET,
 } from "./merge-guard-helpers.ts";
 import type { LedgerEntry } from "./merge-guard-helpers.ts";
-import { evaluateRoundCapMerge } from "../src/merge-guard-round-cap.ts";
 
 await setupLedgerPath();
 
@@ -39,8 +39,11 @@ await setupLedgerPath();
   // and the round-cap shape check sees a valid OID.
   const PR_HEAD = "a".repeat(40);
   const TARGET_OVERRIDE = { ...TARGET, headOid: PR_HEAD };
-  const hook = (cmd: string, entries: LedgerEntry[], opts: Parameters<typeof hookDecision>[2] = {}) =>
-    hookDecision(cmd, entries, { fetchedHead: PR_HEAD, target: TARGET_OVERRIDE, ...opts });
+  const hook = (
+    cmd: string,
+    entries: LedgerEntry[],
+    opts: Parameters<typeof hookDecision>[2] = {},
+  ) => hookDecision(cmd, entries, { fetchedHead: PR_HEAD, target: TARGET_OVERRIDE, ...opts });
   const lens = (over: Partial<LedgerEntry> & { at: number }): LedgerEntry => ({
     branch: "feature/x",
     kind: "lens",
@@ -111,7 +114,10 @@ await setupLedgerPath();
     const r = await hook("gh pr merge 12", [ADV, legacy], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
-    assert(r.block === true, "round-cap: a legacy entry without hasCritical cannot satisfy no-CRITICAL");
+    assert(
+      r.block === true,
+      "round-cap: a legacy entry without hasCritical cannot satisfy no-CRITICAL",
+    );
     assert(/hasCritical/.test(r.reason ?? ""), "…naming the missing hasCritical field");
   }
   // Condition 3: hasCritical is true → refused.
@@ -145,7 +151,10 @@ await setupLedgerPath();
     const r = await hook("gh pr merge 12", [ADV, legacyNoRound], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
-    assert(r.block === true, "round-cap: a legacy entry without `round` counts as round 1 → refused");
+    assert(
+      r.block === true,
+      "round-cap: a legacy entry without `round` counts as round 1 → refused",
+    );
     assert(/round 1/.test(r.reason ?? ""), "…naming the round condition");
   }
   // Condition 4 (aborted runs do not advance the round): the exact
@@ -166,7 +175,10 @@ await setupLedgerPath();
     const r = await hook("gh pr merge 12", [ADV, abortedSeq], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
-    assert(r.block === true, "round-cap: an aborted run wedged in the sequence ends at round 2 → refused");
+    assert(
+      r.block === true,
+      "round-cap: an aborted run wedged in the sequence ends at round 2 → refused",
+    );
     assert(/round 2/.test(r.reason ?? ""), "…naming the round condition");
   }
   // Condition 5: no marker comment → refused, naming the disclosure.
@@ -207,7 +219,10 @@ await setupLedgerPath();
     const r = await hook("gh pr merge 12", [ADV, lens({ at: 2, headSha: otherSha })], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
-    assert(r.block === true, "round-cap: a lens entry for an old headSha is refused even with a fresh marker");
+    assert(
+      r.block === true,
+      "round-cap: a lens entry for an old headSha is refused even with a fresh marker",
+    );
     assert(
       /not the PR's current head/.test(r.reason ?? ""),
       "…naming the headSha condition (the branch moved after the review)",
@@ -271,7 +286,10 @@ await setupLedgerPath();
     const r = await hook("gh pr merge 12", [ADV, malformedSha2], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
-    assert(r.block === true, "round-cap: a non-matching branch-name headSha is refused (malformed)");
+    assert(
+      r.block === true,
+      "round-cap: a non-matching branch-name headSha is refused (malformed)",
+    );
     assert(/malformed/.test(r.reason ?? ""), "…naming the entry as MALFORMED");
   }
   // #1039 — Condition 6 (headSha): a short/abbreviated OID (8 hex chars)
@@ -312,7 +330,10 @@ await setupLedgerPath();
       ADV,
       { branch: "feature/x", kind: "lens", patchId: "p1", passed: true, at: 2 },
     ]);
-    assert(r.block === false, "strict rule: a passing lens entry is still allowed (round-cap not consulted)");
+    assert(
+      r.block === false,
+      "strict rule: a passing lens entry is still allowed (round-cap not consulted)",
+    );
     assert(
       !r.calls.some((c) => c.includes("--json comments")),
       "…the strict path does not read the comments",
@@ -327,7 +348,10 @@ await setupLedgerPath();
       const r = await hook("gh pr merge 12", [ADV, lens({ at: 2 })], {
         ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
       });
-      assert(r.block === true, "escape hatch: PI_ENSEMBLE_LENS_ROUND_CAP_MERGE=0 restores the strict rule");
+      assert(
+        r.block === true,
+        "escape hatch: PI_ENSEMBLE_LENS_ROUND_CAP_MERGE=0 restores the strict rule",
+      );
       assert(
         /no passing lens review on file/.test(r.reason ?? ""),
         "…the strict rule's refusal text applies",
@@ -389,7 +413,7 @@ await setupLedgerPath();
   const roundOk = (round: unknown) =>
     evaluateRoundCapMerge([{ ...good, round }], "feature/x", "p1", [MARKER_COMMENT], validSha);
   const badRounds: Array<[string, unknown]> = [
-    ["\"3\" (a string)", "3"],
+    ['"3" (a string)', "3"],
     ["true (a boolean)", true],
     ["3.5 (a non-integer float)", 3.5],
   ];

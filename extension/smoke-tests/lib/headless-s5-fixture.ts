@@ -184,11 +184,7 @@ interface MergeView {
   prView: string;
 }
 
-function mergeView(
-  verdict: MergeVerdict,
-  pr: number,
-  merged: boolean,
-): MergeView {
+function mergeView(verdict: MergeVerdict, pr: number, merged: boolean): MergeView {
   const passing = [{ name: "typecheck", bucket: "pass", state: "SUCCESS" }];
   const failing = [
     { name: "typecheck", bucket: "pass", state: "SUCCESS" },
@@ -388,7 +384,8 @@ export function mergeExec(
     if (line.includes("--json mergeStateStatus,mergeable,state")) {
       return { stdout: mergeView(opts.merge, pr, mergeAsked).evidence };
     }
-    if (line.includes("gh pr checks")) return { stdout: mergeView(opts.merge, pr, mergeAsked).checks };
+    if (line.includes("gh pr checks"))
+      return { stdout: mergeView(opts.merge, pr, mergeAsked).checks };
     if (line.includes("gh pr view")) {
       const answer = mergeView(opts.merge, pr, mergeAsked).prView;
       log.prViewAnswers.push(answer);
@@ -410,8 +407,7 @@ export function mergeExec(
     }
     if (line.includes("gh repo view")) {
       return {
-        stdout:
-          '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
+        stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
       };
     }
     if (line.includes("git config --get remote")) {

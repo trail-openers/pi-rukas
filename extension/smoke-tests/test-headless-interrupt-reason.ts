@@ -16,10 +16,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { runHeadless } from "../src/headless/run.ts";
 import { EXIT, exitCodeForState } from "../src/headless/exit-code.ts";
-import { beginDispatch } from "../src/work-driver-resume.ts";
+import { runHeadless } from "../src/headless/run.ts";
 import type { DispatchResult } from "../src/types.ts";
+import { beginDispatch } from "../src/work-driver-resume.ts";
 import { createEmitSink } from "../src/work-state-emit.ts";
 import {
   type WorkEvent,
@@ -76,7 +76,10 @@ const interruptCount = (s: WorkState) => s.eventLog.filter((e) => e.kind === "in
   assert(interruptCount(once) === 1, "applyInterrupt appends exactly one interrupted event");
   const twice = applyInterrupt(once, "signal", 11);
   assert(interruptCount(twice) === 1, "the same interrupt applied again adds no event");
-  const merged = { ...running, pipelineState: { ...running.pipelineState, status: "merged" as const } };
+  const merged = {
+    ...running,
+    pipelineState: { ...running.pipelineState, status: "merged" as const },
+  };
   assert(applyInterrupt(merged, "signal", 12) === merged, "a terminal state is returned unchanged");
 }
 
@@ -92,7 +95,10 @@ const interruptCount = (s: WorkState) => s.eventLog.filter((e) => e.kind === "in
     await persistCycle({ repoRoot: repo, emitSink: sink, signal: ac.signal }, stale);
     const onDisk = (await readState(repo, 71)) as WorkState;
     const last = onDisk.eventLog[onDisk.eventLog.length - 1];
-    assert(onDisk.pipelineState.status === "interrupted", "a stale persist after --timeout is interrupted");
+    assert(
+      onDisk.pipelineState.status === "interrupted",
+      "a stale persist after --timeout is interrupted",
+    );
     assert(
       last?.kind === "interrupted" && last.reason === "timeout",
       "the interrupted event carries reason timeout",
@@ -121,7 +127,10 @@ const interruptCount = (s: WorkState) => s.eventLog.filter((e) => e.kind === "in
       5,
     );
     const onDisk = (await readState(repo, 72)) as WorkState;
-    assert(onDisk.pipelineState.status === "interrupted", "beginDispatch after an abort lands interrupted");
+    assert(
+      onDisk.pipelineState.status === "interrupted",
+      "beginDispatch after an abort lands interrupted",
+    );
     assert(interruptCount(onDisk) === 1, "and records one interrupted event");
   } finally {
     rmSync(repo, { recursive: true, force: true });
@@ -160,9 +169,7 @@ const interruptCount = (s: WorkState) => s.eventLog.filter((e) => e.kind === "in
       .map((l) => JSON.parse(l) as { key?: string })
       .filter((p) => p.key !== undefined)
       .map((p) => p.key);
-    const logKeys = state.eventLog.map(
-      (e: WorkEvent, i) => `73:${i}:${(e as { at?: number }).at}`,
-    );
+    const logKeys = state.eventLog.map((e: WorkEvent, i) => `73:${i}:${(e as { at?: number }).at}`);
     assert(result.exitCode === EXIT.interrupted, "the aborted run exits 21");
     assert(
       state.eventLog.some((e) => e.kind.startsWith("dispatch-failed")),

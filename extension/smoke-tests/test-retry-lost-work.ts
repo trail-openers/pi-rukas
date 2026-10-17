@@ -52,7 +52,8 @@ const severed = {
 {
   const line = lostAttemptLine("explore", 1, severed);
   assert(
-    line === "explore attempt 1 lost: 15m09s, 45 turns, 412k tokens — the step restarts from the beginning",
+    line ===
+      "explore attempt 1 lost: 15m09s, 45 turns, 412k tokens — the step restarts from the beginning",
     `explore loss line is complete (got: ${line})`,
   );
   const dev = lostAttemptLine("develop", 2, { ...severed, step: "develop", role: "developer" });
@@ -163,7 +164,10 @@ const severed = {
 
     assert(devPrompts.length === 2, `developer re-dispatched once (got ${devPrompts.length})`);
     const [first = "", second = ""] = devPrompts;
-    assert(!first.includes("was interrupted"), "first developer prompt carries no interruption note");
+    assert(
+      !first.includes("was interrupted"),
+      "first developer prompt carries no interruption note",
+    );
     assert(
       second.includes("A previous attempt at this step was interrupted") &&
         second.includes("cause: provider-severed") &&

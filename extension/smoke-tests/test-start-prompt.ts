@@ -25,13 +25,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const START = path.join(__dirname, "..", "..", "pi-prompts", "start.md");
-const EXPLORE = path.join(
-  __dirname,
-  "..",
-  "..",
-  "agents-base",
-  "explore.md",
-);
+const EXPLORE = path.join(__dirname, "..", "..", "agents-base", "explore.md");
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -179,8 +173,7 @@ assert(
 );
 
 assert(
-  /auto-merge off: no AGENTS\.md\/CLAUDE\.md/.test(body) &&
-    /awaiting-human-merge/.test(body),
+  /auto-merge off: no AGENTS\.md\/CLAUDE\.md/.test(body) && /awaiting-human-merge/.test(body),
   "the readiness line names the missing-doctrine state explicitly — auto-merge off because no AGENTS.md/CLAUDE.md, cycle parks as awaiting-human-merge",
 );
 

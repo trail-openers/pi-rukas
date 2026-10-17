@@ -19,8 +19,8 @@
 
 import { notifyAgent } from "../src/agent-message.ts";
 import {
-  deliverTerminalLine,
   type TerminalDeliveryCtx,
+  deliverTerminalLine,
 } from "../src/work-driver-terminal-delivery.ts";
 import { initialState } from "../src/workflow-state.ts";
 
@@ -55,10 +55,7 @@ function makeState(issue: number, status: "merged" | "handoff" | "aborted") {
   return s;
 }
 
-function makeCtx(
-  host: TerminalDeliveryCtx["host"],
-  issue = 808,
-): TerminalDeliveryCtx {
+function makeCtx(host: TerminalDeliveryCtx["host"], issue = 808): TerminalDeliveryCtx {
   return { repoRoot: "/repo", issue, host };
 }
 
@@ -76,7 +73,7 @@ function makeCtx(
       markerSetAtSend = stateRef.pipelineState.handoffDeliveredAt === undefined;
     },
   } as unknown as TerminalDeliveryCtx["host"];
-  let stateRef = makeState(808, "handoff");
+  const stateRef = makeState(808, "handoff");
 
   const result = await deliverTerminalLine(makeCtx(fakePi), stateRef);
   assert(delivered, "handoff: send fires");
@@ -100,10 +97,11 @@ function makeCtx(
   const fakePi = {
     sendUserMessage() {
       callCount += 1;
-      if (callCount === 1) throw new Error("Agent is already processing. Specify streamingBehavior");
+      if (callCount === 1)
+        throw new Error("Agent is already processing. Specify streamingBehavior");
     },
   } as unknown as TerminalDeliveryCtx["host"];
-  let stateRef = makeState(808, "handoff");
+  const stateRef = makeState(808, "handoff");
 
   const result1 = await deliverTerminalLine(makeCtx(fakePi), stateRef);
   assert(callCount === 1, "throw: first send attempted exactly once");

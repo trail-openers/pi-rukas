@@ -38,7 +38,6 @@ function assert(cond: boolean, msg: string) {
 
 const SRC = path.resolve(import.meta.dirname, "..", "src");
 
-
 /**
  * Comments are not callers.
  *

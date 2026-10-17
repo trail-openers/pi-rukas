@@ -70,10 +70,7 @@ function requestedFields(cmd: string, flag: string): string[] {
 {
   const cmd = prChecksCmd("github", 17);
   const fields = requestedFields(cmd, "--json");
-  assert(
-    cmd === "gh pr checks 17 --json name,state,bucket",
-    `exact argv: ${cmd}`,
-  );
+  assert(cmd === "gh pr checks 17 --json name,state,bucket", `exact argv: ${cmd}`);
   assert(
     fields.length > 0 && fields.every((f) => GH_PR_CHECKS_FIELDS.has(f)),
     `every requested field (${fields.join(",")}) is in the gh 2.98.0 supported set for \`gh pr checks --json\` — a field outside that set makes the whole invocation fail closed (the #745 bug)`,
@@ -89,10 +86,7 @@ function requestedFields(cmd: string, flag: string): string[] {
 {
   const cmd = mergeEvidenceViewCmd(17);
   const fields = requestedFields(cmd, "--json");
-  assert(
-    cmd === "gh pr view 17 --json mergeStateStatus,mergeable,state",
-    `exact argv: ${cmd}`,
-  );
+  assert(cmd === "gh pr view 17 --json mergeStateStatus,mergeable,state", `exact argv: ${cmd}`);
   assert(
     fields.length > 0 && fields.every((f) => GH_PR_VIEW_EVIDENCE_FIELDS.has(f)),
     `every requested field (${fields.join(",")}) is one the gate knows how to read`,
@@ -116,10 +110,7 @@ function requestedFields(cmd: string, flag: string): string[] {
     jobs === "glab api /projects/:id/pipelines/5001 --output json",
     `glab pipelineViewCmd exact argv: ${jobs}`,
   );
-  assert(
-    !jobs.includes("--json"),
-    "glab pipelineViewCmd must not grow a field list either",
-  );
+  assert(!jobs.includes("--json"), "glab pipelineViewCmd must not grow a field list either");
 }
 
 // ── #775 — the label edit commands must name a real gh subcommand ────────

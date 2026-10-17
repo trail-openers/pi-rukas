@@ -7,23 +7,23 @@
  * registering child handles as those tests do.
  */
 
+import { matchesKey } from "@earendil-works/pi-tui";
 import { childHandles, jobs } from "../src/async-jobs-registry.ts";
 import {
+  type ViewHeader,
+  createAgentViewComponent,
+} from "../src/dispatch-deck-live-view-component.ts";
+import { type LiveViewTheme, openLiveView } from "../src/dispatch-deck-live-view.ts";
+import {
+  type LiveEvent,
   appendOperatorSteer,
   dropBuffer,
   feedRawEvent,
   getBuffer,
   startBuffer,
-  type LiveEvent,
 } from "../src/dispatch-deck-live.ts";
-import {
-  createAgentViewComponent,
-  type ViewHeader,
-} from "../src/dispatch-deck-live-view-component.ts";
-import { openLiveView, type LiveViewTheme } from "../src/dispatch-deck-live-view.ts";
 import { clearEntry, reset, snapshot, startEntry } from "../src/dispatch-deck.ts";
 import { steerChild } from "../src/dispatch-steer.ts";
-import { matchesKey } from "@earendil-works/pi-tui";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -112,11 +112,34 @@ function makeSend(
 }
 
 // Create a component wired to steerChild for the given key.
-function makeWiredComp(key: string, header: () => ViewHeader, tui?: { terminal?: { rows?: number } }) {
-  const compRef: { current: { setStatus: (s: { text: string; ok: boolean } | undefined) => void; clearInput: () => void; setInput: (t: string) => void } | undefined } = { current: undefined };
+function makeWiredComp(
+  key: string,
+  header: () => ViewHeader,
+  tui?: { terminal?: { rows?: number } },
+) {
+  const compRef: {
+    current:
+      | {
+          setStatus: (s: { text: string; ok: boolean } | undefined) => void;
+          clearInput: () => void;
+          setInput: (t: string) => void;
+        }
+      | undefined;
+  } = { current: undefined };
   const send = makeSend(key, compRef);
-  const comp = createAgentViewComponent(key, header, fakeTheme, tui, () => {}, (text) => send(text));
-  compRef.current = { setStatus: (s) => comp.setStatus(s), clearInput: () => comp.clearInput(), setInput: (t) => comp.setInput(t) };
+  const comp = createAgentViewComponent(
+    key,
+    header,
+    fakeTheme,
+    tui,
+    () => {},
+    (text) => send(text),
+  );
+  compRef.current = {
+    setStatus: (s) => comp.setStatus(s),
+    clearInput: () => comp.clearInput(),
+    setInput: (t) => comp.setInput(t),
+  };
   return comp;
 }
 

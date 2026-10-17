@@ -28,9 +28,9 @@
  */
 
 import { applyFenceVerdicts } from "../src/work-develop-fence-verdicts.ts";
-import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
+import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "../src/work-driver-scope-fence.ts";
 import { initialState } from "../src/workflow-state.ts";
@@ -130,8 +130,10 @@ function run(
   );
   const fenceRec = records.find((r) => r.file === "src/c.ts");
   assert(
-    !!fenceRec && fenceRec.kind === "issue-fenced" &&
-      fenceRec.workstreamId === "a" && fenceRec.declaredById === undefined,
+    !!fenceRec &&
+      fenceRec.kind === "issue-fenced" &&
+      fenceRec.workstreamId === "a" &&
+      fenceRec.declaredById === undefined,
     `issue-fenced: structured record (got: ${JSON.stringify(records)})`,
   );
   const undecl = records.find((r) => r.file === "src/rogue.ts");
@@ -158,12 +160,23 @@ function run(
 // A's fence includes a file A itself declared. Demoted to note; no record.
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  const a: WS = { id: "a", scope: "x", paths: ["src/a.ts", "src/integrate.ts"], outOfScope: ["src/integrate.ts"] };
+  const a: WS = {
+    id: "a",
+    scope: "x",
+    paths: ["src/a.ts", "src/integrate.ts"],
+    outOfScope: ["src/integrate.ts"],
+  };
   const b: WS = { id: "b", scope: "y", paths: ["src/b.ts"], outOfScope: [] };
   const { failures, notes, records } = run({ a, b }, { a: ["src/integrate.ts"] });
   assert(failures.length === 0, `self-fence: NO failure (got: ${failures.join("; ")})`);
-  assert(notes.some((n) => n.includes("self-fence")), `self-fence: demotion note present (got: ${notes.join("; ")})`);
-  assert(records.length === 0, `self-fence: NO structured record (got: ${JSON.stringify(records)})`);
+  assert(
+    notes.some((n) => n.includes("self-fence")),
+    `self-fence: demotion note present (got: ${notes.join("; ")})`,
+  );
+  assert(
+    records.length === 0,
+    `self-fence: NO structured record (got: ${JSON.stringify(records)})`,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -172,10 +185,19 @@ function run(
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const a: WS = { id: "a", scope: "x", paths: ["src/a.ts"], outOfScope: [] };
-  const b: WS = { id: "b", scope: "y", paths: ["src/b.ts"], outOfScope: ["src/a.ts"], dependsOn: ["a"] };
+  const b: WS = {
+    id: "b",
+    scope: "y",
+    paths: ["src/b.ts"],
+    outOfScope: ["src/a.ts"],
+    dependsOn: ["a"],
+  };
   const { failures, records } = run({ a, b }, { b: ["src/a.ts"] });
   assert(failures.length === 0, `dependsOn exemption: NO failure (got: ${failures.join("; ")})`);
-  assert(records.length === 0, `dependsOn exemption: NO structured record (got: ${JSON.stringify(records)})`);
+  assert(
+    records.length === 0,
+    `dependsOn exemption: NO structured record (got: ${JSON.stringify(records)})`,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -224,7 +246,9 @@ function run(
     `annotated paths: sibling-declared hit fires on the normalised path (got: ${failures.join("; ")})`,
   );
   assert(
-    records.length === 1 && records[0].file === "src/b.ts" && records[0].kind === "sibling-declared",
+    records.length === 1 &&
+      records[0].file === "src/b.ts" &&
+      records[0].kind === "sibling-declared",
     `annotated paths: record uses the normalised file path (got: ${JSON.stringify(records)})`,
   );
 }
@@ -327,7 +351,14 @@ function run(
       },
     },
   };
-  s.eventLog.push({ kind: "cap-hit", at: 1, cap: "consolidated-verify-conflict", reviewRound: 0, nextStep: "handoff", evidence: "cherry-pick conflict on work-driver-converge.ts" });
+  s.eventLog.push({
+    kind: "cap-hit",
+    at: 1,
+    cap: "consolidated-verify-conflict",
+    reviewRound: 0,
+    nextStep: "handoff",
+    evidence: "cherry-pick conflict on work-driver-converge.ts",
+  });
   const text = explainCap("consolidated-verify-conflict", s);
   assert(
     !text.includes("incoherent"),
@@ -352,9 +383,19 @@ function run(
 {
   let s = initialState(669, 1_000_000);
   s = { ...s, pipelineState: { ...s.pipelineState, worktrees: { a: "/w/a", b: "/w/b" } } };
-  s.eventLog.push({ kind: "cap-hit", at: 1, cap: "consolidated-verify-conflict", reviewRound: 0, nextStep: "handoff", evidence: "cherry-pick conflict" });
+  s.eventLog.push({
+    kind: "cap-hit",
+    at: 1,
+    cap: "consolidated-verify-conflict",
+    reviewRound: 0,
+    nextStep: "handoff",
+    evidence: "cherry-pick conflict",
+  });
   const text = explainCap("consolidated-verify-conflict", s);
-  assert(text.includes("incoherent"), `no fenceViolations: incoherent text is preserved (got: ${text.slice(0, 200)})`);
+  assert(
+    text.includes("incoherent"),
+    `no fenceViolations: incoherent text is preserved (got: ${text.slice(0, 200)})`,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -371,12 +412,27 @@ function run(
     pipelineState: {
       ...s.pipelineState,
       worktrees: { a: "/w/a", b: "/w/b" },
-      verifyEvidence: { step: "develop", failures: [], at: 1, fenceViolations: [{ workstreamId: "a", file: "src/extra.ts", kind: "undeclared" }] },
+      verifyEvidence: {
+        step: "develop",
+        failures: [],
+        at: 1,
+        fenceViolations: [{ workstreamId: "a", file: "src/extra.ts", kind: "undeclared" }],
+      },
     },
   };
-  s.eventLog.push({ kind: "cap-hit", at: 1, cap: "consolidated-verify-conflict", reviewRound: 0, nextStep: "handoff", evidence: "cherry-pick conflict" });
+  s.eventLog.push({
+    kind: "cap-hit",
+    at: 1,
+    cap: "consolidated-verify-conflict",
+    reviewRound: 0,
+    nextStep: "handoff",
+    evidence: "cherry-pick conflict",
+  });
   const text = explainCap("consolidated-verify-conflict", s);
-  assert(text.includes("incoherent"), `undeclared-only: incoherent text is preserved (got: ${text.slice(0, 200)})`);
+  assert(
+    text.includes("incoherent"),
+    `undeclared-only: incoherent text is preserved (got: ${text.slice(0, 200)})`,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -398,11 +454,25 @@ function run(
           "consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (conflict at extension/src/work-driver-converge.ts)",
         ],
         at: 1,
-        fenceViolations: [{ workstreamId: "task-d", file: "extension/src/work-driver-converge.ts", declaredById: "task-b", kind: "sibling-declared" }],
+        fenceViolations: [
+          {
+            workstreamId: "task-d",
+            file: "extension/src/work-driver-converge.ts",
+            declaredById: "task-b",
+            kind: "sibling-declared",
+          },
+        ],
       },
     },
   };
-  s.eventLog.push({ kind: "cap-hit", at: 1, cap: "consolidated-verify-conflict", reviewRound: 0, nextStep: "handoff", evidence: "cherry-pick conflict on work-driver-converge.ts" });
+  s.eventLog.push({
+    kind: "cap-hit",
+    at: 1,
+    cap: "consolidated-verify-conflict",
+    reviewRound: 0,
+    nextStep: "handoff",
+    evidence: "cherry-pick conflict on work-driver-converge.ts",
+  });
   const rendered = renderHandoffMarkdown(s);
   assert(
     rendered.includes("task-d") && rendered.includes("work-driver-converge.ts"),
@@ -431,15 +501,32 @@ function run(
     { workstreamId: "e", file: "src/rogue.ts", kind: "undeclared" },
   ];
   const verdicts: Array<{ id: string; ok: boolean; reason?: string }> = [
-    { id: "a", ok: true }, { id: "b", ok: true }, { id: "c", ok: true }, { id: "e", ok: true },
+    { id: "a", ok: true },
+    { id: "b", ok: true },
+    { id: "c", ok: true },
+    { id: "e", ok: true },
   ];
   // The real function runDevelopTopological calls (work-develop-fence-verdicts.ts).
   applyFenceVerdicts(verdicts, gateFence);
   const byId = new Map(verdicts.map((v) => [v.id, v]));
-  assert(byId.get("a")?.ok === true && byId.get("a")?.reason === undefined, `branches-converged: a clean workstream keeps its ok verdict (got: ${JSON.stringify(verdicts)})`);
-  assert(byId.get("b")?.ok === false && (byId.get("b")?.reason ?? "").includes("src/a.ts") && (byId.get("b")?.reason ?? "").includes("declared by a"), `branches-converged: the sibling-declared violator is ok:false with an attributed reason (got: ${JSON.stringify(verdicts)})`);
-  assert(byId.get("c")?.ok === false && (byId.get("c")?.reason ?? "").includes("src/c.ts"), `branches-converged: the issue-fenced violator is ok:false with a reason (got: ${JSON.stringify(verdicts)})`);
-  assert(byId.get("e")?.ok === true, `branches-converged: an undeclared-only workstream is NOT flipped (got: ${JSON.stringify(verdicts)})`);
+  assert(
+    byId.get("a")?.ok === true && byId.get("a")?.reason === undefined,
+    `branches-converged: a clean workstream keeps its ok verdict (got: ${JSON.stringify(verdicts)})`,
+  );
+  assert(
+    byId.get("b")?.ok === false &&
+      (byId.get("b")?.reason ?? "").includes("src/a.ts") &&
+      (byId.get("b")?.reason ?? "").includes("declared by a"),
+    `branches-converged: the sibling-declared violator is ok:false with an attributed reason (got: ${JSON.stringify(verdicts)})`,
+  );
+  assert(
+    byId.get("c")?.ok === false && (byId.get("c")?.reason ?? "").includes("src/c.ts"),
+    `branches-converged: the issue-fenced violator is ok:false with a reason (got: ${JSON.stringify(verdicts)})`,
+  );
+  assert(
+    byId.get("e")?.ok === true,
+    `branches-converged: an undeclared-only workstream is NOT flipped (got: ${JSON.stringify(verdicts)})`,
+  );
 }
 
 // #848 — the flipped verdicts (the REAL applyFenceVerdicts output, not a
@@ -465,9 +552,7 @@ function run(
           { id: "a", ok: true },
           { id: "b", ok: true },
         ],
-        [
-          { workstreamId: "b", file: "src/a.ts", declaredById: "a", kind: "sibling-declared" },
-        ],
+        [{ workstreamId: "b", file: "src/a.ts", declaredById: "a", kind: "sibling-declared" }],
       ),
     },
     { kind: "cap-hit", at: 4, cap: "step-failed:develop", reviewRound: 0, nextStep: "handoff" },
@@ -475,9 +560,18 @@ function run(
   const md = renderHandoffMarkdown(s);
   const chat = renderHandoffUserMessage(s, "/repo/x", "/repo/x/tmp/issue-848");
   const fenceLine = "b: FAIL — fence violation: src/a.ts (declared by a)";
-  assert(md.includes(fenceLine), `#848 markdown: the flipped verdict renders with the fence reason ("${fenceLine}")`);
-  assert(chat.includes(fenceLine), `#848 chat: the identical fence-reason line (both surfaces agree)`);
-  assert(!md.includes("- b: ok") && !chat.includes("  b: ok"), "#848: neither surface shows the stale 'b: ok'");
+  assert(
+    md.includes(fenceLine),
+    `#848 markdown: the flipped verdict renders with the fence reason ("${fenceLine}")`,
+  );
+  assert(
+    chat.includes(fenceLine),
+    `#848 chat: the identical fence-reason line (both surfaces agree)`,
+  );
+  assert(
+    !md.includes("- b: ok") && !chat.includes("  b: ok"),
+    "#848: neither surface shows the stale 'b: ok'",
+  );
 }
 
 // #814 — the persisted branches-converged event case (the flipped verdict in

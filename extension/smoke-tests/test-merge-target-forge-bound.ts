@@ -151,17 +151,20 @@ const forgeOpts: DetectForgeOpts = {
   const recordedOpts: Array<Record<string, unknown>> = [];
   const ghExecFn: typeof import("../src/merge-target.ts").MergeExecFn = async (cmd, opts) => {
     recordedOpts.push({ ...(opts ?? {}) });
-    return { stdout: JSON.stringify({
-      headRefName: "feature/x",
-      headRefOid: "abc123",
-      baseRefName: "main",
-      author: { login: "dev" },
-      labels: [{ name: "l1" }],
-    }) };
+    return {
+      stdout: JSON.stringify({
+        headRefName: "feature/x",
+        headRefOid: "abc123",
+        baseRefName: "main",
+        author: { login: "dev" },
+        labels: [{ name: "l1" }],
+      }),
+    };
   };
   // detectForge must return github — stub git to return a github.com remote.
   const ghGitStub: DetectForgeOpts["execFn"] = async (cmd: string) => {
-    if (cmd === "git config --get remote.origin.url") return { stdout: "https://github.com/owner/repo.git\n" };
+    if (cmd === "git config --get remote.origin.url")
+      return { stdout: "https://github.com/owner/repo.git\n" };
     if (cmd === "git config --get remote.upstream.url") return { stdout: "" };
     if (cmd === "git remote") return { stdout: "origin\n" };
     throw new Error(`unexpected exec: ${cmd}`);
@@ -187,7 +190,8 @@ const forgeOpts: DetectForgeOpts = {
     return { stdout: JSON.stringify({ number: 99 }) };
   };
   const ghGitStub: DetectForgeOpts["execFn"] = async (cmd: string) => {
-    if (cmd === "git config --get remote.origin.url") return { stdout: "https://github.com/owner/repo.git\n" };
+    if (cmd === "git config --get remote.origin.url")
+      return { stdout: "https://github.com/owner/repo.git\n" };
     if (cmd === "git config --get remote.upstream.url") return { stdout: "" };
     if (cmd === "git remote") return { stdout: "origin\n" };
     throw new Error(`unexpected exec: ${cmd}`);

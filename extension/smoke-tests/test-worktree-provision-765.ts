@@ -81,7 +81,7 @@ function realExecFn(
   // (`hook-failed` is reserved for a hook that exited non-zero.)
   const { root, wt } = fixture("w");
   try {
-    await initRepo(root, "node_modules/\n", { "package.json": "{\"name\": \"x\"}\n" });
+    await initRepo(root, "node_modules/\n", { "package.json": '{"name": "x"}\n' });
     mkdirSync(path.join(root, ".pi"), { recursive: true });
     writeFileSync(path.join(root, ".pi", "worktree-setup"), "#!/bin/sh\nexit 0\n");
     mkdirSync(wt, { recursive: true });
@@ -114,7 +114,7 @@ function realExecFn(
   // so the link it creates is real filesystem state.
   const { root, wt } = fixture("w");
   try {
-    await initRepo(root, "node_modules/\n", { "package.json": "{\"name\": \"x\"}\n" });
+    await initRepo(root, "node_modules/\n", { "package.json": '{"name": "x"}\n' });
     mkdirSync(path.join(root, ".pi"), { recursive: true });
     writeFileSync(
       path.join(root, ".pi", "worktree-setup"),
@@ -126,7 +126,10 @@ function realExecFn(
 
     const result = await provisionWorktree(realExec, root, wt);
 
-    assert(result.problem === undefined, "#765 strict: a hook that linked the expected tree is NOT a problem");
+    assert(
+      result.problem === undefined,
+      "#765 strict: a hook that linked the expected tree is NOT a problem",
+    );
     assert(
       await fs
         .readFile(path.join(wt, "node_modules", "marker"), "utf8")
@@ -147,7 +150,7 @@ function realExecFn(
   // precondition does not also fire (isolating the stale-link detection).
   const { root, wt } = fixture("w");
   try {
-    await initRepo(root, "node_modules/\n", { "package.json": "{\"name\": \"x\"}\n" });
+    await initRepo(root, "node_modules/\n", { "package.json": '{"name": "x"}\n' });
     mkdirSync(path.join(root, ".pi"), { recursive: true });
     writeFileSync(
       path.join(root, ".pi", "worktree-setup"),
@@ -159,7 +162,10 @@ function realExecFn(
 
     const result = await provisionWorktree(realExec, root, wt);
 
-    assert(result.problem !== undefined, "#765 strict: a hook that left a STALE (non-resolving) link yields a problem");
+    assert(
+      result.problem !== undefined,
+      "#765 strict: a hook that left a STALE (non-resolving) link yields a problem",
+    );
     assert(
       result.problem?.includes("exited 0") === true,
       "...and it is named as a no-op hook (the link did not resolve non-empty)",
@@ -178,7 +184,7 @@ function realExecFn(
   // in production whenever the source disappears between scan and verify.
   const { root, wt } = fixture("w");
   try {
-    await initRepo(root, "node_modules/\n", { "package.json": "{\"name\": \"x\"}\n" });
+    await initRepo(root, "node_modules/\n", { "package.json": '{"name": "x"}\n' });
     mkdirSync(wt, { recursive: true });
     const result = await provisionWorktree(realExecFn(), root, wt);
     assert(

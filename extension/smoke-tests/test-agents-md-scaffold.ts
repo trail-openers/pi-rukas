@@ -7,7 +7,15 @@
  * create-with-bullets (#697) / 5th-interview-answer (#697) / scaffold-false.
  */
 
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -18,8 +26,7 @@ import {
   updateAgent,
 } from "../src/agents-md/agents-md.ts";
 import { EXIT_CLEAN, EXIT_FINDINGS } from "../src/agents-md/check.ts";
-import { parseLedger, renderLedger, type LedgerRow } from "../src/agents-md/ledger.ts";
-import { presentManagedIds } from "../src/agents-md/section-detect.ts";
+import { type LedgerRow, parseLedger, renderLedger } from "../src/agents-md/ledger.ts";
 import { commandsBody, environmentBody, gatesBody } from "../src/agents-md/renderer.ts";
 import {
   type OperatorAnswers,
@@ -29,6 +36,7 @@ import {
   runScaffoldPostPass,
   runWrapScaffold,
 } from "../src/agents-md/scaffold.ts";
+import { presentManagedIds } from "../src/agents-md/section-detect.ts";
 import { WrapError, wrapBytes, wrapLedgerRows } from "../src/agents-md/wrap.ts";
 
 let exit = 0;
@@ -43,14 +51,36 @@ function assert(cond: boolean, msg: string) {
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-scaffold-"));
 const AGENTS = path.join(tmp, "AGENTS.md");
 const FIXED_DATE = "2026-01-01";
-const BOILERPLATE_IDS = ["minimalist-engineering", "git-workflow", "documentation-policy", "issue-driven-development", "code-review-doctrine", "context7-protocol", "testing-standards"];
+const BOILERPLATE_IDS = [
+  "minimalist-engineering",
+  "git-workflow",
+  "documentation-policy",
+  "issue-driven-development",
+  "code-review-doctrine",
+  "context7-protocol",
+  "testing-standards",
+];
 
 // Build a minimal fixture so detectFacts finds facts → managed sections render.
 mkdirSync(path.join(tmp, ".github", "workflows"), { recursive: true });
 mkdirSync(path.join(tmp, "src"), { recursive: true });
-writeFileSync(path.join(tmp, "package.json"), JSON.stringify({ name: "fixture", scripts: { test: "vitest", lint: "biome lint", build: "bun run build" }, devDependencies: { typescript: "^5.4.0" } }, null, 2));
+writeFileSync(
+  path.join(tmp, "package.json"),
+  JSON.stringify(
+    {
+      name: "fixture",
+      scripts: { test: "vitest", lint: "biome lint", build: "bun run build" },
+      devDependencies: { typescript: "^5.4.0" },
+    },
+    null,
+    2,
+  ),
+);
 writeFileSync(path.join(tmp, "bun.lock"), "{ lockfileVersion: 1 }");
-writeFileSync(path.join(tmp, ".github", "workflows", "ci.yml"), "name: CI\njobs:\n  test:\n    steps: []\n");
+writeFileSync(
+  path.join(tmp, ".github", "workflows", "ci.yml"),
+  "name: CI\njobs:\n  test:\n    steps: []\n",
+);
 writeFileSync(path.join(tmp, "src", "index.ts"), "export const x = 1;\n");
 
 function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
@@ -71,7 +101,12 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
 }
 
 /** Seed the heading-based file shape the integrated create path produces. */
-function seedHeadingFile(root: string, agentsPath: string, fs: AgentsMdFs, extra?: LedgerRow[]): void {
+function seedHeadingFile(
+  root: string,
+  agentsPath: string,
+  fs: AgentsMdFs,
+  extra?: LedgerRow[],
+): void {
   writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fixture" }));
   const facts = {
     manifest: "package.json",
@@ -92,7 +127,12 @@ function seedHeadingFile(root: string, agentsPath: string, fs: AgentsMdFs, extra
   const rows: LedgerRow[] = [
     { key: "quality-gates", value: "vitest", provenance: "auto", date: FIXED_DATE },
     { key: "commands", value: "vitest", provenance: "auto", date: FIXED_DATE },
-    { key: "environment", value: "package.json, bun, typescript", provenance: "auto", date: FIXED_DATE },
+    {
+      key: "environment",
+      value: "package.json, bun, typescript",
+      provenance: "auto",
+      date: FIXED_DATE,
+    },
     ...(extra ?? []),
   ];
   fs.mkdir?.(path.join(root, ".pi"));
@@ -112,13 +152,23 @@ function seedHeadingFile(root: string, agentsPath: string, fs: AgentsMdFs, extra
     res.plan?.scaffoldedIds.length === 7,
     `create --scaffold: 7 scaffolded ids (got ${res.plan?.scaffoldedIds.length})`,
   );
-  assert(content.includes("≥80%"), "create --scaffold: unanswered coverage renders the ≥80% default");
-  assert((content.match(/≥80%/g) ?? []).length === 1, "create --scaffold: the ≥80% default is stated exactly once");
+  assert(
+    content.includes("≥80%"),
+    "create --scaffold: unanswered coverage renders the ≥80% default",
+  );
+  assert(
+    (content.match(/≥80%/g) ?? []).length === 1,
+    "create --scaffold: the ≥80% default is stated exactly once",
+  );
   const ids = presentManagedIds(content);
-  for (const id of BOILERPLATE_IDS) assert(ids.includes(id), `create --scaffold: ${id} is heading-delimited`);
+  for (const id of BOILERPLATE_IDS)
+    assert(ids.includes(id), `create --scaffold: ${id} is heading-delimited`);
   const scaffoldBytes = content.slice(content.indexOf("# Minimalist Engineering"));
   assert(!scaffoldBytes.includes("<!--"), "create --scaffold: zero `<!--` bytes (pure prose)");
-  assert(!content.includes("## Operator choices"), "create --scaffold: no operator-choices without answers");
+  assert(
+    !content.includes("## Operator choices"),
+    "create --scaffold: no operator-choices without answers",
+  );
 }
 
 // ===================================================== 2. create --scaffold with answers
@@ -135,18 +185,42 @@ function seedHeadingFile(root: string, agentsPath: string, fs: AgentsMdFs, extra
   const res = createAgent(tmp, AGENTS, fs, { scaffold: true, answers });
   const content = fs.readFile(AGENTS);
   assert(res.exitCode === 0, "create --scaffold with answers: exit 0");
-  assert(content.includes("## Operator choices"), "scaffold with answers: operator-choices section present");
-  assert(presentManagedIds(content).includes("operator-choices"), "scaffold with answers: operator-choices is heading-delimited");
+  assert(
+    content.includes("## Operator choices"),
+    "scaffold with answers: operator-choices section present",
+  );
+  assert(
+    presentManagedIds(content).includes("operator-choices"),
+    "scaffold with answers: operator-choices is heading-delimited",
+  );
   const opChoicesIdx = content.indexOf("## Operator choices");
   const testingIdx = content.indexOf("# Testing Standards");
   const nextSection = content.indexOf("# ", testingIdx + 1);
-  const testingBody = nextSection > testingIdx ? content.slice(testingIdx, nextSection) : content.slice(testingIdx);
-  assert(testingBody.includes("80%+"), "scaffold with answers: Testing Standards carries the answered threshold");
-  assert(!content.slice(opChoicesIdx, testingIdx).includes("Coverage threshold"), "scaffold with answers: operator-choices omits the coverage bullet");
-  assert((content.match(/80%\+/g) ?? []).length === 1, "scaffold with answers: threshold stated exactly once");
+  const testingBody =
+    nextSection > testingIdx ? content.slice(testingIdx, nextSection) : content.slice(testingIdx);
+  assert(
+    testingBody.includes("80%+"),
+    "scaffold with answers: Testing Standards carries the answered threshold",
+  );
+  assert(
+    !content.slice(opChoicesIdx, testingIdx).includes("Coverage threshold"),
+    "scaffold with answers: operator-choices omits the coverage bullet",
+  );
+  assert(
+    (content.match(/80%\+/g) ?? []).length === 1,
+    "scaffold with answers: threshold stated exactly once",
+  );
   assert(content.includes("MEDIUM"), "scaffold with answers: review-blocking severity recorded");
-  assert(parseLedger(fs.readFile(`${tmp}/.pi/agents-md-state.json`)).some((r) => r.provenance === "asked"), "scaffold with answers: [asked:operator] sidecar rows present");
-  assert(!content.slice(opChoicesIdx).includes("<!--"), "scaffold with answers: zero `<!--` bytes (pure prose)");
+  assert(
+    parseLedger(fs.readFile(`${tmp}/.pi/agents-md-state.json`)).some(
+      (r) => r.provenance === "asked",
+    ),
+    "scaffold with answers: [asked:operator] sidecar rows present",
+  );
+  assert(
+    !content.slice(opChoicesIdx).includes("<!--"),
+    "scaffold with answers: zero `<!--` bytes (pure prose)",
+  );
 }
 
 // ===================================================== 3. create --scaffold dryRun
@@ -173,12 +247,22 @@ function seedHeadingFile(root: string, agentsPath: string, fs: AgentsMdFs, extra
   const fs = mkFs();
   seedHeadingFile(tmp, AGENTS, fs);
   const res = updateAgent(tmp, AGENTS, fs, { scaffold: true });
-  assert(res.exitCode === 0 && res.plan?.wouldWrite === true, "update --scaffold: exit 0, wouldWrite");
-  assert(res.plan?.scaffoldedIds?.length === 7, `update --scaffold: 7 scaffolded ids (got ${res.plan?.scaffoldedIds?.length})`);
+  assert(
+    res.exitCode === 0 && res.plan?.wouldWrite === true,
+    "update --scaffold: exit 0, wouldWrite",
+  );
+  assert(
+    res.plan?.scaffoldedIds?.length === 7,
+    `update --scaffold: 7 scaffolded ids (got ${res.plan?.scaffoldedIds?.length})`,
+  );
   const content = fs.readFile(AGENTS);
   const envHeading = content.indexOf("## Environment");
-  assert(envHeading >= 0 && content.indexOf("# Minimalist Engineering") > envHeading, "update --scaffold: boilerplate after environment");
-  for (const id of BOILERPLATE_IDS) assert(presentManagedIds(content).includes(id), `update --scaffold: ${id} heading-delimited`);
+  assert(
+    envHeading >= 0 && content.indexOf("# Minimalist Engineering") > envHeading,
+    "update --scaffold: boilerplate after environment",
+  );
+  for (const id of BOILERPLATE_IDS)
+    assert(presentManagedIds(content).includes(id), `update --scaffold: ${id} heading-delimited`);
 }
 
 // ===================================================== 5. Idempotency: second scaffold → no-op
@@ -187,8 +271,14 @@ function seedHeadingFile(root: string, agentsPath: string, fs: AgentsMdFs, extra
   rmSync(AGENTS, { force: true });
   const fs = mkFs();
   seedHeadingFile(tmp, AGENTS, fs);
-  assert(updateAgent(tmp, AGENTS, fs, { scaffold: true }).plan?.wouldWrite === true, "scaffold #1: wouldWrite");
-  assert(updateAgent(tmp, AGENTS, fs, { scaffold: true }).plan?.wouldWrite === false, "scaffold #2: no-op (idempotent)");
+  assert(
+    updateAgent(tmp, AGENTS, fs, { scaffold: true }).plan?.wouldWrite === true,
+    "scaffold #1: wouldWrite",
+  );
+  assert(
+    updateAgent(tmp, AGENTS, fs, { scaffold: true }).plan?.wouldWrite === false,
+    "scaffold #2: no-op (idempotent)",
+  );
 }
 
 // ===================================================== 6. Key load-bearing test: check on scaffolded file
@@ -210,7 +300,10 @@ function seedHeadingFile(root: string, agentsPath: string, fs: AgentsMdFs, extra
   try {
     const checkRes = checkAgent(tmp, AGENTS, {}, fs);
     const findings = checkRes.check?.findings ?? [];
-    assert(checkRes.check?.code === EXIT_CLEAN, `check on scaffolded file: exit 0 (got ${checkRes.check?.code})`);
+    assert(
+      checkRes.check?.code === EXIT_CLEAN,
+      `check on scaffolded file: exit 0 (got ${checkRes.check?.code})`,
+    );
     assert(findings.length === 0, `check: zero findings (got ${findings.length})`);
   } finally {
     process.env.PATH = savedPath;
@@ -343,7 +436,11 @@ function seedHeadingFile(root: string, agentsPath: string, fs: AgentsMdFs, extra
 
 {
   rmSync(AGENTS, { force: true });
-  const fs = mkFs({ writeFile: () => { throw new Error("writeFile on idempotent scaffold"); } });
+  const fs = mkFs({
+    writeFile: () => {
+      throw new Error("writeFile on idempotent scaffold");
+    },
+  });
   const baseFs = mkFs();
   seedHeadingFile(tmp, AGENTS, baseFs);
   const seed = updateAgent(tmp, AGENTS, baseFs, { scaffold: true });
@@ -415,31 +512,61 @@ function seedHeadingFile(root: string, agentsPath: string, fs: AgentsMdFs, extra
   const content = fs.readFile(AGENTS);
   assert(res.exitCode === 0, "create + bullets: exit 0");
   assert(content.includes("## Code Style"), "create + bullets: ## Code Style rendered");
-  assert(content.includes("## Architecture Notes"), "create + bullets: ## Architecture Notes rendered");
-  for (const b of [...csBullets, ...archBullets]) assert(content.includes(`- ${b}`), `create + bullets: ${b}`);
+  assert(
+    content.includes("## Architecture Notes"),
+    "create + bullets: ## Architecture Notes rendered",
+  );
+  for (const b of [...csBullets, ...archBullets])
+    assert(content.includes(`- ${b}`), `create + bullets: ${b}`);
   const envIdx = content.indexOf("## Environment");
   const csIdx = content.indexOf("## Code Style");
   const archIdx = content.indexOf("## Architecture Notes");
   const minIdx = content.indexOf("# Minimalist Engineering");
-  assert(envIdx >= 0 && csIdx > envIdx && archIdx > csIdx && archIdx < minIdx, "create + bullets: env → code-style → arch-notes → boilerplate order");
+  assert(
+    envIdx >= 0 && csIdx > envIdx && archIdx > csIdx && archIdx < minIdx,
+    "create + bullets: env → code-style → arch-notes → boilerplate order",
+  );
   const sRows = parseLedger(res.plan?.sidecar.newBytes ?? "");
-  assert(sRows.find((r) => r.key === "code-style")?.provenance === "detected", "create + bullets: code-style [detected:agent] row");
-  assert(sRows.find((r) => r.key === "architecture-notes")?.provenance === "detected", "create + bullets: architecture-notes [detected:agent] row");
-  assert(!sRows.some((r) => r.key === "omit:code-style" || r.key === "omit:architecture-notes"), "create + bullets: no omit: rows");
+  assert(
+    sRows.find((r) => r.key === "code-style")?.provenance === "detected",
+    "create + bullets: code-style [detected:agent] row",
+  );
+  assert(
+    sRows.find((r) => r.key === "architecture-notes")?.provenance === "detected",
+    "create + bullets: architecture-notes [detected:agent] row",
+  );
+  assert(
+    !sRows.some((r) => r.key === "omit:code-style" || r.key === "omit:architecture-notes"),
+    "create + bullets: no omit: rows",
+  );
   assert(!content.includes("<!--"), "create + bullets: pure prose (zero <!--)");
   // Graceful absence: archBullets only → no code-style section, no code-style row.
   rmSync(AGENTS, { force: true });
   const fs2 = mkFs();
-  const res2 = createAgent(tmp, AGENTS, fs2, { scaffold: true, agentOverride: { architectureBullets: archBullets } });
+  const res2 = createAgent(tmp, AGENTS, fs2, {
+    scaffold: true,
+    agentOverride: { architectureBullets: archBullets },
+  });
   const content2 = fs2.readFile(AGENTS);
-  assert(res2.exitCode === 0 && !content2.includes("## Code Style"), "create + arch only: code-style absent (graceful)");
-  assert(!parseLedger(res2.plan?.sidecar.newBytes ?? "").some((r) => r.key === "code-style" || r.key === "omit:code-style"), "create + arch only: no code-style ledger row");
+  assert(
+    res2.exitCode === 0 && !content2.includes("## Code Style"),
+    "create + arch only: code-style absent (graceful)",
+  );
+  assert(
+    !parseLedger(res2.plan?.sidecar.newBytes ?? "").some(
+      (r) => r.key === "code-style" || r.key === "omit:code-style",
+    ),
+    "create + arch only: no code-style ledger row",
+  );
   // Skip-if-present: both ids in existingIds → neither section re-rendered.
   const resIdem = computeScaffold(new Set(["code-style", "architecture-notes"]), {
     scaffold: true,
     agentOverride: { codeStyleBullets: ["different"], architectureBullets: ["different"] },
   });
-  assert(!resIdem.sections.some((s) => s.id === "code-style" || s.id === "architecture-notes"), "computeScaffold: already-present bullet sections skipped");
+  assert(
+    !resIdem.sections.some((s) => s.id === "code-style" || s.id === "architecture-notes"),
+    "computeScaffold: already-present bullet sections skipped",
+  );
 }
 
 // ===================================================== 14. 5th interview answer: projectIntent
@@ -447,15 +574,37 @@ function seedHeadingFile(root: string, agentsPath: string, fs: AgentsMdFs, extra
 {
   const intentOnly: OperatorAnswers = { projectIntent: "Rust CLI for local LLM inference" };
   assert(
-    renderOperatorChoices(intentOnly, true).includes("- **Project intent & stack:** Rust CLI for local LLM inference"),
+    renderOperatorChoices(intentOnly, true).includes(
+      "- **Project intent & stack:** Rust CLI for local LLM inference",
+    ),
     "renderOperatorChoices: 5th answer renders a dedicated bullet",
   );
   const intentRows = operatorChoicesLedgerRows(intentOnly, FIXED_DATE);
-  assert(intentRows.length === 1 && intentRows[0]?.key === "operator:intent" && intentRows[0]?.provenance === "asked", "operatorChoicesLedgerRows: [asked:operator] operator:intent row");
-  const allKeys = operatorChoicesLedgerRows({ coverageThreshold: "a", reviewBlockingSeverity: "b", mergeAuthority: "c", projectConstraints: "d", projectIntent: "e" }, FIXED_DATE).map((r) => r.key);
-  assert(allKeys.length === 5 && new Set(allKeys).size === 5, "operatorChoicesLedgerRows: 5 distinct keys (no collision)");
+  assert(
+    intentRows.length === 1 &&
+      intentRows[0]?.key === "operator:intent" &&
+      intentRows[0]?.provenance === "asked",
+    "operatorChoicesLedgerRows: [asked:operator] operator:intent row",
+  );
+  const allKeys = operatorChoicesLedgerRows(
+    {
+      coverageThreshold: "a",
+      reviewBlockingSeverity: "b",
+      mergeAuthority: "c",
+      projectConstraints: "d",
+      projectIntent: "e",
+    },
+    FIXED_DATE,
+  ).map((r) => r.key);
+  assert(
+    allKeys.length === 5 && new Set(allKeys).size === 5,
+    "operatorChoicesLedgerRows: 5 distinct keys (no collision)",
+  );
   const intentScaffold = computeScaffold(new Set(), { scaffold: true, answers: intentOnly });
-  assert(intentScaffold.operatorChoicesBody?.includes("Project intent & stack"), "computeScaffold: intent-only passes the hasAny gate");
+  assert(
+    intentScaffold.operatorChoicesBody?.includes("Project intent & stack"),
+    "computeScaffold: intent-only passes the hasAny gate",
+  );
   // End-to-end: the answer lands EXCLUSIVELY in operator-choices, never in agent-derived sections.
   rmSync(AGENTS, { force: true });
   const fs = mkFs();
@@ -465,15 +614,34 @@ function seedHeadingFile(root: string, agentsPath: string, fs: AgentsMdFs, extra
     agentOverride: { architectureBullets: ["src/main.rs — CLI entry point"] },
   });
   const content = fs.readFile(AGENTS);
-  assert(res.exitCode === 0 && content.includes("- **Project intent & stack:** Rust CLI for local LLM inference"), "create + 5th answer: bullet in operator-choices");
+  assert(
+    res.exitCode === 0 &&
+      content.includes("- **Project intent & stack:** Rust CLI for local LLM inference"),
+    "create + 5th answer: bullet in operator-choices",
+  );
   const archIdx = content.indexOf("## Architecture Notes");
-  assert(!content.slice(archIdx).includes("Rust CLI for local LLM inference"), "create + 5th answer: absent from architecture-notes (provenance separation)");
+  assert(
+    !content.slice(archIdx).includes("Rust CLI for local LLM inference"),
+    "create + 5th answer: absent from architecture-notes (provenance separation)",
+  );
   const sRows = parseLedger(res.plan?.sidecar.newBytes ?? "");
-  assert(sRows.find((r) => r.key === "operator:intent")?.provenance === "asked", "create + 5th answer: [asked:operator] sidecar row");
-  assert(!sRows.some((r) => r.provenance === "detected" && (r.value ?? "").includes("Rust CLI")), "create + 5th answer: no [detected:agent] row carries the answer");
+  assert(
+    sRows.find((r) => r.key === "operator:intent")?.provenance === "asked",
+    "create + 5th answer: [asked:operator] sidecar row",
+  );
+  assert(
+    !sRows.some((r) => r.provenance === "detected" && (r.value ?? "").includes("Rust CLI")),
+    "create + 5th answer: no [detected:agent] row carries the answer",
+  );
   // Unanswered 5th Q → no section, no row (default-omit pattern).
-  assert(computeScaffold(new Set(), { scaffold: true, answers: {} }).operatorChoicesBody === undefined, "computeScaffold: empty answers → no operator-choices (default-omit)");
-  assert(operatorChoicesLedgerRows({}, FIXED_DATE).length === 0, "operatorChoicesLedgerRows: empty → 0 rows (no omission row)");
+  assert(
+    computeScaffold(new Set(), { scaffold: true, answers: {} }).operatorChoicesBody === undefined,
+    "computeScaffold: empty answers → no operator-choices (default-omit)",
+  );
+  assert(
+    operatorChoicesLedgerRows({}, FIXED_DATE).length === 0,
+    "operatorChoicesLedgerRows: empty → 0 rows (no omission row)",
+  );
 }
 
 // ===================================================== 15. create scaffold: false (no boilerplate)

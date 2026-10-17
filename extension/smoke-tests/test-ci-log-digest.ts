@@ -59,7 +59,11 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-function runDigest(fixturePath: string): { status: number; stdout: string; envError: string | null } {
+function runDigest(fixturePath: string): {
+  status: number;
+  stdout: string;
+  envError: string | null;
+} {
   const result = spawnSync("bash", [DIGEST_SCRIPT, fixturePath], {
     cwd: path.join(__dirname, ".."),
     encoding: "utf-8",
@@ -182,10 +186,7 @@ assert(
 
 // --- Case 4: error: lines survive ---
 const errorColonLines = digestLines.filter((l) => l.trimStart().startsWith("error:"));
-assert(
-  errorColonLines.length >= 1,
-  `case 4: error: lines survive (got ${errorColonLines.length})`,
-);
+assert(errorColonLines.length >= 1, `case 4: error: lines survive (got ${errorColonLines.length})`);
 assert(
   digestLines.some((l) => l.includes("expected 200, got 404")),
   "case 4: the 'error: expected 200, got 404' line is present",
@@ -261,10 +262,7 @@ assert(
 );
 
 // --- Case 11: the digest is compact ---
-assert(
-  stdout.length < 728,
-  `case 11: the digest is compact (${stdout.length} bytes < 728 B)`,
-);
+assert(stdout.length < 728, `case 11: the digest is compact (${stdout.length} bytes < 728 B)`);
 
 // --- Case 12: the digest catches all 5 failure markers ---
 const markerCount = xMarkLines.length + errorTagLines.length + errorColonLines.length;
@@ -332,7 +330,10 @@ assert(
     const fixturePath = path.join(scratchDir, "fixture-crosscheck.ts");
     writeFileSync(
       fixturePath,
-      rawOutput.split("\n").map((l) => `console.log(${JSON.stringify(l)});`).join("\n") + "\nprocess.exit(1);\n",
+      rawOutput
+        .split("\n")
+        .map((l) => `console.log(${JSON.stringify(l)});`)
+        .join("\n") + "\nprocess.exit(1);\n",
     );
     const loopDigest = spawnSync("bash", [VERIFY_LOOP, "--digest", fixturePath], {
       cwd: path.join(__dirname, ".."),
@@ -344,10 +345,11 @@ assert(
     // line-start anchor (no leading-whitespace tolerance) for the ✗ marker,
     // so compare on the raw line.
     const isSharedMarker = (line: string): boolean =>
-      line.startsWith("✗ ") || line.startsWith("##[error]") || line.startsWith("FAILED:") || line.startsWith("error:");
-    const ciMarkers = (ciDigest.stdout ?? "")
-      .split("\n")
-      .filter((l) => isSharedMarker(l));
+      line.startsWith("✗ ") ||
+      line.startsWith("##[error]") ||
+      line.startsWith("FAILED:") ||
+      line.startsWith("error:");
+    const ciMarkers = (ciDigest.stdout ?? "").split("\n").filter((l) => isSharedMarker(l));
     const loopMarkers = (loopDigest.stdout ?? "")
       .split("\n")
       .filter((l) => isSharedMarker(l))

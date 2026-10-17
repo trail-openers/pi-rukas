@@ -461,8 +461,14 @@ else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandbox;
   const { pmBashRefusal } = await import("../src/pm-bash-guard.ts");
   const chain =
     "cd /repo && git log --oneline -8 feature/x && echo '--- diff ---' && git diff --stat origin/main...feature/x";
-  assert(pmVerdict(chain) === null, "#1233: a chain of read-only commands is still not matched (null)");
-  for (const part of ["git log --oneline -8 feature/x", "git diff --stat origin/main...feature/x"]) {
+  assert(
+    pmVerdict(chain) === null,
+    "#1233: a chain of read-only commands is still not matched (null)",
+  );
+  for (const part of [
+    "git log --oneline -8 feature/x",
+    "git diff --stat origin/main...feature/x",
+  ]) {
     assert(pmVerdict(part) === "allow", `#1233: each part passes on its own (${part})`);
   }
   assert(
@@ -479,7 +485,8 @@ else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandbox;
   const offList = pmBashRefusal(pmVerdict("git push origin main"));
   assert(pmVerdict("git push origin main") !== "allow", "#1233: a mutation is still refused");
   assert(
-    /not on the PM bash allowlist/.test(offList) && !/ONE allowlisted command per call/.test(offList),
+    /not on the PM bash allowlist/.test(offList) &&
+      !/ONE allowlisted command per call/.test(offList),
     "#1233: a single off-list command gets the allowlist message, not the chain one",
   );
 }

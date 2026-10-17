@@ -19,16 +19,16 @@
  * No real Pi spawn; `dispatchFn` and `issueBodyFetcherFn` are injected,
  * mirroring test-explore-body-retry.ts.
  */
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { readMarker } from "../src/reply-markers.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { runWorkDriver } from "../src/work-driver.ts";
 import type { NormalisedSpec } from "../src/work-driver-intent.ts";
 import { parseNormalisedSpec, reconcileVerdict } from "../src/work-driver-intent.ts";
-import { readMarker } from "../src/reply-markers.ts";
 import { scratchDir } from "../src/work-driver-workspace.ts";
+import { runWorkDriver } from "../src/work-driver.ts";
 import { readState } from "../src/workflow-state.ts";
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
@@ -180,13 +180,34 @@ assert(
 }
 {
   const root = "/repo";
-  assert(resolvesUnderScratch("tmp/issue-674/explore-report.md", root, 674), "resolvesUnderScratch: own tmp/issue-<N>/ path resolves inside");
-  assert(resolvesUnderScratch("./tmp/issue-674/explore-report.md", root, 674), "..../-prefixed form");
-  assert(resolvesUnderScratch("/repo/tmp/issue-674/explore-report.md", root, 674), "...absolute, repo-root-anchored form");
-  assert(!resolvesUnderScratch("tmp/issue-675/explore-report.md", root, 674), "...sibling cycle dir outside");
-  assert(!resolvesUnderScratch(".pi/work-state/674/explore-report.md", root, 674), "...​.pi/work-state path outside");
-  assert(!resolvesUnderScratch("/tmp/elsewhere/report.md", root, 674), "...absolute path elsewhere outside");
-  assert(!resolvesUnderScratch("tmp/issue-674/../../etc/passwd", root, 674), "...../ escape outside");
+  assert(
+    resolvesUnderScratch("tmp/issue-674/explore-report.md", root, 674),
+    "resolvesUnderScratch: own tmp/issue-<N>/ path resolves inside",
+  );
+  assert(
+    resolvesUnderScratch("./tmp/issue-674/explore-report.md", root, 674),
+    "..../-prefixed form",
+  );
+  assert(
+    resolvesUnderScratch("/repo/tmp/issue-674/explore-report.md", root, 674),
+    "...absolute, repo-root-anchored form",
+  );
+  assert(
+    !resolvesUnderScratch("tmp/issue-675/explore-report.md", root, 674),
+    "...sibling cycle dir outside",
+  );
+  assert(
+    !resolvesUnderScratch(".pi/work-state/674/explore-report.md", root, 674),
+    "...​.pi/work-state path outside",
+  );
+  assert(
+    !resolvesUnderScratch("/tmp/elsewhere/report.md", root, 674),
+    "...absolute path elsewhere outside",
+  );
+  assert(
+    !resolvesUnderScratch("tmp/issue-674/../../etc/passwd", root, 674),
+    "...../ escape outside",
+  );
 }
 
 async function makeRepoWith(
@@ -215,10 +236,16 @@ async function makeRepoWith(
     const spec = await recoverOffloadedSpec(replyText, dir, 674);
     assert(spec !== undefined, "unit: parseable offloaded file recovers a spec");
     if (spec) {
-      assert(spec.deliverables.length === 6, `unit: 6 deliverables (got ${spec.deliverables.length})`);
+      assert(
+        spec.deliverables.length === 6,
+        `unit: 6 deliverables (got ${spec.deliverables.length})`,
+      );
       assert(spec.acceptanceCriteria.length === 6, "unit: 6 acceptance criteria");
       assert(spec.evidence.length === 14, "unit: 14 evidence rows");
-      assert(spec.evidence.filter((e) => e.verdict === "confirmed").length === 14, "unit: all 14 confirmed");
+      assert(
+        spec.evidence.filter((e) => e.verdict === "confirmed").length === 14,
+        "unit: all 14 confirmed",
+      );
       assert(spec.verdict === "proceed-with-assumptions", "unit: offloaded file's own verdict");
     }
   } finally {
@@ -228,23 +255,35 @@ async function makeRepoWith(
 {
   const dir = await makeRepoWith("offload-unit-outside-", { "outside/report.md": reportText });
   try {
-    const spec = await recoverOffloadedSpec("**INTENT-VERDICT: park**\n\nsaved to scratch: `outside/report.md`", dir, 674);
+    const spec = await recoverOffloadedSpec(
+      "**INTENT-VERDICT: park**\n\nsaved to scratch: `outside/report.md`",
+      dir,
+      674,
+    );
     assert(spec === undefined, "unit: citation outside scratch dir ignored — no spec");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 {
-  const dir = await makeRepoWith("offload-unit-nospec-", { "tmp/issue-674/notes.md": "prose only" });
+  const dir = await makeRepoWith("offload-unit-nospec-", {
+    "tmp/issue-674/notes.md": "prose only",
+  });
   try {
-    const spec = await recoverOffloadedSpec("**INTENT-VERDICT: park**\n\nsaved to scratch: `tmp/issue-674/notes.md`", dir, 674);
+    const spec = await recoverOffloadedSpec(
+      "**INTENT-VERDICT: park**\n\nsaved to scratch: `tmp/issue-674/notes.md`",
+      dir,
+      674,
+    );
     assert(spec === undefined, "unit: offloaded file without '## Spec' block yields no spec");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 {
-  const dir = await makeRepoWith("offload-unit-nocite-", { "tmp/issue-674/explore-report.md": reportText });
+  const dir = await makeRepoWith("offload-unit-nocite-", {
+    "tmp/issue-674/explore-report.md": reportText,
+  });
   try {
     const spec = await recoverOffloadedSpec("a reply with a verdict but no file mention", dir, 674);
     assert(spec === undefined, "unit: no citation, no recovery — file on disk never consulted");
@@ -253,10 +292,19 @@ async function makeRepoWith(
   }
 }
 {
-  const dir = await makeRepoWith("offload-unit-missing-", { "tmp/issue-674/gone.md": { missing: true } });
+  const dir = await makeRepoWith("offload-unit-missing-", {
+    "tmp/issue-674/gone.md": { missing: true },
+  });
   try {
-    const spec = await recoverOffloadedSpec("**INTENT-VERDICT: park**\n\nsaved to scratch: `tmp/issue-674/gone.md`", dir, 674);
-    assert(spec === undefined, "unit: cited-but-missing file falls through with no spec and no throw");
+    const spec = await recoverOffloadedSpec(
+      "**INTENT-VERDICT: park**\n\nsaved to scratch: `tmp/issue-674/gone.md`",
+      dir,
+      674,
+    );
+    assert(
+      spec === undefined,
+      "unit: cited-but-missing file falls through with no spec and no throw",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -277,16 +325,24 @@ async function makeRepoWith(
 {
   const inlineShape = "blah\n## Spec\n\n### Intent\nx\n";
   assert(hasInlineSpecHeading(inlineShape), "precedence: inline '## Spec' detected");
-  assert(!hasInlineSpecHeading(replyText), "precedence: offloaded reply has none — fallback may fire");
+  assert(
+    !hasInlineSpecHeading(replyText),
+    "precedence: offloaded reply has none — fallback may fire",
+  );
 }
 {
-  const dir = await makeRepoWith("offload-reconcile-", { "tmp/issue-674/explore-report.md": reportText });
+  const dir = await makeRepoWith("offload-reconcile-", {
+    "tmp/issue-674/explore-report.md": reportText,
+  });
   try {
     const spec = await recoverOffloadedSpec(replyText, dir, 674);
     assert(spec !== undefined, "reconcile: recovered spec exists before reconciliation");
     if (spec) {
       const resolved = reconcileVerdict(spec);
-      assert(resolved.verdict === "proceed-with-assumptions", "reconcile: stays proceed-with-assumptions");
+      assert(
+        resolved.verdict === "proceed-with-assumptions",
+        "reconcile: stays proceed-with-assumptions",
+      );
       assert(resolved.parkReason === undefined, "reconcile: no parkReason attached");
       assert(resolved.deliverables.length === 6, "reconcile: preserves all 6 deliverables");
     }
@@ -314,7 +370,9 @@ async function runDriverCase(
       host: makeFakePi(),
       repoRoot: dir,
       issue,
-      issueBodyFetcherFn: async (n, _cwd) => ({ stdout: `title:\tissue #${n}\nstate:\tOPEN\n\nbody for #${n}` }),
+      issueBodyFetcherFn: async (n, _cwd) => ({
+        stdout: `title:\tissue #${n}\nstate:\tOPEN\n\nbody for #${n}`,
+      }),
       dispatchFn: async (_pi, specArg, opts) => {
         if (opts?.label === "explore") {
           exploreDispatches++;
@@ -326,11 +384,15 @@ async function runDriverCase(
     };
     await runWorkDriver(ctx);
     const after = await readState(dir, issue);
-    const caps = (after?.eventLog ?? []).filter(
-      (e) => e.kind === "cap-hit",
-    ) as Array<{ kind: "cap-hit"; cap: string }>;
+    const caps = (after?.eventLog ?? []).filter((e) => e.kind === "cap-hit") as Array<{
+      kind: "cap-hit";
+      cap: string;
+    }>;
     const ps = after?.pipelineState;
-    const ns = ps && "normalisedSpec" in ps ? (ps as { normalisedSpec?: unknown }).normalisedSpec : undefined;
+    const ns =
+      ps && "normalisedSpec" in ps
+        ? (ps as { normalisedSpec?: unknown }).normalisedSpec
+        : undefined;
     return {
       cap: caps[0]?.cap,
       caps,
@@ -351,12 +413,24 @@ async function runDriverCase(
     { "tmp/issue-674/explore-report.md": reportText },
     replyText,
   );
-  assert(r.exploreDispatches === 1, `driver-674: explore dispatch ran once (got ${r.exploreDispatches})`);
-  assert(r.cap === undefined, "driver-674: NO cap-hit — false explore-needs-clarification park is gone");
+  assert(
+    r.exploreDispatches === 1,
+    `driver-674: explore dispatch ran once (got ${r.exploreDispatches})`,
+  );
+  assert(
+    r.cap === undefined,
+    "driver-674: NO cap-hit — false explore-needs-clarification park is gone",
+  );
   assert(r.spec !== undefined, "driver-674: normalisedSpec recorded on state");
   if (r.spec) {
-    assert(r.spec.deliverables.length === 6, `driver-674: 6 deliverables (got ${r.spec.deliverables.length})`);
-    assert(r.spec.verdict === "proceed-with-assumptions", "driver-674: resolved verdict proceed-with-assumptions");
+    assert(
+      r.spec.deliverables.length === 6,
+      `driver-674: 6 deliverables (got ${r.spec.deliverables.length})`,
+    );
+    assert(
+      r.spec.verdict === "proceed-with-assumptions",
+      "driver-674: resolved verdict proceed-with-assumptions",
+    );
   }
 }
 
@@ -368,7 +442,10 @@ async function runDriverCase(
     { "tmp/issue-675/explore-report.md": { missing: true } },
     replyText.replace(/674/g, "675"),
   );
-  assert(r.cap === "explore-needs-clarification", "driver-missing: missing offloaded file parks as no-signal");
+  assert(
+    r.cap === "explore-needs-clarification",
+    "driver-missing: missing offloaded file parks as no-signal",
+  );
   assert(r.caps.length === 1, "driver-missing: exactly one cap — no new cap kind");
   assert(r.spec === undefined, "driver-missing: no spec recorded");
 }
@@ -379,9 +456,14 @@ async function runDriverCase(
     "offload-driver-outside-",
     676,
     { "outside/elsewhere.md": reportText },
-    replyText.replace(/674/g, "676").replace(/tmp\/issue-676\/explore-report\.md/g, "outside/elsewhere.md"),
+    replyText
+      .replace(/674/g, "676")
+      .replace(/tmp\/issue-676\/explore-report\.md/g, "outside/elsewhere.md"),
   );
-  assert(r.cap === "explore-needs-clarification", "driver-outside: out-of-scratch citation does NOT recover a spec");
+  assert(
+    r.cap === "explore-needs-clarification",
+    "driver-outside: out-of-scratch citation does NOT recover a spec",
+  );
   assert(r.spec === undefined, "driver-outside: no spec recorded — file never consulted");
 }
 
@@ -393,7 +475,10 @@ async function runDriverCase(
     { "tmp/issue-677/report.md": "prose only, no structured spec" },
     replyText.replace(/674/g, "677").replace(/explore-report\.md/g, "report.md"),
   );
-  assert(r.cap === "explore-needs-clarification", "driver-nospec: unparseable offloaded file parks as no-signal");
+  assert(
+    r.cap === "explore-needs-clarification",
+    "driver-nospec: unparseable offloaded file parks as no-signal",
+  );
   assert(r.spec === undefined, "driver-nospec: no spec recorded");
 }
 
@@ -409,14 +494,25 @@ async function runDriverCase(
     inlineReply,
   );
   assert(r.spec !== undefined, "driver-inline: inline '## Spec' still parses");
-  assert(r.spec !== undefined && r.spec.deliverables.length === 1, "driver-inline: INLINE spec (1 deliverable), not the offloaded file's 6");
+  assert(
+    r.spec !== undefined && r.spec.deliverables.length === 1,
+    "driver-inline: INLINE spec (1 deliverable), not the offloaded file's 6",
+  );
   assert(r.cap === "intent-park", "driver-inline: park verdict inline still parks via intent-park");
 }
 
 // 6. INVARIANT — no parseable verdict, no citation → no-signal park (#378)
 {
-  const r = await runDriverCase("offload-driver-nocite-", 679, {}, "blah blah, nothing structured\n");
-  assert(r.cap === "explore-needs-clarification", "driver-nocite: no spec, no citation → no-signal park");
+  const r = await runDriverCase(
+    "offload-driver-nocite-",
+    679,
+    {},
+    "blah blah, nothing structured\n",
+  );
+  assert(
+    r.cap === "explore-needs-clarification",
+    "driver-nocite: no spec, no citation → no-signal park",
+  );
 }
 
 // 7. INVARIANT — PI_ENSEMBLE_INTENT=0: legacy router owns the decision
@@ -426,7 +522,10 @@ async function runDriverCase(
   process.env.PI_ENSEMBLE_INTENT = "0";
   try {
     const legacyVerdict = parseExploreVerdict(replyText.replace(/674/g, "680"));
-    assert(legacyVerdict === null, "driver-legacy: 674 reply carries no legacy EXPLORE-VERDICT token");
+    assert(
+      legacyVerdict === null,
+      "driver-legacy: 674 reply carries no legacy EXPLORE-VERDICT token",
+    );
     assert(
       exploreProducedNoSignal(false, legacyVerdict) === false,
       "driver-legacy: with intent disabled the legacy router owns the decision",
@@ -437,7 +536,10 @@ async function runDriverCase(
       { "tmp/issue-680/explore-report.md": reportText },
       replyText.replace(/674/g, "680"),
     );
-    assert(r.spec === undefined, "driver-legacy: no normalisedSpec — offload fallback scoped to intent path");
+    assert(
+      r.spec === undefined,
+      "driver-legacy: no normalisedSpec — offload fallback scoped to intent path",
+    );
   } finally {
     delete process.env.PI_ENSEMBLE_INTENT;
   }
@@ -463,20 +565,24 @@ async function runDriverCase(
 
   // The inline parse must find the spec (no offload file needed).
   const inlineParsed = parseNormalisedSpec(reply826);
-  assert(inlineParsed !== undefined, "826: parseNormalisedSpec finds the spec inline (no offload needed)");
+  assert(
+    inlineParsed !== undefined,
+    "826: parseNormalisedSpec finds the spec inline (no offload needed)",
+  );
 
   // Driver-level: the 826 reply must NOT park at explore-needs-clarification.
-  const r = await runDriverCase(
-    "offload-driver-826-",
-    826,
-    {},
-    reply826,
-  );
+  const r = await runDriverCase("offload-driver-826-", 826, {}, reply826);
   assert(r.cap === undefined, "driver-826: NO cap-hit — the spec is found inline, no park");
   assert(r.spec !== undefined, "driver-826: normalisedSpec recorded on state");
   if (r.spec) {
-    assert(r.spec.deliverables.length === 5, `driver-826: 5 deliverables (got ${r.spec.deliverables.length})`);
-    assert(r.spec.verdict === "proceed-with-assumptions", `driver-826: resolved verdict proceed-with-assumptions (got ${r.spec.verdict})`);
+    assert(
+      r.spec.deliverables.length === 5,
+      `driver-826: 5 deliverables (got ${r.spec.deliverables.length})`,
+    );
+    assert(
+      r.spec.verdict === "proceed-with-assumptions",
+      `driver-826: resolved verdict proceed-with-assumptions (got ${r.spec.verdict})`,
+    );
   }
 }
 

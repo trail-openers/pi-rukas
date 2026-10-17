@@ -108,7 +108,10 @@ const hasNotPi = result.some((p) => p.endsWith("/not-a-pi-ext"));
 assert(!hasNotPi, "package.json without pi.extensions is filtered out");
 
 const hasAdapter = result.some((p) => p.endsWith("/pi-mcp-adapter"));
-assert(!hasAdapter, "pi-mcp-adapter is filtered out (issue #959: its /mcp registration would replace native MCP)");
+assert(
+  !hasAdapter,
+  "pi-mcp-adapter is filtered out (issue #959: its /mcp registration would replace native MCP)",
+);
 
 // Opt-out env var
 process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD = "1";

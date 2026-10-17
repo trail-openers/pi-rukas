@@ -22,15 +22,15 @@
  *    each other's dispatch-slow events.
  */
 
-import { clearJobsForTesting, startJob } from "../src/async-jobs.ts";
 import {
   clearParentExtensionApiForTesting,
   setParentExtensionApi,
 } from "../src/async-jobs-registry.ts";
+import { clearJobsForTesting, startJob } from "../src/async-jobs.ts";
 import { steerChild } from "../src/dispatch-steer.ts";
 import type { RunningState } from "../src/progress.ts";
-import { drainSlowEvents } from "../src/slow-events.ts";
 import { formatElapsed } from "../src/progress.ts";
+import { drainSlowEvents } from "../src/slow-events.ts";
 import {
   clearSlowWatchesForTesting,
   feedSlowProgress,
@@ -136,7 +136,10 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150" }, async () => {
   assert(!steerText.includes("final report"), "steer no longer contains 'final report'");
   assert(!steerText.includes("\n"), "steer stays a single line (no newlines)");
   const pinned = slowSteerText(1_500_000, 123);
-  assert(pinned.includes("25m0s"), `steer embeds formatElapsed(1500000) → "25m0s" (${formatElapsed(1_500_000)})`);
+  assert(
+    pinned.includes("25m0s"),
+    `steer embeds formatElapsed(1500000) → "25m0s" (${formatElapsed(1_500_000)})`,
+  );
   assert(pinned.includes("123 turns"), "steer embeds the turn count");
   feedSlowProgress("job-turns", stateAt(160));
   assert(notices.length === 1 && steers.length === 1, "149→151→160 → no duplicates");
@@ -253,8 +256,15 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150" }, async () => {
     tag: "simplicity",
   });
   const written: string[] = [];
-  const fakeStdin = { write: (s: string) => (written.push(s), true) } as unknown as import("node:stream").Writable;
-  registerChildHandle(deckKey, fakeStdin, "code-review-specialist[simplicity]", "code-review-specialist");
+  const fakeStdin = { write: (s: string) => (written.push(s), true) } as unknown as import(
+    "node:stream",
+  ).Writable;
+  registerChildHandle(
+    deckKey,
+    fakeStdin,
+    "code-review-specialist[simplicity]",
+    "code-review-specialist",
+  );
   const r = steerChild(deckKey, "status check", "pm-tool");
   assert(r.delivered === true, `lens child is steerable by the deck id (${r.reason ?? "ok"})`);
   assert(written.length === 1, "the steer reached the child's stdin");
@@ -299,7 +309,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150" }, async () => {
 // ---------------------------------------------------------------- 10. silent child
 await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
   setup();
-  let t = 2_000_000;
+  const t = 2_000_000;
   const now = () => t;
   const notices: string[] = [];
   const steers: Array<{ id: string }> = [];
@@ -356,7 +366,10 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
   const { clearSlowEventsForTesting, slowRecorder } = await import("../src/slow-events.ts");
   clearSlowEventsForTesting();
   const at = Date.now();
-  slowRecorder(100, "plan")({
+  slowRecorder(
+    100,
+    "plan",
+  )({
     step: "plan",
     role: "explore",
     jobId: "job-a1",
@@ -368,7 +381,10 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
   });
   // Interleave: cycle B records between A's two crossings, as two cycles
   // advancing in lockstep do in the real driver loop.
-  slowRecorder(200, "adversarial")({
+  slowRecorder(
+    200,
+    "adversarial",
+  )({
     step: "adversarial",
     role: "adversarial-developer",
     jobId: "job-b1",
@@ -378,7 +394,10 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
     tokens: 2,
     at,
   });
-  slowRecorder(100, "plan")({
+  slowRecorder(
+    100,
+    "plan",
+  )({
     step: "plan",
     role: "explore",
     jobId: "job-a2",
@@ -393,7 +412,10 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
     drainedA.length === 2 && drainedA.every((e) => e.jobId === "job-a1" || e.jobId === "job-a2"),
     "drain(A) returns exactly cycle A's two crossings (not B's)",
   );
-  assert(drainedA.every((e) => e.kind === "dispatch-slow"), "drain(A) events are dispatch-slow");
+  assert(
+    drainedA.every((e) => e.kind === "dispatch-slow"),
+    "drain(A) events are dispatch-slow",
+  );
   const drainedB: WorkEvent[] = drainSlowEvents(200);
   assert(
     drainedB.length === 1 && drainedB[0]?.jobId === "job-b1",
@@ -401,7 +423,10 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
   );
   // Drain is a deletion: a second drain of either cycle returns nothing, and
   // draining an unknown cycle never throws or returns a sibling's events.
-  assert(drainSlowEvents(100).length === 0, "drain(A) again → empty (entry deleted on first drain)");
+  assert(
+    drainSlowEvents(100).length === 0,
+    "drain(A) again → empty (entry deleted on first drain)",
+  );
   assert(drainSlowEvents(999).length === 0, "drain(unknown) → empty, no throw");
 }
 
@@ -418,8 +443,14 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
     "#952: reviewer steer tells the child to finish its review",
   );
   assert(!reviewerText.includes("\n"), "#952: reviewer steer stays a single line");
-  assert(!reviewerText.includes("CONTINUE the task"), "#952: reviewer steer has no 'CONTINUE the task'");
-  assert(!reviewerText.includes("not a stop signal"), "#952: reviewer steer is not the default text");
+  assert(
+    !reviewerText.includes("CONTINUE the task"),
+    "#952: reviewer steer has no 'CONTINUE the task'",
+  );
+  assert(
+    !reviewerText.includes("not a stop signal"),
+    "#952: reviewer steer is not the default text",
+  );
 
   const devText = slowSteerText(1_500_000, 123, "developer");
   assert(

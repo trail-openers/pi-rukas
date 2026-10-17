@@ -7,10 +7,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { repositionLensFixWorktree } from "../src/work-driver-lens-fix-reposition-gate.ts";
 import { parkLensFixReposition } from "../src/work-driver-lens-fix-reposition-park.ts";
 import { initialState } from "../src/workflow-state.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
 
 const execp = promisify(exec);
 
@@ -129,7 +129,9 @@ function assert(cond: boolean, msg: string) {
       `981 reposition: a worktree at the old base repositions to the advanced branch tip (got ${r3.kind})`,
     );
     const wtHeadAfter = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
-    const branchTip = (await execp("git rev-parse feature/lens-repos", { cwd: root })).stdout.trim();
+    const branchTip = (
+      await execp("git rev-parse feature/lens-repos", { cwd: root })
+    ).stdout.trim();
     assert(
       wtHeadAfter === branchTip,
       "981 reposition: the worktree is at the branch tip after the reposition",
@@ -150,16 +152,10 @@ function assert(cond: boolean, msg: string) {
       [981],
       "reposition test",
     );
-    assert(
-      r4.kind === "dirty",
-      `981 reposition: a dirty worktree returns dirty (got ${r4.kind})`,
-    );
+    assert(r4.kind === "dirty", `981 reposition: a dirty worktree returns dirty (got ${r4.kind})`);
     // The worktree HEAD is unchanged (still at where case 3 left it).
     const wtHeadDirty = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
-    assert(
-      wtHeadDirty === branchTip,
-      "981 reposition: a dirty worktree is not moved",
-    );
+    assert(wtHeadDirty === branchTip, "981 reposition: a dirty worktree is not moved");
 
     // Case 5: cherry-landed path, but the backup ref creation fails
     // (`git update-ref` rejects). The gate must park (diverged, no backup
@@ -167,19 +163,27 @@ function assert(cond: boolean, msg: string) {
     // still there (not orphaned by a detach checkout).
     await execp(`git checkout -q --detach ${JSON.stringify(baseSha)}`, { cwd: wt });
     const wtHeadBefore = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
-    const tipShaBefore = (await execp("git rev-parse feature/lens-repos", { cwd: root }))
-      .stdout.trim();
+    const tipShaBefore = (
+      await execp("git rev-parse feature/lens-repos", { cwd: root })
+    ).stdout.trim();
     await execp("git checkout -q --detach HEAD~0", { cwd: wt, shell: "/bin/bash" });
     writeFileSync(path.join(wt, "c.txt"), "three\ncherry case\n");
-    await execp("git add . && git commit -q -m 'cherry case work'", { cwd: wt, shell: "/bin/bash" });
+    await execp("git add . && git commit -q -m 'cherry case work'", {
+      cwd: wt,
+      shell: "/bin/bash",
+    });
     const fixCommitSha = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
     // Land the fix on the branch as a cherry-pick (the normal #981 shape),
     // so the worktree is NOT an ancestor of the tip and every cherry line
     // is `-`.
-    await execp(`git cherry-pick ${JSON.stringify(fixCommitSha)}`, { cwd: root, shell: "/bin/bash" });
+    await execp(`git cherry-pick ${JSON.stringify(fixCommitSha)}`, {
+      cwd: root,
+      shell: "/bin/bash",
+    });
     await execp("git push -q origin feature/lens-repos", { cwd: root });
-    const tipShaAfter = (await execp("git rev-parse feature/lens-repos", { cwd: root }))
-      .stdout.trim();
+    const tipShaAfter = (
+      await execp("git rev-parse feature/lens-repos", { cwd: root })
+    ).stdout.trim();
     assert(
       tipShaAfter !== tipShaBefore,
       "981 reposition (backup fail): the cherry-pick advanced the branch tip",
@@ -294,10 +298,15 @@ function assert(cond: boolean, msg: string) {
       // proven non-ancestry). The gate must route to `git-failed`, not
       // `diverged`, and must NOT move the tree (fail closed).
       const wtHeadBefore = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
-      assert(wtHeadBefore === baseSha2, "981 reposition: the worktree starts at the old base (behind the tip)");
+      assert(
+        wtHeadBefore === baseSha2,
+        "981 reposition: the worktree starts at the old base (behind the tip)",
+      );
       const mergeBaseFails = async (cmd: string, o?: { cwd?: string; argv?: string[] }) => {
         if (o?.argv && o.argv[0] === "merge-base") {
-          const err = new Error("simulated git merge-base failure (exit 128)") as Error & { code?: number };
+          const err = new Error("simulated git merge-base failure (exit 128)") as Error & {
+            code?: number;
+          };
           err.code = 128;
           throw err;
         }

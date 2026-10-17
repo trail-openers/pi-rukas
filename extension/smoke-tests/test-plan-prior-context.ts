@@ -21,8 +21,8 @@
  */
 
 import { anglePromptsFor } from "../src/plan-angles.ts";
-import { renderPriorContext } from "../src/plan-prior-context.ts";
 import { gapGatePrompt } from "../src/plan-gate-prompt.ts";
+import { renderPriorContext } from "../src/plan-prior-context.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -41,7 +41,10 @@ const VIPUNE = Array.from({ length: 8 }, (_, i) => ({
 }));
 
 {
-  assert(OP_FACT.length > 4000 && OP_FACT.length < 6000, `fixture is round-9 sized (${OP_FACT.length})`);
+  assert(
+    OP_FACT.length > 4000 && OP_FACT.length < 6000,
+    `fixture is round-9 sized (${OP_FACT.length})`,
+  );
   const r = renderPriorContext([OP, ...VIPUNE]);
   assert(
     r.includes("end-of-operator-context"),
@@ -56,7 +59,8 @@ const VIPUNE = Array.from({ length: 8 }, (_, i) => ({
     "operator: operator entries render FIRST (authority order)",
   );
   assert(
-    r.includes("[truncated]") && r.includes("for child-prompt size (full inventory is in the filed body)"),
+    r.includes("[truncated]") &&
+      r.includes("for child-prompt size (full inventory is in the filed body)"),
     "non-operator: the vipune tail still clips with the legacy marker text byte-exactly",
   );
 }
@@ -75,8 +79,7 @@ const VIPUNE = Array.from({ length: 8 }, (_, i) => ({
   assert(short === "- [issue #4] small fact", "legacy: short input renders byte-identically");
   const onlyVipune = renderPriorContext(VIPUNE);
   assert(
-    /\d+ item\(s\) (clipped|omitted)/.test(onlyVipune) &&
-      !onlyVipune.includes("operator context"),
+    /\d+ item\(s\) (clipped|omitted)/.test(onlyVipune) && !onlyVipune.includes("operator context"),
     "legacy: no-operator input keeps the original cap and marker (no operator wording)",
   );
   assert(renderPriorContext([]) === "", "legacy: empty input renders empty");
@@ -86,9 +89,12 @@ const VIPUNE = Array.from({ length: 8 }, (_, i) => ({
   // End-to-end: the ANGLE child prompt and the GATE prompt carry the full
   // operator context (this is the seam the round-9 children were starved
   // through).
-  const prompts = anglePromptsFor("feature", "add a thing in src/thing.ts", [OP, ...VIPUNE], [
-    "src/thing.ts",
-  ]);
+  const prompts = anglePromptsFor(
+    "feature",
+    "add a thing in src/thing.ts",
+    [OP, ...VIPUNE],
+    ["src/thing.ts"],
+  );
   assert(prompts.length > 0, "e2e: angle prompts built");
   assert(
     prompts.every((p) => p.prompt.includes("end-of-operator-context")),

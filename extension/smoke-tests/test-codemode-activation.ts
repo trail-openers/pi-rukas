@@ -42,9 +42,9 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { enableChildCodemode } from "../src/child-codemode.ts";
 import childGuards from "../src/child-guards.ts";
 import { registerSubagentGuard } from "../src/permission-subagent-guard.ts";
-import { enableChildCodemode } from "../src/child-codemode.ts";
 
 // The roster shape of a real child: the built-in MCP tools (codebase-memory,
 // 14 tools in the reference environment — the exact list in BASE_ROSTER
@@ -143,7 +143,10 @@ delete process.env.PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT;
     "companion registers exactly one session_start handler in trust mode",
   );
   await fireSessionStart(mock);
-  assert(mock.setActiveCalls.length === 1, "companion session_start records exactly one setActiveTools call");
+  assert(
+    mock.setActiveCalls.length === 1,
+    "companion session_start records exactly one setActiveTools call",
+  );
   const call = mock.setActiveCalls[0];
   assert(call !== undefined, "companion setActiveTools call exists");
   // APPEND, not replace: the original set is a prefix of the new set, in
@@ -158,9 +161,15 @@ delete process.env.PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT;
       `companion: position ${i} is still ${BASE_ROSTER[i]} (got ${call?.[i]})`,
     );
   }
-  assert(call?.[BASE_ROSTER.length] === "codemode", "companion: position last is `codemode` (appended)");
+  assert(
+    call?.[BASE_ROSTER.length] === "codemode",
+    "companion: position last is `codemode` (appended)",
+  );
   const mcpCount = (call ?? []).filter((t) => t.startsWith("mcp__codebase_memory__")).length;
-  assert(mcpCount === 14, `companion: all 14 mcp__codebase_memory__* tools survive the append (got ${mcpCount})`);
+  assert(
+    mcpCount === 14,
+    `companion: all 14 mcp__codebase_memory__* tools survive the append (got ${mcpCount})`,
+  );
 }
 
 // ============================================================
@@ -171,7 +180,10 @@ delete process.env.PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT;
   const mock = makeMockPi(BASE_ROSTER);
   childGuards(mock as unknown as ExtensionAPI);
   await fireSessionStart(mock);
-  assert(mock.setActiveCalls.length === 0, "companion under =0: no setActiveTools call (flag off → no-op)");
+  assert(
+    mock.setActiveCalls.length === 0,
+    "companion under =0: no setActiveTools call (flag off → no-op)",
+  );
   delete process.env.PI_ENSEMBLE_CHILD_CODEMODE;
 }
 
@@ -206,7 +218,10 @@ delete process.env.PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT;
   assert(n >= 1, `strict path registers a session_start handler (got ${n})`);
   await fireSessionStart(mock);
   const calls = mock.setActiveCalls;
-  assert(calls.length === 1, `strict path: exactly one setActiveTools call recorded (got ${calls.length})`);
+  assert(
+    calls.length === 1,
+    `strict path: exactly one setActiveTools call recorded (got ${calls.length})`,
+  );
   const call = calls[0];
   assert(call !== undefined, "strict path setActiveTools call exists");
   assert(
@@ -219,7 +234,10 @@ delete process.env.PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT;
       `strict path: position ${i} is still ${BASE_ROSTER[i]} (got ${call?.[i]})`,
     );
   }
-  assert(call?.[BASE_ROSTER.length] === "codemode", "strict path: position last is `codemode` (appended)");
+  assert(
+    call?.[BASE_ROSTER.length] === "codemode",
+    "strict path: position last is `codemode` (appended)",
+  );
 }
 
 // ============================================================
@@ -230,7 +248,10 @@ delete process.env.PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT;
   const mock = makeMockPi(BASE_ROSTER);
   registerSubagentGuard(mock as unknown as ExtensionAPI);
   await fireSessionStart(mock);
-  assert(mock.setActiveCalls.length === 0, "strict path under =0: no setActiveTools call (flag off → no-op)");
+  assert(
+    mock.setActiveCalls.length === 0,
+    "strict path under =0: no setActiveTools call (flag off → no-op)",
+  );
   delete process.env.PI_ENSEMBLE_CHILD_CODEMODE;
 }
 
@@ -263,7 +284,10 @@ delete process.env.PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT;
     threw = true;
   }
   assert(!threw, "defensive: a throwing getActiveTools does not propagate out of session_start");
-  assert(mock.setActiveCalls.length === 0, "defensive: no setActiveTools call recorded when getActiveTools threw");
+  assert(
+    mock.setActiveCalls.length === 0,
+    "defensive: no setActiveTools call recorded when getActiveTools threw",
+  );
 }
 
 // ============================================================
@@ -321,14 +345,16 @@ delete process.env.PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT;
     "canary: spawn-support.ts calls childCodemodeEnabled() (the single seam, no local copy)",
   );
   assert(
-    !(/function\s+childCodemodeEnabled/.test(spawnSupport) &&
-      /PI_ENSEMBLE_CHILD_CODEMODE\s*[\]=]/.test(spawnSupport)),
+    !(
+      /function\s+childCodemodeEnabled/.test(spawnSupport) &&
+      /PI_ENSEMBLE_CHILD_CODEMODE\s*[\]=]/.test(spawnSupport)
+    ),
     "canary: spawn-support.ts has no local childCodemodeEnabled that reads the flag itself (single seam)",
   );
   // The seam does an APPEND, not a replace — the call is [..active, "codemode"].
   assert(
     /\[\s*\.\.\.\s*active\s*,\s*"codemode"\s*\]/.test(seam),
-    "canary: the seam appends ( [...active, \"codemode\"] ), never replaces",
+    'canary: the seam appends ( [...active, "codemode"] ), never replaces',
   );
   // The seam guards against re-appending when already active.
   assert(

@@ -20,8 +20,8 @@ import os from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runSingleDispatch } from "../src/work-driver-merged.ts";
-import { appendEvent, initialState } from "../src/workflow-state.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
+import { appendEvent, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -56,7 +56,15 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
       tokens: 1234,
       at: Date.now(),
     });
-    return { role: "ops", ok: true, text: "done", toolUses: [], ms: 1, exitCode: 0, transcriptPath: "/tmp/x" };
+    return {
+      role: "ops",
+      ok: true,
+      text: "done",
+      toolUses: [],
+      ms: 1,
+      exitCode: 0,
+      transcriptPath: "/tmp/x",
+    };
   };
   const ctx: DriverContext = {
     host: fakePi([]),
@@ -65,7 +73,15 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
     repoRoot: REPO,
     dispatchFn: fakeDispatch,
   } as unknown as DriverContext;
-  const out = await runSingleDispatch(ctx, state, "branch", "ops", "ops:branch", Date.now(), () => "prompt");
+  const out = await runSingleDispatch(
+    ctx,
+    state,
+    "branch",
+    "ops",
+    "ops:branch",
+    Date.now(),
+    () => "prompt",
+  );
   // #799 — the slow recorder no longer folds into a per-step state ref: the
   // crossing is collected in the driver's pending buffer (keyed by the
   // cycle's primary issue, 799 here) and drained at the step boundary
@@ -74,7 +90,10 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   const { drainSlowEvents } = await import("../src/slow-events.ts");
   const drained = drainSlowEvents(799);
   const slowEvents = [...out.eventLog, ...drained].filter((e) => e.kind === "dispatch-slow");
-  assert(slowEvents.length === 1, "driver dispatch crossing → one dispatch-slow in the log (buffer drain)");
+  assert(
+    slowEvents.length === 1,
+    "driver dispatch crossing → one dispatch-slow in the log (buffer drain)",
+  );
   const ev = slowEvents[0];
   if (ev && ev.kind === "dispatch-slow") {
     assert(ev.step === "branch", "dispatch-slow carries the step");
@@ -84,7 +103,10 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   // The completion event lands in the step's own returned state (the buffer
   // drain at the step boundary lands the slow event in the PERSISTED log).
   const last = out.eventLog[out.eventLog.length - 1];
-  assert(last?.kind === "dispatch-completed", "completion event is the tail of the step's own state");
+  assert(
+    last?.kind === "dispatch-completed",
+    "completion event is the tail of the step's own state",
+  );
 });
 
 // ------------------------------------ 2. runSingleDispatch has no heartbeat loop
@@ -136,7 +158,10 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
       slowEvents[0]?.step === "plan",
     "runPlan: the dispatch-slow recorded during the plan step lands exactly once (pending buffer drain)",
   );
-  assert(out.eventLog.length >= 1, "runPlan: the step completed (its own state still carries its own events)");
+  assert(
+    out.eventLog.length >= 1,
+    "runPlan: the step completed (its own state still carries its own events)",
+  );
 }
 
 // ------------------------------------ 4. adversarial fan-out slow event
@@ -159,7 +184,13 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   const git = (args: string) =>
     execSync(`git -C ${JSON.stringify(fixture)} ${args}`, {
       maxBuffer: 64 * 1024,
-      env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@t",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@t",
+      },
     });
   git("init -q");
   writeFileSync(path.join(fixture, "a.txt"), "v1\n");
@@ -184,7 +215,15 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
       tokens: 1234,
       at: Date.now(),
     });
-    return { role: "adversarial-loop", ok: true, text: "VERDICT: APPROVED\n\nNo issues.", toolUses: [], ms: 1, exitCode: 0, adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }] };
+    return {
+      role: "adversarial-loop",
+      ok: true,
+      text: "VERDICT: APPROVED\n\nNo issues.",
+      toolUses: [],
+      ms: 1,
+      exitCode: 0,
+      adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
+    };
   };
   const ctx: any = {
     host: { sendUserMessage: () => {} },
@@ -221,7 +260,9 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   process.env.PI_ENSEMBLE_HANDOFF_CONSOLIDATE = "0";
   process.env.PI_ENSEMBLE_WORKTREE_TEARDOWN = "0";
   const { runHandoff } = await import("../src/work-driver-handoff.ts");
-  const { clearSlowEventsForTesting, drainSlowEvents, slowRecorder } = await import("../src/slow-events.ts");
+  const { clearSlowEventsForTesting, drainSlowEvents, slowRecorder } = await import(
+    "../src/slow-events.ts"
+  );
   clearSlowEventsForTesting();
   const dir = mkdtempSync(path.join(os.tmpdir(), "pi-ens-799handoff-"));
   const ctx: any = {
@@ -254,14 +295,22 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   });
   const out = await runHandoff(ctx, capped, Date.now());
   const inLog = out.eventLog.filter((e) => e.kind === "dispatch-slow");
-  assert(inLog.length === 1, "handoff drain: a crossing recorded during the handoff leg is present in the state runHandoff returns");
   assert(
-    inLog[0]?.kind === "dispatch-slow" && inLog[0]?.step === "handoff" && inLog[0]?.jobId === "handoff-fake",
+    inLog.length === 1,
+    "handoff drain: a crossing recorded during the handoff leg is present in the state runHandoff returns",
+  );
+  assert(
+    inLog[0]?.kind === "dispatch-slow" &&
+      inLog[0]?.step === "handoff" &&
+      inLog[0]?.jobId === "handoff-fake",
     "handoff drain: the event is the one the ops child recorded (step + job id)",
   );
   // The buffer entry was consumed by the drain — nothing is left to leak
   // into a later cycle of the same issue.
-  assert(drainSlowEvents(799).length === 0, "handoff drain: the pending buffer is empty afterwards (no leftover to leak)");
+  assert(
+    drainSlowEvents(799).length === 0,
+    "handoff drain: the pending buffer is empty afterwards (no leftover to leak)",
+  );
   delete process.env.PI_ENSEMBLE_FORGE;
   delete process.env.PI_ENSEMBLE_HANDOFF_CONSOLIDATE;
   delete process.env.PI_ENSEMBLE_WORKTREE_TEARDOWN;
@@ -273,7 +322,9 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   // final drain did not catch) must not leak into a fresh cycle of the same
   // issue: the driver drops every issue's entry when a cycle begins.
   process.env.PI_ENSEMBLE_FORGE = "none";
-  const { clearSlowEventsForTesting, drainSlowEvents, slowRecorder } = await import("../src/slow-events.ts");
+  const { clearSlowEventsForTesting, drainSlowEvents, slowRecorder } = await import(
+    "../src/slow-events.ts"
+  );
   clearSlowEventsForTesting();
   const stale = slowRecorder(799, "handoff");
   stale({
@@ -286,7 +337,10 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
     tokens: 1234,
     at: 1_000_000,
   });
-  assert(drainSlowEvents(799).length === 1, "cycle start: a stale buffer entry exists before the cycle begins");
+  assert(
+    drainSlowEvents(799).length === 1,
+    "cycle start: a stale buffer entry exists before the cycle begins",
+  );
   // The fake dispatch records nothing; the stale entry's jobId is not in the
   // log after the cycle runs.
   const ctx: DriverContext = {
@@ -294,11 +348,21 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
     issue: 799,
     issues: [799],
     repoRoot: "/tmp",
-    dispatchFn: async () => ({ role: "explore", ok: true, text: "done", toolUses: [], ms: 1, exitCode: 0 }),
+    dispatchFn: async () => ({
+      role: "explore",
+      ok: true,
+      text: "done",
+      toolUses: [],
+      ms: 1,
+      exitCode: 0,
+    }),
   } as unknown as DriverContext;
   await runWorkDriver(ctx);
   const leftover = drainSlowEvents(799);
-  assert(!leftover.some((e) => e.jobId === "stale-job"), "cycle start: the stale entry is gone after the cycle starts (no leak into the new cycle)");
+  assert(
+    !leftover.some((e) => e.jobId === "stale-job"),
+    "cycle start: the stale entry is gone after the cycle starts (no leak into the new cycle)",
+  );
   // Sibling-cycle isolation is unchanged: another issue's entry survives.
   const other = slowRecorder(800, "develop");
   other({

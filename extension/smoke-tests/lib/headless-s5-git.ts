@@ -43,7 +43,10 @@ const KNOWN_GIT_SUBCOMMANDS = new Set([
 
 /** The first two argv words, joined — the form two-word whitelist entries use. */
 function subcommandPair(argv: string[]): string {
-  return [argv[0], argv[1]].filter((w) => w !== undefined && w !== "--").join(" ").trim();
+  return [argv[0], argv[1]]
+    .filter((w) => w !== undefined && w !== "--")
+    .join(" ")
+    .trim();
 }
 
 /** Whether this argv-form `git` call is a read the fixture serves. */

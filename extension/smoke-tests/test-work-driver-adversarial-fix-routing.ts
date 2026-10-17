@@ -19,13 +19,13 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { git, singleState, tmpDir, twoWorkstreamState } from "./lib/adversarial-fix-fixtures.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { nextStep } from "../src/work-driver-context.ts";
 import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
+import { git, singleState, tmpDir, twoWorkstreamState } from "./lib/adversarial-fix-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

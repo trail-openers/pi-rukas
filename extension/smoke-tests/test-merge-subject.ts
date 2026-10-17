@@ -14,10 +14,10 @@
  *      --squash (the subject is absent when the title is not in state).
  */
 
-import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
-import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import type { VerifyExecFn } from "../src/work-driver-git.ts";
+import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
+import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
 import { mechanizedMerge } from "../src/work-driver-merged-mechanized.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import { mkStateMerged } from "./work-driver-merged-fixtures.ts";

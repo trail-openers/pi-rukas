@@ -22,12 +22,12 @@ import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { waitForLedger } from "./lib/wait-for-ledger.ts";
-import { ledgerFile, setupRepo } from "./lib/review-ledger-test-helpers.ts";
-import { runLensReview } from "../src/lens-review.ts";
 import { writeAdversarialLedgerEntry } from "../src/adversarial-ledger.ts";
+import { runLensReview } from "../src/lens-review.ts";
 import { isFullCommitSha } from "../src/review-head-sha.ts";
 import type { LedgerEntry } from "../src/review-ledger.ts";
+import { ledgerFile, setupRepo } from "./lib/review-ledger-test-helpers.ts";
+import { waitForLedger } from "./lib/wait-for-ledger.ts";
 
 // This file's own assert and exit counter (NOT the one exported by
 // test-review-ledger.ts — its counter lives in the parent module, so a
@@ -69,10 +69,16 @@ try {
   {
     const { repo, branch } = setupRepo();
     try {
-      const expectedSha = execSync("git rev-parse feature/x", { cwd: repo, encoding: "utf8" }).trim();
+      const expectedSha = execSync("git rev-parse feature/x", {
+        cwd: repo,
+        encoding: "utf8",
+      }).trim();
       assert(isFullCommitSha(expectedSha), "the expected SHA is a 40-char OID");
       await runLensReview({ diff: "a", cwd: repo, branch, head: branch });
-      const e = await waitForEntry(ledgerFile(repo), (x) => x.kind === "lens" && x.branch === branch);
+      const e = await waitForEntry(
+        ledgerFile(repo),
+        (x) => x.kind === "lens" && x.branch === branch,
+      );
       assert(e?.headSha === expectedSha, "branch-name head → stored headSha is the resolved SHA");
       assert(isFullCommitSha(e?.headSha ?? ""), "…matches /^[0-9a-f]{40}$/");
     } finally {
@@ -85,7 +91,10 @@ try {
     const { repo, branch } = setupRepo();
     try {
       await runLensReview({ diff: "a", cwd: repo, branch, head: "nonexistent-ref-1039" });
-      const e = await waitForEntry(ledgerFile(repo), (x) => x.kind === "lens" && x.branch === branch);
+      const e = await waitForEntry(
+        ledgerFile(repo),
+        (x) => x.kind === "lens" && x.branch === branch,
+      );
       assert(e !== undefined, "unresolvable head → a lens entry was written");
       assert(e?.headSha === undefined, "unresolvable head → no headSha stored");
     } finally {
@@ -97,7 +106,10 @@ try {
   {
     const { repo, branch } = setupRepo();
     try {
-      const expectedSha = execSync("git rev-parse feature/x", { cwd: repo, encoding: "utf8" }).trim();
+      const expectedSha = execSync("git rev-parse feature/x", {
+        cwd: repo,
+        encoding: "utf8",
+      }).trim();
       writeAdversarialLedgerEntry(
         {
           role: "adversarial",
@@ -110,7 +122,10 @@ try {
         },
         { workCwd: repo, branch, head: branch },
       );
-      const adv = await waitForEntry(ledgerFile(repo), (x) => x.kind === "adversarial" && x.branch === branch);
+      const adv = await waitForEntry(
+        ledgerFile(repo),
+        (x) => x.kind === "adversarial" && x.branch === branch,
+      );
       assert(!!adv, "adversarial writer stored an entry");
       assert(adv?.headSha === expectedSha, "adversarial writer stores the resolved headSha");
       assert(isFullCommitSha(adv?.headSha ?? ""), "adversarial headSha is a 40-char OID");

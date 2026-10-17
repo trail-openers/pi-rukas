@@ -129,7 +129,7 @@ console.log("provenance: the guard defers to the one validator (no drift):");
     isProvenanceShape(shapedButBad) === true &&
       validateProvenance(shapedButBad).ok === false &&
       isCacheEntry(withProv(shapedButBad)) === false,
-      "the guard follows validateProvenance where isProvenanceShape would have accepted (a shaped line carrying a terminator)",
+    "the guard follows validateProvenance where isProvenanceShape would have accepted (a shaped line carrying a terminator)",
   );
 }
 
@@ -147,7 +147,13 @@ console.log("provenance: the guard applies the FULL value rules, not just the sh
     (cp) => `ok${String.fromCodePoint(cp)}## x`,
   );
   const valueCases: [string, unknown][] = [
-    ...terminators.map((line) => [`a terminator in the line (${JSON.stringify(line)})`, { line, marker: {} }] as [string, unknown]),
+    ...terminators.map(
+      (line) =>
+        [`a terminator in the line (${JSON.stringify(line)})`, { line, marker: {} }] as [
+          string,
+          unknown,
+        ],
+    ),
     ["a NUL in the line", { line: "ok\u0000x", marker: {} }],
     ["a DEL in the line", { line: "ok\u007fx", marker: {} }],
     ["an '@' in the line", { line: "filed by @someone", marker: {} }],

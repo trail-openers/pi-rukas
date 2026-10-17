@@ -12,19 +12,19 @@
  * No real Pi spawn happens; all dispatchCore calls are mocked.
  */
 
-import { commandOf } from "./lib/argv-shell.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { readState } from "../src/workflow-state.ts";
+import { commandOf } from "./lib/argv-shell.ts";
 
 import {
   makeFakePi,
-  mockIssueBodyOk,
-  mkResult,
   mkDispatchFn,
+  mkResult,
+  mockIssueBodyOk,
   setupTestRepo,
 } from "./test-mechanized-commit-stubs.ts";
 

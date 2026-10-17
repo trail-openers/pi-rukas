@@ -397,13 +397,9 @@ function assert(cond: boolean, msg: string) {
 //    the installed `kill` explicitly instead.
 // ---------------------------------------------------------------------------
 {
-  const batchSource = await Bun.file(
-    new URL("../src/async-jobs-batch.ts", import.meta.url),
-  ).text();
+  const batchSource = await Bun.file(new URL("../src/async-jobs-batch.ts", import.meta.url)).text();
   assert(
-    /if \(!childHandles\.has\(jobId\)\) \{\s*childHandles\.set\(jobId, \{/.test(
-      batchSource,
-    ),
+    /if \(!childHandles\.has\(jobId\)\) \{\s*childHandles\.set\(jobId, \{/.test(batchSource),
     "9a: the member's handle registration refuses to overwrite an existing entry",
   );
   // The companion pin: `onStdin` still writes unconditionally, because a spawned

@@ -47,7 +47,18 @@ try {
   const dir = await readHeadLines(repo, sha, "src");
   assert(dir.kind === "invalid", "a directory is invalid, never read as lines");
 
-  for (const p of ["", ".", "/etc/passwd", "src/", "../x", "-x", "a\0b", "./src/a.ts", "src//a.ts", "src/./a.ts"]) {
+  for (const p of [
+    "",
+    ".",
+    "/etc/passwd",
+    "src/",
+    "../x",
+    "-x",
+    "a\0b",
+    "./src/a.ts",
+    "src//a.ts",
+    "src/./a.ts",
+  ]) {
     const out = await readHeadLines(repo, sha, p);
     assert(out.kind === "invalid", `path ${JSON.stringify(p)} is invalid`);
   }

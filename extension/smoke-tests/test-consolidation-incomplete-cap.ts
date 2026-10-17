@@ -15,7 +15,7 @@
  */
 
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
-import { initialState, appendEvent } from "../src/workflow-state.ts";
+import { appendEvent, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

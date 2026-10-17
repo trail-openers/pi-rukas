@@ -16,7 +16,7 @@
  * matches.
  */
 
-import { STOP_ALL_KEY, LIST_SHORTCUT } from "../src/agent-list-keys.ts";
+import { LIST_SHORTCUT, STOP_ALL_KEY } from "../src/agent-list-keys.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -46,7 +46,9 @@ function assert(cond: boolean, msg: string) {
   // pi-coding-agent's app-level keybindings (app.* ids). The module is not
   // re-exported from the package root, so we import it via a relative path
   // from the installed package's dist directory.
-  const { KEYBINDINGS: APP_KB } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js");
+  const { KEYBINDINGS: APP_KB } = await import(
+    "../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js"
+  );
   const kb = getKeybindings();
   const tui = kb.getResolvedBindings() as Record<string, string | string[] | undefined>;
   const app = APP_KB as Record<string, { defaultKeys: string | string[] }>;

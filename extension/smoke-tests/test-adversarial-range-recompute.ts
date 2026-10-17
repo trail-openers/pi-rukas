@@ -20,11 +20,11 @@
  * through the real `computeRangeDiff` (execFile `git diff <base>...<head>`).
  */
 
+import { mock } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { mock } from "bun:test";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

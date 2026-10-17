@@ -89,7 +89,10 @@ const mkDirtyState = (dirty: boolean | undefined) => {
   assert(/git (?:-C \S+ )?apply/.test(msg), "dirty=true: chat has 'git apply'");
   assert(md.includes("add -A"), "dirty=true: markdown has 'add -A'");
   const explanation = explainCap("commit-pr-incomplete-consolidation", s);
-  assert(explanation.includes("uncommitted on disk"), "dirty=true: explainCap has 'uncommitted on disk'");
+  assert(
+    explanation.includes("uncommitted on disk"),
+    "dirty=true: explainCap has 'uncommitted on disk'",
+  );
 }
 
 // Legacy (no dirty flag): treated as dirty (old behaviour preserved).
@@ -98,7 +101,10 @@ const mkDirtyState = (dirty: boolean | undefined) => {
   const msg = renderHandoffUserMessage(s, "/repo/proj", "/repo/proj/tmp/issue-577");
   assert(msg.includes("add -A"), "legacy: chat has 'add -A'");
   const explanation = explainCap("commit-pr-incomplete-consolidation", s);
-  assert(explanation.includes("uncommitted on disk"), "legacy: explainCap has 'uncommitted on disk'");
+  assert(
+    explanation.includes("uncommitted on disk"),
+    "legacy: explainCap has 'uncommitted on disk'",
+  );
 }
 
 // Legacy (no dirty flag): the markdown surface's header must claim the work
@@ -109,10 +115,15 @@ const mkDirtyState = (dirty: boolean | undefined) => {
   const s = mkDirtyState(undefined);
   const md = renderHandoffMarkdown(s, "/repo/proj");
   assert(
-    md.includes("# 1. Inspect each missing workstream's worktree — the developer's work is still there uncommitted:"),
+    md.includes(
+      "# 1. Inspect each missing workstream's worktree — the developer's work is still there uncommitted:",
+    ),
     "legacy: markdown header keeps the 'still there uncommitted' wording",
   );
-  assert(!md.includes("nothing uncommitted — the work is committed there"), "legacy: markdown header does not claim the work is committed");
+  assert(
+    !md.includes("nothing uncommitted — the work is committed there"),
+    "legacy: markdown header does not claim the work is committed",
+  );
 }
 
 console.log(`\nexit ${exit}`);
