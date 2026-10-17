@@ -249,6 +249,17 @@ export async function decide(
     // one judgement, not two. The message still goes into `notes`, because
     // "oversized" and "a getter threw while redacting" are different faults and
     // the record is the only place either can be told apart later (#1393).
+    //
+    // A THROW ABSTAINS — it is never patched over with the caller's state. The
+    // catch used to write `bounded = bounded ?? { state: req.state, count: 0 }`,
+    // and on a throw `bounded` is unassigned, so the fallback WAS the raw,
+    // UNREDACTED caller object: `bounded.state` then fed `BackendInput.state` and
+    // the record claimed `redactions: 0` over text that had never met a redactor.
+    // Nothing ships today only because the same throw leaves `serialised`
+    // undefined and the guard below abstains — a safety that lives one `if` away.
+    // So there is no fallback at all: a throw leaves `bounded` undefined, which is
+    // the SAME value the `serialised === undefined` guard already abstains on, and
+    // `req.state` is never copied into anything the backend can reach (#1393).
     let bounded: { state: unknown; count: number } | undefined;
     let serialised: string | undefined;
     try {
@@ -257,19 +268,24 @@ export async function decide(
       // JSON round-trip so the hash, the model and the log all see the same text.
       serialised = raw === undefined ? undefined : serialise(JSON.parse(raw));
     } catch (err) {
-      bounded = bounded ?? { state: req.state, count: 0 };
+      // Both stay undefined: this is exactly the shape "the state is not JSON"
+      // already has, and the guard that reads them is the only consumer.
+      bounded = undefined;
       serialised = undefined;
-      notes.push(
-        `state could not be bounded or serialised: ${(err as Error)?.message ?? String(err)}`,
-      );
+      notes.push(`state could not be bounded: ${(err as Error)?.message ?? String(err)}`);
     }
-    stateRedactions = bounded.count;
+    // `bounded` is undefined precisely when the pass above threw, and a pass that
+    // threw redacted nothing — so the record's count is 0 and `stateText` is "".
+    stateRedactions = bounded?.count ?? 0;
     stateText = serialised ?? "";
     const estTokens = Math.ceil((stateText.length + req.question.length) / 4);
     let model: (BackendResult & { ok: true }) | undefined;
     let used: Attempt | undefined;
     if (mode !== "off") {
-      if (serialised === undefined) {
+      // One condition, both faults: an unserialisable state and a state that could
+      // not be bounded abstain identically, and `bounded.state` is only ever read
+      // when the pass produced it.
+      if (serialised === undefined || bounded === undefined) {
         notes.push("state is not serialisable as JSON; abstained");
       } else if (estTokens > cfg.tokenBudget) {
         notes.push(
