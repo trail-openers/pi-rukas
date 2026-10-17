@@ -27,7 +27,8 @@
  *   (c) EVOLUTION. A newly discovered bypass spelling is closed by REMOVING AN
  *       ALLOWANCE or ADDING A REFUSAL — never by adding a command scanner. This file
  *       has exactly one parser (`normalise`), one matcher (`namesProtected`) and one
- *       dispatch (`scanCommand`).
+ *       dispatch (`scanCommand`); the parsing helpers themselves live in
+ *       review-accept-command.ts and this module composes them with the arms.
  *
  * ── THE DECISION, in order ──────────────────────────────────────────────────────
  *

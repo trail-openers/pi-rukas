@@ -62,16 +62,34 @@ export function baseName(token: string): string {
  * spelling takes the PREFIX: a name that merely STARTS with a stem is refused, which is
  * what catches `review-findings.jsonx` (a `.json` sibling carrying one more byte) and,
  * through the `?*[]:,;` strip above, the glob and punctuation spellings of the data file.
+ *
+ * TWO erasures are asked of every name, because both happen before the program ever sees
+ * an argument. QUOTES: `cat 'rev''iew-findings.json'` is ONE word that the shell
+ * concatenates into the exact store name, and at this level a balanced quoted span is
+ * indistinguishable from a concatenation — so the word is matched twice, once as written
+ * and once with ALL quote characters removed, which is the text the shell passes. CASE:
+ * the candidate is lowercased HERE, so every caller is case-insensitive rather than one
+ * caller remembering to do it. Both erasures point the same way (clause (b)'s accepted
+ * cost), and `review-accept-guard.ts` — a module BESIDE the store — is still admitted,
+ * because a `.ts` name is stripped and compared for EQUALITY.
  */
 export function isProtectedToken(token: string): boolean {
-  // The quote characters are stripped before the name is compared: `cat 'review-findings
-  // .json'` hands the tool the SAME name as the bare spelling, so a quote may not hide one.
-  const base = baseName(token)
-    .replace(/^['"]+|['"]+$/g, "")
-    .replace(/[?*\[\]:,;]+$/, "");
-  if (PROTECTED_BASENAME.test(base)) return true;
-  if (/\.tsx?$/.test(base)) return PROTECTED_STEMS.includes(base.replace(/\.tsx?$/, ""));
-  return PROTECTED_STEMS.some((stem) => base.startsWith(stem));
+  const matches = (base: string): boolean => {
+    if (PROTECTED_BASENAME.test(base)) return true;
+    if (/\.tsx?$/.test(base)) return PROTECTED_STEMS.includes(base.replace(/\.tsx?$/, ""));
+    return PROTECTED_STEMS.some((stem) => base.startsWith(stem));
+  };
+  // The word as the shell hands it over: every quote character gone (a `'a''b'`
+  // concatenation is one word, not prose), then the trailing glob / punctuation bytes,
+  // then the case a case-insensitive filesystem does not distinguish.
+  return [token, baseName(token).replace(/["']/g, "")].some((word) =>
+    matches(
+      baseName(word)
+        .replace(/^['"]+|['"]+$/g, "")
+        .replace(/[?*\[\]:,;]+$/, "")
+        .toLowerCase(),
+    ),
+  );
 }
 
 /**

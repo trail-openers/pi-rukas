@@ -26,6 +26,9 @@ function assert(cond: boolean, msg: string) {
 /** Words exactly as an arm receives them: lowercased segment split on spaces. */
 const words = (s: string): string[] => s.toLowerCase().split(" ");
 
+const STORE = "review-findings-store";
+const Q = String.fromCharCode(39);
+
 /**
  * A1 refuses every repo-location selector, every operand that NAMES the store, and every
  * empty quoted word. Each spelling below is the only term in the arm that can make its
@@ -72,7 +75,18 @@ for (const c of ["gh pr view 1105", "glab mr diff 3"])
  * A7 (`git commit -m "<prose>"`) carries the same write-flag / repo-location ban the git
  * read arms carry: a `-c` config can name a hook or an alias the commit then runs.
  */
-for (const c of ['git commit -m "x" -c y.z=1', 'git commit -m "x" --git-dir=/x'])
+for (const c of [
+  'git commit -m "x" -c y.z=1',
+  'git commit -m "x" --git-dir=/x',
+  // A template or cleanup operand names a FILE the commit reads, with or without `=value`.
+  // Each needs the QUOTED message too: without one the arm refuses at the missing-`-m`
+  // test, so it proves nothing about the flag ban.
+  'git commit -m "x" --template=<review-findings-store>',
+  `git commit -m "x" --template=${Q}/tmp/${STORE}${Q}`,
+  `git commit -m "x" -t /tmp/${STORE}`,
+  'git commit -m "x" -t /tmp/t',
+  'git commit -m "x" --cleanup=verbatim',
+])
   assert(!armCommit(words(c)), `arm A7 refuses the write-capable flag — ${c}`);
 for (const c of ['git commit -m "plain message"', 'git commit -m "fix: guard"'])
   assert(armCommit(words(c)), `arm A7 still admits the plain commit — ${c}`);
@@ -138,6 +152,28 @@ for (const t of ["index.ts", "review-accept-guard.ts", "notes.md", "/repo/src/a.
 }
 
 /**
+ * The matcher is asked of the word AS THE SHELL PASSES IT: `'rev''iew-findings.json'` is
+ * one word the shell concatenates into the exact store name, and the matcher lowercases
+ * the candidate itself. The COMMAND-level and edit-path counterparts (which the guard's
+ * own lowercase of the whole command would mask) live in the hardened suite.
+ */
+for (const t of [
+  `${Q}rev${Q}${Q}iew-findings.json${Q}`,
+  `"rev""iew-findings.json"`,
+  `"REVIEW-FINDINGS.JSON"`,
+  "Review-Findings.json",
+  "REVIEW-FINDINGS.JSON",
+  `${Q}rev${Q}${Q}iew-findings-store${Q}`,
+])
+  assert(isProtectedToken(t), `matcher: quotes-as-concatenation and case refuse — ${t}`);
+for (const t of ["review-accept-guard.ts", "REVIEW-ACCEPT-GUARD.TS", "index.ts"]) {
+  assert(
+    !isProtectedToken(t.split("/").pop() ?? t),
+    `matcher: a module beside the store stays unprotected in any case — ${t}`,
+  );
+}
+
+/**
  * The edit-path checks (#1125 item 4): the target is normalised and asked SEGMENT-wise, so
  * a trailing `/`, a `/.` or a `../..` walk out of the store's directory cannot present the
  * store as some other file; and a `path` property that THROWS is refused, not left to
@@ -165,5 +201,29 @@ assert(
   }) !== undefined,
   "edit: a throwing path getter is refused and does not throw (#1125)",
 );
+
+/**
+ * Case is erased INSIDE the matcher. The `write` tool's `path` is NOT lowercased by the
+ * guard the way a bash command is, so a mixed-case target is the case that fails without
+ * this: it is refused. The guard module itself remains editable however it is cased.
+ */
+for (const p of [
+  "/repo/.git/Review-Findings.json",
+  "/repo/.git/REVIEW-FINDINGS.JSON",
+  "/repo/.git/Review-Findings-Store.tmp",
+])
+  assert(
+    editsFindingsFile("write", { path: p }) !== undefined,
+    `edit: a protected name in any case is refused — ${p}`,
+  );
+for (const p of [
+  "/repo/extension/src/review-accept-guard.ts",
+  "/repo/extension/src/Review-Accept-Guard.ts",
+]) {
+  assert(
+    editsFindingsFile("write", { path: p }) === undefined,
+    `edit: the guard module stays editable in any case — ${p}`,
+  );
+}
 
 process.exit(exit);
