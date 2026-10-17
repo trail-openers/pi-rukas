@@ -1,13 +1,14 @@
 /**
  * headless/inputs — every input this build honours, for the `--capabilities`
  * answer (#1326): each `PI_ENSEMBLE_*` environment variable read under
- * `extension/src/`, and each `.pi/*` file a cycle reads from the project.
+ * `extension/src/` or by the sandbox wrapper (`bin/`, the image entrypoint),
+ * and each `.pi/*` file a cycle reads from the project.
  *
  * A host compares the names it sets against this list and fails closed on a
  * name the build does not list. The list is data, not a parse of the source,
  * so it costs nothing at `--capabilities` time; `test-headless-inputs.ts`
- * scans `src/` for env reads and fails when one is missing here (or when an
- * entry here is no longer read anywhere).
+ * scans `src/` and the wrapper for env reads and fails when one is missing
+ * here (or when an entry here is no longer read anywhere).
  *
  * Value conventions a host can rely on:
  *
@@ -19,14 +20,27 @@
  *   - `enum`        — one of `values` (case-insensitive where the reader folds case).
  *   - `default: null` — unset by default; the behaviour without it is the
  *                     documented fallback (docs/configuration.md).
- *   - a name containing `<ROLE>` or `<SEAM>` is a family: `<ROLE>` is a role
- *     name and `<SEAM>` a decision-seam id, upper-cased with `-` → `_`.
+ *   - a name containing `<ROLE>`, `<SEAM>` or `<LENS>` is a family: `<ROLE>`
+ *     is a role name, `<SEAM>` a decision-seam id and `<LENS>` a code-review
+ *     lens name (`SECURITY`, `ERROR_HANDLING`), upper-cased with `-` → `_`.
+ *     `members` lists the ids the build reads (#1369), derived from the role
+ *     list, the seam registry and the bundled lens roster, so it cannot
+ *     drift; any other member is ignored. A seam that takes no env config
+ *     (grandfathered) is not a member.
  *
  * `scope` says who sets it: `cycle` (changes what a /work cycle does),
  * `sandbox` (set by the sandbox wrapper), `interactive` (the Pi UI only),
- * `install` (path overrides for an installation), `internal` (pi-rukas sets
- * it on its own children; a host must not), `test` (smoke tests only).
+ * `install` (path overrides for an installation), `wrapper` (read only by
+ * the `bin/pi-rukas` sandbox wrapper on the host, before the container
+ * starts; the extension never reads it, so it has no effect on a cycle run
+ * without the wrapper), `internal` (pi-rukas sets it on its own children or
+ * the wrapper on its container; a host must not), `test` (smoke tests only).
  */
+
+import { SEAMS, isGrandfathered } from "../decision-seam-registry.ts";
+import { LENS_ROSTER } from "../lens-roster.ts";
+import { SHUTDOWN_SETTLE_MS } from "../pending-jobs-signal.ts";
+import { SUBAGENT_ROLE_NAMES } from "../roles.ts";
 
 export type InputType =
   | "boolean"
@@ -38,7 +52,14 @@ export type InputType =
   | "list"
   | "enum";
 
-export type InputScope = "cycle" | "sandbox" | "interactive" | "install" | "internal" | "test";
+export type InputScope =
+  | "cycle"
+  | "sandbox"
+  | "interactive"
+  | "install"
+  | "wrapper"
+  | "internal"
+  | "test";
 
 export interface HostInput {
   name: string;
@@ -47,6 +68,8 @@ export interface HostInput {
   scope: InputScope;
   /** `enum` only: the accepted values. */
   values?: readonly string[];
+  /** A family only: the ids its placeholder takes (#1369). */
+  members?: readonly string[];
   /** `list` only: the separator between values. */
   separator?: string;
   /** `number` / `integer`: the unit, when not obvious from the name. */
@@ -55,7 +78,9 @@ export interface HostInput {
   manifestVersion?: number;
 }
 
-type Opt = Partial<Pick<HostInput, "values" | "separator" | "unit" | "manifestVersion">>;
+type Opt = Partial<
+  Pick<HostInput, "values" | "members" | "separator" | "unit" | "manifestVersion">
+>;
 const E = "PI_ENSEMBLE_";
 
 function input(
@@ -79,6 +104,22 @@ const dir = (name: string, dflt: string | null, scope: InputScope = "install") =
   input(name, "path", dflt, scope);
 const list = (name: string, separator: string, dflt: string | null, scope?: InputScope) =>
   input(name, "list", dflt, scope, { separator });
+const family = (entry: HostInput, members: readonly string[]): HostInput => ({
+  ...entry,
+  members,
+});
+
+/** A role, seam or lens name as it appears in an env name. */
+const envId = (id: string) => id.toUpperCase().replaceAll("-", "_");
+/** `<ROLE>`: every spawned role; the parent session takes no per-role env. */
+export const ROLE_MEMBERS: readonly string[] = SUBAGENT_ROLE_NAMES.map(envId);
+/** `<SEAM>`: every registered seam that reads its env config. */
+export const SEAM_MEMBERS: readonly string[] = Object.values(SEAMS)
+  .filter((s) => !isGrandfathered(s))
+  .map((s) => envId(s.id))
+  .sort();
+/** `<LENS>`: the bundled lenses (lens-roster.ts), in roster order. */
+export const LENS_MEMBERS: readonly string[] = [...new Set(LENS_ROSTER.map((e) => e.name))];
 
 /** Every honoured `PI_ENSEMBLE_*` environment input, sorted by name. */
 export const HEADLESS_INPUTS: readonly HostInput[] = [
@@ -98,18 +139,23 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("CLAIM_SCAN", true),
   flag("COMMENT_RETENTION", true),
   list("COMMENT_RETENTION_PATHS", ",", "extension/src,extension/smoke-tests,agents-base"),
+  // #1240 — 0 restores the pre-#1240 shape: the consolidated verify always runs,
+  // even when its probe tree is provably the tree the per-worktree verify just
+  // judged. Default ON.
+  flag("CONSOLIDATED_VERIFY_SKIP", true),
   flag("CONVERGE", true),
   flag("CROSS_GROUP_CONFLICTS", true),
   ms("CYCLE_BUDGET_MS", null),
   // An absolute deadline; a value below 1e12 (epoch seconds) is ignored.
   int("CYCLE_DEADLINE", null, "cycle", { unit: "epoch-ms" }),
   flag("DEBUG", false),
-  int("DECISION_BUDGET_<SEAM>", null, "cycle", { unit: "tokens" }),
+  family(int("DECISION_BUDGET_<SEAM>", null, "cycle", { unit: "tokens" }), SEAM_MEMBERS),
   input("DECISION_MODE_<SEAM>", "enum", "shadow", "cycle", {
     values: ["off", "shadow", "enforce"],
+    members: SEAM_MEMBERS,
   }),
   str("DECISION_MODEL", null),
-  ms("DECISION_TIMEOUT_MS_<SEAM>", null),
+  family(ms("DECISION_TIMEOUT_MS_<SEAM>", null), SEAM_MEMBERS),
   flag("DECISIONS", true),
   int("DECK_MAX_ROWS", 20, "interactive"),
   dir("DIR", null),
@@ -131,6 +177,11 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("HANDOFF_POST_RETRY", true),
   ms("HANDOFF_POST_RETRY_BACKOFF_MS", 1_000),
   ms("HANDOFF_TIMEOUT_MS", 480_000),
+  // `name:ip` pairs passed to the container as `--add-host`.
+  list("HOST_ALIASES", ",", "fieldbox:192.0.2.10", "wrapper"),
+  str("IMAGE", "ghcr.io/trail-openers/pi-rukas:latest", "wrapper"),
+  // Host directories bind-mounted read-only; EXTRA_IMAGE_DIRS appends to them.
+  list("IMAGE_DIRS", ":", "~/Downloads:~/Desktop:~/Pictures", "wrapper"),
   ms("INACTIVITY_TIMEOUT_MS", 1_800_000),
   ms("INTEGRATION_VERIFY_TIMEOUT_MS", 900_000),
   flag("INTENT", true),
@@ -138,17 +189,26 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("INVARIANT_MEMORY", true),
   input("ISSUE_IMAGES", "boolean", true, "cycle", { manifestVersion: 1 }),
   flag("LENS_EVIDENCE", true),
+  // Unset or 0: no bound on concurrent lens children per model.
+  int("LENS_MODEL_CONCURRENCY", null),
   int("LENS_ROUND_CAP", 3),
   flag("LENS_ROUND_CAP_MERGE", true),
   flag("LENS_ROUND_CAP_OVERRIDE", false),
   flag("LOOP_DETECTOR", true),
   int("MAX_WORKSTREAMS", 6),
   flag("MERGE_AUTHORITY", true),
-  str("MODEL_<ROLE>", null),
+  family(str("MODEL_<ROLE>", null), ROLE_MEMBERS),
+  family(str("MODEL_LENS_<LENS>", null), LENS_MEMBERS),
   dir("MODELS_CONFIG", "~/.pi/agent/ensemble-models.json"),
+  // The host docker socket and SSH agent are mounted unless these are "1".
+  flag("NO_DOCKER_SOCKET", false, "wrapper"),
+  flag("NO_SSH", false, "wrapper"),
   str("NOTIFY_CMD", null),
   int("PARALLEL_GROUPS", 3),
   flag("PARALLEL_WORK", true),
+  // How long the pending-reports signal defers its "0" at session_shutdown for a
+  // killed PM job's report still in flight; `SHUTDOWN_SETTLE_MS` in the reader.
+  ms("PENDING_SHUTDOWN_MS", SHUTDOWN_SETTLE_MS),
   dir("PERM_SOCKET", null, "internal"),
   dir("PI_BIN", null),
   dir("PI_PROMPTS_DIR", null),
@@ -165,13 +225,16 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("PR_PREFLIGHT", true),
   dir("PROMPTS_DIR", null),
   flag("PROTECTED_PATHS", true),
-  str("PROVIDER_<ROLE>", null),
+  family(str("PROVIDER_<ROLE>", null), ROLE_MEMBERS),
+  family(str("PROVIDER_LENS_<LENS>", null), LENS_MEMBERS),
   flag("QUEUE_HALT_ON_FAILURE", false),
   flag("QUIET_LIFECYCLE", false, "interactive"),
   flag("QUIET_STATUS", false, "interactive"),
   input("RATE_LIMIT_BURST_MAX_S", "number", 300, "cycle", { unit: "s" }),
   flag("RESEARCH_FALLBACK", true, "interactive"),
   flag("RESUME", true),
+  // The 90-min review-loop budget is enforced at the fix dispatch, not just displayed.
+  flag("REVIEW_ENFORCE", true),
   dir("REVIEW_LEDGER_FILE", null, "cycle"),
   input("REVIEW_THRESHOLD", "enum", null, "cycle", {
     values: ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
@@ -204,7 +267,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("SYMBOL_MERGE_RETRY", true),
   int("TEST_DELETE_TOLERANCE", 0),
   // Unset: no budget, except code-review-specialist (8,000,000).
-  int("TOKEN_BUDGET_<ROLE>", null, "cycle", { unit: "tokens" }),
+  family(int("TOKEN_BUDGET_<ROLE>", null, "cycle", { unit: "tokens" }), ROLE_MEMBERS),
   ms("TOOL_INACTIVITY_TIMEOUT_MS", 3_600_000),
   input("TRANSCRIPT_RETENTION_DAYS", "number", 5, "cycle", { unit: "days" }),
   flag("TRANSIENT_RETRY", true),
@@ -219,6 +282,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("VERIFY_FULL", true),
   ms("VERIFY_FULL_TIMEOUT_MS", 1_800_000),
   ms("VERIFY_TIMEOUT_MS", 600_000),
+  // The wrapper tells the image entrypoint which mounts are named volumes.
+  list("VOLUME_MOUNTS", ":", null, "internal"),
   flag("WIDENING_SCAN", true),
   dir("WORKSPACE_ROOT", "/workspace", "sandbox"),
   flag("WORKTREE_SWEEP", true),

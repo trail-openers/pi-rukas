@@ -12,6 +12,19 @@ import { startJob } from "./async-jobs.ts";
 import { computeRangeDiff } from "./review-diff.ts";
 
 /**
+ * #1360 — the ONE mint of the tool-path provenance marker.
+ *
+ * Kept module-private to this file (the only place the tool boundary lives) so
+ * the claim "a row came from the `adversarial_loop` tool" can be made here and
+ * nowhere else. It is a string rather than `true` because a literal boolean
+ * widens through the untyped raw-args spread — a caller that passed
+ * `toolPath: false` alongside its other args would clear the marker and take
+ * its row off the bindings. Nothing in the runtime produces this string, so no
+ * raw args can forge it, and a test can pin both halves of that (#1360 lens 5).
+ */
+const TOOL_PATH_PROVENANCE = "adversarial-loop-tool" as const;
+
+/**
  * Async adversarial gate: the orchestrator does sequential rounds internally
  * (adversarial → developer fix → re-adversarial, up to 3 rounds). From the PM's
  * POV the whole saga is one async dispatch: a job handle returns immediately,
@@ -28,7 +41,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
       diff: Type.Optional(
         Type.String({
           description:
-            "Current diff to review (git diff output). Optional when base+head are given — then the diff is computed from the ref range; when both are given, this string wins.",
+            "Current diff to review (git diff output). Optional when base+head are given — then the diff is computed from the ref range; when both are given, this string wins. A pasted diff is recorded as a caller-supplied review: it never counts as a passing adversarial review for the merge guard. Prefer base+head.",
         }),
       ),
       context: Type.String({
@@ -68,6 +81,13 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         workCwd?: string;
         reportOnly?: boolean;
       };
+      // Defence in depth behind the post-spread mint below: the schema has no
+      // `toolPath` property, but Pi passes the parsed argument object through
+      // as-is, so a caller CAN put one in its raw args. Stripping it from the
+      // spread means only THIS statement can ever set the field.
+      const { toolPath: _forged, ...callerParams } = params as typeof params & {
+        toolPath?: unknown;
+      };
       // #1154 — the verdict policy is set after the raw spread, so a caller
       // cannot spoof it: reportOnly picks "terminal"; anything else gets none.
       const policy =
@@ -84,10 +104,20 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         work: (signal, hooks) =>
           runAdversarialLoop(
             {
-              ...params,
+              ...callerParams,
               pi,
               fixFence: { callerCwd: process.cwd() },
               ...policy,
+              // #1161 - set AFTER the raw spread so a caller cannot spoof it.
+              callerSuppliedDiff: Boolean(params.diff),
+              // #1360 - set AFTER the raw spread (and after the raw `toolPath`
+              // was stripped above) so a caller cannot set or clear it: this is
+              // the provenance marker that puts the row through the
+              // range/head/tree bindings AND switches on the per-round capture.
+              // The /work driver calls runAdversarialLoop directly, never sets
+              // it, runs no capture, and keeps its existing identity. Provenance
+              // is never inferred from the presence of a `diff` string.
+              toolPath: TOOL_PATH_PROVENANCE,
             },
             signal,
             hooks.jobId,

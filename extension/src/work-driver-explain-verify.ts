@@ -17,6 +17,7 @@
  */
 
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
+import { BUILD_RESIDUE_LABEL, isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import { HOST_EXHAUSTION_LABEL, isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
 import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
@@ -179,6 +180,10 @@ export function explainVerifyFailed(cap: Cap, state: WorkState): string {
   // Neither a check the host could not fork nor a gate already red at the
   // base judged the change: "inspect the worktree(s)" would be wrong advice.
   if (failures.some(isHostExhaustionFailure)) return hostExhaustionText(step, findings, suffix);
+  // #1421 — the gate declined to run because the root held build output, not
+  // because anything about the change failed. The generic advice below would
+  // send the operator to a diff that was never the problem.
+  if (failures.some(isBuildResidueFailure)) return buildResidueText(step, findings, suffix);
   const advice = failures.some((f) => f.startsWith(BASELINE_RED_MARKER))
     ? "The verify command already fails at the cycle's base commit — fix the gate there (or the host it runs on) before inspecting the worktree(s), then re-run."
     : "Inspect the worktree(s), fix or re-dispatch, and re-run.";
@@ -188,6 +193,15 @@ export function explainVerifyFailed(cap: Cap, state: WorkState): string {
 
 function hostExhaustionText(step: string, findings: string, suffix: string): string {
   return `the driver's outcome-verification gate could not run on the ${step} step — the system refused to start a process (fork failed / EAGAIN):${findings}${suffix}\nThe entries marked ${HOST_EXHAUSTION_LABEL} are environment failures, not defects in the change: those checks never executed. They name the pid count and limit where the driver runs — in a container that is the container's own pid limit, not a host ulimit. Check the ceiling named in the evidence (container pid limit, pid_max, RLIMIT_NPROC, memory), clear it if it was hit, then re-run the cycle.`;
+}
+
+/**
+ * #1421 — the gate declined to mutate a root holding untracked, git-ignored
+ * build output. Nothing judged the change, so the recovery is about the tree
+ * and the project's build, not the diff.
+ */
+function buildResidueText(step: string, findings: string, suffix: string): string {
+  return `the driver's outcome-verification gate was declined on the ${step} step — the repo root held build output it would have had to mutate:${findings}${suffix}\nThe entries marked ${BUILD_RESIDUE_LABEL} are environment refusals, not defects in the change: the named paths are untracked and git-ignored, so they are a tool's output, not source. The gate refuses to consolidate while ANY dirt sits in the root, and it cannot tell a tool's output from content, so it stopped. Do NOT inspect the diff first — it was never judged. Keep build output out of the checkout the gate runs in (point it at a directory outside the tree, e.g. CARGO_TARGET_DIR, or gitignore it where it lands), clear what is already there, then re-run the cycle`;
 }
 
 /** The failures recorded for `step`, else the cap-hit's own evidence. */

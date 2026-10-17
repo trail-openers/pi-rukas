@@ -12,8 +12,9 @@
 
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import type { Finding } from "./lens-review-types.ts";
-import type { ResolvedNotice } from "./review-findings-file.ts";
-import type { Decision, StoredFinding } from "./review-findings-store.ts";
+import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
+import type { StoredFinding } from "./review-findings-file.ts";
+import type { Decision } from "./review-findings-store.ts";
 
 /** At most this many prior rows reach a lens prompt. */
 export const PRIOR_FINDINGS_MAX_ITEMS = 15;
@@ -96,6 +97,25 @@ export function suppressedSection(
 }
 
 /**
+ * A finding's severity rendered for a line that stays one line: the value, or
+ * `UNKNOWN` when it is not one of the four the schema allows.
+ *
+ * A stored row's severity is file content, not a checked field: `rowProblem`
+ * rejects a bad one, but a `Finding` that reaches a renderer straight from a
+ * lens — or from a truncated `lens-issues-found` blob — has not been through it.
+ * A bare `${severity}` would then print `undefined` beside the finding, which
+ * reads like a formatting bug and not like "this row carries no severity".
+ */
+export function severityLabel(severity: string | undefined): string {
+  return severity === "CRITICAL" ||
+    severity === "HIGH" ||
+    severity === "MEDIUM" ||
+    severity === "LOW"
+    ? severity
+    : "UNKNOWN";
+}
+
+/**
  * The "Resolved since last round" block (#1125): each row this round closed
  * because its cited code is gone, with the reason, so an operator can see a row
  * that closed by hash mismatch. Empty input renders nothing.
@@ -107,6 +127,35 @@ export function resolvedSection(resolved: readonly ResolvedNotice[] | undefined)
     neutraliseEvidence(`Resolved since last round (${resolved.length}):`),
     ...resolved.map((r) =>
       neutraliseEvidence(`- resolved (row ${r.rowId}): ${r.title} — ${r.reason}`),
+    ),
+  ];
+}
+
+/**
+ * The "findings memory set aside" block (#1125 disclosure): each row this round
+ * dropped as malformed, and — the load-bearing case — each operator acceptance
+ * that LAPSED because its cited code changed. Both mean a suppression the
+ * operator believed they had is gone, and a row that silently stops suppressing
+ * reappears as a "new" finding next round with no explanation. Every line names
+ * the row and why, so the operator can re-accept it or fix the row. The row's
+ * title and problem text come from a file an agent could have written, so every
+ * line goes through `neutraliseEvidence`. Empty input renders nothing.
+ */
+export function setAsideSection(setAside: readonly SetAsideNotice[] | undefined): string[] {
+  if (!setAside || setAside.length === 0) return [];
+  return [
+    "",
+    neutraliseEvidence(
+      `Findings memory set aside (${setAside.length}) — these rows no longer suppress anything:`,
+    ),
+    ...setAside.map((s) =>
+      // `severity` is already narrowed to the schema's four or `?` by
+      // `describeSetAside`, and `problem` is this module's own vocabulary, so
+      // the whole line — the row's untrusted path and title included — goes
+      // through the one neutraliser rather than field by field.
+      neutraliseEvidence(
+        `- ${s.wasAcceptance ? "acceptance lapsed" : "malformed row"} (row ${s.rowId ?? "?"}): [${s.severity}] ${s.path} — ${s.title}${s.problem ? ` (${s.problem})` : ""}`,
+      ),
     ),
   ];
 }

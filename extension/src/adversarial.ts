@@ -3,24 +3,29 @@ import { classifyDispatchOutcome } from "./adversarial-classify.ts";
 import {
   type FenceRecord,
   type FencedRound,
-  type FixFence,
   createFixFence,
   withFixViolations,
 } from "./adversarial-fix-guard.ts";
-import { buildLedgerNote } from "./adversarial-ledger-note.ts";
-import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
-import { makeRunPhase } from "./adversarial-phase.ts";
 import {
-  type SiblingScope,
-  buildAdversarialPrompt,
-  buildFixPrompt,
-} from "./adversarial-prompts.ts";
+  type BindingState,
+  captureRound,
+  makeLedgerWrite,
+  roundHeadRef,
+} from "./adversarial-ledger-capture.ts";
+import { buildLedgerNote } from "./adversarial-ledger-note.ts";
+import type { AdversarialLoopParams } from "./adversarial-loop-params.ts";
+import { isToolPathProvenance } from "./adversarial-loop-params.ts";
+import { makeRunPhase } from "./adversarial-phase.ts";
+import { policyInfraFailureText, reportPolicyError } from "./adversarial-policy.ts";
+import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
 import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
 import {
   decideLoopAction,
   fixRefusedResult,
   fixThrewResult,
   parseVerdict,
+  passedRoundText,
+  rejectedLoopText,
   summariseFindings,
   synthesizeResult,
   toRoundRecords,
@@ -30,42 +35,11 @@ import { markOrchestrator } from "./async-jobs.ts";
 import { formatReportLine, renderCommentEvidence, roundComments } from "./comment-evidence.ts";
 import type { LostCommentResult } from "./comment-retention.ts";
 import { type RangeDiff, computeRangeDiff } from "./review-diff.ts";
-import type { OnSlowCallback } from "./slow-notice.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { AdversarialVerdict, DispatchResult } from "./types.ts";
 import type { ExecFn } from "./worktree.ts";
 export const MAX_ROUNDS = 3;
-
-/**
- * Whether the loop runs as one reviewer dispatch (#1114) and, if so, how its
- * verdict is judged (#1154). Discriminated: `reportVerdict` is REQUIRED whenever
- * `reportOnly` is true and must be absent otherwise, so no reportOnly caller
- * gets a verdict policy by omission.
- */
-type ReportPolicy =
-  | {
-      /**
-       * #1114 — exactly ONE reviewer dispatch: no developer dispatch, no fix
-       * round. The result carries the parsed verdict in `adversarialRounds` and
-       * its findings in `text`; the driver routes from the round record. The
-       * review-ledger entry is still written (#912) with `loopOutcome` set to
-       * `approved` on a pass and `rejected` otherwise. An unparsed verdict is an
-       * infrastructure outcome, never a verdict.
-       */
-      reportOnly: true;
-      /**
-       * #1154 — how the reportOnly verdict is judged. "terminal": the review is
-       * the loop's only round, so it is judged by the terminal-round rule
-       * (ISSUES_FOUND passes; only CRITICAL_ISSUES_FOUND or an unreadable reply
-       * fails) — the tool path. "routed": judged as round N of 3, so ISSUES_FOUND
-       * routes to a fix pass — the /work driver's per-round reviews. Set by the
-       * adversarial_loop tool (terminal) and by the /work fan-out (routed);
-       * required whenever reportOnly is true.
-       */
-      reportVerdict: "terminal" | "routed";
-    }
-  | { reportOnly?: false | undefined; reportVerdict?: undefined };
 
 /**
  * Run the 3-round adversarial loop directly. Exported so the work-driver can
@@ -78,56 +52,7 @@ type ReportPolicy =
  * state for dispatch_peek / dispatch_steer to resolve into the running child.
  */
 export async function runAdversarialLoop(
-  params: {
-    /** Optional when `base` + `head` are present (computed from the ref
-     * range). When both `diff` and base/head are given, the string wins. */
-    diff?: string;
-    /** #1040 — git timeout for the comment-loss check (the driver passes verifyTimeoutMs()). */
-    commentTimeoutMs?: number;
-    /** #1040 — injected git seam for the comment-loss check (the driver passes its verify exec). */
-    commentExecFn?: ExecFn;
-    /** #859 — the base ref the tool computes the diff from (with head). */
-    base?: string;
-    /** #859 — the head ref the tool computes the diff from (with base). */
-    head?: string;
-    context: string;
-    workCwd?: string;
-    /** Recompute the diff before each review. Without it rounds 2+ see pre-fix material. */
-    getDiff?: () => Promise<string>;
-    /** What the fix pass before this review changed (fix-delta.ts); first round only. */
-    fixDelta?: string;
-    /** The issue this diff is meant to satisfy (#278). Optional: older state files have none. */
-    issueBody?: string;
-    /** The gate the driver already ran green on this tree; the reviewer is told not to re-run it. */
-    gateCmd?: string;
-    /** #799 — the slow-run recorder for this loop's inner children (each
-     * threshold crossing of a review / fix round appends dispatch-slow), and
-     * the parent pi for their slow-run watch (the PM notice half). */
-    onSlow?: OnSlowCallback;
-    pi?: ExtensionAPI;
-    processGroup?: boolean;
-    /** #912 — caller-supplied branch for the review-ledger write (the driver
-     * worktrees are detached, so `git rev-parse --abbrev-ref HEAD` cannot
-     * recover it). When absent the writer recovers the branch from `HEAD`
-     * and skips (traces) on a detached head. */
-    branch?: string;
-    /** #1114 — the round number a reportOnly review carries (prompt + record). Default 1. */
-    reportRound?: number;
-    /**
-     * #1137 — the workstream scope the review is judged within. Present only
-     * on the per-workstream driver path (N>1 fan-out); absent on N=1 and on
-     * the `adversarial_loop` tool path, where the whole issue is the scope
-     * and the prompt is byte-identical to the pre-#1137 one.
-     */
-    scope?: { own?: SiblingScope; siblings: readonly SiblingScope[] };
-    /**
-     * #1104 — the tool path's caller-repo fence. Set ONLY at the tool boundary
-     * (`adversarial-tool.ts`) with the calling process's cwd; the /work driver
-     * leaves it unset, because its caller is the integration checkout it
-     * mutates itself. A fix round needs `workCwd` on every path.
-     */
-    fixFence?: FixFence;
-  } & ReportPolicy,
+  params: AdversarialLoopParams,
   signal: AbortSignal,
   orchestratorJobId: string,
   /** #859 — the ref-range diff computation (injectable for tests). Used when
@@ -167,23 +92,62 @@ export async function runAdversarialLoop(
 
   const fenceRecords: FenceRecord[] = [];
   const fence = createFixFence(params.fixFence, fenceRecords);
-  const ledgerWrite = (raw: DispatchResult): DispatchResult => {
+  // #1360 — the binding captured by the LAST round that read its diff and
+  // dispatched a reviewer: the range SHAs plus the working-tree identity at
+  // that moment. `ledgerWrite` threads it into the writer, which refuses the
+  // row when the tool-path bindings do not hold.
+  const ledgerBinding: BindingState = { captured: { binding: {}, headRef: params.head } };
+  // #1360 — provenance is the branded marker the tool mints; an untyped caller
+  // cannot produce the string, so this narrow IS the provenance check (see
+  // `ToolPathProvenance`). The driver path carries none and runs no capture.
+  const toolPath = isToolPathProvenance(params.toolPath);
+  const ledgerWrite = makeLedgerWrite({
+    state: ledgerBinding,
+    workCwd: params.workCwd,
+    branch: params.branch,
+    // #988 — the branch the note resolved (same shared resolution, same args +
+    // cwd), so the write does not re-resolve.
+    resolvedBranch: branchResolved,
+    callerSuppliedDiff: params.callerSuppliedDiff,
+    // #1360 — provenance is set only at the tool boundary, never inferred.
+    toolPath,
+    baseRef: params.base,
+    // #1360 — one executor for the whole binding: the per-round capture and the
+    // write consult it, so a caller with its own git seam has ONE to give
+    // (same shape as `commentExecFn` for the comment check).
+    execFn: params.commentExecFn,
     // #1104 — fence findings are prefixed BEFORE the write: the durable ledger
     // row must carry the same text the caller sees.
-    const result = withFixViolations(raw, fenceRecords);
-    writeAdversarialLedgerEntry(result, {
-      workCwd: params.workCwd,
-      // #988 — thread the branch the note resolved (same shared resolution,
-      // same args + cwd) so the write does not re-resolve.
-      resolvedBranch: branchResolved,
-      branch: params.branch,
-      head: params.head,
-    });
-    return withLedgerNote(result);
-  };
+    decorate: (raw) => withFixViolations(raw, fenceRecords),
+    note: withLedgerNote,
+  });
+
+  // #1161 — the reportOnly verdict policy is checked and resolved ONCE, at
+  // loop entry. An untyped caller with no recognised policy gets an infra
+  // failure, never a verdict judged as a routed round.
+  const policyError = reportPolicyError(params);
+  if (policyError) {
+    return ledgerWrite(
+      synthesizeResult({
+        ok: false,
+        loopOutcome: "infra-failure",
+        text: policyInfraFailureText(policyError),
+        ms: Date.now() - start,
+        usage,
+        transcriptPath: lastTranscript,
+        model: lastModel,
+      }),
+    );
+  }
+  const reportTerminal = params.reportVerdict === "terminal";
 
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
+  // #1360 — the head the CURRENT round reviews. It starts as the caller's ref
+  // and a fix round that committed changes re-points it at `HEAD`, which is
+  // what `getDiff` then diffs against (the range's head half), so the loop and
+  // the writer never disagree about which commit a round judged.
+  let headRef: string | undefined = params.head;
 
   // #948 / #1040 — the comment check runs ONCE per round, on the diff that round
   // reviews; that single result feeds both the reviewer's prompt and the
@@ -213,6 +177,22 @@ export async function runAdversarialLoop(
   // string, which the loop would review as "nothing to change" and approve.
   let diff: string;
   let getDiff = params.getDiff;
+  /** #1360 — capture what THIS round is about to review, before its reviewer
+   * dispatch, so the identity is the tree the reviewer's prompt carried and not
+   * the tree a later fix round left behind.
+   *
+   * TOOL PATH ONLY. The bindings are consulted only for a `toolPath` row, so on
+   * the driver path this call would be a round of git subprocesses whose answer
+   * nothing reads — `captureRound` is not called there at all, and the writer
+   * receives the row it recorded before #1360. */
+  const captureForRound = async () =>
+    captureRound(
+      ledgerBinding,
+      params.workCwd ?? process.cwd(),
+      params.base,
+      headRef,
+      params.commentExecFn,
+    );
   const noDiffResult = (text: string): DispatchResult =>
     ledgerWrite(
       synthesizeResult({
@@ -235,7 +215,7 @@ export async function runAdversarialLoop(
   } else if (range) {
     const cwd = params.workCwd ?? process.cwd();
     // Round 1 uses the diff computed once here at tool entry.
-    const initial = await rangeDiffFn(cwd, range.base, range.head);
+    const initial = await rangeDiffFn(cwd, range.base, headRef ?? range.head);
     if (!initial.ok) {
       return noDiffResult(
         `Adversarial loop could not compute the diff for ${range.base}...${range.head}: ${initial.reason}`,
@@ -245,7 +225,7 @@ export async function runAdversarialLoop(
     // Rounds 2+ re-compute the SAME range, so a fix round's changes are
     // reviewed (same rule as the driver's per-round getDiff re-read).
     getDiff = async () => {
-      const r = await rangeDiffFn(cwd, range.base, range.head);
+      const r = await rangeDiffFn(cwd, range.base, headRef ?? range.head);
       if (!r.ok) {
         // #859 — a re-read failure is no longer a silent "" (which the loop
         // would ignore and review the STALE diff on). Name it in the trace;
@@ -299,6 +279,13 @@ export async function runAdversarialLoop(
     if (round > firstRound && getDiff) {
       try {
         const fresh = await getDiff();
+        // #1360 — a round after a fix pass reviews what the fixer left in the
+        // worktree, so its head is the branch tip, not the ref the caller
+        // named at entry (that ref is where the round-1 diff came from). The
+        // head re-read sits with the diff re-read — #859's rule, now covering
+        // both halves of the range. A failed re-read keeps the previous diff,
+        // so it keeps the previous round's head too.
+        headRef = roundHeadRef(headRef, { isRefRangeRound: range !== null, freshDiff: fresh });
         if (fresh.trim()) diff = fresh;
       } catch (err) {
         // A failed re-read is not a reason to abandon the round; the previous
@@ -314,11 +301,16 @@ export async function runAdversarialLoop(
     }
     lastComments = await roundComments(
       diff,
-      params.head,
+      headRef,
       params.workCwd,
       params.commentTimeoutMs,
       params.commentExecFn,
     );
+    // #1360 — capture what THIS round is about to review, immediately before
+    // the reviewer dispatch. Gated on the provenance marker: the driver path
+    // never consults a binding, so it pays for none (no capture, no extra git
+    // subprocess, and its row is byte-identical to the pre-#1360 one).
+    if (toolPath) await captureForRound();
     const adv = await runPhaseWithInfraRetry(
       "adversarial-developer",
       `round${round}-review`,
@@ -360,7 +352,7 @@ export async function runAdversarialLoop(
       // #912 — the review ledger keys on the latest entry per branch, so every
       // reviewed round records its verdict: a pass is `approved`, anything the
       // driver will route back or reject is `rejected` (replaced by a later pass).
-      const terminalRound = params.reportVerdict === "terminal" ? MAX_ROUNDS : round;
+      const terminalRound = reportTerminal ? MAX_ROUNDS : round;
       const passed = decideLoopAction(verdict.status, terminalRound, MAX_ROUNDS, true) === "pass";
       return ledgerWrite(
         synthesizeResult({
@@ -398,17 +390,18 @@ export async function runAdversarialLoop(
       // `PASSED WITH FINDINGS` rather than `APPROVED` when something is still
       // outstanding — the operator (and the lens gate) must tell the two apart;
       // `commit-pr` carries the findings into the PR body.
-      const clean = verdict.status === "APPROVED";
-      const notePrefix = diffRereadNotes.length ? `${diffRereadNotes.join("\n")}\n\n` : "";
       const commentsLine = await commentsLineNow();
       const r = synthesizeResult({
         ok: true,
         loopOutcome: "approved",
-        text:
-          notePrefix +
-          (clean
-            ? `Adversarial APPROVED after round ${round}.\n\n${verdict.findings}\n\n${commentsLine}`
-            : `Adversarial PASSED WITH FINDINGS after round ${round} (verdict: ${verdict.status} — non-blocking per agents-base/adversarial-developer.md). These findings are unresolved and travel to the PR body and the lens review; they did not block the commit.\n\n${verdict.findings}\n\n${commentsLine}`),
+        text: passedRoundText({
+          clean: verdict.status === "APPROVED",
+          round,
+          status: verdict.status,
+          findings: verdict.findings,
+          commentsLine,
+          notes: diffRereadNotes,
+        }),
         ms: Date.now() - start,
         usage,
         transcriptPath: lastTranscript,
@@ -469,21 +462,13 @@ export async function runAdversarialLoop(
   const r = synthesizeResult({
     ok: false,
     loopOutcome: "rejected",
-    text: [
-      ...diffRereadNotes,
-      `❌ Adversarial REJECTED after ${MAX_ROUNDS} rounds. Last verdict: ${last?.verdict.status}`,
-      "",
-      last?.verdict.findings ?? "",
-      "",
-      "Surface the following options to the user verbatim and wait for their choice — do not pick on their behalf:",
-      "",
-      "  (a) Authorise another adversarial_loop pass (3 more rounds against the current diff).",
-      "  (b) Accept the current state and proceed to @ops commit. Record the override in vipune.",
-      "  (c) Abandon and rework the approach — return to issue scoping or developer redesign.",
-      "  (d) Take over manually — user steps in to address findings directly.",
-      "",
+    text: rejectedLoopText({
+      maxRounds: MAX_ROUNDS,
+      lastStatus: last?.verdict.status,
+      findings: last?.verdict.findings ?? "",
       commentsLine,
-    ].join("\n"),
+      notes: diffRereadNotes,
+    }),
     ms: Date.now() - start,
     usage,
     transcriptPath: lastTranscript,

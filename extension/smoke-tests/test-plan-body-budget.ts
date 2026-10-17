@@ -24,7 +24,12 @@ import {
   fitDraftToBudget,
 } from "../src/plan-validate.ts";
 import { draftSpec } from "../src/plan-draft.ts";
-import { gatePrompts, installForgeStub, installOfflineVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
+import {
+  gatePrompts,
+  installForgeStub,
+  installOfflineVipuneStub,
+  installNoPlanCacheStub,
+} from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -102,6 +107,25 @@ function assert(cond: boolean, msg: string) {
     "result" in shrinks && shrinks.compacted && shrinks.budget === RENDER_BUDGETS[1],
     "fit: over budget → one compaction pass at stage 1",
   );
+  // #1377: `reserve` shrinks the budget by what the caller appends AFTER the
+  // fitter (the provenance lines), so the FINAL body still fits the forge cap.
+  // With no reservation the comparison is at BODY_BUDGET exactly — the default
+  // is what keeps an existing caller's chosen body byte-identical.
+  const reserved = fitDraftToBudget(
+    (b) => ({ body: b.maxItemsPerSection === 20 ? "x".repeat(BODY_BUDGET - 5) : "now small" }),
+    10,
+  );
+  assert(
+    "result" in reserved && reserved.compacted && reserved.budget === RENDER_BUDGETS[1],
+    "fit: a reservation pushes a body 5 chars under the budget into compaction",
+  );
+  const noReserve = fitDraftToBudget((b) => ({
+    body: b.maxItemsPerSection === 20 ? "x".repeat(BODY_BUDGET - 5) : "now small",
+  }));
+  assert(
+    "result" in noReserve && !noReserve.compacted && noReserve.budget === RENDER_BUDGETS[0],
+    "fit: reserve defaults to 0 — the same body keeps stage 0 (existing callers unchanged)",
+  );
   const hopeless = fitDraftToBudget(() => ({
     body: `## Prior context inventory\n${"y".repeat(BODY_BUDGET + 10)}`,
   }));
@@ -110,6 +134,7 @@ function assert(cond: boolean, msg: string) {
     "tooLarge" in hopeless && /Prior context inventory: \d+ chars/.test(hopeless.breakdown),
     "fit: the halt carries the per-section breakdown",
   );
+
 }
 
 // ------------------------------------------------------------ pipeline
@@ -270,9 +295,6 @@ const MID_CONTEXT = Array.from({ length: 40 }, (_, i) => `fact ${i}: ${"c".repea
     "corrective: the round-2 gate prompt stays under the forge cap",
   );
 }
-
-setPlanDispatch(null);
-delete process.env.PI_ENSEMBLE_FORGE;
 
 // Prompt canary: brevity pressure at the source.
 {

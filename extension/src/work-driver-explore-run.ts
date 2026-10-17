@@ -32,7 +32,12 @@ import {
 } from "./work-driver-plan.ts";
 import { inlineExplorePrompt } from "./work-driver-prompts-early.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
-import { type WorkState, appendEvent, writeDispatchArtifact } from "./workflow-state.ts";
+import {
+  type WorkState,
+  appendEvent,
+  persistCycle,
+  writeDispatchArtifact,
+} from "./workflow-state.ts";
 
 /**
  * A fetch rejection reduced to one line that is safe to put in evidence: the
@@ -95,10 +100,20 @@ export async function runExplore(
   // fetch returns empty stdout, we halt BEFORE wasting tokens on the
   // explore dispatch. That halt is terminal, so each fetch gets a bounded
   // retry with a per-attempt deadline first (see fetchIssueBodyWithRetry).
+  //
+  // #1371 — the step start is persisted before the fetch, so a host reading the
+  // stream sees explore begin when it begins, not after up to ~150 s of
+  // fetching. An abort during the fetch wins over its result: the step returns
+  // with no cap, and the loop records the interrupt.
+  await persistCycle(ctx, next);
   const fetchBody = ctx.issueBodyFetcherFn ?? fetchIssueBodyViaGh;
   const bodySettled = await Promise.allSettled(
-    issues.map((n) => fetchIssueBodyWithRetry(fetchBody, n, ctx.repoRoot)),
+    issues.map((n) => fetchIssueBodyWithRetry(fetchBody, n, ctx.repoRoot, { signal: ctx.signal })),
   );
+  if (ctx.signal?.aborted === true) {
+    trace("work-driver: explore interrupted during the issue-body fetch — no cap recorded");
+    return next;
+  }
 
   // PR11 — track per-issue fetch outcome. A body still empty or still
   // failing AFTER the retries is a pre-condition failure: explore can't
@@ -283,10 +298,7 @@ export async function runExplore(
       });
     }
     const finalSpec = resolved
-      ? finaliseSpecVerdict(resolved.spec, primarySettled.value.stdout, {
-          repoRoot: ctx.repoRoot,
-          issues: ctx.issues ?? [ctx.issue],
-        })
+      ? finaliseSpecVerdict(resolved.spec, primarySettled.value.stdout)
       : undefined;
     if (resolved !== undefined && finalSpec !== undefined) {
       next = {

@@ -29,6 +29,8 @@ import { pathsAreFrontendOnly } from "../src/work-driver-verify-cmd.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
+import { PROTECTED_DIFF_ARGV, PROTECTED_STATUS_ARGV } from "../src/work-driver-protected-paths-read.ts";
 
 const execFileP = promisify(execFile);
 
@@ -87,9 +89,9 @@ try {
     const exec: NonNullable<DriverContext["verifyExecFn"]> = async (argvCmd, o) => {
       const cmd = commandOf(argvCmd, o);
       if (verifyCommands.includes(cmd)) commands.push(cmd);
-      if (cmd === "git status --porcelain") return { stdout: porcelain };
+      if (isNulStatusRead(cmd)) return { stdout: nulStatus(...porcelain.split("\n").filter(Boolean)) };
       if (cmd.startsWith("git rev-list --count")) return { stdout: porcelain.trim() ? "1\n" : "0\n" };
-      if (cmd.startsWith("git diff --name-only")) return { stdout: diffPaths.join("\n") };
+      if (isNulDiffRead(cmd)) return { stdout: nulNameStatus(...diffPaths) };
       if (cmd.startsWith("git diff")) return { stdout: "" };
       return { stdout: "" };
     };
@@ -275,10 +277,11 @@ try {
     const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
       commands.push(cmd);
       const cwd = o?.cwd;
-      if (cmd === "git status --porcelain")
-        return { stdout: cwd === wtA ? " M a.css\n" : " M b.ts\n" };
-      if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
-      if (cmd.startsWith("git diff --name-only")) return { stdout: cwd === wtA ? "a.css\n" : "b.ts\n" };
+      const line = commandOf(cmd, o);
+      if (isNulStatusRead(line))
+        return { stdout: cwd === wtA ? nulStatus(" M a.css") : nulStatus(" M b.ts") };
+      if (line.startsWith("git rev-list --count")) return { stdout: "1\n" };
+      if (isNulDiffRead(line)) return { stdout: cwd === wtA ? nulNameStatus("a.css") : nulNameStatus("b.ts") };
       if (cmd.startsWith("git diff")) return { stdout: "" };
       return { stdout: "" };
     };
@@ -322,10 +325,10 @@ try {
     mkdirSync(path.join(dir, ".pi"), { recursive: true });
     writeFileSync(path.join(dir, ".pi", "smoke-cmd"), "smoke-run\n");
     writeFileSync(path.join(dir, "Cargo.toml"), "[package]\nname='x'\n");
-    const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (cmd === "git status --porcelain") return { stdout: " M a.css\n" };
+    const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
+      if (isNulStatusRead(commandOf(cmd, o))) return { stdout: nulStatus(" M a.css") };
       if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
-      if (cmd.startsWith("git diff --name-only")) return { stdout: "a.css\n" };
+      if (isNulDiffRead(commandOf(cmd, o))) return { stdout: nulNameStatus("a.css") };
       if (cmd.startsWith("git diff")) return { stdout: "" };
       if (cmd === "smoke-run") throw new Error("smoke failed");
       return { stdout: "" };
@@ -399,19 +402,30 @@ try {
       await git(repo, ["worktree", "add", "--detach", wt, baseSha]);
       for (const f of files) writeFileSync(path.join(wt, f), "change\n");
       const commands: string[] = [];
-      const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
+      const exec: NonNullable<DriverContext["verifyExecFn"]> = async (argvCmd, o) => {
+        // #1378 — the two change-set reads are argv-form; everything else here is a
+        // shell string, so match on the shell form.
+        const cmd = commandOf(argvCmd, o);
         if (cmd === "cargo check --quiet") {
           commands.push(cmd);
           return { stdout: "" };
         }
         // Match specific git subcommands the driver issues (not positional parsing).
-        if (cmd === "git status --porcelain") {
-          const { stdout } = await execFileP("git", ["status", "--porcelain"], { cwd: o?.cwd });
+        if (isNulStatusRead(cmd)) {
+          const { stdout } = await execFileP("git", [...PROTECTED_STATUS_ARGV], { cwd: o?.cwd });
           return { stdout };
         }
-        if (cmd.startsWith("git diff --name-only ")) {
-          const range = cmd.slice("git diff --name-only ".length).trim();
-          const { stdout } = await execFileP("git", ["diff", "--name-only", range], { cwd: o?.cwd, maxBuffer: 8 * 1024 * 1024 });
+        if (isNulDiffRead(cmd)) {
+          // Replay the PRODUCTION argv, not a hand-written copy. The range is the
+          // one element the reader appends at its call site, so it is taken from
+          // the tail of the argv the gate actually sent; everything before it is
+          // the exported constant. A literal argv here silently kept passing
+          // while `-M`/`-C`/the filter hardening drifted out of what this test ran.
+          const range = o?.argv?.[o.argv.length - 1] ?? "";
+          const { stdout } = await execFileP("git", [...PROTECTED_DIFF_ARGV, range], {
+            cwd: o?.cwd,
+            maxBuffer: 8 * 1024 * 1024,
+          });
           return { stdout };
         }
         if (cmd.startsWith("git rev-list --count ")) {

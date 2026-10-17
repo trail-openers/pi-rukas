@@ -152,9 +152,13 @@ try {
     dir,
     OPERATOR_ENV,
   ).finally(() => {
-    if (savedGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    // `Reflect.deleteProperty`, NOT an `undefined` assignment: on `process.env` an
+    // assignment coerces its value, so assigning the undefined literal leaves the STRING
+    // "undefined" in the child's environment — the opposite of removing the variable.
+    // Biome's noDelete rule is why `delete` is not used either.
+    if (savedGlobal === undefined) Reflect.deleteProperty(process.env, "GIT_CONFIG_GLOBAL");
     else process.env.GIT_CONFIG_GLOBAL = savedGlobal;
-    if (savedNoSystem === undefined) delete process.env.GIT_CONFIG_NOSYSTEM;
+    if (savedNoSystem === undefined) Reflect.deleteProperty(process.env, "GIT_CONFIG_NOSYSTEM");
     else process.env.GIT_CONFIG_NOSYSTEM = savedNoSystem;
   });
   assert(noId.code === 2, "accept: no git identity refuses (the operator must be known)");
@@ -193,9 +197,9 @@ const importsScripts = srcFiles.filter((f) =>
 assert(importsScripts.length === 0, "boundary: no src module imports the operator script");
 const registersAcceptance = srcFiles.filter((f) => {
   const c = contents.get(f) ?? "";
-  return c.includes("registerTool") && c.includes("acceptRow");
+  return c.includes("registerTool") && c.includes("acceptFinding");
 });
-assert(registersAcceptance.length === 0, "boundary: no Pi tool registers acceptRow");
+assert(registersAcceptance.length === 0, "boundary: no Pi tool registers acceptance");
 
 const agentCommands = [
   "bun extension/scripts/review-accept.ts feat/x deadbeef --reason 'a reason that is long enough'",
@@ -206,6 +210,16 @@ const agentCommands = [
   "cd extension/scripts && bun review-accept.ts main 0123abcd --reason y",
   "bun -e 'await (await import(\"./src/review-findings-store.ts\")).acceptRow({})'",
   "node -e \"require('fs').writeFileSync('review-findings.json','{}')\"",
+  // #1125 — the routes the original scan missed. Plain git/gh was exempt as a
+  // block, so a git argument that writes a file (`--output`) or runs an alias
+  // (`-c alias.x='!…'`) reached the store; and the runtime match required the
+  // runtime and the store name on one line, so a here-doc body or a program
+  // piped into `bun -` did too. The full set is in
+  // test-review-accept-guard-hardened.ts.
+  "git show HEAD:blob --output=review-findings.json",
+  "git -c alias.dump='!cat /tmp/payload review-findings.json' dump",
+  'bun <<EOF\nimport { acceptFinding } from "./src/review-findings-store.ts"\nEOF',
+  "printf 'import \"./src/review-findings-store.ts\"' | bun -",
 ];
 for (const c of agentCommands) {
   assert(
@@ -216,12 +230,32 @@ for (const c of agentCommands) {
 for (const c of [
   "git status",
   "bun test smoke-tests/test-review-accept.ts",
-  "echo review-acceptance-notes",
   'git commit -m "feat: review-accept guard"',
   'git commit -m "docs: review-accept flow"',
-  'gh pr create --body "Adds the review-accept acceptance path"',
+  // The plain git reads the exemption exists for. `git log -- extension/src/
+  // review-findings-store.ts` is NOT one of them any more: the #1125 fix round refuses a
+  // path operand whose last segment is a protected stem, and that over-refusal is
+  // asserted in test-review-accept-guard-hardened.ts's OVER_REFUSALS.
+  "git diff HEAD -- extension/src/review-accept-guard.ts",
 ]) {
   assert(runsReviewAccept(c) === undefined, `guard: leaves unrelated commands alone — ${c}`);
+}
+// #1125 clause (b) — POLARITY. Both are documented over-refusals, the accepted cost of
+// failing closed: a write-capable flag is refused wherever it sits, and a forge write
+// subcommand naming the script is refused even in prose. The pre-adjudication draft
+// asserted the opposite polarity for these two; the canonical list is OVER_REFUSALS in
+// test-review-accept-guard-hardened.ts.
+for (const c of [
+  "git show HEAD:README.md --output=/tmp/readme.txt",
+  'gh pr create --body "Adds the review-accept acceptance path"',
+  // #1125 fix round: the stem match is a PREFIX, so a word that merely STARTS with the
+  // operator script's stem is refused rather than guessed at (canonical: OVER_REFUSALS).
+  "echo review-acceptance-notes",
+]) {
+  assert(runsReviewAccept(c) !== undefined, `guard: over-refuses rather than guesses — ${c}`);
+}
+for (const c of ["gh pr view 1105", "glab mr view 12"]) {
+  assert(runsReviewAccept(c) === undefined, `guard: leaves the exact forge read arms alone — ${c}`);
 }
 
 const handlers: Record<string, (e: unknown, c: unknown) => Promise<unknown>> = {};

@@ -11,9 +11,16 @@
 
 import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
-import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
+import { consolidatedVerifySkip } from "./work-driver-consolidated-verify-skip.ts";
+import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
 import type { DriverContext } from "./work-driver-context.js";
+import {
+  buildResidueFailure,
+  classifyRootDirt,
+  probeIgnored,
+  readIgnoredPaths,
+} from "./work-driver-dirty-root-classify.ts";
 import { extractAttributedTail, isHostForkExhaustion } from "./work-driver-exec-error.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
@@ -24,6 +31,7 @@ import {
   rerunConsolidatedVerifyOnce,
   writeConsolidatedVerifyLog,
 } from "./work-driver-verify-flake.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
 /**
  * #826 — the recorded outcome of the flake-retry decision, computed ONCE in
@@ -43,6 +51,8 @@ import {
  *   single per-worktree failure with a different assertion is a genuine
  *   defect the re-run could mask — the #821 shape).
  */
+export type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
+
 export type ConsolidatedVerifyRetryDecision =
   | "allowed-no-per-worktree-failure"
   | "allowed-shared"
@@ -63,7 +73,24 @@ export interface ConsolidatedVerifyOpts {
   scratchDir: string;
   verifyCmd: string;
   timeoutMs: number;
+  /**
+   * #1362 — the cycle's `.pi/dirty-root-exempt` list. Applied to the repoRoot
+   * dirty-root preflight below only: the cherry-pick and staging that follow
+   * run on the driver's own integration branch and are unchanged.
+   */
+  dirtyRootExempt?: readonly string[];
   workstreamBaseShas?: Record<string, string>;
+  /**
+   * #1240 — the tree that just PASSED the per-worktree verify, established
+   * by the caller (`verifyTreeId(worktree)`), plus the worktree it came from
+   * (the skip note names it). When the cherry-picked probe turns out to be
+   * that SAME tree, running the verify command again at repoRoot proves
+   * nothing, so it is skipped and the equality is reported as `skipped`.
+   * The caller passes this only for the shape where the duplication exists —
+   * one workstream with every per-worktree verify green; absent otherwise.
+   * Read failure on either side means no skip (fail closed toward running).
+   */
+  alreadyVerifiedTree?: AlreadyVerifiedTree;
   retry?: {
     canRetry: boolean;
     onRecover: (evidenceTail?: string) => void;
@@ -85,65 +112,6 @@ export async function runConsolidatedVerify(
  * and its unlocked body return the same type; the body computes it, the
  * wrapper only adds the lock).
  */
-export type ConsolidatedVerifyResult =
-  | {
-      status: "passed";
-      applied: string[];
-      recovered?: boolean;
-      retryDecision?: ConsolidatedVerifyRetryDecision;
-      /**
-       * #841 — the absolute path of the run1 log (the consolidated first
-       * run that failed and was recovered by the flake re-run). Present only
-       * on `recovered: true` results; the caller surfaces it in the recovery
-       * note. Absent on a passing run that never failed and on a failed
-       * result (where `logPath` on the failed shape carries the run that
-       * ended the run).
-       */
-      logPath?: string;
-    }
-  | {
-      status: "failed";
-      detail: string;
-      retried?: boolean;
-      recovered?: boolean;
-      retryDecision?: ConsolidatedVerifyRetryDecision;
-      /**
-       * #841 — the absolute path of the LAST consolidated-verify run's raw
-       * log (the run2 log when `retried === true`, the run1 log otherwise).
-       * `undefined` when the write failed (unwritable scratch dir, etc.) —
-       * the caller then says the log is unavailable in the evidence string.
-       * The ticket asks the path to appear in the cap-hit evidence, so it
-       * is threaded here rather than regexed out of `detail`.
-       */
-      logPath?: string;
-      /**
-       * #841 — the RAW failure stream of the run that ended the run (the
-       * run2 raw stream when `retried === true`, the run1 raw stream
-       * otherwise), carried structurally so the caller's classifier reads
-       * the same shape a single-run failure reads — without parsing the
-       * log path / restore claim back out of `detail` prose.
-       */
-      rawFailure?: string;
-      /**
-       * True when the run that ended the run was KILLED at `timeoutMs`
-       * rather than exiting non-zero. Its stream stops wherever the kill
-       * landed, so it carries no verdict about the code: the caller reports
-       * the bound, not an assertion extracted from a truncated stream.
-       */
-      timedOut?: boolean;
-    }
-  // #725 — the caller distinguishes a genuine cherry-pick / patch-apply
-  // conflict from a dirty-repoRoot preflight refusal via `kind`, not by
-  // regexing the `detail` prose (a reworded message used to silently
-  // re-route the refusal to the conflict cap). The unlocked body below
-  // returns this same shape in both cases.
-  // `host` — the consolidation was never attempted because the host could
-  // not fork (`/bin/sh: 1: Cannot fork`, `spawn … EAGAIN`). It rides on the
-  // refusal shape because nothing was combined or verified, but it is NOT a
-  // conflict: a single-workstream cycle was told "two workstreams edited the
-  // same lines" when the only thing that failed was `git status`.
-  | { status: "conflict"; detail: string; kind: "conflict" | "dirty-root" | "host" };
-
 /**
  * #861 — the unlocked body of the consolidated verify. The ONLY production
  * caller is `runConsolidatedVerify` (the `withIntegrationLock` wrapper);
@@ -166,6 +134,10 @@ export async function runConsolidatedVerifyUnlocked(
   opts: ConsolidatedVerifyOpts,
 ): Promise<ConsolidatedVerifyResult> {
   const { repoRoot, baseSha, worktrees, scratchDir, verifyCmd, timeoutMs } = opts;
+  // #1362 — the configured exemptions, threaded from the cycle context. An
+  // untracked file under one of its prefixes is not dirt here either, so a
+  // tool's own local file no longer refuses the consolidated verify.
+  const exempt = opts.dirtyRootExempt;
   // #794 — the pick scope: each workstream's own range is measured against
   // its effective base (the dependency's tip for a stacked workstream), so
   // a dependent's ANCESTOR commits are not re-picked on top of their
@@ -189,6 +161,7 @@ export async function runConsolidatedVerifyUnlocked(
       originalRef,
       scratchDir,
       label: "consolidated verify",
+      dirtyRootExempt: exempt,
     });
     // Delete the scratch branch so it does not accumulate on every develop
     // re-entry. Failure is non-fatal (a leftover branch costs nothing).
@@ -218,18 +191,60 @@ export async function runConsolidatedVerifyUnlocked(
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
-    const rootDirt = rootStatus.split("\n").filter((l) => l.trim() && !isDriverManagedDirtLine(l));
-    if (rootDirt.length > 0) {
+    const candidateLines = rootStatus.split("\n");
+    // #1421 — git's own opinion about which of these paths are ignored output.
+    // `undefined` (the read failed) classifies every path as dirt, so a gate
+    // that cannot tell still refuses: the fail-closed direction is the pre-
+    // #1421 behaviour, never "nothing is ignored".
+    const classified = classifyRootDirt(
+      candidateLines,
+      await readIgnoredPaths(execFn, repoRoot),
+      exempt,
+      await probeIgnored(execFn, repoRoot, candidateLines),
+    );
+    if (classified.dirt.length > 0) {
       trace("work-driver: consolidated verify — repoRoot dirty, refusing to consolidate");
+      const residueNote =
+        classified.residue.length > 0
+          ? `; ${classified.residue.length} ignored build artifact(s) also present and not counted`
+          : "";
       return {
         status: "conflict",
         kind: "dirty-root",
-        detail: `repoRoot is dirty (${rootDirt
+        detail: `repoRoot is dirty (${classified.dirt
           .slice(0, 5)
           .map((l) => l.slice(3))
           .join(
             ", ",
-          )}); consolidated verify skipped — the combination is unverifiable until the root is clean`,
+          )}${residueNote}; consolidated verify skipped — the combination is unverifiable until the root is clean`,
+      };
+    }
+    // Nothing left but build output: the batch runs anyway, and the outcome is
+    // reported so the cycle's gate can tell "the root was dirty" from "the
+    // root held a tool's output" — before #1421 both were
+    // `verify-failed:develop`, and a complete, reviewed change parked on five
+    // cargo lock files (example-owner/orchard#248 cycle 248).
+    //
+    // Reported HERE, before the checkout, for the same reason the reads are:
+    // everything below mutates repoRoot, and a decline is not a verdict on the
+    // code, so it must not cost a checkout, a cherry-pick or a verify run.
+    if (classified.residue.length > 0) {
+      trace(
+        `work-driver: consolidated verify — repoRoot held ${classified.residue.length} ignored build artifact(s), not dirt: ${classified.residue
+          .slice(0, 5)
+          .map((r) => r.line.slice(3))
+          .join(", ")}`,
+      );
+      const residuePaths = classified.residue.map((r) => r.line.slice(3).trim());
+      return {
+        status: "conflict",
+        kind: "build-residue",
+        residuePaths,
+        residueReasons: classified.residue.map((r) => r.reason),
+        detail: buildResidueFailure(
+          residuePaths,
+          "the consolidated verify was declined because the repo root is not clean",
+        ),
       };
     }
 
@@ -281,6 +296,12 @@ export async function runConsolidatedVerifyUnlocked(
     // unambiguous to an operator inspecting scratchDir. The timestamp is
     // captured here, BEFORE the run1 attempt, so both runs of one cycle
     // carry the same value even if the flake retry fires milliseconds later.
+    //
+    // #1240 — the skip decision. Why it is taken HERE and not before the
+    // picks, and why both sides must read as real hashes, is argued in
+    // `consolidatedVerifySkip` (work-driver-consolidated-verify-skip.ts).
+    const skip = await consolidatedVerifySkip(execFn, repoRoot, opts.alreadyVerifiedTree);
+
     const runTimestamp = new Date().toISOString();
     let run1LogPath: string | undefined;
     // #841 — the run2 log path is NOT precomputed here: it comes from the
@@ -291,21 +312,27 @@ export async function runConsolidatedVerifyUnlocked(
     // Run the verify command against the combined tree.
     let verifyFailure: string | undefined;
     let timedOut = false;
-    try {
-      await withVerifySlot(() =>
-        execFn(verifyCmd, { cwd: repoRoot, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }),
-      );
-    } catch (err) {
-      const e = err as Error & { stderr?: string; stdout?: string; killed?: boolean };
-      verifyFailure = combinedExecFailureStream(e);
-      timedOut = e.killed === true;
-      // #841 — persist the RAW run1 stream before the bounded tail is
-      // computed: the run1 log is the operator's only record of what the
-      // first attempt printed, including the stdout that the pre-#841 `||`
-      // shape dropped. The write never fails the step — a write error
-      // leaves run1LogPath undefined and the caller's evidence string says
-      // the log is unavailable.
-      run1LogPath = writeConsolidatedVerifyLog(scratchDir, runTimestamp, 1, verifyFailure);
+    // #1240 — same tree, same verdict: the per-worktree run already executed
+    // `verifyCmd` against this exact content, so the probe is not re-run.
+    // The restore below still happens (the probe checkout is transient
+    // either way) and the result still reports `applied` verbatim.
+    if (skip === undefined) {
+      try {
+        await withVerifySlot(() =>
+          execFn(verifyCmd, { cwd: repoRoot, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }),
+        );
+      } catch (err) {
+        const e = err as Error & { stderr?: string; stdout?: string; killed?: boolean };
+        verifyFailure = combinedExecFailureStream(e);
+        timedOut = e.killed === true;
+        // #841 — persist the RAW run1 stream before the bounded tail is
+        // computed: the run1 log is the operator's only record of what the
+        // first attempt printed, including the stdout that the pre-#841 `||`
+        // shape dropped. The write never fails the step — a write error
+        // leaves run1LogPath undefined and the caller's evidence string says
+        // the log is unavailable.
+        run1LogPath = writeConsolidatedVerifyLog(scratchDir, runTimestamp, 1, verifyFailure);
+      }
     }
     // #782/#826 — the single bounded flake re-run. It happens on the SAME
     // still-checked-out scratch tree, BEFORE `restoreRoot` (a re-run after
@@ -423,7 +450,11 @@ export async function runConsolidatedVerifyUnlocked(
         `work-driver: consolidated verify — root not restored after a passing run: ${restore.detail}`,
       );
     }
-    return { status: "passed", applied };
+    // #1240 — the skipped probe reports as a pass carrying the identity that
+    // justified it, so the caller records WHY no command ran.
+    return skip === undefined
+      ? { status: "passed", applied }
+      : { status: "passed", applied, skipped: skip };
   } catch (err) {
     const restore = await restoreRoot();
     trace(

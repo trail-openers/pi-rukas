@@ -11,6 +11,7 @@
  */
 
 import { trace } from "./trace.ts";
+import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import {
   extractAttributedTail,
   hostExhaustionFailure,
@@ -30,7 +31,7 @@ export function verifyTimeoutMs() {
 export const VERIFY_TIMEOUT_LABEL = "[verify-timeout]";
 
 /** The bound as a person reads it: whole minutes, else seconds. */
-function boundText(ms: number): string {
+export function boundText(ms: number): string {
   return ms >= 60_000 && ms % 60_000 === 0 ? `${ms / 60_000}-min` : `${Math.round(ms / 1000)}s`;
 }
 
@@ -61,7 +62,11 @@ export function isVerifyTimeoutFailure(failure: string): boolean {
  *   - `verify-timeout:<step>` — every failure is a run killed at its bound;
  *   - `verify-baseline-red:<step>` — `baselineRedOnly`: the base-commit probe
  *     confirmed the verify command fails without the change, and its failures
- *     are the only ones (the caller decides; see verifyDevelopOutcome).
+ *     are the only ones (the caller decides; see verifyDevelopOutcome);
+ *   - `verify-env:<step>` also covers #1421's `[build-residue]`: the gate
+ *     declined to mutate a root holding untracked, git-ignored build output
+ *     (cargo's `target/`, a bundler's `dist/`), so nothing about the change
+ *     was judged. An environment refusal, like the fork failure beside it.
  *
  * One real failure among them is a code failure, so the cap stays verify-failed.
  */
@@ -71,9 +76,12 @@ export function verifyCapFor<S extends string>(
   baselineRedOnly = false,
 ): `verify-failed:${S}` | `verify-timeout:${S}` | `verify-env:${S}` | `verify-baseline-red:${S}` {
   if (failures.length === 0) return `verify-failed:${step}`;
-  const noVerdict = (f: string) => isHostExhaustionFailure(f) || isVerifyTimeoutFailure(f);
+  const noVerdict = (f: string) =>
+    isHostExhaustionFailure(f) || isVerifyTimeoutFailure(f) || isBuildResidueFailure(f);
   if (failures.every(noVerdict) && failures.some(isHostExhaustionFailure))
     return `verify-env:${step}`;
+  // #1421 — build residue alone is an environment refusal, not a verdict.
+  if (failures.every(isBuildResidueFailure)) return `verify-env:${step}`;
   if (failures.every(isVerifyTimeoutFailure)) return `verify-timeout:${step}`;
   return baselineRedOnly ? `verify-baseline-red:${step}` : `verify-failed:${step}`;
 }

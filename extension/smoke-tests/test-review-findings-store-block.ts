@@ -13,7 +13,7 @@ import {
   type StoredFinding,
   capPerBranch,
   capRows,
-} from "../src/review-findings-store.ts";
+} from "../src/review-findings-file.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

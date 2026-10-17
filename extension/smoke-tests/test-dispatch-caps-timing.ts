@@ -177,15 +177,32 @@ const withEnvAsync = async <T>(
       capKillGraceMs: GRACE,
       childExited: () => false,
     });
-    // The child crosses the budget, then stays chatty: 12 assistant turns over
-    // ~6x the grace window, exactly what spawn-inflight.ts feeds on a hot run.
-    session.tokenBudgetTracker?.check(Date.now());
+    // The child crosses the budget, then stays chatty: assistant turns every
+    // 50ms over ~6x the grace window, exactly what spawn-inflight.ts feeds on a
+    // hot run — which drives BOTH `check(now)` AND `onMessageEnd(now)` on every
+    // assistant message_end. Driving `check()` alone made this assertion
+    // vacuous: on the pre-fix shape `onMessageEnd()` was the call that reset the
+    // grace clock, so a loop that never calls it distinguishes nothing and
+    // passes on broken code too. Measured against origin/main's three files:
+    // with `onMessageEnd()` present in the loop the kill NEVER fires (48 turns,
+    // `killed:false`, no cause); without it this same assertion stays green.
+    // `turns` is the second witness the kill did not arrive early.
+    const tracker = session.tokenBudgetTracker;
+    tracker?.check(Date.now());
+    let turns = 0;
     const start = Date.now();
-    while (!session.tokenBudgetTracker?.killed && Date.now() - start < GRACE * 6) {
+    while (!tracker?.killed && Date.now() - start < GRACE * 6) {
       await new Promise((r) => setTimeout(r, 50));
-      session.tokenBudgetTracker?.check(Date.now()); // per-turn check (no-op once triggered)
+      const now = Date.now();
+      tracker?.check(now); // per-turn check (no-op once triggered)
+      // The production call. On the pre-fix shape this resets the grace clock
+      // on every turn and the kill never fires; on the fixed shape the window
+      // is absolute from the trigger, so the turn traffic changes nothing.
+      tracker?.onMessageEnd?.(now);
+      turns += 1;
     }
     await new Promise((r) => setTimeout(r, GRACE + 150)); // let the 500ms poll land
+    assert(turns > 0, `chatty child: turns kept arriving (${turns}) while the kill armed`);
     assert(steered === 1, "chatty child: exactly one wrap-up steer");
     assert(session.tokenBudgetTracker?.killed === true, "chatty child: budget kill FIRES");
     eq(killedSigs.length, 1, "chatty child: exactly one kill signal");

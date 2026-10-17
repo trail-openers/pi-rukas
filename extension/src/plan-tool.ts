@@ -39,8 +39,18 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { runPlanPipeline } from "./plan-driver.ts";
+import { DROPPED_ARTIFACT } from "./plan-dropped-budget.ts";
 import { truncateForDisclosure } from "./plan-gap-disclosure.ts";
-import type { PlanResult } from "./plan-types.ts";
+import {
+  FORBIDDEN_LINE_CHARS,
+  MAX_LABELS,
+  MAX_MARKER_PAIRS,
+  MAX_PROVENANCE_LINE,
+  normalizeLabels,
+  validateProvenance,
+} from "./plan-provenance.ts";
+import type { PlanDriverInput, PlanResult } from "./plan-types.ts";
+import { FORGE_BODY_MAX } from "./plan-validate.ts";
 import { trace } from "./trace.ts";
 import { piSessionHost } from "./work-driver-host.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
@@ -97,38 +107,113 @@ export function registerPlanTool(pi: ExtensionAPI) {
       reviewedDigest: Type.Optional(
         Type.String({
           description:
-            "The reviewedDigest a dry run reported. Echo it on the confirming call to file that exact reviewed spec verbatim; without it, or on a mismatch, the full pipeline runs.",
+            "The reviewedDigest a dry run reported. Echo it on the confirming call to file that exact reviewed spec verbatim; without it, or on a mismatch, the full pipeline runs. The digest also covers labels and provenance: a confirm that changes either is a digest mismatch and files nothing.",
         }),
+      ),
+      labels: Type.Optional(
+        Type.Array(Type.String(), {
+          description: `Labels to create the filed issue with, in the same single forge call — so they are on the issue from its first moment (a follow-up edit leaves a window where an auto-filed ticket reads as manual work to everything watching the tracker). At most ${MAX_LABELS}; each 1-50 chars matching ^[A-Za-z0-9][A-Za-z0-9:._ /-]*$ (spaces and ':' allowed, no comma). Invalid input is refused BEFORE any dispatch with an invalid-input error naming what is wrong. Every label must already exist on the target repo: a missing one halts filing with filingFailure.reason "label-missing" and NOTHING is filed — the driver never creates a label as a side effect of filing. When the repo's label list cannot be read in full (a CLI failure, or more labels than either CLI reads in one page) the halt reason is "label-list-unreadable" instead, and nothing is filed either — the driver never guesses that a label exists. The result gains issueNumber alongside issueUrl. Omit for today's behaviour exactly.`,
+        }),
+      ),
+      provenance: Type.Optional(
+        Type.Object(
+          {
+            line: Type.String({
+              description: `One line of at most ${MAX_PROVENANCE_LINE} chars, rendered as the FIRST line of the issue body in italics followed by a blank line. Any '@', '<', '>', backtick, or control / line-terminator character (CR, LF, form feed, NEL, U+2028, U+2029) is REJECTED (not escaped, not stripped), so the line can never mention an account, inject markup, or open a heading of the body the driver did not write.`,
+              // The schema MIRRORS `FORBIDDEN_LINE_CHARS` rather than relying on
+              // it alone: the validators in plan-provenance.ts are the authority
+              // (they produce the named `invalid-input` problems), and this is
+              // the second net — a caller reading the tool schema sees the shape
+              // it must send, and a caller that bypasses the validators (a future
+              // in-process path) still cannot get a terminator into the first line.
+              // A `\n` here is a heading-injection: `"ok\n## Open points"` files a
+              // section the driver never wrote, under the heading the /work intent
+              // gate reads for blocking gaps — and `\f`, U+0085, U+2028 and U+2029
+              // do the same in any consumer that honours them as terminators, so
+              // the negated class is the WHOLE control range plus the three
+              // Unicode separators, not just CR/LF. It is the exported regex's
+              // source, so the two cannot drift.
+              pattern: `^[^${FORBIDDEN_LINE_CHARS.source.slice(1, -1)}]+$`,
+              maxLength: MAX_PROVENANCE_LINE,
+            }),
+            marker: Type.Record(Type.String(), Type.String(), {
+              description: `Structured pairs, rendered as the LAST line of the body as \`<!-- pi-rukas:provenance v1 k1=v1 k2=v2 ... -->\` in sorted key order. At most ${MAX_MARKER_PAIRS}; keys match ^[a-z][a-z0-9_-]{0,31}$, values match ^[A-Za-z0-9._,:/#@+=-]{1,200}$ (no spaces or newlines; '@' IS allowed in a value — the account prohibition is on \`line\` only). Written by code after drafting, never by an LLM stage, and reserved out of the body budget so compaction cannot trim it.`,
+            }),
+          },
+          {
+            description:
+              "Mark a filed issue as machine-filed: an italic line atop the body and an HTML-comment marker at its foot. Both are appended by code after drafting.",
+          },
+        ),
       ),
     }),
     async execute(_id, raw, _signal, _onUpdate, ctx: ExtensionContext) {
-      const params = raw as {
-        descriptor: string;
-        type?: "bug" | "feature" | "epic" | "chore" | "spike";
-        context?: string;
-        dryRun?: boolean;
-        reviewedDigest?: string;
-      };
-      if (!params.descriptor || params.descriptor.trim().length === 0) {
+      // Pi hands the tool a JSON value. Widening to `Record<string, unknown>`
+      // says exactly that — "fields not yet examined" — and every field is then
+      // narrowed by a validator before use: `descriptor`/`dryRun`/`reviewedDigest`
+      // by the guards here, `labels` by `normalizeLabels` (which rejects a
+      // non-array, a non-string member and a sparse array), `provenance` by
+      // `validateProvenance` (which requires a plain object with own string
+      // keys). An earlier shape-named cast here claimed a `labels: string[]`
+      // that nothing had checked yet, which is how a malformed caller would
+      // reach the create call with bytes this module never examined.
+      const params = raw as Record<string, unknown>;
+      const descriptor = params.descriptor;
+      if (typeof descriptor !== "string" || descriptor.trim().length === 0) {
         return {
           content: [{ type: "text", text: "start_plan_driver requires a non-empty descriptor." }],
           details: { started: false },
         };
       }
+      const dryRun = params.dryRun === true;
+      // #1377: labels and provenance are validated here, BEFORE any dispatch.
+      // A caller that mistypes a label name gets a named error for the cost of
+      // one tool call, not a five-minute pipeline that then halts at the forge;
+      // and nothing can reach the create call with bytes this module did not
+      // check (a label with a comma would break glab's comma-separated list, a
+      // '@' or a newline in the line would name an account or open a heading in
+      // visible text).
+      const labelCheck = normalizeLabels(params.labels ?? []);
+      if (!labelCheck.ok) {
+        return invalidInput("labels", labelCheck.problems);
+      }
+      const provenanceCheck =
+        params.provenance === undefined
+          ? { ok: true as const, provenance: undefined }
+          : validateProvenance(params.provenance);
+      if (!provenanceCheck.ok) {
+        return invalidInput("provenance", provenanceCheck.problems);
+      }
+      const labels = labelCheck.labels;
+      const provenance = provenanceCheck.provenance;
       const repoRoot = await resolveRepoRoot(ctx.cwd);
       trace(
-        `start_plan_driver → descriptor="${params.descriptor.slice(0, 60)}" type=${params.type ?? "inferred"} dryRun=${!!params.dryRun} repoRoot=${repoRoot}`,
+        `start_plan_driver → descriptor="${descriptor.slice(0, 60)}" type=${String(params.type ?? "inferred")} dryRun=${dryRun} labels=${labels.length} provenance=${provenance ? "yes" : "no"} repoRoot=${repoRoot}`,
       );
       try {
-        const result = await runPlanPipeline(piSessionHost(pi), params, repoRoot);
+        const result = await runPlanPipeline(
+          piSessionHost(pi),
+          // The typed view of the call: the four fields the driver reads by
+          // name, with the three the validators just narrowed substituted. The
+          // cast carries no unchecked field into the driver — `type` is the only
+          // one left as the caller wrote it, and the driver re-classifies an
+          // unrecognised value.
+          {
+            ...(params as Omit<PlanDriverInput, "labels" | "provenance" | "descriptor">),
+            descriptor,
+            labels,
+            provenance,
+          },
+          repoRoot,
+        );
         return {
           content: [
             {
               type: "text",
-              text: renderPlanResult(result, params.dryRun === true),
+              text: renderPlanResult(result, dryRun),
             },
           ],
-          details: resultDetails(result, params.dryRun === true),
+          details: resultDetails(result, dryRun),
         };
       } catch (err) {
         trace(`start_plan_driver failed: ${(err as Error).message}`);
@@ -144,6 +229,20 @@ export function registerPlanTool(pi: ExtensionAPI) {
       }
     },
   });
+}
+
+/**
+ * #1377: the pre-dispatch rejection of malformed labels / provenance. A NAMED
+ * error (`invalid-input`) with every problem listed, and `started: false` so a
+ * caller can tell a refused call from a run that filed nothing.
+ */
+function invalidInput(field: string, problems: string[]) {
+  const text = `start_plan_driver refused: invalid ${field}. ${problems.join("; ")}`;
+  trace(`start_plan_driver: invalid ${field} — ${problems.join("; ")}`);
+  return {
+    content: [{ type: "text" as const, text }],
+    details: { started: false, error: `invalid-input: ${field}`, problems },
+  };
 }
 
 function renderPlanResult(r: PlanResult, dryRun: boolean): string {
@@ -269,7 +368,7 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
     ? `\n\n=== BASE FALLBACK ===\nInvestigators read the local checkout, not origin/<default>: ${r.baseFallback}. The investigation cache was not used for this run.`
     : "";
   const compactedNote = r.compacted
-    ? "\n\nCOMPACTED: the body was deterministically compacted to fit the forge's 65,536-char limit (a disclosure line inside the body says how; full findings live in the run transcripts)."
+    ? `\n\nCOMPACTED: the body was deterministically compacted to fit the forge's ${FORGE_BODY_MAX}-char limit (a disclosure line inside the body says how; full findings live in ${r.droppedListFile ?? DROPPED_ARTIFACT}).`
     : "";
   const timingsLine =
     r.timings && r.timings.length > 0
@@ -309,6 +408,9 @@ function resultDetails(r: PlanResult, dryRun: boolean): Record<string, unknown> 
     residualForDisclosure: r.residualForDisclosure,
   };
   if (r.issueUrl) d.issueUrl = r.issueUrl;
+  // #1377: the number the driver parsed from the created issue's URL, so an
+  // automated caller does not have to. Absent when the URL carried no number.
+  if (typeof r.issueNumber === "number") d.issueNumber = r.issueNumber;
   if (r.capReason) d.capReason = r.capReason;
   if (r.filingFailure) d.filingFailure = r.filingFailure;
   if (r.failedAngles) d.failedAngles = r.failedAngles;

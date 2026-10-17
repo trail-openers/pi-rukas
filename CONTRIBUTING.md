@@ -114,7 +114,7 @@ inside argument values are not injection vectors.
 prefix happens in the decision-cache layer
 (`extension/src/permission-decision-cache.ts`), not in pattern authoring.
 `agents.json`-side matching (`matchBashSubcommand` in
-`extension/src/bash-pattern-wildcard.ts`) matches whatever pattern the
+`extension/src/bash-command-parser.ts`) matches whatever pattern the
 operator wrote against the incoming command — an operator-authored pattern is
 not rejected at the matcher level. The drop applies only to the persisted
 `"Allow always"` / `"Deny always"` cache in `.pi/decisions.json`. At load time,
@@ -124,8 +124,9 @@ entry silently (trace-only). At lookup time, `isSafeBashPatternKey` is checked
 in both `lookupCachedToolDecision` and `lookupCachedBrokerDecision`, so a
 residual unsafe-pattern key is skipped at match time even if it had survived a
 load. The unsafe set is `BASH_PATTERN_UNSAFE_CHARS`
-(`['"`*?\[\]{}|&;<>\$]`), a different — larger — set than the matcher-level
-injection chars above. The write path degrades rather than silently drops:
+(`['"`*?\[\]{}|&;<>\$]`) — a superset of the matcher-level injection chars
+above, which additionally cover quoting and globbing characters (`'`, `"`,
+`*`, `?`, `[`, `]`, `{`, `}`). The write path degrades rather than silently drops:
 `getBashAlwaysScope` returns `null` for a command whose extracted prefix
 contains an unsafe character, the UI label falls back to a bare
 `"Allow always"` (no `(prefix *)` suffix), and the stored key is

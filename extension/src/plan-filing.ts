@@ -10,11 +10,19 @@
  *   - `setPlanForge`: the injectable forge-resolution seam (tests),
  *   - the `FilingFailure` / `FilingResult` types (D7: discriminated reasons).
  *
+ * The label existence gate that runs before the create call lives in
+ * `plan-labels.ts` and takes the SAME adapter object `fileIssue` was handed, so
+ * one filing resolves its forge once. This module declares no label path of its
+ * own — labels reach the forge as `fileIssue`'s `opts`, which is the single
+ * channel (#1377), and `FileIssueOpts` itself is declared once, in
+ * `forge-types.ts`, and imported from there.
+ *
  * The `FilingFailure.reason` union is declared ONCE here and re-exported;
  * `PlanResult.filingFailure` (plan-types.ts) references this type, so a
  * reason added on the filing side is forced onto the type side.
  */
 import { detectForge } from "./forge-detect.ts";
+import type { FileIssueOpts } from "./forge-types.ts";
 import { type Forge, createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 
@@ -30,6 +38,18 @@ import { trace } from "./trace.ts";
  * returned targeted questions instead of investigating, or the drafted
  * body failed mechanical validation (plan-validate.ts) before the gap gate
  * ever saw it. Both are policy skips, not failures.
+ *
+ * `label-missing` (#1377) is a third deterministic skip: a caller asked for
+ * labels the target repo does not have. Nothing is filed and no label is
+ * created — the detail names the missing ones.
+ *
+ * `label-list-unreadable` (#1377) is the fourth, and deliberately NOT folded
+ * into `label-missing`: the two read the same in the log but say opposite things
+ * to the operator. One means "create this label", the other means "the read
+ * never answered — do not create anything" (the CLI failed, or the set is larger
+ * than one page either CLI can enumerate). Reporting a failure to read as a
+ * verdict about the labels would send the operator to fix a problem that does
+ * not exist.
  */
 export interface FilingFailure {
   reason:
@@ -43,12 +63,20 @@ export interface FilingFailure {
     | "duplicate-risk"
     | "review-unparseable"
     | "body-too-large"
-    | "filing-in-progress";
+    | "filing-in-progress"
+    | "label-missing"
+    | "label-list-unreadable";
   detail?: string;
 }
 
 export interface FilingResult {
   url?: string;
+  /**
+   * #1377: the filed issue's number, from the forge's parsed response. Left
+   * undefined when the forge gave a URL it could not number (the number is
+   * convenience for the caller — `url` remains the authority).
+   */
+  number?: number;
   failure?: FilingFailure;
 }
 
@@ -59,11 +87,25 @@ export interface FilingResult {
  * the result — the forge's stderr (captured in the thrown Error message) is
  * included in the detail for `create-error` so the operator sees WHY the
  * issue did not file.
+ *
+ * The options type is `FileIssueOpts` from `forge-types.ts` — declared there,
+ * imported from there, and deliberately NOT re-exported here: a re-export is a
+ * second import path to one type, and the two drift. The declaration lives on
+ * the forge side of the seam because the adapter must never import from the
+ * plan layer.
+ *
+ * #1377: `opts.labels` is the ONLY channel labels travel — the adapter carries
+ * none from construction (a `labels` field on `createForge` plus a per-call
+ * `opts` meant two sources that could disagree, and the construction one won
+ * silently). The adapter renders one `--label` per label on gh, `--label a,b`
+ * on glab, and the created issue's number travels back on the result so a
+ * caller does not have to parse the URL itself.
  */
 export async function fileIssue(
   title: string,
   body: string,
   resolveForge: () => Promise<Forge | undefined>,
+  opts: FileIssueOpts = {},
 ): Promise<FilingResult> {
   const resolved = await resolveForge();
   if (!resolved) {
@@ -71,7 +113,7 @@ export async function fileIssue(
     return { failure: { reason: "forge-unresolved" } };
   }
   try {
-    const issue = await resolved.issueCreate(title, body);
+    const issue = await resolved.issueCreate(title, body, opts);
     const url = issue.url;
     if (!url) {
       return {
@@ -81,7 +123,7 @@ export async function fileIssue(
         },
       };
     }
-    return { url };
+    return { url, number: issue.number };
   } catch (err) {
     // A non-Error throw (a plain string, as CLIs and JSON parsers throw)
     // has no `.message` — casting to Error would leave the detail silently
@@ -98,6 +140,10 @@ export async function fileIssue(
  * falls back to raw `gh` (pre-migration behaviour). Detection errors are no
  * longer swallowed silently (D7): they propagate to `fileIssue`'s catch and
  * are carried through the `create-error` failure.
+ *
+ * #1377: no `labels` parameter. Labels are arguments to the create call, not
+ * properties of the adapter, so a filing that resolved its forge once and then
+ * filed under labels the gate never saw is not representable.
  */
 export async function planForgeFor(repoRoot: string): Promise<Forge | undefined> {
   if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;

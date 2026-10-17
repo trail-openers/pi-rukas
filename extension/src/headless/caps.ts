@@ -48,8 +48,12 @@ export const FIXED_CAPS = [
   "cross-group-conflict",
   "deadline",
   "deferred-creation:develop",
+  "develop-child-crash",
   "develop-incomplete-deliverables",
   "developer-timeout",
+  // #1398 — the review re-ran after the PR was marked ready and the driver
+  // could not put the PR back to a draft.
+  "draft-rearm-failed",
   "existing-pr-detected",
   "explore-already-complete",
   "explore-bodies-empty",
@@ -73,6 +77,7 @@ export const FIXED_CAPS = [
   "step-back-revise-spec",
   "token-budget",
   "wall-clock",
+  "worktree-listing-unreadable",
 ] as const satisfies readonly FixedCap[];
 
 // Compile-time exhaustiveness (the #986 pattern): a fixed cap in the union

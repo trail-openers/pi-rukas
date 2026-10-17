@@ -9,6 +9,7 @@ import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
+import { parkLensFixOverrun, reviewFixDispatchBoundMs } from "./work-driver-lens-fix-budget.ts";
 import {
   countCommittedAhead,
   countLensFixEmptyResends,
@@ -35,6 +36,14 @@ export async function runLensFix(
         e.kind === "lens-issues-found",
     );
   const findings = lastFinding?.findings ?? "(no prior findings recorded)";
+  // #1416 — the 90-minute review-loop budget used to be PRINTED (the widget's
+  // `cap 100m11s/90m`) and never enforced: the only check ran after a review
+  // had returned, so a fixer already past its budget was awaited to completion.
+  // Checked here, at the dispatch boundary: already over → park without
+  // dispatching; still under → the fixer is bound to what the budget leaves.
+  const overrun = await parkLensFixOverrun(ctx, state, now);
+  if (overrun !== state) return overrun;
+  const dispatchBoundMs = reviewFixDispatchBoundMs(state, "lens-fix", now);
   // #654 — empty-diff shape: re-dispatch the fix ONCE with no-diff evidence
   // before re-flagging identical findings at escalating severity.
   const resends = countLensFixEmptyResends(state.eventLog, state.pipelineState.reviewRound);
@@ -172,7 +181,10 @@ export async function runLensFix(
     // The same worktree the review itself read, so the fix lands against the
     // tree the findings describe. One worktree holds every workstream's
     // consolidated work, so there is no N>1 partition to make here.
-    { cwd: lensWorktree(ctx, state) },
+    {
+      cwd: lensWorktree(ctx, state),
+      ...(dispatchBoundMs !== undefined ? { timeoutMs: dispatchBoundMs } : {}),
+    },
   );
 }
 

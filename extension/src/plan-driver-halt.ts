@@ -37,6 +37,8 @@ export interface PlanResultFields {
   gaps: PlanGap[];
   priorContext: { source: string; fact: string }[];
   issueUrl?: string;
+  /** #1377: the filed issue's number, when the forge response carried one. */
+  issueNumber?: number;
   filingFailure?: FilingFailure;
   timings: PlanPhaseTiming[];
   capHit?: boolean;
@@ -44,6 +46,15 @@ export interface PlanResultFields {
   residualForDisclosure?: PlanGap[];
   failedAngles?: { name: string; detail: string }[];
   compacted?: boolean;
+  /**
+   * #1383: the durable file holding the FULL dropped-items list when the
+   * bounded `## Dropped investigation items` section omitted part of it, so the
+   * omission line and the tool result name bytes that exist rather than the run
+   * transcripts (`/runs` truncates tool args and prune after 5 days). Absent
+   * when nothing was omitted or the write failed — the body then states counts
+   * and bounds and promises no location.
+   */
+  droppedListFile?: string;
   reviewedDigest?: string;
   investigationReused?: { ageMs: number };
   filedFromDryRun?: { ageMs: number };
@@ -81,12 +92,14 @@ export function buildPlanResult(f: PlanResultFields): PlanResult {
     priorContext: f.priorContext,
     filed: !!f.issueUrl,
     issueUrl: f.issueUrl,
+    issueNumber: f.issueNumber,
     capHit: f.capHit || undefined,
     capReason: f.capReason,
     residualForDisclosure: f.residualForDisclosure?.length ? f.residualForDisclosure : undefined,
     filingFailure: f.filingFailure,
     failedAngles: f.failedAngles?.length ? f.failedAngles : undefined,
     compacted: f.compacted || undefined,
+    droppedListFile: f.droppedListFile,
     reviewedDigest: f.reviewedDigest,
     investigationReused: f.investigationReused,
     filedFromDryRun: f.filedFromDryRun,
