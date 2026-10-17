@@ -116,6 +116,68 @@ const capHit = (cap: string, at: number, extra: Record<string, unknown> = {}): W
   assert(t?.exitCode === null, "a signal-killed child has exitCode null");
 }
 
+// ── #1243 — a provider outage parks with its own cap, and the host reads it as
+// `kind: "provider"` so it can re-queue the cycle itself. A real failure of the
+// work keeps `step-failed:<step>` and stays `process`.
+{
+  const outage = build(
+    [
+      { kind: "step-started", step: "adversarial", at: 1 },
+      {
+        kind: "dispatch-failed-provider",
+        ...base(2, "adversarial-loop", "adversarial"),
+        providerMessage: "Request timed out.",
+        providerRepeats: 2,
+        usage: usage(9),
+      },
+      capHit("provider-unavailable", 3, {
+        evidence: "provider/transport error: Request timed out. · cause=provider-severed",
+      }),
+    ],
+    "handoff",
+  );
+  const f = projectIssue(outage, "f").failure;
+  assert(f?.kind === "provider", `provider-unavailable is kind provider (${f?.kind})`);
+  assert(
+    f?.cause === "provider-severed",
+    `cause is the endpoint's, classified (${f?.cause})`,
+  );
+  assert(
+    f?.providerMessage === "Request timed out.",
+    `the endpoint's own message reaches the host (${f?.providerMessage})`,
+  );
+  assert(
+    (f?.message ?? "").includes("Request timed out."),
+    `message names the fault, not the cap string (${f?.message})`,
+  );
+  // A cap of the same name with no failed dispatch behind it is still `provider`:
+  // the cap itself carries the diagnosis, and a host re-queueing on `provider`
+  // must not depend on the event log surviving intact.
+  const bare = build(
+    [{ kind: "step-started", step: "adversarial", at: 1 }, capHit("provider-unavailable", 2)],
+    "handoff",
+  );
+  assert(
+    projectIssue(bare, "f").failure?.kind === "provider",
+    "provider-unavailable with no dispatch is still kind provider",
+  );
+  // The contrast that makes the cap worth having: a crashed child behind the
+  // same step's cap is NOT a provider park, so a caller does not re-queue a
+  // defect forever.
+  const real = build(
+    [
+      { kind: "step-started", step: "adversarial", at: 1 },
+      { kind: "dispatch-failed", ...base(2, "adversarial-loop", "adversarial"), exitCode: 1 },
+      capHit("step-failed:adversarial", 3),
+    ],
+    "handoff",
+  );
+  assert(
+    projectIssue(real, "f").failure?.kind === "process",
+    "a crashed child stays kind process — not something to re-queue",
+  );
+}
+
 // ── Caps with no failed dispatch.
 {
   const verify = build(

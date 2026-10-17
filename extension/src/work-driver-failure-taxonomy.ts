@@ -18,6 +18,16 @@ import {
   parseRetryDelaySeconds,
 } from "./types.ts";
 
+// #1243 — the provider-class ladder lives in its own module (AGENTS.md §12 size
+// limit). Re-exported so every caller keeps importing the ladder alongside the
+// classifier that produced the cause it keys on — one seam for "what happened"
+// and "how long to wait for it", which is the pairing that was missing before.
+export {
+  providerRetryFloorMs,
+  providerRetryMaxTotalMs,
+  providerRetryWaitMs,
+} from "./work-driver-provider-backoff.ts";
+
 /**
  * #297 — max INFRASTRUCTURE-TRANSIENT retries per step on HALT-class
  * steps. Pre-#297, a single transient (provider error-stop, pi-rukas
@@ -221,6 +231,28 @@ export function shadowFailureCause(
 /** #79 — observed: `404: {"message":"model \"qwen3.8-flash-next\" not found","type":"not_found"}`. */
 const MODEL_NOT_FOUND_PATTERN = /\b404\b.*not[ _]found|\bmodel\b.*\bnot found\b/i;
 
+/**
+ * #1243 — the whole reason, not a prefix of it. Every reason site used to
+ * `slice(0, 60)` the provider's message and the child's tail, which is why the
+ * three tehas cycles all read `subagent failed: Adversarial loop infrastructure
+ * failure: round 2 review disp` — cut 60 characters into our OWN composite
+ * text, so the number that followed was invisible and the one number that WAS
+ * visible ("3m54s") read as a constant rather than that attempt's cost.
+ *
+ * 240 is a compromise: enough of the endpoint's own error to act on, bounded
+ * enough that a stack-trailing provider body cannot dominate a scrollback line
+ * or a headless `message` field (headless/failure.ts applies its own tighter
+ * caps on top of this one).
+ */
+export const FAILURE_REASON_CHARS = 240;
+
+/** Clip to the reason budget, preserving `undefined` — callers distinguish an
+ * absent field from an empty one (`?? "connection lost"` style defaults). */
+function clip(text: string | undefined): string | undefined {
+  if (text === undefined) return undefined;
+  return text.length > FAILURE_REASON_CHARS ? text.slice(0, FAILURE_REASON_CHARS) : text;
+}
+
 /** #79 — `×N in a row` when the loop stopped on a repeating provider error. */
 function repeatsNote(tail: { providerRepeats?: number }): string {
   const n = tail.providerRepeats ?? 0;
@@ -395,13 +427,13 @@ export function failureCauseReason(tail: {
     case "rate-limited:quota-terminal":
       return "provider spend cap reached — waiting will not clear this";
     case "provider-severed":
-      return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}${repeatsNote(tail)}`;
+      return `provider/transport error: ${clip(tail.providerMessage ?? tail.errorTail) ?? "connection lost"}${repeatsNote(tail)}`;
     case "provider-model-unavailable":
-      return `provider does not serve the configured model — re-dispatching cannot help: ${(tail.providerMessage ?? tail.errorTail)?.slice(0, 120)}`;
+      return `provider does not serve the configured model — re-dispatching cannot help: ${clip(tail.providerMessage ?? tail.errorTail)}`;
     case "crashed":
-      return `subagent failed: ${tail.errorTail?.slice(0, 60) ?? "non-zero exit"}`;
+      return `subagent failed: ${clip(tail.errorTail) ?? "non-zero exit"}`;
     case "crashed-unknown":
-      return `subagent failed (unexpected event): ${tail.errorTail?.slice(0, 60) ?? "unknown failure"}`;
+      return `subagent failed (unexpected event): ${clip(tail.errorTail) ?? "unknown failure"}`;
     case "success":
       return "(success — no failure reason)";
   }
@@ -440,13 +472,13 @@ export function failureCauseReasonForClass(
     case "rate-limited:quota-terminal":
       return "provider spend cap reached — waiting will not clear this";
     case "provider-severed":
-      return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}${repeatsNote(tail)}`;
+      return `provider/transport error: ${clip(tail.providerMessage ?? tail.errorTail) ?? "connection lost"}${repeatsNote(tail)}`;
     case "provider-model-unavailable":
-      return `provider does not serve the configured model — re-dispatching cannot help: ${(tail.providerMessage ?? tail.errorTail)?.slice(0, 120)}`;
+      return `provider does not serve the configured model — re-dispatching cannot help: ${clip(tail.providerMessage ?? tail.errorTail)}`;
     case "crashed":
-      return `subagent failed: ${tail.errorTail?.slice(0, 60) ?? "non-zero exit"}`;
+      return `subagent failed: ${clip(tail.errorTail) ?? "non-zero exit"}`;
     case "crashed-unknown":
-      return `subagent failed (unexpected event): ${tail.errorTail?.slice(0, 60) ?? "unknown failure"}`;
+      return `subagent failed (unexpected event): ${clip(tail.errorTail) ?? "unknown failure"}`;
     case "success":
       return "(success — no failure reason)";
   }

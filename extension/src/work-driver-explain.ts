@@ -139,6 +139,22 @@ export function explainCap(
       return explainLens(cap, state);
     case "adversarial-infra-failure":
       return explainOther(cap, state);
+    case "provider-unavailable": {
+      // #1243 — the endpoint caused this park, not the code. Two things the
+      // operator (and a headless caller re-queueing on its own) needs, and the
+      // generic fallback gives neither: that there is nothing to fix, and what
+      // the outage actually said. The provider's own words ride on the cap's
+      // evidence, written by the router off the failed dispatch. When the cap
+      // predates that field (or the router could not read one), the cause is
+      // re-derived off the log so this sentence names the fault the same way the
+      // `step-failed:adversarial` sibling does.
+      const hit = lastCapHit(state, "provider-unavailable");
+      const cause = adversarialFailureCause(state);
+      const ev =
+        hit?.evidence ??
+        `the provider endpoint was unreachable for the whole retry ladder${cause ? ` (${cause})` : ""}`;
+      return `the model endpoint was down or severing connections and every retry met the same fault — ${ev}. NOTHING about this cycle's code was judged: there is no defect here to look at. The branch, PR and any commits are as the sections below describe. A headless caller may re-queue this cycle itself once the endpoint answers (the result's \`failure.kind\` is \`provider\`); from the chat, re-run \`/work ${state.issue}\` — the step resumes where it stopped rather than restarting the cycle. To lengthen the ladder: PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS / PI_ENSEMBLE_PROVIDER_RETRY_MAX_TOTAL_MS`;
+    }
     case "awaiting-human-merge": {
       const hold = state.pipelineState.mergeHold;
       const pr = state.pipelineState.prNumber;
