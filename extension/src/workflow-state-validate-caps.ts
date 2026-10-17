@@ -114,6 +114,12 @@ export const CAP_HIT_FIXED_LITERALS = [
   "cross-group-conflict",
   // #754 — the plan step's own bound expired on the primary plan dispatch.
   "plan-timeout",
+  // #819 — the plan-to-spec gate refused the plan (declared paths cover no
+  // deliverable, or the reply carried several `## Workstreams` blocks). A
+  // deliberate park terminalized as a handoff, fired before the branch step:
+  // the validator must know the literal or a re-entry of a live parked cycle
+  // would halt on "unrecognised value".
+  "plan-spec-mismatch",
   // #280 §B — the same finding shape across ≥3 files routes to step-back.
   "repeat-finding-seam",
   // #1349 — the adversarial fix pass parked on its own checks.

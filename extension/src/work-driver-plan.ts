@@ -40,11 +40,27 @@ export {
   findDroppedDependencyEdges,
   planQualityEnabled,
   planQualityReason,
+  planCorrectivePrompt,
   planDispatchTimeoutMs,
+  planSpecMismatchPlanQualityReason,
   planTimeoutCorrective,
 } from "./work-driver-plan-helpers.ts";
 // #849 — parseWorkstreams + maxWorkstreams moved to work-driver-plan-workstreams.ts
 export { maxWorkstreams, parseWorkstreams } from "./work-driver-plan-workstreams.ts";
+// The explore-reply verdict parsers moved to work-driver-plan-verdicts.ts for
+// the §12 line cap; re-exported so their importers keep this module's path.
+export {
+  type ExploreVerdict,
+  parseExploreVerdict,
+  parsePerIssueVerdicts,
+} from "./work-driver-plan-verdicts.ts";
+// #819 — the plan-to-spec gate's pieces, re-exported so the smoke tests import
+// the gate from the plan module the same way they import every other rule.
+export {
+  countMarkdownSections,
+  findUncoveredDeliverables,
+  planSpecMismatchReason,
+} from "./work-driver-plan-spec-coverage.ts";
 import {
   correctivePlanSteer,
   correctiveTestSubjectSplitSteer,
@@ -53,10 +69,15 @@ import {
   planDispatchTimeoutMs,
   planQualityEnabled,
   planQualityReason,
+  planSpecMismatchCap,
+  planSpecMismatchPlanQualityReason,
   planTimeoutCorrective,
   planTimeoutKill,
 } from "./work-driver-plan-helpers.ts";
 import { findPathCollisions, findTestSubjectSplits } from "./work-driver-plan-paths.ts";
+// #819 — the cap helper below is typed on the gate's verdict shape.
+import type { PlanSpecMismatch } from "./work-driver-plan-spec-coverage.ts";
+import { planCorrectivePrompt } from "./work-driver-plan-timeout.ts";
 import { parseWorkstreams } from "./work-driver-plan-workstreams.ts";
 import { planFindingsCount } from "./work-driver-pr-body-definition.ts";
 import { inlinePlanPrompt } from "./work-driver-prompts-early.ts";
@@ -253,9 +274,34 @@ export async function runPlan(
   // #290 — deterministic plan-quality gate (arithmetic, not judgment).
   // #378 — count DELIVERABLES from the resolved spec, not enumerated markdown.
   const reason = planQualityReason(workstreams, findingsCount);
+  // #819 — the plan-to-spec gate, immediately after `planQualityReason` and
+  // before `checkAndRegisterClaims`: a pure function of (reply text,
+  // workstreams, spec), no dispatch, no I/O. It reads the reply's RAW text
+  // because the multi-block defect is invisible in the parsed map — the parser
+  // saw one block and produced one map either way.
+  // An existing reason takes precedence in the corrective steer (the more
+  // specific diagnosis: a collision is a fixable split, wrong work is not).
+  const specMismatch = planQualityEnabled()
+    ? planSpecMismatchPlanQualityReason(result.text ?? "", workstreams, spec)
+    : undefined;
+  // The kill-triggered corrective already spent this cycle's one-shot budget,
+  // so the gate below does not re-dispatch — but #819 must not proceed to
+  // develop on a plan nobody checked: it halts with the same cap a wrong
+  // corrective gets, and the evidence says the corrective could not run.
+  if (planKill && specMismatch) {
+    return planSpecMismatchCap(
+      next,
+      specMismatch,
+      "the one-shot plan corrective was already spent on the killed primary plan, so this plan was not re-dispatched",
+    );
+  }
   // #754 — the kill-triggered corrective already spent this cycle's one-shot
   // corrective budget; the quality gate below must not spend it a second time.
-  if (!planKill && planQualityEnabled() && reason) {
+  // #819 — a plan-to-spec mismatch fires the same one-shot corrective; when
+  // the shape gate passed and only the spec gate fired, the steer is the
+  // spec-steer (an existing reason keeps precedence: it is the more specific
+  // diagnosis of the two).
+  if (!planKill && planQualityEnabled() && (reason || specMismatch)) {
     // #849 — the first plan's RAW workstreams, held aside for the dropped-edge
     // check. Set here (the quality gate firing on the primary's plan) so the
     // kill-triggered corrective path leaves it undefined (pre-#1005 shape).
@@ -263,12 +309,16 @@ export async function runPlan(
     // needs: it compares the first plan's declared depends-on edges against
     // the corrective's declared edges.
     firstPlanWorkstreams = firstPlanRaw;
-    trace(`work-driver: plan quality — ${reason}, re-dispatching once`);
+    trace(
+      `work-driver: plan quality — ${reason ?? specMismatch?.kind}, re-dispatching once${
+        reason && specMismatch ? ` (also plan-spec-mismatch: ${specMismatch.kind})` : ""
+      }`,
+    );
     const steer =
       reason === "test-subject-split"
         ? correctiveTestSubjectSplitSteer(findTestSubjectSplits(workstreams))
         : correctivePlanSteer(
-            reason,
+            reason ?? "plan-spec-mismatch",
             findingsCount,
             Object.keys(workstreams).length,
             findPathCollisions(workstreams),
@@ -317,6 +367,21 @@ export async function runPlan(
       // a depends-on edge (rule 2) short-circuits the grep, so the common
       // re-split shape costs no exec calls.
       workstreams = await runCouplingMerge(workstreams);
+      // #819 — the gate runs AGAIN on the corrective: the #818 incident's
+      // wrong work came from the CORRECTIVE, not the first plan, so checking
+      // only before the re-dispatch would have passed it. A corrective is
+      // already this cycle's one-shot budget — a plan-to-spec failure here
+      // HALTS rather than proceeding to branch/develop on fabricated scope.
+      const correctiveMismatch = planQualityEnabled()
+        ? planSpecMismatchPlanQualityReason(retry.text ?? "", workstreams, spec)
+        : undefined;
+      if (correctiveMismatch) {
+        return planSpecMismatchCap(
+          next,
+          correctiveMismatch,
+          "this is the one-shot corrective plan — it was not re-dispatched and develop never ran",
+        );
+      }
     }
   }
   // #849 — the one-shot corrective re-plan is free to MERGE the colliding
@@ -362,7 +427,11 @@ export async function runPlan(
   // computed once (`dropped-dependencies` wins when the corrective dropped an
   // edge, else the first plan's quality reason) so the mid-function #849
   // check and the return can no longer disagree.
-  const finalReason = droppedEdges && droppedEdges.length > 0 ? "dropped-dependencies" : reason;
+  const finalReason =
+    droppedEdges && droppedEdges.length > 0
+      ? "dropped-dependencies"
+      : (reason ??
+        (specMismatch && planQualityEnabled() ? ("plan-spec-mismatch" as const) : undefined));
   return {
     ...next,
     pipelineState: {
@@ -377,122 +446,3 @@ export async function runPlan(
     },
   };
 }
-
-/**
- * Enumerated-finding count for this cycle's primary issue, read from the body
- * artifact the explore step cached. Returns 0 when unavailable — the gate then
- * cannot fire on the findings rule, which is the correct conservative
- * behaviour for a body we could not read.
- */
-export type ExploreVerdict = "NEEDS_WORK" | "ALREADY_COMPLETE" | "NEEDS_CLARIFICATION";
-
-export function parseExploreVerdict(text: string): ExploreVerdict | null {
-  const m = text.match(/VERDICT:\s*\**\s*(NEEDS_WORK|ALREADY_COMPLETE|NEEDS_CLARIFICATION)\b/i);
-  const tok = m?.[1];
-  return tok ? (tok.toUpperCase() as ExploreVerdict) : null;
-}
-
-/**
- * PR10 — Multi-issue counterpart to parseExploreVerdict.
- *
- * For `/work N M P`, explore returns a per-issue verdict block like:
- *
- *   ## Verdict
- *   - #561: NEEDS_WORK
- *   - #562: ALREADY_COMPLETE — satisfied by PR #534
- *   - #563: NEEDS_WORK
- *
- * Parses one verdict per requested issue number. The `reason` string
- * captures the trailing prose after `—`/`-` (handoff renderers surface
- * it). When explore omitted a per-issue line for an issue, fall back
- * to the overall verdict via parseExploreVerdict; if even that is
- * absent, default to NEEDS_WORK so the driver proceeds rather than
- * silently dropping the issue.
- */
-export function parsePerIssueVerdicts(
-  text: string,
-  issues: number[],
-): Array<{
-  issue: number;
-  verdict: ExploreVerdict;
-  reason: string;
-  /** Where the verdict came from. `default` means nothing was parsed (#408). */
-  verdictSource: "per-issue" | "overall" | "default";
-}> {
-  const overall = parseExploreVerdict(text);
-  return issues.map((n) => {
-    const re = new RegExp(
-      `#${n}\\s*:\\s*\\**\\s*(NEEDS_WORK|ALREADY_COMPLETE|NEEDS_CLARIFICATION)\\b\\**\\s*[—\\-]?\\s*(.*)`,
-      "i",
-    );
-    const m = text.match(re);
-    const tok = m?.[1];
-    if (tok) {
-      const reason = (m?.[2] ?? "").trim();
-      return {
-        issue: n,
-        verdict: tok.toUpperCase() as ExploreVerdict,
-        reason,
-        verdictSource: "per-issue" as const,
-      };
-    }
-    if (overall) {
-      return {
-        issue: n,
-        verdict: overall as ExploreVerdict,
-        reason: "(no per-issue verdict; using overall)",
-        verdictSource: "overall" as const,
-      };
-    }
-    // #408 — this used to default to NEEDS_WORK, i.e. BUILD IT. Nothing in
-    // the reply said so; the driver invented it. That is the "silence is
-    // permission" shape #378 set out to remove, and it survived here on the
-    // multi-issue path — which #397 then made the ONLY multi-issue path.
-    //
-    // A value the driver made up must not drive an irreversible decision
-    // (the #404 lesson, one step upstream). NEEDS_CLARIFICATION drops the
-    // issue and tells the operator the verdict could not be read, which is
-    // recoverable; building something nobody asked for is not.
-    return {
-      issue: n,
-      verdict: "NEEDS_CLARIFICATION" as ExploreVerdict,
-      reason:
-        "the verdict for this issue could not be read — neither a per-issue marker nor an overall VERDICT was present. Not building on a verdict the driver invented.",
-      verdictSource: "default" as const,
-    };
-  });
-}
-
-/**
- * #657 — the corrective plan re-dispatch prompt. The historical-context note
- * lives here (at the corrective call path, NOT inside the shared steer
- * builders) so it applies ONLY to corrective re-dispatches: a weak model in
- * the #657 post-mortem read a stale `cross-group-conflict` reference as a
- * live unsatisfiable precondition, re-verified it with two gh/git commands
- * 530+ times, and burned 73.5M cache tokens before the wall-clock kill —
- * twice.
- */
-export function planCorrectivePrompt(prompt: string, steer: string): string {
-  const historicalNote = [
-    "NOTE: any prior-handoff or prior-conflict references in your context (e.g. an earlier",
-    "`cross-group-conflict` or overlapping-paths finding from a previous cycle) are HISTORICAL",
-    "records, not live preconditions. Do NOT re-verify them (no `gh issue view`, no `git",
-    "merge-base` checks on them) and do NOT let them block your plan. If the referenced",
-    "issue/commit is no longer relevant, simply proceed with your decomposition. Your job is",
-    "the decomposition itself — emit your final report once it is complete and stop.",
-  ].join(" ");
-  return `${prompt}\n\n${steer}\n\n${historicalNote}`;
-}
-
-/**
- * #290 — count discrete, actionable findings in an issue body.
- *
- * Deliberately deterministic and dumb: top-level numbered items (`1.`, `2)`)
- * and checkboxes (`- [ ]`). Indented continuations are excluded, because a
- * nested sub-point is detail about one finding, not a second finding.
- *
- * This exists to catch under-decomposition without asking a model whether it
- * decomposed well — a model that just produced one workstream is the last
- * thing you should ask. The count is compared against the workstream count
- * and nothing else.
- */

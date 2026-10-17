@@ -206,6 +206,9 @@ const OK_FINDINGS = 2;
     "circular-dependency",
     "interdependent-no-integration-test",
     "dropped-dependencies",
+    // #819 — the plan-to-spec gate. An exhaustive list is the only
+    // thing that stops a new reason silently inheriting the empty-paths prose.
+    "plan-spec-mismatch",
   ] as const) {
     const s = correctivePlanSteer(r, 6, 1);
     assert(s.length > 0 && !s.includes("undefined"), `${r} still renders without details`);
