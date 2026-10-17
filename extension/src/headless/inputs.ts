@@ -233,6 +233,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   input("RATE_LIMIT_BURST_MAX_S", "number", 300, "cycle", { unit: "s" }),
   flag("RESEARCH_FALLBACK", true, "interactive"),
   flag("RESUME", true),
+  // The 90-min review-loop budget is enforced at the fix dispatch, not just displayed.
+  flag("REVIEW_ENFORCE", true),
   dir("REVIEW_LEDGER_FILE", null, "cycle"),
   input("REVIEW_THRESHOLD", "enum", null, "cycle", {
     values: ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
