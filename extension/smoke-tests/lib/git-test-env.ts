@@ -12,11 +12,12 @@
  * this host at `main` and green on a host without the line — the suite's
  * verdict was a property of the machine.
  *
- * Three levers, one per door git reads:
+ * Four levers, one per door git reads:
  *
  *   GIT_CONFIG_GLOBAL   — an empty file replaces the per-user config (git >= 2.32).
  *   GIT_CONFIG_NOSYSTEM — the site-wide /etc/gitconfig is skipped.
  *   HOME                — an empty directory.
+ *   XDG_CONFIG_HOME     — an empty directory, inside that HOME.
  *
  * The third is the one that is easy to get wrong, and it is not optional.
  * `GIT_CONFIG_GLOBAL` replaces the per-user *config*, but git derives the
@@ -26,9 +27,29 @@
  * `git check-ignore -v` still attributed the path to `~/.config/git/ignore`;
  * with `HOME` pointed at an empty directory it reported "not ignored".
  *
- * HOME is also the broader lever, which is the actual requirement: it isolates
- * ANY host-global git state under the home directory — global config, XDG
- * config, XDG ignore — rather than this one excludesFile. Fixtures never
+ * The fourth exists because HOME is NOT the broad lever it was assumed to be.
+ * Git reads the per-user config directory from `$XDG_CONFIG_HOME` WHENEVER THAT
+ * IS SET and only falls back to `$HOME/.config` when it is unset — so
+ * overriding HOME alone leaves a host `XDG_CONFIG_HOME/git/ignore` (and
+ * `.../git/config`, `.../git/attributes`) in force. GitHub's `ubuntu-latest`
+ * runner exports `XDG_CONFIG_HOME`, and that is what made the PRECONDITION of
+ * smoke-tests/test-git-host-isolation-1145.ts red on CI while green here: the
+ * fixture's hostile `$HOME/.config/git/ignore` was never read, because the
+ * runner's variable sent git somewhere else. Reproduced locally by pointing
+ * `XDG_CONFIG_HOME` at a directory carrying `git/ignore` with a clean HOME —
+ * the sentinel disappears from `git status --porcelain -uall` exactly as CI
+ * reported it. The isolation hole is the same one and is not test-only: a
+ * developer whose `XDG_CONFIG_HOME` points at a config tree carrying ignores
+ * was NOT isolated by overriding HOME, which is the guarantee this module
+ * exists to give. Measured with git 2.50.1 on this host (which does NOT export
+ * the variable, hence the local green): hostile `XDG_CONFIG_HOME` + clean HOME
+ * hides the sentinel; the four-variable set shows it again.
+ *
+ * HOME is still the broader lever for the state that IS derived from it, and
+ * the two are complementary rather than redundant: it isolates host-global git
+ * state under the home directory — global config, and the `.config` fallback
+ * git uses when XDG is unset — where XDG closes the per-user-config door that
+ * HOME cannot reach. Fixtures never
  * depend on HOME: every commit in every fixture carries its identity locally
  * (`-c user.email=…` or an in-fixture `git config user.email …`), and
  * `ensureGitIdentity` in lib/git-worktree-fixture.ts supplies the
@@ -64,8 +85,13 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/** The three variables that isolate a fixture repo from the host's git config. */
-export const GIT_ISOLATION_VARS = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "HOME"] as const;
+/** The four variables that isolate a fixture repo from the host's git config. */
+export const GIT_ISOLATION_VARS = [
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_NOSYSTEM",
+  "HOME",
+  "XDG_CONFIG_HOME",
+] as const;
 
 /**
  * The real home directory, captured before this module isolates `HOME` and
@@ -101,23 +127,31 @@ function build(): Record<string, string> {
   if (process.env.PI_ENSEMBLE_SMOKE_HOST_GIT === "1") return {};
   const dir = mkdtempSync(join(tmpdir(), "pi-ens-gitiso-"));
   const cfg = join(dir, "gitconfig");
-  mkdirSync(join(dir, "home"), { recursive: true });
+  const home = join(dir, "home");
+  mkdirSync(home, { recursive: true });
+  // Empty, and INSIDE the isolated HOME so the two levers cannot disagree about
+  // where the per-user config lives. Git looks for `$XDG_CONFIG_HOME/git/ignore`,
+  // so an empty directory has nothing to ignore.
+  const xdg = join(home, ".config");
+  mkdirSync(xdg, { recursive: true });
   writeFileSync(cfg, "");
   const iso: Record<string, string> = {
     GIT_CONFIG_GLOBAL: cfg,
     GIT_CONFIG_NOSYSTEM: "1",
-    HOME: join(dir, "home"),
+    HOME: home,
+    XDG_CONFIG_HOME: xdg,
   };
   // An operator/runner that already chose a value wins — for the two CONFIG
-  // levers only. `HOME` is deliberately excluded: it is always isolated here,
-  // because it is the broad lever (the header) and the one whose host value
-  // silently changes what a fixture's git sees. Honouring an inherited `HOME`
+  // levers only. `HOME` and `XDG_CONFIG_HOME` are deliberately excluded: they
+  // are always isolated here, because they are the two whose host value
+  // silently changes what a fixture's git sees. Honouring an inherited one
   // would defeat the whole point — verify-loop.sh exports its own isolated
-  // `HOME` for the run, and re-using it here is harmless, but re-using the
-  // OPERATOR's home is exactly the leak this module exists to close.
+  // `HOME` and `XDG_CONFIG_HOME` for the run, and re-using those here is
+  // harmless, but re-using the OPERATOR's home or XDG config tree is exactly
+  // the leak this module exists to close.
   for (const k of GIT_ISOLATION_VARS) {
     const existing = process.env[k];
-    if (existing && k !== "HOME") iso[k] = existing;
+    if (existing && k !== "HOME" && k !== "XDG_CONFIG_HOME") iso[k] = existing;
   }
   process.env.PI_ENSEMBLE_TEST_REAL_HOME = REAL_HOME;
   return iso;
@@ -128,6 +162,14 @@ function build(): Record<string, string> {
  * `process.env` explicitly, `Bun.spawn({env: {...process.env}})` among them).
  * Does NOT reach a `child_process` call that omits `env` on bun 1.3 — see the
  * header note; those calls must thread `gitTestEnv()` themselves.
+ *
+ * `XDG_CONFIG_HOME` is SET to the empty dir rather than deleted from
+ * `process.env`, although "isolated" would accept either. The reason is the bun
+ * behaviour just described: bun drops `process.env` mutations on synchronous
+ * spawns, so a `delete` that lands on `process.env` still does not reach an
+ * unthreaded child — the operator's value survives either way, and only the
+ * positive form is robust. It also keeps `gitTestEnv()` a pure superset of its
+ * base, so no caller has to reason about un-setting anything.
  */
 export function isolateGitEnv(): void {
   const iso = gitTestEnv();

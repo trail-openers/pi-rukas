@@ -114,11 +114,12 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX \
 # dirty-root exemption baseline, the integrate preflight and the restore claim
 # see all read the tree as clean. They were red on a host that had that one
 # line and green on one that did not — the suite's verdict was a property of
-# the machine. Three variables, each closing a different door:
+# the machine. Four variables, each closing a different door:
 #
 #   GIT_CONFIG_GLOBAL   — an empty file replaces the per-user config (git >= 2.32).
 #   GIT_CONFIG_NOSYSTEM — the site-wide /etc/gitconfig is not read at all.
 #   HOME                — an empty directory.
+#   XDG_CONFIG_HOME     — an empty directory inside that HOME.
 #
 # HOME is the one that is easy to omit, and it is not optional. GIT_CONFIG_GLOBAL
 # replaces the per-user CONFIG, but git derives the global EXCLUDES file from the
@@ -129,9 +130,22 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX \
 # directory it reported "not ignored". Pinned by
 # smoke-tests/test-git-host-isolation-1145.ts.
 #
-# HOME is also the broader lever, which is the requirement: it isolates ANY
-# host-global git state under the home directory (config, XDG config, XDG
-# ignore), not this one excludesFile. Fixtures never depend on HOME — every
+# HOME is not sufficient either, which is what XDG_CONFIG_HOME is for. Git reads
+# the per-user config directory from $XDG_CONFIG_HOME whenever it is SET, and
+# only falls back to $HOME/.config when it is unset — so on a runner that
+# exports it, isolating HOME leaves `$XDG_CONFIG_HOME/git/ignore` (and `config`,
+# and `attributes`) fully in force. GitHub's ubuntu-latest exports it, which is
+# why the PRECONDITION of test-git-host-isolation-1145.ts was red on CI and
+# green here: the fixture's hostile `$HOME/.config/git/ignore` was never read.
+# Reproduced locally by pointing XDG_CONFIG_HOME at a directory carrying
+# git/ignore with a clean HOME. The leak is not test-only — a developer whose
+# XDG_CONFIG_HOME points at a config tree with ignores was not isolated by
+# overriding HOME, which is the guarantee this block exists to give.
+#
+# HOME is still the broader lever for the state that IS derived from it, and the
+# two are complementary: it isolates host-global git state under the home
+# directory (config, and the `.config` fallback git uses when XDG is unset)
+# rather than this one excludesFile. Fixtures never depend on HOME — every
 # commit in every fixture carries its identity locally (`-c user.email=` or an
 # in-fixture `git config user.email`), and ensureGitIdentity in
 # lib/git-worktree-fixture.ts supplies the GIT_AUTHOR/GIT_COMMITTER fallback.
@@ -148,9 +162,16 @@ if [ "${PI_ENSEMBLE_SMOKE_HOST_GIT:-}" != "1" ]; then
     chmod 700 "$_git_iso" 2>/dev/null || true
     : "$_git_iso/gitconfig" 2>/dev/null || true
     mkdir -p "$_git_iso/home" 2>/dev/null || true
+    mkdir -p "$_git_iso/home/.config" 2>/dev/null || true
     export GIT_CONFIG_GLOBAL="$_git_iso/gitconfig"
     export GIT_CONFIG_NOSYSTEM=1
     export HOME="$_git_iso/home"
+    # Set, not unset. `unset` isolates just as well when the child inherits this
+    # shell's env — git then falls back to the isolated HOME/.config, which is
+    # also empty — but a positive export survives the paths where the child env
+    # is rebuilt from a snapshot rather than inherited, and matches what
+    # lib/git-test-env.ts exports so the two levers agree on one directory.
+    export XDG_CONFIG_HOME="$_git_iso/home/.config"
   else
     # Could not allocate the isolation dir. Falling through to the host config
     # is the status-quo shape; pointing git at a path that does not exist would
