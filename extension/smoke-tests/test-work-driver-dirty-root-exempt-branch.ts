@@ -35,7 +35,7 @@ import type { CycleContext } from "../src/work-driver-context.ts";
 import { createEmitSink } from "../src/work-state-emit.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { realExec } from "./lib/exec-fake.ts";
-import { gitTestEnv, isolateGitEnv } from "./lib/git-test-env.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 
 const execFileP = promisify(execFile);
 
@@ -44,8 +44,9 @@ const execFileP = promisify(execFile);
 // `git status --porcelain -uall`, which is what these assertions read). See
 // lib/git-test-env.ts: the env is threaded into every git call below AND set
 // ambiently, because bun 1.3 does not propagate a process.env assignment to a
-// child_process call that omits `env`.
-isolateGitEnv();
+// child_process call that omits `env` — and the first call does both, so this
+// bare call is the ambient half and the threaded calls take the returned env.
+gitTestEnv();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

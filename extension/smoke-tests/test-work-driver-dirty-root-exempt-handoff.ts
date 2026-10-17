@@ -43,12 +43,14 @@ import {
 import { createEmitSink } from "../src/work-state-emit.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import { gitTestEnv, isolateGitEnv } from "./lib/git-test-env.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 
 const execFileP = promisify(execFile);
 
-// #1145 — fixture repos read no host git config; see lib/git-test-env.ts.
-isolateGitEnv();
+// #1145 — fixture repos read no host git config; see lib/git-test-env.ts. The
+// bare call is the one entry point: its first call also writes the four levers
+// ambiently, which is what the in-process production seam reads.
+gitTestEnv();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

@@ -36,7 +36,6 @@ import { runLensReview } from "../src/lens-review.ts";
 import { LENS_ROSTER } from "../src/lens-roster.ts";
 import { readBranchRows } from "../src/review-findings-store.ts";
 import type { LedgerEntry } from "../src/review-ledger.ts";
-import { validEntries } from "../src/review-ledger.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import {
   CHANGED_LINE_DIFF as DIFF,
@@ -92,14 +91,10 @@ const lensRows = (entries: LedgerEntry[]): LedgerEntry[] =>
 /** Wait until the branch's lens entry records round `n` (one lens row per
  * branch). The poll returns the entries it accepted; a timeout is a null. */
 const waitForRound = (n: number): Promise<LedgerEntry | undefined> =>
-  waitForLensRound(ledgerFile, "feat/x", n, lensRows, (file) =>
-    validEntries(JSON.parse(readFileSync(file, "utf8")).entries as unknown[]),
-  );
+  waitForLensRound(ledgerFile, "feat/x", n, lensRows);
 /** The branch's latest lens row — the one `hasCritical` is asserted on. */
 const latestLensEntry = (): LedgerEntry | undefined =>
-  latestLensEntryOf(ledgerFile, "feat/x", lensRows, (file) =>
-    validEntries(JSON.parse(readFileSync(file, "utf8")).entries as unknown[]),
-  );
+  latestLensEntryOf(ledgerFile, "feat/x", lensRows);
 
 try {
   // A finding literal, for the shapes no lens produces (no path, no line, a

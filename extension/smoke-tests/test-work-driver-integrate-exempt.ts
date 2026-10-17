@@ -30,12 +30,13 @@ import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
 import { integrate, readDirtyPorcelain, restoreRepoRoot } from "../src/work-driver-integrate.ts";
 import { stagePorcelainPaths } from "../src/work-driver-stage.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import { gitTestEnv, isolateGitEnv } from "./lib/git-test-env.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 
 const execFileP = promisify(execFile);
 
-// #1145 — fixture repos read no host git config; see lib/git-test-env.ts.
-isolateGitEnv();
+// #1145 — fixture repos read no host git config; see lib/git-test-env.ts. One
+// entry point: the first call also sets the four levers ambiently.
+gitTestEnv();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

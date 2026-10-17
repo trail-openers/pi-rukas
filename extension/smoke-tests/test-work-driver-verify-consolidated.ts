@@ -17,7 +17,7 @@ import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
-import { gitTestEnv, isolateGitEnv } from "./lib/git-test-env.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 
 const execFileP = promisify(execFile);
 
@@ -25,8 +25,9 @@ const execFileP = promisify(execFile);
 // (a `~/.config/git/ignore` line makes an untracked file vanish from
 // `git status`). Runs under verify-loop.sh too, which exports the same
 // isolation; this makes `bun run smoke-tests/<this>.ts` work on its own.
-// `realExec` below passes no `env`, so the ambient vars are what its git sees.
-isolateGitEnv();
+// `realExec` below passes no `env`, so the ambient vars are what its git sees —
+// and the first `gitTestEnv()` call is what writes them (one entry point).
+gitTestEnv();
 
 // #1012 — empty glob list disables frontend-only classification (also
 // for files that import this module).

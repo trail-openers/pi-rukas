@@ -25,7 +25,10 @@
  *    may legitimately write nothing on a detached head, and a 30 s wait on
  *    a negative case would burn a full budget per case);
  *  - `once: true` is an EXPLICIT single read for a caller that owns its own
- *    wall clock elsewhere. It exists because `budgetMs: 0` reached the same
+ *    wall clock elsewhere. Today that is exactly one caller, `waitForLensRound`
+ *    in lib/review-autonomy-fixtures.ts, which supplies its own awaited 20 ms
+ *    tick; every other caller stays on the budgeted `Atomics.wait` path below.
+ *    It exists because `budgetMs: 0` reached the same
  *    code path by accident — the `while (Date.now() < deadline)` guard is
  *    false on entry, so the loop body (the parse, and the torn-write handling
  *    that keeps the poll going on a mid-rename read) never ran and the call

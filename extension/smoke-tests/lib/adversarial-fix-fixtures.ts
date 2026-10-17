@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import type { DispatchResult } from "../../src/types.ts";
 import type { DriverContext } from "../../src/work-driver-context.ts";
 import { type WorkState, initialState } from "../../src/workflow-state.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 const realExec = promisify(exec);
 const realExecFile = promisify(execFile);
@@ -22,8 +23,19 @@ export function tmpDir(label: string): string {
   return dir;
 }
 
+/** Run one real git command in `cwd` and return its stdout.
+ *
+ * #1145 — `env: gitTestEnv()`. `execSync` is the synchronous spawn form, which
+ * bun 1.3 does not fix with an ambient `process.env` write, and the repos built
+ * through here are the ones the develop/consolidate gates read their dirty
+ * state from: a host `~/.config/git/ignore` makes a fixture file vanish from
+ * `git status`, which decides the verdict without touching the code. */
 export function git(cwd: string, cmd: string): string {
-  return execSync(`git -c user.email=t@t -c user.name=t ${cmd}`, { cwd, stdio: "pipe" }).toString();
+  return execSync(`git -c user.email=t@t -c user.name=t ${cmd}`, {
+    cwd,
+    stdio: "pipe",
+    env: gitTestEnv(),
+  }).toString();
 }
 
 export function singleState(dir: string, eventLog: WorkState["eventLog"] = []): WorkState {

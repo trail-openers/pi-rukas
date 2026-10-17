@@ -60,7 +60,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GIT_ISOLATION_VARS, gitTestEnv, isolateGitEnv } from "./lib/git-test-env.ts";
+import { GIT_ISOLATION_VARS, gitTestEnv } from "./lib/git-test-env.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -90,7 +90,7 @@ const IGNORE_LINE = ["**/", SENTINEL_FILE].join("");
  * `.git` — but a `TMPDIR` inside a checkout, or a repo rooted in the tree, is
  * one exclude line away from a silent false pass on every assertion below.
  * One private root also gives the whole file one place to clean up; it is
- * created LAZILY because case 4 calls `isolateGitEnv()`, which repoints the
+ * created LAZILY because case 4 calls `gitTestEnv()` bare, which repoints the
  * ambient `HOME`/`XDG_CONFIG_HOME` that later cases inherit into their
  * `baseEnv()` — a root resolved at module load would then sit under the
  * isolated HOME, and git resolves `.git/config`'s `core.excludesFile`
@@ -168,7 +168,7 @@ function cleanHome(): string {
  * Callers here always state the host they mean — `hostileEnv()` sets HOME and
  * XDG_CONFIG_HOME explicitly — so an ambient value for either must not survive
  * into the env handed to git. That is not a style choice: case 4 calls
- * `isolateGitEnv()`, which writes the isolation HOME/XDG into `process.env`, so
+ * `gitTestEnv()` bare, which writes the isolation HOME/XDG into `process.env`, so
  * on any re-run order that put case 4 first (or a future case that isolates
  * earlier) every later fixture would inherit the isolated pair and silently
  * lose its hostility. A base that cannot carry them makes the order irrelevant.
@@ -343,15 +343,15 @@ const IG = ["ig", "nore"].join("");
 
 // ------------------------------------------------------ 4. the helper is idempotent
 {
-  // The case mutates four of the ambient levers: `isolateGitEnv()` writes
+  // The case mutates four of the ambient levers: `gitTestEnv()` writes
   // GIT_CONFIG_GLOBAL / GIT_CONFIG_NOSYSTEM / HOME / XDG_CONFIG_HOME into
-  // `process.env`, and the bypass below sets PI_ENSEMBLE_SMOKE_HOST_GIT.
-  // Everything here reads git through an explicit env, so a leaked HOME would
-  // not silently recolour this file — but it leaks into whatever a later `bun`
-  // invocation in the same process inherits, and "the isolated HOME" is not a
-  // value any other test expects to find. Save and restore all four.
+  // `process.env` (the ambient half of the one entry point). Everything here
+  // reads git through an explicit env, so a leaked HOME would not silently
+  // recolour this file — but it leaks into whatever a later `bun` invocation in
+  // the same process inherits, and "the isolated HOME" is not a value any other
+  // test expects to find. Save and restore all four.
   const saved: Record<string, string | undefined> = {};
-  for (const k of [...GIT_ISOLATION_VARS, "PI_ENSEMBLE_SMOKE_HOST_GIT"]) {
+  for (const k of GIT_ISOLATION_VARS) {
     saved[k] = process.env[k];
   }
   const restore = () => {
@@ -385,23 +385,28 @@ const IG = ["ig", "nore"].join("");
     !!iso.HOME && !!iso.XDG_CONFIG_HOME && iso.XDG_CONFIG_HOME.startsWith(`${iso.HOME}${"/"}`),
     `the isolated XDG dir is inside the isolated HOME, so the two levers describe one host (HOME=${JSON.stringify(iso.HOME)}, XDG=${JSON.stringify(iso.XDG_CONFIG_HOME)})`,
   );
-  isolateGitEnv();
+  // The same one entry point performs the ambient write on its first call, so
+  // a test file that only wants the process pointed at the isolated view makes
+  // the bare call and asserts on `process.env` rather than threading an env.
+  gitTestEnv();
   assert(
     process.env.GIT_CONFIG_NOSYSTEM === "1" && !!process.env.GIT_CONFIG_GLOBAL,
-    "isolateGitEnv() applies the isolation to the current process env too",
+    "gitTestEnv() applies the isolation to the current process env too",
   );
   assert(
     !!process.env.XDG_CONFIG_HOME,
-    `isolateGitEnv() SETS XDG_CONFIG_HOME rather than leaving the host's in place (got ${JSON.stringify(process.env.XDG_CONFIG_HOME)})`,
+    `gitTestEnv() SETS XDG_CONFIG_HOME rather than leaving the host's in place (got ${JSON.stringify(process.env.XDG_CONFIG_HOME)})`,
   );
-  // An operator override is honoured, not silently replaced.
-  process.env.PI_ENSEMBLE_SMOKE_HOST_GIT = "1";
-  // Clear the cache indirectly: a fresh module-level cache is not reachable, so
-  // assert the bypass through a call made with the flag already set (the cached
-  // set is reused, so the only honest assertion here is that the base env passes
-  // through and no value points at the isolation dir for a NEW process).
-  const bypassed = gitTestEnv({ FOO: "bar" });
-  assert(bypassed.FOO === "bar", "gitTestEnv() passes the caller's base env through");
+  // The caller's base env passes through untouched — the isolation is a
+  // superset, not a replacement. (The `PI_ENSEMBLE_SMOKE_HOST_GIT` bypass is
+  // NOT asserted here: it is read once, in `build()`, on the FIRST call in the
+  // process, and by this point the cached isolated set already exists — setting
+  // the flag later could only ever assert against a value already chosen, which
+  // is a vacuous pass rather than a test of the hatch. lib/verify-loop.sh
+  // announces the hatch loudly when it is set for a run, which is the coverage
+  // it actually has.)
+  const passthrough = gitTestEnv({ FOO: "bar" });
+  assert(passthrough.FOO === "bar", "gitTestEnv() passes the caller's base env through");
   restore();
 }
 
@@ -418,16 +423,10 @@ const IG = ["ig", "nore"].join("");
       }
       if (!entry.endsWith(".ts")) continue;
       const text = readFileSync(full, "utf8");
-      for (const v of [
-        "GIT_CONFIG_GLOBAL",
-        "GIT_CONFIG_NOSYSTEM",
-        "XDG_CONFIG_HOME",
-        // HOME is the fourth of the isolation set and was the one the scan did
-        // not cover: a production module that SET `process.env.HOME` would move
-        // every git child (and every `~/` path) off the operator's home, which
-        // is the exact boundary this issue must not cross.
-        "HOME",
-      ]) {
+      // The four levers, from the module's own declaration rather than an
+      // inline copy: a fifth lever added to GIT_ISOLATION_VARS has to widen
+      // this scan automatically, or the gate silently stops covering it.
+      for (const v of GIT_ISOLATION_VARS) {
         // An ASSIGNMENT (export / process.env write) — a scrub-list string in an
         // array is not one, which is what headless/build.ts legitimately does.
         const re = new RegExp(`(export\\s+${v}|process\\.env\\.${v}\\s*=[^=])`, "m");
