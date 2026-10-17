@@ -63,6 +63,37 @@ assert(
   "#1156: the literal 'timeout 1200' the issue names is in the role prompt",
 );
 
+// `timeout` is GNU coreutils — macOS ships none, and this repo's own
+// smoke-tests/lib/verify-kill.sh deliberately avoids it for the same reason.
+// A role prompt that mandates the binary is wrong on the dev machine.
+assert(
+  /macOS ships none|macOS has no .{0,10}timeout/i.test(src),
+  "#1156 fallback: the role prompt says macOS has no `timeout`",
+);
+assert(
+  /gtimeout/i.test(src),
+  "#1156 fallback: gtimeout (Homebrew coreutils) is named as the same tool",
+);
+assert(
+  /run the command bare/i.test(src),
+  "#1156 fallback: with no `timeout` the command runs bare",
+);
+assert(
+  /stay under the tool watchdog|under the tool watchdog/i.test(src),
+  "#1156 fallback: the bare-run fallback is bounded by the tool watchdog, not left unbounded",
+);
+assert(
+  /PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS/.test(src),
+  "#1156 fallback: the watchdog bound is named by its knob, so the two timeout rules resolve to one",
+);
+assert(
+  /Git safety/i.test(src) &&
+    /(same bound|one rule|not two unrelated|same rule)/i.test(
+      src.slice(src.indexOf("Scope your own testing"), src.indexOf("Size caps")),
+    ),
+  "#1156 fallback: the section points at the existing watchdog paragraph so the two timeout rules do not read as unrelated",
+);
+
 // ------------------------------------------------ size cap: split, don't shorten
 
 assert(

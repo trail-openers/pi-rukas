@@ -95,6 +95,14 @@ export function developVerifyLine(verifyCmd?: string, fastCmd?: string): string 
  * on a `/work` fan-out: developers ran the whole offline suite in parallel
  * worktrees with no bound at all and one stuck ~20 minutes on a single suite
  * call, so the slowest child set the pace of every gate.
+ *
+ * 1200s sits between the two bounds this one has to live inside: it is 4× the
+ * 300s a single test already gets under `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S`
+ * (verify-kill.sh), so one suite gets room for a slow-but-progressing run
+ * without one stuck call eating the whole budget; and it is a third of the
+ * 3600s `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` watchdog that would otherwise
+ * take the child down, so the command reports what hung instead of the child
+ * being killed for silence.
  */
 export const SUITE_TIMEOUT_SECONDS = 1200;
 
@@ -110,5 +118,5 @@ export const SUITE_TIMEOUT_SECONDS = 1200;
  * returns one of three strings and the rule applies to all three.
  */
 export function developTestScopeLine(): string {
-  return `Scope your own testing: run the smoke tests for the files you changed, plus typecheck and lint. Do NOT run the full test suite — the driver runs the full suite once on your worktree after you finish, and several workstreams each running it whole in parallel only slow every gate down. Wrap every suite or test command in \`timeout ${SUITE_TIMEOUT_SECONDS}\` (e.g. \`timeout ${SUITE_TIMEOUT_SECONDS} bun test extension/smoke-tests/test-foo.ts\`) so a single stuck test can never consume the dispatch.`;
+  return `Scope your own testing: run the smoke tests for the files you changed, plus typecheck and lint. Do NOT run the full test suite — the driver runs the full suite once on your worktree after you finish, and several workstreams each running it whole in parallel only slow every gate down. Wrap every suite or test command in \`timeout ${SUITE_TIMEOUT_SECONDS}\` (e.g. \`timeout ${SUITE_TIMEOUT_SECONDS} bun test extension/smoke-tests/test-foo.ts\`) so a single stuck test can never consume the dispatch; where \`timeout\` is not available (macOS ships none — \`gtimeout\` from Homebrew coreutils is the same tool), run the command bare and keep it under the tool watchdog.`;
 }
