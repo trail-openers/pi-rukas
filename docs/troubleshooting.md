@@ -2207,6 +2207,18 @@ The acceptance boundary is layered:
 
 Layers 1 and 3 are **advisory in trust mode**. They are environment and string checks, so an agent with a shell can still bypass them. They stop an agent that is not trying to bypass them; the operator's terminal is the real boundary.
 
+#### An ordinary git/gh read got blocked by the accept guard (#1125)
+
+Layer 3 hardening closed three routes, and a legitimate command can be caught by the shape test. It now refuses:
+
+- **a git/gh argument that writes or execs**, naming a protected file — `--output` / `-o` (spaced `-o <file>` or attached `-o<file>`), `-c`, `gh alias set`, `gh config set alias`, `git config alias.`. Those arguments make the tool write a file or run a shell, so they are outside the plain-git exemption that lets a commit message name the store.
+- **a JS runtime invoked in a command that names the store**, on any line — a `bun <<EOF` here-doc importing the module, a program piped into `bun -`, or the `-e` / `-p` / `--print` / `--eval` forms.
+- **a plain git that removes the data file** — `checkout` / `restore` / `rm` / `stash` / `clean` naming `review-findings.json`. The data file dominates the exemption.
+
+Remedy: drop the write-capable argument — `git show HEAD:x` without `--output`, and `git --no-pager log` instead of `git -c core.pager=cat log` — and the read is allowed again. Reading the store **module** is now an accepted over-refusal: `git log -- extension/src/review-findings-store.ts` and `git diff HEAD -- …` are refused because a path segment whose last segment is a protected stem is refused by position, and `grep`/`wc`/`sed -n` on the file are refused the same way (clause (b): over-refusing a harmless read is the accepted cost). Read the module with the `read` tool instead, which is not bash and is not guarded. A commit message stays prose only inside a quoted `-m`; the guard refuses `-F`/`--file` outright, so keep the message in `-m "…"`. Git repo-location selectors (`-C <path>`, `--git-dir`, `--work-tree`, `--exec-path`, spaced or `=`-attached, either case) are refused outright: they move the repository a "plain read" runs against, so no arm can vouch for the tree it reads.
+
+Three shapes are refused **on purpose** and have no workaround inside the guard, because a string match cannot tell them from a command: a fenced `bun run build` line followed by prose naming the store, a quoted markdown table whose cells hold `|` and name the store, and a regex literal `/bun|node|deno/` beside a store path. Write the prose without naming the file, or run the read separately. All three are asserted as refusals in `test-review-accept-guard-hardened.ts`. What the guard does not cover at all is in the module header — most load-bearing: it does not guard writes to the store module's own **source** (`sed -i`, `cp`, `tee`, a redirect, `edit`/`write`), only the findings data file and its `.tmp` / `.corrupt` siblings.
+
 A corrupt `review-findings.json` is never overwritten. The reader and the writer both copy it to `review-findings.json.corrupt-<hash>` — the hash is of the bytes that were copied, so a repeat of the same fault names the same file and never duplicates it — and the round then REFUSES: it does not read the corrupt file as "no memory", because a round recorded on no memory would resolve open rows the unreadable file may still hold. The refusal names the copy and the cause and says `repair or remove <file>, or set PI_ENSEMBLE_REVIEW_LEDGER_FILE to a healthy ledger`; the summary carries it as `findings memory unavailable: …`, and every finding is still reported. Fix or remove the file, then re-run the review. A single malformed row is handled the same way on its own (`<file>.corrupt-<hash of the row>`) while the valid rows carry on.
 
 ## The offline smoke suite
@@ -2221,4 +2233,3 @@ Since #1365 `extension/smoke-tests/lib/verify-loop.sh` runs tests through a boun
 **Fix for both:** `PI_ENSEMBLE_VERIFY_TEST_JOBS=1 bash extension/smoke-tests/lib/verify-loop.sh extension/smoke-tests/test-*.ts` restores strictly sequential execution — the pre-#1365 shape, same output and exit codes (pinned by `test-verify-loop-parallel.ts` cases 1-2, which compare JOBS=1 and JOBS=3 byte-for-byte). If one test still fails alone, it is the test.
 
 The other knob is the per-test bound, unchanged by the pool: `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S` (default 300s, positive integer, else 300 with a warning). A test that hits it is reported `FAILED: <file> (timed out after <N>s)` with a `✗ timed out after <N>s` line prepended to its capture; the whole descendant tree is killed, so a hung test does not take the pool with it. Both variables are read once at startup.
-
