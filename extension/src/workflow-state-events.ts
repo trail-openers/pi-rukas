@@ -43,13 +43,13 @@ export type {
   HandoffEmittedEvent,
   LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
-// The 500-line gate (#1247) — the two interruption events live in their own
-// fragment; re-exported so every existing import path keeps working.
+export type { DispatchSlowEvent };
+// #1446-size — interrupted / cycle-interrupted members re-exported from the
+// sibling fragment (the 500-line gate, AGENTS.md §12).
 export type {
   CycleInterruptedEvent,
   InterruptReason,
 } from "./workflow-state-events-interrupted.ts";
-export type { DispatchSlowEvent };
 /**
  * Linear step identifiers the driver walks. This union IS the definition
  * of the cycle — #393 deleted the prose flow that used to be its source.
