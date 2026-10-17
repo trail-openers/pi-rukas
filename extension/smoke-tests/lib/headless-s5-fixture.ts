@@ -41,6 +41,7 @@ import type { DispatchResult } from "../../src/types.ts";
 import type { VerifyExecFn } from "../../src/work-driver-git.ts";
 import type { WorkCapLiteral } from "../../src/workflow-state-events-caps.ts";
 import type { WorkEvent } from "../../src/workflow-state.ts";
+import { isKnownGitSubcommand, runFixtureGit } from "./headless-s5-git.ts";
 
 /**
  * The sentence a `permitted` judge would have to quote verbatim. Kept here so
@@ -103,8 +104,47 @@ export function headlessRepo(grant: string | undefined, dirName = "headless-s5-"
   };
 }
 
-/** What `gh` says about the PR when the cycle reaches the merge gate. */
-export type MergeVerdict = "green" | "blocked" | "failing" | "unopen";
+/**
+ * What `gh` says about the PR when the cycle reaches the merge gate.
+ *
+ * `"merged"` is the POSITIVE CONTROL: every read is green, the forge reports
+ * the PR `MERGED` after the merge call, and the cycle is expected to reach
+ * `merged` with exactly one forge merge. The other four verdicts each assert
+ * `mergeCmds.length === 0`; that field is falsifiable only because the control
+ * drives the same field to 1.
+ */
+export type MergeVerdict = "green" | "blocked" | "failing" | "unopen" | "merged";
+
+/**
+ * The wide `gh pr view` answer the forge adapter reads for the cycle's PR.
+ *
+ * `mergeable` carries the mapper's OWN enum (`forge-mapping.ts` accepts only
+ * `TRUE` / `FALSE` / `UNKNOWN` and folds anything else to `null`), not GitHub's
+ * older `MERGEABLE` spelling — a fixture that invents a value the mapper
+ * discards is asserting nothing about the field it names.
+ */
+function prViewJson(
+  pr: number,
+  facts: {
+    state: "OPEN" | "CLOSED" | "MERGED";
+    mergeStateStatus: "CLEAN" | "BLOCKED";
+    mergeable?: "TRUE" | "UNKNOWN";
+  },
+): string {
+  return JSON.stringify({
+    number: pr,
+    title: "feat(s5): headless gates",
+    state: facts.state,
+    url: `https://github.com/s5/s5/pull/${pr}`,
+    headRefName: "feature/issue-9001",
+    baseRefName: "main",
+    mergeable: facts.mergeable ?? (facts.mergeStateStatus === "CLEAN" ? "TRUE" : "UNKNOWN"),
+    mergeStateStatus: facts.mergeStateStatus,
+    // Always false: a draft cannot merge and would halt the step for a reason
+    // unrelated to what these cases assert.
+    isDraft: false,
+  });
+}
 
 /**
  * One row of the fixture's per-verdict `gh` answers.
@@ -118,6 +158,16 @@ export type MergeVerdict = "green" | "blocked" | "failing" | "unopen";
  * `state: "OPEN"` for every verdict, so the `unopen` case was refused by the
  * PR-identity check rather than by the gate. Both reads now derive from the one
  * row, so no gate can be handed a CLEAN answer for a verdict that blocks.
+ *
+ * ## Why `unopen`'s two reads now DISAGREE
+ *
+ * The evidence probe (the 3-field view `gatherMergeEvidence` issues) reports
+ * `CLOSED`; the wide `prView` the forge adapter reads stays `OPEN`. Answering
+ * `CLOSED` to BOTH let the `unopen` case pass on a downstream refusal —
+ * `markDraftPrReady`'s identity gate, or the mechanized merge's own verify —
+ * with the gate the case names never consulted. The only voice that says
+ * "this PR is not open" is now the evidence gate's own probe, so the refusal
+ * can only come from there.
  */
 interface MergeView {
   /** The evidence gate's 3-field `gh pr view` answer. */
@@ -128,13 +178,30 @@ interface MergeView {
   prView: string;
 }
 
-function mergeView(verdict: MergeVerdict, pr: number): MergeView {
+function mergeView(
+  verdict: MergeVerdict,
+  pr: number,
+  merged: boolean,
+): MergeView {
   const passing = [{ name: "typecheck", bucket: "pass", state: "SUCCESS" }];
   const failing = [
     { name: "typecheck", bucket: "pass", state: "SUCCESS" },
     { name: "test", bucket: "FAIL", state: "FAILURE" },
   ];
   switch (verdict) {
+    case "merged":
+      // The positive control. Before the merge call the forge answers a green
+      // OPEN PR (`merged === false`); the seam flips it to MERGED only after
+      // the forge merge has actually run, so the post-merge verification in
+      // `executeAndVerifyMerge` has something real to confirm.
+      return {
+        evidence: '{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"OPEN"}',
+        checks: JSON.stringify(passing),
+        prView: prViewJson(pr, {
+          state: merged ? "MERGED" : "OPEN",
+          mergeStateStatus: "CLEAN",
+        }),
+      };
     case "green":
       return {
         evidence: '{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"OPEN"}',
@@ -163,10 +230,14 @@ function mergeView(verdict: MergeVerdict, pr: number): MergeView {
         prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "CLEAN" }),
       };
     case "unopen":
+      // The evidence probe is the ONLY thing in the composition that reports
+      // this PR closed. The wide `prView` stays OPEN (see the block comment
+      // above): if it said CLOSED too, the case would pass on the identity
+      // gate's refusal rather than the evidence gate's.
       return {
         evidence: '{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"CLOSED"}',
         checks: JSON.stringify(passing),
-        prView: prViewJson(pr, { state: "CLOSED", mergeStateStatus: "CLEAN" }),
+        prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "CLEAN" }),
       };
     default: {
       const unhandled: never = verdict;
@@ -175,31 +246,20 @@ function mergeView(verdict: MergeVerdict, pr: number): MergeView {
   }
 }
 
-function prViewJson(
-  pr: number,
-  facts: { state: "OPEN" | "CLOSED"; mergeStateStatus: "CLEAN" | "BLOCKED" },
-): string {
-  return JSON.stringify({
-    number: pr,
-    title: "feat(s5): headless gates",
-    state: facts.state,
-    url: `https://github.com/s5/s5/pull/${pr}`,
-    headRefName: "feature/issue-9001",
-    baseRefName: "main",
-    mergeable: facts.mergeStateStatus === "CLEAN" ? "MERGEABLE" : "UNKNOWN",
-    mergeStateStatus: facts.mergeStateStatus,
-    // Always false: a draft cannot merge and would halt the step for a reason
-    // unrelated to what these cases assert.
-    isDraft: false,
-  });
-}
-
 /** Everything the seam was asked, and the merges it was asked to perform. */
 export interface MergeExecLog {
   /** Every command line the seam received, joined for argv-form calls. */
   calls: string[];
   /** The forge merge invocations it was asked to run, verbatim. */
   mergeCmds: string[];
+  /**
+   * Every wide `gh pr view` ANSWER the seam handed back, in the order asked.
+   *
+   * `calls` records the commands; this records the replies. The positive
+   * control needs both to make its ordering claim: "the forge said MERGED"
+   * is content, and "only after the merge was asked for" is order.
+   */
+  prViewAnswers: string[];
   /**
    * Every doctrine read the seam was handed, verbatim, in whatever exec shape
    * arrived (`git show <sha>:AGENTS.md`, or the argv form).
@@ -236,16 +296,6 @@ export function isForgeMerge(line: string): boolean {
 }
 
 /**
- * The git subcommands the seam answers from the fixture's own repo.
- *
- * A whitelist, not "starts with git": each entry is a read the merge step
- * genuinely makes. Anything outside it is an unexpected read the case never
- * meant to ask about, and running it against the fixture repo would answer a
- * question nobody asked.
- */
-const KNOWN_GIT_SUBCOMMANDS = new Set(["show", "rev-parse", "remote", "config", "symbolic-ref"]);
-
-/**
  * The blob spec of a doctrine read, in either exec shape, or undefined when the
  * command is not one.
  *
@@ -278,23 +328,20 @@ function doctrineSpec(cmd: string, o?: { argv?: string[] }): string | undefined 
  * asserts `unexpected` is empty. The last-resort `git`/`gh`/`glab` catch-alls
  * that used to swallow them are gone; without them an unexpected command is the
  * only way this fixture stays honest about the reads a cycle actually made.
+ *
+ * The `"merged"` control is stateful: the wide `gh pr view` answers OPEN until
+ * the forge merge has been asked for, and MERGED after it. That ordering is what
+ * makes the post-merge verification real — an adapter that never issued the
+ * merge would still see MERGED from a fixture that hardcoded it, and the
+ * positive control would prove nothing.
  */
 export function mergeExec(
   opts: { merge: MergeVerdict; repoRoot: string; prNumber?: number; refuseDoctrine?: boolean },
   log: MergeExecLog,
 ): VerifyExecFn {
   const pr = opts.prNumber ?? FIXTURE_PR;
-  const view = mergeView(opts.merge, pr);
-  const runGit = (args: string[]) => {
-    const child = spawnSync("git", args, { cwd: opts.repoRoot, encoding: "utf8" });
-    if (child.status !== 0) {
-      throw Object.assign(new Error(child.stderr?.slice(0, 200) ?? "git failed"), {
-        stdout: child.stdout ?? "",
-        stderr: child.stderr ?? "",
-      });
-    }
-    return { stdout: child.stdout };
-  };
+  let mergeAsked = false;
+  const runGit = (args: string[]) => runFixtureGit(args, opts.repoRoot);
   return async (cmd: string, o?: { argv?: string[]; cwd?: string }) => {
     const line = o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
     log.calls.push(line);
@@ -317,7 +364,7 @@ export function mergeExec(
 
     if (cmd === "git" && o?.argv) {
       const sub = o.argv[0] ?? "";
-      if (!KNOWN_GIT_SUBCOMMANDS.has(sub)) {
+      if (!isKnownGitSubcommand(o.argv)) {
         log.unexpected.push(line);
         return { stdout: "" };
       }
@@ -333,12 +380,20 @@ export function mergeExec(
     // The evidence gate's 3-field probe — distinct from the forge adapter's wide
     // prView field list, which also mentions `mergeStateStatus`.
     if (line.includes("--json mergeStateStatus,mergeable,state")) {
-      return { stdout: view.evidence };
+      return { stdout: mergeView(opts.merge, pr, mergeAsked).evidence };
     }
-    if (line.includes("gh pr checks")) return { stdout: view.checks };
-    if (line.includes("gh pr view")) return { stdout: view.prView };
+    if (line.includes("gh pr checks")) return { stdout: mergeView(opts.merge, pr, mergeAsked).checks };
+    if (line.includes("gh pr view")) {
+      const answer = mergeView(opts.merge, pr, mergeAsked).prView;
+      log.prViewAnswers.push(answer);
+      return { stdout: answer };
+    }
     if (isForgeMerge(line)) {
       log.mergeCmds.push(line);
+      // The stateful control: recording the request is what turns the forge's
+      // answer to `gh pr view` into MERGED, so the post-merge verification in
+      // `executeAndVerifyMerge` confirms a merge that was actually issued.
+      mergeAsked = true;
       if (opts.merge === "blocked" || opts.merge === "unopen") {
         throw Object.assign(new Error("merge refused by the forge"), {
           stdout: "",
