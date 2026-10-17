@@ -17,6 +17,7 @@ import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { setPlanForge } from "../src/plan-filing.ts";
 import { setPlanGitStateFn } from "../src/plan-investigation-cache.ts";
 import type { RegisteredPlanTool } from "../src/plan-tool.ts";
+import type { RegisteredResearchTool } from "../src/research-tool.ts";
 import type { PlanDriverInput, PlanResult } from "../src/plan-types.ts";
 import type { SearchResult } from "../src/vipune.ts";
 import type { vipuneSearch } from "../src/vipune.ts";
@@ -25,6 +26,11 @@ import { parseReportDetails, reportBody } from "./plan-report-read.ts";
 // Re-exported so a test that reads a delivered report imports one module for
 // the harness and gets the reader with it (the two are always used together).
 export { parseReportDetails, reportBody } from "./plan-report-read.ts";
+
+// The #1043 cache fixtures moved to plan-cache-fixture.ts at the 500-line cap,
+// but ~8 plan tests still name them on THIS module. Re-exported rather than
+// rewriting every consumer — one seam, one place to look.
+export * from "./plan-cache-fixture.ts";
 
 /** The gate prompts captured by installForgeStub/makeDispatchStub callers. */
 export const gatePrompts: string[] = [];
