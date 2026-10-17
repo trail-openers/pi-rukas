@@ -181,14 +181,18 @@ export function namesStore(
 }
 
 /** An option value ATTACHED to its flag, with the flag removed: `-G<name>`, `-S<name>`,
- * `--grep=<name>`, `-o<name>`, `--output=<name>`, `-f<name>`. Returns the value, or
- * `null` for a word that is not an attached value. */
+ * `--grep=<name>`, `-o<name>`, `--output=<name>`, `-f<name>`, `-t<name>` (git's
+ * `--template`), `-e<code>` (a runtime's inline program). Returns the value, or `null`
+ * for a word that is not an attached value. */
 function attachedValue(word: string): string | null {
   const bare = word.replace(/^["']+|["']+$/g, "");
-  for (const flag of ["--grep", "--output", "-grep", "--pickaxe"] as const) {
+  for (const flag of ["--grep", "--output", "-grep", "--pickaxe", "--template"] as const) {
     if (bare.startsWith(`${flag}=`)) return bare.slice(flag.length + 1);
   }
-  if (/^-[gsof]/i.test(bare) && bare.length > 2) return bare.slice(2);
+  // `t` is git's `--template` (a FILE whose contents become the commit message) and `e` a
+  // runtime's inline-program flag, so `-treview-findings.json` and `-ereview-accept.ts`
+  // are exactly the attached spellings no tokeniser hands out bare.
+  if (/^-[gsotfe]/i.test(bare) && bare.length > 2) return bare.slice(2);
   return null;
 }
 

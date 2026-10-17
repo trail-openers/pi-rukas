@@ -10,13 +10,7 @@
  * The arms are exported for the guard's dispatch table only; nothing else composes them.
  */
 
-import {
-  PROTECTED_STEMS,
-  baseName,
-  isProtectedToken,
-  tokensOf,
-  unquote,
-} from "./review-accept-command.ts";
+import { baseName, isProtectedToken, tokensOf, unquote } from "./review-accept-command.ts";
 /** A JS runtime: its invocation executes a program, so it is never a read tool.
  * Exported because the guard's pre-checks ask the same question of the whole command. */
 export const RUNTIME = /^(?:bun|bunx|node|npx|tsx|ts-node|deno)$/;

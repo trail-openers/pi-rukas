@@ -12,7 +12,21 @@
 
 import { armCommit, armForgeRead, armGitRead, armRead } from "../src/review-accept-arms.ts";
 import { isProtectedToken } from "../src/review-accept-command.ts";
-import { editsFindingsFile, runsReviewAccept } from "../src/review-accept-guard.ts";
+import { editsFindingsFile, registerReviewAcceptGuard, runsReviewAccept } from "../src/review-accept-guard.ts";
+
+/** Run the REAL tool_call hook over one bash input, as the hardened suite does. */
+async function registerBashCall(input: unknown): Promise<{ block?: boolean } | undefined> {
+  let captured: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
+  registerReviewAcceptGuard({
+    on: (_event: string, handler: typeof captured) => {
+      captured = handler;
+    },
+  } as never);
+  if (!captured) throw new Error("hook: the guard registered no tool_call handler");
+  return (await captured({ toolName: "bash", input }, {})) as
+    | { block?: boolean }
+    | undefined;
+}
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -253,5 +267,54 @@ for (const c of [
   `wc -l extension/src/${STORE}.ts`,
 ])
   assert(runsReviewAccept(c) !== undefined, `guard refuses the displaced case — ${c}`);
+
+/**
+ * An option value ATTACHED to a short flag is one word no tokeniser ever hands out bare,
+ * so `-t` (git's `--template` — a FILE the commit reads) and `-e` (a runtime's inline
+ * program) belong to the attached-value class with `-g/-s/-o/-f`: the two cases below name
+ * the store or the accept script ONLY in that glued position.
+ */
+for (const c of [`git commit -m "x" -t${DATA}`, "bun -ereview-accept.ts"]) {
+  assert(
+    runsReviewAccept(c) !== undefined,
+    `guard refuses a store name glued to a short flag — ${c}`,
+  );
+}
+assert(
+  runsReviewAccept('git commit -m "clean up the review finding handling" -t notes.txt') ===
+    undefined,
+  "guard: an ordinary template file glued to -t is still an allowed commit",
+);
+
+/**
+ * A `path` / `command` that is PRESENT but not a string cannot be scanned, and a scan
+ * that did not run is not a pass — each is refused fail-closed. `toString` is the shape
+ * that used to slip through: the writer below would coerce it onto the store.
+ */
+for (const input of [
+  { path: 123 },
+  { path: ["a"] },
+  { path: { toString: () => `/repo/.git/${DATA}` } },
+])
+  assert(
+    editsFindingsFile("write", input) !== undefined,
+    `edit: a present non-string path is refused — ${JSON.stringify(input)}`,
+  );
+for (const input of [{}, { path: undefined }, { path: null }, { other: 1 }])
+  assert(
+    editsFindingsFile("write", input) === undefined,
+    `edit: an absent path blocks nothing — ${JSON.stringify(input)}`,
+  );
+
+const nonStringCommand = await registerBashCall({ command: { toString: () => `cat ${DATA}` } });
+assert(
+  nonStringCommand?.block === true,
+  "hook: a bash command that is present but not a string is refused",
+);
+for (const input of [{}, { command: undefined }, { command: null }])
+  assert(
+    (await registerBashCall(input)) === undefined,
+    `hook: an absent bash command blocks nothing — ${JSON.stringify(input)}`,
+  );
 
 process.exit(exit);
