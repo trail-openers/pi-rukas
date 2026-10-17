@@ -80,6 +80,8 @@ pi-rukas has **two distinct codebases** that need different handling. Misidentif
 - Users run `./install.sh` → pulls the published image (~10-20s). Local builds happen only on pull failure or with `--build`.
 - Workflow path-filter list (`.devcontainer/**`, `extension/**`, `bin/pi-rukas`, `install.sh`, `agents-base/**`, `modules/**`, `manifests/**`, `agents.json`, `build.sh`) covers everything that ends up in the image; PRs touching only docs / plan files don't trigger a republish.
 - Contributors do NOT need to manually `docker build` + push; the workflow handles it.
+- Retention: `.github/workflows/cleanup-images.yml` (weekly) prunes `sha-*` and untagged versions older than 14 days; `latest` and `v*` release tags are kept forever. Per-commit images are not reproducible (several tools install unpinned), so anything durable pins a release tag.
+- Layer order in the Dockerfile is a cost decision: everything after `COPY . /opt/pi-rukas` rebuilds and re-pushes on every merge, per arch. Steps that don't read the checkout go above it.
 
 ---
 
