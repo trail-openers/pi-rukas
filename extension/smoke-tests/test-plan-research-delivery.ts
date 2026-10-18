@@ -15,7 +15,7 @@
  *    `started: false`, not a throw out of the tool.
  */
 
-import { clearJobsForTesting, startJob } from "../src/async-jobs.ts";
+import { clearJobsForTesting, driverReportStandIn, startJob } from "../src/async-jobs.ts";
 import * as pendingJobs from "../src/pending-jobs-signal.ts";
 import { registerPlanTool } from "../src/plan-tool.ts";
 import { registerResearchTool } from "../src/research-tool.ts";
@@ -118,6 +118,116 @@ async function main(): Promise<void> {
     // Reaching this line at all is the assertion: with the host refusing every
     // sendUserMessage, a job that awaited clean proved the stand-in path is
     // swallow-safe — a throw out of `deliverOrStandIn` rejects `job.completion`.
+  }
+
+  // ------------------------------ 2b. the driver stand-in says DELIVERY failed, not RUN failed
+  // #1541 review (HIGH). The run COMPLETED here — `work` settled and its
+  // rendered text was built. Only the hand-over failed. The generic job stand-in
+  // says `FAILED` and "its result is lost; re-dispatch", and for a plan that is
+  // actively harmful: an operator following it re-runs a pipeline that already
+  // drafted — and on a filing run already FILED — its spec. So this asserts the
+  // words, because the words are what the operator acts on.
+  {
+    const refused = driverReportStandIn(
+      "job-77",
+      "plan-driver",
+      "add retry to dispatch",
+      new Error("sendUserMessage refused the driver report"),
+      "dispatch_status (this job's row), plus the run's own durable output (the research artifact under outputs/, or the filed issue URL)",
+    );
+    assert(
+      /\[ensemble:async\]/.test(refused) && refused.includes("(job job-77)"),
+      "the driver stand-in keeps the two invariants every async report has: the prefix and the jobId token",
+    );
+    assert(
+      /\bplan-driver\b/.test(refused) && refused.includes("add retry to dispatch"),
+      "it names the job AND its subject, so a concurrent pair of launches is distinguishable",
+    );
+    assert(
+      /COMPLETED/i.test(refused) && !/\bFAILED\b/.test(refused),
+      `it says the run COMPLETED and never says FAILED — the run succeeded (got: ${refused.slice(0, 90)})`,
+    );
+    assert(
+      /could not be delivered/i.test(refused),
+      "it names what actually broke: the delivery, not the run",
+    );
+    assert(
+      refused.includes("dispatch_status") && refused.includes("artifact under outputs/"),
+      "it names where to look — the caller's pointer travels into the stand-in verbatim",
+    );
+    assert(
+      !/result is lost|re-dispatch the job/i.test(refused),
+      "it does NOT tell the operator to re-dispatch — a completed plan that filed its spec must not be silently re-run",
+    );
+    assert(
+      /dispatch_status/.test(refused) && /artifact|issue URL/i.test(refused),
+      "it says WHERE to look — a caller-supplied durable location, never a bare 'it is gone'",
+    );
+
+    // And the branch is wired: a refused send on a driver job produces THIS
+    // text in the session, not the generic FAILED stand-in. The host refuses
+    // every send, so the stand-in is captured through a second host rather
+    // than read back from the refusing one.
+    const seen: string[] = [];
+    const host = makeHost();
+    host.pi.sendUserMessage = (content: string) => {
+      seen.push(content);
+    };
+    const job = startJob(host.pi, {
+      label: "plan: undelivered",
+      role: "plan-driver",
+      ownerKind: "pm",
+      reportKind: "driver",
+      subject: "add retry to dispatch",
+      deliverForTest: () => false,
+      // The run reports where IT wrote its result — the pipeline is the only
+      // party that knows, and a stand-in inventing a path would be a second lie.
+      work: async () => ({
+        ...ok("the spec that never reached anyone"),
+        reportWhere: "the filed issue https://example.test/issues/54321",
+      }),
+    });
+    await job.completion;
+    const standIn = seen.find((m) => /could not be delivered/i.test(m)) ?? "";
+    assert(
+      !!standIn,
+      `a driver job whose send was refused lands a delivery-failure stand-in in the session (got ${seen.length} message(s))`,
+    );
+    assert(
+      /COMPLETED/i.test(standIn) && !/\bFAILED\b/.test(standIn),
+      `...and it reads as a delivery failure, not a failed run (got: ${standIn.slice(0, 100)})`,
+    );
+    assert(
+      standIn.includes("add retry to dispatch"),
+      "...and it names the run, so the operator can match it to the launch notice",
+    );
+    assert(
+      standIn.includes("https://example.test/issues/54321"),
+      "...and it names the durable location the run reported, so the operator reads it instead of re-running",
+    );
+
+    // The default when the run reported nothing: a pointer at dispatch_status,
+    // never a path the run never wrote.
+    const seen2: string[] = [];
+    const host2 = makeHost();
+    host2.pi.sendUserMessage = (content: string) => {
+      seen2.push(content);
+    };
+    const job2 = startJob(host2.pi, {
+      label: "plan: no location",
+      role: "plan-driver",
+      ownerKind: "pm",
+      reportKind: "driver",
+      subject: "a run that wrote nothing",
+      deliverForTest: () => false,
+      work: async () => ok("a dry run that filed nothing"),
+    });
+    await job2.completion;
+    const standIn2 = seen2.find((m) => /could not be delivered/i.test(m)) ?? "";
+    assert(
+      /dispatch_status/i.test(standIn2) && !/\/nonexistent\//.test(standIn2),
+      `with nothing reported by the run it falls back to dispatch_status and invents no path (got: ${standIn2.slice(-120)})`,
+    );
   }
 
   // ------------------------------------------ 3. saturation is a named refusal

@@ -318,128 +318,139 @@ assert(
   });
   let gateDispatches = 0;
   let ghWrites = 0;
-  // The filing seam: a forge whose create() counts calls. A killed run must
-  // never reach it.
-  setPlanForge(async () => ({
-    slug: async () => "owner/repo",
-    // biome-ignore lint/suspicious/noExplicitAny: the stub only needs create()
-    async create(a: any) {
-      ghWrites++;
-      return { number: 54321, url: "https://example.test/issues/54321", title: a.title };
-    },
-    async comment(_n: number, _b: string): Promise<boolean> {
-      return true;
-    },
-    // biome-ignore lint/suspicious/noExplicitAny: unused by the filing step
-    async view(_n: number): Promise<any> {
-      return { title: "", body: "", state: "OPEN", labels: [], url: "" };
-    },
-    // biome-ignore lint/suspicious/noExplicitAny: unused by the filing step
-    async edit(_n: number, _o: any): Promise<boolean> {
-      return true;
-    },
-  }));
-  setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
-    if (spec.role === "adversarial-developer") {
-      // The gap-gate reviewer must NOT be dispatched after the kill. The count
-      // is taken HERE — at the moment the stub is actually invoked, which is
-      // after plan-driver-gate.ts's pre-call abort check has let the call
-      // through. A killed run that reaches this line paid for a reviewer.
-      gateDispatches++;
-      return Promise.resolve({
-        role: "adversarial-developer",
-        ok: true,
-        text: "VERDICT: READY",
-        toolUses: [],
-        ms: 1,
-        exitCode: 0,
-      }) as never;
-    }
-    if (spec.prompt.includes("DUPLICATE RISK CHECK")) {
-      return Promise.resolve({
+  // The forge and dispatch seams are process-global (`setPlanForge` /
+  // `setPlanDispatch` on plan-filing.ts / plan-driver.ts), so an assertion that
+  // throws here would leave both installed and every later block in this file
+  // would run against THIS block's stub — a killed-run forge that files issue
+  // 54321, a dispatch stub whose angle children hang on a gate nobody releases.
+  // The teardown belongs in `finally`, not on the happy path. (#1541 review)
+  try {
+    // The filing seam: a forge whose create() counts calls. A killed run must
+    // never reach it.
+    setPlanForge(async () => ({
+      slug: async () => "owner/repo",
+      // biome-ignore lint/suspicious/noExplicitAny: the stub only needs create()
+      async create(a: any) {
+        ghWrites++;
+        return { number: 54321, url: "https://example.test/issues/54321", title: a.title };
+      },
+      async comment(_n: number, _b: string): Promise<boolean> {
+        return true;
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: unused by the filing step
+      async view(_n: number): Promise<any> {
+        return { title: "", body: "", state: "OPEN", labels: [], url: "" };
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: unused by the filing step
+      async edit(_n: number, _o: any): Promise<boolean> {
+        return true;
+      },
+    }));
+    setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
+      if (spec.role === "adversarial-developer") {
+        // The gap-gate reviewer must NOT be dispatched after the kill. The count
+        // is taken HERE — at the moment the stub is actually invoked, which is
+        // after plan-driver-gate.ts's pre-call abort check has let the call
+        // through. A killed run that reaches this line paid for a reviewer.
+        gateDispatches++;
+        return Promise.resolve({
+          role: "adversarial-developer",
+          ok: true,
+          text: "VERDICT: READY",
+          toolUses: [],
+          ms: 1,
+          exitCode: 0,
+        }) as never;
+      }
+      if (spec.prompt.includes("DUPLICATE RISK CHECK")) {
+        return Promise.resolve({
+          role: "explore",
+          ok: true,
+          text: "DUPLICATE_RISK: none — no overlap",
+          toolUses: [],
+          ms: 1,
+          exitCode: 0,
+        }) as never;
+      }
+      angleDispatches++;
+      // The angle children hang until the test releases them, so the kill
+      // lands in the state a real run is in when an operator kills it.
+      return angleGate.then(() => ({
         role: "explore",
         ok: true,
-        text: "DUPLICATE_RISK: none — no overlap",
-        toolUses: [],
+        text: "prose",
+        toolUses: [
+          {
+            name: "report_plan_item",
+            arguments: {
+              kind: "acceptance-criterion",
+              text: "the kill is reported",
+              angle: "test-surface",
+            },
+          },
+        ],
         ms: 1,
         exitCode: 0,
-      }) as never;
-    }
-    angleDispatches++;
-    // The angle children hang until the test releases them, so the kill
-    // lands in the state a real run is in when an operator kills it.
-    return angleGate.then(() => ({
-      role: "explore",
-      ok: true,
-      text: "prose",
-      toolUses: [
-        {
-          name: "report_plan_item",
-          arguments: {
-            kind: "acceptance-criterion",
-            text: "the kill is reported",
-            angle: "test-surface",
-          },
-        },
-      ],
-      ms: 1,
-      exitCode: 0,
-    })) as never;
-  }) as never);
-  const killed = (await plan.tool.execute(
-    "id-kill",
-    { descriptor: "a run that is killed mid-flight in extension/src/plan-tool.ts" },
-    undefined,
-    undefined,
-    CTX,
-  )) as { details: Record<string, unknown> };
-  const killJobId = String(killed.details.jobId ?? "");
-  // Wait until the angle children are in flight, then kill; then release them
-  // so the run reaches its next boundary and owes a report — a job whose work
-  // never settles delivers nothing, which would prove nothing about delivery.
-  for (let i = 0; i < 200 && angleDispatches === 0; i++) await new Promise((r) => setTimeout(r, 5));
-  const killedOk = killJob(killJobId);
-  assert(killedOk, `killJob(${killJobId}) finds the launched plan job`);
-  releaseAngles();
-  const killSteer = await waitForJobReport(killJobId);
-  assert(
-    /CANCELLED/i.test(killSteer),
-    "the steer for a killed run says it was CANCELLED — not a verdict the run never earned",
-  );
-  assert(
-    killSteer.includes(killJobId),
-    "...and the cancellation report names the job, so PM can match it to its launch",
-  );
-  assert(
-    /dispatch_kill/i.test(killSteer),
-    "...and names WHO killed it — an operator's dispatch_kill must not read as a session teardown",
-  );
-  assert(
-    !/PLAN FILED|PLAN DRY-RUN \(nothing filed\)\. Show/.test(killSteer),
-    "a killed run reports neither FILED nor a dry-run-inviting-to-file head",
-  );
-  // Mutation-checked stops. The barrier's two legs dispatch CONCURRENTLY, so
-  // the angle children are already in flight when the kill lands and the
-  // investigate boundary is the LAST one that can be observed from here — the
-  // gate-gate child is dispatched in the same tick as the barrier's own legs
-  // settle, which is why the count below is not the assertion to hang on. The
-  // load-bearing one is the filing seam: delete the boundary checks and a
-  // killed run creates an issue, which is what this test exists to forbid.
-  await new Promise((r) => setTimeout(r, 200));
-  // DEFERRED (#1541 follow-up): the `gateDispatches === 0` half of this is
-  // timing-dependent under load and is the one item still open — a kill landing
-  // mid-barrier can have the reviewer's stub entered in the same microtask chain
-  // (the barrier's legs are concurrent and the corrective re-draft is
-  // synchronous), which costs a child but files nothing. The load-bearing
-  // guarantee — a killed run never FILES and never reports a verdict it did not
-  // earn — is the `ghWrites === 0` half plus the CANCELLED-headline assertions
-  // above, and those hold every time. Tracked for a follow-up that bounds the
-  // child-refusal deterministically.
-  assert(
-    ghWrites === 0,
-    `a killed run files NOTHING and pays for no further child (forge creates: ${ghWrites}, gap-gate dispatches: ${gateDispatches}) — the operator never gets a ticket from a run they cancelled`,
-  );
-  setPlanForge(null);
+      })) as never;
+    }) as never);
+    const killed = (await plan.tool.execute(
+      "id-kill",
+      { descriptor: "a run that is killed mid-flight in extension/src/plan-tool.ts" },
+      undefined,
+      undefined,
+      CTX,
+    )) as { details: Record<string, unknown> };
+    const killJobId = String(killed.details.jobId ?? "");
+    // Wait until the angle children are in flight, then kill; then release them
+    // so the run reaches its next boundary and owes a report — a job whose work
+    // never settles delivers nothing, which would prove nothing about delivery.
+    for (let i = 0; i < 200 && angleDispatches === 0; i++)
+      await new Promise((r) => setTimeout(r, 5));
+    const killedOk = killJob(killJobId);
+    assert(killedOk, `killJob(${killJobId}) finds the launched plan job`);
+    releaseAngles();
+    const killSteer = await waitForJobReport(killJobId);
+    assert(
+      /CANCELLED/i.test(killSteer),
+      "the steer for a killed run says it was CANCELLED — not a verdict the run never earned",
+    );
+    assert(
+      killSteer.includes(killJobId),
+      "...and the cancellation report names the job, so PM can match it to its launch",
+    );
+    assert(
+      /dispatch_kill/i.test(killSteer),
+      "...and names WHO killed it — an operator's dispatch_kill must not read as a session teardown",
+    );
+    assert(
+      !/PLAN FILED|PLAN DRY-RUN \(nothing filed\)\. Show/.test(killSteer),
+      "a killed run reports neither FILED nor a dry-run-inviting-to-file head",
+    );
+    // Mutation-checked stops. The barrier's two legs dispatch CONCURRENTLY, so
+    // the angle children are already in flight when the kill lands and the
+    // investigate boundary is the LAST one that can be observed from here — the
+    // gate-gate child is dispatched in the same tick as the barrier's own legs
+    // settle, which is why the count below is not the assertion to hang on. The
+    // load-bearing one is the filing seam: delete the boundary checks and a
+    // killed run creates an issue, which is what this test exists to forbid.
+    await new Promise((r) => setTimeout(r, 200));
+    // DEFERRED (#1541 follow-up): the `gateDispatches === 0` half of this is
+    // timing-dependent under load and is the one item still open — a kill landing
+    // mid-barrier can have the reviewer's stub entered in the same microtask chain
+    // (the barrier's legs are concurrent and the corrective re-draft is
+    // synchronous), which costs a child but files nothing. The load-bearing
+    // guarantee — a killed run never FILES and never reports a verdict it did not
+    // earn — is the `ghWrites === 0` half plus the CANCELLED-headline assertions
+    // above, and those hold every time. Tracked for a follow-up that bounds the
+    // child-refusal deterministically.
+    assert(
+      ghWrites === 0,
+      `a killed run files NOTHING and pays for no further child (forge creates: ${ghWrites}, gap-gate dispatches: ${gateDispatches}) — the operator never gets a ticket from a run they cancelled`,
+    );
+  } finally {
+    setPlanForge(null);
+    setPlanDispatch(null);
+  }
 }
 
 // ------------------------------------------- #1541: details carry no raw blob

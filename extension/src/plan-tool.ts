@@ -48,6 +48,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { noticeSubject } from "./async-jobs-report.ts";
 import { startJob } from "./async-jobs.ts";
 import { runPlanPipeline } from "./plan-driver.ts";
 import {
@@ -94,15 +95,6 @@ export function launchNotice(o: {
     ? `When the report arrives it says ONE of two things: "${DRY_RUN_HEAD} <digest>" with the spec and the gap dispositions — if the gate passed; or a NOT FILEABLE / PLAN COMPLETED block naming the reason, with NO digest to echo. Show whichever arrived to the operator. Only after that steer has arrived can you re-call with dryRun omitted — and to file the reviewed spec verbatim you must echo the reviewedDigest that steer carried, because that steer is the only place the digest exists; a confirm without it runs the whole pipeline again.`
     : "When the report arrives it says whether the issue was filed and carries the issue URL — or it says the run FAILED / was CANCELLED and names the cause. Until it arrives you have neither verdict nor URL: quote neither.";
   return `pi-rukas: /plan driver started for "${noticeSubject(o.descriptor)}" (jobId: ${o.jobId}, dryRun: ${o.dryRun}, repo: ${o.repoRoot}). ${next} The run takes minutes; end your turn — the [ensemble:async] steer carrying the jobId is the result, not this notice. Do not poll, and do not re-call to check progress.`;
-}
-
-/**
- * #1541 review: the one clamp both launch surfaces share — the notice's quoted
- * subject and the result's `details` identifier print the caller's string, and
- * neither needs more than the first 80 characters to identify a run.
- */
-export function noticeSubject(text: string): string {
-  return text.slice(0, 80);
 }
 
 /**
@@ -298,6 +290,10 @@ export function registerPlanTool(pi: ExtensionAPI) {
           ms: 0,
           exitCode: result.cancelled ? 143 : 0,
           ...(result.cancelled ? { killCause: "abort" as const } : {}),
+          // #1541 review (HIGH) — if the steer never lands, the stand-in names
+          // where the answer still lives: the filed issue. A plan that filed is
+          // NOT a plan to re-run, so this has to be said by the run that knows.
+          ...(result.issueUrl ? { reportWhere: `the filed issue ${result.issueUrl}` } : {}),
         };
       };
       let jobId: string;

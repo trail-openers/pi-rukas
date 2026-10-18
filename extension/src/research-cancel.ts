@@ -8,16 +8,10 @@
  * ("RESEARCH HALTED — reporter-silent") and sends the operator after a reporter
  * extension that was never the problem.
  *
+ * The "who killed it" wording (`killedBy`) is shared with the plan spine and
+ * lives in session-shutdown.ts, beside the shutdown flag it reads — this module
+ * is the research-side reader of that one fact.
+ *
  * Split out of research-driver.ts at the AGENTS.md §12 size cap.
  */
-import { sessionShutdownReason } from "./session-shutdown.ts";
-
-/**
- * Who asked for the kill. Session teardown aborts every in-flight job at once,
- * so an aborted session is the far likelier cause than an operator's
- * dispatch_kill — and the two want different follow-ups.
- */
-export function killedBy(signal: AbortSignal | undefined): string {
-  if (sessionShutdownReason() !== undefined) return "session shutdown";
-  return signal?.aborted ? "dispatch_kill (or session shutdown)" : "the harness";
-}
+export { killedBy } from "./session-shutdown.ts";

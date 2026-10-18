@@ -13,6 +13,19 @@ export function totalTokens(result: DispatchResult): number {
   return (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
 }
 
+/**
+ * #1541 review: the one clamp both background-launch surfaces share — the
+ * launch notice's quoted subject and the result's `details` identifier print
+ * the caller's string, and neither needs more than the first 80 characters to
+ * identify a run. Lives here (rather than in plan-tool.ts, which the research
+ * tool used to import it from) because it belongs to the report/notice layer
+ * both tools share, not to either tool: a tool-to-tool import is the kind of
+ * coupling that turns one tool's refactor into the other's build break.
+ */
+export function noticeSubject(text: string): string {
+  return text.slice(0, 80);
+}
+
 function fmtElapsed(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
@@ -352,6 +365,43 @@ export function formatDriverReport(
   const head = `[ensemble:async] ${label} \`${subject}\` (job ${jobId}) complete`;
   const body = text?.trim() || "(no output)";
   return `${head}\n\n${body}\n\n---\nYou started this driver earlier. Continue the workflow.`;
+}
+
+/**
+ * The stand-in for a `reportKind: "driver"` job whose run COMPLETED but whose
+ * report never reached the host (#1541 review HIGH).
+ *
+ * Sits beside `formatDriverReport`, the text it replaces when that text could
+ * not be handed over — and is deliberately NOT that function's FAILED sibling,
+ * `formatFailReport`. The generic wording says FAILED and "its result is lost;
+ * re-dispatch", and both are false for this branch: the work function settled,
+ * its rendered text was built, and the only thing that failed was the send. An
+ * operator reading FAILED re-runs a plan that already drafted — and on a filing
+ * run already FILED — its spec. The truthful report says the run is done, the
+ * delivery is what broke, and names where the answer still lives.
+ *
+ * Keeps the two invariants every async report has (`[ensemble:async]` prefix,
+ * `(job <id>)` token) so a client that correlates concurrent launches to their
+ * descriptors keeps working on the fallback path. Swallow-safe by its caller:
+ * `deliverStandIn` owns the never-throws contract.
+ *
+ * `where` is supplied by the caller rather than guessed here: this layer renders
+ * reports, it does not know what the pipeline it never ran wrote to disk, and a
+ * stand-in pointing at an artifact or issue that does not exist would be a
+ * second lie on top of the first.
+ */
+export function driverReportStandIn(
+  jobId: string,
+  label: string,
+  subject: string,
+  err: unknown,
+  where: string,
+): string {
+  return (
+    `[ensemble:async] Job \`${label}\` \`${subject}\` (job ${jobId}) COMPLETED \u2014 but its ` +
+    `report could not be delivered: ${String(err)}. The run is not lost and should NOT be ` +
+    `re-run blindly. Look for its result: ${where}.`
+  );
 }
 
 export function formatFailReport(jobId: string, label: string, err: Error): string {

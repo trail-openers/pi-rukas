@@ -353,6 +353,15 @@ async function runPipelineOn(
       timed,
       correctiveRedraft,
     });
+    // #1541 review (LOW) — the abort check runs BEFORE `gate.halted`. A kill
+    // that lands while the gate is settling makes the re-draft's dispatch
+    // refuse, and `correctiveRedraft` rethrows that refusal as a redraft
+    // failure — so a cancelled run would report PLAN HALTED / gate-unavailable
+    // and send the operator after a gate that was never the problem. The run
+    // was cancelled; that is the more specific, more true fact, and it is the
+    // one the operator acts on (re-run vs fix the gate).
+    if (signal?.aborted)
+      return cancelledResult(signal, input, "gap-gate", priorContext, finishTimings());
     // A corrective re-draft that threw is a PLAN halt, not an exception. Routed
     // through the same halt shape as the sibling gate failure modes: `startJob`'s
     // generic fail report would drop the plan-specific rendering and the

@@ -37,6 +37,22 @@ export function sessionShutdownReason(): string | undefined {
   return reason;
 }
 
+/**
+ * Who asked for a job to be killed, as the cancellation report words it.
+ *
+ * Shared by the /plan and /research cancellations (plan-driver-cancel.ts,
+ * research-cancel.ts), which previously carried byte-identical copies — two
+ * places to keep in step with the one fact this reads. Session teardown aborts
+ * every in-flight job at once, so an aborted session is the far likelier cause
+ * than an operator's `dispatch_kill`, and the two want different follow-ups
+ * (nothing to re-do vs re-run the run). Lives beside `sessionShutdownReason`
+ * because that flag is the only thing that distinguishes the two.
+ */
+export function killedBy(signal: AbortSignal | undefined): string {
+  if (sessionShutdownReason() !== undefined) return "session shutdown";
+  return signal?.aborted ? "dispatch_kill (or session shutdown)" : "the harness";
+}
+
 /** The origin of the shutdown (`stdin-eof`, `signal:SIGTERM`, `unknown`), or undefined. */
 export function sessionShutdownOrigin(): ExitOrigin | undefined {
   return origin;
