@@ -47,12 +47,13 @@ import { RESULT_SCHEMA_VERSION } from "./result.ts";
  * (#1306) reads this and re-derives the answer from the live constants.
  * v2 (#1326): every input with type/default/scope, and `files`.
  * Additive, no bump (docs/headless.md versioning rule): `resources` (#1325),
- * `contracts.resultSchema.failureKinds` (#1367), the S6 verbs (#1021).
+ * `contracts.resultSchema.failureKinds` (#1367), the S6 verbs (#1021),
+ * `--continue-pr` and `features.continuePr` (#1468).
  */
 export const CAPABILITIES_VERSION = 2 as const;
 
 /** The flags `work` accepts, in the order the parser accepts them. */
-export const WORK_FLAGS = ["--restart", "--json", "--timeout"] as const;
+export const WORK_FLAGS = ["--restart", "--continue-pr", "--json", "--timeout"] as const;
 
 export { HEADLESS_FILES, HEADLESS_INPUTS } from "./inputs.ts";
 export { readBakedCommit, readBuildVersion } from "./build.ts";
@@ -73,6 +74,8 @@ export const HEADLESS_FEATURES = {
   failureReason: true,
   /** #1368 — the result's `usage.byRole` sums usage per role, failed dispatches included. */
   usageByRole: true,
+  /** #1468 — `work --continue-pr` continues the issue's open PR; the result's `continuedPr`. */
+  continuePr: true,
 } as const;
 
 export interface Capabilities {

@@ -9,6 +9,7 @@ import { reviewWallClockMs } from "./review-budget.ts";
 import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
+import { explainContinueCap, isContinueCap } from "./work-driver-continue-pr-explain.ts";
 import {
   commitPrConsolidationBlurb,
   explainConsolidation,
@@ -68,6 +69,7 @@ export function explainCap(
     snap && !snap.unreadable?.length ? snap.unstagedCount + snap.stagedCount : undefined;
   const fileBlurb =
     fileCount !== undefined ? `${fileCount} file(s) modified-but-uncommitted` : "uncommitted work";
+  if (isContinueCap(cap)) return explainContinueCap(cap, lastCapHit(state, cap)?.evidence);
   switch (cap) {
     case "adversarial-loop":
       return "adversarial gate ran its 3-round internal loop and could not reach APPROVED — the diff still has issues the adversarial-developer flagged";

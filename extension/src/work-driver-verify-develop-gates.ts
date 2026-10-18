@@ -14,6 +14,7 @@ import { type CommentEvidence, formatLostComments } from "./comment-evidence.ts"
 import { checkComments, commentRetentionEnabled } from "./comment-retention.ts";
 import { withVerifySlot } from "./host-resources.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { continuePrDevelopProblems } from "./work-driver-continue-pr-guard.ts";
 import {
   TEST_BLOCK_MARKERS,
   countMarkersInDiffLine,
@@ -26,6 +27,7 @@ import {
   formatExecError,
   testDeleteTolerance,
 } from "./work-driver-verify-develop-helpers.ts";
+import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /** PR338 — validate a git SHA before shell interpolation. */
@@ -202,5 +204,25 @@ export async function runSmokeGate(
     }
   } else {
     notes.push("no .pi/smoke-cmd — product smoke not run");
+  }
+}
+
+/**
+ * #1468 — a continued PR's worktree must hold a finished merge of the mainline
+ * commit on top of the PR head. Each problem fails the gate, so the developer
+ * gets it on the retry.
+ */
+export async function runContinuePrGate(
+  execFn: NonNullable<DriverContext["verifyExecFn"]>,
+  state: WorkState,
+  worktrees: Record<string, string>,
+  failures: string[],
+): Promise<void> {
+  const cp = state.pipelineState.continuedPr;
+  if (!cp) return;
+  for (const [id, cwd] of Object.entries(worktrees)) {
+    for (const problem of await continuePrDevelopProblems(execFn, cwd, cp)) {
+      failures.push(`continue-pr: worktree "${id}": ${problem}`);
+    }
   }
 }

@@ -33,6 +33,7 @@
  * (`sweepStranded` in work-queue.ts). None of the four is raised by a cycle.
  */
 
+import { continueHumanAction, isContinueCap } from "./work-driver-continue-pr-explain.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import {
   type EvidenceFailureKind,
@@ -220,6 +221,8 @@ export function humanActionFor(
   if (/draft-rearm-failed/.test(reason)) {
     return `make #${primary}'s PR a draft by hand — \`gh pr ready <N> --undo\` (GitHub) or \`glab mr update <N> --draft\` (GitLab), N from the handoff — then re-run \`/work ${primary} --restart\` (do NOT skip the draft: the review re-runs on a mergeable PR)`;
   }
+  const continueCap = reason.match(/\bcap (continue-pr-[a-z-]+)/)?.[1];
+  if (continueCap && isContinueCap(continueCap)) return continueHumanAction(continueCap, primary);
   if (/existing-pr-detected/.test(reason))
     return `decide whether to resume, retarget or close the open PR for #${primary}`;
   if (/explore-needs-clarification|step-back-revise-spec/.test(reason)) {

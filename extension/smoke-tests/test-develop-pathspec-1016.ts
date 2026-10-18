@@ -147,7 +147,10 @@ try {
   // (E) The commit lands but its sha cannot be read: the event is still recorded.
   await writeFile(path.join(wt("rp"), "rp.txt"), "rp");
   const rpFake = (async (cmd: string, o: { argv: string[]; cwd: string }) => {
-    if (subOf(o.argv) === "rev-parse") throw new Error("rev-parse refused");
+    // #1468 — the MERGE_HEAD probe goes to real git; only the sha read is refused.
+    if (subOf(o.argv) === "rev-parse" && !o.argv.includes("MERGE_HEAD")) {
+      throw new Error("rev-parse refused");
+    }
     return execp(cmd, o as Parameters<typeof execp>[1]);
   }) as unknown as typeof execp;
   const rpNotes: string[] = [];
