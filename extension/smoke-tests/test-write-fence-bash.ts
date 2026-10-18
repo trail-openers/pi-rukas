@@ -35,7 +35,7 @@ if (!cfg) throw new Error("fixture config did not load");
 function refusedTarget(command: string, cwd: string = fx.wt): string | undefined {
   for (const t of bashWriteTargets(command, cwd)) {
     const judged = judgeWrite(t.path, t.cwd, cfg, { linkedCommand: t.linkedCommand });
-    if (!judged.ok) return t.path;
+    if (t.opaque || !judged.ok) return t.path;
   }
   return undefined;
 }
@@ -83,6 +83,10 @@ const refused: Array<[string, string]> = [
   // A link created in the same call, written under its name.
   ["ln -s src lnk && echo x > lnk/f", "a write under a symlink created in the same command"],
   ["cp -R out copy2 && echo x > copy2/keep", "a write under a copied link, same command"],
+  // #1655 review r2 — brace expansion is refused, not expanded.
+  ["echo x > {../..,src}/x", "a brace list whose first branch climbs out of the root"],
+  [`cp a {${REPO_BIN},src}/b`, "a brace list naming the repo root"],
+  ["touch ../../{bin,src}/x", "a brace list after a climbing prefix"],
 ];
 for (const [command, why] of refused) {
   assert(refusedTarget(command) !== undefined, `refuse: ${why} — \`${command}\``);

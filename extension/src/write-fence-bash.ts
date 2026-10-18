@@ -44,6 +44,11 @@ export interface BashTarget {
    * may change what the path resolves to), so the fence refuses it.
    */
   linkedCommand: boolean;
+  /**
+   * The path uses brace expansion (`{../..,src}/x`, `{1..3}`). Bash would expand
+   * it into several paths; the literal word cannot be judged, so the fence refuses it.
+   */
+  opaque: boolean;
 }
 
 type Tok = { kind: "word"; text: string } | { kind: "op"; text: string };
@@ -354,11 +359,13 @@ export function bashWriteTargets(command: string, cwd: string): BashTarget[] {
   const out: BashTarget[] = [];
   for (const r of raw) {
     if (r.path === "" || DEVICE_SINKS.has(r.path)) continue;
+    const opaque = /\{[^{}]*(,|\.\.)[^{}]*\}/.test(r.path);
     for (const dir of visited) {
       out.push({
         path: r.path,
         cwd: dir,
         linkedCommand: linksMade && !r.creation,
+        opaque,
       });
     }
   }
