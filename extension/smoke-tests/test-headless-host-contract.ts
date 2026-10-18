@@ -65,7 +65,7 @@ function assert(cond: boolean, msg: string) {
     "--capabilities publishes the cap vocabulary",
   );
   assert(caps.contracts.resultSchema.version === RESULT_SCHEMA_VERSION, "result schema version");
-  assert(RESULT_SCHEMA_VERSION === 3, "the result schema version is bumped to 3");
+  assert(RESULT_SCHEMA_VERSION === 4, "the result schema version is bumped to 4 (#1384 renamed a cap)");
   assert(capStep("verify-failed:develop") === "develop", "capStep reads a step template");
   assert(capStep("verify-timeout:develop") === "develop", "verify-timeout: is a step template");
   assert(fixed.includes("deadline"), "the cycle-deadline cap is published");
@@ -173,7 +173,7 @@ const capHit = (cap: string, at: number): WorkEvent =>
 {
   const doc = resultDocument({ exitCode: 0, results: [] }, { commit: null, version: "1.0.0" });
   assert(
-    doc.schemaVersion === 3 &&
+    doc.schemaVersion === 4 &&
       doc.buildCommit === null &&
       doc.buildVersion === "1.0.0" &&
       !("error" in doc),

@@ -229,8 +229,8 @@ async function main() {
       const tail = out.eventLog[out.eventLog.length - 1];
       assert(dispatched === 0, "over the cap: the fixer is NEVER dispatched");
       assert(
-        tail?.kind === "cap-hit" && tail.cap === "wall-clock",
-        `over the cap: the cycle records a wall-clock cap-hit (got ${tail?.kind})`,
+        tail?.kind === "cap-hit" && tail.cap === "lens-review-timeout",
+        `over the cap: the cycle records a lens-review-timeout cap-hit (got ${tail?.kind})`,
       );
       assert(
         tail?.kind === "cap-hit" && tail.nextStep === "handoff",

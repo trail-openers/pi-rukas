@@ -214,7 +214,7 @@ await withRepo(async (repo) => {
     Date.now(),
   );
   assert(
-    capOf(after)?.cap === "wall-clock" && stepOf(after) === "handoff",
+    capOf(after)?.cap === "lens-review-timeout" && stepOf(after) === "handoff",
     `invariant: the wall-clock cap still parks (cap ${capOf(after)?.cap}, next ${stepOf(after)})`,
   );
 });
