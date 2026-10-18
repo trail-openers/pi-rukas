@@ -14,6 +14,7 @@
  * the cap is the only thing a headless host switches on.
  */
 
+import { redactClip } from "./decision-log.ts";
 import {
   FAILURE_REASON_CHARS,
   classifyFailureCause,
@@ -110,9 +111,13 @@ export function providerParkEvidence(tail: DispatchFailureEvent | undefined): st
   // FAILURE_REASON_CHARS but the provider message / error tail concatenated
   // here did not, so a stack-trailing provider body could dominate the handoff
   // and the state file. Same budget as the taxonomy's own, not a second number.
-  return joined.length > FAILURE_REASON_CHARS
-    ? `${joined.slice(0, FAILURE_REASON_CHARS)}…`
-    : joined;
+  //
+  // Redaction rides through the SAME seam `headless/failure.ts::failureOf` uses
+  // (`redactClip`, which redacts then clips): this string is provider-authored
+  // text that lands in a durable file and on an operator-facing surface, so it
+  // gets the same credential scrub before it is written, not only at render.
+  // The bound is the taxonomy's own so the clip stays one number.
+  return redactClip(joined, FAILURE_REASON_CHARS);
 }
 
 /**
