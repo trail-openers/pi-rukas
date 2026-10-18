@@ -30,11 +30,18 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** A grep/read stub: every named symbol is defined in exactly one source file. */
-function stubExec(definitions: Record<string, string[]>) {
+/**
+ * A grep/read stub that COUNTS its calls. Every named symbol is defined in
+ * exactly one source file. The counter is the round-5 assertion: each
+ * normalisation pass re-spawns the `git grep` for every identifier the issue
+ * named, so the number of greps is the number of passes — an exact proxy for
+ * "normalised once" that does not depend on which internal helper fired.
+ */
+function stubExec(definitions: Record<string, string[]>, counter: { greps: number }) {
   return async (_cmd: string, opts?: { argv?: string[] }) => {
     const argv = opts?.argv ?? [];
     if (argv[0] === "grep") {
+      counter.greps += 1;
       const name = argv[4] ?? "";
       return { stdout: (definitions[name] ?? []).map((f) => `${f}\n`).join("") };
     }
@@ -80,6 +87,7 @@ try {
   const tmp = `${process.env.TMPDIR ?? "/tmp"}/plan-unfence-kill-${process.pid}.md`;
   await Bun.write(tmp, body);
   const prompts: string[] = [];
+  const greps = { greps: 0 };
   const ctx = {
     // biome-ignore lint/suspicious/noExplicitAny: the host is unused on this path
     host: {} as any,
@@ -109,7 +117,7 @@ try {
         exitCode: 0,
       };
     },
-    verifyExecFn: stubExec({ dispatchCore: ["extension/src/dispatch.ts"] }),
+    verifyExecFn: stubExec({ dispatchCore: ["extension/src/dispatch.ts"] }, greps),
   };
   const state0 = {
     ...initialState(1167, 1_000_000),
@@ -119,7 +127,10 @@ try {
     },
   };
   const next = await runPlan(ctx, state0, 1_000_000);
-  assert(prompts.length === 2, "the kill-triggered corrective ran (that plan is the one under test)");
+  assert(
+    prompts.length === 2,
+    "the kill-triggered corrective ran (that plan is the one under test)",
+  );
   const ws = next.pipelineState.workstreams as Record<string, Workstream> | undefined;
   assert(
     !(ws?.default?.outOfScope ?? []).includes("extension/src/dispatch.ts"),
@@ -136,6 +147,27 @@ try {
   assert(
     (next.pipelineState.planQuality?.unfence?.removed ?? 0) >= 1,
     "and that it records the fence it removed",
+  );
+  // #1167 round-5 — the kill-recovered plan used to be normalised TWICE: the
+  // kill branch ran the injected normaliser and `runPlan` then ran its own
+  // `runPlanNormalisationPass` unconditionally over the same map. Every
+  // `git grep` fired twice and the second pass's summary replaced the kill
+  // branch's in the state file. The issue names exactly three identifiers here
+  // (`seam`, `lives`, `in` — each resolved with one grep; the `dispatch.ts`
+  // token is already a fence entry so it needs no grep), so one normalisation
+  // is exactly THREE greps — restoring the double call doubles this to 6 and
+  // turns the line red.
+  assert(
+    greps.greps === 3,
+    `the kill-recovered plan is normalised exactly once — one grep per identifier the issue named (got ${greps.greps})`,
+  );
+  // The recorded summary is the KILL branch's, not a later pass's. Distinguishing
+  // proof: a second pass over the already-unfenced map has no fence left to
+  // remove, so it reports `removed: 0` — the `1` here can only be the kill
+  // branch's own record of the fence it removed.
+  assert(
+    next.pipelineState.planQuality?.unfence?.removed === 1,
+    "the recorded unfence summary is the kill branch's own record of the fence it removed",
   );
   await Bun.write(tmp, "");
   await Bun.$`rm -f ${tmp}`.quiet();

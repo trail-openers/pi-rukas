@@ -235,6 +235,15 @@ export async function runPlan(
   // (`if (correctiveUnfence.summary) unfence = …`) and the recovery path must
   // not lose it.
   let killUnfence: PlanUnfenceSummary | undefined;
+  // #1167 round-5 — set when the kill branch has already run the normalisation
+  // over the plan the cycle keeps. `planTimeoutCorrective` now REQUIRES the
+  // normaliser (an optional one was the shape that let a caller quietly stop
+  // normalising), and this flag is what stops the tail below from normalising
+  // the SAME map a second time: the double call re-spawned every `git grep`
+  // for nothing, and the second pass's summary overwrote the kill branch's in
+  // `planQuality.unfence`, so the audit records of the pass that actually
+  // shaped the plan were lost.
+  let normalisedOnce = false;
   const runNormalisation = async (
     raw: typeof workstreams,
     state: WorkState,
@@ -280,6 +289,7 @@ export async function runPlan(
       async (raw, state) => {
         const out = await runNormalisation(raw, state);
         killUnfence = out.summary;
+        normalisedOnce = true;
         return out.workstreams;
       },
     );
@@ -312,16 +322,22 @@ export async function runPlan(
   // load-bearing). #1167 round-3 — its summary goes to the quality tail's
   // single `planQuality` write so the operator can see the pass ran, what it
   // removed and what it declined to do (notes used to go only to `trace()`).
-  const normalised = await runPlanNormalisationPass(workstreams, next, {
-    port,
-    repoRoot: ctx.repoRoot,
-    worktrees: next.pipelineState.worktrees,
-    execFn: planExecFn,
-  });
-  workstreams = normalised.workstreams;
+  // #1167 round-5 — skipped when the kill branch already normalised (see
+  // `normalisedOnce`).
+  let normalisedSummary: PlanUnfenceSummary | undefined;
+  if (!normalisedOnce) {
+    const normalised = await runPlanNormalisationPass(workstreams, next, {
+      port,
+      repoRoot: ctx.repoRoot,
+      worktrees: next.pipelineState.worktrees,
+      execFn: planExecFn,
+    });
+    workstreams = normalised.workstreams;
+    normalisedSummary = normalised.summary;
+  }
   // The kill branch's own pass is the record of the plan the cycle keeps; a
   // plan that never went through the recovery keeps its own summary.
-  const unfenceSummary = killUnfence ?? normalised.summary;
+  const unfenceSummary = killUnfence ?? normalisedSummary;
   // #290 — deterministic plan-quality gate (arithmetic, not judgment), the
   // #819 plan-to-spec gate, the one-shot corrective, the #849 dropped-edge
   // check, the #571 claims and the single planQuality write. #1167 (size split)

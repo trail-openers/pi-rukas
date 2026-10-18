@@ -51,14 +51,12 @@ import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 // The DEFINITION half of the pass lives in work-driver-plan-unfence-defines.ts
 // (the AGENTS.md §12 line cap) — a real seam, not a convenient cut: this module
 // reads the ISSUE (which sections, which tokens), that one reads the REPO (which
-// grep candidate actually DECLARES the name). Re-exported so the pass keeps one
-// import path for the unfence's two halves, as its other fragments do.
-export {
-  couldNotResolveWhy,
-  definesSymbol,
-  definesSymbolLine,
-  resolveDefiningFile,
-} from "./work-driver-plan-unfence-defines.ts";
+// grep candidate actually DECLARES the name). Only `resolveDefiningFile` is
+// re-exported, because that is the only name the pass imports through this path;
+// `definesSymbol` / `definesSymbolLine` / `couldNotResolveWhy` are imported from
+// the defines module directly (round-5 cleanup — the extra re-exports made two
+// modules look like one API surface for no caller).
+export { resolveDefiningFile } from "./work-driver-plan-unfence-defines.ts";
 
 /**
  * Headings whose text names one of the three sections the extraction reads
