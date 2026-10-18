@@ -16,7 +16,23 @@
  */
 
 import { renderLensFindings } from "./lens-findings-render.ts";
+import {
+  type VerifyAttributionRecord,
+  verifyAttributionSectionOf,
+} from "./work-driver-verify-select-render.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
+
+/**
+ * #1647 — the seam's pre-existing-failures section, then the selected verify's
+ * flaky and baseline-red sections. Both describe gate results the cycle pushed
+ * past, so they sit in one place in the PR body.
+ */
+export function carried(
+  section: string,
+  ps: { verifyAttribution?: VerifyAttributionRecord },
+): string {
+  return section + verifyAttributionSectionOf(ps.verifyAttribution);
+}
 
 /**
  * Render the lens-findings section for a PR body.

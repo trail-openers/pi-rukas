@@ -1602,6 +1602,18 @@ The command runs in the group's worktree, never the repo root — under parallel
 
 Escape hatches: `PI_ENSEMBLE_VERIFY_FULL=0`, `PI_ENSEMBLE_VERIFY_FULL_TIMEOUT_MS`.
 
+### A develop round parks on a test the diff cannot reach, or on a red gate that was already red (#1647)
+
+**Symptom:** a cycle parks at `verify-failed:develop` with `[baseline-red]` or `[verify-timeout]` evidence on tests that have nothing to do with the change, or a develop round takes the full ~8-minute suite.
+
+**Cause:** the develop round used to run the whole offline suite on every pass. It now runs the tests the cycle's changed files can reach (`work-driver-verify-select.ts`), plus the `ALWAYS_RUN` list, and the full suite runs once at the `ci` step.
+
+**What you see:** the develop gate's notes say `verify selection ran N test(s) plus M always-run, not the full suite`, or name the reason it fell back to the full suite (`no-selected-tests`, `non-literal-specifier`, `outside-graph`, `smoke-test-helper`). A test that failed once and passed on its rerun is listed as **flaky**; one red on the base commit as well is listed as **baseline-red**. Both appear in the PR body under their own headings, and the handoff evidence names them. A failure that blocks names the decision (`[verify-select] blocking: …`).
+
+**Fix:** a blocked selected run is a real signal — read the named test. To run the full develop command for one cycle while investigating, set `PI_ENSEMBLE_VERIFY_SELECT=0` (this restores `.pi/verify-cmd` exactly; the ci tier is unaffected). An `ALWAYS_RUN` entry that no longer exists fails `test-verify-select-always-run.ts`; regenerate the list from the detector in the same change.
+
+**Limits:** the selector follows imports, literal `import()`/`require()` and `src/` path literals. A test that reads a repository file through a variable is caught only by `ALWAYS_RUN`, which is why that list is enumerated.
+
 ### The develop gate ran the verify command twice on the same tree (#1240)
 
 **Symptom:** `develop` completes many minutes after its developer child finished, with nothing between them but the driver's consolidated verify. On a project whose gate is slow (the orchard factory: `scripts/test.sh`, ~18 min of serial shell tests) an N=1 cycle pays that twice per gate pass — once in the develop worktree and once again at repoRoot for the consolidated probe — and the second run checks content the first already judged. Four gate passes per cycle meant eight runs where four sufficed.

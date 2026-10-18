@@ -13,6 +13,7 @@
 import { execTree } from "./exec-tree.ts";
 import { readMarker } from "./reply-markers.ts";
 import { trace } from "./trace.ts";
+import { discloseInPrBody, runCiVerifyFull } from "./work-driver-ci-verify.ts";
 import { type CycleContext, type DriverContext, MAX_CI_RETRIES } from "./work-driver-context.ts";
 import {
   contradictsSuccess,
@@ -21,7 +22,8 @@ import {
 } from "./work-driver-merge-authority.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCiPrompt, inlineStepBackPrompt } from "./work-driver-prompts-late.ts";
-import { runVerifyFull, verifyCmdFullFor } from "./work-driver-verify-full.ts";
+import { foldVerifyAttribution } from "./work-driver-verify-events.ts";
+import { verifyCmdFullFor } from "./work-driver-verify-full.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -185,13 +187,28 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
       trace(
         `work-driver: ci step — running verify-full in worktree ${primaryWorktreeId}: ${cmd.slice(0, 100)}`,
       );
-      const result = await runVerifyFull(
-        cmd,
+      // #1647 — the tier's full suite is attributed (flaky / baseline-red do not
+      // block). Non-blocking tests are written to the PR body before the tier can
+      // pass: a disclosure that fails fails the tier.
+      const run = await runCiVerifyFull(
+        ctx,
+        next,
         primaryWorktree,
+        cmd,
         verifyFullTimeoutMs(),
         ctx.verifyExecFn ?? execp,
-        { retry: true },
       );
+      const carried = run.outcome === "success" ? run.record : undefined;
+      const disclosed =
+        carried === undefined || (await discloseInPrBody(ctx, next, execp, carried));
+      const result = disclosed
+        ? run
+        : {
+            ...run,
+            outcome: "failure" as const,
+            output: `${run.output}\n[verify-full] the flaky and baseline-red tests could not be written to the PR body, so the tier fails`,
+          };
+      if (carried !== undefined) next = foldVerifyAttribution(next, carried);
       // #782 — a recovered re-run (first failed, second passed) surfaces as
       // status:success with recovered:true, so the handoff can distinguish it
       // from a normal success. The first run's tail is preserved on the event
