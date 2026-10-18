@@ -16,7 +16,10 @@ import { slowRecorder } from "./slow-events.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import { capKillOutcomeFields } from "./work-driver-adversarial-fanout-capkill.ts";
+import {
+  capKillOutcomeFields,
+  retryLadderKillCause,
+} from "./work-driver-adversarial-fanout-capkill.ts";
 import { outcomeEvents } from "./work-driver-adversarial-fanout-events.ts";
 import {
   interpretReview,
@@ -291,6 +294,11 @@ export async function fanOutAdversarial(
       // #543 — thread a loop / token-budget cap kill (+ its trigger
       // evidence) so the aggregate parks with the fixed-literal cap
       // INSTEAD of the generic infra cap (see work-driver-adversarial).
+      ...capKillOutcomeFields(result),
+      // #1243 — and the watchdog kill (timeout / inactivity / tool-inactivity /
+      // abort / plan-timeout) for the retry ladder alone. Order matters:
+      // `capKillOutcomeFields` wins for loop / token-budget, which it owns.
+      ...(retryLadderKillCause(result) ? { killCause: retryLadderKillCause(result) } : {}),
       ...capKillOutcomeFields(result),
       completionEvent,
       branchEvent: multi
