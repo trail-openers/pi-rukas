@@ -355,8 +355,8 @@ for (const cmd of longNonCliMergeDoors()) {
     `…and the real hook blocks it without touching the PR — no current-branch resolution: ${JSON.stringify(r.calls)}`,
   );
   assert(
-    r.holds.length === 1 && /reason=too-large(?=\s)/.test(r.holds[0] ?? ""),
-    `…and logs the bound as the cause that fired, not a grammar refusal: ${JSON.stringify(r.holds)}`,
+    r.traces.length === 1 && /reason=too-large(?=\s)/.test(r.traces[0] ?? ""),
+    `…and logs the bound as the cause that fired, not a grammar refusal: ${JSON.stringify(r.traces)}`,
   );
 }
 
