@@ -109,6 +109,13 @@ export function buildOwnerIndex(repoRoot: string): OwnerIndex {
       continue;
     }
     const state = parsed as WorkState;
+    if (state.issue !== Number(f.slice(0, -".json".length))) {
+      trace(
+        `worktree-sweep: ${file} names issue ${state.issue}, expected ${f.slice(0, -".json".length)} — skipped`,
+      );
+      corrupt.push(f);
+      continue;
+    }
     const claims: string[] = claimedWorktreePaths(state);
     // #861 — `integrateWorktree` is the one worktree path the driver records
     // OUTSIDE the `worktrees` map (`work-driver-commit-fallback.ts` writes it,
