@@ -15,7 +15,7 @@ CI is for VERIFICATION, not DISCOVERY. All gates pass locally before `git push`.
 bun run build
 
 # 2. Type-check, lint, and smoke-test (extension/)
-cd extension && bunx tsc --noEmit && bun run check && \
+cd extension && bun x tsc --noEmit && bun run check && \
   bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts
 ```
 
@@ -544,7 +544,7 @@ This file enforces principles, conventions, and load-bearing constraints. It's n
 
 - Biome (lint + format) is the single source of truth: `bun run check`
 - No `// @ts-ignore`, no `// @ts-expect-error` without an explicit reason in the comment
-- Imports sorted automatically by Biome (`bunx biome format --write src/`)
+- Imports sorted automatically by Biome (`bun x biome format --write src/`)
 - Avoid `any` — use `unknown` and narrow with type guards. If you must cast, comment WHY.
 
 ### File size limits
@@ -608,9 +608,9 @@ CLI flags and event shapes change between Pi minor versions. The dev pins in `ex
 |---|---|
 | Install (after clone) | `./install.sh` |
 | Build role prompts | `bun run build` |
-| Type-check extension | `cd extension && bunx tsc --noEmit` |
+| Type-check extension | `cd extension && bun x tsc --noEmit` |
 | Lint + format check | `cd extension && bun run check` |
-| Apply format | `cd extension && bunx biome format --write src/` |
+| Apply format | `cd extension && bun x biome format --write src/` |
 | All offline smoke tests | (see § 1 pre-push) |
 | Single offline smoke test | `cd extension && bun run smoke-tests/<test>.ts` |
 | Live spawn test (real tokens) | `cd extension && bun run smoke-tests/test-spawn-live.ts` |

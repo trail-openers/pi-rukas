@@ -6,7 +6,7 @@
 #
 # `git worktree add --detach` materialises tracked files only, so
 # `extension/node_modules` is absent and the develop gate
-# (`cd extension && bunx tsc --noEmit`) dies with
+# (`cd extension && bun x tsc --noEmit`) dies with
 # "Cannot find module '@earendil-works/pi-coding-agent'". We symlink the
 # real tree from the main checkout instead of `bun install`-ing a second
 # ~269 MB copy — the tree is read-mostly and safe to share.

@@ -25,6 +25,10 @@ function assert(cond: boolean, msg: string) {
 
 const REPO = "/Users/x/repo";
 
+/** #1414 — the command the checkpoint runs, spelled once here and asserted
+ * verbatim against what both renderers print. */
+const TYPECHECK_CMD = "bun x tsc --noEmit";
+
 function capedState(
   cap: string,
   role: string,
@@ -146,6 +150,219 @@ const capRenderers = [
       !out.includes("committed work"),
       `${name} (d): does not claim committed work for a write-gated role`,
     );
+  }
+}
+
+// (e) #1414 — typecheck FAILED: both renderers name the command the driver
+// actually ran. Before the fix the bullet claimed the driver had run
+// `bunx tsc --no-emit` — an alias provisioning may not create and a flag tsc
+// does not accept — so the operator was told committed code was broken on the
+// strength of a command that could never have succeeded. No case here ever
+// set `typechecked`, so the line had zero regression coverage.
+{
+  const s = capedState("loop-detected", "developer", {
+    tree: "committed",
+    commitSha: "def4567",
+    typechecked: false,
+    statusFile: `${REPO}/tmp/issue-543/status-developer.md`,
+  });
+  for (const [name, out] of capRenderers.map(([n, f]) => [n, f(s)] as const)) {
+    assert(
+      out.includes("typecheck FAILED at checkpoint"),
+      `${name} (e): the failed-typecheck bullet renders`,
+    );
+    assert(
+      out.includes(TYPECHECK_CMD),
+      `${name} (e): names the command the checkpoint ran (${TYPECHECK_CMD})`,
+    );
+    assert(!/\bbunx\b/.test(out), `${name} (e): no bare bunx in the handoff`);
+    assert(!out.includes("--no-emit"), `${name} (e): no non-existent tsc flag in the handoff`);
+  }
+}
+
+// (f) #1414 — a passing typecheck adds no broken-code claim (absent and true
+// both render nothing; only false does).
+{
+  const s = capedState("loop-detected", "developer", {
+    tree: "committed",
+    commitSha: "aaa1111",
+    typechecked: true,
+  });
+  for (const [name, out] of capRenderers.map(([n, f]) => [n, f(s)] as const)) {
+    assert(
+      !/typecheck FAILED/.test(out),
+      `${name} (f): a passing typecheck makes no broken-code claim`,
+    );
+    assert(!out.includes(TYPECHECK_CMD), `${name} (f): a passing typecheck names no command`);
+  }
+}
+
+// (g) #1414 round 2 — the typecheck reached NO VERDICT (the field is absent).
+// Pre-fix this shape was indistinguishable from "broken", in BOTH
+// directions: a command that could not run reached the renderer as `false`
+// (the broken-code bullet, a lie), and once round 2 makes the field honestly
+// absent, the renderer must not fall into "no bullet, therefore it passed".
+// It says plainly that nothing was judged, names the reason, and claims
+// neither way about the code.
+{
+  const s = capedState("loop-detected", "developer", {
+    tree: "committed",
+    commitSha: "bbb2222",
+    typechecked: undefined,
+    typecheckReason: "could not run (sh: tsc: command not found)",
+    statusFile: `${REPO}/tmp/issue-543/status-developer.md`,
+  });
+  for (const [name, out] of capRenderers.map(([n, f]) => [n, f(s)] as const)) {
+    assert(
+      !/typecheck FAILED/.test(out),
+      `${name} (g): a check that never ran is NEVER reported as a failed typecheck`,
+    );
+    assert(
+      /typecheck: no verdict/.test(out),
+      `${name} (g): the no-verdict bullet renders — silence here would read as "it passed"`,
+    );
+    assert(
+      out.includes("could not run"),
+      `${name} (g): the handoff carries the REASON the operator can act on`,
+    );
+    assert(
+      out.includes(TYPECHECK_CMD) && !/\bbunx\b/.test(out) && !out.includes("--no-emit"),
+      `${name} (g): names the command it meant, spelled correctly`,
+    );
+    assert(
+      !/the code is broken as-is/.test(out),
+      `${name} (g): makes no broken-code claim without a verdict`,
+    );
+  }
+}
+
+// (h) #1414 round 2 — mutation direction for (g): a REAL diagnostic still
+// produces the broken-code bullet. Without this case, deleting the `false`
+// branch (or routing everything to the no-verdict bullet) would pass (g).
+{
+  const s = capedState("loop-detected", "developer", {
+    tree: "committed",
+    commitSha: "ccc3333",
+    typechecked: false,
+  });
+  for (const [name, out] of capRenderers.map(([n, f]) => [n, f(s)] as const)) {
+    assert(
+      /typecheck FAILED at checkpoint/.test(out),
+      `${name} (h): a real verdict still blames the code`,
+    );
+    assert(
+      !/typecheck: no verdict/.test(out),
+      `${name} (h): a verdict is not rendered as no-verdict`,
+    );
+  }
+}
+
+// (i) #1414 round 2 — a clean tree with no verdict needs no warning: nothing
+// was committed, so nothing is being passed off as sound.
+{
+  const s = capedState("token-budget", "explore", {
+    tree: "clean",
+    reportOnly: true,
+    typechecked: undefined,
+  });
+  for (const [name, out] of capRenderers.map(([n, f]) => [n, f(s)] as const)) {
+    assert(
+      !/typecheck/.test(out),
+      `${name} (i): a report-only / clean checkpoint makes no typecheck claim at all`,
+    );
+  }
+}
+
+// (j) #1414 round 3 — a DIRTY-UNCOMMITTED checkpoint that never ran the
+// typecheck. This is the case the round-2 bullet got wrong: the checkpoint
+// commits only when the tree is dirty, and the typecheck runs on that path
+// only — so a record whose commit attempt failed, or whose checkpoint never
+// reached the check, had `typechecked` absent and `tree` dirty with no
+// `typecheckAttempted`, and the renderer printed the no-verdict bullet anyway,
+// either bare ("reason: not recorded") or, pre-round-2, claiming a verdict it
+// never got. The handoff must say PLAINLY that the check was not attempted,
+// and must not present a reason it does not have.
+{
+  const s = capedState("loop-detected", "developer", {
+    tree: "dirty-uncommitted",
+    remainingFiles: ["extension/src/partial.ts"],
+    // typechecked absent, typecheckReason absent, typecheckAttempted absent —
+    // exactly what a checkpoint that never ran the check records.
+  });
+  for (const [name, out] of capRenderers.map(([n, f]) => [n, f(s)] as const)) {
+    assert(
+      /typecheck: not attempted/.test(out),
+      `${name} (j): a checkpoint that never ran the check says so, rather than going silent`,
+    );
+    assert(
+      !/typecheck: no verdict/.test(out),
+      `${name} (j): no no-verdict bullet for a check that was never attempted — that bullet asserts an attempt`,
+    );
+    assert(!/typecheck FAILED/.test(out), `${name} (j): no broken-code claim without a verdict`);
+    assert(
+      !/not recorded; see the status file/.test(out),
+      `${name} (j): the handoff does not print a reason placeholder it has no reason for`,
+    );
+    assert(
+      /the driver did not run/.test(out),
+      `${name} (j): the wording attributes the absence to the driver, not to the code`,
+    );
+    assert(
+      out.includes(TYPECHECK_CMD) && !/\bbunx\b/.test(out) && !out.includes("--no-emit"),
+      `${name} (j): names the command it did not run, spelled correctly`,
+    );
+    // The dirty-state warning the operator needs is still there — the new
+    // bullet supplements it, it does not replace it.
+    assert(
+      /UNVERIFIED PARTIAL STATE/.test(out),
+      `${name} (j): the unverified-partial-state warning still renders`,
+    );
+  }
+}
+
+// (k) #1414 round 3 — mutation direction for (j): the SAME dirty tree with the
+// check genuinely attempted and genuinely undecided still gets the no-verdict
+// bullet with its reason. Without this case, (j) is satisfied by deleting the
+// whole no-verdict branch.
+{
+  const s = capedState("loop-detected", "developer", {
+    tree: "dirty-uncommitted",
+    remainingFiles: ["extension/src/partial.ts"],
+    typechecked: undefined,
+    typecheckAttempted: true,
+    typecheckReason:
+      "the host could not start the typecheck (fork failed / out of process slots), so it judged nothing",
+  });
+  for (const [name, out] of capRenderers.map(([n, f]) => [n, f(s)] as const)) {
+    assert(
+      /typecheck: no verdict/.test(out),
+      `${name} (k): an ATTEMPTED check with no verdict still renders the no-verdict bullet`,
+    );
+    assert(out.includes("fork failed"), `${name} (k): the recorded reason reaches the operator`);
+    assert(
+      !/typecheck: not attempted/.test(out),
+      `${name} (k): an attempted check is never described as not attempted`,
+    );
+  }
+}
+
+// (l) #1414 round 3 — an ATTEMPTED check that typechecked cleanly renders no
+// typecheck bullet at all, and specifically not the not-attempted one. This is
+// the (f) assertion re-made under the new gate: `typechecked: true` falls
+// through both the `false` test and the `undefined` test, and the not-attempted
+// bullet lives inside the `undefined` branch, so a restructure that hoists it
+// out would be caught here.
+{
+  const s = capedState("loop-detected", "developer", {
+    tree: "dirty-uncommitted",
+    typechecked: true,
+  });
+  for (const [name, out] of capRenderers.map(([n, f]) => [n, f(s)] as const)) {
+    assert(
+      !/typecheck: not attempted/.test(out),
+      `${name} (l): a clean typecheck on a dirty tree is not reported as an unattempted check`,
+    );
+    assert(!/typecheck/.test(out), `${name} (l): a passing check names no command`);
   }
 }
 
