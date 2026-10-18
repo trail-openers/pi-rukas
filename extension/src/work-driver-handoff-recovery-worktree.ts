@@ -23,7 +23,37 @@ import type { WorkEvent, WorkState } from "./workflow-state.ts";
  * #674 — the worktree-aware recovery steps, or `[]` when the cycle has no
  * committed work on detached-HEAD worktrees (predicate: `committedWork`
  * non-empty AND a branch name to hang the commands on).
+ *
+ * #747 — AND the branch actually exists. `branchName` is written by the
+ * branch step and survives every later cap, so it says "the cycle got a
+ * branch", not "the branch is there now" — a cycle that lost (or never
+ * created) its local ref still had a name to render. Every command this
+ * block emits moves a ref (`git checkout <branch>`, `git cherry-pick`,
+ * `git push -u origin <branch>`), so an operator following it against a
+ * ref git cannot resolve concludes the work is gone. The message renderer
+ * already distinguishes the two states via `handoffSnapshot.branchExists`
+ * ("no branch was created" vs "NOT pushed — local only"); the recovery
+ * block now reads the same field. When it is false the work is still
+ * named — the "Worktree state at handoff" section prints the per-worktree
+ * paths and HEAD SHAs — and the generic pre-branch fallback (read the
+ * state file, `/work <N> --restart`) renders instead.
+ *
+ * The one reading of `branchExists` that would be wrong is "trust the
+ * driver's own consolidation instead": the #968 restore path puts repoRoot
+ * back on the operator's ORIGINAL checkout, so a handoff that consolidated
+ * successfully and then failed its restore (or whose snapshot was captured
+ * against a different tree) can carry a `handoff-consolidated` event with
+ * no resolvable local ref. That is exactly the state this gate refuses to
+ * print `git push -u origin <branch>` for. Pre-#674 state files carry
+ * committed work with no `branchExists` field at all; `!== true` keeps them
+ * out of the block, which is the safe direction — the generic pre-branch
+ * fallback names no ref.
  */
+export function refProvenAtHandoff(state: WorkState): boolean {
+  if (state.pipelineState.handoffSnapshot?.branchExists === true) return true;
+  return state.eventLog?.some((e) => e.kind === "handoff-consolidated") ?? false;
+}
+
 export function worktreeAwareRecoverySteps(
   state: WorkState,
   forge: ForgeType,
@@ -33,7 +63,13 @@ export function worktreeAwareRecoverySteps(
   const issue = state.issue;
   const steps: RecoveryStep[] = [];
   const committedWork = ps.handoffSnapshot?.committedWork;
+  // #747 — `branchExists === true`, not merely "a branch name was captured":
+  // see the predicate doc above. An absent snapshot (pre-#674 state file, or
+  // a handoff that never captured one) is NOT evidence the branch exists, so
+  // the block stays out — the same fail-toward-no-commands reading the
+  // message renderer uses for its branch tag.
   if (!committedWork || committedWork.length === 0 || !ps.branchName) return steps;
+  if (!refProvenAtHandoff(state)) return steps;
   const consEvent = [...state.eventLog]
     .reverse()
     .find(
