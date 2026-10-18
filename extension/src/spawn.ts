@@ -24,6 +24,7 @@ import { createInterface } from "node:readline";
 import { preflightChildGuards } from "./child-guards.ts";
 import { ChildProgress } from "./child-progress.ts";
 import { clampToCycleDeadline } from "./cycle-deadline-clock.ts";
+import { scrubGitLocation } from "./git-env.ts";
 import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
@@ -166,6 +167,9 @@ async function spawnSpecialistInner(
 
   const childEnv: Record<string, string> = { ...process.env, PI_ENSEMBLE_ROLE: spec.role };
   Object.assign(childEnv, vipuneChildEnv());
+  // #1571 — the child works in `cwd`; an inherited GIT_DIR & co. would point
+  // its git at another tree (git-env.ts).
+  scrubGitLocation(childEnv);
   // Interactive-git hang prevention (#605). These win over the inherited
   // host env: a child that reaches an editor, sequence editor, terminal
   // prompt, or full-screen pager (git rebase -i, bare git commit, any

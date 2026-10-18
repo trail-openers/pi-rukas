@@ -33,6 +33,7 @@
  * (judged by the policy judge), as it does for start_work_driver.
  */
 
+import { scrubGitLocation } from "../git-env.ts";
 import { resourceReport } from "../resource-budget.ts";
 import { killLiveProcessGroups } from "../spawn-kill.ts";
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
@@ -131,6 +132,9 @@ function errorMessage(err: unknown): string {
 
 async function main(argv: string[]): Promise<number> {
   const [verb, ...rest] = argv;
+  // #1571 — this process runs the driver without the extension activating:
+  // drop an inherited GIT_DIR & co. here too (git-env.ts).
+  scrubGitLocation(process.env);
   // #1306 — `--capabilities` answers before any cycle, repo or network is
   // touched: the whole point is that a caller checks the build it is about
   // to run without paying for a run. It therefore dispatches before
