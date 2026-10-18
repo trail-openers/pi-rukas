@@ -20,7 +20,16 @@ export function explainPrSteps(cap: Cap, state: WorkState): string {
     case "intent-park": {
       const spec = state.pipelineState.normalisedSpec;
       const reason = (spec?.parkReason ?? "underspecified") as ParkReason;
-      const why = explainPark(reason, state.issue);
+      // #1561 — a park resting on an open PR is work awaiting review, not a
+      // done issue: name the PR instead of inviting the reader to close it.
+      const hit = [...state.eventLog]
+        .reverse()
+        .find((e) => e.kind === "cap-hit" && e.cap === "intent-park");
+      const openPr = hit?.kind === "cap-hit" ? hit.awaitingReviewPr : undefined;
+      const why =
+        openPr !== undefined
+          ? `#${state.issue}'s work is in open PR #${openPr}, which is awaiting review — it is not merged, so #${state.issue} is not done. Review or merge PR #${openPr}; close #${state.issue} once it lands, or say what is still missing and re-run.`
+          : explainPark(reason, state.issue);
       // Memory rows are listed apart: under "Contradicting evidence" a stale
       // vipune row reads as a finding about the code, which it is not.
       const row = (e: { claim: string; source: string }) =>

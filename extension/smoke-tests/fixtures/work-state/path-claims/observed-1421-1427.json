@@ -1,0 +1,14 @@
+{
+  "$comment": "Verbatim shape of the park that opened #1454: 19 paths claimed by #1421 (abbreviated to the two that overlapped), claimed ~87 minutes before #1427 parked at plan. Evidence in .pi/work-state/1392.json and 1402.json (the claimant-naming parks), not 1427.json.",
+  "claims": [
+    {
+      "issue": 1421,
+      "pid": 0,
+      "paths": [
+        "extension/src/worktree-provision.ts",
+        "extension/src/work-driver-verify-develop-helpers.ts"
+      ],
+      "startedAt": "@AGE(-5220000)"
+    }
+  ]
+}

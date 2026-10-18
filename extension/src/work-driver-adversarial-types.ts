@@ -51,8 +51,24 @@ export interface AdversarialOutcome {
   errorTail?: string;
   /** #79 — identical provider failures in a row the loop already saw; ≥2 is not retried in-step. */
   providerRepeats?: number;
-  /** #543 — a loop / token-budget cap kill, threaded from the inner spawn. */
-  killCause?: "loop" | "token-budget";
+  /** #543 — a loop / token-budget cap kill, threaded from the inner spawn.
+   * #1243 — widened to the watchdog kills too, for the RETRY LADDER only (see
+   * `retryLadderKillCause`): a `provider-severed` classification that is really
+   * a self-kill used to buy the minutes floor, because the classifier was never
+   * given the cause. Cap-kill PARKING still reads only loop / token-budget —
+   * `capHitForCapKill` narrows on the value, so widening the field cannot
+   * promote a watchdog kill into a fixed-literal cap. */
+  killCause?:
+    | "timeout"
+    | "inactivity"
+    | "tool-inactivity"
+    | "abort"
+    | "loop"
+    | "token-budget"
+    | "plan-timeout"
+    | "child-bound"
+    | "no-progress"
+    | "stuck-tool";
   /** #543 — the F1 streak evidence for a loop kill, threaded from the inner
    * spawn's DispatchResult so the driver can persist `capEvidence`. */
   loopEvidence?: { tool: string; count: number };

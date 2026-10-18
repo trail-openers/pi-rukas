@@ -7,8 +7,12 @@
  */
 
 import { hostBudget } from "./host-resources.ts";
-import { trace } from "./trace.ts";
-import { extractListField, sliceMarkdownSection } from "./work-driver-plan-parse.ts";
+import { trace, traceWarn } from "./trace.ts";
+import {
+  countMarkdownSections,
+  extractListField,
+  sliceMarkdownSection,
+} from "./work-driver-plan-parse.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { foldTwo } from "./workstream-fold.ts";
 
@@ -40,9 +44,33 @@ import { foldTwo } from "./workstream-fold.ts";
  * #1322 — also parses the optional `- introduces: <symbols>` and
  * `- consumes: <symbols>` lines (the change's contract; see
  * work-driver-plan-contract.ts). Same tolerance, same optionality.
+ *
+ * #819 — the multi-block defect is NOT fixed by changing what this returns.
+ * `sliceMarkdownSection` is byte-unchanged (its other callers — `## Spec`,
+ * `## Worktrees`, `## Rationale` — are unaffected) and this parser still
+ * returns the first block's map, so no caller's behaviour moves. What changed
+ * is that the ambiguity is no longer SILENT: `parseWorkstreams` counts the
+ * `## Workstreams` headings before slicing and traces when a reply carries
+ * more than one. The rejection lives in `planSpecMismatchReason`
+ * (work-driver-plan-spec-coverage.ts), which reads the reply's raw text for
+ * the same count — it has to, because the parsed map cannot distinguish one
+ * block from three.
  */
 export function parseWorkstreams(text: string): Record<string, Workstream> {
   const out: Record<string, Workstream> = {};
+  const blocks = countMarkdownSections(text, "Workstreams");
+  if (blocks > 1) {
+    // Loud on the driver's WARN channel: the reply the cycle built from was
+    // one arbitrary block of several, and the operator reading a handoff
+    // later needs to be able to see that this happened. `traceWarn`, not
+    // `trace`: this is a reply the driver is about to REJECT and halt on, not
+    // routine step bookkeeping — at info level the line is indistinguishable
+    // from the trace noise around it, which is how the #818 reply reached four
+    // developers without anyone seeing a warning.
+    traceWarn(
+      `work-driver: plan reply carried ${blocks} '## Workstreams' sections — parsed the first (the plan-to-spec gate refuses this reply)`,
+    );
+  }
   const section = sliceMarkdownSection(text, "Workstreams");
   if (section === undefined) return out;
   // Each workstream begins with a ### subheading. Slice between consecutive

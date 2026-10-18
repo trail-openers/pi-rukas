@@ -246,6 +246,27 @@ const everyKindEvent: WorkEvent[] = [
     worktree: "/tmp/wt-default",
     workstreamCount: 1,
   },
+  // #1415 — the develop gate's verify run, bracketed.
+  { kind: "verify-started", at: 1, step: "develop", command: "bash scripts/verify.sh" },
+  {
+    kind: "verify-completed",
+    at: 2,
+    step: "develop",
+    command: "bash scripts/verify.sh",
+    ok: true,
+    ms: 1,
+  },
+  // #1404 — the consolidated verify failed and the cycle pushed anyway, every
+  // failing test red at base. Same reason as the skip above: an absent kind
+  // makes the validator's tuple stale, and this event is the only record a
+  // red-gate-pushed cycle leaves in the state file.
+  {
+    kind: "consolidated-verify-pre-existing",
+    at: 1,
+    step: "commit-pr",
+    failures: ["extension/smoke-tests/test-a.ts"],
+    baseSha: "1".repeat(40),
+  },
   { kind: "widening-scan", at: 1, findings: [] },
   {
     kind: "memory-write",
@@ -271,6 +292,18 @@ const everyKindEvent: WorkEvent[] = [
     branch: "feature/x",
     oldSha: "a",
     newSha: "b",
+  },
+  {
+    kind: "retry-tree-clean",
+    at: 1,
+    step: "lens-fix",
+    attempt: 1,
+    outcome: "cleaned",
+    worktree: "/wt",
+    files: ["a.ts"],
+    fileCount: 1,
+    ref: "refs/pi-rukas/retry-preserved/issue-1/lens-fix-1",
+    patch: "/r/tmp/issue-1/retry-lens-fix-1.patch",
   },
   {
     kind: "dispatch-slow",

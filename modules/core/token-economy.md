@@ -13,6 +13,8 @@ Your context window is finite. Every token you consume brings you closer to degr
 
 **Rule**: If work would cost you 500+ tokens to do yourself, delegate it.
 
+The exceptions to that bar live in `modules/core/tool-preferences.md` §Search (the investigation pre-check) and in "The Issue Exception" below. This file owns the bar; read the exceptions there and don't restate them here.
+
 ## Parallel Dispatch
 
 Launch multiple independent tasks in a single message. Don't serialize what can parallelize. Up to 10 concurrent tasks can run simultaneously.

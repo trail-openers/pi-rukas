@@ -25,6 +25,8 @@ export const CAP_TEMPLATES = {
   "verify-baseline-red": "step",
   /** #1349 — the cycle's PR was not open when the step started. */
   "pr-not-open": "step",
+  /** #1472 — a person CLOSED the cycle's issue while the cycle was running. */
+  "issue-closed": "step",
   "step-failed": "step",
   "driver-crash": "step",
   /** The number of commits the local branch is ahead of origin. */
@@ -41,13 +43,30 @@ export const FIXED_CAPS = [
   "adversarial-loop",
   "awaiting-human-merge",
   "ci-retry",
+  // #1454 r3 — the claims lock refused a registration (unwritable
+  // `.pi/work-state`, or held past the wait window). Named rather than left to
+  // surface as `driver-crash:plan`. Sorted where the sort puts it: between
+  // `ci-retry` and `commit-pr-incomplete-consolidation`.
+  "claims-lock-unavailable",
   "commit-pr-incomplete-consolidation",
   "consolidated-verify-conflict",
   "consolidated-verify-consolidation-created",
   "consolidation-incomplete",
+  // #1468 — `--continue-pr` could not continue the issue's open PR.
+  "continue-pr-ambiguous",
+  "continue-pr-fork",
+  "continue-pr-head-moved",
+  "continue-pr-not-found",
+  "continue-pr-unresolved",
+  "continue-pr-unsafe-head",
   "cross-group-conflict",
   "deadline",
   "deferred-creation:develop",
+  // #1101 — queue-raised waits (a group that never dispatched). Sorted with the
+  // rest; the sort order is asserted by test-headless-host-contract.ts.
+  "dependency-cycle",
+  "dependency-parked",
+  "dependency-timeout",
   "develop-child-crash",
   "develop-incomplete-deliverables",
   "developer-timeout",
@@ -66,17 +85,29 @@ export const FIXED_CAPS = [
   "lens-diff-unreadable",
   "lens-fix-not-integrated",
   "lens-fix-reposition",
+  // #1384 — the lens-review fix loop outlived its own budget
+  // (PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS). Was `wall-clock` before result schema
+  // v4, a name a host read as its own cycle clock.
+  "lens-review-timeout",
   "loop-detected",
   "no-review-outcome",
   "ops-merge-base-mismatch",
+  // #819 — the plan-to-spec gate refused the plan before branch/develop.
+  "plan-spec-mismatch",
   "plan-timeout",
+  // #1243 — the step parked on a provider outage; a headless caller re-queues
+  // these itself when the endpoint answers again, so it is a published cap.
+  "provider-unavailable",
+  // #1101 — the group the scheduler had taken into the wait list when a halt
+  // released every worker (`sweepStranded`). Same family as the four above,
+  // sorted where the sort puts it.
+  "queue-stranded",
   "repeat-finding-seam",
   "repo-root-residue",
   "review-incomplete",
   "round-cap",
   "step-back-revise-spec",
   "token-budget",
-  "wall-clock",
   "worktree-listing-unreadable",
 ] as const satisfies readonly FixedCap[];
 

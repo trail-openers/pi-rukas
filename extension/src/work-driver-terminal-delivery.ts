@@ -24,7 +24,7 @@ import { trace } from "./trace.ts";
 import { renderHandoffUserMessage } from "./work-driver-handoff-message.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
-import type { WorkState } from "./workflow-state.ts";
+import { type WorkState, isProviderPark } from "./workflow-state.ts";
 
 /** Terminal delivery of issue #808's driver. `repoRoot`/`issue` anchor the scratch dir + envelope. */
 export type TerminalDeliveryCtx = {
@@ -37,17 +37,38 @@ export type TerminalDeliveryCtx = {
  * Deliver the cycle's terminal line (merged / handoff / aborted). Returns the
  * updated state with `handoffDeliveredAt` set — or the input state unchanged
  * when the line was already delivered or the send failed. Never throws.
+ *
+ * `park` (#1243 fix round) is the snapshot the interrupted/park decision must
+ * be made from. The caller's in-memory copy has been through
+ * `reenterInterrupted`, which flips `interrupted` to `running` — so a park
+ * decided from it looks like a live cycle and its owed line is silently never
+ * delivered. Passing the disk snapshot keeps this function's own reading of the
+ * park and of `handoffDeliveredAt` in agreement with the caller's gate, instead
+ * of two copies disagreeing about whether there is a park at all.
  */
 export async function deliverTerminalLine(
   ctx: TerminalDeliveryCtx,
   state: WorkState,
+  park?: WorkState,
 ): Promise<WorkState> {
-  const final = state.pipelineState.status;
-  if (final !== "merged" && final !== "handoff" && final !== "aborted") {
+  // Where the interrupted/park facts come from: the caller's snapshot when it
+  // gave one, otherwise its own state (every non-resume caller has no separate
+  // disk copy to offer).
+  const record = park ?? state;
+  const final = record.pipelineState.status;
+  // #1243 — `interrupted` is included for the provider park only: a park the
+  // endpoint caused still owes the operator the handoff line, and the status is
+  // the park's own, not a signal's. A SIGNAL interrupt must not come here — its
+  // cycle was cut off mid-step, `interruptIfRequested` owns that write, and
+  // there is no handoff to announce. `handoffDeliveredAt` already gates a
+  // re-send, so a provider park whose line went out is never sent twice. The
+  // test is the shared `isProviderPark` (#1243 fix round): three surfaces ask
+  // this same question and all three now answer it the same way.
+  if (final !== "merged" && final !== "handoff" && final !== "aborted" && !isProviderPark(record)) {
     return state;
   }
 
-  const alreadyDelivered = state.pipelineState.handoffDeliveredAt !== undefined;
+  const alreadyDelivered = record.pipelineState.handoffDeliveredAt !== undefined;
   const message =
     final === "merged"
       ? `pi-rukas:driver-event v1 kind=merged issue=${ctx.issue} at=${new Date().toISOString()}\npi-rukas /work for issue #${ctx.issue} — ${mergedLine(state)}`

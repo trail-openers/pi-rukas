@@ -6,17 +6,20 @@
  *   0  merged (or completed with nothing to merge)
  *  10  handoff for any cap other than the clarification caps, or awaiting-human-merge
  *  11  handoff whose cap is intent-park or explore-needs-clarification
+ *  12  `plan` turns only (#1471): a drafted plan waits for a confirm
  *  20  aborted
  *  21  interrupted by a signal
  *  30  the driver threw, or interrupted by the runner's own --timeout
  *  40  refused to start (claimed by a live cycle, needs-human-attention without
  *      --restart, bad arguments, an unknown flag such as --merge)
+ *  41  `plan` turns only (#1471): the session to resume no longer exists
  *
  * A grouped run exits 21 if any issue was interrupted, otherwise the highest
  * per-issue code. The JSON result carries every issue regardless.
  */
 
 import type { WorkCapLiteral } from "../workflow-state-events-caps.ts";
+import { isProviderPark } from "../workflow-state-events-interrupted.ts";
 import type { InterruptReason, WorkEvent, WorkState } from "../workflow-state.ts";
 
 /** Version of the exit-code contract. Bump on any change to the code values or their meanings. */
@@ -30,6 +33,10 @@ export const EXIT = {
   interrupted: 21,
   crash: 30,
   refused: 40,
+  /** `plan` turns only (#1471): a drafted plan waits for the operator's confirm. */
+  shown: 12,
+  /** `plan` turns only (#1471): the session to resume no longer exists. */
+  lost: 41,
 } as const;
 
 const CLARIFICATION_CAPS = [
@@ -91,8 +98,24 @@ export function exitCodeForState(state: WorkState): number {
     }
     case "aborted":
       return EXIT.aborted;
-    case "interrupted":
-      return lastInterruptReason(state) === "timeout" ? EXIT.crash : EXIT.interrupted;
+    case "interrupted": {
+      // #1243 — a provider park is NOT a signal interrupt: nothing was cut off,
+      // the handoff was delivered, and the host's contract for a park the
+      // endpoint caused is the handoff code it already got (`failure.kind ===
+      // "provider"`, re-queueable). It keeps EXIT.handoff so a host that
+      // switches on 10 sees no change; only re-entry differs from a `handoff`
+      // status. A signal stays 21 and the runner's own `--timeout` stays 30.
+      // The test is the shared `isProviderPark`, not a local read of the reason
+      // — one discriminator for every surface that has to tell the two apart.
+      const reason = lastInterruptReason(state);
+      if (isProviderPark(state)) {
+        const cap = lastCap(state);
+        return cap !== undefined && (CLARIFICATION_CAPS as readonly string[]).includes(cap)
+          ? EXIT.clarification
+          : EXIT.handoff;
+      }
+      return reason === "timeout" ? EXIT.crash : EXIT.interrupted;
+    }
     default:
       // "running" after the driver returned: the cycle did not terminalize.
       return EXIT.crash;

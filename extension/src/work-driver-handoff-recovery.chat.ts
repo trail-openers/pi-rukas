@@ -16,6 +16,9 @@
 import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { commitPrDirtyRootStep } from "./work-driver-handoff-commitpr.ts";
+import { genericRecoveryLines, hasRecoveryWorktrees } from "./work-driver-handoff-recovery-tree.ts";
+// #747 — the same ref-exists predicate the shared worktree recovery uses.
+import { refProvenAtHandoff } from "./work-driver-handoff-recovery-worktree.ts";
 import {
   type RecoveryStep,
   consolidatedRestoreClaim,
@@ -280,7 +283,23 @@ export function recoveryCommandsChat(
     return lines;
   }
 
-  if (!ps.branchName) {
+  // #747 — the predicate is the STATE, not the cap and not merely the
+  // captured name: `branchName` says the branch step ran, `branchExists`
+  // says there is a ref to hand commands to. Identical predicate to the
+  // markdown twin in work-driver-handoff-recovery.md.ts, the shared decision
+  // in work-driver-handoff-recovery-worktree.ts, and the message renderer's
+  // branch tag — one reading, four surfaces. An absent snapshot reads as "no
+  // branch", never as "branch", EXCEPT that a `handoff-consolidated` event
+  // proves the ref: the driver writes it only after it checked out (or
+  // created) the branch and moved the work onto it, so a snapshot whose ref
+  // read failed still has a branch to name. See the markdown twin for the
+  // full reasoning.
+  // #1575's worktree take-over pushes `HEAD:refs/heads/<branch>` and needs no
+  // local ref, so recorded worktrees keep it; only the repoRoot fallback
+  // (`git push -u origin <branch>`) needs the proof.
+  const refIsProven = refProvenAtHandoff(state) || hasRecoveryWorktrees(state);
+  const branchName = ps.branchName && refIsProven ? ps.branchName : undefined;
+  if (!branchName) {
     // Nothing was created, so the generic block below is all wrong: it tells
     // the operator to inspect a worktree that does not exist and push a branch
     // that was never made. This used to be special-cased per cap, which meant
@@ -302,17 +321,14 @@ export function recoveryCommandsChat(
     lines.push(
       "",
       ...killDetail(state).map((l) => `  ${l}`),
-      "  # 1. Inspect what survived before deciding:",
-      `     git -C ${repoRoot} status`,
-      `     git -C ${repoRoot} diff --stat`,
-      "",
-      "  # 2. Discard the cycle and start over (worktree changes are kept):",
-      `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
-      "",
-      `  # 3. Take over manually — commit + push what's there, open the PR yourself:`,
-      `     git -C ${repoRoot} add -p`,
-      `     git -C ${repoRoot} commit`,
-      `     git -C ${repoRoot} push -u origin ${ps.branchName}`,
+      // #1565 — built from the trees the snapshot found, not repoRoot blindly.
+      ...genericRecoveryLines(state).map((l) =>
+        l === ""
+          ? l
+          : l.startsWith("#")
+            ? `  ${l}`
+            : `     ${requalifyLine(l, repoRoot, scratchDirAbs, forge)}`,
+      ),
     );
   }
   return lines;

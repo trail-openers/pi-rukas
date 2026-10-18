@@ -10,10 +10,45 @@
  * queue's worker loop consults; the reactive check remains the safety net for
  * the genuinely unpredictable case (LLM-declared paths diverging from the
  * extracted ones) and is unchanged.
+ *
+ * #1101 — this predicate sees *extracted* tokens only, and a sibling whose
+ * body names no path at all is deliberately invisible to it. That is the
+ * correct answer for the overlap gate (serialising an issue that named
+ * nothing against everything would make every queue sequential) and the wrong
+ * answer for safety: the reactive plan-time check reads what the PLANNER
+ * declared, and a pair invisible here can still collide there. `predictedPathsCollide`
+ * below is the sibling predicate for that case — same shape, non-empty on
+ * either side is enough to hold a group back rather than park it.
  */
 
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { IssueGroup } from "./work-queue.ts";
+
+/**
+ * #1101 — would the reactive plan-time claim check refuse to let these two
+ * path predictions run alongside each other?
+ *
+ * `groupIssues()` extracts path tokens from issue bodies; `checkAndRegisterClaims`
+ * in `work-driver-path-claims.ts` compares what the *planner declared* per
+ * workstream. The two inputs differ, and the gap between them was the bug: a
+ * pair this gate cannot see (because one side extracted nothing, or because the
+ * shared token appears only in prose) ran concurrently and then parked the loser
+ * at plan — after an explore + plan dispatch bought for nothing.
+ *
+ * "Unknown" is not "safe" here. Empty-vs-anything is `false` — a prediction
+ * that names nothing is no evidence of a collision, and must not serialise the
+ * queue — but the caller treats `false` as "no prediction", not as "disjoint",
+ * and still waits on a sibling it can observe. Non-empty on both sides uses the
+ * same full-token + basename comparison as `groupPathsOverlap`, so a bare
+ * `commands.ts` collides with `extension/src/commands.ts`.
+ */
+export function predictedPathsCollide(a: string[], b: string[]): boolean {
+  if (a.length === 0 || b.length === 0) return false;
+  return groupPathsOverlap(
+    { id: "a", scope: "", paths: a, outOfScope: [], issues: [] },
+    { id: "b", scope: "", paths: b, outOfScope: [], issues: [] },
+  );
+}
 
 /**
  * Does this group's groupIssues()-extracted path set overlap a sibling

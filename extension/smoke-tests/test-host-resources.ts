@@ -9,6 +9,9 @@
  *     host and leaves them alone on a large one; explicit env always wins.
  *   - `withVerifySlot` holds at most `PI_ENSEMBLE_VERIFY_CONCURRENCY` runs at
  *     once, FIFO, and a throwing run frees its slot.
+ *   - #1591: cgroup `pids.max` (tightest along the own path, or v1) is read,
+ *     and lowers the lens fan-out (`lensSlots`, PIDS_PER_LENS each);
+ *     `PI_ENSEMBLE_LENS_CONCURRENCY` wins.
  *   - The budget and limits are reported as data (`resourceReport`, and
  *     `resources` in `--capabilities`).
  */
@@ -21,6 +24,7 @@ import {
   type HostBudget,
   __setHostBudget,
   budgetFor,
+  lensConcurrency,
   readHostResources,
   verifyConcurrency,
   verifySlotStats,
@@ -45,6 +49,7 @@ const ENV = [
   "PI_ENSEMBLE_PARALLEL_WORK",
   "PI_ENSEMBLE_MAX_WORKSTREAMS",
   "PI_ENSEMBLE_VERIFY_CONCURRENCY",
+  "PI_ENSEMBLE_LENS_CONCURRENCY",
 ];
 const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 function withEnv<T>(vars: Record<string, string>, fn: () => T): T {
@@ -77,8 +82,11 @@ try {
     "sys/fs/cgroup/box/inner/memory.max": `${4 * GIB}`,
     "sys/fs/cgroup/box/cpu.max": "250000 100000",
     "sys/fs/cgroup/box/memory.max": "max",
+    "sys/fs/cgroup/box/inner/pids.max": "max",
+    "sys/fs/cgroup/box/pids.max": "3072",
   });
   const r2 = readHostResources(v2, 16, 64 * GIB);
+  assert(r2.pidsMax === 3072, `v2: a parent slice's pids.max counts (got ${r2.pidsMax})`);
   assert(
     r2.cgroup === "v2" && r2.cpus === 2 && r2.cpuSource === "cgroup-v2",
     `v2: a parent slice's 2.5-CPU quota counts, floored (got ${r2.cpus} ${r2.cpuSource})`,
@@ -96,8 +104,12 @@ try {
   });
   const ru = readHostResources(unlimited, 16, 64 * GIB);
   assert(
-    ru.cgroup === "v2" && ru.cpus === 16 && ru.cpuSource === "os" && ru.memoryBytes === 64 * GIB,
-    "v2 with `max` limits keeps the os values",
+    ru.cgroup === "v2" &&
+      ru.cpus === 16 &&
+      ru.cpuSource === "os" &&
+      ru.memoryBytes === 64 * GIB &&
+      ru.pidsMax === undefined,
+    "v2 with `max` limits keeps the os values and no pid limit",
   );
 
   const v1 = tree("v1", {
@@ -105,8 +117,10 @@ try {
     "sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us": "300000",
     "sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us": "100000",
     "sys/fs/cgroup/memory/memory.limit_in_bytes": "9223372036854771712",
+    "sys/fs/cgroup/pids/pids.max": "512",
   });
   const r1 = readHostResources(v1, 16, 64 * GIB);
+  assert(r1.pidsMax === 512, `v1: pids/pids.max is read (got ${r1.pidsMax})`);
   assert(
     r1.cgroup === "v1" && r1.cpus === 3 && r1.cpuSource === "cgroup-v1",
     `v1: cfs quota/period gives 3 CPUs (got ${r1.cpus})`,
@@ -178,6 +192,15 @@ try {
   );
   const tiny = host(1, 0.5);
   assert(tiny.workstreamSlots === 1 && tiny.verifyConcurrency === 1, "never below 1");
+  assert(
+    big.lensSlots === 32 && small.lensSlots === 4,
+    "no pid limit: lens slots = workstream slots",
+  );
+  const pids = (cpus: number, gib: number, pidsMax: number) =>
+    budgetFor({ ...host(cpus, gib), pidsMax }).lensSlots;
+  assert(pids(2, 5.4, 3072) === 3, "#1591's container (2 CPU, 5.4 GiB, 3072 pids) → 3 lenses");
+  assert(pids(16, 64, 100_000) === 32, "a high pid limit leaves the CPU/memory slots");
+  assert(pids(16, 64, 500) === 1, "a pid limit below one lens's share still runs 1");
 }
 
 // ── a large unconstrained host keeps today's defaults.
@@ -264,6 +287,20 @@ withEnv({ PI_ENSEMBLE_PARALLEL_WORK: "0" }, () =>
 withEnv({ PI_ENSEMBLE_VERIFY_CONCURRENCY: "0" }, () =>
   assert(verifyConcurrency() === 0, "VERIFY_CONCURRENCY=0 is unbounded"),
 );
+__setHostBudget(budgetFor({ ...host(2, 5.4), pidsMax: 3072 }));
+withEnv({}, () => {
+  assert(lensConcurrency() === 3, "unset: lens concurrency comes from the budget");
+  const l = resourceReport().limits.lensConcurrency;
+  assert(l.value === 3 && l.source === "budget", "the report carries lensConcurrency (budget)");
+});
+withEnv({ PI_ENSEMBLE_LENS_CONCURRENCY: "6" }, () => {
+  assert(lensConcurrency() === 6, "explicit LENS_CONCURRENCY wins over the budget");
+  assert(resourceReport().limits.lensConcurrency.source === "env", "and reports source=env");
+});
+withEnv({ PI_ENSEMBLE_LENS_CONCURRENCY: "0" }, () =>
+  assert(lensConcurrency() === 0, "LENS_CONCURRENCY=0 is unbounded"),
+);
+__setHostBudget(host(2, 4));
 withEnv({ PI_ENSEMBLE_VERIFY_CONCURRENCY: "lots" }, () =>
   assert(verifyConcurrency() === 1, "a garbage VERIFY_CONCURRENCY falls back to the budget"),
 );
@@ -307,6 +344,10 @@ withEnv({ PI_ENSEMBLE_VERIFY_CONCURRENCY: "lots" }, () =>
     "work-driver-verify-baseline.ts",
     "work-driver-verify-full.ts",
     "work-driver-verify-develop-gates.ts",
+    // #1414 round 2 — the cap-checkpoint's typecheck was the eighth verify exec
+    // and the only one with neither a slot nor a bound; the gate that lists
+    // the sites is what would have caught it, so the list is the guarantee.
+    "work-driver-cap-checkpoint-typecheck.ts",
   ];
   const bare = sites.filter(
     (f) => !readFileSync(path.join(SRC, f), "utf8").includes("withVerifySlot(() =>"),

@@ -5,7 +5,7 @@
  * Split out of work-driver.ts per AGENTS.md §12 module-size hygiene (#171).
  */
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
-import { developVerifyLine } from "./work-driver-verify-fast.ts";
+import { developTestScopeLine, developVerifyLine } from "./work-driver-verify-fast.ts";
 
 // #1322 — the Step 2 (plan) prompt lives in work-driver-prompts-plan.ts (500-line
 // cap); re-exported so existing importers keep this path.
@@ -172,6 +172,8 @@ function intentResolutionBlock(issues: number[]): string {
     "  - `proceed` — the intent is clear and grounded.",
     "  - `proceed-with-assumptions` — gaps exist, but each has a defensible default. List every one under Assumptions; they go into the PR body for review.",
     "  - `park` — do NOT guess. Use this when the intent cannot be resolved, is contradicted by the code, is already done, is too large for one cycle, or rests on a premise you could not substantiate. `PARK-REASON` is required for a park.",
+    // #1351 — the driver checks this commit is on origin/<mainline>; one that is not overturns the park.
+    "  - `already-implemented` means the MAINLINE has the work. Add `IMPLEMENTED-AT: <sha>` naming the commit on `origin/<mainline>` that did it (`git log origin/<mainline> -- <path>`). Work that exists only on an open PR or an unmerged branch is NOT already implemented: say so under Evidence and do not park on it; the driver detects open PRs for the issue itself.",
     "",
     "**Parking is a good outcome when it is the right one.** Writing code from a guess is how the wrong thing ships confidently. Ask at most 3 clarifying questions, and only where the answer would change what gets built; anything smaller becomes an Assumption.",
     "",
@@ -210,6 +212,12 @@ function intentResolutionBlock(issues: number[]): string {
     "A deliverable that cannot produce a code diff by design (e.g. a GitHub repo settings toggle, an operator decision, a manual verification step, or external service configuration) gets a `[no-diff: <evidence>]` marker INSTEAD of `[paths: ...]`, where <evidence> is the command, API endpoint, or settings URL that proves it was done. The driver skips the diff check for marked deliverables and surfaces them as operator actions in the PR body — but the marker is honoured ONLY when the evidence string is non-empty, and ONLY when the deliverable declares no code paths (a deliverable with both is malformed and the code paths win). Never use the marker to excuse missing code work, and never write prose like `n/a` into a `[paths: ...]` slot — prose is not a control signal.",
     "",
     "A no-diff deliverable is NOT a workstream candidate — it must not appear in the `## Workstreams` block (it has no paths, so it would fail the empty-paths plan-quality check).",
+    "",
+    // #1155 — the planner is the only author of a `[paths:]` slot, so the
+    // grammar the gates read has to be stated where it is written. The #1137
+    // cycle parked because a planner wrote "X or new work-driver-<name>.ts"
+    // and every downstream reader treated it as one literal filename.
+    "A `[paths: ...]` slot holds **paths the diff can be checked against**, comma-separated. The driver matches each one per path segment against the end-of-develop diff, and it reads three forms: a **file** (`src/foo.ts`), a **directory** (`src/foo` — covers everything beneath it), and a **template** (`src/work-driver-<name>.ts` or `src/work-driver-*.ts` — matches ANY file in that directory whose name fits, so it is the right form when the file's name is genuinely not yet decided). Separating two paths with ` or ` or `|` declares ALTERNATIVES: the deliverable counts as delivered when ANY of them lands. So `[paths: extension/src/verify.ts or new work-driver-<name>.ts]` is legitimate, and the developer may satisfy either half. What is NOT legitimate is prose in the slot — a slot that parses to no file, directory or template at all is reported as an **unmeasurable** warning in the PR body and the gate cannot check that deliverable at all.",
   ].join("\n");
 }
 
@@ -356,7 +364,14 @@ export function inlineDevelopPrompt(
   lines.push(
     `  1. ${fetchInstr}`,
     "  2. Implement the change end-to-end. Your worktree is on a detached HEAD at the base commit — that is correct. Commit your work there; the driver moves the commits to the feature branch during Step 6 consolidation.",
-    `  3. ${verifyLine}`,
+    // #1156 — the test-scope rule rides the same step as the verify command so
+    // the two cannot be read apart: one names what to run, the other names
+    // what NOT to run and bounds what does run. With the #1324 fast tier the
+    // verify line already forbids the project verify command outright, so the
+    // rule is told that its binding is only about the child's own ad-hoc test
+    // commands — otherwise "wrap every suite command in timeout" reads as
+    // permission to run the very full run the fast tier just ruled out.
+    `  3. ${verifyLine} ${developTestScopeLine(Boolean(verifyCmd && fastVerifyCmd))}`,
     // #543 F5 — the driver's checkpoint commits the worktree at the natural
     // seams the child made during its run, so a cap kill never leaves only
     // a failure message. Committing at natural seams is what makes those

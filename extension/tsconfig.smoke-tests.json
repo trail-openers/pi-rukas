@@ -1,0 +1,39 @@
+{
+  // A second project over the files #1417 touched, because the whole
+  // smoke-tests tree carries a pre-existing type-error backlog (~2180 errors)
+  // that tsconfig.json never saw — its `include` covers only src/ and scripts/.
+  // Adding the whole tree to tsconfig.json would red the gate with unrelated
+  // work, and @ts-ignore / file exclusions are not the fix. This file is the
+  // ratchet: it typechecks the merge-guard test seam now, and each follow-up
+  // ticket adds its own clean files to `include` until the backlog is gone and
+  // the tree can move into tsconfig.json.
+  //
+  // #1449 round 2 added the ledger-writer-shape / override-provenance files
+  // below. `tsconfig.json` pins `"types": ["node"]`, which hides the Bun
+  // globals every smoke test uses (`Bun.spawnSync`, `import.meta.dirname`, and
+  // the `bun:test` module itself), so those three files carry a per-file
+  // `bun-test` ambient type declaration rather than a project-wide `"types"`
+  // widening — a project-wide change would silently retypes the other 100+
+  // files this project has never checked. The declaration is the one in
+  // `smoke-tests/lib/bun-test.d.ts`: it names only the two symbols these files
+  // use, so it is an auditable surface, not `@types/bun`.
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/**/*",
+    "scripts/**/*",
+    "smoke-tests/lib/merge-allowlist-target.ts",
+    "smoke-tests/lib/bun-test.d.ts",
+    "smoke-tests/lib/worktree-sweep-assert.ts",
+    "smoke-tests/lib/worktree-sweep-fixture.ts",
+    "smoke-tests/test-merge-size-bound.ts",
+    "smoke-tests/test-work-driver-worktree-sweep.ts",
+    "smoke-tests/lib/writer-shape-mock-arms.test.ts",
+    "smoke-tests/test-adversarial-ledger-writer-shapes.ts",
+    "smoke-tests/test-ledger-override-provenance.ts",
+    "smoke-tests/lib/review-ledger-test-helpers.ts",
+    "smoke-tests/test-ledger-writer-stamp-raw.ts",
+    "smoke-tests/test-merge-guard-hostile-stamp.ts",
+    "smoke-tests/test-auto-delta-carry-provenance.ts",
+    "smoke-tests/test-work-driver-worktree-sweep-rules.ts"
+  ]
+}

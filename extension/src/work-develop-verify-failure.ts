@@ -54,7 +54,14 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
     ? "consolidated-verify-conflict"
     : consolidationCreatedFailure
       ? "consolidated-verify-consolidation-created"
-      : verifyCapFor("develop", gate.failures, gate.baselineRedOnly); // #1324 — a run killed at its bound is not a code failure
+      : verifyCapFor(
+          "develop",
+          gate.failures,
+          gate.baselineRedOnly,
+          // #1421 fix round — the structured decline from the consolidated
+          // gate, not a `[build-residue]` substring of the failure prose.
+          gate.buildResidueOnly === true,
+        ); // #1324 — a run killed at its bound is not a code failure
   trace(`work-driver: ${cap} — ${gate.failures.join(" | ")}`);
   // #782 — when the consolidated verify recovered from a flake but the
   // converge gate then parks, record the retry so the handoff shows
@@ -68,6 +75,9 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
         failures: gate.failures,
         at: Date.now(),
         origin: "outcome-gate",
+        // #1421 fix round — the structured decline, persisted so the queue's
+        // park reason does not have to re-derive it from the failure prose.
+        ...(gate.buildResidueOnly === true ? { buildResidueOnly: true } : {}),
         ...(gate.fenceViolations ? { fenceViolations: gate.fenceViolations } : {}),
         ...(gate.flakeRecovered ? { retries: 1, recovered: true } : {}),
       },
@@ -89,7 +99,10 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
   // #841 — the log path the gate actually wrote, carried STRUCTURALLY on
   // the cap event (the explain renderer renders it without regexing the
   // evidence prose); absent when the gate wrote no log.
-  const logPaths = gate.logPath !== undefined ? [gate.logPath] : undefined;
+  const logPaths =
+    gate.logPath !== undefined || gate.hangLogPaths !== undefined
+      ? [...(gate.hangLogPaths ?? []), ...(gate.logPath !== undefined ? [gate.logPath] : [])]
+      : undefined;
   next = appendEvent(next, {
     kind: "cap-hit",
     at: Date.now(),

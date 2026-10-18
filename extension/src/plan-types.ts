@@ -84,6 +84,15 @@ export interface PlanResult {
   gaps: PlanGap[];
   priorContext: { source: string; fact: string }[];
   filed: boolean;
+  /**
+   * #1541 review (MEDIUM) — set when the run stopped because its async job was
+   * aborted (`dispatch_kill`, or session shutdown killing every in-flight job).
+   * The tool's renderer turns it into a `PLAN CANCELLED` report; without it a
+   * killed run would render whatever draft it had reached under a normal
+   * filed/dry-run head, which is a verdict the run never earned. `phase` is the
+   * phase that had just completed; `by` names who asked for the kill.
+   */
+  cancelled?: { by: string; phase: string };
   issueUrl?: string;
   /**
    * #1377: the filed issue's number, when the forge response carried one.

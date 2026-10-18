@@ -5,14 +5,22 @@
  * for the WHY explanation used by every handoff surface.
  */
 
+import { reviewWallClockMs } from "./review-budget.ts";
 import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
-import { explainConsolidation } from "./work-driver-explain-consolidation.ts";
+import { explainContinueCap, isContinueCap } from "./work-driver-continue-pr-explain.ts";
+import { explainClaimsLock, explainCrossGroupConflict } from "./work-driver-explain-claims.ts";
+import {
+  commitPrConsolidationBlurb,
+  explainConsolidation,
+} from "./work-driver-explain-consolidation.ts";
+import { explainConvergeIncomplete } from "./work-driver-explain-converge.ts";
 import { explainDetectCaps } from "./work-driver-explain-detect-caps.ts";
 import { explainDevelopCrash } from "./work-driver-explain-develop-crash.ts";
 import { explainLens } from "./work-driver-explain-lens.ts";
 import { adversarialFailureCause, explainOther } from "./work-driver-explain-other.ts";
+import { explainPlan } from "./work-driver-explain-plan.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
 import {
@@ -63,13 +71,14 @@ export function explainCap(
     snap && !snap.unreadable?.length ? snap.unstagedCount + snap.stagedCount : undefined;
   const fileBlurb =
     fileCount !== undefined ? `${fileCount} file(s) modified-but-uncommitted` : "uncommitted work";
+  if (isContinueCap(cap)) return explainContinueCap(cap, lastCapHit(state, cap)?.evidence);
   switch (cap) {
     case "adversarial-loop":
       return "adversarial gate ran its 3-round internal loop and could not reach APPROVED — the diff still has issues the adversarial-developer flagged";
     case "round-cap":
       return `lens-review hit its ${MAX_REVIEW_ROUNDS}-round cap with findings still open — the lens reviewers and the developer's fixes did not converge`;
-    case "wall-clock":
-      return "lens-review fix loop exceeded its 90-minute wall-clock cap — total time spent in review/fix iterations is past the budget";
+    case "lens-review-timeout":
+      return `lens-review fix loop exceeded its ${reviewWallClockMs() / 60_000}-minute budget — total time spent in review/fix iterations is past it (PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS). This is the review loop's own budget, not the cycle's time limit`;
     case "review-incomplete":
       return "at least one lens failed every retry, so the six-pass review is incomplete — the diff was not fully reviewed, which is not the same as being rejected";
     case "ci-retry":
@@ -84,6 +93,11 @@ export function explainCap(
       // #754 — the plan step's own bound: the kill-cause family module owns
       // the sentence (it reads the kill event's usage off the log).
       return explainDetectCaps(cap, state);
+    case "plan-spec-mismatch":
+      // #819 — the plan-to-spec gate: the plan was judged and found to be
+      // about the wrong work. The sentence lives in the plan-step explain
+      // module so this file keeps its headroom under the 500-line cap.
+      return explainPlan(cap, state);
     case "repeat-finding-seam": {
       // #280 §B — same finding shape across ≥3 files is a missing-seam
       // signal, not N independent defects. Patching each instance would
@@ -101,35 +115,41 @@ export function explainCap(
     }
     case "explore-already-complete":
       return "explore concluded this issue is already done (e.g., satisfied by a prior PR or merged earlier). The driver halted before branch/develop ran — no code was written. Close the issue if you agree, or re-run /work with additional context if you believe there IS work to do";
-    case "develop-incomplete-deliverables": {
-      // #741 — the converge gate: the verify gate passed (the code builds),
-      // but one or more plan deliverables are absent from the end-of-develop
-      // diff. The missing deliverables ride on the cap event's evidence.
-      const hit = lastCapHit(state, "develop-incomplete-deliverables");
-      const evidence =
-        (hit && "evidence" in hit ? hit.evidence : undefined) ?? "(no detail recorded)";
-      const partials = (state.pipelineState.convergeEvidence?.deliverables ?? [])
-        .filter((d) => d.status === "partial")
-        .map((d) => `${d.id} (${d.reason})`);
-      const noDiff = (state.pipelineState.convergeEvidence?.deliverables ?? [])
-        .filter((d) => d.status === "no-diff")
-        .map((d) => `${d.id} (${d.reason})`);
-      const partialWarning =
-        partials.length > 0
-          ? `\n\nPartial deliverables (warning, non-blocking):\n${partials.map((p) => `  - ${p}`).join("\n")}`
-          : "";
-      const noDiffWarning =
-        noDiff.length > 0
-          ? `\n\nNo-diff deliverables (not blocking — no diff by design):\n${noDiff.map((p) => `  - ${p}`).join("\n")}`
-          : "";
-      return `the converge gate found the end-of-develop diff INCOMPLETE: ${evidence}. The verify gate passed — the code builds and tests; what is missing is declared plan work the diff never contained. The driver already spent its one-shot corrective re-dispatch on these deliverables; re-running /work re-enters the gate with a fresh corrective budget, or implement the missing deliverables on the branch directly.${partialWarning}${noDiffWarning}`;
-    }
+    case "develop-incomplete-deliverables":
+      return explainConvergeIncomplete(state);
     case "intent-park":
       return explainPrSteps(cap, state);
     case "lens-diff-unreadable":
       return explainLens(cap, state);
     case "adversarial-infra-failure":
       return explainOther(cap, state);
+    case "provider-unavailable": {
+      // #1243 — the endpoint caused this park, not the code. Two things the
+      // operator (and a headless caller re-queueing on its own) needs, and the
+      // generic fallback gives neither: that there is nothing to fix, and what
+      // the outage actually said. The provider's own words ride on the cap's
+      // evidence, written by the router off the failed dispatch.
+      //
+      // The re-derived cause is a FALLBACK and is not trusted. A cap written
+      // before the `evidence` field existed, or one whose dispatch the router
+      // could not read, leaves nothing authoritative to quote — and the log scan
+      // that re-derives a cause is not constrained to provider-shaped evidence:
+      // it can answer `self-killed:inactivity` or `crashed`. Printing that
+      // sentence inside a paragraph that opens "the model endpoint was down" is
+      // a contradiction, and it is the exact mislabelling #1243 exists to
+      // remove — the paragraph must not assert an outage the re-derivation
+      // contradicts. So: name the re-derived cause only when it is itself a
+      // provider cause, otherwise say plainly that the detail is unavailable.
+      const hit = lastCapHit(state, "provider-unavailable");
+      const cause = adversarialFailureCause(state);
+      const providerCause = /cause=(provider-severed|rate-limited:burst)\b/.test(cause);
+      const ev =
+        hit?.evidence ??
+        (providerCause
+          ? `the provider endpoint was unreachable for the whole retry ladder (${cause})`
+          : "the endpoint failed every attempt of the retry ladder — the outage detail was not recorded on this cap");
+      return `the model endpoint was down or severing connections and every retry met the same fault — ${ev}. NOTHING about this cycle's code was judged: there is no defect here to look at. The branch, PR and any commits are as the sections below describe. A headless caller may re-queue this cycle itself once the endpoint answers (the result's \`failure.kind\` is \`provider\`); from the chat, re-run \`/work ${state.issue}\` — this park keeps the cycle resumable (status \`interrupted\`, not \`handoff\`), so the halted step re-enters and finished steps are not rebuilt. Do NOT pass \`--restart\`: it wipes the state file and rebuilds a cycle whose steps are all still there to resume from, and nothing about this issue changed. To lengthen the ladder: PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS / PI_ENSEMBLE_PROVIDER_RETRY_MAX_WAIT_MS`;
+    }
     case "awaiting-human-merge": {
       const hold = state.pipelineState.mergeHold;
       const pr = state.pipelineState.prNumber;
@@ -165,13 +185,10 @@ export function explainCap(
       const hit = lastCapHit(state, "worktree-listing-unreadable");
       return `the branch step's same-issue residue pass could not read \`git worktree list\` (${(hit?.evidence ?? "no detail recorded").slice(0, 300)}). The listing is bounded, so this is a git that hung or failed — not an empty list. The driver halted rather than report "nothing to clean" while a same-issue worktree it could not see might hold uncommitted work. Clear whatever is blocking git (a stale \`.git/worktrees\` lock, an I/O wait), then re-run the cycle.`;
     }
-    case "cross-group-conflict": {
-      const hit = lastCapHit(state, "cross-group-conflict");
-      const ev = hit?.evidence ?? "";
-      const siblingMatch = ev.match(/issue #(\d+)/);
-      const siblingIssue = siblingMatch ? siblingMatch[1] : "(see evidence)";
-      return `this cycle's declared paths overlap with issue #${siblingIssue}'s active claim — two cycles cannot edit the same files in parallel. The overlapping paths are in the event log evidence field. Coordinate with the other cycle's owner or re-plan with disjoint file sets.`;
-    }
+    case "cross-group-conflict":
+      return explainCrossGroupConflict(state);
+    case "claims-lock-unavailable":
+      return explainClaimsLock(cap, state);
     case "existing-pr-detected": {
       const pr = state.pipelineState.existingPr;
       const via =
@@ -304,12 +321,13 @@ export function explainCap(
       // #1403 — the dead-child sentence lives with its own family module.
       return explainDevelopCrash(state);
     case "deadline": {
-      // #1238 — the caller-set whole-cycle deadline: at a step boundary the
-      // deadline was within the handoff grace, so no new step started and
-      // the driver parked; the grace lets this comment post before the kill.
-      const hit = lastCapHit(state, "deadline");
-      const ev = hit?.evidence ?? "(no detail recorded)";
-      return `the caller's whole-cycle deadline (${ev}) was within the handoff grace at a step boundary, so the driver started no new step and parked. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`;
+      // #1238 — the deadline was within the handoff grace at a step boundary,
+      // so no new step started; #1593 — or a step ran past it and its own
+      // verdict (named in the evidence) is not why the cycle stopped.
+      const ev = lastCapHit(state, "deadline")?.evidence ?? "(no detail recorded)";
+      return ev.includes("passed while step")
+        ? `the caller's whole-cycle deadline ended the cycle (${ev}). The step's children were stopped at the deadline, so its verdict judged unfinished work. The handoff below says where the work is — branch, PR, and the round reached — and runs inside the caller's handoff allowance (PI_ENSEMBLE_HANDOFF_TIMEOUT_MS), before its kill. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`
+        : `the caller's whole-cycle deadline (${ev}) was within the handoff grace at a step boundary, so the driver started no new step and parked. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`;
     }
   }
   // #844 — a local branch of the resolved name holds commits the freshly
@@ -450,50 +468,4 @@ export function explainCap(
   // covered above; if we land here, surface the raw cap so the user
   // can still grep the state file.
   return `step failed: ${String(cap)} — see state-file event log`;
-}
-
-/**
- * #875 — the "missing workstreams" blurb for the
- * `commit-pr-incomplete-consolidation` cap. Reads ONLY the persisted
- * per-verdict `dirty` flag (no git calls) — dirty=true or flag absent
- * (legacy) → "uncommitted on disk"; dirty=false → cherry-pick recovery.
- */
-function commitPrConsolidationBlurb(
-  state: WorkState,
-  opts: { missingIds: string[]; filesPresent: string[] },
-): string {
-  const ps = state.pipelineState;
-  const which = opts.missingIds.length > 0 ? opts.missingIds.join(", ") : "one or more workstreams";
-  const ic = ps.incompleteConsolidation;
-  const verdicts = Array.isArray(ic) ? [] : (ic?.verdicts ?? []);
-  const wts = ps.worktrees ?? {};
-  const lines: string[] = [`the committed diff is missing declared files from: ${which}.`];
-  for (const id of opts.missingIds) {
-    const v = verdicts.find((x) => x.id === id);
-    const isClean = !Array.isArray(ic) && !!v && v.status === "uncovered" && v.dirty === false;
-    const wtSuffix = wts[id] ? ` (${wts[id]})` : "";
-    if (!isClean) {
-      lines.push(
-        `  - ${id}: the developers' work in the missing worktree${wtSuffix} is uncommitted on disk.`,
-      );
-      continue;
-    }
-    const pick = cherryPickRecoveryFor(state.issue, id, {
-      worktree: wts[id],
-      baseSha: ps.baseSha,
-      ownBase: ps.workstreamBaseShas?.[id],
-      headSha: ps.commitShas?.[id],
-    });
-    const pickText = pick.kind === "command" ? `cherry-pick it: \`${pick.line}\`` : pick.line;
-    lines.push(
-      `  - ${id}: nothing uncommitted — the work is COMMITTED in its worktree${wtSuffix}. If ${v.uncoveredPaths.join(", ")} genuinely needed a change, ${pickText}; otherwise the declaration was over-broad and the fix is a restart.`,
-    );
-  }
-  if (opts.filesPresent.length > 0) {
-    const shown = opts.filesPresent.slice(0, 5).join(", ");
-    lines.push(
-      ` The committed diff contains ${opts.filesPresent.length} file(s): ${shown}${opts.filesPresent.length > 5 ? ` and ${opts.filesPresent.length - 5} more` : ""} — the missing workstreams' files are the difference.`,
-    );
-  }
-  return lines.join(" ");
 }

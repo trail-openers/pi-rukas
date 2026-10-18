@@ -42,4 +42,63 @@ export type PlanQualityReason =
   // (same channel as every other reason). It is a quality signal, not a
   // block: the planner was told to preserve dependsOn and it didn't, which
   // is exactly the shape the corrective steer exists to correct.
-  | "dropped-dependencies";
+  | "dropped-dependencies"
+  // #819 — the plan-to-spec gate (`work-driver-plan-spec-coverage.ts`): no
+  // workstream declares any path of a deliverable the spec requires, or the
+  // reply carries more than one `## Workstreams` section (so the workstreams
+  // the driver parsed are the first block's, and nothing says which issue
+  // they are about). Produced by `planSpecMismatchReason`, NOT by
+  // `planQualityReason` — the existing reasons check shape and never see the
+  // spec, and this reason must not disturb their precedence. The first plan
+  // gets the one-shot corrective; the CORRECTIVE halts with the
+  // `plan-spec-mismatch` cap, because a wrong corrective must never reach
+  // develop (the #818 incident: four developers built a fabricated
+  // supply-chain package for 45 minutes). Surfaced through
+  // `pipelineState.planQuality.reason` like every other reason.
+  | "plan-spec-mismatch"
+  // #1167 — a workstream's `outOfScope` fence contradicts its OWN `paths`
+  // (the same file declared as both "yours" and "don't touch"), or an
+  // `out-of-scope:` entry names a path the SAME workstream also declares.
+  // Surfaced at develop as `declared fence violated` — the #776 / #1020
+  // shape, where the (correct) change had to be finished by hand. This
+  // reason covers contradictions the #1167 plan-time unfence did NOT remove:
+  // a fence the issue never named. An issue-named contradiction is repaired
+  // silently by `unfenceIssueNamedPaths` before this gate runs, so the
+  // re-dispatch is reserved for fences the issue does not speak to.
+  // Precedence: fires where `overlapping-paths` cannot — an out-of-scope
+  // entry is not a `paths` entry, so no two workstreams' lists can collide.
+  | "contradictory-fence";
+
+/**
+ * #1167 round-3 — what the plan-time issue-named unfence did, persisted on
+ * `pipelineState.planQuality.unfence` for the operator.
+ *
+ * This exists because the pass's notes and warnings used to go only to
+ * `trace()`, which nobody reads mid-cycle. In the state file, "the issue named
+ * no fence", "the issue body could not be read", "the identifier cap was hit"
+ * and "git failed" were four indistinguishable silences — and an operator
+ * deciding whether to trust a plan cannot tell them apart from a line count.
+ * The counts are the uncapped truth; the note lists are bounded, because the
+ * point is a legible summary, not a transcript. Written by the plan step from
+ * `unfenceSummary()`; absent when the unfence is disabled or the plan step
+ * never reached it.
+ */
+export interface PlanUnfenceSummary {
+  ran: true;
+  /** Fence entries actually gone, having survived the placement rollback. */
+  removed: number;
+  /** Broader directory fences deliberately kept (the issue named one file). */
+  kept: number;
+  /** Removals rolled back because no workstream could own the path. */
+  rolledBack: number;
+  /** Identifiers the pass could not resolve to exactly one file. */
+  unresolved: number;
+  /**
+   * The issue body was named by the explore cache but could not be read —
+   * distinguishable from an EMPTY body, which is a real "nothing named".
+   */
+  issueBodyUnreadable?: boolean;
+  /** Capped at 10 entries each; the counts above are the uncapped truth. */
+  notes?: string[];
+  warnings?: string[];
+}

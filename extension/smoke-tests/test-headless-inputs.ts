@@ -39,7 +39,9 @@ import { claimScanEnabled, evidenceSupplyEnabled } from "../src/lens-evidence.ts
 import { lensRoundCap } from "../src/lens-round-cap.ts";
 import { loopDetectorEnabled } from "../src/loop-detector.ts";
 import { roundCapMergeEnabled } from "../src/merge-guard-round-cap.ts";
+import { pendingShutdownBoundMs } from "../src/pending-jobs-signal.ts";
 import { planCacheTtlMs } from "../src/plan-investigation-cache.ts";
+import { reviewCapMs, reviewWallClockMs } from "../src/review-budget.ts";
 import { transcriptRetentionDays } from "../src/runs-retention.ts";
 import { autoSteerEnabled } from "../src/slow-notice.ts";
 import { slowThresholds } from "../src/slow-notice.ts";
@@ -57,6 +59,8 @@ import { protectedPathsEnabled } from "../src/work-driver-doctrine.ts";
 import { transientRetryEnabled } from "../src/work-driver-failure-taxonomy.ts";
 import {
   burstThresholdSeconds,
+  providerRetryFloorMs,
+  providerRetryMaxWaitMs,
   transientRetryBackoffMs,
 } from "../src/work-driver-failure-taxonomy.ts";
 import { resolvedParallelGroups } from "../src/work-driver-grouping.ts";
@@ -71,7 +75,6 @@ import { mergeAuthorityEnabled } from "../src/work-driver-merge-authority.ts";
 import { NET_GIT_TIMEOUT_DEFAULT_MS } from "../src/work-driver-net-git.ts";
 import { crossGroupConflictsEnabled } from "../src/work-driver-path-claims.ts";
 import { planContractEnabled } from "../src/work-driver-plan-contract.ts";
-import { pendingShutdownBoundMs } from "../src/pending-jobs-signal.ts";
 import { planQualityEnabled } from "../src/work-driver-plan-helpers.ts";
 import { planDispatchTimeoutMs } from "../src/work-driver-plan-helpers.ts";
 import { maxWorkstreams } from "../src/work-driver-plan-workstreams.ts";
@@ -80,7 +83,10 @@ import { prPreflightEnabled } from "../src/work-driver-pr-preflight.ts";
 import { resumeEnabled, sessionReattachEnabled } from "../src/work-driver-resume.ts";
 import { stepNoticeThresholdMs } from "../src/work-driver-step-notice.ts";
 import { testDeleteTolerance, verifyTimeoutMs } from "../src/work-driver-verify-develop-helpers.ts";
-import { queueHaltOnFailure } from "../src/work-queue.ts";
+import { verifyTimeoutMs } from "../src/work-driver-verify-budget.ts";
+import { tierDefaultReader } from "./lib/verify-tier-pin.ts";
+import { queueDeferCapMs, queueHaltOnFailure } from "../src/work-queue.ts";
+import { queueOrderingEnabled } from "../src/work-queue-scheduler.ts";
 import { wrapperEnvReads } from "./lib/wrapper-env-reads.ts";
 
 let exit = 0;
@@ -319,6 +325,9 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_PENDING_SHUTDOWN_MS", pendingShutdownBoundMs],
   ["PI_ENSEMBLE_PLAN_CACHE_TTL_MS", planCacheTtlMs],
   ["PI_ENSEMBLE_PLAN_TIMEOUT_MS", planDispatchTimeoutMs],
+  // #1243 — the provider-class backoff floor and its total bound.
+  ["PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS", providerRetryFloorMs],
+  ["PI_ENSEMBLE_PROVIDER_RETRY_MAX_WAIT_MS", providerRetryMaxWaitMs],
   ["PI_ENSEMBLE_RATE_LIMIT_BURST_MAX_S", burstThresholdSeconds],
   ["PI_ENSEMBLE_SLOW_NOTICE_MS", () => slowThresholds().ms],
   ["PI_ENSEMBLE_SLOW_NOTICE_TOKENS", () => slowThresholds().tokens],
@@ -331,6 +340,13 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_TRANSCRIPT_RETENTION_DAYS", transcriptRetentionDays],
   ["PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS", transientRetryBackoffMs],
   ["PI_ENSEMBLE_VERIFY_TIMEOUT_MS", verifyTimeoutMs],
+  // #1509 — each tier's documented default is checked against the live reader
+  // with the environment cleared, so a default that drifts from
+  // `work-driver-verify-budget.ts` fails here rather than in the handoff of
+  // some later cycle.
+  ["PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS", tierDefaultReader("suite")],
+  ["PI_ENSEMBLE_VERIFY_FAST_TIMEOUT_MS", tierDefaultReader("fast")],
+  ["PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS", tierDefaultReader("smoke")],
   ["PI_ENSEMBLE_ACCEPTANCE_COVERAGE", acceptanceCoverageEnabled],
   ["PI_ENSEMBLE_AUTO_STEER", autoSteerEnabled],
   ["PI_ENSEMBLE_CHILD_CODEMODE", childCodemodeEnabled],
@@ -351,8 +367,12 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_POLICY_JUDGE", policyJudgeEnabled],
   ["PI_ENSEMBLE_PR_PREFLIGHT", prPreflightEnabled],
   ["PI_ENSEMBLE_PROTECTED_PATHS", protectedPathsEnabled],
+  ["PI_ENSEMBLE_QUEUE_DEFER_CAP_MS", () => queueDeferCapMs()],
   ["PI_ENSEMBLE_QUEUE_HALT_ON_FAILURE", queueHaltOnFailure],
+  ["PI_ENSEMBLE_QUEUE_ORDERING", queueOrderingEnabled],
   ["PI_ENSEMBLE_RESUME", resumeEnabled],
+  ["PI_ENSEMBLE_REVIEW_CAP_MS", () => reviewCapMs()],
+  ["PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS", () => reviewWallClockMs()],
   ["PI_ENSEMBLE_SESSION_REATTACH", sessionReattachEnabled],
   ["PI_ENSEMBLE_TRANSIENT_RETRY", transientRetryEnabled],
 ];
@@ -369,7 +389,11 @@ for (const [name, read] of LIVE) {
   const saved = keys.map((k) => process.env[k]);
   for (const k of keys) delete process.env[k];
   try {
-    const live = read();
+    // #1509 — awaited: the per-tier resolvers read a `.pi/*-timeout-ms` file
+    // and are therefore async. Every existing reader returns a plain value,
+    // which `await` passes through unchanged, so the sync entries are
+    // unaffected.
+    const live = await read();
     assert(
       live === defaultOf(name),
       `${name} default ${defaultOf(name)} matches the reader (${live})`,

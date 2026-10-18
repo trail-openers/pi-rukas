@@ -8,6 +8,99 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.13.0](https://github.com/trail-openers/pi-rukas/compare/v0.12.80...v0.13.0) (2026-10-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **work:** the headless --json result schema is v4. The cap `wall-clock` is now `lens-review-timeout`. A host that pins schemaVersion 3 refuses this build until it moves to 4. A state file from an older build that recorded `wall-clock` is refused on re-entry; use --restart.
+
+### Features
+
+* **headless:** continue an issue's open pull request with --continue-pr ([#1608](https://github.com/trail-openers/pi-rukas/issues/1608)) ([af8deb5](https://github.com/trail-openers/pi-rukas/commit/af8deb5453689d110f2a1fb39af653f63dc7a04f))
+* **headless:** list family members and wrapper-only inputs in --capabilities ([#1375](https://github.com/trail-openers/pi-rukas/issues/1375)) ([b1109de](https://github.com/trail-openers/pi-rukas/commit/b1109de2484aa5068abc29ad95112d317e52de17))
+* **headless:** plan sessions, one turn per run, filed on a confirm ([#1605](https://github.com/trail-openers/pi-rukas/issues/1605)) ([597f808](https://github.com/trail-openers/pi-rukas/commit/597f8081da245f18b14be13de8095ced8a513437))
+* **headless:** plan, research, agents-md and lens-review subcommands ([#1467](https://github.com/trail-openers/pi-rukas/issues/1467)) ([9b0dea6](https://github.com/trail-openers/pi-rukas/commit/9b0dea6f1f60c27a3e70f31621e0816fb1d1573c))
+* **headless:** result carries the reason behind a cap and usage per role ([#1374](https://github.com/trail-openers/pi-rukas/issues/1374)) ([1ca933e](https://github.com/trail-openers/pi-rukas/commit/1ca933e3cbbae6fff6f41d57973ba2af8ff805fd))
+* **models:** per-lens model and provider inputs, and an opt-in per-model lens bound ([#1359](https://github.com/trail-openers/pi-rukas/issues/1359)) ([5368307](https://github.com/trail-openers/pi-rukas/commit/53683073da7957fae4bf7fd0f49a98d415543315))
+* **plan:** launch the plan and research drivers in the background ([#1541](https://github.com/trail-openers/pi-rukas/issues/1541)) ([350acc1](https://github.com/trail-openers/pi-rukas/commit/350acc1b4dd922bbc237ee705b8dd9420c78e6e9))
+* **plan:** start_plan_driver takes caller labels, a provenance marker and returns the issue number ([#1423](https://github.com/trail-openers/pi-rukas/issues/1423)) ([fe79443](https://github.com/trail-openers/pi-rukas/commit/fe79443f15b0c2a6a0c8be736280d23fff589225))
+* **prompts:** ground the agent tool surface in what the runtime grants ([#1434](https://github.com/trail-openers/pi-rukas/issues/1434)) ([c37fc33](https://github.com/trail-openers/pi-rukas/commit/c37fc33180a0c01e2a5c50b31e06e880fe6a7b16))
+* **review:** a finding blocks only when its cited line is in the PR's changed lines ([#1407](https://github.com/trail-openers/pi-rukas/issues/1407)) ([b177040](https://github.com/trail-openers/pi-rukas/commit/b1770400dbfe3bde00674c1ada71679022dcf318))
+* **review:** resolve inside a delta, evict gone accepted rows, disclose set-asides, share test fixtures ([#1408](https://github.com/trail-openers/pi-rukas/issues/1408)) ([3e37074](https://github.com/trail-openers/pi-rukas/commit/3e37074781e3058f8940ea0d5efdfa32002368c4)), closes [#1125](https://github.com/trail-openers/pi-rukas/issues/1125)
+* **spawn:** track child progress and close the in-flight span leak ([#1589](https://github.com/trail-openers/pi-rukas/issues/1589)) ([58a29e0](https://github.com/trail-openers/pi-rukas/commit/58a29e07a795af250f5724cbbd9184831fc6a523))
+* **work:** an opt-in .pi/dirty-root-exempt list of untracked repo-root paths ([#1412](https://github.com/trail-openers/pi-rukas/issues/1412)) ([abc66ad](https://github.com/trail-openers/pi-rukas/commit/abc66ad99c14752aa0bd3d06907604bbfee272fa)), closes [#1362](https://github.com/trail-openers/pi-rukas/issues/1362)
+* **work:** log the shutdown origin (signal / stdin-EOF / unknown) on the session-shutdown line ([#1346](https://github.com/trail-openers/pi-rukas/issues/1346)) ([0934cc4](https://github.com/trail-openers/pi-rukas/commit/0934cc4ac86e9fa84d4563ef6e70a312198259b6))
+* **work:** park on every unresolved CRITICAL open point; retire the keyword classifier ([#1395](https://github.com/trail-openers/pi-rukas/issues/1395)) ([faa0f99](https://github.com/trail-openers/pi-rukas/commit/faa0f99c816575ab9f28c0cef59bd11713de7b75))
+* **work:** record the develop gate's verify run as verify-started / verify-completed ([#1566](https://github.com/trail-openers/pi-rukas/issues/1566)) ([b507139](https://github.com/trail-openers/pi-rukas/commit/b507139b061496a449767d2902d8bcd026119362))
+
+
+### Bug Fixes
+
+* **#1472:** /work stops when its issue is closed ([#1512](https://github.com/trail-openers/pi-rukas/issues/1512)) ([ba763ec](https://github.com/trail-openers/pi-rukas/commit/ba763ec9cd8d7c072d1e02601724525f84375b4d))
+* **adversarial:** bind tool-path review ledger rows to the reviewed diff range ([#1442](https://github.com/trail-openers/pi-rukas/issues/1442)) ([31a8bc5](https://github.com/trail-openers/pi-rukas/commit/31a8bc554ceeb8a8b07eb43e0c89e58cbbe04eb1))
+* **adversarial:** record caller-supplied reviews as non-passing; guard reportOnly policy ([#1188](https://github.com/trail-openers/pi-rukas/issues/1188)) ([1e50058](https://github.com/trail-openers/pi-rukas/commit/1e50058cf56f3d3c10459f6bc8dd189a5ef65b8d))
+* **decision:** seam hygiene — one record per failure, bounded redaction, session model attached ([#1418](https://github.com/trail-openers/pi-rukas/issues/1418)) ([558fe70](https://github.com/trail-openers/pi-rukas/commit/558fe7012dd88c9d476e8563017324ed07f49e6d))
+* **dispatch:** name the cycle's issues and refuse foreign-issue writes ([#1572](https://github.com/trail-openers/pi-rukas/issues/1572)) ([a1f3849](https://github.com/trail-openers/pi-rukas/commit/a1f3849c9d8acc8b2869e781da5efd294024a965)), closes [#1361](https://github.com/trail-openers/pi-rukas/issues/1361)
+* **headless:** a signal during a step outranks that step's own cap ([#1376](https://github.com/trail-openers/pi-rukas/issues/1376)) ([06b0bdc](https://github.com/trail-openers/pi-rukas/commit/06b0bdc759e990b8cd814b07c09601b216d49211))
+* **headless:** bound lens fan-out by pids.max and keep the result when the runner dies ([#1602](https://github.com/trail-openers/pi-rukas/issues/1602)) ([77a98bb](https://github.com/trail-openers/pi-rukas/commit/77a98bbff2ad2f78cff9ac8c81e823ef000f0b97))
+* **headless:** keep the runner's stderr NDJSON-only ([#1373](https://github.com/trail-openers/pi-rukas/issues/1373)) ([046c5b3](https://github.com/trail-openers/pi-rukas/commit/046c5b3994865d76ac13086c45247296bc532e93))
+* **headless:** resolve the launcher's own symlink ([#1372](https://github.com/trail-openers/pi-rukas/issues/1372)) ([895494a](https://github.com/trail-openers/pi-rukas/commit/895494abf26252b35c89c975f0ab43454517f77b))
+* **merge-guard:** hold a merge-adjacent read instead of refusing it as an unreviewed merge ([#1431](https://github.com/trail-openers/pi-rukas/issues/1431)) ([376145c](https://github.com/trail-openers/pi-rukas/commit/376145c12325d1b20492c57a8242006c74416d39))
+* **permissions:** honour a backslash escape outside quotes in the bash parser ([#1585](https://github.com/trail-openers/pi-rukas/issues/1585)) ([bd94675](https://github.com/trail-openers/pi-rukas/commit/bd946754f020485b503a582415e01e327e4f1bf5))
+* **plan:** bound the dropped-items section so the body budget holds ([#1451](https://github.com/trail-openers/pi-rukas/issues/1451)) ([cece7f0](https://github.com/trail-openers/pi-rukas/commit/cece7f032663b142ae9a039e08f5b01bf7f17b90))
+* **pm:** make the question tool hard to miss and easy to call ([#1600](https://github.com/trail-openers/pi-rukas/issues/1600)) ([14aab61](https://github.com/trail-openers/pi-rukas/commit/14aab61461b3078a73775890cd378184f98141b7))
+* **review:** give provider incidents a provider retry floor instead of burning adversarial retries ([#1554](https://github.com/trail-openers/pi-rukas/issues/1554)) ([cea4684](https://github.com/trail-openers/pi-rukas/commit/cea4684176e750ee3ef1d78100cd55715b440537))
+* **review:** ground skill reference paths relative to the asserting file ([#1555](https://github.com/trail-openers/pi-rukas/issues/1555)) ([58bc407](https://github.com/trail-openers/pi-rukas/commit/58bc4076802bc8a8510f3ad4a8788f2a2324e83f))
+* **review:** let the merge guard pass a plain text write to a file ([#1574](https://github.com/trail-openers/pi-rukas/issues/1574)) ([dfaf2b5](https://github.com/trail-openers/pi-rukas/commit/dfaf2b535922a5ffdc54b57332bb7baa172f56f9))
+* **review:** make the review wall clock a knob on every surface that prints it ([#1511](https://github.com/trail-openers/pi-rukas/issues/1511)) ([27bce27](https://github.com/trail-openers/pi-rukas/commit/27bce27e50d201694fd32e9b8406761d79ed81b1))
+* **review:** retire a line-less finding on a complete full review ([#1596](https://github.com/trail-openers/pi-rukas/issues/1596)) ([012a282](https://github.com/trail-openers/pi-rukas/commit/012a282c0c3ca1137e65efa108174e077c1b507f)), closes [#1469](https://github.com/trail-openers/pi-rukas/issues/1469)
+* **review:** surface a ledger write the env override redirected ([#1550](https://github.com/trail-openers/pi-rukas/issues/1550)) ([2f0b31f](https://github.com/trail-openers/pi-rukas/commit/2f0b31ffa2082f804c00fe796870808cf2d94215))
+* **review:** the accept guard scans git/gh output and alias shapes and multi-line runtime imports ([#1406](https://github.com/trail-openers/pi-rukas/issues/1406)) ([bdc0879](https://github.com/trail-openers/pi-rukas/commit/bdc0879a410194caa8f284879941c94d0ffb0351)), closes [#1125](https://github.com/trail-openers/pi-rukas/issues/1125)
+* **review:** the merge guard accepts only a plain merge command ([#1357](https://github.com/trail-openers/pi-rukas/issues/1357)) ([c26dd86](https://github.com/trail-openers/pi-rukas/commit/c26dd863d5deed191efe4cb6ff834ab1a83a38d4))
+* **skills:** stop naming skill tools that do not exist ([#1530](https://github.com/trail-openers/pi-rukas/issues/1530)) ([ffba93e](https://github.com/trail-openers/pi-rukas/commit/ffba93ea0f9e991f0299f3a36866e2c79307d25a))
+* **spawn:** arm the token-budget grace clock at kill-arming, not per-turn message end ([#1461](https://github.com/trail-openers/pi-rukas/issues/1461)) ([061561c](https://github.com/trail-openers/pi-rukas/commit/061561c7b70e1af08fd6569374afa4fccd1678d1))
+* **spawn:** guard kill sites, share the guarded kill, and correct the [#1510](https://github.com/trail-openers/pi-rukas/issues/1510) test header ([#1573](https://github.com/trail-openers/pi-rukas/issues/1573)) ([90356be](https://github.com/trail-openers/pi-rukas/commit/90356be40c0198195a2a4afa6f781d9fa86aa078))
+* **spawn:** guard the token-budget kill so a throw cannot abort the parent ([#1525](https://github.com/trail-openers/pi-rukas/issues/1525)) ([3d013ab](https://github.com/trail-openers/pi-rukas/commit/3d013ab37ea0d2635ac4c932bfd3df113780d676))
+* **spawn:** refuse a developer remote publish in every mode ([#1597](https://github.com/trail-openers/pi-rukas/issues/1597)) ([e1c0bf6](https://github.com/trail-openers/pi-rukas/commit/e1c0bf64f2733211cc91eee801d6bddffdde337a))
+* **test:** the develop gate is green on a macOS host with a raised verify timeout ([#1400](https://github.com/trail-openers/pi-rukas/issues/1400)) ([179551f](https://github.com/trail-openers/pi-rukas/commit/179551fcceb249437a0e77276c8d35848307d523))
+* **work:** a retried step saves then cleans the tree its lost child left ([#1609](https://github.com/trail-openers/pi-rukas/issues/1609)) ([de45bb1](https://github.com/trail-openers/pi-rukas/commit/de45bb11886d0dc8aebb4b072d4bcd213bc3370b))
+* **work:** accept alternative deliverable paths ([#1599](https://github.com/trail-openers/pi-rukas/issues/1599)) ([92f5214](https://github.com/trail-openers/pi-rukas/commit/92f5214c896015c96d41fc0ff8abf3ee75f196f7))
+* **work:** bound the step in flight by the cycle deadline and record it ([#1603](https://github.com/trail-openers/pi-rukas/issues/1603)) ([089d025](https://github.com/trail-openers/pi-rukas/commit/089d0250818827ff31b5697549c185f9fee73cc0))
+* **work:** build handoff recovery commands from the trees git found ([#1575](https://github.com/trail-openers/pi-rukas/issues/1575)) ([170f6e9](https://github.com/trail-openers/pi-rukas/commit/170f6e931ccbe276c01339b3e721e7cb390b9a2f))
+* **work:** check an already-implemented park against the mainline ([#1587](https://github.com/trail-openers/pi-rukas/issues/1587)) ([c8a012c](https://github.com/trail-openers/pi-rukas/commit/c8a012c69aa63939b5cf084dec620b038f0bedb3))
+* **work:** claim workstream coupling on a consolidation conflict only from structured evidence ([#1551](https://github.com/trail-openers/pi-rukas/issues/1551)) ([e86aabf](https://github.com/trail-openers/pi-rukas/commit/e86aabf5a4662eef5269354bf9bc8959c53e8bb1))
+* **work:** enforce the 90-minute review-loop cap at the fix dispatch ([#1436](https://github.com/trail-openers/pi-rukas/issues/1436)) ([7064622](https://github.com/trail-openers/pi-rukas/commit/7064622e2ca5ab7eca26b7979c704aee1a4da8b6)), closes [#1416](https://github.com/trail-openers/pi-rukas/issues/1416)
+* **work:** gate the plan against work unrelated to the issue ([#1524](https://github.com/trail-openers/pi-rukas/issues/1524)) ([aa9f59e](https://github.com/trail-openers/pi-rukas/commit/aa9f59e0f882fd1e728147914ac35d51cc8b9880))
+* **work:** Integrate backup refs grow without bound (one ref per issue) ([#1438](https://github.com/trail-openers/pi-rukas/issues/1438)) ([ffa3a18](https://github.com/trail-openers/pi-rukas/commit/ffa3a1872276114490d73f80f523c089aac532bb))
+* **work:** land review-round fixes for build-residue classifier ([#1462](https://github.com/trail-openers/pi-rukas/issues/1462)) ([9e9ec3c](https://github.com/trail-openers/pi-rukas/commit/9e9ec3c6f7133fb98e56081dcd62c78698012a02))
+* **work:** make the /work queue wait for cross-group dependencies ([#1545](https://github.com/trail-openers/pi-rukas/issues/1545)) ([f2f654d](https://github.com/trail-openers/pi-rukas/commit/f2f654d8e151589865aa4cd620c07bd8d7bb1daf))
+* **work:** make the launch worktree sweep read a state file that exists ([#1265](https://github.com/trail-openers/pi-rukas/issues/1265)) ([#1526](https://github.com/trail-openers/pi-rukas/issues/1526)) ([6da24a6](https://github.com/trail-openers/pi-rukas/commit/6da24a6c3aecad42d49feac139a4f98268216029))
+* **work:** name the fence, the findings and the recovery in a fix-pass scope park ([#1582](https://github.com/trail-openers/pi-rukas/issues/1582)) ([2b9a478](https://github.com/trail-openers/pi-rukas/commit/2b9a4782252ce7fba4d4f916eba240153b698eea))
+* **work:** name what the first explore reply lacked when it is re-dispatched ([#1577](https://github.com/trail-openers/pi-rukas/issues/1577)) ([fa928fc](https://github.com/trail-openers/pi-rukas/commit/fa928fcae414637d48ffc3ea29f6f35c7d9b20eb))
+* **work:** offer handoff recovery only when the branch exists ([#1598](https://github.com/trail-openers/pi-rukas/issues/1598)) ([da2a03c](https://github.com/trail-openers/pi-rukas/commit/da2a03c67af52e3949316684987fd87c0ccef19c))
+* **work:** one argv git seam, a typed ahead-of-base count, and visible skipped consolidation checks ([#1397](https://github.com/trail-openers/pi-rukas/issues/1397)) ([17232fa](https://github.com/trail-openers/pi-rukas/commit/17232fa50962e06f9c54c00b800cd8989057a34d)), closes [#1153](https://github.com/trail-openers/pi-rukas/issues/1153)
+* **work:** per-tier verify bounds and the project's own tsc ([#1595](https://github.com/trail-openers/pi-rukas/issues/1595)) ([4966f6c](https://github.com/trail-openers/pi-rukas/commit/4966f6cb0f4ccf9a8bad28be199a6c886c47d2b3))
+* **work:** publish the claims lock atomically and fail closed ([#1592](https://github.com/trail-openers/pi-rukas/issues/1592)) ([b8e724f](https://github.com/trail-openers/pi-rukas/commit/b8e724fd6b4be1fe1ac9e213e5e4fad625a34bca))
+* **work:** push an adversarial-capped branch and open a draft PR ([#1588](https://github.com/trail-openers/pi-rukas/issues/1588)) ([c649e76](https://github.com/trail-openers/pi-rukas/commit/c649e76429cafec67c23e936093ac55bc4f0bc75))
+* **work:** put an intent park's reason and evidence in failure.message ([#1586](https://github.com/trail-openers/pi-rukas/issues/1586)) ([942125d](https://github.com/trail-openers/pi-rukas/commit/942125de69d89bdc07d80c8d5572b5225f4adfda))
+* **work:** re-arm the draft hold when a review re-runs ([#1446](https://github.com/trail-openers/pi-rukas/issues/1446)) ([10f1a86](https://github.com/trail-openers/pi-rukas/commit/10f1a868fcad96ed8121224661771280fa7cbbfa))
+* **work:** rename the review-loop cap wall-clock to lens-review-timeout ([#1576](https://github.com/trail-openers/pi-rukas/issues/1576)) ([316134e](https://github.com/trail-openers/pi-rukas/commit/316134eab4e69582945cc40f25eac9ebe7c5efc7))
+* **work:** run the cap-checkpoint typecheck with bun x tsc --noEmit ([#1553](https://github.com/trail-openers/pi-rukas/issues/1553)) ([209308f](https://github.com/trail-openers/pi-rukas/commit/209308fcebe3adf3f22987de772fcb9b96605a9b))
+* **work:** skip unreadable worktrees and match branch suffixes in handoff recovery ([#1594](https://github.com/trail-openers/pi-rukas/issues/1594)) ([ceb7e7e](https://github.com/trail-openers/pi-rukas/commit/ceb7e7e1d72ebd6df4a9390e0578c3163be65465))
+* **work:** stale path claims no longer park other cycles ([#1552](https://github.com/trail-openers/pi-rukas/issues/1552)) ([03b0e5d](https://github.com/trail-openers/pi-rukas/commit/03b0e5d2a46ca1eef097831d20e3f2bc44032268))
+* **work:** stop parking cycles on consolidated-verify failures that already fail on the base ([#1549](https://github.com/trail-openers/pi-rukas/issues/1549)) ([6186656](https://github.com/trail-openers/pi-rukas/commit/6186656fd572a5ce3c5d4136234c11d12067cf87))
+* **work:** the develop protected-path gate reads both change sets NUL-separated ([#1440](https://github.com/trail-openers/pi-rukas/issues/1440)) ([a1217f4](https://github.com/trail-openers/pi-rukas/commit/a1217f478811c8131c350b58372fd971081d3c2a))
+* **work:** The headless pending-reports signal can publish "0" when a report ([#1426](https://github.com/trail-openers/pi-rukas/issues/1426)) ([b55ef5c](https://github.com/trail-openers/pi-rukas/commit/b55ef5c92d6cf6f4a6dc554e6c91d3f66e1503e1))
+* **work:** treat a provider park as resumable on every surface ([#1584](https://github.com/trail-openers/pi-rukas/issues/1584)) ([8bd4e37](https://github.com/trail-openers/pi-rukas/commit/8bd4e3738bbcd4e7f6b340b377bbeef3d606f9a1))
+* **work:** unfence issue-named paths before the plan quality gate ([#1556](https://github.com/trail-openers/pi-rukas/issues/1556)) ([f1f3ecd](https://github.com/trail-openers/pi-rukas/commit/f1f3ecdc8107cf677400588da90b72a0729c18bb))
+* **work:** Worktree provisioning residuals ([#1433](https://github.com/trail-openers/pi-rukas/issues/1433)) ([1163d4f](https://github.com/trail-openers/pi-rukas/commit/1163d4f6e4e69e090695c65b0156684a700c3651))
+
+
+### Performance Improvements
+
+* **work:** skip the consolidated verify when its tree already passed ([#1420](https://github.com/trail-openers/pi-rukas/issues/1420)) ([1e529f7](https://github.com/trail-openers/pi-rukas/commit/1e529f7abef0df2eda1731cef28f8b0e192fe6e5))
+
 ## [0.12.80](https://github.com/trail-openers/pi-rukas/compare/v0.12.79...v0.12.80) (2026-10-15)
 
 

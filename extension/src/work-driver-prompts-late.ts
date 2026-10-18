@@ -1,3 +1,4 @@
+import { handoffOpsPromptWithoutLabel } from "./work-driver-handoff-ops-label.ts";
 import type { MergeMethod } from "./work-driver-merged-mechanized.ts";
 import {
   assumptionsBlockOf,
@@ -6,6 +7,7 @@ import {
   fixesLinesOf,
   operatorActionsSectionOf,
   tldrSectionOf,
+  unmeasurablePathsSectionOf,
 } from "./work-driver-pr-body-definition.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
 import { protectedGrantSectionOf } from "./work-driver-protected-grant.ts";
@@ -116,12 +118,16 @@ export function inlineCommitPrPrompt(
   // (see the operatorActionsSectionOf contract); both the multi-worktree
   // and the N=1 flows below splice it into the gh pr create recipe.
   const operatorActions = operatorActionsSectionOf(normalisedSpec);
+  // #1155 — the unmeasurable-deliverables warning, spliced in alongside the
+  // #792 operator-actions section so both PR-body shapes render it.
+  const unmeasurableWarning = unmeasurablePathsSectionOf(normalisedSpec);
   const bodySections = [
     tldrSectionOf(normalisedSpec), // #1006 — TL;DR at the TOP of the PR body in all three shapes.
     assumptionsBlockOf(normalisedSpec),
     protectedGrantSectionOf(fallback?.protectedGrant),
     carriedFindingsSectionOf(eventLog),
     operatorActions,
+    unmeasurableWarning,
     renderLensFindingsSection(eventLog),
   ]
     .filter((s) => s !== "")
@@ -311,33 +317,6 @@ export function inlineCommitPrPrompt(
   ].join("\n");
 }
 
-export function inlineLensFixPrompt(findings: string, scratchDirAbs: string): string {
-  return [
-    "Address the six-pass review findings below against the diff currently on this worktree.",
-    "",
-    "  - Make the minimal change per finding. Group by file.",
-    "  - Run local quality gates before declaring complete.",
-    "  - Do NOT touch unrelated code.",
-    // #543 F5 — same seam-commit clause as the develop prompt: the driver's
-    // cap-checkpoint (F5(2)) commits the worktree at natural seams, so a
-    // cap kill never leaves only a failure message. Read-only roles get no
-    // such line; this one is the developer (write-gated off, worktree cwd).
-    // #621 — same explicit git command + gate-requirement wording as
-    // inlineDevelopPrompt: the lens-fix worktree is the same tree the
-    // develop gate (and later the adversarial diff) reads, so committed
-    // work is what the downstream steps expect.
-    // #1078 — commit subject follows the project's convention (same
-    // softening as the develop prompt).
-    "  - Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m \"<concise subject — follow the project's commit convention from AGENTS.md, or <type>(scope): description>\"`. The driver's gate REJECTS uncommitted-only work — no commit ahead of base SHA means the step fails. Do NOT push — the driver owns the branch.",
-    "",
-    "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",
-    "```json",
-    findings,
-    "```",
-    scratchHygieneSection(scratchDirAbs),
-  ].join("\n");
-}
-
 /**
  * Step 9 (Merge) ops prompt — fallback path when mechanized merge
  * can't execute (derive fallback, infra failure, or mechanized ops
@@ -417,14 +396,15 @@ export function inlineHandoffOpsPrompt(
   prNumber: number | undefined,
   bodyPath: string,
   scratchDirAbs: string,
+  skipAttentionLabel = false,
 ): string {
+  if (skipAttentionLabel)
+    return handoffOpsPromptWithoutLabel(issue, prNumber, bodyPath, scratchDirAbs);
   const target = prNumber ? `pr ${prNumber}` : `issue ${issue}`;
   const commentCmd = prNumber
     ? `gh pr comment ${prNumber} --body-file ${bodyPath}`
     : `gh issue comment ${issue} --body-file ${bodyPath}`;
-  // #798 — option (a): when a PR exists, the label goes on BOTH the issue
-  // (the entry-gate target that /work N reads) and the PR (the review
-  // target). Without the PR, the issue is the only target.
+  // #798 — with a PR the label goes on BOTH the issue (/work N's gate) and the PR.
   const labelCmds: string[] = [];
   if (prNumber) {
     labelCmds.push(`gh issue edit ${issue} --add-label needs-human-attention`);

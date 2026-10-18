@@ -17,7 +17,8 @@
  *
  *  - `CRITICAL_ISSUES_FOUND` still parks. A critical finding is the case the
  *    cap exists for, and no amount of "the human agreed last time" applies.
- *  - The **wall-clock** cap still parks. A review that ran out of time is a
+ *  - The **lens-review-timeout** cap (the loop's own wall clock) still parks.
+ *    A review that ran out of time is a
  *    different signal from one that ran out of rounds: it says nothing about
  *    how small the remaining findings are, only that the loop was slow.
  *  - The residual findings are posted to the PR **first**, and a disclosure
@@ -38,13 +39,9 @@ import { adversarialGateApproved } from "./adversarial-findings.ts";
 import { execp } from "./exec.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
+import { reviewWallClockMs } from "./review-budget.ts";
 import { trace } from "./trace.ts";
-import {
-  type CycleContext,
-  type DriverContext,
-  MAX_REVIEW_ROUNDS,
-  REVIEW_WALL_CLOCK_MS,
-} from "./work-driver-context.ts";
+import { type CycleContext, type DriverContext, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { recordLensResidualsPosted } from "./work-driver-draft-disclosure.ts";
 import { currentPatchIdentity } from "./work-driver-draft-pr.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
@@ -176,9 +173,9 @@ export async function appendReviewCapHit(
   // blown its time budget route to `ci`, which is precisely the case the
   // wall-clock cap exists for. Running out of rounds says the fix loop is not
   // converging; running out of time says nobody knows what it is doing.
-  const wallClockExceeded = Boolean(
-    ps.reviewCapStartedAt && Date.now() - ps.reviewCapStartedAt > REVIEW_WALL_CLOCK_MS,
-  );
+  const now = Date.now();
+  const capMs = reviewWallClockMs();
+  const wallClockExceeded = Boolean(ps.reviewCapStartedAt && now - ps.reviewCapStartedAt > capMs);
   if (round >= MAX_REVIEW_ROUNDS) {
     let next = state;
     let nextStep: "ci" | "handoff" = "handoff";
@@ -276,11 +273,16 @@ export async function appendReviewCapHit(
     });
   }
   if (wallClockExceeded) {
+    // #1384 — the reason rides on the event, not only in the handoff's prose:
+    // the headless result's `failure.message` is the evidence's first line, and
+    // a host records that as the cap's reason.
+    const elapsedMin = Math.round((now - (ps.reviewCapStartedAt ?? now)) / 60_000);
     return appendEvent(state, {
       kind: "cap-hit",
-      at: Date.now(),
-      cap: "wall-clock",
+      at: now,
+      cap: "lens-review-timeout",
       reviewRound: round,
+      evidence: `lens-review fix loop ran ${elapsedMin}m (round ${round}) against its ${capMs / 60_000}-minute budget (PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS); parked at the verdict.`,
       nextStep: "handoff",
     });
   }

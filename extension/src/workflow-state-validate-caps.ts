@@ -24,7 +24,7 @@ import type { WorkStep } from "./workflow-state-events.ts";
 export const CAP_HIT_FIXED_LITERALS = [
   "adversarial-loop",
   "round-cap",
-  "wall-clock",
+  "lens-review-timeout",
   "review-incomplete",
   "ci-retry",
   "developer-timeout",
@@ -91,10 +91,32 @@ export const CAP_HIT_FIXED_LITERALS = [
   // the driver could not put the PR back to a draft. Deliberate park.
   "draft-rearm-failed",
   "existing-pr-detected",
+  // #1468 — `--continue-pr` could not continue the issue's open PR.
+  "continue-pr-ambiguous",
+  "continue-pr-fork",
+  "continue-pr-head-moved",
+  "continue-pr-not-found",
+  "continue-pr-unresolved",
+  "continue-pr-unsafe-head",
   // #844 — the ops-fallback branch path's post-dispatch merge-base check
   // failed: the branch ops created does not sit on the driver-fetched base.
   "ops-merge-base-mismatch",
   "adversarial-infra-failure",
+  // #1243 — the step parked on a provider outage (an endpoint timeout, a
+  // transport severance, a short-burst 429) rather than on a failure of the
+  // work. NOT `step-failed:` (that prefix would read as a mid-flight crash and
+  // mark the cycle `aborted` when the branch may hold finished, committed work).
+  // The caller re-queues it when the endpoint answers again, so the validator
+  // must know the literal or a re-entry of a live parked cycle would halt on
+  // "unrecognised value".
+  //
+  // #1243 fix round — the park terminalises as `interrupted` (reason `provider`),
+  // NOT `handoff`: `handoff` is terminal and re-entry refuses it without
+  // `--restart`, which is the one verb this park's own advice forbids. It keeps
+  // the handoff EXIT code and the delivered comment + label, so the host contract
+  // is unchanged; only re-entry differs. The `step-failed:` exclusion still
+  // matters because the cap literal is what decides the status.
+  "provider-unavailable",
   "loop-detected",
   "token-budget",
   // #973 — the lens review produced no review outcome (all lens dispatches
@@ -112,12 +134,42 @@ export const CAP_HIT_FIXED_LITERALS = [
   "deadline",
   // #571 — a sibling cycle holds a path claim that overlaps this plan.
   "cross-group-conflict",
+  // #1454 r3 — the claims lock refused a registration (the lockfile cannot be
+  // created — a read-only `.pi/work-state` — or is held past the wait window).
+  // A deliberate park terminalized as a handoff, and named so the operator
+  // reads "check that .pi/work-state is writable" instead of the
+  // `driver-crash:plan` "unhandled error in the step handler" an escaping
+  // throw produced.
+  "claims-lock-unavailable",
+  // #1101 — the queue, not a cycle, raised these: a group waited on a sibling
+  // past its bound and never dispatched. `dependency-parked` is the dependency
+  // settling non-merged (a wait cannot fix it); `dependency-timeout` is the
+  // wait outlasting its bound; `dependency-cycle` is the pre-pass verdict for a
+  // group inside an ordering loop; `queue-stranded` is the group still held in
+  // the wait list when a halt released every worker. All four name a group that
+  // wrote nothing, so the handoff must not send the operator to a diff — and the
+  // validator must know each literal or a re-entry of a live parked cycle halts
+  // on "unrecognised value" and tells the operator to delete the record.
+  "dependency-cycle",
+  "dependency-parked",
+  "dependency-timeout",
   // #754 — the plan step's own bound expired on the primary plan dispatch.
   "plan-timeout",
+  // #819 — the plan-to-spec gate refused the plan (declared paths cover no
+  // deliverable, or the reply carried several `## Workstreams` blocks). A
+  // deliberate park terminalized as a handoff, fired before the branch step:
+  // the validator must know the literal or a re-entry of a live parked cycle
+  // would halt on "unrecognised value".
+  "plan-spec-mismatch",
   // #280 §B — the same finding shape across ≥3 files routes to step-back.
   "repeat-finding-seam",
   // #1349 — the adversarial fix pass parked on its own checks.
   "fix-pass-park",
+  // #1101 — the group still held in the queue's wait list when a halt released
+  // every worker (`sweepStranded`). Fourth of the queue-raised family; the
+  // validator must know it or a re-entry of a stranded cycle halts on
+  // "unrecognised value".
+  "queue-stranded",
 ] as const satisfies readonly FixedCap[];
 
 // Compile-time exhaustiveness: a fixed cap in WorkCapLiteral but not listed

@@ -117,7 +117,7 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       return `  dispatch-started · ${e.step} · ${e.label}`;
     case "explore-retried":
       // #1094 — the one automatic explore re-dispatch after a reply with no `## Spec`.
-      return `  explore-retried · no \`## Spec\` in reply${e.verdictParsed ? " (verdict present)" : ""} · first ${e.firstJobId}`;
+      return `  explore-retried · ${e.missing ?? `no \`## Spec\` in reply${e.verdictParsed ? " (verdict present)" : ""}`} · first ${e.firstJobId}`;
     case "dispatch-completed":
       return `  dispatch-completed · ${e.step} · ${e.label} · ${fmtElapsed(e.ms)}`;
     case "dispatch-failed":
@@ -213,6 +213,11 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // because a killed run judged nothing (#1324); `reused` says no command
       // was executed for this verdict at all.
       return `  verify-completed · ${e.step} · ${verifyTargetText(e)} · ${e.status}${e.ms !== undefined ? ` · ${fmtElapsed(e.ms)}` : ""}${e.reused ? " (reused)" : ""}${e.tier ? ` · ${e.tier}` : ""}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
+    case "consolidated-verify-pre-existing":
+      // #1404 — a red gate that did not stop the push, because every failing
+      // test is red at the base commit too. Names and base ride on the event
+      // so an operator can confirm the claim without the raw verify log.
+      return `  consolidated-verify-pre-existing · ${e.step} · ${e.failures.length} failing test(s) red at base ${e.baseSha.slice(0, 8)}: ${e.failures.slice(0, 3).join(", ")}${e.failures.length > 3 ? ` (+${e.failures.length - 3} more)` : ""}`;
     case "widening-scan":
       return `  widening-scan · ${e.findings.length} finding(s)`;
     case "memory-write":
@@ -227,6 +232,9 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       return `  worktree-provisioned · [${e.worktreeId}] · ${e.outcome}${e.problem ? ` · ${e.problem.slice(0, 60)}` : ""}`;
     case "safety-net-commit":
       return `  safety-net-commit · [${e.workstreamId}] · ${e.filesCommitted} file(s) · ${e.commitSha.slice(0, 7)}`;
+    case "retry-tree-clean":
+      // #1391 — the ref and the patch are the recovery handles; both are shown.
+      return `  retry-tree-clean · ${e.step} attempt ${e.attempt} · ${e.outcome} · ${e.fileCount} file(s)${e.ref ? ` · ref ${e.ref}` : ""}${e.patch ? ` · patch ${e.patch}` : ""}${e.detail ? ` · ${e.detail.slice(0, 80)}` : ""}`;
     case "worktree-leftover-handled":
       return `  worktree-leftover-handled · ${e.path.split("/").pop()} · ${e.action}${e.refs.length ? ` · refs: ${e.refs.join(", ")}` : ""}${e.salvageDir ? ` · salvage: ${e.salvageDir}` : ""}`;
     case "branch-reset":

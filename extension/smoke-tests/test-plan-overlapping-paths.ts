@@ -152,10 +152,110 @@ const OK_FINDINGS = 2;
     "circular-dependency",
     "interdependent-no-integration-test",
     "dropped-dependencies",
+    // #819 — the plan-to-spec gate. An exhaustive list is the only
+    // thing that stops a new reason silently inheriting the empty-paths prose.
+    "plan-spec-mismatch",
+    // #1167 — a fence contradicting the workstream that declares it.
+    "contradictory-fence",
   ] as const) {
     const s = correctivePlanSteer(r, 6, 1);
     assert(s.length > 0 && !s.includes("undefined"), `${r} still renders without details`);
   }
+}
+
+// ------------------------- #1167 — the self-contradictory fence is a plan defect
+
+{
+  // The #1020 / #776 shape caught at the other end: the fence names a file the
+  // SAME workstream declares, and the issue never named that file, so the
+  // plan-time unfence left it alone. The develop gate would park on it; the
+  // plan gate rejects it and spends the one-shot corrective instead.
+  const selfFence = {
+    a: { paths: ["src/a.ts"], outOfScope: ["src/a.ts", "docs/"] },
+    b: { paths: ["src/b.ts"] },
+  };
+  assert(
+    planQualityReason(selfFence, OK_FINDINGS) === "contradictory-fence",
+    "#1167: a workstream fencing a file it also declares → contradictory-fence",
+  );
+  // An annotated fence entry is the same file — without normalisation this
+  // contradiction passes silently, which is the issue's own named pitfall.
+  assert(
+    planQualityReason(
+      { a: { paths: ["src/a.ts"], outOfScope: ["src/a.ts (do not touch)"] } },
+      2,
+    ) === "contradictory-fence",
+    "#1167: an annotated fence entry `src/a.ts (do not touch)` is the same file and still fires",
+  );
+  // Directory containment, either direction.
+  assert(
+    planQualityReason(
+      { a: { paths: ["extension/src/foo.ts"], outOfScope: ["extension/src"] } },
+      2,
+    ) === "contradictory-fence",
+    "#1167: fencing the directory that contains the workstream's own file fires",
+  );
+  // A fence naming a SIBLING's file is the #572 cross-declaration contract —
+  // legitimate, and must not fire.
+  assert(
+    planQualityReason(
+      {
+        a: { paths: ["src/a.ts"], outOfScope: ["src/b.ts"] },
+        b: { paths: ["src/b.ts"], outOfScope: ["src/a.ts"] },
+      },
+      2,
+    ) === undefined,
+    "#1167: the cross-declaration contract (each workstream fences the other's files) is legitimate",
+  );
+  // Prose fence entries name no path — not checked, not flagged.
+  assert(
+    planQualityReason(
+      {
+        a: { paths: ["src/a.ts"], outOfScope: ["sibling owns all tests"] },
+        b: { paths: ["src/b.ts"] },
+      },
+      2,
+    ) === undefined,
+    "#1167: a prose fence entry with no path is not judged (there is nothing to compare)",
+  );
+  // Precedence: an empty list cannot contradict anything.
+  assert(
+    planQualityReason(
+      { a: { paths: [], outOfScope: ["src/a.ts"] }, b: { paths: ["src/b.ts"] } },
+      2,
+    ) === "empty-paths",
+    "#1167: empty-paths still wins — an empty paths list can participate in no contradiction",
+  );
+  // Precedence: a true overlap between two workstreams is the more urgent defect.
+  assert(
+    planQualityReason(
+      {
+        a: { paths: ["src/shared.ts", "src/a.ts"], outOfScope: ["src/a.ts"] },
+        b: { paths: ["src/shared.ts"] },
+      },
+      2,
+    ) === "overlapping-paths",
+    "#1167: overlapping-paths keeps precedence over the fence contradiction",
+  );
+  const steer = correctivePlanSteer(
+    "contradictory-fence",
+    2,
+    2,
+    [],
+    [{ workstream: "task-a", entry: "src/a.ts", path: "src/a.ts" }],
+  );
+  assert(
+    /task-a/.test(steer) && /src\/a\.ts/.test(steer),
+    "#1167: the steer names the workstream and the file it contradicts itself about",
+  );
+  assert(
+    /declared fence violated/.test(steer),
+    "#1167: the steer tells the planner what the develop gate will do with this plan",
+  );
+  assert(
+    /Corrective re-dispatch/.test(steer) && !steer.includes("undefined"),
+    "#1167: the steer renders in the shape the corrective dispatch expects",
+  );
 }
 
 // ------------------------------------- #849 — the steer carries the dependsOn

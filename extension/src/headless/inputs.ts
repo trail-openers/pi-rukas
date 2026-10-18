@@ -127,6 +127,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("ADVERSARIAL_EMPTY_SKIP", true),
   ms("ADVERSARIAL_PHASE_BUDGET_MS", 1_800_000),
   flag("ALLOW_DESTRUCTIVE_GIT", false),
+  flag("ALLOW_DEVELOPER_PUSH", false),
   flag("ALLOW_DIRECT_ISSUE_CREATE", false),
   flag("ALLOW_LIVE_SPAWN", false, "test"),
   flag("ALLOW_UNREVIEWED_MERGE", false),
@@ -137,6 +138,11 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("CHILD_CODEMODE", true),
   ms("CI_WATCH_TIMEOUT_MS", 1_800_000),
   flag("CLAIM_SCAN", true),
+  // #1454 — how long a claim whose claimant state file cannot be read may
+  // still park a sibling. The reader is CLAIM_STALE_MS in
+  // work-driver-path-claims.ts; a non-finite/non-positive value falls back to
+  // the 1 h default there, which is the default recorded here.
+  ms("CLAIM_STALE_MS", 3_600_000, "cycle"),
   flag("COMMENT_RETENTION", true),
   list("COMMENT_RETENTION_PATHS", ",", "extension/src,extension/smoke-tests,agents-base"),
   // #1240 — 0 restores the pre-#1240 shape: the consolidated verify always runs,
@@ -146,7 +152,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("CONVERGE", true),
   flag("CROSS_GROUP_CONFLICTS", true),
   ms("CYCLE_BUDGET_MS", null),
-  // An absolute deadline; a value below 1e12 (epoch seconds) is ignored.
+  // An absolute deadline; a value below 1e12 (epoch seconds) is ignored. #1593 —
+  // where step work ends: a host sets it to its kill minus HANDOFF_TIMEOUT_MS.
   int("CYCLE_DEADLINE", null, "cycle", { unit: "epoch-ms" }),
   flag("DEBUG", false),
   family(int("DECISION_BUDGET_<SEAM>", null, "cycle", { unit: "tokens" }), SEAM_MEMBERS),
@@ -174,20 +181,29 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // forge: the driver posts the handoff comment and label; host: the result carries it instead.
   input("HANDOFF_CHANNEL", "enum", "forge", "cycle", { values: ["forge", "host"] }),
   flag("HANDOFF_CONSOLIDATE", true),
+  flag("HANDOFF_DRAFT_PR", true),
   flag("HANDOFF_POST_RETRY", true),
   ms("HANDOFF_POST_RETRY_BACKOFF_MS", 1_000),
   ms("HANDOFF_TIMEOUT_MS", 480_000),
+  // The headless supervisor marks its `work` child (#1591); "1" runs `work` unsupervised.
+  flag("HEADLESS_SUPERVISED", false, "internal"),
   // `name:ip` pairs passed to the container as `--add-host`.
   list("HOST_ALIASES", ",", "halo:192.168.8.249", "wrapper"),
   str("IMAGE", "ghcr.io/trail-openers/pi-rukas:latest", "wrapper"),
   // Host directories bind-mounted read-only; EXTRA_IMAGE_DIRS appends to them.
   list("IMAGE_DIRS", ":", "~/Downloads:~/Desktop:~/Pictures", "wrapper"),
   ms("INACTIVITY_TIMEOUT_MS", 1_800_000),
+  // #1404 — 0 skips the commit-pr baseline probe, so a consolidated verify
+  // failure parks exactly as it did before the feature. The probe can only ever
+  // EXCUSE failures, so this knob only ever makes the gate stricter.
+  flag("INTEGRATION_VERIFY_BASELINE_PROBE", true),
   ms("INTEGRATION_VERIFY_TIMEOUT_MS", 900_000),
   flag("INTENT", true),
   flag("INTENT_CRITICALITY", true),
   flag("INVARIANT_MEMORY", true),
   input("ISSUE_IMAGES", "boolean", true, "cycle", { manifestVersion: 1 }),
+  // Unset: derived from the host budget (CPUs, memory, pids.max); 0 = unbounded.
+  int("LENS_CONCURRENCY", null),
   flag("LENS_EVIDENCE", true),
   // Unset or 0: no bound on concurrent lens children per model.
   int("LENS_MODEL_CONCURRENCY", null),
@@ -218,7 +234,11 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("PLAN_CONTRACT", true),
   int("PLAN_ISSUE", null),
   flag("PLAN_QUALITY", true),
+  dir("PLAN_SESSION_DIR", null, "cycle"),
   ms("PLAN_TIMEOUT_MS", 1_800_000),
+  // #1167 — 0 leaves the planner's out-of-scope fences exactly as written
+  // (the pre-#1167 shape, develop gate included) and traces that it was off.
+  flag("PLAN_UNFENCE", true),
   flag("PM_BASH_GUARD", true, "interactive"),
   dir("PM_PROMPT", null),
   flag("POLICY_JUDGE", true),
@@ -227,16 +247,39 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("PROTECTED_PATHS", true),
   family(str("PROVIDER_<ROLE>", null), ROLE_MEMBERS),
   family(str("PROVIDER_LENS_<LENS>", null), LENS_MEMBERS),
+  // #1243 — the provider-class backoff. A transient retry used to wait 5s then
+  // 10s, so every re-spawn landed inside the same endpoint outage (measured: the
+  // three tehas cycles 45/61/63 parked within 30 minutes with sub-second waits).
+  // A provider-class failure now waits at least FLOOR, scaled by the attempt;
+  // MAX_WAIT is the clamp on EACH wait, not a budget across the cycle. `0`
+  // restores the pre-#1243 shape.
+  // Sorted after PROVIDER_LENS_*: "PROVIDER_R" > "PROVIDER_L".
+  ms("PROVIDER_RETRY_FLOOR_MS", 60_000),
+  ms("PROVIDER_RETRY_MAX_WAIT_MS", 1_800_000),
+  // #1101 — how long a group may wait on a sibling it depends on before the
+  // queue caps the wait (`dependency-timeout`).
+  ms("QUEUE_DEFER_CAP_MS", 1_800_000),
   flag("QUEUE_HALT_ON_FAILURE", false),
+  // #1101 escape hatch: `0` drops the cross-group ordering edge, so groups
+  // dispatch under the #676 overlap rule alone (the pre-#1101 shape).
+  flag("QUEUE_ORDERING", true),
   flag("QUIET_LIFECYCLE", false, "interactive"),
   flag("QUIET_STATUS", false, "interactive"),
   input("RATE_LIMIT_BURST_MAX_S", "number", 300, "cycle", { unit: "s" }),
   flag("RESEARCH_FALLBACK", true, "interactive"),
   flag("RESUME", true),
+  // The ceiling the `check_review_cap` tool answers against (#1429). Separate
+  // from REVIEW_WALL_CLOCK_MS: different ceiling, different consumer.
+  ms("REVIEW_CAP_MS", 5_400_000),
+  // The 90-min review-loop budget is enforced at the fix dispatch, not just displayed.
+  flag("REVIEW_ENFORCE", true),
   dir("REVIEW_LEDGER_FILE", null, "cycle"),
   input("REVIEW_THRESHOLD", "enum", null, "cycle", {
     values: ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
   }),
+  // The driver's review-loop wall clock: what the fixer dispatch is bound by
+  // and what the widget and `/work-status` print (#1429).
+  ms("REVIEW_WALL_CLOCK_MS", 5_400_000),
   str("ROLE", null, "internal"),
   dir("RUNS_DIR", "~/.pi/agent/ensemble-runs"),
   flag("SAFETY_NET_COMMIT", true),
@@ -263,6 +306,21 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   str("SUBAGENT_MODEL", null),
   str("SUBAGENT_PROVIDER", null),
   flag("SYMBOL_MERGE_RETRY", true),
+  // #1454 r2 — a TEST-ONLY fault injection: force the path-claims lock
+  // unreachable so `test-work-driver-claims-concurrent-writers.ts` can prove its
+  // own positive assertion can fail. Listed (not exempted) because the gate
+  // sweeps every `PI_ENSEMBLE_*` read in src/ regardless of who sets it: an
+  // operator who exports it gets an UNSERIALISED claim registry, which is
+  // exactly the kind of outcome-changing knob this table exists to surface.
+  flag("TEST_CLAIMS_LOCK_BLOCKED", false, "internal"),
+  // #1454 r2 — a TEST-ONLY knob: widen the read-modify-write window of a claim
+  // writer by this many ms, so the mutation arm of
+  // `test-work-driver-claims-concurrent-writers.ts` loses a claim
+  // DETERMINISTICALLY instead of only when eight children happen to overlap.
+  // Read ONLY while `PI_ENSEMBLE_TEST_CLAIMS_LOCK_BLOCKED=1` is also set —
+  // `resolveClaimsWindowMs` returns 0 without it — so a production cycle never
+  // waits here and the delay cannot reach a real run.
+  ms("TEST_CLAIMS_WINDOW_MS", 0, "internal"),
   int("TEST_DELETE_TOLERANCE", 0),
   // Unset: no budget, except code-review-specialist (8,000,000).
   family(int("TOKEN_BUDGET_<ROLE>", null, "cycle", { unit: "tokens" }), ROLE_MEMBERS),
@@ -277,12 +335,27 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("VERIFY", true),
   // Unset: derived from the host budget (CPUs, memory, cgroup limits); 0 = unbounded.
   int("VERIFY_CONCURRENCY", null),
+  // #1509 — the verify wall clock is resolved PER TIER. Each tier reads its own
+  // knob first, then PI_ENSEMBLE_VERIFY_TIMEOUT_MS, then its `.pi/*-timeout-ms`
+  // file, then the default listed here. The SUITE tier's default is the one that
+  // moved: it is the 641-file offline suite, and the shared 10-minute number is
+  // what parked healthy cycles at `verify-failed:develop`.
+  //
+  // POSITION: this list is sorted by the `__`-to-space localeCollate that
+  // `test-headless-inputs.ts` enforces, and that collation is NOT ASCII order —
+  // it largely ignores the separators, so `VERIFY_FULL` compares as `VERIFY
+  // FULL` and sorts before `VERIFY_FULL_TIMEOUT_MS`, and `FAST` < `FULL` puts
+  // the fast tier's knob above both. Reading it as plain ASCII order puts these
+  // entries in the wrong place and the gate fails on ordering alone.
+  ms("VERIFY_FAST_TIMEOUT_MS", 600_000),
   flag("VERIFY_FULL", true),
   ms("VERIFY_FULL_TIMEOUT_MS", 1_800_000),
   // #1415 — reuse of a verify gate the cycle already passed: same tree, same
   // command, same bound → the whole develop pass runs nothing. Default on; `0`
   // restores the pre-#1415 "run it every round" behaviour.
   flag("VERIFY_GATE_REUSE", true),
+  ms("VERIFY_SMOKE_TIMEOUT_MS", 600_000),
+  ms("VERIFY_SUITE_TIMEOUT_MS", 1_800_000),
   ms("VERIFY_TIMEOUT_MS", 600_000),
   // The wrapper tells the image entrypoint which mounts are named volumes.
   list("VOLUME_MOUNTS", ":", null, "internal"),
@@ -310,10 +383,32 @@ export interface HostFile {
 export const HEADLESS_FILES: readonly HostFile[] = [
   { path: ".pi/forge", kind: "config", whenAbsent: "forge detected from the git remote" },
   { path: ".pi/permissions.json", kind: "config", whenAbsent: "~/.pi/agent/permissions.json" },
+  // #1509 — the per-tier verify budgets a project may declare (#1041). Read
+  // like every other `.pi/` config file; an unparseable value is ignored with a
+  // trace and the next precedence level answers.
+  {
+    path: ".pi/smoke-cmd-timeout-ms",
+    kind: "config",
+    whenAbsent: "smoke tier uses PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS or its default",
+  },
   { path: ".pi/smoke-cmd", kind: "command", whenAbsent: "no product smoke gate" },
   { path: ".pi/verify-cmd", kind: "command", whenAbsent: "verify command derived from the repo" },
-  { path: ".pi/verify-cmd-fast", kind: "command", whenAbsent: "no fast verify tier" },
+  {
+    path: ".pi/verify-cmd-fast",
+    kind: "command",
+    whenAbsent: "no fast verify tier",
+  },
+  {
+    path: ".pi/verify-cmd-fast-timeout-ms",
+    kind: "config",
+    whenAbsent: "fast tier uses PI_ENSEMBLE_VERIFY_FAST_TIMEOUT_MS or its default",
+  },
   { path: ".pi/verify-cmd-full", kind: "command", whenAbsent: "verify-full tier skipped" },
+  {
+    path: ".pi/verify-timeout-ms",
+    kind: "config",
+    whenAbsent: "suite tier uses PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS or its default",
+  },
   {
     path: ".pi/worktree-setup",
     kind: "hook",

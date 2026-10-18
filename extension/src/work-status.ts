@@ -3,15 +3,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execp } from "./exec.ts";
+import { reviewWallClockMs } from "./review-budget.ts";
 import { trace } from "./trace.ts";
-import {
-  MAX_CI_RETRIES,
-  MAX_REVIEW_ROUNDS,
-  REVIEW_WALL_CLOCK_MS,
-  STEP_ORDINAL,
-} from "./work-driver-context.ts";
+import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS, STEP_ORDINAL } from "./work-driver-context.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
+import { genericRecoveryLines } from "./work-driver-handoff-recovery-tree.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { describeBranchState } from "./work-driver-handoff-view.ts";
 import { mergedLine } from "./work-driver-terminal-delivery.ts";
@@ -104,7 +101,7 @@ export function renderRunningStatus(state: WorkState, repoRoot: string): string 
     const capParts: string[] = [`review round ${ps.reviewRound}/${MAX_REVIEW_ROUNDS}`];
     if (ps.reviewCapStartedAt) {
       const capElapsed = Date.now() - ps.reviewCapStartedAt;
-      capParts.push(`wall-clock ${fmtElapsed(capElapsed)}/${fmtElapsed(REVIEW_WALL_CLOCK_MS)}`);
+      capParts.push(`wall-clock ${fmtElapsed(capElapsed)}/${fmtElapsed(reviewWallClockMs())}`);
     }
     lines.push(`  caps: ${capParts.join(" · ")}`);
   }
@@ -232,6 +229,21 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
       `  target:  ${te.targetType ? `${te.targetType} #${te.targetNumber ?? "?"}` : "?"} (explicit, #798)`,
       `  comment: ${te.commentUrl ?? "WARNING: NOT POSTED — see recovery #4 below"}`,
       labelLine,
+      // #1421 fix round — the jsdoc for `degradedReason` claimed the renderers
+      // print the driver's decline reason; nothing read the field, so an
+      // operator running `/work-status` on a cycle whose consolidation was
+      // refused by cargo's `target/` saw only "handoff-emitted" and had to
+      // open the state file to learn the work was on a worktree. Now the
+      // reader matches the claim. `makeHandoffEmittedEvent` OMITS
+      // `consolidated` on a declined consolidation (it is only set on the
+      // success path), so absence plus a reason is the declined shape.
+      ...(te.degradedReason
+        ? [
+            `  consolid: ${te.consolidated ? "partly —" : "declined —"} ${te.degradedReason.slice(0, 200)}`,
+          ]
+        : te.consolidated
+          ? [`  consolid: onto ${te.consolidatedBranch ?? "?"}`]
+          : []),
     );
   }
 
@@ -277,7 +289,6 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
 
   // Recovery commands (only for non-merged terminal states).
   if (ps.status !== "merged") {
-    const branchForCmd = ps.branchName ?? "<branch>";
     const target = ps.prNumber ? `pr ${ps.prNumber}` : `issue ${issue}`;
     const objType = ps.prNumber ? "pr" : "issue";
     const targetId = ps.prNumber ?? issue;
@@ -289,6 +300,10 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
       lastCap?.kind === "cap-hit" &&
       (lastCap.cap === "intent-park" ||
         lastCap.cap === "existing-pr-detected" ||
+        lastCap.cap === "continue-pr-ambiguous" ||
+        lastCap.cap === "continue-pr-fork" ||
+        lastCap.cap === "continue-pr-not-found" ||
+        lastCap.cap === "continue-pr-unsafe-head" ||
         String(lastCap.cap).startsWith("explore-"));
     lines.push(
       "",
@@ -300,19 +315,8 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
             `  cat .pi/work-state/${issue}/spec.txt`,
             `  /work ${issue} --restart`,
           ]
-        : [
-            "  # 1. Inspect what survived:",
-            "  git status",
-            "  git diff --stat",
-            "",
-            "  # 2. Discard the cycle and start over (worktree is kept):",
-            `  rm .pi/work-state/${issue}.json`,
-            "",
-            "  # 3. Take over manually:",
-            "  git add -p",
-            "  git commit",
-            `  git push -u origin ${branchForCmd}`,
-          ]),
+        : // #1565 — the same trees the handoff found, not repoRoot blindly.
+          genericRecoveryLines(state).map((l) => (l ? `  ${l}` : l))),
     );
     if (
       handoffEvt?.kind === "handoff-emitted" &&

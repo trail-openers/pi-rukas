@@ -13,11 +13,14 @@ import { execp as lensExecp } from "./exec.ts";
 import { aheadOfBase } from "./git-range.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
+import type { GateHangPathSink } from "./work-driver-gate-hang.ts";
 import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
+import { beginVerifyRun, finishVerifyRun } from "./work-driver-verify-events.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
+import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 // #1134 follow-up — the argv form must be honoured: the previous
@@ -165,11 +168,33 @@ export async function verifyStepOutcome(
   /** #1349 — the verify command is red at base and its failures are the only ones. */
   baselineRedOnly?: boolean;
   /**
+   * #1421 fix round — the consolidated gate DECLINED to consolidate because
+   * the root held nothing but untracked, git-ignored build output. Carried
+   * STRUCTURALLY from the result's `kind`/`buildResidueOnly`, so the cap
+   * router never has to substring-match an operator-authored path out of the
+   * failure prose to tell an environment refusal from a verdict.
+   */
+  buildResidueOnly?: boolean;
+  /**
+   * #1427 — the gate-hang reports this gate persisted, one per gate run it
+   * killed at its bound (per-worktree, consolidated, or both). Carried
+   * STRUCTURALLY so the cap emit site records them on the cap-hit event's
+   * `logPaths` — the handoff then names the files, and no renderer has to find
+   * a path in prose. Absent when no run was killed or nothing could be written.
+   */
+  hangLogPaths?: string[];
+  /**
    * #1240 — the consolidated verify did not run because its probe tree is the
    * tree the per-worktree verify already judged. The caller turns this into a
    * `consolidated-verify-skipped` event (`makeConsolidatedVerifySkippedEvent`).
    */
   consolidatedVerifySkipped?: AlreadyVerifiedTree;
+  /**
+   * #1415 — `verify-started` (already persisted, so the stream showed it while
+   * the gate ran) and `verify-completed`; the caller appends both through
+   * `recordDevelopGateEvents`. Absent when no verify command was resolved.
+   */
+  verifyEvents?: VerifyRunEventFragment[];
 }> {
   const failures: string[] = [];
   const notes: string[] = [];
@@ -194,21 +219,34 @@ export async function verifyStepOutcome(
     // Captured here and returned structurally: the caller appends the event,
     // which is where the event log lives.
     let consolidatedVerifySkipped: AlreadyVerifiedTree | undefined;
-    await verifyDevelopOutcome(
-      ctx,
-      state,
-      execFn,
-      failures,
-      notes,
-      (evidenceTail) => {
+    // #1421 fix round — the consolidated gate's structured "declined on
+    // nothing but build residue" signal, captured here and returned on the
+    // result so the cap router reads a boolean rather than a substring.
+    let buildResidueOnly = false;
+    // #1427 round 3 — the hang reports of THIS gate call, in a sink created
+    // here rather than on the cycle context. The context is the wrong scope:
+    // it lives for the whole cycle and `verifyStepOutcome` is called up to
+    // three times in one develop step (first pass, fence merge-and-retry,
+    // sibling-symbol merge), so a cap emitted by the second or third call
+    // carried the FIRST call's report paths in its `logPaths` — the handoff
+    // pointed the operator at a file from a run that had nothing to do with the
+    // cap, and the fence-retry fallback could name reports for a re-run that
+    // killed nothing at all. One sink per call, returned as this call's
+    // `hangLogPaths`, is the scope the cap actually has.
+    const hangSink: GateHangPathSink = {};
+    const verifyStarted = await beginVerifyRun(ctx, state);
+    await verifyDevelopOutcome(ctx, state, execFn, failures, notes, {
+      // #782 — the flake callback is wired at this layer: on recovery it
+      // returns a success verdict carrying the flag the caller routes.
+      onVerifyFlakeRecovered: (evidenceTail) => {
         flakeEvidenceTail = evidenceTail;
       },
       fenceViolations,
-      (logPath) => {
+      onConsolidatedLogPath: (logPath) => {
         consolidatedLogPath = logPath;
       },
       commentEvidence,
-      () => {
+      onBaselineRedOnly: () => {
         baselineRedOnly = true;
       },
       // #1240 review r2 — without this callback the identity the probe
@@ -217,11 +255,23 @@ export async function verifyStepOutcome(
       // would stay undefined so no caller appended the event. The note still
       // appeared, which is exactly how the gap hid: the note is rendered from
       // `cons.skipped` independently of the callback.
-      (skipped) => {
+      onConsolidatedVerifySkipped: (skipped) => {
         consolidatedVerifySkipped = skipped;
       },
-    );
+      // #1421 fix round — the consolidated gate's structured "declined on
+      // nothing but build residue" signal, captured here and returned on the
+      // result so the cap router reads a boolean rather than a substring.
+      onBuildResidueOnly: () => {
+        buildResidueOnly = true;
+      },
+      // #1427 fix round — the walker is a test seam for the hang reports, and
+      // it has to reach BOTH legs of the gate (per-worktree and consolidated).
+      ...(ctx.walkProcessTree !== undefined ? { walkProcessTree: ctx.walkProcessTree } : {}),
+      // #1427 round 3 — this call's sink, threaded to every writer below.
+      hangSink,
+    });
     const flakeRecovered = flakeEvidenceTail !== undefined;
+    const verifyEvents = finishVerifyRun(verifyStarted, failures.length === 0);
     return {
       ok: failures.length === 0,
       failures,
@@ -231,6 +281,16 @@ export async function verifyStepOutcome(
       ...(consolidatedLogPath !== undefined ? { logPath: consolidatedLogPath } : {}),
       ...(baselineRedOnly ? { baselineRedOnly: true } : {}),
       ...(consolidatedVerifySkipped !== undefined ? { consolidatedVerifySkipped } : {}),
+      ...(verifyEvents.length > 0 ? { verifyEvents } : {}),
+      ...(buildResidueOnly ? { buildResidueOnly: true } : {}),
+      // #1427 round 3 — read the sink THIS call created, not the cycle context:
+      // the list is exactly the reports this gate run wrote, which is what the
+      // cap emit site needs. (It used to read `ctx.gateHangLogPaths`, which
+      // accumulated across every gate call of the cycle, so a late cap named
+      // early runs' reports.)
+      ...(hangSink.gateHangLogPaths !== undefined && hangSink.gateHangLogPaths.length > 0
+        ? { hangLogPaths: [...hangSink.gateHangLogPaths] }
+        : {}),
       commentEvidence,
     };
   }

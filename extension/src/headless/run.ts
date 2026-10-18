@@ -28,12 +28,20 @@
 import { killLiveProcessGroups } from "../spawn-kill.ts";
 import { trace } from "../trace.ts";
 import type { DriverContext } from "../work-driver-context.ts";
+import { isLiveOwnerRefusal } from "../work-driver-final-state.ts";
 import { groupIssues } from "../work-driver-grouping.ts";
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { type DriverOutcome, runWorkDriver } from "../work-driver.ts";
 import { fetchIssueBodies } from "../work-entry.ts";
 import { createEmitSink } from "../work-state-emit.ts";
-import { interruptReasonOf, markInterrupted, readState, workStateFile } from "../workflow-state.ts";
+import {
+  interruptReasonOf,
+  isProviderPark,
+  isTerminalState,
+  markInterrupted,
+  readState,
+  workStateFile,
+} from "../workflow-state.ts";
 import type { WorkState } from "../workflow-state.ts";
 import { EXIT, exitCodeForGroup, exitCodeForState } from "./exit-code.ts";
 import { type LineWriter, createHeadlessHost } from "./host.ts";
@@ -44,6 +52,8 @@ export interface HeadlessRunOptions {
   repoRoot: string;
   issues: number[];
   restart: boolean;
+  /** #1468 — continue the issue's open PR. Absent = false. */
+  continuePr?: boolean;
   /** Runner-level wall clock. Absent = no timeout. */
   timeoutMs?: number;
   /** Milliseconds the driver gets to reach a step boundary after an abort. */
@@ -72,8 +82,25 @@ export interface HeadlessRunResult {
 }
 
 const DEFAULT_GRACE_MS = 10_000;
-/** States whose exit code is already decided: an expired signal does not override them. */
-const TERMINAL_STATUSES = new Set<string>(["merged", "handoff", "aborted"]);
+/**
+ * Did this state reach a terminal boundary the runner must not relabel? The
+ * shared `isTerminalState` (merged / handoff / aborted — the ONE terminal-status
+ * notion, workflow-state-schema-workstate.ts) plus a #1243 provider park, which
+ * is `interrupted` by status but terminal by outcome.
+ *
+ * The park is in this test deliberately. It terminalises as `interrupted`
+ * (reason `provider`) precisely so `/work N` re-enters it, and
+ * `exitCodeForState` already gives it `EXIT.handoff` — but `interrupted` is
+ * also the status a signal leaves behind, so a grace expiry that fired after
+ * the park had been written would see a non-terminal status, substitute
+ * `expiredCode`, and report 21/30 for a cycle that handed off. The park had run
+ * to its terminal boundary and delivered its comment; the runner arriving late
+ * must not relabel that. A signal that cut a cycle off mid-step is still not
+ * in the set — it is genuinely the abort's outcome.
+ */
+function terminalForExitCode(state: WorkState): boolean {
+  return isTerminalState(state) || isProviderPark(state);
+}
 /** After grace expires, how long the runner waits for a driver that was mid-step. */
 const LATE_DRIVER_MS = 5_000;
 
@@ -274,6 +301,7 @@ async function runGroup(
     issue: primary,
     issues: members,
     restart: opts.restart,
+    continuePr: opts.continuePr,
     signal,
     processGroup: true,
     // Nobody watches a headless review window: its PR opens as a draft by default.
@@ -312,6 +340,20 @@ async function runGroup(
 
   // Computed once for the group. A refusal is a driver that did not start.
   const refused = outcome !== "expired" && isRefusal(outcome);
+  // #1243 fix round — WHICH refusal. A live owner's refusal and an
+  // already-terminated refusal are not the same fact: the first means somebody
+  // else is running this cycle right now, the second means the cycle is simply
+  // finished. `projectIssue` derives `resumable` from the on-disk STATUS, and a
+  // #1243 provider park's status is `interrupted` (that is what makes it
+  // resumable), so it projects `resumable: true` even though this invocation
+  // was refused entry — and `EXIT.refused` does not catch it because
+  // `exitCodeForState` deliberately maps a park to `EXIT.handoff`. A host that
+  // re-queues on `resumable` would then re-queue a cycle it cannot enter.
+  const refusedByLiveOwner =
+    outcome !== "expired" &&
+    "started" in outcome &&
+    !outcome.started &&
+    isLiveOwnerRefusal(outcome.reason);
   // A signalled run that ran out of grace exits 21 (30 for --timeout), unless
   // the state is already terminal and decided its own code.
   const expiredCode = signal.reason === "timeout" ? EXIT.crash : EXIT.interrupted;
@@ -362,7 +404,7 @@ async function runGroup(
     // a live owner's `running` state is one.
     const refusedHere = refused && state.pipelineState.status === "running";
     let code: number;
-    if (outcome === "expired" && !TERMINAL_STATUSES.has(state.pipelineState.status)) {
+    if (outcome === "expired" && !terminalForExitCode(state)) {
       code = expiredCode;
     } else if (refusedHere) code = EXIT.refused;
     else code = exitCodeForState(state);
@@ -399,6 +441,11 @@ async function runGroup(
       }
     }
     projected.exitCode = code;
+    // #1243 fix round — a park refused for a live owner is not resumable BY
+    // THIS CALLER, whatever its status promises. Deliberately narrower than the
+    // `EXIT.refused` sweep in `runHeadless`: a genuine `already terminated`
+    // refusal keeps its honest `resumable` (with `--restart` it does re-enter).
+    if (refusedByLiveOwner) projected.resumable = false;
     results.push(projected);
     codes.push(code);
   }

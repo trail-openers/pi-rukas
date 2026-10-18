@@ -90,7 +90,10 @@ function stackedState(): WorkState {
         modifiedFiles: [],
         unstagedCount: 0,
         stagedCount: 0,
-        branchExists: false,
+        // #747 — the recovery block is gated on the branch actually existing;
+        // the stacked cycle has a real local ref (the branch step created it),
+        // it simply does not yet carry the stack's commits.
+        branchExists: true,
         branchPushed: false,
         repoRootHeadSha: "99998888",
         capturedAt: 1000,

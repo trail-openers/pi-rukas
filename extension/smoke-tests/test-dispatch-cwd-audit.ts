@@ -103,15 +103,24 @@ const ROOT_INTENTIONAL_SITES: Array<{ file: string; site: RegExp; label: string;
     why: "produces the workstream decomposition; the worktrees it describes do not exist until the branch step",
   },
   {
-    file: "work-driver-plan.ts",
+    // #754 / #1167 (size split) — the site now lives in
+    // work-driver-plan-quality-pass.ts, which owns the whole plan-quality tail
+    // including the one-shot corrective. The allowlist reads the file that
+    // holds the dispatch, so this row points at the moved code; the decision it
+    // records is unchanged — same step, same reason, no worktree exists yet.
+    file: "work-driver-plan-quality-pass.ts",
     site: /\{\s*role:\s*"explore",\s*prompt:\s*correctivePrompt\s*\}/,
     label: "plan:corrective (label: plan:corrective)",
     why: "the one-shot plan re-dispatch — same step, same reason",
   },
   {
-    file: "work-driver-plan-helpers.ts",
+    // #754's kill-triggered corrective moved with the timeout trio from
+    // work-driver-plan-helpers.ts to work-driver-plan-timeout.ts (the §12
+    // line cap); the decision it records is unchanged — same step, same
+    // reason as the quality-gate corrective, no worktrees exist yet.
+    file: "work-driver-plan-timeout.ts",
     site: /\{\s*role:\s*"explore",\s*prompt:\s*correctivePrompt\s*\}/,
-    label: "plan:corrective (kill-triggered, helpers)",
+    label: "plan:corrective (kill-triggered, plan-timeout)",
     why: "the #754 kill-triggered corrective re-dispatch — same step, same reason as the quality-gate corrective",
   },
   {
@@ -290,6 +299,11 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     "work-driver-commit-fallback.ts": 1, // #861 — the ops-fallback commit-pr dispatch, pinned to the integrate worktree (cwd: integratePath)
     "work-develop-fence-recovery-run.ts": 1, // #849 — the fence recovery's single re-dispatch, pinned to the violator's worktree (cwd: the recovered workstream's worktree)
     "work-develop-fence-merge.ts": 1, // #1005 — the merge-and-retry's single re-dispatch of the MERGED workstream, pinned to the violator's (now merged) worktree (cwd: the merged workstream's worktree)
+    // #1044 splits: the two /plan + /research sites the split moved out of
+    // their NON_WORK_DRIVER homes. Both carry an explicit cwd on the spec —
+    // canaries below, in the shape every other cwd-audited file has.
+    "plan-driver-gate.ts": 1, // the gap gate's bounded reviewer dispatch — cwd: args.repoRoot (the plan run has no worktree)
+    "research-angle.ts": 1, // one retrieval angle — cwd: ctx.repoRoot, threaded by research-driver.ts
   };
   // The /plan and /research drivers' seams — outside the /work driver's
   // scope for this audit (their own cwd hygiene is a separate concern).
@@ -384,6 +398,50 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   assert(
     /const wt = worktrees\[mergedId\];/.test(merge),
     "canary: the re-dispatch's cwd resolves to the merged workstream's worktree (worktrees[mergedId]) — the violator's tree, rebased to the owner's tip",
+  );
+}
+
+// ------------------------------------------- /plan gate + /research angle: the #1044 splits carry a cwd
+
+{
+  // #1044's §12 splits moved these two call sites out of their
+  // NON_WORK_DRIVER homes (plan-driver.ts, research-driver.ts) into files the
+  // census had never seen. Neither is a repoRoot-intentional site in the
+  // decision-#5 sense — both set cwd explicitly, so each is cwd-audited in
+  // the same shape as the /work driver's audited sites.
+  //
+  // For the plan gate this is the first cwd audit it ever had: the pre-split
+  // call sat inside plan-driver.ts, which the census exempts wholesale, so
+  // the `cwd: args.repoRoot` was never pinned by anything. The plan driver has
+  // no workstreams and no worktrees — it operates on the checkout it was
+  // launched from (the same reason `runPlan` and the policy judge take the
+  // integration point) — but the key being PRESENT on the spec is the point:
+  // an un-cwd'd spec is what let #741 write to process.cwd().
+  const gate = read("plan-driver-gate.ts");
+  assert(
+    /\{ \.\.\.spec, cwd: args\.repoRoot \}/.test(gate),
+    "canary: the gap gate's reviewer dispatch puts cwd: args.repoRoot on the spec — the plan run has no worktree, so the key is present by declaration, not by accident",
+  );
+  // The angle helper takes `dispatch` as a parameter (a seam, not a site) but
+  // makes the cwd decision itself, so the canary reads the spec it builds.
+  // research-driver.ts builds ONE ctx carrying `repoRoot` per angle and hands
+  // that same object to both the first attempt and the wigolo fallback
+  // re-dispatch — one literal, so the two legs cannot drift apart on cwd.
+  const angle = read("research-angle.ts");
+  assert(
+    /\{ role: "explore", prompt, cwd: ctx\.repoRoot \}/.test(angle),
+    "canary: the research angle dispatch carries cwd: ctx.repoRoot on its spec (the research driver likewise has no worktree, but the key is set)",
+  );
+  const driver = read("research-driver.ts");
+  assert(
+    /const ctx = \{[^}]*\brepoRoot\b[^}]*\}/.test(driver),
+    "canary: ...and research-driver.ts builds one ctx with repoRoot that BOTH dispatch legs share — neither can fall back to process.cwd()",
+  );
+  assert(
+    /runResearchAngle\(dispatch, pi, a, "parallel", undefined, ctx\)[\s\S]{0,700}?runResearchAngle\(dispatch, pi, a, "wigolo", outcome, ctx\)/.test(
+      driver,
+    ),
+    "canary: both the parallel attempt and the wigolo re-dispatch are handed that same ctx object (by identifier, not a second literal)",
   );
 }
 

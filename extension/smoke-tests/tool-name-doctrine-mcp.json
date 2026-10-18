@@ -1,0 +1,73 @@
+{
+  "_comment": [
+    "Committed in-tree roster of the MCP tool names this repo's doctrine relies on.",
+    "Why this file exists: the #995 gate used to read $PI_AGENT_DIR/mcp.json (or",
+    "~/.pi/agent/mcp.json) as a roster source, so a CI box with no user Pi config",
+    "and a laptop with one disagreed about which names were real. A gate whose",
+    "verdict depends on whose machine ran it is not a gate. Everything the doctrine",
+    "names must be declared HERE, with the server it comes from and a reason.",
+    "The gate reads nothing under HOME (asserted by test-tool-name-surface.ts).",
+    "Adding a name: it must be a real tool the named server publishes, and the",
+    "reason must say which doctrine file names it. In-tree .pi/mcp.json is still",
+    "read as a second, also-host-independent source when a clone keeps one."
+  ],
+  "servers": [
+    {
+      "server": "codebase_memory",
+      "tools": [
+        {
+          "name": "search_code",
+          "reason": "Named by its bare shorthand in agents-base/developer.md and modules/core/codebase-memory-mcp.md, which documents the short-name convention explicitly."
+        },
+        {
+          "name": "search_graph",
+          "reason": "Named as a granted codebase-memory tool in the agents-base/developer.md tool-surface table (#1434 grounding)."
+        },
+        {
+          "name": "trace_path",
+          "reason": "Named by its bare shorthand in agents-base/developer.md and modules/core/codebase-memory-mcp.md for callers/callees."
+        },
+        {
+          "name": "detect_changes",
+          "reason": "Named by its bare shorthand in agents-base/developer.md and modules/core/codebase-memory-mcp.md for diff blast radius."
+        },
+        {
+          "name": "get_code_snippet",
+          "reason": "Named as a granted codebase-memory tool in the agents-base/developer.md tool-surface table."
+        },
+        {
+          "name": "get_architecture",
+          "reason": "Named as a granted codebase-memory tool in the agents-base/developer.md tool-surface table."
+        },
+        {
+          "name": "query_graph",
+          "reason": "Named as a granted codebase-memory tool in the agents-base/developer.md tool-surface table."
+        },
+        {
+          "name": "index_repository",
+          "reason": "Named as a granted codebase-memory tool in the agents-base/developer.md tool-surface table."
+        },
+        {
+          "name": "index_status",
+          "reason": "Named in agents-base/developer.md to tell developers what coverage report to consult; granted to no role, so the permission-map leg cannot see it."
+        },
+        {
+          "name": "list_projects",
+          "reason": "Named in agents-base/developer.md to tell developers how to discover indexed projects; granted to no role."
+        },
+        {
+          "name": "delete_project",
+          "reason": "Named in agents-base/developer.md precisely to FORBID the call — a gate that called an accurate prohibition a phantom would punish accurate doctrine."
+        },
+        {
+          "name": "compare_graphs",
+          "reason": "Named in agents-base/developer.md to say the call is not granted; listed so the gate does not call a real-but-ungranted tool a phantom."
+        },
+        {
+          "name": "manage_adr",
+          "reason": "Named in agents-base/developer.md as the ADR seam; granted to no role, named so the prompt can describe it."
+        }
+      ]
+    }
+  ]
+}

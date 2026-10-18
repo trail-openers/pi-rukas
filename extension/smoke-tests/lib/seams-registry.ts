@@ -6,7 +6,13 @@
  * test-only or pending, and the canary symbol whose import proves the seam is
  * still reachable from production. Adding a module to this list is the whole
  * of registering it; the assertions live in the test.
+ *
+ * The review-ledger / merge-guard group lives in
+ * `seams-registry-merge-ledger.ts` and is spread back into `SEAMS` below, so
+ * consumers see a single identical table whichever file an entry was added to.
  */
+
+import { SEAMS_MERGE_LEDGER } from "./seams-registry-merge-ledger.ts";
 
 export interface Seam {
   file: string;
@@ -25,6 +31,13 @@ export interface Seam {
    * make visible.
    */
   canary: { symbol: string; importer: string };
+  /**
+   * #1454 — a symbol whose ONLY caller is inside its own module (the read
+   * filter, the sweep loop). The canary excludes the seam's own file, so a
+   * self-call cannot satisfy it; this field asserts the internal call site
+   * still exists, which is the reachability claim the canary cannot make.
+   */
+  selfCall?: { symbol: string; by: string };
 }
 
 export const SEAMS: Seam[] = [
@@ -41,6 +54,20 @@ export const SEAMS: Seam[] = [
     // (#1187 removed the S4 security-open-point seam.)
     file: "decision-shadow.ts",
     pending: {},
+    // #1393 — the throttle and the in-flight counter are module-private state;
+    // these observe or drive it so the leak and the throttling are assertable at
+    // all (before, nothing read `inFlight`, so the leak was invisible by
+    // construction). `EXACT_RULE_MATCH` names the field an exact-match record
+    // carries, so the taxonomy and its tests cannot drift apart.
+    testOnly: {
+      EXACT_RULE_MATCH: "#1393 — the record's marker is derived from this constant",
+      SKIP_WINDOW_MS: "#1393 — the throttle window the skip test advances a clock past",
+      __setSkipClockForTests: "#1393 — test-decision-shadow-seams.ts",
+      __inFlightForTests: "#1393 — test-decision-shadow-inflight.ts",
+      __resetShadowForTests: "#1393 — both shadow tests",
+      __acquireSlotForTests: "#1393 — test-decision-shadow-inflight.ts",
+      __exactInFlightForTests: "#1393 — test-decision-shadow-exact-bound.ts",
+    },
     canary: { symbol: "shadowDecide", importer: "work-driver-failure-taxonomy.ts" },
   },
   {
@@ -63,11 +90,10 @@ export const SEAMS: Seam[] = [
     canary: { symbol: "armExitCause", importer: "index.ts" },
   },
   {
-    // S4a (#1162) — the workflow-state persistence seam. markInterrupted has
-    // no caller until the headless runner's signal handling lands (#1024).
+    // S4a (#1162) — the workflow-state persistence seam. markInterrupted is
+    // called by the headless runner (headless/run.ts, #1024).
     file: "workflow-state.ts",
     pending: {
-      markInterrupted: "#1024 \u2014 S4 wires SIGTERM/SIGINT to it",
       requestInterrupt: "#1024 \u2014 set by markInterrupted; has no caller of its own",
     },
     testOnly: {
@@ -214,80 +240,7 @@ export const SEAMS: Seam[] = [
       importer: "dispatch-deck-confirm-row.ts",
     },
   },
-  {
-    // #912 — the per-clone review ledger. The writer calls live in
-    // adversarial.ts (runAdversarialLoop) and lens-review.ts
-    // (runLensReview); the guard (merge-guard.ts) is the reader. The shared
-    // predicates + review-patch-identity.ts are the seam the guard trusts.
-    file: "review-ledger.ts",
-    pending: {},
-    testOnly: {
-      readLedgerFile: "the raw file reader; exercised by test-review-ledger.ts",
-      validEntries: "the row validator; exercised by test-review-ledger.ts",
-      dedupeLatest: "the bounded-file dedup; exercised by test-review-ledger.ts",
-      readLedgerAt: "the never-throwing reader; exercised by test-merge-guard.ts",
-      lensBlockedByThreshold:
-        "the driver-side threshold predicate; exercised by test-review-ledger.ts",
-      bumpLensRound:
-        "the #973 round counter; wired in appendLedgerEntry (review-ledger.ts) and exercised by test-review-ledger.ts",
-    },
-    canary: { symbol: "appendLedgerEntry", importer: "adversarial-ledger.ts" },
-  },
-  {
-    // #1360 — the tool-path binding decision. `decideToolPathRow` and
-    // `toolPathFields` are called by the writer (adversarial-ledger.ts) and
-    // `captureBinding` by the loop's capture (adversarial-ledger-capture.ts);
-    // the two entries below have no production caller by design — the range
-    // check runs inside `decideToolPathRow`, and the prefix list is the shared
-    // vocabulary the spec and the guard's quoted detail are asserted against.
-    file: "adversarial-ledger-binding.ts",
-    pending: {},
-    testOnly: {
-      reviewRangeDecision:
-        "the range half of the decision, exercised through decideToolPathRow and asserted directly by test-adversarial-ledger-range.ts",
-      BINDING_REFUSAL_PREFIXES:
-        "the refusal vocabulary; asserted verbatim by test-adversarial-ledger-range.ts",
-    },
-    canary: { symbol: "decideToolPathRow", importer: "adversarial-ledger.ts" },
-  },
-  {
-    // #1360 — the loop-side capture, split from adversarial.ts for the file-size
-    // gate. Both halves are called by the loop.
-    file: "adversarial-ledger-capture.ts",
-    pending: {},
-    canary: { symbol: "captureRound", importer: "adversarial.ts" },
-  },
-  {
-    // #1071 — the per-clone review-ledger lock (O_EXCL lockfile colocated
-    // with the ledger file). Wired into appendLedgerEntry (review-ledger.ts)
-    // so the read → transform → rename window is serialised across
-    // concurrent writers on the same clone.
-    file: "review-ledger-lock.ts",
-    pending: {},
-    testOnly: {
-      LEDGER_LOCK_WAIT_MS:
-        "the default bounded wait (≈5 s); exercised by test-review-ledger-lock.ts",
-      LEDGER_LOCK_STALE_MS:
-        "the default stale window (≈30 s); exercised by test-review-ledger-lock.ts",
-      ledgerLockPath:
-        "the lockfile path (colocated with the ledger file); exercised by test-review-ledger-lock.ts",
-      runLedgerCriticalSectionHook:
-        "ACCEPTED, PERMANENT test seam: a no-op await in appendLedgerEntry (undefined in production) that lets the two-process race test widen the read→rename window deterministically; chosen over an env-var read in the write path (#1071 review); exercised by test-review-ledger-lock.ts",
-      setLedgerCriticalSectionHookForTests:
-        "ACCEPTED, PERMANENT test seam (same hook's setter): never set in production; exercised by test-review-ledger-lock.ts (its child script)",
-    },
-    canary: { symbol: "acquireLedgerLock", importer: "review-ledger.ts" },
-  },
-  {
-    // #912 — the merge target reader (gh/glab) + carve-out predicate.
-    // Wired into merge-guard.ts (the guard's decision path).
-    file: "merge-target.ts",
-    pending: {},
-    testOnly: {
-      resolvePrNumber: "the no-number PR resolution; exercised by test-merge-guard.ts",
-    },
-    canary: { symbol: "readMergeTarget", importer: "merge-guard.ts" },
-  },
+  ...SEAMS_MERGE_LEDGER,
   {
     // #1019 — the pi binary version probe. The probe half (getPiResolutionInfo)
     // used to ship with no production caller, so its PATH-source / older-than-
@@ -337,5 +290,70 @@ export const SEAMS: Seam[] = [
       parseVerifiedLine: "the shared verified-line parser; exercised by test-pi-version-drift.ts",
     },
     canary: { symbol: "parseVerifiedLine", importer: "pi-version-probe.ts" },
+  },
+  {
+    // #1393 — the credential-run character primitives split out of the redaction window.
+    // decision-redact-window.ts is the only production importer; the class-vs-chain pin
+    // reaches isCredentialChar directly because that is the claim being pinned.
+    file: "credential-walk.ts",
+    pending: {},
+    testOnly: {
+      isCredentialChar:
+        "the per-character class test the walks step with; pinned against the net's class source by test-decision-redaction-tail-sweep.ts",
+    },
+    canary: { symbol: "walkRunOneBreak", importer: "decision-redact-window.ts" },
+  },
+  {
+    // #1393 — the scan-window moves `redactBounded` is built from, split out of
+    // decision-log.ts for the 500-line cap. redactBounded is the only caller.
+    file: "decision-redact-window.ts",
+    pending: {},
+    testOnly: {
+      // Exported so the sweep test can re-test the class literal rather than copy it;
+      // the module itself reads the `CREDENTIAL_RUN` built from it.
+      CREDENTIAL_RUN_CLASS_SOURCE:
+        "the class literal exported as source; pinned by test-decision-redaction-tail-sweep.ts",
+    },
+    canary: { symbol: "redactUnscannedRuns", importer: "decision-log.ts" },
+  },
+  {
+    // #1101 fix-round — the path-claim registry. Registered because the issue
+    // shipped a declared, documented, never-called half of it (`setSiblingClaimWait`
+    // and the `claimWaitsForIssues` filter it drives) — the exact shape this file
+    // exists to make visible. The remaining exports are all wired from the plan
+    // step (`work-driver-plan.ts` reads the registry and registers claims) and
+    // from the terminal steps that release them.
+    file: "work-driver-path-claims.ts",
+    pending: {},
+    testOnly: {
+      // Read by the plan step's conflict path and by the terminal steps; exported
+      // so those callers batch one disk read across the workstreams rather than
+      // one per cycle.
+      readClaims: "#1101 — batched read; work-driver-plan.ts + test-work-driver-cross-group-conflicts.ts",
+      checkCrossGroupClaims: "#571 — the async entry to the overlap check; test-asserted",
+      checkCrossGroupClaimsSync: "#571 — the pure core the batched read feeds; test-asserted",
+      registerClaim: "#571 — registers a plan-declared claim; test-asserted",
+      claimWaitsForIssues: "#1101 — the sibling filter readClaims consults; test-asserted",
+      // The negative control for the sibling filter: `readClaims` is the
+      // production reader and asserting only through it could not tell "filter
+      // works" from "filter always says sibling". No production caller reads
+      // back what its own setter just wrote.
+      siblingClaimWaitSnapshot: "#1101 — test-work-entry-queue-wiring.ts",
+    },
+    canary: { symbol: "setSiblingClaimWait", importer: "work-entry-queue.ts" },
+  },
+  {
+    // #1002 round 1 — git's "that is not there" rule, the one place that reads
+    // git's exit code + wording for an absent ref or tree object. `gitSaysAbsent`
+    // is consumed inside this module by `refResolves`; `gitCatFileSaysAbsent` has
+    // a real production caller in `lens-evidence.ts`. The former is exported only
+    // so the wording rule can be asserted directly rather than through a probe.
+    file: "git-range.ts",
+    pending: {},
+    testOnly: {
+      gitSaysAbsent:
+        "the ref-probe absence rule, exercised through refResolves and pinned directly by test-git-range-1153.ts",
+    },
+    canary: { symbol: "gitCatFileSaysAbsent", importer: "lens-evidence.ts" },
   },
 ];

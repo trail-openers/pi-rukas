@@ -43,7 +43,7 @@ import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-
 import { type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 import { worktreePrune, worktreeRemove } from "./worktree.ts";
 
-export { buildCompletionEvent } from "./work-driver-completion-event.ts";
+export { buildCompletionEvent, overrideEnvForKillCause } from "./work-driver-completion-event.ts";
 
 /**
  * Step 6 — Parse `pr: <N>` from an ops commit-pr reply. Lenient — accepts
@@ -454,8 +454,10 @@ export async function runMerged(
   }
 
   // #571 — release the path claim on successful merge.
+  // #1454 — the whole group: a grouped cycle claims every issue, so releasing
+  // only the primary left a sibling entry parked over a merged cycle.
   try {
-    await releaseClaim(ctx.repoRoot, ctx.issue);
+    await releaseClaim(ctx.repoRoot, activeIssuesOf(state));
   } catch {
     /* best-effort; merge must always succeed regardless */
   }

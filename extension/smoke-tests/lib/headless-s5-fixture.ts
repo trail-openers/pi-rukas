@@ -41,6 +41,7 @@ import type { DispatchResult } from "../../src/types.ts";
 import type { VerifyExecFn } from "../../src/work-driver-git.ts";
 import type { WorkCapLiteral } from "../../src/workflow-state-events-caps.ts";
 import type { WorkEvent } from "../../src/workflow-state.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 import { isKnownGitSubcommand, runFixtureGit } from "./headless-s5-git.ts";
 
 /**
@@ -65,7 +66,11 @@ export interface HeadlessRepo {
 export function headlessRepo(grant: string | undefined, dirName = "headless-s5-"): HeadlessRepo {
   const repoRoot = mkdtempSync(path.join(tmpdir(), dirName));
   const git = (...args: string[]) => {
-    const child = spawnSync("git", args, { cwd: repoRoot });
+    // #1145 — `env: gitTestEnv()`: `spawnSync` with no `env` inherits the REAL
+    // `environ` on bun 1.3, and the base SHA this repo records is where the
+    // doctrine read (#406) resolves, so a host ignore file or
+    // `init.defaultBranch` would move the composition's verdict off the code.
+    const child = spawnSync("git", args, { cwd: repoRoot, env: gitTestEnv() });
     if (child.status !== 0) {
       throw new Error(`git ${args.join(" ")}: ${child.stderr?.toString().slice(0, 200)}`);
     }
@@ -253,6 +258,11 @@ function mergeView(
 }
 
 /** Everything the seam was asked, and the merges it was asked to perform. */
+/** The forge's issue-view replies (#1472 closed-issue gate + attention check). */
+const ISSUE_OPEN_JSON =
+  '{"number":1,"title":"s5","body":"b","state":"OPEN","url":"https://github.com/s5/s5/issues/1","author":null,"labels":[],"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}';
+const ISSUE_CLOSED_JSON = ISSUE_OPEN_JSON.replace('"state":"OPEN"', '"state":"CLOSED"');
+
 export interface MergeExecLog {
   /** Every command line the seam received, joined for argv-form calls. */
   calls: string[];
@@ -266,6 +276,8 @@ export interface MergeExecLog {
    * is content, and "only after the merge was asked for" is order.
    */
   prViewAnswers: string[];
+  /** #1472 — every `gh issue view` the seam answered, verbatim. */
+  issueViewCmds: string[];
   /**
    * Every doctrine read the seam was handed, verbatim, in whatever exec shape
    * arrived (`git show <sha>:AGENTS.md`, or the argv form).
@@ -342,7 +354,14 @@ function doctrineSpec(cmd: string, o?: { argv?: string[] }): string | undefined 
  * positive control would prove nothing.
  */
 export function mergeExec(
-  opts: { merge: MergeVerdict; repoRoot: string; prNumber?: number; refuseDoctrine?: boolean },
+  opts: {
+    merge: MergeVerdict;
+    repoRoot: string;
+    prNumber?: number;
+    refuseDoctrine?: boolean;
+    /** #1472 — answer the issue-view with CLOSED so a case can exercise the gate. */
+    issueState?: "OPEN" | "CLOSED";
+  },
   log: MergeExecLog,
 ): VerifyExecFn {
   const pr = opts.prNumber ?? FIXTURE_PR;
@@ -387,6 +406,15 @@ export function mergeExec(
     // prView field list, which also mentions `mergeStateStatus`.
     if (line.includes("--json mergeStateStatus,mergeable,state")) {
       return { stdout: mergeView(opts.merge, pr, mergeAsked).evidence };
+    }
+    // #1472 — the closed-issue gate and the attention check both read the
+    // issue state through the forge. Unanswered, they land in `unexpected` and
+    // every case reaching a step boundary fails the clean-log assertion. OPEN
+    // unless a case asks otherwise: a fixture answering CLOSED would park
+    // every cycle.
+    if (line.includes("gh issue view")) {
+      log.issueViewCmds.push(line);
+      return { stdout: opts.issueState === "CLOSED" ? ISSUE_CLOSED_JSON : ISSUE_OPEN_JSON };
     }
     if (line.includes("gh pr checks")) return { stdout: mergeView(opts.merge, pr, mergeAsked).checks };
     if (line.includes("gh pr view")) {

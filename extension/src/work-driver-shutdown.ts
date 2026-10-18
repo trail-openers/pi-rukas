@@ -38,8 +38,8 @@ import type { ExitOrigin } from "./exit-cause.ts";
 import { sessionShutdownOrigin, sessionShutdownReason } from "./session-shutdown.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { failureEventOf } from "./work-driver-failure-lookup.ts";
 import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
-import { failureEventOf } from "./work-driver-step-router.ts";
 import * as workWidget from "./work-widget.ts";
 import { validateDiscriminants } from "./workflow-state-validate.ts";
 import {

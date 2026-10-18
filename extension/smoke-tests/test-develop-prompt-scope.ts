@@ -17,7 +17,13 @@
  * parallel") is genuinely N>1-only. The scope itself is not.
  */
 
+import { developNote } from "../src/work-develop-run.ts";
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
+import { initialState } from "../src/workflow-state.ts";
+import {
+  assertDevelopPromptTestScope,
+  assertSuiteBoundDerivation,
+} from "./lib/developer-test-scope.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -249,10 +255,7 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
     prompt2.includes("cargo check --quiet"),
     "#751: a different resolved verify command yields a different prompt",
   );
-  assert(
-    !prompt2.includes("bun run check"),
-    "#751: the first command is not carried over",
-  );
+  assert(!prompt2.includes("bun run check"), "#751: the first command is not carried over");
   assert(
     prompt !== prompt2,
     "#751: the two prompts differ — the command is threaded in, not a constant",
@@ -273,10 +276,7 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
     /no discoverable verify command|no project-level check/i.test(noCmd),
     "#751: no verify command → prompt says so plainly, does not invent one",
   );
-  assert(
-    !noCmd.includes("bun run check"),
-    "#751: no fabricated command when none was resolved",
-  );
+  assert(!noCmd.includes("bun run check"), "#751: no fabricated command when none was resolved");
 }
 
 // --------------------------------------------------------------- #1078: issue body artifact + branch state
@@ -350,6 +350,80 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
   assert(
     noArtifact.includes("gh issue view 1078"),
     "#1078: absent artifact path → falls back to the gh issue view re-fetch",
+  );
+}
+
+// ------------------------------------------- #1156: developer test-scope + suite timeout
+
+// The assertions live in lib/developer-test-scope.ts (shared with
+// test-developer-doc-test-scope.ts for the role-prompt half) — this file was
+// over the AGENTS.md §12 cap once they were inlined here.
+
+{
+  const render = (opts?: { verifyCmd?: string; fastCmd?: string }): string =>
+    inlineDevelopPrompt(
+      [1156],
+      "/tmp/scratch",
+      ws,
+      undefined,
+      undefined,
+      BRIEF,
+      undefined,
+      opts?.verifyCmd,
+      undefined,
+      undefined,
+      undefined,
+      opts?.fastCmd,
+    );
+  assertDevelopPromptTestScope(assert, render);
+  assertSuiteBoundDerivation(assert);
+}
+
+// ------------------------------------------- #1468: the continue-PR note
+
+{
+  const fresh = initialState(1468, 1_000_000);
+  const render = (note: string | undefined): string =>
+    inlineDevelopPrompt(
+      [1468],
+      "/tmp/scratch",
+      ws,
+      undefined,
+      undefined,
+      BRIEF,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      note,
+    );
+  assert(
+    render(developNote(fresh)) === render(undefined),
+    "#1468: without continuedPr the develop prompt is byte-identical",
+  );
+  const continued = {
+    ...fresh,
+    pipelineState: {
+      ...fresh.pipelineState,
+      continuedPr: {
+        number: 77,
+        headRefName: "fix/old-branch",
+        headSha: "a".repeat(40),
+        mainlineSha: "b".repeat(40),
+        conflictPaths: ["src/a.ts", "src/b.ts"],
+        matchedBy: "body" as const,
+      },
+    },
+  };
+  const prompt = render(developNote(continued));
+  assert(
+    prompt.includes("PR #77") && prompt.includes("fix/old-branch"),
+    "#1468: the note names the PR and its branch",
+  );
+  assert(prompt.includes("src/a.ts, src/b.ts"), "#1468: the note names the conflicted paths");
+  assert(
+    /never run `git merge --abort`, rebase, reset or push/i.test(prompt),
+    "#1468: the note forbids abort, rebase and push",
   );
 }
 

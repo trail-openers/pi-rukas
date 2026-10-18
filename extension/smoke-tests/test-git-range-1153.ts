@@ -21,7 +21,12 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { aheadOfBase, errorText, execGit, refResolves } from "../src/git-range.ts";
+import {
+  aheadOfBase,
+  errorText,
+  execGit,
+  refResolves,
+} from "../src/git-range.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
 let exit = 0;
@@ -48,6 +53,11 @@ const LISTED = [
   // no timeout at all, so a wedged object store hung the whole step. It now takes
   // the same bound from here.
   "work-driver-verify-develop.ts",
+  // #1002 round 2 — the path-existence probe reads git at `origin/<branch>` for
+  // a path that came out of prose, so it takes the argv form (`argv: ["cat-file",
+  // "-e", treeish]`) and this module's own timeout. Its test fakes assert on
+  // `argv`, not on a command string.
+  "lens-evidence.ts",
 ];
 
 /** A git command string handed to an exec call: a `(` then a literal beginning `git `. */

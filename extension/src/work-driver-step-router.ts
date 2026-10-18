@@ -11,6 +11,7 @@
  * `nextStep()` transition.
  */
 
+import { abortableSleep } from "./dispatch-retry.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import type { RoleName } from "./roles.ts";
 import { drainSlowEvents, foldSlowEvents } from "./slow-events.ts";
@@ -18,20 +19,31 @@ import { trace } from "./trace.ts";
 import { capKilledString } from "./work-driver-cap-killed.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { dispatchTokens } from "./work-driver-cycle-total.ts";
+import { failureEventOf } from "./work-driver-failure-lookup.ts";
 import { STEP_FAILURE_POLICY } from "./work-driver-failure-policy.ts";
 import {
   classifyFailureCause,
   failureCauseReason,
   failureCauseReasonForClass,
   jitteredMs,
+  providerRetryWaitMs,
   shadowFailureCause,
   stepRetryBudget,
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
+import {
+  type DispatchFailureEvent,
+  dispatchFailCapHit,
+  providerParkEvidence,
+  stepParkedOnProvider,
+} from "./work-driver-provider-park.ts";
 import { lostAttemptLine } from "./work-driver-retry-context.ts";
+import { cleanTreeBeforeRetry } from "./work-driver-step-clean.ts";
 import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
+import { routeFanoutHalt } from "./work-driver-step-router-fanout.ts";
 import type { CapEvidence } from "./workflow-state-cap.ts";
+import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
 
@@ -39,11 +51,28 @@ import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./work
  * #366 — injectable sleep. Real waits are the point in production (a burst
  * 429 clears by waiting), but the offline suite must never actually sleep, so
  * the seam is here rather than a bare setTimeout at each call site.
+ *
+ * #1243 fix round — the seam takes the cycle's `AbortSignal`, threaded from
+ * `ctx.signal` at both provider-wait sites. The provider ladder waits minutes,
+ * and a wait a SIGTERM cannot interrupt is a shutdown that waits out the ladder
+ * before it answers. The default resolves early on abort and `unref()`s its
+ * timer so a parked wait never holds the process open.
  */
-let sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms));
+let sleepFn: (ms: number, signal?: AbortSignal) => Promise<void> = abortableSleep;
+
+/**
+ * The provider-ladder wait: injected in tests, abort-aware in production.
+ * #1243 — exported for the adversarial fan-out's in-step retry, which must go
+ * through THIS seam (not its own `abortableSleep`) so one test seam observes
+ * every provider wait the driver takes and the abort signal is threaded the
+ * same way at both sites.
+ */
+export async function providerSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  await sleepFn(ms, signal);
+}
 
 /** Test seam. Returns a restore function. */
-export function __setSleepFn(fn: (ms: number) => Promise<void>): () => void {
+export function __setSleepFn(fn: (ms: number, signal?: AbortSignal) => Promise<void>): () => void {
   const prev = sleepFn;
   sleepFn = fn;
   return () => {
@@ -61,47 +90,9 @@ export function __setSleepFn(fn: (ms: number) => Promise<void>): () => void {
  * re-entry, both of which already persisted state via `persistCycle`).
  */
 /**
- * The dispatch failure this step ended on, if any.
- *
- * A single-dispatch step ends ON its failure, so the last event is the answer.
- * A FAN-OUT step does not: `runDevelop` finishes by appending a
- * `branch-completed` per workstream and then `branches-converged`, which buries
- * the per-child failures several events back. Reading only the last event
- * therefore classified fan-out failures as nothing at all.
- *
- * Measured consequence: three developers hit a 429 carrying a 59-second
- * retry-after — a delay the taxonomy already knows how to wait out, and does
- * wait out for single dispatches — and the step halted with
- * `transientRetryAttempts: {}`. Never attempted, not exhausted. A transient
- * throttle and "the developer genuinely failed" collapsed into the same
- * `ok:false`, and the cap tripped on the latter's semantics.
- *
- * The scan is bounded by `branches-fanned-out`, the marker that opens the
- * fan-out, so it can never reach back into a previous step. All children must
- * have failed for this to return a failure: if any workstream succeeded, the
- * step's problem is not purely transient and re-running it is not the answer.
+ * The dispatch failure this step ended on lives in
+ * `work-driver-failure-lookup.ts` (AGENTS.md §12 size limit).
  */
-export function failureEventOf(events: readonly WorkEvent[]): WorkEvent | undefined {
-  const last = events[events.length - 1];
-  if (last?.kind === "dispatch-failed" || last?.kind === "dispatch-failed-provider") return last;
-  if (last?.kind !== "branches-converged") return undefined;
-  if (last.verdicts.some((v: { ok: boolean }) => v.ok)) return undefined;
-
-  let failure: WorkEvent | undefined;
-  let refused = false;
-  for (let i = events.length - 2; i >= 0; i--) {
-    const e = events[i];
-    if (!e || e.kind === "branches-fanned-out") break;
-    // #1016 — a driver refusal is not transient, and a fan-out that contains
-    // one is not a transient failure even when a sibling dispatch also failed:
-    // re-running it would re-refuse the same workstream. Decline the retry.
-    if (e.kind === "branch-completed" && e.refused) refused = true;
-    if (!failure && (e.kind === "dispatch-failed" || e.kind === "dispatch-failed-provider")) {
-      failure = e;
-    }
-  }
-  return refused ? undefined : failure;
-}
 
 export async function routeStepOutcome(
   ctx: CycleContext,
@@ -268,8 +259,12 @@ export async function routeStepOutcome(
             },
           };
           await persistCycle(ctx, state);
+          // #1391 — save then clean what the lost child left, or park on a failed save.
+          const tree = await cleanTreeBeforeRetry(ctx, state, step, used + 1);
+          if (tree.parked) return { state: tree.state, retry: true };
+          state = tree.state;
           // The retry is a fresh child: say what the failed one took with it.
-          const lost = lostAttemptLine(step, used + 1, tail);
+          const lost = lostAttemptLine(step, used + 1, tail, tree.line);
           const reason = `${failureCauseReason(tail)} · ${lost}`;
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
@@ -280,9 +275,18 @@ export async function routeStepOutcome(
           // otherwise the linear transient backoff. Full jitter either way, so
           // parallel cycles that trip the same limit don't resynchronise into
           // a thundering herd (#289 makes that concrete).
-          const base = transientRetryBackoffMs() * (used + 1);
+          // #1243 — a provider-class failure waits at least
+          // providerRetryFloorMs() × attempt (bounded by the total), not the
+          // 5s/10s ladder: every sub-minute wait lands inside the same outage.
+          const base = providerRetryWaitMs(
+            classification,
+            used + 1,
+            transientRetryBackoffMs() * (used + 1),
+          );
           const backoff = jitteredMs(base, classification.waitMs ?? 0);
-          if (backoff > 0) await sleepFn(backoff);
+          // #1243 fix round — abort-aware: a SIGTERM during a minutes-long
+          // provider wait ends the wait, it does not sit it out.
+          if (backoff > 0) await providerSleep(backoff, ctx.signal);
           return { state, retry: true }; // re-run same step on next loop iteration
         }
         // Budget exhausted → fall through to the HALT cap-hit below.
@@ -300,6 +304,10 @@ export async function routeStepOutcome(
         // `role` field is what F4(f) requires; explainCap reads capEvidence for
         // the trigger detail.
         const capKilled = tail.kind === "dispatch-failed" ? capKilledString(tail) : undefined;
+        // #1243 fix round — the SAME tail `failureEventOf` resolved above, not a
+        // scan of the step window: a step that met an outage early and then died
+        // of a crash ends on the crash, and parks as one.
+        const providerCap = capKilled === undefined && stepParkedOnProvider(tail);
         const cap =
           capKilled ??
           (step === "develop" && killCause === "timeout"
@@ -310,13 +318,19 @@ export async function routeStepOutcome(
                 //   corrective re-dispatch did not recover, so the operator
                 //   sees a cap that names the plan step, not a generic one.
                 ("plan-timeout" as const)
-              : (`step-failed:${step}` as const));
+              : // #1243 — a park the ENDPOINT caused gets its own cap, so a
+                //   headless caller can re-queue it when the provider answers
+                //   again instead of treating it as a real failure.
+                providerCap
+                ? ("provider-unavailable" as const)
+                : (`step-failed:${step}` as WorkCapLiteral));
         const capEvent: Extract<WorkEvent, { kind: "cap-hit" }> = {
           kind: "cap-hit",
           at: Date.now(),
           cap,
           reviewRound: state.pipelineState.reviewRound,
           nextStep: "handoff",
+          ...(providerCap ? { evidence: providerParkEvidence(tail as DispatchFailureEvent) } : {}),
         };
         if (capEvent.cap === "loop-detected" || capEvent.cap === "token-budget") {
           capEvent.role = (tail as { role?: RoleName }).role;
@@ -388,18 +402,23 @@ export async function routeStepOutcome(
             },
           };
           await persistCycle(ctx, state);
-          const lost = lostAttemptLine(step, used + 1, tail);
+          const tree = await cleanTreeBeforeRetry(ctx, state, step, used + 1);
+          if (tree.parked) return { state: tree.state, retry: true };
+          state = tree.state;
+          const lost = lostAttemptLine(step, used + 1, tail, tree.line);
           const reason = `${failureCauseReason(tail)} · ${lost}`;
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
             `work-driver: RETRY_ONCE on step="${step}" (attempt ${used + 2}, budget=${infra ? "transient" : "semantic"}, cause=${classification.cause}) — ${lost}`,
           );
           if (infra) {
+            // #1243 — provider-class failures get the minutes-floor ladder
+            // (see the HALT branch above); everything else keeps the linear one.
             const wait = jitteredMs(
-              transientRetryBackoffMs() * (used + 1),
+              providerRetryWaitMs(classification, used + 1, transientRetryBackoffMs() * (used + 1)),
               classification.waitMs ?? 0,
             );
-            if (wait > 0) await sleepFn(wait);
+            if (wait > 0) await providerSleep(wait, ctx.signal);
           }
           return { state, retry: true }; // re-run same step on next loop iteration
         }
@@ -407,20 +426,15 @@ export async function routeStepOutcome(
         // pattern as the HALT branch above — leave status='running'
         // so the loop runs runHandoff next; runHandoff sets the
         // terminal status based on the cap shape.
-        state = appendEvent(state, {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap: `step-failed:${step}` as const,
-          reviewRound: state.pipelineState.reviewRound,
-          nextStep: "handoff",
-        });
+        const capEvent = dispatchFailCapHit(step, state, tail);
+        state = appendEvent(state, capEvent);
         state = {
           ...state,
           pipelineState: { ...state.pipelineState, currentStep: "handoff" },
         };
         await persistCycle(ctx, state);
         trace(
-          `work-driver: RETRY_ONCE exhausted on step="${step}" (cause=${classification.cause}) → handoff (status set in runHandoff)`,
+          `work-driver: RETRY_ONCE exhausted on step="${step}" (cause=${classification.cause}) → cap="${capEvent.cap}" → handoff (status set in runHandoff)`,
         );
         return { state, retry: true };
       }
@@ -428,49 +442,13 @@ export async function routeStepOutcome(
     }
   }
 
-  // PR7 — multi-workstream halt-cascade router. PR3 emits
-  // `branches-converged` for N>1 fanouts (develop, lens-review).
-  // The PR5 dispatch-failed router above only watches single-dispatch
-  // tails, so all-branches-failed silently advanced into wasted
-  // adversarial + lens-review (the /work 553 2026-06-24 re-test:
-  // 3-of-3 develop branches provider-errored mid-stream, driver
-  // advanced into adversarial APPROVAL of empty diff and lens-review
-  // against header-only "diff").
-  //
-  // Doctrine: ANY failed branch on a HALT-class step routes to
-  // handoff. Partial success on multi-workstream is not a meaningful
-  // input downstream — the out-of-scope fence doctrine implies a failed
-  // branch leaves the broader decomposition incoherent.
+  // PR7 — multi-workstream halt-cascade router, in
+  // work-driver-step-router-fanout.ts (the `branches-converged` tail of an
+  // N>1 fan-out; #1243 makes its cap the provider park when every child lost
+  // the same endpoint fault).
   {
-    const tail = state.eventLog[state.eventLog.length - 1];
-    if (tail?.kind === "branches-converged" && tail.verdicts.length > 0) {
-      const anyFailed = tail.verdicts.some((v) => !v.ok);
-      const policy = STEP_FAILURE_POLICY[step];
-      if (anyFailed && policy === "HALT") {
-        state = appendEvent(state, {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap: `step-failed:${step}` as const,
-          reviewRound: state.pipelineState.reviewRound,
-          nextStep: "handoff",
-        });
-        state = {
-          ...state,
-          pipelineState: { ...state.pipelineState, currentStep: "handoff" },
-        };
-        await persistCycle(ctx, state);
-        const failedCount = tail.verdicts.filter((v) => !v.ok).length;
-        trace(
-          `work-driver: HALT on step="${step}" — ${failedCount}/${tail.verdicts.length} branches failed → handoff`,
-        );
-        return { state, retry: true };
-      }
-      // RETRY_ONCE doesn't apply to multi-workstream fanouts (no step
-      // in STEP_FAILURE_POLICY that fans out is RETRY_ONCE — develop
-      // is HALT, lens-review N>1 path uses the same N>1 fanout but
-      // its retry semantics are handled internally by runLensReview).
-      // DEGRADED_OK: fall-through.
-    }
+    const fanout = await routeFanoutHalt(ctx, state, step);
+    if (fanout !== undefined) return fanout;
   }
 
   // #1016 — a driver REFUSAL halts the step as a non-transient failure. N=1

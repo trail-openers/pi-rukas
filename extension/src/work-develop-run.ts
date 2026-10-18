@@ -28,7 +28,9 @@ import {
   crashedBranchCompleted,
 } from "./work-develop-crash.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { continuePrNote } from "./work-driver-continue-pr-guard.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
+import { reviewFixDispatchBoundMs, reviewLoopActive } from "./work-driver-lens-fix-budget.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import {
   inlineDevelopPrompt,
@@ -181,6 +183,13 @@ export function parkDeferredLeftover(
   return true;
 }
 
+/** The develop note: the continue-PR note (#1468), then the interrupted-attempt note. */
+export function developNote(state: WorkState): string | undefined {
+  const cp = state.pipelineState.continuedPr;
+  const parts = [cp && continuePrNote(cp), interruptedDevelopNote(state)].filter(Boolean);
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
 /** Create the per-workstream dispatch closure (captures `stateRef` for memory-inject events). */
 export function makeRunOneWorkstream(
   s: DevelopRunState,
@@ -193,6 +202,17 @@ export function makeRunOneWorkstream(
     const ws = workstreams[id];
     const startedAt = Date.now();
     const developerLabel = ids.length > 1 ? `developer[${id}]` : "developer";
+    // #1416 — a develop dispatch that IS a review fix pass (the adversarial
+    // gate threads `fixFindings` for a rejected workstream, or the lens loop
+    // re-reviews after a lens-fix) runs under the same 90-minute review-loop
+    // budget the widget prints. A fix pass is the other half of the fix loop;
+    // leaving it unbounded is the bug the lens-fix dispatch had.
+    const reviewFixBoundMs =
+      ws?.fixFindings &&
+      (s.stateRef.current.pipelineState.lastCompletedStep === "lens-fix" ||
+        reviewLoopActive(s.stateRef.current))
+        ? reviewFixDispatchBoundMs(s.stateRef.current, "lens-fix", startedAt)
+        : undefined;
     const speculativeContextPath = path.join(scratchAbs, `speculative-${id}.md`);
     // #679 case 1 — sibling workstreams for the informational injection.
     // Gated on N>1 and workstreamId !== "default" (the existing `parallel`
@@ -290,13 +310,14 @@ export function makeRunOneWorkstream(
               verifyCmd,
               issueBodyArtifactPaths,
               ws?.fixFindings,
-              interruptedDevelopNote(s.stateRef.current),
+              developNote(s.stateRef.current),
               fastVerifyCmd,
             ),
             cwd,
           },
           {
             label: developerLabel,
+            ...(reviewFixBoundMs !== undefined ? { timeoutMs: reviewFixBoundMs } : {}),
             // #838 — the developer row's deck entry (row label `#<issue>
             // develop · <workstream>` — display only; the job label above is
             // what the cap checkpoint's `developer[<id>]` parse sees).

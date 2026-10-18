@@ -396,23 +396,38 @@ export { runWrap } from "./wrap-io.ts";
  * 0 clean, 1 findings/drift, 2 refuse/corrupt, 3 gated-on-human. The output is
  * a short human-readable line plus, on update, a machine-readable plan marker
  * the prompt layer renders as a diff before asking.
+ *
+ * `emit` receives each human line and its stream (headless S6, #1021, sends
+ * both to stderr as NDJSON); `runAgentsMdVerb` also returns the VerbResult.
  */
-export function runAgentsMd(argv: string[]): number {
+export function runAgentsMd(argv: string[], emit: AgentsMdEmit = CONSOLE_EMIT): number {
+  return runAgentsMdVerb(argv, emit).exitCode;
+}
+
+export type AgentsMdEmit = (line: string, stream: "out" | "err") => void;
+
+const CONSOLE_EMIT: AgentsMdEmit = (line, stream) =>
+  stream === "out" ? console.log(line) : console.error(line);
+
+export function runAgentsMdVerb(
+  argv: string[],
+  emit: AgentsMdEmit = CONSOLE_EMIT,
+): { exitCode: number; result?: VerbResult } {
   const args = argv.filter((a) => a !== "");
   const verb = args[0] as Verb | undefined;
   const rest = args.slice(1).filter((a) => !a.startsWith("--"));
   const deep = args.includes("--deep");
 
   if (!verb || !["create", "update", "check"].includes(verb)) {
-    console.error("usage: agents-md <create|update|check> [root] [file] [--deep]");
-    return 2;
+    emit("usage: agents-md <create|update|check> [root] [file] [--deep]", "err");
+    return { exitCode: 2 };
   }
   // Args: verb [root] [file] [--deep]. `file` defaults to <root>/AGENTS.md.
   const root = rest[0] ?? process.cwd();
   const file = rest[1] ?? path.join(root, "AGENTS.md");
   const rootDir = root;
 
-  const r =
+  const r: VerbResult =
     verb === "create"
       ? createAgent(rootDir, file)
       : verb === "update"
@@ -420,30 +435,30 @@ export function runAgentsMd(argv: string[]): number {
         : checkAgent(rootDir, file, { deep });
 
   if (r.error) {
-    console.error(`error: ${r.error}`);
-    return r.exitCode;
+    emit(`error: ${r.error}`, "err");
+    return { exitCode: r.exitCode, result: r };
   }
   if (verb === "check") {
-    const c = (r as VerbResult).check;
+    const c = r.check;
     if (!c) {
-      console.error("error: no check result");
-      return 2;
+      emit("error: no check result", "err");
+      return { exitCode: 2, result: r };
     }
-    if (c.findings.length === 0) console.log("clean");
-    else for (const f of c.findings) console.log(`${f.kind}: ${f.message}`);
-    return c.code;
+    if (c.findings.length === 0) emit("clean", "out");
+    else for (const f of c.findings) emit(`${f.kind}: ${f.message}`, "out");
+    return { exitCode: c.code, result: r };
   }
   const plan = r.plan;
   if (!plan) {
-    console.error("error: no plan result");
-    return 2;
+    emit("error: no plan result", "err");
+    return { exitCode: 2, result: r };
   }
-  console.log(plan.wouldWrite ? "would write" : "no-op (already current)");
-  console.log(`managed: ${plan.managedIds.join(", ")}`);
+  emit(plan.wouldWrite ? "would write" : "no-op (already current)", "out");
+  emit(`managed: ${plan.managedIds.join(", ")}`, "out");
   if (plan.omitted.length)
-    console.log(`omitted: ${plan.omitted.map((o) => `${o.id} (${o.reason})`).join(", ")}`);
-  if (plan.drift) console.log(`drift: ${plan.drift}`);
-  return 0;
+    emit(`omitted: ${plan.omitted.map((o) => `${o.id} (${o.reason})`).join(", ")}`, "out");
+  if (plan.drift) emit(`drift: ${plan.drift}`, "out");
+  return { exitCode: 0, result: r };
 }
 
 // Allow `bun src/agents-md/agents-md.ts ...` invocation when this file is the entrypoint.

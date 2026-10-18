@@ -66,6 +66,16 @@ export interface DispatchResult {
    * from "we could not tell".
    */
   observedToolCalls?: number;
+  /**
+   * #1541 review (HIGH) — where the run put its result OUTSIDE the report text,
+   * for the delivery-failure stand-in to name. Only a `reportKind: "driver"`
+   * work function has one to give: a research run writes an artifact under
+   * `outputs/`, a plan run may have filed an issue, and both are known only once
+   * the pipeline returns. When the report itself never lands, this is what the
+   * operator reads instead of re-running a run that already produced its output.
+   * A display string, never parsed.
+   */
+  reportWhere?: string;
   ms: number;
   exitCode: number | null;
   usage?: DispatchUsage;
@@ -135,6 +145,12 @@ export interface DispatchResult {
   // the tool-inactivity bound. A sibling of "inactivity": same poll, one
   // budget active at a time (the tool bound while the in-flight set is
   // non-empty, the model-silence bound when it is empty).
+  //
+  // #1567 child-supervision policy — "child-bound" = the per-child time
+  // limit expired (wrap-up steer, then kill at bound + 10 min);
+  // "no-progress" = the driver ended a child frozen across slow levels;
+  // "stuck-tool" = a second call-kill on the same command. Reserved here
+  // (P1); the pieces that enforce each policy emit them.
   killCause?:
     | "timeout"
     | "inactivity"
@@ -142,7 +158,10 @@ export interface DispatchResult {
     | "loop"
     | "token-budget"
     | "plan-timeout"
-    | "tool-inactivity";
+    | "tool-inactivity"
+    | "child-bound"
+    | "no-progress"
+    | "stuck-tool";
   /**
    * #298 — set only on the SYNTHESIZED adversarial-loop result (role
    * "adversarial-loop"): "rejected" is a COMPLETED reviewer verdict (must be
@@ -176,6 +195,11 @@ export interface DispatchResult {
    * model-silence bound otherwise).
    */
   killBudgetMs?: number;
+  /**
+   * #1593 — the "timeout" kill came from the caller's cycle deadline
+   * (`PI_ENSEMBLE_CYCLE_DEADLINE`), which tightened the child's own bound.
+   */
+  killedAtCycleDeadline?: boolean;
   /**
    * #543 — set when killCause is "loop". The structured trigger evidence the
    * F1 detector had at kill time: the tool name and the streak count.

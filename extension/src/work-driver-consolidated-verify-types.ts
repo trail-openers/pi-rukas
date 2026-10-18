@@ -12,8 +12,76 @@
 import type { ConsolidatedVerifyRetryDecision } from "./work-driver-consolidated-verify.ts";
 import type { DirtReason } from "./work-driver-dirty-root-classify.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
-
 import type { GatePass } from "./workflow-state-schema-gate-reuse.ts";
+
+/**
+ * The options for the consolidated verify (the locked wrapper and the
+ * unlocked body share this shape; the wrapper only adds the integration
+ * lock, the body does the work). Defined ONCE so the two signatures
+ * cannot drift.
+ */
+export interface ConsolidatedVerifyOpts {
+  repoRoot: string;
+  baseSha: string;
+  branchName?: string;
+  worktrees: Record<string, string>;
+  scratchDir: string;
+  verifyCmd: string;
+  timeoutMs: number;
+  /**
+   * #1509 — the knob the timeout failure for THIS run names. The develop gate
+   * and the commit-pr seam bound the same command with different knobs, and
+   * the reporter must name the one that actually governed the run rather than
+   * deriving it from the step name. Absent = the suite tier's knob.
+   */
+  suiteTimeoutKnob?: string;
+  /**
+   * #1509 — the fast tier's own bound, when the caller resolved one. Present
+   * means the consolidated timeout failure names the SUITE knob for the full
+   * command and the FAST knob for a fast-tier kill; absent means the caller
+   * kept the pre-#1509 shared-bound shape and the reporter says nothing about
+   * a fast-tier budget it did not set.
+   */
+  fastTierTimeoutMs?: number;
+  /**
+   * #1427 — called with the path of the hang report this run persisted, so the
+   * caller can record it structurally on the cap-hit event. Absent = the caller
+   * wants no report written (nothing is then written for the consolidated run).
+   */
+  onGateHangLogPath?: (logPath: string) => void;
+  /**
+   * #1427 — injectable process-tree walker for the hang report (tests).
+   */
+  walkProcessTree?: (leaderPid: number) => {
+    processes: import("./work-driver-gate-hang.ts").HangProcess[];
+    treeUnavailable?: string;
+  };
+  /**
+   * #1362 — the cycle's `.pi/dirty-root-exempt` list. Applied to the repoRoot
+   * dirty-root preflight below only: the cherry-pick and staging that follow
+   * run on the driver's own integration branch and are unchanged.
+   */
+  dirtyRootExempt?: readonly string[];
+  workstreamBaseShas?: Record<string, string>;
+  /**
+   * #1240 — the tree that just PASSED the per-worktree verify, established
+   * by the caller (`verifyTreeId(worktree)`), plus the worktree it came from
+   * (the skip note names it). When the cherry-picked probe turns out to be
+   * that SAME tree, running the verify command again at repoRoot proves
+   * nothing, so it is skipped and the equality is reported as `skipped`.
+   * The caller passes this only for the shape where the duplication exists —
+   * one workstream with every per-worktree verify green; absent otherwise.
+   * Read failure on either side means no skip (fail closed toward running).
+   */
+  alreadyVerifiedTree?: AlreadyVerifiedTree;
+  retry?: {
+    canRetry: boolean;
+    onRecover: (evidenceTail?: string) => void;
+    onFirstFailure?: (
+      rawFailure: string,
+    ) => { allowed: boolean; decision: ConsolidatedVerifyRetryDecision } | undefined;
+  };
+}
 
 export type ConsolidatedVerifyResult =
   | {
@@ -80,6 +148,15 @@ export type ConsolidatedVerifyResult =
        * the bound, not an assertion extracted from a truncated stream.
        */
       timedOut?: boolean;
+      /**
+       * #1427 — the path of the persisted gate-hang report for this run (the
+       * still-running test names, the process tree captured at the kill, the
+       * output tail). Present only when the run that decided this outcome was
+       * KILLED at `timeoutMs` AND the write succeeded — absence means either no
+       * kill or an unwritable scratch dir, and the caller's failure string says
+       * so rather than naming a file that is not there.
+       */
+      hangLogPath?: string;
     }
   // #725 — the caller distinguishes a genuine cherry-pick / patch-apply
   // conflict from a dirty-repoRoot preflight refusal via `kind`, not by
@@ -106,4 +183,37 @@ export type ConsolidatedVerifyResult =
       residuePaths?: string[];
       /** Why each path is not this cycle's problem, same order. */
       residueReasons?: DirtReason[];
+      /**
+       * #1421 fix round — TRUE only when the root held NOTHING but residue:
+       * every non-residue line the gate considered had already been dropped as
+       * driver-managed or configured-exempt, so the residue alone is why the
+       * batch was declined. A decline sitting beside dirt the gate charged, or
+       * one unblocked by an exemption, does NOT carry the environment cap —
+       * which is why the caller reads THIS field instead of matching a
+       * substring out of `detail` (an operator path named
+       * `build/[build-residue].log` is prose the router must never route on).
+       */
+      buildResidueOnly?: boolean;
+      /**
+       * #813 — WHICH workstream's pick failed, when the batch aborted on a
+       * cherry-pick. Carried structurally (never regexed out of `detail`) so
+       * the reporter states what was observed — the pick that failed, and
+       * what applied cleanly before it — rather than asserting that two
+       * workstreams edited the same lines and the decomposition is
+       * incoherent. `undefined` for the other conflict `kind`s.
+       */
+      conflictedWorkstream?: string;
+      /**
+       * #813 — workstreams whose picks applied cleanly before the aborting
+       * pick. Absent when the batch never got that far or the read failed.
+       */
+      appliedBeforeConflict?: string[];
+      /**
+       * #813 — the file git named for the aborted pick, extracted by the
+       * batch itself. Structured so the reporter can name the colliding file
+       * (and recognise it as a sibling's declared path) without parsing an
+       * arbitrary `detail` string, which would let the message decide the
+       * diagnosis.
+       */
+      conflictedFile?: string;
     };

@@ -23,6 +23,7 @@
  * are its behaviour, and it answers only to its own escape hatch.
  */
 
+import { LOG_STRING_CHARS } from "./decision-log.ts";
 import { traceWarn } from "./trace.ts";
 
 export type QuestionKind = "choice" | "bool" | "score";
@@ -38,6 +39,25 @@ export type QuestionKind = "choice" | "bool" | "score";
 export type Composition = "may-add-only" | "tie-break" | "advisory" | "replace";
 
 export type DecisionMode = "off" | "shadow" | "enforce";
+
+/**
+ * How one state field reaches a model and the log: it goes through
+ * `redactBounded` (decision-log.ts), which scans a window WIDENED past the cut —
+ * up to its own `SCAN_CAP` beyond it, with the edge pulled back to the start of
+ * the token the cut fell inside — redacts that whole window, and then keeps `max`
+ * characters from
+ * `from`. So the value is NOT redacted whole and then clipped: a clip-then-redact
+ * (or a redact over only the kept window) amputates a credential that straddles
+ * the cut, and the pattern never sees enough context to match it (#1393). The
+ * scan is bounded, never the whole document, because a state can be megabytes.
+ * Declared on the seam, so the caller hands over raw text and the seam owns the
+ * bound.
+ */
+export interface FieldBound {
+  max: number;
+  /** Which end to keep. `end` is for output tails, where a failure shows last. */
+  from?: "start" | "end";
+}
 
 /** The rule's "I cannot tell" answer. Only meaningful on a `tie-break` seam. */
 export const UNDECIDED = "undecided";
@@ -62,6 +82,14 @@ export interface SeamSpec {
   evidence: "quote" | "none";
   /** The module that calls `decide()` for this seam, relative to `src/`. */
   owner: string;
+  /**
+   * Per-field input bounds the SEAM applies, keyed by the field's name in
+   * `DecideRequest.state`. A caller that supplies an over-long field gets a
+   * redacted, clipped value; a field not listed keeps only the global record
+   * bound. Declared here rather than at the call site so the bound, the
+   * redaction order and the log can never disagree (#1393).
+   */
+  fields?: Readonly<Record<string, FieldBound>>;
   timeoutMs: number;
   /** Token budget per call; an over-budget state or response abstains. */
   tokenBudget: number;
@@ -118,6 +146,12 @@ export const SEAMS = {
     defaultMode: "shadow",
     evidence: "none",
     owner: "work-driver-failure-taxonomy.ts",
+    // The provider's own error and the tail of the subagent's output: both
+    // untrusted, both bounded by the seam, so no caller clips by hand.
+    fields: {
+      providerMessage: { max: 600 },
+      lastOutput: { max: 600, from: "end" },
+    },
     timeoutMs: 30_000,
     tokenBudget: 4_000,
   },
@@ -174,6 +208,7 @@ export function seamContractViolations(spec: Partial<SeamSpec>): string[] {
     "defaultMode",
     "evidence",
     "owner",
+    // Optional, so never demanded: a seam with no model-visible text has none.
     "timeoutMs",
     "tokenBudget",
   ]) {
@@ -181,6 +216,20 @@ export function seamContractViolations(spec: Partial<SeamSpec>): string[] {
   }
   if (v.length > 0) return v;
   const full = spec as SeamSpec;
+  // The optional per-field bounds are checked here too, so a typo'd bound is a
+  // contract violation (rule-only seam) rather than an unbounded field.
+  for (const [name, bound] of Object.entries(full.fields ?? {})) {
+    if (!bound || typeof bound.max !== "number" || !(bound.max > 0))
+      v.push(`field bound '${name}' needs a positive max`);
+    if (bound?.from !== undefined && bound.from !== "start" && bound.from !== "end")
+      v.push(`field bound '${name}' has an unknown direction`);
+    // A bound past the record-wide one is a bug, not a choice: `appendDecisionRecord`
+    // clips every string to `LOG_STRING_CHARS` anyway, so declaring more would give
+    // a field bound that silently does not exist. Better a rule-only seam and a
+    // trace line than a config that lies about what it shipped (#1393).
+    if (bound && typeof bound.max === "number" && bound.max > LOG_STRING_CHARS)
+      v.push(`field bound '${name}' exceeds LOG_STRING_CHARS (${LOG_STRING_CHARS})`);
+  }
   const labels = Object.keys(full.labels);
   if (!(KINDS as readonly string[]).includes(full.kind)) v.push(`unknown kind: ${full.kind}`);
   if (!(COMPOSITIONS as readonly string[]).includes(full.composition))

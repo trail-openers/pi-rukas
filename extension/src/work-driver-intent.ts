@@ -28,6 +28,7 @@
 
 import { readMarker } from "./reply-markers.ts";
 import { trace } from "./trace.ts";
+import { splitDeliverablePaths } from "./work-driver-deliverable-paths.ts";
 import {
   contradictionAssumptions,
   loadBearingContradictions,
@@ -240,14 +241,22 @@ export function parseNormalisedSpec(text: string): NormalisedSpec | undefined {
  *
  * Paths are optional. The no-diff marker is explicit: `[no-diff: <evidence>]`.
  * A bare "n/a" in paths is prose, not a control signal.
+ *
+ * #1155 — a slot may declare ALTERNATIVES (`a.ts or b.ts`, `a.ts|b.ts`), so the
+ * comma is not the only separator and the slot list is NOT the unit the gate
+ * matches on. `splitDeliverablePaths` is the same splitter the converge gate
+ * and the #819 plan-to-spec coverage gate run, so a deliverable that the
+ * coverage gate counts as two paths is the same two paths at develop. What the
+ * split does NOT do is rewrite `<name>` into `*`: `d.paths` stays the
+ * planner's own text (the plan prompt, the corrective prompt and the PR body
+ * all read it), and the glob form is a matching-time concept in
+ * `work-driver-deliverable-paths.ts`. `paths.length === 0` still means "the
+ * slot held nothing", which is what the #792 no-diff decision below keys on.
  */
 function parseDeliverables(section: string | undefined): SpecDeliverable[] {
   return bullets(section).map((line, i) => {
     const pathsMatch = line.match(/\[paths:\s*([^\]]*)\]/i);
-    const paths = (pathsMatch?.[1] ?? "")
-      .split(",")
-      .map((p) => p.trim())
-      .filter(Boolean);
+    const paths = splitDeliverablePaths(pathsMatch?.[1]);
     // The no-diff marker is explicit and machine-readable: `[no-diff: <evidence>]`.
     // A bare "n/a" in a `[paths: …]` slot must NOT be silently auto-detected —
     // that is prose, and treating prose as a control signal is how the bug works.

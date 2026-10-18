@@ -12,7 +12,7 @@
  * Offline: no Pi session, no network (gh fails and the attention check reads as
  * unchecked, which the driver tolerates).
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { validateNdjsonLine } from "../src/headless/ndjson.ts";
@@ -181,10 +181,7 @@ function parseLines(lines: string[]): Record<string, unknown>[] {
     );
     assert(before === after, "the refused invocation leaves the state file untouched");
     // #1326 — a live owner holds the cycle: re-running cannot resume it.
-    assert(
-      result.results[0]?.resumable === false,
-      "a refused (exit 40) result is not resumable",
-    );
+    assert(result.results[0]?.resumable === false, "a refused (exit 40) result is not resumable");
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
@@ -213,6 +210,130 @@ function parseLines(lines: string[]): Record<string, unknown>[] {
     assert(
       result.results[0]?.prNumber === 12,
       "the JSON result carries the PR from the state file",
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+// ── 5. #1243 — a provider park is terminal: grace expiry cannot relabel its code.
+//
+// The park terminalises as `interrupted` (reason `provider`) so `/work N`
+// re-enters it, and `exitCodeForState` gives it `EXIT.handoff`. But
+// `interrupted` is ALSO the status a signal leaves behind, so when the runner's
+// grace expired with the park on disk, the old `!TERMINAL_STATUSES.has(status)`
+// test saw a non-terminal status and substituted the abort's code — 21 for a
+// SIGTERM, 30 for `--timeout` — on a cycle that had reached its terminal
+// boundary and delivered its handoff. `terminalForExitCode` is the fix; drop
+// its `isProviderPark` clause and this leg reports 21.
+//
+// The fixture is built so the driver writes NOTHING after the park: it
+// re-enters at `handoff` with `handoffDeliveredAt` already set, which
+// short-circuits both the re-delivery and the step body. So the state file the
+// runner reads back is the park that was on disk BEFORE the run started, and
+// the runner's own decision is the only thing under test.
+{
+  const repo = tmpRepo();
+  try {
+    mkdirSync(path.join(repo, ".git", "info"), { recursive: true });
+    const base = initialState(45);
+    const park: WorkState = {
+      ...base,
+      pipelineState: {
+        ...base.pipelineState,
+        status: "interrupted",
+        currentStep: "handoff",
+        lastCompletedStep: "adversarial",
+        handoffDeliveredAt: new Date().toISOString(),
+      },
+      eventLog: [
+        { kind: "step-started", step: "adversarial", at: 1 },
+        {
+          kind: "dispatch-failed-provider",
+          step: "adversarial",
+          role: "adversarial-loop",
+          jobId: "j-45",
+          label: "adversarial_loop",
+          ms: 1_000,
+          at: 2,
+          providerMessage: "Request timed out.",
+        },
+        {
+          kind: "cap-hit",
+          at: 3,
+          cap: "provider-unavailable",
+          reviewRound: 0,
+          nextStep: "handoff",
+          evidence: "Request timed out. · cause=provider-severed",
+        },
+        { kind: "interrupted", at: 4, reason: "provider", step: "adversarial" },
+        // The park re-entered its handoff step. Without this the driver's
+        // inconsistency guard sees `currentStep: handoff` behind the last
+        // `step-started` and refuses the cycle outright (exit 40).
+        { kind: "step-started", step: "handoff", at: 5 },
+      ],
+    };
+    await writeState(repo, park);
+    const sig = fakeSignals();
+    // The abort is already raised when the run starts: `graceTimer` arms on an
+    // already-aborted signal, so the runner takes its expired path — the code
+    // that used to relabel the park. The park survives on disk (nothing here
+    // re-persists it: `applyInterrupt` no-ops on a non-`running` cycle), so the
+    // state the runner reads back is the park and `terminalForExitCode` is the
+    // only thing deciding 10 vs 21. Mutation-checked: dropping the
+    // `isProviderPark` clause from that helper reports 21 for both asserts below
+    // (the driver's own terminal-delivery write deletes the state file, so the
+    // runner falls to its not-started branch and takes the expired code there —
+    // which is the same relabelling, just one branch earlier).
+    sig.fire("SIGTERM");
+    const result = await runHeadless({
+      repoRoot: repo,
+      issues: [45],
+      restart: false,
+      graceMs: 5,
+      signalTarget: sig as unknown as NodeJS.Process,
+      driverSeams: {
+        // Both seams are inert and neither is reached: the cycle re-enters at
+        // `handoff` with `handoffDeliveredAt` already set, so the driver's
+        // re-entry short-circuits and writes NOTHING after the park. That is
+        // what makes this the runner's decision — the only write after the park
+        // is the runner's own expired-path `markInterrupted`, which
+        // `applyInterrupt` no-ops because the cycle is not `running`. With a
+        // productive seam the driver re-persists the cycle itself and the leg
+        // would decide for the driver's reasons, not the runner's (mutation-
+        // checked: dropping the `isProviderPark` clause flips this to 21).
+        dispatchFn: async () => ({
+          role: "ops" as const,
+          ok: false,
+          text: "smoke: inert",
+          toolUses: [],
+          ms: 0,
+          exitCode: 1,
+          transcriptPath: "/tmp/stub.json",
+        }),
+        issueBodyFetcherFn: async () => ({
+          stdout: "title:\tmock\nstate:\tOPEN\n\nnon-empty mock body",
+        }),
+      },
+      write: () => undefined,
+    });
+    const state = (await readState(repo, 45)) as WorkState;
+    assert(
+      state.pipelineState.status === "interrupted" &&
+        state.eventLog.some((e) => e.kind === "interrupted" && e.reason === "provider"),
+      "the state on disk is still the provider park",
+    );
+    assert(
+      result.results[0]?.exitCode === 10,
+      `a grace expiry after a provider park keeps EXIT.handoff (got ${result.results[0]?.exitCode})`,
+    );
+    assert(
+      result.exitCode === 10,
+      `the run's exit code is the park's, not the abort's (got ${result.exitCode})`,
+    );
+    assert(
+      result.results[0]?.resumable === true,
+      "the JSON result still reports the park resumable",
     );
   } finally {
     rmSync(repo, { recursive: true, force: true });

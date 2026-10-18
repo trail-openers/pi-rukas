@@ -137,6 +137,13 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
       "underspecified with parkReasonSource=default (#404 — an invented reason must never license building)",
   },
   {
+    token: "IMPLEMENTED-AT",
+    values: "<commit sha, 7-40 hex> (`IMPLEMENTED-AT: <sha>` line on an already-implemented park)",
+    consumer: "work-driver-intent-grounding.ts",
+    onAbsence:
+      "the stated park stands, traced as not checked against mainline (#1351 — only a cited commit that is off the mainline overturns it)",
+  },
+  {
     token: "DUPLICATE_RISK",
     values: ["high", "medium", "low", "none"],
     consumer: "plan-investigate.ts",
@@ -180,7 +187,7 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
     values: ["SUCCESS", "FAILED"],
     consumer: "lens-review-child.ts",
     onAbsence:
-      "not blocked — traced; the pre-spawn statSync is the executed evidence the skill exists; only an explicit FAILED blocks",
+      "not blocked — traced; the pre-spawn statSync is the executed evidence the skill exists. The marker is the child's SELF-REPORT and it alone decides the outcome: a parsed FAILED blocks (findings kept), anything else does not. The driver additionally cross-checks a claimed SUCCESS against the child's recorded tool calls (`skillLoadProof`, lens-skill-load-proof.ts) in SHADOW — a refutation (`unproven`) emits a traceWarn naming the lens, the verdict and the tool names/paths seen, and blocks nothing; no recorded tool calls at all reads as absent, never refuted. FOLLOW-UP: promote the cross-check to enforce once the shadow log shows no false refutations (see docs/configuration.md → Skill Load Status marker)",
   },
   {
     // Not a child reply: the gap gate writes this section into a filed issue body,

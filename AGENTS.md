@@ -15,7 +15,7 @@ CI is for VERIFICATION, not DISCOVERY. All gates pass locally before `git push`.
 bun run build
 
 # 2. Type-check, lint, and smoke-test (extension/)
-cd extension && bunx tsc --noEmit && bun run check && \
+cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && bun run check && \
   bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts
 ```
 
@@ -76,10 +76,12 @@ pi-rukas has **two distinct codebases** that need different handling. Misidentif
 ### Path D — Sandbox image (`.devcontainer/`, image-baked tools)
 
 - Sandbox Docker image: source in `.devcontainer/Dockerfile` + `.devcontainer/entrypoint.sh`.
-- Image is auto-published to GHCR (`ghcr.io/trail-openers/pi-rukas:latest` + `sha-<commit>` + `vX.Y.Z` on release) by `.github/workflows/publish-image.yml` on every merge to main that touches image-baked files.
+- Image is auto-published to GHCR (`ghcr.io/trail-openers/pi-rukas:latest` + `sha-<commit>` + `vX.Y.Z` on release) by `.github/workflows/publish-image.yml` after CI passes on a push to main (`workflow_run`), so `latest` is never built from a red commit.
 - Users run `./install.sh` → pulls the published image (~10-20s). Local builds happen only on pull failure or with `--build`.
-- Workflow path-filter list (`.devcontainer/**`, `extension/**`, `bin/pi-rukas`, `install.sh`, `agents-base/**`, `modules/**`, `manifests/**`, `agents.json`, `build.sh`) covers everything that ends up in the image; PRs touching only docs / plan files don't trigger a republish.
+- Debounced: a main build is skipped when main has already moved past its commit (the newer commit publishes), and a newer build cancels an in-flight one. If the newest commit's CI fails, `latest` stays at the last green image until the next green merge.
 - Contributors do NOT need to manually `docker build` + push; the workflow handles it.
+- Retention: `.github/workflows/cleanup-images.yml` (weekly) prunes `sha-*` and untagged versions older than 14 days; `latest` and `v*` release tags are kept forever. Per-commit images are not reproducible (several tools install unpinned), so anything durable pins a release tag.
+- Layer order in the Dockerfile is a cost decision: everything after `COPY . /opt/pi-rukas` rebuilds and re-pushes on every merge, per arch. Steps that don't read the checkout go above it.
 
 ---
 
@@ -278,7 +280,7 @@ This rule does NOT apply when an agent works on pi-rukas itself (this repo's Typ
 
 *Merge authority (#380).* The `merged` step had no authority gate at all and decided on `text.includes("ci-status: success")` in an ops reply. It now needs BOTH an explicit grant — a recognised sentence in the project's `AGENTS.md` (see §9), or `/work N --merge` — AND evidence from `gh` (`mergeStateStatus`, `gh pr checks`, with `skipped`/`neutral` required checks treated as NOT passing). It fails closed: an unreadable `gh` blocks the merge. With no grant the cycle parks as `awaiting-human-merge`, PR open and work pushed. At `ci` the weaker rule applies — narration cannot promote a status, only executed evidence can demote one. Escape hatch `PI_ENSEMBLE_MERGE_AUTHORITY=0`.
 
-*Claim scan + evidence supply.* Six lenses passed a PR whose docs described the bug as intended behaviour and invented hardware specs. Not a missing lane — SIMPLICITY was already chartered for "contradictory documentation" — but a missing view: lens children run in a worktree **detached at `baseSha`**, so a file they open is the pre-change version, and the contradicting line was outside the diff. Two fixes, no seventh lens. `lens-evidence.ts` supplies the post-change content of changed prose files via `git show origin/<branch>:<path>` and warns every lens that its working tree is stale. `claim-scan.ts` deterministically grounds each checkable particular the diff adds to prose against the branch; a token is grounded only if it occurs **outside the prose asserting it**, which is what keeps §7's docs-ship-with-the-change rule from firing constantly. Escape hatches `PI_ENSEMBLE_CLAIM_SCAN=0`, `PI_ENSEMBLE_LENS_EVIDENCE=0`.
+*Claim scan + evidence supply.* Six lenses passed a PR whose docs described the bug as intended behaviour and invented hardware specs. Not a missing lane — SIMPLICITY was already chartered for "contradictory documentation" — but a missing view: lens children run in a worktree **detached at `baseSha`**, so a file they open is the pre-change version, and the contradicting line was outside the diff. Two fixes, no seventh lens. `lens-evidence.ts` supplies the post-change content of changed prose files via `git show origin/<branch>:<path>` and warns every lens that its working tree is stale. `claim-scan.ts` deterministically grounds each checkable particular the diff adds to prose against the branch; a token is grounded only if it occurs **outside the prose asserting it**, which is what keeps §7's docs-ship-with-the-change rule from firing constantly. A `path` claim is the one exception, and the only one: it is also grounded when the named file exists at the branch, resolved against the citing file's directory OR the repo root — because a path's target is itself prose, the token-occurrence rule could never ground it, and one cycle reported eight MEDIUMs against six `references/*.md` files that all exist (#1002). The escape is kind-gated to `path`, so product/quantity/flag/env keep the prose-does-not-ground-prose rule; an invalid path token or a git failure is "could not tell", never a fabricated finding. Escape hatches `PI_ENSEMBLE_CLAIM_SCAN=0`, `PI_ENSEMBLE_LENS_EVIDENCE=0`.
 
 *The round cap routes, it does not only stop.* A cap that fires is normally a stop signal, but this one was stopping work that was already fine: two of six outcomes in one overnight run died at `lens-issues-found → cap-hit{round-cap} → handoff`, after which a human judged #457 merge-as-is and #680's PR merged unchanged. `work-driver-lens-cap.ts` now routes a round cap to `ci` when the verdict is `ISSUES_FOUND`, the adversarial gate approved, and the residual findings were posted to the PR — a failed disclosure parks, because a PR that silently swallows three rounds of unresolved findings is worse than a park. `CRITICAL_ISSUES_FOUND` and the 90-minute wall-clock cap still park; a review that ran out of time is a different signal from one that ran out of rounds. Merge authority is untouched — the cycle reaches the same default-deny gate below, so this decides where a capped cycle goes, never what it may do when it arrives.
 
@@ -348,7 +350,7 @@ Three supporting defects fixed with it: the diff was computed once and re-sent t
 
 *Two workstreams must not claim the same file (#444).* `runDevelop` fans one developer per workstream into its own worktree, so two `paths` lists naming the same file is two developers editing it in parallel — surfacing only at commit-pr, as a bare `git apply` failure during consolidation, after the whole develop and adversarial spend. Nothing checked. `findPathCollisions` (`work-driver-plan-paths.ts`) is now a third `planQualityReason`, so it inherits the existing one-shot corrective re-dispatch rather than adding a halt path: the planner can re-split, which is the better outcome. Containment counts (`src/foo` vs `src/foo/bar.ts`) but a shared prefix does not, and paths are normalised first so an annotation like `"src/a.ts (new)"` cannot hide an overlap.
 
-*This repo's develop gate is now the real §1 gate.* With no `.pi/verify-cmd`, `verifyCmdFor` fell through to `npm run test` — three smoke tests out of ~120, no typecheck, no lint. The gate that proves a developer's diff builds was proving almost nothing. `.pi/verify-cmd` now runs `tsc --noEmit`, `bun run check` and the full offline suite; `.pi/verify-cmd-full` remains the deeper second tier the ci step runs once.
+*This repo's develop gate is now the real §1 gate.* With no `.pi/verify-cmd`, `verifyCmdFor` fell through to `npm run test` — three smoke tests out of ~120, no typecheck, no lint. The gate that proves a developer's diff builds was proving almost nothing. `.pi/verify-cmd` now runs the typecheck, `bun run check` and the full offline suite; `.pi/verify-cmd-full` remains the deeper second tier the ci step runs once. The typecheck names the compiler by PATH (`node node_modules/typescript/bin/tsc`), never a launcher alias: `bun x tsc` is an npx-style lookup that on one host resolved a global TypeScript 7, printed usage and exited 0, so the gate passed every tree while judging nothing (#1414/#1118). Each verify tier also carries its own wall clock since #1509 — see docs/configuration.md.
 
 *Throughput, measured (v0.12.41).* An operator complaint — "/work doesn't finish work" — measured against 69 terminal cycles in the durable session store and 29 state files. **15 merged, 22%**; pi-rukas 59%, nessie 12% (last autonomous merge 26 June), llm-iac and vipune 0. **Every one of the 10 autonomous merges ran with zero other cycles in flight, N=1, median 78.5 lines and 18.2 minutes.** Nothing outside that shape has ever merged. v0.12.41 moved `MAX_PARALLEL_GROUPS_DEFAULT` from 3 → 1 on this measurement: concurrency was the strongest predictor of failure, every role ran ~2.4× slower with another cycle in flight, and two of the four nessie cycles that reached commit-pr were destroyed by each other through the shared repo root.
 
@@ -542,7 +544,7 @@ This file enforces principles, conventions, and load-bearing constraints. It's n
 
 - Biome (lint + format) is the single source of truth: `bun run check`
 - No `// @ts-ignore`, no `// @ts-expect-error` without an explicit reason in the comment
-- Imports sorted automatically by Biome (`bunx biome format --write src/`)
+- Imports sorted automatically by Biome (`bun x biome format --write src/`)
 - Avoid `any` — use `unknown` and narrow with type guards. If you must cast, comment WHY.
 
 ### File size limits
@@ -606,9 +608,9 @@ CLI flags and event shapes change between Pi minor versions. The dev pins in `ex
 |---|---|
 | Install (after clone) | `./install.sh` |
 | Build role prompts | `bun run build` |
-| Type-check extension | `cd extension && bunx tsc --noEmit` |
+| Type-check extension | `cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json` |
 | Lint + format check | `cd extension && bun run check` |
-| Apply format | `cd extension && bunx biome format --write src/` |
+| Apply format | `cd extension && bun x biome format --write src/` |
 | All offline smoke tests | (see § 1 pre-push) |
 | Single offline smoke test | `cd extension && bun run smoke-tests/<test>.ts` |
 | Live spawn test (real tokens) | `cd extension && bun run smoke-tests/test-spawn-live.ts` |

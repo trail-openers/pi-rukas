@@ -14,8 +14,10 @@
 
 import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
+import { reviewWallClockMs } from "./review-budget.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
 import type { DispatchImage, DispatchResult } from "./types.ts";
+import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import type { EmitSink } from "./work-state-emit.ts";
 import { KNOWN_STATUSES } from "./workflow-state-validate.ts";
@@ -61,11 +63,19 @@ export const MAX_REVIEW_ROUNDS = 3;
 export const MAX_CI_RETRIES = 2;
 
 /**
- * Wall-clock cap for the entire fix loop (lens-review → developer-fix →
- * adversarial → re-review). 90 minutes, same as legacy review-cap.ts.
- * Persisted in `pipelineState.reviewCapStartedAt` so it survives restart.
+ * The review-loop time ceilings live in `review-budget.ts` (#1429), which is
+ * the only place either ceiling is stated. Re-exported so every existing
+ * import path keeps working and `nextStep` below reads the resolved value.
  */
-export const REVIEW_WALL_CLOCK_MS = 90 * 60 * 1000;
+export {
+  MIN_REVIEW_BUDGET_MS,
+  REVIEW_CAP_DEFAULT_MS,
+  REVIEW_CAP_ENV,
+  REVIEW_WALL_CLOCK_ENV,
+  REVIEW_WALL_CLOCK_MS,
+  reviewCapMs,
+  reviewWallClockMs,
+} from "./review-budget.ts";
 
 /**
  * Headless S4 (#1024) — the context a cycle runs with once `enterCycle` has
@@ -73,6 +83,21 @@ export const REVIEW_WALL_CLOCK_MS = 90 * 60 * 1000;
  * of it), so a step that writes state cannot be compiled without a sink.
  */
 export type CycleContext = DriverContext & { emitSink: EmitSink };
+
+/**
+ * #1414 — the shell-executor shape the driver's test seams accept, written
+ * once so `verifyExecFn` and `checkpointExecFn` cannot drift.
+ *
+ * Round 2: this used to be a SECOND structural declaration of the same shape.
+ * Two literals that must stay byte-equivalent is one more thing to forget — an
+ * added option on `VerifyExecFn` would have left this one silently dropping it,
+ * which is precisely the #1279 failure the `argv` field exists to prevent.
+ * `work-driver-git.ts` is the leaf (its jsdoc header says so) and `VerifyExecFn`
+ * is its one executor type, so this is an ALIAS of it: one declaration, and the
+ * `satisfies` check there keeps `execp` honest against both names. A type-only
+ * import pulls no runtime code, so the leaf-ness claimed above is unaffected.
+ */
+export type DriverExecFn = VerifyExecFn;
 
 export interface DriverContext {
   /** The host the cycle runs in (#1020). Pi-session or a recording test host. */
@@ -137,13 +162,13 @@ export interface DriverContext {
    * passes `/work N --restart` to wipe a prior terminal cycle's state
    * and run fresh (e.g., after revising the issue body via /plan).
    * This flag only resets the driver's state file — it does NOT clean up
-   * branches, worktrees, or an already-open PR. #362 adds a branch-step
-   * pre-flight that halts when an open PR already covers the issue,
-   * because wiping state alone made the driver rebuild #5 from scratch
-   * and open a duplicate PR (#358 orphaned by #359). Default behaviour
-   * (omitted / false) reads the existing state if present.
+   * branches, worktrees, or an already-open PR. #362's branch-step
+   * pre-flight halts when an open PR already covers the issue (#358
+   * orphaned by #359). Omitted / false reads the existing state.
    */
   restart?: boolean;
+  /** #1468 — `/work N --restart --continue-pr`: continue the issue's open PR. */
+  continuePr?: boolean;
   /**
    * #380 — the operator's in-session grant of merge authority, from
    * `/work N --merge`. Merging is the one irreversible act in the cycle and
@@ -184,6 +209,17 @@ export interface DriverContext {
    */
   dirtyRootExemptReadFailed?: string;
   /**
+   * #1427 — injectable process-tree walker for the gate-hang reports, threaded
+   * from the verify seams down to `runVerifyCommandGate` and the consolidated
+   * probe. Production leaves it unset and the real `ps` walk runs; smoke tests
+   * inject one so a report's tree section is an assertion rather than whatever
+   * else happens to be running on the host.
+   */
+  walkProcessTree?: (leaderPid: number) => {
+    processes: import("./work-driver-gate-hang.ts").HangProcess[];
+    treeUnavailable?: string;
+  };
+  /**
    * #1292 — the invoking session has no UI (`!ctx.hasUI`, e.g. `pi -p`). A
    * headless cycle opens its PR as a draft by default — nobody is watching
    * the review window — unless `PI_ENSEMBLE_DRAFT_PR` says otherwise.
@@ -223,23 +259,17 @@ export interface DriverContext {
    * executor used by verifyStepOutcome (git status / rev-list, the
    * project's verify command, gh pr view). Production callers omit
    * this; the default is `execp`. Mirrors `issueBodyFetcherFn`.
-   *
-   * `opts.argv` (#1005): when present, the executor runs the command in
-   * argv form (no shell re-parse) — `cmd` is the executable and
-   * `argv` its arguments. The coupling grep (rule 3) uses it because the
-   * file list is planner-controlled: a shell-built command would
-   * re-parse `$(…)`/backticks/`;` inside a path.
    */
-  verifyExecFn?: (
-    cmd: string,
-    opts?: {
-      cwd?: string;
-      timeout?: number;
-      maxBuffer?: number;
-      shell?: string;
-      argv?: string[];
-    },
-  ) => Promise<{ stdout: string; stderr?: string }>;
+  verifyExecFn?: DriverExecFn;
+  /**
+   * #1414 — optional test seam for the cap-kill checkpoint's TYPECHECK only
+   * (`typecheckWorktree`). Default `execp`; like `verifyExecFn` but NARROWER:
+   * the checkpoint's git calls keep calling `execp`, so a fake cannot make
+   * `tree: "committed"` a tautology.
+   */
+  checkpointExecFn?: DriverExecFn;
+  /** #1414 r3 — commit-only test seam; documented at its call site. */
+  checkpointCommitFn?: DriverExecFn;
   /**
    * Optional injection point for tests: replace runLensReview with a fake.
    * Production callers omit this — runLens uses the real runLensReview.
@@ -305,10 +335,9 @@ export interface DriverContext {
  * #533 — the transition table's answer, made total. Pre-#533 an unknown
  * `pipelineState.currentStep` reached the linear table's `Record<WorkStep, …>`
  * lookup, got `undefined`, and the driver loop's 64-iteration safety counter
- * fired with a message naming no field. The unknown case is now its own
- * member: the driver halts naming `pipelineState.currentStep`, and a loop
- * that spins can only do so by repeatedly RUNNING a real step, which the
- * safety counter still bounds.
+ * fired with a message naming no field. The unknown case is now its own member:
+ * the driver halts naming `pipelineState.currentStep`, and a loop that spins can
+ * only do so by repeatedly RUNNING a real step, which the safety counter bounds.
  */
 export type StepDecision =
   | { kind: "step"; step: WorkStep }
@@ -408,7 +437,7 @@ export function nextStep(state: WorkState): StepDecision {
     // somehow reached the cap without a cap-hit recorded has nothing that says
     // where it should go, and "stop" is the only safe answer to that.
     if (ps.reviewRound >= MAX_REVIEW_ROUNDS) return { kind: "step", step: "handoff" };
-    if (ps.reviewCapStartedAt && Date.now() - ps.reviewCapStartedAt > REVIEW_WALL_CLOCK_MS) {
+    if (ps.reviewCapStartedAt && Date.now() - ps.reviewCapStartedAt > reviewWallClockMs()) {
       return { kind: "step", step: "handoff" };
     }
     return { kind: "step", step: "lens-fix" };

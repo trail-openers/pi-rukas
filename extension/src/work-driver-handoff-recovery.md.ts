@@ -17,6 +17,9 @@
 import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { commitPrDirtyRootStep } from "./work-driver-handoff-commitpr.ts";
+import { genericRecoveryLines, hasRecoveryWorktrees } from "./work-driver-handoff-recovery-tree.ts";
+// #747 — the same ref-exists predicate the shared worktree recovery uses.
+import { refProvenAtHandoff } from "./work-driver-handoff-recovery-worktree.ts";
 import {
   type RecoveryStep,
   consolidatedRestoreClaim,
@@ -220,7 +223,29 @@ export function recoveryCommandsMarkdown(
     return lines;
   }
 
-  if (!ps.branchName) {
+  // #747 — the predicate is the STATE, not the cap and not merely the
+  // captured name: `branchName` says the branch step ran, `branchExists`
+  // says there is a ref to hand commands to. A cycle that captured a name
+  // but has no resolvable local ref (a re-entry whose ref was pruned, a
+  // consolidation whose restore moved repoRoot off it and failed) took the
+  // `else` below and was told to `git add -p` / `git push -u origin <branch>`
+  // against a ref git cannot resolve. Same predicate the shared decision in
+  // work-driver-handoff-recovery-worktree.ts uses and the same one the
+  // message renderer's branch tag reads; an absent snapshot reads as "no
+  // branch", never as "branch".
+  //
+  // The `handoff-consolidated` event is the one proof that outranks a stale
+  // snapshot read: the driver only writes it after it CHECKED OUT (or
+  // created) the ref and moved the work onto it, so the branch provably
+  // existed at handoff time. Without it the block's by-name `git push` would
+  // vanish whenever the snapshot's ref read failed — a git hiccup is not
+  // evidence a ref was never created, and the same lie runs the other way.
+  // #1575's worktree take-over pushes `HEAD:refs/heads/<branch>` and needs no
+  // local ref, so recorded worktrees keep it; only the repoRoot fallback
+  // (`git push -u origin <branch>`) needs the proof.
+  const refIsProven = refProvenAtHandoff(state) || hasRecoveryWorktrees(state);
+  const branchName = ps.branchName && refIsProven ? ps.branchName : undefined;
+  if (!branchName) {
     // See the twin in work-driver-handoff-message.ts: the predicate is the
     // state, not the cap, so a NEW pre-branch cap cannot fall through to
     // commands for a branch that was never created.
@@ -235,17 +260,8 @@ export function recoveryCommandsMarkdown(
   } else {
     lines.push(
       ...killDetail(state).map((l) => `# ${l}`),
-      "# 1. Inspect what survived before deciding:",
-      "git status",
-      "git diff --stat",
-      "",
-      "# 2. Discard the cycle and start over (worktree changes are kept):",
-      `rm .pi/work-state/${issue}.json`,
-      "",
-      "# 3. Take over manually — commit + push what's there, open the PR yourself:",
-      "git add -p",
-      "git commit",
-      `git push -u origin ${ps.branchName}`,
+      // #1565 — built from the trees the snapshot found, not repoRoot blindly.
+      ...genericRecoveryLines(state),
     );
   }
   lines.push("```", "");

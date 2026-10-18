@@ -23,6 +23,13 @@
  *     58.9% figure counts partials as the upper bound — blocking on
  *     partials is a policy decision the issue defers to review).
  *
+ * #1155 — `unmeasurable` gets the same treatment and the same channel: a
+ * deliverable whose `[paths:]` slot parses to no concrete or glob alternative
+ * is a WARNING, never a cap. It rides on `convergeEvidence` with the partials
+ * and `explainCap` renders it, because the pre-#1155 shape turned such a slot
+ * into an `absent` row and parked the cycle (issue #1137: 154 min, and the
+ * corrective re-dispatch could not satisfy a literal `<name>`).
+ *
  * Escape hatch: PI_ENSEMBLE_CONVERGE=0 (checked in runConvergeGate).
  */
 
@@ -40,7 +47,7 @@ import {
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { applySafetyNet } from "./work-driver-safety-net.ts";
 import { verifyCapFor } from "./work-driver-verify-develop-helpers.ts";
-import { recordConsolidatedVerifySkip } from "./work-driver-verify-events.ts";
+import { recordDevelopGateEvents } from "./work-driver-verify-events.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -174,7 +181,7 @@ export async function runConvergeGateHandler(
     // #1240 — the corrective re-run's skip is recorded like the first pass's:
     // without it a skip on this path is invisible, which is exactly the
     // "gate silently stopped running" reading #1240 exists to prevent.
-    next = recordConsolidatedVerifySkip(next, gate2);
+    next = recordDevelopGateEvents(next, gate2);
     // #1040 — lost-comment evidence persists from the re-run's develop note.
     next = recordCommentEvidence(next, gate2.commentEvidence);
     if (gate2.flakeRecovered) {
@@ -194,7 +201,12 @@ export async function runConvergeGateHandler(
       );
       const cap2 = conflictText
         ? ("consolidated-verify-conflict" as const)
-        : verifyCapFor("develop", gate2.failures, gate2.baselineRedOnly);
+        : verifyCapFor(
+            "develop",
+            gate2.failures,
+            gate2.baselineRedOnly,
+            gate2.buildResidueOnly === true,
+          );
       next = {
         ...next,
         pipelineState: {
@@ -207,6 +219,7 @@ export async function runConvergeGateHandler(
             failures: gate2.failures,
             at: Date.now(),
             origin: "outcome-gate",
+            ...(gate2.buildResidueOnly === true ? { buildResidueOnly: true } : {}),
             ...(gate2.flakeRecovered ? { retries: 1, recovered: true } : {}),
           },
         },
@@ -218,6 +231,14 @@ export async function runConvergeGateHandler(
         reviewRound: next.pipelineState.reviewRound,
         nextStep: "handoff",
         ...(conflictText ? { evidence: conflictText } : {}),
+        // #1427 round 3 — the hang reports THIS re-run wrote, on the same
+        // structural channel `appendDevelopVerifyFailure` uses for the first
+        // pass. Without it this cap — reached when the corrective's commit
+        // re-ran the gate and THAT hung — handed off with no pointer to the
+        // report that says what hung, even though the file was on disk.
+        ...(gate2.hangLogPaths !== undefined && gate2.hangLogPaths.length > 0
+          ? { logPaths: [...gate2.hangLogPaths] }
+          : {}),
       });
       return next;
     }

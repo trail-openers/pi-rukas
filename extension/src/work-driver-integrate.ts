@@ -6,6 +6,7 @@ import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import { integrationEmptiness } from "./work-driver-integrate-emptiness.ts";
+import { fastForwardOnto, rewindFastForward } from "./work-driver-integrate-ff.ts";
 import { sweepBeforeFollowupCheckout } from "./work-driver-integrate-sweep.ts";
 import { verifyIntegration } from "./work-driver-integrate-verify-step.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
@@ -22,6 +23,11 @@ export { readDirtyPorcelain, restoreRepoRoot } from "./work-driver-preflight.ts"
 // keep this file under the 500-line gate); the re-exports below preserve
 // every existing import path unchanged.
 
+import type { IntegrateResult } from "./work-driver-integrate-result.ts";
+
+// The result contract lives in work-driver-integrate-result.ts and is re-exported
+// here so every consumer keeps importing it from the module that owns `integrate()`.
+export type { IntegrateResult };
 import { cachedIssueTitle } from "./work-driver-integrate-title.ts";
 export { cachedIssueTitle } from "./work-driver-integrate-title.ts";
 
@@ -51,6 +57,11 @@ export interface IntegrateOpts {
   commitTitle: string;
   commitBody: string;
   mode: "create" | "followup";
+  /**
+   * #1468 — step 3 fast-forwards the branch to the worktree HEAD instead of
+   * cherry-picking, so a merge commit keeps both parents (`--continue-pr`).
+   */
+  fastForward?: boolean;
   /** #577 — fail if ANY workstream produced no diff (commit-pr sets this). */
   requireAllNonEmpty?: boolean;
   /** #453 — pre-existing commit SHAs from a prior attempt (resume). */
@@ -76,6 +87,15 @@ export interface IntegrateOpts {
   verifiedWorktree?: string;
   /** Wall-clock for `verifyCmd`. */
   verifyTimeoutMs?: number;
+  /**
+   * #1404 — the cycle's ORIGINAL base commit (`pipelineState.baseSha`), the
+   * commit this cycle's commits are measured against. Threaded to the
+   * commit-pr verify so a consolidated failure earns a baseline probe. The
+   * caller must NOT pass a followup round's `followupBase` — that commit
+   * already carries this cycle's earlier commits, which would excuse every
+   * failure as pre-existing. Absent → no probe, failures park as before.
+   */
+  baselineBaseSha?: string;
   /**
    * #782 — the commit-pr flake re-run. When the consolidated verify at this
    * seam fails and `ciRetryCount` is unset (first consolidated run), the
@@ -145,50 +165,6 @@ export async function isCommitOnBranch(
   }
 }
 
-export type IntegrateResult =
-  | {
-      ok: true;
-      workstreams: string[];
-      empty: false;
-      /** #492 — worktrees that were clean at stage time (the fixer/developer
-       *  produced no diff there). Set only when at least one worktree was
-       *  clean, so a caller can tell "this one wrote nothing" apart from the
-       *  workstreams that did ship. */
-      noDiff?: NoDiff;
-      commitShas?: Record<string, string>;
-      completeness?: ConsolidationCompleteness;
-      /**
-       * #1240 — the commit-pr consolidated verify did not run because the
-       * committed integration tree is the tree the develop step already
-       * verified green. The caller records the visible event from it; absent
-       * on every run that executed the command.
-       */
-      verifySkipped?: AlreadyVerifiedTree;
-    }
-  /** Nothing to integrate — every worktree was clean. Not an error. #492. */
-  | {
-      ok: true;
-      workstreams: [];
-      empty: true;
-      noDiff: NoDiff;
-      /** #749 — empty because every workstream's work was already on the
-       *  branch (tree-hash dedup skip), not because nothing was produced. */
-      skippedAlreadyOnBranch?: string[];
-    }
-  | {
-      ok: false;
-      reason: string;
-      conflictPatch?: string;
-      /** #492 — worktrees that produced no diff (for handoff context). */
-      noDiff?: NoDiff;
-      /** #539 — structured failure discriminator. Cause readers MUST read this, never re-parse `reason`. */
-      failure?: "dirty-repoRoot" | "apply" | "verify";
-      /** #1324 — the `verify` failure was a run killed at its bound. */
-      timedOut?: boolean;
-      /** #654 task-c — dirty-preflight porcelain lines (the caller parks with these). */
-      porcelain?: string[];
-    };
-
 /**
  * Consolidate every worktree onto the feature branch at repoRoot.
  * Fails rather than forces at every step. The dirty-repoRoot preflight runs
@@ -211,10 +187,16 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
   // #1240 — set only when step 4 skipped its verify run; carried on the
   // success result so the caller can record the visible event.
   let verifySkipped: AlreadyVerifiedTree | undefined;
+  // #1404 — set when step 4's verify failed ONLY on tests that already fail
+  // at the cycle's base commit. The push below proceeds on it; the names ride
+  // on the success result so the caller can make them visible.
+  let verifyPreExisting: string[] | undefined;
   // #750 — the restore is verified, not assumed (see work-driver-restore.ts).
-  const restoreRoot = async (): Promise<VerifiedRestoreResult> =>
-    originalRef
-      ? verifiedRestoreRoot(execFn, {
+  // #1468 — the branch tip before a fast-forward; every unpushed exit rewinds to it.
+  let ffFrom: string | undefined;
+  const restoreRoot = async (): Promise<VerifiedRestoreResult> => {
+    const restored: VerifiedRestoreResult = originalRef
+      ? await verifiedRestoreRoot(execFn, {
           repoRoot,
           originalRef,
           scratchDir: opts.scratchDir,
@@ -222,6 +204,9 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
           dirtyRootExempt,
         })
       : { restored: true };
+    if (ffFrom) await rewindFastForward(execFn, repoRoot, branchName, ffFrom);
+    return restored;
+  };
   // The verified post-condition via the shared claim builder, wrapped with
   // the ref the root was restored to (the helper's two shapes are kept
   // verbatim; the ref is load-bearing for the operator's retry).
@@ -314,15 +299,24 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     // 3. Orchestrated cherry-pick + patch fallback (work-driver-cherry-pick.ts).
     //    The patch-fallback rebases a followup-mode lens-fix patch onto the
     //    branch's CURRENT head before applying it (#654 task-b).
-    const orchResult = await orchestrateCherryPick(execFn, {
-      repoRoot,
-      branchName,
-      worktrees: { ids, worktrees, commitShas: opts.commitShas ?? {} },
-      baseSha: opts.baseSha,
-      scratchDir: opts.scratchDir,
-      requireAllNonEmpty: opts.requireAllNonEmpty,
-      pickScope,
-    });
+    if (opts.fastForward) {
+      ffFrom = (await execFn("git", { argv: ["rev-parse", "HEAD"], cwd: repoRoot })).stdout.trim();
+    }
+    const orchResult = opts.fastForward
+      ? await fastForwardOnto(execFn, repoRoot, ids, worktrees, {
+          title: opts.commitTitle,
+          body: opts.commitBody,
+          exempt: dirtyRootExempt,
+        })
+      : await orchestrateCherryPick(execFn, {
+          repoRoot,
+          branchName,
+          worktrees: { ids, worktrees, commitShas: opts.commitShas ?? {} },
+          baseSha: opts.baseSha,
+          scratchDir: opts.scratchDir,
+          requireAllNonEmpty: opts.requireAllNonEmpty,
+          pickScope,
+        });
 
     // Handle cherry-pick conflict — caller must abort and restore branch.
     // #750 — the claim states the VERIFIED post-condition only.
@@ -414,12 +408,24 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       verifyCmd: opts.verifyCmd,
       verifyExecFn: opts.verifyExecFn,
       verifyTimeoutMs: opts.verifyTimeoutMs,
+      baselineBaseSha: opts.baselineBaseSha,
+      // #1404 — the workstream worktrees are extra trees the change run's
+      // failing-test names may live under (see IntegrationVerifyOpts).
+      changeRoots: Object.values(worktrees),
       verifyRetry: opts.verifyRetry,
       restoreRoot,
       claimFor,
     });
     if (integrationVerify.failure !== undefined) return integrationVerify.failure;
+    verifyPreExisting = integrationVerify.preExistingFailures;
     verifySkipped = integrationVerify.skipped;
+
+    // #1468 — a refresh pushes nothing when main is red too; commit-pr parks.
+    if (opts.fastForward && verifyPreExisting !== undefined) {
+      await restoreRoot();
+      const names = { preExistingOnly: true, preExistingFailures: verifyPreExisting } as const;
+      return { ok: true, workstreams: appliedWorkstreams, empty: false, ...names };
+    }
 
     // 5. Push.
     const pushRefProblem = netRefProblem(branchName);
@@ -460,6 +466,9 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       commitShas: Object.keys(cherryPickShas).length > 0 ? cherryPickShas : undefined,
       completeness: orchResult.completeness,
       ...(verifySkipped !== undefined ? { verifySkipped } : {}),
+      ...(verifyPreExisting !== undefined
+        ? { preExistingOnly: true, preExistingFailures: verifyPreExisting }
+        : {}),
     };
   } catch (err) {
     const e = err as Error & { stderr?: string };

@@ -109,10 +109,30 @@ function parkedState(): WorkState {
 
 // 3. The queue gives a deadline-specific action.
 {
-  const action = humanActionFor("cap-hit: deadline", 1238);
+  // The canonical shape is what the queue's OWN writer produces: `parkReason`
+  // returns `cap ${cap.cap}${suffix}`, so a deadline park reaches
+  // `humanActionFor` as `cap deadline`. (`cap-hit: deadline` — the event's
+  // field name as a prefix — was never a reason any writer emitted.)
+  const action = humanActionFor("cap deadline", 1238);
   assert(
     action.includes("deadline") && action.includes("--restart"),
     `queue action for a deadline park names the deadline + restart (got: ${action})`,
+  );
+  assert(
+    !/^inspect \.pi\/work-state/.test(action),
+    "a `cap deadline` reason is not the generic inspect-the-state-file fallback",
+  );
+  // #1101 fix-round — the match is ANCHORED, because a queue-raised park's
+  // free-text detail is not a cycle's verdict. A stranded group whose blocker
+  // happened to contain the word must still get the queue's own action, not
+  // the deadline one.
+  const notDeadline = humanActionFor(
+    "cap queue-stranded:dependency group(s) group-a never reached its deadline",
+    1238,
+  );
+  assert(
+    !/PI_ENSEMBLE_CYCLE_DEADLINE/.test(notDeadline),
+    `a queue park merely MENTIONING a deadline gets no deadline advice (got: ${notDeadline})`,
   );
   assert(
     !action.includes("the fix loop did not converge"),

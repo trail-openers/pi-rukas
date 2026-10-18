@@ -14,7 +14,7 @@ import type { WorkStep } from "./workflow-state-events.ts";
 export type WorkCapLiteral =
   | "adversarial-loop"
   | "round-cap"
-  | "wall-clock"
+  | "lens-review-timeout"
   // A lens failed every retry, so the six-pass review is incomplete.
   // Distinct from the round cap: nothing capped, the review could not be
   // completed. This used to be reported as "adversarial-loop".
@@ -116,15 +116,61 @@ export type WorkCapLiteral =
   // mergeable PR.
   | "draft-rearm-failed"
   | "existing-pr-detected"
+  // #1468 — `--continue-pr` could not continue the issue's open PR: the
+  // lookup was not one PR, the PR is a fork or its head is unsafe, the head
+  // moved under the run, or the merge of the mainline was left unfinished.
+  | "continue-pr-ambiguous"
+  | "continue-pr-fork"
+  | "continue-pr-head-moved"
+  | "continue-pr-not-found"
+  | "continue-pr-unresolved"
+  | "continue-pr-unsafe-head"
   // #844 — the ops-fallback branch path's post-dispatch merge-base check
   // failed: the branch ops created does not sit on the driver-resolved
   // baseSha (ops built off a stale local ref — the #830 shape).
   | "ops-merge-base-mismatch"
   // #486 — infra-failure: adversarial loop failed on infra every attempt.
   | "adversarial-infra-failure"
+  // #1243 — the step parked because the PROVIDER was down, not because the
+  // work failed. A transport severance / endpoint timeout / short-burst 429
+  // that survived every retry (and, for the adversarial gate, the fan-out's
+  // own ladder) parks here instead of `step-failed:<step>`, for two reasons.
+  // (1) The caller can act: tehas runs pi-rukas headless and re-queues a
+  // provider park itself when the endpoint answers again — it has nothing to
+  // look at, because nothing about the code was judged. (2) It is NOT a
+  // mid-flight-halt shape: `runHandoff` keys `status: "aborted"` off the
+  // `step-failed:` prefix, and an outage that ends at a step boundary with
+  // committed work on the branch is a handoff a person (or the queue) resumes,
+  // not a crash to post-mortem. A quota window or a spend cap does NOT take
+  // this cap — waiting does not clear those, so they stay `step-failed:<step>`
+  // and go to a person (see `stepParkedOnProvider`).
+  | "provider-unavailable"
   // #571 — sibling cycle holds a path claim; overlap detected at plan
   // time. Two cycles cannot edit the same files in parallel.
   | "cross-group-conflict"
+  // #1454 r3 — the claims lock REFUSED a registration: the lockfile cannot be
+  // created (read-only `.pi/work-state`, ENOSPC) or a sibling held it past the
+  // wait window. `registerClaim` fails closed there — writing unlocked is the
+  // lost update the lock exists to remove — and the plan step converts that
+  // refusal into this cap rather than letting it escape as
+  // `driver-crash:plan`, which reports "unhandled error in the step handler"
+  // when the filesystem is what is broken. The refusal text rides on evidence.
+  | "claims-lock-unavailable"
+  // #1101 — the QUEUE raised these, not a cycle: a group waited on a sibling
+  // past its bound and never dispatched. `dependency-timeout` is the ordering
+  // edge that never cleared; `dependency-parked` is its sibling, the dependency
+  // settling on something other than `merged` (waiting cannot fix that, so it is
+  // a park, not a timeout). `dependency-cycle` is the pre-pass verdict for a
+  // group inside an ordering loop, and `queue-stranded` the group the scheduler
+  // was holding in the wait list when a halt released every worker. None of the
+  // four has a state file, a worktree or a diff behind it, so each routes to
+  // `isQueueLevelPark` for the never-dispatched report shape. `cross-group-conflict`
+  // above is reused for a claim wait that capped out — same condition as the
+  // plan-time check, seen earlier and more cheaply. See work-queue-cap.ts.
+  | "dependency-timeout"
+  | "dependency-parked"
+  | "dependency-cycle"
+  | "queue-stranded"
   // #543 — fixed literals (NOT `'<role>'` template shapes): a per-role
   // suffix would smuggle a cap the #533 canary doesn't know. Which role's
   // child was killed is carried in the new `role` field + capEvidence.
@@ -133,6 +179,15 @@ export type WorkCapLiteral =
   // #754 — the plan step's own bound expired on the primary plan
   // dispatch; distinct from `step-failed:plan` and `developer-timeout`.
   | "plan-timeout"
+  // #819 — the plan-to-spec gate refused the plan: no workstream declares any
+  // path of a deliverable the spec requires, or the reply carried more than
+  // one `## Workstreams` section. A DELIBERATE park terminalized as a handoff
+  // (not `step-failed:plan`, which would read as a dispatch that failed and
+  // terminalize as `aborted`, hiding that the plan was judged and found to be
+  // about the wrong work). It fires BEFORE the branch step, so nothing was
+  // written: the #818 shape — a corrective plan about a different problem,
+  // four developers and 45 minutes spent building it — is what this stops.
+  | "plan-spec-mismatch"
   // #280 §B — round-1 repeat-finding seam detection. Same finding
   // shape across ≥3 files → step-back (SDD spec-gap analysis).
   | "repeat-finding-seam"
@@ -150,6 +205,9 @@ export type WorkCapLiteral =
   // #1349 — the cycle's PR was no longer open when the step started (the
   // commit-pr re-entry refusal, the PR-gone park). Nothing was judged.
   | `pr-not-open:${WorkStep}`
+  // #1472 — a person CLOSED the cycle's issue mid-run: nothing judged, no
+  // child dispatched. Unlike `pr-not-open`, which reads the PR an agent opened.
+  | `issue-closed:${WorkStep}`
   // #1349 — the adversarial fix pass parked on its own checks (scope fence,
   // no-op pass, comment retention, a read that failed closed); the outcome
   // gate rejected nothing.

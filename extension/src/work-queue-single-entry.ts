@@ -7,8 +7,10 @@
  * own file next to the shape it builds.
  */
 
+import { parkReason } from "./work-queue-park-reason.ts";
 import { type QueueEntry, humanActionFor } from "./work-queue.ts";
 import { lastInterruptReason } from "./work-status-interrupted.ts";
+import { isProviderPark } from "./workflow-state-events-interrupted.ts";
 import { type WorkState, readState } from "./workflow-state.ts";
 
 /**
@@ -46,15 +48,41 @@ export async function singleCycleQueueEntry(
 
   const cap = [...(state?.eventLog ?? [])].reverse().find((e) => e.kind === "cap-hit");
   const capHit = cap?.kind === "cap-hit" ? cap : undefined;
+  // #1421 fix round — the cap reason comes from the queue's OWN reader, not a
+  // local string. This path used to spell `cap <cap>` itself, so every suffix
+  // `parkReason` carries for `humanActionFor` (`:build-residue`,
+  // `:host-resource-exhaustion`, the awaiting-human-merge PR/authority tag,
+  // the #753 leftover path) was missing on the single-group build, and a
+  // build-residue park got the fork advice or the "inspect the diff" advice.
+  // `parkReason`'s own `running` branch is unreachable here (the switch above
+  // returns first), and its `lastCompletedStep` fallback is not used: this
+  // path derives `failedStep` from the `step-failed:` cap, so only the reason
+  // string is taken.
   const reason = capHit
-    ? `cap ${capHit.cap}${
-        capHit.cap === "intent-park" && ps?.normalisedSpec?.parkReason
-          ? `:${ps.normalisedSpec.parkReason}`
-          : ""
-      }`
+    ? parkReason(state).reason
     : status === "interrupted"
       ? `cycle interrupted: ${lastInterruptReason(state?.eventLog ?? []) ?? "no reason recorded"}`
       : `cycle ended as ${status}`;
+
+  // #1243 fix round — a PROVIDER park takes its reason from the CAP, not from
+  // the interrupt reason, and therefore carries the provider action text the
+  // multi-issue path gets from `humanActionFor`. Its cap is
+  // `provider-unavailable`; an interrupted-status reason ("cycle interrupted:
+  // provider") matches none of `humanActionFor`'s rules and fell through to
+  // "inspect .pi/work-state/N.json and re-run /work N --restart" — the generic
+  // advice for a real failure, and the one verb this park exists to avoid.
+  // A genuine signal/timeout interrupt has no such cap and keeps the S4a
+  // resume wording below.
+  if (state !== undefined && isProviderPark(state)) {
+    const provider = parkReason(state).reason;
+    return {
+      groupId,
+      issues,
+      outcome: "parked",
+      reason: provider,
+      humanAction: humanActionFor(provider, issue, issues),
+    };
+  }
 
   // S4a (#1162) — an interrupted cycle is resumable, not terminal: the operator
   // resumes it rather than acting on a failed step.

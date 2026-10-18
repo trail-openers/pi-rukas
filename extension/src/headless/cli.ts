@@ -5,7 +5,16 @@
  * `pi-rukas run`, which execs it.
  *
  *   pi-rukas-headless work <issue> [more issues] [--restart]
- *                          [--timeout <minutes>] [--json]
+ *                          [--continue-pr] [--timeout <minutes>] [--json]
+ *
+ * `--continue-pr` (#1468) continues the issue's open pull request instead of
+ * stopping on it, so it takes exactly one issue.
+ *   pi-rukas-headless plan | research | agents-md | lens-review …   (S6, #1021)
+ *
+ * The S6 subcommands run their pipelines on a headless DriverHost: their
+ * flags and exit codes are documented in their own modules (plan.ts,
+ * research.ts, agents-md.ts, lens-review.ts), and each always prints one JSON
+ * document on stdout.
  *
  * stderr: NDJSON v1 progress lines (ndjson.ts), and nothing else: the driver's
  * own plain-text diagnostics are rerouted as `log` lines (stderr.ts, #1370).
@@ -17,6 +26,9 @@
  * with its process group (exit 21). Interactive /work is unchanged: its
  * children stay in the terminal's group, so Ctrl-C reaches them as before.
  *
+ * `work` runs as a child of a supervisor (supervise.ts, #1591), so a runner that
+ * dies without writing its result still gets one, projected from the state files.
+ *
  * There is no `--merge`: merge authority comes only from the project's AGENTS.md
  * (judged by the policy judge), as it does for start_work_driver.
  */
@@ -25,16 +37,53 @@ import { resourceReport } from "../resource-budget.ts";
 import { killLiveProcessGroups } from "../spawn-kill.ts";
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { resolveRepoRoot } from "../work-entry.ts";
+import { runAgentsMdHeadless } from "./agents-md.ts";
 import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { buildCapabilities } from "./capabilities.ts";
 import { EXIT } from "./exit-code.ts";
+import { createVerbHost } from "./host.ts";
+import { runLensReviewVerb } from "./lens-review.ts";
+import { runPlanVerb } from "./plan.ts";
+import { runResearchVerb } from "./research.ts";
 import { resultDocument } from "./result.ts";
 import { runHeadless } from "./run.ts";
 import { type StderrCapture, captureStrayOutput } from "./stderr.ts";
+import { SUPERVISED_ENV, superviseWork } from "./supervise.ts";
+import type { VerbContext, VerbOutcome } from "./verb.ts";
+
+/** The S6 subcommands (#1021), keyed by verb. */
+export const SUBCOMMANDS: Record<string, Subcommand> = {
+  plan: runPlanVerb,
+  research: runResearchVerb,
+  "agents-md": runAgentsMdHeadless,
+  "lens-review": runLensReviewVerb,
+};
+
+type Subcommand = (argv: readonly string[], ctx: VerbContext) => Promise<VerbOutcome>;
+
+/**
+ * Run one S6 subcommand: NDJSON on stderr through `write`, the JSON document on
+ * stdout. `run` defaults to the verb's entry in SUBCOMMANDS; tests pass one
+ * that injects their seams.
+ */
+export async function runSubcommand(
+  verb: string,
+  argv: readonly string[],
+  repoRoot: string,
+  write: (line: string) => void,
+  run: Subcommand | undefined = Object.hasOwn(SUBCOMMANDS, verb) ? SUBCOMMANDS[verb] : undefined,
+): Promise<number> {
+  if (!run) throw new Error(`unknown subcommand "${verb}"`);
+  const { exitCode, doc } = await run(argv, { repoRoot, host: createVerbHost(write) });
+  const build = { buildCommit: readBuildCommit(), buildVersion: readBuildVersion() };
+  process.stdout.write(`${JSON.stringify({ ...build, ...doc })}\n`);
+  return exitCode;
+}
 
 export interface ParsedArgs {
   issues: number[];
   restart: boolean;
+  continuePr: boolean;
   timeoutMs?: number;
   json: boolean;
 }
@@ -43,11 +92,13 @@ export interface ParsedArgs {
 export function parseHeadlessArgs(argv: string[]): ParsedArgs | { error: string } {
   const issues: number[] = [];
   let restart = false;
+  let continuePr = false;
   let json = false;
   let timeoutMs: number | undefined;
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i] as string;
     if (tok === "--restart") restart = true;
+    else if (tok === "--continue-pr") continuePr = true;
     else if (tok === "--json") json = true;
     else if (tok === "--timeout") {
       const v = Number(argv[++i]);
@@ -67,7 +118,8 @@ export function parseHeadlessArgs(argv: string[]): ParsedArgs | { error: string 
     }
   }
   if (issues.length === 0) return { error: "work needs at least one issue number" };
-  return { issues, restart, timeoutMs, json };
+  if (continuePr && issues.length > 1) return { error: "--continue-pr takes one issue" };
+  return { issues, restart, continuePr, timeoutMs, json };
 }
 
 /** Set once `work` starts; flushed before the process exits. */
@@ -87,9 +139,13 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(`${JSON.stringify(buildCapabilities())}\n`);
     return EXIT.merged;
   }
+  if (verb !== undefined && Object.hasOwn(SUBCOMMANDS, verb)) {
+    capture = captureStrayOutput();
+    return runSubcommand(verb, rest, await resolveRepoRoot(process.cwd()), capture.write);
+  }
   if (verb !== "work") {
     process.stderr.write(
-      "usage: pi-rukas-headless work <issue...> [--restart] [--timeout <min>] [--json] | --capabilities\n",
+      `usage: pi-rukas-headless work <issue...> [--restart] [--continue-pr] [--timeout <min>] [--json] | ${Object.keys(SUBCOMMANDS).join(" | ")} … | --capabilities\n`,
     );
     return EXIT.refused;
   }
@@ -100,12 +156,21 @@ async function main(argv: string[]): Promise<number> {
     );
     return EXIT.refused;
   }
+  if (process.env[SUPERVISED_ENV] !== "1") {
+    return superviseWork({
+      repoRoot: await resolveRepoRoot(process.cwd()),
+      issues: args.issues,
+      json: args.json,
+      command: [process.execPath, process.argv[1] as string, ...argv],
+    });
+  }
   capture = captureStrayOutput();
   const repoRoot = await resolveRepoRoot(process.cwd());
   const run = await runHeadless({
     repoRoot,
     issues: args.issues,
     restart: args.restart,
+    continuePr: args.continuePr,
     timeoutMs: args.timeoutMs,
     write: capture.write,
   });

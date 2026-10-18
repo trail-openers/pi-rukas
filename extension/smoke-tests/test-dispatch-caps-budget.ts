@@ -1,28 +1,36 @@
 #!/usr/bin/env bun
 /**
- * #543 F6 — token budget (secondary cost bound, SHIPS DEFAULT-OFF).
+ * #543 F6 — token budget: the PURE seam (secondary cost bound, SHIPS DEFAULT-OFF).
+ *
+ * Split out of `test-dispatch-caps.ts` to keep both files under the 500-line
+ * hard limit (AGENTS.md §12). That file keeps the `createCapSession` race
+ * cases (H1 grace-window, chatty-child kill, H2 master-switch inertness,
+ * spawn#6 fingerprint reset); this one keeps the pure arithmetic and the
+ * budget/env readers. No assertion was weakened or dropped in the move.
  *
  * The budget is on CUMULATIVE tokens (input + output + cacheRead + cacheWrite
  * per message_end — the same accumulation progress.ts tracks). When the
  * running total crosses PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>, spawn steers the child
  * to wrap up, then kills after the grace window with killCause "token-budget".
  *
- * The offline test asserts the pure seams (budget reader, cumulative
+ * These offline assertions cover the pure seams (budget reader, cumulative
  * accumulation, steer-text shape, the kill-cause env-name mapping) and the
  * F7e inertness canary: with every budget at 0 (the ship default), the budget
  * machinery is inert — no killCause outside timeout/inactivity/abort, no steer
  * written, no new behavior on a healthy stream.
  *
- * The steer-then-kill live path (a scripted usage stream crossing an explicit
- * budget) is exercised in the live spawn test (test-dispatch-caps-live.ts,
- * out of scope for the offline pre-push set) because it needs a real child to
- * receive the steer and observe the SIGTERM. The offline suite proves the
- * arithmetic and the inertness; the live suite proves the end-to-end kill.
+ * The steer-then-kill path with a REAL child (a live Pi child receiving the
+ * wrap-up steer and observing the SIGTERM) is **uncovered today**: no
+ * `test-dispatch-caps-live.ts` exists, and the live suites that do exist
+ * (`test-spawn-live.ts`, `test-progress-live.ts`) exercise spawn shape and
+ * `onProgress` cadence, not a scripted usage stream crossing an explicit
+ * budget. The offline suite proves the arithmetic, the trigger, and the
+ * inertness; the end-to-end kill against a real child is an unenforced
+ * assertion, stated plainly rather than cited to a file that is not there.
  */
 
-import type { PiContentBlock } from "../src/pi-event-shapes.ts";
 import { budgetSteerText, emptyRunningState, formatTokens, ingestEvent } from "../src/progress.ts";
-import { createCapSession, resolveKillCause } from "../src/spawn-caps.ts";
+import { resolveKillCause } from "../src/spawn-caps.ts";
 import {
   capKillGraceMs,
   inactivityTimeoutMs,
@@ -36,16 +44,6 @@ function assert(cond: boolean, msg: string) {
   else {
     console.error(`✗ ${msg}`);
     exit = 1;
-  }
-}
-function eq(actual: unknown, expected: unknown, msg: string): void {
-  const a = JSON.stringify(actual);
-  const e = JSON.stringify(expected);
-  if (a === e) {
-    assert(true, msg);
-  } else {
-    console.error(`  expected: ${e}\n  actual:   ${a}`);
-    assert(false, msg);
   }
 }
 
@@ -329,155 +327,42 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     }) === undefined,
     "C1: no facts → undefined (no kill)",
   );
-}
-
-// ---------------------------------------------------------------------------
-// #543 H1 — grace-window kill race: the child exits on its own between the
-// poll's grace check and killChild. The kill is a no-op on a dead process,
-// but without the exited guard loopKilled / the tracker's killed flag would
-// flip and mark a normally-completed child as a cap failure.
-// ---------------------------------------------------------------------------
-{
-  const killedSigs: string[] = [];
-  const child = { killed: killedSigs, kill: (sig: string) => killedSigs.push(sig) } as never;
-  let exited = false;
-  const session = createCapSession({
-    role: "developer",
-    child,
-    onSteer: () => {},
-    totalTokens: () => 1_000_000, // over budget — check() will trigger
-    timedOut: () => false,
-    inactivityKilled: () => false,
-    toolInactivityKilled: () => false,
-    aborted: () => false,
-    capKillGraceMs: 600,
-    childExited: () => exited,
-  });
-  process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER = "100";
-  try {
-    // The tracker triggers at the first message_end (1_000_000 >= 100).
-    session.tokenBudgetTracker?.check(Date.now());
-    // The child exits on its own BEFORE the grace window elapses.
-    exited = true;
-    // Wait for the 500ms poll to fire.
-    await new Promise((r) => setTimeout(r, 700));
-    assert(
-      !session.tokenBudgetTracker?.killed,
-      "H1: child self-exited before grace → tracker NOT killed",
-    );
-    eq(child.killed, [], "H1: no kill signal sent to a self-exiting child");
-    assert(session.killCause() === undefined, "H1: killCause stays undefined (ok=true semantics)");
-  } finally {
-    delete process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER;
-    session.cleanup();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// #543 H2 — F7e INERTNESS: with PI_ENSEMBLE_DISPATCH_CAPS=0 (master switch),
-// createCapSession creates NO loop observer, NO token-budget tracker, and NO
-// new timer. A 20-repeat identical stream through the session produces no
-// steer, no killCause, and no setInterval call from the session.
-// ---------------------------------------------------------------------------
-{
-  let timersCreated = 0;
-  const origSetInterval = globalThis.setInterval;
-  globalThis.setInterval = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
-    timersCreated += 1;
-    return origSetInterval(fn, ms, ...args);
-  }) as typeof setInterval;
-  let session: ReturnType<typeof createCapSession>;
-  process.env.PI_ENSEMBLE_DISPATCH_CAPS = "0";
-  try {
-    session = createCapSession({
-      role: "developer",
-      child: { killed: [] as string[], kill: () => {} } as never,
-      onSteer: () => {},
-      totalTokens: () => 0,
-      timedOut: () => false,
-      inactivityKilled: () => false,
-      toolInactivityKilled: () => false,
-      aborted: () => false,
-      capKillGraceMs: 1000,
-      childExited: () => false,
-    });
-  } finally {
-    globalThis.setInterval = origSetInterval;
-    delete process.env.PI_ENSEMBLE_DISPATCH_CAPS;
-  }
-  assert(session.loopObserver === undefined, "H2: master switch off → no loop observer");
+  // #1567 — the supervision kills sit below the structural caps and above
+  // the backstop: stuck-tool > no-progress > child-bound.
+  const none = {
+    loopKilled: false,
+    inactivityKilled: false,
+    toolInactivityKilled: false,
+    timedOut: false,
+    tokenBudgetKilled: false,
+    aborted: false,
+  };
+  const all = { stuckToolKilled: true, noProgressKilled: true, childBoundKilled: true };
   assert(
-    session.tokenBudgetTracker === undefined,
-    "H2: master switch off → no token-budget tracker",
+    resolveKillCause({ ...none, ...all, tokenBudgetKilled: true }) === "token-budget",
+    "#1567: token-budget beats the supervision kills",
   );
-  assert(timersCreated === 0, `H2: master switch off → NO new setInterval (got ${timersCreated})`);
-  // Feed a 20-repeat identical stream through the session's ingest path.
-  // loopObserver is undefined so observe is a no-op; assert nothing changed.
-  const blocks: PiContentBlock[] = [
-    { type: "toolCall", id: "x", name: "bash", arguments: '{"command":"git log"}' },
-  ];
-  for (let turn = 0; turn < 20; turn++) session.loopObserver?.(blocks, turn);
-  assert(!session.loopKilled(), "H2: 20-repeats through an inert session → not loop-killed");
   assert(
-    session.killCause() === undefined,
-    "H2: 20-repeats through an inert session → no killCause",
+    resolveKillCause({ ...none, ...all, loopKilled: true }) === "loop",
+    "#1567: loop beats the supervision kills",
   );
-}
-
-// ---------------------------------------------------------------------------
-// #543 spawn#6 — a DISTINCT fingerprint arriving after kill-trigger resets
-// the grace clock (aligning with the budget tracker's onMessageEnd reset).
-// The spec's deferral is "while no new message_end has arrived since
-// trigger"; a different call is new work the in-flight kill would discard.
-// ---------------------------------------------------------------------------
-{
-  const killedSigs: string[] = [];
-  const child = { killed: killedSigs, kill: (sig: string) => killedSigs.push(sig) } as never;
-  let session: ReturnType<typeof createCapSession>;
-  process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = "30000"; // long window
-  try {
-    session = createCapSession({
-      role: "developer",
-      child,
-      onSteer: () => {},
-      totalTokens: () => 0,
-      timedOut: () => false,
-      inactivityKilled: () => false,
-      toolInactivityKilled: () => false,
-      aborted: () => false,
-      capKillGraceMs: 30_000,
-      childExited: () => false,
-    });
-    // biome-ignore lint/style/noNonNullAssertion: caps are on by default in this test scope
-    // biome-ignore lint/style/noNonNullAssertion: caps are on by default in this test scope; the observer is defined
-    const observe = session.loopObserver!;
-    // 10 identical calls → kill arms (count reaches LOOP_KILL_AT=10).
-    for (let turn = 0; turn < 10; turn++) {
-      observe(
-        [{ type: "toolCall", id: "x", name: "bash", arguments: '{"command":"git log --oneline"}' }],
-        turn,
-      );
-    }
-    assert(!session.loopKilled(), "spawn#6: kill armed but grace window open");
-    eq(child.killed, [], "spawn#6: no signal before grace elapses");
-    // A DISTINCT message_end arrives (the loop ended).
-    observe(
-      [{ type: "toolCall", id: "x", name: "bash", arguments: '{"command":"cargo test"}' }],
-      10,
-    );
-    // Wait 700ms (the poll fires at 500ms) — the grace clock was reset by
-    // the distinct fingerprint, so the kill must NOT fire.
-    await new Promise((r) => setTimeout(r, 700));
-    assert(
-      !session.loopKilled(),
-      "spawn#6: distinct message_end reset the grace clock — kill deferred",
-    );
-    eq(child.killed, [], "spawn#6: no kill signal after the distinct message_end");
-    session.cleanup();
-  } finally {
-    delete process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS;
-    session?.cleanup();
-  }
+  assert(
+    resolveKillCause({ ...none, ...all, timedOut: true, aborted: true }) === "stuck-tool",
+    "#1567: stuck-tool beats no-progress, child-bound, timeout, abort",
+  );
+  assert(
+    resolveKillCause({
+      ...none,
+      noProgressKilled: true,
+      childBoundKilled: true,
+      timedOut: true,
+    }) === "no-progress",
+    "#1567: no-progress beats child-bound and timeout",
+  );
+  assert(
+    resolveKillCause({ ...none, childBoundKilled: true, timedOut: true }) === "child-bound",
+    "#1567: child-bound beats the 2-h backstop",
+  );
 }
 
 console.log(`\nexit ${exit}`);

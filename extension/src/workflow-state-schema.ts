@@ -4,8 +4,9 @@
  */
 
 import type { Verdict } from "./lens-review.ts";
+import type { ContinuedPr } from "./work-driver-continue-pr-state.ts";
 import type { NormalisedSpec } from "./work-driver-intent.ts";
-import type { CapEvidence, CapedPartialState, EvidenceFailureKind } from "./workflow-state-cap.ts";
+import type { CapEvidence, CapedPartialState } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 // #679/#728 — workstream shape + consolidation record, split for the 500-line gate.
 // Re-exported so existing importers keep their paths.
@@ -16,13 +17,14 @@ export type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
 export type { FenceViolation } from "./workflow-state-schema-verify.ts";
 import type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 import type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
-import type { PlanQualityReason } from "./workflow-state-schema-plan-quality.ts";
-import type { FenceViolation, VerifyEvidenceOrigin } from "./workflow-state-schema-verify.ts";
+// #861 / #1167 — `PlanQualityReason` and `PlanUnfenceSummary` live in the
+// plan-quality fragment (the 500-line cap); re-exported here so importers of
+// this module keep their path.
+export type {
+  PlanQualityReason,
+  PlanUnfenceSummary,
+} from "./workflow-state-schema-plan-quality.ts";
 import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
-
-// #861 — PlanQualityReason moved to its own fragment (the 500-line cap);
-// re-exported so existing importers keep their path.
-export type { PlanQualityReason };
 
 // #1415 — the verify-gate reuse records live with the other verify-evidence
 // shapes; re-exported so importers reach them from the schema module.
@@ -31,7 +33,6 @@ export type { PlanQualityReason };
 // 500-line gate; re-exported so importers reach them from the schema module.
 export type { GatePass, WorkstreamGreen } from "./workflow-state-schema-gate-reuse.ts";
 import type { GatePass, WorkstreamGreen } from "./workflow-state-schema-gate-reuse.ts";
-
 export {
   filesPresentFromConsolidation,
   type IncompleteConsolidation,
@@ -49,18 +50,34 @@ export { WORK_STEPS } from "./workflow-state-events.ts";
 export type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
 import type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
 export { prDraftFindings } from "./workflow-state-schema-pr-draft.ts";
-import type { PrDraftState } from "./workflow-state-schema-pr-draft.ts";
+// #1362 — cycle-start exempt-untracked baseline: type + #533 validator in workflow-state-dirty-root.ts (#540/#861 seam).
 export {
   type DirtyRootExemptBaseline,
   dirtyRootExemptBaselineFindings,
 } from "./workflow-state-dirty-root.ts";
+import type { IssueClosedState } from "./workflow-state-schema-issue-closed.ts";
+// #1292 / #1421 / #814 — the verify-gate record shapes (and the PR-draft
+// record they sit beside) live in workflow-state-schema-gates.ts (the 500-line
+// gate); re-exported here so every importer keeps its path.
+export type {
+  PrDraftState,
+  VerifyEvidence,
+  VerifyMergeHold,
+  VerifyPlanQuality,
+} from "./workflow-state-schema-gates.ts";
+import type {
+  PrDraftState,
+  VerifyEvidence,
+  VerifyMergeHold,
+  VerifyPlanQuality,
+} from "./workflow-state-schema-gates.ts";
 
 /**
  * Pipeline snapshot — the driver's "where are we" view, reconstructible from
  * eventLog (authoritative on divergence) but stored for O(1) reads. (#861:
  * `PlanQualityReason` lives in `workflow-state-schema-plan-quality.ts`.)
  */
-export interface PipelineState {
+export interface PipelineState extends IssueClosedState {
   /** Current step. Drives template selection and transition table. */
   currentStep: WorkStep;
   /**
@@ -152,21 +169,19 @@ export interface PipelineState {
    */
   activeIssues?: number[];
   /**
-   * PR11 — per-issue body-fetch failure list. Populated by `runExplore`
-   * when `gh issue view <N>` returns empty stdout or rejects for any
-   * issue in the cycle. Drives the operator-facing handoff body — each
-   * entry names which `gh` call broke so the operator can target the
-   * actual failure (gh auth, gh version, network, extension hijack).
-   * Absent for normal cycles where every issue body fetched cleanly.
+   * PR11 — per-issue body-fetch failure list, set by `runExplore` when
+   * `gh issue view <N>` returns empty stdout or rejects. Each entry names the
+   * `gh` call that broke (auth, version, network, extension hijack) for the
+   * handoff body. Absent when every issue body fetched cleanly.
    */
   emptyBodyIssues?: Array<{ issue: number; reason: string }>;
   /**
-   * #362 — the open PR the branch-step pre-flight found already covering
-   * this issue, which is why the cycle halted with cap
-   * `existing-pr-detected`. Drives the handoff body (PR number, its head
-   * branch, and which signal matched). Absent for every cycle that ran.
+   * #362 — the open PR that halted the branch step with cap
+   * `existing-pr-detected`; drives the handoff body. Absent otherwise.
    */
   existingPr?: { number: number; headRefName: string; matchedBy: "body" | "branch" };
+  /** #1468 — the open PR `--continue-pr` continues. Absent otherwise. */
+  continuedPr?: ContinuedPr;
   /**
    * #287 — bookkeeping for the integration step. `reintegrations` counts
    * lens-fix follow-up commits applied onto the branch after the first
@@ -195,38 +210,8 @@ export interface PipelineState {
    * operator does not have to reproduce it.
    */
   lensDiffError?: string;
-  mergeHold?: {
-    authorityGranted: boolean;
-    /** #407 — `doctrine` is a citation-verified grant; `citation-failed` is a
-     * judge that asserted permission it could not point at. `agents-md`
-     * remains for state files written before #407. */
-    authoritySource: "agents-md" | "doctrine" | "operator" | "none" | "citation-failed";
-    /** The AGENTS.md sentence that granted or forbade it, verbatim. */
-    authorityQuote?: string;
-    /** Why the executed-evidence gate refused. */
-    evidenceReason?: string;
-    /** The evidence refusal was a tooling failure, not a CI verdict (#745). */
-    evidenceFailureKind?: EvidenceFailureKind;
-    /** Required checks reporting `skipped`/`neutral` — green to GitHub, not to us. */
-    inconclusive?: string[];
-    /**
-     * The review round cap routed this cycle to `ci` with findings still
-     * outstanding, so the merge is held however permissive the grant is.
-     */
-    unresolvedReviewFindings?: boolean;
-  };
-  planQuality?: {
-    findingsCount: number;
-    redispatched: boolean;
-    reason?: PlanQualityReason;
-    /**
-     * #849 — the dependsOn edges the one-shot corrective re-plan dropped
-     * (reason: dropped-dependencies). Persisted alongside the reason so the
-     * original trigger's evidence isn't the only thing the operator sees;
-     * absent when no edge was dropped.
-     */
-    droppedEdges?: { from: string; to: string }[];
-  };
+  mergeHold?: VerifyMergeHold;
+  planQuality?: VerifyPlanQuality;
   /**
    * PR14/#540 — the subsumption-aware consolidation verdict: `verdicts`
    * (workstreams NOT covered by the committed diff) + `filesPresent` (what
@@ -444,20 +429,7 @@ export interface PipelineState {
    * `retries`/`recovered`: the consolidated gate's single bounded re-run; absent
    * pre-#782 means no re-run, so schemaVersion stays 1.
    */
-  verifyEvidence?: {
-    step: WorkStep;
-    failures: string[];
-    at: number;
-    retries?: number;
-    recovered?: boolean;
-    /** Which writer raised this park; see `VerifyEvidenceOrigin`. Absent pre-origin. */
-    origin?: VerifyEvidenceOrigin;
-    /**
-     * #814 — structured develop-scope-fence violations (see
-     * `FenceViolation` below). Absent = none recorded.
-     */
-    fenceViolations?: FenceViolation[];
-  };
+  verifyEvidence?: VerifyEvidence;
   /**
    * #1415 — the verify gate's reuse records: whole-gate passes this cycle RAN and
    * PASSED (keyed by `<treeHash>\0<cmd>\0<timeoutMs>`) plus each workstream's own
@@ -487,14 +459,11 @@ export interface PipelineState {
   handoffDeliveredAt?: string;
 }
 
-// #1362 — WORK_STEPS' home is workflow-state-events.ts, beside the WorkStep union
-// it mirrors (that module has no value imports, so a runtime reader can reach the
-// tuple without pulling a value edge through the validator's cap vocabulary — see
-// the comment on the tuple). It moved out of this module for the 500-line gate and
-// is re-exported above so every importer keeps its path.
-// WorkState moved to workflow-state-schema-workstate.ts (500-line gate); re-exported.
+// #1362 — WORK_STEPS' home is workflow-state-events.ts (its own note there
+// explains why); it and WorkState (workflow-state-schema-workstate.ts, with
+// #1454's single terminal-status notion) left this module for the 500-line gate
+// and are re-exported so every importer keeps its path.
+export { TERMINAL_STATUSES, isTerminalState } from "./workflow-state-schema-workstate.ts";
 export type { WorkState } from "./workflow-state-schema-workstate.ts";
-
-// The state constructors/mutators (`initialState`, `appendEvent`,
-// `detectInconsistencies`) live in `workflow-state-update.ts` —
-// `workflow-state.ts` re-exports them so existing imports keep working.
+// The constructors/mutators (`initialState`, `appendEvent`, `detectInconsistencies`)
+// live in `workflow-state-update.ts`; `workflow-state.ts` re-exports them.

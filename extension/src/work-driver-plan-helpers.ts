@@ -16,139 +16,49 @@ import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
+// #819 round-2 — the single-block rule lives in the prompt module so the
+// planner prompt, this steer and the gate's evidence all quote one string.
+// #1167 (size split) — the corrective steers themselves moved to
+// work-driver-plan-steers.ts (the §12 line cap); re-exported so importers
+// (runPlan's call site and the smoke suites) keep this module's path.
+export {
+  correctivePlanSteer,
+  correctiveTestSubjectSplitSteer,
+} from "./work-driver-plan-steers.ts";
 // #849 — findDroppedDependencyEdges moved to work-driver-plan-deps.ts (the
 // 500-line cap); re-exported so the importers keep their paths.
 export { findDroppedDependencyEdges } from "./work-driver-plan-deps.ts";
+// #754 — the plan-step timing trio + the corrective prompt builder moved to
+// work-driver-plan-timeout.ts (the §12 line cap); re-exported so importers
+// keep this module's path.
+export {
+  correctivePlanTimeoutSteer,
+  planCorrectiveFailureEvent,
+  planCorrectivePrompt,
+  planDispatchTimeoutMs,
+  planKillDetailForTest,
+  planTimeoutCorrective,
+  planTimeoutKill,
+} from "./work-driver-plan-timeout.ts";
 import type { PlanQualityReason } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
-// #754 — the steer for the corrective re-dispatch after a PRIMARY plan
-// dispatch killed at the step's own bound. A timeout says nothing about
-// decomposition, so it is deliberately a SEPARATE steer from
-// correctivePlanSteer: steering a killed planner toward MORE workstreams is
-// the forced-split pressure #819 measured as wrong-work. It re-states the
-// single deliverable (one concise workstreams block covering the spec) and
-// keeps the plan's scope intact.
-export function correctivePlanTimeoutSteer(timeoutMs: number): string {
-  return [
-    "## Corrective re-dispatch (plan timeout)",
-    "",
-    `Your previous planning attempt exceeded its wall-clock bound (${Math.round(timeoutMs / 60_000)} min) and was killed; it produced no plan.`,
-    "This is NOT a signal that the issue needs more or fewer workstreams.",
-    "Re-plan now, working from the issue body and spec already in front of you.",
-    "Return ONE concise '## Workstreams' block whose workstream(s) cover the spec's deliverables,",
-    "and do not change WHAT is built. Then stop.",
-  ].join("\n");
-}
-
-// #754 — the plan step's own wall-clock bound. The compiled /plan pipeline
-// already bounds every planning child with PLAN_DISPATCH_TIMEOUT_MS (30 min,
-// plan-investigate.ts) — the SAME activity in the SAME repo — but the work
-// driver's plan step never adopted it: both the primary and corrective plan
-// dispatches rode the 2-hour global spawn backstop, and on the #742 cycle a
-// 266-turn planning loop burned 120 of the cycle's 140 minutes before the
-// backstop killed it — for a corrective re-plan that then finished the same
-// decomposition in 37 s. This bound is deliberately the same 30 minutes
-// (in-repo precedent, not a fresh measurement): it leaves ~48x headroom over
-// the observed legitimate planning duration while capping the pathological
-// case at a quarter of its old cost.
-//
-// It applies to the PRIMARY plan dispatch only — the corrective re-dispatch
-// is the recovery path this bound exists to feed, and bounding it too could
-// kill the 37-second corrective and any legitimately longer re-plan. It is
-// a DISTINCT env var from PI_ENSEMBLE_SPAWN_TIMEOUT_MS (which stays global
-// and role-agnostic — test-spawn-bounds.ts asserts that), and the global
-// backstop is untouched for every other step.
-export function planDispatchTimeoutMs(): number {
-  const env = Number(process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS);
-  return Number.isFinite(env) && env > 0 ? env : 30 * 60_000;
-}
-
-/**
- * #754 — the DispatchResult the plan step emits when the primary dispatch was
- * killed at a wall-clock bound: the structured plan-timeout cause is derived
- * AT THE CALL SITE from the expired per-call timeoutMs, because
- * resolveKillCause has no input for "which per-call bound expired" and stays
- * a pure function of the child-process cap facts. The rewritten result flows
- * through buildCompletionEvent unchanged, so the dispatch-failed event
- * carries usage (turns + cache volume), killBudgetMs and the operator-facing
- * errorTail. A killed dispatch never produces a structured result — the
- * corrective re-dispatch is the recovery.
- */
-export function planTimeoutKill(
-  result: DispatchResult,
-  opts: { timeoutMs?: number },
-): DispatchResult | undefined {
-  if (!result || result.killCause !== "timeout" || !opts.timeoutMs) return undefined;
-  return {
-    ...result,
-    ok: false,
-    killCause: "plan-timeout",
-    killBudgetMs: opts.timeoutMs,
-  };
-}
-
-/**
- * #754 — the one-shot corrective re-dispatch after a PRIMARY plan dispatch
- * killed at the step's own bound. A killed child has no structured output
- * (parseWorkstreams would return nothing), so the corrective is the recovery
- * path. It carries the timeout steer — NOT correctivePlanSteer: a timeout
- * says nothing about decomposition, and steering a killed planner toward
- * MORE workstreams is the forced-split pressure that produced the wrong-work
- * shape #819. The corrective is NEVER re-dispatched again: if it fails or is
- * killed itself, its dispatch-failed is the step's tail and the router's
- * `plan-timeout` cap halts to handoff. The caller applies the one-shot
- * corrective budget by skipping the #290 quality gate after this runs.
- */
-export async function planTimeoutCorrective(
-  ctx: CycleContext,
-  pi: DriverHost,
-  dispatch:
-    | NonNullable<DriverContext["dispatchFn"]>
-    | ((
-        pi: DriverHost,
-        spec: { role: string; prompt: string },
-        opts: { label: string; timeoutMs?: number },
-      ) => Promise<DispatchResult>),
-  prompt: string,
-  planKill: DispatchResult,
-  workState: WorkState,
-  parseWorkstreams: (
-    text: string,
-  ) => Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }>,
-  planCorrectivePrompt: (prompt: string, steer: string) => string,
-): Promise<{
-  ok: boolean;
-  state: WorkState;
-  workstreams: Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }>;
-}> {
-  let state = workState;
-  trace(
-    `work-driver: plan dispatch killed at ${planKill.killBudgetMs}ms bound — corrective re-dispatch (timeout steer)`,
-  );
-  const steer = correctivePlanTimeoutSteer(planKill.killBudgetMs ?? 0);
-  const correctivePrompt = planCorrectivePrompt(prompt, steer);
-  const retry = await dispatch(
-    pi,
-    { role: "explore", prompt: correctivePrompt },
-    { label: "plan:corrective" },
-  ).catch(() => undefined);
-  if (retry) {
-    state = appendEvent(
-      state,
-      await buildCompletionEvent(ctx, "plan", "explore", "plan:corrective", retry),
-    );
-    const reparsed = parseWorkstreams(retry.text ?? "");
-    const workstreams = Object.keys(reparsed).length > 0 ? reparsed : ({} as typeof reparsed);
-    return { ok: true, state, workstreams };
-  }
-  return { ok: false, state, workstreams: {} };
-}
 import {
+  type FenceContradiction,
   type PathCollision,
+  findFenceContradictions,
   findPathCollisions,
   findTestSubjectSplits,
+  isPlainRepoRelativePath,
 } from "./work-driver-plan-paths.ts";
+// #819 — the plan-to-spec gate (an adjacent pure function, NOT a new branch
+// in planQualityReason, which never sees the spec).
+import type {
+  PlanSpecMismatch,
+  SpecCoverageSpec,
+  SpecCoverageWorkstream,
+} from "./work-driver-plan-spec-coverage.ts";
+import { planSpecMismatchReason } from "./work-driver-plan-spec-coverage.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
 /**
@@ -165,6 +75,92 @@ export interface PlanQualityWorkstream {
 export function planQualityEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_PLAN_QUALITY;
   return v !== "0" && v !== "false";
+}
+
+/**
+ * #819 — the plan-to-spec gate's verdict, shaped for `planQuality.reason`.
+ *
+ * Deliberately NOT a branch inside `planQualityReason`: that function is
+ * called positionally as `(workstreams, findingsCount)` from four smoke
+ * suites and never receives the spec, so threading a spec argument through it
+ * would break every caller for no benefit — and it would let the new reason
+ * reorder the existing eight, whose precedence is deliberate (a collision is a
+ * fixable split; wrong work is not). This is the "adjacent pure function" the
+ * issue names: pure over (reply text, workstreams, spec), no dispatch, no I/O.
+ */
+export function planSpecMismatchPlanQualityReason(
+  text: string,
+  workstreams: Record<string, SpecCoverageWorkstream>,
+  spec: SpecCoverageSpec | undefined,
+): PlanSpecMismatch | undefined {
+  return planSpecMismatchReason(text, workstreams, spec);
+}
+/**
+ * #819 — the halts both gate sites emit, factored out of `runPlan` so the
+ * step handler stays inside its own budget. Same decision from two places: the
+ * primary reply when the one-shot corrective budget is already spent, and the
+ * corrective reply, which has no budget left to spend.
+ *
+ * `nextStep: "handoff"`, and NO commits, branch or worktree — the cap fires
+ * before the branch step, which is the whole value of placing the gate there.
+ *
+ * #819 round-2 — the cap alone is not enough for the operator to see WHY this
+ * cycle stopped at plan: `lastCapHit` is the only other reader of the gate's
+ * verdict, and a state file whose `planQuality.reason` is absent reads as "the
+ * shape gate passed, the cycle just happened to stop". So this writes BOTH the
+ * cap-hit event and `pipelineState.planQuality.reason = "plan-spec-mismatch"`,
+ * preserving whatever `findingsCount` / `redispatched` the step already
+ * recorded.
+ *
+ * The persisted evidence is capped: this string is rendered verbatim into the
+ * handoff (and an uncovered-deliverables verdict concatenates EVERY uncovered
+ * deliverable with ALL its paths, so a 20-deliverable spec's evidence is
+ * kilobytes). `recoveryStepsForCap` already clips the rendered line; capping
+ * here keeps the state file — which the driver re-parses on every wake — small.
+ */
+export function planSpecMismatchCap(
+  state: WorkState,
+  mismatch: PlanSpecMismatch,
+  whyNotReplanned: string,
+): WorkState {
+  trace(`work-driver: plan to-spec gate — ${mismatch.kind}, halting before branch`);
+  // #819 round-3 — the truncation order is the reason this sentence is readable.
+  // `${mismatch.evidence} — ${whyNotReplanned}`.slice(0, 500) clipped the
+  // CONCATENATION, so on a wide spec (an uncovered-deliverables verdict lists
+  // every deliverable with all of its paths — kilobytes) the operator's
+  // sentence — "this is the one-shot corrective plan; develop never ran" — was
+  // the part that fell off the end, and the state file kept 500 characters of
+  // deliverable list that says nothing about why the cycle stopped. The
+  // variable part is capped FIRST so the fixed part always survives.
+  const EVIDENCE_CAP = 500;
+  const clause = ` — ${whyNotReplanned}`;
+  const head =
+    mismatch.evidence.length > EVIDENCE_CAP - clause.length
+      ? `${mismatch.evidence.slice(0, Math.max(0, EVIDENCE_CAP - clause.length - 1))}…`
+      : mismatch.evidence;
+  const evidence = `${head}${clause}`.slice(0, EVIDENCE_CAP);
+  const withReason: WorkState = {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      planQuality: {
+        findingsCount: state.pipelineState.planQuality?.findingsCount ?? 0,
+        redispatched: state.pipelineState.planQuality?.redispatched ?? false,
+        ...(state.pipelineState.planQuality?.droppedEdges
+          ? { droppedEdges: state.pipelineState.planQuality.droppedEdges }
+          : {}),
+        reason: "plan-spec-mismatch",
+      },
+    },
+  };
+  return appendEvent(withReason, {
+    kind: "cap-hit",
+    at: Date.now(),
+    cap: "plan-spec-mismatch",
+    reviewRound: state.pipelineState.reviewRound,
+    nextStep: "handoff",
+    evidence,
+  });
 }
 
 export function planQualityReason(
@@ -211,6 +207,14 @@ export function planQualityReason(
   )
     return "invalid-path";
   if (findPathCollisions(workstreams).length > 0) return "overlapping-paths";
+  // #1167 — a fence naming a path the SAME workstream declares. Runs after
+  // `overlapping-paths` because the two are structurally disjoint (an
+  // out-of-scope entry is not a `paths` entry, so no cross-workstream pair
+  // can collide on it) and after `invalid-path` because a fence naming a
+  // malformed path is the more urgent defect. This is the shape the develop
+  // gate parks on — catching it here costs one plan dispatch instead of a
+  // full develop-and-adversarial burn.
+  if (findFenceContradictions(workstreams).length > 0) return "contradictory-fence";
   // #679 case 2(a) — a self `depends-on` (a workstream declaring itself as
   // its own dependency) is an INVALID reference, not a cycle: cycle
   // detection operates on the graph, a single self-edge is a malformed
@@ -299,148 +303,6 @@ export function interdependentWithoutIntegrationTest(
   return false;
 }
 
-export function correctivePlanSteer(
-  reason: PlanQualityReason,
-  findingsCount: number,
-  workstreamCount: number,
-  collisions: PathCollision[] = [],
-): string {
-  if (reason === "overlapping-paths") {
-    return [
-      "## Corrective re-dispatch",
-      "",
-      "Two workstreams in your previous plan declared the same file:",
-      ...collisions.map((c) => `- \`${c.a}\` and \`${c.b}\` both claim ${c.path}`),
-      "",
-      "Each workstream gets its own worktree and its own developer, running in parallel, so two",
-      "workstreams sharing a file means two developers editing it at once — which surfaces later as a",
-      "merge conflict the driver cannot resolve. Re-plan so every file belongs to exactly ONE workstream:",
-      "either move the shared file into whichever workstream genuinely owns it, or merge the two",
-      "workstreams if they cannot be separated.",
-      "",
-      "#849 — dependencies survive the re-plan: where one workstream CONSUMES an artifact another",
-      "workstream CREATES (a function, a type, a migration, a config value), keep the `- depends-on:`",
-      "line (or ADD one) so the develop step defers the consumer's worktree until the creator commits —",
-      "two parallel developers editing around a not-yet-created artifact is the #814 shape that",
-      "duplicated a migration at commit-pr. And where BOTH workstreams would CREATE the same artifact",
-      "(the shared file above), MERGE them into one workstream rather than splitting ownership:",
-      "merging is what the overlap fix is for; preserving the file boundary and dropping the dependency",
-      "edge leaves the two halves semantically coupled but structurally independent, which is the",
-      "worse outcome of the two.",
-    ].join("\n");
-  }
-  if (reason === "invalid-path") {
-    return [
-      "## Corrective re-dispatch",
-      "",
-      "Your previous plan declared a path that is not a plain repo-relative path (it contains a",
-      "shell metacharacter, starts with `/`, or has a `..` segment). Every declared path must be a",
-      "plain repo-relative path (e.g. `src/foo.ts` or `src/foo`) — no shell metacharacters, no",
-      "absolute paths, no `..` traversal. Re-plan with every `paths:` entry as a plain",
-      "repo-relative path.",
-    ].join("\n");
-  }
-  // #849 — dropped-dependencies is a RECORDED reason, not a re-dispatch
-  // trigger: the one-shot corrective has ALREADY run (it is what dropped
-  // the edge), and there is no second re-dispatch per #754's one-shot rule.
-  // The steer body below is unreachable by construction — it exists only so
-  // this reason never falls through to the empty-paths prose if a future
-  // bug re-dispatches on it.
-  if (reason === "dropped-dependencies") {
-    return [
-      "## Corrective re-dispatch (not issued)",
-      "",
-      "Record-only: the previous corrective re-plan dropped a `- depends-on:` edge the",
-      "first plan had. The cycle continues with the corrective plan — this reason is",
-      "recorded on pipelineState.planQuality so the operator can see the drop; it is",
-      "never re-dispatched.",
-    ].join("\n");
-  }
-  if (reason === "under-decomposed") {
-    return [
-      "## Corrective re-dispatch",
-      "",
-      `Your previous plan produced ${workstreamCount} workstream(s) for an issue body containing ${findingsCount} enumerated findings, and the workstream(s) declared no paths.`,
-      "Re-plan: give every workstream a non-empty `paths:` and list anything you are deliberately not doing under `Deferred:`. Do NOT split work just to raise the workstream count — workstreams that share a file or a compile/runtime dependency are ONE workstream (the consumer cannot build without the producer's commit); only genuinely independent file sets get their own workstream.",
-    ].join("\n");
-  }
-  if (reason === "invalid-dependency") {
-    return [
-      "## Corrective re-dispatch",
-      "",
-      "Your previous plan declared a `- depends-on: <id>` line that references a workstream id the plan",
-      "did not declare — either a non-existent id, or the workstream referencing ITSELF.",
-      "A `depends-on` reference is load-bearing: the develop step defers the referencing workstream's",
-      "worktree until the referenced one commits, so a dangling reference has nothing to wait on.",
-      "Re-plan: every `- depends-on: <id>` must name a `### <id>` workstream declared in the same plan,",
-      "and no workstream may declare itself as its own dependency.",
-    ].join("\n");
-  }
-  if (reason === "circular-dependency") {
-    return [
-      "## Corrective re-dispatch",
-      "",
-      "Your previous plan's `- depends-on:` declarations form a cycle (e.g. A depends on B and B on A,",
-      "or A→B→C→A transitively). A cycle has no topological order: the develop step would wait on a",
-      "workstream that is itself waiting, and the dispatch could never start.",
-      "Re-plan: the depends-on graph must be a DAG — if two workstreams genuinely need each other's",
-      "output, they are not independently decomposable and should be merged into one workstream.",
-    ].join("\n");
-  }
-  if (reason === "interdependent-no-integration-test") {
-    return [
-      "## Corrective re-dispatch",
-      "",
-      "Your previous plan has two workstreams that are interdependent through DIFFERENT files — one",
-      "declares `- depends-on: <other>` (or one's test file exercises the other's file) — but no",
-      "workstream declares a `- integration-test: <path>` line naming a consolidated-tree test that",
-      "exercises both halves together. Each workstream passes its own develop gate in isolation; without",
-      "a declared integration test, the combined behaviour is verified nowhere in the cycle.",
-      "Re-plan: on the DEPENDENT workstream (the one declaring `depends-on`, or either in the inferred",
-      "coupling case) add `- integration-test: <path>` naming the consolidated-tree test.",
-      "Scope note: the line is a plan-quality DECLARATION only — the develop step does not execute it;",
-      "executing the declared integration test is a separate concern (issue #669's territory).",
-    ].join("\n");
-  }
-  return [
-    "## Corrective re-dispatch",
-    "",
-    "At least one workstream in your previous plan declared no `paths:`.",
-    "Every workstream MUST list the files it will touch — the driver uses that list to verify the committed diff",
-    "actually contains each workstream's slice, and an empty list silently disables that check.",
-    "Re-plan with a non-empty `paths:` and `out-of-scope:` for every workstream.",
-  ].join("\n");
-}
-
-export function correctiveTestSubjectSplitSteer(
-  splits: { test: string; testPath: string; subjectPath: string; subject: string }[],
-): string {
-  const pairs =
-    splits.length > 0
-      ? splits.map(
-          (s) =>
-            `- \`${s.test}\` declared test \`${s.testPath}\`, which exercises \`${s.subjectPath}\` owned by \`${s.subject}\``,
-        )
-      : [];
-  return [
-    "## Corrective re-dispatch",
-    "",
-    "Your previous plan separated a test from the file it exercises:",
-    ...(pairs.length > 0
-      ? [...pairs, ""]
-      : [
-          "The plan has a workstream that is only test file(s) whose subject(s) live in another workstream.",
-          "",
-        ]),
-    "Each workstream gets its own worktree and its own developer, so a test and its subject in",
-    "different worktrees can never meet: each workstream passes its own develop gate against its own",
-    "tree, and the consolidated verify fails at commit-pr for the same reason the test was split.",
-    "Re-plan so every test stays in the SAME workstream as the file it exercises. A workstream that is",
-    "only test file(s) has no legitimate reading — move the test to its subject's workstream, or make",
-    "the test file's subject part of the same workstream.",
-  ].join("\n");
-}
-
 export async function countFindingsForCycle(ctx: CycleContext, state: WorkState): Promise<number> {
   const artifact = state.pipelineState.issueBodyArtifact;
   if (!artifact) return 0;
@@ -461,24 +323,4 @@ export function countEnumeratedFindings(body: string): number {
     if (/^\s*(?:\d+[.)]\s+\S|[-*]\s+\[[ xX]\]\s*\S)/.test(line)) n += 1;
   }
   return n;
-}
-
-/**
- * #1005 — a declared path is a plain repo-relative path when it has no
- * shell metacharacter, no leading `/`, and no `..` segment. The check is
- * deliberately conservative (rejects what is clearly dangerous; does not
- * try to be a full path grammar): the fence and the consolidation checks
- * compare these strings as-is, so a `..`-traversing or absolute path is
- * not a scope the driver can verify.
- */
-function isPlainRepoRelativePath(p: string): boolean {
-  const trimmed = p.trim();
-  if (trimmed.length === 0) return false;
-  // Shell metacharacters that would execute in a shell-built command.
-  if (/[`$;&|<>(){}\\\"'\s]/.test(trimmed)) return false;
-  // Absolute path (leading /).
-  if (trimmed.startsWith("/")) return false;
-  // .. traversal (as a segment, not inside a filename like "a..b.ts").
-  if (trimmed.split("/").includes("..")) return false;
-  return true;
 }
