@@ -201,6 +201,7 @@ const EXT_TOOLS_TO_CHECK = [
   "adversarial_loop",
   "start_work_driver",
   "check_review_cap",
+  "start_review_cap",
 ];
 for (const tool of EXT_TOOLS_TO_CHECK) {
   assert(sessionActive.includes(tool), `extension tool ${tool} survives setActiveTools REPLACE`);
