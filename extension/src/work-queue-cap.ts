@@ -40,6 +40,7 @@ import {
   mergeHoldGrantAction,
 } from "./work-driver-merge-authority.ts";
 import { HOST_EXHAUSTION_SUFFIX } from "./work-queue-park-reason.ts";
+import { crossGroupAction } from "./work-queue-parks-claims.ts";
 import { deferredLeftoverAction } from "./work-queue-parks.ts";
 import type { BlockReason } from "./work-queue-scheduler.ts";
 
@@ -138,6 +139,24 @@ export function humanActionFor(
   // the switch in `queueWaitAction` branches on. A hand-written alternation
   // here was a second list of the same two names, and a third cap added to
   // that switch fell through this one to "inspect a diff that does not exist".
+  //
+  // #1454 — `cross-group-conflict` is the ONE name this router sees from two
+  // producers, so the two rules are split by provenance, not by the bare word:
+  //
+  //   - `^cap cross-group-conflict` + `in-flight sibling(s)` — the QUEUE's
+  //     sighting (`waitCapFor`'s detail is the only thing that writes that
+  //     clause). The group never dispatched: `queueWaitAction`.
+  //   - a bare `cross-group-conflict` — the REACTIVE plan-time check in
+  //     work-driver-path-claims.ts, raised from inside a cycle that DID
+  //     dispatch, has a state file, and is parked against somebody else's
+  //     claim: `crossGroupAction`, which names the CLAIMANT.
+  //
+  // The generic fallback both used to get is the shape that sent six operators
+  // to re-run an unchanged issue into the same park.
+  if (/^cap cross-group-conflict\b.*in-flight sibling\(s\)/.test(reason)) {
+    return queueWaitAction(primary, "cross-group-conflict");
+  }
+  if (/cross-group-conflict/.test(reason)) return crossGroupAction(reason, primary);
   const waitCap = reason.match(new RegExp(`^cap (${QUEUE_WAIT_CAPS.join("|")})\\b`));
   if (waitCap) return queueWaitAction(primary, waitCap[1] as QueueWaitCap);
   // #753 — a dirty-leftover park (deferred worktree creation refused):

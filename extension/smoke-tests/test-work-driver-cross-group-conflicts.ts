@@ -4,15 +4,20 @@
  *
  * Verifies the path-claim registry (work-driver-path-claims.ts):
  *  1. Atomic write and release of claims
- *  2. Liveness checking via PID
+ *  2. Liveness checking via PID — against the SAME primitive the driver uses
+ *     for state-file owners (#1454)
  *  3. Overlap detection using normaliseDeclaredPath
  *  4. Escape hatch PI_ENSEMBLE_CROSS_GROUP_CONFLICTS=0
+ *
+ * The stale-claim half of #1454 (a dead or terminal claimant must not park a
+ * sibling, stale entries must be PRUNED from the file, and a live claimant
+ * must still park) lives in test-work-driver-stale-path-claims.ts.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
+  type PathClaimEntry,
   checkAndRegisterClaims,
   checkCrossGroupClaimsSync,
   crossGroupConflictsEnabled,
@@ -20,8 +25,16 @@ import {
   registerClaim,
   releaseClaim,
 } from "../src/work-driver-path-claims.ts";
-import { initialState } from "../src/workflow-state-update.ts";
+import { processAlive } from "../src/work-driver-resume.ts";
 import type { WorkState } from "../src/workflow-state.ts";
+import {
+  makeCtx,
+  makeState,
+  rawClaims,
+  seedClaims,
+  spawnLivePid,
+  tmpDir,
+} from "./lib/claims-test-helpers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -30,21 +43,6 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
-}
-
-function tmpDir(): string {
-  return mkdtempSync(path.join(tmpdir(), "pi-claims-test-"));
-}
-
-// Helper: build a minimal workstate.
-function makeState(issue: number, repoRoot: string): WorkState {
-  return {
-    ...initialState(issue, repoRoot),
-    pipelineState: {
-      ...initialState(issue, repoRoot).pipelineState,
-      workstreams: {},
-    },
-  };
 }
 
 // ================================================================ 1. Atomic write/release
@@ -67,20 +65,46 @@ function makeState(issue: number, repoRoot: string): WorkState {
   }
 }
 
-// ================================================================ 2. PID liveness
+// ================================================================ 2. PID liveness — the ONE predicate (#1454)
 {
+  // The claims gate used to carry its own `isProcessAlive`, which disagreed
+  // with `processAlive` in BOTH directions: pid 1 (EPERM) read dead, pid 0
+  // ("signal my whole process group") read alive. These cases pin the two
+  // helpers to the same verdict for every pid shape a hand-edited or corrupt
+  // claims entry can carry.
+  const live = await spawnLivePid();
   const dir = tmpDir();
   try {
-    // Register with a non-existent PID (0 always fails kill).
-    const wd = path.join(dir, ".pi", "work-state");
-    mkdirSync(wd, { recursive: true });
-    writeFileSync(
-      path.join(wd, "path-claims.json"),
-      JSON.stringify([{ issue: 99, pid: 999999, paths: ["src/x.ts"], startedAt: Date.now() }]),
+    const pids: unknown[] = [1, 0, -1, 1.5, Number.NaN, "3716067", 999999, live.pid];
+    let agreed = true;
+    for (const pid of pids) {
+      seedClaims(dir, [{ issue: 99, pid, paths: ["src/x.ts"], startedAt: Date.now() }]);
+      const honoured = (await readClaims(dir)).length > 0;
+      const canonical = processAlive(pid as number);
+      if (honoured !== canonical) {
+        agreed = false;
+        console.error(`  pid ${String(pid)}: gate=${honoured} processAlive=${canonical}`);
+      }
+    }
+    assert(
+      agreed,
+      "claims gate agrees with processAlive for {1,0,-1,1.5,NaN,'3716067',999999,live}",
     );
-    const claims = await readClaims(dir);
-    assert(claims.length === 0, "stale PID (0) is filtered out");
+
+    // The two shapes the old private helper got exactly wrong.
+    seedClaims(dir, [{ issue: 91, pid: 1, paths: ["src/a.ts"], startedAt: Date.now() }]);
+    assert((await readClaims(dir)).length === 1, "pid 1 (EPERM) counts as ALIVE");
+    seedClaims(dir, [{ issue: 92, pid: 0, paths: ["src/a.ts"], startedAt: Date.now() }]);
+    assert(
+      (await readClaims(dir)).length === 0,
+      "pid 0 (whole-process-group) is rejected outright",
+    );
+
+    // A foreign live pid still reserves its paths.
+    seedClaims(dir, [{ issue: 93, pid: live.pid, paths: ["src/a.ts"], startedAt: Date.now() }]);
+    assert((await readClaims(dir)).length === 1, "a live foreign owner's claim is honoured");
   } finally {
+    await live.stop();
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -294,6 +318,5 @@ function makeState(issue: number, repoRoot: string): WorkState {
     rmSync(dir, { recursive: true, force: true });
   }
 }
-
 console.log(`\nexit ${exit}`);
 process.exit(exit);

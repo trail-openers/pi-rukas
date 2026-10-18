@@ -1,0 +1,14 @@
+{
+  "$comment": "The #1421 shape the ticket's motivating diagnosis got wrong: the claimant's pid was STILL RUNNING (a 13h pi process) while its cycle had reached status handoff and never released its claim. Pid liveness alone cannot see this — the terminal status of the claimant's state file is what releases it.",
+  "claims": [
+    {
+      "issue": 1421,
+      "pid": -1,
+      "paths": [
+        "extension/src/worktree-provision.ts",
+        "extension/src/work-driver-verify-develop-helpers.ts"
+      ],
+      "startedAt": "@AGE(-5220000)"
+    }
+  ]
+}
