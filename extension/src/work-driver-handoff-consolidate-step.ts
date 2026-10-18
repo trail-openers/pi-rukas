@@ -26,6 +26,18 @@ import type { WorkEvent, WorkState } from "./workflow-state.ts";
  * by cargo's `target/` was indistinguishable from one whose cherry-picks
  * conflicted, and the operator was never told where the reviewed commits are.
  */
+/** The most recent `handoff-consolidated` event in a log, if any. */
+export function lastConsolidatedEvent(
+  eventLog: readonly WorkEvent[],
+): Extract<WorkEvent, { kind: "handoff-consolidated" }> | undefined {
+  return [...eventLog]
+    .reverse()
+    .find(
+      (e): e is Extract<WorkEvent, { kind: "handoff-consolidated" }> =>
+        e.kind === "handoff-consolidated",
+    );
+}
+
 export interface ConsolidateOutcome {
   event?: Extract<WorkEvent, { kind: "handoff-consolidated" }>;
   degradedReason?: string;

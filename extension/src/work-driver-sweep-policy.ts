@@ -93,11 +93,14 @@ export async function decideSweepAction(opts: DecideOpts): Promise<SweepAction> 
 
   // Rule 3: Live owner check
   const issueNumber = state.issue;
-  if (groupClaimedByState(state, target.name)) {
+  const ownerPid = state.owner?.pid;
+  const deadOwner = ownerPid !== undefined && ownerPid !== selfPid && !processAlive(ownerPid);
+  // A running file whose recorded owner is dead claims nothing: the group
+  // claim exists for files with no owner yet, not for crashed cycles (#1454).
+  if (!deadOwner && groupClaimedByState(state, target.name)) {
     return { type: "skip", reason: `group-claimed ${target.name}` };
   }
-  const ownerPid = state.owner?.pid;
-  if (ownerPid !== undefined && ownerPid !== selfPid && processAlive(ownerPid)) {
+  if (ownerPid !== undefined && ownerPid !== selfPid && !deadOwner) {
     return { type: "skip", reason: `live-owner pid=${ownerPid}` };
   }
   // Second part of live check: issue in liveCycles and not launching cycle's own
@@ -209,13 +212,10 @@ export async function executeSweepAction(
         maxBuffer: 256 * 1024,
       });
     case "remove": {
-      return await execFn(
-        `git worktree remove --force ${JSON.stringify(action.target.realPath)}`,
-        {
-          cwd: resolve(action.target.realPath, "..", ".."),
-          maxBuffer: 256 * 1024,
-        },
-      );
+      return await execFn(`git worktree remove --force ${JSON.stringify(action.target.realPath)}`, {
+        cwd: resolve(action.target.realPath, "..", ".."),
+        maxBuffer: 256 * 1024,
+      });
     }
     default:
       return { stdout: "" };

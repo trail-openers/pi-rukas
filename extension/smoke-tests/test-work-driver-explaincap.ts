@@ -224,5 +224,37 @@ runExplainCapCanaries();
   );
 }
 
+// #1468 — each continue-pr cap renders its own WHY, not the generic fallback,
+// and the queue's advice for it never says a bare `--restart`.
+for (const [cap, needle] of [
+  ["continue-pr-ambiguous", "more than one open PR"],
+  ["continue-pr-fork", "from a fork"],
+  ["continue-pr-head-moved", "head branch moved"],
+  ["continue-pr-not-found", "could not find exactly one open PR"],
+  ["continue-pr-unresolved", "merge of the mainline"],
+  ["continue-pr-unsafe-head", "head branch is not safe"],
+] as const) {
+  let s = initialState(1468, 1_000_000);
+  s = { ...s, pipelineState: { ...s.pipelineState, currentStep: "handoff" } };
+  s = appendEvent(s, {
+    kind: "cap-hit",
+    at: 2,
+    cap,
+    reviewRound: 0,
+    nextStep: "handoff",
+    evidence: "EV-1468",
+  } as Parameters<typeof appendEvent>[1]);
+  const line = explainCap(cap, s);
+  assert(
+    line.includes(needle) && line.includes("EV-1468"),
+    `explainCap(${cap}) renders its sentence and the evidence (got ${line.slice(0, 60)})`,
+  );
+  const action = humanActionFor(`cap ${cap}`, 1468);
+  assert(
+    !/^inspect \.pi\/work-state/.test(action) && !/--restart(?! --continue-pr)/.test(action),
+    `humanActionFor(${cap}) is specific and never says a bare --restart (got ${action})`,
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

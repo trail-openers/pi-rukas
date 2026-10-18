@@ -83,6 +83,8 @@ import { prPreflightEnabled } from "../src/work-driver-pr-preflight.ts";
 import { resumeEnabled, sessionReattachEnabled } from "../src/work-driver-resume.ts";
 import { stepNoticeThresholdMs } from "../src/work-driver-step-notice.ts";
 import { testDeleteTolerance, verifyTimeoutMs } from "../src/work-driver-verify-develop-helpers.ts";
+import { verifyTimeoutMs } from "../src/work-driver-verify-budget.ts";
+import { tierDefaultReader } from "./lib/verify-tier-pin.ts";
 import { queueDeferCapMs, queueHaltOnFailure } from "../src/work-queue.ts";
 import { queueOrderingEnabled } from "../src/work-queue-scheduler.ts";
 import { wrapperEnvReads } from "./lib/wrapper-env-reads.ts";
@@ -338,6 +340,13 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_TRANSCRIPT_RETENTION_DAYS", transcriptRetentionDays],
   ["PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS", transientRetryBackoffMs],
   ["PI_ENSEMBLE_VERIFY_TIMEOUT_MS", verifyTimeoutMs],
+  // #1509 — each tier's documented default is checked against the live reader
+  // with the environment cleared, so a default that drifts from
+  // `work-driver-verify-budget.ts` fails here rather than in the handoff of
+  // some later cycle.
+  ["PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS", tierDefaultReader("suite")],
+  ["PI_ENSEMBLE_VERIFY_FAST_TIMEOUT_MS", tierDefaultReader("fast")],
+  ["PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS", tierDefaultReader("smoke")],
   ["PI_ENSEMBLE_ACCEPTANCE_COVERAGE", acceptanceCoverageEnabled],
   ["PI_ENSEMBLE_AUTO_STEER", autoSteerEnabled],
   ["PI_ENSEMBLE_CHILD_CODEMODE", childCodemodeEnabled],
@@ -380,7 +389,11 @@ for (const [name, read] of LIVE) {
   const saved = keys.map((k) => process.env[k]);
   for (const k of keys) delete process.env[k];
   try {
-    const live = read();
+    // #1509 — awaited: the per-tier resolvers read a `.pi/*-timeout-ms` file
+    // and are therefore async. Every existing reader returns a plain value,
+    // which `await` passes through unchanged, so the sync entries are
+    // unaffected.
+    const live = await read();
     assert(
       live === defaultOf(name),
       `${name} default ${defaultOf(name)} matches the reader (${live})`,

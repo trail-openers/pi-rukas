@@ -49,6 +49,18 @@ function assert(cond: boolean, msg: string) {
   assert(unknown.length === 0, `every validator cap literal is published (${unknown.join(", ")})`);
   assert(new Set(fixed).size === fixed.length, "published caps are unique");
   assert(JSON.stringify([...fixed].sort()) === JSON.stringify(fixed), "published caps are sorted");
+  const continueCaps = [
+    "ambiguous",
+    "fork",
+    "head-moved",
+    "not-found",
+    "unresolved",
+    "unsafe-head",
+  ];
+  assert(
+    continueCaps.every((c) => fixed.includes(`continue-pr-${c}`)),
+    "the six continue-pr caps are published (#1468)",
+  );
   const vocab = capVocabulary();
   const verify = vocab.templates.find((t) => t.prefix === "verify-failed:");
   assert(
@@ -245,8 +257,15 @@ const capHit = (cap: string, at: number): WorkEvent =>
     "utf8",
   );
   assert(
-    /build-args: \|\s*\n\s*GITHUB_SHA=\$\{\{ github\.sha \}\}/.test(workflow),
-    "publish-image.yml passes GITHUB_SHA as a build arg",
+    /build-args: \|\s*\n\s*GITHUB_SHA=\$\{\{ needs\.gate\.outputs\.sha \}\}/.test(workflow),
+    "publish-image.yml passes the gated commit as GITHUB_SHA",
+  );
+  // Under workflow_run, github.sha is main's tip when the run starts, not
+  // the commit CI checked — the gate must take workflow_run.head_sha.
+  assert(
+    /RUN_SHA: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/.test(workflow) &&
+      /sha="\$\{RUN_SHA:-\$GITHUB_SHA\}"/.test(workflow),
+    "publish-image.yml's gate resolves the commit from workflow_run.head_sha",
   );
   const lines = docker.split("\n");
   const argAt = lines.findIndex((l) => /^ARG GITHUB_SHA\b/.test(l));

@@ -17,7 +17,9 @@
  * parallel") is genuinely N>1-only. The scope itself is not.
  */
 
+import { developNote } from "../src/work-develop-run.ts";
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
+import { initialState } from "../src/workflow-state.ts";
 import {
   assertDevelopPromptTestScope,
   assertSuiteBoundDerivation,
@@ -375,6 +377,54 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
     );
   assertDevelopPromptTestScope(assert, render);
   assertSuiteBoundDerivation(assert);
+}
+
+// ------------------------------------------- #1468: the continue-PR note
+
+{
+  const fresh = initialState(1468, 1_000_000);
+  const render = (note: string | undefined): string =>
+    inlineDevelopPrompt(
+      [1468],
+      "/tmp/scratch",
+      ws,
+      undefined,
+      undefined,
+      BRIEF,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      note,
+    );
+  assert(
+    render(developNote(fresh)) === render(undefined),
+    "#1468: without continuedPr the develop prompt is byte-identical",
+  );
+  const continued = {
+    ...fresh,
+    pipelineState: {
+      ...fresh.pipelineState,
+      continuedPr: {
+        number: 77,
+        headRefName: "fix/old-branch",
+        headSha: "a".repeat(40),
+        mainlineSha: "b".repeat(40),
+        conflictPaths: ["src/a.ts", "src/b.ts"],
+        matchedBy: "body" as const,
+      },
+    },
+  };
+  const prompt = render(developNote(continued));
+  assert(
+    prompt.includes("PR #77") && prompt.includes("fix/old-branch"),
+    "#1468: the note names the PR and its branch",
+  );
+  assert(prompt.includes("src/a.ts, src/b.ts"), "#1468: the note names the conflicted paths");
+  assert(
+    /never run `git merge --abort`, rebase, reset or push/i.test(prompt),
+    "#1468: the note forbids abort, rebase and push",
+  );
 }
 
 console.log(`\nexit ${exit}`);

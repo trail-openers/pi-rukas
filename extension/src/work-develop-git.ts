@@ -301,9 +301,16 @@ export async function resetWorktreeToBase(
   if (work.length > 0) {
     patchPath = await savePartialWork(git, cwd, base, work, save.patchPath);
   }
-  await git(["reset", "--hard", base], { cwd, maxBuffer: 64 * 1024 });
-  await git(["clean", ...RESET_CLEAN_ARGS], { cwd, maxBuffer: 64 * 1024 });
+  await resetAndClean(git, cwd, base);
   return patchPath;
+}
+
+/** The destructive half of every save-then-clean: `reset --hard <target>` (not
+ *  `checkout`, which leaves the save's staged index dirty) and the driver-dir-
+ *  sparing clean. Callers run it only after their save returned. */
+export async function resetAndClean(git: GitExec, cwd: string, target: string): Promise<void> {
+  await git(["reset", "--hard", target], { cwd, maxBuffer: 64 * 1024 });
+  await git(["clean", ...RESET_CLEAN_ARGS], { cwd, maxBuffer: 64 * 1024 });
 }
 
 /** Stage the deletion of `paths` that are gone from the working tree. `rm --cached`
@@ -341,8 +348,8 @@ export async function unstagePaths(git: GitExec, cwd: string, paths: string[]): 
 }
 
 /** Stage the work paths and write `git diff --binary --cached <base>` to
- *  `patchPath`. The write refuses to overwrite an existing file (`wx`), so a
- *  retry can never clobber an earlier save. Before writing, every work path must
+ *  `patchPath` (after the optional `preserveRef`). The write refuses to
+ *  overwrite an existing file (`wx`), so a retry can never clobber an earlier save. Before writing, every work path must
  *  appear in the index (`diff --cached --name-only`) and the patch must be
  *  non-empty; otherwise it throws. Any failure throws, so the caller never
  *  resets unsaved work. */
@@ -352,6 +359,10 @@ export async function savePartialWork(
   base: string,
   work: string[],
   patchPath: string,
+  /** #1391 — when set, the verified stage is also committed (`commit-tree`,
+   *  HEAD untouched) and this ref pointed at it BEFORE the patch is written, so
+   *  the save survives the reset as a ref and not only as a file under `tmp/`. */
+  preserveRef?: string,
 ): Promise<string> {
   let patch: string;
   try {
@@ -375,6 +386,12 @@ export async function savePartialWork(
       throw new Error(
         `${unstaged.length} work path(s) not staged, e.g. ${JSON.stringify(unstaged[0])}`,
       );
+    }
+    if (preserveRef !== undefined) {
+      const tree = (await git(["write-tree"], { cwd })).stdout.trim();
+      const msg = `pi-rukas: work a lost attempt left in ${cwd}`;
+      const commit = await git(["commit-tree", tree, "-p", "HEAD", "-m", msg], { cwd });
+      await git(["update-ref", preserveRef, commit.stdout.trim()], { cwd });
     }
     const { stdout } = await git(["diff", "--binary", "--cached", base], {
       cwd,

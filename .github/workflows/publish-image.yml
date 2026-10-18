@@ -6,29 +6,33 @@ name: publish-image
 # broadband: ~10–20s).
 #
 # Triggers:
-#   - push to main (only when files baked into the image change — paths: filter)
+#   - CI succeeded on a push to main (workflow_run) — so `latest` is never
+#     built from a commit whose CI failed. The image is built from the commit
+#     CI checked (`workflow_run.head_sha`), not from `github.sha`, which under
+#     workflow_run is whatever main points at when this run starts.
 #   - release published (release-please cuts a tag → publish a versioned image)
 #   - manual workflow_dispatch (ad-hoc republish when needed)
+#
+# Debounce: merges arrive in bursts (38 in one day), and each used to build
+# and push a full multi-arch image that the next merge overwrote minutes
+# later. Now a main build is skipped when main has already moved past its
+# commit (the newer commit's own CI run publishes instead), and the
+# concurrency group cancels an in-flight main build when a newer one starts.
+# The same check stops a commit whose CI finished late from overwriting
+# `latest` with an older image. Trade-off: if the newest commit's CI fails,
+# `latest` stays at the last published image until the next green merge.
+# workflow_run has no `paths:` filter, so docs-only merges publish too; with
+# the layer cache that is a ~3 min build.
 #
 # Tags pushed: `latest`, `sha-<12char-commit>`, and `<tag>` on release.
 # Multi-arch: linux/amd64 + linux/arm64 (Apple Silicon hosts get native, not emulated).
 # Cache: BuildKit GHA cache lets subsequent builds finish in 2–3 min vs. ~10 cold.
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths:
-      - '.devcontainer/**'
-      - 'extension/**'
-      - 'bin/pi-rukas'
-      - 'install.sh'
-      - 'install-retry-defaults.sh'
-      - 'agents-base/**'
-      - 'modules/**'
-      - 'manifests/**'
-      - 'agents.json'
-      - 'build.sh'
-      - '.github/workflows/publish-image.yml'
   release:
     types: [published]
   workflow_dispatch: {}
@@ -37,12 +41,51 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  # A release build gets its own group and is never cancelled.
+  group: publish-image-${{ github.event_name == 'release' && github.event.release.tag_name || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_run' }}
+
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    # Only a successful CI run for a push to main — never a PR's run.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      publish: ${{ steps.commit.outputs.publish }}
+    steps:
+      - name: Resolve commit, skip if main has moved on
+        id: commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          sha="${RUN_SHA:-$GITHUB_SHA}"
+          publish=true
+          if [ "$EVENT" = "workflow_run" ]; then
+            main="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+            if [ "$main" != "$sha" ]; then
+              echo "::notice::main is at ${main::12}, past ${sha::12}; its own CI run publishes instead"
+              publish=false
+            fi
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+
   publish:
+    needs: gate
+    if: needs.gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -59,10 +102,12 @@ jobs:
 
       - name: Compute tags
         id: tags
+        env:
+          SHA: ${{ needs.gate.outputs.sha }}
         run: |
           owner_lc="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           tags="ghcr.io/${owner_lc}/pi-rukas:latest"
-          tags="${tags},ghcr.io/${owner_lc}/pi-rukas:sha-${GITHUB_SHA::12}"
+          tags="${tags},ghcr.io/${owner_lc}/pi-rukas:sha-${SHA::12}"
           if [ "${{ github.event_name }}" = "release" ]; then
             tags="${tags},ghcr.io/${owner_lc}/pi-rukas:${{ github.event.release.tag_name }}"
           fi
@@ -78,6 +123,6 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           # #1326 — baked into .pi/pi-rukas-commit (see the Dockerfile).
           build-args: |
-            GITHUB_SHA=${{ github.sha }}
+            GITHUB_SHA=${{ needs.gate.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

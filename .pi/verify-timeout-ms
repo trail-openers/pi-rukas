@@ -1,0 +1,28 @@
+# Suite-tier verify budget (#1509, folded in from #1041).
+#
+# The wall clock the driver gives the SUITE tier — `.pi/verify-cmd` in each
+# worktree, its consolidated run, and the baseline probe that re-runs the same
+# command at the cycle's base commit. First non-empty, non-comment line, a
+# positive number of milliseconds, read like every other `.pi/` config file.
+#
+# Why a file and not only the env var (#1041): PI_ENSEMBLE_VERIFY_TIMEOUT_MS
+# belongs to the Pi process, so a project whose gate legitimately needs longer
+# than the default could not say so itself — every operator had to export a
+# variable before launching. This repo's full offline suite is ~641 files; at
+# 2 jobs under load it measured past the old shared 10-minute bound, which
+# parked healthy cycles at `verify-failed:develop` on code that was never
+# judged. 30 minutes is the documented suite-tier default
+# (`PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS`), stated here explicitly so the gate's
+# budget is visible next to the command it bounds rather than being an ambient
+# number somebody remembers.
+#
+# Precedence (highest first): PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS →
+# PI_ENSEMBLE_VERIFY_TIMEOUT_MS → this file → the documented default.
+# Fast tier: .pi/verify-cmd-fast-timeout-ms. Smoke tier: .pi/smoke-cmd-timeout-ms.
+# An unparseable value (non-numeric, zero, negative) is ignored with a trace and
+# the next level answers; `0` in particular never reaches exec, which reads a
+# zero timeout as "no bound at all".
+#
+# `.pi/` is a protected path, so an unattended /work cycle cannot rewrite these
+# budgets — same rule as .pi/verify-cmd.
+1800000

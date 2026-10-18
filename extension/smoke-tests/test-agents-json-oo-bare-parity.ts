@@ -285,6 +285,45 @@ for (const role of ROLES) {
 }
 
 const ops = agents.agent.ops?.permission?.bash ?? {};
+
+// ============================================================
+// #1113 — the developer role has NO push grant, and @ops still does.
+//
+// The doctrine has said `git push` is @ops's job since the first commit, and
+// `agents.json` granted it anyway (`"git push*": "allow"`,
+// `"oo git push*": "allow"`). In trust/sandbox mode the map is never read, so
+// the grant was not even the enforcement gap — it was the visible lie, and the
+// one thing a reviewer of a PM dispatch could check. Both rows are now `deny`
+// for developer and the mode-independent guard (`developer-push-guard.ts`) is
+// the enforcement. This block pins BOTH directions: developer has no allow,
+// and ops keeps its (out of scope to remove — the issue names ops as the push
+// owner, and `git push -u origin <branch>` is in the recovery list below).
+// ============================================================
+{
+  const dev = agents.agent.developer?.permission?.bash ?? {};
+  for (const key of ["git push*", "oo git push*"]) {
+    assert(
+      dev[key] === undefined || dev[key] === "deny",
+      `developer: "${key}" is not an allow row (#1113) — found ${dev[key] ?? "absent"}`,
+    );
+  }
+  for (const cmd of [
+    "git push",
+    "git push origin main",
+    "git push --force-with-lease",
+    "oo git push origin feature/x",
+  ]) {
+    const got = matchBashSubcommand(cmd, dev);
+    assert(got !== "allow", `developer: "${cmd}" does not resolve allow (#1113) — got ${got}`);
+  }
+  // The positive counterpart: removing developer's rows must not have reached
+  // into ops' map. If this fails, the fix was applied to the wrong role block.
+  assert(
+    ops["git push*"] === "allow" && ops["oo git push*"] === "allow",
+    "ops: keeps its git push allows (#1113 — ops owns the push; out of scope to remove)",
+  );
+}
+
 for (const cmd of [
 	"cargo test",
 	"cargo clippy",

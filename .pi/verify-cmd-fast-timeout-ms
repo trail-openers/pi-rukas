@@ -1,0 +1,13 @@
+# Fast-tier verify budget (#1509).
+#
+# The wall clock the driver gives `.pi/verify-cmd-fast` — typecheck plus lint,
+# which finishes in seconds. First non-empty, non-comment line, a positive
+# number of milliseconds.
+#
+# This tier exists so a fast failure is caught in seconds AND so a fast run can
+# never inherit the suite tier's budget: before #1509 both tiers shared one
+# bound and the full run got whatever the fast run left of it. The bound here
+# belongs to the fast run alone. Precedence:
+# PI_ENSEMBLE_VERIFY_FAST_TIMEOUT_MS → PI_ENSEMBLE_VERIFY_TIMEOUT_MS → this
+# file → the documented default (10 min).
+600000

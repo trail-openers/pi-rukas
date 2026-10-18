@@ -31,8 +31,10 @@ import {
   isHostExhaustionFailure,
 } from "./work-driver-exec-error.ts";
 import { isHostForkExhaustion, pidLimitSnapshot } from "./work-driver-exec-error.ts";
+import { describeObservedConsolidationConflict } from "./work-driver-explain-consolidation.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import { verifyTimeoutFailure, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
+import { TIER_KNOB } from "./work-driver-verify-budget.ts";
+import { verifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
 import { rawOutputClause } from "./work-driver-verify-flake.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
@@ -40,9 +42,26 @@ export interface ConsolidatedVerifyReporting {
   cmd: string;
   failures: string[];
   notes: string[];
+  /**
+   * #1509 — the bound the consolidated run was given, and the knob that
+   * governed it. Both are threaded from the caller rather than re-read: a
+   * reporter that called a resolver itself could print a bound other than the
+   * one the run was killed at, and could name the wrong knob for a commit-pr
+   * run bounded by the integration knob. `timeoutMs` is required for the
+   * caller that has a run; a caller with no run behind the failure strings
+   * (a decline or conflict path) passes the bound it would have used.
+   */
+  timeoutMs: number;
+  timeoutKnob?: string;
   /** Only `repoRoot` is read. */
   ctx: { repoRoot: string };
   worktrees: Record<string, string>;
+  /**
+   * #813 — the plan's workstreams, read for their declared `paths` only: the
+   * no-fence conflict text says "likely coupled" when the failure names a
+   * file a sibling declared. Absent → the neutral observed sentence.
+   */
+  workstreams?: Record<string, { paths: string[] } | undefined>;
   perWorktreeFailuresByWs: Record<string, string>;
   singlePerWs: string | undefined;
   singlePerAssertion: string | null | undefined;
@@ -67,14 +86,31 @@ export interface ConsolidatedVerifyReporting {
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void;
 }
 
+/**
+ * #813 — the declared paths per workstream, for the coupled-pair clause.
+ * An absent plan (no `workstreams` on the state) yields `{}`.
+ */
+function declaredPathsByWorkstream(
+  workstreams: ConsolidatedVerifyReporting["workstreams"],
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [id, ws] of Object.entries(workstreams ?? {})) {
+    if (ws && Array.isArray(ws.paths) && ws.paths.length > 0) out[id] = ws.paths;
+  }
+  return out;
+}
+
 export function reportConsolidatedVerifyOutcome(
   cons: ConsolidatedVerifyResult,
   {
     cmd,
     failures,
     notes,
+    timeoutMs,
+    timeoutKnob,
     ctx,
     worktrees,
+    workstreams,
     perWorktreeFailuresByWs,
     singlePerWs,
     singlePerAssertion,
@@ -139,8 +175,26 @@ export function reportConsolidatedVerifyOutcome(
           `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). The develop scope fence recorded a sibling-declared violation BEFORE this conflict: ${named}. The declared paths are disjoint — the decomposition is fine; the fence was violated and the conflict is its consequence at consolidation. Re-splitting the plan will NOT fix this; restore the fence boundary (the touching workstream's commit must not include that file) and re-run`,
         );
       } else {
+        // #813 — no fence record: report what was OBSERVED (which patch
+        // failed, what applied cleanly before it) instead of asserting "two
+        // workstreams edited the same lines; the decomposition is
+        // incoherent". #1005 merges coupled workstreams at plan time, so the
+        // pair that still collides is usually coupled through types with
+        // disjoint declared paths — where re-splitting is not the fix. One
+        // renderer's sentence, shared with the cap explanation via
+        // describeObservedConsolidationConflict. `cons.detail` is deliberately
+        // NOT passed as `evidence`: this renderer already embeds it in the
+        // lead, and only the structured pick fields are trustworthy enough to
+        // license the "likely coupled" wording — a `detail` string is an
+        // ungoverned message that could manufacture that diagnosis.
         failures.push(
-          `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). Two workstreams edited the same lines; the decomposition is incoherent, which is distinct from a verify failure`,
+          describeObservedConsolidationConflict({
+            lead: `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail})`,
+            conflictedWorkstream: cons.conflictedWorkstream,
+            appliedBeforeConflict: cons.appliedBeforeConflict,
+            conflictedFile: cons.conflictedFile,
+            declaredPathsByWorkstream: declaredPathsByWorkstream(workstreams),
+          }),
         );
       }
     }
@@ -227,7 +281,12 @@ export function reportConsolidatedVerifyOutcome(
           // the output tail, so the headline stays the plain timeout sentence and
           // the report is pointed at structurally (`hangLogPath` below, thence to
           // the cap event and the handoff).
-          `${verifyTimeoutFailure(cmd, `on the CONSOLIDATED tree at ${ctx.repoRoot}`, verifyTimeoutMs())}.`
+          `${verifyTimeoutFailure(
+            cmd,
+            `on the CONSOLIDATED tree at ${ctx.repoRoot}`,
+            timeoutMs,
+            timeoutKnob ?? TIER_KNOB.suite,
+          )}.`
         : isHostForkExhaustion(classifierInput)
           ? hostExhaustionFailure(
               `verify command \`${cmd}\` on the CONSOLIDATED tree`,
