@@ -196,6 +196,15 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // proved was already run. Names the tree and the worktree so the claim
       // is checkable, not just asserted.
       return `  consolidated-verify-skipped · ${e.step} · tree ${e.treeHash.slice(0, 8)} already passed in ${path.basename(e.worktree)}`;
+    case "consolidated-verify-pre-existing":
+      // #1404 — a red gate that did not stop the push, because every failing
+      // test is red at the base commit too. Names and base ride on the event
+      // so an operator can confirm the claim without the raw verify log.
+      return `  consolidated-verify-pre-existing · ${e.step} · ${e.failures.length} failing test(s) red at base ${e.baseSha.slice(0, 8)}: ${e.failures.slice(0, 3).join(", ")}${e.failures.length > 3 ? ` (+${e.failures.length - 3} more)` : ""}`;
+    case "verify-started":
+      return `  verify-started · ${e.step} · ${e.command.slice(0, 60)}`;
+    case "verify-completed":
+      return `  verify-completed · ${e.step} · ${e.ok ? "passed" : "FAILED"} · ${fmtElapsed(e.ms)} · ${e.command.slice(0, 60)}`;
     case "widening-scan":
       return `  widening-scan · ${e.findings.length} finding(s)`;
     case "memory-write":

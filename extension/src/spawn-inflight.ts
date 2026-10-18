@@ -27,6 +27,7 @@ import { type RunningState, ingestEvent } from "./progress.ts";
 import type { CapSession } from "./spawn-caps.ts";
 import { killProcessTree } from "./spawn-kill.ts";
 import { inactivityTimeoutMs, toolInactivityTimeoutMs, willRetryAfter } from "./spawn-support.ts";
+import { traceWarn } from "./trace.ts";
 
 /** The per-spawn set of open toolCall ids. A toolCall block opens one; the
  * matching toolResult closes it. */
@@ -135,13 +136,82 @@ export function createInactivityPoll(opts: {
       if (budget.ms <= 0) return; // this budget is disabled; the other is checked in its own branch
       if (Date.now() - lastActivityAt() >= budget.ms) {
         onKill(budget.cause, budget.ms, inFlightTools.toolNames());
-        killProcessTree(child);
+        // #1510 — this runs on its OWN setInterval, so a throw here is an
+        // uncaught exception at timer level: it aborts the parent and takes
+        // down every sibling child still in flight, exactly the shape the
+        // budget kill guards. `onKill` has already recorded the cause, so the
+        // kill is attributed even when the signal cannot land — the failure is
+        // reported at default log level, never swallowed.
+        try {
+          killProcessTree(child);
+        } catch (err) {
+          traceWarn(`inactivity killProcessTree failed: ${String(err)}`);
+        }
       }
     },
     Math.min(30_000, Math.max(250, Math.floor(pollBudgetMs / 2))),
   );
   interval.unref();
   return () => clearInterval(interval);
+}
+
+/**
+ * The wall-clock backstop (#1510 sibling of createInactivityPoll — both are
+ * spawn-level timers that KILL, so they share this module). The backstop only
+ * catches runaway loops; the inactivity watchdog above detects true hangs
+ * without a view on how fast the child's model happens to be.
+ *
+ * The kill runs on its OWN setTimeout, so a throw escaping it is an uncaught
+ * exception at timer level that aborts the parent and takes down every
+ * sibling child — the exact shape #1510 guards on the budget path. `timedOut`
+ * is set FIRST, so `killCause()` still reports "timeout" when the signal
+ * cannot land; the failure is reported at default log level, never swallowed.
+ */
+export function createWallClockBackstop(opts: {
+  child: ChildProcess;
+  timeoutMs: number;
+  onTimeout: () => void;
+}): () => void {
+  const { child, timeoutMs, onTimeout } = opts;
+  const timeout = setTimeout(() => {
+    onTimeout();
+    try {
+      killProcessTree(child);
+    } catch (err) {
+      traceWarn(`wall-clock backstop killProcessTree failed: ${String(err)}`);
+    }
+  }, timeoutMs);
+  return () => clearTimeout(timeout);
+}
+
+/**
+ * Propagate Pi's user-cancel (Esc) signal: kill the child so the tool-execute
+ * promise resolves and Pi un-sticks immediately (#1510 sibling of the two
+ * timer kills above — all three reach `killProcessTree` from outside the
+ * normal flow, so all three are guarded and reported, never swallowed).
+ * Fires once, immediately if the signal is already aborted. Returns the detach
+ * the caller runs in its finally block.
+ */
+export function attachAbortKill(
+  child: ChildProcess,
+  signal: AbortSignal | undefined,
+  onAbort: () => void,
+): () => void {
+  if (!signal) return () => undefined;
+  const kill = () => {
+    onAbort();
+    try {
+      killProcessTree(child);
+    } catch (err) {
+      traceWarn(`abort killProcessTree failed: ${String(err)}`);
+    }
+  };
+  if (signal.aborted) {
+    kill();
+    return () => undefined;
+  }
+  signal.addEventListener("abort", kill, { once: true });
+  return () => signal.removeEventListener("abort", kill);
 }
 
 /**

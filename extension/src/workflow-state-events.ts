@@ -31,9 +31,11 @@ import type {
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
 import type { DispatchSlowEvent } from "./workflow-state-events-slow.ts";
 import type {
+  ConsolidatedVerifyPreExistingEvent,
   ConsolidatedVerifySkippedEvent,
   VerifyFlakeRecoveredEvent,
   VerifyFullStatusEvent,
+  VerifyRunEvent,
 } from "./workflow-state-events-verify-flake.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 // #539 — single definition in the sibling fragment module.
@@ -449,6 +451,8 @@ export type WorkEvent =
   | VerifyFullStatusEvent
   | VerifyFlakeRecoveredEvent
   | ConsolidatedVerifySkippedEvent
+  | ConsolidatedVerifyPreExistingEvent
+  | VerifyRunEvent
   | WideningScanEvent
   | MemoryEventFragment
   | WorktreeProvisionedEvent

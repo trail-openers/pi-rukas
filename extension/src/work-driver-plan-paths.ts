@@ -111,6 +111,55 @@ export function findPathCollisions(
   return collisions;
 }
 
+/** A fence entry that contradicts the workstream declaring it (#1167). */
+export interface FenceContradiction {
+  /** The workstream whose fence contradicts its own paths. */
+  workstream: string;
+  /** The fence entry as the planner wrote it. */
+  entry: string;
+  /** The workstream's own declared path the entry names. */
+  path: string;
+}
+
+/**
+ * #1167 — fences that contradict the plan declaring them.
+ *
+ * The planner prompt's cross-declaration contract (#572) tells every
+ * workstream to put its siblings' paths into its own `out-of-scope:` line,
+ * so a fence naming a path is normal. What is never legitimate is a fence
+ * naming a path the SAME workstream also declares — the plan says both
+ * "this file is yours" and "do not touch it". That is the #776 / #1020
+ * incident: the develop fence hit parked a correct, complete change.
+ *
+ * The comparison reuses `findPathCollisions`' containment semantics
+ * (exact match, or containment either way on a `/` boundary) and normalises
+ * BOTH sides with `normaliseDeclaredPath` first. The normalisation is the
+ * whole game: a fence entry carrying an annotation — `src/x.ts (new)` — is
+ * the same file as `src/x.ts`, and comparing un-normalised strings lets the
+ * contradiction pass silently (the issue's own named pitfall).
+ *
+ * Prose fence entries that name no path (`"sibling owns all tests"`, `"docs/"`
+ * when no path declares it) are NOT flagged: there is nothing to compare, and
+ * inventing a match from free text would reject plans whose fences are simply
+ * worded loosely.
+ */
+export function findFenceContradictions(
+  workstreams: Record<string, { paths: string[]; outOfScope?: string[] }>,
+): FenceContradiction[] {
+  const out: FenceContradiction[] = [];
+  for (const [id, ws] of Object.entries(workstreams)) {
+    const own = [...new Set((ws.paths ?? []).map((p) => normaliseDeclaredPath(p)).filter(Boolean))];
+    if (own.length === 0) continue;
+    for (const entry of ws.outOfScope ?? []) {
+      const n = normaliseDeclaredPath(entry);
+      if (!n) continue;
+      const path = own.find((p) => p === n || p.startsWith(`${n}/`) || n.startsWith(`${p}/`));
+      if (path !== undefined) out.push({ workstream: id, entry, path });
+    }
+  }
+  return out;
+}
+
 /**
  * True when the basename looks like a test file, by naming convention only.
  *

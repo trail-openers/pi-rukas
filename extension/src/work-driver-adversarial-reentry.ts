@@ -121,6 +121,16 @@ export function isTransientAdversarialOutcome(o: AdversarialOutcome): boolean {
  * computation. The shape of the event (infra vs threw) determines which
  * classification kind to pass; the taxonomy returns the waitMs floor
  * and shouldRetry flag used by the in-step retry's shared wait.
+ *
+ * #1243 — `killCause` is load-bearing for the LADDER, not just the diagnosis.
+ * Without it an infra-shaped self-kill reaches the taxonomy with no structured
+ * signal, falls through every `self-killed:*` branch, and lands on the
+ * `dispatch-failed-provider` default as `provider-severed` — the exact cause
+ * `providerRetryWaitMs` multiplies by the 60 s floor. The taxonomy already
+ * returns `self-killed:inactivity` given the cause; it was simply never shown
+ * one. Passing it keeps a self-kill on the linear ladder, which is what #1243
+ * says a self-kill deserves ("a self-kill keeps the linear ladder — waiting
+ * minutes does not fix a hang").
  */
 export function classifyAdversarialOutcome(o: AdversarialOutcome) {
   return o.infra
@@ -128,6 +138,7 @@ export function classifyAdversarialOutcome(o: AdversarialOutcome) {
         kind: "dispatch-failed-provider",
         providerMessage: o.errorTail,
         providerRepeats: o.providerRepeats,
+        killCause: o.killCause,
       })
     : classifyFailureCause({ kind: "dispatch-failed", errorTail: o.errorTail });
 }

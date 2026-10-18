@@ -38,6 +38,40 @@ export type VerifyFlakeRecoveredEvent = {
 };
 
 /**
+ * #1415 — one run of the develop gate's verify, bracketed. The gate can take
+ * as long as the project's whole suite (measured: ~22 min per develop round on
+ * a host whose gate is 7–10 min), and with nothing recorded between the
+ * developer finishing and `develop` completing, an operator watching the
+ * stream saw a stall that was not one. `verify-started` is persisted BEFORE
+ * the command runs, so it reaches the stream while the gate is still running;
+ * `verify-completed` carries how long it took and whether it passed.
+ *
+ * `command` is the verify command the gate resolved — the per-worktree and
+ * consolidated runs both use it. The bracket is the whole gate, so a gate that
+ * ends before running it (no diff, a frontend-only diff) still records both,
+ * with a short `ms`. A gate with no discoverable command records neither.
+ */
+export type VerifyStartedEvent = {
+  kind: "verify-started";
+  at: number;
+  step: "develop";
+  command: string;
+};
+
+export type VerifyCompletedEvent = {
+  kind: "verify-completed";
+  at: number;
+  step: "develop";
+  command: string;
+  /** The gate's verdict: false when it recorded any failure. */
+  ok: boolean;
+  /** Wall-clock time of the whole gate, from `verify-started`. */
+  ms: number;
+};
+
+export type VerifyRunEvent = VerifyStartedEvent | VerifyCompletedEvent;
+
+/**
  * Issue #279 — verify-full tier status event (driver-side, ci step).
  * Lives in this verify fragment (same domain: verify-tier outcomes) to
  * keep the main union file under the §12 500-line limit.
@@ -95,6 +129,48 @@ export type ConsolidatedVerifySkippedEvent = {
   /** How many workstreams the cycle has — the skip requires exactly one. */
   workstreamCount: number;
 };
+
+/**
+ * Issue #1404 — the commit-pr consolidated verify FAILED and the cycle
+ * CONTINUED, because every failing test also fails at the cycle's base commit.
+ *
+ * **Why an event.** This is the one shape in the pipeline where a red gate
+ * does not stop the push, so the state file alone must say so: an operator
+ * reading a merged cycle needs to learn the gate was red, and the next cycle
+ * needs to learn why it will park on the same tests. A note would not do —
+ * notes reach the state file on failure paths, and this is the success path.
+ *
+ * Deliberately NOT `verify-flake-recovered` (nothing was re-run and passed)
+ * nor `consolidated-verify-skipped` (the command ran and failed). The names
+ * ride with it so the record is checkable rather than a claim.
+ */
+export type ConsolidatedVerifyPreExistingEvent = {
+  kind: "consolidated-verify-pre-existing";
+  at: number;
+  /** The step whose consolidated verify excused its failures: always commit-pr. */
+  step: "commit-pr";
+  /** The failing test names the base run produced too. */
+  failures: string[];
+  /** The base commit they were measured against. */
+  baseSha: string;
+};
+
+/**
+ * Build the #1404 pre-existing-failures event. A factory for the same reason
+ * as the skip's: one place owns `step` and stamps `at` at the decision.
+ */
+export function makeConsolidatedVerifyPreExistingEvent(
+  failures: readonly string[],
+  baseSha: string,
+): ConsolidatedVerifyPreExistingEvent {
+  return {
+    kind: "consolidated-verify-pre-existing",
+    at: Date.now(),
+    step: "commit-pr",
+    failures: [...failures],
+    baseSha,
+  };
+}
 
 /**
  * Build the #1240 skip event. A factory (rather than a literal at each call

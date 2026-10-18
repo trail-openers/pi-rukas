@@ -202,6 +202,60 @@ await setupLedgerPath();
       assert(/verdict is malformed/.test(r.reason ?? ""), "…naming the malformed verdict (condition-N wording)");
       assert(!/round-cap path was not evaluated/.test(r.reason ?? ""), "…NOT the 'not evaluated' fall-through");
     }
+
+    /* #1449 — the refusal distinguishes "never reviewed" from "reviewed, but the
+     * row landed at an overridden path".
+     *
+     * Both situations refuse (the fail-closed rule is unchanged — that is the
+     * point: the guard cannot be talked into passing). Only the EXPLANATION
+     * differs, and for an operator staring at a refused merge the explanation is
+     * the whole difference between "go run the review" and "your environment is
+     * lying to you".
+     *
+     * The guard cannot detect the redirect itself: it resolves its path through
+     * the same `ledgerPathFor`, in the same process, reading the same poisoned
+     * `process.env`, so guard and writer agree on the redirected file. What it
+     * can surface is the provenance the WRITER stamped on the row it did manage
+     * to write — which is why the distinguishing case here is a row carrying a
+     * `writtenTo` stamp: the stamp is evidence from the write side, not an
+     * inference from here. */
+    {
+      const redirect = path.join(tmpdir(), "pi-1449-elsewhere", "review-ledger.json");
+      const stamped: LedgerEntry = { ...ADV, writtenTo: redirect };
+      const diverted = await hook("gh pr merge 12", [stamped], {
+        ghComments: commentsWith("feature/x", "p1"),
+      });
+      assert(
+        diverted.block === true,
+        "#1449 a redirected review still refuses (fail closed is unchanged)",
+      );
+      assert(
+        /DID run/i.test(diverted.reason ?? "") && (diverted.reason ?? "").includes(redirect),
+        "#1449 the refusal says a review DID run and names the file its row went to",
+      );
+      assert(
+        /unset PI_ENSEMBLE_REVIEW_LEDGER_FILE/.test(diverted.reason ?? ""),
+        "#1449 the refusal names the env var to unset — the operator can act on it",
+      );
+      assert(
+        /round-cap path was not evaluated/.test(diverted.reason ?? ""),
+        "#1449 the redirected refusal keeps the #1000 'not evaluated' disclosure",
+      );
+      // The guard must not INVENT a redirect it has no evidence for: the same
+      // call without the stamp reads as never-reviewed, or the distinguishing
+      // text would become a guess that lets any refusal blame the environment.
+      const never = await hook("gh pr merge 12", [ADV], {
+        ghComments: commentsWith("feature/x", "p1"),
+      });
+      assert(
+        !/DID run/i.test(never.reason ?? "") && /no entry to evaluate/.test(never.reason ?? ""),
+        "#1449 with no write-side stamp the refusal makes NO claim that a review ran",
+      );
+      assert(
+        never.reason !== diverted.reason,
+        "#1449 the two situations are textually distinguishable in the refusal itself",
+      );
+    }
   }
 }
 

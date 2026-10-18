@@ -33,7 +33,13 @@ import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { type DriverOutcome, runWorkDriver } from "../work-driver.ts";
 import { fetchIssueBodies } from "../work-entry.ts";
 import { createEmitSink } from "../work-state-emit.ts";
-import { interruptReasonOf, markInterrupted, readState, workStateFile } from "../workflow-state.ts";
+import {
+  interruptReasonOf,
+  isTerminalState,
+  markInterrupted,
+  readState,
+  workStateFile,
+} from "../workflow-state.ts";
 import type { WorkState } from "../workflow-state.ts";
 import { EXIT, exitCodeForGroup, exitCodeForState } from "./exit-code.ts";
 import { type LineWriter, createHeadlessHost } from "./host.ts";
@@ -72,8 +78,6 @@ export interface HeadlessRunResult {
 }
 
 const DEFAULT_GRACE_MS = 10_000;
-/** States whose exit code is already decided: an expired signal does not override them. */
-const TERMINAL_STATUSES = new Set<string>(["merged", "handoff", "aborted"]);
 /** After grace expires, how long the runner waits for a driver that was mid-step. */
 const LATE_DRIVER_MS = 5_000;
 
@@ -362,7 +366,7 @@ async function runGroup(
     // a live owner's `running` state is one.
     const refusedHere = refused && state.pipelineState.status === "running";
     let code: number;
-    if (outcome === "expired" && !TERMINAL_STATUSES.has(state.pipelineState.status)) {
+    if (outcome === "expired" && !isTerminalState(state)) {
       code = expiredCode;
     } else if (refusedHere) code = EXIT.refused;
     else code = exitCodeForState(state);

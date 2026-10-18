@@ -60,7 +60,20 @@ import type { VerifyExecFn } from "./work-driver-git.ts";
  * and the range/content the approving round actually judged. `toolPath` is set
  * ONLY by `adversarial-tool.ts` after the raw params spread, so a caller cannot
  * set it; the driver's rows carry none and keep their pre-#1360 semantics.
+ *
+ * #1449 — the return widens from `Promise<void>` to an outcome, because the
+ * adversarial half of the ledger had no way to say anything about where its row
+ * landed: every skip was trace-only, so a misdirected adversarial row was
+ * invisible even after the lens side reported its own. The shape mirrors
+ * `LensLedgerOutcome` (see lens-ledger.ts for why a redirect is `recorded: true`
+ * with a `landedAtPath`, never `recorded: false`). The promise still never
+ * rejects and the loop still never awaits it — the caller that wants the report
+ * threads a `note` callback (adversarial-ledger-capture.ts `makeLedgerWrite`).
  */
+export type AdversarialLedgerOutcome =
+  | { recorded: true; landedAtPath?: string }
+  | { recorded: false; reason: string };
+
 export function writeAdversarialLedgerEntry(
   result: DispatchResult,
   params: {
@@ -83,8 +96,8 @@ export function writeAdversarialLedgerEntry(
      * `commentExecFn` on the comment check. Defaults to the real executor. */
     execFn?: VerifyExecFn;
   },
-): Promise<void> {
-  const write = async () => {
+): Promise<AdversarialLedgerOutcome> {
+  const write = async (): Promise<AdversarialLedgerOutcome> => {
     const c = params.workCwd ?? process.cwd();
     const execFn = params.execFn ?? execp;
     // #980 — the branch comes from the SHARED resolver (review-branch.ts:
@@ -102,14 +115,19 @@ export function writeAdversarialLedgerEntry(
         .branch;
     if (!branch) {
       trace("adversarial: ledger write skipped — no branch (detached head, no caller branch)");
-      return;
+      return { recorded: false, reason: "no branch to key the ledger entry on" };
     }
     // The shared working-tree patch id (review-ledger.ts). When untracked
     // files exist the entry is still written for the tracked content, but the
     // gap is traced — see the warning's wording in workingTreePatchId.
     const computed = await workingTreePatchId(execFn, c);
     if (computed.warning) trace(`adversarial: ${computed.warning}`);
-    if (!computed.patchId) return;
+    if (!computed.patchId) {
+      return {
+        recorded: false,
+        reason: computed.warning ?? "no patch id for the working tree",
+      };
+    }
     // #1039 — resolve the head to a full 40-char SHA via the shared
     // resolver (review-head-sha.ts — the same one the lens writer and the
     // diff resolvers use). The adversarial writer takes `head` for branch
@@ -196,9 +214,34 @@ export function writeAdversarialLedgerEntry(
       ...(headSha ? { headSha } : {}),
       ...toolPathFields(bound ?? {}, toolPath),
     };
-    await appendLedgerEntry(entry, execFn, c);
+    // #1449 — the misdirection is answered in TWO places, and the row itself is
+    // the second one. Inside the redirecting process the guard reads the same
+    // file the writer wrote, so it can notice nothing; but a LATER process (a
+    // fresh Pi session, the /work driver, an operator's terminal) reads the
+    // clone's real ledger, finds nothing, and needs the write-side provenance to
+    // explain why. It travels on the row because that is the one artefact the
+    // write produces. The stamp itself is applied by `appendLedgerEntry`
+    // (review-ledger.ts) — the one place that knows the resolved path — and handed
+    // back through `stamped` rather than read off `entry`, which the writer does
+    // not mutate: the outcome's `landedAtPath` and the row's stamp are then the
+    // SAME string from the SAME resolution, not two comparisons that could
+    // disagree.
+    const stamped: { current: LedgerEntry; landedAtPath?: string } = { current: entry };
+    const appendFailure = await appendLedgerEntry(entry, execFn, c, stamped);
+    if (appendFailure) return { recorded: false, reason: appendFailure };
+    return { recorded: true, landedAtPath: stamped.landedAtPath };
   };
-  return write().catch((err) =>
-    trace(`adversarial: ledger write failed: ${(err as Error).message}`),
-  );
+  return write().catch((err: unknown): AdversarialLedgerOutcome => {
+    // `err instanceof Error ? err.message : String(err)` — never a cast. The
+    // writer's own body throws Errors, but `catch` also fires on anything a
+    // called function throws: a bare string from a hand-rolled stub, or
+    // undefined from a property access on an odd shape. `(err as Error).message`
+    // is erased at compile time and throws a TypeError INSIDE this catch on
+    // those, which turns "the ledger had a problem" into "the ledger write
+    // rejected" — the one contract (#1161) every caller of this function relies
+    // on. Same shape as `merge-guard-provenance.ts` and `analyseRefusal`.
+    const reason = err instanceof Error ? err.message : String(err);
+    trace(`adversarial: ledger write failed: ${reason}`);
+    return { recorded: false, reason };
+  });
 }

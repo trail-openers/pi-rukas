@@ -156,7 +156,7 @@ An optional top-level `error` (`{ code, message }`) is present when the runner d
 
 Every text field has secrets redacted before it is cut to its bound.
 
-A failed dispatch is read only for the caps a failed dispatch causes (`step-failed:<step>`, `adversarial-infra-failure`, `developer-timeout`, `review-incomplete`, `loop-detected`, `token-budget`, `plan-timeout`): the last `dispatch-failed*` event between the start of the stopped step's last run and the cap. Its kind wins over the cap's:
+A failed dispatch is read only for the caps a failed dispatch causes (`step-failed:<step>`, `adversarial-infra-failure`, `provider-unavailable`, `developer-timeout`, `review-incomplete`, `loop-detected`, `token-budget`, `plan-timeout`): the last `dispatch-failed*` event between the start of the stopped step's last run and the cap. Usually its kind wins over the cap's — except for `provider-unavailable` and `develop-child-crash`, whose kind comes from the cap even when a failed dispatch exists to explain them. For `provider-unavailable` that matters on a multi-attempt outage: the cap is only chosen when the dispatch that ENDED the step was itself severed by the provider or hit a short-burst 429, and a rung of the ladder that died of something else must not relabel the park.
 
 | `kind` | Meaning |
 |---|---|
@@ -197,7 +197,7 @@ The same object appears in the `--json` result and in `--capabilities` (`extensi
 
 `--capabilities` publishes every value `cap` can take under `contracts.resultSchema.caps`:
 
-- `fixed` — literal caps such as `round-cap`, `intent-park`, `awaiting-human-merge`, `deadline` (the cycle deadline was reached; parked at a step boundary), `fence-violation:develop`, `fix-pass-park` (the adversarial fix pass parked on its own check).
+- `fixed` — literal caps such as `round-cap`, `intent-park`, `awaiting-human-merge`, `deadline` (the cycle deadline was reached; parked at a step boundary), `fence-violation:develop`, `fix-pass-park` (the adversarial fix pass parked on its own check), `provider-unavailable` (a dispatch the model ENDPOINT caused — a severed stream or a short-burst 429 — ended the step after its retries were spent; `failure.kind` is `provider`, so a host may re-queue it once the endpoint answers. The terminal dispatch is what is classified: a step that met an outage earlier and then died of a crash is a crash, not a provider park).
 - `templates` — a prefix plus one parameter: `verify-failed:<step>` (the gate ran and judged the code), `verify-timeout:<step>` (the verify command hit its time bound), `verify-env:<step>` (the system refused to start a process, so the gate never ran), `verify-baseline-red:<step>` (the verify command already fails at the cycle's base commit, on the same assertion as the change or by timing out on both), `pr-not-open:<step>` (the cycle's PR was merged or closed when the step started), `step-failed:<step>`, `driver-crash:<step>` (with the step list in `values`), and `branch-ahead:<count>`.
 
 **`verify-failed:<step>` was narrowed in result schema v2.** It now means only that the gate ran and judged the change. A gate that hit its bound, could not start a process, or was red at the base commit, and the PR-not-open and fix-pass parks, used to share it and now have the caps above (see [troubleshooting](troubleshooting.md#what-verify-failedstep-means-and-the-caps-that-split-from-it-1349)). This changes what an existing cap means, and the narrowing is deliberate. It is covered by the tolerate-the-unknown rule below: a host that meets one of the new caps treats it as a generic handoff. It ships in the same release as schema v2, so no released v2 build used the old meaning and the version is not bumped again. A host that read `verify-failed:` as "the gate parked" should also match the new caps, or treat them as unknown caps (below).
@@ -256,6 +256,8 @@ Only these kinds are a host contract, versioned by `NDJSON_STABLE_VERSION` (1) a
 | `step-started` | `step`, `at`, `round` |
 | `dispatch-started` | `step`, `role`, `jobId`, `at` |
 | `dispatch-completed` | `step`, `role`, `jobId`, `ok`, `ms`, `at`, `usage` |
+| `verify-started` | `step`, `command`, `at` — the develop gate's verify is about to run (#1415, added in this release); written before the command starts, so it arrives while the gate is still running |
+| `verify-completed` | `step`, `command`, `ok`, `ms`, `at` — how that gate ended and how long it took |
 | `cap-hit` | `cap`, `at`, `nextStep` |
 | `handoff-emitted` | `at`, `commentUrl`, `labelApplied` |
 | `ci-status` | `at`, `status`, `runUrl` |

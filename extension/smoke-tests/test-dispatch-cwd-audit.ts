@@ -103,7 +103,12 @@ const ROOT_INTENTIONAL_SITES: Array<{ file: string; site: RegExp; label: string;
     why: "produces the workstream decomposition; the worktrees it describes do not exist until the branch step",
   },
   {
-    file: "work-driver-plan.ts",
+    // #754 / #1167 (size split) — the site now lives in
+    // work-driver-plan-quality-pass.ts, which owns the whole plan-quality tail
+    // including the one-shot corrective. The allowlist reads the file that
+    // holds the dispatch, so this row points at the moved code; the decision it
+    // records is unchanged — same step, same reason, no worktree exists yet.
+    file: "work-driver-plan-quality-pass.ts",
     site: /\{\s*role:\s*"explore",\s*prompt:\s*correctivePrompt\s*\}/,
     label: "plan:corrective (label: plan:corrective)",
     why: "the one-shot plan re-dispatch — same step, same reason",
