@@ -164,8 +164,8 @@ async function main() {
       `80m in → the fixer is bound to what remains (got ${tight})`,
     );
     assert(
-      reviewFixDispatchBoundMs(at(CAP - 2 * MIN), "lens-fix", now) === undefined,
-      "88m in → inside the handoff grace, so no fresh fix is started",
+      reviewFixDispatchBoundMs(at(CAP - 2 * MIN), "lens-fix", now) === 2 * MIN,
+      "88m in → still bounded to what remains (#1242: this band used to run unbounded)",
     );
     assert(
       reviewFixDispatchBoundMs(at(100 * MIN), "lens-fix", now) === MIN_FIX_DISPATCH_MS,
@@ -262,10 +262,22 @@ async function main() {
         seen = o;
       });
       const nowAt = Date.now();
-      await runLensFix(ctx, stateFor(repo, branch, nowAt - (CAP - 10 * MIN)), nowAt);
+      await runLensFix(ctx, stateFor(repo, branch, nowAt - (CAP - 20 * MIN)), nowAt);
       assert(
-        seen?.timeoutMs !== undefined && seen.timeoutMs <= 10 * MIN && seen.timeoutMs > 0,
-        `80m in: the fixer IS dispatched but bound to the remaining budget (got ${seen?.timeoutMs})`,
+        seen?.timeoutMs === 20 * MIN,
+        `70m in: the fixer IS dispatched but bound to the remaining budget (got ${seen?.timeoutMs})`,
+      );
+      // #1567 item 6 / #1242 — 10 min left is less than the 15 a lens-fix
+      // needs: the fixer is not started (it used to run with no loop bound).
+      seen = undefined;
+      const late = await runLensFix(ctx, stateFor(repo, branch, nowAt - (CAP - 10 * MIN)), nowAt);
+      const tail = late.eventLog[late.eventLog.length - 1];
+      assert(
+        seen === undefined &&
+          tail?.kind === "cap-hit" &&
+          tail.cap === "lens-review-timeout" &&
+          /needs at least 15m/.test(tail.evidence ?? ""),
+        `80m in: a lens-fix that cannot do useful work in 10m is not dispatched (got ${tail?.kind})`,
       );
     } finally {
       rmSync(repo, { recursive: true, force: true });

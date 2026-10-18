@@ -33,8 +33,11 @@
  *    develop pass runs uncapped.
  *  - The bound never extends a dispatch: `timeoutMs` is the MINIMUM of the
  *    caller's own bound and what the loop budget leaves.
- *  - Already past the bound: the fixer is never dispatched (the overrun is what
- *    the cap exists to stop) and a `lens-review-timeout` cap-hit routes to handoff.
+ *  - Too little budget left to be useful (`MIN_USEFUL_MS`: 15 min for a
+ *    lens-fix, 10 min for a lens round — #1567 item 6, #1242): the step is
+ *    never started and a `lens-review-timeout` cap-hit routes to handoff. A
+ *    lens round started at 84 of 90 min ran 27 min and its findings were
+ *    never fixed; that round is now refused, and so is the fixer.
  *  - `handoff` and `merged` are never capped: the comment is the whole point of
  *    a handoff, and merging a green PR is the cycle's payoff.
  *  - The clock itself is unchanged — `pipelineState.reviewCapStartedAt`, set
@@ -48,17 +51,14 @@ import { notifyAgent } from "./agent-message.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
-import { handoffDispatchTimeoutMs } from "./work-driver-handoff.ts";
+import { MIN_USEFUL_MS } from "./work-driver-deadline.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
 
-/** Floor for a bound we actually arm. Below this a fixer cannot produce a
- *  commit, so "no time left" and "almost none" get the same honest answer. */
-export const MIN_FIX_DISPATCH_MS = 60_000;
-
-/** The bound armed when the budget is already spent: not unbounded (that is
- *  the bug) and not immediate — the child is killed with the structured
+/** The least bound armed on a fix-loop dispatch: with the budget spent, the
+ *  develop fix pass (which has no park of its own) is not left unbounded —
+ *  that is the bug — nor killed at once; it is killed with the structured
  *  `timeout` killCause and the step fails through the normal router. */
-const MAX_SAFE_BOUND_MS = MIN_FIX_DISPATCH_MS;
+export const MIN_FIX_DISPATCH_MS = 60_000;
 
 /** Enforce the review-loop budget, or only report it? Process env is read per
  *  call so tests can flip it, matching the other escape hatches. */
@@ -82,12 +82,28 @@ export function reviewLoopActive(state: WorkState): boolean {
 }
 
 /**
+ * The loop budget left, or `undefined` when enforcement is off or no review
+ * clock has started (a cycle that has not reached lens-review).
+ */
+function reviewRemainingMs(state: WorkState, now: number): number | undefined {
+  if (!reviewEnforceEnabled()) return undefined;
+  const elapsed = reviewElapsedMs(state, now);
+  return elapsed === undefined ? undefined : reviewWallClockMs() - elapsed;
+}
+
+/**
  * The dispatch bound the remaining loop budget leaves, if any.
  *
  * Returns `undefined` when the dispatch runs uncapped: enforcement off, no
- * review clock, a step outside the review loop, the budget still comfortable,
- * or a step the cap must never interrupt. Never returns a number LARGER than
- * `requestedTimeoutMs` — the cap only ever shortens a dispatch.
+ * review clock, or a step outside the review loop. Otherwise the bound is
+ * what the budget leaves, never less than `MIN_FIX_DISPATCH_MS` and never
+ * more than `requestedTimeoutMs` — the cap only ever shortens a dispatch.
+ *
+ * #1242 — there used to be a band (1 min + the handoff grace, ~9 min) in
+ * which this returned `undefined` and the fixer ran with no loop bound at
+ * all, at the tightest moment of the loop. `parkLensFixOverrun` now refuses
+ * a lens-fix that cannot do useful work in what is left, and every fixer
+ * that is dispatched is bounded.
  */
 export function reviewFixDispatchBoundMs(
   state: WorkState,
@@ -95,21 +111,10 @@ export function reviewFixDispatchBoundMs(
   now: number,
   requestedTimeoutMs?: number,
 ): number | undefined {
-  if (!reviewEnforceEnabled()) return undefined;
   if (step !== "lens-fix") return undefined;
-  const elapsed = reviewElapsedMs(state, now);
-  if (elapsed === undefined) return undefined;
-  const remaining = reviewWallClockMs() - elapsed;
-  // Past the cap: a minimal bound stays armed rather than leaving the fixer
-  // unbounded — unbounded is the bug. (The lens-fix caller parks instead of
-  // dispatching; the develop fix-pass caller has no park of its own, so this
-  // is the branch that keeps it from running forever.)
-  if (remaining <= 0) return Math.min(MAX_SAFE_BOUND_MS, boundCeiling(requestedTimeoutMs));
-  // The handoff grace is held back so a fixer killed by the budget still has
-  // time to hand off before the caller's own kill (the #1238 deadline shape).
-  if (remaining <= MIN_FIX_DISPATCH_MS + handoffDispatchTimeoutMs()) return undefined;
-  const bound = Math.min(remaining, boundCeiling(requestedTimeoutMs));
-  return bound < MIN_FIX_DISPATCH_MS ? undefined : bound;
+  const remaining = reviewRemainingMs(state, now);
+  if (remaining === undefined) return undefined;
+  return Math.min(Math.max(remaining, MIN_FIX_DISPATCH_MS), boundCeiling(requestedTimeoutMs));
 }
 
 /** Never lengthen a dispatch the caller already bounded. */
@@ -118,28 +123,34 @@ function boundCeiling(requestedTimeoutMs?: number): number {
 }
 
 /**
- * The pre-dispatch park for a fixer the loop budget has already outlived.
+ * Park before a review-loop step the loop budget cannot fit (#1567 item 6
+ * applied to the loop's own clock): append a `lens-review-timeout` cap-hit,
+ * move `currentStep` to `handoff`, persist, notify — and do NOT dispatch.
+ * `nextStep` routes a trailing `cap-hit` on its own `nextStep`.
  *
- * Mirrors `parkLensFixReposition`: append the cap-hit, move `currentStep` to
- * `handoff`, persist, and notify — and do NOT dispatch. `nextStep` routes a
- * trailing `cap-hit` on its own `nextStep`, so the loop arrives at handoff and
- * the operator gets the comment + label + notification the budget promised.
- *
- * Returns `state` unchanged when no cap applies (enforcement off, no clock,
- * budget intact): the caller then dispatches as before.
+ * Returns `state` unchanged when the step fits (enforcement off, no clock,
+ * at least `MIN_USEFUL_MS[step]` of the budget left).
  */
-export async function parkLensFixOverrun(
+async function parkReviewNoFit(
   ctx: CycleContext,
   state: WorkState,
+  step: "lens-fix" | "lens-review",
   now: number,
 ): Promise<WorkState> {
-  if (!reviewEnforceEnabled()) return state;
-  const elapsed = reviewElapsedMs(state, now);
+  const remaining = reviewRemainingMs(state, now);
+  const need = MIN_USEFUL_MS[step] ?? 0;
+  if (remaining === undefined || remaining >= need) return state;
   const capMs = reviewWallClockMs();
-  if (elapsed === undefined || elapsed <= capMs) return state;
+  const elapsedMin = Math.round((capMs - remaining) / 60_000);
   const round = state.pipelineState.reviewRound;
-  const evidence = `lens-fix not dispatched: the review loop has run ${Math.round(elapsed / 60_000)}m (round ${round}) against the ${capMs / 60_000}-minute cap, so the fixer was stopped before it started rather than left running past its own printed budget.`;
-  trace(`work-driver: lens-fix — review wall-clock cap exceeded — ${evidence}`);
+  const what =
+    step === "lens-fix" ? "lens-fix not dispatched" : `lens-review round ${round + 1} not started`;
+  const why =
+    remaining <= 0
+      ? "so the step was stopped before it started rather than left running past its own printed budget"
+      : `and ${Math.round(remaining / 60_000)}m of it is left — ${step} needs at least ${need / 60_000}m to do useful work`;
+  const evidence = `${what}: the review loop has run ${elapsedMin}m (round ${round}) against the ${capMs / 60_000}-minute cap, ${why}.`;
+  trace(`work-driver: ${step} — the review loop cannot fit the step — ${evidence}`);
   let next: WorkState = appendEvent(state, {
     kind: "cap-hit",
     at: now,
@@ -152,7 +163,29 @@ export async function parkLensFixOverrun(
   await persistCycle(ctx, next);
   notifyAgent(
     ctx.host,
-    `pi-rukas: /work for issue #${ctx.issue} hit the ${capMs / 60_000}-minute review-loop cap (${Math.round(elapsed / 60_000)}m elapsed, round ${round}) — the lens-fix developer was not dispatched. Routing to handoff so the comment posts.`,
+    `pi-rukas: /work for issue #${ctx.issue} hit the ${capMs / 60_000}-minute review-loop cap (${elapsedMin}m elapsed, round ${round}) — ${what}. Routing to handoff so the comment posts.`,
   );
   return next;
+}
+
+/** The pre-dispatch park for a fixer the loop budget cannot fit (#1416, #1242). */
+export function parkLensFixOverrun(
+  ctx: CycleContext,
+  state: WorkState,
+  now: number,
+): Promise<WorkState> {
+  return parkReviewNoFit(ctx, state, "lens-fix", now);
+}
+
+/**
+ * #1242 — the pre-start park for a lens round the loop budget cannot fit. A
+ * round started at 84 min of a 90-min loop ran 27 min, and its findings were
+ * posted but never fixed. The first round has no clock yet and always runs.
+ */
+export function parkLensRoundNoFit(
+  ctx: CycleContext,
+  state: WorkState,
+  now: number,
+): Promise<WorkState> {
+  return parkReviewNoFit(ctx, state, "lens-review", now);
 }

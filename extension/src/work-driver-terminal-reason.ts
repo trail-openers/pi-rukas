@@ -14,10 +14,9 @@
  * appends a cap-hit that says what ended the step, keeping the step's own
  * verdict in the log and naming it in the evidence:
  *
- * - `deadline` — the caller's whole-cycle deadline had passed by the time the
- *   step ended. The boundary check only consults the deadline before a step
- *   starts, so a step that crossed it ran without it; its verdict is not the
- *   reason the cycle stopped.
+ * - `deadline` — step work's end (the caller's deadline less the handoff
+ *   grace, where the clock stops a step's children) had passed by the time
+ *   the step ended; its verdict is not the reason the cycle stopped.
  * - otherwise, a child of that step killed at its backstop (`killCause:
  *   timeout`) and never re-run to completion → the cap the router gives a
  *   backstop kill of its own: `spawn-backstop` for develop,
@@ -37,6 +36,7 @@ type FailedDispatch = Extract<WorkEvent, { kind: "dispatch-failed" }>;
 /** Caps whose own name already says a clock, a kill or a guard ended the step. */
 const STANDS_AS_IS = new Set<string>([
   "deadline",
+  "deadline:no-fit",
   "awaiting-human-merge",
   "spawn-backstop",
   "plan-timeout",
@@ -80,12 +80,14 @@ function backstopKills(window: readonly WorkEvent[]): FailedDispatch[] {
 /**
  * The state the handoff starts from: `state` itself, or `state` with one
  * cap-hit appended naming the clock that ended the step (see the header).
- * `deadline` is the cycle's resolved deadline (undefined: none set).
+ * `deadline` is the cycle's resolved deadline (undefined: none set) and
+ * `graceMs` the handoff grace step work ends before it.
  */
 export function terminalReasonAtHandoff(
   state: WorkState,
   deadline: number | undefined,
   now: number,
+  graceMs = 0,
 ): WorkState {
   const log = state.eventLog;
   let capIdx = -1;
@@ -105,7 +107,8 @@ export function terminalReasonAtHandoff(
   const kills = backstopKills(log.slice(startIdx, capIdx + 1));
   const verdict = `its own verdict \`${cap.cap}\`${cap.evidence ? ` (${quote(cap.evidence)})` : ""}`;
 
-  if (deadline !== undefined && now >= deadline) {
+  const stepsEnd = deadline === undefined ? undefined : deadline - graceMs;
+  if (deadline !== undefined && stepsEnd !== undefined && now >= stepsEnd) {
     const killed = kills.length
       ? `; ${kills.length} child dispatches of the step were killed (${kills.map((k) => `${k.label}: ${quote(k.errorTail)}`).join("; ")})`
       : "";
@@ -116,9 +119,9 @@ export function terminalReasonAtHandoff(
       reviewRound: state.pipelineState.reviewRound,
       nextStep: "handoff",
       evidence:
-        `caller deadline ${deadline} (absolute epoch ms) passed while step "${step}" ran — ` +
-        `it ended ${now - deadline}ms past it${killed}. The deadline is checked only before a step ` +
-        `starts, so ${verdict} is not why the cycle stopped`,
+        `caller deadline ${deadline} (absolute epoch ms), less the ${graceMs}ms handoff grace, passed while step "${step}" ran — ` +
+        `it ended ${now - stepsEnd}ms past it${killed}. Its children were stopped there, ` +
+        `so ${verdict} is not why the cycle stopped`,
     });
   }
 

@@ -23,6 +23,7 @@ import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { recordLensResidualsPosted } from "./work-driver-draft-disclosure.ts";
 import { lastCapIsRearmFailure, rearmDraftForReview } from "./work-driver-draft-rearm.ts";
 import { lensCapKillEvent, lensTimingsOf } from "./work-driver-lens-capkill.ts";
+import { parkLensRoundNoFit } from "./work-driver-lens-fix-budget.ts";
 import { applyLensVerdict } from "./work-driver-lens-verdicts.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
 import { recordResidualsPost } from "./work-driver-pr-gone.ts";
@@ -39,6 +40,9 @@ export async function runLens(
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
+  // #1242 — a round the review-loop budget cannot fit is not started.
+  const noFit = await parkLensRoundNoFit(ctx, state, now);
+  if (noFit !== state) return noFit;
   const ps = state.pipelineState;
   const round = ps.reviewRound + 1;
   let next: WorkState = {

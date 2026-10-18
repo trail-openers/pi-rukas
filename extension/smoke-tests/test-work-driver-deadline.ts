@@ -225,7 +225,9 @@ const T0 = 1_800_000_000_000; // a realistic epoch ms (2027)
     );
   }
   {
-    const r = await deadlineCheck(makeCtx(), withDeadline(T0 + GRACE + 1), "lens-fix", T0);
+    // A step with no useful-time minimum (#1567 item 6 lists develop,
+    // lens-fix and lens-review; test-work-driver-deadline-fit.ts covers them).
+    const r = await deadlineCheck(makeCtx(), withDeadline(T0 + GRACE + 1), "adversarial", T0);
     assert(r.parked === false, "1 ms beyond the grace still starts the step");
   }
   {
