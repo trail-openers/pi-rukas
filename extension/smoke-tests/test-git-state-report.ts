@@ -6,11 +6,11 @@
  * a timeout must read "unverified (<reason>)" — never "clean".
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { reportsGitState } from "../src/async-jobs-report.ts";
 import { type GitRunner, gitStateLine, runGit } from "../src/git-state.ts";
+import { trackedTempDir } from "./lib/git-test-env.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -25,7 +25,7 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 const PREFIX = "git state (at report time):";
 
 function mkRepo(withCommit = true): string {
-  const dir = mkdtempSync(join(tmpdir(), "git-state-"));
+  const dir = trackedTempDir("git-state-");
   git(dir, "init", "-q");
   if (withCommit) {
     git(
@@ -73,7 +73,7 @@ function mkRepo(withCommit = true): string {
 
 // 3. unpushed with upstream
 {
-  const bare = mkdtempSync(join(tmpdir(), "git-state-bare-"));
+  const bare = trackedTempDir("git-state-bare-");
   git(bare, "init", "-q", "--bare");
   const dir = mkRepo();
   git(dir, "remote", "add", "origin", bare);
@@ -110,7 +110,7 @@ function mkRepo(withCommit = true): string {
 
 // 5. non-repo cwd
 {
-  const dir = mkdtempSync(join(tmpdir(), "git-state-plain-"));
+  const dir = trackedTempDir("git-state-plain-");
   mkdirSync(join(dir, "sub"));
   const line = await gitStateLine(dir);
   assert(
