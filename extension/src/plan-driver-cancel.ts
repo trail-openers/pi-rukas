@@ -18,15 +18,7 @@ import {
   classifyPlanType,
   planTitle,
 } from "./plan-types.ts";
-import { sessionShutdownReason } from "./session-shutdown.ts";
-
-/** Who asked for the kill. Session teardown aborts every job at once, so an
- *  aborted session is the far likelier cause than an operator's dispatch_kill —
- *  and the two want different follow-ups (nothing to re-do vs re-run the plan). */
-export function killedBy(signal: AbortSignal | undefined): string {
-  if (sessionShutdownReason() !== undefined) return "session shutdown";
-  return signal?.aborted ? "dispatch_kill (or session shutdown)" : "the harness";
-}
+import { killedBy } from "./session-shutdown.ts";
 
 /**
  * The early-return halt for a kill observed at a phase boundary. `phase` is

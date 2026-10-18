@@ -19,8 +19,8 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { noticeSubject } from "./async-jobs-report.ts";
 import { startJob } from "./async-jobs.ts";
-import { noticeSubject } from "./plan-tool.ts";
 import { runResearchPipeline } from "./research-driver.ts";
 import type { ResearchClaim, ResearchResult } from "./research-types.ts";
 import { trace } from "./trace.ts";
@@ -139,6 +139,12 @@ export function registerResearchTool(pi: ExtensionAPI) {
           ms: 0,
           exitCode: result.cancelled ? 143 : 0,
           ...(result.cancelled ? { killCause: "abort" as const } : {}),
+          // #1541 review (HIGH) — the artifact is the run's durable output: if
+          // the steer never lands, reading it beats re-running a 20-minute
+          // retrieval. The stand-in only names a path the run actually wrote.
+          ...(result.artifactPath
+            ? { reportWhere: `the research artifact at ${result.artifactPath}` }
+            : {}),
         };
       };
       // #1044 — launch, don't wait (see plan-tool.ts for the full reasoning).

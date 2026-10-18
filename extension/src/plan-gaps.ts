@@ -35,6 +35,7 @@
 import { type GapGateParse, type GapGateVerdict, parseGaps } from "./plan-gap-parse.ts";
 import type { PlanGap } from "./plan-types.ts";
 import { trace } from "./trace.ts";
+import type { DispatchResult } from "./types.ts";
 
 /**
  * The gaps that block filing: CRITICAL only. #664 transposed — the
@@ -159,6 +160,17 @@ export type GapGateDispatch = (
   errorStop?: unknown;
   text: string;
   toolUses: unknown[];
+  /**
+   * #1541 — the abort reply's kill cause, on the CONTRACT rather than only on
+   * the object plan-driver-gate.ts synthesises. Every downstream failure
+   * classifier (work-driver-completion-event.ts, work-driver-failure-taxonomy.ts)
+   * branches on `killCause` FIRST, so an aborted gate round reads as an abort
+   * rather than a provider fault — which is exactly the confusion #382's
+   * "host suspend is not a provider failure" closed for single dispatches.
+   * Typed off `DispatchResult` rather than a fresh literal so the two cannot
+   * drift.
+   */
+  killCause?: NonNullable<DispatchResult["killCause"]>;
 }>;
 
 export async function runGapGateLoop(

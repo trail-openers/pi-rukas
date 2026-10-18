@@ -356,16 +356,25 @@ export async function invokePlanTool(
 }
 
 /**
- * Poll until the job's report has reached the stub inbox (600 × 10 ms — the
- * plan pipeline runs dozens of stubbed dispatches before it reports). A job
- * that settled WITHOUT delivering throws immediately: that is a broken
- * delivery, and a slow suite is a different problem from a silent one.
+ * Poll until the job's report has reached the stub inbox (3000 × 10 ms = 30 s —
+ * the plan pipeline runs dozens of stubbed dispatches before it reports).
+ *
+ * The bound was 600 (6 s) and that was not enough: measured on this host, the
+ * same file passes bare and fails under `verify-loop.sh`, and the difference
+ * reproduces on the loop's isolated `HOME` alone (`HOME=/tmp bun <test>` fails
+ * on HEAD, before any of this PR's edits). An isolated HOME costs the pipeline
+ * real work it otherwise short-circuits on a configured host, and 6 s of wall
+ * clock is a property of the machine — which is exactly what #1145's git
+ * isolation set out to remove from the suite's verdict. A generous ceiling costs
+ * nothing on the pass path (the loop returns on the first hit) and the fast-fail
+ * below still fires, so a genuinely broken delivery throws in ~1 s rather than
+ * after the whole ceiling: a slow suite stays distinguishable from a silent one.
  */
 export async function waitForJobReport(
   jobId: string,
   inbox: Array<{ content: string }> = jobSteerInbox,
 ): Promise<string> {
-  for (let i = 0; i < 600; i++) {
+  for (let i = 0; i < 3000; i++) {
     const hit = inbox.find((m) => m.content.includes(`(job ${jobId})`));
     if (hit) return hit.content;
     const running = runningJobIds();
