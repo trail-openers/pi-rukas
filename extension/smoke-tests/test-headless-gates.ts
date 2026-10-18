@@ -36,7 +36,7 @@ import type { WorkCapLiteral } from "../src/workflow-state-events-caps.ts";
 import { parseHeadlessArgs } from "../src/headless/cli.ts";
 import { buildCapabilities } from "../src/headless/capabilities.ts";
 import { EXIT } from "../src/headless/exit-code.ts";
-import { projectIssue } from "../src/headless/result.ts";
+import { RESULT_SCHEMA_VERSION, projectIssue } from "../src/headless/result.ts";
 import { runHeadless } from "../src/headless/run.ts";
 import { appendEvent, initialState, type WorkState } from "../src/workflow-state.ts";
 import { MERGE_GRANT, capHitEvent, headlessRepo, okResult } from "./lib/headless-s5-fixture.ts";
@@ -70,6 +70,16 @@ initEnv();
   assert(
     !("error" in ok),
     "the supported flags still parse — the refusal is not a blanket rejection",
+  );
+  // #1468 — `--continue-pr` continues one issue's open PR, so it takes one issue.
+  const cont = parseHeadlessArgs(["7", "--continue-pr"]);
+  assert(!("error" in cont) && cont.continuePr, "`7 --continue-pr` parses to continuePr");
+  const plain = parseHeadlessArgs(["7"]);
+  assert(!("error" in plain) && !plain.continuePr, "continuePr defaults to false");
+  const two = parseHeadlessArgs(["7", "8", "--continue-pr"]);
+  assert(
+    "error" in two && two.error.includes("one issue"),
+    `\`7 8 --continue-pr\` is refused as bad-arguments (exit 40) (got: ${"error" in two ? two.error : ""})`,
   );
   const names = buildCapabilities().inputs.map((i) => i.name);
   assert(
@@ -241,6 +251,49 @@ initEnv();
       `bullet evidence projects to numbered q1, q2 in order (got ${JSON.stringify(p.questions)})`,
     );
   }
+}
+
+// ── 5. #1468 — a continued PR projects `continuedPr` and `prNumber`.
+{
+  const base = appendEvent(initialState(9011), capHitEvent("awaiting-human-merge", { at: 2 }));
+  const continued: WorkState = {
+    ...base,
+    pipelineState: {
+      ...base.pipelineState,
+      status: "handoff",
+      branchName: "feature/x",
+      prNumber: 42,
+      continuedPr: {
+        number: 42,
+        headRefName: "feature/x",
+        headSha: "a".repeat(40),
+        mainlineSha: "b".repeat(40),
+        conflictPaths: [],
+        matchedBy: "branch",
+      },
+    },
+  };
+  const p = projectIssue(continued, "x");
+  assert(
+    JSON.stringify(p.continuedPr) ===
+      JSON.stringify({
+        number: 42,
+        headRefName: "feature/x",
+        startHeadSha: "a".repeat(40),
+        mainlineSha: "b".repeat(40),
+      }),
+    `a continued state projects continuedPr (got ${JSON.stringify(p.continuedPr)})`,
+  );
+  assert(p.prNumber === 42, `and prNumber (got ${p.prNumber})`);
+  const fresh = projectIssue(
+    { ...base, pipelineState: { ...base.pipelineState, prNumber: 5 } },
+    "x",
+  );
+  assert(!("continuedPr" in fresh), "a cycle that did not continue a PR has no continuedPr");
+  assert(
+    RESULT_SCHEMA_VERSION === 3,
+    "the result field is additive: RESULT_SCHEMA_VERSION stays 3",
+  );
 }
 
 restoreEnv();
