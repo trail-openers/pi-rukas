@@ -10,7 +10,10 @@
  *
  *   - no parseable failing names (tsc or biome failed, the loop crashed, the
  *     report is missing) → blocks; a timed-out run → blocks, and is not rerun,
- *     because the bound is the verdict;
+ *     because the bound is the verdict — at develop. The ci tier (rerunUnnamed)
+ *     reruns both once, as its pre-#1647 `runVerifyFull(…, {retry: true})` did:
+ *     a full suite on a loaded host is exactly the run that can hit its bound
+ *     once and pass the next time;
  *   - the run is repeated ONCE (the #782 single-rerun mechanism, here per
  *     selected run): passing on the rerun → flaky, not blocking;
  *   - failing again → a test this cycle changed or added blocks (a base run
@@ -57,8 +60,8 @@ export interface SelectedVerifyOptions {
   record: SelectedVerifyRecord;
   /**
    * The ci tier's single rerun for a failure that names no test (a transient
-   * tsc or loop crash). The develop round leaves it off: an unnamed failure
-   * blocks there, as it always has.
+   * tsc or loop crash) or that hit its time bound. The develop round leaves it
+   * off: an unnamed or timed-out failure blocks there, as it always has.
    */
   rerunUnnamed?: boolean;
 }
@@ -265,7 +268,11 @@ function recordFlaky(o: SelectedVerifyOptions, names: readonly string[]): void {
 }
 
 function block(err: ExecError, reason: string): ExecError {
-  err.stderr = `${err.stderr ?? ""}\n[verify-select] blocking: ${reason}`;
+  const line = `[verify-select] blocking: ${reason}`;
+  err.stderr = `${err.stderr ?? ""}\n${line}`;
+  // runVerifyFull reads err.message before stderr, so the ci evidence would
+  // otherwise carry only "Command failed" and hide why the gate blocked.
+  err.message = `${err.message}\n${line}`;
   return err;
 }
 
@@ -282,7 +289,7 @@ export function withSelectedAttribution(
     if (cmd !== o.cmd) return execFn(cmd, opts);
     const first = await runOnce(o, execFn, opts, "first");
     if (first.ok) return first.out;
-    if (first.timedOut) throw block(first.err, first.reason);
+    if (first.timedOut && o.rerunUnnamed !== true) throw block(first.err, first.reason);
     const firstNames = first.names ?? [];
     if (firstNames.length === 0 && o.rerunUnnamed !== true) {
       throw block(first.err, first.reason);
