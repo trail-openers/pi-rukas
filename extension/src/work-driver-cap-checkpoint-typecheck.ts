@@ -67,7 +67,8 @@ const TYPECHECK_MAX_BUFFER = 256 * 1024;
  * GLOBAL TypeScript 7: the invocation printed its usage and exited 0, so the
  * driver's typecheck gate was a NO-OP that reported every tree as typechecking.
  * The same alias is why the checkpoint used to accuse good code of being broken
- * (#1414 round 1: no `bunx` on PATH at all, plus the `--no-emit` flag that is
+ * (#1414 round 1: no hyphenless launcher alias on PATH at all, plus the
+ * `--no-emit` flag that is
  * not a tsc flag).
  *
  * So the command spells the compiler as a PATH under the package's own
@@ -117,7 +118,7 @@ export const CHECKPOINT_TYPECHECK_CMD = `${LOCAL_TSC} --noEmit -p ${TSC_PROJECT}
  * #1414/#1118 — the same compiler, spelled for the project's `.pi/verify-cmd*`
  * files and any prose site that prescribes a typecheck. One exported string so
  * the tier files, this constant and the docs cannot each keep their own idea
- * of what "run the typecheck" means; `test-verify-cmd-no-bare-bunx.ts` asserts
+ * of what "run the typecheck" means; the launcher gate in smoke-tests asserts
  * the tier files use exactly this prefix.
  */
 export const LOCAL_TSC_CMD = LOCAL_TSC;

@@ -5,11 +5,10 @@
 #   cwd = the new worktree root, no args, no env.
 #
 # `git worktree add --detach` materialises tracked files only, so
-# `extension/node_modules` is absent and the develop gate
-# (`cd extension && node node_modules/typescript/bin/tsc --noEmit -p
-# tsconfig.json`) dies with
-# "Cannot find module '@earendil-works/pi-coding-agent'". We symlink the
-# real tree from the main checkout instead of `bun install`-ing a second
+# `extension/node_modules` is absent and the develop gate dies with
+# "Cannot find module '@earendil-works/pi-coding-agent'" when it runs
+# `cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json`.
+# We symlink the real tree from the main checkout instead of installing a second
 # ~269 MB copy — the tree is read-mostly and safe to share.
 #
 # The worktree also needs `dist/prompts/standard/` (role prompts assembled

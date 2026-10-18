@@ -327,6 +327,9 @@ for (const rel of PROSE_FILES) {
   // flags the bug was about (`--noEmit`, not the `--no-emit` that tsc accepts
   // as a prefix-matched abbreviation and silently treats differently).
   const localDefinitionRe = /\bCHECKPOINT_TYPECHECK_CMD\s*=\s*`\$\{LOCAL_TSC\}\s+--noEmit\s+-p\s+\$\{TSC_PROJECT\}`/;
+  // The exact source text the pattern matches, shared with the duplicate-
+  // definition canary below so the fixture and the rule cannot drift apart.
+  const PINNED_TEMPLATE_LITERAL = "`" + "${LOCAL_TSC} --noEmit -p ${TSC_PROJECT}" + "`";
   if (!localDefinitionRe.test(typecheckSrc))
     report([
       `exported CHECKPOINT_TYPECHECK_CMD is not built from \`\${LOCAL_TSC} --noEmit -p \${TSC_PROJECT}\` — the launcher or the flags drifted (\`${LOCAL_TSC_TEXT}\`)`,
@@ -395,7 +398,12 @@ for (const rel of PROSE_FILES) {
   // define. (Note the direction: the earlier `planted` canary above asserts
   // the opposite sense, because there the fixture carries a BAD literal and a
   // value-pinned pattern correctly refuses to match it.)
-  const duplicateConst = `${ckptSrc}\nconst CHECKPOINT_TYPECHECK_CMD = "${CHECKPOINT_TYPECHECK_CMD}";`;
+  // The planted copy is written in the SAME shape the leaf uses — a template
+  // over the two pieces — because that is the duplicate a reader would
+  // actually write, and it is the shape `localDefinitionRe` is looking for.
+  // Planting the resolved string instead makes a working pattern look broken.
+  const duplicateConst =
+    ckptSrc + "\nconst CHECKPOINT_TYPECHECK_CMD = " + PINNED_TEMPLATE_LITERAL + ";";
   if (!localDefinitionRe.test(duplicateConst))
     report(["GATE-BROKEN: a second local definition of the checkpoint literal was NOT caught"]);
   else console.log("✓ canary duplicate local checkpoint literal: caught");
