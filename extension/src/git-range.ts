@@ -242,6 +242,13 @@ export function gitSaysAbsent(err: unknown): boolean {
  * A killed or signalled probe carries a numeric code too and says nothing about
  * the path — refused for the same reason `gitSaysAbsent` refuses it.
  *
+ * `not a valid object name` is deliberately NOT in the wording set, unlike
+ * `gitSaysAbsent`'s list: that is git's answer when the REV part of the
+ * tree-ish is unresolvable, which says nothing about the path. Reading it as
+ * absent would report "the branch does not have this file" about a ref nobody
+ * resolved. It belongs to `gitWordingSaysRefMissing`, where the question IS the
+ * ref.
+ *
  * This is the ONLY place that reads git's "not there" wording for the tree
  * probe. `lens-evidence.ts` used to hand-roll "exit 128 means absent", which is
  * the second copy this module exists to prevent: a wording fix applied here
@@ -261,7 +268,7 @@ export function gitCatFileSaysAbsent(err: unknown): boolean {
   if (e.signal !== null && e.signal !== undefined) return false;
   const stderr = typeof e.stderr === "string" ? e.stderr : "";
   if (/not a git repository|dubious ownership/i.test(stderr)) return false;
-  return /does not exist|no such (?:path|object|tree|file)|not a valid object name/i.test(stderr);
+  return /does not exist|no such (?:path|object|tree|file)/i.test(stderr);
 }
 
 /**
