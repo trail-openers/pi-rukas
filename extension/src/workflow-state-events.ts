@@ -31,6 +31,7 @@ import type {
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
 import type { DispatchSlowEvent } from "./workflow-state-events-slow.ts";
 import type {
+  ConsolidatedVerifyPreExistingEvent,
   ConsolidatedVerifySkippedEvent,
   VerifyFlakeRecoveredEvent,
   VerifyFullStatusEvent,
@@ -449,6 +450,7 @@ export type WorkEvent =
   | VerifyFullStatusEvent
   | VerifyFlakeRecoveredEvent
   | ConsolidatedVerifySkippedEvent
+  | ConsolidatedVerifyPreExistingEvent
   | WideningScanEvent
   | MemoryEventFragment
   | WorktreeProvisionedEvent

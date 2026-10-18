@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 /**
  * work-driver-integrate-result — the result contract of `integrate()`, kept
  * apart from its implementation so the shape callers switch on stays readable.

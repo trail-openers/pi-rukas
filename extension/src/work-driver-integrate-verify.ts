@@ -31,6 +31,7 @@
  * two concerns separate.
  */
 
+import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import {
@@ -40,8 +41,19 @@ import {
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { type HangProcess, NO_TREE_CAPTURED, captureProcessTree } from "./work-driver-gate-hang.ts";
+import type { CommitPrConsolidatedVerifyResult } from "./work-driver-integrate-verify-result.ts";
 import { commitPrSkipDecision } from "./work-driver-integrate-verify-skip.ts";
-import { type FailureAttribution, attributeAgainstBase } from "./work-driver-verify-attribution.ts";
+import { attributeAgainstBase } from "./work-driver-verify-attribution.ts";
+
+/**
+ * Escape hatch for #1404's baseline probe. `0` skips the probe entirely, so
+ * every consolidated verify failure parks as it did before the feature — the
+ * probe can only ever EXCUSE a failure, so turning it off can only ever make
+ * the seam stricter, never looser.
+ */
+export function baselineProbeEnabled(): boolean {
+  return process.env.PI_ENSEMBLE_INTEGRATION_VERIFY_BASELINE_PROBE !== "0";
+}
 import { isTimedOutKill, verifyHangFailure } from "./work-driver-verify-develop-helpers.ts";
 import {
   FAST_TIER_LABEL,
@@ -55,72 +67,6 @@ import {
 } from "./work-driver-verify-flake.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
-
-/**
- * The result of running the commit-pr consolidated-tree verify.
- *
- * - `ok: true` — the consolidated tree passed verify; the caller may push.
- * - `ok: false` — the consolidated tree failed verify; the caller must
- *   NOT push. The `failureTail` is the raw (bounded) verify output, the
- *   `verdict` is the three-way classification, and the `classifiedMessage`
- *   is the handoff-ready text that names the classification, the specific
- *   assertion, and the workstream ids.
- */
-export type CommitPrConsolidatedVerifyResult =
-  | {
-      ok: true /** #782 — the first run flaked and the single re-run passed. */;
-      recovered?: boolean;
-      /**
-       * #1240 — the verify command was not run because the integration tree
-       * is the tree the develop gate already verified green. The caller
-       * renders the visible note from it. Absent on every real run.
-       */
-      skipped?: AlreadyVerifiedTree;
-    }
-  | {
-      ok: false;
-      /** Raw bounded (800-char) verify output, with attribution anchor. */
-      failureTail: string;
-      /** True when the tail starts at a `FAILED:` marker (smoke-loop shape). */
-      attributed: boolean;
-      /** Three-way classification (see the classifier module docstring). */
-      verdict: ConsolidationFailureVerdict;
-      /** Handoff-ready message naming classification + assertion + workstreams. */
-      classifiedMessage: string;
-      /** #1324 — the run was killed at its bound: no verdict, so no classification. */
-      timedOut?: boolean;
-      /**
-       * #1404 — every consolidated failure the base-commit probe accounted
-       * for: each failing test also fails at `baseSha`, so NONE is caused by
-       * this change. The caller may continue (push, open the PR) and must
-       * carry `preExistingFailures` as a visible note. Absent whenever the
-       * probe did not run, could not establish a red base, or any failure is
-       * change-caused / unattributable — absence is the park, never an
-       * omission to read as approval.
-       */
-      preExistingOnly?: boolean;
-      /**
-       * #1404 — the failing test names the base run also produced. Present
-       * whenever the probe ran and named them, including the mixed case
-       * (some pre-existing, some change-caused) where the cycle still parks.
-       */
-      preExistingFailures?: string[];
-      /**
-       * #1404 — the failing test names the base run did NOT produce, i.e. the
-       * ones this change caused. Set on a mixed verdict; the park reason
-       * names these alone, so an operator is not sent to inspect tests that
-       * were already red before the cycle started.
-       */
-      changeCausedFailures?: string[];
-      /**
-       * #1427 — commit-pr carries the hang CLAUSE only. The clause is composed
-       * into `classifiedMessage` (see the timeout branch below), which is what
-       * the caller puts on the cap and the handoff renders; the commit-pr seam
-       * has no scratch dir of its own to persist a full report to, so unlike
-       * the develop seams this result reports no `runningTests` / `processes`
-       * and no caller ever read them (round 1: two dead fields).
-       */
-    };
 
 /**
  * Run the project's verify command against the CONSOLIDATED tree at
@@ -200,24 +146,25 @@ export async function runCommitPrConsolidatedVerify(
      */
     alreadyVerifiedTree?: AlreadyVerifiedTree;
     /**
-    /**
      * #1404 — the cycle's ORIGINAL base commit, the commit this cycle's
-     * commits were measured against. When set, a consolidated failure earns a
-     * baseline probe: the verify command re-runs ONCE in a detached worktree
-     * at this sha, and the failing-test-name sets decide which failures the
-     * change caused. Absent → no probe, every failure parks as before
-     * (fail-closed). The CALLER supplies `ps.baseSha` and never a followup
-     * round's `followupBase` — that commit already carries this cycle's
-     * earlier commits, which would excuse every failure as pre-existing.
+     * commits were measured against. Required for the baseline probe: when it
+     * is absent, or is not a 40-hex commit id, no probe runs and every
+     * consolidated failure parks as before (fail-closed). The CALLER supplies
+     * `ps.baseSha` and never a followup round's `followupBase` — that commit
+     * already carries this cycle's earlier commits, which would excuse every
+     * failure as pre-existing.
      */
     baseSha?: string;
     /**
-     * #1404 — the probe tree's name suffix. The develop step's probe is
-     * `baseline-verify-<issue>`; this seam must not share that name (one
-     * step's teardown would destroy the other's tree), so the caller passes a
-     * distinct one. Defaults to the issue number alone.
+     * #1404 — trees the change run's failing-test names may live under, on top
+     * of `repoRoot` and the probe tree (which the seam always knows). The
+     * caller passes the workstream worktrees: a committed gate script resolves
+     * its own directory, so its printed paths follow the checkout the script
+     * lives in. A name under none of them is unattributable, never excused.
      */
-    baselineProbeLabel?: string;
+    changeRoots?: readonly string[];
+    /** #1404 — names the change run printed without a root prefix. */
+    changeUnrooted?: readonly string[];
     /**
      * #1427 round 3 — no `walkProcessTree` here, deliberately. It was declared
      * as a test seam and had no caller: neither `verifyIntegration` (its only
@@ -429,43 +376,76 @@ export async function runCommitPrConsolidatedVerify(
   // can only EXCUSE failures, never turn this verdict into a pass: only the
   // caller — which alone owns the push — treats `preExistingOnly` as a
   // reason to continue.
-  if (opts.baseSha !== undefined && !timedOut) {
-    const outcome = await attributeAgainstBase(execFn, opts, failure);
-    if (outcome) {
-      const pre = outcome.preExistingFailures;
-      const caused = outcome.changeCausedFailures;
-      // The park reason names ONLY what the change caused. A cycle where three
-      // tests are red and two were red at base is a defect in one test, and an
-      // operator told to "fix the consolidated tree" for all three would waste
-      // two of those inspections on gate rot the base commit already owns.
-      const message =
-        caused.length > 0
-          ? `${classifiedMessage} — ${pre.length + caused.length} test(s) fail; ${pre.length} also fail at the cycle's base commit (${pre.join(", ") || "none"}) and are pre-existing; the failures this change CAUSED are: ${caused.join(", ")}`
-          : classifiedMessage;
-      // Every failure the base accounts for: nothing here is the change's
-      // doing, so the caller may push. This is the only shape the settlement
-      // allows to continue, and it still reports `ok: false` — the probe has
-      // no authority to turn the gate's verdict into a pass.
-      if (caused.length === 0 && pre.length > 0) {
+  if (opts.baseSha !== undefined && !timedOut && baselineProbeEnabled()) {
+    // #1404 fix round — the probe must re-run the command the change run
+    // ACTUALLY executed (`ranCmd`: the fast tier when that tier is what
+    // failed, the full command otherwise), under the same cwd and executor.
+    // Probing `opts.verifyCmd` instead would compare two different gates and
+    // attribute one run's names to the other's verdict, so the whole
+    // comparison — including its continue path — is refused when they differ.
+    if (ranCmd !== opts.verifyCmd) {
+      trace(
+        `work-driver: commit-pr verify — the failing run executed \`${ranCmd.slice(0, 80)}\`, not the configured verify command, so the baseline probe cannot compare like with like; the consolidated failure parks as before`,
+      );
+    } else {
+      const outcome = await attributeAgainstBase(
+        execFn,
+        {
+          repoRoot: opts.repoRoot,
+          verifyCmd: ranCmd,
+          timeoutMs: opts.timeoutMs,
+          baseSha: opts.baseSha,
+          // The change run ran in the integration checkout; the probe ran in
+          // its own worktree. Names are compared by path RELATIVE to the tree
+          // each run executed in, so a name outside every known tree can never
+          // excuse anything. The workstream worktrees are included because a
+          // gate that resolves its own script path prints names under the tree
+          // the script lives in, not the cwd it was run from.
+          ...(opts.changeRoots !== undefined ? { changeRoots: opts.changeRoots } : {}),
+          ...(opts.changeUnrooted !== undefined ? { changeUnrooted: opts.changeUnrooted } : {}),
+        },
+        failure,
+      );
+      if (outcome) {
+        const pre = outcome.preExistingFailures;
+        const caused = outcome.changeCausedFailures;
+        // The park reason names ONLY what the change caused. A cycle where three
+        // tests are red and two were red at base is a defect in one test, and an
+        // operator told to "fix the consolidated tree" for all three would waste
+        // two of those inspections on gate rot the base commit already owns.
+        // Names are run through `neutraliseMarkdownField` — they are printed
+        // into the cap evidence, the handoff and the PR body, and a test name is
+        // data a fixture (or an upstream test) controls.
+        const shown = (names: readonly string[]) => names.map(neutraliseMarkdownField).join(", ");
+        const message =
+          caused.length > 0
+            ? `${classifiedMessage} — ${pre.length + caused.length} test(s) fail; ${pre.length} also fail at the cycle's base commit (${shown(pre)}) and are pre-existing; the failures this change CAUSED are: ${shown(caused)}`
+            : classifiedMessage;
+        // Every failure the base accounts for: nothing here is the change's
+        // doing, so the caller may push. This is the only shape the settlement
+        // allows to continue, and it still reports `ok: false` — the probe has
+        // no authority to turn the gate's verdict into a pass.
+        if (caused.length === 0 && pre.length > 0) {
+          return {
+            ok: false,
+            failureTail,
+            attributed,
+            verdict,
+            classifiedMessage: message,
+            preExistingOnly: true,
+            preExistingFailures: pre,
+          };
+        }
         return {
           ok: false,
           failureTail,
           attributed,
           verdict,
           classifiedMessage: message,
-          preExistingOnly: true,
-          preExistingFailures: pre,
+          ...(pre.length > 0 ? { preExistingFailures: pre } : {}),
+          ...(caused.length > 0 ? { changeCausedFailures: caused } : {}),
         };
       }
-      return {
-        ok: false,
-        failureTail,
-        attributed,
-        verdict,
-        classifiedMessage: message,
-        ...(pre.length > 0 ? { preExistingFailures: pre } : {}),
-        ...(caused.length > 0 ? { changeCausedFailures: caused } : {}),
-      };
     }
   }
   return { ok: false, failureTail, attributed, verdict, classifiedMessage };

@@ -25,7 +25,10 @@ import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import type { IntegrateResult } from "./work-driver-integrate.ts";
 import { parsePrNumber } from "./work-driver-merged.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
-import { makeConsolidatedVerifySkippedEvent } from "./workflow-state-events-verify-flake.ts";
+import {
+  makeConsolidatedVerifyPreExistingEvent,
+  makeConsolidatedVerifySkippedEvent,
+} from "./workflow-state-events-verify-flake.ts";
 import type { ConsolidationVerdict } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
@@ -252,6 +255,13 @@ export function finalizeCommitPrState(
   commitPrFlakeEvidence: string | undefined,
   /** A second round: the commits were pushed onto a PR that was already open. */
   prAlreadyOpen = false,
+  /**
+   * #1404 — the base commit the pre-existing verdict was measured against,
+   * recorded on the event so the claim is checkable. Only read when
+   * `preExistingOnly` is set; `"unknown"` is what an older caller passes and
+   * renders as-is rather than being guessed at.
+   */
+  commitPrVerifyBaseSha = "unknown",
 ): WorkState {
   let next = appendEvent(
     {
@@ -282,16 +292,22 @@ export function finalizeCommitPrState(
     });
   }
   // #1404 — the gate was red and the cycle pushed: every failing test is red
-  // at the cycle's base commit too. Recorded as a plumbing report, not an
-  // event: `plumbReportSection` already renders that field in the handoff, and
-  // appending to the event log here would move the tail `nextStep()` routes on.
-  // The followup path (a PR already open) builds NO body at all, so on that
-  // exit this record is the only place the pre-existing names survive.
+  // at the cycle's base commit too. TWO records, because they reach different
+  // readers: the EVENT is what survives in the state file (and what proves a
+  // continued cycle was not silent), the plumbing REPORT is what the handoff
+  // renderer already prints. Appending the event is safe for routing — the
+  // dispatch-completion event is appended after it and is what `nextStep()`
+  // reads as the tail — and it is appended on the followup path too, so a
+  // second round cannot continue on an undocumented red gate.
   if (
     res.preExistingOnly === true &&
     res.preExistingFailures &&
     res.preExistingFailures.length > 0
   ) {
+    next = appendEvent(
+      next,
+      makeConsolidatedVerifyPreExistingEvent(res.preExistingFailures, commitPrVerifyBaseSha),
+    );
     const body = `commit-pr consolidated verify failed on ${res.preExistingFailures.length} test(s) that also fail at the cycle's base commit, so the push proceeded: ${res.preExistingFailures.join(", ")}. These are gate failures owned by the base commit, not by this change — fix the gate at the base (or the host it runs on) or the next cycle parks here too.`;
     const prior = next.pipelineState.plumbReports ?? [];
     if (!prior.some((r) => r.body === body)) {
