@@ -393,13 +393,14 @@ export function isFinalProviderFault(cls: { cause: DispatchFailureCause; shouldR
 
 /**
  * #79 — how many re-dispatches a RETRY_ONCE step may spend on this failure:
- * none for a final provider fault, the transient budget for infra, else one.
+ * none for a final provider fault or a stall kill (#1313: the same brief
+ * freezes the same way), the transient budget for infra, else one.
  */
 export function stepRetryBudget(
   cls: { cause: DispatchFailureCause; shouldRetry: boolean; maxRetries: number },
   infra: boolean,
 ): number {
-  if (isFinalProviderFault(cls)) return 0;
+  if (isFinalProviderFault(cls) || cls.cause === "self-killed:no-progress") return 0;
   return infra ? cls.maxRetries : 1;
 }
 
