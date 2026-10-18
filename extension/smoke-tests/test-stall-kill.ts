@@ -18,7 +18,7 @@ import { ChildProgress } from "../src/child-progress.ts";
 import type { PiJsonEvent } from "../src/pi-event-shapes.ts";
 import { applyStallKill, armStallKill } from "../src/spawn-stall.ts";
 import type { DispatchResult } from "../src/types.ts";
-import { classifyFailureCause } from "../src/work-driver-failure-taxonomy.ts";
+import { classifyFailureCause, stepRetryBudget } from "../src/work-driver-failure-taxonomy.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -147,6 +147,10 @@ function arm(opts: {
     c.cause === "self-killed:no-progress" && !c.shouldRetry,
     "the driver parks a no-progress kill and never re-runs it",
   );
+  assert(stepRetryBudget(c, false) === 0, "a RETRY_ONCE step spends no retry on a stall kill");
+  const finished = { ...base(), ok: true };
+  applyStallKill(killed, finished);
+  assert(finished.killCause === undefined, "a child that finished before the kill landed is done");
   const adv = classifyDispatchOutcome({ ...base(), killCause: "no-progress" });
   assert(
     adv.cause === "self-killed:no-progress" && !adv.shouldRetry,

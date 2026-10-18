@@ -145,7 +145,8 @@ export function armStallKill(o: {
  */
 export function applyStallKill(stall: StallKill, result: DispatchResult): void {
   const cause = result.killCause;
-  if (!stall.killed()) return;
+  // A child that finished its reply before the kill landed is done, not frozen.
+  if (!stall.killed() || result.ok) return;
   if (cause && cause !== "timeout" && cause !== "abort" && cause !== "child-bound") return;
   result.killCause = "no-progress";
   result.killBudgetMs = stall.frozenMs();
