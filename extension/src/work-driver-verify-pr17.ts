@@ -20,7 +20,7 @@ import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import { beginVerifyRun, finishVerifyRun } from "./work-driver-verify-events.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
-import type { VerifyRunEvent } from "./workflow-state-events-verify-flake.ts";
+import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 // #1134 follow-up — the argv form must be honoured: the previous
@@ -194,7 +194,7 @@ export async function verifyStepOutcome(
    * the gate ran) and `verify-completed`; the caller appends both through
    * `recordDevelopGateEvents`. Absent when no verify command was resolved.
    */
-  verifyEvents?: VerifyRunEvent[];
+  verifyEvents?: VerifyRunEventFragment[];
 }> {
   const failures: string[] = [];
   const notes: string[] = [];

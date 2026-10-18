@@ -16,7 +16,7 @@ import path from "node:path";
 import { withVerifySlot } from "./host-resources.ts";
 import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
 import { reportConsolidatedVerifyOutcome } from "./work-driver-consolidated-verify-report.ts";
-import type { ConsolidatedVerifyOpts } from "./work-driver-consolidated-verify-types.ts";
+import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import {
   NO_SPECIFIC_ASSERTION,
@@ -24,7 +24,6 @@ import {
   classifyConsolidatedVerifyFailure,
   consolidatedFailureMessage,
   extractSpecificAssertion,
-  sharesAssertion,
 } from "./work-driver-consolidation-classify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { missingDepsFailure } from "./work-driver-deps-gate.ts";
@@ -57,8 +56,18 @@ import {
 import { developVerifiedTree } from "./work-driver-verify-eligibility.ts";
 import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
 import { rawOutputClause, slugName, writeGateHangLog } from "./work-driver-verify-flake.ts";
+import {
+  type GatePass,
+  type GateRecorded,
+  combinedWorktreeTree,
+  gatePassPlan,
+  gatePassRecord,
+  greenForWorktree,
+  reusableGatePass,
+} from "./work-driver-verify-gate-reuse.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { execp } from "./work-driver-verify.ts";
+import type { WorkstreamGreen } from "./workflow-state-schema-gate-reuse.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
@@ -124,6 +133,19 @@ export async function runVerifyCommandGate(opts: {
    */
   suiteTierTimeoutMs?: number;
   /**
+   * #1415 — called once per gate pass with the reuse records this pass produced:
+   * the whole-gate verdict it established (absent when the pass reused one, ran
+   * no command, failed, or could not read its combined tree), the per-workstream
+   * greens it established, and the workstream ids whose greens it refuted.
+   *
+   * One callback, not three: the three writes land on two fields of one state
+   * object, and a caller that stored the greens and lost the verdict to a stale
+   * state reference would leave the cycle permanently un-reusable with no
+   * symptom beyond a slow cycle. The gate decides reuse AND produces the record,
+   * so a caller that ignores this callback loses memoisation, never correctness.
+   */
+  onGateRecorded?: GateRecorded;
+  /**
    * #814 — structured fence violations recorded by the scope gate earlier
    * in this same develop verify (the gate runs BEFORE the consolidated
    * verify, so the records already exist when the conflict branch fires).
@@ -184,6 +206,7 @@ export async function runVerifyCommandGate(opts: {
     // `consolidatedVerifySkipped` stayed undefined and no skip event was ever
     // appended, while the state file looked explained.
     onConsolidatedVerifySkipped,
+    onGateRecorded,
     onBuildResidueOnly,
     fastTierTimeoutMs: fastTimeoutMs,
     suiteTimeoutKnob,
@@ -198,6 +221,47 @@ export async function runVerifyCommandGate(opts: {
   // environment could disagree with each other about which bound fired.
   const suiteTimeoutMs = suiteTierTimeoutMsOpt ?? (await verifyTimeoutMs());
   const perWorktreeVerifyFailures: string[] = [];
+  // The tier-resolved bound is also part of the reuse identity.
+  const passTimeoutMs = suiteTimeoutMs;
+  // #1415 — the whole-gate reuse, decided BEFORE a single command runs. When
+  // the cycle's combined tree, the verify command and the bound are all
+  // unchanged since a pass the driver itself recorded, AND every changed
+  // workstream holds a current green for that same triple, this pass has a
+  // verdict already: the per-worktree loop is skipped and the consolidated
+  // probe is not built. Anything short of that conjunction — no record, a moved
+  // tree, an edited `.pi/verify-cmd`, a tightened bound, an unreadable tree id,
+  // a workstream without a green — falls through and runs, exactly as before.
+  // The join of the two halves, and why one missing green collapses reuse to a
+  // full run, is `gatePassPlan`, kept beside the rest of the reuse rule.
+  const gateReuseState = state.pipelineState.gateReuse;
+  const reuseDecision = await reusableGatePass(ctx.verifyExecFn ?? execp, {
+    cmd,
+    timeoutMs: passTimeoutMs,
+    worktrees: state.pipelineState.worktrees ?? {},
+    changedWorktrees,
+    recorded: gateReuseState?.passes,
+    greens: gateReuseState?.workstreamGreens,
+  });
+  const plan = await gatePassPlan(ctx.verifyExecFn ?? execp, {
+    wholeGate: reuseDecision.reuse,
+    cmd,
+    timeoutMs: passTimeoutMs,
+    worktrees: state.pipelineState.worktrees ?? {},
+    changedWorktrees,
+    greens: gateReuseState?.workstreamGreens,
+  });
+  const reusedWholeGate = plan.wholeGateHeld !== undefined;
+  // Greens this pass establishes (a worktree whose command ran and passed) and
+  // refutes (a worktree whose command failed). Mutated in place, like
+  // `failures`/`notes` — the caller persists them alongside the step's other
+  // gate evidence.
+  const greensRecorded: Array<[string, WorkstreamGreen]> = [];
+  const greensRefuted: string[] = [];
+  for (const cwd of plan.reuse) {
+    notes.push(
+      `per-worktree verify reused — worktree ${cwd} already passed \`${cmd}\` under a ${passTimeoutMs}ms bound at this tree, so the command was not run there (Set PI_ENSEMBLE_VERIFY_GATE_REUSE=0 to run every develop round)`,
+    );
+  }
   // #1427 — the scratch dir a killed run's hang report is persisted to, created
   // lazily by the write. Named once here so the per-worktree loop and the
   // consolidated run below share one location (the consolidated run's own logs
@@ -216,7 +280,7 @@ export async function runVerifyCommandGate(opts: {
     const id = Object.keys(worktrees).find((k) => worktrees[k] === cwd);
     return slugName(id ?? path.basename(cwd));
   };
-  for (const cwd of changedWorktrees) {
+  for (const cwd of plan.run) {
     const depsMissing = await missingDepsFailure(execFn, state, ctx.repoRoot, cwd, cmd); // #1146
     if (depsMissing !== undefined) {
       perWorktreeVerifyFailures.push(depsMissing);
@@ -226,6 +290,17 @@ export async function runVerifyCommandGate(opts: {
       await withVerifySlot(() =>
         execFn(cmd, { cwd, timeout: suiteTimeoutMs, maxBuffer: 4 * 1024 * 1024 }),
       );
+      // The command passed: record the green for the tree it just read. Read
+      // NOW, at the moment of the pass — a later read could describe content
+      // that appeared after the command finished, and a green pointing at
+      // content nothing tested is the one failure this seam must not have.
+      const id = Object.entries(state.pipelineState.worktrees ?? {}).find(
+        ([, w]) => w === cwd,
+      )?.[0];
+      if (id !== undefined) {
+        const green = await greenForWorktree(ctx.verifyExecFn ?? execp, cwd, cmd, passTimeoutMs);
+        if (green !== undefined) greensRecorded.push([id, green]);
+      }
     } catch (err) {
       const e = err as Error & {
         stdout?: string;
@@ -317,6 +392,13 @@ export async function runVerifyCommandGate(opts: {
           `verify command \`${ran}\` failed in ${cwd}${depsHint}`,
         ),
       );
+      // A green this workstream held describes the tree it had then. The
+      // command just failed — on that tree or the one it holds now — so the
+      // record is no evidence of anything and the next pass must run.
+      const failedId = Object.entries(state.pipelineState.worktrees ?? {}).find(
+        ([, w]) => w === cwd,
+      )?.[0];
+      if (failedId !== undefined) greensRefuted.push(failedId);
     }
   }
   // #1005 — per-worktree failures are the verdict when the consolidated run
@@ -412,37 +494,78 @@ export async function runVerifyCommandGate(opts: {
     worktrees: state.pipelineState.worktrees ?? {},
     perWorktreeVerifyFailures,
   });
-  // #1427 fix round — the consolidated call is a TYPED literal, so a key that
-  // does not exist on `ConsolidatedVerifyOpts` is a compile error rather than a
-  // silently dropped option (the `{ onWalk: … }` forwarding defect: the walker
-  // never reached the consolidated probe and the real `ps` walked the host).
-  // The literal itself lives in work-driver-verify-consolidated-opts.ts
-  // (AGENTS.md §12 file-size cap) and stays typed there for the same reason.
-  const consOpts: ConsolidatedVerifyOpts = buildConsolidatedVerifyOpts({
-    repoRoot: ctx.repoRoot,
-    baseSha: baseSha as string,
-    stateWorktrees: state.pipelineState.worktrees ?? {},
-    workstreamBaseShas,
-    scratchDir,
-    verifyCmd: cmd,
-    timeoutMs: suiteTimeoutMs,
-    ...(suiteTimeoutKnob !== undefined ? { suiteTimeoutKnob } : {}),
-    ...(fastTimeoutMs === undefined ? {} : { fastTierTimeoutMs: fastTimeoutMs }),
-    ...(alreadyVerifiedTree !== undefined ? { alreadyVerifiedTree } : {}),
-    dirtyRootExempt: ctx.dirtyRootExempt,
-    ...(walkProcessTree !== undefined ? { walkProcessTree } : {}),
-    retry: buildConsolidatedRetry({
-      canRetry: flakeRetryPrecondition,
-      singlePerAssertion,
-      onRecover: (evidenceTail) => {
-        notes.push(
-          `consolidated verify RECOVERED after one bounded re-run (transient flake) — first-run failure preserved${evidenceTail ? `: ${evidenceTail}` : ""}`,
-        );
-        onVerifyFlakeRecovered?.(evidenceTail);
-      },
-    }),
-  });
-  const cons = await runConsolidatedVerify(execFn, consOpts);
+  // Wall-clock of the consolidated COMMAND, measured only when it runs. The
+  // record the pass leaves behind carries it so the next round can tell a
+  // 30-second gate from a 9-minute one — the difference between a verdict worth
+  // reusing and one whose run the bound exists to cap.
+  const consolidatedStartedAt = Date.now();
+  const cons: ConsolidatedVerifyResult = reusedWholeGate
+    ? { status: "passed", applied: [], reused: plan.wholeGateHeld }
+    : await runConsolidatedVerify(
+        execFn,
+        buildConsolidatedVerifyOpts({
+          repoRoot: ctx.repoRoot,
+          baseSha: baseSha as string,
+          stateWorktrees: state.pipelineState.worktrees ?? {},
+          workstreamBaseShas,
+          scratchDir,
+          verifyCmd: cmd,
+          timeoutMs: suiteTimeoutMs,
+          ...(suiteTimeoutKnob !== undefined ? { suiteTimeoutKnob } : {}),
+          ...(fastTimeoutMs === undefined ? {} : { fastTierTimeoutMs: fastTimeoutMs }),
+          ...(alreadyVerifiedTree !== undefined ? { alreadyVerifiedTree } : {}),
+          dirtyRootExempt: ctx.dirtyRootExempt,
+          ...(walkProcessTree !== undefined ? { walkProcessTree } : {}),
+          retry: buildConsolidatedRetry({
+            canRetry: flakeRetryPrecondition,
+            singlePerAssertion,
+            onRecover: (evidenceTail) => {
+              notes.push(
+                `consolidated verify RECOVERED after one bounded re-run (transient flake) — first-run failure preserved${evidenceTail ? `: ${evidenceTail}` : ""}`,
+              );
+              onVerifyFlakeRecovered?.(evidenceTail);
+            },
+          }),
+        }),
+      );
+  // The consolidated run's wall-clock: measured, not estimated, because it is
+  // the number the next round's reuse decision is screened against — and a
+  // reused pass has no duration, because it ran nothing.
+  const consolidatedDurationMs = reusedWholeGate ? undefined : Date.now() - consolidatedStartedAt;
+  // #1415 — record the verdict the moment it exists, in the seam that decided
+  // it: a caller that had to thread the result outward could drop it, and the
+  // symptom of a dropped record is only "the cycle is slow again". A pass that
+  // reused records NOTHING — refreshing `at` every round would keep a stale
+  // verdict permanently "fresh", and no new duration was measured to record.
+  // The combined tree is re-read AFTER the probe (whose checkout the probe has
+  // since restored) with the same function the reuse check used, so the record
+  // and the decision cannot describe different content; an unreadable tree
+  // records nothing (no record, no reuse).
+  if (cons.status === "passed" && !reusedWholeGate) {
+    const combined = await combinedWorktreeTree(
+      ctx.verifyExecFn ?? execp,
+      state.pipelineState.worktrees ?? {},
+    );
+    // A passing pass whose combined tree could not be read records no verdict:
+    // an entry needs a tree, and one guessed from a partial read is the record
+    // a later skip would stand on. Its greens are still recorded — each was
+    // read from its own worktree at the moment its command passed.
+    onGateRecorded?.(
+      combined === undefined
+        ? undefined
+        : gatePassRecord(combined, cmd, passTimeoutMs, consolidatedDurationMs),
+      greensRecorded,
+      greensRefuted,
+    );
+  } else if (reusedWholeGate) {
+    // A reused pass records nothing: it measured no duration, and refreshing a
+    // record's `at` every round would keep a stale verdict permanently "fresh".
+    onGateRecorded?.(undefined, [], []);
+  } else if (greensRefuted.length > 0) {
+    // A failed pass records no verdict, but a green the command just refuted
+    // must not survive to license the next round's skip.
+    onGateRecorded?.(undefined, [], greensRefuted);
+  }
   reportConsolidatedVerifyOutcome(cons, {
     cmd,
     failures,

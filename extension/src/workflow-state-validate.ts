@@ -92,6 +92,11 @@ export const KNOWN_EVENT_KINDS = [
   // tree is the tree the per-worktree verify already judged. A fast `develop`
   // must be explainable from the state file.
   "consolidated-verify-skipped",
+  // #1415 — one EXECUTED run of the driver's verify gate, with its duration
+  // and command. Absent from the tuple, a resumed cycle halts on the very
+  // event that says what the gate cost (#986's shape). Its `step` is a
+  // WorkStep so the validator's step check covers it; `target` is not a
+  // discriminant the validator knows, so it carries no unknown-value check.
   // #1404 — the consolidated verify failed and the cycle pushed anyway, because
   // every failing test is red at the cycle's base commit too. The one shape
   // where a red gate does not stop the push, so the state file must carry it.

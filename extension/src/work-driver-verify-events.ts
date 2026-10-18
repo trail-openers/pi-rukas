@@ -17,11 +17,8 @@ import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
-import {
-  type VerifyRunEvent,
-  type VerifyStartedEvent,
-  makeConsolidatedVerifySkippedEvent,
-} from "./workflow-state-events-verify-flake.ts";
+import { makeConsolidatedVerifySkippedEvent } from "./workflow-state-events-verify-flake.ts";
+import type { VerifyRunEventFragment, VerifyStartedEvent } from "./workflow-state-events-verify.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 
 /**
@@ -48,6 +45,7 @@ export async function beginVerifyRun(
     at: Date.now(),
     step: "develop",
     command,
+    target: { kind: "consolidated" },
   };
   try {
     await persistCycle(ctx, appendEvent(state, started));
@@ -61,7 +59,7 @@ export async function beginVerifyRun(
 export function finishVerifyRun(
   started: VerifyStartedEvent | undefined,
   ok: boolean,
-): VerifyRunEvent[] {
+): VerifyRunEventFragment[] {
   if (started === undefined) return [];
   const at = Date.now();
   return [
@@ -71,7 +69,8 @@ export function finishVerifyRun(
       at,
       step: "develop",
       command: started.command,
-      ok,
+      target: started.target,
+      status: ok ? "success" : "failure",
       ms: at - started.at,
     },
   ];
@@ -94,7 +93,10 @@ export function finishVerifyRun(
  */
 export function recordDevelopGateEvents(
   state: WorkState,
-  gate: { consolidatedVerifySkipped?: AlreadyVerifiedTree; verifyEvents?: VerifyRunEvent[] },
+  gate: {
+    consolidatedVerifySkipped?: AlreadyVerifiedTree;
+    verifyEvents?: VerifyRunEventFragment[];
+  },
 ): WorkState {
   const [started, completed] = gate.verifyEvents ?? [];
   const events = [

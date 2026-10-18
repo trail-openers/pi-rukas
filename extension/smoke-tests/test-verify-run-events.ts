@@ -7,10 +7,10 @@
  *
  *   a. `verify-started` reaches the host's emit sink BEFORE the command runs
  *      (the whole point: visible while it happens), carrying the command;
- *   b. `verify-completed` carries ok, the duration and the command;
+ *   b. `verify-completed` carries its status, duration and command;
  *   c. recording the gate after the run emits `verify-completed` and does NOT
  *      emit `verify-started` a second time (the emit sink's prefix match);
- *   d. a failing gate records `ok: false`;
+ *   d. a failing gate records `status: "failure"`;
  *   e. no discoverable verify command → no bracket at all (nothing ran);
  *   f. both kinds validate, render in /work-status, and are stable NDJSON.
  *
@@ -24,13 +24,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { isStableKind } from "../src/headless/ndjson.ts";
-import { fmtEvent } from "../src/work-status-events.ts";
 import { recordDevelopGateEvents } from "../src/work-driver-verify-events.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
+import { createEmitSink } from "../src/work-state-emit.ts";
+import { fmtEvent } from "../src/work-status-events.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { persistCycle } from "../src/workflow-state.ts";
-import { createEmitSink } from "../src/work-state-emit.ts";
 import {
   type Counts,
   ctxFor,
@@ -99,11 +99,11 @@ try {
     );
     assert(
       completed?.kind === "verify-completed" &&
-        completed.ok === true &&
+        completed.status === "success" &&
         completed.command === r.cmd &&
         completed.ms >= 0 &&
         completed.ms === completed.at - (started?.at ?? Number.NaN),
-      `b: verify-completed carries ok, ms and the command (got ${JSON.stringify(completed)})`,
+      `b: verify-completed carries status, ms and the command (got ${JSON.stringify(completed)})`,
     );
 
     const before = r.emitted.length;
@@ -128,8 +128,8 @@ try {
     const completed = r.gate.verifyEvents?.[1];
     assert(r.kindsAtRun.length > 0 && !r.gate.ok, "d: the command ran and the gate fails");
     assert(
-      completed?.kind === "verify-completed" && completed.ok === false,
-      `d: verify-completed records ok: false (got ${JSON.stringify(completed)})`,
+      completed?.kind === "verify-completed" && completed.status === "failure",
+      `d: verify-completed records failure (got ${JSON.stringify(completed)})`,
     );
   }
 
@@ -145,13 +145,20 @@ try {
   // --------------------------------------------------------------- case f
   {
     const events: WorkEvent[] = [
-      { kind: "verify-started", at: 1, step: "develop", command: "bash scripts/verify.sh" },
+      {
+        kind: "verify-started",
+        at: 1,
+        step: "develop",
+        command: "bash scripts/verify.sh",
+        target: { kind: "consolidated" },
+      },
       {
         kind: "verify-completed",
         at: 1_347_001,
         step: "develop",
         command: "bash scripts/verify.sh",
-        ok: true,
+        target: { kind: "consolidated" },
+        status: "success",
         ms: 1_347_000,
       },
     ];

@@ -11,6 +11,7 @@ import path from "node:path";
  */
 
 import { crashTreeSentence } from "./work-develop-crash.ts";
+import type { VerifyTarget } from "./workflow-state-events-verify.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 
 export function fmtElapsed(ms: number): string {
@@ -92,6 +93,13 @@ function crashTreeText(
         : paths,
     reason: "",
   });
+}
+
+/** #1415 — the tree a verify run was executed against, in the status line's
+ *  compact register: a basename, because an absolute worktree path costs the
+ *  width a reader needs for the duration and the command. */
+function verifyTargetText(e: { target: VerifyTarget }): string {
+  return e.target.kind === "worktree" ? path.basename(e.target.path) : "consolidated";
 }
 
 /** Format an event for the "last N" trailing log. Compact one-liner per event. */
@@ -196,15 +204,20 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // proved was already run. Names the tree and the worktree so the claim
       // is checkable, not just asserted.
       return `  consolidated-verify-skipped · ${e.step} · tree ${e.treeHash.slice(0, 8)} already passed in ${path.basename(e.worktree)}`;
+    case "verify-started":
+      // #1415 — the gate announcing itself BEFORE it runs: this is the line
+      // that exists for the 22 minutes the operator used to watch empty.
+      return `  verify-started · ${e.step} · ${verifyTargetText(e)} · ${e.command.slice(0, 60)}${e.tier ? ` · ${e.tier}` : ""}${e.retried ? " · re-run" : ""}`;
+    case "verify-completed":
+      // The verdict + the cost. `timeout` reads differently from `failure`
+      // because a killed run judged nothing (#1324); `reused` says no command
+      // was executed for this verdict at all.
+      return `  verify-completed · ${e.step} · ${verifyTargetText(e)} · ${e.status}${e.ms !== undefined ? ` · ${fmtElapsed(e.ms)}` : ""}${e.reused ? " (reused)" : ""}${e.tier ? ` · ${e.tier}` : ""}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
     case "consolidated-verify-pre-existing":
       // #1404 — a red gate that did not stop the push, because every failing
       // test is red at the base commit too. Names and base ride on the event
       // so an operator can confirm the claim without the raw verify log.
       return `  consolidated-verify-pre-existing · ${e.step} · ${e.failures.length} failing test(s) red at base ${e.baseSha.slice(0, 8)}: ${e.failures.slice(0, 3).join(", ")}${e.failures.length > 3 ? ` (+${e.failures.length - 3} more)` : ""}`;
-    case "verify-started":
-      return `  verify-started · ${e.step} · ${e.command.slice(0, 60)}`;
-    case "verify-completed":
-      return `  verify-completed · ${e.step} · ${e.ok ? "passed" : "FAILED"} · ${fmtElapsed(e.ms)} · ${e.command.slice(0, 60)}`;
     case "widening-scan":
       return `  widening-scan · ${e.findings.length} finding(s)`;
     case "memory-write":

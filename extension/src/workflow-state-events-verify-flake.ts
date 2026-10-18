@@ -38,40 +38,6 @@ export type VerifyFlakeRecoveredEvent = {
 };
 
 /**
- * #1415 — one run of the develop gate's verify, bracketed. The gate can take
- * as long as the project's whole suite (measured: ~22 min per develop round on
- * a host whose gate is 7–10 min), and with nothing recorded between the
- * developer finishing and `develop` completing, an operator watching the
- * stream saw a stall that was not one. `verify-started` is persisted BEFORE
- * the command runs, so it reaches the stream while the gate is still running;
- * `verify-completed` carries how long it took and whether it passed.
- *
- * `command` is the verify command the gate resolved — the per-worktree and
- * consolidated runs both use it. The bracket is the whole gate, so a gate that
- * ends before running it (no diff, a frontend-only diff) still records both,
- * with a short `ms`. A gate with no discoverable command records neither.
- */
-export type VerifyStartedEvent = {
-  kind: "verify-started";
-  at: number;
-  step: "develop";
-  command: string;
-};
-
-export type VerifyCompletedEvent = {
-  kind: "verify-completed";
-  at: number;
-  step: "develop";
-  command: string;
-  /** The gate's verdict: false when it recorded any failure. */
-  ok: boolean;
-  /** Wall-clock time of the whole gate, from `verify-started`. */
-  ms: number;
-};
-
-export type VerifyRunEvent = VerifyStartedEvent | VerifyCompletedEvent;
-
-/**
  * Issue #279 — verify-full tier status event (driver-side, ci step).
  * Lives in this verify fragment (same domain: verify-tier outcomes) to
  * keep the main union file under the §12 500-line limit.
