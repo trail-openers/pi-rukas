@@ -32,6 +32,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { closeSync, openSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace, traceWarn } from "./trace.ts";
@@ -184,12 +185,15 @@ interface LockHandle {
   token: string | null;
   release: () => Promise<void>;
   /**
-   * True when the body ran WITHOUT serialisation. A lockfile that cannot be
-   * CREATED (read-only `.pi`) degrades to an unserialised write, which is the
-   * pre-lock behaviour and the lesser cost; the injected fault is the same
-   * shape and is what the mutation check observes.
+   * True when the body ran WITHOUT serialisation.
    */
   degraded: boolean;
+  /**
+   * True when the lockfile could not be CREATED for a real reason (read-only
+   * `.pi`, ENOSPC) rather than the test's injected fault. A genuine fault is
+   * never silently degraded for a writer: `withClaimsLock` throws on it.
+   */
+  fault?: boolean;
 }
 
 async function acquire(
@@ -208,22 +212,49 @@ async function acquire(
     try {
       // `wx` is O_EXCL: the create itself is the atomic test-and-set.
       const token = JSON.stringify({ pid: process.pid, at: Date.now(), nonce: randomUUID() });
-      // The create must publish the token, not merely the name. bun's
-      // `open(path, "wx", mode, data)` silently ignores the data argument, so
-      // the ONLY shape that publishes atomically is a same-tick burst with the
-      // handle still open: bun's `FileHandle.writeFile` performs the write
-      // synchronously before its first `await` (verified by observing the
-      // on-disk bytes before the returned promise settles), so the file is
-      // never observable as zero bytes. Awaiting between `open` and `write`
-      // instead opens a window in which a sibling's poll reads "", fails
-      // JSON.parse, and — reading that as corruption — DELETES a lock whose
-      // holder is alive. That is the lost update the concurrency test caught.
-      // `writeSync` is not on bun's FileHandle, so this is `writeFile` with the
-      // `await` deliberately left to the caller's chain.
-      const fh = unlocked ? throwCannotCreate() : await fs.open(file, "wx");
-      const published = fh.writeFile(token);
-      await published;
-      await fh.close();
+      // The token must be published IN THE SAME TICK as the create.
+      //
+      // O_EXCL makes existence atomic; it says nothing about CONTENTS. Any
+      // `await` between the create and the write splits them, and inside the
+      // split a sibling sees a lockfile that exists and holds nothing — a lock
+      // that is neither held nor free.
+      //
+      // The previous revision used the async shape (`await fs.open(file, "wx")`,
+      // then `fh.writeFile(token)`) and asserted here that bun's
+      // `FileHandle.writeFile` "performs the write synchronously before its
+      // first `await`", so the file is "never observable as zero bytes". That
+      // assertion is FALSE. Measured with an independent harness: 8 writers
+      // released from a barrier while one observer polls the real lock path —
+      // the async shape exposes 25,391 zero-byte reads across 6 rounds, the
+      // sync shape 0. The bytes reach the inode only once the awaited write
+      // resolves, so every poll landing between create and resolution sees an
+      // empty file.
+      //
+      // That window is the third way this lock can be bypassed, and it is the
+      // one the `readLockAge` contract silently depends on. The judge refuses
+      // to call an unparsable lockfile stale — correctly, because a half-read
+      // file is more often "mid-publish" than "corpse". But it also means a
+      // waiter can be held off by a lockfile nobody published, and any future
+      // change that makes an unparsable read deletable (the pre-r2 behaviour,
+      // which really did steal live locks) turns the same window into two
+      // writers in the body at once. Publishing synchronously removes the
+      // window instead of relying on a runtime behaviour no caller can see.
+      //
+      // `openSync` + `writeFileSync(fd, …)` has no such seam: the create
+      // returns and the write through the fd happens with no `await` and no
+      // yield between them, so no other process can observe the file without
+      // its token. This is the shape `review-ledger-lock.ts` already uses,
+      // which is why that lock has never shown it. `writeSync` is not on bun's
+      // `FileHandle`; `writeFileSync(fd, …)` is the documented way to write
+      // through a numeric fd, and the `finally` guarantees the descriptor
+      // closes even if the write throws.
+      if (unlocked) throwCannotCreate();
+      const fd = openSync(file, "wx");
+      try {
+        writeFileSync(fd, token);
+      } finally {
+        closeSync(fd);
+      }
       return {
         token,
         release: async () => {
@@ -238,12 +269,21 @@ async function acquire(
       };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
-        // Cannot create the lock at all (read-only .pi, or the injected
-        // fault). The body still runs: a registry nobody can write is worse
-        // than an unserialised write, and the atomic rename in writeClaims
-        // still prevents a torn file.
-        trace(`claims-lock: lockfile unavailable, continuing unlocked: ${(err as Error).message}`);
-        return { token: null, release: async () => undefined, degraded: unlocked };
+        // Cannot create the lock at all (read-only `.pi`, ENOSPC, the injected
+        // fault). This is NOT a hand-off: the caller must decide, because a
+        // writer that proceeds here is the lost update this lock exists to
+        // remove. `unlocked` distinguishes the test's forced fault (which the
+        // mutation arm needs to observe a real lost update) from a genuine
+        // filesystem fault, and both are traced — a registration that ran
+        // unserialised is never silent.
+        traceWarn(
+          `claims-lock: lockfile cannot be created (${(err as Error).message}) — ${
+            unlocked
+              ? "registering WITHOUT the lock (injected fault)"
+              : "refusing to register unserialised"
+          }`,
+        );
+        return { token: null, release: async () => undefined, degraded: true, fault: !unlocked };
       }
       // Held. Sweep it only once the HOLDER is provably stale; anything else
       // we wait out. Sweeping on a failed parse is what destroyed live locks:
@@ -266,22 +306,33 @@ async function acquire(
 
 /**
  * Run `fn` holding the claims lock, throwing if the lock is not obtained
- * within the wait window. For writers whose unlocked run would be a lost
- * update: registration.
+ * within the wait window OR the lockfile could not be created for a real
+ * reason. For writers whose unlocked run would be a lost update: registration.
+ *
+ * registerClaim must NEVER write without holding the lock. Both ways of failing
+ * to hold it are fatal here and both are traced before the throw: another cycle
+ * held the lock past the wait window, or the lockfile could not be created at
+ * all (read-only `.pi`, ENOSPC). The test's injected fault is the one
+ * exception, and only because the mutation arm exists to prove the positive
+ * assertion tests the lock — it deliberately reproduces the lost update this
+ * throw prevents. A production cycle sets neither variable and cannot reach it.
  */
 export async function withClaimsLock<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
   const handle = await acquire(repoRoot, Date.now() + LOCK_WAIT_MS);
   if (handle === null) {
     throw new Error(
-      `path-claims: could not acquire the claims lock within ${LOCK_WAIT_MS}ms — ` +
-        `another cycle holds ${lockPath(repoRoot)} (a stale lock is swept after ${LOCK_STALE_MS}ms)`,
+      `path-claims: refusing to register a claim without the lock — could not acquire ${lockPath(repoRoot)} within ${LOCK_WAIT_MS}ms (another cycle holds it; a stale lock is swept after ${LOCK_STALE_MS}ms)`,
+    );
+  }
+  if (handle.fault) {
+    // A genuine "cannot create the lockfile" is not a licence to write
+    // unserialised — that is the lost update with extra steps.
+    throw new Error(
+      `path-claims: refusing to register a claim without the lock — ${lockPath(repoRoot)} cannot be created (check that .pi/work-state is writable)`,
     );
   }
   if (handle.degraded) {
-    // A writer that could not serialise is exactly how a claim goes missing,
-    // so it is never silent. It still runs (a registry nobody can write is
-    // worse than an unserialised write) but the operator sees why claims may
-    // disagree.
+    // Reached only under the injected fault. Still never silent.
     traceWarn(
       "claims-lock: registering a path claim WITHOUT the lock — a concurrent cycle may overwrite it",
     );
