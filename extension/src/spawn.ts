@@ -381,6 +381,7 @@ async function spawnSpecialistInner(
     progress: childProgress,
     cwd,
     enabled: opts.stallKill === true,
+    appendStderr,
     settled: () => promptCompleted || flags.childExited() || flags.aborted() || flags.timedOut(),
   });
 
@@ -437,9 +438,6 @@ async function spawnSpecialistInner(
   }
 
   appendKillLines(flags, timeoutMs, appendStderr);
-  if (stall.killed()) {
-    appendStderr(`\n[pi-rukas] killed: no progress for ${stall.frozenMs()}ms across slow levels`);
-  }
 
   // Final flat string from the ring buffer (bounded; no SlowFlatten on the
   // 64KB total even if the rest of the spawn ran a regex over it).

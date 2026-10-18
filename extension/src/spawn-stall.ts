@@ -69,6 +69,8 @@ export function armStallKill(o: {
   cwd: string;
   /** A driver child; false arms nothing. */
   enabled: boolean;
+  /** Receives the stderr attribution line when the child is ended. */
+  appendStderr?: (s: string) => void;
   /** The child is ending anyway (exited, reported, or another kill landed). */
   settled: () => boolean;
   /** Test seams. */
@@ -118,6 +120,7 @@ export function armStallKill(o: {
       } else {
         frozenMs = t - o.progress.lastProgressAt;
         killed = true;
+        o.appendStderr?.(`\n[pi-rukas] killed: no progress for ${frozenMs}ms across slow levels`);
         trace(`stall: no progress for ${frozenMs}ms across slow level ${level} — ending the child`);
         try {
           kill();
