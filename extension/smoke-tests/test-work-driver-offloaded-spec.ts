@@ -295,6 +295,13 @@ async function makeRepoWith(
   }
 }
 
+/** No explore/intent park. The fixture repo is not a git repo, so a later
+ * step (#1634: the adversarial diff read) may still halt; that is not this
+ * test's concern. */
+function noExplorePark(caps: Array<{ cap: string }>): boolean {
+  return caps.every((c) => c.cap !== "explore-needs-clarification" && c.cap !== "intent-park");
+}
+
 // Driver-level regression — full runWorkDriver harness
 async function runDriverCase(
   prefix: string,
@@ -352,7 +359,7 @@ async function runDriverCase(
     replyText,
   );
   assert(r.exploreDispatches === 1, `driver-674: explore dispatch ran once (got ${r.exploreDispatches})`);
-  assert(r.cap === undefined, "driver-674: NO cap-hit — false explore-needs-clarification park is gone");
+  assert(noExplorePark(r.caps), "driver-674: NO cap-hit — false explore-needs-clarification park is gone");
   assert(r.spec !== undefined, "driver-674: normalisedSpec recorded on state");
   if (r.spec) {
     assert(r.spec.deliverables.length === 6, `driver-674: 6 deliverables (got ${r.spec.deliverables.length})`);
@@ -472,7 +479,7 @@ async function runDriverCase(
     {},
     reply826,
   );
-  assert(r.cap === undefined, "driver-826: NO cap-hit — the spec is found inline, no park");
+  assert(noExplorePark(r.caps), "driver-826: NO cap-hit — the spec is found inline, no park");
   assert(r.spec !== undefined, "driver-826: normalisedSpec recorded on state");
   if (r.spec) {
     assert(r.spec.deliverables.length === 5, `driver-826: 5 deliverables (got ${r.spec.deliverables.length})`);

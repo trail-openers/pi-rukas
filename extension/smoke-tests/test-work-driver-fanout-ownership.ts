@@ -9,6 +9,7 @@
 
 import { rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { mkReadableTmp } from "./lib/readable-worktree.ts";
 import { fanOutAdversarial } from "../src/work-driver-adversarial-fanout.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import type { WorkState } from "../src/workflow-state.ts";
@@ -68,7 +69,7 @@ const WS = {
   // A: `ids` carries a phantom with no map entry. The review set is `ids`, so
   // the phantom is reviewed (at repoRoot, as on main). The docs prompt names
   // its real sibling and no one else.
-  const dir = tmpDir("own-phantom");
+  const dir = mkReadableTmp("adv-fix-own-phantom-");
   try {
     git(dir, "init -q -b main");
     const reviewed: string[] = [];
@@ -116,7 +117,7 @@ const WS = {
 {
   // B: the map has a key ("extra") the `ids` argument does not. It is not
   // reviewed, but the docs prompt still names it as a sibling.
-  const dir = tmpDir("own-extra");
+  const dir = mkReadableTmp("adv-fix-own-extra-");
   try {
     git(dir, "init -q -b main");
     const reviewed: string[] = [];
@@ -160,7 +161,7 @@ const WS = {
 {
   // C: with NO workstreams map (the N=1 default shape), `ids` is the source of
   // truth — a single default workstream, N=1 prompt, no sibling scope.
-  const dir = tmpDir("own-fallback");
+  const dir = mkReadableTmp("adv-fix-own-fallback-");
   try {
     git(dir, "init -q -b main");
     let n1 = false;
@@ -199,7 +200,7 @@ const WS = {
   // map (not the id count), so the single review is still a multi-workstream
   // review: its own branch-completed + branches-converged events are written.
   // This is deliberate — the map is the cycle's workstream count.
-  const dir = tmpDir("own-subset");
+  const dir = mkReadableTmp("adv-fix-own-subset-");
   try {
     git(dir, "init -q -b main");
     const reviewed: string[] = [];

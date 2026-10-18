@@ -14,6 +14,7 @@ import { aheadOfBase, execGit, prRange } from "./git-range.ts";
 import { trace } from "./trace.ts";
 import { resolveMainline } from "./work-driver-git.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
+import type { ExecFn } from "./worktree.ts";
 
 /** Validate a git SHA before shell interpolation. */
 const VALID_BASEDIFF_SHA_RE = /^[0-9a-f]{40}$/;
@@ -37,8 +38,9 @@ const VALID_BASEDIFF_SHA_RE = /^[0-9a-f]{40}$/;
  * empty and adversarial would trivially approve (#453). Logic:
  *   1. If baseSha is a valid 40-char hex SHA, try `git diff baseSha..HEAD`.
  *      If the result is non-empty, return it — this is the committed work.
- *   2. Fall back to `git diff HEAD` for uncommitted changes (pre-commit
- *      compat, or when baseSha is absent / the baseSha range is empty).
+ *   2. If that range is empty (nothing committed yet), `git diff baseSha`:
+ *      the working tree against base, so uncommitted tracked changes show
+ *      (#1634). Without a valid baseSha, `git diff HEAD` (pre-commit compat).
  *
  * `fetchDiff` is always per-worktree (`cwd` is one of the cycle's
  * worktrees, or the last-resort repoRoot fallback recorded by the branch
@@ -78,9 +80,14 @@ export type WorktreeDiff = { ok: true; diff: string } | { ok: false; reason: str
  * worktree, and with a baseSha an empty `baseSha..HEAD` (nothing committed
  * yet) is confirmed against the working tree with `git diff <baseSha>`, so
  * tracked changes the developer left uncommitted are reviewed, not skipped.
- * Any failed read is `ok: false` carrying git's error.
+ * Any failed read is `ok: false` carrying git's error. `exec` is the
+ * driver's injectable git executor (`ctx.verifyExecFn`), default `execp`.
  */
-export async function readWorktreeDiff(cwd: string, baseSha?: string): Promise<WorktreeDiff> {
+export async function readWorktreeDiff(
+  cwd: string,
+  baseSha?: string,
+  exec: ExecFn = execp,
+): Promise<WorktreeDiff> {
   // #1153 — a baseSha that is not a full SHA is never interpolated.
   const base = baseSha && VALID_BASEDIFF_SHA_RE.test(baseSha) ? baseSha : undefined;
   // #453 — committed work first: `git diff baseSha..HEAD` is what the
@@ -90,7 +97,7 @@ export async function readWorktreeDiff(cwd: string, baseSha?: string): Promise<W
   let diff = "";
   for (const range of ranges) {
     try {
-      diff = await execGit(execp, cwd, ["diff", "--end-of-options", range], {
+      diff = await execGit(exec, cwd, ["diff", "--end-of-options", range], {
         maxBuffer: 1024 * 1024, // 1 MiB cap
       });
     } catch (err) {

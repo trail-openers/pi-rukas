@@ -19,6 +19,7 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { mkReadableTmp } from "./lib/readable-worktree.ts";
 import { git, singleState, tmpDir, twoWorkstreamState } from "./lib/adversarial-fix-fixtures.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
@@ -90,7 +91,7 @@ function ctxFor(
 // A — the review does not touch the tree, dispatches no developer, and a
 // parsed ISSUES_FOUND routes the workstream to develop.
 {
-  const dir = tmpDir("route");
+  const dir = mkReadableTmp("adv-fix-route-");
   try {
     git(dir, "init -q -b main");
     writeFileSync(path.join(dir, "a.txt"), "uncommitted work\n");
@@ -147,7 +148,7 @@ function ctxFor(
 
 // B — an unparsed verdict is infra: no routing, no develop, no counted round.
 {
-  const dir = tmpDir("infra");
+  const dir = mkReadableTmp("adv-fix-infra-");
   try {
     const devSpawns: string[] = [];
     const seen: Array<number | undefined> = [];
@@ -179,8 +180,8 @@ function ctxFor(
 // C — two workstreams: only the non-approving one goes back to develop, and
 // after its fix pass only it is re-reviewed; the approved one keeps its verdict.
 {
-  const a = tmpDir("ws-a");
-  const b = tmpDir("ws-b");
+  const a = mkReadableTmp("adv-fix-ws-a-");
+  const b = mkReadableTmp("adv-fix-ws-b-");
   try {
     const devSpawns: string[] = [];
     const calls: Array<{ id: string; round?: number }> = [];
@@ -253,8 +254,8 @@ function ctxFor(
 // early-return parks on the explicit `adversarial-infra-failure` cap, and NO
 // fix request is recorded (the early-return precedes the routing block).
 {
-  const a2 = tmpDir("mix-a");
-  const b2 = tmpDir("mix-b");
+  const a2 = mkReadableTmp("adv-fix-mix-a-");
+  const b2 = mkReadableTmp("adv-fix-mix-b-");
   try {
     const ctx = ctxFor(
       a2,
@@ -326,7 +327,7 @@ function seededLog(): WorkState["eventLog"] {
   return log;
 }
 {
-  const dir = tmpDir("cap-critical");
+  const dir = mkReadableTmp("adv-fix-cap-critical-");
   try {
     const seen: number[] = [];
     const ctx = ctxFor(
@@ -348,7 +349,7 @@ function seededLog(): WorkState["eventLog"] {
   }
 }
 {
-  const dir = tmpDir("cap-issues");
+  const dir = mkReadableTmp("adv-fix-cap-issues-");
   try {
     const ctx = ctxFor(
       dir,

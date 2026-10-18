@@ -12,6 +12,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { mkReadableTmp, mkReadableTrees } from "./lib/readable-worktree.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { __setSleepFn } from "../src/work-driver-step-router.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
@@ -74,7 +75,7 @@ function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
 
 // T5 (#298) — REJECTED verdict records dispatch-completed (not dispatch-failed-with-menu-errorTail) + adversarial-rejected.
 {
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-adv-rejected-"));
+  const dir = mkReadableTmp("work-driver-adv-rejected-");
   try {
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     let s = initialState(954, 1_000_000);
@@ -156,7 +157,7 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
       ...s.pipelineState,
       currentStep: "adversarial",
       lastCompletedStep: "develop",
-      worktrees: tree,
+      worktrees: mkReadableTrees(tree),
       workstreams: streams,
       branchName: `feature/issue-${issue}`,
     },
@@ -165,7 +166,7 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
 
 // W1 (#486) — 3 workstreams; task-b's loop fails transiently on the first pass and succeeds on the in-step retry. The retry must occur (2 loop calls for task-b) and the aggregate must approve on task-b's recovered verdict — no handoff, no cap-hit.
 {
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w1-"));
+  const dir = mkReadableTmp("work-driver-486-w1-");
   try {
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     const s = advFanoutState(958, dir, ["task-a", "task-b", "task-c"]);
@@ -253,7 +254,7 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
 // the state file, and the cycle parks with the distinct infra cap — never
 // an adversarial-rejected.
 {
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w2-"));
+  const dir = mkReadableTmp("work-driver-486-w2-");
   try {
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     const s = advFanoutState(959, dir, ["task-a", "task-b", "task-c"]);
@@ -348,7 +349,7 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
 // infra shortfall is never dressed up as a rejection, and task-c's
 // approval survives in the state file.
 {
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w3-"));
+  const dir = mkReadableTmp("work-driver-486-w3-");
   try {
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     const s = advFanoutState(960, dir, ["task-a", "task-b", "task-c"]);

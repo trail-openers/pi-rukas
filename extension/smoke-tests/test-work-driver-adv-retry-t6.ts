@@ -10,6 +10,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { mkReadableTmp } from "./lib/readable-worktree.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
@@ -52,7 +53,7 @@ process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_VERIFY = "0";
 {
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-adv-infra-"));
+  const dir = mkReadableTmp("work-driver-adv-infra-");
   try {
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     let s = initialState(955, 1_000_000);
