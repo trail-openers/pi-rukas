@@ -43,8 +43,8 @@ import {
   runSmokeGate,
 } from "./work-driver-verify-develop-gates.ts";
 import { normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
-import { runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
+import { runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
 import { fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";

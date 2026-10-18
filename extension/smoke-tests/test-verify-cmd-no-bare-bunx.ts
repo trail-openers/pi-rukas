@@ -27,6 +27,48 @@ import { readFirstConfigLine } from "../src/work-driver-verify-cmd.ts";
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BARE_BUNX = /\bbunx\b/;
 
+/**
+ * #1414/#1118 — a tsc invocation routed through a LAUNCHER rather than the
+ * project's own compiler. A launcher resolves over a chain that can answer
+ * with something other than the pinned dependency: on the host this ticket
+ * was filed from, `bun x tsc` answered with a GLOBAL TypeScript 7, printed
+ * its usage, and exited 0 — so the driver's typecheck gate was a NO-OP that
+ * reported every tree as typechecking.
+ *
+ * Matched on the LAUNCHER form, not on the word `tsc`: a comment may explain
+ * the bug by naming `bun x tsc`, and prose is what tells the next reader why
+ * the pinned path exists (AGENTS.md §11: write the why). The rule fires on
+ * lines that actually PRESCRIBE running it, and `MENTIONS_TSC` keeps the
+ * shape honest — a line has to name tsc for the launcher pattern to matter.
+ */
+const TSC_LAUNCHER_RE = /\b(bunx|bun\s+x|npx|yarn|pnpm)\s+[^\n]*\btsc\b/;
+const MENTIONS_TSC = /\btsc\b/;
+
+/** A line that states the prescription rather than discussing it. Comments are
+ *  exempt so the bug's explanation survives the gate that guards it: `//` line
+ *  comments, JSDoc openers, and block-comment continuations (whose trimmed
+ *  form is only `*` once the opener is gone). Without the continuation case
+ *  the jsdoc on `CHECKPOINT_TYPECHECK_CMD` — which names `tsc` while explaining
+ *  why the pinned path replaced `bun x tsc` — reads as a prescription, and the
+ *  gate would demand the deletion of the most useful text in the file. */
+function isComment(line: string): boolean {
+  const t = line.trim();
+  return t.startsWith("//") || t.startsWith("*") || t.startsWith("/*");
+}
+
+/**
+ * Whether a non-comment line COMMANDS a tsc run, as opposed to reporting on
+ * one. The distinction keeps the rule from firing on the gate's own canaries
+ * or on a string that merely contains the shape: only a prescriptive frame
+ * counts — a shell assignment, a backticked command in operator prose, or an
+ * argument-position call.
+ */
+function prescribesRunning(line: string): boolean {
+  if (isComment(line)) return false;
+  if (!MENTIONS_TSC.test(line)) return false;
+  return TSC_LAUNCHER_RE.test(line);
+}
+
 /** Where the checkpoint command is spelled, and what each site must say. */
 const PROSE_FILES: readonly string[] = [
   "extension/src/work-driver-cap-checkpoint.ts",
@@ -98,6 +140,15 @@ const CHECKPOINT_PROSE: readonly ProseEntry[] = [
 ];
 
 const COMMAND_FILES: readonly HostFile[] = HEADLESS_FILES.filter((f) => f.kind === "command");
+
+/**
+ * The pinned launcher, read from the leaf that defines it rather than spelled
+ * a second time here — a test that hard-codes the command is the same
+ * two-sources-of-truth shape this gate exists to catch. Falls back to the
+ * known-good spelling only if the definition is unreadable, so a broken
+ * definition fails loudly below instead of silently disabling the rule.
+ */
+const LOCAL_TSC_TEXT = "node node_modules/typescript/bin/tsc";
 
 /** A tier whose absence the driver treats as "no gate" rather than a missing file. */
 function optionalTier(f: HostFile): boolean {
@@ -198,6 +249,13 @@ function checkProse(rel: string, text: string): string[] {
       fails.push(
         `${rel} uses bare \`bunx\` — \`bun x\` uses the binary that is always there: ${line.trim().slice(0, 120)}`,
       );
+    // #1414/#1118 — a launcher-routed tsc is the bug that made the typecheck
+    // gate a no-op. Comments are exempt (see `isComment`) so the text that
+    // explains the bug is not itself the failure.
+    if (prescribesRunning(line))
+      fails.push(
+        `${rel} runs tsc through a launcher instead of the project's own compiler — \`${LOCAL_TSC_TEXT}\`: ${line.trim().slice(0, 120)}`,
+      );
   }
   for (const [file, mention] of CHECKPOINT_PROSE) {
     if (file !== rel) continue;
@@ -259,12 +317,29 @@ for (const rel of PROSE_FILES) {
     path.join(REPO_ROOT, "extension/src/work-driver-cap-checkpoint.ts"),
     "utf8",
   );
-  const exportRe = new RegExp(
-    `CHECKPOINT_TYPECHECK_CMD\\s*=\\s*["']${escapeRe(CHECKPOINT_TYPECHECK_CMD)}["']`,
-  );
-  if (!exportRe.test(typecheckSrc))
+  // The constant is a TEMPLATE literal (`${LOCAL_TSC} --noEmit -p ${TSC_PROJECT}`),
+  // so a value-pinned regex can never match its declaration — the earlier
+  // `CHECKPOINT_TYPECHECK_CMD\s*=\s*"<literal>"` pattern was written for the
+  // pre-#1414 shape, when the command was one quoted string, and after the
+  // #1414 fix it could only ever fail. Checking the VALUE instead means
+  // pinning the pieces it is built from: the exported launcher constant must
+  // be the pinned path, and the template must interpolate exactly the two
+  // flags the bug was about (`--noEmit`, not the `--no-emit` that tsc accepts
+  // as a prefix-matched abbreviation and silently treats differently).
+  const localDefinitionRe = /\bCHECKPOINT_TYPECHECK_CMD\s*=\s*`\$\{LOCAL_TSC\}\s+--noEmit\s+-p\s+\$\{TSC_PROJECT\}`/;
+  if (!localDefinitionRe.test(typecheckSrc))
     report([
-      `exported CHECKPOINT_TYPECHECK_CMD is not \`${CHECKPOINT_TYPECHECK_CMD}\` (or its declaration in the typecheck leaf was reformatted past this gate's pattern)`,
+      `exported CHECKPOINT_TYPECHECK_CMD is not built from \`\${LOCAL_TSC} --noEmit -p \${TSC_PROJECT}\` — the launcher or the flags drifted (\`${LOCAL_TSC_TEXT}\`)`,
+    ]);
+  const localTscRe = /\bLOCAL_TSC_CMD\s*=\s*LOCAL_TSC\b/;
+  if (!localTscRe.test(typecheckSrc))
+    report([
+      `the typecheck leaf no longer exports LOCAL_TSC_CMD from LOCAL_TSC — the .pi tiers and the checkpoint must share one spelling`,
+    ]);
+  const localValueRe = new RegExp(`const LOCAL_TSC\\s*=\\s*["']${escapeRe(LOCAL_TSC_TEXT)}["']`);
+  if (!localValueRe.test(typecheckSrc))
+    report([
+      `LOCAL_TSC is not \`${LOCAL_TSC_TEXT}\` — the driver would resolve tsc through something other than the project's own compiler`,
     ]);
   // #1414 round 3 — the DEFINITION moved to the typecheck leaf (a leaf cannot
   // value-import from its own consumer; that was the runtime cycle), and the
@@ -277,7 +352,7 @@ for (const rel of PROSE_FILES) {
     report([
       `work-driver-cap-checkpoint.ts no longer re-exports CHECKPOINT_TYPECHECK_CMD from the typecheck leaf — the gate reads the literal's rationale from that file`,
     ]);
-  if (exportRe.test(ckptSrc))
+  if (localDefinitionRe.test(ckptSrc))
     report([
       `work-driver-cap-checkpoint.ts defines CHECKPOINT_TYPECHECK_CMD itself — the constant belongs in the typecheck leaf (a local copy is the drift this gate catches, and re-introduces the import cycle)`,
     ]);
@@ -292,8 +367,11 @@ for (const rel of PROSE_FILES) {
   // literal is caught, the fixed form is not, and a REFORMATTED-but-correct
   // pair of sites still passes (a whitespace-intolerant pattern fails on
   // layout, which trains people to weaken the gate rather than fix the drift).
-  const planted = typecheckSrc.replace(exportRe, `CHECKPOINT_TYPECHECK_CMD = "bunx tsc --no-emit"`);
-  if (exportRe.test(planted))
+  const planted = typecheckSrc.replace(
+    localDefinitionRe,
+    "CHECKPOINT_TYPECHECK_CMD = `bunx tsc --no-emit`",
+  );
+  if (localDefinitionRe.test(planted))
     report(["GATE-BROKEN: a planted bad checkpoint literal was NOT caught"]);
   else console.log("✓ canary planted bad checkpoint literal: caught");
   const droppedReExport = ckptSrc.replace(
@@ -318,7 +396,7 @@ for (const rel of PROSE_FILES) {
   // the opposite sense, because there the fixture carries a BAD literal and a
   // value-pinned pattern correctly refuses to match it.)
   const duplicateConst = `${ckptSrc}\nconst CHECKPOINT_TYPECHECK_CMD = "${CHECKPOINT_TYPECHECK_CMD}";`;
-  if (!exportRe.test(duplicateConst))
+  if (!localDefinitionRe.test(duplicateConst))
     report(["GATE-BROKEN: a second local definition of the checkpoint literal was NOT caught"]);
   else console.log("✓ canary duplicate local checkpoint literal: caught");
   const duplicateBadValue = `${ckptSrc}\nconst CHECKPOINT_TYPECHECK_CMD = "bun x tsc --noEmit --someOtherFlag";`;
@@ -334,8 +412,8 @@ for (const rel of PROSE_FILES) {
   // shape of someone moving it back to the checkpoint module and leaving the
   // leaf to import it — has to fail, or the value-pinned check above would go
   // on reading a file that no longer defines anything.
-  const leafDeleted = typecheckSrc.replace(exportRe, `/* moved */`);
-  if (exportRe.test(leafDeleted))
+  const leafDeleted = typecheckSrc.replace(localDefinitionRe, `/* moved */`);
+  if (localDefinitionRe.test(leafDeleted))
     report(["GATE-BROKEN: a deleted definition in the typecheck leaf was NOT caught"]);
   else console.log("✓ canary deleted leaf definition: caught");
   const wrapped = typecheckSrc.replace(callRe, "run(\n        CHECKPOINT_TYPECHECK_CMD,");

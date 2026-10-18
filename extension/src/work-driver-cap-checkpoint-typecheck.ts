@@ -71,9 +71,10 @@ const TYPECHECK_MAX_BUFFER = 256 * 1024;
  * not a tsc flag).
  *
  * So the command spells the compiler as a PATH under the package's own
- * dependency directory. Nothing in it is looked up: no `bun x`, no `bunx`, no
- * `tsc` on PATH, no npx-style cache. `node` is the one name that must resolve,
- * and the sandbox image installs node as a prerequisite. The file it runs is
+ * dependency directory. Nothing in it is looked up: no launcher, no hyphenless
+ * alias, no `tsc` on PATH, no npx-style cache. `node` is the one name that must
+ * resolve, and the sandbox image installs node as a prerequisite. The file it
+ * runs is
  * the real CLI shipped by the `typescript` devDependency, so the version that
  * answers is the version `extension/package.json` pins — which is the whole
  * point: a gate cannot pass a tree by running a compiler the project does not

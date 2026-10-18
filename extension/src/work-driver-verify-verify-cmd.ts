@@ -32,18 +32,21 @@ import { provisionDepsHint } from "./work-driver-deps-hint.ts";
 import {
   extractAttributedTail,
   hostExhaustionFailure,
-  isHostExhaustionFailure,
   isHostForkExhaustion,
   pidLimitSnapshot,
 } from "./work-driver-exec-error.ts";
 import { captureProcessTree } from "./work-driver-gate-hang.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import { compareWithBaseline } from "./work-driver-verify-baseline.ts";
+import { aggregateVerifyOutcome } from "./work-driver-verify-aggregate.ts";
 import {
   TIER_KNOB,
   fastTierTimeoutMs as resolveFastTierTimeoutMs,
   suiteTierTimeoutMs,
 } from "./work-driver-verify-budget.ts";
+import {
+  buildConsolidatedRetry,
+  buildConsolidatedVerifyOpts,
+} from "./work-driver-verify-consolidated-opts.ts";
 import {
   type KilledGateRun,
   formatExecError,
@@ -402,62 +405,32 @@ export async function runVerifyCommandGate(opts: {
   // does not exist on `ConsolidatedVerifyOpts` is a compile error rather than a
   // silently dropped option (the `{ onWalk: … }` forwarding defect: the walker
   // never reached the consolidated probe and the real `ps` walked the host).
-  const consOpts: ConsolidatedVerifyOpts = {
+  // The literal itself lives in work-driver-verify-consolidated-opts.ts
+  // (AGENTS.md §12 file-size cap) and stays typed there for the same reason.
+  const consOpts: ConsolidatedVerifyOpts = buildConsolidatedVerifyOpts({
     repoRoot: ctx.repoRoot,
     baseSha: baseSha as string,
-    worktrees: state.pipelineState.worktrees ?? {},
-    // #794 — own-range selection: a stacked workstream's range is
-    // measured against its dependency's tip, so its ancestor commits are
-    // not re-picked on top of their content (the #775 replay).
+    stateWorktrees: state.pipelineState.worktrees ?? {},
     workstreamBaseShas,
     scratchDir,
     verifyCmd: cmd,
     timeoutMs: suiteTimeoutMs,
-    // #1509 — the reporter renders the consolidated timeout string and must
-    // name the knob that governed THIS run, not re-read one from the tier map.
     ...(suiteTimeoutKnob !== undefined ? { suiteTimeoutKnob } : {}),
-    // #1509 — the fast tier's bound reaches the executor through the wrapper
-    // the caller built, so the reporter needs nothing more than the knob above.
     ...(fastTimeoutMs === undefined ? {} : { fastTierTimeoutMs: fastTimeoutMs }),
-    // #1240 — the N=1 duplicate run: same tree, same verdict.
     ...(alreadyVerifiedTree !== undefined ? { alreadyVerifiedTree } : {}),
-    // #1362 — the repoRoot dirty-root preflight inside honours the project's
-    // exemption list, so a tool's local file no longer refuses the batch.
     dirtyRootExempt: ctx.dirtyRootExempt,
-    // #1427 fix round — the walker is forwarded under the field `ConsolidatedVerifyOpts`
-    // actually declares. It used to be spread onto the REPORTING call below under
-    // a name that exists nowhere (`onWalk`), so the probe silently fell back to
-    // the real `ps` and the report described whatever else was on the host.
     ...(walkProcessTree !== undefined ? { walkProcessTree } : {}),
-    retry: {
+    retry: buildConsolidatedRetry({
       canRetry: flakeRetryPrecondition,
-      onFirstFailure: (raw) => {
-        if (singlePerAssertion === undefined) {
-          return { allowed: true, decision: "allowed-no-per-worktree-failure" };
-        }
-        if (singlePerAssertion === null) {
-          return { allowed: true, decision: "allowed-unknown" };
-        }
-        return sharesAssertion(raw, singlePerAssertion)
-          ? { allowed: true, decision: "allowed-shared" }
-          : { allowed: false, decision: "suppressed-mismatch" };
-      },
+      singlePerAssertion,
       onRecover: (evidenceTail) => {
-        // #841 — onRecover fires BEFORE the run result is available, so the
-        // log path is not in scope here. The post-run pass below (the
-        // `cons.recovered === true` branch) surfaces the run1 log path in
-        // its own note, which is the one the operator actually reads when
-        // the gate proceeds after recovery.
         notes.push(
           `consolidated verify RECOVERED after one bounded re-run (transient flake) — first-run failure preserved${evidenceTail ? `: ${evidenceTail}` : ""}`,
         );
-        // The decision note rides on the recorded `retryDecision` AFTER the
-        // consolidated run (below), where the same value also drives the
-        // failed-path notes — one read, no closure cell.
         onVerifyFlakeRecovered?.(evidenceTail);
       },
-    },
-  };
+    }),
+  });
   const cons = await runConsolidatedVerify(execFn, consOpts);
   reportConsolidatedVerifyOutcome(cons, {
     cmd,
@@ -496,47 +469,24 @@ export async function runVerifyCommandGate(opts: {
       }
     },
   });
-  // Aggregation: a consolidated FAILURE keeps per-worktree failures as
-  // failures. A consolidated PASS does NOT downgrade them (#1005 reverses
-  // the #669 downgrade): a workstream that fails in its OWN tree must block,
-  // even when the combined tree passes — a combined run that passes does not
-  // excuse a workstream that fails on its own (the #933/#996 shape: 0/5 and
-  // 1/5 workstreams passing their own gate, the split halves coupled). The
-  // per-worktree failure is kept as a failure AND the passing consolidated
-  // run is still noted (the evidence that the combination is not the cause
-  // is preserved in the note; the per-worktree defect is not excused).
-  if (perWorktreeVerifyFailures.length > 0) {
-    failures.push(...perWorktreeVerifyFailures);
-    for (const f of perWorktreeVerifyFailures) {
-      notes.push(
-        `per-worktree verify (evidence; still a failure — the consolidated pass does not excuse a per-worktree defect, #1005) — ${f}`,
-      );
-    }
-  }
-  // Baseline comparison — ONLY once the verify command has already failed
-  // (never on the happy path: it costs a full gate run). Not when the host
-  // could not fork: the probe cannot run there either, and its "red at base"
-  // would be the same environment failure read as a verdict. See
-  // work-driver-verify-baseline.ts.
-  if (
-    (cons.status === "failed" || perWorktreeVerifyFailures.length > 0) &&
-    !failures.some(isHostExhaustionFailure)
-  ) {
-    const attributed = await compareWithBaseline(execFn, {
-      repoRoot: ctx.repoRoot,
-      baseSha: baseSha as string,
-      issue: ctx.issue,
-      cmd,
-      timeoutMs: suiteTimeoutMs,
-      changeFailures: [
-        ...(cons.status === "failed"
-          ? [{ text: cons.rawFailure ?? "", timedOut: cons.timedOut === true }]
-          : []),
-        ...perWorktreeVerifyFailures.map((f) => ({ text: f, timedOut: isVerifyTimeoutFailure(f) })),
-      ],
-      failures,
-      notes,
-    });
-    if (attributed) opts.onBaselineAttributed?.();
-  }
+  // Post-run reconciliation and base attribution — extracted to
+  // work-driver-verify-aggregate.ts (AGENTS.md §12 file-size cap). Once the two
+  // execution legs have run and reported, nothing here starts another gate
+  // except the baseline probe: it reads the two results, the caller's
+  // `failures`/`notes`, and attributes a failure against the base commit.
+  // Moved as-is — the #1005 aggregation rule and the "only once the command
+  // already failed, never when the host could not fork" condition for paying
+  // for the probe both travel with their comments.
+  await aggregateVerifyOutcome({
+    execFn,
+    ctx,
+    cmd,
+    baseSha,
+    suiteTimeoutMs,
+    cons,
+    perWorktreeVerifyFailures,
+    failures,
+    notes,
+    onBaselineAttributed: () => opts.onBaselineAttributed?.(),
+  });
 }
