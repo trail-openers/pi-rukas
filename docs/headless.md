@@ -5,6 +5,8 @@
 ```
 pi-rukas-headless work <issue> [more issues] [--restart] [--continue-pr] [--timeout <minutes>] [--json]
 pi-rukas-headless plan <descriptor> (--dry-run | --file) [--type <t>] [--context <text>] [--reviewed-digest <d>] [--json]
+pi-rukas-headless plan <descriptor> --start [--type <t>] [--context <text>] [--json]
+pi-rukas-headless plan --resume <session> (--answer <file> | --retry | --confirm) [--json]
 pi-rukas-headless research <topic> [--tier quick|standard|deep|adoption] [--context <text>] [--json]
 pi-rukas-headless agents-md <create|update|check> [root] [file] [--deep] [--json]
 pi-rukas-headless lens-review [--base <ref> --head <ref>] [--since <ref>] [--full] [--context <text>] [--pr <n>] [--json]
@@ -28,10 +30,43 @@ A caller (e.g. tehas) calls `--capabilities` once per image build and once befor
 | `agents-md` | clean | findings or drift; gated on a human (`"gated": true`) | | | | refused or corrupt (`error`) |
 | `lens-review` | `APPROVED`, or no review (`"noReview": true` — an empty delta, not an approval) | `ISSUES_FOUND` | | `CRITICAL_ISSUES_FOUND` | `REVIEW_INCOMPLETE` | the round budget refused the run (`ROUND_CAP_REACHED`) |
 
-- **`plan`** files only with `--file`; a dry run reports a `reviewedDigest`, and `--file --reviewed-digest <d>` with the same inputs files that reviewed spec verbatim. The document carries the pipeline's whole result (`spec`, `gaps`, `status`, `mode`).
+- **`plan`** files only with `--file`; a dry run reports a `reviewedDigest`, and `--file --reviewed-digest <d>` with the same inputs files that reviewed spec verbatim. The document carries the pipeline's whole result (`spec`, `gaps`, `status`, `mode`). With `--start` or `--resume` it is a planning session instead: see [Planning sessions](#planning-sessions).
 - **`research`**: a deep run whose entailment pass could not run carries `"entailment": "unavailable"`.
 - **`agents-md`** documents carry `verb` (`create` / `update` / `check`), `status` (`clean`, `findings`, `gated`, `refused`), `findings[]` and, for `create` / `update`, `wouldWrite`. `root` defaults to the repository root.
 - **`lens-review`** is admitted through the same round budget as `dispatch_lens_review` and writes the review ledger like it. Without `--base` / `--head` it reviews the working tree.
+
+### Planning sessions
+
+A caller that plans without a person at a terminal (#1471) holds the plan as a session over several runs, one turn per run, and asks the operator between them, on an issue for example. The session lives in `PI_ENSEMBLE_PLAN_SESSION_DIR` (absolute), or `<git common dir>/pi-plan-sessions` when it is unset; a caller that makes a fresh clone per turn sets it to a directory it keeps.
+
+| Run | What it does |
+|---|---|
+| `plan <descriptor> --start [--type <t>] [--context <text>]` | Starts a session and runs its first turn. |
+| `plan --resume <session> --answer <file>` | Runs the next turn with the operator's answer, read from `<file>` (at most 20,000 characters). |
+| `plan --resume <session> --retry` | Runs the turn again with no new answer, after a failed one. |
+| `plan --resume <session> --confirm` | Files the plan the last turn showed. Runs no pipeline stage. |
+
+A turn is a dry run of the /plan pipeline, with the session's descriptor and context and every answer so far, in order, appended to the context. It never files. It ends with one of:
+
+| Exit | `status` | Meaning |
+|---|---|---|
+| 11 | `question` | The pipeline needs answers before it can draft. `questions` holds them. |
+| 12 | `shown` | A plan is drafted: `title`, `spec`, `reviewedDigest`. `questions` holds the open points the gap gate left for the operator (CRITICAL gaps and either/or decisions, with the proposed `resolution`); it can be empty. Answer to change the plan, or confirm. |
+| 10 | `duplicate-risk` | The plan looks like a duplicate of open work. Answer to explain, or stop. |
+| 40 | `failed` | The turn failed (`failure.reason`, as for a one-shot run). `--retry` runs it again. |
+
+`--confirm` exits 0 with `status: "filed"`, `url` and `issueNumber`. It files the shown `spec` byte for byte, and only the plan the last turn showed: after an answer, the plan shown before it can no longer be confirmed. A confirm when no plan is shown exits 40 with `error.code: "nothing-to-confirm"`, and an answer after the session filed exits 40 with `"already-filed"`.
+
+A session files once. A second confirm exits 0 with `"alreadyFiled": true` and makes no forge call. The session records that a filing started before it calls the forge, and keeps that record when the call fails, since a failed call may still have created the issue. The next confirm then searches the forge, closed issues included, for issues whose body carries the session's marker (the filed body's last line, `plan-session=<id>`):
+
+- the issue of this plan: it is recorded, and the confirm exits 0 with `"recovered": true`;
+- an issue of an earlier plan of the session: exit 40, `error.code: "earlier-plan-filed"` and its `url`; nothing is filed;
+- none: the plan is filed;
+- the forge cannot be searched or resolved: exit 40, `failure.reason: "filing-unverified"`; nothing is filed and the record stays, so a later confirm checks again.
+
+Every document carries `mode: "turn"`, `status`, `session` (`id`, `turn`) and, after a turn, `text`: one sentence for the operator. Each question is `{ id, question, options, resolution? }`, numbered `q1`, `q2`, …; `options` is empty when the answer is free text. A session that does not exist, or whose record cannot be read, exits 41 with `status: "lost"` and `"lost": true`; it is never replaced by a new one. A run on a session another live run holds exits 40 with `"session-busy"`; a lock left by a run that is gone is taken over (on another host, after two hours). A turn that was killed leaves the session with no result and the earlier plan no longer confirmable; `--retry` runs it again. A session id is a UUID; anything else is a bad argument.
+
+Each turn reads the same inputs as a one-shot run, `PI_ENSEMBLE_EXTRA_IMAGE_DIRS` and `PI_ENSEMBLE_PLAN_ISSUE` included, so a caller passes them on every turn. `--capabilities` lists the flags under `verbs.plan.flags` and the feature as `features.planTurns`.
 
 ## The four contracts
 
@@ -39,7 +74,7 @@ The headless runner's contract with its caller is four independent surfaces, eac
 
 | Contract | Version constant | Module | Description |
 |---|---|---|---|
-| Exit codes | `EXIT` object (`exit-code.ts`) | `extension/src/headless/exit-code.ts` | The process exit code. 7 named values: `merged` (0), `handoff` (10), `clarification` (11), `aborted` (20), `interrupted` (21), `crash` (30), `refused` (40). |
+| Exit codes | `EXIT` object (`exit-code.ts`) | `extension/src/headless/exit-code.ts` | The process exit code. 9 named values: `merged` (0), `handoff` (10), `clarification` (11), `shown` (12), `aborted` (20), `interrupted` (21), `crash` (30), `refused` (40), `lost` (41). `shown` and `lost` come only from `plan` turns. |
 | `--json` result schema | `RESULT_SCHEMA_VERSION` (4) | `extension/src/headless/result.ts` | The JSON document on stdout when `--json` is used. See below. Its `cap` values come from a published vocabulary (`extension/src/headless/caps.ts`). |
 | NDJSON progress | `NDJSON_VERSION` (1); stable subset `NDJSON_STABLE_VERSION` (1) | `extension/src/headless/ndjson.ts` | One JSON object per line on stderr. Every line carries `v` (1), `kind`, `at` (ISO-8601). Driver event lines additionally carry `issue` and `key` (idempotency key `<issue>:<index>:<at>`). Only a declared subset of kinds is stable; every other line is marked `unstable: true`. |
 | Capabilities | `CAPABILITIES_VERSION` (2) | `extension/src/headless/capabilities.ts` | The JSON object `--capabilities` prints. See below. |
@@ -51,10 +86,12 @@ The headless runner's contract with its caller is four independent surfaces, eac
 | 0 | `merged` | Merged, or completed with nothing to merge |
 | 10 | `handoff` | Handoff for any cap other than the clarification caps, or awaiting-human-merge |
 | 11 | `clarification` | Handoff whose cap is `intent-park` or `explore-needs-clarification` |
+| 12 | `shown` | `plan` turns only: a drafted plan waits for the operator's confirm ([Planning sessions](#planning-sessions)) |
 | 20 | `aborted` | Aborted |
 | 21 | `interrupted` | Interrupted by a signal (SIGINT/SIGTERM) |
 | 30 | `crash` | The driver threw, or interrupted by the runner's own `--timeout`, or a cycle left running after the driver returned, or the runner process died without writing its result |
 | 40 | `refused` | Refused to start (claimed by a live cycle, `needs-human-attention` without `--restart`, bad arguments, unknown flag) |
+| 41 | `lost` | `plan` turns only: the session to resume does not exist |
 
 A grouped run exits 21 if any issue was interrupted, otherwise the highest per-issue code. The `--json` result carries every issue regardless.
 

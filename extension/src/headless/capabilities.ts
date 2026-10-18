@@ -76,6 +76,8 @@ export const HEADLESS_FEATURES = {
   usageByRole: true,
   /** #1468 — `work --continue-pr` continues the issue's open PR; the result's `continuedPr`. */
   continuePr: true,
+  /** #1471 — `plan --start` / `--resume`: a planning session, one turn per run, filed only on a confirm. */
+  planTurns: true,
 } as const;
 
 export interface Capabilities {
