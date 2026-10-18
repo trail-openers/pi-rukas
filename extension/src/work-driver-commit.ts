@@ -71,7 +71,7 @@ import {
   unmeasurablePathsSectionOf,
 } from "./work-driver-pr-body-definition.ts";
 import { findOpenPrForBranch } from "./work-driver-pr-preflight.ts";
-import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
+import { carried, renderLensFindingsSection } from "./work-driver-pr-sections.ts";
 import { protectedGrantSectionOf } from "./work-driver-protected-grant.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
@@ -408,7 +408,7 @@ export async function mechanizedCommitPr(
     // test is red at base too. That fact belongs where review happens: a
     // silent continue would leave the next reviewer (and the next cycle) to
     // rediscover that the gate, not this diff, is broken.
-    const preExistingSection = preExistingFailuresSectionOf(res.preExistingFailures);
+    const preExistingSection = carried(preExistingFailuresSectionOf(res.preExistingFailures), ps);
     const prBody = [
       tldr,
       "",

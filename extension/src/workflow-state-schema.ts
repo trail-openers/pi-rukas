@@ -445,6 +445,13 @@ export interface PipelineState extends IssueClosedState {
     workstreamGreens: Record<string, WorkstreamGreen>;
   };
   /**
+   * #1647 — tests the selected verify let through without blocking: `flaky`
+   * (failed once, passed on the rerun) and `baselineRed` (red on the base commit
+   * too). Commit-pr renders both into the PR body and the handoff renders them.
+   * Absent = none recorded.
+   */
+  verifyAttribution?: { flaky: string[]; baselineRed: string[] };
+  /**
    * Terminal status. "running" while active; flips on `merged` or `handoff`.
    * S4a (#1162) — "interrupted" is written by `markInterrupted` (SIGTERM /
    * SIGINT). It is not terminal: re-entry resumes it as "running".

@@ -20,6 +20,7 @@ import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import { beginVerifyRun, finishVerifyRun } from "./work-driver-verify-events.ts";
 import type { DevelopGateRecord } from "./work-driver-verify-gate-reuse.ts";
+import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -202,6 +203,8 @@ export async function verifyStepOutcome(
    * next develop pass can reuse a verdict this one established.
    */
   gateRecord?: DevelopGateRecord;
+  /** #1647 — the selected develop run's flaky and baseline-red tests, folded into `pipelineState.verifyAttribution`. */
+  selectedVerify?: SelectedVerifyRecord;
 }> {
   const failures: string[] = [];
   const notes: string[] = [];
@@ -242,6 +245,7 @@ export async function verifyStepOutcome(
     // `hangLogPaths`, is the scope the cap actually has.
     const hangSink: GateHangPathSink = {};
     let gateRecord: DevelopGateRecord | undefined;
+    let selectedVerify: SelectedVerifyRecord | undefined;
     const verifyStarted = await beginVerifyRun(ctx, state);
     await verifyDevelopOutcome(ctx, state, execFn, failures, notes, {
       // #782 — the flake callback is wired at this layer: on recovery it
@@ -281,6 +285,9 @@ export async function verifyStepOutcome(
       onGateRecorded: (pass, greens, refuted) => {
         gateRecord = { pass, greens: [...greens], refuted: [...refuted] };
       },
+      onSelectedVerify: (record) => {
+        selectedVerify = record;
+      },
     });
     const flakeRecovered = flakeEvidenceTail !== undefined;
     const verifyEvents = finishVerifyRun(verifyStarted, failures.length === 0);
@@ -296,6 +303,7 @@ export async function verifyStepOutcome(
       ...(verifyEvents.length > 0 ? { verifyEvents } : {}),
       ...(buildResidueOnly ? { buildResidueOnly: true } : {}),
       ...(gateRecord !== undefined ? { gateRecord } : {}),
+      ...(selectedVerify !== undefined ? { selectedVerify } : {}),
       // #1427 round 3 — read the sink THIS call created, not the cycle context:
       // the list is exactly the reports this gate run wrote, which is what the
       // cap emit site needs. (It used to read `ctx.gateHangLogPaths`, which

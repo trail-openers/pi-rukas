@@ -364,6 +364,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // command, same bound → the whole develop pass runs nothing. Default on; `0`
   // restores the pre-#1415 "run it every round" behaviour.
   flag("VERIFY_GATE_REUSE", true),
+  flag("VERIFY_SELECT", true),
   ms("VERIFY_SMOKE_TIMEOUT_MS", 600_000),
   ms("VERIFY_SUITE_TIMEOUT_MS", 1_800_000),
   ms("VERIFY_TIMEOUT_MS", 600_000),
