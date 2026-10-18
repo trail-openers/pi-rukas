@@ -67,6 +67,20 @@ fanout_require_ready() {  # $1 = issue; exits 5 when triage says do not run it
 # human or a briefed subagent, not by a rule here. The distinction matters: `park-stale` means
 # the ticket is wrong and should be closed, `park-wont-merge` means the ticket is thin and should
 # be rewritten. Both refuse; only one is worth re-running after an edit.
+# One declared-files cell entry -> a repo-relative path, or empty. Planner annotations are prose:
+# "src/a.ts (new)" names a file that does not exist yet and is skipped; "src/a.ts (edits)" keeps the
+# path. A blank cell arrives as "-" and is skipped. Whitespace around the path is trimmed (a cell
+# "src/a.ts, src/b.ts" yields " src/b.ts" after the comma split).
+fanout_norm_path() {  # $1 = raw entry
+  local p="$1"
+  case "$p" in *"(new)"*) return 0 ;; esac
+  p="${p%%" ("*}"
+  p="${p#"${p%%[![:space:]]*}"}"
+  p="${p%"${p##*[![:space:]]}"}"
+  case "$p" in ''|-) return 0 ;; esac
+  printf '%s' "$p"
+}
+
 fanout_require_current() {  # $1 = issue, $2 = clone dir (may be empty for pre-clone checks)
   local issue="$1" clone="${2:-}"
 
@@ -86,15 +100,16 @@ fanout_require_current() {  # $1 = issue, $2 = clone dir (may be empty for pre-c
   if [ "${FANOUT_FORGE_CHECK:-1}" = 1 ]; then
     local raw state
     raw="$(gh issue view "$issue" --json state 2>/dev/null || true)"
-    state="$(printf '%s' "$raw" | "$(fanout_node)" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const o=JSON.parse(s);process.stdout.write(String(o.state||""))}catch{}})')"
+    # Prefix OK: on success so an unparseable or empty reply is distinguishable from a real value.
+    state="$(printf '%s' "$raw" | "$(fanout_node)" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const o=JSON.parse(s);if(typeof o.state==="string")process.stdout.write("OK:"+o.state)}catch{}})')"
+    case "$state" in
+      OK:?*) state="${state#OK:}" ;;
+      *) die "could not read the forge state for issue $issue (gh unavailable or unauthenticated). Fix gh auth, or set FANOUT_FORGE_CHECK=0 to run without the closed-issue check." 5 ;;
+    esac
     # tr, not a case-transformation operator: macOS ships bash 3.2 and that operator is bash 4+.
     case "$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')" in
       CLOSED|MERGED) die "issue $issue is $state on the forge — do not spawn a cycle for it" 5 ;;
     esac
-    # An unreadable state is NOT treated as open. `gh` failing here usually means auth or rate
-    # limit, and silently proceeding past a closed ticket is how a fleet rebuilds work that
-    # already shipped. Fail loudly and let the operator fix the auth.
-    [ -n "$state" ] || warn "could not read the forge state for issue $issue (gh unavailable or unauthenticated) — trusting triage.tsv"
   fi
 
   # Handed off previously. Re-running an unchanged issue against the same gate reproduces the
@@ -102,7 +117,13 @@ fanout_require_current() {  # $1 = issue, $2 = clone dir (may be empty for pre-c
   if [ "${FANOUT_ALLOW_ATTENTION:-0}" != 1 ]; then
     local lraw labels
     lraw="$(gh issue view "$issue" --json labels 2>/dev/null || true)"
-    labels="$(printf '%s' "$lraw" | "$(fanout_node)" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const o=JSON.parse(s);process.stdout.write((o.labels||[]).map((l)=>l.name).join(","))}catch{}})')"
+    labels="$(printf '%s' "$lraw" | "$(fanout_node)" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const o=JSON.parse(s);process.stdout.write("OK:"+(o.labels||[]).map((l)=>l.name).join(","))}catch{}})')"
+    # An empty or unparseable reply must not read as "no labels": that would let a handed-off
+    # issue through exactly when gh is failing. Only an explicit OK: prefix counts as a read.
+    case "$labels" in
+      OK:*) labels="${labels#OK:}" ;;
+      *) die "could not read the labels for issue $issue (gh unavailable or unauthenticated). Fix gh auth, or set FANOUT_ALLOW_ATTENTION=1 to skip the attention check." 5 ;;
+    esac
     case ",$labels," in
       *,needs-human-attention,*)
         die "issue $issue carries needs-human-attention: a previous cycle handed it off and nothing has revised it. Re-running reproduces the same park. Have the reason resolved, or set FANOUT_ALLOW_ATTENTION=1 if you know better." 5 ;;
@@ -114,6 +135,7 @@ fanout_require_current() {  # $1 = issue, $2 = clone dir (may be empty for pre-c
   if [ -n "$clone" ] && [ -d "$clone" ]; then
     local f missing=""
     while IFS= read -r f; do
+      f="$(fanout_norm_path "$f")"
       [ -n "$f" ] || continue
       [ -e "$clone/$f" ] || missing="$missing $f"
     done <<__FILES__

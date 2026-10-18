@@ -112,7 +112,8 @@ fanout_forge_url() {
     const u = process.env.FANOUT_URL || "";
     // Local: begins with a slash, ~/, ./ or ../ . Remote: a scheme, or scp-style host:path
     // where the host part is non-empty and contains no slash. Anything else is unknown.
-    if (/^(\/|~\/|\.\/|\.\.\/)/.test(u)) { process.stdout.write("local"); }
+    // file: and git+file: are local repositories under a scheme, so they are local too.
+    if (/^(\/|~\/|\.\/|\.\.\/)/.test(u) || /^(git\+)?file:/i.test(u)) { process.stdout.write("local"); }
     else if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(u)) { process.stdout.write("remote"); }
     else if (/^[^/\s]+:[^/]/.test(u)) { process.stdout.write("remote"); }
     else { process.stdout.write("unknown"); }

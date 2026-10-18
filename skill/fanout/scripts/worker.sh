@@ -103,9 +103,6 @@ HEAP_OVR="${HEAP_OVR:-}"
 # to abort, and the callee's message is still printed for the operator.
 FORGE="$(fanout_forge_url)" || die "forge url resolution failed" 3
 [ -n "$FORGE" ] || die "no usable forge url for $FANOUT_REPO. A worker whose origin is a local path pushes into its own parent clone and the PR never appears -- the cycle then reports success having shipped nothing. Pass --forge-url explicitly." 3
-HEADLESS="$FANOUT_REPO/bin/pi-rukas-headless"
-[ -x "$HEADLESS" ] || HEADLESS="$FANOUT_REPO/extension/src/headless/cli.ts"
-
 CLONE="$WORKERS_DIR/issue-$ISSUE/repo"
 RUNDIR="$RUNS_DIR/issue-$ISSUE"
 LOCKDIR="$WORKERS_DIR/issue-$ISSUE.lock"
@@ -235,6 +232,13 @@ fanout_require_current "$ISSUE" "$CLONE"
 # ---------------------------------------------------------------------------
 mkdir -p "$RUNDIR"
 fanout_apply_budget "$WORKERS_TOTAL" "$LEAN" "$HEAP_OVR" | tee "$RUNDIR/budget.log"
+
+# The runner comes from the BUILT clone, never from the user's checkout: its imports and
+# node_modules must be the ones this worker's bun install produced (a dirty or differently
+# branched user checkout would otherwise change what every worker runs).
+HEADLESS="$CLONE/bin/pi-rukas-headless"
+[ -x "$HEADLESS" ] || HEADLESS="$CLONE/extension/src/headless/cli.ts"
+[ -f "$HEADLESS" ] || die "runner not found in the clone ($HEADLESS) — the build cannot be run" 12
 
 # Self-signed provider certificates. Deliberately NOT hardcoded: this is a property of the
 # provider, not of the fan-out, so it arrives from the environment. Set it only for a
