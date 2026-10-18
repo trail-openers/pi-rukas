@@ -21,7 +21,7 @@
  * is the failure mode that would park every cycle while looking green.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -218,6 +218,79 @@ function assert(cond: boolean, msg: string) {
       many.names.length >= 3 &&
       body.split("\n").filter((l) => l === `FAILED-TESTS: ${many.names.length}`).length === 1,
     `a multi-failure run's list and count agree (exit ${manyCode}, ${JSON.stringify(many.names?.map((n) => path.basename(n)))})`,
+  );
+
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// ── 5. the writer refuses to follow a symlink. The reader opens with
+// `O_NOFOLLOW`, so a symlinked report path was never readable — but the WRITER
+// used a shell redirection, and `> path` truncates whatever the path RESOLVES
+// to. A report path swapped for a link to another file therefore made the loop
+// an arbitrary-file writer: the victim's content destroyed, replaced with a
+// verdict list. The driver pre-creates the file with `O_EXCL` in a 0700 dir, so
+// a symlink there is not the file the driver made and the only correct answer
+// is to write nothing — which leaves the run unattributable (a park), the same
+// outcome as no report at all.
+{
+  const FIXTURES = path.join(import.meta.dirname, "fixtures", "verify-loop");
+  const LOOP = path.join(import.meta.dirname, "lib", "verify-loop.sh");
+  const dir = createVerifyReportDir("pi-1404-symlink-");
+  const runLoop = (files: string[], reportFile: string): number => {
+    const env: Record<string, string | undefined> = { ...process.env };
+    env.VERIFY_REPORT_FILE = reportFile;
+    const r = spawnSync("bash", [LOOP, ...files.map((f) => path.join(FIXTURES, f))], {
+      cwd: path.join(import.meta.dirname, ".."),
+      encoding: "utf8",
+      env: env as NodeJS.ProcessEnv,
+    });
+    return r.status ?? -1;
+  };
+
+  const { symlinkSync, unlinkSync, lstatSync } = await import("node:fs");
+  const victim = path.join(dir, "victim.txt");
+  const VICTIM_BODY = "do-not-overwrite-me\n";
+  writeFileSync(victim, VICTIM_BODY);
+  const linked = path.join(dir, "report-linked.txt");
+  // The driver's `O_EXCL` creation is what a real run starts from; here the
+  // path is a symlink instead, which is the state the writer must refuse.
+  symlinkSync(victim, linked);
+  const code = runLoop(["fixture-1.ts"], linked);
+  assert(
+    code !== 0,
+    `setup: the run still fails on its own merits when the report cannot be written — a refused write never turns a red suite green (exit ${code})`,
+  );
+  assert(
+    readFileSync(victim, "utf8") === VICTIM_BODY,
+    `#1404: the loop refuses to write through a symlinked $VERIFY_REPORT_FILE — the victim's content is untouched, so the loop is not an arbitrary-file writer for anything that can plant a link at the path (got ${JSON.stringify(readFileSync(victim, "utf8"))})`,
+  );
+  assert(
+    lstatSync(linked).isSymbolicLink(),
+    "#1404: the symlink itself is left in place, not replaced by a regular file — the driver's reader would refuse it either way, and silently swapping the node would hide the tampering",
+  );
+  // And the temp file the writer stages must not survive a refused write.
+  const leftovers = readdirSync(dir).filter((n) => n.includes(".part."));
+  assert(
+    leftovers.length === 0,
+    `#1404: no .part temp file is left behind by the refused write (${JSON.stringify(leftovers)})`,
+  );
+  for (const p of [linked, victim]) {
+    try {
+      unlinkSync(p);
+    } catch {
+      // already gone
+    }
+  }
+
+  // A MISSING report file is refused the same way: the driver always pre-creates
+  // it, so "nothing is there" is not a state the loop is asked to write into —
+  // creating it here would make the loop the author of a file the driver vouches
+  // for.
+  const absent = path.join(dir, "report-absent.txt");
+  const absentCode = runLoop(["fixture-1.ts"], absent);
+  assert(
+    absentCode !== 0 && !existsSync(absent),
+    `#1404: the loop does not create a report the driver never made — a missing path is left missing (exit ${absentCode}, exists ${existsSync(absent)})`,
   );
 
   rmSync(dir, { recursive: true, force: true });

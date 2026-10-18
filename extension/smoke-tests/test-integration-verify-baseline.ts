@@ -342,7 +342,6 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
       code: 1,
     }),
     opts("sh gate.sh", probeA),
-    "",
   );
   assert(
     contradictory === undefined,
@@ -357,7 +356,6 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
   const unprobed = await attributeAgainstBase(
     scripted({ stdout: "some tool complained, no markers here", code: 1 }),
     opts("sh gate.sh", probeB),
-    "",
   );
   assert(
     unprobed === undefined,
@@ -373,7 +371,6 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
       code: 1,
     }),
     opts("sh gate.sh", probeC),
-    "",
   );
   assert(
     clear !== undefined &&
@@ -392,7 +389,6 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
       code: 1,
     }),
     opts("sh gate.sh", probeD),
-    "",
   );
   assert(
     agreed !== undefined &&
@@ -413,7 +409,6 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
       code: 1,
     }),
     { ...opts("sh gate.sh", probeE), reportDir: "/somewhere/else" },
-    "",
   );
   assert(
     forged === undefined,
@@ -430,12 +425,17 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
       code: 1,
     }),
     opts("sh gate.sh", probeF),
-    "",
   );
   assert(
     empty === undefined,
     `#1404: an empty report file is unattributable, not "the base named nothing so nothing is excused by it" (got ${JSON.stringify(empty)})`,
   );
+
+  // (g)/(h)/(i) — the zero-name CHANGE report, its mirror control, and the
+  // continue gate's arithmetic — live in their own file
+  // (test-verify-zero-name-report.ts) so this one stays under the size cap.
+  // That case set is the one that decides whether a red consolidated gate can
+  // be talked into a push; it runs beside this one in the offline loop.
 
   fs.rmSync(reportDir, { recursive: true, force: true });
 }

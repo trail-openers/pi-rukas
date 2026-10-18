@@ -27,6 +27,7 @@
  * result so the caller can record the visible event.
  */
 
+import { trace } from "./trace.ts";
 import { commitPrVerifiedTree } from "./work-driver-integrate-eligibility.ts";
 import { runCommitPrConsolidatedVerify } from "./work-driver-integrate-verify.ts";
 import type { IntegrateOpts, IntegrateResult } from "./work-driver-integrate.ts";
@@ -128,12 +129,21 @@ export async function verifyIntegration(
     // caller pushes and makes the names visible. Everything else (no probe,
     // no red base established, ANY change-caused or unattributable failure)
     // restores and fails exactly as before.
-    if (
-      vr.preExistingOnly === true &&
-      vr.preExistingFailures &&
-      vr.preExistingFailures.length > 0
-    ) {
-      return { preExistingFailures: vr.preExistingFailures };
+    // `continueOnPreExisting` is where the three conditions live (a non-empty
+    // change report, every name accounted for at base, nothing left as the
+    // change's own) and it is the ONLY shape that sets `preExistingOnly`. This
+    // site deliberately does not re-derive that judgement from the two arrays:
+    // `preExistingFailures.length > 0` alone is the shape a zero-name change
+    // report used to reach, and two independent readers of one rule is how one
+    // of them ends up being the permissive one.
+    if (vr.preExistingOnly === true) {
+      const names = vr.preExistingFailures ?? [];
+      if (names.length > 0) return { preExistingFailures: names };
+      // A marker with no names behind it is a contradiction, not a pass. Fail
+      // closed to the park rather than trusting the flag.
+      trace(
+        "work-driver: commit-pr verify — a pre-existing-only verdict arrived with no test names, which is not a shape the probe produces; the consolidated failure parks",
+      );
     }
     const restore = await opts.restoreRoot();
     return {

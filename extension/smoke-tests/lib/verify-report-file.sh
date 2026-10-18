@@ -53,10 +53,20 @@
 # unattributable and a green base must be positively establishable).
 #
 # A run that never reaches the report half — killed at the pool level, died in
-# the interrupt path — leaves either nothing at the path, or a 0-byte file from
-# the `: >` below. Both are unattributable to the reader. The file is NEVER
-# left holding a half-written name list: names are buffered and written in one
-# redirection, so a reader that sees content sees a complete list.
+# the interrupt path — leaves either nothing at the path, or the 0-byte file the
+# driver created with `O_EXCL` before the run started. Both are unattributable to
+# the reader. The file is NEVER left holding a half-written name list: names are
+# buffered, written to a temp file in the same directory, and `mv`'d into place,
+# so a reader that sees the path sees either the previous content or the
+# complete list, never a partial one.
+#
+# The path must already be a regular file the driver created. `write_verify_report`
+# refuses a symlink (and a missing file, and any other non-regular node): a
+# shell redirection writes through a symlink to whatever it points at, which
+# would make this function an arbitrary-file writer for anything that could plant
+# a link at the path. The driver's reader opens with `O_NOFOLLOW` anyway, so a
+# symlinked report was never readable — refusing the write costs nothing and
+# leaves the run unattributable, the same outcome as no report at all.
 
 # write_verify_report — emit the out-of-band verdict, if one was asked for.
 #
@@ -67,7 +77,7 @@
 # this channel exists to make impossible.
 write_verify_report() {
   [ -n "${VERIFY_REPORT_FILE:-}" ] || return 0
-  local count="${#names[@]}" line
+  local count="${#names[@]}" line tmp
   # Buffer first, write once. Assigning to `line` cannot fail on a name that
   # has already been printed to stdout, so the file appears either complete or
   # absent rather than mid-list.
@@ -77,21 +87,40 @@ write_verify_report() {
     line="${line}${name}"$'\n'
   done
   line="${line}FAILED-TESTS: ${count}"
-  # `: >` truncates (or creates) the file BEFORE the redirection of the body
-  # would — kept separate so a failure of the body leaves a 0-byte file rather
-  # than a stale one from a previous run at the same path.
-  if ! : >"$VERIFY_REPORT_FILE" 2>/dev/null; then
-    echo "warn: verify-loop: could not create the verify report file at \$VERIFY_REPORT_FILE; the run's verdict is out-of-band-unreadable" >&2
+  # #1404 fix round 3 — refuse to follow a symlink. `printf > path` truncates
+  # whatever `path` RESOLVES to, so a report path swapped for a symlink to
+  # another file turns the loop into an arbitrary-file writer: the victim's
+  # content is destroyed and replaced with a verdict list. The driver creates
+  # this file itself with `O_EXCL` in a 0700 dir and the reader opens it with
+  # `O_NOFOLLOW`, so a symlink at the path is never the file the driver made —
+  # the correct response is to write nothing and leave the run unattributable
+  # (a park), which is the fail-closed direction this whole channel obeys.
+  # `-f` alone is not enough: `[ -f ]` is true through a symlink to a regular
+  # file, which is precisely the case being refused.
+  if [ -L "$VERIFY_REPORT_FILE" ] || [ ! -f "$VERIFY_REPORT_FILE" ]; then
+    echo "warn: verify-loop: \$VERIFY_REPORT_FILE is not a regular file the driver created (missing, a symlink, or some other node); refusing to write through it — the run's verdict is out-of-band-unreadable" >&2
     return 0
   fi
-  if ! printf '%s\n' "$line" >"$VERIFY_REPORT_FILE" 2>/dev/null; then
+  # Write through a temp file in the SAME directory and `mv` it into place, so
+  # the path the reader opens is never half-written and never opened while a
+  # redirection has it truncated. Same directory because `mv` across filesystems
+  # is a copy-then-unlink, which would reintroduce the window (and fail where the
+  # dir is a mount point). The driver pre-created the target with `O_EXCL`, so
+  # the replace is a rename onto an existing regular file, not a creation.
+  tmp="${VERIFY_REPORT_FILE}.part.$$"
+  if ! printf '%s\n' "$line" >"$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null
     echo "warn: verify-loop: could not write the verify report file; the run's verdict is out-of-band-unreadable" >&2
     return 0
   fi
-  # 0400 — the driver is the only reader and runs as the same user. Tightening
-  # the mode costs nothing and removes the group/other-readable window a
-  # default-umask file would have had. A failed chmod does not invalidate the
-  # content, so it is not fatal; the warning is enough.
-  chmod 400 "$VERIFY_REPORT_FILE" 2>/dev/null
+  # 0400 before the rename, so the file is never briefly readable by group or
+  # other at its final name. The driver is the only reader and runs as the same
+  # user; a failed chmod does not invalidate the content, so it is not fatal.
+  chmod 400 "$tmp" 2>/dev/null
+  if ! mv -f "$tmp" "$VERIFY_REPORT_FILE" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null
+    echo "warn: verify-loop: could not move the verify report into place; the run's verdict is out-of-band-unreadable" >&2
+    return 0
+  fi
   return 0
 }

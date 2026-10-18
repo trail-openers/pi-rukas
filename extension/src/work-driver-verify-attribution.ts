@@ -72,6 +72,27 @@ export interface FailureAttribution {
 }
 
 /**
+ * What `attributeFailuresByName` has already resolved through the filesystem.
+ *
+ * `compareNames` re-resolves every root and every name with `realpathSync` on
+ * EVERY comparison (the macOS `/var` → `/private/var` case `asPath` exists
+ * for), so a run with C change names and B base names costs 2·C·B + O(C+B)
+ * stat-heavy walks. One memo per call takes it to O(C+B) — and the memo is
+ * scoped to the call, never to the module, because the probe deletes its own
+ * worktree before this runs and a cache that outlived the call would pin a
+ * path whose disk state is about to change under a later call.
+ *
+ * The shape is the structural one `work-driver-verify-names.ts` declares, so a
+ * plain `Map` is the memo and no import cycle appears for the shared type.
+ */
+export type NameResolution = Map<string, string | null>;
+
+/** Fresh memo for one `attributeFailuresByName` call. */
+export function createNameResolution(): NameResolution {
+  return new Map();
+}
+
+/**
  * The one rule: a failing test name in BOTH runs' sets is pre-existing; a
  * name in the change run's set only is change-caused. Neither empty set is
  * ever a pass:
@@ -91,13 +112,15 @@ export function attributeFailuresByName(
   changeNames: readonly string[],
   baseNames: readonly string[],
   roots: NameRoots,
+  /** Memo from `createNameResolution()`; omit for a live walk every time. */
+  resolution?: NameResolution,
 ): FailureAttribution {
   if (changeNames.length === 0) {
     return {
       preExisting: [],
       changeCaused: [],
       unattributable:
-        "the failing tests could not be named from the verify output, so no per-test comparison was possible",
+        "the failing tests could not be named from the verify output, so no per-test comparison was possible — a change run that FAILED while naming nothing is a report that does not describe that failure, which is unattributable, not an absence of failures",
     };
   }
   if (baseNames.length === 0) {
@@ -113,7 +136,7 @@ export function attributeFailuresByName(
   outer: for (const name of new Set(changeNames)) {
     let unknown = false;
     for (const baseName of baseNames) {
-      const cmp = compareNames(name, baseName, roots);
+      const cmp = compareNames(name, baseName, roots, resolution);
       if (cmp === "same") {
         preExisting.push(name);
         continue outer;
@@ -143,6 +166,15 @@ export interface BaselineProbeOutcome {
   preExistingFailures: string[];
   /** Failing test names that pass at base — caused by the change. */
   changeCausedFailures: string[];
+  /**
+   * #1404 round 3 — the names the CHANGE run's report carried, exactly as read
+   * (not deduplicated). The continue gate needs the denominator the other two
+   * fields were computed from: `preExistingFailures.length === 0` is also the
+   * shape of "the run named nothing", and only the caller that owns the push
+   * should have to know the difference — so it is handed the count it has to
+   * check rather than being asked to infer it.
+   */
+  changeRunNames: string[];
 }
 
 /** A git commit is 40 hex chars; nothing else may reach `git worktree add`. */
@@ -225,7 +257,6 @@ export async function attributeAgainstBase(
      */
     probeReportFile: string;
   },
-  changeStream: string,
 ): Promise<BaselineProbeOutcome | undefined> {
   if (!SHA_RE.test(opts.baseSha)) {
     trace(
@@ -275,19 +306,24 @@ export async function attributeAgainstBase(
     timeoutMs: bound,
     ...(opts.probeEnv !== undefined ? { env: opts.probeEnv } : {}),
   });
-  if (verdict.status !== "red") {
+  if (verdict.status === "green" || verdict.status === "unknown") {
     trace(
       `work-driver: commit-pr verify — the baseline probe did not establish a red base (${verdict.status === "unknown" ? verdict.reason : "the base is green"}); the consolidated failure parks as before`,
     );
     return undefined;
   }
-  if (verdict.timedOut) {
+  // #1404 fix round 3 — a base run killed at its bound judged nothing, so it is
+  // its own verdict arm and there is nothing here to read from it. Keeping it
+  // out of the `red` shape is the point: the fields this seam reasons over are
+  // precisely the ones a killed run cannot supply, and an optional field on the
+  // excusing shape is a field a future producer can leave out and still excuse.
+  if (verdict.status === "red-timed-out") {
     trace(
       "work-driver: commit-pr verify — the baseline run was killed at its bound, so no per-test comparison was possible; the consolidated failure parks as before",
     );
     return undefined;
   }
-  const baseStream = verdict.rawStream ?? "";
+  const baseStream = verdict.rawStream;
   // The base run's NAMES come from its report file. The stream is still read
   // here, and still read sceptically: `probed` and `isContradictoryTally` can
   // each veto an excuse, and neither can ever create one. Both are derived from
@@ -304,6 +340,9 @@ export async function attributeAgainstBase(
   // exited non-zero while its own tally reported `F: 0` is either a broken
   // harness or a forged stream, and in neither case does it establish that any
   // particular test was already red. The optimistic half is never taken alone.
+  // A MISSING exit code is read as non-zero (`?? 1`), which is the strict side:
+  // an executor that could not say what the child returned is not evidence the
+  // child succeeded, and the agreement check runs rather than being skipped.
   if ((verdict.exitCode ?? 1) !== 0 && isContradictoryTally(baseStream) === true) {
     trace(
       `work-driver: commit-pr verify — ${emptyBaseReason(false, baseStream)}; the consolidated failure parks as before`,
@@ -318,6 +357,9 @@ export async function attributeAgainstBase(
     return undefined;
   }
   const baseNames = baseReport.names;
+  // One memo for the whole comparison. Every name in both lists is walked once
+  // and reused across the C×B comparisons it takes to settle the run.
+  const resolution = createNameResolution();
   // Anchor the comparison in the trees each run ACTUALLY executed in. The
   // probe's worktree is one of them (the probe created it, so the exported
   // naming rule names the same path). The other is where the CHANGE run's names
@@ -329,24 +371,37 @@ export async function attributeAgainstBase(
   // entirely. Hence `changeRoots`: every tree the change run may have run in. A
   // name that sits under NONE of them is `unknown`, and `unknown` parks — it
   // never excuses.
-  const attribution = attributeFailuresByName(changeNames, baseNames, {
-    changeRoots: [probeTree, opts.repoRoot, ...(opts.changeRoots ?? [])],
-    probeRoot: probeTree,
-  });
+  const attribution = attributeFailuresByName(
+    changeNames,
+    baseNames,
+    {
+      changeRoots: [probeTree, opts.repoRoot, ...(opts.changeRoots ?? [])],
+      probeRoot: probeTree,
+    },
+    resolution,
+  );
   if (attribution.unattributable !== undefined) {
     trace(
       `work-driver: commit-pr verify — the baseline probe is unattributable: ${attribution.unattributable}`,
     );
     return undefined;
   }
-  // `changeStream` is retained in the signature for the caller's error path
-  // only (the tail the classifier reads is built upstream from the same
-  // stream); nothing here reads it to decide an excuse. Declared and unused on
-  // purpose rather than deleted, so a future caller cannot reintroduce the
-  // stream as a name source by passing it back in a different position.
-  void changeStream;
+  // The guard the continue path is NOT. `attributeFailuresByName` already
+  // refuses a zero-name change report as unattributable, but this function's
+  // contract is the object the caller reads, and a caller that reads
+  // `changeCausedFailures.length === 0` as "continue" must never be handed
+  // that shape from a report that names nothing. "No evidence" and "evidence
+  // of innocence" are different facts and only the second one may continue;
+  // an empty list is never evidence of innocence, whatever else the run said.
+  if (changeNames.length === 0) {
+    trace(
+      "work-driver: commit-pr verify — the change run's report named no failing test while its run failed, so the report does not describe this failure; the consolidated failure parks as before",
+    );
+    return undefined;
+  }
   return {
     preExistingFailures: attribution.preExisting,
     changeCausedFailures: attribution.changeCaused,
+    changeRunNames: [...changeNames],
   };
 }
