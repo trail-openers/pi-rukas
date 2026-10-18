@@ -178,6 +178,8 @@ export interface PiJsonEvent {
   toolName?: string;
   /** Present on `tool_execution_start` / `tool_execution_update` — the call's arguments. */
   args?: unknown;
+  /** Present on `tool_execution_update` — the call's output so far. */
+  partialResult?: unknown;
   /**
    * Present on `tool_execution_*` events when the call is nested (made by a
    * tool via `ctx.executeTool()`, e.g. a codemode script). Identifies the

@@ -8,7 +8,7 @@
  * DispatchResult.killCause, lastActivity and the stderr attribution line
  * follow #296's structured-kill contract. killCause priority
  * (resolveKillCause): loop > inactivity = tool-inactivity > token-budget >
- * timeout > abort — the most specific wins (the #296 invariant; #296's three
+ * stuck-tool > no-progress > child-bound (#1567) > timeout > abort — the most specific wins (the #296 invariant; #296's three
  * values are untouched). Inactivity and tool-inactivity rank equal: both are
  * wall-clock silence kills of the same poll (the #951 exemption swaps which
  * budget is armed, not the kill's nature), so their ordering is irrelevant —
@@ -41,7 +41,7 @@ function killChild(child: ChildProcess): void {
 
 /**
  * #543 — killCause priority: loop > inactivity = tool-inactivity >
- * token-budget > timeout > abort (the most specific wins — the #296
+ * token-budget > stuck-tool > no-progress > child-bound (#1567) > timeout > abort (the most specific wins — the #296
  * invariant; #296's three values are untouched). The two silence kills rank
  * equal: same poll, one budget armed at a time (#951), so their relative
  * order cannot change an outcome.
@@ -59,6 +59,11 @@ export function resolveKillCause(facts: {
   toolInactivityKilled: boolean;
   timedOut: boolean;
   tokenBudgetKilled: boolean;
+  /** #1567 — the child-supervision kills. Optional while no piece emits
+   * them; each enforcing piece passes its own flag. */
+  stuckToolKilled?: boolean;
+  noProgressKilled?: boolean;
+  childBoundKilled?: boolean;
   aborted: boolean;
 }): DispatchResult["killCause"] {
   if (facts.loopKilled) return "loop";
@@ -70,6 +75,13 @@ export function resolveKillCause(facts: {
   // token budget that also outlived the wall-clock backstop is a
   // token-budget kill (see the module doc + the doc comment above).
   if (facts.tokenBudgetKilled) return "token-budget";
+  // #1567 — below the structural caps, above the 2-h backstop: a child the
+  // supervisor ended that also outlived the backstop is named for the
+  // supervisor's reason. Most specific first: a second call-kill on one
+  // command, then a frozen child, then the plain per-child time limit.
+  if (facts.stuckToolKilled) return "stuck-tool";
+  if (facts.noProgressKilled) return "no-progress";
+  if (facts.childBoundKilled) return "child-bound";
   if (facts.timedOut) return "timeout";
   if (facts.aborted) return "abort";
   return undefined;
