@@ -31,7 +31,7 @@ export type LensResidualsPostFailedEvent = {
  *
  * The failure event above existed and the success event did not, so "were this
  * round's findings disclosed?" was re-inferred from which cap NAME had
- * appeared in the log (`capHitNamesOf` matching round-cap / wall-clock). Any
+ * appeared in the log (`capHitNamesOf` matching round-cap / lens-review-timeout). Any
  * `ISSUES_FOUND` followed by something other than a round/wall-clock cap that
  * parks — `dispatch-failed`, `verify-failed:*`, a kill cause, `ci-retry` —
  * read as "nothing to hold for" and the PR was marked ready over findings
