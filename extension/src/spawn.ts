@@ -368,10 +368,7 @@ async function spawnSpecialistInner(
     reported: () => promptCompleted,
     childExited: flags.childExited,
     preempted: () =>
-      flags.aborted() ||
-      flags.timedOut() ||
-      flags.inactivityKilled() ||
-      flags.toolInactivityKilled(),
+      flags.aborted() || flags.timedOut() || flags.inactivityKilled() || callBudget.stuckKilled(),
     commits: spec.role === "developer" && spec.cwd !== undefined,
   });
 
