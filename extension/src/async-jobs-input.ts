@@ -115,6 +115,11 @@ export interface StartJobInput {
    * Test seam only. Production always runs the real stand-in fallback; a test
    * passes `false` to prove the branch actually reads the boolean rather than
    * assuming the send worked.
+   *
+   * #1541 review round 4 (HIGH): it is now threaded into `deliverOrStandIn` as
+   * its `deliver` argument rather than called by the branch itself, so the
+   * formatter-throw path and the refused-send path share one fallback — and a
+   * test that injects it still exercises the real build-and-deliver sequence.
    */
   deliverForTest?: (report: string) => boolean;
   /**

@@ -85,23 +85,39 @@ export function deliverStandIn(
 }
 
 /**
- * Deliver `build()`; if building throws, fall back to the stand-in. Never throws.
+ * Deliver `build()`; if building throws **or the send refuses**, fall back to the
+ * stand-in. Never throws.
  *
  * #1389: the build-failure line is a `traceWarn`, not a debug-gated `trace` — a
  * report the PM was promised and did not get is a fault, not a diagnostic, and
  * the criterion this closes is that no path publishes "0" with nothing handed
  * over.
+ *
+ * #1541 review round 4 (HIGH) — the `deliver` seam. Two failure modes, one
+ * contract: the promised steer must never be stranded. `build()` throwing is the
+ * one this function has always caught. `deliverReport` cannot throw, but it
+ * returns `false` when the host rejected the send — a signal that used to be
+ * read at one call site by hand, which meant the formatter-throw case there had
+ * no fallback at all (the caller evaluated `build()` outside any try). Passing
+ * the boolean *through* this function is what makes "either half fails → one
+ * stand-in" a property of the helper rather than of each caller remembering to
+ * check. `deliver` defaults to the real `deliverReport` against `host`, so the
+ * three pre-existing call sites are unchanged in behaviour; `deliverForTest`
+ * threads the injected form through it.
  */
 export function deliverOrStandIn(
   host: DispatchHost,
   label: string,
   build: () => string,
   standIn: (failure: unknown) => string,
+  deliver: (report: string) => boolean = (report) => deliverReport(host, report),
 ): void {
   let failure: unknown;
   try {
-    deliverReport(host, build());
-    return;
+    const report = build();
+    if (deliver(report)) return;
+    failure = new Error("the host refused the report");
+    traceWarn(`${label} report refused by the host: ${String(failure)}`);
   } catch (err) {
     failure = err;
     traceWarn(`${label} report failed: ${String(err)}`);

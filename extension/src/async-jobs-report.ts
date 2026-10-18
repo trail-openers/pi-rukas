@@ -385,6 +385,14 @@ export function formatDriverReport(
  * descriptors keeps working on the fallback path. Swallow-safe by its caller:
  * `deliverStandIn` owns the never-throws contract.
  *
+ * `err` is flattened and clamped before it is interpolated (#1541 review round 4,
+ * same shape `formatFailReport` uses — `(err.message ?? "").slice(-200)`). This
+ * text is a steer message, i.e. it goes into the PM's context and then into the
+ * next model turn. An unbounded `String(err)` from a formatter that threw on a
+ * multi-hundred-line report would put the very text that broke the render back in
+ * front of the model that has to recover from it, and its newlines would break
+ * the one-line-per-report shape the session reads.
+ *
  * `where` is supplied by the caller rather than guessed here: this layer renders
  * reports, it does not know what the pipeline it never ran wrote to disk, and a
  * stand-in pointing at an artifact or issue that does not exist would be a
@@ -397,9 +405,10 @@ export function driverReportStandIn(
   err: unknown,
   where: string,
 ): string {
+  const tail = String(err).replace(/\s+/g, " ").trim().slice(0, 200);
   return (
     `[ensemble:async] Job \`${label}\` \`${subject}\` (job ${jobId}) COMPLETED \u2014 but its ` +
-    `report could not be delivered: ${String(err)}. The run is not lost and should NOT be ` +
+    `report could not be delivered: ${tail}. The run is not lost and should NOT be ` +
     `re-run blindly. Look for its result: ${where}.`
   );
 }
