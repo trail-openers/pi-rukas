@@ -112,6 +112,12 @@ export LC_ALL=C
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX \
   GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
 
+# #1604 — every dispatch arms a slow-notice watch, and the tests assert its
+# default thresholds. An operator's exported override (a normal setting) made
+# those tests fail on an unmodified main, so drop the family before any test runs.
+unset PI_ENSEMBLE_SLOW_NOTICE PI_ENSEMBLE_SLOW_NOTICE_MS PI_ENSEMBLE_SLOW_NOTICE_TURNS \
+  PI_ENSEMBLE_SLOW_NOTICE_TOKENS PI_ENSEMBLE_AUTO_STEER
+
 # #1404 — VERIFY_REPORT_FILE is deliberately NOT scrubbed here. It is the path
 # the loop itself writes its out-of-band verdict to at the end of the run, so an
 # early `unset` in this file would silently produce no report at all — and "no
