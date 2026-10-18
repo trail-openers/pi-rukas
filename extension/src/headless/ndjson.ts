@@ -45,6 +45,8 @@ export const NDJSON_STABLE_FIELDS = {
   "step-started": ["step", "at", "round"],
   "dispatch-started": ["step", "role", "jobId", "at"],
   "dispatch-completed": ["step", "role", "jobId", "ok", "ms", "at", "usage"],
+  "verify-started": ["step", "command", "at"],
+  "verify-completed": ["step", "command", "ok", "ms", "at"],
   "cap-hit": ["cap", "at", "nextStep"],
   "handoff-emitted": ["at", "commentUrl", "labelApplied"],
   "ci-status": ["at", "status", "runUrl"],
