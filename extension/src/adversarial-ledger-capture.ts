@@ -11,6 +11,7 @@
  */
 
 import { type LedgerBinding, captureBinding } from "./adversarial-ledger-binding.ts";
+import { misdirectedLedgerNote } from "./adversarial-ledger-note.ts";
 import {
   type AdversarialLedgerOutcome,
   writeAdversarialLedgerEntry,
@@ -111,17 +112,19 @@ export function roundHeadRef(
  * and `note` runs LAST so the not-recorded warning reaches the result and not
  * the row (#980).
  *
- * #1449 — the write's outcome now reaches the operator through `onLedgerOutcome`,
- * the same side-channel shape `runLensReview` uses for its `onLedgerWrite`.
- * The row itself is unchanged by it (the promise is still fire-and-forget and
- * still never rejects: a ledger problem never costs a review), and the
- * synchronous return is preserved for the loop's seven exits — the note is
- * DELIVERED asynchronously via the optional callback, exactly as `lens-review.ts`
- * delivers its ledger outcome through the tool's note channel. A caller that
- * passes no callback gets today's behaviour byte-for-byte. The callback is
- * awaited, so a caller whose note is async (a dispatch that delivers a steer)
- * is not raced: the loop returns as soon as it did before, and the delivery
- * lands while the caller still owns the result.
+ * #1449 — the write's outcome reaches the operator through `onLedgerOutcome`,
+ * and the DEFAULT reporter is the misdirection note: `runAdversarialLoop` calls
+ * `makeLedgerWrite` with no callback and gets one, so the adversarial half of
+ * #1449 is not a capability a caller has to opt into (the shape `writeAdversarialLedgerEntry`
+ * documents, where every skip used to be trace-only). The row itself is
+ * unchanged by it — the promise is still fire-and-forget and still never
+ * rejects: a ledger problem never costs a review — and the synchronous return
+ * is preserved for the loop's seven exits. The note is DELIVERED when the write
+ * settles, into the held result, exactly as `lens-review.ts` delivers its ledger
+ * outcome through the tool's note channel. A caller that wants the raw outcome
+ * instead (a test) replaces the callback. The callback is awaited by the
+ * delivery, not by the return: a caller whose note is async (a dispatch that
+ * delivers a steer) is not raced, and the loop returns as soon as it did before.
  */
 export function makeLedgerWrite(opts: {
   state: BindingState;
@@ -138,12 +141,34 @@ export function makeLedgerWrite(opts: {
   execFn?: VerifyExecFn;
   decorate: (raw: DispatchResult) => DispatchResult;
   note: (result: DispatchResult) => DispatchResult;
-  /** #1449 — called with the resolved write outcome (the misdirection report).
-   * Optional: a caller that does not want the report simply does not ask. */
+  /** #1449 — called with the resolved write outcome. Defaults to the
+   * misdirection-note reporter; a caller that wants the raw outcome (a test)
+   * replaces it. */
   onLedgerOutcome?: (outcome: AdversarialLedgerOutcome) => void | Promise<void>;
 }): (raw: DispatchResult) => DispatchResult {
   return (raw) => {
     const result = opts.decorate(raw);
+    // #1449 — the result the loop returns is held here so the note can be
+    // appended when the write reports a redirect. The ledger write stays
+    // fire-and-forget: this reference is what the note is appended TO, never
+    // something the return waits on.
+    let live = result;
+    const deliver =
+      opts.onLedgerOutcome ??
+      ((outcome: AdversarialLedgerOutcome) => {
+        // Default reporter: append the misdirection note to the held result.
+        // A no-op on every outcome but a row that landed outside the per-clone
+        // ledger (see `misdirectedLedgerNote`), so the overwhelming majority of
+        // writes change nothing — and nothing here is awaited by the return.
+        const note = misdirectedLedgerNote(outcome);
+        // `opts.note` re-runs on the held result because the loop's threader is
+        // PURE (it appends a constant when the branch did not resolve), so
+        // re-applying it to `live` is byte-identical to applying it once. It
+        // must be applied here and not earlier: the loop's `note` runs on the
+        // return, which happens BEFORE this promise settles, so a note applied
+        // only on the synchronous path could never see a redirect.
+        if (note) live = opts.note({ ...live, text: `${live.text}\n\n${note}` });
+      });
     const ledgerWrite = writeAdversarialLedgerEntry(result, {
       workCwd: opts.workCwd,
       resolvedBranch: opts.resolvedBranch,
@@ -158,12 +183,11 @@ export function makeLedgerWrite(opts: {
     });
     // The promise never rejects (the writer's own catch), so the only
     // bookkeeping here is delivering the report; a callback that throws must
-    // not break the loop, hence the swallow. When no caller asked for the
-    // report the promise is dropped exactly as before (fire-and-forget).
-    if (opts.onLedgerOutcome) {
-      const deliver = opts.onLedgerOutcome;
-      void ledgerWrite.then((outcome) => deliver(outcome)).catch(() => undefined);
-    }
-    return opts.note(result);
+    // not break the loop, hence the swallow. The reporter always runs — the
+    // default IS the misdirection note, so the adversarial half of #1449 is
+    // never a capability a caller has to opt into (a caller that wants the raw
+    // outcome instead, e.g. a test, replaces it).
+    void ledgerWrite.then((outcome) => deliver(outcome)).catch(() => undefined);
+    return opts.note(live);
   };
 }

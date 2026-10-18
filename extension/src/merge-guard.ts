@@ -84,12 +84,12 @@
  * or error refuses (fail-closed).
  */
 
-import { existsSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
 import type { MergeCommand } from "./merge-allowlist.ts";
 import { readMergeCommand } from "./merge-allowlist.ts";
+import { misdirectedWriteOf } from "./merge-guard-provenance.ts";
 import {
   adversarialRefusal,
   lensNotEvaluatedRefusal,
@@ -110,7 +110,6 @@ import {
   latestEntry,
   ledgerPathFor,
   readLedgerAt,
-  readLedgerFile,
   remoteName,
 } from "./review-ledger.ts";
 import { trace, traceWarn } from "./trace.ts";
@@ -378,8 +377,13 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // provenance the writer persists on the row (`LedgerEntry.writtenTo`), read
     // from the file the override points at. Fail-open on the DIAGNOSTIC only:
     // a second read that throws yields no note and the ordinary refusal, never
-    // a pass — the strict fail-closed rule below is untouched.
-    const redirectedTo = await misdirectedWriteOf(ledgerPath, target.headBranch);
+    // a pass — the strict fail-closed rule below is untouched. The read itself
+    // lives in merge-guard-provenance.ts, where that contract is enforced: it
+    // swallows every fs/parse fault internally and is synchronous, so nothing
+    // on the guard's decision path is a throw site. `lensNotEvaluatedRefusal`
+    // is its only consumer — the value is read once here and carried, and a
+    // missing value is exactly today's never-reviewed refusal.
+    const redirectedTo = misdirectedWriteOf(ledgerPath, target.headBranch);
     const branch = target.headBranch;
 
     // Adversarial: latest entry must be passed AND match the current patchId.
@@ -444,33 +448,6 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
 
 function block(reason: string) {
   return { block: true, reason };
-}
-
-/**
- * #1449 — the path a redirected review wrote to, when one did.
- *
- * The guard reads the ledger through the same resolver the writer writes
- * through, so within a redirecting process both agree on the overridden file
- * and the mismatch is invisible to a comparison. The rows themselves carry the
- * answer: a writer that noticed its own redirect stamps `writtenTo` on the row
- * it wrote. So this asks the ONE file the override points at (the guard's own
- * resolved path) whether any row for this branch carries that stamp, and
- * returns the first one it finds.
- *
- * Best-effort BY DESIGN: any fault returns undefined, which is the ordinary
- * "never reviewed" refusal. A diagnostic read must never turn a refusal into a
- * pass, and must never invent a second refusal path.
- */
-async function misdirectedWriteOf(ledgerPath: string, branch: string): Promise<string | undefined> {
-  try {
-    if (!existsSync(ledgerPath)) return undefined;
-    for (const e of readLedgerFile(ledgerPath).entries) {
-      if (e.branch === branch && typeof e.writtenTo === "string" && e.writtenTo) return e.writtenTo;
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
