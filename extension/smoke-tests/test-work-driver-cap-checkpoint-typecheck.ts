@@ -246,11 +246,48 @@ async function dirtyRepo(issue: number, withExtension: boolean): Promise<string>
       false,
       "",
     ],
+    // ---- #1414 round 3 (a): the `/timed out after/i` MESSAGE fallback is gone.
+    // The `timedOutKill` / `overflow` flags are the whole contract. A compiler
+    // whose own output happens to contain that phrase was previously reported as
+    // a run killed at its bound — a stall that never happened, and a verdict the
+    // driver never earned. Mutation direction: restore the ORed message test and
+    // BOTH cases below fail.
+    [
+      "tsc output merely CONTAINING 'timed out after' is a verdict, not a bound kill",
+      Object.assign(
+        new Error(
+          "Command failed: bun x tsc --noEmit\nsrc/a.ts(1,1): error TS2345: 'command timed out after' is not assignable",
+        ),
+        {
+          code: 2,
+          killed: false,
+          stdout: "src/a.ts(1,1): error TS2345: 'command timed out after 5000ms' is not assignable",
+          stderr: "",
+        },
+      ),
+      false,
+      "",
+    ],
+    [
+      "no flags set = no kill claimed, whatever the message says",
+      Object.assign(new Error("summary line reads: command timed out after 0ms"), {
+        code: 1,
+        killed: false,
+        stdout: "no diagnostics",
+        stderr: "",
+      }),
+      false,
+      "",
+    ],
   ];
   for (const [label, err, wantVerdict, wantText] of cases) {
     let got: ReturnType<typeof classifyTypecheckRejection> | "THREW" = "THREW";
     try {
-      got = classifyTypecheckRejection(err);
+      // #1414 round 3 — `timeoutMs` is REQUIRED (the parameter exists so the
+      // bound in the reason comes from the run, never from a second environment
+      // read). Passing it explicitly here is what makes that observable; omitting
+      // it is a compile error rather than a silent fallback.
+      got = classifyTypecheckRejection(err, verifyTimeoutMs());
     } catch {
       /* asserted below */
     }

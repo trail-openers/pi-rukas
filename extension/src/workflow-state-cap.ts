@@ -162,6 +162,16 @@ export interface CapedPartialState {
    * checkpoint that never ran one is a new version of the #1414 lie. Old
    * state files predate the field and read as "not attempted", which is the
    * safe direction: the bullet is omitted, never a false claim.
+   *
+   * #1414 round 3 — the whole dirty branch sets the field AT THE CALL SITE, so a
+   * checkpoint whose COMMIT failed after the check ran keeps `true` and keeps the
+   * verdict it observed. Pre-round-3 the assignment sat ahead of the call inside
+   * the branch's outer try, so any escape past that point (a stage or commit
+   * throw landing in the outer catch, which resets only `tree`) dropped BOTH the
+   * attempt and the verdict: the operator was told the tree was never compiled
+   * when the driver had compiled it and had the result in a local variable.
+   * `test-work-driver-cap-checkpoint-attempted.ts` forces the commit to fail and
+   * asserts the record survives.
    */
   typecheckAttempted?: true;
   at: number;

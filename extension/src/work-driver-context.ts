@@ -268,6 +268,8 @@ export interface DriverContext {
    * `tree: "committed"` a tautology.
    */
   checkpointExecFn?: DriverExecFn;
+  /** #1414 r3 — commit-only test seam; documented at its call site. */
+  checkpointCommitFn?: DriverExecFn;
   /**
    * Optional injection point for tests: replace runLensReview with a fake.
    * Production callers omit this — runLens uses the real runLensReview.
@@ -333,10 +335,9 @@ export interface DriverContext {
  * #533 — the transition table's answer, made total. Pre-#533 an unknown
  * `pipelineState.currentStep` reached the linear table's `Record<WorkStep, …>`
  * lookup, got `undefined`, and the driver loop's 64-iteration safety counter
- * fired with a message naming no field. The unknown case is now its own
- * member: the driver halts naming `pipelineState.currentStep`, and a loop
- * that spins can only do so by repeatedly RUNNING a real step, which the
- * safety counter still bounds.
+ * fired with a message naming no field. The unknown case is now its own member:
+ * the driver halts naming `pipelineState.currentStep`, and a loop that spins can
+ * only do so by repeatedly RUNNING a real step, which the safety counter bounds.
  */
 export type StepDecision =
   | { kind: "step"; step: WorkStep }

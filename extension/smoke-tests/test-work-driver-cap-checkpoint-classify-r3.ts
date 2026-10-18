@@ -37,6 +37,7 @@ import {
   classifyTypecheckRejection,
   sanitiseReason,
 } from "../src/work-driver-cap-checkpoint-typecheck.ts";
+import { verifyTimeoutMs } from "../src/work-driver-verify-develop-helpers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -121,12 +122,64 @@ const cases: Array<[string, unknown, true | false | undefined, string]> = [
     undefined,
     "could not start",
   ],
+  // ---- a tsc message containing that phrase is NOT a timeout (#1414 round 3):
+  // the `timedOutKill` / `overflow` flags are the contract, and the message is
+  // the compiler's own prose. Pre-round-3 the classifier ORed a
+  // `/timed out after/i.test(message)` into the timeout arm, so a run that
+  // merely PRINTED that phrase was reported to the operator as a stalled run
+  // whose bound fired — with no bound having fired, and no flags set.
+  [
+    "a tsc message containing 'timed out after' is NOT a timeout — the flags are the contract",
+    Object.assign(
+      new Error(
+        "Command failed: bun x tsc --noEmit\nsrc/a.ts(1,1): error TS2345: the word 'timed out after' appears in a string literal",
+      ),
+      {
+        code: 2,
+        // `killed` false and NO `timedOutKill` / `overflow` — a plain non-zero
+        // exit. Only the message mentions a timeout, and a message is not a kill.
+        killed: false,
+        stdout: "src/a.ts(1,1): error TS2345: match against 'command timed out after 5000ms'",
+        stderr: "",
+      },
+    ),
+    false,
+    "",
+  ],
+  [
+    "a message that only says 'timed out after', with no TS output and no flags, is a failure, never a bound kill",
+    Object.assign(new Error("tsc printed 'command timed out after 1ms' in its summary line"), {
+      code: 1,
+      killed: false,
+      stdout: "compilation finished; nothing to report",
+      stderr: "",
+    }),
+    false,
+    "",
+  ],
+  [
+    "a REAL timeout still reads as one — the flags, not the message, carry it",
+    Object.assign(new Error("command timed out after 600000ms: bun x tsc --noEmit"), {
+      killed: true,
+      timedOutKill: true,
+      code: null,
+      stdout: "",
+      stderr: "",
+    }),
+    undefined,
+    "killed at its",
+  ],
 ];
 
 for (const [label, err, wantVerdict, wantText] of cases) {
   let got: ReturnType<typeof classifyTypecheckRejection> | "THREW" = "THREW";
   try {
-    got = classifyTypecheckRejection(err);
+    // #1414 round 3 — `timeoutMs` is a REQUIRED parameter: the only way this
+    // pure-classifier call can name a bound is for the test to supply one, which
+    // is what makes "the bound comes from the caller, never from the environment"
+    // observable. A dropped parameter here is a compile error, not a silent
+    // environment read.
+    got = classifyTypecheckRejection(err, verifyTimeoutMs());
   } catch {
     /* asserted below */
   }
@@ -207,6 +260,62 @@ for (const [label, err, wantVerdict, wantText] of cases) {
     sanitiseReason("could not run (sh: tsc: command not found)") ===
       "could not run (sh: tsc: command not found)",
     "sanitise: an ordinary reason is untouched",
+  );
+}
+
+// ---- #1414 round 3 (b): the `verdict: false` DETAIL is sanitised too. `why`
+// has been through `sanitiseReason` since the field shipped; `detail` had not,
+// so the SAME child output broke the handoff's list item in one field and not
+// the other — and `detail` is the one that reaches the operator as "Last output:
+// …" in the status file. Both fields land in the same two markdown surfaces, so
+// both get the same treatment.
+{
+  const nasty = classifyTypecheckRejection(
+    Object.assign(
+      new Error("Command failed: bun x tsc --noEmit"),
+      {
+        code: 2,
+        stdout:
+          "src/a.ts(1,1): error TS2345: first line\n\u001b[31m  indented continuation\t\nsrc/b.ts(2,2): error TS2322: tail\n",
+        stderr: "",
+      },
+    ),
+    verifyTimeoutMs(),
+  );
+  assert(
+    nasty.verdict === false,
+    `detail-sanitise: the diagnostic still produces a verdict (got ${JSON.stringify(nasty)})`,
+  );
+  if (nasty.verdict === false) {
+    assert(
+      !/[\n\r\t\u0000-\u001f]/.test(nasty.detail) && !nasty.detail.includes("\u001b"),
+      `detail-sanitise: no control characters or newlines survive in detail (got ${JSON.stringify(nasty.detail)})`,
+    );
+    assert(
+      nasty.detail.includes("TS2345") && nasty.detail.includes("TS2322"),
+      `detail-sanitise: sanitising does not drop the diagnostics themselves (got ${JSON.stringify(nasty.detail)})`,
+    );
+    assert(
+      nasty.detail.length <= 200,
+      `detail-sanitise: detail is bounded like why (got ${nasty.detail.length})`,
+    );
+  }
+  // Mutation direction: an ordinary detail keeps the diagnostic verbatim and
+  // single-line (the message is joined in as evidence, so the assertion is on the
+  // diagnostic appearing whole and free of control characters, not on equality).
+  const plain = classifyTypecheckRejection(
+    Object.assign(new Error("Command failed: bun x tsc --noEmit"), {
+      code: 2,
+      stdout: "src/a.ts(1,1): error TS2345: not assignable",
+      stderr: "",
+    }),
+    verifyTimeoutMs(),
+  );
+  assert(
+    plain.verdict === false &&
+      plain.detail.startsWith("src/a.ts(1,1): error TS2345: not assignable") &&
+      !/[\n\r\t]/.test(plain.detail),
+    `detail-sanitise: an ordinary diagnostic passes through whole on one line (got ${JSON.stringify(plain)})`,
   );
 }
 
