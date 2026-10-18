@@ -425,5 +425,72 @@ function refProvenFor(state: ReturnType<typeof state>): boolean {
   );
 }
 
+// ---------------------------------------------------------------------------
+// 5. The GENERIC fallback block (no committed work, so no worktree-aware
+//    steps at all) had the same defect: it keyed on `!ps.branchName`, so a
+//    cycle with a captured name and no ref fell through to
+//    `git add -p` / `git push -u origin <branch>`. Both twins must now read
+//    the ref proof, and the pre-branch recipe (state file + --restart) must
+//    be what renders instead.
+// ---------------------------------------------------------------------------
+{
+  const snapshot = (branchExists: boolean) => ({
+    modifiedFiles: [],
+    unstagedCount: 0,
+    stagedCount: 0,
+    branchExists,
+    branchPushed: false,
+    capturedAt: 3,
+  });
+  const noRefMd = renderHandoffMarkdown({
+    ...state({ cap: "developer-timeout", branchExists: false, consolidated: false }),
+    pipelineState: {
+      ...state({ cap: "developer-timeout", branchExists: false, consolidated: false })
+        .pipelineState,
+      committedWork: undefined,
+      handoffSnapshot: snapshot(false),
+    },
+  });
+  const noRefChat = renderHandoffUserMessage(
+    {
+      ...state({ cap: "developer-timeout", branchExists: false, consolidated: false }),
+      pipelineState: {
+        ...state({ cap: "developer-timeout", branchExists: false, consolidated: false })
+          .pipelineState,
+        handoffSnapshot: snapshot(false),
+      },
+    },
+    REPO,
+    `${REPO}/tmp/issue-747`,
+  );
+  assert(
+    !/push -u origin feature\/issue-747/.test(noRefMd) &&
+      !/git -C [^\n]* push -u origin feature\/issue-747/.test(noRefChat) &&
+      !/git add -p/.test(noRefMd) &&
+      !/git add -p/.test(noRefChat),
+    "#747 generic block: a captured name with no ref gets no takeover commands (either surface)",
+  );
+  assert(
+    /--restart/.test(noRefMd) && /--restart/.test(noRefChat),
+    "#747 generic block: ...and the restart-a-cycle recipe renders instead",
+  );
+  const withRefChat = renderHandoffUserMessage(
+    {
+      ...state({ cap: "developer-timeout", branchExists: true, consolidated: false }),
+      pipelineState: {
+        ...state({ cap: "developer-timeout", branchExists: true, consolidated: false })
+          .pipelineState,
+        handoffSnapshot: snapshot(true),
+      },
+    },
+    REPO,
+    `${REPO}/tmp/issue-747`,
+  );
+  assert(
+    /push -u origin feature\/issue-747/.test(withRefChat),
+    "#747 generic block: a proven ref still gets the takeover commands (no over-correction)",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
