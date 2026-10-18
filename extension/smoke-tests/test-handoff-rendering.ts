@@ -117,66 +117,41 @@ for (const [name, render] of [
 }
 
 // -------------------------- a real branch still gets the takeover commands
+// #747 — "a real branch" now means the handoff snapshot READ the ref, not
+// merely that a name was captured (the predicate used to key on
+// `branchName` alone). The reverse case — a captured name with no ref, which
+// must get no takeover commands — is pinned by
+// test-handoff-recovery-branch-exists-747.ts, which owns the #747 matrix.
 
-  // #747 — a real branch still gets the takeover commands, but "real" now
-  // means the handoff snapshot READ the ref, not merely that a name was
-  // captured (the gate that used to key this block on `branchName` alone).
-  {
-    const s = intentParkState();
-    s.pipelineState.branchName = "feature/issue-337-x";
-    s.pipelineState.handoffSnapshot = {
-      modifiedFiles: [],
-      unstagedCount: 0,
-      stagedCount: 0,
-      branchExists: true,
-      branchPushed: false,
-      capturedAt: 3,
-    };
-    s.eventLog = [
-      { kind: "cap-hit", at: 3, cap: "developer-timeout", reviewRound: 0, nextStep: "handoff" },
-    ] as WorkEvent[];
-    const out = renderHandoffUserMessage(s, REPO, `${REPO}/tmp`);
-    assert(
-      /git .*push -u origin feature\/issue-337-x/.test(out),
-      "a post-branch cap DOES get the takeover command, with the real branch name",
-    );
-    assert(
-      !/&&/.test(
-        out
-          .split("\n")
-          .filter((l) => /^\s*git\b/.test(l.trim()))
-          .join("\n"),
-      ),
-      "...still unchained",
-    );
-  }
-  // #747 — the same cap with a captured name and NO ref gets no takeover
-  // commands: before the fix the predicate was `branchName` alone, so this
-  // shape told the operator to push a ref git cannot resolve.
-  {
-    const s = intentParkState();
-    s.pipelineState.branchName = "feature/issue-337-x";
-    s.pipelineState.handoffSnapshot = {
-      modifiedFiles: [],
-      unstagedCount: 0,
-      stagedCount: 0,
-      branchExists: false,
-      branchPushed: false,
-      capturedAt: 3,
-    };
-    s.eventLog = [
-      { kind: "cap-hit", at: 3, cap: "developer-timeout", reviewRound: 0, nextStep: "handoff" },
-    ] as WorkEvent[];
-    const out = renderHandoffUserMessage(s, REPO, `${REPO}/tmp`);
-    assert(
-      !/push -u origin/.test(out) && !/git add -p/.test(out),
-      "#747: a captured branch name with no local ref gets no takeover commands",
-    );
-    assert(
-      /--restart/.test(out),
-      "#747: ...and it falls through to the restart-a-cycle recipe instead",
-    );
-  }
+{
+  const s = intentParkState();
+  s.pipelineState.branchName = "feature/issue-337-x";
+  s.pipelineState.handoffSnapshot = {
+    modifiedFiles: [],
+    unstagedCount: 0,
+    stagedCount: 0,
+    branchExists: true,
+    branchPushed: false,
+    capturedAt: 3,
+  };
+  s.eventLog = [
+    { kind: "cap-hit", at: 3, cap: "developer-timeout", reviewRound: 0, nextStep: "handoff" },
+  ] as WorkEvent[];
+  const out = renderHandoffUserMessage(s, REPO, `${REPO}/tmp`);
+  assert(
+    /git .*push -u origin feature\/issue-337-x/.test(out),
+    "a post-branch cap DOES get the takeover command, with the real branch name",
+  );
+  assert(
+    !/&&/.test(
+      out
+        .split("\n")
+        .filter((l) => /^\s*git\b/.test(l.trim()))
+        .join("\n"),
+    ),
+    "...still unchained",
+  );
+}
 
 // #500 — commit-pr-incomplete-consolidation with recorded repoRoot state:
 // the live #481 cycle left repoRoot with two UU paths and eight staged
