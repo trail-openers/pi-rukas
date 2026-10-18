@@ -111,6 +111,8 @@ export const KNOWN_EVENT_KINDS = [
   // #625 — the develop step's safety-net commit record (the driver writes it
   // when it commits a workstream's in-scope work on a cap/failure exit).
   "safety-net-commit",
+  // #1391 — the step-retry clean record (save, keep or refusal of a lost tree).
+  "retry-tree-clean",
   // #674 — the handoff consolidation record (the driver writes it when it
   // consolidates parallel workstreams into a single handoff).
   "handoff-consolidated",
