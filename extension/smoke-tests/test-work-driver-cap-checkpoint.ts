@@ -22,12 +22,18 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { execp } from "../src/exec.ts";
 import { checkpointCapedDispatch } from "../src/work-driver-cap-checkpoint.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState, writeState } from "../src/workflow-state.ts";
+
+/** #1414 — the command the checkpoint is supposed to run, spelled once here
+ * and asserted verbatim against what the injected executor received. */
+const TYPECHECK_CMD = "bun x tsc --noEmit";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -85,6 +91,36 @@ function capKillState(repoRoot: string, issue: number): ReturnType<typeof initia
 }
 
 const fakePi = { sendUserMessage: () => {} } as unknown as ExtensionAPI;
+
+/**
+ * #1414 — an injected `checkpointExecFn` that records the typecheck call and
+ * forwards EVERYTHING else to the real executor. The checkpoint's five git
+ * calls run against a real repo here, so a blanket stub would turn
+ * `tree: "committed"` into a tautology; forwarding keeps those assertions
+ * meaningful. Typed against the seam itself, since smoke tests are outside
+ * extension/tsconfig.json's include list and would not be type-checked.
+ */
+function typecheckSpy(
+  behaviour: "resolve" | "reject" | "reject-non-error" = "resolve",
+): {
+  fn: NonNullable<DriverContext["checkpointExecFn"]>;
+  calls: { cmd: string; cwd?: string }[];
+} {
+  const calls: { cmd: string; cwd?: string }[] = [];
+  const fn: NonNullable<DriverContext["checkpointExecFn"]> = async (cmd, opts) => {
+    if (cmd.includes("tsc")) {
+      calls.push({ cmd, cwd: opts?.cwd });
+      if (behaviour === "resolve") return { stdout: "", stderr: "" };
+      if (behaviour === "reject") throw new Error("tsc exited 2: type errors");
+      // A non-Error rejection must still land as typechecked: false — the
+      // checkpoint is contractually non-throwing.
+      throw "tsc blew up without an Error";
+    }
+    // git and anything else: the real executor, unchanged.
+    return execp(cmd, { maxBuffer: 8 * 1024 * 1024, ...opts });
+  };
+  return { fn, calls };
+}
 
 // ------------------------------- (M6) scoped stage, foreign file NOT swept
 {
@@ -235,6 +271,140 @@ const fakePi = { sendUserMessage: () => {} } as unknown as ExtensionAPI;
     const committed = git(repo, "show", "--name-only", "--format=", "HEAD").split("\n");
     assert(committed.includes("seed.txt"), "#1190: the first ` M` record is committed whole");
     assert(committed.includes("zz-new.ts"), "#1190: the later record is committed too");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+// ---- #1414: the typecheck branch actually runs, and runs the right command
+//
+// Every earlier fixture here writes only top-level files, so the worktree has
+// no `extension/` directory and `typecheckWorktree` returns `undefined` from
+// its `fs.access` gate — the `typechecked` field was NEVER written by any
+// test, and the command it ran (`bunx tsc --no-emit`) was never observed.
+// Two independent defects hid behind that: the alias is not always on PATH
+// and `--no-emit` is not a tsc flag, so the checkpoint recorded
+// `typechecked: false` on every host and the handoff told the operator the
+// committed code was broken.
+//
+// The branch sits on the DIRTY path only (after the porcelain check, before
+// the commit) and after the report-only short-circuit, so this fixture needs
+// a developer role, an in-scope dirty file, AND an extension/ directory.
+{
+  const repo = makeRepo();
+  try {
+    mkdirSync(path.join(repo, "extension"), { recursive: true });
+    writeFileSync(path.join(repo, "extension", "tsconfig.json"), '{"compilerOptions":{}}\n');
+    writeFileSync(path.join(repo, "in-scope.ts"), "in\n");
+    let s = capKillState(repo, 9905);
+    s = {
+      ...s,
+      pipelineState: {
+        ...s.pipelineState,
+        workstreams: {
+          default: {
+            id: "default",
+            scope: "scope",
+            paths: ["in-scope.ts"],
+            outOfScope: [],
+          },
+        },
+      },
+    };
+    await writeState(repo, s);
+    const spy = typecheckSpy("resolve");
+    const ctx = {
+      host: fakePi,
+      repoRoot: repo,
+      issue: 9905,
+      checkpointExecFn: spy.fn,
+    } as unknown as Parameters<typeof checkpointCapedDispatch>[0];
+    const out = await checkpointCapedDispatch(ctx, s, "develop");
+    const cps = out.pipelineState.capedPartialState;
+
+    assert(spy.calls.length === 1, "#1414: the typecheck branch ran exactly once");
+    assert(
+      spy.calls[0]?.cmd === TYPECHECK_CMD,
+      `#1414: the injected executor received exactly \`${TYPECHECK_CMD}\` (got ${JSON.stringify(spy.calls[0]?.cmd)})`,
+    );
+    assert(
+      !/\bbunx\b/.test(spy.calls[0]?.cmd ?? "") && !spy.calls[0]?.cmd.includes("--no-emit"),
+      "#1414: no bare bunx and no --no-emit reach the executor",
+    );
+    assert(
+      spy.calls[0]?.cwd === path.join(repo, "extension"),
+      `#1414: cwd is the worktree's extension/ dir (got ${JSON.stringify(spy.calls[0]?.cwd)})`,
+    );
+    assert(cps?.typechecked === true, "#1414: a resolving typecheck records typechecked:true");
+    assert(cps?.tree === "committed", "#1414: the injected executor does not stop the commit");
+    const passFile = path.join(repo, "tmp", "issue-9905", "status-developer.md");
+    const passContent = await readFile(passFile, "utf8").catch(() => "");
+    assert(
+      passContent.includes(`Typecheck (${TYPECHECK_CMD}) passed at the checkpoint.`),
+      `#1414: the status file names the command it ran on the pass case (got: ${JSON.stringify(passContent.split("\n").filter((l) => l.startsWith("Typecheck")).join("|"))})`,
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+// ---- #1414 (fail + non-Error): typechecked:false, and the handoff names the
+// command the driver actually ran.
+{
+  const repo = makeRepo();
+  try {
+    mkdirSync(path.join(repo, "extension"), { recursive: true });
+    writeFileSync(path.join(repo, "extension", "tsconfig.json"), '{"compilerOptions":{}}\n');
+    writeFileSync(path.join(repo, "in-scope.ts"), "in\n");
+    const s = capKillState(repo, 9906);
+    await writeState(repo, s);
+    const spy = typecheckSpy("reject");
+    const ctx = {
+      host: fakePi,
+      repoRoot: repo,
+      issue: 9906,
+      checkpointExecFn: spy.fn,
+    } as unknown as Parameters<typeof checkpointCapedDispatch>[0];
+    const out = await checkpointCapedDispatch(ctx, s, "develop");
+    const cps = out.pipelineState.capedPartialState;
+    assert(spy.calls.length === 1, "#1414-fail: the typecheck branch ran once");
+    assert(cps?.typechecked === false, "#1414-fail: a rejecting typecheck records false");
+    assert(cps?.tree === "committed", "#1414-fail: a failed typecheck still commits (recovery)");
+    const failContent = await readFile(
+      path.join(repo, "tmp", "issue-9906", "status-developer.md"),
+      "utf8",
+    ).catch(() => "");
+    assert(
+      failContent.includes(`Typecheck (${TYPECHECK_CMD}) FAILED at the checkpoint`),
+      "#1414-fail: the status file names the command it ran on the fail case",
+    );
+    assert(!failContent.includes("--no-emit"), "#1414-fail: no stale flag in the status file");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+// ---- #1414 (non-Error rejection): the never-throw contract holds.
+{
+  const repo = makeRepo();
+  try {
+    mkdirSync(path.join(repo, "extension"), { recursive: true });
+    writeFileSync(path.join(repo, "in-scope.ts"), "in\n");
+    const s = capKillState(repo, 9907);
+    await writeState(repo, s);
+    const spy = typecheckSpy("reject-non-error");
+    const ctx = {
+      host: fakePi,
+      repoRoot: repo,
+      issue: 9907,
+      checkpointExecFn: spy.fn,
+    } as unknown as Parameters<typeof checkpointCapedDispatch>[0];
+    const out = await checkpointCapedDispatch(ctx, s, "develop");
+    assert(
+      out.pipelineState.capedPartialState?.typechecked === false,
+      "#1414: a non-Error rejection still records typechecked:false (never throws)",
+    );
+    assert(spy.calls.length === 1, "#1414: the non-Error case still ran the typecheck");
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

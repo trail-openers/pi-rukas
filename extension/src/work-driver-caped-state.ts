@@ -28,6 +28,7 @@
  * files, or a cap other than loop/token-budget). Pure function — no I/O.
  */
 
+import { CHECKPOINT_TYPECHECK_CMD } from "./work-driver-cap-checkpoint.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 export function capedPartialStateLines(state: WorkState, indent: string): string[] {
@@ -77,7 +78,7 @@ export function capedPartialStateLines(state: WorkState, indent: string): string
   }
   if (cps.typechecked === false) {
     lines.push(
-      `${indent}- **typecheck FAILED at checkpoint** — the driver's \`bunx tsc --no-emit\` in the worktree failed before the checkpoint commit: the code is broken as-is. Fix the typecheck before pushing.`,
+      `${indent}- **typecheck FAILED at checkpoint** — the driver's \`${CHECKPOINT_TYPECHECK_CMD}\` in the worktree failed before the checkpoint commit: the code is broken as-is. Fix the typecheck before pushing.`,
     );
   }
   // #543 (M7) — on a REVIEW_INCOMPLETE cap (one lens cap-killed, the rest

@@ -83,6 +83,23 @@ export {
  */
 export type CycleContext = DriverContext & { emitSink: EmitSink };
 
+/**
+ * #1414 — the shell-executor shape the driver's test seams accept, written
+ * once so `verifyExecFn` and `checkpointExecFn` cannot drift. Structurally
+ * identical to `VerifyExecFn` (work-driver-git.ts), declared here rather than
+ * imported so a context type does not pull in that module's git/restore code.
+ */
+export type DriverExecFn = (
+  cmd: string,
+  opts?: {
+    cwd?: string;
+    timeout?: number;
+    maxBuffer?: number;
+    shell?: string;
+    argv?: string[];
+  },
+) => Promise<{ stdout: string; stderr?: string }>;
+
 export interface DriverContext {
   /** The host the cycle runs in (#1020). Pi-session or a recording test host. */
   host: DriverHost;
@@ -243,23 +260,15 @@ export interface DriverContext {
    * executor used by verifyStepOutcome (git status / rev-list, the
    * project's verify command, gh pr view). Production callers omit
    * this; the default is `execp`. Mirrors `issueBodyFetcherFn`.
-   *
-   * `opts.argv` (#1005): when present, the executor runs the command in
-   * argv form (no shell re-parse) — `cmd` is the executable and
-   * `argv` its arguments. The coupling grep (rule 3) uses it because the
-   * file list is planner-controlled: a shell-built command would
-   * re-parse `$(…)`/backticks/`;` inside a path.
    */
-  verifyExecFn?: (
-    cmd: string,
-    opts?: {
-      cwd?: string;
-      timeout?: number;
-      maxBuffer?: number;
-      shell?: string;
-      argv?: string[];
-    },
-  ) => Promise<{ stdout: string; stderr?: string }>;
+  verifyExecFn?: DriverExecFn;
+  /**
+   * #1414 — optional test seam for the cap-kill checkpoint's TYPECHECK only
+   * (`typecheckWorktree`). Default `execp`; like `verifyExecFn` but NARROWER:
+   * the checkpoint's git calls keep calling `execp`, so a fake cannot make
+   * `tree: "committed"` a tautology.
+   */
+  checkpointExecFn?: DriverExecFn;
   /**
    * Optional injection point for tests: replace runLensReview with a fake.
    * Production callers omit this — runLens uses the real runLensReview.

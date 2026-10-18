@@ -25,6 +25,10 @@ function assert(cond: boolean, msg: string) {
 
 const REPO = "/Users/x/repo";
 
+/** #1414 — the command the checkpoint runs, spelled once here and asserted
+ * verbatim against what both renderers print. */
+const TYPECHECK_CMD = "bun x tsc --noEmit";
+
 function capedState(
   cap: string,
   role: string,
@@ -146,6 +150,50 @@ const capRenderers = [
       !out.includes("committed work"),
       `${name} (d): does not claim committed work for a write-gated role`,
     );
+  }
+}
+
+// (e) #1414 — typecheck FAILED: both renderers name the command the driver
+// actually ran. Before the fix the bullet claimed the driver had run
+// `bunx tsc --no-emit` — an alias provisioning may not create and a flag tsc
+// does not accept — so the operator was told committed code was broken on the
+// strength of a command that could never have succeeded. No case here ever
+// set `typechecked`, so the line had zero regression coverage.
+{
+  const s = capedState("loop-detected", "developer", {
+    tree: "committed",
+    commitSha: "def4567",
+    typechecked: false,
+    statusFile: `${REPO}/tmp/issue-543/status-developer.md`,
+  });
+  for (const [name, out] of capRenderers.map(([n, f]) => [n, f(s)] as const)) {
+    assert(
+      out.includes("typecheck FAILED at checkpoint"),
+      `${name} (e): the failed-typecheck bullet renders`,
+    );
+    assert(
+      out.includes(TYPECHECK_CMD),
+      `${name} (e): names the command the checkpoint ran (${TYPECHECK_CMD})`,
+    );
+    assert(!/\bbunx\b/.test(out), `${name} (e): no bare bunx in the handoff`);
+    assert(!out.includes("--no-emit"), `${name} (e): no non-existent tsc flag in the handoff`);
+  }
+}
+
+// (f) #1414 — a passing typecheck adds no broken-code claim (absent and true
+// both render nothing; only false does).
+{
+  const s = capedState("loop-detected", "developer", {
+    tree: "committed",
+    commitSha: "aaa1111",
+    typechecked: true,
+  });
+  for (const [name, out] of capRenderers.map(([n, f]) => [n, f(s)] as const)) {
+    assert(
+      !/typecheck FAILED/.test(out),
+      `${name} (f): a passing typecheck makes no broken-code claim`,
+    );
+    assert(!out.includes(TYPECHECK_CMD), `${name} (f): a passing typecheck names no command`);
   }
 }
 

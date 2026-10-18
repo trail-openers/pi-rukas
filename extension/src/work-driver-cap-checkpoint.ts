@@ -32,17 +32,27 @@ import { execp as checkpointExecp } from "./exec.ts";
 import { excludeToolListFor } from "./role-tools.ts";
 import { isRoleName } from "./roles.ts";
 import { trace } from "./trace.ts";
-import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
-import {
-  type CapedPartialState,
-  type WorkEvent,
-  type WorkState,
-  type WorkStep,
-  persistCycle,
-  readState,
-} from "./workflow-state.ts";
+import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
+import type { WorkState } from "./workflow-state-schema.ts";
+import { type CapedPartialState, persistCycle, readState } from "./workflow-state.ts";
+
+/**
+ * #1414 — the ONE spelling of the checkpoint's typecheck command. The
+ * executed call, the status-file lines below and the handoff bullet
+ * (work-driver-caped-state.ts) all carry this exact text, so what the driver
+ * RUNS and what it TELLS the operator it ran cannot drift. The no-bare-alias
+ * gate under `smoke-tests/` pins the exported value, the executed
+ * literal and each prose site to one another.
+ *
+ * `bun x` — not the hyphenless alias the gate refuses — dispatches through
+ * the one bun binary always on PATH (#1118); `--noEmit` is the real tsc
+ * flag — the hyphenated form is not one, so the old literal failed on every
+ * host and the handoff falsely reported committed code as broken.
+ */
+export const CHECKPOINT_TYPECHECK_CMD = "bun x tsc --noEmit";
 
 /** #543 (M5) — structurally write-gated roles: the SAME set role-tools.ts
  * passes `--exclude-tools write,edit,multiedit` to (explore /
@@ -69,12 +79,18 @@ function workstreamIdFromLabel(label: string): string | undefined {
 /**
  * #544 (8d) — typecheck the worktree's TypeScript BEFORE the checkpoint
  * commit (recovery, not the full gate — the full suite runs on the
- * integrated branch). Runs `bunx tsc --noEmit` in the worktree's
+ * integrated branch). Runs `CHECKPOINT_TYPECHECK_CMD` in the worktree's
  * `extension/` directory; `false` when the typecheck fails, `undefined`
  * when the worktree has no `extension/` (nothing to check — the record
- * omits the field). Never throws.
+ * omits the field). Never throws: a rejection may be a non-Error, so the
+ * catch reads it through `instanceof`, never blind `.message`.
+ *
+ * #1414 — the executor is a PARAMETER, not the module binding: the driver
+ * passes `ctx.checkpointExecFn ?? execp` so a smoke test can prove the
+ * branch runs and name the command it runs. The git calls stay on the
+ * module-level executor, so a fake cannot make `tree: "committed"` vacuous.
  */
-async function typecheckWorktree(cwd: string): Promise<boolean | undefined> {
+async function typecheckWorktree(cwd: string, run: DriverExecFn): Promise<boolean | undefined> {
   const ext = path.join(cwd, "extension");
   try {
     await fs.access(ext);
@@ -82,12 +98,11 @@ async function typecheckWorktree(cwd: string): Promise<boolean | undefined> {
     return undefined;
   }
   try {
-    await checkpointExecp("bunx tsc --no-emit", { cwd: ext, maxBuffer: 256 * 1024 });
+    await run(CHECKPOINT_TYPECHECK_CMD, { cwd: ext, maxBuffer: 256 * 1024 });
     return true;
   } catch (err) {
-    trace(
-      `work-driver: checkpoint typecheck failed in ${cwd}: ${(err as Error).message?.slice(0, 120)}`,
-    );
+    const detail = err instanceof Error ? err.message : String(err);
+    trace(`work-driver: checkpoint typecheck failed in ${cwd}: ${detail.slice(0, 120)}`);
     return false;
   }
 }
@@ -201,7 +216,7 @@ export async function checkpointCapedDispatch(
         // skipped so the checkpoint never blocks on the project's full gate,
         // but the commit must not silently claim a tree that does not even
         // typecheck: the `typechecked` flag lets the handoff say so.
-        typechecked = await typecheckWorktree(cwd);
+        typechecked = await typecheckWorktree(cwd, ctx.checkpointExecFn ?? checkpointExecp);
         // Stage the porcelain paths (skip driver artefacts: .pi/ and tmp/)
         // and commit. The commit message is driver-attributed so the
         // operator can tell the checkpoint from a child's seam commit.
@@ -302,9 +317,9 @@ export async function checkpointCapedDispatch(
         : "";
     const typecheckLine =
       typechecked === false
-        ? "Typecheck (bunx tsc --no-emit) FAILED at the checkpoint — the committed code is broken as-is; fix before pushing."
+        ? `Typecheck (${CHECKPOINT_TYPECHECK_CMD}) FAILED at the checkpoint — the committed code is broken as-is; fix before pushing.`
         : typechecked === true
-          ? "Typecheck (bunx tsc --no-emit) passed at the checkpoint."
+          ? `Typecheck (${CHECKPOINT_TYPECHECK_CMD}) passed at the checkpoint.`
           : "";
     const content = [
       `# Cap-kill status — ${step} / ${role} (cap: ${cap})`,
