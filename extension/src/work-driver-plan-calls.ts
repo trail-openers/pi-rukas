@@ -20,6 +20,8 @@
 import path from "node:path";
 import { Value } from "@sinclair/typebox/value";
 import {
+  WORKSTREAM_ID_MAX,
+  WORKSTREAM_ID_PATTERN,
   WORKSTREAM_PARAMETERS,
   type WorkstreamArgs,
   duplicateWorkstreamIdMessage,
@@ -31,6 +33,8 @@ import type { DispatchResult } from "./types.ts";
 import { foldToCeiling, workstreamFromArgs } from "./work-driver-plan-workstreams.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+
+const WORKSTREAM_ID_RE = new RegExp(WORKSTREAM_ID_PATTERN);
 
 /** Companion extension path, loaded into the plan child with `--extension`. */
 export const WORKSTREAM_REPORTER_PATH = path.join(__dirname, "workstream-reporter.ts");
@@ -95,8 +99,17 @@ export function workstreamCallsOf(
   // accepted ids must be unique here too, or a later entry would overwrite one.
   const seen = new Set<string>();
   const refuse = (id: string | undefined, reason: string) => {
+    // A planner-supplied id is recorded only when it is a legal id. Anything
+    // else is shown as a placeholder, so the state file never holds free text
+    // in the id slot.
+    const recorded =
+      id === undefined
+        ? undefined
+        : id.length <= WORKSTREAM_ID_MAX && WORKSTREAM_ID_RE.test(id)
+          ? id.slice(0, REFUSED_ID_MAX)
+          : "(invalid id)";
     refused.push({
-      ...(id === undefined ? {} : { id: id.slice(0, REFUSED_ID_MAX) }),
+      ...(recorded === undefined ? {} : { id: recorded }),
       reason: reason.slice(0, REFUSED_REASON_MAX),
     });
   };
@@ -144,26 +157,37 @@ export function workstreamCallsOf(
   };
 }
 
-/** The shared opening of every zero-accepted evidence string (see isNoCallsEvidence). */
+/** The shared opening of every zero-accepted evidence string. */
 export const NO_ACCEPTED_CALL_EVIDENCE = "no accepted report_workstream call";
 
+/** How many refusal reasons the zero-accepted evidence quotes. */
+const EVIDENCE_REASONS_SHOWN = 3;
+
 /**
- * The evidence a zero-accepted report reads as. A zero-call result cannot tell
- * two causes apart from the driver's side: the planner ignored the tool, or the
- * tool was never registered in the plan child (the companion did not load). So
- * the evidence names both and the check that tells them apart. A refused call is
- * a planner-side fact and is said as one.
+ * The verdict a zero-accepted report carries on its park (the cap-hit's
+ * `planVerdict`). "no-calls" means the reply made no call at all; "all-refused"
+ * means it made calls and the driver refused every one.
+ */
+export function zeroAcceptedVerdictOf(report: WorkstreamReport): "no-calls" | "all-refused" {
+  return report.refused.length === 0 ? "no-calls" : "all-refused";
+}
+
+/**
+ * The evidence a zero-accepted report reads as. With no call at all, the cause is
+ * ambiguous from the driver's side: the planner ignored the tool, or the tool was
+ * never registered in the plan child, so the evidence names both. With refused
+ * calls the tool plainly registered, and the evidence quotes the refusal reasons.
  */
 export function noWorkstreamCallsEvidence(report: WorkstreamReport): string {
   if (report.refused.length === 0) {
     return `${NO_ACCEPTED_CALL_EVIDENCE}: the reply made none, or report_workstream is missing from the plan child's tool list (the companion did not register)`;
   }
-  return `${NO_ACCEPTED_CALL_EVIDENCE}: ${report.refused.length} call(s) refused`;
-}
-
-/** True when a park's evidence is the zero-accepted verdict, not a spec mismatch. */
-export function isNoCallsEvidence(evidence: string): boolean {
-  return evidence.startsWith(NO_ACCEPTED_CALL_EVIDENCE);
+  const reasons = report.refused
+    .slice(0, EVIDENCE_REASONS_SHOWN)
+    .map((r) => (r.id ? `${r.id}: ${r.reason}` : r.reason))
+    .join("; ");
+  const more = report.refused.length > EVIDENCE_REASONS_SHOWN ? "; …" : "";
+  return `${NO_ACCEPTED_CALL_EVIDENCE}: ${report.refused.length} call(s) refused — ${reasons}${more}`;
 }
 
 /** The evidence of an unreadable report: the calls exist, their results do not. */

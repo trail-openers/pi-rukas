@@ -15,7 +15,6 @@
 import type { ForgeType } from "./forge-detect.ts";
 import { LINE_TERMINATORS, dropC0Controls } from "./work-driver-consolidation-note.ts";
 import { type RecoveryStep, forgeRecoveryLines } from "./work-driver-handoff-recovery.ts";
-import { isNoCallsEvidence } from "./work-driver-plan-calls.ts";
 import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -65,7 +64,37 @@ export function planSpecMismatchSteps(
   // #1652 — zero accepted calls is not a spec verdict: the spec-coverage advice
   // (revise the issue) would send the operator at the wrong thing. Two causes
   // look identical here, so the steps check the channel, then re-run.
-  if (isNoCallsEvidence(evidence)) {
+  if (hit?.planVerdict === "all-refused") {
+    return [
+      {
+        section: "plan-spec-mismatch",
+        comment: [
+          "1. Every report_workstream call in the plan reply was refused by the driver's checks.",
+          "   The reasons (schema, duplicate id, or path grammar) are in the evidence:",
+          `   ${evidence.slice(0, 300)}`,
+        ],
+        lines: [`cat .pi/work-state/${issue}.json`],
+      },
+      {
+        section: "plan-spec-mismatch",
+        comment: [
+          "2. A refusal proves the tool is registered, so do not check the tool list. If a path",
+          "   the issue needs was refused, the planner grammar is the limit (no absolute paths,",
+          "   '..' segments, leading '-' or ':', glob characters, or shell metacharacters):",
+          "   reword the issue's file reference, then re-run.",
+        ],
+        lines: [],
+      },
+      {
+        section: "plan-spec-mismatch",
+        comment: [
+          "3. Re-run — this cycle wrote nothing, so a restart costs one planning dispatch:",
+        ],
+        lines: [`/work ${issue} --restart`],
+      },
+    ];
+  }
+  if (hit?.planVerdict === "no-calls") {
     return [
       {
         section: "plan-spec-mismatch",

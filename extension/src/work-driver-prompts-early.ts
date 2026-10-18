@@ -4,7 +4,7 @@
  * for Steps 1-4: explore, plan, branch, develop, speculative-explore.
  * Split out of work-driver.ts per AGENTS.md §12 module-size hygiene (#171).
  */
-import { neutraliseFenceEntry } from "./plan-workstream-schema.ts";
+import { quotedOutOfScope } from "./plan-workstream-schema.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 import { developTestScopeLine, developVerifyLine } from "./work-driver-verify-fast.ts";
 
@@ -322,7 +322,7 @@ export function inlineDevelopPrompt(
       // those files; separating them invites the reader to skip it.
       memoryBrief ?? "",
       workstream.outOfScope.length > 0
-        ? `**OUT OF SCOPE — do NOT touch**: ${workstream.outOfScope.map(neutraliseFenceEntry).join("; ")}`
+        ? `**OUT OF SCOPE — do NOT touch**: ${quotedOutOfScope(workstream.outOfScope)}`
         : "Stay tightly focused on the scope; other workstreams handle the rest.",
       "",
     );

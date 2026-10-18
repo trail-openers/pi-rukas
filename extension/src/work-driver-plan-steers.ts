@@ -13,6 +13,7 @@
  * Re-exported from work-driver-plan-helpers.ts so importers keep their paths.
  */
 
+import { neutraliseFenceEntry } from "./plan-workstream-schema.ts";
 import type { RefusedWorkstreamCall } from "./work-driver-plan-calls.ts";
 import type { PathCollision } from "./work-driver-plan-paths.ts";
 import type { FenceContradiction } from "./work-driver-plan-paths.ts";
@@ -223,7 +224,12 @@ export function correctiveNoWorkstreamCallsSteer(refused: RefusedWorkstreamCall[
     refused.length === 0
       ? "Your previous reply made NO `report_workstream` tool call, so the driver has no plan."
       : `Your previous reply's \`report_workstream\` calls were ALL refused (${refused.length}), so the driver has no plan:`,
-    ...refused.map((r) => `- ${r.id ? `\`${r.id}\`: ` : ""}${r.reason}`),
+    // Both fields are the planner's text (an id it chose, a reason that may echo
+    // its own call), so they are neutralised before they reach the prompt.
+    ...refused.map(
+      (r) =>
+        `- ${r.id ? `\`${neutraliseFenceEntry(r.id)}\`: ` : ""}${neutraliseFenceEntry(r.reason)}`,
+    ),
     "",
     "Re-plan the SAME work against the issue, and report every workstream through one",
     "`report_workstream` call each. Prose and markdown sections are not read for workstreams.",

@@ -44,6 +44,7 @@ import {
   type WorkstreamReport,
   noWorkstreamCallsEvidence,
   unreadableWorkstreamCallsEvidence,
+  zeroAcceptedVerdictOf,
 } from "./work-driver-plan-calls.ts";
 import {
   type FenceContradiction,
@@ -51,12 +52,13 @@ import {
   findFenceContradictions,
   findPathCollisions,
   findTestSubjectSplits,
-  isPlainRepoRelativePath,
+  isPlannedRepoRelativePath,
 } from "./work-driver-plan-paths.ts";
 // #819 — the plan-to-spec gate (an adjacent pure function, NOT a new branch
 // in planQualityReason, which never sees the spec).
 import type { PlanSpecMismatch } from "./work-driver-plan-spec-coverage.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
+import type { PlanVerdict } from "./workflow-state-events-caps.ts";
 import type { PlanQualityReason } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -104,7 +106,13 @@ export function planSpecMismatchCap(
   mismatch: PlanSpecMismatch,
   whyNotReplanned: string,
 ): WorkState {
-  return parkPlanSpecMismatch(state, mismatch.evidence, whyNotReplanned, mismatch.kind);
+  return parkPlanSpecMismatch(
+    state,
+    mismatch.evidence,
+    whyNotReplanned,
+    mismatch.kind,
+    mismatch.kind,
+  );
 }
 
 /**
@@ -123,6 +131,7 @@ export function planNoWorkstreamCallsCap(
     noWorkstreamCallsEvidence(report),
     whyNotReplanned,
     "no-workstream-calls",
+    zeroAcceptedVerdictOf(report),
   );
 }
 
@@ -149,6 +158,7 @@ function parkPlanSpecMismatch(
   mismatchEvidence: string,
   whyNotReplanned: string,
   gate: string,
+  planVerdict: PlanVerdict,
 ): WorkState {
   trace(`work-driver: plan ${gate} gate — halting before branch`);
   // #819 round-3 — the truncation order is the reason this sentence is readable.
@@ -184,6 +194,7 @@ function parkPlanSpecMismatch(
     kind: "cap-hit",
     at: Date.now(),
     cap: "plan-spec-mismatch",
+    planVerdict,
     reviewRound: state.pipelineState.reviewRound,
     nextStep: "handoff",
     evidence,
@@ -228,7 +239,7 @@ export function planQualityReason(
   if (
     ids.some((id) =>
       (workstreams[id]?.paths ?? []).some(
-        (p) => !isPlainRepoRelativePath(normaliseDeclaredPath(p) ?? p),
+        (p) => !isPlannedRepoRelativePath(normaliseDeclaredPath(p) ?? p),
       ),
     )
   )

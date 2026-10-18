@@ -27,24 +27,43 @@ export function isPlainRepoRelativePath(p: string): boolean {
 }
 
 /**
+ * The planner's path grammar: a repo-relative path that may contain `[ ] ( )`
+ * and literal spaces (Next.js `app/[id]/page.tsx`, `app/(group)/page.tsx`,
+ * `docs/my file.md`). Every consumer of a declared path passes it as argv or
+ * as data, never as shell text, so those characters are not a hazard here.
+ * Still refused: shell expansion characters, other whitespace, absolute paths
+ * and `..` segments.
+ */
+export function isPlannedRepoRelativePath(p: string): boolean {
+  const trimmed = p.trim();
+  if (trimmed.length === 0) return false;
+  // Shell expansion and quoting characters, and whitespace other than a space.
+  if (/[`$;&|<>{}\\"'\t\r\n\v\f\0]/.test(trimmed)) return false;
+  if (trimmed.startsWith("/")) return false;
+  if (trimmed.split("/").includes("..")) return false;
+  return true;
+}
+
+/**
  * The reason a declared path is refused, or undefined when it is acceptable.
  * A trailing parenthetical annotation (`src/a.ts (new)`) is planner prose, not
  * part of the path, so it is stripped first — the same allowance the declared-
- * path normaliser makes. A leading `-` (read as a flag by git), a leading `:`
- * or a glob/magic character (git pathspec magic) and a NUL byte are refused on
- * top of the shared shape check.
+ * path normaliser makes. A parenthetical that is a whole path segment
+ * (`app/(group)`) is a real name and is kept. A leading `-` (read as a flag
+ * by git), a leading `:` or a glob/magic character (git pathspec magic) and a
+ * NUL byte are refused on top of the shape check.
  */
 export function plannedPathProblem(raw: string): string | undefined {
   const p = raw
     .trim()
-    .replace(/\s*\([^()]*\)\s*$/, "")
+    .replace(/(?<=[^/])\s*\([^()]*\)\s*$/, "")
     .trim();
   if (p.startsWith("-")) return `'${raw}' starts with '-' (it would be read as a flag)`;
   if (p.startsWith(":")) return `'${raw}' starts with ':' (git reads it as pathspec magic)`;
-  if (/[*?[\]!]/.test(p)) return `'${raw}' contains a glob or pathspec character (* ? [ ] !)`;
+  if (/[*?!]/.test(p)) return `'${raw}' contains a glob or pathspec character (* ? !)`;
   if (p.includes("\0")) return `'${raw}' contains a NUL byte`;
-  if (!isPlainRepoRelativePath(p)) {
-    return `'${raw}' is not a plain repo-relative path (no absolute paths, '..' segments, whitespace or shell metacharacters)`;
+  if (!isPlannedRepoRelativePath(p)) {
+    return `'${raw}' is not a plain repo-relative path (no absolute paths, '..' segments, tabs or shell metacharacters)`;
   }
   return undefined;
 }
