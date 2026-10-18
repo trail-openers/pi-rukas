@@ -265,7 +265,25 @@ export async function hookDecision(
     block: (r as { block?: boolean } | undefined)?.block === true,
     reason: (r as { reason?: string } | undefined)?.reason,
     calls: env.calls,
-    /** Every `merge-guard: HELD …` line the hook emitted for this command. */
-    holds: traces.filter((l) => l.includes("merge-guard: HELD")).map((l) => l.trim()),
+    /**
+     * Every `merge-guard: HELD …` OR `merge-guard: BLOCKED …` trace line the
+     * hook emitted for this command. #1479 — the filter used to match `HELD`
+     * only, so a blocked merge (kind `merge`, unresolvable number) logged its
+     * `merge-guard: BLOCKED` trace line and no test could ever see it. The
+     * line is stored WITHOUT the `[pi-rukas] WARN ` prefix `traceWarn` adds,
+     * so an assertion can anchor on `^merge-guard:` without depending on the
+     * console prefix — which is harness plumbing, not the trace contract.
+     * (Renamed from `holds` in #1479: it now carries BLOCKED lines too, and
+     * `traces` matches the doc — these are the guard's trace lines.)
+     */
+    traces: traces
+      .filter((l) => l.includes("merge-guard: HELD") || l.includes("merge-guard: BLOCKED"))
+      .map(
+        (l) =>
+          // #1479 lens fix — strip ANY trace level word, not just `WARN`: the
+          // prefix is harness plumbing (`[pi-rukas] LEVEL msg`), and a future
+          // level must not silently change which lines the filter sees.
+          l.trim().replace(/^\[pi-rukas\] [A-Z]+ /, ""),
+      ),
   };
 }

@@ -301,15 +301,15 @@ for (const cmd of ["cd x && gh pr merge 17", "gh api repos/o/r/pulls/12/merge"])
       // (`\\s`, not `\s`: inside a template literal the pattern is a string and
       // needs the doubled backslash to reach the regex as `\s`.)
       r.block &&
-        r.holds.length === 1 &&
-        new RegExp(`reason=${code}(?=\\s)`).test(r.holds[0] ?? ""),
-      `hold logs ${code}: ${cmd.slice(0, 30)}… (${JSON.stringify(r.holds)})`,
+        r.traces.length === 1 &&
+        new RegExp(`reason=${code}(?=\\s)`).test(r.traces[0] ?? ""),
+      `hold logs ${code}: ${cmd.slice(0, 30)}… (${JSON.stringify(r.traces)})`,
     );
     // The secret-leak invariant from the earlier round: the hold line carries
     // the code and the LENGTH only, never the command text — which is also why
     // the assertion above cannot be satisfied by the command echoing back.
     assert(
-      !r.holds.some((h) => h.includes("--auto") || h.includes("yyyy")),
+      !r.traces.some((h) => h.includes("--auto") || h.includes("yyyy")),
       `…and the hold line repeats no part of the command text: ${cmd.slice(0, 30)}…`,
     );
   }
@@ -319,11 +319,11 @@ for (const cmd of ["cd x && gh pr merge 17", "gh api repos/o/r/pulls/12/merge"])
     // cause `earlyRefuse` could ever report, whatever had actually failed.
     const r = await hookDecision("gh pr merge", GOOD_ENTRIES, { branchNumber: "empty" });
     assert(
-      r.block && r.holds.length === 1 && /reason=unresolved-pr-number(?=\s)/.test(r.holds[0] ?? ""),
+      r.block && r.traces.length === 1 && /reason=unresolved-pr-number(?=\s)/.test(r.traces[0] ?? ""),
       "early refusal logs the cause that fired (unresolved-pr-number)",
     );
     assert(
-      !r.holds.some((h) => /reason=(form|not-a-merge|unknown-flag|too-large)\b/.test(h)),
+      !r.traces.some((h) => /reason=(form|not-a-merge|unknown-flag|too-large)\b/.test(h)),
       "…and never another seam's code for a resolution failure",
     );
   }
