@@ -29,7 +29,9 @@ When parallelising implementation, create git worktrees as **isolated scratch sp
    @developer: "Work in .worktrees/task-A ..."
    @developer: "Work in .worktrees/task-B ..."
 
-3. Both developers return with changed files listed (uncommitted)
+3. Both developers return with their work COMMITTED in their own worktree
+   (#1113: a developer commits locally and never pushes — publishing the
+   branch is @ops's step, and the child guard refuses the developer's `git push`)
 
 4. @ops cherry-picks all changes into ONE feature branch:
    git checkout feature/issue-N
@@ -48,9 +50,9 @@ When parallelising implementation, create git worktrees as **isolated scratch sp
 
 **⛔ NEVER dispatch @ops to reset, clean, checkout, or modify files in a worktree that contains uncommitted developer work.**
 
-Developer changes are intentionally uncommitted when they return. The correct state is:
-- Developer returns → changes sitting uncommitted in worktree ✅
-- @ops commits from that worktree ✅
+Developer changes are committed in the worktree by the developer before it returns (the develop gate rejects a tree with no commit ahead of base SHA). @ops integrates and publishes those commits.
+- Developer returns → its work committed in its own worktree ✅
+- @ops pushes that worktree's branch ✅
 
 The dangerous failure pattern:
 - Developer returns → @ops task times out → PM dispatches @ops again with "check status" → second @ops sees conflict and resets → **work is lost** ❌

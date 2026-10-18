@@ -33,6 +33,7 @@
  * (`sweepStranded` in work-queue.ts). None of the four is raised by a cycle.
  */
 
+import { continueHumanAction, isContinueCap } from "./work-driver-continue-pr-explain.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import {
   type EvidenceFailureKind,
@@ -40,6 +41,7 @@ import {
   mergeHoldGrantAction,
 } from "./work-driver-merge-authority.ts";
 import { HOST_EXHAUSTION_SUFFIX } from "./work-queue-park-reason.ts";
+import { crossGroupAction } from "./work-queue-parks-claims.ts";
 import { deferredLeftoverAction } from "./work-queue-parks.ts";
 import type { BlockReason } from "./work-queue-scheduler.ts";
 
@@ -138,6 +140,24 @@ export function humanActionFor(
   // the switch in `queueWaitAction` branches on. A hand-written alternation
   // here was a second list of the same two names, and a third cap added to
   // that switch fell through this one to "inspect a diff that does not exist".
+  //
+  // #1454 — `cross-group-conflict` is the ONE name this router sees from two
+  // producers, so the two rules are split by provenance, not by the bare word:
+  //
+  //   - `^cap cross-group-conflict` + `in-flight sibling(s)` — the QUEUE's
+  //     sighting (`waitCapFor`'s detail is the only thing that writes that
+  //     clause). The group never dispatched: `queueWaitAction`.
+  //   - a bare `cross-group-conflict` — the REACTIVE plan-time check in
+  //     work-driver-path-claims.ts, raised from inside a cycle that DID
+  //     dispatch, has a state file, and is parked against somebody else's
+  //     claim: `crossGroupAction`, which names the CLAIMANT.
+  //
+  // The generic fallback both used to get is the shape that sent six operators
+  // to re-run an unchanged issue into the same park.
+  if (/^cap cross-group-conflict\b.*in-flight sibling\(s\)/.test(reason)) {
+    return queueWaitAction(primary, "cross-group-conflict");
+  }
+  if (/cross-group-conflict/.test(reason)) return crossGroupAction(reason, primary);
   const waitCap = reason.match(new RegExp(`^cap (${QUEUE_WAIT_CAPS.join("|")})\\b`));
   if (waitCap) return queueWaitAction(primary, waitCap[1] as QueueWaitCap);
   // #753 — a dirty-leftover park (deferred worktree creation refused):
@@ -201,6 +221,8 @@ export function humanActionFor(
   if (/draft-rearm-failed/.test(reason)) {
     return `make #${primary}'s PR a draft by hand — \`gh pr ready <N> --undo\` (GitHub) or \`glab mr update <N> --draft\` (GitLab), N from the handoff — then re-run \`/work ${primary} --restart\` (do NOT skip the draft: the review re-runs on a mergeable PR)`;
   }
+  const continueCap = reason.match(/\bcap (continue-pr-[a-z-]+)/)?.[1];
+  if (continueCap && isContinueCap(continueCap)) return continueHumanAction(continueCap, primary);
   if (/existing-pr-detected/.test(reason))
     return `decide whether to resume, retarget or close the open PR for #${primary}`;
   if (/explore-needs-clarification|step-back-revise-spec/.test(reason)) {
@@ -249,6 +271,9 @@ export function humanActionFor(
     return `the verify command already fails at #${primary}'s base commit — fix the gate on the mainline, then re-run \`/work ${primary} --restart\``;
   if (/pr-not-open/.test(reason))
     return `#${primary}'s PR is no longer open — decide whether the work belongs in a new PR`;
+  // #1472 — a person closed the issue; the driver stopped and merged nothing.
+  if (/issue-closed/.test(reason))
+    return `#${primary} is CLOSED — a person ended it mid-cycle. If the work is still wanted, reopen it (\`gh issue reopen ${primary}\`) and re-run \`/work ${primary} --restart\``;
   if (/fix-pass-park/.test(reason))
     return `read the fix pass's reason in #${primary}'s handoff — the adversarial fix pass parked on its own check`;
   if (/verify-failed/.test(reason))

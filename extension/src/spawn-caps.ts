@@ -8,7 +8,7 @@
  * DispatchResult.killCause, lastActivity and the stderr attribution line
  * follow #296's structured-kill contract. killCause priority
  * (resolveKillCause): loop > inactivity = tool-inactivity > token-budget >
- * timeout > abort — the most specific wins (the #296 invariant; #296's three
+ * stuck-tool > no-progress > child-bound (#1567) > timeout > abort — the most specific wins (the #296 invariant; #296's three
  * values are untouched). Inactivity and tool-inactivity rank equal: both are
  * wall-clock silence kills of the same poll (the #951 exemption swaps which
  * budget is armed, not the kill's nature), so their ordering is irrelevant —
@@ -30,7 +30,7 @@ import type { PiContentBlock } from "./pi-event-shapes.ts";
 import type { LoopObserver } from "./progress.ts";
 import { killProcessTree } from "./spawn-kill.ts";
 import { TokenBudgetTracker, tokenBudgetEnvKey } from "./spawn-support.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import { turnNudgeEnabled, turnNudgeText, turnNudgeThreshold } from "./turn-nudge.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -41,7 +41,7 @@ function killChild(child: ChildProcess): void {
 
 /**
  * #543 — killCause priority: loop > inactivity = tool-inactivity >
- * token-budget > timeout > abort (the most specific wins — the #296
+ * token-budget > stuck-tool > no-progress > child-bound (#1567) > timeout > abort (the most specific wins — the #296
  * invariant; #296's three values are untouched). The two silence kills rank
  * equal: same poll, one budget armed at a time (#951), so their relative
  * order cannot change an outcome.
@@ -59,6 +59,11 @@ export function resolveKillCause(facts: {
   toolInactivityKilled: boolean;
   timedOut: boolean;
   tokenBudgetKilled: boolean;
+  /** #1567 — the child-supervision kills. Optional while no piece emits
+   * them; each enforcing piece passes its own flag. */
+  stuckToolKilled?: boolean;
+  noProgressKilled?: boolean;
+  childBoundKilled?: boolean;
   aborted: boolean;
 }): DispatchResult["killCause"] {
   if (facts.loopKilled) return "loop";
@@ -70,6 +75,13 @@ export function resolveKillCause(facts: {
   // token budget that also outlived the wall-clock backstop is a
   // token-budget kill (see the module doc + the doc comment above).
   if (facts.tokenBudgetKilled) return "token-budget";
+  // #1567 — below the structural caps, above the 2-h backstop: a child the
+  // supervisor ended that also outlived the backstop is named for the
+  // supervisor's reason. Most specific first: a second call-kill on one
+  // command, then a frozen child, then the plain per-child time limit.
+  if (facts.stuckToolKilled) return "stuck-tool";
+  if (facts.noProgressKilled) return "no-progress";
+  if (facts.childBoundKilled) return "child-bound";
   if (facts.timedOut) return "timeout";
   if (facts.aborted) return "abort";
   return undefined;
@@ -270,9 +282,16 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
   // which aborts the parent and takes down every sibling child still in
   // flight. It stays on the caller side rather than inside `killChild` /
   // `killProcessTree` because those already swallow their own signal errors
-  // (`signalChild` / `signalGroupPid`); the reachable throw is above them — a
-  // child handle without a `kill` method, or the prologue of
-  // `killProcessTree` itself.
+  // (`signalChild` / `signalGroupPid`) — no injectable child handle reaches
+  // this catch in a test, so the guard is defence-in-depth for the
+  // pre-signal throws (the `isGroupChild` WeakMap receiver, the escalation
+  // `setTimeout`), not a branch an offline assertion can witness. It is
+  // therefore reported, never merely swallowed: `traceWarn` at default log
+  // level, NOT the `PI_ENSEMBLE_DEBUG`-gated `trace` — a kill that could not
+  // land is outcome-changing, the child keeps spending against a budget that
+  // already fired while `killCause()` still reports "token-budget", which is
+  // what makes `work-driver-adversarial-capkill.ts` park a cycle on a child
+  // nobody killed. Same reasoning as `review-budget.ts`'s silent-reject fix.
   const budgetKill = () => {
     if (opts.childExited()) return; // H1 — the child is already gone
     try {
@@ -281,10 +300,8 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
       // The kill signal is a best-effort side effect; the tracker set its own
       // `killed` flag BEFORE calling, so `killCause()` and the `tokenBudget`
       // evidence pair survive a swallowed throw — crash path and attribution
-      // path stay separate. Traced rather than swallowed silently, mirroring
-      // the loop detector's `trace()` sites, so a kill that cannot land is
-      // recorded (PI_ENSEMBLE_DEBUG=1) instead of lost.
-      trace(`token-budget killChild failed: ${String(err)}`);
+      // path stay separate.
+      traceWarn(`token-budget killChild failed: ${String(err)}`);
     }
   };
   const tracker =

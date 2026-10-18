@@ -44,7 +44,7 @@
 
 import { notifyAgent } from "./agent-message.ts";
 import type { DispatchHost } from "./async-jobs-lifecycle.ts";
-import { DRIVER_OWNED_NOTICE, getParentExtensionApi } from "./async-jobs-registry.ts";
+import { driverOwnedNotice, getParentExtensionApi } from "./async-jobs-registry.ts";
 import { steerChild } from "./dispatch-steer.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import type { RunningState } from "./progress.ts";
@@ -177,7 +177,7 @@ function noticeText(w: Watch, s: RunningState, triggered: string[], excludedMs: 
     `[ensemble:slow] ${w.label} (${w.id}) has been running past a slow-run threshold (level ${w.level})${trigger} ${fmtSlow(s.elapsedMs, s.turns, s.totalTokens, excludedMs)}.`,
     s.lastToolName ? `Last tool: ${s.lastToolName}` : "",
     snippet,
-    w.driverOwned ? DRIVER_OWNED_NOTICE : "",
+    w.driverOwned ? driverOwnedNotice() : "",
     `Use dispatch_peek ${w.id} to inspect it or dispatch_steer ${w.id} to course-correct it. A steer only lands once the current tool call returns — if it is hung in one, dispatch_kill ${w.id}${w.driverOwned ? " with force: true" : ""}.`,
   ]
     .filter(Boolean)

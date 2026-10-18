@@ -230,7 +230,8 @@ export interface Forge {
   issueComment(number: number, body: string): Promise<string>;
   /** #775 — list the issue's comments (idempotency check before re-posting). */
   issueComments(number: number): Promise<NormalizedComment[]>;
-  issueSearch(query: string): Promise<NormalizedIssue[]>;
+  /** `allStates` (#1471) searches closed issues too; the default is open ones only. */
+  issueSearch(query: string, opts?: { allStates?: boolean }): Promise<NormalizedIssue[]>;
 
   // Pull requests / MRs
   prView(number: number): Promise<NormalizedPullRequest>;

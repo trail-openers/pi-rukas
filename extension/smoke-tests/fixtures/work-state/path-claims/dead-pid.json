@@ -1,0 +1,14 @@
+{
+  "$comment": "A claim whose owner pid is dead (0 is never a valid owner: kill(0,0) signals the caller's own process group). The gate must not park a sibling, and the entry must be pruned by the next writer. No state file accompanies it — a dead pid alone is sufficient.",
+  "claims": [
+    {
+      "issue": 1421,
+      "pid": 0,
+      "paths": [
+        "extension/src/worktree-provision.ts",
+        "extension/src/work-driver-verify-develop-helpers.ts"
+      ],
+      "startedAt": "@AGE(-60000)"
+    }
+  ]
+}

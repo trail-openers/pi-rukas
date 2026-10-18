@@ -62,6 +62,7 @@ import {
 } from "./work-develop-git.ts";
 import { withPersistNotes } from "./work-develop-retry.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { mergeInProgress } from "./work-driver-continue-pr-guard.ts";
 import { execp } from "./work-driver-verify.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -158,6 +159,13 @@ export async function safetyNetWorktree(
     assertInsideWorktrees(repoRoot, cwd);
   } catch (err) {
     const note = `${wsId}: safety net refused — ${errText(err)}`;
+    trace(`work-driver: ${note}`);
+    notes.push(note);
+    return undefined;
+  }
+  // #1468 — staging would mark the conflicted paths resolved, markers and all.
+  if (await mergeInProgress(execFn, cwd)) {
+    const note = `${wsId}: safety net skipped — a merge is in progress (MERGE_HEAD); the developer finishes it`;
     trace(`work-driver: ${note}`);
     notes.push(note);
     return undefined;

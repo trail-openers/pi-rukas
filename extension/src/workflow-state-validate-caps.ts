@@ -24,7 +24,7 @@ import type { WorkStep } from "./workflow-state-events.ts";
 export const CAP_HIT_FIXED_LITERALS = [
   "adversarial-loop",
   "round-cap",
-  "wall-clock",
+  "lens-review-timeout",
   "review-incomplete",
   "ci-retry",
   "developer-timeout",
@@ -91,6 +91,13 @@ export const CAP_HIT_FIXED_LITERALS = [
   // the driver could not put the PR back to a draft. Deliberate park.
   "draft-rearm-failed",
   "existing-pr-detected",
+  // #1468 — `--continue-pr` could not continue the issue's open PR.
+  "continue-pr-ambiguous",
+  "continue-pr-fork",
+  "continue-pr-head-moved",
+  "continue-pr-not-found",
+  "continue-pr-unresolved",
+  "continue-pr-unsafe-head",
   // #844 — the ops-fallback branch path's post-dispatch merge-base check
   // failed: the branch ops created does not sit on the driver-fetched base.
   "ops-merge-base-mismatch",

@@ -18,6 +18,7 @@ import { conflictArtifactFromPlumb } from "./work-driver-commit-helpers.ts";
 import { auditCommitPrFallback } from "./work-driver-commit-pr-audit.ts";
 import { mechanizedCommitPr } from "./work-driver-commit.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { continueCommitPrHalt } from "./work-driver-continue-pr-commit.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { appendEvent } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -88,6 +89,9 @@ async function runCommitPrLocked(
           },
         )
       );
+    } else if (state.pipelineState.continuedPr) {
+      // #1468 — the fallback's prompt opens a PR; a continued PR gets none.
+      return continueCommitPrHalt(ctx, state, mech.reason, execFn);
     } else {
       trace(`work-driver: mechanized commit-pr fell back to ops dispatch: ${mech.reason}`);
       preDispatch = appendEvent(state, {

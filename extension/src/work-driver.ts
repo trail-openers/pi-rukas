@@ -17,7 +17,7 @@ import {
   nextStep,
 } from "./work-driver-context.ts";
 import { enterCycle } from "./work-driver-cycle-entry.ts";
-import { parkAtDeadlineBoundary } from "./work-driver-deadline.ts";
+import { parkAtDeadlineBoundary, withCycleClock } from "./work-driver-deadline.ts";
 import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
 import {
@@ -118,7 +118,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
     // (per-invocation ownership token; see work-driver-deck-header.ts).
     const header = acquireWorkDeckHeader(ctx.issue, headerToken());
     try {
-      return await runWorkDriverInner(cycleCtx);
+      return await withCycleClock(() => runWorkDriverInner(cycleCtx));
     } finally {
       header.release();
     }

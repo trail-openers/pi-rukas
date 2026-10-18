@@ -41,6 +41,10 @@ import {
   worktreesWithNewWork,
 } from "./work-driver-commit-reentry.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import {
+  continueCommitPrPrecheck,
+  continuePrCreateRefusal,
+} from "./work-driver-continue-pr-commit.ts";
 import { draftPrEnabled } from "./work-driver-draft-pr.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
@@ -149,6 +153,8 @@ export async function mechanizedCommitPr(
   if (ids.length === 0) {
     return { ok: false, reason: "no worktrees recorded at Step 3 — nothing to consolidate" };
   }
+  const unresolved = await continueCommitPrPrecheck(execFn, state);
+  if (unresolved) return unresolved;
   const startedAt = Date.now();
   try {
     // RE-ENTRY GUARD (census 2026-09-09): a resume that re-enters commit-pr
@@ -163,7 +169,8 @@ export async function mechanizedCommitPr(
     // here — `ci-status: failure → develop → adversarial → commit-pr` — and
     // skipping it reported a CI fix as shipped that was never pushed. That
     // round integrates onto the branch's own head (see `followupBase`).
-    let existingPr = await findOpenPrForBranch(execFn, ctx.repoRoot, branchName);
+    let existingPr =
+      ps.continuedPr?.number ?? (await findOpenPrForBranch(execFn, ctx.repoRoot, branchName));
     if (existingPr === undefined) {
       const recorded = await recordedPrState(ctx, execFn, ps.prNumber, branchName);
       if (recorded === "OPEN") existingPr = ps.prNumber;
@@ -249,6 +256,7 @@ export async function mechanizedCommitPr(
       commitTitle: title,
       commitBody,
       mode: followupBase ? "followup" : "create",
+      fastForward: ps.continuedPr !== undefined,
       // Only the workstream that fixed something has a diff on a second round.
       requireAllNonEmpty: !followupBase,
       // #453 — skip already-applied.
@@ -307,6 +315,8 @@ export async function mechanizedCommitPr(
       // halt a child that worked there anyway). A failure to create the
       // integrate worktree is a driver environment failure → a cap, not an
       // LLM judgment call.
+      // #1468 — continue mode has no fallback, so no integrate worktree for one.
+      if (ps.continuedPr) return { ok: false, reason: res.reason, fallbackCause };
       const worktreeRes = await ensureIntegrateWorktreeOrHalt(
         ctx,
         state,
@@ -386,9 +396,8 @@ export async function mechanizedCommitPr(
       );
       return { ok: true, state: next };
     }
-    // #378 — when the intent resolver filled gaps with defensible defaults,
-    // those assumptions belong where review happens; buried in a state file
-    // they may as well not exist.
+    // #378 — assumptions the intent resolver filled in belong where review
+    // happens, not buried in a state file.
     const assumptionsBlock = assumptionsBlockOf(ps.normalisedSpec);
     const carriedFindings = carriedFindingsSectionOf(state.eventLog);
     // #792 — no-diff deliverables (settings toggles, operator actions) must
@@ -432,6 +441,7 @@ export async function mechanizedCommitPr(
     // head from repoRoot's CURRENT checkout, so a sibling group that moved
     // HEAD between our push and this call would have its branch opened as our
     // PR. The flag makes that impossible even if the lock is ever wrong.
+    if (ps.continuedPr) return continuePrCreateRefusal(state);
     const forge = await forgeForCycle(ctx, execFn);
     if (!forge) {
       return {

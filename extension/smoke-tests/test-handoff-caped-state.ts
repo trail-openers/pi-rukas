@@ -10,6 +10,7 @@
  * driver's composed state, never the killed child's final text.
  */
 
+import { CHECKPOINT_TYPECHECK_CMD } from "../src/work-driver-cap-checkpoint.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
 import type { WorkState } from "../src/workflow-state.ts";
@@ -25,9 +26,12 @@ function assert(cond: boolean, msg: string) {
 
 const REPO = "/Users/x/repo";
 
-/** #1414 — the command the checkpoint runs, spelled once here and asserted
- * verbatim against what both renderers print. */
-const TYPECHECK_CMD = "bun x tsc --noEmit";
+/** #1414 — the command the checkpoint runs. Imported from the leaf that
+ * defines it, not re-spelled here: a local copy is exactly the two-sources-
+ * of-truth shape this assertion exists to catch, and when the driver's
+ * spelling moved to the project's own compiler this line kept asserting the
+ * old command and failed for the wrong reason. */
+const TYPECHECK_CMD = CHECKPOINT_TYPECHECK_CMD;
 
 function capedState(
   cap: string,

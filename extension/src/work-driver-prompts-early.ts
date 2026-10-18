@@ -172,6 +172,8 @@ function intentResolutionBlock(issues: number[]): string {
     "  - `proceed` — the intent is clear and grounded.",
     "  - `proceed-with-assumptions` — gaps exist, but each has a defensible default. List every one under Assumptions; they go into the PR body for review.",
     "  - `park` — do NOT guess. Use this when the intent cannot be resolved, is contradicted by the code, is already done, is too large for one cycle, or rests on a premise you could not substantiate. `PARK-REASON` is required for a park.",
+    // #1351 — the driver checks this commit is on origin/<mainline>; one that is not overturns the park.
+    "  - `already-implemented` means the MAINLINE has the work. Add `IMPLEMENTED-AT: <sha>` naming the commit on `origin/<mainline>` that did it (`git log origin/<mainline> -- <path>`). Work that exists only on an open PR or an unmerged branch is NOT already implemented: say so under Evidence and do not park on it; the driver detects open PRs for the issue itself.",
     "",
     "**Parking is a good outcome when it is the right one.** Writing code from a guess is how the wrong thing ships confidently. Ask at most 3 clarifying questions, and only where the answer would change what gets built; anything smaller becomes an Assumption.",
     "",

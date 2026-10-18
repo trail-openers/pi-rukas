@@ -173,7 +173,16 @@ export async function runConsolidatedVerifyUnlocked(
       return {
         status: "conflict",
         kind: "conflict",
-        detail: `cherry-pick conflict — two workstreams edited the same lines; ${restoreClaimFor(restore)}`,
+        detail: `cherry-pick conflict — the batch aborted; ${restoreClaimFor(restore)}`,
+        ...(orchResult._conflictedWorkstream !== undefined
+          ? { conflictedWorkstream: orchResult._conflictedWorkstream }
+          : {}),
+        ...(orchResult._conflictAppliedBefore !== undefined
+          ? { appliedBeforeConflict: orchResult._conflictAppliedBefore }
+          : {}),
+        ...(orchResult._conflictedFile !== undefined
+          ? { conflictedFile: orchResult._conflictedFile }
+          : {}),
       };
     }
     if (orchResult._applyConflict !== undefined) {
@@ -183,6 +192,7 @@ export async function runConsolidatedVerifyUnlocked(
         status: "conflict",
         kind: "conflict",
         detail: `patch-apply failed for workstream '${id}': ${reason}. Conflict patch preserved at ${patchFile}. ${restoreClaimFor(restore)}`,
+        conflictedWorkstream: id,
       };
     }
 
