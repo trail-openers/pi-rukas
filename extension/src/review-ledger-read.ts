@@ -31,6 +31,33 @@ export function readLedgerFile(file: string): LedgerFile {
 }
 
 /**
+ * #1449 — the ONLY permissive read of `readLedgerFile`, for a caller that has
+ * already read the same file by another route and wants the raw rows back.
+ *
+ * `readLedgerFile` THROWS on an unreadable path (a missing file or an fs error)
+ * and can throw on a malformed one (`JSON.parse` on a file written by hand, or
+ * truncated mid-write). The one production caller that re-reads a path it had
+ * already read — the #912 merge guard's misdirected-write diagnostic in
+ * `merge-guard-provenance.ts` — must not let either reach the caller: the guard
+ * is fail-CLOSED, and a provenance helper that throws out of the handler is a
+ * fault inside the gate that decides whether a merge happens. A diagnostic is
+ * allowed to be silent; it is never allowed to change the verdict.
+ *
+ * `readLedgerAt` is the same never-throw contract but discards the rows, so it
+ * cannot answer "what did the file say". Every OTHER caller keeps the throwing
+ * contract deliberately: `appendLedgerEntry` re-reads under the lock right
+ * before its rename, and there a swallowed read error would drop a concurrent
+ * writer's row — an empty ledger there is data loss, not a safe default.
+ */
+export function readLedgerFileSafe(file: string): LedgerFile {
+  try {
+    return readLedgerFile(file);
+  } catch {
+    return { entries: [] };
+  }
+}
+
+/**
  * Validate an untrusted row before the ledger trusts it: `branch` must be
  * a non-empty string, `kind` one of the two review kinds, `patchId` a
  * string, `at` a finite number, `passed` a boolean. Anything else is

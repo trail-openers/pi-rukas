@@ -25,17 +25,22 @@
  *   4. with NO override set, nothing is flagged and nothing is stamped: the
  *      normal path stays textually and structurally unchanged.
  */
-import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { makeLedgerWrite } from "../src/adversarial-ledger-capture.ts";
+import { misdirectedLedgerNote } from "../src/adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "../src/adversarial-ledger.ts";
 import { writeLensLedgerEntry } from "../src/lens-ledger.ts";
+import { misdirectedWriteOf } from "../src/merge-guard-provenance.ts";
 import { lensNotEvaluatedRefusal } from "../src/merge-guard-reads.ts";
+import { registerMergeGuard } from "../src/merge-guard.ts";
+import { readLedgerFileSafe } from "../src/review-ledger-read.ts";
 import { MISDIRECTED_LEDGER_NOTE, readLedgerFile } from "../src/review-ledger.ts";
+import type { LedgerEntry } from "../src/review-ledger.ts";
 import type { VerifyExecFn } from "../src/work-driver-git.ts";
-import { BRANCH, ledgerFile, setupRepo } from "./lib/adversarial-ledger-harness.ts";
+import { BRANCH, forgeExec, ledgerFile, setupRepo } from "./lib/adversarial-ledger-harness.ts";
 
 // ---------------------------------------------------------------------------
 // Never touch the real per-clone ledger.
@@ -165,10 +170,7 @@ try {
   const rows = readLedgerFile(leaked).entries;
   const row = rows.at(-1);
   assert(row?.kind === "lens", "#1449 the redirected row is a lens row");
-  assert(
-    row?.writtenTo === leaked,
-    `#1449 the row stamps where it landed (${row?.writtenTo})`,
-  );
+  assert(row?.writtenTo === leaked, `#1449 the row stamps where it landed (${row?.writtenTo})`);
   assert(
     row?.writtenTo !== undefined && row.writtenTo !== cloneLedger,
     "#1449 the stamped path is not the clone's ledger — that is the misdirection",
@@ -253,7 +255,10 @@ try {
     });
     homeRows = existsSync(homePath) ? readLedgerFile(homePath).entries : [];
   });
-  assert(again.recorded === true, "#1449 the adversarial write records normally once the env is clean");
+  assert(
+    again.recorded === true,
+    "#1449 the adversarial write records normally once the env is clean",
+  );
   assert(
     again.recorded && again.landedAtPath === undefined,
     "#1449 with no override set, the normal write reports no misdirection",
@@ -313,8 +318,10 @@ try {
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed > 0 ? 1 : 0);
 } finally {
-  if (previousOverride === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-  else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = previousOverride;
+  if (previousOverride === undefined) {
+    // biome-ignore lint/performance/noDelete: restoring the pre-import env is the state under test
+    delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+  } else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = previousOverride;
   rmSync(path.dirname(repo), { recursive: true, force: true });
   rmSync(sentinelDir, { recursive: true, force: true });
 }
