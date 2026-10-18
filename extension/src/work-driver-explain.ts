@@ -10,6 +10,7 @@ import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainContinueCap, isContinueCap } from "./work-driver-continue-pr-explain.ts";
+import { explainClaimsLock, explainCrossGroupConflict } from "./work-driver-explain-claims.ts";
 import {
   commitPrConsolidationBlurb,
   explainConsolidation,
@@ -204,19 +205,10 @@ export function explainCap(
       const hit = lastCapHit(state, "worktree-listing-unreadable");
       return `the branch step's same-issue residue pass could not read \`git worktree list\` (${(hit?.evidence ?? "no detail recorded").slice(0, 300)}). The listing is bounded, so this is a git that hung or failed — not an empty list. The driver halted rather than report "nothing to clean" while a same-issue worktree it could not see might hold uncommitted work. Clear whatever is blocking git (a stale \`.git/worktrees\` lock, an I/O wait), then re-run the cycle.`;
     }
-    case "cross-group-conflict": {
-      const hit = lastCapHit(state, "cross-group-conflict");
-      const ev = hit?.evidence ?? "";
-      const siblingMatch = ev.match(/claimant(\d+)/) ?? ev.match(/issue #(\d+)/);
-      const siblingIssue = siblingMatch ? siblingMatch[1] : "(see evidence)";
-      // #1454 — the old sentence said "active claim" and told the operator to
-      // "coordinate with the other cycle's owner". In every park we measured
-      // the other cycle had already exited or parked, so the advice was
-      // unreachable and the re-run re-parked. A claim is honoured only while
-      // its owner is alive AND its state file is non-terminal; a stale one is
-      // pruned on the next read.
-      return `this cycle's declared paths overlap with issue #${siblingIssue}'s path claim — two cycles cannot edit the same files in parallel. The overlapping paths are in the event log evidence field. A claim is honoured only while #${siblingIssue}'s cycle is still running: if that pid has exited, or its state file reads merged/handoff/aborted, the claim is stale and the next /work prunes it — check the pid and .pi/work-state/${siblingIssue}.json before anything else. Only when #${siblingIssue} is genuinely still running is this a real conflict; then re-plan with disjoint file sets.`;
-    }
+    case "cross-group-conflict":
+      return explainCrossGroupConflict(state);
+    case "claims-lock-unavailable":
+      return explainClaimsLock(cap, state);
     case "existing-pr-detected": {
       const pr = state.pipelineState.existingPr;
       const via =
