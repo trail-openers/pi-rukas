@@ -327,7 +327,7 @@ export function explainCap(
       const ev = lastCapHit(state, "deadline")?.evidence ?? "(no detail recorded)";
       return ev.includes("passed while step")
         ? `the caller's whole-cycle deadline ended the cycle (${ev}). The step's children were stopped at the deadline, so its verdict judged unfinished work. The handoff below says where the work is — branch, PR, and the round reached — and runs inside the caller's handoff allowance (PI_ENSEMBLE_HANDOFF_TIMEOUT_MS), before its kill. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`
-        : `the caller's whole-cycle deadline (${ev}) was within the handoff grace at a step boundary, so the driver started no new step and parked. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`;
+        : `the caller's whole-cycle deadline (${ev}) ${ev.includes("(overdue)") ? "had already passed when the driver reached" : "was within the handoff grace at"} a step boundary, so the driver started no new step and parked. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`;
     }
   }
   // #844 — a local branch of the resolved name holds commits the freshly

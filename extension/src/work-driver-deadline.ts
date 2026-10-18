@@ -85,6 +85,38 @@ export function readCycleDeadline(state: WorkState, now: number): number | undef
 }
 
 /**
+ * #1542 — the time left, signed in words: a negative "remained" read as time
+ * still in hand, when the deadline had passed an hour earlier.
+ */
+function remainingText(remaining: number, grace: number): string {
+  return remaining >= 0
+    ? `${remaining}ms remained, within the ${grace}ms handoff grace`
+    : `the deadline had already passed ${-remaining}ms earlier (overdue)`;
+}
+
+/**
+ * #1542 — which step was refused, and after which one. A develop entered from
+ * the adversarial gate is that round's fix pass, not the develop step (which
+ * finished long before), and the step that actually ran last is the one the
+ * operator should look at.
+ */
+function refusedStepText(state: WorkState, step: WorkStep): string {
+  const log = state.eventLog;
+  const fix = step === "develop" ? log[log.length - 1] : undefined;
+  const what =
+    fix?.kind === "adversarial-fix-requested"
+      ? `the adversarial round ${fix.round} fix pass ("develop") not started`
+      : `step "${step}" not started`;
+  for (let i = log.length - 1; i >= 0; i--) {
+    const e = log[i];
+    if (e?.kind === "step-started" && e.step !== "handoff") {
+      return `${what}; the last step that ran was "${e.step}"`;
+    }
+  }
+  return what;
+}
+
+/**
  * The pre-step boundary check (#1238). Parks with cap `deadline` (routing to
  * handoff) once `now + handoff grace >= deadline` — the deadline means "do
  * not start a new step after this point", so a step's own worst case is not
@@ -133,9 +165,7 @@ export async function deadlineCheck(
     cap: "deadline",
     reviewRound: next.pipelineState.reviewRound,
     nextStep: "handoff",
-    evidence:
-      `caller deadline ${deadline} (absolute epoch ms); ${remaining}ms remained, ` +
-      `within the ${grace}ms handoff grace — step "${step}" not started`,
+    evidence: `caller deadline ${deadline} (absolute epoch ms); ${remainingText(remaining, grace)} — ${refusedStepText(next, step)}`,
   });
   return { parked: true, state: capped, deadline };
 }
