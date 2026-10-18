@@ -30,10 +30,22 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { execp } from "../src/exec.ts";
 import { runClaimScan } from "../src/lens-evidence.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
+
+// #1145 — these fixtures build throwaway repos and read what git reports about
+// them, so they must not read the operator's global config / global ignore. One
+// call does both halves: it writes the four isolation levers into `process.env`
+// (which is what reaches `execp` below, an exec this file does not control) and
+// `gitTestEnv()` returns them for the calls threaded explicitly.
+gitTestEnv();
 
 const execFileAsync = promisify(execFile);
 const sh = async (cmd: string, cwd: string) => {
-  const { stdout } = await execFileAsync("sh", ["-c", cmd], { cwd, maxBuffer: 4 * 1024 * 1024 });
+  const { stdout } = await execFileAsync("sh", ["-c", cmd], {
+    cwd,
+    maxBuffer: 4 * 1024 * 1024,
+    env: gitTestEnv(),
+  });
   return stdout;
 };
 
@@ -85,6 +97,7 @@ async function buildRepo(files: Record<string, string>): Promise<{ repo: string;
   const { stdout } = await execFileAsync("git", ["diff", "origin/main...origin/feature/x"], {
     cwd: repo,
     maxBuffer: 4 * 1024 * 1024,
+    env: gitTestEnv(),
   });
   return { repo, diff: stdout };
 }

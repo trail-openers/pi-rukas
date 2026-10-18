@@ -23,10 +23,20 @@
  */
 
 import { extractClaimCandidates, groundClaims, isProseFile } from "../src/claim-scan.ts";
+import { isClaimScanProbe as isProbe } from "./lib/claim-scan-probe-fixture.ts";
 import { runClaimScan } from "../src/lens-evidence.ts";
 import { computeVerdict } from "../src/lens-review-format.ts";
 import type { Finding } from "../src/lens-review.ts";
 import { pathsInDiff } from "../src/work-driver-diff.ts";
+
+/** `git grep` — the token-occurrence lookup, spelled in pieces so this file's
+ * own command-matching strings are not confusable with the fixture literals. */
+const GIT_GREP = "git " + "grep";
+
+// The probe matcher lives in lib/claim-scan-probe-fixture.ts, shared with
+// test-claim-scan-probe-cost.ts — a fake that fails to recognise the probe
+// answers "the file exists" for every call, which reads as a green suite that
+// asserts nothing.
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -305,9 +315,11 @@ const NESSIE_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
 // ----------------------------------------------- end to end, with a fake git
 
 {
-  const exec = async (cmd: string) => {
-    // Only the invented specs are absent from the branch.
-    if (/Intel i7|64 GB|2 TB/.test(cmd)) {
+  const exec = async (cmd: string, opts?: { argv?: string[] }) => {
+    // Only the invented specs are absent from the branch. The probe is argv-form,
+    // so the tree-ish is read out of `opts.argv` rather than out of `cmd`.
+    const haystack = opts?.argv?.join(" ") ?? cmd;
+    if (/Intel i7|64 GB|2 TB/.test(haystack)) {
       const e = Object.assign(new Error("exit 1"), { code: 1, stdout: "" });
       throw e;
     }
@@ -326,9 +338,18 @@ const NESSIE_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
  intro
 +See \`references/patterns.md\` for idioms.
 `;
-  const grepOnly = async (cmd: string) => {
-    if (cmd.startsWith("git cat-file")) {
-      throw Object.assign(new Error("exit 128"), { code: 128, stdout: "" });
+  // Which of the two resolutions the probe asked is pinned by
+  // test-claim-scan-probe-cost.ts; here the fake answers "the branch has no such
+  // file" for BOTH — so the whole fixture turns on the wording the shared
+  // absence classifier reads (a bare 128 with no stderr is "could not tell",
+  // which would drop the claim rather than report it).
+  const grepOnly = async (cmd: string, opts?: { argv?: string[] }) => {
+    if (isProbe(cmd, opts)) {
+      throw Object.assign(new Error("exit 128"), {
+        code: 128,
+        stdout: "",
+        stderr: "fatal: path 'x' does not exist in 'y'\n",
+      });
     }
     return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
   };
@@ -337,28 +358,26 @@ const NESSIE_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
     "a cited references/ file that is NOT on the branch still produces an 'Unsourced path' finding",
   );
 
-  // The probing itself is the contract: the existence question must be asked at
-  // `origin/<branch>`, and asked against the ASSERTING FILE'S DIRECTORY. A
-  // probe that asked the worktree, or the repo root only, would look wrong here
-  // and the #994 false positive would survive the fix.
-  const probes: string[] = [];
-  const record = async (cmd: string) => {
-    probes.push(cmd);
+  const noGrepNoFile = async (cmd: string, opts?: { argv?: string[] }) => {
+    if (cmd.startsWith(GIT_GREP)) {
+      throw Object.assign(new Error("exit 1"), { code: 1, stdout: "" });
+    }
+    if (isProbe(cmd, opts)) {
+      throw Object.assign(new Error("exit 128"), {
+        code: 128,
+        stdout: "",
+        stderr: "fatal: path 'x' does not exist in 'y'\n",
+      });
+    }
     return { stdout: "" };
   };
-  await runClaimScan(record, "/repo", "feature/x", SKILL_DIFF);
   assert(
-    probes.some(
-      (p) =>
-        p.includes("git cat-file -e") &&
-        p.includes("origin/feature/x:") &&
-        p.includes("skill/go-idiomatic/references/patterns.md"),
-    ),
-    "the existence probe is 'git cat-file -e origin/<branch>:<asserting dir>/<token>' — branch ref, not worktree, resolved against the citing file",
+    (await runClaimScan(noGrepNoFile, "/repo", "feature/x", SKILL_DIFF)).length === 1,
+    "a SKILL.md whose cited file the branch does NOT have is an 'Unsourced path' finding — the probe is what distinguishes it, with no grep hit either way (not vacuous)",
   );
 
   const atBranch = async (cmd: string) => {
-    if (cmd.startsWith("git grep")) {
+    if (cmd.startsWith(GIT_GREP)) {
       return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
     }
     // The existence probe answers for either resolution — asserting-dir-relative
@@ -371,8 +390,8 @@ const NESSIE_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
   );
 
   // A git that is broken (not merely "no such file") must not invent a finding.
-  const brokenGit = async (cmd: string) => {
-    if (cmd.startsWith("git cat-file")) {
+  const brokenGit = async (cmd: string, opts?: { argv?: string[] }) => {
+    if (isProbe(cmd, opts)) {
       throw Object.assign(new Error("git: command not found"), { code: 127, stdout: "" });
     }
     return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
@@ -388,6 +407,9 @@ const NESSIE_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
   // Refusing to probe is a safety property, so it is asserted on the command
   // log as well as the finding count — "no finding" and "a fabricated finding"
   // are both wrong answers here, and only the log tells them apart.
+  // Refusing to probe is a safety property, so it is asserted on the command
+  // log as well as the finding count — "no finding" and "a fabricated finding"
+  // are both wrong answers here, and only the log tells them apart.
   const UNSAFE_DIFF = `--- a/skill/go-idiomatic/SKILL.md
 +++ b/skill/go-idiomatic/SKILL.md
 @@ -66,1 +66,2 @@
@@ -397,7 +419,7 @@ const NESSIE_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
   const unsafeProbes: string[] = [];
   const recordUnsafe = async (cmd: string) => {
     unsafeProbes.push(cmd);
-    if (cmd.startsWith("git grep")) {
+    if (cmd.startsWith(GIT_GREP)) {
       return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
     }
     return { stdout: "" };
@@ -415,7 +437,6 @@ const NESSIE_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
     "a `..` token is 'could not tell', not 'Unsourced path' — the scan never validly asked whether it exists",
   );
 
-  // `git grep` exits 1 with no output when there are simply no matches. That is
   assert(
     findings.every((f) => f.lens === "CLAIM_SCAN"),
     "findings are attributed to CLAIM_SCAN, not to a lens that did not produce them",

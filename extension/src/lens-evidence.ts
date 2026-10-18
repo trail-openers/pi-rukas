@@ -22,7 +22,13 @@
  *   2. `runClaimScan` grounds the factual particulars the diff asserts against
  *      the branch, deterministically. See `claim-scan.ts` for why this is not a
  *      model and not a lens.
+ *   3. `pathExistsAtBranch` answers "does the file a path claim points at exist
+ *      on the branch", which the existence escape in `groundClaims` needs and
+ *      which nobody else in the codebase can answer — the worktree is at the
+ *      wrong commit, so the filesystem is not an option.
  */
+
+import { gitCatFileSaysAbsent } from "./git-range.ts";
 
 import {
   type PathExistenceLookup,
@@ -38,7 +44,14 @@ import { pathsInDiff, readFileAtBranch } from "./work-driver-diff.ts";
 
 type ExecFn = (
   cmd: string,
-  opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
+  opts?: {
+    cwd?: string;
+    timeout?: number;
+    maxBuffer?: number;
+    shell?: string;
+    /** #1005 argv form — matches `DriverContext.verifyExecFn` / `worktree.ts` ExecFn. */
+    argv?: string[];
+  },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
 /** Files supplied in full, and the budget for doing so. */
@@ -50,6 +63,13 @@ export function claimScanEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_CLAIM_SCAN;
   return v !== "0" && v !== "false";
 }
+
+/**
+ * Bound on one `git cat-file -e` probe. Same bound as every other driver git
+ * read (`DEFAULT_GIT_TIMEOUT_MS` via `execGit`): a wedged object store must
+ * cost the lens step its claim scan, not the lens step.
+ */
+const PROBE_TIMEOUT_MS = 10 * 60_000;
 
 export function evidenceSupplyEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_LENS_EVIDENCE;
@@ -195,18 +215,48 @@ function isSafePath(value: string): boolean {
  * children's worktree is detached at `baseSha`, so a reference file the PR
  * itself added does not exist on disk and would false-fire.
  *
- * Exit codes distinguish the two failure modes, and collapsing them was the
- * trap: `git cat-file -e` exits 128 for "not there", which is a fact the caller
- * acts on, and anything else (git missing, bad ref, unreadable repo) is "could
- * not tell", which throws and drops the claim. Grounding a claim on a
- * git-internal error, or flagging an absent file because git broke, are both
- * defects.
+ *   - a throw — the branch could not be read at all, and that is not "absent".
+ *     `gitCatFileSaysAbsent` from `git-range.ts` decides which side a rejection
+ *     is on; do not hand-roll a second reading of git's exit codes here (the
+ *     first fix round of #1002 found this site had one).
  */
 function pathExistsAtBranch(
   execFn: ExecFn,
   repoRoot: string,
   branchName: string,
 ): PathExistenceLookup {
+  // Memoised per (branch, resolved path) — i.e. per scan. `groundClaims` walks
+  // its candidates serially and the same path token recurs across added lines
+  // (the six #994 skills all cited `references/patterns.md`), so an unshared
+  // probe paid a git spawn per mention for an answer git already gave.
+  const cache = new Map<string, Promise<boolean>>();
+  // argv, not a command string (#1005 shape): the path here comes from prose a
+  // human wrote, so it must reach git as ONE argument rather than through a shell
+  // re-parse, where `$(…)`, backticks or `;` inside a filename would execute.
+  // The canary in test-git-range-1153.ts lists every importer of git-range.ts
+  // and refuses a command-string git call in it.
+  const probe = (resolved: string): Promise<boolean> => {
+    const key = `${branchName}\u0000${resolved}`;
+    const hit = cache.get(key);
+    if (hit) return hit;
+    const fresh = execFn("git", {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+      timeout: PROBE_TIMEOUT_MS,
+      argv: ["cat-file", "-e", `origin/${branchName}:${resolved}`],
+    }).then(
+      () => true,
+      (err: unknown) => {
+        // 128/1 with git's OWN "that is not there" wording is a fact about the
+        // path; anything else (a broken git, an unresolvable ref, a killed
+        // probe) says nothing and must not be cached as "absent".
+        if (gitCatFileSaysAbsent(err)) return false;
+        throw err;
+      },
+    );
+    cache.set(key, fresh);
+    return fresh;
+  };
   return async (token, assertingFile) => {
     // Not a repo path at all (it carries `..`, a backslash, or characters
     // outside the safe set). The existence question is unanswerable, which is
@@ -217,34 +267,77 @@ function pathExistsAtBranch(
     if (!SAFE_PATH.test(branchName) || !isSafePath(token)) {
       throw new Error(`could not judge path \`${token}\` — not a repo path`);
     }
-    const candidates = [joinAgainstAssertingDir(token, assertingFile), token];
-    let couldNotTell = false;
-    for (const resolved of candidates) {
-      if (!isSafePath(resolved)) continue;
-      try {
-        await execFn(`git cat-file -e ${JSON.stringify(`origin/${branchName}:${resolved}`)}`, {
-          cwd: repoRoot,
-          maxBuffer: 64 * 1024,
-        });
-        return true;
-      } catch (err) {
-        const e = err as { code?: number };
-        // 128 is git's "does not exist". Any other non-zero is a broken git,
-        // an unresolvable ref, or a timeout — none of which say the file is
-        // missing.
-        if (e.code !== 128) couldNotTell = true;
-      }
+    const candidates = [joinAgainstAssertingDir(token, assertingFile), token].filter(isSafePath);
+    if (candidates.length === 0) {
+      throw new Error(`could not judge path \`${token}\` — not a repo path`);
     }
-    if (couldNotTell) throw new Error(`could not read the branch for path \`${token}\``);
+    // The two resolutions are an OR, so they run together — but they do not
+    // both AWAIT. The short-circuit that `anySettledTrue` enforces is the one
+    // that makes parallelism safe here: a resolution git could not answer must
+    // not turn "absent" into "could not tell" when its sibling already answered
+    // absent, because that would silently drop a finding the branch supports.
+    const outcomes = await anySettledTrue(candidates.map(probe));
+    if (outcomes.some((o) => o === true)) return true;
+    if (outcomes.some((o) => o === undefined)) {
+      throw new Error(`could not read the branch for path \`${token}\``);
+    }
     return false;
   };
 }
 
 /**
- * Resolve a relative path token the way Markdown does: against the directory
- * of the file that cites it. A token already sitting at the repo root (no
- * directory in the asserting file) resolves to itself, and a leading `./` is
- * dropped so `./references/x.md` and `references/x.md` are the same claim.
+ * Run `suits` concurrently and return their outcomes, as soon as one resolves
+ * `true`.
+ *
+ * Each element is `true` (seen), `false` (settled absent) or `undefined`
+ * (rejected, or settled after an early `true` and never observed). An early
+ * `true` does NOT cancel the siblings — an unawaited rejection would surface as
+ * an unhandled rejection — they are merely no longer waited for.
+ *
+ * The short-circuit is load-bearing for the caller's semantics, not a latency
+ * nicety: `false` is a fact the scan reports and a rejection is a fact it
+ * swallows, so once one resolution has said "absent", a sibling that could not
+ * answer must not upgrade the answer to "could not tell".
+ */
+async function anySettledTrue(suits: Array<Promise<boolean>>): Promise<Array<boolean | undefined>> {
+  const settled: Array<boolean | undefined> = suits.map(() => undefined);
+  return new Promise<Array<boolean | undefined>>((resolve) => {
+    let pending = suits.length;
+    let done = false;
+    const finish = () => {
+      if (done || pending > 0) return;
+      done = true;
+      resolve(settled);
+    };
+    suits.forEach((suit, i) => {
+      suit.then(
+        (v) => {
+          settled[i] = v;
+          if (v && !done) {
+            done = true;
+            resolve(settled);
+            return;
+          }
+          pending -= 1;
+          finish();
+        },
+        () => {
+          settled[i] = undefined;
+          pending -= 1;
+          finish();
+        },
+      );
+    });
+  });
+}
+
+/**
+ * Resolve a relative path token against the directory of the file that cites
+ * it — `references/x.md` cited from `skill/foo/SKILL.md` becomes
+ * `skill/foo/references/x.md`, dropping a leading `./` so that shape and the
+ * bare one are the same claim. A token with no directory in the asserting file
+ * resolves to itself. NOT general path resolution: it never collapses `..`, and
+ * the caller refuses any token carrying one before calling this.
  */
 function joinAgainstAssertingDir(token: string, assertingFile: string): string {
   const clean = token.startsWith("./") ? token.slice(2) : token;
