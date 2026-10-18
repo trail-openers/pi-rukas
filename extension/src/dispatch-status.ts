@@ -1,8 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
-  DRIVER_OWNED_NOTICE,
   type JobStatusRow,
+  driverOwnedNotice,
+  driverOwnerTag,
   jobStatusSnapshot,
   killJob,
 } from "./async-jobs.ts";
@@ -154,7 +155,7 @@ export function driverKillRefusal(
     return `Refused: ${row.jobId} (${row.label}) is the /work driver cycle itself, and dispatch_kill cannot stop a cycle — nothing in the driver listens to this abort. To stop one hung child, dispatch_kill that child's id; otherwise let the cycle reach merged or handoff (state: /work-status).`;
   }
   if (force) return undefined;
-  return `Refused: ${row.jobId} (${row.label}). ${DRIVER_OWNED_NOTICE} If dispatch_peek shows it is genuinely hung (no new turn for a long time), call dispatch_kill again with force: true — the driver then handles the failed dispatch.`;
+  return `Refused: ${row.jobId} (${row.label}). ${driverOwnedNotice()} If dispatch_peek shows it is genuinely hung (no new turn for a long time), call dispatch_kill again with force: true — the driver then handles the failed dispatch.`;
 }
 
 function renderStatus(rows: JobStatusRow[]): string {
@@ -174,7 +175,7 @@ function renderStatus(rows: JobStatusRow[]): string {
     if (r.batchId) {
       return `  ↳ [${r.jobId}] ${r.label} (in batch ${r.batchId}) · ${elapsed}`;
     }
-    return `[${r.jobId}] ${r.label} · ${elapsed} elapsed${r.driverOwned ? " · owned by the /work driver, not you" : ""}`;
+    return `[${r.jobId}] ${r.label} · ${elapsed} elapsed${r.driverOwned ? ` · ${driverOwnerTag()}` : ""}`;
   });
   return [`${rows.length} async slot(s) in flight:`, ...lines].join("\n");
 }

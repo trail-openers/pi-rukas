@@ -6,6 +6,7 @@
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
 import { abortableSleep } from "./dispatch-retry.ts";
 import type { DispatchResult } from "./types.ts";
+import { retryLadderKillCause } from "./work-driver-adversarial-fanout-capkill.ts";
 import { jitteredMs } from "./work-driver-failure-taxonomy.ts";
 
 /**
@@ -97,6 +98,22 @@ export const runPhaseWithInfraRetry = async (
   return current;
 };
 
+/**
+ * The kill cause the synthesized loop result carries: a cap kill (loop /
+ * token-budget) or a watchdog kill. Both travel on the same field because both
+ * are read there downstream — `capKillOutcomeFields` narrows to the two cap
+ * kills for PARKING, `retryLadderKillCause` narrows to the watchdog five for
+ * the LADDER — so this projection has to keep both sets and neither consumer
+ * has to guess. `undefined` when the child died of anything else.
+ */
+function capKillOrWatchdogKillCause(r: DispatchResult): DispatchResult["killCause"] | undefined {
+  const cause = r.killCause;
+  if (cause === undefined) return undefined;
+  return cause === "loop" || cause === "token-budget" || retryLadderKillCause(r)
+    ? cause
+    : undefined;
+}
+
 export const infraFailureResult = (
   round: number,
   phase: string,
@@ -125,9 +142,18 @@ export const infraFailureResult = (
     loopOutcome: "infra-failure",
     adversarialRounds: c.toRoundRecords([] as never),
     roundsExecuted: round,
-    // #543 — thread a loop / token-budget cap kill through the synthesized
-    // loop result so the fan-out aggregate (work-driver-adversarial.ts) can
-    // park with the fixed-literal cap INSTEAD of the generic infra cap.
-    ...(r.killCause === "loop" || r.killCause === "token-budget" ? { killCause: r.killCause } : {}),
+    // #543 / #1243 — thread the kill cause through the synthesized loop result.
+    // Two DIFFERENT projections, both read off the same field by the fan-out:
+    //  - `loop` / `token-budget` are cap kills: the aggregate parks with the
+    //    fixed-literal cap INSTEAD of the generic infra cap (#543).
+    //  - the watchdog causes (timeout / inactivity / tool-inactivity / abort /
+    //    plan-timeout) are NOT cap kills and must not become caps — but if this
+    //    projection drops them, `runOne` has no cause to thread, the outcome
+    //    reaches the ladder with no structured signal, and
+    //    `classifyAdversarialOutcome` falls through every `self-killed:*` branch
+    //    to the `dispatch-failed-provider` default. That is #1243's own bug in
+    //    the opposite direction: a self-kill buys the 60 s provider floor.
+    //    `retryLadderKillCause` is the single list of which causes qualify.
+    ...(capKillOrWatchdogKillCause(r) ? { killCause: capKillOrWatchdogKillCause(r) } : {}),
   };
 };

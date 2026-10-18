@@ -59,6 +59,8 @@ import { protectedPathsEnabled } from "../src/work-driver-doctrine.ts";
 import { transientRetryEnabled } from "../src/work-driver-failure-taxonomy.ts";
 import {
   burstThresholdSeconds,
+  providerRetryFloorMs,
+  providerRetryMaxWaitMs,
   transientRetryBackoffMs,
 } from "../src/work-driver-failure-taxonomy.ts";
 import { resolvedParallelGroups } from "../src/work-driver-grouping.ts";
@@ -321,6 +323,9 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_PENDING_SHUTDOWN_MS", pendingShutdownBoundMs],
   ["PI_ENSEMBLE_PLAN_CACHE_TTL_MS", planCacheTtlMs],
   ["PI_ENSEMBLE_PLAN_TIMEOUT_MS", planDispatchTimeoutMs],
+  // #1243 — the provider-class backoff floor and its total bound.
+  ["PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS", providerRetryFloorMs],
+  ["PI_ENSEMBLE_PROVIDER_RETRY_MAX_WAIT_MS", providerRetryMaxWaitMs],
   ["PI_ENSEMBLE_RATE_LIMIT_BURST_MAX_S", burstThresholdSeconds],
   ["PI_ENSEMBLE_SLOW_NOTICE_MS", () => slowThresholds().ms],
   ["PI_ENSEMBLE_SLOW_NOTICE_TOKENS", () => slowThresholds().tokens],

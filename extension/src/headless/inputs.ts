@@ -137,6 +137,11 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("CHILD_CODEMODE", true),
   ms("CI_WATCH_TIMEOUT_MS", 1_800_000),
   flag("CLAIM_SCAN", true),
+  // #1454 — how long a claim whose claimant state file cannot be read may
+  // still park a sibling. The reader is CLAIM_STALE_MS in
+  // work-driver-path-claims.ts; a non-finite/non-positive value falls back to
+  // the 1 h default there, which is the default recorded here.
+  ms("CLAIM_STALE_MS", 3_600_000, "cycle"),
   flag("COMMENT_RETENTION", true),
   list("COMMENT_RETENTION_PATHS", ",", "extension/src,extension/smoke-tests,agents-base"),
   // #1240 — 0 restores the pre-#1240 shape: the consolidated verify always runs,
@@ -223,6 +228,9 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   int("PLAN_ISSUE", null),
   flag("PLAN_QUALITY", true),
   ms("PLAN_TIMEOUT_MS", 1_800_000),
+  // #1167 — 0 leaves the planner's out-of-scope fences exactly as written
+  // (the pre-#1167 shape, develop gate included) and traces that it was off.
+  flag("PLAN_UNFENCE", true),
   flag("PM_BASH_GUARD", true, "interactive"),
   dir("PM_PROMPT", null),
   flag("POLICY_JUDGE", true),
@@ -231,6 +239,15 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("PROTECTED_PATHS", true),
   family(str("PROVIDER_<ROLE>", null), ROLE_MEMBERS),
   family(str("PROVIDER_LENS_<LENS>", null), LENS_MEMBERS),
+  // #1243 — the provider-class backoff. A transient retry used to wait 5s then
+  // 10s, so every re-spawn landed inside the same endpoint outage (measured: the
+  // three orchard cycles 45/61/63 parked within 30 minutes with sub-second waits).
+  // A provider-class failure now waits at least FLOOR, scaled by the attempt;
+  // MAX_WAIT is the clamp on EACH wait, not a budget across the cycle. `0`
+  // restores the pre-#1243 shape.
+  // Sorted after PROVIDER_LENS_*: "PROVIDER_R" > "PROVIDER_L".
+  ms("PROVIDER_RETRY_FLOOR_MS", 60_000),
+  ms("PROVIDER_RETRY_MAX_WAIT_MS", 1_800_000),
   // #1101 — how long a group may wait on a sibling it depends on before the
   // queue caps the wait (`dependency-timeout`).
   ms("QUEUE_DEFER_CAP_MS", 1_800_000),
@@ -281,6 +298,21 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   str("SUBAGENT_MODEL", null),
   str("SUBAGENT_PROVIDER", null),
   flag("SYMBOL_MERGE_RETRY", true),
+  // #1454 r2 — a TEST-ONLY fault injection: force the path-claims lock
+  // unreachable so `test-work-driver-claims-concurrent-writers.ts` can prove its
+  // own positive assertion can fail. Listed (not exempted) because the gate
+  // sweeps every `PI_ENSEMBLE_*` read in src/ regardless of who sets it: an
+  // operator who exports it gets an UNSERIALISED claim registry, which is
+  // exactly the kind of outcome-changing knob this table exists to surface.
+  flag("TEST_CLAIMS_LOCK_BLOCKED", false, "internal"),
+  // #1454 r2 — a TEST-ONLY knob: widen the read-modify-write window of a claim
+  // writer by this many ms, so the mutation arm of
+  // `test-work-driver-claims-concurrent-writers.ts` loses a claim
+  // DETERMINISTICALLY instead of only when eight children happen to overlap.
+  // Read ONLY while `PI_ENSEMBLE_TEST_CLAIMS_LOCK_BLOCKED=1` is also set —
+  // `resolveClaimsWindowMs` returns 0 without it — so a production cycle never
+  // waits here and the delay cannot reach a real run.
+  ms("TEST_CLAIMS_WINDOW_MS", 0, "internal"),
   int("TEST_DELETE_TOLERANCE", 0),
   // Unset: no budget, except code-review-specialist (8,000,000).
   family(int("TOKEN_BUDGET_<ROLE>", null, "cycle", { unit: "tokens" }), ROLE_MEMBERS),

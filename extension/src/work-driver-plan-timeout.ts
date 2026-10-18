@@ -18,6 +18,7 @@ import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import { buildCompletionEvent, overrideEnvForKillCause } from "./work-driver-merged.ts";
 import { withUsage } from "./workflow-state-events-usage.ts";
+import type { Workstream } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 
 // #754 — the steer for the corrective re-dispatch after a PRIMARY plan
@@ -198,15 +199,20 @@ export async function planTimeoutCorrective(
   prompt: string,
   planKill: DispatchResult,
   workState: WorkState,
-  parseWorkstreams: (
-    text: string,
-  ) => Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }>,
+  parseWorkstreams: (text: string) => Record<string, Workstream>,
   planCorrectivePrompt: (prompt: string, steer: string) => string,
-): Promise<{
-  ok: boolean;
-  state: WorkState;
-  workstreams: Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }>;
-}> {
+  // #1167 round-4 — the same fold + coupling merge + unfence the primary plan
+  // and the quality corrective run, supplied by the caller so this module does
+  // not import the coupling pass and the three paths cannot drift apart.
+  // REQUIRED since round-5: an optional normaliser was the shape that let a
+  // caller quietly stop normalising the recovered plan (the round-4 defect),
+  // and "honest pass-through for a dispatch-only test" is a thing the test
+  // passes explicitly, not a default production can fall into.
+  normalise: (
+    raw: Record<string, Workstream>,
+    state: WorkState,
+  ) => Promise<Record<string, Workstream>>,
+): Promise<{ ok: boolean; state: WorkState; workstreams: Record<string, Workstream> }> {
   let state = workState;
   trace(
     `work-driver: plan dispatch killed (${planKill.killCause ?? "unknown cause"}, bound ${planKill.killBudgetMs}ms) — corrective re-dispatch (timeout steer)`,
@@ -254,8 +260,8 @@ export async function planTimeoutCorrective(
       await buildCompletionEvent(ctx, "plan", "explore", "plan:corrective", retry),
     );
     const reparsed = parseWorkstreams(retry.text ?? "");
-    const workstreams = Object.keys(reparsed).length > 0 ? reparsed : ({} as typeof reparsed);
-    return { ok: true, state, workstreams };
+    const parsed = Object.keys(reparsed).length > 0 ? reparsed : ({} as typeof reparsed);
+    return { ok: true, state, workstreams: await normalise(parsed, state) };
   }
 }
 

@@ -40,7 +40,7 @@ import {
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { applySafetyNet } from "./work-driver-safety-net.ts";
 import { verifyCapFor } from "./work-driver-verify-develop-helpers.ts";
-import { recordConsolidatedVerifySkip } from "./work-driver-verify-events.ts";
+import { recordDevelopGateEvents } from "./work-driver-verify-events.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -174,7 +174,7 @@ export async function runConvergeGateHandler(
     // #1240 — the corrective re-run's skip is recorded like the first pass's:
     // without it a skip on this path is invisible, which is exactly the
     // "gate silently stopped running" reading #1240 exists to prevent.
-    next = recordConsolidatedVerifySkip(next, gate2);
+    next = recordDevelopGateEvents(next, gate2);
     // #1040 — lost-comment evidence persists from the re-run's develop note.
     next = recordCommentEvidence(next, gate2.commentEvidence);
     if (gate2.flakeRecovered) {

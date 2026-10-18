@@ -246,6 +246,16 @@ const everyKindEvent: WorkEvent[] = [
     worktree: "/tmp/wt-default",
     workstreamCount: 1,
   },
+  // #1415 — the develop gate's verify run, bracketed.
+  { kind: "verify-started", at: 1, step: "develop", command: "bash scripts/verify.sh" },
+  {
+    kind: "verify-completed",
+    at: 2,
+    step: "develop",
+    command: "bash scripts/verify.sh",
+    ok: true,
+    ms: 1,
+  },
   // #1404 — the consolidated verify failed and the cycle pushed anyway, every
   // failing test red at base. Same reason as the skip above: an absent kind
   // makes the validator's tuple stale, and this event is the only record a
