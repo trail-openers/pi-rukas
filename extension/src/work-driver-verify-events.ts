@@ -1,6 +1,6 @@
 /**
- * work-driver-verify-events — #1240: the recorder that turns a consolidated
- * verify skip into its event-log entry.
+ * work-driver-verify-events — the develop gate's event-log entries: the
+ * #1240 consolidated-verify skip and the #1415 verify-run bracket.
  *
  * Lives on the VERIFY side, not in `workflow-state-events-verify-flake.ts`.
  * That module is a pure type fragment — every sibling `workflow-state-events-*`
@@ -13,34 +13,104 @@
  * The factory and the event type stay where the union can reach them; the
  * mutation lives here, where importing `workflow-state.ts` is ordinary.
  */
+import { trace } from "./trace.ts";
+import type { CycleContext } from "./work-driver-context.ts";
+import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
-import { makeConsolidatedVerifySkippedEvent } from "./workflow-state-events-verify-flake.ts";
-import { type WorkState, appendEvent } from "./workflow-state.ts";
+import {
+  type VerifyRunEvent,
+  type VerifyStartedEvent,
+  makeConsolidatedVerifySkippedEvent,
+} from "./workflow-state-events-verify-flake.ts";
+import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 
 /**
- * Record the skip on the state: the single place that turns a gate's
- * `consolidatedVerifySkipped` into the event, so EVERY path that re-runs the
- * develop gate records it. The gate runs at four seams (the topological
- * develop pass, the #1005 fence merge-and-retry, the #1323 sibling-symbol
- * merge, and the #741 converge corrective re-run) and each one owns its own
- * append; a skip recorded only at the first would make the gate look like it
- * ran on the three re-run paths, which is the opposite of what #1240's
- * "never silent" promise means. `workstreamCount` is read from the state here
- * for the same reason — one rule for the count cannot drift per caller.
+ * #1415 — record that the develop gate's verify is starting, and PERSIST it
+ * before the command runs: the persist is what puts the event on the host's
+ * stream (work-state-emit.ts), so an operator sees the gate start rather than
+ * a silent gap the length of the project's suite. The caller's state is not
+ * replaced — the gate's caller appends the same event object later (see
+ * `recordDevelopGateEvents`), at the same log index, so the emit sink sees a
+ * matching prefix and does not emit it twice.
+ *
+ * A failed persist costs only the live line, never the gate: it is traced and
+ * the verify runs. A crash mid-gate leaves `currentStep` at develop either
+ * way, so re-entry re-runs the step exactly as it would without this write.
  */
-export function recordConsolidatedVerifySkip(
+export async function beginVerifyRun(
+  ctx: CycleContext,
   state: WorkState,
-  gate: { consolidatedVerifySkipped?: AlreadyVerifiedTree },
+): Promise<VerifyStartedEvent | undefined> {
+  const command = await verifyCmdFor(ctx.repoRoot);
+  if (command === undefined) return undefined;
+  const started: VerifyStartedEvent = {
+    kind: "verify-started",
+    at: Date.now(),
+    step: "develop",
+    command,
+  };
+  try {
+    await persistCycle(ctx, appendEvent(state, started));
+  } catch (err) {
+    trace(`work-driver: verify-started not persisted — ${(err as Error).message?.slice(0, 160)}`);
+  }
+  return started;
+}
+
+/** #1415 — the bracket for one gate run: its start and how it ended. */
+export function finishVerifyRun(
+  started: VerifyStartedEvent | undefined,
+  ok: boolean,
+): VerifyRunEvent[] {
+  if (started === undefined) return [];
+  const at = Date.now();
+  return [
+    started,
+    {
+      kind: "verify-completed",
+      at,
+      step: "develop",
+      command: started.command,
+      ok,
+      ms: at - started.at,
+    },
+  ];
+}
+
+/**
+ * Record the develop gate's events on the state: the single place that turns
+ * a gate result into log entries, so EVERY path that re-runs the develop gate
+ * records them. The gate runs at four seams (the topological develop pass, the
+ * #1005 fence merge-and-retry, the #1323 sibling-symbol merge, and the #741
+ * converge corrective re-run) and each one owns its own append; a skip
+ * recorded only at the first would make the gate look like it ran on the three
+ * re-run paths, which is the opposite of what #1240's "never silent" promise
+ * means. `workstreamCount` is read from the state here for the same reason —
+ * one rule for the count cannot drift per caller.
+ *
+ * Callers append this FIRST after the gate: `verify-started` was already
+ * persisted at the next index, and appending anything before it would read to
+ * the emit sink as a rewritten log.
+ */
+export function recordDevelopGateEvents(
+  state: WorkState,
+  gate: { consolidatedVerifySkipped?: AlreadyVerifiedTree; verifyEvents?: VerifyRunEvent[] },
 ): WorkState {
-  if (gate.consolidatedVerifySkipped === undefined) return state;
-  return appendEvent(
-    state,
-    makeConsolidatedVerifySkippedEvent(
-      "develop",
-      gate.consolidatedVerifySkipped,
-      // The degenerate N=1 shape carries no `worktrees` map (the one
-      // workstream's worktree IS repoRoot), so count that as one.
-      Object.keys(state.pipelineState.worktrees ?? {}).length || 1,
-    ),
-  );
+  const [started, completed] = gate.verifyEvents ?? [];
+  const events = [
+    ...(started ? [started] : []),
+    ...(gate.consolidatedVerifySkipped !== undefined
+      ? [
+          makeConsolidatedVerifySkippedEvent(
+            "develop",
+            gate.consolidatedVerifySkipped,
+            // The degenerate N=1 shape carries no `worktrees` map (the one
+            // workstream's worktree IS repoRoot), so count that as one.
+            Object.keys(state.pipelineState.worktrees ?? {}).length || 1,
+          ),
+        ]
+      : []),
+    ...(completed ? [completed] : []),
+  ];
+  return events.length === 0 ? state : appendEvent(state, ...events);
 }

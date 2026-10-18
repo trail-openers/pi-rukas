@@ -63,7 +63,7 @@ import {
 } from "./work-develop-fence-verdicts.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
-import { recordConsolidatedVerifySkip } from "./work-driver-verify-events.ts";
+import { recordDevelopGateEvents } from "./work-driver-verify-events.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
@@ -108,7 +108,7 @@ export async function runMergeRetryFlow(
   // #1240 — the re-run's skip is recorded like the first pass's: this path
   // owns its appends, so without this the consolidated verify would look like
   // it ran whenever the gate ran after a merge.
-  next = recordConsolidatedVerifySkip(next, gate2);
+  next = recordDevelopGateEvents(next, gate2);
   // #1040 — lost-comment evidence persists from the re-run's develop note.
   next = recordCommentEvidence(next, gate2.commentEvidence);
   const rereRunRecords = gate2.fenceViolations ?? [];

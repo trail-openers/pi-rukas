@@ -42,7 +42,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { execp } from "../src/exec.ts";
 import { isDriverManagedDirtLine } from "../src/work-driver-branch-residue.ts";
-import { recordConsolidatedVerifySkip } from "../src/work-driver-verify-events.ts";
+import { recordDevelopGateEvents } from "../src/work-driver-verify-events.ts";
 import { isDirtForTreeIdentity, verifyTreeId } from "../src/work-driver-verify-tree.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import {
@@ -282,7 +282,7 @@ try {
     // one recorder all four develop re-run seams share. The control is a gate
     // that ran the command: the skip event's absence is the evidence a run
     // happened, so a recorder that appended unconditionally is caught here.
-    const afterRecord = recordConsolidatedVerifySkip(stateFor(d, 1253), dGate);
+    const afterRecord = recordDevelopGateEvents(stateFor(d, 1253), dGate);
     const recorded = afterRecord.eventLog.filter((e) => e.kind === "consolidated-verify-skipped");
     assert(
       recorded.length === 1,
@@ -297,7 +297,7 @@ try {
       `case l2: the event carries step=develop, the N=1 count and the identity the gate proved (${JSON.stringify(recorded[0])})`,
     );
     assert(
-      recordConsolidatedVerifySkip(stateFor(d, 1253), {}).eventLog.length ===
+      recordDevelopGateEvents(stateFor(d, 1253), {}).eventLog.length ===
         stateFor(d, 1253).eventLog.length,
       "case l2 (control): a gate that ran the consolidated verify appends no skip event",
     );
