@@ -184,6 +184,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("HANDOFF_POST_RETRY", true),
   ms("HANDOFF_POST_RETRY_BACKOFF_MS", 1_000),
   ms("HANDOFF_TIMEOUT_MS", 480_000),
+  // The headless supervisor marks its `work` child (#1591); "1" runs `work` unsupervised.
+  flag("HEADLESS_SUPERVISED", false, "internal"),
   // `name:ip` pairs passed to the container as `--add-host`.
   list("HOST_ALIASES", ",", "halo:192.168.8.249", "wrapper"),
   str("IMAGE", "ghcr.io/trail-openers/pi-rukas:latest", "wrapper"),
@@ -199,6 +201,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("INTENT_CRITICALITY", true),
   flag("INVARIANT_MEMORY", true),
   input("ISSUE_IMAGES", "boolean", true, "cycle", { manifestVersion: 1 }),
+  // Unset: derived from the host budget (CPUs, memory, pids.max); 0 = unbounded.
+  int("LENS_CONCURRENCY", null),
   flag("LENS_EVIDENCE", true),
   // Unset or 0: no bound on concurrent lens children per model.
   int("LENS_MODEL_CONCURRENCY", null),
