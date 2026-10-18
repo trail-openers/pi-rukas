@@ -49,6 +49,40 @@ function lockForcedUnavailable(): boolean {
 }
 
 /**
+ * #1454 r2 — the injected width of a claim writer's read-modify-write window.
+ *
+ * The concurrent-writers test's mutation arm must observe a lost update with
+ * the lock forced off. It is a genuine race — eight children released together
+ * from a barrier — but whether any two of them land their `read` and `write`
+ * on opposite sides of each other's rename is a scheduling question, and on a
+ * fast, lightly-loaded runner they can clear the whole window without ever
+ * overlapping. An assertion that only fails when the scheduler cooperates is a
+ * mutation check that silently stops checking — which is what CI run
+ * 39103184814 hit, where the arm reported `lost: []` and passed vacuously.
+ *
+ * So the arm widens the window this lock exists to make indivisible: this many
+ * ms of `await` between the read and the write, so every writer is still
+ * holding a snapshot a sibling's rename can land inside. It lives beside
+ * `lockForcedUnavailable` because the two are one switch: the delay is read
+ * ONLY when the lock is already forced off, so a production cycle — which sets
+ * neither — never waits here, and the positive arm keeps asserting that a
+ * SERIALISED writer loses nothing.
+ */
+export function resolveClaimsWindowMs(
+  raw: string | undefined,
+  lockBlocked: string | undefined,
+): number {
+  if (lockBlocked !== "1") return 0;
+  const parsed = raw === undefined || raw === "" ? Number.NaN : Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+export const CLAIMS_RMW_WINDOW_MS: number = resolveClaimsWindowMs(
+  process.env.PI_ENSEMBLE_TEST_CLAIMS_WINDOW_MS,
+  process.env.PI_ENSEMBLE_TEST_CLAIMS_LOCK_BLOCKED,
+);
+
+/**
  * Throw the same ENOENT an unwritable directory throws, so the fault-injection
  * path exercises the REAL "cannot create the lock" branch rather than a
  * bespoke one that could drift from it.

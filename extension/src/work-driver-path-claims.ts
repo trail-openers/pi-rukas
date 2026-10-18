@@ -68,7 +68,11 @@ import {
   readRawRows,
   writeClaims,
 } from "./work-driver-path-claims-file.ts";
-import { withClaimsLock, withClaimsLockBestEffort } from "./work-driver-path-claims-lock.ts";
+import {
+  CLAIMS_RMW_WINDOW_MS,
+  withClaimsLock,
+  withClaimsLockBestEffort,
+} from "./work-driver-path-claims-lock.ts";
 import {
   type PathClaimEntry,
   claimDeletionReason,
@@ -425,6 +429,10 @@ export async function registerClaim(
     // as no owner. `releaseClaim` used to rebuild the file from a filtered read
     // and silently erased a live sibling's ownership — same class, other door.
     const all = await readRawClaims(repoRoot);
+    // #1454 r2 — test-only widening of the window this lock exists to close:
+    // the interval a sibling's rename can land in. 0 unless the test forced the
+    // lock off, so production never waits. See `resolveClaimsWindowMs`.
+    if (CLAIMS_RMW_WINDOW_MS > 0) await new Promise((r) => setTimeout(r, CLAIMS_RMW_WINDOW_MS));
     const live: PathClaimEntry[] = [];
     for (const entry of all) {
       if (entry.pid !== PID) {

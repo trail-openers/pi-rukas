@@ -52,7 +52,28 @@ function gatePath(dir: string): string {
 function runWriter(dir: string, issue: number, unlocked: boolean): Promise<number> {
   return new Promise((resolve, reject) => {
     const env: NodeJS.ProcessEnv = { ...process.env };
-    if (unlocked) env.PI_ENSEMBLE_TEST_CLAIMS_LOCK_BLOCKED = "1";
+    if (unlocked) {
+      env.PI_ENSEMBLE_TEST_CLAIMS_LOCK_BLOCKED = "1";
+      // Make the lost update structural rather than a coincidence of scheduling.
+      //
+      // The mutation arm asserts that with the lock gone a claim IS lost. That
+      // only happens if two writers actually interleave — one reads, another
+      // renames over the file, the first then renames its own stale snapshot on
+      // top. The children are released together from a barrier, but on a fast,
+      // lightly-loaded runner they can each clear the read-modify-write before
+      // a sibling starts, and then nothing is lost and the check asserts
+      // nothing. That is what CI run 39103184814 hit.
+      //
+      // So the arm widens the window the lock is supposed to make indivisible:
+      // `CLAIMS_RMW_WINDOW_MS` awaits between the read and the write, so every
+      // writer is still holding a stale snapshot a sibling's rename can land
+      // inside. It is gated on the same variable that forces the lock off
+      // (`resolveClaimsWindowMs` returns 0 without it), so the production path
+      // never waits and the positive arm — lock ON — still asserts exactly what
+      // it asserted before: serialised writers lose nothing, because the lock
+      // keeps the widened window private to one writer at a time.
+      env.PI_ENSEMBLE_TEST_CLAIMS_WINDOW_MS = "40";
+    }
     const child = spawn(
       process.execPath,
       ["run", WRITER, dir, String(issue), gatePath(dir)],

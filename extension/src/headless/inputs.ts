@@ -293,6 +293,14 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // operator who exports it gets an UNSERIALISED claim registry, which is
   // exactly the kind of outcome-changing knob this table exists to surface.
   flag("TEST_CLAIMS_LOCK_BLOCKED", false, "internal"),
+  // #1454 r2 — a TEST-ONLY knob: widen the read-modify-write window of a claim
+  // writer by this many ms, so the mutation arm of
+  // `test-work-driver-claims-concurrent-writers.ts` loses a claim
+  // DETERMINISTICALLY instead of only when eight children happen to overlap.
+  // Read ONLY while `PI_ENSEMBLE_TEST_CLAIMS_LOCK_BLOCKED=1` is also set —
+  // `resolveClaimsWindowMs` returns 0 without it — so a production cycle never
+  // waits here and the delay cannot reach a real run.
+  ms("TEST_CLAIMS_WINDOW_MS", 0, "internal"),
   int("TEST_DELETE_TOLERANCE", 0),
   // Unset: no budget, except code-review-specialist (8,000,000).
   family(int("TOKEN_BUDGET_<ROLE>", null, "cycle", { unit: "tokens" }), ROLE_MEMBERS),
