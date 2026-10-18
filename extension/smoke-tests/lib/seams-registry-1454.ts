@@ -81,7 +81,7 @@ export const SEAMS_1454: Seam[] = [
   },
   {
     // #1454 — the claims file's disk layer, split from the registry for the
-    // 500-line gate. Three reads and one writer, each with a distinct caller:
+    // file-size gate. Three reads and one writer, each with a distinct caller:
     // the prune wants the raw rows, the writers want the validated subset, and
     // none of them filters by liveness (that is `readClaims`'s job). All four
     // are called in production from the registry.
@@ -89,5 +89,31 @@ export const SEAMS_1454: Seam[] = [
     pending: {},
     testOnly: {},
     canary: { symbol: "writeClaims", importer: "work-driver-path-claims.ts" },
+  },
+  {
+    // #1454 r3 — the plan-time GATE, split from the registry for the 500-line
+    // gate along the seam it already had: the registry owns the file, this
+    // module owns what the plan step does with it. `checkAndRegisterClaims` is
+    // the production entry (the plan step calls it through the registry's
+    // re-export); the two writers are called by the driver's teardown and by
+    // the queue, and are pinned by the claims suites.
+    file: "work-driver-path-claims-gate.ts",
+    pending: {},
+    testOnly: {
+      releaseClaim:
+        "the group-aware teardown writer; pinned by the release / release-group cases in the claims suites — its production callers reach it through the registry re-export",
+    },
+    canary: { symbol: "checkAndRegisterClaims", importer: "work-driver-plan-quality-pass.ts" },
+  },
+  {
+    // #1454 r3 — the operator sentence for a refused claims registration,
+    // split from work-driver-explain.ts for the 500-line gate (the same seam
+    // -other/-lens/-verify use). Dispatched by explainCap's exhaustive switch;
+    // the refusal text and the named cap are pinned by
+    // test-work-driver-claims-refusal.ts.
+    file: "work-driver-explain-claims.ts",
+    pending: {},
+    testOnly: {},
+    canary: { symbol: "explainClaimsLock", importer: "work-driver-explain.ts" },
   },
 ];

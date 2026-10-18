@@ -148,6 +148,14 @@ export type WorkCapLiteral =
   // #571 — sibling cycle holds a path claim; overlap detected at plan
   // time. Two cycles cannot edit the same files in parallel.
   | "cross-group-conflict"
+  // #1454 r3 — the claims lock REFUSED a registration: the lockfile cannot be
+  // created (read-only `.pi/work-state`, ENOSPC) or a sibling held it past the
+  // wait window. `registerClaim` fails closed there — writing unlocked is the
+  // lost update the lock exists to remove — and the plan step converts that
+  // refusal into this cap rather than letting it escape as
+  // `driver-crash:plan`, which reports "unhandled error in the step handler"
+  // when the filesystem is what is broken. The refusal text rides on evidence.
+  | "claims-lock-unavailable"
   // #1101 — the QUEUE raised these, not a cycle: a group waited on a sibling
   // past its bound and never dispatched. `dependency-timeout` is the ordering
   // edge that never cleared; `dependency-parked` is its sibling, the dependency

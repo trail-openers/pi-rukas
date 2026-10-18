@@ -134,6 +134,13 @@ export const CAP_HIT_FIXED_LITERALS = [
   "deadline",
   // #571 — a sibling cycle holds a path claim that overlaps this plan.
   "cross-group-conflict",
+  // #1454 r3 — the claims lock refused a registration (the lockfile cannot be
+  // created — a read-only `.pi/work-state` — or is held past the wait window).
+  // A deliberate park terminalized as a handoff, and named so the operator
+  // reads "check that .pi/work-state is writable" instead of the
+  // `driver-crash:plan` "unhandled error in the step handler" an escaping
+  // throw produced.
+  "claims-lock-unavailable",
   // #1101 — the queue, not a cycle, raised these: a group waited on a sibling
   // past its bound and never dispatched. `dependency-parked` is the dependency
   // settling non-merged (a wait cannot fix it); `dependency-timeout` is the
