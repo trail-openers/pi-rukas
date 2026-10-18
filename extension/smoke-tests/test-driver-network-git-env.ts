@@ -219,6 +219,7 @@ const EXPECTED: Record<string, number> = {
   "work-driver-adversarial-lensfix.ts": 1,
   "work-driver-branch-ops.ts": 1,
   "work-driver-handoff-consolidate-branch.ts": 1,
+  "work-driver-handoff-capped-pr.ts": 1,
   "work-driver-worktree-sweep.ts": 1,
   "work-driver-handoff-snapshot.ts": 1,
   "work-driver-lens-fix-reposition-gate.ts": 1,
