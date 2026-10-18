@@ -93,6 +93,18 @@ export interface VerifyEvidence {
    * in workflow-state-schema-verify.ts). Absent = none recorded.
    */
   fenceViolations?: FenceViolation[];
+  /**
+   * #1392 — what the base-commit probe said about the same command, in the
+   * gate's own words (green / not established / why it did not run). Absent
+   * when no probe outcome was recorded.
+   */
+  baseline?: string;
+  /**
+   * #1392 — the redacted, bounded tail of the failing run's output
+   * (`verifyOutputTail`), rendered fenced into the handoff so the park
+   * carries content rather than only a scratch-dir path.
+   */
+  outputTail?: string;
 }
 
 // `PrDraftState` is #1292's PR-draft record and already lives in

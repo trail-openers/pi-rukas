@@ -30,6 +30,7 @@ import { recoveryCommandsMarkdown } from "./work-driver-handoff-recovery.md.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { describeBranchState } from "./work-driver-handoff-view.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
+import { verifyEvidenceLines } from "./work-driver-verify-output-tail.ts";
 import { dispatchDurations } from "./work-status-dispatch-durations.ts";
 import { fmtElapsed } from "./work-status-events.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
@@ -126,6 +127,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     ...draftPrHandoffLines(ps, forge),
     ...commitPrRootFacts(state, capForExplain),
     ...commitPrFallbackPlumbSection(state, capForExplain),
+    ...verifyEvidenceLines(state, "markdown"),
     ...adversarialOutcomeSection(state),
     ...plumbReportSection(state),
     ...retryTreeSection(state),

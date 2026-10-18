@@ -10,7 +10,9 @@ import { trace } from "./trace.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
 import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
 import { plumbQuestion, withDeveloperPlumbReplies } from "./work-driver-adversarial-plumb.ts";
+import { BASELINE_NOTE_PREFIX } from "./work-driver-verify-baseline.ts";
 import { verifyCapFor } from "./work-driver-verify-develop-helpers.ts";
+import { verifyLogOutputTail } from "./work-driver-verify-output-tail.ts";
 import type { verifyStepOutcome } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -81,6 +83,10 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
         ...(gate.buildResidueOnly === true ? { buildResidueOnly: true } : {}),
         ...(gate.fenceViolations ? { fenceViolations: gate.fenceViolations } : {}),
         ...(gate.flakeRecovered ? { retries: 1, recovered: true } : {}),
+        // #1392 — the baseline probe's answer and the failing run's tail, so
+        // the park says whether the base was already red and shows output.
+        ...withDefined("baseline", baselineOf(gate)),
+        ...withDefined("outputTail", verifyLogOutputTail(gate.logPath)),
       },
     },
   };
@@ -125,6 +131,19 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
     ...(logPaths !== undefined ? { logPaths } : {}),
   });
   return next;
+}
+
+/** `{ [key]: value }` when `value` is defined, else nothing to spread. */
+function withDefined<K extends string>(key: K, value: string | undefined) {
+  return value === undefined ? {} : ({ [key]: value } as Record<K, string>);
+}
+
+/**
+ * The baseline probe's green / not-established note. A RED base is not read
+ * here: it already leads `failures` (BASELINE_RED_MARKER), which the park renders.
+ */
+function baselineOf(gate: DevelopVerifyGate): string | undefined {
+  return (gate.notes ?? []).find((n) => n.startsWith(BASELINE_NOTE_PREFIX));
 }
 
 /** The develop gate's failure for a round in which no worktree changed anything. */

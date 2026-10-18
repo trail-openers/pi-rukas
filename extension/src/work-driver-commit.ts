@@ -118,8 +118,8 @@ export async function mechanizedCommitPr(
       ok: false;
       reason: string;
       terminal?: boolean;
-      /** #1324 — the terminal verify failure was a run killed at its bound. */
-      timedOut?: boolean;
+      /** #1324 / #1392 — the terminal verify failure's bound kill and output tail. */
+      verify?: Pick<Extract<IntegrateResult, { ok: false }>, "timedOut" | "outputTail">;
       fallbackCause?: CommitPrFallbackCause;
       /**
        * #861 — the structured conflict-patch path preserved by integrate()
@@ -298,7 +298,7 @@ export async function mechanizedCommitPr(
           reason: res.reason,
           terminal: true,
           fallbackCause,
-          ...(res.timedOut ? { timedOut: true } : {}),
+          verify: { timedOut: res.timedOut, outputTail: res.outputTail },
         };
       }
       // #861 — on a non-terminal failure the ops fallback takes over, so

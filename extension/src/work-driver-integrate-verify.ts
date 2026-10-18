@@ -342,6 +342,12 @@ export async function runCommitPrConsolidatedVerify(
     // can only EXCUSE failures, never turn this verdict into a pass: only the
     // caller — which alone owns the push — treats `preExistingOnly` as a
     // reason to continue.
+    // #1392 — every park below states what the base commit said, including
+    // that nothing was learned; silence read as "the gate was green before".
+    let baseline =
+      opts.baseSha === undefined
+        ? "not probed — no base commit was recorded for this cycle"
+        : "not probed — PI_ENSEMBLE_INTEGRATION_VERIFY_BASELINE_PROBE=0";
     if (opts.baseSha !== undefined && !timedOut && baselineProbeEnabled()) {
       // #1404 fix round — the probe must re-run the command the change run
       // ACTUALLY executed (`ranCmd`: the fast tier when that tier is what
@@ -350,10 +356,12 @@ export async function runCommitPrConsolidatedVerify(
       // attribute one run's names to the other's verdict, so the whole
       // comparison — including its continue path — is refused when they differ.
       if (ranCmd !== opts.verifyCmd) {
+        baseline = "not probed — the failing run was the fast tier, not the full verify command";
         trace(
           `work-driver: commit-pr verify — the failing run executed \`${ranCmd.slice(0, 80)}\`, not the configured verify command, so the baseline probe cannot compare like with like; the consolidated failure parks as before`,
         );
       } else if (channel === undefined) {
+        baseline = "not probed — the run wrote no failing-test report to compare against";
         // #1404 fix round 3 — no channel, no report, so the probe has no name
         // source at all. Skipping it outright is the honest shape: paying for a
         // full base run that cannot attribute anything is worse than not running
@@ -407,10 +415,12 @@ export async function runCommitPrConsolidatedVerify(
           const pre = outcome.preExistingFailures;
           const caused = outcome.changeCausedFailures;
           const shown = (names: readonly string[]) => names.map(neutraliseMarkdownField).join(", ");
+          // #1392 — no change-caused name means the comparison accounted for
+          // nothing, so the park says the base's verdict is unknown.
           const message =
             caused.length > 0
               ? `${classifiedMessage} — ${pre.length + caused.length} test(s) fail; ${pre.length} also fail at the cycle's base commit (${shown(pre)}) and are pre-existing; the failures this change CAUSED are: ${shown(caused)}`
-              : classifiedMessage;
+              : `${classifiedMessage} — baseline: ${unattributedBaseline}`;
           return done({
             ok: false,
             failureTail,
@@ -421,11 +431,22 @@ export async function runCommitPrConsolidatedVerify(
             ...(caused.length > 0 ? { changeCausedFailures: caused } : {}),
           });
         }
+        baseline = unattributedBaseline;
       }
     }
-    return done({ ok: false, failureTail, attributed, verdict, classifiedMessage });
+    return done({
+      ok: false,
+      failureTail,
+      attributed,
+      verdict,
+      classifiedMessage: `${classifiedMessage} — baseline: ${baseline}`,
+    });
   }
 }
+
+/** The probe ran at base but could not compare failing-test names. */
+const unattributedBaseline =
+  "probed at the cycle's base commit, but this failure's test names could not be compared with the base run's, so whether the base was already red is unknown";
 
 /**
  * The continue gate, extracted for the §12 cap — and because it is the one

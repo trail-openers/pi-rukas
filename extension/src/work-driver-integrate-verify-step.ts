@@ -32,6 +32,7 @@ import { commitPrVerifiedTree } from "./work-driver-integrate-eligibility.ts";
 import { runCommitPrConsolidatedVerify } from "./work-driver-integrate-verify.ts";
 import type { IntegrateOpts, IntegrateResult } from "./work-driver-integrate.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
+import { verifyOutputTail } from "./work-driver-verify-output-tail.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -146,12 +147,14 @@ export async function verifyIntegration(
       );
     }
     const restore = await opts.restoreRoot();
+    const tail = verifyOutputTail(vr.failureTail);
     return {
       failure: {
         ok: false,
         failure: "verify",
         reason: `${vr.classifiedMessage} — it was not pushed. ${opts.claimFor(restore)}.`,
         ...(vr.timedOut ? { timedOut: true } : {}),
+        ...(tail !== undefined ? { outputTail: tail } : {}),
       },
     };
   }
