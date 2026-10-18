@@ -193,6 +193,10 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("HEADLESS_SUPERVISED", false, "internal"),
   // `name:ip` pairs passed to the container as `--add-host`.
   list("HOST_ALIASES", ",", "halo:192.168.8.249", "wrapper"),
+  // #1528 — the host-wide child bound, shared by processes using one slot dir.
+  int("HOST_SPAWN_CAP", 64),
+  dir("HOST_SPAWN_DIR", null),
+  ms("HOST_SPAWN_WAIT_MS", 1_800_000),
   str("IMAGE", "ghcr.io/trail-openers/pi-rukas:latest", "wrapper"),
   // Host directories bind-mounted read-only; EXTRA_IMAGE_DIRS appends to them.
   list("IMAGE_DIRS", ":", "~/Downloads:~/Desktop:~/Pictures", "wrapper"),
