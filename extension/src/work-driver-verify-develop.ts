@@ -35,7 +35,6 @@ import { developTierTimeouts } from "./work-driver-verify-budget.ts";
 import {
   declaredPathsHaveSource,
   shouldSkipVerifyForFrontendOnly,
-  verifyCmdFor,
 } from "./work-driver-verify-cmd.ts";
 import {
   collectCommentEvidence,
@@ -46,7 +45,7 @@ import {
 import { normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
 import { runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
-import { fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
+import { planDevelopVerify } from "./work-driver-verify-select-develop.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
 
@@ -392,7 +391,8 @@ export async function verifyDevelopOutcome(
   // verify failures are downgraded to notes whenever that consolidated run
   // passes — the consolidated result is what decides whether a per-worktree
   // failure was a cross-worktree artifact.
-  const cmd = await verifyCmdFor(ctx.repoRoot);
+  const plan = await planDevelopVerify(ctx, touchedPaths, worktrees, baseSha, execFn, notes);
+  const cmd = plan.cmd;
   let verifyCmdEnd: number | undefined;
   if (!cmd) {
     notes.push(
@@ -437,9 +437,7 @@ export async function verifyDevelopOutcome(
       await runVerifyCommandGate({
         suiteTierTimeoutMs: tiers.suite,
         // #1324 — `.pi/verify-cmd-fast` runs before every full run of `cmd`.
-        execFn: withFastTier(execFn, cmd, await fastVerifyCmdFor(ctx.repoRoot), {
-          fast: tiers.fast,
-        }),
+        execFn: plan.wrap(execFn),
         cmd,
         ctx,
         state,
@@ -466,7 +464,7 @@ export async function verifyDevelopOutcome(
         ...(walkProcessTree !== undefined ? { walkProcessTree } : {}),
         ...(hangSink !== undefined ? { hangSink } : {}),
         ...(onGateRecorded !== undefined ? { onGateRecorded } : {}),
-      });
+      }).finally(() => plan.finish(options.onSelectedVerify));
       // #1349 — only a base that fails the way the change does excuses it.
       verifyCmdEnd = before === 0 && attributed ? failures.length : undefined;
     }

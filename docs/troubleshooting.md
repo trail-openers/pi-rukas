@@ -1602,6 +1602,31 @@ The command runs in the group's worktree, never the repo root — under parallel
 
 Escape hatches: `PI_ENSEMBLE_VERIFY_FULL=0`, `PI_ENSEMBLE_VERIFY_FULL_TIMEOUT_MS`.
 
+### A develop round parks on a test the diff cannot reach, or on a red gate that was already red (#1647)
+
+**Symptom:** a cycle parks at `verify-failed:develop` with `[baseline-red]` or `[verify-timeout]` evidence on tests that have nothing to do with the change, or a develop round takes the full ~8-minute suite.
+
+**Cause:** the develop round used to run the whole offline suite on every pass. It now runs the tests the cycle's changed files can reach (`work-driver-verify-select.ts`), plus the `ALWAYS_RUN` list, and the full suite runs once at the `ci` step.
+
+**What you see:** the develop gate's notes say `verify selection ran N test(s) plus M always-run, not the full suite`, or name the reason it fell back to the full suite (`no-selected-tests`, `non-literal-specifier`, `outside-graph`, `smoke-test-helper`). A test that failed once and passed on its rerun is listed as **flaky**; one red on the base commit as well is listed as **baseline-red**. Both appear in the PR body under their own headings, and the handoff evidence names them. A failure that blocks names the decision (`[verify-select] blocking: …`).
+
+**Fix:** a blocked selected run is a real signal — read the named test. To run the full develop command for one cycle while investigating, set `PI_ENSEMBLE_VERIFY_SELECT=0` (this restores `.pi/verify-cmd` exactly at develop; the ci tier is unaffected, and the escape hatch does not touch it). An `ALWAYS_RUN` entry that no longer exists fails `test-verify-select-always-run.ts`; regenerate the list with `bun smoke-tests/lib/always-run-detector.ts --write` in the same change.
+
+**Opt-in:** selection runs only where the project has `.pi/verify-select` (this repo does; its content is not read). Without the file the develop round runs `.pi/verify-cmd` exactly as before #1647, and the ci tier is not attributed either.
+
+**Limits:**
+- The selector follows static and re-export `import`, literal `import()`/`require()` (extensionless, `.js` and directory forms resolve), and `src/` path literals. A non-literal `import()`/`require()` makes the graph uncomputable for its path, so the develop round runs the full suite (`non-literal-specifier`); a test that reaches such a module runs on every selection.
+- A test that reads a repository file through a variable is caught only by `ALWAYS_RUN`, which is why that list is enumerated. The detector is text-based: a reader it cannot see is a gate that never looked, and a fixture that writes and reads a `src/` path is listed as a reader too.
+- **Baseline-red is judged by name and by the first failure line.** A test is excused only when the base run fails with the same `✗` line and detail as the change run (digits folded out). A test that fails on base with a line but prints none on this change blocks: the same failure cannot be shown. Residual risk: when neither run prints a `✗` line for a test, the verdict stays name-only and the trace says so, so a change that breaks a baseline-red test in a new way is excused on that path. Read the `[verify-select]` trace lines for "judged by name only" before trusting a baseline-red entry.
+- A run that fails with names the rerun cannot place (a path outside `extension/`) blocks rather than guessing. A timed-out ci run is rerun whole, not by ID, because its rest never ran.
+
+### Selected verify: what attribution does not defend, and why "pre-existing" is defined twice (#1647)
+
+- **The report channel.** The failing names come from `VERIFY_REPORT_FILE`, a file the smoke loop writes itself. `verify-kill.sh` runs every test under `env -u VERIFY_REPORT_FILE`, so no test can learn the path or write it, and a test that prints the lines the reader trusts cannot forge a verdict. This is not a boundary against the cycle's own code: a developer can edit any test, the selector, or the verify command, and the gate attributes failures rather than defending against code written to pass. Treat a green gate as "the diff's failures were attributed", not as "the diff was proven correct".
+- **Two definitions of "pre-existing".** The commit-pr seam (`work-driver-verify-attribution.ts`) excuses a name that fails on the base commit once, by name. The selected verify (`work-driver-verify-select-verdict.ts`) needs two agreeing base runs, the same failure line on both sides, and no change-caused name. The selected verify runs on develop hosts that are often loaded, where one red run is routinely a timing failure; the seam runs once at a quiet point. Both are deliberate. Changing the seam's policy is a separate decision.
+- **The PR body carries one block.** Flaky and baseline-red tests are written between `<!-- verify-attribution:begin -->` and `:end` markers, rendered from the cycle's whole record. A repeated write replaces the block, so it converges. The ci tier writes it only on a passing tier; if the PR body cannot be read as text, or its markers are unpaired, nothing is edited and the tier fails with that reason. A body that is `null` is treated as empty.
+- **The opt-in file must be a regular file.** `.pi/verify-select` is checked with `stat`, so a directory of that name does not opt a project in.
+
 ### The develop gate ran the verify command twice on the same tree (#1240)
 
 **Symptom:** `develop` completes many minutes after its developer child finished, with nothing between them but the driver's consolidated verify. On a project whose gate is slow (the orchard factory: `scripts/test.sh`, ~18 min of serial shell tests) an N=1 cycle pays that twice per gate pass — once in the develop worktree and once again at repoRoot for the consolidated probe — and the second run checks content the first already judged. Four gate passes per cycle meant eight runs where four sufficed.

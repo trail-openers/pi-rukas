@@ -17,6 +17,8 @@ import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { type DevelopGateRecord, gatePassKey } from "./work-driver-verify-gate-reuse.ts";
+import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
+import type { VerifyAttributionRecord } from "./work-driver-verify-shared.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { makeConsolidatedVerifySkippedEvent } from "./workflow-state-events-verify-flake.ts";
 import type { VerifyRunEventFragment, VerifyStartedEvent } from "./workflow-state-events-verify.ts";
@@ -99,6 +101,7 @@ export function recordDevelopGateEvents(
     consolidatedVerifySkipped?: AlreadyVerifiedTree;
     verifyEvents?: VerifyRunEventFragment[];
     gateRecord?: DevelopGateRecord;
+    selectedVerify?: SelectedVerifyRecord;
   },
 ): WorkState {
   const [started, completed] = gate.verifyEvents ?? [];
@@ -117,7 +120,10 @@ export function recordDevelopGateEvents(
       : []),
     ...(completed ? [completed] : []),
   ];
-  const recorded = withGateRecord(state, gate.gateRecord);
+  const recorded = foldVerifyAttribution(
+    withGateRecord(state, gate.gateRecord),
+    gate.selectedVerify,
+  );
   return events.length === 0 ? recorded : appendEvent(recorded, ...events);
 }
 
@@ -140,5 +146,30 @@ function withGateRecord(state: WorkState, record: DevelopGateRecord | undefined)
   return {
     ...state,
     pipelineState: { ...state.pipelineState, gateReuse: { passes, workstreamGreens } },
+  };
+}
+
+/**
+ * #1647 — fold one selected run's flaky and baseline-red tests into
+ * `pipelineState.verifyAttribution`, keeping each name once across rounds. The
+ * commit-pr PR body and the handoff both render what this records.
+ */
+export function foldVerifyAttribution(
+  state: WorkState,
+  record: SelectedVerifyRecord | undefined,
+): WorkState {
+  if (record === undefined) return state;
+  if (record.flaky.length === 0 && record.baselineRed.length === 0) return state;
+  const prev = state.pipelineState.verifyAttribution ?? { flaky: [], baselineRed: [] };
+  return {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      verifyAttribution: {
+        ...prev,
+        flaky: [...new Set([...prev.flaky, ...record.flaky])],
+        baselineRed: [...new Set([...prev.baselineRed, ...record.baselineRed])],
+      },
+    },
   };
 }

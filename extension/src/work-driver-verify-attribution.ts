@@ -32,6 +32,13 @@
  * fail-closed: the only shapes that excuse a test are ones whose evidence is
  * complete and anchored (see `compareNames` for the anchoring, `summaryCount`
  * for what a summary is allowed to claim).
+ *
+ * "Pre-existing" has a second definition in the selected verify (#1647,
+ * work-driver-verify-select-verdict). That one needs two agreeing base runs
+ * and the same failure line on both sides, because it runs on loaded develop
+ * hosts where one red run is often a timing failure. This seam runs once at a
+ * quiet point and keeps the one-run rule. Unifying them is out of scope for
+ * #1647; the difference is deliberate, not drift.
  */
 
 import { trace } from "./trace.ts";
@@ -49,6 +56,7 @@ import {
   isRegularReportFile,
   verifyReportEnv,
 } from "./work-driver-verify-report-path.ts";
+import { SHA_RE } from "./work-driver-verify-shared.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /** The three-way per-test verdict over the change run's failing test names. */
@@ -175,10 +183,12 @@ export interface BaselineProbeOutcome {
    * check rather than being asked to infer it.
    */
   changeRunNames: string[];
+  /**
+   * #1647 — the base run's own output, so the selected verify can compare the
+   * failure each test showed on base with the one it showed on this change.
+   */
+  probeOutput?: string;
 }
-
-/** A git commit is 40 hex chars; nothing else may reach `git worktree add`. */
-const SHA_RE = /^[0-9a-f]{40}$/;
 
 /**
  * #1404 — run the base probe and diff the failing-test-name sets.
@@ -256,6 +266,12 @@ export async function attributeAgainstBase(
      * controls.
      */
     probeReportFile: string;
+    /**
+     * #1647 — the probe tree's label. Defaults to the commit-pr seam's own
+     * (`commit-pr`); another seam passes its own so two seams never share one
+     * worktree name (and so one seam's teardown never removes another's checkout).
+     */
+    probeLabel?: string;
   },
 ): Promise<BaselineProbeOutcome | undefined> {
   if (!SHA_RE.test(opts.baseSha)) {
@@ -264,7 +280,8 @@ export async function attributeAgainstBase(
     );
     return undefined;
   }
-  const probeTree = baselineProbeWorktreePath(opts.repoRoot, "commit-pr");
+  const probeLabel = opts.probeLabel ?? "commit-pr";
+  const probeTree = baselineProbeWorktreePath(opts.repoRoot, probeLabel);
   // Every name the comparison will use has to come from a file inside the
   // driver's own report dir. Checked BEFORE the base run is paid for: a
   // misconfigured caller should not cost a full gate run to discover it cannot
@@ -301,7 +318,7 @@ export async function attributeAgainstBase(
     // Deliberately NOT the bare issue number: the develop step's probe tree
     // is `baseline-verify-<issue>`, and two steps sharing one tree name means
     // one step's teardown removes the other's checkout.
-    issue: "commit-pr",
+    issue: probeLabel,
     cmd: opts.verifyCmd,
     timeoutMs: bound,
     ...(opts.probeEnv !== undefined ? { env: opts.probeEnv } : {}),
@@ -403,5 +420,6 @@ export async function attributeAgainstBase(
     preExistingFailures: attribution.preExisting,
     changeCausedFailures: attribution.changeCaused,
     changeRunNames: [...changeNames],
+    probeOutput: baseStream,
   };
 }
