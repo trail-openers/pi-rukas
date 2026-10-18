@@ -212,6 +212,12 @@ function intentResolutionBlock(issues: number[]): string {
     "A deliverable that cannot produce a code diff by design (e.g. a GitHub repo settings toggle, an operator decision, a manual verification step, or external service configuration) gets a `[no-diff: <evidence>]` marker INSTEAD of `[paths: ...]`, where <evidence> is the command, API endpoint, or settings URL that proves it was done. The driver skips the diff check for marked deliverables and surfaces them as operator actions in the PR body — but the marker is honoured ONLY when the evidence string is non-empty, and ONLY when the deliverable declares no code paths (a deliverable with both is malformed and the code paths win). Never use the marker to excuse missing code work, and never write prose like `n/a` into a `[paths: ...]` slot — prose is not a control signal.",
     "",
     "A no-diff deliverable is NOT a workstream candidate — it must not appear in the `## Workstreams` block (it has no paths, so it would fail the empty-paths plan-quality check).",
+    "",
+    // #1155 — the planner is the only author of a `[paths:]` slot, so the
+    // grammar the gates read has to be stated where it is written. The #1137
+    // cycle parked because a planner wrote "X or new work-driver-<name>.ts"
+    // and every downstream reader treated it as one literal filename.
+    "A `[paths: ...]` slot holds **paths the diff can be checked against**, comma-separated. The driver matches each one per path segment against the end-of-develop diff, and it reads three forms: a **file** (`src/foo.ts`), a **directory** (`src/foo` — covers everything beneath it), and a **template** (`src/work-driver-<name>.ts` or `src/work-driver-*.ts` — matches ANY file in that directory whose name fits, so it is the right form when the file's name is genuinely not yet decided). Separating two paths with ` or ` or `|` declares ALTERNATIVES: the deliverable counts as delivered when ANY of them lands. So `[paths: extension/src/verify.ts or new work-driver-<name>.ts]` is legitimate, and the developer may satisfy either half. What is NOT legitimate is prose in the slot — a slot that parses to no file, directory or template at all is reported as an **unmeasurable** warning in the PR body and the gate cannot check that deliverable at all.",
   ].join("\n");
 }
 

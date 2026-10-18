@@ -23,6 +23,13 @@
  *     58.9% figure counts partials as the upper bound — blocking on
  *     partials is a policy decision the issue defers to review).
  *
+ * #1155 — `unmeasurable` gets the same treatment and the same channel: a
+ * deliverable whose `[paths:]` slot parses to no concrete or glob alternative
+ * is a WARNING, never a cap. It rides on `convergeEvidence` with the partials
+ * and `explainCap` renders it, because the pre-#1155 shape turned such a slot
+ * into an `absent` row and parked the cycle (issue #1137: 154 min, and the
+ * corrective re-dispatch could not satisfy a literal `<name>`).
+ *
  * Escape hatch: PI_ENSEMBLE_CONVERGE=0 (checked in runConvergeGate).
  */
 

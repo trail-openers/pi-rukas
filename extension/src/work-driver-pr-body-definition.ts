@@ -14,6 +14,10 @@
  *      surface from the assumptions block (a declared deliverable with a
  *      status is not an assumption; rendering it under "Assumptions" would
  *      misrepresent it).
+ *   6. unmeasurablePathsSection: the #1155 deliverables whose `[paths:]` slot
+ *      the converge gate could not check — a warning, never a cap, and a
+ *      distinct surface again (an unmeasurable slot is "the gate gave up
+ *      judging", not "the work is missing" and not an operator action).
  *
  * Workstream consolidation lines remain mechanized-only since the fallback
  * LLM lacks the structured workstream data — this exception is recorded here.
@@ -21,6 +25,7 @@
 
 import { carriedAdversarialFindings, renderCarriedFindings } from "./adversarial-findings.ts";
 import { neutraliseMarkdownField } from "./comment-evidence.ts";
+import { declaresNoMeasurablePath } from "./work-driver-deliverable-paths.ts";
 import { renderAssumptions } from "./work-driver-intent.ts";
 import type { NormalisedSpec } from "./work-driver-intent.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
@@ -149,6 +154,61 @@ export function renderOperatorActions(
  */
 export function operatorActionsSectionOf(spec: PipelineStateNormalisedSpec | undefined): string {
   return renderOperatorActions(spec);
+}
+
+/**
+ * #1155 — the deliverables whose declared `[paths:]` slot the converge gate
+ * cannot check: it parses to no concrete or glob alternative (`n/a — repo
+ * settings`, a bare sentence, a placeholder in a shape the parser cannot
+ * rescue). The predicate is the converge gate's own `declaresNoMeasurablePath`,
+ * so a deliverable this function lists is exactly one the gate classified
+ * `unmeasurable` — the PR body and the gate cannot disagree about which rows
+ * went unchecked.
+ */
+export function unmeasurableDeliverables(
+  spec: NormalisedSpec | PipelineStateNormalisedSpec | undefined,
+): Array<PipelineStateNormalisedSpec["deliverables"][number]> {
+  if (!spec) return [];
+  const rows = spec.deliverables as Array<PipelineStateNormalisedSpec["deliverables"][number]>;
+  return rows.filter((d) => (d.paths ?? []).length > 0 && declaresNoMeasurablePath(d.paths ?? []));
+}
+
+/**
+ * #1155 — the warning block for unmeasurable deliverables, in the shape
+ * `renderOperatorActions` uses: its own heading, non-blocking, and the
+ * offending slot verbatim so the reader can tell which `[paths:]` to reword.
+ * Returns "" when every deliverable names something checkable — the section
+ * must not appear at all in its absence.
+ *
+ * Why it must be in the PR body and not only the trace: the issue's decided
+ * rule is "a warning in the PR body/handoff, never a cap". A warning nobody
+ * reads is a gate that silently stopped checking, which is the failure mode
+ * #1240 exists to make visible.
+ */
+export function renderUnmeasurablePathsWarning(
+  spec: NormalisedSpec | PipelineStateNormalisedSpec | undefined,
+): string {
+  const rows = unmeasurableDeliverables(spec);
+  if (rows.length === 0) return "";
+  return [
+    "",
+    "## Unmeasurable deliverables (warning — not blocking)",
+    "",
+    "The converge completeness gate could not check these deliverables: their declared `[paths:]` slot parses to no concrete or glob path, so there was nothing to look for in the diff. The work may well be done — it is simply not verifiable from the plan as written. Reword the slot to name a file, a directory, or a `<template>`:",
+    "",
+    ...rows.map(
+      (d) => `- **${d.id}: ${d.description}** — \`[paths: ${(d.paths ?? []).join(", ")}]\``,
+    ),
+  ].join("\n");
+}
+
+/**
+ * #1155 — the warning as a PR-body slice, shared by the mechanized commit-pr
+ * path and the LLM-ops fallback prompt exactly as `operatorActionsSectionOf`
+ * is, so both render the same text. Empty when there is nothing to show.
+ */
+export function unmeasurablePathsSectionOf(spec: PipelineStateNormalisedSpec | undefined): string {
+  return renderUnmeasurablePathsWarning(spec);
 }
 
 /**
