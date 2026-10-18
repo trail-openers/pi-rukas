@@ -143,6 +143,13 @@ async function testRunWorktreeSweepReapsDeadOwner() {
     await fs.mkdir(join(wtPath, "build"), { recursive: true });
     await fs.writeFile(join(wtPath, "build", "stale.js"), "artifact\n");
 
+    // r2 — `status` must be a TERMINAL one, not "running". Rule 3's
+    // group-claim guard (`groupClaimedByState`) skips any tree whose owner
+    // state file is still RUNNING and whose name encodes that owner's issue,
+    // so a "running" dead-owner fixture is refused before the ladder and this
+    // suite asserts nothing about the purge. `aborted` is what a killed cycle
+    // leaves and it also keeps Rule 5 (REMOVE) unreachable; the sibling
+    // aborted-claimant case in -identity.ts proves the same shape purges.
     const stateDir = join(dir, ".pi", "work-state");
     await fs.mkdir(stateDir, { recursive: true });
     await fs.writeFile(
@@ -161,26 +168,30 @@ async function testRunWorktreeSweepReapsDeadOwner() {
           reviewRound: 0,
           ciRetryCount: 0,
           plumbReports: [],
-          status: "running",
+          status: "aborted",
         },
         eventLog: [],
       }),
     );
 
+    // The shared harness executor rather than a local copy: the hand-rolled
+    // form dropped `argv`, so `isWorkProvablyOnRemote`'s `execFn("git", { argv })`
+    // ran a bare `git` and the remote proof could never resolve.
     const result = await runWorktreeSweep({
       repoRoot: dir,
       launchingCycleIssue: 1427,
       liveCycles: new Set([1427]),
-      execFn: async (cmd, opts) => {
-        const argv = cmd.startsWith("git ") ? cmd.slice(4).split(/\s+/) : [cmd];
-        const { stdout } = await execAsync("git", argv as string[], { cwd: opts?.cwd });
-        return { stdout, stderr: undefined };
-      },
+      execFn: realGitExecFn,
     });
     assertTrue(result.ran, "the sweep ran");
+    // The sweep's skip reasons ride on the failure message: every tree it
+    // declines leaves a named reason, and a red assertion with no reason sends
+    // the reader to the purge code when the decline happened two rules earlier.
     assertTrue(
       result.purged.includes(wtPath),
-      "the dead owner's tree was PURGED (not removed) — uncommitted work stays inspectable",
+      `the dead owner's tree was PURGED (not removed) — uncommitted work stays inspectable [skipped: ${result.skipped
+        .map((s) => s.reason)
+        .join(",")}]`,
     );
     assertTrue(result.removed.length === 0, "nothing was removed while its work was unproven");
     const stillThere = await fs.stat(wtPath).then(
@@ -407,11 +418,7 @@ async function testAbortedClaimantReleasesAndPurges() {
       // it in the set would trip rule 3's `live-issue` clause and the sweep
       // would decline for a reason unrelated to what is under test.
       liveCycles: new Set([1451]),
-      execFn: async (cmd, opts) => {
-        const argv = cmd.startsWith("git ") ? cmd.slice(4).split(/\s+/) : [cmd];
-        const { stdout } = await execAsync("git", argv as string[], { cwd: opts?.cwd });
-        return { stdout, stderr: undefined };
-      },
+      execFn: realGitExecFn,
     });
     assertTrue(result.purged.includes(wtPath), "the aborted claimant's tree is PURGED");
     assertTrue(
@@ -442,6 +449,7 @@ async function runTests() {
   await testDeadClaimWorktreeResolution();
   await testOwnerClaimsAreValidated();
   await testRunWorktreeSweepReapsDeadOwner();
+  await testAbortedClaimantReleasesAndPurges();
   console.log(exitCode === 0 ? "\nAll tests passed." : "\nFAILED");
   process.exit(exitCode);
 }
