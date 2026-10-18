@@ -221,6 +221,13 @@ export async function decideEmptyDelta(opts: {
  * `carriedFrom` marker overridden, so no field is hand-copied. It never throws:
  * a failed append is reported as `recorded: false`, and the caller then runs a
  * full review rather than claiming a carry it did not record.
+ *
+ * #1449 lens round 1 — a carry is a ledger write like any other, so it gets the
+ * `writtenTo` stamp from `appendLedgerEntry` (where every write is stamped)
+ * rather than from a copy of the previous row's fields. Before that, a carry
+ * under a leaked `PI_ENSEMBLE_REVIEW_LEDGER_FILE` put its row in the wrong file
+ * with nothing on it to say so — the guard then said "never reviewed", which is
+ * the false statement #1449 removes.
  */
 export async function writeCarriedEntry(
   cwd: string,
@@ -246,9 +253,13 @@ export async function writeCarriedEntry(
       carryNote: CARRY_NOTE,
     };
     const failure = await appendLedgerEntry(entry, execp, cwd);
-    return failure ? { recorded: false, reason: failure } : { recorded: true };
-  } catch (err) {
-    return { recorded: false, reason: (err as Error).message };
+    if (failure) return { recorded: false, reason: failure };
+    return entry.writtenTo ? { recorded: true, landedAtPath: entry.writtenTo } : { recorded: true };
+  } catch (err: unknown) {
+    // `instanceof` rather than a cast: a thrown non-Error would make
+    // `(err as Error).message` throw INSIDE this catch, and the caller reads a
+    // rejection here as "run a full review" — a crash instead of a verdict.
+    return { recorded: false, reason: err instanceof Error ? err.message : String(err) };
   }
 }
 

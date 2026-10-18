@@ -112,11 +112,16 @@ export function latestEntry(entries: LedgerEntry[], branch: string, kind: Review
   return best;
 }
 
-/** Read + validate the ledger from a resolved path; never throws. */
+/**
+ * Read + validate the ledger from a resolved path; never throws.
+ *
+ * #1449 lens round 1 — this is `readLedgerFileSafe`'s rows. The two used to
+ * carry their own copy of the same try/catch, which read as two contracts and
+ * was one: both swallow every fs and parse fault to "no rows". They stay two
+ * NAMES because callers ask two questions ("what did the file say" wants the
+ * `LedgerFile`; "what rows are there" wants the array), but the swallow is now
+ * written once — and a fix to the swallow reaches both.
+ */
 export function readLedgerAt(file: string): LedgerEntry[] {
-  try {
-    return readLedgerFile(file).entries;
-  } catch {
-    return [];
-  }
+  return readLedgerFileSafe(file).entries;
 }

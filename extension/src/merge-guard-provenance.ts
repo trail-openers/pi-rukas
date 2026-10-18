@@ -27,8 +27,9 @@
  *
  * ## The failure contract (every arm refuses; none may pass)
  *
- * - a row for this branch carrying `writtenTo` → that path (the only arm that
- *   produces the distinguishing refusal text);
+ * - a row for this branch carrying `writtenTo` → that path, sanitised (the only
+ *   arm that produces the distinguishing refusal text); a stamp that sanitises
+ *   to nothing (control characters only) takes the no-row arm instead;
  * - no such row → undefined: the ordinary "never reviewed" refusal;
  * - an unreadable file (missing, a directory, an fs error) → undefined;
  * - a corrupt file (`readLedgerFileSafe` yielding nothing) → undefined.
@@ -53,6 +54,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { sameResolvedPath, sanitiseLedgerProvenancePath } from "./review-ledger-path.ts";
 import { readLedgerFileSafe } from "./review-ledger-read.ts";
 import { trace, traceWarn } from "./trace.ts";
 
@@ -60,13 +62,47 @@ import { trace, traceWarn } from "./trace.ts";
  * The path a redirected review wrote to, when one did. Undefined means "no
  * misdirection detected" — the ordinary never-reviewed refusal — and a fault
  * inside the read takes that same arm after tracing why.
+ *
+ * The returned value is the row's `writtenTo` stamp **sanitised**
+ * (`sanitiseLedgerProvenancePath`): the stamp is written by whatever process
+ * made the write and read back out of a file the environment names, so by the
+ * time it is rendered into the guard's refusal it is untrusted data. Control
+ * characters are stripped and the length capped there, so the refusal cannot
+ * be made to carry injected lines — and a stamp that sanitises to nothing
+ * yields the plain never-reviewed refusal, which is the honest text for
+ * "there is no path worth naming".
  */
-export function misdirectedWriteOf(ledgerPath: string, branch: string): string | undefined {
+export function misdirectedWriteOf(
+  ledgerPath: string,
+  branch: string,
+  /** #1449 round 2 — the clone's OWN ledger path (the override-blind answer,
+   * `cloneLedgerPathFor`). A stamp naming it is not a misdirection. The caller
+   * resolves it once and passes it, so this diagnostic makes no git call; an
+   * unresolvable path is passed as undefined, which reports rather than hides. */
+  expectedClonePath?: string,
+): string | undefined {
   try {
     if (!existsSync(ledgerPath)) return undefined;
     for (const e of readLedgerFileSafe(ledgerPath).entries) {
-      if (e.branch === branch && typeof e.writtenTo === "string" && e.writtenTo) {
-        return e.writtenTo;
+      if (e.branch === branch) {
+        const stamped = sanitiseLedgerProvenancePath(e.writtenTo);
+        // #1449 round 2 — a stamp naming the file this guard is reading is not
+        // evidence of a misdirection, and neither is one naming the clone's OWN
+        // ledger. The second case is what an override points at most of the time
+        // a stale value lingers: a row written before the override existed, or
+        // written by a process without it, sits in the clone's ledger with no
+        // stamp at all — but a row that carries a stamp equal to the clone path
+        // says plainly "this landed where the guard looks", so reporting it as
+        // redirected would tell the operator a review went somewhere it
+        // demonstrably did not.
+        //
+        // The comparison is against the CLONE path (`cloneLedgerPathFor`, the
+        // override-blind answer) and not against `ledgerPath`: inside a
+        // redirecting process `ledgerPath` IS the redirected file, so comparing
+        // against it would compare a stamp to itself and never fire — and a
+        // legitimate redirect's stamp always differs from the clone path, which
+        // is what makes it a redirect.
+        if (stamped && !sameResolvedPath(stamped, expectedClonePath)) return stamped;
       }
     }
     return undefined;

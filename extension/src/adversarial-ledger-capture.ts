@@ -42,27 +42,40 @@ export interface BindingState {
 }
 
 /**
- * #1449 — the ledger writer behind a one-line mutable seam.
+ * #1449 lens round 1 — normalise whatever a ledger writer handed back into the
+ * one shape the reporter's contract allows.
  *
  * `makeLedgerWrite` must not assume the writer's return is chainable or that it
  * cannot throw before returning, because "a ledger problem never costs a review"
- * is the CALL SITE's invariant, not one writer's implementation detail. But the
- * real writer ends in `write().catch(...)`, so neither failure mode is reachable
- * through it — and a guard for an unreachable failure is an untested guard. The
- * seam is how `test-adversarial-ledger-writer-shapes.ts` reaches both: it installs
- * a writer returning `undefined` (the shape `mock.module` gives a bare
- * `(r, p) => { push() }`), one throwing synchronously, and one rejecting, and
- * asserts none of them damages the loop's result. Deleting the `Promise.resolve`
- * or the `try`/`catch` turns an arm red (mutation-checked).
+ * is the CALL SITE's invariant, not one writer's implementation detail. This is
+ * the pure half of that tolerance: nothing is chained onto the return until it
+ * has passed through here, and anything that is not an outcome — `undefined`,
+ * `null`, a bare object from a stub, a value a refactor starts returning —
+ * becomes "nothing to report" rather than a claim the row never earned.
  *
- * A box (`.current`) rather than a setter, so the swap is one assignment the test
- * restores in a `finally`. Production never writes it: every non-test process
- * calls the real `writeAdversarialLedgerEntry`. Same precedent as the `execFn`
- * seam #1360 threads through this module — one injectable point per dependency.
+ * A free function rather than an inline expression, for the same reason
+ * `misdirectedLedgerNote` is one: the real writer ends in `write().catch(...)`,
+ * so neither an unchainable return nor a synchronous throw is reachable
+ * *through* it, and an end-to-end assertion against the real writer can never
+ * see those arms. `test-adversarial-ledger-writer-shapes.ts` feeds every shape
+ * to this helper directly; the loop-level arms in that file go through the REAL
+ * writer. A process-global mutable box that production reads (the shape this
+ * module carried until the round-1 review) is a liability on the #912 trust
+ * path bought for no test benefit — an assertion that cannot see an arm through
+ * the real function is a missing test, not a missing seam.
  */
-export const LEDGER_WRITER: {
-  current: typeof writeAdversarialLedgerEntry;
-} = { current: writeAdversarialLedgerEntry };
+export function normaliseLedgerWriteReturn(value: unknown): AdversarialLedgerOutcome | undefined {
+  // `recorded` is the discriminant both writers' outcome types carry on both
+  // arms. A value without it is not an outcome whatever else it is, and handing
+  // one to the reporter would put an invented claim in front of the operator.
+  // The `value === null` test is NOT redundant with `"recorded" in value`: the
+  // `in` operator throws a TypeError on a primitive, and `typeof null` is
+  // "object", so without it a rejected-to-null writer crashes the call site
+  // instead of reporting nothing. Deleting it turns the `null` arm red (verified
+  // by mutation); deleting the whole check turns four arms red.
+  if (value === null || typeof value !== "object" || !("recorded" in value)) return undefined;
+  return value as AdversarialLedgerOutcome;
+}
 
 /**
  * Take this round's capture.
@@ -192,21 +205,26 @@ export function makeLedgerWrite(opts: {
         // only on the synchronous path could never see a redirect.
         if (note) live = opts.note({ ...live, text: `${live.text}\n\n${note}` });
       });
-    // #1449 — the writer is called through a SEAM (`LEDGER_WRITER`) rather than
-    // by name, and the result is normalised before ANYTHING is chained onto it.
-    // Two layers, both load-bearing, neither reachable through the real writer:
-    // `writeAdversarialLedgerEntry` ends in `write().catch(...)`, so a fault in
-    // its BODY can only ever be a rejection — an unreachable throw and an
-    // unchainable return would make the `try`/`catch` and the `Promise.resolve`
-    // decorative, and an unreachable guard is an untested one. The seam lets a
-    // test install a writer that returns `undefined` (the shape `mock.module`
-    // gives a bare `(r, p) => { push() }`, which took down
-    // `test-adversarial-tool-guards` in CI with `TypeError: undefined is not an
-    // object`) or throws synchronously, and prove neither reaches the loop's
-    // exit. Production never sets the seam; it is the real writer throughout.
+    // #1449 — the writer is called BY NAME and its return is treated as
+    // untrusted: normalised through `normaliseLedgerWriteReturn` and wrapped in
+    // `Promise.resolve` before anything is chained onto it, with the CALL itself
+    // inside a `try`/`catch`.
+    //
+    // Why the tolerance survives on a call to a function whose own body cannot
+    // produce these shapes: the call site's invariant is its own. The shape that
+    // made this load-bearing was real, not hypothetical — `mock.module` gives a
+    // bare `(r, p) => { push(...) }` an `undefined` return, and the call site
+    // did `ledgerWrite.then(...)` directly, so every exit of the loop threw
+    // `TypeError: undefined is not an object` in CI (PR #1550). A ledger problem
+    // became a lost review: the exact direction #1449 must never open. The arms
+    // that pin the three layers live in
+    // `test-adversarial-ledger-writer-shapes.ts` — the shapes go through the
+    // pure helper, and the loop's exits go through THIS call with the real
+    // writer plus a `mock.module` of it, which is how a no-promise return is
+    // produced without a mutable production seam.
     let ledgerWrite: unknown;
     try {
-      ledgerWrite = LEDGER_WRITER.current(result, {
+      ledgerWrite = writeAdversarialLedgerEntry(result, {
         workCwd: opts.workCwd,
         resolvedBranch: opts.resolvedBranch,
         branch: opts.branch,
@@ -231,20 +249,13 @@ export function makeLedgerWrite(opts: {
     // never a capability a caller has to opt into (a caller that wants the raw
     // outcome instead, e.g. a test, replaces it). `Promise.resolve` is what
     // makes the chain safe when `ledgerWrite` is undefined / a non-promise / a
-    // thenable that never settles — see the guard above. A non-`undefined`
-    // non-promise return reaches the reporter as no outcome (normalised, so the
-    // reporter's contract is one type whatever the writer returned);
-    // `misdirectedLedgerNote` reads only `recorded` / `landedAtPath` / `reason`,
-    // so a shape it has never seen yields no note rather than a crash or an
-    // invented claim.
+    // thenable that never settles — see the guard above. Every value reaching
+    // the reporter has passed through `normaliseLedgerWriteReturn`, so the
+    // reporter's contract is one type whatever the writer returned; the note
+    // reads only `recorded` / `landedAtPath` / `reason`, so a shape it has never
+    // seen yields no note rather than a crash or an invented claim.
     void Promise.resolve(ledgerWrite)
-      .then((outcome) =>
-        deliver(
-          outcome === undefined || outcome === null
-            ? undefined
-            : (outcome as AdversarialLedgerOutcome),
-        ),
-      )
+      .then((value) => deliver(normaliseLedgerWriteReturn(value)))
       .catch(() => undefined);
     return opts.note(live);
   };

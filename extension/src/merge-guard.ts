@@ -107,6 +107,7 @@ import {
 } from "./merge-target.ts";
 import {
   type LedgerEntry,
+  cloneLedgerPathFor,
   latestEntry,
   ledgerPathFor,
   readLedgerAt,
@@ -368,6 +369,13 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       );
     }
     const entries: LedgerEntry[] = readLedgerAt(ledgerPath);
+    // #1449 round 2 — the override-blind path, resolved ONCE here so the
+    // diagnostic below makes no git call of its own (it is synchronous, and its
+    // never-throw contract is part of why the guard's hot path has no throw
+    // site). An unresolvable clone path is passed through as undefined, which
+    // REPORTS a stamp rather than hiding it: "could not prove it is the clone's
+    // own file" is not evidence of anything.
+    const cloneLedgerPath = await cloneLedgerPathFor(execFn, cwd);
     // #1449 — "there is no lens entry" has two causes and the operator must be
     // able to tell them apart from the refusal alone: nobody reviewed the
     // branch, or a review ran and its row landed at an overridden path this
@@ -383,7 +391,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // on the guard's decision path is a throw site. `lensNotEvaluatedRefusal`
     // is its only consumer — the value is read once here and carried, and a
     // missing value is exactly today's never-reviewed refusal.
-    const redirectedTo = misdirectedWriteOf(ledgerPath, target.headBranch);
+    const redirectedTo = misdirectedWriteOf(ledgerPath, target.headBranch, cloneLedgerPath);
     const branch = target.headBranch;
 
     // Adversarial: latest entry must be passed AND match the current patchId.
