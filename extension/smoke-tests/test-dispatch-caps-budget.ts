@@ -327,6 +327,42 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     }) === undefined,
     "C1: no facts → undefined (no kill)",
   );
+  // #1567 — the supervision kills sit below the structural caps and above
+  // the backstop: stuck-tool > no-progress > child-bound.
+  const none = {
+    loopKilled: false,
+    inactivityKilled: false,
+    toolInactivityKilled: false,
+    timedOut: false,
+    tokenBudgetKilled: false,
+    aborted: false,
+  };
+  const all = { stuckToolKilled: true, noProgressKilled: true, childBoundKilled: true };
+  assert(
+    resolveKillCause({ ...none, ...all, tokenBudgetKilled: true }) === "token-budget",
+    "#1567: token-budget beats the supervision kills",
+  );
+  assert(
+    resolveKillCause({ ...none, ...all, loopKilled: true }) === "loop",
+    "#1567: loop beats the supervision kills",
+  );
+  assert(
+    resolveKillCause({ ...none, ...all, timedOut: true, aborted: true }) === "stuck-tool",
+    "#1567: stuck-tool beats no-progress, child-bound, timeout, abort",
+  );
+  assert(
+    resolveKillCause({
+      ...none,
+      noProgressKilled: true,
+      childBoundKilled: true,
+      timedOut: true,
+    }) === "no-progress",
+    "#1567: no-progress beats child-bound and timeout",
+  );
+  assert(
+    resolveKillCause({ ...none, childBoundKilled: true, timedOut: true }) === "child-bound",
+    "#1567: child-bound beats the 2-h backstop",
+  );
 }
 
 console.log(`\nexit ${exit}`);

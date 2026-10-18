@@ -22,12 +22,75 @@
  */
 
 import type { ChildProcess } from "node:child_process";
+import type { ChildProgress } from "./child-progress.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { type RunningState, ingestEvent } from "./progress.ts";
 import type { CapSession } from "./spawn-caps.ts";
 import { killProcessTree } from "./spawn-kill.ts";
 import { inactivityTimeoutMs, toolInactivityTimeoutMs, willRetryAfter } from "./spawn-support.ts";
 import { traceWarn } from "./trace.ts";
+
+/** A span one event opens: the call's id, tool name and arguments. */
+export interface SpanOpen {
+  id: string;
+  name: string;
+  args: unknown;
+}
+
+/** The span edges of one event: the calls it opens, the call ids it closes. */
+export interface SpanEdges {
+  opens: SpanOpen[];
+  closes: string[];
+}
+
+const NO_EDGES: SpanEdges = { opens: [], closes: [] };
+
+/**
+ * The span edges one parsed child event carries. The single rule for what is
+ * in flight, shared by `InFlightTools` and the progress tracker
+ * (child-progress.ts) so the two cannot disagree about which calls run.
+ */
+export function spanEdges(event: PiJsonEvent): SpanEdges {
+  // This open/delete covers BOTH call shapes: top-level calls, whose
+  // flat events carry the same toolCallId as the toolCall block (so
+  // the set/delete here is idempotent with the message-path close
+  // below), and nested codemode calls (ctx.executeTool), whose
+  // <callerId>/<n> ids never surface in a message. A span always
+  // closes on its own tool_execution_end; an orphan dies with the
+  // spawn.
+  if (event.type === "tool_execution_start") {
+    if (!event.toolCallId) return NO_EDGES;
+    const open = { id: event.toolCallId, name: event.toolName ?? "unknown", args: event.args };
+    return { opens: [open], closes: [] };
+  }
+  if (event.type === "tool_execution_end") {
+    return event.toolCallId ? { opens: [], closes: [event.toolCallId] } : NO_EDGES;
+  }
+  const msg = event.message;
+  if (!msg) return NO_EDGES;
+  if (msg.role === "toolResult") {
+    // A toolResult closes its span whether or not it is an error — a
+    // failed tool that reported is no longer in flight.
+    return msg.toolCallId ? { opens: [], closes: [msg.toolCallId] } : NO_EDGES;
+  }
+  // #1465 — only the assistant message_end opens spans. Pi's turn_end
+  // re-carries the turn's assistant message AFTER its tool results, and
+  // message_start / message_update carry it while it streams; opening on
+  // those re-opened every completed call at turn end, so the set grew by
+  // every call of every turn. An `error` / `aborted` message runs none of
+  // its toolCalls (the agent loop returns before the tool batch), so its
+  // blocks would never be closed either.
+  if (event.type !== "message_end") return NO_EDGES;
+  if (msg.stopReason === "error" || msg.stopReason === "aborted") return NO_EDGES;
+  if (msg.role !== "assistant" || !msg.content) return NO_EDGES;
+  const opens: SpanOpen[] = [];
+  for (const block of msg.content) {
+    if (block.type === "toolCall" && block.id) {
+      opens.push({ id: block.id, name: block.name ?? "unknown", args: block.arguments });
+    }
+  }
+  return { opens, closes: [] };
+}
 
 /** The per-spawn set of open toolCall ids. A toolCall block opens one; the
  * matching toolResult closes it. */
@@ -50,38 +113,11 @@ export class InFlightTools {
 
   /** Process one parsed child event against the in-flight state. */
   observe(event: PiJsonEvent): void {
-    // This open/delete covers BOTH call shapes: top-level calls, whose
-    // flat events carry the same toolCallId as the toolCall block (so
-    // the set/delete here is idempotent with the message-path close
-    // below), and nested codemode calls (ctx.executeTool), whose
-    // <callerId>/<n> ids never surface in a message. A span always
-    // closes on its own tool_execution_end; an orphan dies with the
-    // spawn.
-    if (event.type === "tool_execution_start") {
-      if (event.toolCallId) this.open.set(event.toolCallId, event.toolName ?? "unknown");
-      return;
-    }
-    if (event.type === "tool_execution_end") {
-      if (event.toolCallId) this.open.delete(event.toolCallId);
-      return;
-    }
-    const msg = event.message;
-    if (!msg) return;
-    if (msg.role === "toolResult") {
-      // A toolResult closes its span whether or not it is an error — a
-      // failed tool that reported is no longer in flight.
-      if (msg.toolCallId) this.open.delete(msg.toolCallId);
-      return;
-    }
-    if (msg.role === "assistant" && msg.content) {
-      for (const block of msg.content) {
-        if (block.type === "toolCall" && block.id) {
-          // Set semantics: re-observing an id (a retried turn re-emitting
-          // the same block) does not change the state.
-          this.open.set(block.id, block.name ?? "unknown");
-        }
-      }
-    }
+    const { opens, closes } = spanEdges(event);
+    // Set semantics: re-observing an id (a retried turn re-emitting
+    // the same block) does not change the state.
+    for (const o of opens) this.open.set(o.id, o.name);
+    for (const id of closes) this.open.delete(id);
   }
 }
 
@@ -224,6 +260,8 @@ export function attachAbortKill(
 export function createStdoutLineHandler(opts: {
   start: number;
   inFlightTools: InFlightTools;
+  /** #1567 — the per-spawn progress tracker (child-progress.ts); observation only. */
+  childProgress: ChildProgress;
   appendStderr: (s: string) => void;
   runningState: RunningState;
   caps: CapSession;
@@ -238,6 +276,7 @@ export function createStdoutLineHandler(opts: {
   const {
     start,
     inFlightTools,
+    childProgress,
     appendStderr,
     runningState,
     caps,
@@ -292,6 +331,8 @@ export function createStdoutLineHandler(opts: {
     // closes). Runs on the SAME hot path where lastActivityAt resets, so the
     // watchdog's poll below sees the current set at every tick.
     inFlightTools.observe(parsed);
+    // #1567 — record progress (child-progress.ts). Nothing acts on it yet.
+    childProgress.observe(parsed);
     // Retain only the two events collapseEvents actually reads (the latest
     // agent_end + the latest assistant message_end as fallback). Everything
     // else is already absorbed by ingestEvent into runningState above, and
