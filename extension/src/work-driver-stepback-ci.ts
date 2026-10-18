@@ -198,9 +198,15 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
         verifyFullTimeoutMs(),
         ctx.verifyExecFn ?? execp,
       );
-      const carried = run.outcome === "success" ? run.record : undefined;
-      // Only names the PR body does not already list (the develop round wrote its own).
-      const fresh = carried === undefined ? undefined : uncarriedNames(next, carried);
+      // Folded on failure too: a failing tier's flaky and baseline-red names are
+      // what the handoff and the next commit-pr must still show.
+      const carried = run.record;
+      // Disclosed only on a passing tier, and only the names the PR body does not
+      // already list (the develop round wrote its own).
+      const fresh =
+        carried === undefined || run.outcome !== "success"
+          ? undefined
+          : uncarriedNames(next, carried);
       const disclosed = fresh === undefined || (await discloseInPrBody(ctx, next, execp, fresh));
       const result = disclosed
         ? run

@@ -46,6 +46,10 @@ writeFileSync(
   'import { readFileSync } from "node:fs";\nimport path from "node:path";\nconst file = path.join(__dirname, "..", "src", "x.ts");\nreadFileSync(file, "utf8");\n',
 );
 writeFileSync(
+  path.join(fixture, "smoke-tests", "test-fixture-template.ts"),
+  'import { readFileSync } from "node:fs";\nconst dir = process.cwd();\nreadFileSync(`${dir}/src/x.ts`, "utf8");\n',
+);
+writeFileSync(
   path.join(fixture, "smoke-tests", "test-fixture-quiet.ts"),
   'import { a } from "../src/a.ts";\nvoid a;\n',
 );
@@ -53,6 +57,10 @@ const fixtureReaders = textReadingTests(fixture);
 assert(
   fixtureReaders.includes("smoke-tests/test-fixture-reader.ts"),
   "a fixture test that reads a src/ file is detected as a reader",
+);
+assert(
+  fixtureReaders.includes("smoke-tests/test-fixture-template.ts"),
+  "a fixture that reads a src/ path built inside a template literal is detected as a reader",
 );
 assert(
   !fixtureReaders.includes("smoke-tests/test-fixture-quiet.ts"),

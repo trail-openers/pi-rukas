@@ -68,6 +68,8 @@ interface Scenario {
   noReportFirst?: boolean;
   /** When set, the base probe is killed at its bound: unresolved, so it cannot excuse. */
   probeKilled?: boolean;
+  /** When set, only the first base probe is red; the second is green (a flake on base). */
+  baseFirstOnly?: boolean;
 }
 
 /** A verify-loop stand-in: real git for everything else, names reported out-of-band. */
@@ -111,8 +113,9 @@ function stubExec(s: Scenario, calls: { change: number; probe: number }) {
         stderr: "",
       });
     }
+    const baseRed = s.baseFirstOnly === true && calls.probe > 1 ? [] : s.base;
     const failing = isProbe
-      ? requested.filter((r) => s.base.includes(r))
+      ? requested.filter((r) => baseRed.includes(r))
       : requested.filter((r) => {
           const left = remaining[r] ?? 0;
           if (left > 0) {
@@ -158,6 +161,7 @@ async function attempt(
   const calls = { change: 0, probe: 0 };
   const cmd = selectedVerifyCommand([...Object.keys(s.change), ...s.base]);
   const exec = stubExec(s, calls);
+  const probeLabel = `test-${name}`;
   const wrapped = withSelectedAttribution(exec, exec, {
     cmd,
     channel,
@@ -165,6 +169,7 @@ async function attempt(
     baseSha,
     changeRoots: [repo],
     changedTests,
+    probeLabel,
     timeoutMs: 60_000,
     record,
     rerunUnnamed,
@@ -201,7 +206,16 @@ const R = "smoke-tests/test-red.ts";
     r.ok && r.record.baselineRed.join() === R,
     "red twice and red on base → baseline-red, not blocking",
   );
-  assert(r.calls.probe === 1, "baseline-red: the base is probed once, for that test only");
+  assert(r.calls.probe === 2, "baseline-red: the base is probed twice, for that test only");
+}
+// Red twice, red on one base run and green on the next: one red base run does not excuse.
+{
+  const r = await attempt(
+    "base-flake",
+    { change: { [R]: 2 }, base: [R], baseFirstOnly: true },
+    [],
+  );
+  assert(!r.ok && r.record.baselineRed.length === 0, "a base red on one probe only → blocks");
 }
 // Red twice, green on base: blocks.
 {

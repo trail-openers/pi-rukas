@@ -79,6 +79,7 @@ export async function runCiVerifyFull(
     baseSha,
     changeRoots: [primaryWorktree, ctx.repoRoot],
     changedTests,
+    probeLabel: `ci-${ctx.issue}`,
     timeoutMs,
     record,
     // The tier had a single rerun of any failure before #1647; the attribution
@@ -90,7 +91,15 @@ export async function runCiVerifyFull(
     const result = await runVerifyFull(cmd, primaryWorktree, timeoutMs, attributed, {
       retry: false,
     });
-    return { ...result, record };
+    // The attribution reran a failure itself, so the tier's #782 signal comes from
+    // the record: a recovered run reports the first run's tail, as runVerifyFull does.
+    return {
+      ...result,
+      ...(record.recovered !== undefined
+        ? { recovered: true, firstRunOutput: record.recovered.firstRunOutput }
+        : {}),
+      record,
+    };
   } finally {
     removeVerifyReportDir(channel.reportDir);
   }
@@ -107,7 +116,9 @@ export async function discloseInPrBody(
   execFn: ExecFn,
   record: SelectedVerifyRecord,
 ): Promise<boolean> {
-  const section = verifyAttributionSectionOf(record);
+  // The develop round may already have written its own sections; the ci tier's
+  // are headed apart so the PR body never carries two identical headings.
+  const section = verifyAttributionSectionOf(record, "full suite");
   if (section === "") return true;
   const prNumber = state.pipelineState.prNumber;
   if (prNumber === undefined) return false;

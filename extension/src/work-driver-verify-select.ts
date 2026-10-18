@@ -45,8 +45,12 @@ export interface VerifySelection {
 
 /** `smoke-tests/test-*.ts`, one level deep. */
 const TEST_RE = /^smoke-tests\/test-[^/]+\.ts$/;
-/** Files that may be graph nodes: source modules and top-level smoke files. */
-const NODE_RE = /^(?:src\/[^/]+\.ts|smoke-tests\/[^/]+\.ts)$/;
+/**
+ * Files that may be graph nodes: source modules at any depth under `src/` (a
+ * nested module imported only by another nested module must still reach the
+ * tests above it) and top-level smoke files.
+ */
+const NODE_RE = /^(?:src\/(?:[^/]+\/)*[^/]+\.ts|smoke-tests\/[^/]+\.ts)$/;
 
 // A static import or re-export: the specifier is the last quoted string before
 // the statement ends. `[\w*{}\s,$]` covers default, namespace and named lists,
@@ -155,11 +159,17 @@ function buildGraph(extensionDir: string): Graph {
   const dynamic = new Set<string>();
   const srcTouchers: string[] = [];
   const files: string[] = [];
-  for (const dir of ["src", "smoke-tests"]) {
-    for (const name of readdirSync(path.join(extensionDir, dir))) {
-      const rel = `${dir}/${name}`;
-      if (NODE_RE.test(rel)) files.push(rel);
+  const walk = (rel: string) => {
+    for (const entry of readdirSync(path.join(extensionDir, rel), { withFileTypes: true })) {
+      const child = `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walk(child);
+      else if (NODE_RE.test(child)) files.push(child);
     }
+  };
+  walk("src");
+  for (const name of readdirSync(path.join(extensionDir, "smoke-tests"))) {
+    const rel = `smoke-tests/${name}`;
+    if (NODE_RE.test(rel)) files.push(rel);
   }
   for (const rel of files) {
     nodes.add(rel);
