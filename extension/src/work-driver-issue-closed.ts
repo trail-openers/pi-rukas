@@ -54,8 +54,8 @@
  */
 
 import { notifyAgent } from "./agent-message.ts";
-import { createForge, type Forge } from "./forge.ts";
 import { detectForge } from "./forge-detect.ts";
+import { type Forge, createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { reportFinalState } from "./work-driver-final-state.ts";
@@ -314,4 +314,75 @@ export async function checkIssueStatesAtEntry(
 /** Trace helper shared with the entry block's disclosure. */
 export function traceUnreadableIssueStates(issues: number[]): void {
   trace(`work-driver: issue-state gate could not read ${issues.map((n) => `#${n}`).join(", ")}`);
+}
+
+/**
+ * #1472 — the step-boundary park for a CLOSED issue, shaped for `runStep`.
+ *
+ * `refuseClosedIssue` (work-driver-lifecycle.ts) returns a `DriverOutcome`
+ * because it serves the cycle-entry refusal in the driver's step loop. That
+ * shape is wrong at the step boundary, which must return a `WorkState`, and the
+ * loop lives in `work-driver.ts` — a file pinned at the repo's 500-line hard
+ * limit, so the check cannot grow there either. This variant reads the same
+ * state and parks with the same cap, and notifies the operator, but returns the
+ * parked `WorkState` so `runStep` can hand it straight back.
+ *
+ * `undefined` means "proceed" — including when the state is unreadable, which
+ * never ends a cycle.
+ */
+export async function parkIfIssueClosed(
+  ctx: CycleContext,
+  state: WorkState,
+  step: WorkStep,
+  opts: { forge?: Forge } = {},
+): Promise<WorkState | undefined> {
+  const group = [...new Set([ctx.issue, ...(ctx.issues ?? [])])];
+  const forge = opts.forge ?? (await cycleForge(ctx));
+  if (!forge) return undefined;
+  const cached = cycleVerdicts.get(ctx);
+  for (const n of group) {
+    const known = cached?.get(n);
+    if (known === "CLOSED") return notifyAndPark(ctx, state, n, step, group.length);
+    if (known === "OPEN") continue;
+    const read = await readIssueState(forge, n, !unreadableIssueCycles.has(ctx));
+    if (read.state === "CLOSED") return notifyAndPark(ctx, state, n, step, group.length);
+    if (read.state === undefined) {
+      // Fail open, once per cycle, and say so.
+      if (!unreadableIssueCycles.has(ctx)) {
+        unreadableIssueCycles.add(ctx);
+        return unreadableIssueNote(state, group, step);
+      }
+      continue;
+    }
+    cacheVerdict(ctx, n, read.state);
+  }
+  return undefined;
+}
+
+/** Park AND tell the operator — a silent refusal is the bug this fixes. */
+async function notifyAndPark(
+  ctx: CycleContext,
+  state: WorkState,
+  closedIssue: number,
+  step: WorkStep,
+  groupSize: number,
+): Promise<WorkState> {
+  notifyAgent(
+    ctx.host,
+    [
+      `pi-rukas: /work for issue #${closedIssue} stopped — it is CLOSED.`,
+      "",
+      `A person closed it while the cycle ran, so the ${step} step did not run and`,
+      "no further child was dispatched. Nothing was merged; the branch and any",
+      "worktree are left as they are.",
+      "",
+      '--restart does not override a closed issue: it means "I revised the issue",',
+      "and a closed issue has not been revised back.",
+      "",
+      "If the work is still wanted, reopen it first:",
+      `  gh issue reopen ${closedIssue}`,
+      `  /work ${closedIssue} --restart`,
+    ].join("\n"),
+  );
+  return issueClosedPark(state, closedIssue, step, groupSize);
 }

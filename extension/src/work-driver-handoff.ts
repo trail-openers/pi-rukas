@@ -204,14 +204,9 @@ export async function runHandoff(
   // is targeted and issueLabelApplied mirrors labelApplied.
   let issueLabelApplied: boolean | undefined;
   let prLabelApplied: boolean | undefined;
-  // #1472 — a cycle parked because a person CLOSED its issue DECLINES the
-  // attention label: the human already engaged, and `needs-human-attention` is
-  // what stops the NEXT `/work` run, so leaving it on would block a legitimate
-  // reopen-and-rerun. Seeded here so every downstream writer — the in-proc post,
-  // the retry path, the dual-target apply, and the @ops prompt (whose label and
-  // verify commands are suppressed in inlineHandoffOpsPrompt) — sees the label
-  // as settled. It is a deliberate decline, NOT a failure, so the HANDOFF
-  // DISPATCH INCOMPLETE banner stays quiet.
+  // #1472 — a closed-issue park declines the label. Seeded here so all four
+  // writers see it settled; it is a deliberate decline, NOT a failure, so the
+  // HANDOFF DISPATCH INCOMPLETE banner stays quiet. See PipelineState.
   if (labelApplied) {
     issueLabelApplied = true;
     prLabelApplied = prNumber ? true : undefined;

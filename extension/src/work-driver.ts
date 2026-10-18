@@ -35,7 +35,6 @@ import {
   emitStepStarted,
   updateFooter,
 } from "./work-driver-lifecycle.ts";
-import { refuseClosedIssue } from "./work-driver-lifecycle.ts";
 import { recordProtectedGrant } from "./work-driver-protected-grant.ts";
 import { claimCycle } from "./work-driver-registry.ts";
 import {
@@ -291,14 +290,14 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     const stepStartedAt = Date.now();
     // PR4: sub-round labels for iterative steps.
     const stepRound = countPriorStepStarts(state, step) + 1;
-    // #657 — the step-started this iteration emits is appended by the handler;
-    // its round is derived at render time (fmtRecentEvents).
+    // #657 — the first event of this iteration is the step-started the step
+    // handler appends; its round is derived at render time (fmtRecentEvents)
+    // so renderers can show re-entries as "adversarial (round 3)". Additive
+    // field; absent in the 12 per-step handler append sites, so nothing there changes.
     emitStepStarted(step, stepOrd.num, stepOrd.total, stepRound, ctx.issue);
     // PR2 O2: footer status cursor (step-level position with live-tick).
     updateFooter(state, stepStartedAt);
     try {
-      const closed = await refuseClosedIssue(ctx, state);
-      if (closed) return closed; // #1472
       state = await runStep(ctx, state, step);
       if (interruptedAfter(ctx, state, step)) return { started: true };
     } catch (err) {

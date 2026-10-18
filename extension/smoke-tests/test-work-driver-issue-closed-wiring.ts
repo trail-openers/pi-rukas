@@ -43,18 +43,23 @@ assert(
   /state\.pipelineState\.handoffLabelSkipped === true/.test(read("work-driver-handoff-ops.ts")),
   "the ops dispatch passes the decline into the prompt",
 );
-// The refusal is CALLED from the step loop in work-driver.ts (pinned at the
-// 500-line cap, so its body lives in work-driver-lifecycle.ts) and BEFORE
-// runStep, so a CLOSED issue never pays for a child.
+// #1472 placement, and WHY it is where it is: `work-driver.ts` is pinned at the
+// repo's 500-line hard limit, so the step loop cannot grow — the step-boundary
+// park lives in `runStep`, the single funnel every step passes through, and it
+// returns BEFORE the step switch dispatches any child. The cycle-entry refusal
+// keeps its own `DriverOutcome`-shaped form in the lifecycle module.
 const loop = read("work-driver.ts");
 assert(
-  /const closed = await refuseClosedIssue\(ctx, state\)/.test(loop),
-  "the step loop refuses a CLOSED issue",
+  !/refuseClosedIssue|parkIfIssueClosed/.test(loop),
+  "work-driver.ts stays at main exactly — the gate does NOT live in the capped file",
 );
 assert(
-  /if \(closed\) return closed;[\s\S]*?await runStep\(ctx, state, step\)/.test(loop) &&
-    /const closed = await refuseClosedIssue\(ctx, state\)/.test(loop),
-  "the refusal returns BEFORE runStep dispatches a child",
+  /const refused = await parkIfIssueClosed\(ctx, state, step\)/.test(runStep),
+  "runStep parks a CLOSED issue",
+);
+assert(
+  /if \(refused\) return refused;[\s\S]*?if \(step !== "handoff"/.test(runStep),
+  "the park returns before the step gate and before any child is dispatched",
 );
 // The step boundary itself must be gated, not just entry: a mid-cycle CLOSE has
 // to stop the NEXT step. Asserted per ungated step so deleting the call for one

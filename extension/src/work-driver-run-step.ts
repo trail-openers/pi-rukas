@@ -11,7 +11,7 @@ import type { CycleContext } from "./work-driver-context.ts";
 import { markDraftPrReady } from "./work-driver-draft-pr.ts";
 import { runExplore } from "./work-driver-explore.ts";
 import { runHandoff } from "./work-driver-handoff.ts";
-import { endIfIssueClosed } from "./work-driver-issue-closed.ts";
+import { endIfIssueClosed, parkIfIssueClosed } from "./work-driver-issue-closed.ts";
 import { runLensFix } from "./work-driver-lens-fix.ts";
 import { runLens } from "./work-driver-lens.ts";
 import { runMerged } from "./work-driver-merged.ts";
@@ -47,6 +47,19 @@ export async function runStep(
   // `merged` is NOT (it merges a PR whose review already passed; refusing it
   // would destroy finished, approved work — `endIfPrGone` is that step's
   // authority, since a merge acts on the PR).
+  // #1472 — a person can CLOSE the issue while the cycle runs, and every step
+  // below pays for a fresh agent turn. `endIfPrGone` watches the PR; this
+  // watches the issue. Refused at the FIRST dispatch point of the cycle (the
+  // driver's step loop is not the place for it — that file sits at the repo's
+  // 500-line hard limit, and runStep is the single funnel every step passes
+  // through), then gated at every step boundary. `handoff` is deliberately NOT
+  // gated: the park IS a handoff, so gating it would refuse the renderer the
+  // park needs. `merged` is NOT gated either: it merges a PR whose review
+  // already passed, and refusing it would destroy finished, approved work
+  // because an issue was closed afterwards — `endIfPrGone` stays that step's
+  // authority, since a merge acts on the PR.
+  const refused = await parkIfIssueClosed(ctx, state, step);
+  if (refused) return refused;
   if (step !== "handoff" && step !== "merged") {
     const gate = await endIfIssueClosed(ctx, state, step);
     if (gate.ended) return gate.ended;

@@ -393,7 +393,8 @@ export function inlineHandoffOpsPrompt(
   scratchDirAbs: string,
   skipAttentionLabel = false,
 ): string {
-  if (skipAttentionLabel) return opsPromptWithoutLabel(issue, prNumber, bodyPath, scratchDirAbs);
+  if (skipAttentionLabel)
+    return handoffOpsPromptWithoutLabel(issue, prNumber, bodyPath, scratchDirAbs);
   const target = prNumber ? `pr ${prNumber}` : `issue ${issue}`;
   const commentCmd = prNumber
     ? `gh pr comment ${prNumber} --body-file ${bodyPath}`
