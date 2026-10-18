@@ -115,11 +115,17 @@ export interface CapedPartialState {
    * expect any committed work, only the child's report. */
   reportOnly?: boolean;
   /**
-   * #544 — the checkpoint runs `bunx tsc --noEmit` in the worktree's
-   * `extension/` directory BEFORE committing (recovery, not the full gate —
-   * that runs on the integrated branch). `false` means the checkpoint
-   * commit is known-broken as-is and the handoff surfaces say so. Absent
-   * when the check could not run (worktree has no `extension/`).
+   * #544 — the checkpoint runs `CHECKPOINT_TYPECHECK_CMD` (see
+   * work-driver-cap-checkpoint.ts) in the worktree's `extension/` directory
+   * BEFORE committing (recovery, not the full gate — that runs on the
+   * integrated branch). `false` means the checkpoint commit is known-broken
+   * as-is and the handoff surfaces say so. Absent when the check could not
+   * run (worktree has no `extension/`).
+   *
+   * The command here is named by reference, not spelled: this module is
+   * type-only, so importing the constant would invert the dependency, and
+   * spelling it would be a second source of truth the no-bare-alias gate
+   * (#1414) would have to keep in step by hand.
    */
   typechecked?: boolean;
   at: number;
