@@ -107,11 +107,18 @@ export async function withProviderBackoff(
   return result;
 }
 
-/** Sleep that resolves early when the dispatch is cancelled. */
+/** Sleep that resolves early when the dispatch is cancelled.
+ *
+ * #1243 fix round — the timer is `unref()`'d: a caller that parks on a
+ * provider wait for minutes must not keep the process alive by virtue of that
+ * timer alone (the driver's own shutdown, or a host's `--timeout`, is supposed
+ * to be able to end it).
+ */
 export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve();
     const timer = setTimeout(done, ms);
+    timer.unref?.();
     function done() {
       clearTimeout(timer);
       signal?.removeEventListener("abort", done);

@@ -153,7 +153,7 @@ export function explainCap(
       const ev =
         hit?.evidence ??
         `the provider endpoint was unreachable for the whole retry ladder${cause ? ` (${cause})` : ""}`;
-      return `the model endpoint was down or severing connections and every retry met the same fault — ${ev}. NOTHING about this cycle's code was judged: there is no defect here to look at. The branch, PR and any commits are as the sections below describe. A headless caller may re-queue this cycle itself once the endpoint answers (the result's \`failure.kind\` is \`provider\`); from the chat, re-run \`/work ${state.issue}\` — the step resumes where it stopped rather than restarting the cycle. To lengthen the ladder: PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS / PI_ENSEMBLE_PROVIDER_RETRY_MAX_TOTAL_MS`;
+      return `the model endpoint was down or severing connections and every retry met the same fault — ${ev}. NOTHING about this cycle's code was judged: there is no defect here to look at. The branch, PR and any commits are as the sections below describe. A headless caller may re-queue this cycle itself once the endpoint answers (the result's \`failure.kind\` is \`provider\`); from the chat, re-run \`/work ${state.issue}\` — the step resumes where it stopped rather than restarting the cycle. To lengthen the ladder: PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS / PI_ENSEMBLE_PROVIDER_RETRY_MAX_WAIT_MS`;
     }
     case "awaiting-human-merge": {
       const hold = state.pipelineState.mergeHold;

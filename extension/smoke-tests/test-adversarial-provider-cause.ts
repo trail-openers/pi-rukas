@@ -42,7 +42,7 @@ import {
   classifyFailureCause,
   failureCauseReason,
   providerRetryFloorMs,
-  providerRetryMaxTotalMs,
+  providerRetryMaxWaitMs,
   providerRetryWaitMs,
 } from "../src/work-driver-failure-taxonomy.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
@@ -149,15 +149,15 @@ async function ladder(script: (string | undefined)[]) {
   // `delete`, not `= ""`: `Number("")` is 0, which the env readers accept as a
   // legitimate zero override — pinning it to the empty string would assert 0 === 0.
   delete process.env.PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS;
-  delete process.env.PI_ENSEMBLE_PROVIDER_RETRY_MAX_TOTAL_MS;
+  delete process.env.PI_ENSEMBLE_PROVIDER_RETRY_MAX_WAIT_MS;
   const severed = { cause: "provider-severed" as const };
   assert(
     providerRetryFloorMs() >= 60_000,
     `the default floor is minutes-scale, not seconds (${providerRetryFloorMs()}ms) — a sub-minute ladder re-spawns inside the same outage`,
   );
   assert(
-    providerRetryMaxTotalMs() === 30 * 60_000,
-    `the default total bound is 30 min (${providerRetryMaxTotalMs()}ms)`,
+    providerRetryMaxWaitMs() === 30 * 60_000,
+    `the default per-wait clamp is 30 min (${providerRetryMaxWaitMs()}ms)`,
   );
   assert(
     providerRetryWaitMs(severed, 1, 5_000) === providerRetryFloorMs(),
@@ -178,8 +178,8 @@ async function ladder(script: (string | undefined)[]) {
     "a stated delay LONGER than the floor is respected",
   );
   assert(
-    providerRetryWaitMs(severed, 10_000, 5_000) === providerRetryMaxTotalMs(),
-    "the wait never exceeds the total bound",
+    providerRetryWaitMs(severed, 10_000, 5_000) === providerRetryMaxWaitMs(),
+    "the wait never exceeds the per-wait bound",
   );
   assert(
     providerRetryWaitMs({ cause: "self-killed:inactivity" }, 1, 5_000) === 5_000,

@@ -18,20 +18,25 @@
 import type { DispatchFailureCause } from "./types.ts";
 
 /**
- * The FLOOR of the provider-class backoff, and the ceiling on the total the
- * driver will sit through.
+ * The FLOOR of the provider-class backoff, and the clamp on a SINGLE wait.
  *
  * A PROVIDER-class failure (a transport severance / endpoint timeout / 5xx, or
- * a short-burst 429) waits at least the floor, scaled by the attempt, capped at
- * the total. A provider that DID state a delay is a floor above this one (the
- * `waitMs` path) — waiting less than asked is what earns the next 429.
+ * a short-burst 429) waits at least the floor, scaled by the attempt, and no
+ * single wait exceeds the clamp. A provider that DID state a delay is a floor
+ * above this one (the `waitMs` path) — waiting less than asked is what earns
+ * the next 429.
+ *
+ * The clamp is per wait, NOT a budget for the whole cycle: what bounds the
+ * cycle is the retry budget (each rung spends one), not this number. It exists
+ * so one provider-stated delay — a 429 asking for a day — cannot put a cycle to
+ * sleep on its own.
  *
  * Both are env-tunable and both are zeroed by the offline suite (like
  * `transientRetryBackoffMs`) so no test sleeps.
  *
  * Override: PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS (default 60s),
- * PI_ENSEMBLE_PROVIDER_RETRY_MAX_TOTAL_MS (default 30 min — the bound the issue
- * names).
+ * PI_ENSEMBLE_PROVIDER_RETRY_MAX_WAIT_MS (default 30 min — the bound the issue
+ * names, on one wait).
  */
 export function providerRetryFloorMs(): number {
   const env = Number(process.env.PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS);
@@ -39,8 +44,8 @@ export function providerRetryFloorMs(): number {
   return 60_000;
 }
 
-export function providerRetryMaxTotalMs(): number {
-  const env = Number(process.env.PI_ENSEMBLE_PROVIDER_RETRY_MAX_TOTAL_MS);
+export function providerRetryMaxWaitMs(): number {
+  const env = Number(process.env.PI_ENSEMBLE_PROVIDER_RETRY_MAX_WAIT_MS);
   if (Number.isFinite(env) && env >= 0) return env;
   return 30 * 60_000;
 }
@@ -64,9 +69,9 @@ const PROVIDER_CLASS_CAUSES: ReadonlySet<DispatchFailureCause> = new Set<Dispatc
  * `attempt` is the retry about to run (1-based), so the two transient attempts
  * wait the floor and twice the floor. A provider-stated delay (`cls.waitMs`) is
  * a FLOOR rather than a target — the larger of the two wins — and the result is
- * clamped to `providerRetryMaxTotalMs()` so a cycle that keeps meeting an
- * outage stops at the bound instead of sleeping the night away. Callers add
- * jitter on top of the result.
+ * clamped to `providerRetryMaxWaitMs()` so no single wait — one a provider asked
+ * for, one the floor scaled past the bound — puts a cycle to sleep for longer
+ * than the bound. Callers add jitter on top of the result.
  *
  * Non-provider causes return `linearMs` unchanged: a self-kill or a crash is not
  * cleared by a minute of waiting, and paying minutes for what a second buys
@@ -80,5 +85,5 @@ export function providerRetryWaitMs(
   if (!PROVIDER_CLASS_CAUSES.has(cls.cause)) return linearMs;
   const scaled = providerRetryFloorMs() * Math.max(1, attempt);
   const stated = Math.max(cls.waitMs ?? 0, scaled);
-  return Math.min(stated, providerRetryMaxTotalMs());
+  return Math.min(stated, providerRetryMaxWaitMs());
 }

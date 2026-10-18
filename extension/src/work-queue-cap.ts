@@ -207,6 +207,12 @@ export function humanActionFor(
     return `revise the body of #${primary} — the spec is underspecified`;
   }
   if (/explore-already-complete/.test(reason)) return `confirm and close #${primary}`;
+  // #1243 — the endpoint caused this park, not the work. The advice must match
+  // explainCap, or the queue tells the operator to do the one thing the park
+  // says is unnecessary: `--restart` wipes the state file and rebuilds a cycle
+  // whose steps are all still there to resume from.
+  if (/provider-unavailable/.test(reason))
+    return `re-run \`/work ${primary}\` once the model endpoint answers — the step resumes where it stopped, so do NOT pass --restart (nothing about this cycle's code was judged: there is no defect to inspect)`;
   if (/explore-bodies-empty/.test(reason))
     return "fix the gh setup (`gh auth status`), then re-run";
   if (/round-cap|adversarial-loop|wall-clock/.test(reason)) {

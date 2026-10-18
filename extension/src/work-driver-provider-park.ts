@@ -3,7 +3,7 @@
  * ENDPOINT gets named, and what it says about itself (#1243).
  *
  * Split from `work-driver-step-router.ts` (AGENTS.md §12 file-size limit). Pure:
- * reads the event log a step already left behind, writes nothing. The router
+ * reads the dispatch failure the step ended on, writes nothing. The router
  * decides WHEN to park; this module decides what the park is CALLED and what its
  * `evidence` carries, so the two questions do not compete for one file.
  *
@@ -36,35 +36,42 @@ export type DispatchFailureEvent =
  * with a person. A self-kill, a loop, or a crashed child is never provider
  * fault, whatever its exit code looks like.
  *
- * "Any failed dispatch in the step" rather than only the last one: with a
- * transient ladder the last attempt is usually the one that fails, but a step
- * that met the outage and then died of something else is not a provider park.
+ * The TERMINAL failure is what is classified, and nothing else. With a
+ * transient ladder the last attempt is usually the one that fails, so scanning
+ * the whole window used to read the same as scanning the tail — but the two
+ * come apart on the case that matters: a step that MET an outage early, waited
+ * it out, recovered, and then died of a crash. That step died of the crash,
+ * and its own evidence says so (`cause=crashed`). Labelling it
+ * `provider-unavailable` handed a headless caller a `failure.kind` of
+ * `provider` and a resumable handoff — both autonomously re-queueable — for a
+ * cycle whose real failure a person has to look at. That is the mislabelling
+ * #1243 exists to remove, reproduced in the other direction.
+ *
+ * The caller passes the `tail` the router already resolved through
+ * `failureEventOf` (work-driver-failure-lookup.ts), so the two cannot disagree
+ * about which dispatch ended the step — including on a fan-out, where the
+ * failure sits behind `branches-converged` rather than at the end of the log.
  */
-export function stepParkedOnProvider(eventLog: readonly WorkEvent[]): boolean {
-  let sawProvider = false;
-  for (let i = eventLog.length - 1; i >= 0; i--) {
-    const e = eventLog[i];
-    if (!e) continue;
-    if (e.kind === "step-started") break;
-    if (e.kind !== "dispatch-failed" && e.kind !== "dispatch-failed-provider") continue;
-    // The outage evidence must come from the PROVIDER. `dispatch-failed` is
-    // pi-rukas's own record of a child that exited non-zero, was killed, or
-    // threw — never a provider stop — so the provider evidence is exactly
-    // `kind === "dispatch-failed-provider"` (the `providerMessage` field lives
-    // on that member only).
-    if (e.kind !== "dispatch-failed-provider") continue;
-    const cause = classifyFailureCause(e).cause;
-    if (cause === "provider-severed" || cause === "rate-limited:burst") sawProvider = true;
-  }
-  return sawProvider;
+export function stepParkedOnProvider(tail: DispatchFailureEvent | undefined): boolean {
+  // The outage evidence must come from the PROVIDER. `dispatch-failed` is
+  // pi-rukas's own record of a child that exited non-zero, was killed, or
+  // threw — never a provider stop — so the provider evidence is exactly
+  // `kind === "dispatch-failed-provider"` (the `providerMessage` field lives
+  // on that member only).
+  if (tail?.kind !== "dispatch-failed-provider") return false;
+  const cause = classifyFailureCause(tail).cause;
+  return cause === "provider-severed" || cause === "rate-limited:burst";
 }
 
 /**
  * The cap a dispatch failure parks with: the provider park (#1243) when the
  * endpoint caused it, otherwise the step's own `step-failed:<step>`.
  */
-export function dispatchFailCapFor(step: WorkStep, eventLog: readonly WorkEvent[]): WorkCapLiteral {
-  return stepParkedOnProvider(eventLog) ? "provider-unavailable" : `step-failed:${step}`;
+export function dispatchFailCapFor(
+  step: WorkStep,
+  tail: DispatchFailureEvent | undefined,
+): WorkCapLiteral {
+  return stepParkedOnProvider(tail) ? "provider-unavailable" : `step-failed:${step}`;
 }
 
 /**
@@ -104,7 +111,7 @@ export function dispatchFailCapHit(
   state: WorkState,
   tail: DispatchFailureEvent,
 ): Extract<WorkEvent, { kind: "cap-hit" }> {
-  const cap = dispatchFailCapFor(step, state.eventLog);
+  const cap = dispatchFailCapFor(step, tail);
   return {
     kind: "cap-hit",
     at: Date.now(),

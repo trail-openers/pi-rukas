@@ -11,6 +11,7 @@
  * `nextStep()` transition.
  */
 
+import { abortableSleep } from "./dispatch-retry.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import type { RoleName } from "./roles.ts";
 import { drainSlowEvents, foldSlowEvents } from "./slow-events.ts";
@@ -48,11 +49,22 @@ import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./work
  * #366 — injectable sleep. Real waits are the point in production (a burst
  * 429 clears by waiting), but the offline suite must never actually sleep, so
  * the seam is here rather than a bare setTimeout at each call site.
+ *
+ * #1243 fix round — the seam takes the cycle's `AbortSignal`, threaded from
+ * `ctx.signal` at both provider-wait sites. The provider ladder waits minutes,
+ * and a wait a SIGTERM cannot interrupt is a shutdown that waits out the ladder
+ * before it answers. The default resolves early on abort and `unref()`s its
+ * timer so a parked wait never holds the process open.
  */
-let sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms));
+let sleepFn: (ms: number, signal?: AbortSignal) => Promise<void> = abortableSleep;
+
+/** The provider-ladder wait: injected in tests, abort-aware in production. */
+async function providerSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  await sleepFn(ms, signal);
+}
 
 /** Test seam. Returns a restore function. */
-export function __setSleepFn(fn: (ms: number) => Promise<void>): () => void {
+export function __setSleepFn(fn: (ms: number, signal?: AbortSignal) => Promise<void>): () => void {
   const prev = sleepFn;
   sleepFn = fn;
   return () => {
@@ -260,7 +272,9 @@ export async function routeStepOutcome(
             transientRetryBackoffMs() * (used + 1),
           );
           const backoff = jitteredMs(base, classification.waitMs ?? 0);
-          if (backoff > 0) await sleepFn(backoff);
+          // #1243 fix round — abort-aware: a SIGTERM during a minutes-long
+          // provider wait ends the wait, it does not sit it out.
+          if (backoff > 0) await providerSleep(backoff, ctx.signal);
           return { state, retry: true }; // re-run same step on next loop iteration
         }
         // Budget exhausted → fall through to the HALT cap-hit below.
@@ -278,7 +292,10 @@ export async function routeStepOutcome(
         // `role` field is what F4(f) requires; explainCap reads capEvidence for
         // the trigger detail.
         const capKilled = tail.kind === "dispatch-failed" ? capKilledString(tail) : undefined;
-        const providerCap = capKilled === undefined && stepParkedOnProvider(state.eventLog);
+        // #1243 fix round — the SAME tail `failureEventOf` resolved above, not a
+        // scan of the step window: a step that met an outage early and then died
+        // of a crash ends on the crash, and parks as one.
+        const providerCap = capKilled === undefined && stepParkedOnProvider(tail);
         const cap =
           capKilled ??
           (step === "develop" && killCause === "timeout"
@@ -386,7 +403,7 @@ export async function routeStepOutcome(
               providerRetryWaitMs(classification, used + 1, transientRetryBackoffMs() * (used + 1)),
               classification.waitMs ?? 0,
             );
-            if (wait > 0) await sleepFn(wait);
+            if (wait > 0) await providerSleep(wait, ctx.signal);
           }
           return { state, retry: true }; // re-run same step on next loop iteration
         }
