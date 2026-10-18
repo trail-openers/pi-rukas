@@ -15,6 +15,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { mkReadableTmp, mkReadableTrees } from "./lib/readable-worktree.ts";
 import type { DispatchResult, ExtensionAPI } from "../src/types.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
@@ -57,7 +58,7 @@ for (const [killCause, cap] of [
   ["loop", "loop-detected"],
   ["token-budget", "token-budget"],
 ] as const) {
-  const dir = mkdtempSync(path.join(tmpdir(), `work-driver-543-${killCause}-`));
+  const dir = mkReadableTmp(`work-driver-543-${killCause}-`);
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
@@ -77,7 +78,7 @@ for (const [killCause, cap] of [
       ...s.pipelineState,
       currentStep: "adversarial",
       lastCompletedStep: "develop",
-      worktrees: tree,
+      worktrees: mkReadableTrees(tree),
       workstreams: streams,
       branchName: "feature/issue-543",
       adversarialTransientRetries: { "task-a": 3 },

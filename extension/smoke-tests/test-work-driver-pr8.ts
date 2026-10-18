@@ -11,6 +11,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { mkReadableTmp, mkReadableTrees } from "./lib/readable-worktree.ts";
 import { type DriverContext, nextStep } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
@@ -91,7 +92,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 //   - any-rejected → adversarial-rejected + cap-hit → routes to handoff
 {
   // 33a — all 3 workstreams APPROVED → aggregate adversarial-approved.
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-adv-fanout-ok-"));
+  const dir = mkReadableTmp("work-driver-adv-fanout-ok-");
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
@@ -102,11 +103,11 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
         ...s.pipelineState,
         currentStep: "adversarial",
         lastCompletedStep: "develop",
-        worktrees: {
+        worktrees: mkReadableTrees({
           "task-a": `${dir}/.worktrees/task-a`,
           "task-b": `${dir}/.worktrees/task-b`,
           "task-c": `${dir}/.worktrees/task-c`,
-        },
+        }),
         workstreams: {
           "task-a": { id: "task-a", scope: "a", paths: [], outOfScope: [] },
           "task-b": { id: "task-b", scope: "b", paths: [], outOfScope: [] },
@@ -187,7 +188,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 {
   // 33b — 1 of 3 workstreams REJECTED → aggregate adversarial-rejected
   // + cap-hit('adversarial-loop') → cycle routes to handoff.
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-adv-fanout-rej-"));
+  const dir = mkReadableTmp("work-driver-adv-fanout-rej-");
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
@@ -198,11 +199,11 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
         ...s.pipelineState,
         currentStep: "adversarial",
         lastCompletedStep: "develop",
-        worktrees: {
+        worktrees: mkReadableTrees({
           "task-a": `${dir}/.worktrees/task-a`,
           "task-b": `${dir}/.worktrees/task-b`,
           "task-c": `${dir}/.worktrees/task-c`,
-        },
+        }),
         workstreams: {
           "task-a": { id: "task-a", scope: "a", paths: [], outOfScope: [] },
           "task-b": { id: "task-b", scope: "b", paths: [], outOfScope: [] },
@@ -278,7 +279,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 // (Helper isn't exported, so test via the synthesised adversarial-approved
 // rounds field — exercise round 1/2/3 paths individually via mocked loops.)
 {
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-adv-rounds-"));
+  const dir = mkReadableTmp("work-driver-adv-rounds-");
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
@@ -289,10 +290,10 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
         ...s.pipelineState,
         currentStep: "adversarial",
         lastCompletedStep: "develop",
-        worktrees: {
+        worktrees: mkReadableTrees({
           "task-a": `${dir}/.worktrees/task-a`,
           "task-b": `${dir}/.worktrees/task-b`,
-        },
+        }),
         workstreams: {
           "task-a": { id: "task-a", scope: "a", paths: [], outOfScope: [] },
           "task-b": { id: "task-b", scope: "b", paths: [], outOfScope: [] },

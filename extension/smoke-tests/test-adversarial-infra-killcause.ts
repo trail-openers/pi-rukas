@@ -26,6 +26,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { classifyDispatchOutcome } from "../src/adversarial-classify.ts";
+import { execp } from "../src/exec.ts";
 import {
   type InfraCtx,
   infraFailureResult,
@@ -217,7 +218,12 @@ async function waitsFor(child: () => DispatchResult, issue: number): Promise<num
       // commit-pr would otherwise run THIS repo's `bun run test` — the whole
       // offline suite — inside a synthetic git tree: minutes of unrelated work
       // per leg, and a gate this test has no business re-proving.
-      verifyExecFn: async () => ({ stdout: "", stderr: "", code: 0 }),
+      // The adversarial diff read (#1634) goes through this executor too, and
+      // it must see the real committed change.
+      verifyExecFn: async (cmd: string, opts?: { argv?: string[] }) =>
+        cmd === "git" && opts?.argv?.[0] === "diff"
+          ? execp(cmd, opts)
+          : { stdout: "", stderr: "", code: 0 },
       adversarialLoopFn: async () => {
         const r = await runPhaseWithInfraRetry("adversarial-developer", "round1-review", "p", dir, {
           runPhase: async () => {

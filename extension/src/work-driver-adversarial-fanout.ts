@@ -138,7 +138,7 @@ export async function fanOutAdversarial(
     const baseSha = state.pipelineState.baseSha;
     // #1634 — read so that "empty" and "unreadable" stay distinct: the empty
     // skip (#286, a pass) needs a positively empty diff, never a failed read.
-    const read = await readWorktreeDiff(cwd, baseSha);
+    const read = await readWorktreeDiff(cwd, baseSha, ctx.verifyExecFn);
     const early = preReviewOutcome(read, {
       id,
       multi,

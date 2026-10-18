@@ -12,6 +12,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { mkReadableTmp } from "./lib/readable-worktree.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { appendEvent, initialState, readState, writeState } from "../src/workflow-state.ts";
@@ -86,7 +87,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 // verdict, outcome infra-failure, and NO adversarial-rejected event whose
 // findings claim a rejection the loop explicitly disavowed.
 {
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-485-r1-"));
+  const dir = mkReadableTmp("work-driver-485-r1-");
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
@@ -192,7 +193,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 // pass, which is simulated here by its applied marker (the develop gates have
 // their own tests), then round 2 approves.
 {
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-485-r2-"));
+  const dir = mkReadableTmp("work-driver-485-r2-");
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });

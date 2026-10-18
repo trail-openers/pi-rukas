@@ -35,6 +35,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { mkReadableTmp } from "./lib/readable-worktree.ts";
 import { ADVERSARIAL_PER_WS_MAX_RETRIES } from "../src/work-driver-adversarial-types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
@@ -155,7 +156,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   // signal; this bound only absorbs host load.
   const LOAD_TOLERANCE_CEILING_MS = (MAX_OUTER_CALLS + 1) * CALL_DELAY_MS + 5_000; // ≈5.5 s, proportional load-tolerance bound
 
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-357-t8-"));
+  const dir = mkReadableTmp("work-driver-357-t8-");
   try {
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     let s = initialState(357, 1_000_000);

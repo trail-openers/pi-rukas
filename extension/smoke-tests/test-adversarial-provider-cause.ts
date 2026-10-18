@@ -29,6 +29,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { mkReadableTmp } from "./lib/readable-worktree.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { infraFailureResult, runPhaseWithInfraRetry } from "../src/adversarial-retry.ts";
 import { classifyDispatchOutcome } from "../src/adversarial-classify.ts";
@@ -247,7 +248,7 @@ function makeFakePi(): ExtensionAPI {
   return { sendUserMessage: () => {} } as unknown as ExtensionAPI;
 }
 async function driverRun(issue: number, script: (string | undefined)[]) {
-  const dir = mkdtempSync(path.join(tmpdir(), `adv-provider-cause-${issue}-`));
+  const dir = mkReadableTmp(`adv-provider-cause-${issue}-`);
   try {
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     let s = initialState(issue, 1_000_000);

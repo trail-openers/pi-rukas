@@ -15,6 +15,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { mkReadableTmp, mkReadableTrees } from "./lib/readable-worktree.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
@@ -54,7 +55,7 @@ process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 
 {
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w1r-"));
+  const dir = mkReadableTmp("work-driver-486-w1r-");
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
@@ -72,7 +73,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       ...s.pipelineState,
       currentStep: "adversarial",
       lastCompletedStep: "develop",
-      worktrees: tree,
+      worktrees: mkReadableTrees(tree),
       workstreams: streams,
       branchName: "feature/issue-961",
       // Seeded as post-step persistence would leave it (1 initial + 2 in-step
@@ -185,7 +186,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 // batch must replace the first pass's records (R1); the stale infra-failure
 // must not sit side-by-side with the fresh APPROVED (W1).
 {
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w1rr-"));
+  const dir = mkReadableTmp("work-driver-486-w1rr-");
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
@@ -203,7 +204,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       ...s.pipelineState,
       currentStep: "adversarial",
       lastCompletedStep: "develop",
-      worktrees: tree,
+      worktrees: mkReadableTrees(tree),
       workstreams: streams,
       branchName: "feature/issue-962",
     };
@@ -360,7 +361,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 // still holds: the gate parks under `adversarial-infra-failure`, never a
 // rejection. Drives runAdversarial directly (like W1R).
 {
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w2b-"));
+  const dir = mkReadableTmp("work-driver-486-w2b-");
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
@@ -378,7 +379,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       ...s.pipelineState,
       currentStep: "adversarial",
       lastCompletedStep: "develop",
-      worktrees: tree,
+      worktrees: mkReadableTrees(tree),
       workstreams: streams,
       branchName: "feature/issue-963",
     };
