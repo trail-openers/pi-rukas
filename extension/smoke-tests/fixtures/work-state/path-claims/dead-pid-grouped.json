@@ -1,0 +1,20 @@
+{
+  "$comment": "A grouped cycle (/work 1421 1422) claims EVERY issue in its group, so a stale group is a set of entries, not one. Clearing only the primary leaves #1422's claim behind to park the next cycle — the same zombie one issue short.",
+  "claims": [
+    {
+      "issue": 1421,
+      "pid": 0,
+      "paths": [
+        "extension/src/worktree-provision.ts",
+        "extension/src/work-driver-verify-develop-helpers.ts"
+      ],
+      "startedAt": "@AGE(-120000)"
+    },
+    {
+      "issue": 1422,
+      "pid": 0,
+      "paths": ["extension/src/worktree-provision.ts"],
+      "startedAt": "@AGE(-120000)"
+    }
+  ]
+}

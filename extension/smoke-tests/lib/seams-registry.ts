@@ -6,7 +6,13 @@
  * test-only or pending, and the canary symbol whose import proves the seam is
  * still reachable from production. Adding a module to this list is the whole
  * of registering it; the assertions live in the test.
+ *
+ * The review-ledger / merge-guard group lives in
+ * `seams-registry-merge-ledger.ts` and is spread back into `SEAMS` below, so
+ * consumers see a single identical table whichever file an entry was added to.
  */
+
+import { SEAMS_MERGE_LEDGER } from "./seams-registry-merge-ledger.ts";
 
 export interface Seam {
   file: string;
@@ -25,6 +31,13 @@ export interface Seam {
    * make visible.
    */
   canary: { symbol: string; importer: string };
+  /**
+   * #1454 — a symbol whose ONLY caller is inside its own module (the read
+   * filter, the sweep loop). The canary excludes the seam's own file, so a
+   * self-call cannot satisfy it; this field asserts the internal call site
+   * still exists, which is the reachability claim the canary cannot make.
+   */
+  selfCall?: { symbol: string; by: string };
 }
 
 export const SEAMS: Seam[] = [
@@ -227,159 +240,7 @@ export const SEAMS: Seam[] = [
       importer: "dispatch-deck-confirm-row.ts",
     },
   },
-  {
-    // #912 — the per-clone review ledger. The writer calls live in
-    // adversarial.ts (runAdversarialLoop) and lens-review.ts
-    // (runLensReview); the guard (merge-guard.ts) is the reader. The shared
-    // predicates + review-patch-identity.ts are the seam the guard trusts.
-    file: "review-ledger.ts",
-    pending: {},
-    testOnly: {
-      readLedgerFile: "the raw file reader; exercised by test-review-ledger.ts",
-      validEntries: "the row validator; exercised by test-review-ledger.ts",
-      dedupeLatest: "the bounded-file dedup; exercised by test-review-ledger.ts",
-      readLedgerAt: "the never-throwing reader; exercised by test-merge-guard.ts",
-      lensBlockedByThreshold:
-        "the driver-side threshold predicate; exercised by test-review-ledger.ts",
-      bumpLensRound:
-        "the #973 round counter; wired in appendLedgerEntry (review-ledger.ts) and exercised by test-review-ledger.ts",
-    },
-    canary: { symbol: "appendLedgerEntry", importer: "adversarial-ledger.ts" },
-  },
-  {
-    // #1360 — the tool-path binding decision. `decideToolPathRow` and
-    // `toolPathFields` are called by the writer (adversarial-ledger.ts) and
-    // `captureBinding` by the loop's capture (adversarial-ledger-capture.ts);
-    // the two entries below have no production caller by design — the range
-    // check runs inside `decideToolPathRow`, and the prefix list is the shared
-    // vocabulary the spec and the guard's quoted detail are asserted against.
-    file: "adversarial-ledger-binding.ts",
-    pending: {},
-    testOnly: {
-      reviewRangeDecision:
-        "the range half of the decision, exercised through decideToolPathRow and asserted directly by test-adversarial-ledger-range.ts",
-      BINDING_REFUSAL_PREFIXES:
-        "the refusal vocabulary; asserted verbatim by test-adversarial-ledger-range.ts",
-    },
-    canary: { symbol: "decideToolPathRow", importer: "adversarial-ledger.ts" },
-  },
-  {
-    // #1360 — the loop-side capture, split from adversarial.ts for the file-size
-    // gate. Both halves are called by the loop.
-    file: "adversarial-ledger-capture.ts",
-    pending: {},
-    canary: { symbol: "captureRound", importer: "adversarial.ts" },
-  },
-  {
-    // #1071 — the per-clone review-ledger lock (O_EXCL lockfile colocated
-    // with the ledger file). Wired into appendLedgerEntry (review-ledger.ts)
-    // so the read → transform → rename window is serialised across
-    // concurrent writers on the same clone.
-    file: "review-ledger-lock.ts",
-    pending: {},
-    testOnly: {
-      LEDGER_LOCK_WAIT_MS:
-        "the default bounded wait (≈5 s); exercised by test-review-ledger-lock.ts",
-      LEDGER_LOCK_STALE_MS:
-        "the default stale window (≈30 s); exercised by test-review-ledger-lock.ts",
-      ledgerLockPath:
-        "the lockfile path (colocated with the ledger file); exercised by test-review-ledger-lock.ts",
-      runLedgerCriticalSectionHook:
-        "ACCEPTED, PERMANENT test seam: a no-op await in appendLedgerEntry (undefined in production) that lets the two-process race test widen the read→rename window deterministically; chosen over an env-var read in the write path (#1071 review); exercised by test-review-ledger-lock.ts",
-      setLedgerCriticalSectionHookForTests:
-        "ACCEPTED, PERMANENT test seam (same hook's setter): never set in production; exercised by test-review-ledger-lock.ts (its child script)",
-    },
-    canary: { symbol: "acquireLedgerLock", importer: "review-ledger.ts" },
-  },
-  {
-    // #912 — the merge target reader (gh/glab) + carve-out predicate.
-    // Wired into merge-guard.ts (the guard's decision path).
-    file: "merge-target.ts",
-    pending: {},
-    testOnly: {
-      resolvePrNumber: "the no-number PR resolution; exercised by test-merge-guard.ts",
-    },
-    canary: { symbol: "readMergeTarget", importer: "merge-guard.ts" },
-  },
-  {
-    // #912/#1417 — the merge guard's refusal PROSE. `renderHold` +
-    // `holdReasonText` (every HELD command) and `GLAB_AUTO_MERGE_REFUSAL` are
-    // called by merge-guard.ts. The MERGE half lost its production caller when
-    // #1417 split hold text from merge refusals: declared test-only rather than
-    // deleted, because docs/troubleshooting.md quotes its wording as the
-    // documented refusal shape and the hold-text suite pins it survives.
-    file: "merge-refusals.ts",
-    pending: {},
-    testOnly: {
-      ACCEPTED_MERGE_FORM:
-        "#1417 — the one accepted shape, inlined into HOLD_FORM_TEXT and MERGE_FORM_REFUSAL; the hold-text suite pins the sentence",
-      MERGE_FORM_REFUSAL:
-        "#1417 — MERGE-half prose, no production caller since holds got their own text; docs quote it, test-merge-guard-hold-text-1417.ts pins it",
-      mergeFormRefusal:
-        "#1417 — composes MERGE_FORM_REFUSAL with a reason code; same status, exercised by the hold-text and allowlist suites",
-    },
-    canary: { symbol: "renderHold", importer: "merge-guard.ts" },
-  },
-  {
-    // #1417 — the guard's size bound (#955). The module-graph import check
-    // cannot protect it: merge-allowlist.ts imports `lexedWhy` from
-    // merge-refusals.ts on the same line block, so deleting the bound's CALL
-    // outright — the mutation four lenses confirmed by live experiment — left
-    // every importer assertion green. The canary is therefore pinned to the
-    // CALL SITE's own text, not the module graph.
-    file: "merge-size.ts",
-    pending: {},
-    testOnly: {
-      // The NUMBER the bound documents, pinned equal to 8000 so a silent
-      // widening cannot move it out from under the troubleshooting entry.
-      MERGE_COMMAND_SIZE_BOUND:
-        "asserted equal to the documented bound by test-merge-size-bound.ts",
-      // The MATCHER's predicate (fail-closed: length + forge word, nothing
-      // else). `readMergeCommand` consults only the classifier's, so the pair
-      // differ on one axis the classifier cannot see — pinned at test-merge-
-      // size-bound.ts's own seam. No production caller today because #1357
-      // deleted the walking matcher; it is the predicate a revived one imports.
-      exceedsAnalysisBound:
-        "the fail-closed predicate; pinned by test-merge-size-bound.ts against the classifier's",
-      // The CLASSIFIER's predicate — reached in production only through
-      // `analysisBound`, and asserted directly so a clause cannot move between
-      // it and the matcher's predicate unnoticed.
-      exceedsClassifierBound:
-        "the classifier predicate; reached via analysisBound and asserted directly by test-merge-size-bound.ts",
-    },
-    canary: { symbol: "analysisBound", importer: "merge-allowlist.ts" },
-  },
-  {
-    // #1417 — step 1 of the classifier (the trigger). Same reasoning: the
-    // module graph stays satisfied by merge-size.ts's import while
-    // `readMergeCommand` quietly stops asking the trigger anything.
-    file: "merge-trigger.ts",
-    pending: {},
-    canary: { symbol: "triggerCode", importer: "merge-allowlist.ts" },
-  },
-  {
-    // #1417 — the command-text views and their patterns. The classifier reaches
-    // this module through the trigger, so that is the call site the canary
-    // pins; the bound's own path runs through `triggerCode` instead.
-    file: "merge-lex-views.ts",
-    pending: {},
-    testOnly: {
-      // The `g`-flagged tokeniser `ansiC` replaces with — shared with a
-      // `.test()` caller it would carry `lastIndex` between calls, which is
-      // why it is exported at all rather than being a module constant.
-      ANSI_ESCAPE_PATTERN:
-        "the tokeniser behind ansiC (its only consumer); pinned exported by the lastIndex comment and exercised through ansiC's suite",
-    },
-    canary: { symbol: "hasComplexCommandWord", importer: "merge-trigger.ts" },
-  },
-  {
-    // #1417 — the bound's refusal wording. Called by exactly one function, so
-    // the canary names that function's module; if the wording stops being
-    // reachable the bound has no refusal left to emit.
-    file: "merge-too-large.ts",
-    pending: {},
-    canary: { symbol: "refuseTooLarge", importer: "merge-size.ts" },
-  },
+  ...SEAMS_MERGE_LEDGER,
   {
     // #1019 — the pi binary version probe. The probe half (getPiResolutionInfo)
     // used to ship with no production caller, so its PATH-source / older-than-
@@ -480,5 +341,19 @@ export const SEAMS: Seam[] = [
       siblingClaimWaitSnapshot: "#1101 — test-work-entry-queue-wiring.ts",
     },
     canary: { symbol: "setSiblingClaimWait", importer: "work-entry-queue.ts" },
+  },
+  {
+    // #1002 round 1 — git's "that is not there" rule, the one place that reads
+    // git's exit code + wording for an absent ref or tree object. `gitSaysAbsent`
+    // is consumed inside this module by `refResolves`; `gitCatFileSaysAbsent` has
+    // a real production caller in `lens-evidence.ts`. The former is exported only
+    // so the wording rule can be asserted directly rather than through a probe.
+    file: "git-range.ts",
+    pending: {},
+    testOnly: {
+      gitSaysAbsent:
+        "the ref-probe absence rule, exercised through refResolves and pinned directly by test-git-range-1153.ts",
+    },
+    canary: { symbol: "gitCatFileSaysAbsent", importer: "lens-evidence.ts" },
   },
 ];

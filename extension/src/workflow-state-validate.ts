@@ -16,14 +16,20 @@ import { WORK_STEPS, type WorkEvent, type WorkStep } from "./workflow-state-even
 import { prDraftFindings } from "./workflow-state-schema-pr-draft.ts";
 import { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
 import {
-  CAP_EVIDENCE_KINDS,
   CAP_HIT_NEXT_STEPS,
   KNOWN_CAPPED_PARTIAL_ROLES,
-  KNOWN_CAPPED_PARTIAL_TREES,
-  KNOWN_CONSOLIDATION_STATUSES,
   KNOWN_STATUSES,
   isKnownCap,
 } from "./workflow-state-validate-caps.ts";
+// The consolidation + cap-checkpoint records are validated in their own module
+// (#861 seam, AGENTS.md §12 file-size split); predicate + rationale there.
+import {
+  capEvidenceFindings,
+  capedPartialStateFindings,
+  consolidationCompletenessFindings,
+  consolidationNotesFindings,
+  incompleteConsolidationFindings,
+} from "./workflow-state-validate-consolidation.ts";
 export { KNOWN_STATUSES } from "./workflow-state-validate-caps.ts";
 // #1362 — the cycle-start exempt-untracked baseline (#533 rule: type-check the
 // untyped cast; predicate + rationale in workflow-state-dirty-root.ts).
@@ -86,6 +92,13 @@ export const KNOWN_EVENT_KINDS = [
   // tree is the tree the per-worktree verify already judged. A fast `develop`
   // must be explainable from the state file.
   "consolidated-verify-skipped",
+  // #1404 — the consolidated verify failed and the cycle pushed anyway, because
+  // every failing test is red at the cycle's base commit too. The one shape
+  // where a red gate does not stop the push, so the state file must carry it.
+  "consolidated-verify-pre-existing",
+  // #1415 — the develop gate's verify run, bracketed so its time is visible.
+  "verify-started",
+  "verify-completed",
   // #558 — the branch step's worktree provisioning record (the driver writes
   // it when it symlinks dependencies into a fresh worktree). Absent from the
   // tuple, a cycle that crashed after provisioning refused to resume.
@@ -210,225 +223,17 @@ export function validateDiscriminants(state: unknown): string[] {
     // PR is mergeable. Predicate + rationale in workflow-state-schema-pr-draft.ts;
     // absent validates (a cycle that never opened its PR as a draft).
     out.push(...prDraftFindings(ps.prDraft));
-    if (ps.incompleteConsolidation !== undefined) {
-      const ic = ps.incompleteConsolidation;
-      if (Array.isArray(ic)) {
-        ic.forEach((e, i) => {
-          const v = e as Record<string, unknown> | null;
-          if (typeof v !== "object" || v === null) {
-            out.push(`pipelineState.incompleteConsolidation[${i}] is not an object`);
-          } else if (typeof v.id !== "string") {
-            out.push(`pipelineState.incompleteConsolidation[${i}].id is missing or not a string`);
-          }
-        });
-      } else if (typeof ic !== "object" || ic === null) {
-        out.push("pipelineState.incompleteConsolidation is not an object or array");
-      } else {
-        const ico = ic as Record<string, unknown>;
-        const verdicts = ico.verdicts;
-        if (verdicts === undefined) {
-          out.push("pipelineState.incompleteConsolidation has no verdicts field");
-        } else if (!Array.isArray(verdicts)) {
-          out.push("pipelineState.incompleteConsolidation.verdicts is not an array");
-        } else {
-          verdicts.forEach((v, i) => {
-            const e = v as Record<string, unknown> | null;
-            if (typeof e !== "object" || e === null) {
-              out.push(`pipelineState.incompleteConsolidation.verdicts[${i}] is not an object`);
-              return;
-            }
-            if (e.status === undefined) {
-              if (!Array.isArray(e.paths)) {
-                out.push(
-                  `pipelineState.incompleteConsolidation.verdicts[${i}] has neither status nor paths`,
-                );
-              }
-              return;
-            }
-            if (!KNOWN_CONSOLIDATION_STATUSES.includes(e.status)) {
-              out.push(
-                `pipelineState.incompleteConsolidation.verdicts[${i}].status has unknown value ${JSON.stringify(e.status)}`,
-              );
-              return;
-            }
-            if (e.status === "uncovered" && !Array.isArray(e.uncoveredPaths)) {
-              out.push(
-                `pipelineState.incompleteConsolidation.verdicts[${i}].uncoveredPaths is missing or not an array (required when status is 'uncovered')`,
-              );
-            }
-            // #875 — the per-workstream dirty flag (computed once at gate
-            // time from the worktree porcelain). OPTIONAL: pre-#875 state
-            // files lack it entirely and must keep validating; when
-            // present it must be a boolean (renderers read it verbatim,
-            // so a non-boolean would be a confident-wrong claim).
-            if (e.status === "uncovered" && e.dirty !== undefined && typeof e.dirty !== "boolean") {
-              out.push(
-                `pipelineState.incompleteConsolidation.verdicts[${i}].dirty is not a boolean (must be a boolean when present)`,
-              );
-            }
-            if (e.status === "unverifiable" && typeof e.reason !== "string") {
-              out.push(
-                `pipelineState.incompleteConsolidation.verdicts[${i}].reason is missing or not a string (required when status is 'unverifiable')`,
-              );
-            }
-            // #778 — a `moved` verdict must carry the move records: the
-            // whole point of the status is that the state file names both
-            // sides of the rename, so a partial record would be a confident
-            // wrong handoff input.
-            if (e.status === "moved") {
-              const mp = e.movedPaths;
-              if (!Array.isArray(mp)) {
-                out.push(
-                  `pipelineState.incompleteConsolidation.verdicts[${i}].movedPaths is missing or not an array (required when status is 'moved')`,
-                );
-              } else if (
-                mp.some(
-                  (m) =>
-                    typeof m !== "object" ||
-                    m === null ||
-                    typeof (m as Record<string, unknown>).from !== "string" ||
-                    typeof (m as Record<string, unknown>).to !== "string",
-                )
-              ) {
-                out.push(
-                  `pipelineState.incompleteConsolidation.verdicts[${i}].movedPaths contains an entry without string from/to`,
-                );
-              }
-            }
-          });
-          if (ico.filesPresent !== undefined && !Array.isArray(ico.filesPresent)) {
-            out.push("pipelineState.incompleteConsolidation.filesPresent is not an array");
-          }
-        }
-      }
-    }
-    // #543 — `pipelineState.capEvidence`, when present, must carry a known
-    // `kind` and a numeric `count` (the structured trigger evidence the
-    // F1/F6 caps render). The same #533 "type-check the untyped cast" rule
-    // that covers `commitPrRoot`: a partial / hand-edited record would
-    // otherwise flow to `explainCap` as if every field were present.
-    if (ps.capEvidence !== undefined) {
-      const ce = ps.capEvidence;
-      if (typeof ce !== "object" || ce === null) {
-        out.push("pipelineState.capEvidence is not an object");
-      } else {
-        const ceo = ce as Record<string, unknown>;
-        if (!CAP_EVIDENCE_KINDS.includes(ceo.kind)) {
-          out.push(`pipelineState.capEvidence.kind has unknown value ${JSON.stringify(ceo.kind)}`);
-        }
-        // (H3) — the repeat count is the trigger evidence for the LOOP kind
-        // only: the token-budget evidence's story is the budget arithmetic
-        // (budgetTokens / usedTokens), and a count there would be fiction.
-        if (ceo.kind === "loop") {
-          if (typeof ceo.count !== "number" || !Number.isFinite(ceo.count)) {
-            out.push(
-              "pipelineState.capEvidence.count is missing or not a finite number (required for kind 'loop')",
-            );
-          }
-        }
-        if (ceo.turnRange !== undefined && !Array.isArray(ceo.turnRange)) {
-          out.push("pipelineState.capEvidence.turnRange is not an array");
-        }
-        // (H3) — the budget arithmetic is REQUIRED for the token-budget kind
-        // (that IS the evidence); for any other kind it is only checked when
-        // present, so a loop record carrying a stray budgetTokens is not
-        // rejected.
-        if (ceo.kind === "token-budget") {
-          for (const field of ["budgetTokens", "usedTokens"] as const) {
-            if (typeof ceo[field] !== "number" || !Number.isFinite(ceo[field] as number)) {
-              out.push(
-                `pipelineState.capEvidence.${field} is missing or not a finite number (required for kind 'token-budget')`,
-              );
-            }
-          }
-        } else {
-          for (const field of ["budgetTokens", "usedTokens"] as const) {
-            if (
-              ceo[field] !== undefined &&
-              (typeof ceo[field] !== "number" || !Number.isFinite(ceo[field] as number))
-            ) {
-              out.push(`pipelineState.capEvidence.${field} is not a finite number`);
-            }
-          }
-        }
-      }
-    }
-    // #728 — `pipelineState.consolidationCompleteness`, when present, must
-    // carry the name-sets (arrays) the handoff renders verbatim: a partial
-    // or hand-edited record would otherwise render a confident wrong
-    // dropped-path list. `checkError` (the "could not verify" state) is
-    // optional and, when present, must be a string.
-    if (ps.consolidationCompleteness !== undefined) {
-      const cc = ps.consolidationCompleteness;
-      if (typeof cc !== "object" || cc === null) {
-        out.push("pipelineState.consolidationCompleteness is not an object");
-      } else {
-        const cco = cc as Record<string, unknown>;
-        for (const field of ["intended", "landed", "droppedPaths"] as const) {
-          const arr = cco[field];
-          if (!Array.isArray(arr)) {
-            out.push(`pipelineState.consolidationCompleteness.${field} is missing or not an array`);
-          } else if (arr.some((v) => typeof v !== "string")) {
-            out.push(
-              `pipelineState.consolidationCompleteness.${field} contains a non-string entry`,
-            );
-          }
-        }
-        if (cco.checkError !== undefined && typeof cco.checkError !== "string") {
-          out.push("pipelineState.consolidationCompleteness.checkError is not a string");
-        }
-      }
-    }
-    // #1153 — `pipelineState.consolidationNotes`, when present, must be an
-    // array of strings: the handoff renders each entry verbatim into a
-    // "checks that did not run" bullet, so a non-string (an object, a number)
-    // would render `[object Object]` where the operator expected a reason, and
-    // a non-array would crash the renderer.
-    if (ps.consolidationNotes !== undefined) {
-      const cn = ps.consolidationNotes;
-      if (!Array.isArray(cn)) {
-        out.push("pipelineState.consolidationNotes is not an array");
-      } else if (cn.some((v) => typeof v !== "string")) {
-        out.push("pipelineState.consolidationNotes contains a non-string entry");
-      }
-    }
-    // #543 F5 — `pipelineState.capedPartialState` (the driver-owned
-    // checkpoint record) must carry a known role/tree and, when the tree is
-    // "committed", the commit it claims: the handoff renders
-    // `git -C <worktree> show <sha>` from it, and a partial object would
-    // render a confident wrong SHA.
-    if (ps.capedPartialState !== undefined) {
-      const cps = ps.capedPartialState;
-      if (typeof cps !== "object" || cps === null) {
-        out.push("pipelineState.capedPartialState is not an object");
-      } else {
-        const cpso = cps as Record<string, unknown>;
-        if (typeof cpso.cap !== "string" || cpso.cap.length === 0) {
-          out.push("pipelineState.capedPartialState.cap is missing or not a string");
-        }
-        if (cpso.role !== undefined && !KNOWN_CAPPED_PARTIAL_ROLES.includes(cpso.role)) {
-          out.push(
-            `pipelineState.capedPartialState.role has unknown value ${JSON.stringify(cpso.role)}`,
-          );
-        }
-        if (!KNOWN_CAPPED_PARTIAL_TREES.includes(cpso.tree)) {
-          out.push(
-            `pipelineState.capedPartialState.tree has unknown value ${JSON.stringify(cpso.tree)}`,
-          );
-        }
-        if (typeof cpso.at !== "number" || !Number.isFinite(cpso.at)) {
-          out.push("pipelineState.capedPartialState.at is not a finite number");
-        }
-        if (cpso.typechecked !== undefined && typeof cpso.typechecked !== "boolean") {
-          out.push("pipelineState.capedPartialState.typechecked is not a boolean");
-        }
-        if (cpso.tree === "committed" && typeof cpso.commitSha !== "string") {
-          out.push(
-            "pipelineState.capedPartialState.commitSha is missing or not a string (required when tree is 'committed')",
-          );
-        }
-      }
-    }
+    // The five consolidation / cap-checkpoint records below (#540/#543/#728/
+    // #778/#875/#1153/#1414) are checked in their own module — the same #533
+    // "type-check the untyped cast" rule as `prDraft` and
+    // `dirtyRootExemptBaseline` above, and the same #861 seam the cap
+    // vocabulary used for the 500-line gate. Findings are appended in the
+    // original order, so the reported list is unchanged.
+    out.push(...incompleteConsolidationFindings(ps.incompleteConsolidation));
+    out.push(...capEvidenceFindings(ps.capEvidence));
+    out.push(...consolidationCompletenessFindings(ps.consolidationCompleteness));
+    out.push(...consolidationNotesFindings(ps.consolidationNotes));
+    out.push(...capedPartialStateFindings(ps.capedPartialState));
   }
 
   const log = s.eventLog;

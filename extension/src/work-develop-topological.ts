@@ -46,7 +46,7 @@ import {
   safetyNetWorktree,
 } from "./work-driver-safety-net.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
-import { recordConsolidatedVerifySkip } from "./work-driver-verify-events.ts";
+import { recordDevelopGateEvents } from "./work-driver-verify-events.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
@@ -395,7 +395,7 @@ async function runDevelopTopological(
     // than inferred from the absence of a 20-minute gap. Appended here, where
     // the caller owns the event log, so the log stays append-only; the helper
     // is shared with the three gate RE-RUN paths so a skip is never lost.
-    next = recordConsolidatedVerifySkip(next, gate);
+    next = recordDevelopGateEvents(next, gate);
     stateRef.current = next;
     // #814 — a fence violator must not report a bare "ok" here: replace the
     // event with the flipped verdicts via replaceDevelopConvergedVerdicts

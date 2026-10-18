@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import { startBatch, startJob } from "./async-jobs.ts";
@@ -11,7 +11,7 @@ import { transcriptPathFor } from "./spawn-support.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
-import { liveCycleOwning } from "./work-driver-registry.ts";
+import { liveCycleIssues, liveCycleOwning } from "./work-driver-registry.ts";
 
 /**
  * #838 — the per-cycle deck option a driver dispatch threads through
@@ -73,6 +73,40 @@ export function assertNotDriverWorktree(spec: DispatchSpec): void {
   if (cycle === undefined) return;
   throw new Error(
     `Refused: ${cwd} is the worktree of the running /work driver cycle for #${cycle}. The driver's own child is the only writer there, and a second ${spec.role} corrupts the tree the driver verifies and commits from. Do not hand-dispatch into a live cycle — the driver retries and parks on its own (/work-status ${cycle}). To inspect the tree, dispatch explore.`,
+  );
+}
+
+/** "issue #37", "issues 37", "issue-37" (worktree / branch), "task-37", "gh issue view 37". */
+const ISSUE_REF = /\bissues?[-_ ]?#?(\d+)|\btask-(\d+)|\bgh issue \w+ #?(\d+)/gi;
+
+const hashList = (ns: Iterable<number>) => [...ns].map((n) => `#${n}`).join(", ");
+
+/**
+ * Refuse a PM dispatch of a WRITING role whose prompt or cwd names an issue
+ * the live /work cycle does not own (#1361) — in a session with no terminal
+ * only. There nobody asked the PM for other work: it exists to report on the
+ * cycle, and the one time it wrote for another issue it had invented that
+ * issue from a slow-run notice, made a worktree and branch for it in the
+ * cycle's repository and spent 1.1M tokens before noticing. In the TUI the
+ * operator may well ask for other work while a cycle runs, so it is let
+ * through. Read-only roles may look anywhere.
+ */
+export function assertWithinCycleIssues(
+  spec: DispatchSpec,
+  mode: ExtensionContext["mode"] | undefined,
+): void {
+  if (mode === undefined || mode === "tui") return;
+  if (excludeToolsFor(spec.role) !== undefined) return;
+  const owned = new Set(liveCycleIssues());
+  if (owned.size === 0) return;
+  const named = new Set<number>();
+  for (const m of `${spec.cwd ?? ""}\n${spec.prompt}`.matchAll(ISSUE_REF)) {
+    named.add(Number(m[1] ?? m[2] ?? m[3]));
+  }
+  const foreign = [...named].filter((n) => !owned.has(n));
+  if (foreign.length === 0) return;
+  throw new Error(
+    `Refused: this ${spec.role} dispatch names ${hashList(foreign)}, but the /work cycle in this session owns ${hashList(owned)} and no other issue. Its children are the driver's (dispatch_status marks them), and the driver develops, commits and parks on its own (/work-status ${[...owned][0]}). Do not start work on an issue the cycle was not given; to look something up, dispatch explore.`,
   );
 }
 
@@ -220,12 +254,13 @@ export function registerDispatchTools(pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, _signal, _onUpdate, ctx) {
       // Defence in depth: TypeBox may not strict-strip undeclared fields, so
       // we discard any agent-supplied `model` before constructing the spec.
       // Model choice is user-authority-only (see issue #92).
       const spec = stripModelOverride(params as DispatchSpec);
       assertNotDriverWorktree(spec);
+      assertWithinCycleIssues(spec, ctx?.mode);
       // #1015 — the report's git-state line runs here; the child still gets spec unchanged.
       const cwd = spec.cwd ?? process.cwd();
       const { jobId } = startJob(pi, {
@@ -276,7 +311,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
         { maxItems: MAX_PARALLEL },
       ),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, _signal, _onUpdate, ctx) {
       const rawSpecs = (params as { specs: DispatchSpec[] }).specs;
       if (rawSpecs.length < 2) {
         throw new Error(
@@ -289,7 +324,10 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       // Defence in depth: drop any agent-supplied `model` from every spec.
       // Model choice is user-authority-only (see issue #92).
       const specs = rawSpecs.map(stripModelOverride);
-      for (const spec of specs) assertNotDriverWorktree(spec);
+      for (const spec of specs) {
+        assertNotDriverWorktree(spec);
+        assertWithinCycleIssues(spec, ctx?.mode);
+      }
       // Share a runId so all children in this batch sort together on disk.
       const runId = makeRunId();
       const { batchId } = startBatch(pi, {

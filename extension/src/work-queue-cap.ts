@@ -40,6 +40,7 @@ import {
   mergeHoldGrantAction,
 } from "./work-driver-merge-authority.ts";
 import { HOST_EXHAUSTION_SUFFIX } from "./work-queue-park-reason.ts";
+import { crossGroupAction } from "./work-queue-parks-claims.ts";
 import { deferredLeftoverAction } from "./work-queue-parks.ts";
 import type { BlockReason } from "./work-queue-scheduler.ts";
 
@@ -138,6 +139,24 @@ export function humanActionFor(
   // the switch in `queueWaitAction` branches on. A hand-written alternation
   // here was a second list of the same two names, and a third cap added to
   // that switch fell through this one to "inspect a diff that does not exist".
+  //
+  // #1454 — `cross-group-conflict` is the ONE name this router sees from two
+  // producers, so the two rules are split by provenance, not by the bare word:
+  //
+  //   - `^cap cross-group-conflict` + `in-flight sibling(s)` — the QUEUE's
+  //     sighting (`waitCapFor`'s detail is the only thing that writes that
+  //     clause). The group never dispatched: `queueWaitAction`.
+  //   - a bare `cross-group-conflict` — the REACTIVE plan-time check in
+  //     work-driver-path-claims.ts, raised from inside a cycle that DID
+  //     dispatch, has a state file, and is parked against somebody else's
+  //     claim: `crossGroupAction`, which names the CLAIMANT.
+  //
+  // The generic fallback both used to get is the shape that sent six operators
+  // to re-run an unchanged issue into the same park.
+  if (/^cap cross-group-conflict\b.*in-flight sibling\(s\)/.test(reason)) {
+    return queueWaitAction(primary, "cross-group-conflict");
+  }
+  if (/cross-group-conflict/.test(reason)) return crossGroupAction(reason, primary);
   const waitCap = reason.match(new RegExp(`^cap (${QUEUE_WAIT_CAPS.join("|")})\\b`));
   if (waitCap) return queueWaitAction(primary, waitCap[1] as QueueWaitCap);
   // #753 — a dirty-leftover park (deferred worktree creation refused):
@@ -207,6 +226,16 @@ export function humanActionFor(
     return `revise the body of #${primary} — the spec is underspecified`;
   }
   if (/explore-already-complete/.test(reason)) return `confirm and close #${primary}`;
+  // #1243 — the endpoint caused this park, not the work. The advice must match
+  // explainCap AND the driver's actual re-entry behaviour: a provider park
+  // terminalises as `interrupted` (reason `provider`), which the driver
+  // re-enters, so a plain `/work N` resumes the halted step. `--restart` would
+  // wipe the state file and rebuild a cycle whose steps are all still there to
+  // resume from. Pre-fix this advice said "resumes where it stopped" while the
+  // park terminalised as the terminal `handoff`, which REFUSES a plain re-run —
+  // advice no invocation could follow.
+  if (/provider-unavailable/.test(reason))
+    return `re-run \`/work ${primary}\` once the model endpoint answers — this park stays resumable, so the halted step re-enters and finished steps are not rebuilt; do NOT pass --restart (nothing about this cycle's code was judged: there is no defect to inspect)`;
   if (/explore-bodies-empty/.test(reason))
     return "fix the gh setup (`gh auth status`), then re-run";
   if (/round-cap|adversarial-loop|wall-clock/.test(reason)) {

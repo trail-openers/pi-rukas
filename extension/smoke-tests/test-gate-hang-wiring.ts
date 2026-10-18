@@ -160,6 +160,10 @@ async function caseDevelopCap() {
   writeFileSync(path.join(f.repo, "change.txt"), "new\n");
   await git(f.repo, ["add", "."]);
   await git(f.repo, ["commit", "-q", "-m", "add change"]);
+  // The driver's state file lives at repoRoot and is gitignored in a real
+  // project; the develop gate persists `verify-started` there (#1415), and this
+  // root-as-worktree fixture must not read it as a protected-path write.
+  writeFileSync(path.join(f.repo, ".git", "info", "exclude"), ".pi/work-state/\n");
 
   const state = initialState(1427);
   state.pipelineState.worktrees = { default: f.repo };

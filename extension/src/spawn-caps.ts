@@ -30,7 +30,7 @@ import type { PiContentBlock } from "./pi-event-shapes.ts";
 import type { LoopObserver } from "./progress.ts";
 import { killProcessTree } from "./spawn-kill.ts";
 import { TokenBudgetTracker, tokenBudgetEnvKey } from "./spawn-support.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import { turnNudgeEnabled, turnNudgeText, turnNudgeThreshold } from "./turn-nudge.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -262,6 +262,36 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
       : undefined;
   loopGracePoll?.unref();
 
+  // The budget kill, symmetric with `loops()` above (#1510). The tracker
+  // invokes this from BOTH of its paths — `poll()` on the driver's 500 ms
+  // `setInterval` (grace > 0) and `check()` synchronously (grace == 0) — so
+  // the guard lives HERE, on the injected closure, rather than in either
+  // branch: a throw escaping `poll()` is an uncaught exception at timer level,
+  // which aborts the parent and takes down every sibling child still in
+  // flight. It stays on the caller side rather than inside `killChild` /
+  // `killProcessTree` because those already swallow their own signal errors
+  // (`signalChild` / `signalGroupPid`) — no injectable child handle reaches
+  // this catch in a test, so the guard is defence-in-depth for the
+  // pre-signal throws (the `isGroupChild` WeakMap receiver, the escalation
+  // `setTimeout`), not a branch an offline assertion can witness. It is
+  // therefore reported, never merely swallowed: `traceWarn` at default log
+  // level, NOT the `PI_ENSEMBLE_DEBUG`-gated `trace` — a kill that could not
+  // land is outcome-changing, the child keeps spending against a budget that
+  // already fired while `killCause()` still reports "token-budget", which is
+  // what makes `work-driver-adversarial-capkill.ts` park a cycle on a child
+  // nobody killed. Same reasoning as `review-budget.ts`'s silent-reject fix.
+  const budgetKill = () => {
+    if (opts.childExited()) return; // H1 — the child is already gone
+    try {
+      killChild(opts.child);
+    } catch (err) {
+      // The kill signal is a best-effort side effect; the tracker set its own
+      // `killed` flag BEFORE calling, so `killCause()` and the `tokenBudget`
+      // evidence pair survive a swallowed throw — crash path and attribution
+      // path stay separate.
+      traceWarn(`token-budget killChild failed: ${String(err)}`);
+    }
+  };
   const tracker =
     capsOn && opts.onSteer
       ? new TokenBudgetTracker(
@@ -269,9 +299,7 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
           opts.onSteer,
           // H1 — same race as the loop kill: the tracker kills on its own
           // schedule, so gate the kill on the child's observed exit too.
-          () => {
-            if (!opts.childExited()) killChild(opts.child);
-          },
+          budgetKill,
           opts.totalTokens,
           graceMs,
         )
