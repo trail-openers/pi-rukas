@@ -132,6 +132,9 @@ export const CAP_HIT_FIXED_LITERALS = [
   // park terminalized as a handoff; the evidence names the deadline, the
   // time remaining, and the step that was not started.
   "deadline",
+  // #1567 item 6 — time was left before the deadline, but not enough for the
+  // step to be worth starting (MIN_USEFUL_MS). Terminalized as a handoff.
+  "deadline:no-fit",
   // #571 — a sibling cycle holds a path claim that overlaps this plan.
   "cross-group-conflict",
   // #1454 r3 — the claims lock refused a registration (the lockfile cannot be

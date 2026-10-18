@@ -14,7 +14,10 @@
  * is where step work ends, and `deadline + allowance` is the kill. This
  * module holds both numbers for the cycle and gives every spawn the bound:
  *
- * - while steps run, a child is killed no later than the deadline;
+ * - while steps run, a child is killed no later than the deadline minus the
+ *   handoff grace (the allowance): the policy's `timeoutMs = min(own bound,
+ *   deadline − now − grace)` (#1567 item 6). The step-boundary check uses the
+ *   same end, so "a step may start" and "a step's children must stop" agree;
  * - once the handoff runs, its child is killed no later than the kill minus
  *   a small reserve, which is left for the in-process `gh` fallback that
  *   posts the same body when the handoff dispatch does not finish.
@@ -39,6 +42,8 @@ interface CycleClock {
   deadlineMs?: number;
   /** The caller's hard kill as the contract implies it: deadline + handoff allowance. */
   killAtMs?: number;
+  /** Where step work ends: deadline − handoff grace (the allowance). */
+  stepsEndMs?: number;
   phase: Phase;
 }
 
@@ -63,6 +68,7 @@ export function noteCycleDeadline(
   if (!clock) return;
   clock.deadlineMs = deadlineMs;
   clock.killAtMs = deadlineMs === undefined ? undefined : deadlineMs + allowanceMs;
+  clock.stepsEndMs = deadlineMs === undefined ? undefined : deadlineMs - allowanceMs;
   clock.phase = step === "handoff" ? "handoff" : "steps";
 }
 
@@ -81,7 +87,7 @@ export function clampToCycleDeadline(
   now: number,
 ): { timeoutMs: number; clamped: boolean } {
   const clock = store.getStore();
-  const end = clock?.phase === "handoff" ? handoffEndOf(clock) : clock?.deadlineMs;
+  const end = clock?.phase === "handoff" ? handoffEndOf(clock) : clock?.stepsEndMs;
   if (end === undefined) return { timeoutMs, clamped: false };
   const left = Math.max(MIN_CLAMPED_BOUND_MS, end - now);
   return left < timeoutMs ? { timeoutMs: left, clamped: true } : { timeoutMs, clamped: false };

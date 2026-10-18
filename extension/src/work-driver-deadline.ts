@@ -17,14 +17,19 @@
  * and passes that allowance as `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` (#1593, the
  * janit/tehas#355 contract), so the handoff has the allowance to itself.
  *
- * - At each step boundary the driver parks with cap `deadline` (and routes
- *   to handoff) once `now + handoff grace >= deadline`: a step that would
- *   have less than the grace to run is not started. A step's worst-case
- *   bound is not reserved — those bounds are backstops measured in hours.
- * - A step already running when the deadline arrives does not run on: every
- *   child the cycle spawns is bounded by what the deadline leaves, and the
- *   handoff's child by the allowance after it (cycle-deadline-clock.ts).
- *   Before #1593 such a step ran to its own backstop, into the caller's kill.
+ * - Step work ends at `deadline − handoff grace`; what is left before that
+ *   is the step's useful time. At each step boundary the driver parks with
+ *   cap `deadline` (and routes to handoff) once no useful time is left.
+ * - Partial fit (#1567 item 6, #1447/#1547): develop and lens-fix need at
+ *   least 15 min of useful time, a lens round 10 min. With less, the step is
+ *   not started and the cycle parks with cap `deadline:no-fit`, naming the
+ *   step, the time left and the time it needed. With enough, the step is
+ *   clamped to the time left rather than refused for not fitting its own
+ *   (much longer) bound.
+ * - A step already running does not run on: every child the cycle spawns is
+ *   bounded by `deadline − now − grace`, and the handoff's child by the
+ *   allowance after the deadline (cycle-deadline-clock.ts). Before #1593 such
+ *   a step ran to its own backstop, into the caller's kill.
  * - A step that ends past the deadline does not get to name the cycle's
  *   terminal reason: the handoff boundary records `deadline` after its
  *   verdict (work-driver-terminal-reason.ts).
@@ -39,6 +44,18 @@ import type { CycleContext } from "./work-driver-context.ts";
 import { handoffDispatchTimeoutMs } from "./work-driver-handoff.ts";
 import { terminalReasonAtHandoff } from "./work-driver-terminal-reason.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
+
+const MINUTE_MS = 60_000;
+
+/**
+ * #1567 item 6 — the least useful time (before `deadline − handoff grace`) a
+ * step needs to be worth starting. A step not listed needs only some.
+ */
+export const MIN_USEFUL_MS: Partial<Record<WorkStep, number>> = {
+  develop: 15 * MINUTE_MS,
+  "lens-fix": 15 * MINUTE_MS,
+  "lens-review": 10 * MINUTE_MS,
+};
 
 /** Below this an epoch is in seconds, not ms (1e12 ms is September 2001). */
 const EPOCH_MS_FLOOR = 1e12;
@@ -118,9 +135,10 @@ function refusedStepText(state: WorkState, step: WorkStep): string {
 
 /**
  * The pre-step boundary check (#1238). Parks with cap `deadline` (routing to
- * handoff) once `now + handoff grace >= deadline` — the deadline means "do
- * not start a new step after this point", so a step's own worst case is not
- * reserved. Returns `{ parked, state, deadline }`; `state` carries the
+ * handoff) once `now + handoff grace >= deadline`, and with `deadline:no-fit`
+ * when some useful time is left but less than the step's `MIN_USEFUL_MS`. A
+ * step's own worst-case bound is not reserved: a step that fits is clamped to
+ * the time left (cycle-deadline-clock.ts). Returns `{ parked, state, deadline }`; `state` carries the
  * resolved deadline (persisted so a budget resolves exactly once), or drops
  * a stale persisted one when no deadline applies any more.
  *
@@ -150,22 +168,31 @@ export async function deadlineCheck(
   if (step === "handoff") {
     // #1593 — a step that ended past the deadline, or on a backstop kill, does
     // not leave its own verdict standing as the cycle's terminal reason.
-    return { parked: false, state: terminalReasonAtHandoff(next, deadline, now), deadline };
+    return {
+      parked: false,
+      state: terminalReasonAtHandoff(next, deadline, now, handoffDispatchTimeoutMs()),
+      deadline,
+    };
   }
   if (step === "merged") return { parked: false, state: next, deadline };
   const grace = handoffDispatchTimeoutMs();
   const remaining = deadline - now;
-  if (now + grace < deadline) return { parked: false, state: next, deadline };
+  const useful = remaining - grace;
+  const need = MIN_USEFUL_MS[step] ?? 0;
+  if (useful > 0 && useful >= need) return { parked: false, state: next, deadline };
+  const noFit = useful > 0;
   trace(
-    `work-driver: deadline park before ${step} — remaining ${remaining}ms <= handoff grace ${grace}ms (deadline ${deadline})`,
+    `work-driver: deadline park before ${step} — ${useful}ms useful (remaining ${remaining}ms − handoff grace ${grace}ms), step needs ${need}ms (deadline ${deadline})`,
   );
   const capped = appendEvent(next, {
     kind: "cap-hit",
     at: now,
-    cap: "deadline",
+    cap: noFit ? "deadline:no-fit" : "deadline",
     reviewRound: next.pipelineState.reviewRound,
     nextStep: "handoff",
-    evidence: `caller deadline ${deadline} (absolute epoch ms); ${remainingText(remaining, grace)} — ${refusedStepText(next, step)}`,
+    evidence: noFit
+      ? `caller deadline ${deadline} (absolute epoch ms); ${useful}ms of useful time remained after the ${grace}ms handoff grace, and "${step}" needs at least ${need}ms — ${refusedStepText(next, step)}`
+      : `caller deadline ${deadline} (absolute epoch ms); ${remainingText(remaining, grace)} — ${refusedStepText(next, step)}`,
   });
   return { parked: true, state: capped, deadline };
 }
@@ -189,9 +216,14 @@ export async function parkAtDeadlineBoundary(
     if (checked.state !== state) await persistCycle(ctx, checked.state);
     return checked.state;
   }
+  const last = checked.state.eventLog[checked.state.eventLog.length - 1];
+  const why =
+    last?.kind === "cap-hit" && last.cap === "deadline:no-fit"
+      ? `too little time is left before the caller's deadline for ${step} to do useful work`
+      : "the caller's deadline is within the handoff grace";
   notifyAgent(
     ctx.host,
-    `pi-rukas: /work for issue #${ctx.issue} parked at the ${step} boundary — the caller's deadline is within the handoff grace, so no new step starts. Routing to handoff so the comment posts before the deadline.`,
+    `pi-rukas: /work for issue #${ctx.issue} parked at the ${step} boundary — ${why}, so no new step starts. Routing to handoff so the comment posts before the deadline.`,
   );
   const toHandoff: WorkState = {
     ...checked.state,
