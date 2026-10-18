@@ -6,7 +6,7 @@ import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import { integrationEmptiness } from "./work-driver-integrate-emptiness.ts";
-import { fastForwardOnto } from "./work-driver-integrate-ff.ts";
+import { fastForwardOnto, rewindFastForward } from "./work-driver-integrate-ff.ts";
 import { sweepBeforeFollowupCheckout } from "./work-driver-integrate-sweep.ts";
 import { verifyIntegration } from "./work-driver-integrate-verify-step.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
@@ -192,9 +192,11 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
   // on the success result so the caller can make them visible.
   let verifyPreExisting: string[] | undefined;
   // #750 — the restore is verified, not assumed (see work-driver-restore.ts).
-  const restoreRoot = async (): Promise<VerifiedRestoreResult> =>
-    originalRef
-      ? verifiedRestoreRoot(execFn, {
+  // #1468 — the branch tip before a fast-forward; every unpushed exit rewinds to it.
+  let ffFrom: string | undefined;
+  const restoreRoot = async (): Promise<VerifiedRestoreResult> => {
+    const restored: VerifiedRestoreResult = originalRef
+      ? await verifiedRestoreRoot(execFn, {
           repoRoot,
           originalRef,
           scratchDir: opts.scratchDir,
@@ -202,6 +204,9 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
           dirtyRootExempt,
         })
       : { restored: true };
+    if (ffFrom) await rewindFastForward(execFn, repoRoot, branchName, ffFrom);
+    return restored;
+  };
   // The verified post-condition via the shared claim builder, wrapped with
   // the ref the root was restored to (the helper's two shapes are kept
   // verbatim; the ref is load-bearing for the operator's retry).
@@ -294,8 +299,15 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     // 3. Orchestrated cherry-pick + patch fallback (work-driver-cherry-pick.ts).
     //    The patch-fallback rebases a followup-mode lens-fix patch onto the
     //    branch's CURRENT head before applying it (#654 task-b).
+    if (opts.fastForward) {
+      ffFrom = (await execFn("git", { argv: ["rev-parse", "HEAD"], cwd: repoRoot })).stdout.trim();
+    }
     const orchResult = opts.fastForward
-      ? await fastForwardOnto(execFn, repoRoot, ids, worktrees)
+      ? await fastForwardOnto(execFn, repoRoot, ids, worktrees, {
+          title: opts.commitTitle,
+          body: opts.commitBody,
+          exempt: dirtyRootExempt,
+        })
       : await orchestrateCherryPick(execFn, {
           repoRoot,
           branchName,
