@@ -10,7 +10,7 @@
  * `cycle.json` recorded `"cap": null, "capReason": null`.
  *
  * The reason is structural: `appendReviewCapHit` (the only writer of the
- * `wall-clock` cap) is reached from `applyLensVerdict`, i.e. only AFTER a lens
+ * `lens-review-timeout` cap) is reached from `applyLensVerdict`, i.e. only AFTER a lens
  * review has returned, and `runLensFix` itself checked nothing at all. The
  * driver was awaiting a fixer that had already outlived its budget, while the
  * slow-run notice told the PM the driver "retries or parks by itself when it
@@ -22,7 +22,7 @@
  * bound with the structured `timeout` killCause and the step fails the same way
  * any dispatch failure fails — through the step router — so no new failure mode
  * is introduced. A fixer the budget has already outlived is never dispatched at
- * all: the cycle parks with a `wall-clock` cap-hit routed to handoff, which is
+ * all: the cycle parks with a `lens-review-timeout` cap-hit routed to handoff, which is
  * the comment + label + notification the budget always promised and never
  * produced.
  *
@@ -34,7 +34,7 @@
  *  - The bound never extends a dispatch: `timeoutMs` is the MINIMUM of the
  *    caller's own bound and what the loop budget leaves.
  *  - Already past the bound: the fixer is never dispatched (the overrun is what
- *    the cap exists to stop) and a `wall-clock` cap-hit routes to handoff.
+ *    the cap exists to stop) and a `lens-review-timeout` cap-hit routes to handoff.
  *  - `handoff` and `merged` are never capped: the comment is the whole point of
  *    a handoff, and merging a green PR is the cycle's payoff.
  *  - The clock itself is unchanged — `pipelineState.reviewCapStartedAt`, set
@@ -143,7 +143,7 @@ export async function parkLensFixOverrun(
   let next: WorkState = appendEvent(state, {
     kind: "cap-hit",
     at: now,
-    cap: "wall-clock",
+    cap: "lens-review-timeout",
     reviewRound: round,
     evidence,
     nextStep: "handoff",

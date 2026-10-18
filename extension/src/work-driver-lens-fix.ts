@@ -8,6 +8,7 @@ import { execp } from "./exec.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
+import { continuedHeadMoved, headMovedCap } from "./work-driver-continue-pr-guard.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { parkLensFixOverrun, reviewFixDispatchBoundMs } from "./work-driver-lens-fix-budget.ts";
 import {
@@ -19,6 +20,7 @@ import { repositionLensFixWorktree } from "./work-driver-lens-fix-reposition-gat
 import { parkLensFixReposition } from "./work-driver-lens-fix-reposition-park.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
+import { interruptedLensFixNote, lostAttemptOnStep } from "./work-driver-retry-context.ts";
 import { developTestScopeLine } from "./work-driver-verify-fast.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -151,7 +153,9 @@ export async function runLensFix(
     }
   }
   const isResend = next !== state;
-  const prompt = isResend
+  // #1391 — a retried fixer is told where its lost predecessor's work went.
+  const lostNote = interruptedLensFixNote(state) ?? "";
+  const body = isResend
     ? [
         `RE-DISPATCH — the previous lens-fix dispatch produced no committed fix: no commits ahead of the feature branch in the lens-fix worktree ${JSON.stringify(fixTree)}.`,
         `Either the findings are already resolved in the committed diff (in which case say so with \`nothing-to-fix: <one-line reason>\` and make no changes), or the previous attempt left uncommitted work in that tree that it never committed. Inspect the tree — \`git -C ${fixTree} status\` — and commit any uncommitted fix work there: \`git add -A\` followed by \`git commit -m "<type>(scope): concise subject"\`. Do NOT push.`,
@@ -170,6 +174,7 @@ export async function runLensFix(
         scratchHygieneSection(scratchDir(ctx.repoRoot, ctx.issue)),
       ].join("\n")
     : inlineLensFixPrompt(findings, scratchDir(ctx.repoRoot, ctx.issue));
+  const prompt = `${lostNote}${body}`;
 
   // #981 (task-b) — reposition the lens-fix worktree to the branch's
   // current tip BEFORE the fix dispatch. The worktree was created at the
@@ -188,6 +193,9 @@ export async function runLensFix(
     // `tree !== ctx.repoRoot`: legacy state without worktrees falls back to
     // repoRoot; the reposition gate only makes sense for a separate worktree.
     const execFn: ExecFn = ctx.verifyExecFn ?? execp;
+    // #1468 — the reposition fast-forwards onto origin's tip: never onto a foreign push.
+    const moved = await continuedHeadMoved(execFn, ctx.repoRoot, state.pipelineState);
+    if (moved) return headMovedCap(state, moved, "lens-fix");
     const issueTitle = await cachedIssueTitle(state);
     const rep = await repositionLensFixWorktree(
       execFn,
@@ -195,6 +203,9 @@ export async function runLensFix(
       branchName,
       [ctx.issue],
       issueTitle,
+      lostAttemptOnStep(state, "lens-fix")
+        ? { repoRoot: ctx.repoRoot, issue: ctx.issue, state }
+        : undefined,
     );
     if (rep.kind === "already-at-tip" || rep.kind === "repositioned") {
       trace(

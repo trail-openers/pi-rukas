@@ -3,14 +3,18 @@
  * by `currentStep`. Split out of work-driver.ts (500-line cap); the
  * PR-gone check (work-driver-pr-gone.ts) guards the steps that touch the PR.
  */
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { runAdversarial } from "./work-driver-adversarial.ts";
 import { runBranch, runDevelop, stampCycleStartRef } from "./work-driver-branch-develop.ts";
 import { runCommitPr } from "./work-driver-commit.ts";
 import type { CycleContext } from "./work-driver-context.ts";
+import { continuedHeadMoved, headMovedCap } from "./work-driver-continue-pr-guard.ts";
+import { continuePrPreflight } from "./work-driver-continue-pr-lookup.ts";
 import { markDraftPrReady } from "./work-driver-draft-pr.ts";
 import { runExplore } from "./work-driver-explore.ts";
 import { runHandoff } from "./work-driver-handoff.ts";
+import { endIfIssueClosed, parkIfIssueClosed } from "./work-driver-issue-closed.ts";
 import { runLensFix } from "./work-driver-lens-fix.ts";
 import { runLens } from "./work-driver-lens.ts";
 import { runMerged } from "./work-driver-merged.ts";
@@ -18,6 +22,9 @@ import { runPlan } from "./work-driver-plan.ts";
 import { endIfPrGone } from "./work-driver-pr-gone.ts";
 import { runCi, runStepBack } from "./work-driver-stepback-ci.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
+
+/** #1468 — the steps the head-moved guard skips: no PR head exists yet, or the cycle is ending. */
+const UNGUARDED_STEPS: ReadonlySet<WorkStep> = new Set(["explore", "plan", "branch", "handoff"]);
 
 /**
  * Run a single step end-to-end: load template (or judge inline for PM-
@@ -37,39 +44,74 @@ export async function runStep(
 ): Promise<WorkState> {
   const now = Date.now();
   trace(`work-driver: running step "${step}" for issue ${ctx.issue}`);
+  let gatedState = state;
+
+  // #1472 — a person can CLOSE the issue while the cycle runs, and every step
+  // below pays for a fresh agent turn. `endIfPrGone` watches the PR; this
+  // watches the issue. Refused at the FIRST dispatch point of the cycle (the
+  // driver's step loop is not the place for it — that file sits at the repo's
+  // 500-line hard limit, and runStep is the single funnel every step passes
+  // through), then gated at every step boundary. `handoff` is deliberately NOT
+  // gated: the park IS a handoff, so gating it would refuse the renderer the
+  // park needs. `merged` is NOT gated either: it merges a PR whose review
+  // already passed, and refusing it would destroy finished, approved work
+  // because an issue was closed afterwards — `endIfPrGone` stays that step's
+  // authority, since a merge acts on the PR.
+  const issueGate = await parkIfIssueClosed(ctx, state, step);
+  // ONLY a CLOSED issue parks. An unreadable state returns the SAME state it was
+  // handed — distinguishable by identity — and must fall through: the gate
+  // fails open. Truthiness is not the test here, because the plumb-report note
+  // is also a WorkState.
+  if (issueGate && issueGate !== state) return issueGate;
+  if (step !== "handoff" && step !== "merged") {
+    const gate = await endIfIssueClosed(ctx, state, step);
+    if (gate.ended) return gate.ended;
+    gatedState = gate.state;
+  }
+
+  // #1468 — a continued PR's head is checked at every step boundary.
+  if (gatedState.pipelineState.continuedPr && !UNGUARDED_STEPS.has(step)) {
+    const moved = await continuedHeadMoved(
+      ctx.verifyExecFn ?? execp,
+      ctx.repoRoot,
+      gatedState.pipelineState,
+    );
+    if (moved) return headMovedCap(gatedState, moved, step);
+  }
 
   switch (step) {
+    // #1468 — `--continue-pr` stops here when there is no one PR to continue.
     case "explore":
-      return runExplore(ctx, state, now);
+      return (await continuePrPreflight(ctx, gatedState, now)) ?? runExplore(ctx, gatedState, now);
     case "plan":
-      return runPlan(ctx, state, now);
+      return runPlan(ctx, gatedState, now);
     case "branch":
-      return runBranch(ctx, await stampCycleStartRef(ctx, state), now);
+      return runBranch(ctx, await stampCycleStartRef(ctx, gatedState), now);
     case "develop":
-      return runDevelop(ctx, state, now);
+      return runDevelop(ctx, gatedState, now);
     case "adversarial":
-      return runAdversarial(ctx, state, now);
+      return runAdversarial(ctx, gatedState, now);
     case "commit-pr":
-      return runCommitPr(ctx, state, now);
+      return runCommitPr(ctx, gatedState, now);
     // A PR merged or closed under the review ends the cycle before the step.
     case "lens-review": {
-      const gate = await endIfPrGone(ctx, state, step);
+      const gate = await endIfPrGone(ctx, gatedState, step);
       return gate.ended ?? runLens(ctx, gate.state, now);
     }
     case "lens-fix": {
-      const gate = await endIfPrGone(ctx, state, step);
+      const gate = await endIfPrGone(ctx, gatedState, step);
       return gate.ended ?? runLensFix(ctx, gate.state, now);
     }
     case "step-back":
-      return runStepBack(ctx, state, now);
+      return runStepBack(ctx, gatedState, now);
     // #1292 — the review is done: a draft PR is marked ready before CI.
     case "ci": {
-      const gate = await endIfPrGone(ctx, state, step);
+      const gate = await endIfPrGone(ctx, gatedState, step);
       return gate.ended ?? runCi(ctx, await markDraftPrReady(ctx, gate.state), now);
     }
     case "handoff":
-      return runHandoff(ctx, state, now);
+      return runHandoff(ctx, gatedState, now);
     case "merged":
-      return runMerged(ctx, state, now);
+      return runMerged(ctx, gatedState, now);
   }
 }

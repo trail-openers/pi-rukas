@@ -1,11 +1,31 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
-import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
-import { processAlive } from "./work-driver-resume.ts";
-import type { WorkEvent, WorkState } from "./workflow-state.ts";
+import {
+  type DecideOpts,
+  type SweepResult,
+  decideSweepAction,
+  executeSweepAction,
+} from "./work-driver-sweep-policy.ts";
+import { isLaunchingCycleOwnWorktree } from "./work-driver-sweep-rules.ts";
+import {
+  type OwnerIndex,
+  buildOwnerIndex,
+  claimUnderWorktrees,
+} from "./work-driver-worktree-sweep-owners.ts";
+import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
+
+export type { DecideOpts, SweepAction, SweepResult } from "./work-driver-sweep-policy.ts";
+export { decideSweepAction, executeSweepAction } from "./work-driver-sweep-policy.ts";
+export {
+  groupClaimedByState,
+  hasRealDependencyTree,
+  isLaunchingCycleOwnWorktree,
+  parseWorktreeIssue,
+} from "./work-driver-sweep-rules.ts";
+export { PACKAGE_DIR_MARKERS, PROVISIONED_DEP_NAMES } from "./work-driver-sweep-rules.ts";
 
 const defaultExecFn: ExecFn = execp;
 
@@ -36,33 +56,51 @@ export interface SweepTargetError {
 
 /**
  * Validate a candidate path is safe to operate on.
+ *
+ * r2 — two things the previous version trusted too far:
+ *   - it printed its own failures to `console.error`, which in `-p` mode is the
+ *     NDJSON channel's neighbour and in the TUI is a panel the operator is not
+ *     reading for this; every diagnostic here is `trace` now.
+ *   - it accepted a `.git` file whose text merely EQUALLED
+ *     `<repoGitPath>/worktrees/<basename>`. That string is free for anyone who
+ *     can write under `.worktrees/`. The identity is now proved in BOTH
+ *     directions: the `.git` pointer names our admin dir, the admin directory
+ *     EXISTS, and its own `gitdir` file points back at the candidate. A
+ *     one-sided pointer is not a worktree of this repo.
  */
 export function resolveSweepTarget(
   repoRoot: string,
   candidate: string,
 ): SweepTargetResult | SweepTargetError {
-  // Use realpathSync for validation to match how git worktree resolves symlinks
-  const validationPath = realpathSync(candidate);
+  // realpathSync matches how git worktree resolves symlinks. Guarded: the
+  // owner index may name a since-removed tree — a nonexistent path is an
+  // unresolvable target, not a crash (same shape as the lstat below).
+  let validationPath: string;
+  try {
+    validationPath = realpathSync(candidate);
+  } catch (err) {
+    trace(`resolveSweepTarget: realpathSync failed for ${candidate}: ${err}`);
+    return { ok: false, reason: "unresolvable" };
+  }
   let validationStats: ReturnType<typeof lstatSync>;
   try {
     validationStats = lstatSync(validationPath);
   } catch (err) {
-    console.error(`resolveSweepTarget: lstatSync failed for ${candidate}: ${err}`);
+    trace(`resolveSweepTarget: lstatSync failed for ${candidate}: ${err}`);
     return { ok: false, reason: "unresolvable" };
   }
 
-  // Use realpathSync for repo paths to match how git worktree resolves symlinks
-  const worktreesDir = realpathSync(resolve(repoRoot, ".worktrees"));
-  let worktreesStats: ReturnType<typeof lstatSync>;
+  let worktreesDir: string;
+  let repoRootPath: string;
+  let repoGitPath: string;
   try {
-    worktreesStats = lstatSync(worktreesDir);
+    worktreesDir = realpathSync(resolve(repoRoot, ".worktrees"));
+    repoRootPath = realpathSync(repoRoot);
+    repoGitPath = realpathSync(resolve(repoRoot, ".git"));
   } catch (err) {
-    console.error(`resolveSweepTarget: lstatSync failed for ${worktreesDir}: ${err}`);
+    trace(`resolveSweepTarget: could not resolve repository paths: ${err}`);
     return { ok: false, reason: "unresolvable" };
   }
-
-  const repoRootPath = realpathSync(repoRoot);
-  const repoGitPath = realpathSync(resolve(repoRoot, ".git"));
 
   // For the returned realPath, use resolve() to match test expectations
   const resultPath = resolve(candidate);
@@ -85,12 +123,18 @@ export function resolveSweepTarget(
   const gitFile = join(validationPath, ".git");
   let gitFileContent: string;
   try {
-    gitFileContent = require("node:fs").readFileSync(gitFile, "utf8");
+    gitFileContent = readFileSync(gitFile, "utf8");
   } catch {
     return { ok: false, reason: "not-our-worktree" };
   }
-  const expected = `gitdir: ${repoGitPath}/worktrees/${basename(validationPath)}`;
+  const adminDir = join(repoGitPath, "worktrees", basename(validationPath));
+  const expected = `gitdir: ${adminDir}`;
   if (gitFileContent.trim() !== expected) {
+    return { ok: false, reason: "not-our-worktree" };
+  }
+  // r2 — the reverse half of the identity. The forward pointer alone is a
+  // string; git's own admin directory is the record. Both must agree.
+  if (!isOurWorktreeAdminDir(adminDir, validationPath)) {
     return { ok: false, reason: "not-our-worktree" };
   }
 
@@ -99,160 +143,53 @@ export function resolveSweepTarget(
 }
 
 /**
- * Options for deciding sweep action.
+ * True when `<repoGitPath>/worktrees/<name>` exists AND its `gitdir` file
+ * points back at `worktreePath/.git`.
+ *
+ * git writes the pair when it creates a worktree, so a directory merely
+ * carrying a plausible `.git` file — hand-made, or left by some other tool —
+ * fails here while a real linked worktree of this repo passes. Absent admin dir
+ * or an unmatched back-pointer are the same refusal: it is not ours to sweep.
  */
-export interface DecideOpts {
-  /** The worktree state from the state file. */
-  state: WorkState;
-  /** The resolved sweep target (from resolveSweepTarget). */
-  target: SweepTargetResult;
-  /** The current process PID (for self-exemption). */
-  selfPid: number;
-  /** Set of live issue numbers from the registry. */
-  liveCycles: Set<number>;
-  /** The launching cycle's own issue number (to exclude from live check). */
-  launchingCycleIssue: number;
-  /** Executor for running git commands. */
-  execFn: ExecFn;
-}
-
-/**
- * Action to take on a worktree.
- */
-export type SweepAction =
-  | { type: "skip"; reason: string }
-  | { type: "purge"; target: SweepTargetResult }
-  | { type: "remove"; target: SweepTargetResult };
-
-/**
- * Result of executing a sweep action.
- */
-export interface SweepResult {
-  stdout: string;
-  stderr?: string;
-}
-
-/**
- * Decide what to do with a validated worktree.
- * Implements the 6-rule decision engine.
- */
-export async function decideSweepAction(opts: DecideOpts): Promise<SweepAction> {
-  const { state, target, selfPid, liveCycles, launchingCycleIssue, execFn } = opts;
-
-  // Rule 1: Already handled by resolveSweepTarget (returns error if invalid)
-  // Rule 2: Directory absence - handled by resolveSweepTarget (not-a-directory)
-
-  // Rule 3: Live owner check
-  const issueNumber = state.issue;
-  const ownerPid = state.owner?.pid;
-  if (ownerPid !== undefined && ownerPid !== selfPid && processAlive(ownerPid)) {
-    return { type: "skip", reason: `live-owner pid=${ownerPid}` };
-  }
-  // Second part of live check: issue in liveCycles and not launching cycle's own
-  const isIssueInLiveCycles = liveCycles.has(issueNumber);
-  if (isIssueInLiveCycles && launchingCycleIssue !== issueNumber) {
-    return { type: "skip", reason: `live-issue ${issueNumber}` };
-  }
-
-  // Rule 4: State is awaiting-human-merge → artifact purge only
-  if (isAwaitingHumanMerge(state)) {
-    return { type: "purge", target };
-  }
-
-  // Rule 5: Work provably on remote → full removal
-  if (await isWorkProvablyOnRemote(state, target.realPath, execFn)) {
-    return { type: "remove", target };
-  }
-
-  // Rule 6: Fallback → artifact purge only
-  return { type: "purge", target };
-}
-
-/**
- * Check if the state indicates an awaiting-human-merge park.
- */
-function isAwaitingHumanMerge(state: WorkState): boolean {
-  // Find the last cap-hit event (highest array index)
-  const capHits = state.eventLog.filter(
-    (e): e is Extract<WorkEvent, { kind: "cap-hit"; cap: string }> => e.kind === "cap-hit",
-  );
-  if (capHits.length === 0) return false;
-  // Take the last one (highest index)
-  const lastCapHit = capHits[capHits.length - 1];
-  if (!lastCapHit || lastCapHit.cap !== "awaiting-human-merge") return false;
-  // Check if mergeHold is present in pipelineState
-  return !!state.pipelineState.mergeHold;
-}
-
-/**
- * Check if work is provably on the remote.
- */
-async function isWorkProvablyOnRemote(
-  state: WorkState,
-  worktreePath: string,
-  execFn: ExecFn,
-): Promise<boolean> {
-  const status = state.pipelineState.currentStep;
-  const branchName = state.pipelineState.branchName;
-  if (!branchName) return false;
-  // Status must be merged, handoff, or aborted
-  if (!["merged", "handoff", "aborted"].includes(status)) return false;
-
-  // A branch name that is not git-safe is never fetched: not swept (keep it).
-  if (netRefProblem(branchName) !== undefined) return false;
+function isOurWorktreeAdminDir(adminDir: string, worktreePath: string): boolean {
   try {
-    // Fetch the branch
-    await runNetGit(execFn, "git", {
-      cwd: worktreePath,
-      maxBuffer: 256 * 1024,
-      timeoutMs: 10_000,
-      argv: ["fetch", "origin", branchName],
-    });
-    // Check if HEAD matches FETCH_HEAD
-    const { stdout: diffOut } = await execFn("git diff --quiet --submodule=diff FETCH_HEAD", {
-      cwd: worktreePath,
-      maxBuffer: 256 * 1024,
-    });
-    // Check if working tree is clean
-    const { stdout: statusOut } = await execFn("git status --porcelain", {
-      cwd: worktreePath,
-      maxBuffer: 256 * 1024,
-    });
-    return diffOut === "" && statusOut === "";
+    if (!lstatSync(adminDir).isDirectory()) return false;
+    const backPointer = readFileSync(join(adminDir, "gitdir"), "utf8").trim();
+    return backPointer === join(worktreePath, ".git");
   } catch (err) {
-    trace(`worktree-sweep: remote check failed for ${worktreePath}: ${err}`);
+    trace(`resolveSweepTarget: no matching gitdir back-pointer for ${adminDir}: ${err}`);
     return false;
   }
 }
 
 /**
- * Execute the decided action.
+ * #1454 — find the state file of the cycle a worktree belongs to, through
+ * `pipelineState.worktrees` (the id→path map the branch step records). The old
+ * code guessed `.pi/work-state/<basename>.json`, which never matches a
+ * multi-workstream tree. An unclaimed tree, or the launching cycle's own tree,
+ * returns null — the sweep never touches the cycle running it. The index is
+ * built once per sweep by the caller and passed in; see `buildOwnerIndex`.
  */
-export async function executeSweepAction(
-  action: SweepAction,
-  execFn: ExecFn,
-): Promise<SweepResult> {
-  switch (action.type) {
-    case "skip":
-      return { stdout: "" };
-    case "purge":
-      return await execFn("git clean -fdX", {
-        cwd: action.target.realPath,
-        maxBuffer: 256 * 1024,
-      });
-    case "remove": {
-      // We need to run the command from the parent directory of the worktree
-      const worktreeDir = action.target.realPath;
-      const parentDir = resolve(worktreeDir, "..");
-      const relativePath = relative(parentDir, worktreeDir);
-      return await execFn(`git worktree remove --force ${JSON.stringify(relativePath)}`, {
-        cwd: parentDir,
-        maxBuffer: 256 * 1024,
-      });
-    }
-    default:
-      return { stdout: "" };
-  }
+export function findOwningCycleState(
+  repoRoot: string,
+  worktreePath: string,
+  launchingCycleIssue: number,
+  // r2 — required. Optional-with-a-default meant a caller that forgot to pass
+  // the index re-read and re-parsed `.pi/work-state/` once per worktree, which
+  // is exactly the cost the index was introduced to remove, and did it
+  // invisibly. Every caller builds the index once per sweep.
+  index: OwnerIndex,
+): { state: WorkState | null; ownerIssue?: number } {
+  // Cheap, I/O-free containment backstop: a state file is operator-editable and
+  // cannot name a path outside .worktrees/ for the sweep to `git clean`. The
+  // full git-worktree gate stays in resolveSweepTarget, where purge/remove fires
+  // (the sweep loop runs it on the candidate before calling here).
+  const resolved = claimUnderWorktrees(repoRoot, worktreePath);
+  if (resolved === null) return { state: null };
+  const owner = index.byPath.get(resolved);
+  if (owner === undefined) return { state: null };
+  if (owner.state.issue === launchingCycleIssue) return { state: null };
+  return { state: owner.state, ownerIssue: owner.state.issue };
 }
 
 /**
@@ -265,6 +202,10 @@ export async function runWorktreeSweep(opts: {
   execFn?: ExecFn;
   /** Set to false to disable the sweep (for testing/env var). */
   enabled?: boolean;
+  /** Maximum number of remote proofs attempted during the launch sweep. */
+  netProofLimit?: number;
+  /** Disable remote proofs while retaining local-only purge behavior. */
+  allowNetworkProof?: boolean;
 }): Promise<{
   ran: boolean;
   checked: number;
@@ -277,10 +218,19 @@ export async function runWorktreeSweep(opts: {
   }
 
   const { repoRoot, launchingCycleIssue, liveCycles, execFn = defaultExecFn } = opts;
+  const netProofBudget = { remaining: Math.max(0, opts.netProofLimit ?? 5) };
+  // ONE read of `.pi/work-state/` for the whole sweep — findOwningCycleState
+  // used to reopen and reparse it once per worktree.
+  const ownerIndex = buildOwnerIndex(repoRoot);
+  if (ownerIndex.corrupt.length > 0) {
+    trace(
+      `worktree-sweep: skipped ${ownerIndex.corrupt.length} corrupt state file(s): ${ownerIndex.corrupt.join(", ")}`,
+    );
+  }
   const worktreesDir = join(repoRoot, ".worktrees");
   let dirs: string[];
   try {
-    const entries = require("node:fs").readdirSync(worktreesDir) as string[];
+    const entries = readdirSync(worktreesDir);
     dirs = entries.filter((entry) => {
       const full = join(worktreesDir, entry);
       return lstatSync(full).isDirectory();
@@ -304,25 +254,25 @@ export async function runWorktreeSweep(opts: {
     }
     checked.push(resolved.realPath);
 
-    // Read the state file for this worktree
-    const stateFilePath = join(repoRoot, ".pi", "work-state", `${resolved.name}.json`);
-    let state: WorkState | null = null;
-    try {
-      const stateContent = require("node:fs").readFileSync(stateFilePath, "utf8");
-      state = JSON.parse(stateContent) as WorkState;
-    } catch {
-      // Unreadable state file - skip
-      skipped.push({ path: resolved.realPath, reason: "state-unreadable" });
-      continue;
-    }
-
-    // Exclude the launching cycle's own state file
-    if (resolved.name === `${opts.launchingCycleIssue}-default`) {
-      // Note: the spec says the launch sweep excludes the launching cycle's own state file by path.
-      // We'll skip it here.
+    if (isLaunchingCycleOwnWorktree(resolved.name, launchingCycleIssue)) {
       skipped.push({ path: resolved.realPath, reason: "launching-cycle-own" });
       continue;
     }
+
+    // #1454 — the owner is resolved by WORKTREE PATH, not a basename guess
+    // (see findOwningCycleState). An unclaimed tree is skipped: no owner whose
+    // liveness could be judged.
+    const owner = findOwningCycleState(
+      repoRoot,
+      resolved.realPath,
+      launchingCycleIssue,
+      ownerIndex,
+    );
+    if (!owner.state) {
+      skipped.push({ path: resolved.realPath, reason: "state-unreadable" });
+      continue;
+    }
+    const state = owner.state;
 
     const decideOpts: DecideOpts = {
       state,
@@ -331,6 +281,8 @@ export async function runWorktreeSweep(opts: {
       liveCycles,
       launchingCycleIssue: opts.launchingCycleIssue,
       execFn,
+      netProofBudget,
+      allowNetworkProof: opts.allowNetworkProof,
     };
 
     const action = await decideSweepAction(decideOpts);
@@ -344,7 +296,12 @@ export async function runWorktreeSweep(opts: {
     }
 
     if (action.type === "purge") {
-      purged.push(resolved.realPath);
+      if (result.purgeSkipped) {
+        skipped.push({ path: resolved.realPath, reason: "purge-skipped:real-deps" });
+        trace(`worktree-sweep: purge skipped for ${resolved.realPath}: real dependency tree`);
+      } else {
+        purged.push(resolved.realPath);
+      }
     } else if (action.type === "remove") {
       removed.push(resolved.realPath);
     } else if (action.type === "skip") {
@@ -382,9 +339,21 @@ export async function runWorktreeTeardown(opts: {
   }
 
   const retained: string[] = [];
+  const netProofBudget = { remaining: Object.keys(worktrees).length };
 
   for (const [worktreeName, worktreePath] of Object.entries(worktrees)) {
-    const resolved = resolveSweepTarget(repoRoot, worktreePath);
+    // r2 — the same containment gate `buildOwnerIndex` applies to every
+    // `pipelineState.worktrees` value. `integrateWorktree` is the one path the
+    // driver records OUTSIDE that map, so without this line it was the only
+    // state-file path the teardown loop could act on without the gate: a
+    // hand-edited `integrateWorktree` reached `git clean -fdX` in a directory
+    // the sweep should never have entered.
+    const claimed = claimUnderWorktrees(repoRoot, worktreePath);
+    if (claimed === null) {
+      trace(`worktree-teardown: invalid worktree path ${worktreePath}: outside-worktrees`);
+      continue;
+    }
+    const resolved = resolveSweepTarget(repoRoot, claimed);
     if (!resolved.ok) {
       trace(`worktree-teardown: invalid worktree path ${worktreePath}: ${resolved.reason}`);
       continue;
@@ -398,6 +367,7 @@ export async function runWorktreeTeardown(opts: {
       liveCycles: new Set([state.issue]), // Only this cycle is live for teardown purposes
       launchingCycleIssue: state.issue, // Exclude self from live check
       execFn,
+      netProofBudget,
     };
 
     const action = await decideSweepAction(decideOpts);
@@ -414,6 +384,9 @@ export async function runWorktreeTeardown(opts: {
     if (action.type === "purge") {
       // We still retain the worktree, but we've purged artifacts
       retained.push(resolved.realPath);
+      if (result.purgeSkipped) {
+        trace(`worktree-teardown: purge skipped for ${resolved.realPath}: real dependency tree`);
+      }
     } else if (action.type === "remove") {
       // Worktree removed, not retained
     } else if (action.type === "skip") {
@@ -423,18 +396,4 @@ export async function runWorktreeTeardown(opts: {
   }
 
   return retained;
-}
-
-// Helper function to compute relative path
-function relative(from: string, to: string): string {
-  const fromParts = from.split(/[\\/]/);
-  const toParts = to.split(/[\\/]/);
-  let i = 0;
-  while (i < fromParts.length && i < toParts.length && fromParts[i] === toParts[i]) {
-    i++;
-  }
-  const upSteps = fromParts.length - i;
-  const downParts = toParts.slice(i);
-  const parts = Array(upSteps).fill("..").concat(downParts);
-  return parts.length === 0 ? "." : parts.join("/");
 }

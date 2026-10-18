@@ -10,6 +10,8 @@
  *     (v2 `cpu.max`, v1 `cpu.cfs_quota_us` / `cpu.cfs_period_us`).
  *   - Memory: `os.totalmem()`, lowered by a cgroup memory limit
  *     (v2 `memory.max`, v1 `memory.limit_in_bytes`).
+ *   - Processes: the cgroup pid limit (v2 / v1 `pids.max`, docker
+ *     `--pids-limit`), which counts threads too. Unset when unlimited (#1591).
  *
  * The cgroup v2 limits are read along the process's own cgroup path up to the
  * root, so a limit set on a parent slice counts. No cgroup files (macOS, an
@@ -41,6 +43,8 @@ export interface HostResources {
   memoryBytes: number;
   memorySource: "os" | "cgroup-v2" | "cgroup-v1";
   cgroup: "v2" | "v1" | "none";
+  /** The cgroup's `pids.max` (processes AND threads); absent when unlimited or unreadable. */
+  pidsMax?: number;
 }
 
 export interface HostBudget extends HostResources {
@@ -52,7 +56,21 @@ export interface HostBudget extends HostResources {
   workstreamSlots: number;
   /** Default verify concurrency: one run per 2 CPUs and per 2 GiB, at least 1. */
   verifyConcurrency: number;
+  /**
+   * Concurrent lens children (#1591). A lens can run the product's gate, so it
+   * is sized like a workstream, and lowered by the pid limit at
+   * PIDS_PER_LENS each.
+   */
+  lensSlots: number;
 }
+
+/**
+ * Pids one lens child may use at its peak. #1591: six lenses running a
+ * product's parallel shell gate side by side exhausted a 3072 `pids.max`
+ * (about 512 each, where a whole cycle otherwise peaks near 71). Twice that
+ * observed peak leaves headroom for the driver and a burst: 3072 runs 3.
+ */
+export const PIDS_PER_LENS = 1024;
 
 function readText(file: string): string | undefined {
   try {
@@ -98,6 +116,9 @@ export function readHostResources(
     if (mem !== undefined && mem < out.memoryBytes)
       Object.assign(out, { memoryBytes: mem, memorySource: src });
   };
+  const lowerPids = (pids: number | undefined) => {
+    if (pids !== undefined && (out.pidsMax === undefined || pids < out.pidsMax)) out.pidsMax = pids;
+  };
   const own = (readText(path.join(root, "proc", "self", "cgroup")) ?? "")
     .split("\n")
     .find((l) => l.startsWith("0::"));
@@ -112,6 +133,7 @@ export function readHostResources(
         readLimit(path.join(dir, "memory.max")),
         "cgroup-v2",
       );
+      lowerPids(readLimit(path.join(dir, "pids.max")));
       if (path.relative(cgRoot, dir) === "" || !dir.startsWith(cgRoot)) break;
       dir = path.dirname(dir);
     }
@@ -121,8 +143,10 @@ export function readHostResources(
     .map((d) => path.join(cgRoot, d))
     .find((d) => readText(path.join(d, "cpu.cfs_period_us")) !== undefined);
   const v1Mem = readLimit(path.join(cgRoot, "memory", "memory.limit_in_bytes"));
-  if (v1Cpu !== undefined || v1Mem !== undefined) {
+  const v1Pids = readLimit(path.join(cgRoot, "pids", "pids.max"));
+  if (v1Cpu !== undefined || v1Mem !== undefined || v1Pids !== undefined) {
     out.cgroup = "v1";
+    lowerPids(v1Pids);
     const cpus = v1Cpu
       ? quotaCpus(
           readLimit(path.join(v1Cpu, "cpu.cfs_quota_us")),
@@ -137,10 +161,14 @@ export function readHostResources(
 /** Derive the budget from the host's resources. Pure. */
 export function budgetFor(r: HostResources): HostBudget {
   const memGib = r.memoryBytes / GIB;
+  const workstreamSlots = Math.max(1, Math.min(r.cpus * 2, Math.floor(memGib)));
+  const pidSlots =
+    r.pidsMax === undefined ? workstreamSlots : Math.floor(r.pidsMax / PIDS_PER_LENS);
   return {
     ...r,
-    workstreamSlots: Math.max(1, Math.min(r.cpus * 2, Math.floor(memGib))),
+    workstreamSlots,
     verifyConcurrency: Math.max(1, Math.min(Math.floor(r.cpus / 2), Math.floor(memGib / 2))),
+    lensSlots: Math.max(1, Math.min(workstreamSlots, pidSlots)),
   };
 }
 
@@ -171,6 +199,15 @@ export function envCount(name: string, min = 1): number | undefined {
  */
 export function verifyConcurrency(): number {
   return envCount("PI_ENSEMBLE_VERIFY_CONCURRENCY", 0) ?? hostBudget().verifyConcurrency;
+}
+
+/**
+ * Concurrent lens children allowed across the process (#1591).
+ * `PI_ENSEMBLE_LENS_CONCURRENCY` wins (`0` = unbounded, the pre-#1591 fan-out);
+ * otherwise the budget's.
+ */
+export function lensConcurrency(): number {
+  return envCount("PI_ENSEMBLE_LENS_CONCURRENCY", 0) ?? hostBudget().lensSlots;
 }
 
 let active = 0;

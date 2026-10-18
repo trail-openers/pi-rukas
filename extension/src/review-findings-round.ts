@@ -103,6 +103,11 @@ export function applyFindingRound(opts: {
   };
   const normalised = findings.map((f) => (noFile(f.path) ? { ...f, line: undefined } : f));
   const identities = normalised.map((f) => identityOf(f, linesOf(f.path)));
+  // The explicit no-line marker (#1469), derived from the IDENTITY rather than
+  // the payload: identityOf already folds in every way a finding can end up
+  // without a resolvable line - the lens omitted it, the path is not a readable
+  // file at head, or the cited line is past the file's end - so the marker says
+  // "this row cites no code" for all three, not just the first.
   normalised.forEach((f, i) => {
     const id = identities[i] as FindingIdentity;
     const critical = f.severity === "CRITICAL";
@@ -124,6 +129,7 @@ export function applyFindingRound(opts: {
         severity: f.severity,
         lens: f.lens,
         ...(f.line ? { line: f.line } : {}),
+        ...(id.hasLine ? {} : { noLine: true as const }),
         snippetHash: id.snippetHash,
         ...(id.lineHash ? { lineHash: id.lineHash } : {}),
         status: "open",
@@ -148,7 +154,16 @@ export function applyFindingRound(opts: {
       lastSeen: now,
       snippetHash: id.snippetHash,
       lineHash: id.lineHash ?? row.lineHash,
-      line: f.line,
+      // Written conditionally, never as `line: f.line`: an own property whose
+      // value is `undefined` still appears in `Object.keys`, so a re-reported
+      // line-less finding would have written the field back onto a row that had
+      // none — the exact shape divergence between the two row sites that made a
+      // row's fate depend on whether it had ever been re-reported (#1469).
+      ...(f.line ? { line: f.line } : {}),
+      // The marker is written at BOTH row sites: had only the new-row site
+      // carried it, the same divergence would appear in reverse, and the fate
+      // rule reads the row, not its history.
+      ...(id.hasLine ? {} : { noLine: true as const }),
       // The newest report of the finding is the freshest prose for it.
       ...(f.description ? { description: f.description } : {}),
       ...(f.suggestion ? { suggestion: f.suggestion } : {}),
@@ -251,6 +266,9 @@ export function applyFindingRound(opts: {
         severity: r.severity,
         path: r.path,
         line: r.line,
+        // A carried row keeps the marker it stored: it is still a file-level
+        // claim, and the renderer's `:?` depends on the row saying so.
+        ...(r.noLine === undefined ? {} : { noLine: r.noLine }),
         title: r.title,
         // A carried row is re-reported to the operator verbatim from the row: the
         // stored description rides along so it never renders empty (#1130).

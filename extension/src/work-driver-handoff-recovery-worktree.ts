@@ -13,11 +13,12 @@
 
 import type { ForgeType } from "./forge-detect.ts";
 import { dependencyLeaves } from "./work-driver-cherry-pick.ts";
+import { lastConsolidatedEvent } from "./work-driver-handoff-consolidate-step.ts";
 import { consolidatedMergeStep } from "./work-driver-handoff-merge-step.ts";
 import type { RecoveryStep } from "./work-driver-handoff-recovery.ts";
 import { stackPickRange } from "./work-driver-handoff-stack-pick.ts";
 import { isConsolidatedPark } from "./work-driver-merge-subject.ts";
-import type { WorkEvent, WorkState } from "./workflow-state.ts";
+import type { WorkState } from "./workflow-state.ts";
 
 /**
  * #674 — the worktree-aware recovery steps, or `[]` when the cycle has no
@@ -68,12 +69,7 @@ export function worktreeAwareRecoverySteps(
   // message renderer uses for its branch tag.
   if (!committedWork || committedWork.length === 0 || !ps.branchName) return steps;
   if (!refProvenAtHandoff(state)) return steps;
-  const consEvent = [...state.eventLog]
-    .reverse()
-    .find(
-      (e): e is Extract<WorkEvent, { kind: "handoff-consolidated" }> =>
-        e.kind === "handoff-consolidated",
-    );
+  const consEvent = lastConsolidatedEvent(state.eventLog);
   if (consEvent) {
     // #968 — the driver restores repoRoot to the operator's original
     // checkout after consolidation (the branch is pushed by name, which

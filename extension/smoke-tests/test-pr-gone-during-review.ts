@@ -443,6 +443,9 @@ try {
     const src = readFileSync(path.join(import.meta.dir, "../src/work-driver-run-step.ts"), "utf8");
     // The ci argument is the draft mark point (#1292): mandatory, not optional.
     const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // #1472 — the PR gate now reads the ISSUE-gated state, so the subject is
+    // `gatedState` (the local the issue gate writes). Named once, not per case.
+    const PR_GATE_SUBJECT = "gatedState";
     const gated: Array<[string, string]> = [
       ["runLens", "gate.state"],
       ["runLensFix", "gate.state"],
@@ -451,7 +454,7 @@ try {
     for (const [fn, arg] of gated) {
       assert(
         new RegExp(
-          `await endIfPrGone\\(ctx, state, step\\);\\s*return gate\\.ended \\?\\? ${fn}\\(ctx, ${esc(arg)}, now\\)`,
+          `await endIfPrGone\\(ctx, ${PR_GATE_SUBJECT}, step\\);\\s*return gate\\.ended \\?\\? ${fn}\\(ctx, ${esc(arg)}, now\\)`,
         ).test(src),
         `runStep checks the PR before ${fn}`,
       );

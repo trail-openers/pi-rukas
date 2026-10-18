@@ -321,12 +321,16 @@ function refProvenFor(state: ReturnType<typeof state>): boolean {
           !!st.pipelineState.branchName &&
           (branchExists || (consolidated && refProvenFor(st)));
         assert(
-          (shared > 0) === expect,
+          shared > 0 === expect,
           `matrix cap=${cap} consolidated=${consolidated} branchExists=${branchExists}: shared decision block=${shared > 0} (expected ${expect})`,
         );
         // (b) Both renderers agree with each other AND with the decision —
         // except the cap that owns its own renderer branch (see above).
-        if (cap === CONSOLIDATION_CAP ? mdRenders !== chatRenders : mdRenders !== chatRenders || mdRenders !== expect) {
+        if (
+          cap === CONSOLIDATION_CAP
+            ? mdRenders !== chatRenders
+            : mdRenders !== chatRenders || mdRenders !== expect
+        ) {
           mismatches++;
           console.error(
             `✗ matrix cap=${cap} consolidated=${consolidated} branchExists=${branchExists}: md=${mdRenders} chat=${chatRenders} expected=${expect} (shared=${shared > 0})`,
@@ -345,13 +349,19 @@ function refProvenFor(state: ReturnType<typeof state>): boolean {
       }
     }
   }
-  assert(mismatches === 0, `both renderers agree with the shared decision across the matrix (${mismatches} mismatches)`);
+  assert(
+    mismatches === 0,
+    `both renderers agree with the shared decision across the matrix (${mismatches} mismatches)`,
+  );
   assert(
     falsePushBlocks === 0,
     `no cap with branchExists:false prints push/checkout/cherry-pick text (${falsePushBlocks} offenders)`,
   );
   for (const s of [...seenNoBranch].slice(0, 5)) console.error(`  offender: ${s}`);
-  assert(seenBranch.size === caps.length, "the matrix really exercised branchExists:true for every cap");
+  assert(
+    seenBranch.size === caps.length,
+    "the matrix really exercised branchExists:true for every cap",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -431,38 +441,33 @@ function refProvenFor(state: ReturnType<typeof state>): boolean {
 //    cycle with a captured name and no ref fell through to
 //    `git add -p` / `git push -u origin <branch>`. Both twins must now read
 //    the ref proof, and the pre-branch recipe (state file + --restart) must
-//    be what renders instead.
+//    be what renders instead. No worktrees are recorded here: with one,
+//    #1575's take-over pushes the worktree HEAD by refspec, which needs no
+//    local ref (covered by test-handoff-recovery-tree.ts).
 // ---------------------------------------------------------------------------
 {
-  const snapshot = (branchExists: boolean) => ({
-    modifiedFiles: [],
-    unstagedCount: 0,
-    stagedCount: 0,
-    branchExists,
-    branchPushed: false,
-    capturedAt: 3,
-  });
-  const noRefMd = renderHandoffMarkdown({
-    ...state({ cap: "developer-timeout", branchExists: false, consolidated: false }),
-    pipelineState: {
-      ...state({ cap: "developer-timeout", branchExists: false, consolidated: false })
-        .pipelineState,
-      committedWork: undefined,
-      handoffSnapshot: snapshot(false),
-    },
-  });
-  const noRefChat = renderHandoffUserMessage(
-    {
-      ...state({ cap: "developer-timeout", branchExists: false, consolidated: false }),
+  // No committed work, no recorded worktrees: the repoRoot fallback.
+  const generic = (branchExists: boolean) => {
+    const base = state({ cap: "developer-timeout", branchExists, consolidated: false });
+    return {
+      ...base,
       pipelineState: {
-        ...state({ cap: "developer-timeout", branchExists: false, consolidated: false })
-          .pipelineState,
-        handoffSnapshot: snapshot(false),
+        ...base.pipelineState,
+        committedWork: undefined,
+        worktrees: {},
+        handoffSnapshot: {
+          modifiedFiles: [],
+          unstagedCount: 0,
+          stagedCount: 0,
+          branchExists,
+          branchPushed: false,
+          capturedAt: 3,
+        },
       },
-    },
-    REPO,
-    `${REPO}/tmp/issue-747`,
-  );
+    };
+  };
+  const noRefMd = renderHandoffMarkdown(generic(false));
+  const noRefChat = renderHandoffUserMessage(generic(false), REPO, `${REPO}/tmp/issue-747`);
   assert(
     !/push -u origin feature\/issue-747/.test(noRefMd) &&
       !/git -C [^\n]* push -u origin feature\/issue-747/.test(noRefChat) &&
@@ -474,18 +479,7 @@ function refProvenFor(state: ReturnType<typeof state>): boolean {
     /--restart/.test(noRefMd) && /--restart/.test(noRefChat),
     "#747 generic block: ...and the restart-a-cycle recipe renders instead",
   );
-  const withRefChat = renderHandoffUserMessage(
-    {
-      ...state({ cap: "developer-timeout", branchExists: true, consolidated: false }),
-      pipelineState: {
-        ...state({ cap: "developer-timeout", branchExists: true, consolidated: false })
-          .pipelineState,
-        handoffSnapshot: snapshot(true),
-      },
-    },
-    REPO,
-    `${REPO}/tmp/issue-747`,
-  );
+  const withRefChat = renderHandoffUserMessage(generic(true), REPO, `${REPO}/tmp/issue-747`);
   assert(
     /push -u origin feature\/issue-747/.test(withRefChat),
     "#747 generic block: a proven ref still gets the takeover commands (no over-correction)",

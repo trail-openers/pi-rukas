@@ -3,7 +3,7 @@
 `pi-rukas-headless` runs `/work` cycles without an interactive Pi session. It is invoked as:
 
 ```
-pi-rukas-headless work <issue> [more issues] [--restart] [--timeout <minutes>] [--json]
+pi-rukas-headless work <issue> [more issues] [--restart] [--continue-pr] [--timeout <minutes>] [--json]
 pi-rukas-headless plan <descriptor> (--dry-run | --file) [--type <t>] [--context <text>] [--reviewed-digest <d>] [--json]
 pi-rukas-headless research <topic> [--tier quick|standard|deep|adoption] [--context <text>] [--json]
 pi-rukas-headless agents-md <create|update|check> [root] [file] [--deep] [--json]
@@ -40,7 +40,7 @@ The headless runner's contract with its caller is four independent surfaces, eac
 | Contract | Version constant | Module | Description |
 |---|---|---|---|
 | Exit codes | `EXIT` object (`exit-code.ts`) | `extension/src/headless/exit-code.ts` | The process exit code. 7 named values: `merged` (0), `handoff` (10), `clarification` (11), `aborted` (20), `interrupted` (21), `crash` (30), `refused` (40). |
-| `--json` result schema | `RESULT_SCHEMA_VERSION` (3) | `extension/src/headless/result.ts` | The JSON document on stdout when `--json` is used. See below. Its `cap` values come from a published vocabulary (`extension/src/headless/caps.ts`). |
+| `--json` result schema | `RESULT_SCHEMA_VERSION` (4) | `extension/src/headless/result.ts` | The JSON document on stdout when `--json` is used. See below. Its `cap` values come from a published vocabulary (`extension/src/headless/caps.ts`). |
 | NDJSON progress | `NDJSON_VERSION` (1); stable subset `NDJSON_STABLE_VERSION` (1) | `extension/src/headless/ndjson.ts` | One JSON object per line on stderr. Every line carries `v` (1), `kind`, `at` (ISO-8601). Driver event lines additionally carry `issue` and `key` (idempotency key `<issue>:<index>:<at>`). Only a declared subset of kinds is stable; every other line is marked `unstable: true`. |
 | Capabilities | `CAPABILITIES_VERSION` (2) | `extension/src/headless/capabilities.ts` | The JSON object `--capabilities` prints. See below. |
 
@@ -53,20 +53,20 @@ The headless runner's contract with its caller is four independent surfaces, eac
 | 11 | `clarification` | Handoff whose cap is `intent-park` or `explore-needs-clarification` |
 | 20 | `aborted` | Aborted |
 | 21 | `interrupted` | Interrupted by a signal (SIGINT/SIGTERM) |
-| 30 | `crash` | The driver threw, or interrupted by the runner's own `--timeout`, or a cycle left running after the driver returned |
+| 30 | `crash` | The driver threw, or interrupted by the runner's own `--timeout`, or a cycle left running after the driver returned, or the runner process died without writing its result |
 | 40 | `refused` | Refused to start (claimed by a live cycle, `needs-human-attention` without `--restart`, bad arguments, unknown flag) |
 
 A grouped run exits 21 if any issue was interrupted, otherwise the highest per-issue code. The `--json` result carries every issue regardless.
 
 A signal outranks the failure of the step it lands in. The step that was running when the signal fired is not routed: no cap, no handoff, exit 21, `resumable: true`, and its `interrupted` event names it (`step`). A cap that step recorded on its way out (an aborted child, an issue-body fetch cut short) is the abort's doing, so the result does not report it as `cap`; running `work <issue>` again re-runs the step. The one exception is the `handoff` step itself: a signal that lands there arrives after the cycle has already stopped on its cap, so the handoff finishes and the run exits with the handoff's code.
 
-### `--json` result schema (v3)
+### `--json` result schema (v4)
 
 With `--json`, stdout carries exactly one JSON document:
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "buildCommit": "d39f8731f34d…",
   "buildVersion": "0.12.79",
   "exitCode": 10,
@@ -116,7 +116,7 @@ With `--json`, stdout carries exactly one JSON document:
 
 | Field | Present | Meaning |
 |---|---|---|
-| `schemaVersion` | always | `RESULT_SCHEMA_VERSION`. Version 2 (#1326) added `schemaVersion`, `buildCommit`, `buildVersion`, `failedStep`, `prUrl`, `usage` and `resumable`. Version 3 (#1327) added `parkReason` and `handoff`. |
+| `schemaVersion` | always | `RESULT_SCHEMA_VERSION`. Version 2 (#1326) added `schemaVersion`, `buildCommit`, `buildVersion`, `failedStep`, `prUrl`, `usage` and `resumable`. Version 3 (#1327) added `parkReason` and `handoff`. Version 4 (#1384) renamed the cap `wall-clock` to `lens-review-timeout` (see [the `cap` vocabulary](#the-cap-vocabulary)). |
 | `buildCommit` | always | The full 40-hex commit the running build was made from (the image's baked `.pi/pi-rukas-commit`, else the HEAD of the pi-rukas checkout), or `null` when nothing records it. Never anything else, so a host can safely run `git merge-base --is-ancestor <fix> <buildCommit>` when it is non-null. |
 | `buildVersion` | always | The release version of the running build (`extension/package.json`). |
 | `issues[].status` | always | `merged`, `handoff`, `aborted`, `interrupted`, `running` (the driver returned without a terminal state) or `not-started`. |
@@ -128,6 +128,7 @@ With `--json`, stdout carries exactly one JSON document:
 | `issues[].branch`, `prNumber`, `prUrl` | when known | `prUrl` is present only when unambiguous: the PR URL the driver recorded (its handoff comment on the PR), else one built from the project's git remote when there is exactly one remote, the forge is GitHub or GitLab, and the web address is certain (an `http(s)` remote, or ssh to github.com / gitlab.com; GitLab subgroups and explicit https ports are kept). Otherwise only `prNumber` is set. |
 | `issues[].usage` | when a state existed | Tokens, cost and turns summed over every dispatch the cycle recorded (`dispatch-completed`, `dispatch-failed` and `dispatch-failed-provider` events), and the dispatch count. It covers the current cycle only: `--restart` discards the state, so earlier cycles' cost is not included. `usage.byRole` (#1368, added in this release) holds the same seven numbers per dispatch `role` (the `role` on the `dispatch-*` events, e.g. `developer`, `adversarial`), summed over the same dispatches, failed ones included, so its rows add up to the total. |
 | `issues[].resumable` | always | `true` when running `work <issue>` again **without** `--restart` continues this cycle (it was interrupted, or stopped while running). Always `false` on a refusal (exit 40: another live process owns the cycle, so a re-run is refused again until it ends) and when `PI_ENSEMBLE_RESUME=0`. A terminal cycle needs `--restart` for a fresh one. |
+| `issues[].continuedPr` | when a `--continue-pr` cycle reached the branch step | The PR it continued (#1468): `number`, `headRefName`, `startHeadSha` (the PR head when the run started) and `mainlineSha` (the mainline commit merged into it). See [`--continue-pr` for hosts](#--continue-pr-for-hosts). |
 | `issues[].stateFile` | always | A path for a person to inspect. Not a host contract: see below. |
 | `issues[].questions` | exit 11 only | The clarification questions, numbered `q1`, `q2`, … |
 | `issues[].diverged` | on divergence | The in-memory and on-disk states disagreed; the exit code is 30. |
@@ -135,7 +136,9 @@ With `--json`, stdout carries exactly one JSON document:
 
 An optional top-level `error` (`{ code, message }`) is present when the runner detected a divergence (e.g. `state-diverged`) or another runner-level failure.
 
-`resources` (#1325, added in this release; an additive field, so no schema bump) is the host budget and the parallelism limits the run chose — see [Resource report](#resource-report). `failure` (#1367) and `usage.byRole` (#1368) are additive fields too, so the schema stays at 3; a host detects them with `features.failureReason` and `features.usageByRole` in `--capabilities`.
+**A runner that dies still answers (#1591).** `work` runs as a child of a small supervisor process that holds its stdout. If the child exits without writing a result — Bun aborts natively when it cannot create a thread, for example at a container's `pids.max`, and no handler runs on such an abort — the supervisor writes the document itself: `error.code: "crash"`, a message naming the signal or exit code, exit 30, and each issue projected from its state file (`not-started` when there is none; a non-terminal issue has exit 30). A cycle that had opened its PR still reports `branch` and `prUrl`. stderr is passed through untouched. `PI_ENSEMBLE_HEADLESS_SUPERVISED=1` runs `work` in-process without the supervisor.
+
+`resources` (#1325, added in this release; an additive field, so no schema bump) is the host budget and the parallelism limits the run chose — see [Resource report](#resource-report). `failure` (#1367), `usage.byRole` (#1368) and `continuedPr` (#1468) are additive fields too, so they need no schema bump; a host detects them with `features.failureReason`, `features.usageByRole` and `features.continuePr` in `--capabilities`.
 
 ### The `failure` object
 
@@ -156,12 +159,14 @@ An optional top-level `error` (`{ code, message }`) is present when the runner d
 
 Every text field has secrets redacted before it is cut to its bound.
 
+On an `intent-park` (#1561), `message` names the park reason and the evidence the park rests on, e.g. `intent-park (already-implemented): PR #12 (MERGED) — …` or `… commit 58c2bf4 — …`; `evidence` adds the resolver's decisive rows and rationale. A cited PR's state is read from the forge (`state not read` when it could not be). When an `already-implemented` park rests on an OPEN PR, the message says the work is awaiting review in that PR rather than that the issue is done.
+
 A failed dispatch is read only for the caps a failed dispatch causes (`step-failed:<step>`, `adversarial-infra-failure`, `provider-unavailable`, `developer-timeout`, `review-incomplete`, `loop-detected`, `token-budget`, `plan-timeout`): the last `dispatch-failed*` event between the start of the stopped step's last run and the cap. Usually its kind wins over the cap's — except for `provider-unavailable` and `develop-child-crash`, whose kind comes from the cap even when a failed dispatch exists to explain them. For `provider-unavailable` that matters on a multi-attempt outage: the cap is only chosen when the dispatch that ENDED the step was itself severed by the provider or hit a short-burst 429, and a rung of the ladder that died of something else must not relabel the park.
 
 | `kind` | Meaning |
 |---|---|
 | `provider` | A dispatch stopped on a provider error: an outage, a 429, a spend cap, an unknown model (`cause` says which). The case a host may retry later on its own. |
-| `timeout` | A time bound ended it: a child killed for time or silence, `verify-timeout:<step>`, `developer-timeout`, `plan-timeout`, `wall-clock`, `deadline`. |
+| `timeout` | A time bound ended it: a child killed for time or silence, `verify-timeout:<step>`, `developer-timeout`, `plan-timeout`, `lens-review-timeout`, `deadline`. |
 | `guard` | pi-rukas ended the child on a guard: a loop, the token budget, an abort. |
 | `process` | The child process failed with no structured cause (a dispatch cap with no failed dispatch recorded is `process` too). |
 | `verify` | The verify gate ran and judged the code red: `verify-failed:<step>`, `verify-baseline-red:<step>`, `integration-verify-failed`, `consolidated-verify-consolidation-created`. |
@@ -180,18 +185,20 @@ The same object appears in the `--json` result and in `--capabilities` (`extensi
   "host": {
     "cpus": 4, "cpuSource": "cgroup-v2",          // os | cgroup-v2 | cgroup-v1
     "memoryBytes": 8589934592, "memorySource": "cgroup-v2",
-    "cgroup": "v2"                                 // v2 | v1 | none
+    "cgroup": "v2",                                // v2 | v1 | none
+    "pidsMax": 3072                                // absent when unlimited
   },
-  "budget": { "workstreamSlots": 8, "verifyConcurrency": 2 },
+  "budget": { "workstreamSlots": 8, "verifyConcurrency": 2, "lensSlots": 3 },
   "limits": {
     "parallelGroups":    { "value": 1, "source": "budget" },  // env | budget | default
     "maxWorkstreams":    { "value": 6, "source": "default" },
-    "verifyConcurrency": { "value": 2, "source": "budget" }   // 0 = unbounded
+    "verifyConcurrency": { "value": 2, "source": "budget" },  // 0 = unbounded
+    "lensConcurrency":   { "value": 3, "source": "budget" }   // env | budget; 0 = unbounded
   }
 }
 ```
 
-`host` is what the machine allows: `os.availableParallelism()` and `os.totalmem()`, each lowered by a cgroup CPU quota or memory limit when one is set. `budget` is derived from it: `workstreamSlots` is two per CPU or one per GiB, whichever is lower; `verifyConcurrency` is one per two CPUs or per 2 GiB, at least 1. `limits` are what a cycle runs with. `source: "env"` means an explicit setting decided the value, `"budget"` that the host budget lowered the default, `"default"` that the static default applied. The budget never raises a default. The group and workstream defaults hold from about 9 CPUs and 18 GiB up.
+`host` is what the machine allows: `os.availableParallelism()` and `os.totalmem()`, each lowered by a cgroup CPU quota or memory limit when one is set. `budget` is derived from it: `workstreamSlots` is two per CPU or one per GiB, whichever is lower; `verifyConcurrency` is one per two CPUs or per 2 GiB, at least 1; `lensSlots` (#1591) is `workstreamSlots` lowered to one per 1024 of the cgroup's `pids.max` (which counts threads too), at least 1. `limits` are what a cycle runs with. `source: "env"` means an explicit setting decided the value, `"budget"` that the host budget lowered the default, `"default"` that the static default applied. The budget never raises a default. The group and workstream defaults hold from about 9 CPUs and 18 GiB up.
 
 ### The `cap` vocabulary
 
@@ -201,6 +208,8 @@ The same object appears in the `--json` result and in `--capabilities` (`extensi
 - `templates` — a prefix plus one parameter: `verify-failed:<step>` (the gate ran and judged the code), `verify-timeout:<step>` (the verify command hit its time bound), `verify-env:<step>` (the system refused to start a process, so the gate never ran), `verify-baseline-red:<step>` (the verify command already fails at the cycle's base commit, on the same assertion as the change or by timing out on both), `pr-not-open:<step>` (the cycle's PR was merged or closed when the step started), `step-failed:<step>`, `driver-crash:<step>` (with the step list in `values`), and `branch-ahead:<count>`.
 
 **`verify-failed:<step>` was narrowed in result schema v2.** It now means only that the gate ran and judged the change. A gate that hit its bound, could not start a process, or was red at the base commit, and the PR-not-open and fix-pass parks, used to share it and now have the caps above (see [troubleshooting](troubleshooting.md#what-verify-failedstep-means-and-the-caps-that-split-from-it-1349)). This changes what an existing cap means, and the narrowing is deliberate. It is covered by the tolerate-the-unknown rule below: a host that meets one of the new caps treats it as a generic handoff. It ships in the same release as schema v2, so no released v2 build used the old meaning and the version is not bumped again. A host that read `verify-failed:` as "the gate parked" should also match the new caps, or treat them as unknown caps (below).
+
+**`wall-clock` was renamed `lens-review-timeout` in result schema v4 (#1384).** pi-rukas used `wall-clock` for one clock only: the lens-review fix loop's own budget (`PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS`, 90 min by default). A host that ends cycles on its own time limit reads `wall-clock` as that limit, so an operator was sent to raise the wrong number. pi-rukas no longer emits `wall-clock`; each time bound it raises has its own id (`lens-review-timeout`, `plan-timeout`, `developer-timeout`, `verify-timeout:<step>`, `deadline`), and a host is free to use `wall-clock` for its own kill. Removing a value changes the vocabulary, so the result schema version moved from 3 to 4. The cap-hit carries the reason as `evidence`, so `failure.message` names the elapsed time and the budget rather than repeating the cap.
 
 A host switches on these values instead of strings found in pi-rukas source. The list is checked against the driver's cap type at compile time, so the build cannot record a cap the vocabulary omits. Exit code 11 is reserved for `intent-park` and `explore-needs-clarification`.
 
@@ -341,12 +350,45 @@ What `--restart` does:
 
 What `--restart` does not reset or check:
 
-- **The forge.** An open PR for the issue is found and reused (`PI_ENSEMBLE_PR_PREFLIGHT`), not duplicated.
+- **The forge.** An open PR for the issue is not duplicated. Without `--continue-pr` the run stops at the branch step with the cap `existing-pr-detected` (`PI_ENSEMBLE_PR_PREFLIGHT=0` turns that check off). With [`--continue-pr`](#--continue-pr-for-hosts) the run continues that PR.
 - **Worktrees and branches.** A leftover worktree with no uncommitted or unpushed work is recreated, and one that holds work is refused (see [troubleshooting.md](troubleshooting.md)).
 - **The intent-park record.** A restart that parks again for the same reason, on the same issue text and commit, links the earlier park comment instead of posting a new one.
 - **Nothing about a live cycle.** `--restart` skips the check for another live process that owns the issue (that check is part of resuming). A host must never restart an issue it is still running; wait for the first run to exit.
 
 Use `--restart` only when a person, or the host acting on a person's answer, has dealt with the handoff. Passing it on every run turns the gate off entirely, and the same handoff repeats.
+
+## `--continue-pr` for hosts
+
+`work <issue> --continue-pr` (#1468) continues the issue's open pull request instead of stopping on `existing-pr-detected`. A host uses it to refresh a PR that has fallen behind or conflicts with the mainline. The flag is additive: without it, nothing changes.
+
+What it does:
+
+- **Finds the PR.** Before explore, it lists the open PRs (`gh pr list --state open --limit 500`) and keeps those that close the issue in their body or name it in their branch. Exactly one must match, its head must be in the same repository, and its base must be the mainline. Otherwise the run stops before the branch step with one of the caps below, and nothing is written.
+- **Merges the mainline into the PR head.** The branch step checks out the PR head as it is on the remote and merges `origin/<mainline>` into it with a merge commit. It never rebases. A conflicted merge is left in progress in the worktree, and the developer is told to resolve the markers and finish the merge, and to do no other work. The base of the cycle is the mainline tip, so the gates and the reviews judge the PR's whole diff against the mainline.
+- **Pushes a fast-forward.** At commit-pr the PR branch is fast-forwarded to the result and pushed with a plain push. It never force-pushes, never opens a second PR and never runs the ops fallback. The PR's title and body are not changed.
+- **Stops if someone else pushes.** At the start of each later step, and before a lens-fix round moves its worktree, it checks that the remote head is still one of its own commits. A push someone else made in between is rejected, never overwritten. If someone else pushed to it, deleted it or rewound it, the run stops on `continue-pr-head-moved`.
+
+Limits:
+
+- **One issue.** `--continue-pr` with more than one issue is refused with exit 40 (`bad-arguments`).
+- **A terminal state still needs `--restart`.** A `merged`, `handoff` or `aborted` state file is refused with exit 40 as before. Pass `--restart --continue-pr` to run the issue again.
+- **`PI_ENSEMBLE_PR_PREFLIGHT` is ignored.** The lookup always runs in this mode.
+- **A red mainline parks the refresh.** When the verify command already fails at the mainline tip, commit-pr stops on `integration-verify-failed` and nothing is pushed. Fix the mainline first.
+- **At most 500 open PRs.** A full page cannot prove that only one PR matches, so the lookup fails closed with `continue-pr-not-found`.
+- **GitHub only.** Another forge gives `continue-pr-not-found`.
+
+The caps (each has a row in [troubleshooting.md](troubleshooting.md)):
+
+| Cap | When | Before the branch step |
+|---|---|---|
+| `continue-pr-ambiguous` | Two or more open PRs match the issue. `evidence` lists them. | yes |
+| `continue-pr-fork` | The one match comes from a fork. | yes |
+| `continue-pr-not-found` | No PR matches, or the lookup could not prove exactly one (a `gh` error, unreadable output, a full page, a forge that is not GitHub). | yes |
+| `continue-pr-unsafe-head` | The head branch name is unsafe or is the mainline, the PR's base is not the mainline, the local branch is ahead of or diverged from the PR head, or another worktree holds the branch at another commit. | yes |
+| `continue-pr-head-moved` | The PR head changed after the lookup, or someone else pushed to it, deleted it or rewound it during the run. | no |
+| `continue-pr-unresolved` | At commit-pr the merge is still unfinished: a conflict, a leftover conflict marker, or a history that no longer has the PR head as its first parent. Nothing is pushed and the worktree is kept. | no |
+
+Any other failure in this mode stops on `step-failed:branch` or `step-failed:commit-pr`. A successful run ends like any other cycle that opened a PR, usually `awaiting-human-merge` with exit 10, and the result carries `issues[].continuedPr`. A host detects the flag with `verbs.work.flags` and `features.continuePr` in `--capabilities`.
 
 ## `--capabilities` answer
 
@@ -375,7 +417,7 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
     }
   },
   "verbs": {
-    "work": { "flags": ["--restart", "--json", "--timeout"] },
+    "work": { "flags": ["--restart", "--continue-pr", "--json", "--timeout"] },
     "plan": { "flags": ["--dry-run", "--file", "--type", "--context", "--reviewed-digest", "--json"] },
     "research": { "flags": ["--tier", "--context", "--json"] },
     "agents-md": { "flags": ["--deep", "--json"] },
@@ -384,6 +426,11 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
   "inputs": [                  // every PI_ENSEMBLE_* input this build or its wrapper reads
     { "name": "PI_ENSEMBLE_MAX_WORKSTREAMS", "type": "integer", "default": 6, "scope": "cycle" },
     { "name": "PI_ENSEMBLE_VERIFY_TIMEOUT_MS", "type": "duration-ms", "default": 600000, "scope": "cycle" },
+    // #1509 — the develop-tier bound is now per tier; each reads its own knob,
+    // then PI_ENSEMBLE_VERIFY_TIMEOUT_MS, then its `.pi/*-timeout-ms` file.
+    { "name": "PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS", "type": "duration-ms", "default": 1800000, "scope": "cycle" },
+    { "name": "PI_ENSEMBLE_VERIFY_FAST_TIMEOUT_MS", "type": "duration-ms", "default": 600000, "scope": "cycle" },
+    { "name": "PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS", "type": "duration-ms", "default": 600000, "scope": "cycle" },
     { "name": "PI_ENSEMBLE_MODEL_<ROLE>", "type": "string", "default": null, "scope": "cycle",
       "members": ["DEVELOPER", "OPS", "EXPLORE", "ADVERSARIAL_DEVELOPER", "CODE_REVIEW_SPECIALIST"] },
     { "name": "PI_ENSEMBLE_NO_SSH", "type": "boolean", "default": false, "scope": "wrapper" },
@@ -397,10 +444,12 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
   "features": {
     "resultFromMemory": true,   // #1189 — result from in-memory state, not the state file
     "cycleDeadline": true,      // #1238 — a cycle deadline that parks with a handoff
+    "cycleDeadlineHandoffAllowance": true, // #1593 — the deadline bounds the step in flight
     "handoffChannel": true,     // #1327 — PI_ENSEMBLE_HANDOFF_CHANNEL=host
     "restartClearsAttention": true, // #1327 — --restart clears needs-human-attention
     "failureReason": true,      // #1367 — issues[].failure in the result
-    "usageByRole": true         // #1368 — issues[].usage.byRole in the result
+    "usageByRole": true,        // #1368 — issues[].usage.byRole in the result
+    "continuePr": true          // #1468 — work --continue-pr and issues[].continuedPr
   },
   "resources": { … }            // #1325 — the host budget and limits; see Resource report
 }
@@ -431,10 +480,12 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
 | `files[]` | `HEADLESS_FILES` (`inputs.ts`) | The `.pi/*` files a cycle reads from the project (`path`, `kind`: `command` / `hook` / `config`, and what happens `whenAbsent`). Files the driver writes, such as `.pi/work-state/`, are state, not input, and are not listed. |
 | `features.resultFromMemory` | Constant `true` | `true` when the result is taken from the driver's in-memory state rather than re-reading the state file (#1189). |
 | `features.cycleDeadline` | Constant `true` | `true` when a cycle that hits its deadline parks with a handoff rather than being killed (#1238). |
+| `features.cycleDeadlineHandoffAllowance` | Constant `true` | `true` when the deadline is where step work ends: children running at `PI_ENSEMBLE_CYCLE_DEADLINE` are stopped there, the handoff runs within `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` after it, and a step that ended past the deadline records `deadline` as the cycle's cap (#1593). A host sets the deadline to its kill minus that allowance. |
 | `features.handoffChannel` | Constant `true` | `true` when the build honours `PI_ENSEMBLE_HANDOFF_CHANNEL` and carries the handoff in the result (#1327). |
 | `features.restartClearsAttention` | Constant `true` | `true` when `--restart` overrides the attention gate and clears `needs-human-attention` (#1327). See [`--restart` for hosts](#--restart-for-hosts). |
 | `features.failureReason` | Constant `true` | `true` when the result carries `issues[].failure`, the reason behind its `cap` (#1367). |
 | `features.usageByRole` | Constant `true` | `true` when the result's `usage` carries `byRole`, failed dispatches included (#1368). |
+| `features.continuePr` | Constant `true` | `true` when `work` accepts `--continue-pr` and the result carries `issues[].continuedPr` (#1468). See [`--continue-pr` for hosts](#--continue-pr-for-hosts). |
 | `resources` | `resourceReport()` (`resource-budget.ts`) | The host budget and the limits a cycle started now would run with, read when the answer is built. See [Resource report](#resource-report). |
 
 ### How a caller uses this

@@ -17,6 +17,7 @@
 import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { commitPrDirtyRootStep } from "./work-driver-handoff-commitpr.ts";
+import { genericRecoveryLines, hasRecoveryWorktrees } from "./work-driver-handoff-recovery-tree.ts";
 // #747 — the same ref-exists predicate the shared worktree recovery uses.
 import { refProvenAtHandoff } from "./work-driver-handoff-recovery-worktree.ts";
 import {
@@ -239,7 +240,10 @@ export function recoveryCommandsMarkdown(
   // existed at handoff time. Without it the block's by-name `git push` would
   // vanish whenever the snapshot's ref read failed — a git hiccup is not
   // evidence a ref was never created, and the same lie runs the other way.
-  const refIsProven = refProvenAtHandoff(state);
+  // #1575's worktree take-over pushes `HEAD:refs/heads/<branch>` and needs no
+  // local ref, so recorded worktrees keep it; only the repoRoot fallback
+  // (`git push -u origin <branch>`) needs the proof.
+  const refIsProven = refProvenAtHandoff(state) || hasRecoveryWorktrees(state);
   const branchName = ps.branchName && refIsProven ? ps.branchName : undefined;
   if (!branchName) {
     // See the twin in work-driver-handoff-message.ts: the predicate is the
@@ -256,17 +260,8 @@ export function recoveryCommandsMarkdown(
   } else {
     lines.push(
       ...killDetail(state).map((l) => `# ${l}`),
-      "# 1. Inspect what survived before deciding:",
-      "git status",
-      "git diff --stat",
-      "",
-      "# 2. Discard the cycle and start over (worktree changes are kept):",
-      `rm .pi/work-state/${issue}.json`,
-      "",
-      "# 3. Take over manually — commit + push what's there, open the PR yourself:",
-      "git add -p",
-      "git commit",
-      `git push -u origin ${branchName}`,
+      // #1565 — built from the trees the snapshot found, not repoRoot blindly.
+      ...genericRecoveryLines(state),
     );
   }
   lines.push("```", "");

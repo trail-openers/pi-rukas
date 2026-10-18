@@ -10,6 +10,7 @@
  * returned reply text and state, exactly as before the split.
  */
 
+import { clampToCycleDeadline } from "./cycle-deadline-clock.ts";
 import { dispatchCore } from "./dispatch.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
@@ -36,7 +37,8 @@ export async function runHandoffOpsDispatch(
   handoffBodyPath: string,
 ): Promise<{ next: WorkState; opsReplyText: string }> {
   const dispatch = ctx.dispatchFn ?? dispatchCore;
-  const boundMs = handoffDispatchTimeoutMs();
+  // #1593 — the handoff ends inside the caller's allowance, never at its kill.
+  const boundMs = clampToCycleDeadline(handoffDispatchTimeoutMs(), Date.now()).timeoutMs;
   const startedAt = Date.now();
   const prNumber = state.pipelineState.prNumber;
   let next = state;
@@ -45,6 +47,7 @@ export async function runHandoffOpsDispatch(
     prNumber,
     handoffBodyPath,
     scratchDir(ctx.repoRoot, ctx.issue),
+    state.pipelineState.handoffLabelSkipped === true, // #1472
   );
   // #573 — derive transcript path BEFORE beginDispatch so crash-resume can
   // locate the surviving session file. Single dispatch: seq=undefined.

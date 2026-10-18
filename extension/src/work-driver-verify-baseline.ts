@@ -30,6 +30,7 @@ import {
   sharesAssertion,
 } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import { TIER_KNOB, TIER_TIMEOUT_FILE, VERIFY_TIMEOUT_ENV } from "./work-driver-verify-budget.ts";
 import { VERIFY_TIMEOUT_LABEL, boundText } from "./work-driver-verify-develop-helpers.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 import { summaryCount } from "./work-driver-verify-names.ts";
@@ -230,7 +231,11 @@ export function baselineRedMessage(
 ): string {
   const where = `on a clean checkout of the cycle's base commit ${opts.baseSha.slice(0, 12)}, without this change`;
   if (verdict.status === "red-timed-out") {
-    return `${BASELINE_RED_MARKER} ${VERIFY_TIMEOUT_LABEL} verify command \`${opts.cmd}\` exceeded its ${boundText(opts.timeoutMs)} timeout ${where} — the gate cannot finish inside its bound on this host whatever the diff contains. Raise PI_ENSEMBLE_VERIFY_TIMEOUT_MS or make the gate faster; the failures below do not implicate this change`;
+    // #1509 — the knob named here is the one that governs the tier the probe
+    // ran (the suite tier: it re-runs `.pi/verify-cmd` at base), and the bound
+    // is the caller's `timeoutMs` threaded in rather than re-read, so the text
+    // can only ever describe the run that actually happened.
+    return `${BASELINE_RED_MARKER} ${VERIFY_TIMEOUT_LABEL} verify command \`${opts.cmd}\` exceeded its ${boundText(opts.timeoutMs)} timeout ${where} — the gate cannot finish inside its bound on this host whatever the diff contains. Raise ${TIER_KNOB.suite} (or .pi/${TIER_TIMEOUT_FILE.suite}, or ${VERIFY_TIMEOUT_ENV} in the environment) or make the gate faster; the failures below do not implicate this change`;
   }
   const same =
     verdict.assertion !== null && sharesAssertion(opts.changeFailure, verdict.assertion)
