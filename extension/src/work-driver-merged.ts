@@ -43,7 +43,7 @@ import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-
 import { type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 import { worktreePrune, worktreeRemove } from "./worktree.ts";
 
-export { buildCompletionEvent } from "./work-driver-completion-event.ts";
+export { buildCompletionEvent, overrideEnvForKillCause } from "./work-driver-completion-event.ts";
 
 /**
  * Step 6 — Parse `pr: <N>` from an ops commit-pr reply. Lenient — accepts

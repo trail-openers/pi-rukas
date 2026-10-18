@@ -25,8 +25,69 @@ export const HOST_EXHAUSTION_SUFFIX = "host-resource-exhaustion";
 /** #1421 — the suffix for a gate declined by git-ignored build output. */
 export const BUILD_RESIDUE_SUFFIX = "build-residue";
 
+/**
+ * #1101 — queue-raised park reasons, recognised here as well as in
+ * `work-queue-cap.ts`.
+ *
+ * These never came from a cycle: the queue raised them about a group it never
+ * dispatched. `parkReason` reads a STATE FILE, and for these groups there is
+ * none — so the shapes below are not reasons this function produces, they are
+ * the reasons it must not mistake for one. A queue-level park writes an entry
+ * with no state file behind it, and a renderer or a `/work-status` reader that
+ * walks in expecting `cap <cycle-cap>` + a step to inspect will send the
+ * operator to a diff that was never written. `isQueueLevelPark` is the single
+ * test for that, shared so the two places cannot drift.
+ *
+ * `cross-group-conflict` is deliberately NOT in this list. It shares its name
+ * with the reactive plan-time check in `work-driver-path-claims.ts`, which
+ * raises it from inside a cycle that HAD dispatched — so the bare word cannot
+ * answer the question the renderer asks, and must not earn the never-dispatched
+ * treatment: that cycle has a diff to read. The queue's own route (`waitCapFor`)
+ * always writes an `in-flight sibling(s) …` detail and no reactive reason
+ * carries that text, which is the provenance `QUEUE_SIDE_CONFLICT` below reads.
+ * Keeping the name out of this list is what lets `parkReason`'s state-file
+ * guard and the `at <step>` suffix stay correct for the cycle-side sighting.
+ */
+export const QUEUE_PARK_REASONS = [
+  "dependency-parked",
+  "dependency-timeout",
+  "dependency-cycle",
+  // #1101 fix-round — the fourth shape: a group the scheduler had taken into
+  // the wait list when a halt released every worker (`sweepStranded`). It was
+  // missing, so the stranded group rendered with the running-cycle glyph and a
+  // step suffix, exactly like the parks that DO have work to salvage — the one
+  // thing this list exists to prevent.
+  "queue-stranded",
+] as const;
+
+/**
+ * The queue's own `cross-group-conflict`, recognised by the detail only the
+ * queue writes (`waitCapFor`'s `in-flight sibling(s) …` clause).
+ */
+const QUEUE_SIDE_CONFLICT = /\bcap cross-group-conflict\b.*in-flight sibling\(s\)/;
+
+/**
+ * Was this reason raised by the queue about a group it never dispatched?
+ *
+ * `cross-group-conflict` is the one name with a cycle-side twin, so it is
+ * classified by provenance through `QUEUE_SIDE_CONFLICT` rather than by the
+ * bare word: a plan-time collision inside a cycle that ran keeps its step.
+ */
+export function isQueueLevelPark(reason: string | undefined): boolean {
+  if (!reason) return false;
+  if (QUEUE_SIDE_CONFLICT.test(reason)) return true;
+  return QUEUE_PARK_REASONS.some((cap) => new RegExp(`\\bcap ${cap}\\b`).test(reason));
+}
+
 export function parkReason(state: WorkState | undefined): { reason: string; failedStep?: string } {
   if (!state) return { reason: "cycle produced no state file" };
+  // #1101 — a group the QUEUE parked has no state file of its own, so this
+  // function is never the right reader for it. Guarded rather than assumed:
+  // `runGroup` can report `started: false` for a group whose on-disk state
+  // belongs to a DIFFERENT cycle, and reporting that cycle's cap as this
+  // group's reason is how a live cycle's mid-flight cap got printed as a
+  // terminal failure with `--restart` advice that would race it.
+  //
   // A `running` status with a live owner is not a park — it is a cycle in
   // flight. Reporting its most recent cap-hit as a terminal reason told the
   // operator a live cycle had failed, and recommended `--restart`.

@@ -8,6 +8,7 @@
 
 import { hostBudget } from "./host-resources.ts";
 import { effectiveMaxWorkstreams } from "./work-driver-plan-workstreams.ts";
+import { orderingDependencies } from "./work-queue-deps.ts";
 
 /**
  * PR16 — Deterministic multi-issue grouping.
@@ -115,6 +116,18 @@ export interface GroupingResult {
   fanout: { mode: "parallel" | "sequential"; concurrencyCap: number };
   /** Human-readable notes on which rules fired; surfaced in a plumb-report. */
   notes: string[];
+  /**
+   * #1101 — the ordering statements found in the bodies, keyed by the issue
+   * that declares them. Values are issue numbers, unfiltered: an entry may
+   * point outside the invocation, at its own group, or at a pair R1 already
+   * merged. `planOrderingEdges()` is what decides which of those is a real
+   * cross-group obligation, and the queue is what acts on it.
+   *
+   * Deliberately NOT R1's own link set: R1's regex also matches `fixes #N`
+   * and `related to #N`, which are references, not ordering. Feeding those
+   * to the queue would serialise every pair that happens to cite each other.
+   */
+  depsByIssue: Record<number, number[]>;
 }
 
 export function groupIssues(
@@ -122,8 +135,13 @@ export function groupIssues(
   bodiesByIssue: Record<number, string>,
 ): GroupingResult {
   const notes: string[] = [];
+  // #1101 — the declared ordering statements, collected alongside R1 so the
+  // queue can order groups. Populated for every issue in the invocation, so
+  // the K=0/K=1 early returns below emit an empty map rather than an absent
+  // field: a caller must be able to read `depsByIssue` without a guard.
+  const depsByIssue: Record<number, number[]> = {};
   if (activeIssues.length === 0) {
-    return { groups: {}, fanout: { mode: "parallel", concurrencyCap: 1 }, notes };
+    return { groups: {}, fanout: { mode: "parallel", concurrencyCap: 1 }, notes, depsByIssue };
   }
   // Structural corroboration record for R4: which pairs R1/R2 actually unioned.
   // #501 — tracking these as note strings would couple R4's union DECISION to
@@ -136,12 +154,16 @@ export function groupIssues(
     // Single-issue path: return one "default" group. Callers usually
     // shouldn't reach groupIssues for K=1, but return sanely if they do.
     const n = activeIssues[0] ?? 0;
+    for (const dep of orderingDependencies(bodiesByIssue[n])) {
+      depsByIssue[n] = [...(depsByIssue[n] ?? []), dep];
+    }
     return {
       groups: {
         default: { id: "default", scope: `issue #${n}`, paths: [], outOfScope: [], issues: [n] },
       },
       fanout: { mode: "parallel", concurrencyCap: 1 },
       notes,
+      depsByIssue,
     };
   }
 
@@ -236,6 +258,19 @@ export function groupIssues(
       }
     }
     linkRe.lastIndex = 0;
+  }
+
+  // #1101 — the ordering statements, in the same pass over the bodies. Read
+  // from the raw body rather than from R1's union decisions so that a split
+  // marker (R3) or a group-size split cannot make an ordering obligation
+  // invisible: R3 forces the issues apart, and the queue still has to know
+  // which of them goes first.
+  for (const n of activeIssues) {
+    for (const dep of orderingDependencies(bodiesByIssue[n] ?? "")) {
+      const bucket = depsByIssue[n] ?? [];
+      if (!bucket.includes(dep)) bucket.push(dep);
+      depsByIssue[n] = bucket;
+    }
   }
 
   // R2 — Path overlap. Extract path-shaped tokens from each body,
@@ -436,5 +471,5 @@ export function groupIssues(
     );
   }
 
-  return { groups, fanout, notes };
+  return { groups, fanout, notes, depsByIssue };
 }

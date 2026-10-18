@@ -37,8 +37,9 @@
 # global lines that follow all per-test blocks in the --digest output.
 #
 # Usage:
-#   verify-loop.sh <file> [<file> ...]           — normal mode
-#   verify-loop.sh --digest <file> [<file> ...] — #1028 digest mode
+#   verify-loop.sh <file> [<file> ...]                  — normal mode
+#   verify-loop.sh --digest <file> [<file> ...]         — #1028 digest mode
+#   verify-loop.sh --jobs-from-host <file> [...]        — pool width from the host
 #
 # Normal mode: runs every test once, prints each test's full output plus a
 # per-failure `FAILED: <file>` marker and a final summary line.
@@ -75,9 +76,13 @@
 # --- #1365 — bounded job pool (lib/verify-pool.sh).
 # Tests run concurrently, at most PI_ENSEMBLE_VERIFY_TEST_JOBS at once
 # (${VERIFY_TEST_JOBS:-2}; 1 restores the strictly sequential pre-#1365
-# shape). The count is clamped to the number of collected tests and to 16,
-# with a warning naming the clamp — more than 16 concurrent `bun` processes
-# compete with each other for CPU and the suite gets slower, not faster.
+# shape). With --jobs-from-host and no ambient setting, the count comes from
+# host_job_count (4 on a host reporting 8 or more CPUs, 2 otherwise) instead of
+# the shipped default of 2 — see that function for why getconf, and why an
+# unparseable CPU count sizes down rather than up. The count is clamped to the
+# number of collected tests and to 16, with a warning naming the clamp — more
+# than 16 concurrent `bun` processes compete with each other for CPU and the
+# suite gets slower, not faster.
 # Every job still runs under the per-test watchdog above. Output is replayed
 # in ARGUMENT order after the pool drains, so both modes' output (and the
 # digest) are byte-identical to a sequential run regardless of finish order.
@@ -106,6 +111,27 @@ export LC_ALL=C
 # Drop git's repository-locating variables before any test runs.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX \
   GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
+
+# #1404 — VERIFY_REPORT_FILE is deliberately NOT scrubbed here. It is the path
+# the loop itself writes its out-of-band verdict to at the end of the run, so an
+# early `unset` in this file would silently produce no report at all — and "no
+# report" is the unattributable shape, not a passing one. The scrub a test must
+# not see the path is done at the one place a test is started: the `bun run` in
+# verify-kill.sh's run_test_with_timeout runs under `env -u VERIFY_REPORT_FILE`,
+# which removes the variable from the CHILD's environment and leaves the
+# parent's copy intact for the final write. Every test descendant goes through
+# that spawn, so nothing a test forks can inherit it either.
+
+# #1145 — the git-isolation half (the isolated `HOME`, `XDG_CONFIG_HOME`,
+# `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_NOSYSTEM` exports, the escape-hatch
+# announcement, and the `_git_iso` name the EXIT trap below removes) lives in
+# verify-git-env.sh so each file stays under the §12 500-line cap. Sourced here
+# — before the #1017/#1043/#1069 export block and before any test runs — because
+# the ordering is the behaviour: a fixture's git call reads whatever is exported
+# by the time the pool starts it. The full #1145 argument (why HOME alone is the
+# wrong fix, why XDG_CONFIG_HOME has to be SET rather than unset, and what the
+# escape hatch does not cover) moved to that file with the code.
+. "$(dirname "${BASH_SOURCE[0]}")/verify-git-env.sh"
 
 # #1017 — forbid live spawns in every offline test. Any offline test that
 # reaches the real spawn path (spawnSpecialist) fails loudly in ~5s with the
@@ -178,6 +204,43 @@ for _verify_fn in report_results emit_tally; do
 done
 unset _verify_fn
 
+# #1404 — the out-of-band verdict channel (lib/verify-report-file.sh). When the
+# caller sets VERIFY_REPORT_FILE to an absolute path, the loop writes its own
+# verdict there — one failing test path per line plus a `FAILED-TESTS: <n>`
+# trailer — AFTER every test has finished, and scrubs the variable from every
+# test child's environment (`env -u` in verify-kill.sh's run_test_with_timeout)
+# so a test cannot learn the path. The commit-pr baseline probe reads failing
+# names ONLY from that file, never from the stream: the stream's `FAILED:`
+# markers are an ordinary string a test can print, and a test that prints the
+# whole triad the loop prints (per-file marker + count-matched summary + a
+# non-zero `P:/F:` tally) is indistinguishable from the loop's own verdict —
+# which is how a green base came to excuse a change-caused failure and the
+# cycle pushed. See that file's header for the contract and the write
+# discipline. Same hard name check as the other halves: a missing half here
+# would leave the driver reading a stream it must not read, which is the bug
+# this exists to close, so `write_verify_report` is not optional when the
+# reporter is loaded.
+. "$(dirname "${BASH_SOURCE[0]}")/verify-report-file.sh"
+for _report_fn in write_verify_report; do
+  if [ "$(type -t "$_report_fn")" != function ]; then
+    echo "error: verify-loop: lib/verify-report-file.sh did not define $_report_fn — the out-of-band verdict channel is broken; refusing to run" >&2
+    exit 2
+  fi
+done
+unset _report_fn
+
+# The channel is opt-in, and only in the shape it was designed for. A relative
+# path would be resolved against whatever cwd the gate happens to run in, so the
+# report could land anywhere in the tree (a verify command runs in the checkout
+# under test) — an unattributable outcome is better than a stray write. An
+# unusable value is announced, the variable is dropped, and the run proceeds
+# normally: this is the shape the offline suite and CI run in, where no report
+# is wanted at all and the gate's own output is the deliverable.
+if [ -n "${VERIFY_REPORT_FILE:-}" ] && [ "${VERIFY_REPORT_FILE#/}" = "$VERIFY_REPORT_FILE" ]; then
+  echo "warn: verify-loop: VERIFY_REPORT_FILE must be an absolute path; got '${VERIFY_REPORT_FILE}', ignoring the out-of-band report" >&2
+  VERIFY_REPORT_FILE=""
+fi
+
 # The source above is not optional and not best-effort. If verify-pool.sh is
 # missing, truncated, or a stale copy from before #1365, `set -u` alone will
 # not stop the loop: the missing functions would surface as command-not-found
@@ -201,16 +264,59 @@ if ! command -v pgrep >/dev/null 2>&1; then
   echo "warn: verify-loop: pgrep not found — on timeout only the top-level test process will be killed (descendants may be orphaned)" >&2
 fi
 
-# --- #1028 — parse --digest flag (must come before the usage check so that
-# a bare `--digest` with no files is still a usage error).
+# --- #1028 — parse the --digest flag, and the host-sizing flag.
+#
+# Both parse BEFORE the usage check so that a bare `--digest` / `--jobs-from-host`
+# with no files is still a usage error. `--digest` stays position-pinned (only
+# accepted as the first word) because test-ci-verify-digest.ts pins that argv
+# shape; the new flag is accepted in ANY position, which is what lets
+# .pi/verify-cmd carry it either side of the test glob — case 4 of
+# test-verify-loop-jobs-from-host.ts pins both positions.
+#
+# A flag is never a test path: each recognised word is `shift`ed out of "$@", so
+# the pool only ever collects real paths, and `pool_collect`'s `--` guard against
+# dash-leading arguments stays intact.
+#
+# An unrecognised dash-leading word is a usage error too, not a test path. Before
+# this, `verify-loop.sh --diagst …` fell through the `*` arm, got collected, and
+# the pool reported "no such file" for a typo in a flag — a run whose real tests
+# were never given the flag's behaviour. `--` itself still passes through to the
+# pool's own guard (see the explicit arm below) rather than being refused, so the
+# documented `-- <files>` shape is unaffected.
 DIGEST=0
 if [ "$#" -gt 0 ] && [ "$1" = "--digest" ]; then
   DIGEST=1
   shift
 fi
+# #1365 follow-up — --jobs-from-host: size the pool from the host CPU count when
+# the caller did not name a number. Opt-in, and CI does not pass it, so the
+# shipped default of 2 stays the CI shape; the host-derived 4 is what this repo's
+# own develop gate needs to stay inside PI_ENSEMBLE_VERIFY_TIMEOUT_MS. It lives
+# here rather than as an inline expansion in .pi/verify-cmd because that word is
+# not a form the review-accept guard (#1125) admits: A5 (`armVerifyLoop`) accepts
+# `bash …/verify-loop.sh` only when every word after the script is `--digest` or a
+# test path, and `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf …)}"` is neither.
+# A5 is not a general ban on expansions in a `bash` command — it is this arm's
+# argv rule — so the sizing has to be a flag the arm recognises.
+VERIFY_JOBS_FROM_HOST=0
+_args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --jobs-from-host) VERIFY_JOBS_FROM_HOST=1 ;;
+    --) _args+=("$1") ;;
+    --*)
+      echo "usage: verify-loop.sh [--digest] [--jobs-from-host] <file> ..." >&2
+      echo "error: verify-loop: unknown option '$1'" >&2
+      exit 2
+      ;;
+    *) _args+=("$1") ;;
+  esac
+  shift
+done
+set -- ${_args[@]+"${_args[@]}"}
 
 if [ "$#" -eq 0 ]; then
-  echo "usage: verify-loop.sh [--digest] <file> ..." >&2
+  echo "usage: verify-loop.sh [--digest] [--jobs-from-host] <file> ..." >&2
   exit 2
 fi
 
@@ -241,6 +347,13 @@ _extra_cleanup() {
   rm -f ${_extra_captures[*]:-} || :
   if [ -n "$RUN_DIR" ]; then rm -rf "$RUN_DIR" || :; fi
   if [ -n "${_ledger_tmp_dir:-}" ]; then rm -rf "${_ledger_tmp_dir}" || :; fi
+  # #1145 round 3 — the git-isolation temp dir exported at the top of this file
+  # (`HOME`, `XDG_CONFIG_HOME`, an empty `GIT_CONFIG_GLOBAL`) was never removed:
+  # every gate run left a 0700 directory in TMPDIR for the life of the machine,
+  # and a suite re-run in a loop accumulates them. Same `|| :` discipline as the
+  # three lines above — the EXIT trap's last status IS the shell's exit status,
+  # so a cleanup that can fail must not be the thing that decides the verdict.
+  if [ -n "${_git_iso:-}" ]; then rm -rf "$_git_iso" || :; fi
 }
 trap '_extra_cleanup' EXIT
 

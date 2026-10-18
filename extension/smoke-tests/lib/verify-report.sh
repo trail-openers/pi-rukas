@@ -42,10 +42,21 @@ emit_tally() {
 report_results() {
   local total="$1" name sep summary budget emitted cap capfile line i in_block
 
+  # #1404 — the out-of-band verdict is written on EVERY exit path below, and
+  # only once the run is over. Each path calls `write_verify_report` immediately
+  # before its `exit`, because the exit paths are three and their `names` state
+  # differs (all-pass has none, the two failure paths have the full list) — a
+  # single call at the top of the function would be wrong for none of them and
+  # the all-pass path is the one that matters most: a green base must be
+  # positively establishable, and "no file" is unattributable to the reader.
+  # `write_verify_report` is a no-op when VERIFY_REPORT_FILE is unset, so the
+  # offline suite and CI are unaffected.
+
   if [ "${#names[@]}" -eq 0 ]; then
     if [ "$DIGEST" -eq 1 ]; then
       emit_tally "$total" 0
     fi
+    write_verify_report
     exit 0
   fi
 
@@ -112,6 +123,7 @@ report_results() {
     done
     echo "$summary"
     emit_tally "$((total - ${#names[@]}))" "${#names[@]}"
+    write_verify_report
     exit 1
   fi
 
@@ -152,6 +164,14 @@ report_results() {
   # read (observed on a full-suite run: two failures named, process exited 0).
   # Deriving the status from `names` — the array the summary is built from —
   # makes the marker and the exit code one fact that cannot disagree.
+  #
+  # The out-of-band report is written from that SAME array, one line before the
+  # exit, so the stream's summary and the file's name list are one fact and not
+  # two that a reader has to cross-check. A `report_results` that exited without
+  # calling it would leave the driver with no file — unattributable, so a park —
+  # which is the fail-closed direction; calling it here is what lets a genuine
+  # red base excuse anything at all.
+  write_verify_report
   [ "${#names[@]}" -eq 0 ] || exit 1
   exit 0
 }

@@ -5,7 +5,7 @@
  * Split out of work-driver.ts per AGENTS.md §12 module-size hygiene (#171).
  */
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
-import { developVerifyLine } from "./work-driver-verify-fast.ts";
+import { developTestScopeLine, developVerifyLine } from "./work-driver-verify-fast.ts";
 
 // #1322 — the Step 2 (plan) prompt lives in work-driver-prompts-plan.ts (500-line
 // cap); re-exported so existing importers keep this path.
@@ -356,7 +356,14 @@ export function inlineDevelopPrompt(
   lines.push(
     `  1. ${fetchInstr}`,
     "  2. Implement the change end-to-end. Your worktree is on a detached HEAD at the base commit — that is correct. Commit your work there; the driver moves the commits to the feature branch during Step 6 consolidation.",
-    `  3. ${verifyLine}`,
+    // #1156 — the test-scope rule rides the same step as the verify command so
+    // the two cannot be read apart: one names what to run, the other names
+    // what NOT to run and bounds what does run. With the #1324 fast tier the
+    // verify line already forbids the project verify command outright, so the
+    // rule is told that its binding is only about the child's own ad-hoc test
+    // commands — otherwise "wrap every suite command in timeout" reads as
+    // permission to run the very full run the fast tier just ruled out.
+    `  3. ${verifyLine} ${developTestScopeLine(Boolean(verifyCmd && fastVerifyCmd))}`,
     // #543 F5 — the driver's checkpoint commits the worktree at the natural
     // seams the child made during its run, so a cap kill never leaves only
     // a failure message. Committing at natural seams is what makes those

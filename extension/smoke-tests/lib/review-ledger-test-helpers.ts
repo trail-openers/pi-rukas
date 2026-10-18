@@ -20,42 +20,199 @@
  * resolution (no env override) provides. Importing this module does NOT
  * self-isolate (the import-time side effect would break the temp-repo ledger
  * tests by setting the env override).
+ *
+ * #1449 — the helper no longer LEAKS. It used to honour an already-set value
+ * as its own isolation target, which turned every caller into a passthrough:
+ * a parent process (or an earlier test file in the same process) that set the
+ * override got its value adopted, never replaced, and its own temp dir rmSync'd
+ * on this process's exit. The live symptom (issue #1431 / PR #1431, branch
+ * recut/issue-1417-merge-guard): a hand-run `dispatch_lens_review` in a Pi
+ * process whose environment inherited a leaked override wrote its rows into a
+ * /tmp file while `.git/review-ledger.json` sat untouched, and the #912 guard
+ * refused the merge for want of a lens entry.
+ *
+ * The contract now:
+ *   - the previous value is SAVED and RESTORED around the helper's own use, so
+ *     the importing process's `process.env` after the call is the env it was
+ *     before (asserted by test-ledger-isolation.ts);
+ *   - a pre-existing value is never adopted as this call's isolation target.
+ *     A caller that wants to honour one calls `adoptLedgerOverride()`;
+ *     `isolateLedger()` always points at a fresh private temp file;
+ *   - the temp dir it created is the only dir it removes on exit, and the
+ *     exit handler restores the env before removing anything.
  */
 
 import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gitTestEnv } from "./git-test-env.ts";
+
+/** The env var `ledgerPathFor` reads — owned by the src module, imported so the
+ * helper cannot drift from the variable the writer actually honours. */
+const LEDGER_ENV = "PI_ENSEMBLE_REVIEW_LEDGER_FILE";
+
+/** What one `isolateLedger()` call owns, so its undo is exact. */
+interface Isolation {
+  dir: string;
+  file: string;
+  /** Restore the env this call changed and remove its temp dir. Idempotent. */
+  release: () => void;
+}
+
+const active = new Set<Isolation>();
 
 /**
- * Self-isolate from the REAL per-clone review ledger (idempotent). Sets
- * `PI_ENSEMBLE_REVIEW_LEDGER_FILE` to a private temp file so any subsequent
- * `appendLedgerEntry` call in this process writes there, not to the main
- * clone's .git. The temp dir is removed on process exit (best-effort).
- * Honours an already-set value (e.g. the operator's or a prior call).
+ * The env value this process started with, captured before ANY isolation was
+ * taken. #1449 round 2 — this, not a per-call `previous`, is what a release
+ * restores once no isolation is left: a per-call `previous` is another
+ * isolation's temp file when the calls nested, and restoring it would name a
+ * directory its owner already deleted.
  */
-export function isolateLedger(): void {
-  if (process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === undefined) {
-    const isoDir = mkdtempSync(path.join(os.tmpdir(), "ledger-iso-"));
-    process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = path.join(isoDir, "review-ledger.json");
-    process.on("exit", () => {
+const baseline = process.env[LEDGER_ENV];
+
+/**
+ * Self-isolate from the REAL per-clone review ledger. Sets
+ * `PI_ENSEMBLE_REVIEW_LEDGER_FILE` to a freshly created private temp file so
+ * any subsequent `appendLedgerEntry` call in this process writes there, not to
+ * the main clone's .git.
+ *
+ * #1449 — idempotent PER CALLER, and it never adopts an inherited value: each
+ * call takes its own target and remembers what it replaced, so a second call
+ * (a second file, or a test that re-isolates) cannot inherit the first one's
+ * path as if it were the caller's own. The env is restored on process exit
+ * before the temp dir is removed, so a suite that outlives the isolation reads
+ * the env it started with.
+ *
+ * Returns the `release` for callers that want to undo the isolation explicitly
+ * rather than at process exit (a test file that isolates, runs, and then drives
+ * a real-git writer — the temp-repo pattern). Existing callers that ignore the
+ * return value are unchanged.
+ */
+export function isolateLedger(): () => void {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ledger-iso-"));
+  const file = path.join(dir, "review-ledger.json");
+  process.env[LEDGER_ENV] = file;
+  const iso: Isolation = {
+    dir,
+    file,
+    release: () => {
+      if (!active.has(iso)) return;
+      active.delete(iso);
+      // Restore FIRST: an exit handler that removed the dir while the env still
+      // named it would leave a window where a late writer targets a deleted
+      // directory.
+      //
+      // #1449 round 2 — "restore" means "restore to whatever is still correct",
+      // and when isolations are nested a per-call saved `previous` is not always
+      // it. Each call used to save the env as it found it, so an INNER call's
+      // saved value was the OUTER call's file — a path that is not the caller's
+      // to restore and that the outer release will delete. Restoring it verbatim
+      // points the env at a directory that no longer exists, which is the same
+      // class of bug this helper exists to prevent. That field is gone; the
+      //
+      // So the answer is derived from the set that is still live, never from a
+      // value remembered at acquisition time:
+      //   • any isolation still active  → the env names the innermost live one
+      //     (insertion order is acquisition order, so the LAST entry is the
+      //     innermost), and that file is guaranteed to exist because its owner has
+      //     not released;
+      //   • none left active            → restore what THIS process's outermost
+      //     isolation actually replaced, i.e. the value saved before any isolation
+      //     was taken (`baseline`), which is the only value that is neither a
+      //     helper-created temp nor somebody else's target.
+      // Releasing in either order therefore lands on the same correct answer.
+      //
+      // #1449 round 2 — each step is individually wrapped, because this runs on
+      // the process `exit` handler and an exit handler that throws is the worst
+      // failure this file can have: the remaining isolations in the loop below
+      // never release, so every later suite in the same process inherits a
+      // `PI_ENSEMBLE_REVIEW_LEDGER_FILE` naming a directory that may or may not
+      // exist — the exact leak #1449 was filed for, manufactured by the cleanup
+      // whose job is to prevent it. `process.env` assignment can throw
+      // (ERR_STRING_TOO_LONG on an absurd value, a frozen/locked-down env) and
+      // `rmSync` already had its own guard; now both halves do.
       try {
-        rmSync(isoDir, { recursive: true, force: true });
+        const innermostLive = [...active][active.size - 1];
+        if (innermostLive) process.env[LEDGER_ENV] = innermostLive.file;
+        else if (baseline === undefined) delete process.env[LEDGER_ENV];
+        else process.env[LEDGER_ENV] = baseline;
+      } catch {
+        // The env could not be restored — nothing else here should follow it.
+      }
+      try {
+        rmSync(iso.dir, { recursive: true, force: true });
       } catch {
         // cleanup is best-effort
       }
-    });
-  }
+    },
+  };
+  active.add(iso);
+  return iso.release;
 }
 
-/** Set up a temp repo with a local bare origin + a feature branch. */
+/**
+ * #1449 — the explicit way to honour an already-set override (an operator's
+ * scratch ledger, or a gate that pinned one for the whole suite): returns its
+ * path without replacing it, creates nothing, and registers no cleanup — this
+ * helper does not own a directory it did not create, so it must never rmSync
+ * one. A caller that reaches for `isolateLedger` because its docs once said it
+ * "honours an already-set value" reaches for the wrong function now.
+ */
+export function adoptLedgerOverride(): string | undefined {
+  const value = process.env[LEDGER_ENV]?.trim();
+  if (!value) return undefined;
+  return path.isAbsolute(value) ? value : path.resolve(process.cwd(), value);
+}
+
+/**
+ * #1449 — every path this module pointed the env at and has NOT restored.
+ * Exposed for `test-ledger-isolation.ts`, which asserts the set is empty once
+ * a suite's import-time helpers have released their isolations: a leak into the
+ * importing (or parent) process is exactly the bug that redirected a real
+ * review's write.
+ */
+export function activeIsolations(): string[] {
+  return [...active].map((i) => i.file);
+}
+
+// Process-exit cleanup for isolations still held at exit (the common case: a
+// test file isolates at the top and never releases). Restores the env in
+// reverse order of acquisition so the outermost caller's value wins.
+//
+// #1449 round 2 — each release is wrapped in its own try/catch. `release` is
+// already defensive internally, but the loop must not depend on that: one throw
+// here abandons every remaining isolation, and the leak it leaves (an env
+// naming a temp dir this process is about to delete) is the bug this whole
+// helper exists to close. A cleanup loop is not allowed a failure mode worse
+// than the state it is cleaning up.
+process.on("exit", () => {
+  for (const iso of [...active].reverse()) {
+    try {
+      iso.release();
+    } catch {
+      // Best-effort: a release that cannot finish must not abandon its siblings.
+    }
+  }
+});
+
+/** Set up a temp repo with a local bare origin + a feature branch.
+ *
+ * #1145 — every `execSync` here carries `env: gitTestEnv()`. These are the
+ * synchronous spawn forms, which is exactly the case bun 1.3 does not fix by an
+ * ambient `process.env` write, and this repo is what the ledger writers and the
+ * merge guard read their identity from: a host `init.defaultBranch` makes the
+ * clone's default branch differ, a host `~/.config/git/ignore` makes a file
+ * vanish from the fixture's own status. Both decide the verdict, neither is
+ * about the code under test. */
 export function setupRepo(): { repo: string; origin: string; branch: string } {
   const dir = mkdtempSync(path.join(os.tmpdir(), "ledger-"));
   const repo = path.join(dir, "repo");
   const origin = path.join(dir, "origin.git");
-  execSync(`git init -q ${origin}`, { stdio: "ignore" });
-  execSync(`git clone -q ${origin} ${repo}`, { stdio: "ignore" });
-  const git = (cmd: string) => execSync(cmd, { cwd: repo, stdio: "ignore" });
+  const gitEnv = gitTestEnv();
+  execSync(`git init -q ${origin}`, { stdio: "ignore", env: gitEnv });
+  execSync(`git clone -q ${origin} ${repo}`, { stdio: "ignore", env: gitEnv });
+  const git = (cmd: string) => execSync(cmd, { cwd: repo, stdio: "ignore", env: gitEnv });
   git("git config user.email t@t.t");
   git("git config user.name t");
   git("echo base > base.txt");
@@ -83,6 +240,7 @@ export const ledgerFile = (repo: string) => {
   const common = execSync("git rev-parse --git-common-dir", {
     cwd: repo,
     encoding: "utf8",
+    env: gitTestEnv(),
   }).trim();
   const abs = path.isAbsolute(common) ? common : path.resolve(repo, common);
   return path.join(abs, "review-ledger.json");

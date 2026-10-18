@@ -407,5 +407,13 @@ async function reviewAndAwaitLedger(
   }
 }
 
+// (J) and (K) — what the carry's own ledger write REPORTS about where it landed —
+// moved to `test-auto-delta-carry-provenance.ts` for the AGENTS.md §12 500-line
+// gate. Same `carryFixture` shape, the other question: this suite asks whether an
+// empty delta is CARRIED; that one asks whether the carry's write tells the truth
+// about the file it wrote to. A redirected carry used to report the same shape as
+// an ordinary one, because `writeCarriedEntry` read its own entry rather than the
+// stamped holder `appendLedgerEntry` hands back.
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

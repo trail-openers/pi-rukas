@@ -48,6 +48,7 @@
  * never trigger the merge.
  */
 import { recordCommentEvidence } from "./comment-evidence.ts";
+import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
 import {
   applyMergedSafetyNet,
   fenceCapHit,
@@ -55,6 +56,7 @@ import {
   runMergePrep,
   secondViolationProse,
 } from "./work-develop-fence-merge.ts";
+import { mergeRetryCap } from "./work-develop-fence-retry-cap.ts";
 import {
   applyFenceVerdicts,
   replaceDevelopConvergedVerdicts,
@@ -171,8 +173,26 @@ export async function runMergeRetryFlow(
   // The re-run failed without a blocking fence record: a genuine verify
   // failure after the merge. Hand off — the #1005 criterion (a second
   // failure after merging hands off, naming the merge).
+  //
+  // #1427 fix round — this cap used to be hardcoded to `fence-violation:develop`
+  // with an unbounded join of the failures, so a merge re-run that timed out
+  // reported a FENCE problem and the handoff's explainer never saw a timeout:
+  // the operator was told to restore a scope boundary when the gate had simply
+  // run out of time. It now routes through `verifyCapFor` exactly like the
+  // first pass's cap (`appendDevelopVerifyFailure`), carries its evidence
+  // through `boundJoinFailures`, and keeps the hang reports on the event's
+  // `logPaths` — the same structural channel, so the handoff names the files.
   const failureEvidence =
-    gate2.failures.length > 0 ? gate2.failures.join(" | ") : "(no failure string)";
+    gate2.failures.length > 0
+      ? `${boundJoinFailures(gate2.failures)}; a second failure after merging hands off`
+      : "(no failure string); a second failure after merging hands off";
+  // #1427 round 3 — ONLY this re-run's own reports. The pre-fix line read
+  // `?? ctx.gateHangLogPaths` when the re-run's result had none, so a merge
+  // re-run that killed nothing capped with the FIRST pass's hang reports
+  // attached — the handoff told the operator to open a file from a run that
+  // had nothing to do with the cap. The per-call sink in `verifyStepOutcome`
+  // makes `gate2.hangLogPaths` the complete and correct list.
+  const hangLogPaths = gate2.hangLogPaths;
   next = {
     ...next,
     pipelineState: {
@@ -189,7 +209,11 @@ export async function runMergeRetryFlow(
     next,
     fenceCapHit(
       next,
-      `verify failed AFTER the merge-and-retry (${mergeEvidence(merges, discardedShas)}) — ${failureEvidence}; a second failure after merging hands off`,
+      `verify failed AFTER the merge-and-retry (${mergeEvidence(merges, discardedShas)}) — ${failureEvidence}`,
+      // #1427 fix round — the cap says WHAT stopped the re-run (a run the wall
+      // clock killed is not a fence problem); the rule lives in `mergeRetryCap`.
+      mergeRetryCap(blockingSecond.length > 0, gate2.ok, gate2.failures),
+      hangLogPaths !== undefined && hangLogPaths.length > 0 ? hangLogPaths : undefined,
     ),
   );
   return next;

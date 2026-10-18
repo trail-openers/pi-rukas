@@ -311,33 +311,6 @@ export function inlineCommitPrPrompt(
   ].join("\n");
 }
 
-export function inlineLensFixPrompt(findings: string, scratchDirAbs: string): string {
-  return [
-    "Address the six-pass review findings below against the diff currently on this worktree.",
-    "",
-    "  - Make the minimal change per finding. Group by file.",
-    "  - Run local quality gates before declaring complete.",
-    "  - Do NOT touch unrelated code.",
-    // #543 F5 — same seam-commit clause as the develop prompt: the driver's
-    // cap-checkpoint (F5(2)) commits the worktree at natural seams, so a
-    // cap kill never leaves only a failure message. Read-only roles get no
-    // such line; this one is the developer (write-gated off, worktree cwd).
-    // #621 — same explicit git command + gate-requirement wording as
-    // inlineDevelopPrompt: the lens-fix worktree is the same tree the
-    // develop gate (and later the adversarial diff) reads, so committed
-    // work is what the downstream steps expect.
-    // #1078 — commit subject follows the project's convention (same
-    // softening as the develop prompt).
-    "  - Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m \"<concise subject — follow the project's commit convention from AGENTS.md, or <type>(scope): description>\"`. The driver's gate REJECTS uncommitted-only work — no commit ahead of base SHA means the step fails. Do NOT push — the driver owns the branch.",
-    "",
-    "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",
-    "```json",
-    findings,
-    "```",
-    scratchHygieneSection(scratchDirAbs),
-  ].join("\n");
-}
-
 /**
  * Step 9 (Merge) ops prompt — fallback path when mechanized merge
  * can't execute (derive fallback, infra failure, or mechanized ops

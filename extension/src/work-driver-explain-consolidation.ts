@@ -8,6 +8,8 @@
 
 import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
+// #875 blurb (moved here from work-driver-explain.ts for the 500-line gate).
+import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
@@ -147,4 +149,56 @@ function fenceAttribution(fence: FenceViolationRecord[]): string | undefined {
   const named = describeSiblingFenceViolations(fence);
   if (!named) return undefined;
   return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict that the develop scope fence ALREADY predicted: the declared paths were DISJOINT (the decomposition was fine), but the fence was violated — ${named}. Re-splitting the plan will NOT fix this conflict; it is the fence violation materialising at consolidation. Restore the fence boundary (the violating workstream's commit must not include that file — split the change so each file is touched by exactly one workstream) and re-run`;
+}
+
+/**
+ * #875 — the "missing workstreams" blurb for the
+ * `commit-pr-incomplete-consolidation` cap. Reads ONLY the persisted
+ * per-verdict `dirty` flag (no git calls) — dirty=true or flag absent
+ * (legacy) → "uncommitted on disk"; dirty=false → cherry-pick recovery.
+ *
+ * Moved verbatim out of work-driver-explain.ts (the 500-line gate; the same
+ * seam this module already is — "so that file sits under the cap with headroom
+ * for new caps"). It belongs here rather than in the parent because it is the
+ * consolidation family's own prose: the cherry-pick recovery it emits is the
+ * one this family of caps names.
+ */
+export function commitPrConsolidationBlurb(
+  state: WorkState,
+  opts: { missingIds: string[]; filesPresent: string[] },
+): string {
+  const ps = state.pipelineState;
+  const which = opts.missingIds.length > 0 ? opts.missingIds.join(", ") : "one or more workstreams";
+  const ic = ps.incompleteConsolidation;
+  const verdicts = Array.isArray(ic) ? [] : (ic?.verdicts ?? []);
+  const wts = ps.worktrees ?? {};
+  const lines: string[] = [`the committed diff is missing declared files from: ${which}.`];
+  for (const id of opts.missingIds) {
+    const v = verdicts.find((x) => x.id === id);
+    const isClean = !Array.isArray(ic) && !!v && v.status === "uncovered" && v.dirty === false;
+    const wtSuffix = wts[id] ? ` (${wts[id]})` : "";
+    if (!isClean) {
+      lines.push(
+        `  - ${id}: the developers' work in the missing worktree${wtSuffix} is uncommitted on disk.`,
+      );
+      continue;
+    }
+    const pick = cherryPickRecoveryFor(state.issue, id, {
+      worktree: wts[id],
+      baseSha: ps.baseSha,
+      ownBase: ps.workstreamBaseShas?.[id],
+      headSha: ps.commitShas?.[id],
+    });
+    const pickText = pick.kind === "command" ? `cherry-pick it: \`${pick.line}\`` : pick.line;
+    lines.push(
+      `  - ${id}: nothing uncommitted — the work is COMMITTED in its worktree${wtSuffix}. If ${v.uncoveredPaths.join(", ")} genuinely needed a change, ${pickText}; otherwise the declaration was over-broad and the fix is a restart.`,
+    );
+  }
+  if (opts.filesPresent.length > 0) {
+    const shown = opts.filesPresent.slice(0, 5).join(", ");
+    lines.push(
+      ` The committed diff contains ${opts.filesPresent.length} file(s): ${shown}${opts.filesPresent.length > 5 ? ` and ${opts.filesPresent.length - 5} more` : ""} — the missing workstreams' files are the difference.`,
+    );
+  }
+  return lines.join(" ");
 }

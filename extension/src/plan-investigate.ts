@@ -237,6 +237,13 @@ export async function runInvestigation(
      * none (the real fs.stat is used); tests pass a stub.
      */
     statFn?: (p: string) => Promise<unknown>;
+    /**
+     * #1541 review (MEDIUM) — the async job's signal, threaded to every child
+     * of the barrier so `dispatch_kill` stops live children instead of only
+     * refusing the next phase. Absent → the pre-#1541 shape (tests, and any
+     * caller with no job to abort).
+     */
+    signal?: AbortSignal;
   },
 ): Promise<InvestigationResult> {
   const { type, descriptor, repoRoot, inv, priorContext, codeIdentifiers } = args;
@@ -295,6 +302,7 @@ export async function runInvestigation(
     {
       label: "plan-duplicate-risk",
       timeoutMs: PLAN_DISPATCH_TIMEOUT_MS,
+      ...(args.signal ? { signal: args.signal } : {}),
       extraArgs: PLAN_MARKER_CHILD_ARGS,
     },
   );
@@ -312,6 +320,7 @@ export async function runInvestigation(
         {
           label: `plan-${a.name}`.slice(0, 24),
           timeoutMs: PLAN_DISPATCH_TIMEOUT_MS,
+          ...(args.signal ? { signal: args.signal } : {}),
           extraArgs: PLAN_EXTRA_ARGS,
         },
       ).then((r) => {

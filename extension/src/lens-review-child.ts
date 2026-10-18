@@ -19,13 +19,14 @@ import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
+import { skillLoadProof } from "./lens-skill-load-proof.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { readEnumMarker } from "./reply-markers.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import type { SlowWatchInput } from "./slow-notice.ts";
 import { feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { spawnSpecialist } from "./spawn.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { jitteredMs } from "./work-driver-failure-taxonomy.ts";
 
@@ -122,6 +123,7 @@ export async function runLensChild(opts: {
     runOpts.evidence,
     roster,
     runOpts.priorFindings,
+    skillPath,
   );
   const tag = lens.name.toLowerCase().replaceAll("_", "-");
   // Per-lens deck key. The dispatch deck (#117) is now the single live
@@ -345,10 +347,58 @@ export async function runLensChild(opts: {
   // is the executed evidence that the skill existed; absence is traced
   // (PI_ENSEMBLE_DEBUG=1) so the operator can see the honor system was
   // simply not exercised.
+  //
+  // PR #1530 / #995 added a cross-check of a claimed SUCCESS against the
+  // child's recorded tool calls (`skillLoadProof`). As of round 3 of that
+  // review it runs in SHADOW: the proof is computed and a disagreement is
+  // traced, but it does NOT change the outcome. The child's own marker is the
+  // only thing that blocks, exactly as before the proof existed.
+  //
+  // Why shadow rather than a block. A false `unproven` blocks every lens
+  // review on every PR, and two false-refutation classes were still open:
+  //   - `observedToolCalls` is only consulted when it EXCEEDS `toolUses.length`,
+  //     so an under-recovered-but-non-empty replay (live 5, recovered 2, the
+  //     read among the 3 that were dropped) refutes a lens that read its skill;
+  //   - the directory resolution (`realpathOr`) can mismatch when the skills
+  //     dir is a symlink tree that resolves differently at check time than the
+  //     child saw at read time.
+  // Both are judgement calls about another module's records, and the repo rule
+  // for a new judgement seam is shadow first, enforce once the log earns it.
+  // FOLLOW-UP: promote `unproven` to a block once the shadow log shows no
+  // false refutations — the line below is the log, and the enforcement is one
+  // `blocked: true` branch on `case "unproven"` here.
   const skillLoadStatus = readEnumMarker(result.text ?? "", "Skill Load Status", [
     "SUCCESS",
     "FAILED",
   ]);
+  if (skillLoadStatus === "SUCCESS") {
+    // `observedToolCalls` is passed so a replay that is EMPTY on the array but
+    // non-empty on the live count abstains outright (`unverifiable`): the child
+    // made calls the replay did not carry, so the absence of a read from
+    // `toolUses` says nothing about whether it read the skill.
+    const proof = skillLoadProof(result.toolUses, skillPath, result.observedToolCalls);
+    switch (proof) {
+      case "proven":
+        // The marker and the records agree; nothing to say.
+        break;
+      case "unproven":
+        // SHADOW: warn, do not block. traceWarn (not trace) so the line shows
+        // without PI_ENSEMBLE_DEBUG and the operator can see — in a normal run
+        // log — the lens, the verdict it claimed, and the tool names/paths the
+        // proof looked at. That is the evidence the promotion decision needs.
+        traceWarn(
+          `skill load SHADOW: SUCCESS not corroborated (${lens.skill}): no read of ${skillPath} among ${describeToolCalls(result.toolUses)} — NOT blocking (shadow mode; the child's own marker decides)`,
+        );
+        break;
+      case "unverifiable":
+        trace(
+          `skill load SUCCESS unverifiable (${lens.skill}): the child recorded no usable tool calls; treated as absent, not refuted`,
+        );
+        break;
+    }
+  }
+  // The child's own marker is the gate. A `FAILED` self-report blocks with its
+  // findings kept — unchanged from before #995's proof.
   if (skillLoadStatus === "FAILED") {
     return {
       lens: lens.name,
@@ -385,9 +435,43 @@ export async function runLensChild(opts: {
   };
 }
 
+/** A compact, bounded summary of what the proof actually looked at, for the
+ * SHADOW warning: the tool names it saw and the path-shaped arguments those
+ * calls carried. Nothing is executed and no argument content beyond paths is
+ * echoed; the list is capped so a chatty child cannot make the warning the
+ * longest line in the run. Both the `read` and `file_path` spellings are
+ * collected — this line reports what the child NAMED, so the operator can see
+ * why the proof disagreed with it, including when the model used a spelling
+ * the tool would have rejected. */
+function describeToolCalls(toolUses: readonly unknown[]): string {
+  const names: string[] = [];
+  const paths: string[] = [];
+  for (const tu of toolUses ?? []) {
+    if (!tu || typeof tu !== "object") continue;
+    const call = tu as Record<string, unknown>;
+    const name = typeof call.name === "string" ? call.name : "?";
+    if (names.length < 8 && !names.includes(name)) names.push(name);
+    const args =
+      call.arguments && typeof call.arguments === "object"
+        ? (call.arguments as Record<string, unknown>)
+        : {};
+    for (const key of ["path", "file_path"]) {
+      const v = args[key];
+      if (typeof v === "string" && v.trim() && paths.length < 8 && !paths.includes(v)) {
+        paths.push(v);
+      }
+    }
+  }
+  const seen = names.length > 0 ? names.join(", ") : "(none)";
+  const withPaths = paths.length > 0 ? `; paths ${paths.join(", ")}` : "";
+  return `${toolUses?.length ?? 0} tool call(s) [tools ${seen}]${withPaths}`;
+}
+
 // #872 — honor-system absence is traced, not blocked: the marker was not
 // emitted, but the pre-spawn statSync in `runLensChild` is the executed
-// evidence the skill exists, so only an explicit FAILED ever blocks.
+// evidence the skill exists, so an absent marker never blocks — and a SUCCESS
+// whose read the child did not perform is downgraded to FAILED above rather
+// than reaching this line.
 function traceSkillLoadAbsence(lensSkill: string, status: string | undefined): void {
   if (status === undefined) {
     trace(`skill load status absent (${lensSkill}) — pre-spawn stat passed; marker not emitted`);

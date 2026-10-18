@@ -31,6 +31,16 @@
  * #1043: an identical confirm of a FILEABLE dry run files the reviewed spec
  * verbatim (plan-confirm.ts) with no investigation, drafting or gate.
  *
+ * **The tool launches; it does not wait (#1044).** The pipeline runs in a
+ * background job (`startJob`, `reportKind: "driver"`) and execute() returns a
+ * launch notice with the `jobId` immediately — the same contract
+ * `start_work_driver` has. A blocking plan run locked the operator out of the
+ * PM for 5–45 minutes, which is what they actually complained about. The full
+ * rendered result — the exact text this tool used to return, dry-run specs and
+ * NOT-FILEABLE blocks included — arrives later as ONE `[ensemble:async]` steer,
+ * whether or not the PM is still mid-turn (`deliverAs: "steer"` is inert when
+ * idle). A throw inside the job is delivered as a fail report, never lost.
+ *
  * The driver's own filing is a child-process exec — exempt from the
  * tool_call guard by construction, exactly like the work driver's
  * mechanized `gh pr create`.
@@ -38,9 +48,9 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { noticeSubject } from "./async-jobs-report.ts";
+import { startJob } from "./async-jobs.ts";
 import { runPlanPipeline } from "./plan-driver.ts";
-import { DROPPED_ARTIFACT } from "./plan-dropped-budget.ts";
-import { truncateForDisclosure } from "./plan-gap-disclosure.ts";
 import {
   FORBIDDEN_LINE_CHARS,
   MAX_LABELS,
@@ -49,11 +59,43 @@ import {
   normalizeLabels,
   validateProvenance,
 } from "./plan-provenance.ts";
+import { DRY_RUN_HEAD, renderPlanResult } from "./plan-report.ts";
 import type { PlanDriverInput, PlanResult } from "./plan-types.ts";
-import { FORGE_BODY_MAX } from "./plan-validate.ts";
 import { trace } from "./trace.ts";
 import { piSessionHost } from "./work-driver-host.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
+
+/**
+ * #1044 — the tool's return is a LAUNCH notice, never the spec: a tool result
+ * arrives in seconds, and the pipeline takes minutes. So the only thing this
+ * text may assert is what every run does whatever it ends up doing. The
+ * `dryRun` branch used to say "show this spec to the operator", which read as
+ * an instruction to present text that does not exist yet; it now points at the
+ * steer instead, and the wording of the dry-run head stays in one place with
+ * the renderer (plan-report.ts / DRY_RUN_HEAD).
+ */
+export function launchNotice(o: {
+  jobId: string;
+  descriptor: string;
+  dryRun: boolean;
+  repoRoot: string;
+}): string {
+  // #1541 review (MEDIUM) — two corrections to what this may promise.
+  // (a) Conditional outcome. The dry-run branch used to assert the report
+  //     "opens with <DRY_RUN_HEAD> and carries the spec, the gap dispositions
+  //     and the digest". A dry run whose gate capped unresolved-CRITICAL, whose
+  //     draft failed validation, or whose gap gate was unavailable renders
+  //     NOT FILEABLE / PLAN COMPLETED with no digest at all, so the notice was
+  //     offering a digest that may not exist. Same for the filing branch.
+  // (b) The confirm call is a SECOND launch, and the digest it must echo only
+  //     ever comes from the first one's steer — a confirm issued before that
+  //     steer arrived has no digest to pass, files nothing verbatim, and pays
+  //     for a full pipeline. Say so where the operator reads it.
+  const next = o.dryRun
+    ? `When the report arrives it says ONE of two things: "${DRY_RUN_HEAD} <digest>" with the spec and the gap dispositions — if the gate passed; or a NOT FILEABLE / PLAN COMPLETED block naming the reason, with NO digest to echo. Show whichever arrived to the operator. Only after that steer has arrived can you re-call with dryRun omitted — and to file the reviewed spec verbatim you must echo the reviewedDigest that steer carried, because that steer is the only place the digest exists; a confirm without it runs the whole pipeline again.`
+    : "When the report arrives it says whether the issue was filed and carries the issue URL — or it says the run FAILED / was CANCELLED and names the cause. Until it arrives you have neither verdict nor URL: quote neither.";
+  return `pi-rukas: /plan driver started for "${noticeSubject(o.descriptor)}" (jobId: ${o.jobId}, dryRun: ${o.dryRun}, repo: ${o.repoRoot}). ${next} The run takes minutes; end your turn — the [ensemble:async] steer carrying the jobId is the result, not this notice. Do not poll, and do not re-call to check progress.`;
+}
 
 /**
  * The shape of a registered `start_plan_driver` tool def — shared with the
@@ -64,7 +106,20 @@ export interface RegisteredPlanTool {
   name: string;
   description: string;
   parameters: { properties?: Record<string, unknown> };
-  execute: (...a: unknown[]) => Promise<unknown>;
+  // The five execute() arguments are NAMED (not `...a: unknown[]`) so the
+  // shared harness — plan-test-stubs.ts, driving every dry-run e2e block —
+  // can pass the ExtensionContext positionally without the `as any` cast it
+  // needed before. #1044 makes the fifth argument matter in a second way: the
+  // tool now launches a background job, and a job's report reaches the
+  // registered `pi`, not this object — so a test that wants to read its own
+  // result registers a stub whose `sendUserMessage` records the delivery.
+  execute: (
+    id: string,
+    params: Record<string, unknown>,
+    signal: unknown,
+    onUpdate: unknown,
+    ctx: { cwd: string },
+  ) => Promise<unknown>;
 }
 
 export function registerPlanTool(pi: ExtensionAPI) {
@@ -72,7 +127,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
     name: "start_plan_driver",
     label: "Start /plan Driver",
     description:
-      "Run the compiled /plan pipeline (classify → inventory → type-specialised investigation → draft → adversarial gap gate → file) and file the resulting GitHub issue. This is the ONLY way to create a GitHub issue: direct `gh issue create` (and `gh api` POST to the issues collection) is structurally refused for every role in every mode — the refusal names this tool. Call with dryRun:true FIRST to return { spec, gaps, priorContext, filed:false } without filing; show the spec + gap dispositions to the operator, and on their confirmation re-call with dryRun omitted to file. The result includes issueUrl on success. A dry run reports a reviewedDigest; re-calling with identical inputs (same descriptor, context, type and origin/<default> commit, within the expiry — 2 hours by default) and that digest files the reviewed spec VERBATIM, with no investigation, drafting or gap gate (the result says FILED FROM REVIEWED DRY RUN). Any other call — a changed input, a missing or wrong digest, an expired or non-fileable dry run — runs the full pipeline, which reuses the investigation and re-runs the gate; when that call carried a reviewedDigest and the pipeline drafts a different spec, nothing is filed and the result says THE REVIEWED SPEC CHANGED — show the new spec and ask again. Epic sub-issues at depth >= 3 get a minimal body with a depth-limit note. Gap gate: runs for bug/feature/epic; chore/spike get deterministic validation only. A too-thin descriptor (below the word floor, no code identifier, no context) returns needs-clarification questions without dispatching anything — answer them and re-call. Non-resumable: a failed run is re-run, not resumed.",
+      "Launch the compiled /plan pipeline (classify → inventory → type-specialised investigation → draft → adversarial gap gate → file) in the BACKGROUND and file the resulting GitHub issue. This is the ONLY way to create a GitHub issue: direct `gh issue create` (and `gh api` POST to the issues collection) is structurally refused for every role in every mode — the refusal names this tool. RETURNS IMMEDIATELY with a jobId and a launch notice — it does NOT return the spec. The run takes minutes; end your turn and the full result arrives later as one `[ensemble:async]` steer message naming this job (also when you are idle). Never poll or re-call to find out whether it finished. Call with dryRun:true FIRST: the steer then carries { spec, gaps, priorContext, filed:false } without filing; show that spec + gap dispositions to the operator, and on their confirmation re-call with dryRun omitted — that re-call is another launch, and it benefits from the dry run's investigation cache. The result includes issueUrl on success. A dry run reports a reviewedDigest; re-calling with identical inputs (same descriptor, context, type and origin/<default> commit, within the expiry — 2 hours by default) and that digest files the reviewed spec VERBATIM, with no investigation, drafting or gap gate (the result says FILED FROM REVIEWED DRY RUN). Any other call — a changed input, a missing or wrong digest, an expired or non-fileable dry run — runs the full pipeline, which reuses the investigation and re-runs the gate; when that call carried a reviewedDigest and the pipeline drafts a different spec, nothing is filed and the result says THE REVIEWED SPEC CHANGED — show the new spec and ask again. Epic sub-issues at depth >= 3 get a minimal body with a depth-limit note. Gap gate: runs for bug/feature/epic; chore/spike get deterministic validation only. A too-thin descriptor (below the word floor, no code identifier, no context) returns needs-clarification questions without dispatching anything — answer them and re-call. Concurrent launches are allowed; each result names its own descriptor. Non-resumable: a failed run is re-run, not resumed.",
     parameters: Type.Object({
       descriptor: Type.String({
         description: "Ticket descriptor — one or two sentences describing the intended change.",
@@ -190,43 +245,96 @@ export function registerPlanTool(pi: ExtensionAPI) {
       trace(
         `start_plan_driver → descriptor="${descriptor.slice(0, 60)}" type=${String(params.type ?? "inferred")} dryRun=${dryRun} labels=${labels.length} provenance=${provenance ? "yes" : "no"} repoRoot=${repoRoot}`,
       );
+      // #1044 — launch, don't wait. The whole pipeline runs inside the job, so
+      // a throw anywhere in it reaches the job's rejection path and is
+      // delivered as a bounded fail report rather than disappearing with the
+      // tool call. `skipDeck`: the pipeline's own investigation / gap-gate
+      // children are the real deck rows, and a synthetic row for the parent
+      // job would mask them (the same reasoning the work tool's job follows).
+      //
+      // The job delivers to `pi`, the ExtensionAPI the tool was registered on
+      // — the same host `start_work_driver` hands its job (work-tool.ts), so
+      // every report-delivering tool resolves against one session. `steer`
+      // survives the mid-turn case: a tool call runs during a turn by
+      // definition, and the flag queues the message and is inert when idle
+      // (agent-message.ts). A test drives the same seam by making the pi stub
+      // it registers with answer `sendUserMessage`.
+      // The typed view of the call: the four fields the driver reads by name,
+      // with the three the validators just narrowed substituted. The cast
+      // carries no unchecked field into the driver — `type` is the only one left
+      // as the caller wrote it, and the driver re-classifies an unrecognised
+      // value.
+      const driverInput: PlanDriverInput = {
+        ...(params as Omit<PlanDriverInput, "labels" | "provenance" | "descriptor">),
+        descriptor,
+        labels,
+        provenance,
+      };
+      // #1541 review (MEDIUM) — the job's OWN AbortSignal, not the tool's exec
+      // signal. `killJob(jobId)` / `killAllJobs()` (dispatch_kill and
+      // session_shutdown) abort that controller, and `runPlanPipeline` checks
+      // the signal at its phase boundaries, so an operator can stop a run
+      // instead of waiting out the 30-minute per-child bound. The tool's
+      // `_signal` is deliberately NOT threaded: Pi drops it the moment
+      // execute() returns, and the job outlives the call by minutes.
+      const runPlanJob = async (signal: AbortSignal) => {
+        const result = await runPlanPipeline(piSessionHost(pi), driverInput, repoRoot, { signal });
+        return {
+          role: "plan-driver",
+          ok: !result.cancelled,
+          // A cancelled run is STILL delivered as a report: a silent kill
+          // leaves PM waiting for a steer that never arrives, which is the
+          // same silent hang #1044 was filed to remove.
+          text: renderPlanResult(result, dryRun),
+          toolUses: [],
+          ms: 0,
+          exitCode: result.cancelled ? 143 : 0,
+          ...(result.cancelled ? { killCause: "abort" as const } : {}),
+          // #1541 review (HIGH) — if the steer never lands, the stand-in names
+          // where the answer still lives: the filed issue. A plan that filed is
+          // NOT a plan to re-run, so this has to be said by the run that knows.
+          ...(result.issueUrl ? { reportWhere: `the filed issue ${result.issueUrl}` } : {}),
+        };
+      };
+      let jobId: string;
       try {
-        const result = await runPlanPipeline(
-          piSessionHost(pi),
-          // The typed view of the call: the four fields the driver reads by
-          // name, with the three the validators just narrowed substituted. The
-          // cast carries no unchecked field into the driver — `type` is the only
-          // one left as the caller wrote it, and the driver re-classifies an
-          // unrecognised value.
-          {
-            ...(params as Omit<PlanDriverInput, "labels" | "provenance" | "descriptor">),
-            descriptor,
-            labels,
-            provenance,
-          },
-          repoRoot,
-        );
-        return {
-          content: [
-            {
-              type: "text",
-              text: renderPlanResult(result, dryRun),
-            },
-          ],
-          details: resultDetails(result, dryRun),
-        };
+        jobId = startJob(pi, {
+          label: "plan-driver",
+          role: "plan-driver",
+          subject: descriptor,
+          skipDeck: true,
+          reportKind: "driver",
+          work: (signal) => runPlanJob(signal),
+        }).jobId;
       } catch (err) {
-        trace(`start_plan_driver failed: ${(err as Error).message}`);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `start_plan_driver failed: ${(err as Error).message}`,
-            },
-          ],
-          details: { started: false, error: (err as Error).message },
-        };
+        // #1541 review (LOW) — startJob throws at its MAX_JOBS cap. Letting it
+        // propagate surfaces async-jobs internals as a tool failure; the caller
+        // gets a NAMED refusal with `started: false`, the same shape the
+        // invalid-input refusal above uses.
+        return jobSaturation(err);
       }
+      return {
+        content: [
+          {
+            type: "text",
+            text: launchNotice({ jobId, descriptor, dryRun, repoRoot }),
+          },
+        ],
+        // #1295 — the async-result contract every report-delivering tool keeps:
+        // `async: true` plus the jobId the steer's header will name.
+        // #1541 review — `descriptor` is clamped to the same 80 chars the notice
+        // prints. It is an LLM-written string that lands in tool output and then
+        // in the transcript verbatim; an unbounded one puts the caller's whole
+        // prompt into the details block for no benefit, since the value is an
+        // identifier for the operator to match a steer to a run, not a document.
+        details: {
+          started: true,
+          async: true,
+          jobId,
+          dryRun,
+          descriptor: noticeSubject(descriptor),
+        },
+      };
     },
   });
 }
@@ -245,180 +353,18 @@ function invalidInput(field: string, problems: string[]) {
   };
 }
 
-function renderPlanResult(r: PlanResult, dryRun: boolean): string {
-  // The head must NEVER invite filing a halted draft (vipune fixture run,
-  // C1: a draft-invalid halt on a dryRun rendered as a clean pass and the
-  // head said "re-call with dryRun omitted to file" — the session read it
-  // as the gate approving a spec with zero acceptance criteria). Any
-  // filingFailure means the spec is not fileable as-is, dryRun or not.
-  const halted = !r.filed && !!r.filingFailure;
-  const baseHead = halted
-    ? `PLAN ${dryRun ? "DRY-RUN — " : ""}NOT FILEABLE AS-IS (${r.filingFailure?.reason}). Nothing was filed${dryRun ? ", and re-calling without dryRun would NOT file this spec either" : ""} — see the FILING STATUS section below before showing this to the operator.`
-    : dryRun
-      ? r.reviewedDigest
-        ? `PLAN DRY-RUN (nothing filed). Show this spec to the operator. reviewedDigest: ${r.reviewedDigest} — on their confirmation re-call start_plan_driver with dryRun omitted and reviewedDigest: "${r.reviewedDigest}" to file this exact spec verbatim.`
-        : "PLAN DRY-RUN (nothing filed). Show this spec to the operator; on their confirmation re-call start_plan_driver with dryRun omitted to file."
-      : r.filed
-        ? r.filedFromDryRun
-          ? `PLAN FILED FROM REVIEWED DRY RUN (age ${fmtMs(r.filedFromDryRun.ageMs)}) — ${r.issueUrl}. The spec below is the dry run's reviewed body, filed verbatim: no investigation, drafting or gap gate ran. NOT re-checked: the duplicate-risk check against live forge state, and the NEVER CLAIM directives.`
-          : `PLAN FILED — ${r.issueUrl}`
-        : "PLAN COMPLETED — filing failed or was blocked; see the FILING STATUS section below. The spec is still valid to review.";
-  // #1224: the confirmation covered the reviewed spec, not this re-drafted one.
-  const changed = r.reviewedSpecChanged
-    ? `PLAN NOT FILED — THE REVIEWED SPEC CHANGED. The reviewed dry run could not be filed verbatim (${r.reviewedSpecChanged.reason}), so the full pipeline re-ran and drafted a DIFFERENT spec (below). Nothing was filed: the operator's confirmation does not cover this spec — show it to them and ask again.${r.reviewedDigest ? ` On their confirmation re-call start_plan_driver with dryRun omitted and reviewedDigest: "${r.reviewedDigest}" to file this exact spec verbatim.` : ""}`
-    : "";
-  const head = !changed ? baseHead : halted ? `${changed}\n\n${baseHead}` : changed;
-  const gaps =
-    r.gaps.length > 0
-      ? r.gaps.map((g) => `- [${g.severity}] ${g.description} → ${g.resolution}`).join("\n")
-      : "- (none)";
-  const prior =
-    r.priorContext.length > 0
-      ? r.priorContext
-          .slice(0, 10)
-          .map((p) => `- [${p.source}] ${p.fact}`)
-          .join("\n")
-      : "- (none — cold start)";
-  // D1: the cap message names the ACTUAL cause (discriminated capReason),
-  // instead of the old "unresolved CRITICAL/HIGH gaps remain" which was
-  // false when a MEDIUM-only NEEDS_ITERATION verdict burned the rounds.
-  // #664 transposed: the terminal rule is CRITICAL-only — residual-high
-  // (HIGH findings travel in the disclosure) and residual-medium-low both
-  // mean the spec FILED; only unresolved-blocking (CRITICAL remains) does
-  // not.
-  // Adversarial follow-up: the wording is round-count-agnostic. The no-op
-  // round elimination means a MEDIUM-only or HIGH-only NEEDS_ITERATION
-  // terminates after a SINGLE dispatch — the old text claimed "the
-  // reviewer asked for another iteration" / "fresh findings each round",
-  // both false when one round ran. Lead with the load-bearing fact (the
-  // spec WAS filed), same defect class D1 fixed. The inline list uses the
-  // UNION (residualForDisclosure) to match the filed body's residual
-  // section, which also uses the union — the old last-round-only list
-  // could omit a round-1 finding the body discloses (2-round
-  // CRITICAL-then-HIGH case).
-  // The old `&& r.gaps.length > 0` guard made gate-unavailable — whose
-  // parse yields ZERO gaps — invisible on a dryRun. capHit alone earns the
-  // block (vipune fixture run, C1 follow-up).
-  let cap = "";
-  if (r.capHit) {
-    // The inline list renders the SAME union as the filed body's residual
-    // section, through the SAME single truncation (truncateForDisclosure) —
-    // the two render sites cannot drift (lens review, PR #637 finding 1;
-    // the PERFORMANCE lens flagged the drift risk specifically).
-    const residual = (r.residualForDisclosure ?? [])
-      .map((g) => `[${g.severity}] ${truncateForDisclosure(g.description)}`)
-      .join(", ");
-    if (r.capReason === "unresolved-blocking") {
-      cap = `\n\nGAP GATE CAP HIT: after the iteration cap, unresolved CRITICAL gaps remain (listed under GAP DISPOSITIONS). ${r.filed ? "The spec was FILED with them under '## Open points' in the issue body; the /work intent gate decides whether the issue is buildable." : "Nothing was filed (dry run): a confirmed run files them under '## Open points'."}`;
-    } else if (r.capReason === "residual-high") {
-      cap = `\n\nGAP GATE CAP HIT: the reviewer returned HIGH findings alongside MEDIUM/LOW items (${residual}); with no CRITICAL gap the spec is FILED with the residual findings disclosed in the issue body (see '## Residual gap-gate findings'). HIGH findings travel in that disclosure — the terminal rule is CRITICAL-only.`;
-    } else if (r.capReason === "residual-medium-low") {
-      cap = `\n\nGAP GATE CAP HIT: the reviewer returned only MEDIUM/LOW findings (${residual}); with no CRITICAL gap the spec is FILED with the residual findings disclosed in the issue body (see '## Residual gap-gate findings').`;
-    } else if (r.capReason === "verdict-absent") {
-      cap =
-        "\n\nGAP GATE NOTE: the reviewer never wrote a verdict line; no CRITICAL gap was found, so the spec proceeded — but the absence is recorded here (the gate did not explicitly say READY).";
-    } else if (r.capReason === "gate-unavailable") {
-      cap =
-        "\n\nGAP GATE UNAVAILABLE: the gap-gate dispatch itself failed, so no reviewer ever saw the spec. It was NOT filed — the spec above is still valid to review, but re-run start_plan_driver after the gate failure is addressed (see the FILING STATUS below).";
-    } else if (r.capReason === "review-unparseable") {
-      cap =
-        "\n\nGAP GATE REVIEW UNPARSEABLE: the reviewer replied, but its output carried no structured findings and no verdict — even after one strict-contract retry. The spec was NOT reviewed and is NOT fileable (distinct from a clean review, which renders '(none)' below). Re-run start_plan_driver to retry the gate.";
-    } else {
-      cap = "\n\nGAP GATE CAP HIT: the iteration cap was reached. See the gap dispositions below.";
-    }
-  }
-  // D7: the filing failure reason is DISCRIMINATED and surfaced — the
-  // forge stderr (when there is one) reaches the operator without
-  // PI_ENSEMBLE_DEBUG. Rendered on dryRun too (C1): the halt reasons are
-  // set BEFORE filing would happen, and hiding them behind !dryRun is what
-  // made a rejected draft look like a clean pass.
-  let filingStatus = "";
-  if (!r.filed && r.filingFailure) {
-    const f = r.filingFailure;
-    if (
-      f.reason === "gate-unavailable" ||
-      f.reason === "needs-clarification" ||
-      f.reason === "draft-invalid" ||
-      f.reason === "duplicate-risk" ||
-      f.reason === "review-unparseable" ||
-      f.reason === "body-too-large"
-    ) {
-      // Deliberate skip (not a failure): the cap routed to surface (a
-      // CRITICAL gap remains — CRITICAL-only blocks, #664 transposed; HIGH
-      // findings travel in the residual disclosure instead), the gap gate
-      // never ran (no reviewer saw the spec — re-run after the gate failure
-      // is addressed), the deterministic precheck asked for clarification
-      // before any dispatch, or the drafted body failed deterministic
-      // validation. The spec is not filed by policy; no forging happened.
-      filingStatus = `\n\n=== FILING STATUS ===\nNot filed (by policy): ${f.detail}`;
-    } else {
-      filingStatus = `\n\n=== FILING STATUS ===\nFiling did not complete. Reason: ${f.reason}${f.detail ? ` — ${f.detail}` : ""}. The spec above is still valid to review and can be re-run after the cause is addressed.`;
-    }
-  }
-  // Failed investigation angles surface HERE too, not only inside the spec
-  // body — the operator must see the hole without reading the whole draft.
-  const investigation =
-    r.failedAngles && r.failedAngles.length > 0
-      ? `\n\n=== INVESTIGATION STATUS ===\n${r.failedAngles.length} angle(s) FAILED — their surface is uninvestigated:\n${r.failedAngles.map((a) => `- ${a.name}: ${a.detail}`).join("\n")}`
-      : "";
-  const reusedNote = r.investigationReused
-    ? `\n\n=== INVESTIGATION REUSED ===\nThe duplicate-risk and angle investigation (and the inventory) was reused from the confirmed dry run ${fmtMs(r.investigationReused.ageMs)} ago — the descriptor, context, type and origin/<default> commit are unchanged. The working tree was NOT compared: uncommitted edits made after the dry run are not reflected in the reused investigation. Drafting, validation and the gap gate re-ran.`
-    : "";
-  const baseNote = r.baseFallback
-    ? `\n\n=== BASE FALLBACK ===\nInvestigators read the local checkout, not origin/<default>: ${r.baseFallback}. The investigation cache was not used for this run.`
-    : "";
-  const compactedNote = r.compacted
-    ? `\n\nCOMPACTED: the body was deterministically compacted to fit the forge's ${FORGE_BODY_MAX}-char limit (a disclosure line inside the body says how; full findings live in ${r.droppedListFile ?? DROPPED_ARTIFACT}).`
-    : "";
-  const timingsLine =
-    r.timings && r.timings.length > 0
-      ? `\n\n=== TIMINGS ===\n${r.timings.map((t) => `${t.phase} ${fmtMs(t.ms)}`).join(" · ")}`
-      : "";
-  return `${head}
-
-Title: ${r.title}
-Type: ${r.type}
-
-=== SPEC (the issue body) ===
-${r.spec}
-
-=== GAP DISPOSITIONS ===
-${gaps}
-
-=== PRIOR CONTEXT ATTRIBUTION ===
-${prior}${reusedNote}${investigation}${baseNote}${cap}${filingStatus}${compactedNote}${timingsLine}`;
-}
-
-/** Human-readable duration: sub-minute in seconds, else m+s. */
-function fmtMs(ms: number): string {
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  return `${Math.floor(s / 60)}m${s % 60 ? `${s % 60}s` : ""}`;
-}
-
-function resultDetails(r: PlanResult, dryRun: boolean): Record<string, unknown> {
-  const d: Record<string, unknown> = {
-    started: true,
-    type: r.type,
-    title: r.title,
-    filed: r.filed,
-    dryRun,
-    gapCount: r.gaps.length,
-    capHit: r.capHit ?? false,
-    residualForDisclosure: r.residualForDisclosure,
+/**
+ * #1541 review (LOW): the named refusal when `startJob` is at its MAX_JOBS
+ * cap. The registry throws a raw Error (every other startJob caller relies on
+ * that — `test-async-dispatch.ts` pins the message), so the tool path
+ * translates it into the shape its callers already read: `started: false` plus
+ * an `error` naming the cause.
+ */
+function jobSaturation(err: unknown) {
+  const detail = err instanceof Error ? err.message : String(err);
+  trace(`start_plan_driver refused: ${detail}`);
+  return {
+    content: [{ type: "text" as const, text: `start_plan_driver refused: ${detail}` }],
+    details: { started: false, error: "jobs-saturated" },
   };
-  if (r.issueUrl) d.issueUrl = r.issueUrl;
-  // #1377: the number the driver parsed from the created issue's URL, so an
-  // automated caller does not have to. Absent when the URL carried no number.
-  if (typeof r.issueNumber === "number") d.issueNumber = r.issueNumber;
-  if (r.capReason) d.capReason = r.capReason;
-  if (r.filingFailure) d.filingFailure = r.filingFailure;
-  if (r.failedAngles) d.failedAngles = r.failedAngles;
-  if (r.compacted) d.compacted = true;
-  if (r.investigationReused) d.investigationReused = r.investigationReused;
-  if (r.reviewedDigest) d.reviewedDigest = r.reviewedDigest;
-  if (r.filedFromDryRun) d.filedFromDryRun = r.filedFromDryRun;
-  if (r.reviewedSpecChanged) d.reviewedSpecChanged = r.reviewedSpecChanged;
-  if (r.timings) d.timings = r.timings;
-  return d;
 }

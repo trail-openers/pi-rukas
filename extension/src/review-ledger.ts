@@ -51,7 +51,15 @@ import path from "node:path";
 import { dedupeLatest } from "./review-ledger-core.ts";
 import { acquireLedgerLock, runLedgerCriticalSectionHook } from "./review-ledger-lock.ts";
 import { mergeAfterRace } from "./review-ledger-merge.ts";
-import { identityBase, ledgerPathFor, remoteName } from "./review-ledger-path.ts";
+import {
+  cloneLedgerPathFor,
+  identityBase,
+  ledgerPathFor,
+  ledgerWriteLandedAt,
+  remoteName,
+  sameResolvedPath,
+} from "./review-ledger-path.ts";
+import { latestEntry, readLedgerFile, validEntries } from "./review-ledger-read.ts";
 import { bumpLensRound } from "./review-ledger-round.ts";
 import { diffDigestOfRange, patchIdOfRange } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
@@ -108,6 +116,22 @@ export interface LedgerEntry {
   carriedFrom?: string;
   /** #1176 round 2 \u2014 carried entries only: the trust assumption the row states (mainline changes merged in were not re-reviewed by this branch). */
   carryNote?: string;
+  /** #1449 — the path this row's write resolved to. #1449 round 2 changed the
+   * contract: the stamp is now written on EVERY row (by `appendLedgerEntry`, the
+   * one function that holds the resolved path), so a new writer cannot forget it
+   * and an ordinary row is evidence of where it landed rather than of nothing.
+   *
+   * **Presence is therefore NOT the misdirection signal** — the misdirection is
+   * DERIVED, by comparing the stamp against the clone's own ledger path
+   * (`cloneLedgerPathFor`, the override-blind answer) with `sameResolvedPath`.
+   * A row stamped with the clone's own path is an ordinary row. The only
+   * consumer, `misdirectedWriteOf` (merge-guard-provenance.ts), is a
+   * DIAGNOSTIC: it changes the refusal's TEXT, never a verdict — no path in the
+   * guard reads this field to decide whether a merge happens, and none may
+   * (see that module's failure contract). Rendered consumers sanitise it
+   * (`sanitiseLedgerProvenancePath`) because the value names a file the
+   * environment chose. */
+  writtenTo?: string;
   /** #1360 — adversarial entries written from the `adversarial_loop` TOOL only:
    * the base SHA the review resolved, and the head SHA it reviewed. Stored so
    * an audit can see what range a row actually covers (the row's `patchId` is
@@ -119,7 +143,7 @@ export interface LedgerEntry {
   reviewedHead?: string;
 }
 
-interface LedgerFile {
+export interface LedgerFile {
   entries: LedgerEntry[];
 }
 
@@ -127,10 +151,18 @@ export type LedgerExecFn = VerifyExecFn;
 
 /**
  * #955 file-size split: `ledgerPathFor` (and its one-time override trace)
- * live in review-ledger-path.ts; the re-export below keeps importers
- * unchanged.
+ * live in review-ledger-path.ts; the re-exports below keep importers
+ * unchanged. #1449 adds the override-blind twin and the misdirection
+ * predicate/note so every writer reaches them through the same seam it
+ * already imports (`review-ledger.ts`) rather than the path module directly.
  */
-export { ledgerPathFor } from "./review-ledger-path.ts";
+export {
+  cloneLedgerPathFor,
+  LEDGER_OVERRIDE_ENV,
+  ledgerPathFor,
+  MISDIRECTED_LEDGER_NOTE,
+  misdirectedLedgerWrite,
+} from "./review-ledger-path.ts";
 export { bumpLensRound } from "./review-ledger-round.ts";
 export { dedupeLatest } from "./review-ledger-core.ts";
 export { mergeAfterRace } from "./review-ledger-merge.ts";
@@ -321,11 +353,50 @@ export async function appendLedgerEntry(
   entry: LedgerEntry,
   execFn: LedgerExecFn,
   cwd: string,
+  /** #1449 round 2 — when given, receives the stamped row plus whether it landed
+   * outside the clone's own ledger. The stamp is applied HERE, at the one place
+   * holding the resolved path, so no writer can forget it; the caller must not
+   * read its own `entry` for it. `landedAtPath` is left undefined when the row
+   * landed on the clone's ledger, because that field means "somewhere other than
+   * where the guard looks" — a value equal to the clone path is not a redirect. */
+  stampedOut?: { current: LedgerEntry; landedAtPath?: string },
 ): Promise<string | undefined> {
   let file: string | undefined;
   try {
     file = await ledgerPathFor(execFn, cwd);
     if (!file) return "no git common dir (not a git worktree)";
+    // #1449 — STAMPED HERE, at the one place that knows where the row actually
+    // landed, rather than by each writer. Every caller passes an entry whose
+    // provenance field is absent (or holds a value from a different context), and
+    // this function is the only one holding the resolved path: stamping per-caller
+    // meant a new writer could forget, and a forgotten stamp is exactly the state
+    // in which a redirected review is indistinguishable from an unreviewed branch.
+    // Sanitised on the way in because the value is later printed into a refusal
+    // string. An existing stamp is OVERWRITTEN, not honoured: a row carried from
+    // another file must report where it landed HERE.
+    // The stamp is the RAW resolved path, not the sanitised one: sanitising is a
+    // RENDER-time operation (the guard prints the value into a refusal) and
+    // `sanitiseLedgerProvenancePath` caps at 240 chars, so a long real path — a
+    // deep worktree, a long temp prefix — clamped to a PREFIX of the clone path
+    // and `sameResolvedPath` then read an ordinary write as a redirect on every
+    // single review. Compare raw, sanitise only where it is rendered.
+    const stamped: LedgerEntry = { ...entry, writtenTo: file };
+    // #1449 round 2 — `landedAtPath` means "somewhere other than where the guard
+    // looks", so it is set only when the resolved path differs from the clone's own
+    // ledger (compared RAW and realpath'd where that works — a symlinked or
+    // relative override is one file in two spellings). The ROW still carries the
+    // full stamp either way: the guard's own comparison needs it.
+    //
+    // `ledgerWriteLandedAt` owns the short-circuit that keeps the extra
+    // `git rev-parse` off the 99% path, and the reasoning for why skipping it is
+    // safe (no override ⇒ same resolver, same fileName ⇒ equal by construction;
+    // no parent directory ⇒ nothing that can alias). Kept in the path module so
+    // the predicate that decides "misdirected" has one definition, next to the
+    // resolver whose output it compares.
+    if (stampedOut) {
+      stampedOut.current = stamped;
+      stampedOut.landedAtPath = await ledgerWriteLandedAt(execFn, cwd, file);
+    }
     const dir = path.dirname(file);
     if (!existsSync(dir)) {
       // The common dir of a real clone always exists; a missing one means
@@ -363,7 +434,7 @@ export async function appendLedgerEntry(
       // the same branch are historical (the guard's latestEntry picks the
       // highest `at` regardless, so a hand-edited or legacy multi-row file
       // still counts the most recent round).
-      entries.push(bumpLensRound(entry, entries));
+      entries.push(bumpLensRound(stamped, entries));
       // #1071 test-only hook: a two-process race (test-review-ledger-lock.ts)
       // straddles the read/rename gap deterministically by injecting a hook
       // (setLedgerCriticalSectionHookForTests) that awaits here. No-op in
@@ -399,7 +470,7 @@ export async function appendLedgerEntry(
           // ordering — push the bumped entry FIRST, then dedupe, the #1069
           // fix — is unit-testable without mocking node:fs. A race is rare; it
           // must not quietly write a ledger the happy path would never write.
-          const deduped = mergeAfterRace(merged, entry);
+          const deduped = mergeAfterRace(merged, stamped);
           writeFileSync(tmp, JSON.stringify({ entries: deduped }, null, 2), "utf8");
           renameSync(tmp, file);
         } catch (err3) {
@@ -417,74 +488,13 @@ export async function appendLedgerEntry(
   }
 }
 
-/** Read the raw ledger (no git involved — the path is supplied). */
-export function readLedgerFile(file: string): LedgerFile {
-  const raw = readFileSync(file, "utf8");
-  const parsed = JSON.parse(raw) as { entries?: unknown };
-  if (!parsed || !Array.isArray(parsed.entries)) return { entries: [] };
-  return { entries: validEntries(parsed.entries) };
-}
-
-/**
- * Validate an untrusted row before the ledger trusts it: `branch` must be
- * a non-empty string, `kind` one of the two review kinds, `patchId` a
- * string, `at` a finite number, `passed` a boolean. Anything else is
- * dropped (and traced) — a corrupt row must not satisfy or shadow a
- * genuine one.
- */
-export function validEntries(entries: unknown[]): LedgerEntry[] {
-  const ok: LedgerEntry[] = [];
-  for (const e of entries) {
-    if (
-      e &&
-      typeof e === "object" &&
-      typeof (e as LedgerEntry).branch === "string" &&
-      (e as LedgerEntry).branch.length > 0 &&
-      ((e as LedgerEntry).kind === "adversarial" || (e as LedgerEntry).kind === "lens") &&
-      typeof (e as LedgerEntry).patchId === "string" &&
-      typeof (e as LedgerEntry).at === "number" &&
-      Number.isFinite((e as LedgerEntry).at) &&
-      typeof (e as LedgerEntry).passed === "boolean"
-    ) {
-      ok.push(e as LedgerEntry);
-    } else {
-      trace(`review-ledger: dropped invalid ledger entry: ${safeJson(e)}`);
-    }
-  }
-  return ok;
-}
-
-/** One line, for the trace: a never-throwing JSON stringify. */
-function safeJson(v: unknown): string {
-  try {
-    return JSON.stringify(v) ?? "undefined";
-  } catch {
-    return "<unserialisable>";
-  }
-}
-
-/**
- * The LATEST entry per kind for a branch (max `at`), or undefined.
- *
- * Adversarial: the guard requires the latest to be `passed` AND its patchId
- * to equal the current one. Lens: the latest must be `passed` (any patchId
- * — a passing lens entry may predate a later commit; a later FAILING lens
- * run is what the latest-ness protects against).
- */
-export function latestEntry(entries: LedgerEntry[], branch: string, kind: ReviewKind) {
-  let best: LedgerEntry | undefined;
-  for (const e of entries) {
-    if (e.branch !== branch || e.kind !== kind) continue;
-    if (!best || e.at >= best.at) best = e;
-  }
-  return best;
-}
-
-/** Read + validate the ledger from a resolved path; never throws. */
-export function readLedgerAt(file: string): LedgerEntry[] {
-  try {
-    return readLedgerFile(file).entries;
-  } catch {
-    return [];
-  }
-}
+// The read side lives in review-ledger-read.ts (file-size limit) and is
+// re-exported here so every existing caller keeps importing from this module —
+// the ledger's public surface is one module, not a hunt for the right file.
+export {
+  latestEntry,
+  readLedgerAt,
+  readLedgerFile,
+  readLedgerFileSafe,
+  validEntries,
+} from "./review-ledger-read.ts";
