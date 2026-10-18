@@ -140,12 +140,15 @@ export function withDeveloperPlumbReplies(
   priorBodies: ReadonlySet<string>,
 ): WorkState {
   const replies: string[] = [];
+  // #1332 — the develop step's empty-round cap may already have recorded it.
+  const recorded = new Set((state.pipelineState.plumbReports ?? []).map((r) => r.body));
   for (const e of state.eventLog.slice(fromIndex)) {
     if (
       e.kind === "dispatch-completed" &&
       e.step === "develop" &&
       e.summary?.includes(PLUMB_REPLY_MARKER) &&
       !priorBodies.has(e.summary) &&
+      !recorded.has(e.summary) &&
       !replies.includes(e.summary)
     )
       replies.push(e.summary);
