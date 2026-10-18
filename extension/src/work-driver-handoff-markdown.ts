@@ -446,7 +446,7 @@ function writeFenceSection(state: WorkState): string[] {
   const lines =
     unreadable === 0
       ? `- ${n} write${n === 1 ? "" : "s"} outside a developer's worktree ${n === 1 ? "was" : "were"} refused at write time. The refusals are ${logs}.`
-      : `- Count unknown (${unreadable} refusal log${unreadable === 1 ? "" : "s"} unreadable); ${n} refusal${n === 1 ? "" : "s"} counted from the readable logs. The refusals are ${logs}.`;
+      : `- Count unknown (${unreadable} refusal source${unreadable === 1 ? "" : "s"} unreadable or unlogged); ${n} refusal${n === 1 ? "" : "s"} counted from the readable logs. The refusals are ${logs}.`;
   return ["### Writes refused by the write fence", "", lines, ""];
 }
 

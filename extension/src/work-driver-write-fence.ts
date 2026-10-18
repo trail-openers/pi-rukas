@@ -12,7 +12,20 @@
 
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { WorkState } from "./workflow-state.ts";
-import { countWriteFenceRefusals } from "./write-fence-log.ts";
+import {
+  clearWriteFenceLogs,
+  countWriteFenceRefusals,
+  markCountUnknown,
+} from "./write-fence-log.ts";
+
+/**
+ * `--restart`: removes the previous cycle's refusal logs so the new count starts
+ * at zero. A log that cannot be removed leaves the new count unknown.
+ */
+export async function resetWriteFenceLogs(scratch: string): Promise<void> {
+  const stuck = await clearWriteFenceLogs(scratch);
+  if (stuck > 0) markCountUnknown(scratch, stuck);
+}
 
 /** `state` with the cycle's refusal total brought up to date from the scratch dir. */
 export async function foldWriteFenceCount(

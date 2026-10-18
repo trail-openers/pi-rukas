@@ -17,13 +17,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CycleContext } from "../src/work-driver-context.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
-import { foldWriteFenceCount } from "../src/work-driver-write-fence.ts";
+import { foldWriteFenceCount, resetWriteFenceLogs } from "../src/work-driver-write-fence.ts";
 import { initialState } from "../src/workflow-state-update.ts";
+import { childEnvFor, writeFenceChildEnv } from "../src/write-fence-contract.ts";
 import {
+  appendWriteFenceRefusal,
   clearWriteFenceLogs,
   countWriteFenceRefusals,
-  childEnvFor,
-  writeFenceChildEnv,
 } from "../src/write-fence-log.ts";
 import { buildFenceFixture } from "./lib/write-fence-fixture.ts";
 
@@ -167,6 +167,35 @@ assert(
   readdirSync(scratch).includes("notes.md"),
   "C: the restart clears only the fence's own logs",
 );
+
+// ============================================================
+// E. What the count cannot see is unknown, never a silent zero (#1655 review r3).
+// ============================================================
+{
+  const unlogged = path.join(fx.base, "unlogged");
+  mkdirSync(unlogged, { recursive: true });
+  // The child's own log name is taken by a directory, so its append fails and it cannot log.
+  mkdirSync(path.join(unlogged, `write-fence-${process.pid}.jsonl`));
+  appendWriteFenceRefusal(unlogged, { tool: "write", path: "/x", reason: "r", at: 1 });
+  assert(
+    (await countWriteFenceRefusals(unlogged)).unreadable >= 1,
+    "E: a refusal the child could not log leaves an unaccounted marker, so the count is unknown",
+  );
+  await resetWriteFenceLogs(unlogged);
+  assert(
+    (await countWriteFenceRefusals(unlogged)).unreadable >= 1,
+    "E: a restart that cannot remove a log leaves the new count unknown",
+  );
+  const cleanDir = path.join(fx.base, "clean-restart");
+  mkdirSync(cleanDir, { recursive: true });
+  writeFileSync(path.join(cleanDir, "write-fence-7.jsonl"), line(1));
+  await resetWriteFenceLogs(cleanDir);
+  const afterClean = await countWriteFenceRefusals(cleanDir);
+  assert(
+    afterClean.count === 0 && afterClean.unreadable === 0,
+    "E: a restart that removes every log starts the count at a known zero",
+  );
+}
 
 // ============================================================
 // D. The handoff names the count, and a clean cycle says nothing.

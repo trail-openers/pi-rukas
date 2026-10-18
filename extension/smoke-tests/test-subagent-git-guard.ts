@@ -150,12 +150,12 @@ for (const cmd of [
   // a cosmetic edit to childEnv construction must consciously update this
   // test. The behavioural contract (env wins) is proven by the value
   // assertions above plus the guard's own test cases.
-  // #1655 moved the spread into write-fence-log.ts's childEnvFor (spawn.ts sits
-  // at the size cap), so the canary pins both halves: childEnvFor spreads the
-  // inherited env first, and spawn.ts assigns GIT_* after calling it.
+  // #1655 moved the spread into write-fence-contract.ts's childEnvFor (spawn.ts
+  // sits at the size cap), so the canary pins both halves: childEnvFor spreads
+  // the inherited env first, and spawn.ts assigns GIT_* after calling it.
   const spreadIdx = src.indexOf("childEnvFor(process.env, spec.role)");
   const gitEditorIdx = src.indexOf('GIT_EDITOR = "true"');
-  const envHelper = readFileSync(path.join(SRC, "write-fence-log.ts"), "utf8");
+  const envHelper = readFileSync(path.join(SRC, "write-fence-contract.ts"), "utf8");
   assert(
     /\{\s*\.\.\.env,\s*PI_ENSEMBLE_ROLE:\s*role\s*\}/.test(envHelper),
     "canary: childEnvFor starts from the inherited env spread",

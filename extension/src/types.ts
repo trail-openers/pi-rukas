@@ -1,4 +1,4 @@
-import type { WriteFence } from "./write-fence-log.ts";
+import type { WriteFence } from "./write-fence-contract.ts";
 
 /** The dispatch option that fences a child; the driver's dispatch seams accept it (#1655). */
 export interface WriteFenceOpt {

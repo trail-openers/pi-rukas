@@ -27,11 +27,22 @@ import {
 } from "./write-fence-bash-words.ts";
 import { expandHome } from "./write-fence-path.ts";
 
-/** One word of a command: its text, and whether the text depends on a run-time value. */
+/**
+ * One word of a command: its text, and whether the text depends on a run-time value.
+ * `glob`: the word has an unquoted `*`, `?` or `[`, which the shell expands to the
+ * files it matches. The fence cannot know those, so the word is opaque at a write position.
+ */
 export interface Word {
   text: string;
   dyn: boolean;
+  glob?: boolean;
 }
+
+/** Unquoted characters the shell expands as a pathname pattern. */
+const GLOB_CHARS = new Set(["*", "?", "["]);
+
+/** What a `$` or backtick at a position became: literal, applied up to `end`, or never closed. */
+type Expanded = { status: "none" } | { status: "ok"; end: number } | { status: "unclosed" };
 
 export type Tok = { kind: "word"; word: Word } | { kind: "op"; text: string };
 
@@ -47,6 +58,7 @@ interface State {
   subs: string[];
   word?: string;
   dyn: boolean;
+  glob: boolean;
 }
 
 function add(s: State, text: string): void {
@@ -59,9 +71,12 @@ function mark(s: State): void {
 }
 
 function endWord(s: State): void {
-  if (s.word !== undefined) s.toks.push({ kind: "word", word: { text: s.word, dyn: s.dyn } });
+  if (s.word !== undefined) {
+    s.toks.push({ kind: "word", word: { text: s.word, dyn: s.dyn, glob: s.glob } });
+  }
   s.word = undefined;
   s.dyn = false;
+  s.glob = false;
 }
 
 function op(s: State, text: string): void {
@@ -75,30 +90,30 @@ function dropFdNumber(s: State): void {
 }
 
 /**
- * A `$` or backtick expansion at `src[k]`, applied to the word. Returns the position
- * after it, -1 when it is not closed, or undefined when the `$` is literal.
+ * A `$` or backtick expansion at `src[k]`, applied to the word. `none` when the `$`
+ * is literal; `unclosed` when the expansion never closes (the command does not lex).
  */
-function expansionAt(s: State, src: string, k: number): number | undefined {
+function expansionAt(s: State, src: string, k: number): Expanded {
   if (src[k] === "`") {
     const end = skipBacktick(src, k);
-    if (end < 0) return -1;
+    if (end < 0) return { status: "unclosed" };
     s.subs.push(src.slice(k + 1, end - 1));
     mark(s);
-    return end;
+    return { status: "ok", end };
   }
   if (src[k + 1] === "(") {
     const end = skipSubst(src, k);
-    if (end < 0) return -1;
+    if (end < 0) return { status: "unclosed" };
     s.subs.push(src.slice(k + 2, end - 1));
     mark(s);
-    return end;
+    return { status: "ok", end };
   }
   const exp = dollarExpansion(src, k);
-  if (exp === undefined) return undefined;
-  if (exp.end < 0) return -1;
+  if (exp === undefined) return { status: "none" };
+  if (exp.end < 0) return { status: "unclosed" };
   add(s, exp.text);
   if (exp.dyn) s.dyn = true;
-  return exp.end;
+  return { status: "ok", end: exp.end };
 }
 
 /** A double-quoted string starting at `src[i]`. Returns the position after its closing quote, or -1. */
@@ -116,9 +131,10 @@ function lexDouble(s: State, src: string, i: number): number {
       continue;
     }
     if (c === "$" || c === "`") {
-      const next = expansionAt(s, src, k);
-      if (next !== undefined) {
-        k = next;
+      const exp = expansionAt(s, src, k);
+      if (exp.status === "unclosed") return -1;
+      if (exp.status === "ok") {
+        k = exp.end;
         continue;
       }
     }
@@ -148,7 +164,7 @@ function lexTilde(s: State, src: string, i: number): number {
 
 /** Lex a command. Undefined when it does not lex (see the module doc). */
 export function lex(src: string): Lexed | undefined {
-  const s: State = { toks: [], subs: [], dyn: false };
+  const s: State = { toks: [], subs: [], dyn: false, glob: false };
   const heredocs: Heredoc[] = [];
   let i = 0;
   while (i < src.length) {
@@ -188,10 +204,10 @@ export function lex(src: string): Lexed | undefined {
       continue;
     }
     if (ch === "$" || ch === "`") {
-      const end = expansionAt(s, src, i);
-      if (end === -1) return undefined;
-      if (end !== undefined) {
-        i = end;
+      const exp = expansionAt(s, src, i);
+      if (exp.status === "unclosed") return undefined;
+      if (exp.status === "ok") {
+        i = exp.end;
         continue;
       }
       add(s, ch);
@@ -259,6 +275,7 @@ export function lex(src: string): Lexed | undefined {
         i++;
       }
     } else {
+      if (GLOB_CHARS.has(ch)) s.glob = true;
       add(s, ch);
       i++;
     }

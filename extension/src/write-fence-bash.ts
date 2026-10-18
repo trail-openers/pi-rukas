@@ -14,15 +14,18 @@
  * checked. A subshell's `cd` does not end with the subshell, so each target is
  * judged against every directory the command may have reached.
  *
- * A word the fence cannot resolve (a `$VAR` other than `$HOME`, a `~user`, a
- * substitution inside a path) is refused where it is written, since its path is
- * unknown. A command that does not lex is refused whole: the fence does not
- * guess its shape.
+ * The rule is one: what the fence can resolve statically, it judges; what it
+ * cannot resolve at a write position, it refuses. A word the fence cannot resolve
+ * (a `$VAR` other than `$HOME`, a `~user`, a substitution inside a path, a glob,
+ * brace expansion) is refused where it is written, since its path is unknown. A
+ * command that does not lex is refused whole: the fence does not guess its shape.
  *
- * Not checked, by design: a body handed to `sh -c`, `bash -c` or `eval` (an
- * opaque string here; the after-the-fact residue detection stays the backstop),
- * `cd -` (OLDPWD is not known statically), and a command whose NAME is itself
- * an expansion. Unknown commands are allowed.
+ * A body the shell will run as its own command (`eval`, `sh -c`, `bash -c`, …) is
+ * read as a command when its text is literal, so its writes are judged too. A
+ * body built at run time is refused. Everything else is best-effort: an
+ * unrecognised command contributes no targets, and the repo-root residue
+ * detection is the backstop. See docs/troubleshooting.md for the categories not
+ * checked.
  */
 
 import path from "node:path";
@@ -30,6 +33,7 @@ import { type Word, lex } from "./write-fence-bash-lex.ts";
 import { commandName, operands, simpleCommands, stripPrefix } from "./write-fence-bash-split.ts";
 import {
   copyLikeTargets,
+  embeddedBody,
   hardLinkSources,
   makesLinks,
   symlinkNames,
@@ -55,6 +59,15 @@ export interface BashTarget {
 /** Why a command is refused whole: it does not lex. */
 export const UNPARSEABLE_REASON =
   "unparseable bash; refused by the write fence (the command does not lex, for example an unterminated quote)";
+
+/** Why a body the shell runs is refused: its text is only known at run time. */
+const DYNAMIC_BODY_REASON =
+  "it runs a command string built at run time, so the fence cannot read what it writes";
+
+/** A target the walk cannot judge, with the reason. */
+function opaqueTarget(cwd: string, why: string, what = "the command"): BashTarget {
+  return { path: what, cwd, linkedCommand: false, throughLinks: [], opaque: why };
+}
 
 /** A word a command writes. `link`: the command makes it a symbolic link's name. `creation`: it is the name the command creates. */
 interface RawTarget {
@@ -86,6 +99,9 @@ function resolveFrom(base: string, w: Word): string | undefined {
 function opaqueReason(w: Word): string | undefined {
   if (w.dyn) {
     return "it uses a shell expansion the fence cannot resolve (a variable, a substitution, or ~user), so the path cannot be judged";
+  }
+  if (w.glob) {
+    return "it has a glob (*, ? or [), which expands to the files it matches; name each path literally";
   }
   if (BRACE.test(w.text)) {
     return "it uses brace expansion, which the fence does not expand. Name each path literally";
@@ -119,20 +135,12 @@ function targetsFrom(raw: RawTarget[], dir: string, linksAnywhere: boolean): Bas
  */
 export function bashWriteTargets(command: string, cwd: string): BashTarget[] {
   const lexed = lex(command);
-  if (!lexed) {
-    return [
-      {
-        path: "the command",
-        cwd,
-        linkedCommand: false,
-        throughLinks: [],
-        opaque: UNPARSEABLE_REASON,
-      },
-    ];
-  }
+  if (!lexed) return [opaqueTarget(cwd, UNPARSEABLE_REASON)];
   const raw: RawTarget[] = [];
   // Every directory the command may be in: the start, and each cd or `env -C` it reaches.
   const visited = new Set<string>([cwd]);
+  // Command strings the shell runs as their own commands (`eval`, `sh -c`).
+  const bodies: Word[] = [];
   let here = cwd;
   let linksAnywhere = false;
   for (const simple of simpleCommands(lexed.toks)) {
@@ -158,6 +166,8 @@ export function bashWriteTargets(command: string, cwd: string): BashTarget[] {
       }
       continue;
     }
+    const body = embeddedBody(name, args);
+    if (body !== undefined) bodies.push(body);
     if (makesLinks(name, args)) linksAnywhere = true;
     if (COPY_LIKE.has(name)) {
       // A destination is the name the command creates, so it is not judged as a path a link may redirect.
@@ -172,8 +182,16 @@ export function bashWriteTargets(command: string, cwd: string): BashTarget[] {
   const out: BashTarget[] = [];
   for (const dir of visited) out.push(...targetsFrom(raw, dir, linksAnywhere));
   // A substitution is a command of its own: judged from every directory this one may run in.
-  for (const body of lexed.subs) {
-    for (const dir of visited) out.push(...bashWriteTargets(body, dir));
+  for (const sub of lexed.subs) {
+    for (const dir of visited) out.push(...bashWriteTargets(sub, dir));
+  }
+  // So is a body the shell runs. A literal one is judged; a dynamic one cannot be read.
+  for (const body of bodies) {
+    if (body.dyn) {
+      out.push(opaqueTarget(cwd, DYNAMIC_BODY_REASON));
+      continue;
+    }
+    for (const dir of visited) out.push(...bashWriteTargets(body.text, dir));
   }
   return out;
 }

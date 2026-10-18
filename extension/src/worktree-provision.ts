@@ -70,12 +70,6 @@ export type ExecFn = (
 /** Where a project describes provisioning we cannot infer. */
 export const WORKTREE_SETUP_HOOK = ".pi/worktree-setup";
 
-/**
- * Dependency directories safe to share between worktrees. Defined in
- * worktree-dep-contract.ts, which the write fence imports too (#1655).
- */
-export { SHAREABLE_DEPS };
-
 /** Never linked, however tempting: concurrent writers would serialise. */
 export const NEVER_SHARED = ["target", "build", "dist", ".next", "out"] as const;
 

@@ -67,10 +67,16 @@ const refused: Array<[string, string]> = [
   ["echo x > ~+/../bin/keep", "~+ is the working directory, so ~+/../bin escapes the root"],
   // A variable in a write target is opaque: its value is unknown when the command is judged.
   ["echo x > $OUT/keep", "a redirect through a variable"],
-  ["echo x > \"$OUT\"", "a quoted redirect through a variable"],
+  ['echo x > "$OUT"', "a quoted redirect through a variable"],
   // #1655 MEDIUM 2 — a link the command creates, or overwrites, under a later path.
-  ["ln -s /repo/bin x && echo y > x/new", "a write under a link created earlier in the same command"],
-  ["ln -sfn /tmp out && echo y > out/keep", "a write under an existing worktree link the command overwrites"],
+  [
+    "ln -s /repo/bin x && echo y > x/new",
+    "a write under a link created earlier in the same command",
+  ],
+  [
+    "ln -sfn /tmp out && echo y > out/keep",
+    "a write under an existing worktree link the command overwrites",
+  ],
   // #1655 MEDIUM 3 — writers the fence now covers.
   [`dd if=/dev/zero of=${REPO_BIN}/keep bs=1 count=1`, "dd of= into the repo root"],
   [`truncate -s 0 ${REPO_BIN}/keep`, "truncate into the repo root"],
@@ -90,7 +96,10 @@ const refused: Array<[string, string]> = [
   ["cd " + fx.repo + " && tar -xf a.tgz", "a relative tar extraction after cd to the repo root"],
   // #1655 MEDIUM 4 — a command that does not lex is refused whole.
   [`echo "unterminated > ${REPO_BIN}/x`, "an unterminated quote is unparseable, so refused"],
-  [`echo $'unterminated > ${REPO_BIN}/x`, "an unterminated ANSI-C string is unparseable, so refused"],
+  [
+    `echo $'unterminated > ${REPO_BIN}/x`,
+    "an unterminated ANSI-C string is unparseable, so refused",
+  ],
   [`sed -i 's/a/b/' ${REPO_BIN}/keep`, "sed -i on a repo-root file"],
   [`echo x | tee ${REPO_BIN}/x`, "a repo-root tee in a pipeline"],
   [`true && echo x > ${REPO_BIN}/x`, "a repo-root redirect after &&"],
@@ -179,14 +188,72 @@ for (const [command, why] of allowedForms) {
   assert(refusedTarget(command) === undefined, `allow: ${why} — \`${command}\``);
 }
 
+// ------------------------------------------------ #1655 review r3 — globs at a write position
+const globRefused: Array<[string, string]> = [
+  ["echo x > o*/keep", "a glob in a redirect target, which may name the escaping link"],
+  [`rm ${REPO_BIN}/k?ep`, "rm of a glob in a repo-root name"],
+  ["cp a out/[k]eep", "a bracket glob naming a file through a link"],
+  [`cp a ${REPO_BIN}/*`, "cp to a glob in the repo root"],
+];
+for (const [command, why] of globRefused) {
+  assert(refusedTarget(command) !== undefined, `refuse: ${why} — \`${command}\``);
+}
+for (const [command, why] of [
+  ["ls src/*.ts", "a glob in a read-only command writes nothing"],
+  ["cat src/*", "a glob read by cat writes nothing"],
+  ['echo "o*/keep" > out.txt', "a quoted glob is literal, and the target is inside the worktree"],
+] as const) {
+  assert(refusedTarget(command) === undefined, `allow: ${why} — \`${command}\``);
+}
+
+// ------------------------------------------------ #1655 review r3 — git output options
+const gitOutputRefused: Array<[string, string]> = [
+  [`git diff --output=${REPO_BIN}/patch`, "git diff --output= into the repo root"],
+  [`git log --output ${REPO_BIN}/patch`, "git log --output with its value as the next word"],
+  ["git show --output=../../bin/p", "git show --output= climbing out of the root"],
+  [`git -C ${fx.repo} diff --output patch`, "git diff --output named relative to a -C at the repo root"],
+  [`git format-patch -o ${REPO_BIN} HEAD~1`, "git format-patch -o into the repo root"],
+  [`git format-patch --output-directory=${REPO_BIN} HEAD~1`, "git format-patch --output-directory="],
+  [`git archive -o ${REPO_BIN}/a.tar HEAD`, "git archive -o into the repo root"],
+  [`git bundle create ${REPO_BIN}/b HEAD`, "git bundle create into the repo root"],
+  [`git -C ${fx.repo} format-patch -o out HEAD~1`, "format-patch -o relative to a -C outside the worktree"],
+];
+for (const [command, why] of gitOutputRefused) {
+  assert(refusedTarget(command) !== undefined, `refuse: ${why} — \`${command}\``);
+}
+for (const [command, why] of [
+  ["git diff --output=patch.diff", "git diff --output= inside the worktree"],
+  ["git -C . log --output out.txt", "git log --output relative to a -C inside the worktree"],
+  ["git diff --stat", "git diff without an output option writes nothing"],
+  ["git archive HEAD", "git archive to stdout writes nothing"],
+  ["git bundle verify src/x.bundle", "git bundle verify reads its file"],
+] as const) {
+  assert(refusedTarget(command) === undefined, `allow: ${why} — \`${command}\``);
+}
+
+// ------------------------------------------------ #1655 review r3 — command strings the shell runs
+const bodyRefused: Array<[string, string]> = [
+  [`sh -c 'echo x > ${REPO_BIN}/x'`, "a literal body handed to sh -c is read as a command"],
+  [`bash -c 'rm ${REPO_BIN}/keep'`, "a literal body handed to bash -c"],
+  [`zsh -lc 'echo x > ${REPO_BIN}/x'`, "a body behind a combined -lc flag"],
+  [`eval 'echo x > ${REPO_BIN}/x'`, "a literal eval body"],
+  [`eval rm ${REPO_BIN}/keep`, "an eval whose words join into a write"],
+  [`sh -c 'echo x > ../../bin/x'`, "a body that climbs out of the root"],
+  ['sh -c "$CMD"', "a body built at run time cannot be read, so it is refused"],
+  ['eval "$CMD"', "an eval of a run-time string is refused"],
+];
+for (const [command, why] of bodyRefused) {
+  assert(refusedTarget(command) !== undefined, `refuse: ${why} — \`${command}\``);
+}
+assert(
+  refusedTarget(`sh -c 'echo x > out.txt'`) === undefined,
+  "allow: a literal sh -c body whose target is inside the worktree",
+);
+
 // ------------------------------------------------ the best-effort line
 assert(
-  refusedTarget(`sh -c 'echo x > ${REPO_BIN}/x'`) === undefined,
-  "best-effort: a body handed to sh -c is opaque here (the residue detection is the backstop)",
-);
-assert(
-  refusedTarget(`eval 'echo x > ${REPO_BIN}/x'`) === undefined,
-  "best-effort: an eval body is opaque here",
+  refusedTarget(`python -c 'open("${REPO_BIN}/x", "w")'`) === undefined,
+  "documented gap: a non-shell interpreter one-liner is not read (listed in troubleshooting.md)",
 );
 assert(
   bashWriteTargets(`echo "unterminated > ${REPO_BIN}/x`, fx.wt)[0]?.opaque?.includes(

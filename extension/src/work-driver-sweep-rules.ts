@@ -12,8 +12,8 @@
 import { type Stats, existsSync, lstatSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkState } from "./workflow-state.ts";
+import { SHAREABLE_DEPS } from "./worktree-dep-contract.ts";
 import { DEPENDENCY_MARKERS } from "./worktree-provision-hook.ts";
-import { SHAREABLE_DEPS } from "./worktree-provision.ts";
 
 /**
  * The issue a worktree directory name encodes, or undefined when it does not

@@ -7,20 +7,19 @@
  * lines when a step settles and stores the total on the cycle state.
  *
  * A missing scratch dir costs the count, never the cycle: the child only traces
- * the refusal, and the driver reads nothing. A log the driver cannot read is
- * counted as unreadable, never as zero, so the handoff can say the count is unknown.
+ * the refusal, and the driver reads nothing. Anything the count cannot account
+ * for is kept apart as unaccounted: a log the driver cannot read, a refusal the
+ * child could not log (it leaves an `unaccounted` marker), a log a restart could
+ * not remove. The handoff then says the count is unknown, never a silent zero.
+ *
+ * The scratch dir is child-writable, so the count is advisory: a child can
+ * delete its own log. It is evidence about the developer's instructions, not a
+ * gate.
  */
 
-import { promises as fs, appendFileSync } from "node:fs";
+import { promises as fs, appendFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { trace } from "./trace.ts";
-
-/** What a dispatch is fenced to: its worktree, the main checkout, and the cycle scratch dir. All absolute. */
-export interface WriteFence {
-  root: string;
-  repo: string;
-  scratch: string;
-}
 
 /** One refused write, as the child records it. */
 export interface WriteFenceRefusal {
@@ -30,20 +29,26 @@ export interface WriteFenceRefusal {
   at: number;
 }
 
-/** What the driver reads back: refusals counted, and logs that could not be read (so their count is unknown). */
+/** What the driver reads back: refusals counted, and what the count cannot account for (so the total is a lower bound). */
 export interface WriteFenceCount {
   count: number;
   unreadable: number;
 }
 
-/** The env the fence reads. A child inherits none of these unless the driver sets them for its dispatch. */
-const WRITE_FENCE_ENV = [
-  "PI_ENSEMBLE_WRITE_ROOT",
-  "PI_ENSEMBLE_WRITE_REPO",
-  "PI_ENSEMBLE_WRITE_SCRATCH",
-] as const;
-
 const LOG_NAME = /^write-fence-\d+\.jsonl$/;
+const UNACCOUNTED_NAME = /^write-fence-unaccounted-[\w-]+$/;
+
+/** Mark the scratch dir as holding a refusal the count cannot see. Never throws. */
+function markUnaccounted(scratch: string, tag: string | number): void {
+  try {
+    writeFileSync(
+      path.join(scratch, `write-fence-unaccounted-${tag}`),
+      `${new Date().toISOString()}\n`,
+    );
+  } catch (err) {
+    trace(`write-fence: could not mark ${scratch} as unaccounted: ${(err as Error).message}`);
+  }
+}
 
 /** Append one refusal to this child's log. Never throws: the refusal stands either way. */
 export function appendWriteFenceRefusal(
@@ -63,13 +68,14 @@ export function appendWriteFenceRefusal(
     );
   } catch (err) {
     trace(`write-fence: could not record refusal in ${scratch}: ${(err as Error).message}`);
+    markUnaccounted(scratch, process.pid);
   }
 }
 
 /**
  * Total refusals across every fenced child that has written into this scratch dir.
  * A scratch dir that does not exist holds no logs (zero refusals); one that cannot
- * be read is unknown, reported as one unreadable log.
+ * be read is unknown, reported as one unaccounted source.
  */
 export async function countWriteFenceRefusals(scratch: string): Promise<WriteFenceCount> {
   let names: string[];
@@ -84,7 +90,8 @@ export async function countWriteFenceRefusals(scratch: string): Promise<WriteFen
     return { count: 0, unreadable: 1 };
   }
   let count = 0;
-  let unreadable = 0;
+  const markers = names.filter((n) => UNACCOUNTED_NAME.test(n)).length;
+  let unreadable = markers;
   for (const name of names.filter((n) => LOG_NAME.test(n))) {
     const file = path.join(scratch, name);
     try {
@@ -102,45 +109,35 @@ export async function countWriteFenceRefusals(scratch: string): Promise<WriteFen
 }
 
 /**
- * Remove the logs a previous cycle left behind. Only the fence's own files are
- * touched; a `--restart` calls this so a new cycle starts its count at zero.
+ * Remove the logs and markers a previous cycle left behind. Only the fence's own
+ * files are touched. Returns how many could not be removed, so the caller can
+ * mark the new cycle's count unknown rather than start it at a false zero.
  */
-export async function clearWriteFenceLogs(scratch: string): Promise<void> {
+export async function clearWriteFenceLogs(scratch: string): Promise<number> {
   let names: string[];
   try {
     names = await fs.readdir(scratch);
-  } catch {
-    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    trace(`write-fence: could not list ${scratch} to clear the count: ${(err as Error).message}`);
+    return 1;
   }
-  await Promise.all(
-    names
-      .filter((n) => LOG_NAME.test(n))
-      .map((n) =>
-        fs.rm(path.join(scratch, n), { force: true }).catch((err: unknown) => {
+  const stale = names.filter((n) => LOG_NAME.test(n) || UNACCOUNTED_NAME.test(n));
+  const failures = await Promise.all(
+    stale.map((n) =>
+      fs.rm(path.join(scratch, n), { force: true }).then(
+        () => 0,
+        (err: unknown) => {
           trace(`write-fence: could not clear ${n} from ${scratch}: ${(err as Error).message}`);
-        }),
+          return 1;
+        },
       ),
+    ),
   );
+  return failures.reduce<number>((a, b) => a + b, 0);
 }
 
-/**
- * The env a child starts from: the parent's, with any inherited fence setting
- * removed (a child the driver did not fence must not inherit the ambient root of
- * the process that spawned it), and the child's role set.
- */
-export function childEnvFor(env: NodeJS.ProcessEnv, role: string): Record<string, string> {
-  const out: NodeJS.ProcessEnv = { ...env, PI_ENSEMBLE_ROLE: role };
-  for (const key of WRITE_FENCE_ENV) delete out[key];
-  return out as Record<string, string>;
-}
-
-/** The env a fenced dispatch's child gets. An unfenced child gets none, so the fence stays off for it. */
-export function writeFenceChildEnv(fence: WriteFence | undefined): Record<string, string> {
-  return fence
-    ? {
-        PI_ENSEMBLE_WRITE_ROOT: fence.root,
-        PI_ENSEMBLE_WRITE_REPO: fence.repo,
-        PI_ENSEMBLE_WRITE_SCRATCH: fence.scratch,
-      }
-    : {};
+/** Record that the count cannot account for `n` logs a restart could not remove. Never throws. */
+export function markCountUnknown(scratch: string, n: number): void {
+  for (let k = 0; k < n; k++) markUnaccounted(scratch, `restart-${k}`);
 }

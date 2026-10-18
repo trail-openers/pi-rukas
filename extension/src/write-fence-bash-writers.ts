@@ -16,6 +16,25 @@ import { operands, operandsWith, optionValues } from "./write-fence-bash-split.t
 /** `.`: the working directory, for a tool that writes into it when given no directory. */
 const DOT: Word = { text: ".", dyn: false };
 
+/** Shells whose `-c` argument is a command string the shell then runs as its own. */
+const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
+
+/**
+ * The command text a command runs as a body of its own: `eval`'s words, joined as
+ * the shell joins them, or a shell's `-c` argument. Undefined when it runs none.
+ * The body is read by the caller as a command, so its own writes are judged.
+ */
+export function embeddedBody(name: string, args: Word[]): Word | undefined {
+  if (name === "eval") {
+    return args.length === 0
+      ? undefined
+      : { text: args.map((a) => a.text).join(" "), dyn: args.some((a) => a.dyn) };
+  }
+  if (!SHELLS.has(name)) return undefined;
+  const k = args.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a.text));
+  return k < 0 ? undefined : args[k + 1];
+}
+
 /** Options of `cp`/`mv`/`install`/`ln` that take the destination directory as their value. */
 const TARGET_DIR_OPTIONS = ["-t", "--target-directory"];
 
