@@ -256,6 +256,12 @@ export async function attributeAgainstBase(
      * controls.
      */
     probeReportFile: string;
+    /**
+     * #1647 — the probe tree's label. Defaults to the commit-pr seam's own
+     * (`commit-pr`); another seam passes its own so two seams never share one
+     * worktree name (and so one seam's teardown never removes another's checkout).
+     */
+    probeLabel?: string;
   },
 ): Promise<BaselineProbeOutcome | undefined> {
   if (!SHA_RE.test(opts.baseSha)) {
@@ -264,7 +270,8 @@ export async function attributeAgainstBase(
     );
     return undefined;
   }
-  const probeTree = baselineProbeWorktreePath(opts.repoRoot, "commit-pr");
+  const probeLabel = opts.probeLabel ?? "commit-pr";
+  const probeTree = baselineProbeWorktreePath(opts.repoRoot, probeLabel);
   // Every name the comparison will use has to come from a file inside the
   // driver's own report dir. Checked BEFORE the base run is paid for: a
   // misconfigured caller should not cost a full gate run to discover it cannot
@@ -301,7 +308,7 @@ export async function attributeAgainstBase(
     // Deliberately NOT the bare issue number: the develop step's probe tree
     // is `baseline-verify-<issue>`, and two steps sharing one tree name means
     // one step's teardown removes the other's checkout.
-    issue: "commit-pr",
+    issue: probeLabel,
     cmd: opts.verifyCmd,
     timeoutMs: bound,
     ...(opts.probeEnv !== undefined ? { env: opts.probeEnv } : {}),

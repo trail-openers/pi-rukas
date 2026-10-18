@@ -153,6 +153,7 @@ export async function planDevelopVerify(
               baseSha,
               changeRoots: [...Object.values(worktrees), repoRoot],
               changedTests,
+              probeLabel: `develop-${ctx.issue}`,
               timeoutMs,
               record,
             });

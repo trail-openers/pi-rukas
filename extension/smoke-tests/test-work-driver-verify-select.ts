@@ -64,6 +64,14 @@ write(
   'import { c } from "../src/c.ts";\nconst child = `const m = await import(${JSON.stringify(x)});`;\nvoid [c, child];\n',
 );
 
+// A top-level module reached by a test only through a nested module (#1647 review).
+write("src/trace2.ts", "export const t2 = 9;\n");
+write("src/headless/inputs2.ts", 'import { t2 } from "../trace2.ts";\nexport const i2 = t2;\n');
+write(
+  "smoke-tests/test-nested.ts",
+  'import { i2 } from "../src/headless/inputs2.ts";\nvoid i2;\n',
+);
+
 write("src/k.ts", "export const k = 7;\n");
 write(
   "smoke-tests/test-comment.ts",
@@ -127,6 +135,14 @@ assert(
 );
 
 // --- a changed test selects itself -----------------------------------------
+assert(
+  sel(["src/trace2.ts"]).tests.includes("smoke-tests/test-nested.ts"),
+  "a module imported by a nested module selects the test that reaches it through that nested module",
+);
+assert(
+  sel(["src/headless/inputs2.ts"]).tests.includes("smoke-tests/test-nested.ts"),
+  "a change to a nested module selects the test that imports it",
+);
 const self = sel(["smoke-tests/test-unrelated.ts"]);
 assert(
   self.mode === "selected" && self.tests.includes("smoke-tests/test-unrelated.ts"),

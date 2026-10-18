@@ -37,6 +37,8 @@ export interface SelectedVerifyRecord {
   flaky: string[];
   /** Tests that failed twice and are red on the base commit too. */
   baselineRed: string[];
+  /** Set when the run was recovered by its rerun: the first run's output, for the ci tier's #782 signal. */
+  recovered?: { firstRunOutput: string };
 }
 
 export interface SelectedVerifyOptions {
@@ -49,6 +51,8 @@ export interface SelectedVerifyOptions {
   changeRoots: readonly string[];
   /** Test files this cycle changed or added, relative to `extension/`. Never probed. */
   changedTests: readonly string[];
+  /** The base probe's worktree label; each seam passes its own (#1647). */
+  probeLabel: string;
   timeoutMs: number;
   record: SelectedVerifyRecord;
   /**
@@ -161,12 +165,67 @@ async function runOnce(
   }
 }
 
-/** Serialises base probes in this process: every probe shares one worktree name. */
+/** Serialises base probes in this process. */
 let probeChain: Promise<unknown> = Promise.resolve();
 
 /**
+ * One base probe of exactly `rels`. Passes only when every name is red on base
+ * and the change run has no name that is green there.
+ */
+async function probeOnce(
+  o: SelectedVerifyOptions,
+  rawExec: ExecFn,
+  rels: readonly string[],
+  changeReportFile: string,
+  label: string,
+): Promise<{ ok: true } | { blocks: string }> {
+  let probeReportFile: string;
+  try {
+    probeReportFile = createVerifyReportFile(o.channel.reportDir, label);
+  } catch {
+    return { blocks: "the base probe's report could not be created, so it cannot run" };
+  }
+  const probeEnv = verifyReportEnv(process.env, probeReportFile);
+  const run = probeChain.then(() =>
+    attributeAgainstBase(rawExec, {
+      repoRoot: o.repoRoot,
+      verifyCmd: probeCommand(rels),
+      baseSha: o.baseSha as string,
+      timeoutMs: o.timeoutMs,
+      changeRoots: [...o.changeRoots],
+      changeReportFile,
+      reportDir: o.channel.reportDir,
+      probeEnv,
+      probeReportFile,
+      probeLabel: o.probeLabel,
+    }),
+  );
+  probeChain = run.catch(() => undefined);
+  const probe = await run;
+  if (probe === undefined) {
+    return {
+      blocks:
+        "the base probe did not establish a red base for these tests (green on base, or the probe was unresolved), so the failure is not attributed",
+    };
+  }
+  if (probe.changeCausedFailures.length > 0) {
+    return {
+      blocks: `red on this change and green on base: ${probe.changeCausedFailures.join(", ")}`,
+    };
+  }
+  const redOnBase = new Set(
+    probe.preExistingFailures.map(extensionRelative).filter((r): r is string => r !== undefined),
+  );
+  if (!rels.every((r) => redOnBase.has(r))) {
+    return { blocks: "a failing test was not shown to be red on the base commit" };
+  }
+  return { ok: true };
+}
+
+/**
  * Judge a twice-failing run's names. Returns the names that are baseline-red,
- * or the reason the failure blocks.
+ * or the reason the failure blocks. Two base runs must agree: one red run on a
+ * loaded host would otherwise excuse a test the change breaks deterministically.
  */
 async function judge(
   o: SelectedVerifyOptions,
@@ -188,38 +247,9 @@ async function judge(
     };
   }
   if (o.baseSha === undefined) return { blocks: "there is no base commit to probe" };
-  let probeReportFile: string;
-  try {
-    probeReportFile = createVerifyReportFile(o.channel.reportDir, "probe");
-  } catch {
-    return { blocks: "the base probe's report could not be created, so it cannot run" };
-  }
-  const probeEnv = verifyReportEnv(process.env, probeReportFile);
-  const run = probeChain.then(() =>
-    attributeAgainstBase(rawExec, {
-      repoRoot: o.repoRoot,
-      verifyCmd: probeCommand(rels),
-      baseSha: o.baseSha as string,
-      timeoutMs: o.timeoutMs,
-      changeRoots: [...o.changeRoots],
-      changeReportFile,
-      reportDir: o.channel.reportDir,
-      probeEnv,
-      probeReportFile,
-    }),
-  );
-  probeChain = run.catch(() => undefined);
-  const probe = await run;
-  if (probe === undefined) {
-    return {
-      blocks:
-        "the base probe did not establish a red base for these tests (green on base, or the probe was unresolved), so the failure is not attributed",
-    };
-  }
-  if (probe.changeCausedFailures.length > 0) {
-    return {
-      blocks: `red on this change and green on base: ${probe.changeCausedFailures.join(", ")}`,
-    };
+  for (const label of ["probe", "probe2"]) {
+    const verdict = await probeOnce(o, rawExec, rels, changeReportFile, label);
+    if ("blocks" in verdict) return verdict;
   }
   return { baselineRed: rels };
 }
@@ -260,6 +290,9 @@ export function withSelectedAttribution(
     const second = await runOnce(o, execFn, opts, "rerun");
     if (second.ok) {
       recordFlaky(o, firstNames);
+      o.record.recovered = {
+        firstRunOutput: `${first.err.stdout ?? ""}\n${first.err.stderr ?? ""}`.trim(),
+      };
       return second.out;
     }
     if (second.timedOut || second.names === undefined || second.names.length === 0) {
