@@ -8,12 +8,18 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const MANIFESTS = path.join(ROOT, "manifests");
-const PROMPTS = path.join(ROOT, "dist", "prompts", "standard");
+// #1579 — build into a temp dir, never the checkout's dist/: the smoke loop runs
+// tests concurrently, and an in-place rebuild (build.sh deletes the role
+// prompts before rewriting them) made every concurrent reader of dist/ —
+// test-cancel's spawn first — fail with ENOENT.
+const OUT = mkdtempSync(path.join(tmpdir(), "built-prompts-"));
+const PROMPTS = path.join(OUT, "standard");
 const BUILD = path.join(ROOT, "build.sh");
 const CODEMODE_MODULE = "modules/core/codemode.md";
 
@@ -35,7 +41,7 @@ execFileSync("bash", [BUILD], {
   env: {
     ...process.env,
     PI_ENSEMBLE_BASE: ROOT,
-    PROMPTS_DIR: path.join(ROOT, "dist", "prompts"),
+    PROMPTS_DIR: OUT,
   },
   stdio: "ignore",
 });
@@ -201,4 +207,5 @@ for (const rel of [
 }
 
 console.log(`\nexit ${exit}`);
+rmSync(OUT, { recursive: true, force: true });
 process.exit(exit);

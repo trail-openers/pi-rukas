@@ -70,7 +70,8 @@
 
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
+import { ROLES } from "../src/roles.ts";
 import { KILL_GRACE_MS } from "../src/spawn-kill.ts";
 import { spawnSpecialist } from "../src/spawn.ts";
 import type { DispatchResult } from "../src/types.ts";
@@ -92,6 +93,13 @@ function assert(cond: boolean, msg: string) {
   sharedAssert(cond, msg);
   if (!cond) exit = 1;
 }
+
+// #1579 — the probes read their role prompt from THIS checkout's dist/ only.
+const checkout = resolve(import.meta.dir, "..", "..");
+assert(
+  ROLES.explore.promptFile.startsWith(`${checkout}${sep}`),
+  `probe prompt is read inside the checkout under test (${ROLES.explore.promptFile})`,
+);
 
 /**
  * The ceiling on any single probe's await. A CEILING, not a floor: it only
