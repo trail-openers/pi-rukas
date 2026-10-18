@@ -2125,6 +2125,14 @@ One real failure next to any of these is a code failure, so the cap stays `verif
 
 **Fix:** The evidence line quotes `cgroup pids.current=N of pids.max=M` for wherever the driver runs, with the counters read just after the failure. The quoted counters appear only when they are readable (cgroup v2 on Linux); otherwise the line says the limit is unknown and you read the limit yourself. In a container that is the container's own limit (docker `--pids-limit`), not a host ulimit — `ulimit -u` on the host will show nothing to raise. If the counters show headroom, the limit may have been hit transiently by a burst of parallel processes and drained before they were read; re-run the cycle before changing the limit, and check the other ceilings the evidence names. A count at the limit with a low load average means leaked or unreaped children: inside the container, check that PID 1 is an init (`cat /proc/1/comm` → `tini`), restart the container or raise its pid limit, then re-run the cycle. Do not start by inspecting the diff: it has not been judged either way.
 
+#### The headless runner aborted (`panic: abort() called`) during lens-review
+
+**Symptom:** `pi-rukas-headless work N --json` dies with `oh no: Bun has crashed` / `panic(main thread): abort() called` (exit 134), usually in `lens-review`, and the container's `pids.events` counts refused forks. Before #1591 the `--json` result was empty, even when the cycle had already opened its PR.
+
+**Cause:** The container ran out of pids (`pids.max`, docker `--pids-limit`, which counts threads as well as processes). The review started all six lenses at once, and each lens can run the product's gate; a gate that runs its tests in parallel, six times side by side, can use many times what a cycle otherwise needs. When Bun cannot create a thread it aborts natively, so no JavaScript handler can write the result.
+
+**Fix:** Since #1591 the lens fan-out is bounded by the host budget, which now reads `pids.max`: one lens per 1024 pids, and no more than the host's workstream slots (the `resource budget` trace line and `resources.limits.lensConcurrency` in the `--json` result show the value). Set `PI_ENSEMBLE_LENS_CONCURRENCY` to choose it yourself, or raise the container's pid limit. If the runner still dies, the headless supervisor writes the `--json` result from the state files (`error.code: "crash"`, exit 30), so the host sees the cycle's branch and PR. Re-running `work N` resumes a cycle whose runner died, from its last step boundary.
+
 #### `verify-baseline-red:<step>`: the gate was already red at the base commit
 
 **Symptom:** The develop step ends with `verify-baseline-red:develop` (`verify-failed:develop` before #1349), and the first evidence line starts with `[baseline-red]` and names the base sha and the assertion that fails there.

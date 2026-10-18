@@ -53,7 +53,7 @@ The headless runner's contract with its caller is four independent surfaces, eac
 | 11 | `clarification` | Handoff whose cap is `intent-park` or `explore-needs-clarification` |
 | 20 | `aborted` | Aborted |
 | 21 | `interrupted` | Interrupted by a signal (SIGINT/SIGTERM) |
-| 30 | `crash` | The driver threw, or interrupted by the runner's own `--timeout`, or a cycle left running after the driver returned |
+| 30 | `crash` | The driver threw, or interrupted by the runner's own `--timeout`, or a cycle left running after the driver returned, or the runner process died without writing its result |
 | 40 | `refused` | Refused to start (claimed by a live cycle, `needs-human-attention` without `--restart`, bad arguments, unknown flag) |
 
 A grouped run exits 21 if any issue was interrupted, otherwise the highest per-issue code. The `--json` result carries every issue regardless.
@@ -135,6 +135,8 @@ With `--json`, stdout carries exactly one JSON document:
 
 An optional top-level `error` (`{ code, message }`) is present when the runner detected a divergence (e.g. `state-diverged`) or another runner-level failure.
 
+**A runner that dies still answers (#1591).** `work` runs as a child of a small supervisor process that holds its stdout. If the child exits without writing a result — Bun aborts natively when it cannot create a thread, for example at a container's `pids.max`, and no handler runs on such an abort — the supervisor writes the document itself: `error.code: "crash"`, a message naming the signal or exit code, exit 30, and each issue projected from its state file (`not-started` when there is none; a non-terminal issue has exit 30). A cycle that had opened its PR still reports `branch` and `prUrl`. stderr is passed through untouched. `PI_ENSEMBLE_HEADLESS_SUPERVISED=1` runs `work` in-process without the supervisor.
+
 `resources` (#1325, added in this release; an additive field, so no schema bump) is the host budget and the parallelism limits the run chose — see [Resource report](#resource-report). `failure` (#1367) and `usage.byRole` (#1368) are additive fields too, so the schema stays at 3; a host detects them with `features.failureReason` and `features.usageByRole` in `--capabilities`.
 
 ### The `failure` object
@@ -182,18 +184,20 @@ The same object appears in the `--json` result and in `--capabilities` (`extensi
   "host": {
     "cpus": 4, "cpuSource": "cgroup-v2",          // os | cgroup-v2 | cgroup-v1
     "memoryBytes": 8589934592, "memorySource": "cgroup-v2",
-    "cgroup": "v2"                                 // v2 | v1 | none
+    "cgroup": "v2",                                // v2 | v1 | none
+    "pidsMax": 3072                                // absent when unlimited
   },
-  "budget": { "workstreamSlots": 8, "verifyConcurrency": 2 },
+  "budget": { "workstreamSlots": 8, "verifyConcurrency": 2, "lensSlots": 3 },
   "limits": {
     "parallelGroups":    { "value": 1, "source": "budget" },  // env | budget | default
     "maxWorkstreams":    { "value": 6, "source": "default" },
-    "verifyConcurrency": { "value": 2, "source": "budget" }   // 0 = unbounded
+    "verifyConcurrency": { "value": 2, "source": "budget" },  // 0 = unbounded
+    "lensConcurrency":   { "value": 3, "source": "budget" }   // env | budget; 0 = unbounded
   }
 }
 ```
 
-`host` is what the machine allows: `os.availableParallelism()` and `os.totalmem()`, each lowered by a cgroup CPU quota or memory limit when one is set. `budget` is derived from it: `workstreamSlots` is two per CPU or one per GiB, whichever is lower; `verifyConcurrency` is one per two CPUs or per 2 GiB, at least 1. `limits` are what a cycle runs with. `source: "env"` means an explicit setting decided the value, `"budget"` that the host budget lowered the default, `"default"` that the static default applied. The budget never raises a default. The group and workstream defaults hold from about 9 CPUs and 18 GiB up.
+`host` is what the machine allows: `os.availableParallelism()` and `os.totalmem()`, each lowered by a cgroup CPU quota or memory limit when one is set. `budget` is derived from it: `workstreamSlots` is two per CPU or one per GiB, whichever is lower; `verifyConcurrency` is one per two CPUs or per 2 GiB, at least 1; `lensSlots` (#1591) is `workstreamSlots` lowered to one per 1024 of the cgroup's `pids.max` (which counts threads too), at least 1. `limits` are what a cycle runs with. `source: "env"` means an explicit setting decided the value, `"budget"` that the host budget lowered the default, `"default"` that the static default applied. The budget never raises a default. The group and workstream defaults hold from about 9 CPUs and 18 GiB up.
 
 ### The `cap` vocabulary
 
