@@ -16,13 +16,16 @@ export type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
 export type { FenceViolation } from "./workflow-state-schema-verify.ts";
 import type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 import type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
-import type { PlanQualityReason } from "./workflow-state-schema-plan-quality.ts";
+// #861 / #1167 — `PlanQualityReason` and `PlanUnfenceSummary` live in the
+// plan-quality fragment (the 500-line cap); re-exported just below.
+import type {
+  PlanQualityReason,
+  PlanUnfenceSummary,
+} from "./workflow-state-schema-plan-quality.ts";
 import type { FenceViolation, VerifyEvidenceOrigin } from "./workflow-state-schema-verify.ts";
 import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
 
-// #861 — PlanQualityReason moved to its own fragment (the 500-line cap);
-// re-exported so existing importers keep their path.
-export type { PlanQualityReason };
+export type { PlanQualityReason, PlanUnfenceSummary };
 
 export {
   filesPresentFromConsolidation,
@@ -53,8 +56,6 @@ export {
  * from eventLog but stored explicitly for O(1) reads. When the two
  * diverge, eventLog is authoritative.
  */
-// #861 — PlanQualityReason lives in workflow-state-schema-plan-quality.ts
-// (re-exported above); the 500-line cap.
 
 export interface PipelineState {
   /** Current step. Drives template selection and transition table. */
@@ -229,6 +230,8 @@ export interface PipelineState {
      * absent when no edge was dropped.
      */
     droppedEdges?: { from: string; to: string }[];
+    /** #1167 — the issue-named unfence's record (`PlanUnfenceSummary`). */
+    unfence?: PlanUnfenceSummary;
   };
   /**
    * PR14/#540 — the subsumption-aware consolidation verdict: `verdicts`
@@ -485,11 +488,9 @@ export interface PipelineState {
   handoffDeliveredAt?: string;
 }
 
-// #1362 — WORK_STEPS' home is workflow-state-events.ts, beside the WorkStep union
-// it mirrors (that module has no value imports, so a runtime reader can reach the
-// tuple without pulling a value edge through the validator's cap vocabulary — see
-// the comment on the tuple). It moved out of this module for the 500-line gate and
-// is re-exported above so every importer keeps its path.
+// #1362 — WORK_STEPS' home is workflow-state-events.ts (its own note there
+// explains why); it and WorkState both left this module for the 500-line gate
+// and are re-exported so every importer keeps its path.
 // WorkState moved to workflow-state-schema-workstate.ts (500-line gate); re-exported.
 export type { WorkState } from "./workflow-state-schema-workstate.ts";
 

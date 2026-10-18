@@ -1,0 +1,61 @@
+{
+ "source": "Replay fixture for issue #1167. Captured from the /work #1020 (Headless S2 - DriverHost seam) cycle that parked with: workstream default touched out-of-scope path extension/src/dispatch.ts - declared fence violated (issue-fenced). The change was finished by hand as PR #1159 (commit 93a56cf). issueBody is the driver-cached body; plan is the workstreams map the plan step parsed from the planner reply.",
+ "issue": 1020,
+ "issueBody": "feat: Headless S2 \u2014 DriverHost seam and Pi-session host\n\n## Context & motivation\n\nDescriptor: Headless S2: introduce a DriverHost seam replacing DriverContext.pi and notifyAgent on driver paths, with a Pi-session host that preserves current behaviour and a parity test (part of epic #1018).\nType: feature\n\n## Prior context inventory\n\n- Part of EPIC #1018. Depends on S1 (import-surface audit). [context param]\n- Decisions: DriverHost has exactly the capabilities the census found on driver paths: emit progress line, deliver terminal line (merged/handoff/aborted, keeping the handoffDeliveredAt write-ahead idempotency in work-driver-terminal-delivery.ts), lifecycle entries (lifecycle-events.ts appendEntry/registerEntryRenderer via startJob), slow-run notices (slow-notice.ts). Replace `DriverContext.pi: ExtensionAPI` (work-driver-context.ts:149) with `host: DriverHost`; route the ~12 notifyAgent/pi.sendUserMessage driver-path sites (work-driver.ts, work-entry.ts, work-driver-terminal-delivery.ts, work-driver-handoff.ts, slow-notice.ts) through it. The Pi-session host wraps ExtensionAPI with no behaviour change (still deliverAs:\"steer\"). All Pi references in driver modules become type-only. Plan, research and lens-review take a DriverHost (or nothing) instead of ExtensionAPI where they only forward it to dispatchCore; agents-md needs no host. [context param]\n- EPIC: Headless runner for the compiled drivers [issue #1018 (OPEN)]\n\n## Technical context\n\n- **test-surface**: 1 reference, 8 test-surface-item, 5 edge-case; Let me investigate the existing test surface around the driver modules.; Now let me look at the key existing tests to understand what fixtures/harnesses exist.; I now have a full picture of the test surface. Let me confirm a few remaining specifics.; I have a full picture now. Let me report the structured findings.\n\n## Acceptance criteria\n\n- No driver-path module (work-driver*.ts, work-entry.ts, plan-driver.ts, research-driver.ts, lens-review*.ts) holds an ExtensionAPI value; only the Pi-session host module does.\n- Parity test (work only): the same stubbed cycle (injected dispatchFn + forge fixture) under the Pi-session host and a recording test host produces identical pipelineState + eventLog with timestamps normalised; plan/research/lens-review are wired to DriverHost and keep their existing tests green but are not in the parity invariant.\n- All existing offline smoke tests green; test-seams-wired.ts covers the new module.\n\n## References\n\n- extension/src/work-driver-context.ts:149 defines DriverContext.pi: ExtensionAPI (imported as type at line 15), and the seam to be replaced with DriverHost is this exact field; 26 ctx.pi read sites spread across work-driver.ts, work-driver-plan.ts, work-driver-explore-run.ts, work-driver-merged.ts, work-driver-handoff-ops.ts, work-develop-run.ts, work-develop-fence-merge.ts,\u2026\n\n## Test surface\n\n- Add a NEW parity test (e.g. extension/smoke-tests/test-driver-host-parity.ts): the same stubbed /work cycle (injected dispatchFn + forge fixture, pattern from test-work-driver-skeleton.ts \u00a73) run under (a) a Pi-session DriverHost wrapping a recording sendUserMessage and (b) a recording test DriverHost; assert identical pipelineState + eventLog with timestamps normalised. This does not exist today\u2026\n- test-work-driver-skeleton.ts is the primary work-area suite to extend: its makeFakePi() (lines ~40-48) builds an ExtensionAPI stub cast as unknown as ExtensionAPI with only sendUserMessage; ~105 test files under smoke-tests build similar fake-Pi stubs (55 in test-work-driver-*.ts alone, 134 sendUserMessage references across 88 test files), all of which need their DriverContext construction update\u2026\n- test-terminal-delivery.ts (#808) is the golden-fixture candidate for the host seam: its makeCtx(pi, issue) builds TerminalDeliveryCtx whose pi is Pick<ExtensionAPI,'sendUserMessage'>; it already pins send-first-then-handoffDeliveredAt, throw \u2192 no marker + retry delivers, and the kind=merged/handoff envelope \u2014 extend makeCtx to construct the ctx from a DriverHost instead of a raw pi object.\n- test-agent-message-delivery.ts pins the deliverAs contract: notifyAgent carries deliverAs:'steer' (canary at line 50) and a tree-wide grep asserts no module calls sendUserMessage without deliverAs, exempting only agent-message.ts/async-jops.ts/types.ts. When the Pi-session host wraps ExtensionAPI it must preserve deliverAs:'steer', and the EXEMPT set / grep must be re-aimed at the host wrapper so\u2026\n- test-seams-wired.ts (the dead-code gate) must gain a Seam entry for the new DriverHost module: a canary naming a production importer (e.g. the runWorkDriver call in work-entry.ts or the DriverContext field), plus any test-only exports (e.g. a host factory) declared so an unwired export fails the gate. Its orphan check also requires the new host module to have a real production importer, not just \u2026\n- plan-driver.ts (runPlanPipeline pi at line 90) and research-driver.ts (runResearchPipeline pi at line 124) take ExtensionAPI only to forward it to dispatchCore. Their existing suites (test-plan-pipeline.ts with setPlanDispatch + FAKE_PI {registerTool:()=>{}} as never; test-research-fallback-driver.ts with setResearchDispatch + the same FAKE_PI) must keep passing when the param becomes DriverHost-\u2026\n- lens-review.ts takes an optional pi (line 201) solely to forward to the slow-run watch (work-driver-lens.ts:169 pi: ctx.pi \u2192 slow-notice). test-slow-notice-driver.ts drives the REAL driver steps (runSingleDispatch/runPlan) with fake dispatch fns and fakePi(notices) recording sendUserMessage \u2014 the slow-notice half of the DriverHost seam; keep it green and it is the natural place to assert the host\u2026\n- test-driver-envelope.ts (work-driver-handoff-message.ts renderHandoffUserMessage) and test-work-notify.ts (#388 notify hook, runWorkQueue) exercise handoff/queue message rendering independent of the host; both use their own fake pi and should stay green unchanged \u2014 they are the \"no behaviour change\" regression set for the Pi-session host. test-work-notify.ts in particular asserts the #388 notify \u2026\n\n## Edge cases & pitfalls\n\n- The DriverHost must capture MORE than sendUserMessage: the census found driver paths also (a) call startJob(pi) in work-entry.ts (lines 177, 269) to launch driver sub-jobs, and (b) rely on lifecycle entries via lifecycle-events.ts attach(pi)/appendEntry/registerEntryRenderer. If DriverHost only exposes a notify/deliver method, the startJob(pi) and lifecycle attach(pi) call sites in work-entry.ts \u2026\n- Handoff idempotency is order-sensitive (test-terminal-delivery.ts \u00a71 asserts handoffDeliveredAt is NOT set when sendUserMessage fires \u2014 send-first-then-record). A recording test host that captures the message synchronously must reproduce this ordering; a naive host that stamps the marker before the terminal deliver callback runs will invert the write-ahead and break the #808 re-delivery-on-resume\u2026\n- The terminal-delivery throw path (#808) throws from sendUserMessage (\"Agent is already processing\u2026\") mid-send; the Pi-session host wrapping ExtensionAPI must let that rejection propagate (not swallow it) so deliverTerminalLine's traced-no-marker branch fires, and a throwing send must never become an unhandled rejection. A recording test host that never throws cannot exercise this \u2014 the parity tes\u2026\n- slow-notice.ts (line 205) falls back to getParentExtensionApi() when w.pi is absent \u2014 lens/adversarial children have no pi of their own. A DriverHost seam must not break this fallback: the host must either thread a host down to slow-notice or leave the parent-api registry path intact, or slow-run notices for lens children silently vanish. test-slow-notice-driver.ts's lens fan-out case is the guar\u2026\n- Parity invariant scope: the acceptance criterion limits parity to the WORK cycle only (plan/research/lens-review wired but not in the invariant). The parity test must normalise timestamps (eventLog `at` fields, handoffDeliveredAt ISO, any Date.now()-derived values) before comparing, and must run the cycle to a terminal state with a stubbed dispatchFn that halts before a live adversarial/lens spaw\u2026\n\n## Open Questions\n\n- (none)\n\n## Out of scope\n\n- The headless host and CLI (S4); binary resolution (S3).\n\n\n## Resolved decisions\n- DriverHost covers notify/terminal delivery, lifecycle entries and slow-run notices. Dispatch keeps its own seam: dispatchCore/startJob take a narrow `DispatchHost` (the `sendUserMessage` + `appendEntry`/`registerEntryRenderer` subset startJob uses), which the Pi-session host provides; the two work-entry.ts startJob sites use it. `DriverContext.dispatchFn`'s first parameter becomes that `DispatchHost` type; tests constructing DriverContext update their stubs mechanically.\n- `TerminalDeliveryCtx.pi` becomes `host: DriverHost`.\n- The parity test uses an identical injected dispatchFn in both runs; it covers notify/terminal/lifecycle/slow-notice, not the spawn path (covered by existing suites).",
+ "plan": {
+  "default": {
+   "id": "default",
+   "scope": "Replace DriverContext.pi with DriverHost seam, Pi-session host, DispatchHost for startJob, parity test",
+   "paths": [
+    "extension/src/work-driver-host.ts",
+    "extension/src/work-driver-context.ts",
+    "extension/src/work-driver.ts",
+    "extension/src/work-driver-terminal-delivery.ts",
+    "extension/src/work-driver-handoff.ts",
+    "extension/src/work-driver-lens.ts",
+    "extension/src/work-driver-plan.ts",
+    "extension/src/work-driver-merged.ts",
+    "extension/src/work-driver-handoff-ops.ts",
+    "extension/src/work-driver-converge-gate.ts",
+    "extension/src/work-develop-run.ts",
+    "extension/src/work-develop-fence-merge.ts",
+    "extension/src/work-driver-explore-dispatch.ts",
+    "extension/src/slow-notice.ts",
+    "extension/src/work-entry.ts",
+    "extension/src/async-jobs.ts",
+    "extension/src/plan-driver.ts",
+    "extension/src/research-driver.ts",
+    "extension/src/lens-review.ts",
+    "extension/smoke-tests/test-driver-host-parity.ts",
+    "extension/smoke-tests/test-seams-wired.ts",
+    "extension/smoke-tests/test-work-driver-skeleton.ts",
+    "extension/smoke-tests/test-terminal-delivery.ts",
+    "extension/smoke-tests/test-slow-notice-driver.ts",
+    "extension/smoke-tests/test-agent-message-delivery.ts"
+   ],
+   "outOfScope": [
+    "extension/src/spawn.ts",
+    "extension/src/spawn-support.ts",
+    "extension/src/dispatch.ts",
+    "extension/src/dispatch-core*.ts (no changes beyond the DispatchHost type narrowing)",
+    "extension/src/agent-message.ts (read-only; `notifyAgent` keeps `deliverAs:\"steer\"`)",
+    "extension/src/lifecycle-events.ts",
+    "extension/src/work-tool.ts",
+    "extension/src/adversarial-tool.ts",
+    "extension/src/lens-review-tool.ts",
+    "extension/src/dispatch-deck*.ts",
+    "any headless host or CLI files (S4)",
+    "binary-resolution files (S3)",
+    "extension/src/permission-guard.ts",
+    "agents.json",
+    "agents-base/**",
+    "modules/**",
+    "manifests/**",
+    "pi-prompts/**",
+    "README.md",
+    "AGENTS.md",
+    "CHANGELOG.md"
+   ]
+  }
+ }
+}
