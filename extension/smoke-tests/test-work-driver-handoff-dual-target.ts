@@ -10,7 +10,10 @@
  * Covers: (1) both targets verified → labelApplied true; (2) partial
  * failure (issue verified, PR not) → the split is recorded, not collapsed;
  * (3) the no-PR path (prNumber undefined) is unchanged — single-target issue
- * labeling, `prLabelApplied` absent, target is the issue.
+ * labeling, `prLabelApplied` absent, target is the issue;
+ * (4) the host handoff channel never triggers the #798 issue-label write
+ * (`applyIssueLabelDualTarget`), which stays outside the fallback try/catch
+ * and behind the `!host` guard.
  *
  * Split from `test-work-driver-handoff-event-provenance.ts` (§12 file-size
  * limit): these three cases are self-contained end-to-end `runHandoff`
@@ -18,7 +21,7 @@
  * `lib/handoff-provenance-fixtures.ts` (single copy, no drift).
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
@@ -163,6 +166,59 @@ function assert(cond: boolean, msg: string) {
       "#798 no-PR: issueLabelApplied true, prLabelApplied ABSENT (not false) — pre-#798 no-PR shape preserved",
     );
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// The #798 issue-label write (`applyIssueLabelDualTarget` + fresh read-back)
+// was moved into `deliverHandoff` by the §12 code-split — inside the fallback's
+// swallow-all try/catch, and with the `!host` guard dropped. On the host
+// channel (#1327) that meant the driver labelled the issue the host owns.
+// `prLabelApplied` is false in this fixture, so the fallback always enters and
+// would reach the label write on its own: only the `!host` guard keeps it out.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "issue798-host-"));
+  const env = "PI_ENSEMBLE_HANDOFF_CHANNEL";
+  const saved = process.env[env];
+  try {
+    process.env[env] = "host";
+    const { forge, calls } = mkFakeForge({
+      issueLabels: [],
+      prLabels: [],
+    });
+    // `scratchDir`/handoff body are absent on the host path; make the body
+    // file real so the fallback leg runs to the point the label write sat at.
+    mkdirSync(path.join(dir, "tmp", "issue-799"), { recursive: true });
+    writeFileSync(path.join(dir, "tmp", "issue-799", "handoff-comment.md"), "# body", "utf8");
+    const ctx: DriverContext = {
+      host: fakePi,
+      repoRoot: dir,
+      issue: 799,
+      dispatchFn: async () => ({
+        role: "ops",
+        ok: true,
+        text: "posted.\nHANDOFF-RESULT: comment=https://github.com/acme/widget/pull/800#issuecomment-1 label=applied",
+        toolUses: [],
+        ms: 10,
+        exitCode: 0,
+        transcriptPath: "/tmp/stub.json",
+      }),
+      forge,
+    };
+    const next = await runHandoff(ctx, cappedState(799, 800), Date.now());
+    const labelWrites = calls.filter((c) => c.method === "labelCreate" || c.method === "labelAdd");
+    assert(
+      labelWrites.length === 0,
+      `#798 host channel: with host true the driver makes NO issue-label write — applyIssueLabelDualTarget is not called (saw: ${labelWrites.map((c) => `${c.method}(${c.args.join(",")})`).join(", ") || "none"})`,
+    );
+    const emitted = next.eventLog.find((e) => e.kind === "handoff-emitted");
+    assert(
+      emitted?.kind === "handoff-emitted" && emitted.delivery === "host",
+      "#798 host channel: the handoff still records the host delivery",
+    );
+  } finally {
+    if (saved === undefined) delete process.env[env];
+    else process.env[env] = saved;
     rmSync(dir, { recursive: true, force: true });
   }
 }
