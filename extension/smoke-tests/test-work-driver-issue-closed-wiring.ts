@@ -93,7 +93,10 @@ assert(
   "issue-closed is published in CAP_TEMPLATES (tsc fails if it is not)",
 );
 assert(
-  /issue-closed/.test(read("work-queue.ts")),
+  // The queue's human-action table moved to work-queue-cap.ts (#1563-era
+  // size split); assert on both so the check survives the next relocation
+  // rather than going silently vacuous on a file move.
+  /issue-closed/.test(read("work-queue-cap.ts")) || /issue-closed/.test(read("work-queue.ts")),
   "the work queue names a human action for an issue-closed park",
 );
 console.log(exit === 0 ? "\nAll #1472 wiring canaries passed." : "\nFAILED");
