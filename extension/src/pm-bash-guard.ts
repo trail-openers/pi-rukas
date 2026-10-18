@@ -38,6 +38,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchBashSubcommand } from "./bash-command-parser.ts";
 import { loadAgentsJson } from "./permission-config.ts";
+import { allowsReadOnlyChain, firstWordAllowed, splitReadOnlyChain } from "./pm-bash-chain.ts";
 import { isPmModeActive } from "./pm-mode.ts";
 import { trace } from "./trace.js";
 
@@ -63,28 +64,36 @@ export function registerPmBashGuard(pi: ExtensionAPI): void {
       string
     >;
     const verdict = matchBashSubcommand(command, pmBash);
-    // matchBashSubcommand returns null for injection vectors OUTSIDE quoted
-    // segments — those can never auto-match an allowlist row, so they block
-    // here exactly as they block under strict-mode headless resolution.
-    if (verdict === "allow") return;
+    // A loose row (`cat*`) must not admit `cat=1 touch x` or `catchsegv`.
+    if (verdict === "allow" && firstWordAllowed(command, pmBash)) return;
+    // matchBashSubcommand returns null for any operator outside quotes. A
+    // chain whose every part is an allowlisted read passes here, and only
+    // here — other roles keep the refusal (#1352, pm-bash-chain.ts).
+    if (verdict === null && allowsReadOnlyChain(command, pmBash)) return;
     trace(`pm-bash-guard: BLOCKED PM bash (mode-independent) — ${command}`);
-    return { block: true, reason: pmBashRefusal(verdict) };
+    const split = verdict === null ? splitReadOnlyChain(command) : undefined;
+    const unterminated = split?.ok === false && split.reason === "unterminated-quote";
+    return { block: true, reason: pmBashRefusal(verdict, unterminated) };
   });
 }
 
 /**
  * Why a PM bash call was refused. `null` from the matcher means the command
- * carries a shell operator outside quotes (`&&`, `;`, `|`, a redirect,
- * backticks, `$(…)`): the allowlist matches ONE command, so a compound is
- * never matched — even when every part of it is a read-only command that
- * would pass alone. The old text called that an "injection chain", which sent
- * a PM (and the operator reading the log) looking for an attack in
- * `git status && git log`, and did not say that the same reads work one at a
- * time (#1233).
+ * carries a shell operator outside quotes. A chain of allowlisted reads joined
+ * by `&&`, `||`, `;` or `|` was already accepted (pm-bash-chain.ts), so a null
+ * that reaches here has a part that is not an allowlisted read, or a construct
+ * no chain may carry (`$(…)`, backticks, `$VAR`, a redirect other than to
+ * /dev/null, `xargs`/`tee`). The old text called that an "injection chain",
+ * which sent a PM looking for an attack in `git status && git log` (#1233).
+ * An unterminated quote gets its own text: the command does not parse at all,
+ * usually because of an apostrophe inside a single-quoted argument (#1352).
  */
-export function pmBashRefusal(verdict: string | null): string {
+export function pmBashRefusal(verdict: string | null, unterminatedQuote = false): string {
+  if (unterminatedQuote) {
+    return "Refused: this command has an unterminated quote, so it does not parse as shell — usually an apostrophe inside a single-quoted argument. Write the apostrophe as '\\'' (close the quote, escaped quote, reopen) or use double quotes, then run it again.";
+  }
   if (verdict === null) {
-    return "Refused: PM bash runs ONE allowlisted command per call, and this one chains, pipes or redirects (`&&`, `;`, `|`, `>`, backticks, `$(…)`). A compound command is never matched against the allowlist, even when every part is read-only. Run each part as its own bash call — for another directory use `git -C <dir> …` rather than `cd <dir> && …` — and dispatch anything that mutates to a specialist (dispatch_specialist: ops for git and forge-CLI (gh/glab) mutations, developer for code).";
+    return "Refused: PM bash accepts one allowlisted command, or a chain of allowlisted reads joined by `&&`, `||`, `;` or `|` (redirects only to /dev/null or `2>&1`). This one has a part that is not on the allowlist (e.g. `cd`), or carries `$(…)`, backticks, `$VAR`, another redirect, or `xargs`/`tee`. Run each part as its own bash call — for another directory use `git -C <dir> …` rather than `cd <dir> && …` — and dispatch anything that mutates to a specialist (dispatch_specialist: ops for git and forge-CLI (gh/glab) mutations, developer for code).";
   }
   return "Refused: this command is not on the PM bash allowlist (agents.json). PM may run only its allowlisted read-only commands directly. Dispatch implementation and git/mutation work to specialists instead (dispatch_specialist to ops for git and forge-CLI (gh/glab) mutations, developer for code).";
 }
