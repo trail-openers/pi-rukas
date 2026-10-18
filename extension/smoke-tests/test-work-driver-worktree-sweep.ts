@@ -21,17 +21,19 @@
  *  3. the removal arm actually removing (cwd + path shape git accepts).
  *
  * Cases 1–3 pin the name→state-file rule itself, which is where the bug lived;
- * 4–9 pin what the sweep does once it CAN read a state file. The decision
+ * 4–6 pin what the sweep does once it CAN read a state file. The decision
  * engine's rules and the command each arm issues are covered by
- * `test-work-driver-worktree-sweep-rules.ts` (the §12 500-line cap split the
- * coverage at the real-git / no-git seam, which is also the seam between
- * "the sweep's verdict becomes a real command" and "the verdict was right").
+ * `test-work-driver-worktree-sweep-rules.ts`, and the remaining sweep cases
+ * (live owner/issue, the launching cycle's own tree, and the in-cycle teardown
+ * pass) by `test-worktree-teardown-retention.ts`. §12's 500-line cap split the
+ * coverage at the seam that matters — real-git action, decision rules with no
+ * git under them, and the guards that must never act — so that a file can fail
+ * for one reason and not three at once.
  */
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { processAlive } from "../src/work-driver-resume.ts";
 import {
   isLaunchingCycleOwnWorktree,
   parseWorktreeIssue,
@@ -44,9 +46,7 @@ import {
   assertEquals,
   assertFalse,
   assertTrue,
-  failFast,
   finish,
-  foreignSchemaStateJson,
   skipReasons,
   skipsByPath,
 } from "./lib/worktree-sweep-assert.ts";
@@ -162,7 +162,7 @@ async function testStateFileLookupIsNotTheBasename() {
 }
 
 // ---------------------------------------------------------------------------
-// 4–9: what the sweep does once it can read a state file
+// 4–6: what the sweep does once it can read a state file
 // ---------------------------------------------------------------------------
 
 async function testSweepPurgesDeadOwnersLeftover() {
@@ -258,229 +258,8 @@ async function testSweepRemovesWorkOnRemote() {
   assertFalse(existsSync(wt.path), "the directory is gone — git really removed it");
 }
 
-async function testSweepSkipsLiveOwnerAndLiveIssue() {
-  console.log("\n6. a live owner or a live sibling issue is never touched");
-  const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-live");
-  const mine = makeSweepWorktree(repoRoot, baseSha, "issue-7-default", {
-    dirty: true,
-  });
-  const theirs = makeSweepWorktree(repoRoot, baseSha, "issue-8-default", {
-    dirty: true,
-  });
-  const stranger = makeSweepWorktree(repoRoot, baseSha, "issue-9-default", {
-    dirty: true,
-  });
-  // `selfPid` is the sweep's own process, so the owner pid must differ from it
-  // for Rule 3a to fire at all — that is the self-exemption, not an oversight.
-  // A detached child parked on a stdin read is the honest way to hold a pid
-  // this test can reap, rather than a number that happens to be free.
-  const parked = spawn("cat", [], {
-    detached: true,
-    stdio: ["ignore", "ignore", "ignore"],
-  });
-  parked.unref();
-  const liveOtherPid = parked.pid;
-  if (liveOtherPid === undefined || !processAlive(liveOtherPid)) {
-    failFast("could not park a live child to own a state file — case 6 cannot run");
-  }
-  try {
-    writeSweepStateForWorktree(repoRoot, mine.name, {
-      ownerPid: liveOtherPid,
-      status: "aborted",
-      updatedAt: PAST,
-    });
-    writeSweepStateForWorktree(repoRoot, theirs.name, {
-      ownerPid: deadPid(),
-      status: "aborted",
-      updatedAt: PAST,
-    });
-    writeSweepStateForWorktree(repoRoot, stranger.name, {
-      ownerPid: deadPid(),
-      status: "aborted",
-      updatedAt: PAST,
-    });
-
-    const rec = recordingExec();
-    const res = await runWorktreeSweep({
-      repoRoot,
-      launchingCycleIssue: 1006,
-      liveCycles: new Set<number>([8]),
-      execFn: rec.exec,
-    });
-    assertEquals(res.purged.length, 1, "only the dead, unclaimed tree was swept");
-    assertEquals(res.purged[0], stranger.path, "and it is the one with no owner and no claim");
-    const byPath = skipsByPath(res);
-    assertTrue(
-      (byPath.get(mine.path) ?? "").startsWith("live-owner"),
-      `live owner skipped by pid (got: ${byPath.get(mine.path)})`,
-    );
-    assertTrue(
-      (byPath.get(mine.path) ?? "").includes(String(liveOtherPid)),
-      "naming the owner pid the operator has to chase",
-    );
-    assertEquals(
-      byPath.get(theirs.path),
-      "live-issue 8",
-      "a live sibling issue is skipped by issue",
-    );
-    assertEquals(
-      rec.countMatching("git clean"),
-      1,
-      "exactly one cleanup command ran, for one tree",
-    );
-    for (const wt of [mine, theirs]) assertTrue(existsSync(wt.path), `${wt.name} survives`);
-  } finally {
-    try {
-      process.kill(liveOtherPid, "SIGKILL");
-    } catch {
-      /* already reaped */
-    }
-  }
-}
-
-async function testSweepSkipsLaunchingCycleOwnTree() {
-  console.log("\n7. the launching cycle's own tree is skipped (the guard that never fired)");
-  const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-own");
-  const own = makeSweepWorktree(repoRoot, baseSha, "issue-1006-default", {
-    dirty: true,
-  });
-  const integrate = makeSweepWorktree(repoRoot, baseSha, "issue-1006-integrate", { dirty: true });
-  const foreign = makeSweepWorktree(repoRoot, baseSha, "issue-11-default", {
-    dirty: true,
-  });
-  for (const wt of [own, integrate, foreign]) {
-    writeSweepStateForWorktree(repoRoot, wt.name, {
-      ownerPid: deadPid(),
-      status: "aborted",
-      updatedAt: PAST,
-    });
-  }
-
-  const rec = recordingExec();
-  const res = await runWorktreeSweep({
-    repoRoot,
-    launchingCycleIssue: 1006,
-    liveCycles: new Set<number>([1006]),
-    execFn: rec.exec,
-  });
-
-  const byPath = skipsByPath(res);
-  assertEquals(byPath.get(own.path), "launching-cycle-own", "own default tree skipped by name");
-  assertEquals(
-    byPath.get(integrate.path),
-    "launching-cycle-own",
-    "own integrate tree skipped by name (pre-fix, its dead-owner state meant removal)",
-  );
-  assertEquals(res.purged.length, 1, "the foreign leftover was still swept");
-  assertEquals(res.purged[0], foreign.path, "and it is the only one that was");
-  assertTrue(existsSync(own.path), "the launching cycle's tree is intact");
-  assertEquals(rec.countMatching("git clean -fdX"), 1, "exactly one cleanup command ran");
-}
-
-async function testSweepPurgesAwaitingHumanMerge() {
-  console.log("\n8. an awaiting-human-merge park purges artifacts and keeps the tree");
-  const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-mergehold");
-  const wt = makeSweepWorktree(repoRoot, baseSha, "issue-7-default", {
-    dirty: true,
-  });
-  writeSweepStateForWorktree(repoRoot, wt.name, {
-    ownerPid: deadPid(),
-    status: "handoff",
-    currentStep: "handoff",
-    branchName: "feature/issue-7-held",
-    cap: "awaiting-human-merge",
-    mergeHold: true,
-    updatedAt: PAST,
-  });
-
-  const rec = recordingExec();
-  const res = await runWorktreeSweep({
-    repoRoot,
-    launchingCycleIssue: 1006,
-    liveCycles: new Set<number>(),
-    execFn: rec.exec,
-  });
-  assertEquals(
-    res.purged.length,
-    1,
-    "purged (artifacts), not removed (the operator still needs it)",
-  );
-  assertEquals(res.removed.length, 0, "a held merge is never removed");
-  assertEquals(rec.countMatching("git worktree remove"), 0, "no removal command");
-  assertTrue(existsSync(wt.path), "the tree survives for inspection");
-}
-
-async function testSweepDoesNotClaimASuppressedPurge() {
-  console.log("\n10. a purge the dependency guard suppressed is never reported as purged");
-  const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-purgeskip");
-  // A dead, aborted, dirty leftover holding a REAL `node_modules`: Rule 6
-  // decides `purge`, and the executor refuses to run `git clean -fdX` on it.
-  const kept = makeSweepWorktree(repoRoot, baseSha, "issue-7-default", {
-    dirty: true,
-    installDeps: true,
-  });
-  writeSweepStateForWorktree(repoRoot, kept.name, {
-    ownerPid: deadPid(),
-    status: "aborted",
-    updatedAt: PAST,
-  });
-
-  const rec = recordingExec();
-  const res = await runWorktreeSweep({
-    repoRoot,
-    launchingCycleIssue: 1006,
-    liveCycles: new Set<number>(),
-    execFn: rec.exec,
-  });
-  // #1265 lens FIX 4 — the caller used to discard `SweepResult` and push every
-  // `purge` decision into `purged`, so the operator's report claimed a clean of
-  // a tree whose provisioned install was still sitting there.
-  assertEquals(res.purged.length, 0, "a suppressed purge does NOT appear in `purged`");
-  assertEquals(
-    skipsByPath(res).get(kept.path),
-    "purge-skipped:real-deps",
-    "and appears in `skipped` with the reason the guard gave",
-  );
-  assertEquals(rec.countMatching("git clean"), 0, "no clean command was issued");
-  assertTrue(existsSync(join(kept.path, "node_modules", "dep.js")), "the install is intact");
-  assertEquals(res.checked, 1, "the tree WAS checked — this is a suppression, not a blind spot");
-}
-
-async function testSweepRefusesForeignSchemaState() {
-  console.log("\n11. a state file from another driver version skips rather than decides");
-  const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-schema");
-  // FIX 8: the sweep used to `JSON.parse(…) as WorkState`. An assertion is not a
-  // check — a file written by a different build would have driven Rules 4–6 from
-  // fields that mean something else there, and decided a tree's fate on them.
-  const wt = makeSweepWorktree(repoRoot, baseSha, "issue-7-default", {
-    dirty: true,
-  });
-  mkdirSync(join(repoRoot, ".pi", "work-state"), { recursive: true });
-  writeFileSync(
-    join(repoRoot, ".pi", "work-state", "7.json"),
-    foreignSchemaStateJson(7, 99),
-    "utf8",
-  );
-
-  const rec = recordingExec();
-  const res = await runWorktreeSweep({
-    repoRoot,
-    launchingCycleIssue: 1006,
-    liveCycles: new Set<number>(),
-    execFn: rec.exec,
-  });
-  assertEquals(
-    skipsByPath(res).get(wt.path),
-    "state-unreadable",
-    "a foreign schemaVersion takes the same skip as corrupt JSON",
-  );
-  assertEquals(res.purged.length + res.removed.length, 0, "nothing was swept on it");
-  assertEquals(rec.calls.length, 0, "and no command was issued");
-  assertTrue(existsSync(wt.path), "the tree is left for the operator");
-}
-
 async function testSweepSkipsUnreadableAndForeignCandidates() {
-  console.log("\n9. unreadable state, foreign trees and anonymous dirs all SKIP and stay put");
+  console.log("\n6. unreadable state, foreign trees and anonymous dirs all SKIP and stay put");
   const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-skips");
 
   // (a) a real worktree whose state file is missing entirely.
@@ -565,12 +344,7 @@ async function runTests() {
   await testStateFileLookupIsNotTheBasename();
   await testSweepPurgesDeadOwnersLeftover();
   await testSweepRemovesWorkOnRemote();
-  await testSweepSkipsLiveOwnerAndLiveIssue();
-  await testSweepSkipsLaunchingCycleOwnTree();
-  await testSweepPurgesAwaitingHumanMerge();
   await testSweepSkipsUnreadableAndForeignCandidates();
-  await testSweepDoesNotClaimASuppressedPurge();
-  await testSweepRefusesForeignSchemaState();
   finish();
 }
 
