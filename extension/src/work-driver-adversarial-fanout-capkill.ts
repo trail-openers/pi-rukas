@@ -22,3 +22,58 @@ export function capKillOutcomeFields(result: DispatchResult): Partial<Adversaria
   }
   return {};
 }
+
+/**
+ * #1243 — the watchdog kill causes, threaded onto the outcome for the RETRY
+ * LADDER alone. `capKillOutcomeFields` deliberately does NOT carry these: it
+ * also drives `capHitForCapKill`, whose whole point is that a cap kill parks
+ * with a FIXED-LITERAL cap instead of the generic infra cap, and promoting an
+ * inactivity kill to that path would change what the operator's state file
+ * says — a contract #543 settled. This is the narrower question "how long do we
+ * sit out before re-dispatching?", which the ladder answers from the cause.
+ *
+ * Without it the ladder cannot see the kill at all. `runOne` sets `infra: true`
+ * and leaves `errorTail` empty for a watchdog kill, so
+ * `classifyAdversarialOutcome` fell through to the `dispatch-failed-provider`
+ * default and returned `provider-severed` — a cause #1243's minutes floor is
+ * keyed on. Measured on test-work-driver-adv-retry-357 T8: the four bounded
+ * attempts slept 2 × 60 s + 2 × 120 s and the cycle's elapsed went from ~0.5 s
+ * to ~130 s. That is the inverse of what the issue asked for — it is a SELF-KILL
+ * (pi-rukas ended its own child for going silent), and the taxonomy's own rule
+ * keeps a self-kill on the linear ladder precisely because waiting minutes does
+ * not un-hang a hung child. The structured cause existed on the DispatchResult
+ * the whole time; the projection dropped it.
+ *
+ * The union is inlined (as it is in `types.ts`) rather than named: there is no
+ * exported kill-cause type to import, and minting one for this call site would
+ * be a second vocabulary to keep in step with the first.
+ */
+type RetryLadderKillCause = "timeout" | "inactivity" | "tool-inactivity" | "abort" | "plan-timeout";
+
+const RETRY_LADDER_KILL_CAUSES: readonly string[] = [
+  "timeout",
+  "inactivity",
+  "tool-inactivity",
+  "abort",
+  "plan-timeout",
+];
+
+function isRetryLadderKillCause(cause: string): cause is RetryLadderKillCause {
+  return RETRY_LADDER_KILL_CAUSES.includes(cause);
+}
+
+/**
+ * The watchdog kill to put on the outcome for the ladder, or `undefined`.
+ *
+ * `loop` / `token-budget` are deliberately EXCLUDED rather than filtered by a
+ * membership test alone: `runOne` spreads `capKillOutcomeFields` immediately
+ * before this, and those two carry `loopEvidence` / `tokenBudget` alongside the
+ * cause. Re-spreading a bare `killCause` for them would overwrite the
+ * evidence-bearing entry with a thinner one, and `capHitForCapKill` reads that
+ * evidence. A predicate over a string-typed array narrows where `Array.includes`
+ * alone cannot.
+ */
+export function retryLadderKillCause(result: DispatchResult): RetryLadderKillCause | undefined {
+  const cause = result.killCause;
+  return cause !== undefined && isRetryLadderKillCause(cause) ? cause : undefined;
+}
