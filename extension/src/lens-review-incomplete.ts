@@ -52,3 +52,26 @@ export function lensProducedEvidence(r: LensRunResult): boolean {
 export function isReviewIncomplete(lensResults: readonly LensRunResult[] | undefined): boolean {
   return (lensResults ?? []).some((r) => !!r.blocked || !lensProducedEvidence(r));
 }
+
+/**
+ * #1564 — one line per lane that left the review incomplete, naming what
+ * actually happened to it. "Failed every retry" was the only story told, so a
+ * lens that hung silent until a bound ended it — never retried — read as one
+ * that was retried and failed, which sends the operator after the wrong fault.
+ */
+export function incompleteLanes(lensResults: readonly LensRunResult[] | undefined): string[] {
+  return (lensResults ?? [])
+    .filter((r) => !!r.blocked || !lensProducedEvidence(r))
+    .map((r) => `${r.lens}: ${laneReason(r)}`);
+}
+
+function laneReason(r: LensRunResult): string {
+  if (!r.blocked) return "not reviewed — the lens returned neither findings nor a summary";
+  if (r.killCause === "child-bound") return r.parseError ?? "not reviewed — ended at its run bound";
+  if (r.killCause === "loop" || r.killCause === "token-budget") {
+    return `stopped by the ${r.killCause} cap (not retried)`;
+  }
+  const why = r.parseError ?? "unknown failure";
+  if (r.attempts === 0) return `not run — ${why}`;
+  return `${why} (${r.attempts} attempt${r.attempts === 1 ? "" : "s"})`;
+}

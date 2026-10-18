@@ -3,6 +3,7 @@
  * split out of work-driver-lens.ts (AGENTS.md §12 file-size limit).
  */
 
+import { incompleteLanes } from "./lens-review-incomplete.ts";
 import type { runLensReview } from "./lens-review.ts";
 import { capKilledString, isCapKilled } from "./work-driver-cap-killed.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
@@ -65,7 +66,7 @@ export async function applyLensVerdict(
     // step that actually parked — 26% of handoffs pointing at the wrong gate.)
     state = await appendReviewCapHit(ctx, state, round, summary.verdict, findingsBlob);
   } else {
-    // REVIEW_INCOMPLETE — at least one lens failed all retries. Treat as a
+    // REVIEW_INCOMPLETE — at least one lens gave no verdict. Treat as a
     // halt that needs human attention rather than continuing the fix loop
     // against a partial review. Standing doctrine: never silently downgrade
     // a six-pass to a five-pass.
@@ -94,6 +95,9 @@ export async function applyLensVerdict(
       // F4(g) REVIEW_INCOMPLETE fallback — a cap-killed lens records its
       // fixed literal; anything else is a review that could not complete.
       cap: capKilled ?? REVIEW_INCOMPLETE_CAP,
+      // #1564 — which lanes left the review incomplete, and why: a lens that
+      // never answered is "not reviewed", not one that failed every retry.
+      evidence: incompleteLanes(summary.lenses).join("; ") || undefined,
       reviewRound: round,
       nextStep: "handoff",
     });

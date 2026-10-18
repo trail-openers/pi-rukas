@@ -211,6 +211,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("INVARIANT_MEMORY", true),
   input("ISSUE_IMAGES", "boolean", true, "cycle", { manifestVersion: 1 }),
   // Unset: derived from the host budget (CPUs, memory, pids.max); 0 = unbounded.
+  // #1564 — a lens child's run bound (spawn-child-bound.ts).
+  ms("LENS_BOUND_MS", 1_800_000),
   int("LENS_CONCURRENCY", null),
   flag("LENS_EVIDENCE", true),
   // Unset or 0: no bound on concurrent lens children per model.

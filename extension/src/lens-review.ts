@@ -117,6 +117,8 @@ export async function runLensReview(opts: {
   head?: string;
   signal?: AbortSignal;
   processGroup?: boolean;
+  /** #1242 — each lens child's run bound (default: lensChildBoundMs). */
+  childBoundMs?: number;
   /** #973 — the delta base (see resolveReviewDiff for the full contract). */
   since?: string;
   /** #973 — force a full review (the automatic delta base is not consulted; an explicit `since` still wins when given). */

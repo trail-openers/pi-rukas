@@ -129,12 +129,16 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
   const capKilledCount = blockedLenses.filter((r) =>
     r.killCause ? capKilledCauses.has(r.killCause as "loop" | "token-budget") : false,
   ).length;
+  // #1564 — a lens ended at its run bound was never retried either.
+  const boundCount = blockedLenses.filter((r) => r.killCause === "child-bound").length;
   const blockedHeader =
-    capKilledCount === blockedLenses.length
-      ? "was stopped by a self-inflicted cap (not retried)"
-      : capKilledCount > 0
-        ? "did not complete (see each lens)"
-        : `failed all ${maxLensAttempts} attempts`;
+    boundCount === blockedLenses.length
+      ? "returned no verdict within the lens bound (not reviewed, not retried)"
+      : capKilledCount === blockedLenses.length
+        ? "was stopped by a self-inflicted cap (not retried)"
+        : capKilledCount + boundCount > 0
+          ? "did not complete (see each lens)"
+          : `failed all ${maxLensAttempts} attempts`;
   const blockedBanner =
     blockedLenses.length > 0
       ? [

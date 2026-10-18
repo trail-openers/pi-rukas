@@ -164,7 +164,7 @@ export function recoveryCommandsMarkdown(
     );
   } else if (cap === "review-incomplete") {
     // #543 F5 — the review could not be completed: a loop/token-budget cap
-    // killed one of the six lenses, or a lens failed every retry. The
+    // killed one of the six lenses, a lens hit its run bound, or failed. The
     // completed lenses' verdicts are already rendered above; the recovery
     // is to re-run the review, not to push the branch or take over a PR.
     lines.push(

@@ -40,7 +40,7 @@ const WHY: Record<string, string> = {
   abort: "was cancelled",
   // #1560 — the per-child run bound: steered to wrap up, ended a grace later.
   "child-bound":
-    "outlived its per-child run bound — it was steered to wrap up and ended a grace period later without having committed or finished its reply (PI_ENSEMBLE_DEVELOP_BOUND_MS / PI_ENSEMBLE_EXPLORE_BOUND_MS)",
+    "outlived its per-child run bound — it was steered to wrap up and ended a grace period later without having committed or finished its reply (PI_ENSEMBLE_DEVELOP_BOUND_MS / PI_ENSEMBLE_EXPLORE_BOUND_MS / PI_ENSEMBLE_LENS_BOUND_MS)",
   // #543 — the F1 loop detector and F6 token budget are OUR caps, distinct
   // from a wall-clock timeout: a repeating call was detected structurally,
   // so "split the work" does not apply (re-issuing the same prompt loops again).
