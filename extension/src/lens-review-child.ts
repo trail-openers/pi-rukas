@@ -25,6 +25,7 @@ import { readEnumMarker } from "./reply-markers.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import type { SlowWatchInput } from "./slow-notice.ts";
 import { feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
+import { lensChildBoundMs } from "./spawn-child-bound.ts";
 import { spawnSpecialist } from "./spawn.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -47,6 +48,7 @@ export async function runLensChild(opts: {
     signal?: AbortSignal;
     /** #1024 — headless only: the child leads its own process group. */
     processGroup?: boolean;
+    childBoundMs?: number; // #1242 — the round's lens bound (default: lensChildBoundMs)
     evidence?: string;
     /** #1105 — the branch's prior-findings DATA block (lens-residuals.ts). */
     priorFindings?: string;
@@ -125,6 +127,7 @@ export async function runLensChild(opts: {
     runOpts.priorFindings,
     skillPath,
   );
+  const boundMs = runOpts.childBoundMs ?? lensChildBoundMs();
   const tag = lens.name.toLowerCase().replaceAll("_", "-");
   // Per-lens deck key. The dispatch deck (#117) is now the single live
   // surface — there used to be a parallel onUpdate callback rendering an
@@ -193,10 +196,10 @@ export async function runLensChild(opts: {
             // (set in spawn.ts) disables auto-discovery; `--extension <path>` still
             // loads explicit paths, so the reporter is the only extension in the child.
             extraArgs: lensExtraArgs,
-            // No timeoutMs override — inherits spawn.ts's bounds: the 2h
-            // wall-clock backstop (spawnBackstopMs, spawn-support.ts) and the
-            // 25-min inactivity watchdog (inactivityTimeoutMs). No per-role
-            // timeout exists; liveness, not wall clock, is the real signal.
+            // #1564 — the lens's own run bound (spawn-child-bound.ts): a lens
+            // that never answers is steered to wrap up, then ended, instead of
+            // holding the round until the 2-h spawn backstop.
+            childBoundMs: boundMs,
             signal: kill.signal,
             processGroup: runOpts.processGroup,
             onProgress: (state) => {
@@ -251,7 +254,14 @@ export async function runLensChild(opts: {
       // #543 no-retry-on-cap-kill: a loop / token-budget killed child is a
       // SELF-inflicted cap, never a transient failure. Re-spawning it would
       // just re-loop (the kill is the cap; the retry would undo it 4x).
-      if (result && (result.killCause === "loop" || result.killCause === "token-budget")) {
+      // #1564 — nor is a lens ended at its run bound: a retry would spend the
+      // bound again on a child that did not answer within it.
+      if (
+        result &&
+        (result.killCause === "loop" ||
+          result.killCause === "token-budget" ||
+          result.killCause === "child-bound")
+      ) {
         break;
       }
       // Backoff before next retry (skipped on last attempt to keep total
@@ -314,6 +324,10 @@ export async function runLensChild(opts: {
     const textIsReviewOutput =
       !!summary && summary !== NO_TEXT_PLACEHOLDER && (result?.thinkingOnly === true || capKill);
     const hasEvidence = findings.length > 0 || (!!summary && textIsReviewOutput);
+    // #1564 — a lens ended at its run bound never gave a verdict: its lane is
+    // not reviewed (blocked → REVIEW_INCOMPLETE) even when it reported some
+    // findings first, which are kept.
+    const bounded = result?.killCause === "child-bound";
     return {
       lens: lens.name,
       ok: false,
@@ -321,8 +335,12 @@ export async function runLensChild(opts: {
       startMs,
       findings: hasEvidence ? findings : [],
       attempts,
-      blocked: !hasEvidence,
-      parseError: hasEvidence ? undefined : (lastError ?? "unknown failure"),
+      blocked: !hasEvidence || bounded,
+      parseError: bounded
+        ? `not reviewed — no verdict within its ${Math.max(1, Math.round(boundMs / 60_000))}-min lens bound (PI_ENSEMBLE_LENS_BOUND_MS, never past the review budget); ended, not retried`
+        : hasEvidence
+          ? undefined
+          : (lastError ?? "unknown failure"),
       summary: hasEvidence ? summary : undefined,
       usage: result?.usage,
       ...(hasEvidence && result ? { model: result.model } : {}),

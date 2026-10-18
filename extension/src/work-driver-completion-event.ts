@@ -56,7 +56,7 @@ export function overrideEnvForKillCause(
     // turns them off is the caps master switch. The piece that emits each
     // cause adds its own bound knob here when it introduces one.
     case "child-bound":
-      return "PI_ENSEMBLE_DEVELOP_BOUND_MS / PI_ENSEMBLE_EXPLORE_BOUND_MS";
+      return "PI_ENSEMBLE_DEVELOP_BOUND_MS / PI_ENSEMBLE_EXPLORE_BOUND_MS / PI_ENSEMBLE_LENS_BOUND_MS";
     case "no-progress":
     case "stuck-tool":
       return "PI_ENSEMBLE_DISPATCH_CAPS";
