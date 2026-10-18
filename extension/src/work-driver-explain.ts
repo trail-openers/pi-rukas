@@ -14,6 +14,7 @@ import {
   commitPrConsolidationBlurb,
   explainConsolidation,
 } from "./work-driver-explain-consolidation.ts";
+import { explainConvergeIncomplete } from "./work-driver-explain-converge.ts";
 import { explainDetectCaps } from "./work-driver-explain-detect-caps.ts";
 import { explainDevelopCrash } from "./work-driver-explain-develop-crash.ts";
 import { explainLens } from "./work-driver-explain-lens.ts";
@@ -113,41 +114,8 @@ export function explainCap(
     }
     case "explore-already-complete":
       return "explore concluded this issue is already done (e.g., satisfied by a prior PR or merged earlier). The driver halted before branch/develop ran — no code was written. Close the issue if you agree, or re-run /work with additional context if you believe there IS work to do";
-    case "develop-incomplete-deliverables": {
-      // #741 — the converge gate: the verify gate passed (the code builds),
-      // but one or more plan deliverables are absent from the end-of-develop
-      // diff. The missing deliverables ride on the cap event's evidence.
-      const hit = lastCapHit(state, "develop-incomplete-deliverables");
-      const evidence =
-        (hit && "evidence" in hit ? hit.evidence : undefined) ?? "(no detail recorded)";
-      const partials = (state.pipelineState.convergeEvidence?.deliverables ?? [])
-        .filter((d) => d.status === "partial")
-        .map((d) => `${d.id} (${d.reason})`);
-      const noDiff = (state.pipelineState.convergeEvidence?.deliverables ?? [])
-        .filter((d) => d.status === "no-diff")
-        .map((d) => `${d.id} (${d.reason})`);
-      // #1155 — an UNMEASURABLE deliverable is the gate saying "I could not
-      // judge this", which is a different sentence from "the work is missing",
-      // and it must not be folded into the absent list. The operator needs to
-      // see it here because the cap below may have fired on OTHER deliverables
-      // while this one slipped past the check entirely.
-      const unmeasurable = (state.pipelineState.convergeEvidence?.deliverables ?? [])
-        .filter((d) => d.status === "unmeasurable")
-        .map((d) => `${d.id} (${d.reason})`);
-      const partialWarning =
-        partials.length > 0
-          ? `\n\nPartial deliverables (warning, non-blocking):\n${partials.map((p) => `  - ${p}`).join("\n")}`
-          : "";
-      const noDiffWarning =
-        noDiff.length > 0
-          ? `\n\nNo-diff deliverables (not blocking — no diff by design):\n${noDiff.map((p) => `  - ${p}`).join("\n")}`
-          : "";
-      const unmeasurableWarning =
-        unmeasurable.length > 0
-          ? `\n\nUnmeasurable deliverables (warning, non-blocking — the gate could not check these; reword their [paths:] slot so the plan names a real file or a <template>):\n${unmeasurable.map((p) => `  - ${p}`).join("\n")}`
-          : "";
-      return `the converge gate found the end-of-develop diff INCOMPLETE: ${evidence}. The verify gate passed — the code builds and tests; what is missing is declared plan work the diff never contained. The driver already spent its one-shot corrective re-dispatch on these deliverables; re-running /work re-enters the gate with a fresh corrective budget, or implement the missing deliverables on the branch directly.${partialWarning}${noDiffWarning}${unmeasurableWarning}`;
-    }
+    case "develop-incomplete-deliverables":
+      return explainConvergeIncomplete(state);
     case "intent-park":
       return explainPrSteps(cap, state);
     case "lens-diff-unreadable":

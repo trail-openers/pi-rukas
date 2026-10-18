@@ -400,13 +400,6 @@ export async function mechanizedCommitPr(
     // happens, not buried in a state file.
     const assumptionsBlock = assumptionsBlockOf(ps.normalisedSpec);
     const carriedFindings = carriedFindingsSectionOf(state.eventLog);
-    // #792 — no-diff deliverables (settings toggles, operator actions) must
-    // surface as a DISTINCT PR-body section, not vanish from the record and
-    // not be misrendered under the assumptions heading.
-    const operatorActions = operatorActionsSectionOf(ps.normalisedSpec);
-    // #1155 — the warning half of the same rule: a deliverable the converge
-    // gate could not check is disclosed here rather than passed silently.
-    const unmeasurableWarning = unmeasurablePathsSectionOf(ps.normalisedSpec);
     // #1006 — the TL;DR section is at the TOP of the PR body, before the
     // "Automated by" line and before `Fixes #N`. It is the first thing a
     // reviewer sees. Empty when the spec has no usable source.
@@ -427,8 +420,9 @@ export async function mechanizedCommitPr(
       assumptionsBlock,
       protectedGrantSectionOf(ctx.protectedGrant),
       carriedFindings,
-      operatorActions,
-      unmeasurableWarning,
+      // #792 / #1155 — no-diff and unmeasurable deliverables, each its own section.
+      operatorActionsSectionOf(ps.normalisedSpec),
+      unmeasurablePathsSectionOf(ps.normalisedSpec),
       preExistingSection,
       renderLensFindingsSection(state.eventLog),
     ]
