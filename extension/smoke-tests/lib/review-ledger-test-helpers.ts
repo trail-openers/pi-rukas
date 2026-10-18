@@ -66,6 +66,15 @@ interface Isolation {
 const active = new Set<Isolation>();
 
 /**
+ * The env value this process started with, captured before ANY isolation was
+ * taken. #1449 round 2 — this, not a per-call `previous`, is what a release
+ * restores once no isolation is left: a per-call `previous` is another
+ * isolation's temp file when the calls nested, and restoring it would name a
+ * directory its owner already deleted.
+ */
+const baseline = process.env[LEDGER_ENV];
+
+/**
  * Self-isolate from the REAL per-clone review ledger. Sets
  * `PI_ENSEMBLE_REVIEW_LEDGER_FILE` to a freshly created private temp file so
  * any subsequent `appendLedgerEntry` call in this process writes there, not to
@@ -98,8 +107,30 @@ export function isolateLedger(): () => void {
       // Restore FIRST: an exit handler that removed the dir while the env still
       // named it would leave a window where a late writer targets a deleted
       // directory.
-      if (iso.previous === undefined) delete process.env[LEDGER_ENV];
-      else process.env[LEDGER_ENV] = iso.previous;
+      //
+      // #1449 round 2 — "restore" means "restore to whatever is still correct",
+      // and when isolations are nested `previous` is not always it. Each call saves
+      // the env as it found it, so an INNER call's `previous` is the OUTER call's
+      // file — a path that is not the caller's to restore and that the outer
+      // release will delete. Restoring it verbatim points the env at a directory
+      // that no longer exists, which is the same class of bug this helper exists to
+      // prevent.
+      //
+      // So the answer is derived from the set that is still live, never from a
+      // value remembered at acquisition time:
+      //   • any isolation still active  → the env names the innermost live one
+      //     (insertion order is acquisition order, so the LAST entry is the
+      //     innermost), and that file is guaranteed to exist because its owner has
+      //     not released;
+      //   • none left active            → restore what THIS process's outermost
+      //     isolation actually replaced, i.e. the value saved before any isolation
+      //     was taken (`baseline`), which is the only value that is neither a
+      //     helper-created temp nor somebody else's target.
+      // Releasing in either order therefore lands on the same correct answer.
+      const innermostLive = [...active][active.size - 1];
+      if (innermostLive) process.env[LEDGER_ENV] = innermostLive.file;
+      else if (baseline === undefined) delete process.env[LEDGER_ENV];
+      else process.env[LEDGER_ENV] = baseline;
       try {
         rmSync(iso.dir, { recursive: true, force: true });
       } catch {

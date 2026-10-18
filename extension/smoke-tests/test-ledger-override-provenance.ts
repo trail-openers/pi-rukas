@@ -134,9 +134,19 @@ try {
   );
   const cleanRow = existsSync(cloneLedger) ? readLedgerFile(cloneLedger).entries.at(-1) : undefined;
   assert(cleanRow?.kind === "lens", "baseline: the row is on the clone's ledger");
+  // #1449 round 2 — the stamp is now UNCONDITIONAL (finding 5: stamping lives in
+  // `appendLedgerEntry`, the one place that knows where the row landed, so a new
+  // writer cannot forget it). The baseline therefore expects the stamp to be
+  // PRESENT and to name the clone's own ledger — which is precisely the value the
+  // guard compares against the clone path and drops. "No stamp" was the old
+  // design's signal; it is no longer what distinguishes a redirect.
   assert(
-    cleanRow?.writtenTo === undefined,
-    "baseline: a row on the clone's ledger carries no writtenTo stamp",
+    cleanRow?.writtenTo !== undefined,
+    `#1449 every write is stamped, including an ordinary one (${cleanRow?.writtenTo})`,
+  );
+  assert(
+    cleanRow?.writtenTo === cloneLedger,
+    `#1449 an ordinary row is stamped with the clone's own ledger path, which the guard compares away (${cleanRow?.writtenTo})`,
   );
   rmSync(cloneLedger, { force: true });
 
@@ -273,14 +283,19 @@ try {
     `#1449 the clean adversarial row is on the clone's ledger (${homeRows.length} row(s) there)`,
   );
   assert(
-    home?.writtenTo === undefined,
-    "#1449 a row written to the clone's own ledger carries no writtenTo stamp",
+    home?.writtenTo === cloneLedger,
+    `#1449 a row written to the clone's own ledger is stamped with that path, which the guard compares away (${home?.writtenTo})`,
   );
-  // …and no row anywhere on the clone's ledger carries one, which is the
-  // invariant that makes the stamp meaningful: it appears ONLY on a redirected
-  // write, so the guard never has to weigh a stamp on an ordinary row.
+  // …and every row on the clone's ledger carries exactly that stamp — no more,
+  // no less. #1449 round 2 made the stamp unconditional (it is written by
+  // `appendLedgerEntry`, the only function holding the resolved path), so the
+  // invariant that keeps the diagnostic meaningful is no longer "a stamp implies a
+  // redirect" but "a stamp always names the file the writer actually wrote to".
+  // A row on the clone's ledger stamped with anything else would mean the writer
+  // resolved one path and wrote another.
   assert(
-    homeRows.every((e) => e.writtenTo === undefined),
+    homeRows.every((e) => e.writtenTo === cloneLedger),
+    "#1449 every row on the clone's ledger is stamped with the clone's own path — the stamp always names the file actually written",
     "#1449 no row on the clone's ledger carries a writtenTo stamp",
   );
 

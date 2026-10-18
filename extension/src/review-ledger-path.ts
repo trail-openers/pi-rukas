@@ -8,6 +8,11 @@
  * `ledgerPathFor` so importers are unchanged; this module only imports a type
  * from review-ledger.ts (no runtime cycle), so importers are unchanged.
  *
+ * It also owns `sanitiseLedgerProvenancePath` (#1449 lens round 1): the row's
+ * `writtenTo` stamp comes from a file the environment names, so the value the
+ * guard renders is untrusted data and is reduced (control characters stripped,
+ * length capped) here, in the one module that both writers and the guard read.
+ *
  * It also owns `identityBase` (#1305): the ONE answer to "which ref is a
  * review's patch identity taken against", shared by the ledger writer and the
  * merge guard so the two cannot resolve different bases.
@@ -25,6 +30,7 @@
  * here, direct or type-only.
  */
 
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { resolveMainline } from "./mainline.ts";
 import type { LedgerExecFn } from "./review-ledger.ts";
@@ -82,6 +88,29 @@ export async function ledgerPathFor(
     // absolute.
     return path.isAbsolute(override) ? override : path.resolve(cwd, override);
   }
+  const dir = await cloneGitDir(execFn, cwd);
+  return dir ? path.join(dir, fileName) : undefined;
+}
+
+/**
+ * The clone's SHARED git storage directory — the directory every ledger (and
+ * every ledger lock) lives in, for this cwd whether it is a plain clone or a
+ * worktree.
+ *
+ * #1449 lens round 1 — ONE private helper behind both public resolvers
+ * (`ledgerPathFor` and `cloneLedgerPathFor`). The two used to carry the same
+ * `git rev-parse --git-common-dir` body each, which meant a fix to the
+ * worktree rule — the `worktrees/` fold below — had to be made twice, and a
+ * fix made once would leave the two resolvers disagreeing about where the
+ * clone's ledger is. A disagreement of exactly that kind is what the
+ * misdirection predicate is supposed to DETECT, so the comparison must not be
+ * built from two bodies that can drift.
+ *
+ * Returns undefined when git cannot answer; both callers treat that as "no
+ * path", and `misdirectedLedgerWrite` treats an unresolvable dir as "nothing
+ * to compare against" rather than a misdirection.
+ */
+async function cloneGitDir(execFn: LedgerExecFn, cwd: string): Promise<string | undefined> {
   try {
     const { stdout } = await execFn("git rev-parse --git-common-dir", { cwd, maxBuffer: 8 * 1024 });
     const raw = stdout.trim();
@@ -89,11 +118,9 @@ export async function ledgerPathFor(
     const commonDir = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
     // A worktree's common dir is .git/worktrees/<name>; the SHARED storage
     // is the main .git — one ledger per clone, not per worktree.
-    const dir =
-      raw.startsWith("worktrees/") && !commonDir.endsWith(".git")
-        ? path.join(commonDir, "..", "..")
-        : commonDir;
-    return path.join(dir, fileName);
+    return raw.startsWith("worktrees/") && !commonDir.endsWith(".git")
+      ? path.join(commonDir, "..", "..")
+      : commonDir;
   } catch (err) {
     trace(`review-ledger: cannot resolve git common dir: ${(err as Error).message}`);
     return undefined;
@@ -123,22 +150,51 @@ export async function cloneLedgerPathFor(
   cwd: string,
   fileName = "review-ledger.json",
 ): Promise<string | undefined> {
-  try {
-    const { stdout } = await execFn("git rev-parse --git-common-dir", { cwd, maxBuffer: 8 * 1024 });
-    const raw = stdout.trim();
-    if (!raw) return undefined;
-    const commonDir = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
-    // Same worktree rule as `ledgerPathFor`: the SHARED storage is the main
-    // .git, so every worktree of a clone has one expected ledger.
-    const dir =
-      raw.startsWith("worktrees/") && !commonDir.endsWith(".git")
-        ? path.join(commonDir, "..", "..")
-        : commonDir;
-    return path.join(dir, fileName);
-  } catch (err) {
-    trace(`review-ledger: cannot resolve the clone ledger dir: ${(err as Error).message}`);
-    return undefined;
-  }
+  // Same body as `ledgerPathFor`'s git branch by construction — both read
+  // `cloneGitDir`, so the worktree fold can only ever have one definition.
+  const dir = await cloneGitDir(execFn, cwd);
+  return dir ? path.join(dir, fileName) : undefined;
+}
+
+/**
+ * #1449 lens round 1 — the `writtenTo` stamp, reduced to something it is safe
+ * to put inside a refusal message.
+ *
+ * The stamp is written by whichever process made the write, and it is read
+ * back out of a file the environment names — so by the time the #912 guard
+ * renders it, it is untrusted data. Two properties have to hold before it
+ * reaches prose:
+ *
+ * - **no control characters / newlines.** A refusal is rendered into the
+ *   agent's tool-result text; a row stamped with an embedded `\n` (or an
+ *   ANSI/OSC escape) would inject lines into a message whose authority is the
+ *   guard's. Stripped rather than rejected, because a path carrying a stray
+ *   control byte is still the operator's best clue to the leaked file.
+ * - **bounded length.** The value is a path from a hostile-ish source and the
+ *   refusal is one line among the guard's output; 240 chars is comfortably
+ *   longer than any real filesystem path and short enough that a pathological
+ *   stamp cannot crowd the refusal out of view.
+ *
+ * Returns undefined for anything that was never a usable stamp (not a
+ * string, empty after sanitising) — the caller then renders the plain
+ * never-reviewed refusal, which is the right text for "we have nothing to
+ * name".
+ */
+export function sanitiseLedgerProvenancePath(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  // Stripping C0/C1 IS the operation, so the class is written from the character
+  // codes rather than as control-character literals in a pattern: a literal range
+  // in a regex is both the thing the linter flags and the thing a reader has to
+  // decode, and neither is improved by a suppression comment the linter ignores.
+  const stripped = [...value]
+    .filter((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      return !(code < 0x20 || (code >= 0x7f && code <= 0x9f));
+    })
+    .join("")
+    .trim();
+  if (!stripped) return undefined;
+  return stripped.slice(0, 240);
 }
 
 /**
@@ -172,6 +228,22 @@ export const MISDIRECTED_LEDGER_NOTE =
  * predicate, so the two writers can never disagree about what a misdirection
  * is.
  */
+export function sameResolvedPath(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  const x = path.resolve(a);
+  const y = path.resolve(b);
+  if (x === y) return true;
+  try {
+    return realpathSync(x) === realpathSync(y);
+  } catch {
+    // "Could not tell them apart" is not evidence of a difference — but this
+    // predicate's callers read FALSE as "different", so the fail direction here
+    // REPORTS a redirect rather than hiding one. That is the safe side for both
+    // consumers: the guard keeps its explanation, the writer keeps its note.
+    return false;
+  }
+}
+
 export async function misdirectedLedgerWrite(
   execFn: LedgerExecFn,
   cwd: string,
@@ -181,7 +253,7 @@ export async function misdirectedLedgerWrite(
   if (!process.env[LEDGER_OVERRIDE_ENV]?.trim()) return undefined;
   const expected = await cloneLedgerPathFor(execFn, cwd);
   if (!expected) return undefined;
-  return resolved === expected ? undefined : resolved;
+  return sameResolvedPath(resolved, expected) ? undefined : resolved;
 }
 
 /**

@@ -37,7 +37,7 @@
  * it; runtime isolation is the primary mechanism.
  */
 
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -125,10 +125,7 @@ const SMOKE_TESTS = import.meta.dirname;
       abs.length > 0 && !/([/\\])\.git([/\\]|$)/.test(abs),
       `suite env: the gate's ledger override (${abs}) is NOT inside a .git directory`,
     );
-    assert(
-      path.isAbsolute(override),
-      "suite env: the gate's ledger override is an absolute path",
-    );
+    assert(path.isAbsolute(override), "suite env: the gate's ledger override is an absolute path");
   }
 }
 
@@ -170,17 +167,17 @@ assert(
   try {
     writeFileSync(
       path.join(fixtureDir, "test-unisolated-fixture.ts"),
-      "const r = await runLensReview({ diff: \"d\" } as never);\nvoid r;\n",
+      'const r = await runLensReview({ diff: "d" } as never);\nvoid r;\n',
     );
     writeFileSync(
       path.join(fixtureDir, "test-isolated-fixture.ts"),
-      "process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = \"/tmp/x.json\";\nconst r = await runLensReview({ diff: \"d\" } as never);\nvoid r;\n",
+      'process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = "/tmp/x.json";\nconst r = await runLensReview({ diff: "d" } as never);\nvoid r;\n',
     );
     // A fixture isolated by the shared findings-memory factory rather than by
     // naming the env var itself: the marker lives in the fixture it imports.
     writeFileSync(
       path.join(fixtureDir, "test-fixture-isolated.ts"),
-      "import { setupReviewFixture } from \"./lib/review-findings-fixtures.ts\";\nconst f = setupReviewFixture({ prefix: \"p\", files: {}, report: () => [] });\nconst r = await runLensReview({ diff: \"d\" } as never);\nvoid r; void f;\n",
+      'import { setupReviewFixture } from "./lib/review-findings-fixtures.ts";\nconst f = setupReviewFixture({ prefix: "p", files: {}, report: () => [] });\nconst r = await runLensReview({ diff: "d" } as never);\nvoid r; void f;\n',
     );
     const found = scanDir(fixtureDir);
     assert(
@@ -248,9 +245,9 @@ assert(
   );
   assert(
     helpers.activeIsolations().length === 2,
-    `#1449 both calls are tracked so both are undone (active: ${helpers
-      .activeIsolations()
-      .length})`,
+    `#1449 both calls are tracked so both are undone (active: ${
+      helpers.activeIsolations().length
+    })`,
   );
   releaseB();
   releaseA();
@@ -265,6 +262,57 @@ assert(
     helpers.activeIsolations().length === 0,
     "#1449 every isolation this process opened is released — nothing left to clean up on exit",
   );
+
+  // ---- out-of-order release: the env must never name a removed directory ----
+  //
+  // Each `isolateLedger()` saves the env as it found it, so the INNER call's
+  // `previous` is the OUTER call's file. Releasing in acquisition (FIFO) order —
+  // outer first — and writing that saved value back points the env at the inner
+  // isolation's file while the outer one believed it had cleared it; releasing
+  // the inner first writes back a path whose directory the outer release then
+  // deletes. Either way a writer running afterwards targets a directory that no
+  // longer exists, which is the same class of bug the helper exists to prevent.
+  //
+  // The contract: after ANY release, whatever the env names is a file inside a
+  // directory that still exists.
+  {
+    const rel1 = helpers.isolateLedger();
+    const first = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    const rel2 = helpers.isolateLedger();
+    const second = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    assert(
+      first && second && first !== second,
+      `#1449 [fifo] two nested isolations have distinct targets (${first}, ${second})`,
+    );
+    // Release the OUTER one first — the order the naive `previous` restore gets wrong.
+    rel1();
+    const afterOuter = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    assert(
+      afterOuter === second,
+      `#1449 [fifo] releasing the OUTER isolation while the inner is live re-points the env at the inner's file, not at a stale saved value (${afterOuter})`,
+    );
+    assert(
+      !!afterOuter && existsSync(afterOuter.replace(/[^/]+$/, "")),
+      `#1449 [fifo] the path the env names after that release still exists — a writer at this moment is not writing into a deleted directory (${afterOuter})`,
+    );
+    rel2();
+    const afterInner = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    assert(
+      afterInner === before,
+      `#1449 [fifo] releasing the last isolation restores the value the first one replaced (${afterInner})`,
+    );
+    assert(
+      helpers.activeIsolations().length === 0,
+      "#1449 [fifo] nothing left tracked after an out-of-order release pair",
+    );
+    // Double release is idempotent — the exit handler and an explicit caller both
+    // reach for the same release.
+    rel2();
+    assert(
+      process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === before,
+      "#1449 [fifo] a second release of an already-released isolation is inert",
+    );
+  }
   // A helper that never adopts an inherited value must not DELETE one it was
   // handed either: an operator's/gate's override has to survive a sibling
   // file's isolate/release cycle untouched.

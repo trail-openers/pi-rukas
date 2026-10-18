@@ -36,7 +36,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { makeLedgerWrite } from "../src/adversarial-ledger-capture.ts";
@@ -271,6 +271,9 @@ try {
 }
 
 try {
+  // The stamp-comparison arms moved to test-ledger-provenance-compare.ts for the
+  // 500-line gate; this suite keeps the fault tolerance of the same read.
+
   // ---- (a) the helper: no throw, no misdirection claimed -----------------
   assert(
     misdirectedWriteOf(corrupt, BRANCH) === undefined,

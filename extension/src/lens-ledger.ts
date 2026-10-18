@@ -19,9 +19,7 @@ import { resolveReviewBranch } from "./review-branch.ts";
 import {
   type LedgerEntry,
   appendLedgerEntry,
-  ledgerPathFor,
   lensPassed,
-  misdirectedLedgerWrite,
   workingTreePatchId,
 } from "./review-ledger.ts";
 import { trace, traceWarn } from "./trace.ts";
@@ -125,42 +123,29 @@ export function writeLensLedgerEntry(
       ...(overrideCap ? { overrideCap: true } : {}),
       ...(computed.diffSha256 ? { diffSha256: computed.diffSha256 } : {}),
     };
-    // #1449 — the row carries where it landed when that is not the clone's own
-    // ledger, so a LATER process that reads the real ledger and finds nothing
-    // can still be told a review ran elsewhere (see `LedgerEntry.writtenTo`).
-    // ONE predicate with the adversarial writer, so the two cannot disagree
-    // about what a misdirection is; no override set means no git call, no cost.
-    const landedAtPath = await misdirectedLedgerWrite(execp, c, await appendTargetFor(execp, c));
-    if (landedAtPath) entry.writtenTo = landedAtPath;
-    const failure = await appendLedgerEntry(entry, execp, c);
+    // #1449 — the row carries where it landed, so a LATER process that reads the
+    // real ledger and finds nothing can still be told a review ran elsewhere (see
+    // `LedgerEntry.writtenTo`). The stamp is applied by `appendLedgerEntry` itself
+    // — the one place that knows the resolved path — so a carry write gets it too
+    // and no writer can forget it; it is handed back through `stamped` rather than
+    // read off `entry`, which the writer does not mutate. Reading the SAME stamped
+    // row the write used is what makes the outcome's `landedAtPath` and the row's
+    // stamp one string from one resolution. No override set means no git call, no
+    // cost.
+    const stamped: { current: LedgerEntry; landedAtPath?: string } = { current: entry };
+    const failure = await appendLedgerEntry(entry, execp, c, stamped);
     if (failure) return { recorded: false, reason: failure };
-    return landedAtPath ? { recorded: true, landedAtPath } : { recorded: true };
+    return { recorded: true, landedAtPath: stamped.landedAtPath };
   };
   // The catch is load-bearing for the fire-and-forget contract: the
   // returned promise MUST resolve (never reject) so an un-awaited caller
   // cannot leak an unhandled rejection. Tests that await it can rely on
-  // the same guarantee.
+  // the same guarantee. `instanceof` rather than a cast — a thrown non-Error
+  // would make `(err as Error).message` throw INSIDE the catch and reject the
+  // promise every caller relies on never rejecting.
   return write().catch((err: unknown): LensLedgerOutcome => {
-    const reason = (err as Error).message;
+    const reason = err instanceof Error ? err.message : String(err);
     trace(`lens-review: ledger write failed: ${reason}`);
     return { recorded: false, reason };
   });
-}
-
-/**
- * #1449 — the path `appendLedgerEntry` resolved for this write.
- *
- * The writer does not return it (its contract is a failure reason, shared with
- * the adversarial writer and the driver), so the caller re-resolves it here —
- * the same function, same env, same cwd, microseconds later, after the append
- * released the ledger lock. When it cannot resolve there is no path to compare
- * and no misdirection is reported: a path this module cannot name is not
- * evidence that a row went astray.
- */
-async function appendTargetFor(execFn: typeof execp, cwd: string): Promise<string | undefined> {
-  try {
-    return await ledgerPathFor(execFn, cwd);
-  } catch {
-    return undefined;
-  }
 }

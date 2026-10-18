@@ -33,7 +33,7 @@ import {
 import { execp } from "./exec.ts";
 import { resolveReviewBranch } from "./review-branch.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
-import { identityBase, ledgerPathFor, misdirectedLedgerWrite } from "./review-ledger-path.ts";
+import { identityBase } from "./review-ledger-path.ts";
 import {
   type LedgerEntry,
   adversarialPassed,
@@ -220,16 +220,28 @@ export function writeAdversarialLedgerEntry(
     // fresh Pi session, the /work driver, an operator's terminal) reads the
     // clone's real ledger, finds nothing, and needs the write-side provenance to
     // explain why. It travels on the row because that is the one artefact the
-    // write produces. ONE predicate (review-ledger-path.ts) for both writers;
-    // no override in the environment means no git call and no cost.
-    const landedAtPath = await misdirectedLedgerWrite(execFn, c, await ledgerPathFor(execFn, c));
-    if (landedAtPath) entry.writtenTo = landedAtPath;
-    const appendFailure = await appendLedgerEntry(entry, execFn, c);
+    // write produces. The stamp itself is applied by `appendLedgerEntry`
+    // (review-ledger.ts) — the one place that knows the resolved path — and handed
+    // back through `stamped` rather than read off `entry`, which the writer does
+    // not mutate: the outcome's `landedAtPath` and the row's stamp are then the
+    // SAME string from the SAME resolution, not two comparisons that could
+    // disagree.
+    const stamped: { current: LedgerEntry; landedAtPath?: string } = { current: entry };
+    const appendFailure = await appendLedgerEntry(entry, execFn, c, stamped);
     if (appendFailure) return { recorded: false, reason: appendFailure };
-    return landedAtPath ? { recorded: true, landedAtPath } : { recorded: true };
+    return { recorded: true, landedAtPath: stamped.landedAtPath };
   };
-  return write().catch((err): AdversarialLedgerOutcome => {
-    trace(`adversarial: ledger write failed: ${(err as Error).message}`);
-    return { recorded: false, reason: (err as Error).message };
+  return write().catch((err: unknown): AdversarialLedgerOutcome => {
+    // `err instanceof Error ? err.message : String(err)` — never a cast. The
+    // writer's own body throws Errors, but `catch` also fires on anything a
+    // called function throws: a bare string from a hand-rolled stub, or
+    // undefined from a property access on an odd shape. `(err as Error).message`
+    // is erased at compile time and throws a TypeError INSIDE this catch on
+    // those, which turns "the ledger had a problem" into "the ledger write
+    // rejected" — the one contract (#1161) every caller of this function relies
+    // on. Same shape as `merge-guard-provenance.ts` and `analyseRefusal`.
+    const reason = err instanceof Error ? err.message : String(err);
+    trace(`adversarial: ledger write failed: ${reason}`);
+    return { recorded: false, reason };
   });
 }
