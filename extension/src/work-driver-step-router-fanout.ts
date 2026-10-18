@@ -60,23 +60,22 @@ export async function routeFanoutHalt(
   // STEP_FAILURE_POLICY that fans out is RETRY_ONCE — develop is HALT, and the
   // lens-review N>1 path's retry semantics are handled internally by
   // runLensReview). So a failed HALT-class fan-out halts directly.
+  //
+  // #1243 fix round — `failureEventOf`'s answer is passed straight through,
+  // narrowed to the dispatch-failure union, including `undefined`: a fan-out
+  // whose failure was a driver REFUSAL has no dispatch-failure event at all
+  // (`failureEventOf` declines those by design), and the cap builder reads an
+  // absent tail as "not a provider park", which is the truth. The caller used
+  // to synthesise a bare `dispatch-failed` event to satisfy a non-optional
+  // parameter — a second shape of the same nothing.
+  const failedDispatch = failureEventOf(state.eventLog);
   const capEvent = dispatchFailCapHit(
     step,
     state,
-    (() => {
-      const t = failureEventOf(state.eventLog);
-      return t?.kind === "dispatch-failed" || t?.kind === "dispatch-failed-provider"
-        ? t
-        : {
-            kind: "dispatch-failed",
-            step,
-            role: "fanout",
-            jobId: "",
-            label: "",
-            ms: 0,
-            at: Date.now(),
-          };
-    })(),
+    failedDispatch?.kind === "dispatch-failed" ||
+      failedDispatch?.kind === "dispatch-failed-provider"
+      ? failedDispatch
+      : undefined,
   );
   let next = appendEvent(state, capEvent);
   next = { ...next, pipelineState: { ...next.pipelineState, currentStep: "handoff" } };

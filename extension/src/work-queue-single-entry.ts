@@ -10,6 +10,7 @@
 import { parkReason } from "./work-queue-park-reason.ts";
 import { type QueueEntry, humanActionFor } from "./work-queue.ts";
 import { lastInterruptReason } from "./work-status-interrupted.ts";
+import { isProviderPark } from "./workflow-state-events-interrupted.ts";
 import { type WorkState, readState } from "./workflow-state.ts";
 
 /**
@@ -62,6 +63,26 @@ export async function singleCycleQueueEntry(
     : status === "interrupted"
       ? `cycle interrupted: ${lastInterruptReason(state?.eventLog ?? []) ?? "no reason recorded"}`
       : `cycle ended as ${status}`;
+
+  // #1243 fix round — a PROVIDER park takes its reason from the CAP, not from
+  // the interrupt reason, and therefore carries the provider action text the
+  // multi-issue path gets from `humanActionFor`. Its cap is
+  // `provider-unavailable`; an interrupted-status reason ("cycle interrupted:
+  // provider") matches none of `humanActionFor`'s rules and fell through to
+  // "inspect .pi/work-state/N.json and re-run /work N --restart" — the generic
+  // advice for a real failure, and the one verb this park exists to avoid.
+  // A genuine signal/timeout interrupt has no such cap and keeps the S4a
+  // resume wording below.
+  if (state !== undefined && isProviderPark(state)) {
+    const provider = parkReason(state).reason;
+    return {
+      groupId,
+      issues,
+      outcome: "parked",
+      reason: provider,
+      humanAction: humanActionFor(provider, issue, issues),
+    };
+  }
 
   // S4a (#1162) — an interrupted cycle is resumable, not terminal: the operator
   // resumes it rather than acting on a failed step.

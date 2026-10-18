@@ -20,12 +20,11 @@
  */
 
 import { notifyAgent } from "./agent-message.ts";
-import { lastInterruptReason } from "./headless/exit-code.ts";
 import { trace } from "./trace.ts";
 import { renderHandoffUserMessage } from "./work-driver-handoff-message.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
-import type { WorkState } from "./workflow-state.ts";
+import { type WorkState, isProviderPark } from "./workflow-state.ts";
 
 /** Terminal delivery of issue #808's driver. `repoRoot`/`issue` anchor the scratch dir + envelope. */
 export type TerminalDeliveryCtx = {
@@ -49,13 +48,10 @@ export async function deliverTerminalLine(
   // the park's own, not a signal's. A SIGNAL interrupt must not come here — its
   // cycle was cut off mid-step, `interruptIfRequested` owns that write, and
   // there is no handoff to announce. `handoffDeliveredAt` already gates a
-  // re-send, so a provider park whose line went out is never sent twice.
-  if (
-    final !== "merged" &&
-    final !== "handoff" &&
-    final !== "aborted" &&
-    !(final === "interrupted" && lastInterruptReason(state) === "provider")
-  ) {
+  // re-send, so a provider park whose line went out is never sent twice. The
+  // test is the shared `isProviderPark` (#1243 fix round): three surfaces ask
+  // this same question and all three now answer it the same way.
+  if (final !== "merged" && final !== "handoff" && final !== "aborted" && !isProviderPark(state)) {
     return state;
   }
 

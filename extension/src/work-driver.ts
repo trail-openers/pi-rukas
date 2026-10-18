@@ -25,7 +25,7 @@ import {
   withDirtyRootExemptReadFailure,
 } from "./work-driver-dirty-root-exempt-notice.ts";
 import { DIRTY_ROOT_EXEMPT_FILE, readDirtyRootExempt } from "./work-driver-dirty-root-exempt.ts";
-import { reportFinalState } from "./work-driver-final-state.ts";
+import { refuseAlreadyTerminated, reportFinalState } from "./work-driver-final-state.ts";
 import { recordHostHandoffOnCrash } from "./work-driver-handoff-channel.ts";
 import { interruptIfRequested, recordStepCrash } from "./work-driver-interrupt.ts";
 import {
@@ -47,12 +47,16 @@ import {
   resolveReattach,
   resumeEnabled,
 } from "./work-driver-resume-reattach.ts";
-import { reenterInterrupted } from "./work-driver-resume.ts";
+import { redeliverUndeliveredPark, reenterInterrupted } from "./work-driver-resume.ts";
 import { runStep } from "./work-driver-run-step.ts";
 import { interruptedAfter, interruptedByShutdown, sessionEnding } from "./work-driver-shutdown.ts";
 import { refuseAttentionLabelled, refuseInvalidState } from "./work-driver-state-guards.ts";
 import { routeStepOutcome } from "./work-driver-step-router.ts";
 import { deliverTerminalLine } from "./work-driver-terminal-delivery.ts";
+import {
+  MAX_TRANSITION_ITERATIONS,
+  haltOnTransitionSafety,
+} from "./work-driver-transition-safety.ts";
 import { scratchDir, setupWorkspaceTmp, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import { runWorktreeSweep } from "./work-driver-worktree-sweep.ts";
 import * as workWidget from "./work-widget.ts";
@@ -130,10 +134,20 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
 async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
   // PR12 — `/work N --restart`: skip readState, start fresh. Branch step
   // handles worktree leftovers at runtime; this flag only wipes state.
-  let state =
-    ctx.restart === true
-      ? initialState(ctx.issue)
-      : reenterInterrupted((await readState(ctx.repoRoot, ctx.issue)) ?? initialState(ctx.issue));
+  //
+  // #1243 fix round — the disk state is read ONCE and carried down, so the
+  // `running`-classifier below sees the very file this invocation opened, not a
+  // second read of it. The park this issue is about lands here as
+  // `interrupted` (reason `provider`), and `reenterInterrupted` flips that to
+  // `running` before the classifier — so the classifier's live-owner pid check
+  // and its in-flight-dispatch read run for a provider park exactly as they do
+  // for a crashed `running` cycle. Without the carry-down, a second driver
+  // could re-enter one cycle: the park's `owner` survives terminalisation, and
+  // `applyInterrupt` clears `inFlightJobIds` (its dispatch is gone), which is
+  // precisely the state a second `readState` after the re-entry write would
+  // have made look like a clean boundary.
+  const disk = ctx.restart === true ? undefined : await readState(ctx.repoRoot, ctx.issue);
+  let state = reenterInterrupted(disk ?? initialState(ctx.issue));
   if (ctx.restart === true) {
     trace(`work-driver: --restart wiped state for issue #${ctx.issue} (fresh cycle)`);
   }
@@ -156,16 +170,9 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
 
   // PR12 — surface a clear notify when state is already terminal and no --restart.
   if (state.pipelineState.status !== "running" && ctx.restart !== true) {
-    const terminalStatus = state.pipelineState.status;
-    const at = new Date().toISOString();
-    notifyAgent(
-      ctx.host,
-      `pi-rukas:driver-event v1 kind=refused issue=${ctx.issue} at=${at}\npi-rukas: /work for issue #${ctx.issue} already terminated as ${terminalStatus}. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with --restart:\n  /work ${ctx.issue} --restart\nOr rm ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json manually. The prior cycle's event log is preserved in the state file until you restart or remove it.`,
-    );
-    // reportFinalState is called at every terminal path (7 sites) so the runner
-    // always gets the driver's in-memory terminal state — see work-driver-final-state.ts
+    const refused = await refuseAlreadyTerminated(ctx, state);
     reportFinalState(ctx, state);
-    return { started: false, reason: `already terminated as ${terminalStatus}` };
+    return { started: false, reason: refused };
   }
 
   {
@@ -206,15 +213,6 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     }
     if (verdict.action === "resume") {
       // #573 — reattach surviving session before falling back to re-dispatch.
-      const inFlightEvents = state.eventLog.filter(
-        (e) =>
-          e.kind === "dispatch-started" &&
-          verdict.jobIds.includes((e as { jobId?: string }).jobId ?? ""),
-      );
-      // Find the dispatch-started event matching one of the in-flight job IDs.
-      const startedEvt = inFlightEvents.find(
-        (e) => (e as { jobId?: string }).jobId === verdict.jobIds[0],
-      ) as (WorkEvent & { jobId?: string; transcriptPath?: string; role?: string }) | undefined;
       const at = new Date().toISOString();
       notifyAgent(
         ctx.host,
@@ -222,6 +220,11 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       );
 
       // #573 — reattach attempt.
+      const inFlightEvents = state.eventLog.filter(
+        (e) =>
+          e.kind === "dispatch-started" &&
+          verdict.jobIds.includes((e as { jobId?: string }).jobId ?? ""),
+      ) as unknown as Array<Record<string, unknown>>;
       const { shouldSkipStep, nextState } = await attemptReattachInResume(
         ctx,
         state,
@@ -236,6 +239,10 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
         state = clearForResume(state);
       }
     }
+    // #1243 fix round — a provider park whose handoff line never reached the
+    // session still owes it (see `redeliverUndeliveredPark`'s docstring in
+    // work-driver-resume.ts for why the classifier alone cannot cover it).
+    state = await redeliverUndeliveredPark(ctx, verdict, disk, state);
   }
 
   {
@@ -262,22 +269,9 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     state = await interruptIfRequested(ctx, state);
     if (state.pipelineState.status !== "running") break;
     safety++;
-    if (safety > 64) {
-      // Safety: unbounded transition loop guard.
-      trace(`work-driver: safety break after 64 iterations for issue ${ctx.issue}`);
-      state = {
-        ...state,
-        pipelineState: { ...state.pipelineState, status: "aborted" },
-      };
-      await persistCycle(ctx, state);
-      notifyAgent(
-        ctx.host,
-        `pi-rukas /work driver aborted on issue #${ctx.issue}: transition safety limit reached.` +
-          `Inspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json for the state.`,
-      );
-      // The cycle ran and then aborted — its state file is the real outcome.
-      reportFinalState(ctx, state);
-      return { started: true };
+    if (safety > MAX_TRANSITION_ITERATIONS) {
+      // Safety: unbounded transition loop guard (work-driver-transition-safety.ts).
+      return await haltOnTransitionSafety(ctx, state);
     }
     const step = state.pipelineState.currentStep;
     // A session shutdown is not a step failure — see work-driver-shutdown.ts.
@@ -484,12 +478,11 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
   // trace (never escape) a delivery throw so a resume can re-attempt it.
   state = await deliverTerminalLine(ctx, state);
   // #1243 — a provider park terminalises as `interrupted`, not `handoff`, so it
-  // needs this write too (the in-memory state is the one carrying the park).
-  // `deliverTerminalLine` sets `handoffDeliveredAt` only on a successful send,
-  // so a park whose line did not go out is written with the field unset and the
-  // next invocation re-attempts it. A signal interrupt deliberately does NOT
-  // come here: `interruptIfRequested` owns that write, and re-persisting a
-  // possibly stale snapshot would be #1024's stale-`running` hazard reopened.
+  // needs this write too: `deliverTerminalLine` sets `handoffDeliveredAt` only on
+  // a successful send, so a park whose line did not go out is written with the
+  // field unset and the next invocation re-attempts it. A signal interrupt
+  // deliberately does NOT come here — `interruptIfRequested` owns that write,
+  // and re-persisting a stale snapshot is #1024's stale-`running` hazard.
   if (final === "handoff" || final === "aborted" || final === "interrupted") {
     // On a send failure this write is the only record that the driver reached
     // its terminal boundary at all.

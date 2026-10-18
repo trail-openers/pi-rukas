@@ -16,6 +16,7 @@ import fs from "node:fs/promises";
 import { MAX_REVIEW_ROUNDS, STEP_ORDINAL } from "./work-driver-context.ts";
 import { humanActionFor } from "./work-queue.ts";
 import { lastInterruptReason } from "./work-status-interrupted.ts";
+import { isProviderPark } from "./workflow-state-events-interrupted.ts";
 import { type WorkState, readState, workStateDir } from "./workflow-state.ts";
 
 /**
@@ -75,10 +76,14 @@ export function renderCycleIndex(
     `/work — ${running.length} running, ${interruptedNote}${needsInput.length} needs your input, ${done.length} done`,
   ];
   // S4a (#1162) — resumable, not terminal: `/work N` re-enters the cycle.
+  // #1243 fix round — a provider park keeps its own wording in the index too:
+  // "interrupted" invites a reader to look for a signal, when the row is
+  // really a park waiting on the endpoint. Same glyph, same resume action.
   for (const c of interrupted) {
     const reason = lastInterruptReason(c.state.eventLog);
+    const park = isProviderPark(c.state);
     lines.push(
-      `  ⏸ #${c.issue}  interrupted at ${c.state.pipelineState.currentStep}${reason ? ` (${reason})` : ""}`,
+      `  ⏸ #${c.issue}  ${park ? "parked (provider unavailable) at" : "interrupted at"} ${c.state.pipelineState.currentStep}${reason ? ` (${reason})` : ""}`,
     );
     lines.push(`      → /work ${c.issue} resumes it`);
   }
