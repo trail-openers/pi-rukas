@@ -97,7 +97,7 @@ export function registerQuestionTool(pi: ExtensionAPI) {
     label: "Question",
     description:
       "Ask the user a question and let them pick from options. Use when you need user input to proceed. " +
-      "One question per call: for several decisions, make one call per decision — calls run one at a time. " +
+      "One question per call: with several decisions, ask the first and wait for its answer before asking the next. " +
       "This is the only tool for asking the user; there is no ask_user, AskUserQuestion or questionnaire tool.",
     parameters: QuestionParams,
     prepareArguments: prepareQuestionArguments,
