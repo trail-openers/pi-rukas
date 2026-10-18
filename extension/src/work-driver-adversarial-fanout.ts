@@ -11,6 +11,7 @@
  */
 
 import { runAdversarialLoop } from "./adversarial.ts";
+import { abortableSleep } from "./dispatch-retry.ts";
 import { adversarialFixDelta } from "./fix-delta.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { makeRunId } from "./spawn.ts";
@@ -435,7 +436,7 @@ export async function fanOutAdversarial(
           ),
         )
       : 0;
-    if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+    if (waitMs > 0) await abortableSleep(waitMs, ctx.signal);
     const budget: Record<string, number> = { ...localRetries };
     for (const o of candidates) {
       const incremented = (localRetries[o.id] ?? 0) + 1;

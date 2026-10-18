@@ -24,7 +24,7 @@ import {
 // and "how long to wait for it", which is the pairing that was missing before.
 export {
   providerRetryFloorMs,
-  providerRetryMaxTotalMs,
+  providerRetryMaxWaitMs,
   providerRetryWaitMs,
 } from "./work-driver-provider-backoff.ts";
 
