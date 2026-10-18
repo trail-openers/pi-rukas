@@ -16,22 +16,24 @@
  * removal arm shipped issuing a path relative to a cwd it was not run from.
  * The cases here use real `WorkState` objects and assert on argv, cwd and the
  * count of commands issued.
+ *
+ * The in-cycle `runWorktreeTeardown` pass that used to sit in this file moved
+ * to `test-worktree-teardown-retention.ts` when the #1265 assertions pushed
+ * this file past §12's cap: no case was deleted, and both files exit through
+ * the shared `finish()` in `lib/worktree-sweep-assert.ts`.
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   PACKAGE_DIR_MARKERS,
   PROVISIONED_DEP_NAMES,
-  type SweepAction,
   type SweepTargetResult,
   decideSweepAction,
   executeSweepAction,
   hasRealDependencyTree,
-  resolveSweepTarget,
   runWorktreeSweep,
-  runWorktreeTeardown,
 } from "../src/work-driver-worktree-sweep.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import { DEPENDENCY_MARKERS } from "../src/worktree-provision-hook.ts";
@@ -308,96 +310,11 @@ async function testExecuteSweepAction() {
 }
 
 // ---------------------------------------------------------------------------
-// runWorktreeTeardown — the in-cycle path
-// ---------------------------------------------------------------------------
-
-async function testRunWorktreeTeardown() {
-  console.log("\n3. in-cycle teardown retains what it must and removes what it may");
-  const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-teardown");
-  const wt = makeSweepWorktree(repoRoot, baseSha, "issue-7-default", {
-    dirty: true,
-  });
-  const state: WorkState = {
-    ...abortedState(7),
-    pipelineState: {
-      ...abortedState(7).pipelineState,
-      worktrees: { default: wt.path },
-    },
-  };
-  const rec = recordingExec();
-  const retained = await runWorktreeTeardown({
-    repoRoot,
-    state,
-    execFn: rec.exec,
-  });
-  assertEquals(retained.length, 1, "a dirty tree is retained by teardown");
-  assertEquals(retained[0], wt.path, "naming the retained worktree");
-  assertEquals(rec.countMatching("git worktree remove"), 0, "teardown removed nothing");
-  assertTrue(existsSync(wt.path), "and the directory is still there");
-
-  // disabled → no-op, the pre-existing contract
-  const disabled = await runWorktreeTeardown({
-    repoRoot,
-    state,
-    execFn: rec.exec,
-    enabled: false,
-  });
-  assertEquals(disabled.length, 0, "disabled teardown returns nothing");
-
-  // no worktrees recorded → nothing to do, nothing touched
-  const empty = await runWorktreeTeardown({
-    repoRoot,
-    state: {
-      ...abortedState(7),
-      pipelineState: { ...abortedState(7).pipelineState, worktrees: {} },
-    },
-    execFn: rec.exec,
-  });
-  assertEquals(empty.length, 0, "an empty worktrees map tears down nothing");
-
-  // A path in the map that is not one of our worktrees is skipped, not fatal —
-  // teardown runs on the handoff path, where a bad entry must not lose the cycle.
-  // This case is not hypothetical: `pipelineState.worktrees` is written at
-  // `branch` and read at handoff, and in between a crash, an external
-  // `git worktree remove`, or an operator cleanup can take the directory with
-  // it. `resolveSweepTarget` used to call `realpathSync` UNGUARDED there, so a
-  // path that was simply gone THREW ENOENT out of `runHandoff` instead of
-  // returning the `unresolvable` result its signature promises — losing the
-  // whole teardown pass, and with it the `retainedWorktrees` the operator is
-  // told to go and look at. Before this assertion, the only thing standing
-  // between a stale map entry and a broken handoff was an unrelated try/catch.
-  const gone = makeSweepWorktree(repoRoot, baseSha, "issue-8-default");
-  rmSync(gone.path, { recursive: true, force: true });
-  const stale = await runWorktreeTeardown({
-    repoRoot,
-    state: {
-      ...abortedState(7),
-      pipelineState: {
-        ...abortedState(7).pipelineState,
-        worktrees: { default: "/no/such/tree", other: gone.path },
-      },
-    },
-    execFn: rec.exec,
-  });
-  assertEquals(stale.length, 0, "a vanished worktree contributes no retained entry");
-  const missing = resolveSweepTarget(repoRoot, "/no/such/tree");
-  assertFalse(missing.ok, "resolveSweepTarget reports a missing path rather than throwing on it");
-  assertEquals(missing.ok ? "" : missing.reason, "unresolvable", "and names the reason");
-
-  // A directory that exists but is not a worktree at all keeps the older reason.
-  const plainDir = join(repoRoot, ".worktrees", "not-a-worktree");
-  mkdirSync(plainDir, { recursive: true });
-  const plain = resolveSweepTarget(repoRoot, plainDir);
-  assertFalse(plain.ok, "a plain directory under .worktrees is not one of ours");
-  assertEquals(plain.ok ? "" : plain.reason, "not-our-worktree", "and says so");
-}
-
-// ---------------------------------------------------------------------------
 // runWorktreeSweep — the escape hatches
 // ---------------------------------------------------------------------------
 
 async function testSweepEscapeHatches() {
-  console.log("\n4. the escape hatches stay dark");
+  console.log("\n3. the escape hatches stay dark");
   const { repoRoot } = makeSweepRepo("pi-rukas-sweep-dark");
   const rec = recordingExec();
   const off = await runWorktreeSweep({
@@ -432,7 +349,7 @@ async function testSweepEscapeHatches() {
 // ---------------------------------------------------------------------------
 
 async function testGroupClaimProtectsSecondaryWorkstream() {
-  console.log("\n5. a RUNNING group's non-primary workstream is never swept");
+  console.log("\n4. a RUNNING group's non-primary workstream is never swept");
   const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-group");
   // A grouped cycle launched as #10: one state file 10.json with issues
   // [10, 11], and a workstream tree named by the PRIMARY with 11 in it.
@@ -477,7 +394,7 @@ async function testGroupClaimProtectsSecondaryWorkstream() {
 }
 
 async function testFetchBudgetBoundsTheLaunchSweep() {
-  console.log("\n6. the Rule 5 remote proof fetches at most netProofLimit times");
+  console.log("\n5. the Rule 5 remote proof fetches at most netProofLimit times");
   const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-budget");
   const origin = join(repoRoot, "origin.git");
   const run = (args: string[], cwd: string) =>
@@ -522,7 +439,6 @@ async function testFetchBudgetBoundsTheLaunchSweep() {
 async function runTests() {
   await testDecideSweepAction();
   await testExecuteSweepAction();
-  await testRunWorktreeTeardown();
   await testSweepEscapeHatches();
   await testGroupClaimProtectsSecondaryWorkstream();
   await testFetchBudgetBoundsTheLaunchSweep();
