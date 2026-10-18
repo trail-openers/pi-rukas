@@ -61,10 +61,18 @@
  * re-exports the one definition.
  */
 
+import {
+  declaredPathMatches,
+  declaredPathsCoveredBy,
+  isPlaceholderPath,
+  measurableAlternative,
+  splitDeclaredSlots,
+  splitDeliverablePaths,
+  toAlternative,
+} from "./work-driver-deliverable-paths.ts";
 import { countMarkdownSections } from "./work-driver-plan-parse.ts";
 import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
 import { PLAN_SINGLE_BLOCK_RULE } from "./work-driver-prompts-plan.ts";
-import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
 /** The deliverable shape the gate reads (structural subset of SpecDeliverable). */
 export interface SpecCoverageDeliverable {
@@ -93,9 +101,20 @@ export interface UncoveredDeliverable {
   paths: string[];
 }
 
-/** Normalise a declared-path list: dedupe, drop blanks. */
-function normalisedPaths(paths: string[] | undefined): string[] {
-  return [...new Set((paths ?? []).map(normaliseDeclaredPath).filter((p) => p.length > 0))];
+/**
+ * The deliverable's declared SLOTS, deduped by text. Slot-level, not
+ * alternative-level: #1155 makes the alternatives of one slot an EITHER/OR
+ * (any one satisfies it) while a comma-separated slot stays a separate piece
+ * of declared work (every one must land). Flattening the two — which is what
+ * an earlier draft of this gate did — reads
+ * `[paths: src/a.ts or src/b.ts]` as two paths that both need a workstream,
+ * so a plan declaring only `src/b.ts` was rejected for work the develop gate
+ * would have passed. `findUncoveredDeliverables` compares slot-to-slot with
+ * `coveredBy`, which is the converge gate's own slot matcher, so "covered" and
+ * "delivered" are one decision made once (#1155).
+ */
+function declaredSlots(paths: string[] | undefined): string[] {
+  return [...new Set(splitDeclaredSlots(paths))];
 }
 
 /**
@@ -109,11 +128,16 @@ function normalisedPaths(paths: string[] | undefined): string[] {
  * DIRECTORY it lives in (`extension/src`), which is the same ownership claim
  * seen from the other side. The separator is what keeps `src/foo` from
  * "covering" `src/foobar`.
+ *
+ * #1155 — the implementation is `declaredPathsCoveredBy`, the converge gate's
+ * own slot matcher run against declarations instead of a diff set. That is the
+ * point: this gate and the converge gate must agree about what a `[paths:]`
+ * slot means, so an either/or is covered by a workstream that declared ONE
+ * alternative of it, exactly as develop counts it delivered when one
+ * alternative lands.
  */
 function coveredBy(path: string, workstreamPaths: string[]): boolean {
-  return workstreamPaths.some(
-    (wp) => wp === path || path.startsWith(`${wp}/`) || wp.startsWith(`${path}/`),
-  );
+  return declaredPathsCoveredBy(path, workstreamPaths);
 }
 
 /**
@@ -124,20 +148,24 @@ function coveredBy(path: string, workstreamPaths: string[]): boolean {
  * 1. EMPTY paths after normalisation — a prose deliverable, or one whose only
  *    `paths:` slot was blank/whitespace. `classifyDeliverables` calls this
  *    `unmeasurable` for the same reason.
- * 2. A path that is not a plain repo-relative path at all (`"tbd"`, `"TBD"`,
- *    `"N/A"`, `"none"`, or a whole sentence). `isPlainRepoRelativePath` is
- *    deliberately a DANGEROUS-CHARACTER check (its job is the shell-injection
- *    surface in the coupling merge's grep), so it alone lets `"n/a"` through as
- *    a syntactically fine relative path — which is exactly the slot shape real
- *    specs carry. The placeholder list below is the second, complementary
- *    check: a slot that is a known filler word is not an ownership claim
- *    either. Between the two, `"n/a"` and `"will land somewhere sensible"` are
- *    both excluded, and a genuine filename is not. Measured against a
- *    workstream union either shape would be UNCOVERED by construction, which is
- *    a rejection the planner cannot act on — the defect is in the spec's slot,
- *    not in the plan. The shape gate calls the same `isPlainRepoRelativePath`
- *    predicate `invalid-path` on the workstream side, so the dangerous half of
- *    the rule is shared verbatim.
+ * 2. Not a path at all, once its alternatives are split: a slot whose every
+ *    alternative is a filler word (`"tbd"`, `"N/A"`, `"none"`) or fails the
+ *    shell-metacharacter shape gate. `deliverablePathAlternatives` +
+ *    `measurableAlternative` ARE the converge gate's predicates — same
+ *    placeholder list, same `isPlainRepoRelativePath` shape gate, same
+ *    alternatives split — so the two gates cannot disagree about whether a
+ *    slot is judgeable. `isPlainRepoRelativePath` alone is a DANGEROUS-
+ *    CHARACTER check (its job is the shell-injection surface in the coupling
+ *    merge's grep), so it alone lets `"n/a"` through as a syntactically fine
+ *    relative path — which is exactly the slot shape real specs carry. Measured
+ *    against a workstream union either shape would be UNCOVERED by construction,
+ *    which is a rejection the planner cannot act on — the defect is in the
+ *    spec's slot, not in the plan.
+ *    #1155 — the alternatives split is what makes this clause honest. The
+ *    pre-#1155 check ran `paths.every(...)` over UNSPLIT slots, so an either/or
+ *    like `"src/a.ts or see the issue"` was one non-path slot and the whole
+ *    deliverable was excluded; now the measurable half still counts, and a
+ *    deliverable is excluded only when NOTHING in it is measurable.
  * 3. An HONORED no-diff marker (#792: `noDiff` AND non-empty evidence AND no
  *    code paths). A contradictory marker with paths lets the paths win, exactly
  *    as `classifyDeliverables` does.
@@ -159,46 +187,29 @@ function measurable(d: SpecCoverageDeliverable, paths: string[]): boolean {
   // marker (clause 3) unmeasurable: the marker is only honoured when the
   // deliverable declares no paths, so it never needs its own branch.
   if (paths.length === 0) return false;
-  // Clause 2 — Not a path → not measurable. Any non-path slot disqualifies the
-  // whole deliverable: a partial list cannot be honestly judged either, since
-  // the EVERY-path rule would reject the plan for the prose half anyway.
-  return paths.every((p) => isPlainRepoRelativePath(p) && !isPlaceholderPath(p));
-}
-
-/**
- * Placeholder `paths:` slots a real spec has been seen to carry when the
- * resolver had no file to name. Compared case-insensitively and after
- * stripping punctuation, because the same intent arrives as `n/a`, `N/A`,
- * `n.a.` and `"—"`.
- *
- * Why a list and not a heuristic: the dangerous-character check alone is not
- * enough ("n/a" has no metacharacters and is a legal relative path), and a
- * heuristic like "no dot → not a file" would drop `extension/smoke-tests/`,
- * which is a legitimate DIRECTORY and one of the #818 fixture's deliverables.
- * A short explicit set cannot misfire on a filename, and a slot that is not in
- * the set is judged by the rules the converge gate already uses.
- */
-const PLACEHOLDER_PATHS = new Set([
-  "n/a",
-  "na",
-  "none",
-  "null",
-  "nil",
-  "tbd",
-  "todo",
-  "tentative",
-  "unknown",
-  "unspecified",
-  "placeholder",
-  "prose",
-  "-",
-  "—",
-  ".",
-  "…",
-]);
-
-function isPlaceholderPath(p: string): boolean {
-  return PLACEHOLDER_PATHS.has(p.trim().toLowerCase().replace(/[.]+$/, ""));
+  // Clause 2 — EVERY unit (comma-separated slot, with alternatives split out)
+  // is measurable. #819 round-2 wrote this as "every path", and #1155 keeps
+  // it: a mixed list (`src/a.ts`, `n/a`) is excluded wholesale because the
+  // every-path rule would reject the plan for the prose half regardless, so
+  // judging the measurable half would only produce a rejection nobody can fix.
+  // What #1155 changes is the UNIT the rule reads — an either/or is one unit
+  // with alternatives, not two units, so `src/a.ts or src/b.ts` stays
+  // measurable while a literal `n/a` slot still disqualifies.
+  return splitDeliverablePaths(paths.join(",")).every((unit) => {
+    // Judgeable means the diff could ever answer: a placeholder word (`n/a`,
+    // `tbd`) never can, and neither can anything that is neither a plain
+    // repo-relative path nor a template whose SEGMENTS are plain. The template
+    // case cannot go through `isPlainRepoRelativePath` directly — it rejects
+    // `<` and `>` as shell metacharacters, so a whole-directory template would
+    // read as prose and every deliverable with one would silently leave the
+    // #819 gate. `measurableAlternative` is the converge gate's own answer to
+    // the same question, so plan time and develop time agree (#1155).
+    if (isPlaceholderPath(unit)) return false;
+    // `measurableAlternative` IS the converge gate's predicate (shared grammar,
+    // shared placeholder list, shared shape gate) — plan time and develop time
+    // cannot disagree about whether a unit is judgeable (#1155).
+    return measurableAlternative(toAlternative(unit));
+  });
 }
 
 /**
@@ -210,6 +221,13 @@ function isPlaceholderPath(p: string): boolean {
  * paths is uncovered when the plan covers one of them. A partial sibling
  * cannot stand in for the missing half.
  *
+ * #1155 — "two declared paths" now counts ALTERNATIVES, so
+ * `[paths: src/a.ts or src/b.ts]` is ONE unit that either workstream half can
+ * cover, not two units that both must. That is the converge gate's ANY-
+ * alternative rule; keeping EVERY-over-alternatives here would make the
+ * coverage gate reject a plan the develop gate would pass, which is the drift
+ * this module exists to prevent.
+ *
  * Returns `checkedCount: 0` when no deliverable carries a path — the caller
  * must read that as "this gate has nothing to say", NOT as a pass it earned
  * and certainly not as a rejection.
@@ -219,7 +237,9 @@ export function findUncoveredDeliverables(
   spec: SpecCoverageSpec | undefined,
 ): { uncovered: UncoveredDeliverable[]; checkedCount: number } {
   const deliverables = spec?.deliverables ?? [];
-  const workstreamPaths = normalisedPaths(
+  // Workstream paths stay a flat list: they are the comparison POOL, and a
+  // slot counts as covered when ANY declared path in the pool covers it.
+  const workstreamPaths = splitDeclaredSlots(
     Object.values(workstreams).flatMap((ws) => ws?.paths ?? []),
   );
   // #819 round-2 — an HONORED no-diff deliverable (#792) is excluded from the
@@ -229,13 +249,11 @@ export function findUncoveredDeliverables(
   // honoured marker (which requires `paths.length === 0`, so a CONTRADICTORY
   // marker + real paths falls through and the paths win — deterministic, and
   // byte-for-byte the converge gate's rule).
-  const measurableDeliverables = deliverables.filter((d) =>
-    measurable(d, normalisedPaths(d.paths)),
-  );
+  const measurableDeliverables = deliverables.filter((d) => measurable(d, declaredSlots(d.paths)));
   const uncovered: UncoveredDeliverable[] = [];
   let checkedCount = 0;
   for (const d of measurableDeliverables) {
-    const paths = normalisedPaths(d.paths);
+    const paths = declaredSlots(d.paths);
     if (!measurable(d, paths)) continue;
     checkedCount += 1;
     if (paths.every((p) => coveredBy(p, workstreamPaths))) continue;
