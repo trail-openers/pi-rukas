@@ -10,7 +10,9 @@
  *       extension/node_modules -> repo/extension/node_modules
  *       out -> repo/bin                          (a symlink escape)
  *     .worktrees/wt2/           a worktree whose node_modules points at a tree NOT named node_modules
+ *       lookalike/node_modules -> other/node_modules   (named like a dependency tree, but a sibling's)
  *     .worktrees/other/         a sibling worktree
+ *       node_modules/pkg/        the sibling's dependency tree
  *   scratch/                    the cycle scratch dir
  *
  * The layout lives under the repo root's gitignored tmp/, NOT os.tmpdir(): the OS
@@ -71,6 +73,10 @@ export function buildFenceFixture(tag: string): FenceFixture {
   );
   symlinkSync(path.join(repo, "bin"), path.join(wt, "out"), "dir");
   symlinkSync(path.join(repo, "bin"), path.join(wt2, "node_modules"), "dir");
+  // A look-alike: named `node_modules` and provisioned-looking, but it points at a SIBLING's tree, not the main checkout's.
+  mkdirSync(path.join(wt, "lookalike"), { recursive: true });
+  mkdirSync(path.join(other, "node_modules", "pkg"), { recursive: true });
+  symlinkSync(path.join(other, "node_modules"), path.join(wt, "lookalike", "node_modules"), "dir");
   // The provisioned links are older than any fence loaded over this fixture.
   pause(20);
   return { base, repo, wt, wt2, other, scratch };

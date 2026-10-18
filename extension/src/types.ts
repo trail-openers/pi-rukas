@@ -1,3 +1,10 @@
+import type { WriteFence } from "./write-fence-log.ts";
+
+/** The dispatch option that fences a child; the driver's dispatch seams accept it (#1655). */
+export interface WriteFenceOpt {
+  writeFence?: WriteFence;
+}
+
 /** One image part of an RPC prompt, as Pi takes it. `data` is base64. */
 export interface DispatchImage {
   type: "image";

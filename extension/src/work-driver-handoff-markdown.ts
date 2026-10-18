@@ -440,13 +440,14 @@ function workstreamRefusalSection(state: WorkState): string[] {
  */
 function writeFenceSection(state: WorkState): string[] {
   const n = state.pipelineState.writeFenceRefusals ?? 0;
-  if (n === 0) return [];
-  return [
-    "### Writes refused by the write fence",
-    "",
-    `- ${n} write${n === 1 ? "" : "s"} outside a developer's worktree ${n === 1 ? "was" : "were"} refused at write time. The refusals are logged as \`write-fence-*.jsonl\` in the cycle's scratch dir.`,
-    "",
-  ];
+  const unreadable = state.pipelineState.writeFenceUnreadable ?? 0;
+  if (n === 0 && unreadable === 0) return [];
+  const logs = `logged as \`write-fence-*.jsonl\` in the cycle's scratch dir`;
+  const lines =
+    unreadable === 0
+      ? `- ${n} write${n === 1 ? "" : "s"} outside a developer's worktree ${n === 1 ? "was" : "were"} refused at write time. The refusals are ${logs}.`
+      : `- Count unknown (${unreadable} refusal log${unreadable === 1 ? "" : "s"} unreadable); ${n} refusal${n === 1 ? "" : "s"} counted from the readable logs. The refusals are ${logs}.`;
+  return ["### Writes refused by the write fence", "", lines, ""];
 }
 
 /**

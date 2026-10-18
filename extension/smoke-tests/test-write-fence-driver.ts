@@ -22,6 +22,7 @@ import { initialState } from "../src/workflow-state-update.ts";
 import {
   clearWriteFenceLogs,
   countWriteFenceRefusals,
+  childEnvFor,
   writeFenceChildEnv,
 } from "../src/write-fence-log.ts";
 import { buildFenceFixture } from "./lib/write-fence-fixture.ts";
@@ -47,10 +48,30 @@ assert(
   "A: an unfenced child gets no write-fence env (the fence stays off for it)",
 );
 {
-  const env = writeFenceChildEnv({ root: "/w/wt", scratch: "/w/tmp/issue-1655" });
+  const env = writeFenceChildEnv({ root: "/w/wt", repo: "/w/repo", scratch: "/w/tmp/issue-1655" });
   assert(
-    env.PI_ENSEMBLE_WRITE_ROOT === "/w/wt" && env.PI_ENSEMBLE_WRITE_SCRATCH === "/w/tmp/issue-1655",
-    "A: a fenced child gets PI_ENSEMBLE_WRITE_ROOT and PI_ENSEMBLE_WRITE_SCRATCH",
+    env.PI_ENSEMBLE_WRITE_ROOT === "/w/wt" &&
+      env.PI_ENSEMBLE_WRITE_REPO === "/w/repo" &&
+      env.PI_ENSEMBLE_WRITE_SCRATCH === "/w/tmp/issue-1655",
+    "A: a fenced child gets PI_ENSEMBLE_WRITE_ROOT, _REPO and _SCRATCH",
+  );
+  // The child inherits no fence setting from its parent: a process with an ambient root spawns an unfenced child.
+  const inherited = childEnvFor(
+    {
+      PI_ENSEMBLE_WRITE_ROOT: "/ambient/root",
+      PI_ENSEMBLE_WRITE_REPO: "/ambient/repo",
+      PI_ENSEMBLE_WRITE_SCRATCH: "/ambient/scratch",
+      PATH: "/bin",
+    },
+    "explore",
+  );
+  assert(
+    inherited.PI_ENSEMBLE_WRITE_ROOT === undefined &&
+      inherited.PI_ENSEMBLE_WRITE_REPO === undefined &&
+      inherited.PI_ENSEMBLE_WRITE_SCRATCH === undefined &&
+      inherited.PATH === "/bin" &&
+      inherited.PI_ENSEMBLE_ROLE === "explore",
+    "A: an unfenced child never inherits an ambient write root, repo or scratch (other env and its role kept)",
   );
 }
 {
@@ -97,14 +118,23 @@ writeFileSync(path.join(scratch, "write-fence-101.jsonl"), line(1) + line(2));
 writeFileSync(path.join(scratch, "write-fence-102.jsonl"), line(3));
 writeFileSync(path.join(scratch, "notes.md"), "not a fence log\n");
 
+const summed = await countWriteFenceRefusals(scratch);
 assert(
-  (await countWriteFenceRefusals(scratch)) === 3,
+  summed.count === 3 && summed.unreadable === 0,
   "C: the reader sums lines across every fenced child's log",
 );
 assert(
-  (await countWriteFenceRefusals(path.join(fx.base, "absent"))) === 0,
+  (await countWriteFenceRefusals(path.join(fx.base, "absent"))).count === 0,
   "C: a missing scratch dir counts as zero, never throws",
 );
+// #1655 MEDIUM 6 — a log that cannot be read is unknown, never a silent zero.
+mkdirSync(path.join(scratch, "write-fence-103.jsonl"));
+const withUnreadable = await countWriteFenceRefusals(scratch);
+assert(
+  withUnreadable.count === 3 && withUnreadable.unreadable === 1,
+  "C: an unreadable log is counted as unreadable, and its refusals are not guessed",
+);
+rmSync(path.join(scratch, "write-fence-103.jsonl"), { recursive: true });
 
 const ctx = { repoRoot: fx.repo, issue: ISSUE } as unknown as CycleContext;
 const start = initialState(ISSUE);

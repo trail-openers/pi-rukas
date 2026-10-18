@@ -16,7 +16,7 @@ import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
-import type { DispatchImage, DispatchResult } from "./types.ts";
+import type { DispatchImage, DispatchResult, WriteFenceOpt } from "./types.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import type { EmitSink } from "./work-state-emit.ts";
@@ -136,7 +136,7 @@ export interface DriverContext {
   dispatchFn?: (
     host: DispatchHost,
     spec: { role: string; prompt: string; cwd?: string; images?: DispatchImage[] },
-    opts?: import("./write-fence-log.ts").WriteFenceOpt & {
+    opts?: WriteFenceOpt & {
       label?: string;
       skipDeck?: boolean;
       deck?: { cycleKey: string; label: string; deckLabel?: string }; // #838 — see dispatchCore
