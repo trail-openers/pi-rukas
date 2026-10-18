@@ -145,7 +145,12 @@ export function registerWorkTools(pi: ExtensionAPI) {
         role: "work-driver",
         skipDeck: true,
         work: (signal, hooks) =>
-          runDriver(piSessionHost(pi), { repoRoot, invocation, sink: { notify: (t) => trace(t) } }),
+          runDriver(piSessionHost(pi), {
+            repoRoot,
+            invocation,
+            sink: { notify: (t) => trace(t) },
+            signal,
+          }),
       });
 
       setJobIssues(handle.jobId, params.issues);

@@ -47,6 +47,8 @@ export interface QueueLaunch {
   mergeGrant: boolean;
   protectedGrant: string[];
   headless: boolean | undefined;
+  /** #1260 — the launching job's abort signal; each group job also honours its own. */
+  signal?: AbortSignal;
   /** The ordering graph from `queueOrderingPlan()` — passed through untouched. */
   ordering: OrderingPlan;
   /**
@@ -78,6 +80,7 @@ export async function launchQueue(pi: DriverHost, launch: QueueLaunch): Promise<
     mergeGrant,
     protectedGrant,
     headless,
+    signal,
     ordering,
     issues,
     makeResult,
@@ -98,12 +101,14 @@ export async function launchQueue(pi: DriverHost, launch: QueueLaunch): Promise<
           role: "work-driver",
           skipDeck: true,
           ownerKind: "driver" as const,
-          work: async () => {
+          work: async (jobSignal) => {
+            const groupSignal = signal ? AbortSignal.any([jobSignal, signal]) : jobSignal;
             if (seams?.runDriver) {
               await seams.runDriver(primary, {
                 issues: groupIssueNums,
                 parallelCycles: concurrency,
                 invocationStartRef,
+                signal: groupSignal,
               });
             } else {
               await runWorkDriver({
@@ -115,6 +120,7 @@ export async function launchQueue(pi: DriverHost, launch: QueueLaunch): Promise<
                 mergeGrant,
                 protectedGrant,
                 headless,
+                signal: groupSignal,
                 parallelCycles: concurrency,
                 invocationStartRef,
               });

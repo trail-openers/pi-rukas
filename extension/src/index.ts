@@ -30,6 +30,7 @@ import { registerCheckReviewCapTool } from "./review-cap.ts";
 import { pruneOldRuns, registerRunsCommand } from "./runs.ts";
 import { registerSandboxFsGuard } from "./sandbox-fs-guard.ts";
 import * as sessionAutosave from "./session-autosave.ts";
+import { armGroupReaper } from "./spawn-kill.ts";
 import { trace } from "./trace.ts";
 import { registerWorkTools } from "./work-tool.ts";
 import * as workWidget from "./work-widget.ts";
@@ -62,6 +63,9 @@ export default async function (pi: ExtensionAPI) {
     trace("extension: subagent mode — permission-guard + sandbox-fs-guard only");
     return;
   }
+  // #1260 — a child that leads its own process group is outside the
+  // terminal's reach, so reap every live group when this process exits.
+  armGroupReaper();
   // Load persisted model overrides BEFORE any spawn can ask for a model.
   await loadOverrides();
   // The whole retry story assumes a provider's `retry-after` is honoured. That
