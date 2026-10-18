@@ -1100,6 +1100,14 @@ The park has its own cap, `fix-pass-park` (it reused `verify-failed:develop` bef
 
 **Fix:** restore the named lines in the workstream's worktree, or reword them in place, and re-run. `PI_ENSEMBLE_COMMENT_RETENTION=0` disables the check.
 
+### An adversarial fix pass parked on "changed <file> — outside its declared paths"
+
+**Symptom:** the `fix-pass-park` reason reads *"<workstream> changed <file> — outside its declared paths and the files the findings name (declared paths: …; finding-named files it admits: …). No finding names <file>. …"* (or *"A finding names <file>, but it does not widen the fence"*).
+
+**Why:** a fix pass may change only the workstream's declared paths (or, undeclared, the files it already changed) plus finding-named files that widen the fence — tracked at base, unprotected, and in the directory of a declared or already-changed non-root path. The check runs after the pass, so the edit is not refused up front (#1522); the park names both sets it checked and the worktree that holds the change. Before #1522 it was the bare clause, with neither set nor a recovery.
+
+**Fix:** if a finding's fix genuinely needs the file, the declared scope is wrong: name the file in the issue's scope and re-run `/work <issue> --restart`. Otherwise the pass overreached: revert the file in the named worktree and land the rest by hand, or re-run `/work <issue> --restart`. The findings the pass answered are in the handoff's plumb report.
+
 ### "repoRoot was NOT restored: the discarded state could not be saved"
 
 **Symptom:** a failed consolidation, integration, lens-fix integration or handoff consolidation ends with *"repoRoot was NOT restored: the discarded state could not be saved (`git diff` failed: …), so nothing was reset or checked out — the tree at <path> is left exactly as it was"*. The next `/work` then stops at the branch step with `repo-root-residue`.
