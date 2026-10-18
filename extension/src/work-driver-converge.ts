@@ -19,7 +19,9 @@
  *   - `implemented`  — every declared path is in the diff
  *   - `partial`      — some but not all declared paths are in the diff
  *   - `absent`       — no declared path is in the diff
- *   - `unmeasurable` — no declared paths (prose deliverable); never blocks
+ *   - `unmeasurable` — no declared path the gate can measure (a prose
+ *                      deliverable, or paths that parse to no concrete or glob
+ *                      alternative — #1155); never blocks
  *   - `no-diff`      — plan-time marker + evidence: the absence is correct
  *                      by design (settings toggle, operator action); never
  *                      blocks, surfaced as an operator action
@@ -31,6 +33,23 @@
  * `normaliseDeclaredPath` for the same reason the verify gate does: they
  * are planner prose, not `git` output, and `"src/a.ts (new)"` must read as
  * `src/a.ts`.
+ *
+ * #1155 — a declared path is a LIST OF ALTERNATIVES, not a literal. The plan
+ * writes prose, so `[paths: extension/src/verify.ts or new work-driver-<name>.ts]`
+ * is one slot meaning two paths, and `<name>` is a template the planner left
+ * rather than a filename. Before this, both read as one literal string no
+ * `git diff --name-only` could contain, so the developers' real file
+ * (`work-driver-acceptance-coverage.ts`) classified `absent`, the corrective
+ * re-dispatch spent 76 min trying to create `work-driver-<name>.ts`, and a
+ * 154-min cycle parked. The rule the operator decided: a deliverable counts as
+ * delivered when ANY alternative matches the diff (segment-anchored glob for
+ * templates); `partial` uses the same matching; a deliverable with NO concrete
+ * or glob alternative at all is `unmeasurable` — a warning, never a cap — and
+ * only a deliverable that has at least one measurable alternative and matches
+ * none of them is `absent`. The grammar lives in
+ * `work-driver-deliverable-paths.ts`, which the #819 plan-to-spec coverage gate
+ * calls too, so the two gates cannot disagree about what a `[paths:]` slot
+ * means.
  *
  * The LLM-assisted content check the issue mentions lives at the
  * `buildConvergeCorrectivePrompt` seam: the driver classifies
@@ -46,68 +65,39 @@ import path from "node:path";
 import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import {
+  type ClassifyDeliverableInput,
+  type ConvergeDeliverableResult,
+  type ConvergeVerdict,
+  type WorkstreamPathsMap,
+  classifyDeliverables,
+} from "./work-driver-converge-classify.ts";
+import {
+  declaredPathMatches,
+  deliverablePathAlternatives,
+} from "./work-driver-deliverable-paths.ts";
 import { porcelainPaths } from "./work-driver-doctrine.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
+
+// The classification types and the pure classifier moved to
+// `work-driver-converge-classify.ts` (#1155, AGENTS.md §12 file-size cap).
+// Re-exported so the gate's consumers — the gate handler, the develop
+// topological/merge-retry flows, and the smoke tests — keep their import
+// paths and cannot drift to a second copy of the vocabulary.
+export {
+  type ClassifyDeliverableInput,
+  type ConvergeDeliverableResult,
+  type ConvergeVerdict,
+  type DeliverableStatus,
+  type WorkstreamPathsMap,
+  classifyDeliverables,
+} from "./work-driver-converge-classify.ts";
 
 /** `PI_ENSEMBLE_CONVERGE=0` (or `false`) disables the gate. */
 export function convergeGateEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_CONVERGE;
   return v !== "0" && v !== "false";
-}
-
-export type DeliverableStatus = "implemented" | "partial" | "absent" | "unmeasurable" | "no-diff";
-
-export interface ConvergeDeliverableResult {
-  id: string;
-  status: DeliverableStatus;
-  /** The normalised declared paths this deliverable declared. */
-  paths: string[];
-  /** Of those, which are present in the diff. */
-  present: string[];
-  /** Of those, which are missing from the diff (absent/partial only). */
-  missing: string[];
-  /** One-line, operator-readable reason (rendered in handoff + PR body). */
-  reason: string;
-  /**
-   * The evidence string recorded at plan time for a `no-diff` deliverable
-   * (a command to run, an API endpoint, or a settings URL). Surfaced verbatim
-   * in the operator-actions render. `undefined` for all other statuses.
-   */
-  noDiffEvidence?: string;
-  /**
-   * #1137 d2 — the workstream id(s) that delivered this deliverable's paths
-   * (the workstream(s) whose declared paths overlap this deliverable's paths
-   * AND whose paths are present in the consolidated diff). `undefined` when
-   * no workstream claim can be resolved (N=1 default workstream, or no
-   * workstream declared the paths). Present on `implemented` results to make
-   * the "sibling-delivered" behavior explicit: a deliverable is `implemented`
-   * when ANY workstream delivered its paths, not just the "owning" one.
-   */
-  deliveredBy?: string[];
-}
-
-export interface ConvergeVerdict {
-  /**
-   * Reserved for a future readable-but-incomplete diff reading (e.g. a
-   * per-worktree partial failure the gate wants to surface). Today the
-   * only unreadable path returns `null` before classification, so this is
-   * always `false` — the gate degrades to pass rather than emitting a
-   * half-classified verdict.
-   */
-  diffUnreadable: boolean;
-  deliverables: ConvergeDeliverableResult[];
-  absent: ConvergeDeliverableResult[];
-  partial: ConvergeDeliverableResult[];
-  /**
-   * Deliverables classified `no-diff` — the gate checked and the absence
-   * is correct by design (settings toggle, operator action, etc.). These
-   * are NOT blockers; they are surfaced as operator actions in the
-   * completion report and PR body. Distinct from `unmeasurable` (the gate
-   * cannot check this) and from `absent` (the gate checked and the work
-   * is missing).
-   */
-  noDiff: ConvergeDeliverableResult[];
 }
 
 /**
@@ -201,127 +191,6 @@ export async function readEndOfDevelopDiff(
 }
 
 /**
- * The core classification. Pure over (deliverables, diff-file-set) so the
- * smoke test exercises the exact production predicate with no git at all.
- */
-/**
- * The deliverable shape accepted by `classifyDeliverables`. Extends the
- * inline shape with the optional plan-time no-diff marker (issue #792):
- * `noDiff` flags a deliverable that produces no diff by design, and
- * `noDiffEvidence` carries the evidence string (command, API endpoint, or
- * settings URL) that makes the marker actionable. When `noDiff` is true but
- * `noDiffEvidence` is absent or empty, the marker is NOT honoured — the
- * deliverable classifies as it would without the marker (absent if it has
- * paths, unmeasurable if it does not). A contradictory case (both valid code
- * paths AND a no-diff marker) lets the code paths win: the marker is ignored
- * and the deliverable is classified by path presence.
- */
-export interface ClassifyDeliverableInput {
-  id: string;
-  description: string;
-  paths: string[];
-  /** Plan-time marker: this deliverable produces no diff by design. */
-  noDiff?: boolean;
-  /** Evidence string required for the no-diff marker to be honoured. */
-  noDiffEvidence?: string;
-}
-
-/**
- * #1137 d2 — the workstream ownership map passed to `classifyDeliverables`
- * for the `deliveredBy` field. Maps workstream id → its declared (normalised)
- * paths. When absent, `deliveredBy` is not populated (the gate degrades to
- * the pre-#1137 shape: status + reason only, no attribution).
- */
-export interface WorkstreamPathsMap {
-  [workstreamId: string]: string[];
-}
-
-export function classifyDeliverables(
-  deliverables: ClassifyDeliverableInput[],
-  diffFiles: Set<string>,
-  workstreamPaths?: WorkstreamPathsMap,
-): ConvergeVerdict {
-  const results: ConvergeDeliverableResult[] = deliverables.map((d) => {
-    const paths = [
-      ...new Set((d.paths ?? []).map(normaliseDeclaredPath).filter((p) => p.length > 0)),
-    ];
-
-    // No-diff marker: honoured only when it carries a non-empty evidence
-    // string AND the deliverable has no valid code paths (a contradictory
-    // marker + paths lets the code paths win — deterministic, documented).
-    if (d.noDiff && d.noDiffEvidence && d.noDiffEvidence.trim().length > 0 && paths.length === 0) {
-      return {
-        id: d.id,
-        status: "no-diff",
-        paths,
-        present: [],
-        missing: [],
-        reason: `no diff by design — evidence: ${d.noDiffEvidence.trim()}`,
-        noDiffEvidence: d.noDiffEvidence.trim(),
-      };
-    }
-
-    if (paths.length === 0) {
-      return {
-        id: d.id,
-        status: "unmeasurable",
-        paths,
-        present: [],
-        missing: [],
-        reason: "no declared paths (prose deliverable)",
-      };
-    }
-    const present = paths.filter(
-      (p) => diffFiles.has(p) || Array.from(diffFiles).some((f) => f.startsWith(`${p}/`)),
-    );
-    const missing = paths.filter((p) => !present.includes(p));
-    let status: DeliverableStatus;
-    let reason: string;
-    if (missing.length === 0) {
-      status = "implemented";
-      reason = `all ${paths.length} declared path(s) in the diff`;
-    } else if (present.length === 0) {
-      status = "absent";
-      reason = `none of ${paths.length} declared path(s) in the diff (${paths.join(", ")})`;
-    } else {
-      status = "partial";
-      reason = `only ${present.length}/${paths.length} declared path(s) in the diff — missing: ${missing.join(", ")}`;
-    }
-    // #1137 d2 — attribute the deliverable to the workstream(s) that delivered
-    // its paths. A deliverable is `implemented` when ANY workstream's declared
-    // paths overlap the deliverable's paths AND those workstream paths are in
-    // the consolidated diff. This makes the "sibling-delivered" behavior
-    // explicit: the gate does not flag a deliverable just because the
-    // "owning" workstream didn't deliver it, as long as a sibling did.
-    let deliveredBy: string[] | undefined;
-    if (status === "implemented" && workstreamPaths) {
-      const ids: string[] = [];
-      for (const [wsId, wsPaths] of Object.entries(workstreamPaths)) {
-        const normalised = wsPaths.map(normaliseDeclaredPath).filter((p) => p.length > 0);
-        const overlaps = normalised.some(
-          (p) => diffFiles.has(p) || Array.from(diffFiles).some((f) => f.startsWith(`${p}/`)),
-        );
-        const coversDeliverable = paths.some((dp) =>
-          normalised.some((wp) => dp === wp || dp.startsWith(`${wp}/`) || wp.startsWith(`${dp}/`)),
-        );
-        if (overlaps && coversDeliverable) ids.push(wsId);
-      }
-      if (ids.length > 0) deliveredBy = ids;
-    }
-    return deliveredBy
-      ? { id: d.id, status, paths, present, missing, reason, deliveredBy }
-      : { id: d.id, status, paths, present, missing, reason };
-  });
-  return {
-    diffUnreadable: false,
-    deliverables: results,
-    absent: results.filter((r) => r.status === "absent"),
-    partial: results.filter((r) => r.status === "partial"),
-    noDiff: results.filter((r) => r.status === "no-diff"),
-  };
-}
-
-/**
  * The end-of-develop converge gate. Runs at the end of the develop step,
  * after the existing verify gate has passed. Returns `null` when the gate
  * does not apply (disabled, no normalised spec, no deliverables, or an
@@ -355,6 +224,15 @@ export async function runConvergeGate(
   if (verdict.noDiff.length > 0) {
     trace(
       `work-driver: converge gate — no-diff deliverable(s) (operator actions): ${verdict.noDiff.map((a) => a.id).join(", ")}`,
+    );
+  }
+  // #1155 — an unmeasurable deliverable is a WARNING the operator must see
+  // while the cycle is running, not a line buried in the state file: the
+  // planner wrote a `[paths:]` slot nobody can check, and the gate is passing
+  // it rather than verifying it.
+  if (verdict.unmeasurable.length > 0) {
+    trace(
+      `work-driver: converge gate — UNMEASURABLE deliverable(s), warning not cap: ${verdict.unmeasurable.map((a) => `${a.id} — ${a.reason}`).join("; ")}`,
     );
   }
   return verdict;
@@ -391,7 +269,15 @@ export function buildConvergeCorrectivePrompt(state: WorkState, verdict: Converg
         `- intent: ${spec.intent}`,
         "deliverables:",
         ...spec.deliverables.map(
-          (d) => `  - ${d.id}: ${d.description} [paths: ${d.paths.join(", ")}]`,
+          // #1155 — print the alternatives the child can actually act on. The
+          // pre-#1155 render joined the RAW slots, so a corrective child read
+          // "missing path(s): extension/src/work-driver-verify.ts or new
+          // work-driver-<name>.ts" and spent its dispatch trying to create a
+          // file literally named `work-driver-<name>.ts`. The alternatives are
+          // the same split the gate matched on, and a `<name>` template is now
+          // labelled as one instead of being handed over as a filename.
+          (d) =>
+            `  - ${d.id}: ${d.description} [paths: ${d.paths.join(", ")}]${templateNote(d.paths)}`,
         ),
         "acceptance criteria:",
         ...spec.acceptanceCriteria.map((a) => `  - ${a}`),
@@ -413,16 +299,42 @@ export function buildConvergeCorrectivePrompt(state: WorkState, verdict: Converg
   return lines.join("\n");
 }
 
-/** Which workstream(s) declared the missing paths (for prompt attribution). */
+/**
+ * #1155 — the template note appended to a spec line whose `[paths:]` slot left
+ * a `<…>`/`*` placeholder. The corrective child must know a template is a shape
+ * to satisfy, not a filename: the #1137 corrective burned 76 min on
+ * `work-driver-<name>.ts`. Returns "" for an all-concrete deliverable.
+ */
+function templateNote(paths: readonly string[]): string {
+  const templates = deliverablePathAlternatives(paths)
+    .flatMap((slot) => slot.alternatives)
+    .filter((alt) => alt.isGlob)
+    .map((alt) => alt.raw);
+  if (templates.length === 0) return "";
+  return ` — NOTE: ${templates.map((t) => `\`${t}\``).join(", ")} is a TEMPLATE, not a filename: any file that matches it counts (the gate matches a template per path segment).`;
+}
+
+/**
+ * Which workstream(s) declared the missing paths (for prompt attribution).
+ *
+ * #1155 — compared with the shared alternatives grammar, not `includes`: the
+ * `missing` strings are now the planner's own `raw` forms, which may hold
+ * several alternatives, and an exact `includes` against a workstream's
+ * declaration would silently drop the attribution (and with it the corrective
+ * child's cwd) for every either/or deliverable.
+ */
 function workstreamsOwningPath(state: WorkState, missing: string[]): string | null {
   const workstreams = state.pipelineState.workstreams ?? {};
   const owners = new Set<string>();
   for (const [id, ws] of Object.entries(workstreams)) {
     const declared = (ws?.paths ?? []).map(normaliseDeclaredPath);
-    if (missing.some((p) => declared.includes(p))) owners.add(id);
+    if (missing.some((p) => declaredPathMatches(p, EMPTY_DIFF_SET, declared))) owners.add(id);
   }
   return owners.size > 0 ? [...owners].join(", ") : null;
 }
+
+/** No diff files — the workstream-ownership reads match on declarations alone. */
+const EMPTY_DIFF_SET: ReadonlySet<string> = new Set<string>();
 
 /**
  * The FIRST workstream id that declared at least one of the missing paths
@@ -441,7 +353,7 @@ export function workstreamOwnsMissingPaths(
   for (const [id, ws] of Object.entries(workstreams)) {
     const declared = (ws?.paths ?? []).map(normaliseDeclaredPath);
     for (const p of missing) {
-      if (declared.includes(p)) return id;
+      if (declaredPathMatches(p, EMPTY_DIFF_SET, declared)) return id;
     }
   }
   return null;

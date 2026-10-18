@@ -7,6 +7,7 @@ import {
   fixesLinesOf,
   operatorActionsSectionOf,
   tldrSectionOf,
+  unmeasurablePathsSectionOf,
 } from "./work-driver-pr-body-definition.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
 import { protectedGrantSectionOf } from "./work-driver-protected-grant.ts";
@@ -117,12 +118,16 @@ export function inlineCommitPrPrompt(
   // (see the operatorActionsSectionOf contract); both the multi-worktree
   // and the N=1 flows below splice it into the gh pr create recipe.
   const operatorActions = operatorActionsSectionOf(normalisedSpec);
+  // #1155 — the unmeasurable-deliverables warning, spliced in alongside the
+  // #792 operator-actions section so both PR-body shapes render it.
+  const unmeasurableWarning = unmeasurablePathsSectionOf(normalisedSpec);
   const bodySections = [
     tldrSectionOf(normalisedSpec), // #1006 — TL;DR at the TOP of the PR body in all three shapes.
     assumptionsBlockOf(normalisedSpec),
     protectedGrantSectionOf(fallback?.protectedGrant),
     carriedFindingsSectionOf(eventLog),
     operatorActions,
+    unmeasurableWarning,
     renderLensFindingsSection(eventLog),
   ]
     .filter((s) => s !== "")
