@@ -392,6 +392,11 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
   "inputs": [                  // every PI_ENSEMBLE_* input this build or its wrapper reads
     { "name": "PI_ENSEMBLE_MAX_WORKSTREAMS", "type": "integer", "default": 6, "scope": "cycle" },
     { "name": "PI_ENSEMBLE_VERIFY_TIMEOUT_MS", "type": "duration-ms", "default": 600000, "scope": "cycle" },
+    // #1509 — the develop-tier bound is now per tier; each reads its own knob,
+    // then PI_ENSEMBLE_VERIFY_TIMEOUT_MS, then its `.pi/*-timeout-ms` file.
+    { "name": "PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS", "type": "duration-ms", "default": 1800000, "scope": "cycle" },
+    { "name": "PI_ENSEMBLE_VERIFY_FAST_TIMEOUT_MS", "type": "duration-ms", "default": 600000, "scope": "cycle" },
+    { "name": "PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS", "type": "duration-ms", "default": 600000, "scope": "cycle" },
     { "name": "PI_ENSEMBLE_MODEL_<ROLE>", "type": "string", "default": null, "scope": "cycle",
       "members": ["DEVELOPER", "OPS", "EXPLORE", "ADVERSARIAL_DEVELOPER", "CODE_REVIEW_SPECIALIST"] },
     { "name": "PI_ENSEMBLE_NO_SSH", "type": "boolean", "default": false, "scope": "wrapper" },

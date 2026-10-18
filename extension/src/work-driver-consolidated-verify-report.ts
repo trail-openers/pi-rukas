@@ -32,7 +32,8 @@ import {
 } from "./work-driver-exec-error.ts";
 import { isHostForkExhaustion, pidLimitSnapshot } from "./work-driver-exec-error.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import { verifyTimeoutFailure, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
+import { TIER_KNOB } from "./work-driver-verify-budget.ts";
+import { verifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
 import { rawOutputClause } from "./work-driver-verify-flake.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
@@ -40,6 +41,17 @@ export interface ConsolidatedVerifyReporting {
   cmd: string;
   failures: string[];
   notes: string[];
+  /**
+   * #1509 — the bound the consolidated run was given, and the knob that
+   * governed it. Both are threaded from the caller rather than re-read: a
+   * reporter that called a resolver itself could print a bound other than the
+   * one the run was killed at, and could name the wrong knob for a commit-pr
+   * run bounded by the integration knob. `timeoutMs` is required for the
+   * caller that has a run; a caller with no run behind the failure strings
+   * (a decline or conflict path) passes the bound it would have used.
+   */
+  timeoutMs: number;
+  timeoutKnob?: string;
   /** Only `repoRoot` is read. */
   ctx: { repoRoot: string };
   worktrees: Record<string, string>;
@@ -73,6 +85,8 @@ export function reportConsolidatedVerifyOutcome(
     cmd,
     failures,
     notes,
+    timeoutMs,
+    timeoutKnob,
     ctx,
     worktrees,
     perWorktreeFailuresByWs,
@@ -227,7 +241,12 @@ export function reportConsolidatedVerifyOutcome(
           // the output tail, so the headline stays the plain timeout sentence and
           // the report is pointed at structurally (`hangLogPath` below, thence to
           // the cap event and the handoff).
-          `${verifyTimeoutFailure(cmd, `on the CONSOLIDATED tree at ${ctx.repoRoot}`, verifyTimeoutMs())}.`
+          `${verifyTimeoutFailure(
+            cmd,
+            `on the CONSOLIDATED tree at ${ctx.repoRoot}`,
+            timeoutMs,
+            timeoutKnob ?? TIER_KNOB.suite,
+          )}.`
         : isHostForkExhaustion(classifierInput)
           ? hostExhaustionFailure(
               `verify command \`${cmd}\` on the CONSOLIDATED tree`,
