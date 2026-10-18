@@ -12,6 +12,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { execTree } from "./exec-tree.ts";
 import { trace } from "./trace.ts";
 import { raiseConsolidationIncompleteCap } from "./work-driver-commit-completeness.ts";
@@ -61,6 +62,7 @@ import {
   companionLinesOf,
   fixesLinesOf,
   operatorActionsSectionOf,
+  preExistingFailuresSectionOf,
   tldrSectionOf,
 } from "./work-driver-pr-body-definition.ts";
 import { findOpenPrForBranch } from "./work-driver-pr-preflight.ts";
@@ -261,6 +263,12 @@ export async function mechanizedCommitPr(
       verifiedWorktree:
         followupBase === undefined && ids.length === 1 ? Object.values(worktrees)[0] : undefined,
       verifyTimeoutMs: integrationVerifyTimeoutMs(),
+      // #1404 — ALWAYS the cycle's original base, never `followupBase`: a
+      // second round's base is the branch head, which already carries this
+      // cycle's earlier commits, so probing it would excuse every failure as
+      // pre-existing. The followup probe's base therefore contains commits
+      // this cycle wrote, which is the base the change is measured against.
+      baselineBaseSha: ps.baseSha,
       verifyRetry: {
         ciRetryCount: ps.ciRetryCount,
         onRecover: (evidenceTail?: string) => {
@@ -343,6 +351,24 @@ export async function mechanizedCommitPr(
     }
     // A second round pushed onto the PR that is already open — nothing to create.
     if (existingPr !== undefined) {
+      // #1404 fix round — the followup round PARKS on a pre-existing-only
+      // verdict rather than continuing. On the create path the excused failures
+      // are disclosed in the PR body this call writes (`preExistingFailuresSection
+      // Of`); a followup round builds NO body, so continuing would push a red
+      // gate onto an open PR that no longer says anything about it — the
+      // reviewer of that PR would see green commits and no record that the gate
+      // is red. Rewriting an existing PR's body from here is a larger change
+      // than this seam should take on (it would own the merge of operator edits),
+      // so the fail-closed option is taken: the cycle parks, the reason names
+      // the tests, and nothing is pushed.
+      if (res.preExistingOnly === true) {
+        return {
+          ok: false,
+          terminal: true,
+          fallbackCause,
+          reason: `commit-pr consolidated verify failed on test(s) that also fail at the cycle's base commit (${(res.preExistingFailures ?? []).map(neutraliseMarkdownField).join(", ")}). Open PR #${existingPr} cannot be given the disclosure that makes a red gate safe to push, so the followup round parks rather than pushing the red gate silently onto it. Fix the gate at the base commit (or run the commit-pr round that opens its own PR) and re-run.`,
+        };
+      }
       const rootState = await inspectCommitPrRoot(execFn, ctx.repoRoot);
       const next = finalizeCommitPrState(
         state,
@@ -355,6 +381,7 @@ export async function mechanizedCommitPr(
         rootState,
         commitPrFlakeEvidence,
         true,
+        ps.baseSha ?? "unknown",
       );
       return { ok: true, state: next };
     }
@@ -371,6 +398,11 @@ export async function mechanizedCommitPr(
     // "Automated by" line and before `Fixes #N`. It is the first thing a
     // reviewer sees. Empty when the spec has no usable source.
     const tldr = tldrSectionOf(ps.normalisedSpec);
+    // #1404 — the gate was red and the cycle pushed anyway, because every red
+    // test is red at base too. That fact belongs where review happens: a
+    // silent continue would leave the next reviewer (and the next cycle) to
+    // rediscover that the gate, not this diff, is broken.
+    const preExistingSection = preExistingFailuresSectionOf(res.preExistingFailures);
     const prBody = [
       tldr,
       "",
@@ -383,6 +415,7 @@ export async function mechanizedCommitPr(
       protectedGrantSectionOf(ctx.protectedGrant),
       carriedFindings,
       operatorActions,
+      preExistingSection,
       renderLensFindingsSection(state.eventLog),
     ]
       .filter((l) => l !== "")
@@ -435,6 +468,10 @@ export async function mechanizedCommitPr(
       res,
       rootState,
       commitPrFlakeEvidence,
+      false,
+      // #1404 — the base the pre-existing verdict was measured against, on the
+      // event so the claim is checkable from the state file.
+      ps.baseSha ?? "unknown",
     );
     if (!draft) return { ok: true, state: next };
     const prDraft = { status: "draft" as const };

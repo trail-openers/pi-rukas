@@ -44,6 +44,10 @@ export const ALLOWANCES: Case[] = [
     c: "bash smoke-tests/lib/verify-loop.sh --digest smoke-tests/test-review-accept.ts",
     why: "--digest before the file list",
   },
+  {
+    c: "bash smoke-tests/lib/verify-loop.sh --jobs-from-host smoke-tests/test-*.ts",
+    why: "the host-sizing switch that .pi/verify-cmd actually carries (no expansion in it)",
+  },
   { c: "bun run build", why: "the exact build form" },
   { c: "bun run check", why: "the exact check form" },
   { c: "bunx tsc --noEmit", why: "the exact type-check form" },

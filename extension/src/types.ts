@@ -66,6 +66,16 @@ export interface DispatchResult {
    * from "we could not tell".
    */
   observedToolCalls?: number;
+  /**
+   * #1541 review (HIGH) — where the run put its result OUTSIDE the report text,
+   * for the delivery-failure stand-in to name. Only a `reportKind: "driver"`
+   * work function has one to give: a research run writes an artifact under
+   * `outputs/`, a plan run may have filed an issue, and both are known only once
+   * the pipeline returns. When the report itself never lands, this is what the
+   * operator reads instead of re-running a run that already produced its output.
+   * A display string, never parsed.
+   */
+  reportWhere?: string;
   ms: number;
   exitCode: number | null;
   usage?: DispatchUsage;

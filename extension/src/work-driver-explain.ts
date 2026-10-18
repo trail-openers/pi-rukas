@@ -8,11 +8,15 @@
 import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
-import { explainConsolidation } from "./work-driver-explain-consolidation.ts";
+import {
+  commitPrConsolidationBlurb,
+  explainConsolidation,
+} from "./work-driver-explain-consolidation.ts";
 import { explainDetectCaps } from "./work-driver-explain-detect-caps.ts";
 import { explainDevelopCrash } from "./work-driver-explain-develop-crash.ts";
 import { explainLens } from "./work-driver-explain-lens.ts";
 import { adversarialFailureCause, explainOther } from "./work-driver-explain-other.ts";
+import { explainPlan } from "./work-driver-explain-plan.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
 import {
@@ -84,6 +88,11 @@ export function explainCap(
       // #754 — the plan step's own bound: the kill-cause family module owns
       // the sentence (it reads the kill event's usage off the log).
       return explainDetectCaps(cap, state);
+    case "plan-spec-mismatch":
+      // #819 — the plan-to-spec gate: the plan was judged and found to be
+      // about the wrong work. The sentence lives in the plan-step explain
+      // module so this file keeps its headroom under the 500-line cap.
+      return explainPlan(cap, state);
     case "repeat-finding-seam": {
       // #280 §B — same finding shape across ≥3 files is a missing-seam
       // signal, not N independent defects. Patching each instance would
@@ -450,50 +459,4 @@ export function explainCap(
   // covered above; if we land here, surface the raw cap so the user
   // can still grep the state file.
   return `step failed: ${String(cap)} — see state-file event log`;
-}
-
-/**
- * #875 — the "missing workstreams" blurb for the
- * `commit-pr-incomplete-consolidation` cap. Reads ONLY the persisted
- * per-verdict `dirty` flag (no git calls) — dirty=true or flag absent
- * (legacy) → "uncommitted on disk"; dirty=false → cherry-pick recovery.
- */
-function commitPrConsolidationBlurb(
-  state: WorkState,
-  opts: { missingIds: string[]; filesPresent: string[] },
-): string {
-  const ps = state.pipelineState;
-  const which = opts.missingIds.length > 0 ? opts.missingIds.join(", ") : "one or more workstreams";
-  const ic = ps.incompleteConsolidation;
-  const verdicts = Array.isArray(ic) ? [] : (ic?.verdicts ?? []);
-  const wts = ps.worktrees ?? {};
-  const lines: string[] = [`the committed diff is missing declared files from: ${which}.`];
-  for (const id of opts.missingIds) {
-    const v = verdicts.find((x) => x.id === id);
-    const isClean = !Array.isArray(ic) && !!v && v.status === "uncovered" && v.dirty === false;
-    const wtSuffix = wts[id] ? ` (${wts[id]})` : "";
-    if (!isClean) {
-      lines.push(
-        `  - ${id}: the developers' work in the missing worktree${wtSuffix} is uncommitted on disk.`,
-      );
-      continue;
-    }
-    const pick = cherryPickRecoveryFor(state.issue, id, {
-      worktree: wts[id],
-      baseSha: ps.baseSha,
-      ownBase: ps.workstreamBaseShas?.[id],
-      headSha: ps.commitShas?.[id],
-    });
-    const pickText = pick.kind === "command" ? `cherry-pick it: \`${pick.line}\`` : pick.line;
-    lines.push(
-      `  - ${id}: nothing uncommitted — the work is COMMITTED in its worktree${wtSuffix}. If ${v.uncoveredPaths.join(", ")} genuinely needed a change, ${pickText}; otherwise the declaration was over-broad and the fix is a restart.`,
-    );
-  }
-  if (opts.filesPresent.length > 0) {
-    const shown = opts.filesPresent.slice(0, 5).join(", ");
-    lines.push(
-      ` The committed diff contains ${opts.filesPresent.length} file(s): ${shown}${opts.filesPresent.length > 5 ? ` and ${opts.filesPresent.length - 5} more` : ""} — the missing workstreams' files are the difference.`,
-    );
-  }
-  return lines.join(" ");
 }

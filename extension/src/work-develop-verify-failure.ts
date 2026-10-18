@@ -99,7 +99,10 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
   // #841 — the log path the gate actually wrote, carried STRUCTURALLY on
   // the cap event (the explain renderer renders it without regexing the
   // evidence prose); absent when the gate wrote no log.
-  const logPaths = gate.logPath !== undefined ? [gate.logPath] : undefined;
+  const logPaths =
+    gate.logPath !== undefined || gate.hangLogPaths !== undefined
+      ? [...(gate.hangLogPaths ?? []), ...(gate.logPath !== undefined ? [gate.logPath] : [])]
+      : undefined;
   next = appendEvent(next, {
     kind: "cap-hit",
     at: Date.now(),

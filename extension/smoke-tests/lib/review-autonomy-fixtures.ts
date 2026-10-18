@@ -20,6 +20,7 @@ import { FINDINGS_FILE } from "../../src/review-findings-store.ts";
 import type { LedgerEntry } from "../../src/review-ledger.ts";
 import { latestEntry, readLedgerAt } from "../../src/review-ledger.ts";
 import { hookDecision } from "../merge-guard-helpers.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 import { waitForLedger } from "./wait-for-ledger.ts";
 
 /** A stored row's invariant fields: the test's rows are all open, unmatched,
@@ -74,11 +75,6 @@ export function seedFindings(storeFile: string, branch: string, rows: readonly S
   writeFileSync(storeFile, JSON.stringify({ rows: [...others, ...onBranch] }, null, 2), "utf8");
 }
 
-/** A file reader: how a suite turns the ledger path into validated entries.
- * `readLedgerAt` is the default; the advisory suite passes its own because it
- * asserts on rows the writer keyed differently. */
-export type LedgerReader = (file: string) => LedgerEntry[];
-
 /** The branch's latest lens entry — the row the round-cap rule and the merge
  * guard read. `rows` selects which entries a suite counts (default: this
  * branch's lens rows). */
@@ -92,6 +88,14 @@ export function latestLensEntry(
   return latestEntry(rows(read(ledgerFile)), branch, "lens");
 }
 
+/** How long `waitForLensRound` waits for the fire-and-forget write to land the
+ * row it is looking for. The writer's measured latency is two subprocess hops
+ * (a couple of hundred ms on an idle host); this is the headroom for a loaded
+ * one, chosen well under the smoke watchdog's per-test bound so a hung writer
+ * surfaces as this suite's own assertion, not as a watchdog kill naming the
+ * wrong thing. */
+const LENS_ROUND_WAIT_MS = 30_000;
+
 /** Wait until the branch's lens entry records round `n`. The ledger write is
  * fire-and-forget (#984), so a scenario reads the entry through this seam
  * rather than racing it.
@@ -103,30 +107,80 @@ export function latestLensEntry(
  * `[]`, so a torn or malformed file at the deadline read as "no such round" and
  * the scenario threw its own 'recorded no lens entry' instead of the poll's
  * report of an unreadable ledger. A predicate never satisfied by the deadline
- * returns null (the shared poll's contract), never the stale file. */
+ * returns null (the shared poll's contract), never the stale file.
+ *
+ * There is no injected `read` any more: the predicate seam is what decides,
+ * `waitForLedger` is what reads, and a second reader is precisely the
+ * swallowed-parse-error bug the paragraph above describes. A caller that wants
+ * different ROWS passes `rows`; a caller that wanted a different READER was
+ * asking for a second, weaker read. */
 export async function waitForLensRound(
   ledgerFile: string,
   branch: string,
   n: number,
   rows: (entries: LedgerEntry[]) => LedgerEntry[] = (entries) =>
     entries.filter((e) => e.kind === "lens" && e.branch === branch),
-  read: LedgerReader = readLedgerAt,
 ): Promise<LedgerEntry | undefined> {
   // One sleep between ticks, and only when the previous check missed: the
   // passing path reads the ledger once and returns (the shared poll's own idiom).
+  //
+  // #1145 — the sleep is an ASYNC `setTimeout`, and that is load-bearing, not
+  // cosmetic. `waitForLedger`'s own wait is `Atomics.wait` on a
+  // SharedArrayBuffer, which parks the WHOLE thread for its budget: no timer
+  // fires and no I/O callback runs while it waits. The writer this poll is
+  // waiting for is the fire-and-forget ledger write, which is itself a chain of
+  // ASYNC git subprocess calls (`workingTreePatchId` → `identityBase` →
+  // `resolveMainline`). So a long `Atomics.wait` here starves exactly the writer
+  // whose file it is watching for: with a 60 s budget the row appeared only at
+  // t=60 s, immediately after the wait released — the writer could not run while
+  // the poll ran. The pre-#1145 shape (a 200 ms budget, ~500 ms of parked thread
+  // across the whole loop) happened to leave the writer enough gaps to finish,
+  // which is why this suite is green on a fast host and red on a loaded one.
+  //
+  // So: `once: true` (one read, never a blocking wait — #1145 round 3 replaced
+  // the `budgetMs: 0` that only LOOKED like a single read; see
+  // lib/wait-for-ledger.ts) plus the awaited 20 ms tick, which yields to the
+  // loop so the writer's git children can run.
+  //
+  // The bound is a WALL-CLOCK DEADLINE, not an iteration count. The old shape
+  // ("500 iterations × 20 ms ≈ 10 s") stated a bound it did not implement:
+  // `setTimeout(20)` is a floor, and a loop whose body also does a synchronous
+  // file read and parse under load runs each tick slower than 20 ms, so the
+  // real ceiling was however long 500 slow ticks take — a number that grows
+  // exactly when the host is loaded, which is the condition the wait exists for.
+  // A `Date.now()` deadline says the thing it means: this much time, no more.
   const tick = () => new Promise((r) => setTimeout(r, 20));
+  const deadlineMs = Date.now() + LENS_ROUND_WAIT_MS;
   const settled = (entries: LedgerEntry[]): boolean => rows(entries).some((e) => e.round === n);
   const rowOf = (entries: LedgerEntry[]): LedgerEntry | undefined =>
     latestEntry(rows(entries), branch, "lens");
-  if (settled(read(ledgerFile))) return rowOf(read(ledgerFile));
-  for (let i = 0; i < 250; i++) {
-    // The shared poll (#984 — a fixed budget that child-process startup can eat,
-    // which makes the file look "late") does the reading AND the deciding: its
-    // `until` is the round predicate, so a hit costs one read.
-    const entries = waitForLedger(ledgerFile, { budgetMs: 200, until: settled });
+  // The pre-check and every tick read the file directly rather than through
+  // `readLedgerAt`, which swallows a parse error to `[]`: a torn or malformed
+  // file must not read as "no such round" here either.
+  //
+  // A custom `read` is a caller's fixture (a JSON.parse of a path it chose), and
+  // the row it waits for is written by a fire-and-forget writer — so "the file
+  // is not there yet" is the NORMAL state of a tick, not an error. The shared
+  // poll already counts an unreadable read and keeps going; the caller's reader
+  // is held to the same contract, so an early throw resolves to "no row yet"
+  // and the poll times out into a failed assertion — which is what a missing
+  // round is supposed to produce — rather than escaping as an unhandled error
+  // that kills every later case in the file.
+  const attempt = (): LedgerEntry[] | null => {
+    try {
+      return waitForLedger(ledgerFile, { once: true, until: settled });
+    } catch {
+      return null;
+    }
+  };
+  const first = attempt();
+  const firstRow = first ? rowOf(first) : undefined;
+  if (firstRow?.round === n) return firstRow;
+  while (Date.now() < deadlineMs) {
+    await tick();
+    const entries = attempt();
     const row = entries ? rowOf(entries) : undefined;
     if (row?.round === n) return row;
-    await tick();
   }
   // Timed out with the predicate never satisfied: null, so the caller's assertion
   // fails on the missing round rather than on whatever older row is on disk.
@@ -236,7 +290,15 @@ export function buildPrRepo(
   files: Record<string, string>,
   final: Record<string, string>,
 ): void {
-  const g = (...args: string[]) => execFileSync("git", ["-C", repoDir, ...args], { stdio: "pipe" });
+  // #1145 — `env: gitTestEnv()` on every git child. This is the synchronous
+  // spawn form, which bun 1.3 does not fix with an ambient `process.env` write,
+  // and the branch this helper cuts is what the review and the merge guard read
+  // their range from: a host `~/.config/git/ignore` or `init.defaultBranch`
+  // changes what `git status`/`origin/HEAD` report here, so the scenario's
+  // verdict would be a property of the machine (see lib/git-test-env.ts).
+  const gitEnv = gitTestEnv();
+  const g = (...args: string[]) =>
+    execFileSync("git", ["-C", repoDir, ...args], { stdio: "pipe", env: gitEnv });
   g("checkout", "-q", "-b", branch, "main");
   for (const [name, content] of Object.entries(files)) {
     writeFileSync(path.join(repoDir, name), content);

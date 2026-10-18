@@ -25,14 +25,38 @@ import type { DispatchResult } from "./types.ts";
 import type { WorkInvocation } from "./work-args.ts";
 import { effectiveParallelGroups, groupIssues } from "./work-driver-grouping.ts";
 import type { DriverHost } from "./work-driver-host.ts";
+import { setSiblingClaimWait } from "./work-driver-path-claims.ts";
 import { runWorkDriver } from "./work-driver.ts";
+import { queueOrderingPlan } from "./work-entry-ordering.ts";
+import { launchQueue } from "./work-entry-queue.ts";
 import { singleCycleQueueEntry } from "./work-queue-single-entry.ts";
 import { mergeQueueSummaryEntry } from "./work-queue-summary.ts";
+import type { QueueSummary } from "./work-queue-types.ts";
 import { renderQueueSummary, runWorkQueue } from "./work-queue.ts";
 
 export { parseWorkArgs, type WorkInvocation } from "./work-args.ts";
 
 type CycleFlags = Pick<WorkInvocation, "restart" | "mergeGrant" | "protectedGrant" | "headless">;
+
+/**
+ * Test seams for the grouped entry path (#1101 fix-round).
+ *
+ * The entry point is the only place the ordering graph is computed, so it is the
+ * only place its wiring can be tested — and reaching it through the real
+ * default seams costs a `gh` call per issue and a Pi spawn per group. Both are
+ * the outermost layer of the path; everything between them (grouping, the
+ * ordering plan, `runWorkQueue`, the completion-await `startJob` provides) runs
+ * unchanged. Optional, so every production caller is unaffected.
+ */
+export interface EntrySeams {
+  /** Instead of `fetchIssueBodies` (forge → `gh`). */
+  fetchBodies?: (repoRoot: string, issues: number[]) => Promise<Record<number, string>>;
+  /** Instead of `runWorkDriver` (a Pi-spawned cycle), for one group. */
+  runDriver?: (
+    primary: number,
+    ctx: { issues?: number[]; parallelCycles?: number; invocationStartRef?: string },
+  ) => Promise<void>;
+}
 
 /**
  * Resolve the repository root for a session directory.
@@ -108,11 +132,27 @@ export async function runGroupedIssues(
   issues: number[],
   flags: CycleFlags,
   notify: (text: string) => void,
+  seams?: EntrySeams,
 ): Promise<string> {
   const { restart, mergeGrant, protectedGrant, headless } = flags;
-  const bodiesByIssue = await fetchIssueBodies(repoRoot, issues);
-  const { groups, notes } = groupIssues(issues, bodiesByIssue);
+  const bodiesByIssue = seams?.fetchBodies
+    ? await seams.fetchBodies(repoRoot, issues)
+    : await fetchIssueBodies(repoRoot, issues);
+  // #1101 — `groupIssues()` already collects the ordering statements in the same
+  // pass over the bodies it uses for R1, so the queue's edges come from the one
+  // read. Re-scanning the bodies here would be a second regex that could drift
+  // from the one the grouping decisions were made with.
+  const { groups, notes, depsByIssue } = groupIssues(issues, bodiesByIssue);
   const groupList = Object.values(groups);
+  // #1101 — the queue's ordering graph, computed here and handed to
+  // `runWorkQueue`. This is the wiring the feature was missing: `runWorkQueue`
+  // took `dependencies` / `cyclic` and its scheduler obeyed them, but the only
+  // production caller passed neither, so every real `/work 12 13` still started
+  // the dependent alongside its dependency and the gate stayed a test fixture.
+  // The why of reading it HERE (the bodies are this function's) is in
+  // work-entry-ordering.ts.
+  const ordering = queueOrderingPlan({ groups, depsByIssue });
+  const orderingNotes = ordering.notes.length > 0 ? `\n  ${ordering.notes.join("\n  ")}` : "";
   // #676 lens-findings — the summary and per-issue rule notes are built from
   // issue titles/bodies (untrusted content) and land in the agent prompt
   // channel via notify/notifyAgent, which — unlike the #388 notify hook
@@ -131,50 +171,26 @@ export async function runGroupedIssues(
   const concurrency = Math.min(effectiveParallelGroups(), groupList.length);
   const restartTag = restart ? " (restart — prior state wiped)" : "";
   notify(
-    `pi-rukas:driver-event v1 kind=group-result issue=${issues.join(", ")} at=${new Date().toISOString()}\npi-rukas: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}\n${effectiveParallelGroups() > 1 ? `Running up to ${concurrency} cycle(s) concurrently` : "Running cycles sequentially"}${restartTag}; a failed group parks and the queue continues.`,
+    `pi-rukas:driver-event v1 kind=group-result issue=${issues.join(", ")} at=${new Date().toISOString()}\npi-rukas: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}${orderingNotes}\n${effectiveParallelGroups() > 1 ? `Running up to ${concurrency} cycle(s) concurrently` : "Running cycles sequentially"}${restartTag}; a failed group parks and the queue continues.`,
   );
 
-  const summaryResult = await runWorkQueue({
+  // #1101 — the queue runs under `launchQueue`, which opens and closes the
+  // sibling-claim window around it and passes the ordering graph through.
+  // Extracted to work-entry-queue.ts for §12's line cap; the wiring itself (this
+  // is the call that used to omit `dependencies` / `cyclic` entirely) is pinned
+  // by test-work-entry-queue-wiring.ts.
+  const summaryResult = await launchQueue(pi, {
     repoRoot,
     groups: groupList,
     restart,
     concurrency,
-    runGroup: async (primary, groupIssueNums, invocationStartRef) => {
-      const handle = startJob(pi, {
-        label: `work-driver-group:${groupList.find((g) => g.issues[0] === primary)?.id ?? "unknown"}`,
-        role: "work-driver",
-        skipDeck: true,
-        ownerKind: "driver" as const,
-        work: async () => {
-          await runWorkDriver({
-            host: pi,
-            repoRoot,
-            issue: primary,
-            issues: groupIssueNums,
-            restart,
-            mergeGrant,
-            protectedGrant,
-            headless,
-            parallelCycles: concurrency,
-            invocationStartRef,
-          });
-          return makeResult(
-            true,
-            `Completed group: #${(groupIssueNums ?? [primary]).join(", #")}`,
-            Date.now(),
-          );
-        },
-      });
-      setJobIssues(handle.jobId, groupIssueNums ?? [primary]);
-      // #676 — hold the runWorkQueue worker slot (and the inFlight entry the
-      // pre-dispatch overlap gate keys on) until the driver reaches a terminal
-      // state. startJob is fire-and-forget; without this await, runGroup would
-      // resolve within the same event-loop tick and the gate's inFlight map
-      // would be empty by the time the next worker checks it, making the
-      // pre-dispatch serialization a no-op on the real entry path.
-      await handle.completion;
-      return { started: true };
-    },
+    mergeGrant,
+    protectedGrant,
+    headless,
+    ordering,
+    issues,
+    makeResult,
+    seams,
   });
   return renderQueueSummary(summaryResult);
 }

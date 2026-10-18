@@ -11,7 +11,11 @@
  */
 
 import { type LedgerBinding, captureBinding } from "./adversarial-ledger-binding.ts";
-import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
+import { misdirectedLedgerNote } from "./adversarial-ledger-note.ts";
+import {
+  type AdversarialLedgerOutcome,
+  writeAdversarialLedgerEntry,
+} from "./adversarial-ledger.ts";
 import { execp } from "./exec.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -35,6 +39,65 @@ export interface BindingState {
    * set in ONE assignment, so an interrupted round can never leave the writer
    * pairing round N's binding with round N+1's head ref. */
   captured?: RoundCapture;
+}
+
+/**
+ * #1449 lens round 1 — normalise whatever a ledger writer handed back into the
+ * one shape the reporter's contract allows.
+ *
+ * `makeLedgerWrite` must not assume the writer's return is chainable or that it
+ * cannot throw before returning, because "a ledger problem never costs a review"
+ * is the CALL SITE's invariant, not one writer's implementation detail. This is
+ * the pure half of that tolerance: nothing is chained onto the return until it
+ * has passed through here, and anything that is not an outcome — `undefined`,
+ * `null`, a bare object from a stub, a value a refactor starts returning —
+ * becomes "nothing to report" rather than a claim the row never earned.
+ *
+ * A free function rather than an inline expression, for the same reason
+ * `misdirectedLedgerNote` is one: the real writer ends in `write().catch(...)`,
+ * so neither an unchainable return nor a synchronous throw is reachable
+ * *through* it, and an end-to-end assertion against the real writer can never
+ * see those arms. `test-adversarial-ledger-writer-shapes.ts` feeds every shape
+ * to this helper directly; the loop-level arms in that file go through the REAL
+ * writer. A process-global mutable box that production reads (the shape this
+ * module carried until the round-1 review) is a liability on the #912 trust
+ * path bought for no test benefit — an assertion that cannot see an arm through
+ * the real function is a missing test, not a missing seam.
+ */
+export function normaliseLedgerWriteReturn(value: unknown): AdversarialLedgerOutcome | undefined {
+  // `recorded` is the discriminant both writers' outcome types carry on both
+  // arms. A value without it is not an outcome whatever else it is, and handing
+  // one to the reporter would put an invented claim in front of the operator.
+  // The `value === null` test is NOT redundant with `"recorded" in value`: the
+  // `in` operator throws a TypeError on a primitive, and `typeof null` is
+  // "object", so without it a rejected-to-null writer crashes the call site
+  // instead of reporting nothing. Deleting it turns the `null` arm red (verified
+  // by mutation); deleting the whole check turns four arms red.
+  if (value === null || typeof value !== "object" || !("recorded" in value)) return undefined;
+  // #1449 round 2 — the discriminant must be the BOOLEAN it claims to be, not
+  // merely PRESENT. Both writers produce `recorded: true | false` and the
+  // reporter branches on `outcome.recorded === true`, so a truthy non-boolean is
+  // the shape that turns "nothing was reported" into "a row was recorded": a
+  // `{ recorded: "yes" }` from a stub, or `1`/`[]` from a refactor, reaches the
+  // operator as a claim that a row exists. Same direction as the guard's own
+  // validation of a foreign ledger row (`validEntries`: `typeof passed ===
+  // "boolean"`) — the value a #912 reader acts on is type-checked, not
+  // truth-tested.
+  //
+  // The read is wrapped because the round-1 contract it must not break is "this
+  // helper never crashes on a hostile shape": a getter that throws is such a
+  // shape, and an unreadable discriminant is by definition not `true`/`false`
+  // — so the swallow lands on the same answer the guard already gives. Deleting
+  // the boolean check turns the four non-boolean arms above red; deleting the
+  // swallow turns the hostile-getter arm red.
+  let recorded: unknown;
+  try {
+    recorded = (value as { recorded?: unknown }).recorded;
+  } catch {
+    return undefined;
+  }
+  if (recorded !== true && recorded !== false) return undefined;
+  return value as AdversarialLedgerOutcome;
 }
 
 /**
@@ -107,6 +170,20 @@ export function roundHeadRef(
  * durable row carries the same text the caller sees (#1104: fence findings),
  * and `note` runs LAST so the not-recorded warning reaches the result and not
  * the row (#980).
+ *
+ * #1449 — the write's outcome reaches the operator through `onLedgerOutcome`,
+ * and the DEFAULT reporter is the misdirection note: `runAdversarialLoop` calls
+ * `makeLedgerWrite` with no callback and gets one, so the adversarial half of
+ * #1449 is not a capability a caller has to opt into (the shape `writeAdversarialLedgerEntry`
+ * documents, where every skip used to be trace-only). The row itself is
+ * unchanged by it — the promise is still fire-and-forget and still never
+ * rejects: a ledger problem never costs a review — and the synchronous return
+ * is preserved for the loop's seven exits. The note is DELIVERED when the write
+ * settles, into the held result, exactly as `lens-review.ts` delivers its ledger
+ * outcome through the tool's note channel. A caller that wants the raw outcome
+ * instead (a test) replaces the callback. The callback is awaited by the
+ * delivery, not by the return: a caller whose note is async (a dispatch that
+ * delivers a steer) is not raced, and the loop returns as soon as it did before.
  */
 export function makeLedgerWrite(opts: {
   state: BindingState;
@@ -123,21 +200,104 @@ export function makeLedgerWrite(opts: {
   execFn?: VerifyExecFn;
   decorate: (raw: DispatchResult) => DispatchResult;
   note: (result: DispatchResult) => DispatchResult;
+  /** #1449 — called with the resolved write outcome. Defaults to the
+   * misdirection-note reporter; a caller that wants the raw outcome (a test)
+   * replaces it. */
+  onLedgerOutcome?: (outcome: AdversarialLedgerOutcome | undefined) => void | Promise<void>;
 }): (raw: DispatchResult) => DispatchResult {
   return (raw) => {
     const result = opts.decorate(raw);
-    writeAdversarialLedgerEntry(result, {
-      workCwd: opts.workCwd,
-      resolvedBranch: opts.resolvedBranch,
-      branch: opts.branch,
-      head: opts.state.captured?.headRef,
-      callerSuppliedDiff: opts.callerSuppliedDiff === true,
-      // #1360 — the tool path's provenance marker and its round capture.
-      base: opts.baseRef,
-      toolPath: opts.toolPath === true,
-      binding: opts.state.captured?.binding,
-      execFn: opts.execFn,
-    });
-    return opts.note(result);
+    // #1449 — the result the loop returns is held here so the note can be
+    // appended when the write reports a redirect. The ledger write stays
+    // fire-and-forget: this reference is what the note is appended TO, never
+    // something the return waits on.
+    let live = result;
+    const deliver =
+      opts.onLedgerOutcome ??
+      ((outcome: AdversarialLedgerOutcome | undefined) => {
+        // Default reporter: append the misdirection note to the held result.
+        // A no-op on every outcome but a row that landed outside the per-clone
+        // ledger (see `misdirectedLedgerNote`), so the overwhelming majority of
+        // writes change nothing — and nothing here is awaited by the return.
+        const note = misdirectedLedgerNote(outcome);
+        // `opts.note` re-runs on the held result because the loop's threader is
+        // PURE (it appends a constant when the branch did not resolve), so
+        // re-applying it to `live` is byte-identical to applying it once. It
+        // must be applied here and not earlier: the loop's `note` runs on the
+        // return, which happens BEFORE this promise settles, so a note applied
+        // only on the synchronous path could never see a redirect.
+        if (note) live = opts.note({ ...live, text: `${live.text}\n\n${note}` });
+      });
+    // #1449 — the writer is called BY NAME and its return is treated as
+    // untrusted: normalised through `normaliseLedgerWriteReturn` and wrapped in
+    // `Promise.resolve` before anything is chained onto it, with the CALL itself
+    // inside a `try`/`catch`.
+    //
+    // Why the tolerance survives on a call to a function whose own body cannot
+    // produce these shapes: the call site's invariant is its own. The shape that
+    // made this load-bearing was real, not hypothetical — `mock.module` gives a
+    // bare `(r, p) => { push(...) }` an `undefined` return, and the call site
+    // did `ledgerWrite.then(...)` directly, so every exit of the loop threw
+    // `TypeError: undefined is not an object` in CI (PR #1550). A ledger problem
+    // became a lost review: the exact direction #1449 must never open. The arms
+    // that pin the three layers live in
+    // `test-adversarial-ledger-writer-shapes.ts` — the shapes go through the
+    // pure helper, and the loop's exits go through THIS call with the real
+    // writer plus a `mock.module` of it, which is how a no-promise return is
+    // produced without a mutable production seam.
+    let ledgerWrite: unknown;
+    try {
+      ledgerWrite = writeAdversarialLedgerEntry(result, {
+        workCwd: opts.workCwd,
+        resolvedBranch: opts.resolvedBranch,
+        branch: opts.branch,
+        head: opts.state.captured?.headRef,
+        callerSuppliedDiff: opts.callerSuppliedDiff === true,
+        // #1360 — the tool path's provenance marker and its round capture.
+        base: opts.baseRef,
+        toolPath: opts.toolPath === true,
+        binding: opts.state.captured?.binding,
+        execFn: opts.execFn,
+      });
+    } catch {
+      // A writer that throws synchronously is a ledger fault, not a review
+      // fault: nothing is reported (there is no outcome to report) and the loop
+      // returns its result exactly as it would have without the write.
+      ledgerWrite = undefined;
+    }
+    // The promise never rejects (the writer's own catch), so the only
+    // bookkeeping here is delivering the report; a callback that throws must
+    // not break the loop, hence the swallow. The reporter always runs — the
+    // default IS the misdirection note, so the adversarial half of #1449 is
+    // never a capability a caller has to opt into (a caller that wants the raw
+    // outcome instead, e.g. a test, replaces it). `Promise.resolve` is what
+    // makes the chain safe when `ledgerWrite` is undefined / a non-promise / a
+    // thenable that never settles — see the guard above. Every value reaching
+    // the reporter has passed through `normaliseLedgerWriteReturn`, so the
+    // reporter's contract is one type whatever the writer returned; the note
+    // reads only `recorded` / `landedAtPath` / `reason`, so a shape it has never
+    // seen yields no note rather than a crash or an invented claim.
+    // #1449 round 2 — the reporter is reached on BOTH Settlings of the write,
+    // not just fulfilment. `Promise.reject("boom")` skips a `.then` fulfilment
+    // handler entirely and lands in `.catch`, so the arm that used to sit in
+    // `.catch(() => undefined)` threw the one piece of information the whole
+    // mechanism exists to deliver: a writer whose own promise rejects with a
+    // non-Error reported NOTHING at all, while the `recorded: false` outcome it
+    // produced — with its String()-ified reason — went unread. The contract of
+    // the call site is "whatever the writer handed back, the operator hears
+    // about it", and `settled` is the shape that contract has to cover. A
+    // rejection with no value at all still normalises to "nothing to report",
+    // which is the correct answer and the same one every other off-contract
+    // shape gets; a callback that throws is still swallowed, so nothing here can
+    // break the loop.
+    const settled = (value: unknown): void => {
+      try {
+        deliver(normaliseLedgerWriteReturn(value));
+      } catch {
+        // A reporter that throws is a reporting fault, never a review fault.
+      }
+    };
+    void Promise.resolve(ledgerWrite).then(settled, settled);
+    return opts.note(live);
   };
 }

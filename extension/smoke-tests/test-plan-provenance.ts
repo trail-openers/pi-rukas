@@ -27,7 +27,8 @@
  *      they were before this feature (no behaviour change for existing callers).
  */
 
-import { reviewedDigestOf } from "../src/plan-filing-claim.ts";
+import {
+  reviewedDigestOf } from "../src/plan-filing-claim.ts";
 import { fileIssue } from "../src/plan-filing.ts";
 import {
   MAX_LABELS,
@@ -37,10 +38,12 @@ import {
   provenanceReservation,
   validateProvenance,
   withProvenance,
-} from "../src/plan-provenance.ts";
-import { type RegisteredPlanTool, registerPlanTool } from "../src/plan-tool.ts";
+  } from "../src/plan-provenance.ts";
+import { type RegisteredPlanTool,
+  registerPlanTool } from "../src/plan-tool.ts";
 import { FORGE_BODY_MAX } from "../src/plan-validate.ts";
-import { cacheGuardScenarios, confirmDigestScenarios } from "./plan-confirm-label-scenarios.ts";
+import { cacheGuardScenarios,
+  confirmDigestScenarios } from "./plan-confirm-label-scenarios.ts";
 import { inputGateScenarios } from "./plan-input-gate-scenarios.ts";
 import { provenanceShapeScenarios } from "./plan-provenance-shape.ts";
 import {
@@ -60,6 +63,7 @@ import {
   newPlanCache,
   pipeline,
   teardownPlanCache,
+  makeJobDeliverer,
 } from "./plan-test-stubs.ts";
 
 let exit = 0;
@@ -161,7 +165,10 @@ await cacheGuardScenarios(assert);
 
 const tools: RegisteredPlanTool[] = [];
 // biome-ignore lint/suspicious/noExplicitAny: minimal stub; only registerTool is used
-registerPlanTool({ registerTool: (def: RegisteredPlanTool) => tools.push(def) } as any);
+registerPlanTool({
+  registerTool: (def: RegisteredPlanTool) => tools.push(def),
+  ...makeJobDeliverer(),
+} as any);
 
 // The input gate — invalid labels / line / marker refused PRE-DISPATCH, nothing
 // filed, and the TypeBox schema proven as wide as the validator — runs through

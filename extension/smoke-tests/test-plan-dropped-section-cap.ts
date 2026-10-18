@@ -382,12 +382,12 @@ import { assert, DROPPED_DOMINATED_BODY, finish } from "./plan-dropped-harness.t
   );
   assert(
     read("plan-dropped-section.ts").includes("DROPPED_ARTIFACT") &&
-      read("plan-tool.ts").includes("DROPPED_ARTIFACT"),
+      read("plan-report.ts").includes("DROPPED_ARTIFACT"),
     "canary: the body's omission line and the COMPACTED note name the same location",
   );
   assert(
-    !/full findings live in "the run/.test(read("plan-tool.ts")),
-    "canary: plan-tool.ts has no competing literal for the findings location",
+    !/full findings live in "the run/.test(read("plan-report.ts")),
+    "canary: plan-report.ts has no competing literal for the findings location",
   );
   assert(
     !read("plan-dropped-section.ts").includes("run transcripts") &&

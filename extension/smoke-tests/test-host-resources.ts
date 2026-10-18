@@ -307,6 +307,10 @@ withEnv({ PI_ENSEMBLE_VERIFY_CONCURRENCY: "lots" }, () =>
     "work-driver-verify-baseline.ts",
     "work-driver-verify-full.ts",
     "work-driver-verify-develop-gates.ts",
+    // #1414 round 2 — the cap-checkpoint's typecheck was the eighth verify exec
+    // and the only one with neither a slot nor a bound; the gate that lists
+    // the sites is what would have caught it, so the list is the guarantee.
+    "work-driver-cap-checkpoint-typecheck.ts",
   ];
   const bare = sites.filter(
     (f) => !readFileSync(path.join(SRC, f), "utf8").includes("withVerifySlot(() =>"),

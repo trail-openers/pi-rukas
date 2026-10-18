@@ -19,6 +19,10 @@ import {
   planCorrectivePrompt,
 } from "../src/work-driver-plan.ts";
 import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
+import {
+  PLAN_DELIVERABLE_PATH_RULE,
+  PLAN_SINGLE_BLOCK_RULE,
+} from "../src/work-driver-prompts-plan.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -302,6 +306,18 @@ assert(
 
 {
   const p = inlinePlanPrompt([290], "/tmp/scratch");
+  // #819 round-2 — the two rules whose violation was the #818 incident are in
+  // the PLANNER prompt, not only in the gate's rejection: a planner that was
+  // never told "one `## Workstreams` heading" and "every deliverable with
+  // paths must be claimed" cannot fix a rejection it was never warned about.
+  assert(
+    p.includes(PLAN_SINGLE_BLOCK_RULE),
+    "#819 round-2: the planner prompt states the single-`## Workstreams`-block rule (the shared constant)",
+  );
+  assert(
+    p.includes(PLAN_DELIVERABLE_PATH_RULE),
+    "#819 round-2: the planner prompt states the deliverable-coverage rule (every `[paths: …]` deliverable claimed by some workstream)",
+  );
   assert(
     !/Bias toward SINGLE-WORKSTREAM/i.test(p),
     "the old 'bias toward SINGLE-WORKSTREAM' instruction is GONE — it was the inversion of this doctrine",
@@ -349,6 +365,43 @@ assert(
   assert(
     /Record-only/.test(s) && /never re-dispatched/.test(s),
     "#849: the steer states the reason is recorded and never re-dispatched",
+  );
+}
+
+// ------------------------- #819 — the plan-spec reason joins the vocabulary
+
+{
+  // The new reason is ADDITIVE: the eight existing reasons keep their exact
+  // behaviour, and the gate that produces the new one is a separate pure
+  // function (it needs the spec, which planQualityReason never receives).
+  const distinct = { "task-a": { paths: ["src/a.ts"] }, "task-b": { paths: ["src/b.ts"] } };
+  assert(
+    planQualityReason(distinct, 2) === undefined,
+    "#819: a clean two-workstream plan is still not rejected by the shape gate",
+  );
+  assert(
+    planQualityReason(ws(2, []), 2) === "empty-paths",
+    "#819: an existing reason still wins where it fired before (the new reason is not a shadow over them)",
+  );
+  const s = correctivePlanSteer("plan-spec-mismatch", 5, 1);
+  assert(
+    s.length > 0 && !s.includes("undefined"),
+    "#819: plan-spec-mismatch renders without leaking 'undefined'",
+  );
+  assert(
+    !/declared no `paths:`/.test(s),
+    "#819: plan-spec-mismatch does NOT fall through to the empty-paths prose (wrong defect)",
+  );
+  assert(
+    /Do NOT invent new work/.test(s),
+    "#819: the steer forbids the #818 failure — the corrective re-choosing WHAT gets built",
+  );
+  assert(
+    // #819 round-2 — the rule is one exported constant quoted verbatim by the
+    // planner prompt, the steer and the gate's evidence, so the assertion
+    // targets the constant rather than a paraphrase of it.
+    s.includes(PLAN_SINGLE_BLOCK_RULE),
+    "#819: the steer states the one-`## Workstreams`-block rule (the shared constant)",
   );
 }
 

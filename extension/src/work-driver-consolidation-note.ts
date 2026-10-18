@@ -20,8 +20,15 @@ const MAX_NOTE_CHARS = 500;
  * terminal cursor when an operator reads the comment, and `\u2028`/`\u2029`/
  * `\u0085` are line terminators to some renderers even though they are not to
  * JavaScript's regex engine — so all of them collapse to a single space.
+ *
+ * #819 round-3 — EXPORTED. Anything that interpolates untrusted text into a
+ * fenced block needs the same rule: a renderer that honours one of these
+ * characters ends a ``` fence in the middle of the data, and the rest of the
+ * string is then markdown (or a command) rather than content. The consolidation
+ * note and the plan handoff's cap evidence are two such sites; one regex, so a
+ * third site cannot invent a weaker one.
  */
-const LINE_TERMINATORS = /[\r\n\u2028\u2029\u0085]+/g;
+export const LINE_TERMINATORS = /[\r\n\u2028\u2029\u0085]+/g;
 
 /**
  * Drop C0 controls (NUL..0x1f) and DEL (0x7f).
@@ -30,8 +37,10 @@ const LINE_TERMINATORS = /[\r\n\u2028\u2029\u0085]+/g;
  * shape `dispatch-deck-line.ts` uses — so no control character appears in the
  * source at all. C1 is deliberately left alone: invisible, not structurally
  * dangerous.
+ *
+ * #819 round-3 — EXPORTED for the same reason as `LINE_TERMINATORS`.
  */
-function dropC0Controls(text: string): string {
+export function dropC0Controls(text: string): string {
   let out = "";
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);
