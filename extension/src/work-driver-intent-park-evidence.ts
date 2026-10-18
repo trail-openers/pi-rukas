@@ -17,6 +17,10 @@ import type { Forge } from "./forge.ts";
 import { isMemoryClaim } from "./work-driver-intent-criticality.ts";
 import type { NormalisedSpec, SpecEvidence } from "./work-driver-intent.ts";
 
+/** The basis of the assumption `groundAlreadyImplemented` records when it refutes a park (#1351). */
+export const GROUNDING_BASIS =
+  "already-implemented means the mainline has the work; an open PR or an unmerged branch does not";
+
 /** At most this many cited PRs are looked up. */
 const MAX_PRS = 3;
 
@@ -101,7 +105,9 @@ export function parkEvidence(
       ...[...states].map(([n, st]) => `PR #${n} (${st === "unread" ? "state not read" : st})`),
       ...citedCommits(decisiveText(spec)).map((sha) => `commit ${sha}`),
     ];
-    const first = rows[0] ? rowText(rows[0]) : spec.rationale.split("\n")[0]?.trim();
+    // #1351 — a refuted already-implemented park leads with the refutation, not the resolver's claim.
+    const refuted = spec.assumptions.find((a) => a.basis === GROUNDING_BASIS)?.text;
+    const first = refuted ?? (rows[0] ? rowText(rows[0]) : spec.rationale.split("\n")[0]?.trim());
     headline = [refs.join(", "), first].filter((p) => p).join(" — ") || "no evidence recorded";
   }
   const lines = [`intent-park (${reason}): ${headline}`];
