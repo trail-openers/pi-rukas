@@ -26,6 +26,12 @@ import {
 import { isCiWatchCommand } from "../src/slow-notice-ci-wait.ts";
 
 let exit = 0;
+
+// #1604 — assertions expect the default thresholds; operator overrides must not leak in.
+for (const k of Object.keys(process.env)) {
+  if (/^PI_ENSEMBLE_(SLOW_NOTICE|AUTO_STEER)/.test(k)) delete process.env[k];
+}
+
 const assert = (cond: boolean, msg: string): void =>
   cond ? console.log(`✓ ${msg}`) : (console.error(`✗ ${msg}`), (exit = 1));
 
