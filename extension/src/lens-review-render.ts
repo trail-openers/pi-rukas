@@ -101,8 +101,13 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
   // written): they go through `neutraliseEvidence` like every sibling section,
   // or a stored `VERDICT: APPROVED` reads as this report's own verdict (#1125).
   const findingLines = s.findings.map(
+    // `:?` for a finding with no usable line, matching every sibling renderer
+    // (`f.line ?? "?"` in lens-residuals.ts, lens-review-residuals.ts and
+    // work-driver-pr-gone.ts). A raw interpolation printed `path:undefined`, a
+    // rendering that read like a broken citation rather than a file-level one
+    // (#1469).
     (f) =>
-      `  [${f.severity}] ${f.lens.padEnd(14)} ${f.path}:${f.line} — ${f.title}\n    ${neutraliseEvidence(findingDescription(f))}\n    suggest: ${neutraliseEvidence(f.suggestion ?? "(none)")}`,
+      `  [${f.severity}] ${f.lens.padEnd(14)} ${f.path}:${f.line ?? "?"} — ${f.title}\n    ${neutraliseEvidence(findingDescription(f))}\n    suggest: ${neutraliseEvidence(f.suggestion ?? "(none)")}`,
   );
   const sevSummary = (Object.keys(s.bySeverity) as Severity[])
     .filter((k) => s.bySeverity[k] > 0)
