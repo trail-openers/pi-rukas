@@ -107,8 +107,16 @@ if [ ! -f "$SUMMARY" ]; then
 fi
 
 append_row() {  # one row, under a mkdir lock so parallel writers cannot interleave
-  local row="$1"
-  while ! mkdir "$LOCK" 2>/dev/null; do sleep 0.05; done
+  local row="$1" waited=0
+  # Bounded: a lock left behind by a killed drive.sh used to hang every worker forever with no
+  # output. Wait FANOUT_SUMMARY_LOCK_WAIT seconds (default 60), then say which directory to remove.
+  while ! mkdir "$LOCK" 2>/dev/null; do
+    sleep 0.05
+    waited=$((waited + 1))
+    if [ "$waited" -ge "$(( ${FANOUT_SUMMARY_LOCK_WAIT:-60} * 20 ))" ]; then
+      die "summary lock still held after ${FANOUT_SUMMARY_LOCK_WAIT:-60} s: $LOCK. If no drive.sh is running, remove that directory and re-run; this worker's summary row was not written." 1
+    fi
+  done
   printf '%s\n' "$row" >>"$SUMMARY"
   rmdir "$LOCK" 2>/dev/null || true
 }

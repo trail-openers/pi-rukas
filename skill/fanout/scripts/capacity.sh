@@ -162,8 +162,9 @@ echo
 echo "  budgets each worker would get at N=$N:"
 # Print, do not apply — this script must not mutate the caller's environment.
 total="$N"
-if [ "$LEAN" = 1 ]; then cap=16; conc=1; ws=1; heap=1536
-else cap=$(( 64 / total )); conc=$(( 4 / total )); ws=$(( 6 / total )); heap=3072; fi
+cap=$(( 64 / total )); conc=$(( 4 / total )); ws=$(( 6 / total )); heap=3072
+# Lean changes only workstreams and heap; spawn cap and verify slots still divide by N (as lib-budget.sh).
+if [ "$LEAN" = 1 ]; then ws=1; heap=1536; fi
 [ "$cap" -ge 4 ] || cap=4; [ "$conc" -ge 1 ] || conc=1; [ "$ws" -ge 1 ] || ws=1
 echo "    PI_ENSEMBLE_SPAWN_CAP=$cap  PI_ENSEMBLE_VERIFY_CONCURRENCY=$conc  PI_ENSEMBLE_MAX_WORKSTREAMS=$ws  heap=${heap}MB"
 echo

@@ -50,7 +50,7 @@ The scripts honour exactly these; anything else is refused as unknown.
 | verdict | effect |
 |---|---|
 | `ready` | spawn |
-| `ready-lean` | spawn with `--lean` (one workstream, one verify slot, 1536 MB heap) — use for small issues when pushing N high on a tight host |
+| `ready-lean` | spawn with `--lean` (one workstream, 1536 MB heap; spawn cap and verify slots still divide by N) — use for small issues when pushing N high on a tight host |
 | `blocked` | refuse; needs something external (a decision, a dependency, an environment change) |
 | `needs-human` | refuse; a human must decide before any cycle is spent |
 | `park-wont-merge` | refuse; the issue body will resolve to `intent-park` after a full explore + plan |

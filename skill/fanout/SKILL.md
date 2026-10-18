@@ -69,8 +69,8 @@ scripts/drive.sh --repo "$REPO" --parallel 2 1514 1515 1516
 One row per finished cycle lands in `tmp/fanout/summary.tsv`: issue, status, cap, failedStep,
 exit, cost, duration, dispatches, PR, branch.
 
-Per-worker overrides: `--lean` (heap 1536 MB, one workstream, one verify slot — use this to
-push N higher), `--timeout <min>`, `--force-clone`, `--override-triage` (only when you have
+Per-worker overrides: `--lean` (heap 1536 MB, one workstream; spawn cap and verify slots still
+divide by N — use this to push N higher), `--timeout <min>`, `--force-clone`, `--override-triage` (only when you have
 personally checked the block it is ignoring).
 
 ## Validate before you build (this is not optional)

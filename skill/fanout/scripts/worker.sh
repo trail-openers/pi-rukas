@@ -147,20 +147,24 @@ if [ "$OVERRIDE_TRIAGE" = 0 ]; then
   if [ "${FANOUT_FORGE_CHECK:-$([ "$DRY_RUN" = 1 ] && echo 0 || echo 1)}" = 1 ]; then
     fanout_require_current "$ISSUE" ""
   fi
-  files="$(fanout_row "$ISSUE" files-likely-touched)"
-  if [ -n "$files" ]; then
-    # Runs under --dry-run too, deliberately. The whole purpose of a dry run is to predict
-    # what the real run will do; a gate that only bites at runtime means the dry run silently
-    # approves a collision the real run refuses, which is worse than having no dry run at all.
-    # fanout_live_claims dies (exit 11) on an unreadable claims file, but `die` inside a
-    # command substitution only exits the subshell. Capture it on its own line and propagate
-    # the status, or a corrupt claims file reads as "no live claims" and the gate fails OPEN.
-    claims="$(fanout_live_claims)" || exit "$?"
-    hit="$(fanout_intersection "$claims" "$files")"
-    [ "$hit" = "[]" ] || die "issue $ISSUE collides with a LIVE cycle's declared paths: $hit — two PRs over one file is a guaranteed conflict and a wasted cycle" 7
-  else
-    warn "issue $ISSUE has no files-likely-touched in triage.tsv; the path-claim gate is therefore blind for it"
-  fi
+fi
+
+# The collision gate runs on EVERY path, including --override-triage. It guards the forge
+# (two PRs over one file), not the triage verdict, so no flag skips it. It also runs under
+# --dry-run: a dry run that approved a collision the real run refuses would be worse than none.
+# fanout_live_claims dies (exit 11) on an unreadable claims file, but `die` inside a command
+# substitution only exits the subshell. Capture it on its own line and propagate the status, or
+# a corrupt claims file reads as "no live claims" and the gate fails OPEN.
+# fanout_norm_list drops a blank "-" cell and any "(new)" or annotation-only entry, so a row
+# that declares no real path reads as blind here rather than silently passing the gate.
+files="$(fanout_norm_list "$(fanout_row "$ISSUE" files-likely-touched)")"
+if [ -n "$files" ]; then
+  # The worker's own clone is excluded from the claim search (see fanout_live_claims).
+  claims="$(fanout_live_claims "$CLONE")" || exit "$?"
+  hit="$(fanout_intersection "$claims" "$files")"
+  [ "$hit" = "[]" ] || die "issue $ISSUE collides with a LIVE cycle's declared paths: $hit — two PRs over one file is a guaranteed conflict and a wasted cycle" 7
+else
+  warn "issue $ISSUE has no files-likely-touched in triage.tsv; the path-claim gate is therefore blind for it"
 fi
 
 if [ "$DRY_RUN" = 1 ]; then
@@ -181,7 +185,13 @@ if [ -e "$CLONE" ]; then
 fi
 
 log "cloning issue $ISSUE (--shared from $FANOUT_REPO)"
-git clone --shared --no-checkout "$FANOUT_REPO" "$CLONE" 2>&1 | tail -3 || die "clone failed" 9
+# Capture git's own status. `git ... | tail` reports tail's status, so a failed clone used to
+# pass silently and the cycle ran on a directory that does not exist.
+if ! clone_out="$(git clone --shared --no-checkout "$FANOUT_REPO" "$CLONE" 2>&1)"; then
+  printf '%s\n' "$clone_out" | tail -3
+  die "clone failed" 9
+fi
+printf '%s\n' "$clone_out" | tail -3
 
 # A --shared clone's origin is the LOCAL path. Left alone, this worker pushes into its
 # parent and the PR never reaches the forge: the cycle looks successful and ships nothing.
@@ -210,7 +220,11 @@ git -C "$CLONE" checkout main >/dev/null 2>&1 \
 # worker's own extension/node_modules — never shared, unlike the main checkout's tree that
 # .pi/worktree-setup symlinks into worktrees.
 log "installing extension dependencies"
-( cd "$CLONE/extension" && bun install --frozen-lockfile ) 2>&1 | tail -5 || die "bun install failed" 10
+if ! install_out="$( (cd "$CLONE/extension" && bun install --frozen-lockfile) 2>&1)"; then
+  printf '%s\n' "$install_out" | tail -5
+  die "bun install failed" 10
+fi
+printf '%s\n' "$install_out" | tail -5
 [ -d "$CLONE/extension/node_modules/@earendil-works/pi-coding-agent" ] \
   || die "install produced no pi-coding-agent — the cycle would spawn no children" 10
 
