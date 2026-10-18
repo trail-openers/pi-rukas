@@ -265,9 +265,22 @@ export const SEAMS: Seam[] = [
   },
   {
     // #1360 — the loop-side capture, split from adversarial.ts for the file-size
-    // gate. Both halves are called by the loop.
+    // gate. Both halves are called by the loop. #1449 round 1 removed the
+    // `LEDGER_WRITER` box: the loop now calls `writeAdversarialLedgerEntry`
+    // directly, and the return-shape tolerance is a pure helper
+    // (`normaliseLedgerWriteReturn`) tested on its shapes directly, so nothing
+    // here is injectable on the #912 trust path.
     file: "adversarial-ledger-capture.ts",
     pending: {},
+    testOnly: {
+      // #1449 round 1 — the shape arm of the call site's tolerance. Exported so
+      // every off-contract return can be fed to it DIRECTLY (undefined, null, a
+      // bare object, an empty object, a string, a number, an array) instead of
+      // only through a mocked writer; production reaches it only via
+      // `makeLedgerWrite`. Exercised by test-adversarial-ledger-writer-shapes.ts.
+      normaliseLedgerWriteReturn:
+        "#1449 — the pure return-shape arm; called by makeLedgerWrite, asserted directly by test-adversarial-ledger-writer-shapes.ts",
+    },
     canary: { symbol: "captureRound", importer: "adversarial.ts" },
   },
   {
