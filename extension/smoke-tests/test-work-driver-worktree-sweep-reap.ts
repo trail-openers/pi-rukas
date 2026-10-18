@@ -1,16 +1,29 @@
-import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
+import {
+  checkAndRegisterClaims,
+  readClaims,
+} from "../src/work-driver-path-claims.ts";
 import {
   findOwningCycleState,
   resolveSweepTarget,
   runWorktreeSweep,
 } from "../src/work-driver-worktree-sweep.ts";
 import { buildOwnerIndex } from "../src/work-driver-worktree-sweep-owners.ts";
-
-const execAsync = promisify(execFile);
+import {
+  makeCtx,
+  makeState,
+  rawClaims,
+  seedClaims,
+  spawnLivePid,
+} from "./lib/claims-test-helpers.ts";
+import {
+  execAsync,
+  realGitExecFn,
+  scratchRepo,
+  sweepState,
+  writeSweepState,
+} from "./lib/worktree-sweep-harness.ts";
 
 let exitCode = 0;
 function assertTrue(cond: boolean, msg: string) {
@@ -25,17 +38,6 @@ function assertFalse(cond: boolean, msg: string) {
 }
 function assertEquals(actual: unknown, expected: unknown, msg: string) {
   assertTrue(actual === expected, `${msg} (got ${String(actual)}, want ${String(expected)})`);
-}
-
-/** A scratch repo with the three paths resolveSweepTarget realpathSync's. */
-async function scratchRepo(): Promise<string> {
-  const dir = await fs.mkdtemp(join(tmpdir(), "sweep-ownership-"));
-  await execAsync("git", ["init"], { cwd: dir });
-  await execAsync("git", ["config", "user.name", "Test"], { cwd: dir });
-  await execAsync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
-  await execAsync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: dir });
-  await fs.mkdir(join(dir, ".worktrees"), { recursive: true });
-  return dir;
 }
 
 /**
@@ -76,18 +78,28 @@ async function testDeadClaimWorktreeResolution() {
     };
     await fs.writeFile(join(stateDir, "1421.json"), JSON.stringify(claimant));
 
-    const foundA = findOwningCycleState(dir, wtA, 1427);
+    // r2 — the index is a REQUIRED argument. It used to be optional with a
+    // default that re-read `.pi/work-state/` per call, which is the cost the
+    // index exists to remove and did it invisibly. Every caller builds it once
+    // per sweep; this is the shape a sweep actually uses.
+    const index = buildOwnerIndex(dir);
+    const foundA = findOwningCycleState(dir, wtA, 1427, index);
     assertTrue(foundA.state !== null, "task-a's owner resolves through the worktrees map");
     assertEquals(foundA.ownerIssue, 1421, "the resolved owner is the claimant, not the basename");
-    const foundB = findOwningCycleState(dir, wtB, 1427);
+    const foundB = findOwningCycleState(dir, wtB, 1427, index);
     assertTrue(foundB.state !== null, "every workstream in a multi-workstream cycle resolves");
 
     // The launching cycle's own tree is never swept, by ISSUE, not basename.
-    const own = findOwningCycleState(dir, wtA, 1421);
+    const own = findOwningCycleState(dir, wtA, 1421, index);
     assertTrue(own.state === null, "the launching cycle's own tree is refused");
 
     // A tree no state file claims is refused rather than guessed at.
-    const orphan = findOwningCycleState(dir, join(dir, ".worktrees", "issue-9999-default"), 1427);
+    const orphan = findOwningCycleState(
+      dir,
+      join(dir, ".worktrees", "issue-9999-default"),
+      1427,
+      index,
+    );
     assertTrue(orphan.state === null, "an unclaimed tree resolves to no owner");
 
     // Path traversal stays refused: a path outside .worktrees/ is never a
@@ -247,13 +259,14 @@ async function testOwnerClaimsAreValidated() {
       JSON.stringify(state(1442, { default: join(dir, "victim.txt") })),
     );
 
-    const legitFound = findOwningCycleState(dir, legit, 1427);
+    const legitFound = findOwningCycleState(dir, legit, 1427, buildOwnerIndex(dir));
     assertTrue(legitFound.state !== null, "a claim inside .worktrees/ still resolves");
     assertEquals(legitFound.ownerIssue, 1440, "the legit claim's owner is the claiming cycle");
 
-    const rootClaim = findOwningCycleState(dir, dir, 1427);
+    const idx = buildOwnerIndex(dir);
+    const rootClaim = findOwningCycleState(dir, dir, 1427, idx);
     assertTrue(rootClaim.state === null, "a state file claiming the repo root is refused");
-    const fileClaim = findOwningCycleState(dir, join(dir, "victim.txt"), 1427);
+    const fileClaim = findOwningCycleState(dir, join(dir, "victim.txt"), 1427, idx);
     assertTrue(fileClaim.state === null, "a state file claiming a plain file is refused");
 
     const index = buildOwnerIndex(dir);
@@ -296,6 +309,135 @@ async function testOwnerClaimsAreValidated() {
   }
 }
 
+/**
+ * #1454 r2 — an ABORTED claimant with a live pid and unpushed work: its claim
+ * is released, and the sweep PURGES its tree rather than removing it.
+ *
+ * Two halves, both load-bearing:
+ *
+ *  1. **The claim goes.** `aborted` is a terminal status, so the claimant's own
+ *     state file is the proof — not the pid. Without the terminal-status rule
+ *     the entry would park every later cycle touching those paths, which is the
+ *     #1421 zombie with a different status word. A live pid is precisely the
+ *     case a pid probe cannot decide.
+ *  2. **The tree is kept.** `aborted` is a `status`, never a `currentStep`, so
+ *     the remote-provable ladder cannot talk itself into REMOVE. An aborted
+ *     cycle whose commits never landed keeps an inspectable tree, exactly like a
+ *     crashed one — and unlike a merged one.
+ */
+async function testAbortedClaimantReleasesAndPurges() {
+  console.log("\nTesting aborted claimant: claim released, tree purged not removed (#1454 r2)...");
+  const dir = await scratchRepo();
+  const wtPath = join(dir, ".worktrees", "issue-1450-task-a");
+  let live: { pid: number; stop: () => Promise<void> } | null = null;
+  try {
+    await fs.writeFile(join(dir, ".gitignore"), "build/\n");
+    await execAsync("git", ["add", ".gitignore"], { cwd: dir });
+    await execAsync("git", ["commit", "-m", "ignore build output"], { cwd: dir });
+    await execAsync("git", ["worktree", "add", "--detach", wtPath, "HEAD"], { cwd: dir });
+    // Unpushed work the sweep has no business destroying.
+    await fs.writeFile(join(wtPath, "work-in-progress.rs"), "the aborted developer's work\n");
+    await fs.mkdir(join(wtPath, "build"), { recursive: true });
+    await fs.writeFile(join(wtPath, "build", "stale.js"), "artifact\n");
+
+    // The claimant's pid is alive for the CLAIM half (that is the whole point:
+    // a live pid must not keep a terminal cycle's paths reserved) but must be
+    // dead by the time the SWEEP runs, whose rule 3 correctly refuses to touch
+    // any tree whose owner pid is alive. So the claim is asserted first against
+    // the live pid, then the state file's owner is aged to a corpse and the
+    // sweep judged on that.
+    live = await spawnLivePid();
+    const stateDir = join(dir, ".pi", "work-state");
+    await fs.mkdir(stateDir, { recursive: true });
+    const abortedState = (ownerPid: number) => ({
+      schemaVersion: 1,
+      resumable: false,
+      owner: { pid: ownerPid, at: Date.now() },
+      issue: 1450,
+      startedAt: Date.now() - 3_600_000,
+      updatedAt: Date.now() - 60_000,
+      pipelineState: {
+        currentStep: "develop",
+        inFlightJobIds: [],
+        worktrees: { "task-a": wtPath },
+        reviewRound: 0,
+        ciRetryCount: 0,
+        plumbReports: [],
+        status: "aborted",
+      },
+      eventLog: [],
+    });
+    await fs.writeFile(join(stateDir, "1450.json"), JSON.stringify(abortedState(live.pid)));
+
+    // --- half 1: the claim no longer reserves its paths.
+    const claimPath = "src/deep-module.ts";
+    seedClaims(dir, [
+      { issue: 1450, pid: live.pid, paths: [claimPath], startedAt: Date.now() - 60_000 },
+    ]);
+    const honoured = await readClaims(dir);
+    assertTrue(
+      !honoured.some((c) => c.issue === 1450),
+      "an aborted claimant's entry is not honoured even though its pid is alive",
+    );
+    assertTrue(
+      !rawClaims(dir).some((c) => c.issue === 1450),
+      "the aborted claimant's entry is PRUNED from the registry, not just skipped",
+    );
+    // And a sibling is free to take those paths.
+    const sibling = await checkAndRegisterClaims(
+      makeCtx(dir, 1451),
+      makeState(1451, dir),
+      { "task-a": { paths: [claimPath] } },
+    );
+    assertTrue(
+      sibling.pipelineState.status === "running",
+      "a sibling is NOT parked by the aborted claimant's stale claim",
+    );
+
+    // --- half 2: the tree is purged, never removed. The owner is now a corpse
+    // (the cycle is over — that is what `aborted` reports), which is the only
+    // state in which the sweep may act at all.
+    await live.stop();
+    live = null;
+    await fs.writeFile(join(stateDir, "1450.json"), JSON.stringify(abortedState(999_999)));
+    const result = await runWorktreeSweep({
+      repoRoot: dir,
+      launchingCycleIssue: 1451,
+      // The aborted cycle is NOT live — that is what `aborted` asserts. Leaving
+      // it in the set would trip rule 3's `live-issue` clause and the sweep
+      // would decline for a reason unrelated to what is under test.
+      liveCycles: new Set([1451]),
+      execFn: async (cmd, opts) => {
+        const argv = cmd.startsWith("git ") ? cmd.slice(4).split(/\s+/) : [cmd];
+        const { stdout } = await execAsync("git", argv as string[], { cwd: opts?.cwd });
+        return { stdout, stderr: undefined };
+      },
+    });
+    assertTrue(result.purged.includes(wtPath), "the aborted claimant's tree is PURGED");
+    assertTrue(
+      !result.removed.includes(wtPath),
+      "the aborted claimant's tree is NOT removed — its work is unpushed",
+    );
+    const survives = await fs
+      .stat(join(wtPath, "work-in-progress.rs"))
+      .then(
+        () => true,
+        () => false,
+      );
+    assertTrue(survives, "the unpushed file survives the purge for later inspection");
+    const artifact = await fs.stat(join(wtPath, "build")).then(
+      () => true,
+      () => false,
+    );
+    assertTrue(!artifact, "the git-ignored build artefact was still cleaned");
+  } finally {
+    if (live) await live.stop();
+    await execAsync("git", ["worktree", "remove", "--force", wtPath], { cwd: dir }).catch(
+      () => undefined,
+    );
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
 async function runTests() {
   await testDeadClaimWorktreeResolution();
   await testOwnerClaimsAreValidated();

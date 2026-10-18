@@ -286,6 +286,13 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   str("SUBAGENT_MODEL", null),
   str("SUBAGENT_PROVIDER", null),
   flag("SYMBOL_MERGE_RETRY", true),
+  // #1454 r2 — a TEST-ONLY fault injection: force the path-claims lock
+  // unreachable so `test-work-driver-claims-concurrent-writers.ts` can prove its
+  // own positive assertion can fail. Listed (not exempted) because the gate
+  // sweeps every `PI_ENSEMBLE_*` read in src/ regardless of who sets it: an
+  // operator who exports it gets an UNSERIALISED claim registry, which is
+  // exactly the kind of outcome-changing knob this table exists to surface.
+  flag("TEST_CLAIMS_LOCK_BLOCKED", false, "internal"),
   int("TEST_DELETE_TOLERANCE", 0),
   // Unset: no budget, except code-review-specialist (8,000,000).
   family(int("TOKEN_BUDGET_<ROLE>", null, "cycle", { unit: "tokens" }), ROLE_MEMBERS),

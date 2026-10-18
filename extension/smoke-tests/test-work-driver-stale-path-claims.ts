@@ -26,7 +26,10 @@ import {
   checkAndRegisterClaims,
   claimStaleReason,
   readClaims,
+  registerClaim,
   releaseClaim,
+  resolveClaimStaleMs,
+  validClaimEntry,
 } from "../src/work-driver-path-claims.ts";
 import { processAlive } from "../src/work-driver-resume.ts";
 import {
@@ -349,28 +352,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-// ================================================================ 24c. #1454 r2 — the age bound is floored, not trusted
-{
-  // `PI_ENSEMBLE_CLAIM_STALE_MS=1` would expire every claim the instant it
-  // was written, which is the "two cycles, one file" false-positive the
-  // registry exists to prevent. The value is clamped, not believed.
-  const src = readFileSync(
-    path.join(import.meta.dirname, "..", "src", "work-driver-path-claims.ts"),
-    "utf8",
-  );
-  assert(
-    /Math\.max\(value,\s*CLAIM_STALE_MIN_FLOOR_MS\)/.test(src),
-    "CLAIM_STALE_MS is clamped to the floor rather than returned verbatim",
-  );
-  assert(
-    CLAIM_STALE_MIN_FLOOR_MS === 300_000,
-    "the floor is the documented 5 minutes (below it, no claim survives a write)",
-  );
-  assert(
-    CLAIM_STALE_MS >= CLAIM_STALE_MIN_FLOOR_MS,
-    "the exported bound never sits below the floor",
-  );
-}
 
 // ================================================================ 25. #1454 — fixtures are the repro's shape, and stay in sync
 {
@@ -419,19 +400,34 @@ function assert(cond: boolean, msg: string) {
 {
   // A second kill(pid,0) in this harness is how the two helpers came to
   // disagree about pid 1 and pid 0 in the first place. Pin the single seam.
-  const src = readFileSync(
-    path.join(import.meta.dirname, "..", "src", "work-driver-path-claims.ts"),
-    "utf8",
-  );
-  const code = src
-    .split("\n")
-    .filter((line) => !line.trimStart().startsWith("*") && !line.trimStart().startsWith("/*"))
-    .join("\n");
-  assert(!code.includes("isProcessAlive"), "path-claims no longer defines its own isProcessAlive");
-  assert(!code.includes("process.kill"), "path-claims contains no module-local kill(pid,0)");
+  //
+  // r2 — the staleness predicates now live in
+  // `work-driver-path-claims-staleness.ts` (the registry module split for the
+  // 500-line gate), so the canary checks BOTH files: neither may grow its own
+  // liveness helper, and the predicate module must be the one that imports
+  // `processAlive` — a file that neither liveness-checks nor imports it is a
+  // file where a third notion of "alive" could be added unnoticed.
+  const dir = path.join(import.meta.dirname, "..", "src");
+  const registry = readFileSync(path.join(dir, "work-driver-path-claims.ts"), "utf8");
+  const staleness = readFileSync(path.join(dir, "work-driver-path-claims-staleness.ts"), "utf8");
+  const strip = (src: string) =>
+    src
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("*") && !line.trimStart().startsWith("/*"))
+      .join("\n");
   assert(
-    /import \{[^}]*processAlive[^}]*\} from "\.\/work-driver-resume\.ts"/.test(src),
-    "path-claims imports processAlive from work-driver-resume.ts",
+    !strip(registry).includes("isProcessAlive"),
+    "the registry module defines no isProcessAlive of its own",
+  );
+  assert(!strip(registry).includes("process.kill"), "the registry contains no kill(pid,0)");
+  assert(
+    !strip(staleness).includes("isProcessAlive"),
+    "the staleness module defines no isProcessAlive of its own",
+  );
+  assert(!strip(staleness).includes("process.kill"), "the staleness module contains no kill(pid,0)");
+  assert(
+    /import \{[^}]*processAlive[^}]*\} from "\.\/work-driver-resume\.ts"/.test(staleness),
+    "the staleness module imports processAlive from work-driver-resume.ts",
   );
 }
 

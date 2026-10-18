@@ -56,10 +56,38 @@ export const SEAMS_1454: Seam[] = [
   },
   {
     // #1454 — the cross-group park's operator action, split from work-queue.ts
-    // for the 500-line gate. humanActionFor is its only production caller.
+    // for the 500-line gate. #1101 moved `humanActionFor` itself into
+    // work-queue-cap.ts, so work-queue-cap.ts is now the production caller —
+    // the canary names the module that actually calls it, not the one that
+    // used to host the function.
     file: "work-queue-parks-claims.ts",
     pending: {},
     testOnly: {},
-    canary: { symbol: "crossGroupAction", importer: "work-queue.ts" },
+    canary: { symbol: "crossGroupAction", importer: "work-queue-cap.ts" },
+  },
+  {
+    // #1101 — the sibling-wait seam, split from work-driver-path-claims.ts for
+    // the 500-line gate. The registry re-exports all three and `readClaims`
+    // consults `claimWaitsForIssues`; `work-entry-queue.ts` is the queue's
+    // setter, which is the wiring this canary pins (the half that shipped
+    // inert the first time).
+    file: "work-driver-path-claims-siblings.ts",
+    pending: {},
+    testOnly: {
+      siblingClaimWaitSnapshot:
+        "#1101 — the negative control for the sibling filter; test-work-entry-queue-wiring.ts. No production caller reads back what its own setter just wrote.",
+    },
+    canary: { symbol: "setSiblingClaimWait", importer: "work-entry-queue.ts" },
+  },
+  {
+    // #1454 — the claims file's disk layer, split from the registry for the
+    // 500-line gate. Three reads and one writer, each with a distinct caller:
+    // the prune wants the raw rows, the writers want the validated subset, and
+    // none of them filters by liveness (that is `readClaims`'s job). All four
+    // are called in production from the registry.
+    file: "work-driver-path-claims-file.ts",
+    pending: {},
+    testOnly: {},
+    canary: { symbol: "writeClaims", importer: "work-driver-path-claims.ts" },
   },
 ];
