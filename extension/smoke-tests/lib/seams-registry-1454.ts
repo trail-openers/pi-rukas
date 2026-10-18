@@ -41,8 +41,6 @@ export const SEAMS_1454: Seam[] = [
     testOnly: {
       findOwningCycleState:
         "worktree-path → owning cycle state; the sweep calls it in production, exported so the suite asserts the multi-workstream name mismatch resolves and path escapes are refused",
-      resolveSweepTargetByPath:
-        "path-shaped wrapper over resolveSweepTarget, so the suite can assert a path named by a dead claimant's map is still confined to .worktrees/",
       resolveSweepTarget:
         "the path-validation gate; pinned by the traversal / not-our-worktree cases",
       decideSweepAction:

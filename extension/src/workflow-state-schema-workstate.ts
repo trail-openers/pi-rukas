@@ -69,7 +69,7 @@ export interface WorkState {
  * still owns its claim until its pid is gone.
  *
  * This predicate, not a re-derived status string per call site, is what
- * `isClaimStale` reads. Keeping the list in exactly one place is the point:
+ * `claimStaleReason` reads. Keeping the list in exactly one place is the point:
  * the claims gate and the worktree sweep must not disagree about what
  * "finished" means.
  */

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import {
   findOwningCycleState,
-  resolveSweepTargetByPath,
+  resolveSweepTarget,
   runWorktreeSweep,
 } from "../src/work-driver-worktree-sweep.ts";
 
@@ -90,16 +90,17 @@ async function testDeadClaimWorktreeResolution() {
     assertTrue(orphan.state === null, "an unclaimed tree resolves to no owner");
 
     // Path traversal stays refused: a path outside .worktrees/ is never a
-    // target, whichever map named it.
+    // target, whichever map named it. Asserted through resolveSweepTarget —
+    // the gate both the sweep loop and the teardown loop actually call.
     await fs.writeFile(join(dir, "package.json"), "{}\n");
-    const traversal = resolveSweepTargetByPath(dir, join(dir, "package.json"));
-    assertFalse(traversal.ok, "a path outside .worktrees/ is refused by resolveSweepTargetByPath");
+    const traversal = resolveSweepTarget(dir, join(dir, "package.json"));
+    assertFalse(traversal.ok, "a path outside .worktrees/ is refused by resolveSweepTarget");
     assertEquals(
       (traversal as { reason?: string }).reason,
       "outside-worktrees",
       "the refusal names the path escape, not a generic failure",
     );
-    const escape = resolveSweepTargetByPath(dir, "/etc");
+    const escape = resolveSweepTarget(dir, "/etc");
     assertFalse(escape.ok, "an absolute path outside the repo is refused");
   } finally {
     await fs.rm(dir, { recursive: true, force: true });

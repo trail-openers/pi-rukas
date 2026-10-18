@@ -50,6 +50,7 @@
  * bug, because the loss arrives after explore+plan have already been paid for.
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
@@ -291,12 +292,25 @@ async function pruneClaims(repoRoot: string, stale: PathClaimEntry[]): Promise<v
   }
 }
 
-/** Atomic write + rename — the one writer shape for the claims file. */
+/**
+ * Atomic write + rename — the one writer shape for the claims file.
+ *
+ * The tmp name is unique per call (pid + random suffix), not a fixed
+ * `<file>.tmp`: two cycles writing the registry concurrently used to share one
+ * scratch path, so one writer's `rename` moved the other's half-written file
+ * into place and the loser's write vanished. Same shape as `writeSnapshot` in
+ * workflow-state.ts. `rename` stays the atomic publish step.
+ */
 async function writeClaims(file: string, entries: PathClaimEntry[]): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(entries, null, 2)}\n`, "utf8");
-  await fs.rename(tmp, file);
+  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmp, `${JSON.stringify(entries, null, 2)}\n`, "utf8");
+    await fs.rename(tmp, file);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => undefined);
+    throw err;
+  }
 }
 
 /**

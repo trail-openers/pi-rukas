@@ -99,21 +99,6 @@ export function resolveSweepTarget(
 }
 
 /**
- * #1454 — resolve a sweep target from a repo root and a worktree path, the
- * shape the claims gate holds (an absolute path from `pipelineState.worktrees`)
- * rather than a directory it has already walked. Path traversal is validated
- * exactly as hard as when the sweep discovers the directory itself: a path
- * that is not under `<repoRoot>/.worktrees/` is refused, never operated on.
- */
-export function resolveSweepTargetByPath(
-  repoRoot: string,
-  worktreePath: string,
-): SweepTargetResult | SweepTargetError {
-  const candidate = resolve(repoRoot, worktreePath);
-  return resolveSweepTarget(repoRoot, candidate);
-}
-
-/**
  * Options for deciding sweep action.
  */
 export interface DecideOpts {

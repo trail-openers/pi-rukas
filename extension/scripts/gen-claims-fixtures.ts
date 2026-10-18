@@ -1,17 +1,31 @@
 #!/usr/bin/env bun
 /**
- * #1454 — generator for the path-claims golden fixtures under
+ * #1454 — generator for the path-claims fixtures under
  * `smoke-tests/fixtures/work-state/`.
  *
- * The fixtures are committed (a test reading a generated file is not a golden
- * fixture) and this generator is their source of truth, so the shapes are
- * reviewable as data rather than as TypeScript object literals scattered
- * through the suite. Re-run after editing this file:
+ * The fixtures are committed (a test reading a freshly generated file is not a
+ * fixture — the committed bytes are what the suite is asserted against) and
+ * this generator is how they are authored, so the shapes are reviewable as
+ * data rather than as TypeScript object literals scattered through the suite.
+ *
+ * It is an AUTHORING tool, not a golden check: nothing in the suite re-runs it
+ * or compares its output to the committed files. Regenerating is therefore a
+ * deliberate act, not a verification step — the committed fixtures are the
+ * contract, and `smoke-tests/fixtures/work-state/loader.ts` reads those.
+ *
+ * Two consequences of that, both deliberate:
+ *   - Regenerating reformats. This file emits every array expanded across
+ *     lines; the committed fixtures keep short arrays (`"inFlightJobIds":
+ *     ["plan:1"]`) on one line, which `JSON.stringify` will not produce. So a
+ *     plain re-run shows whitespace-only diffs on files whose contents did not
+ *     change. Do not commit those — regenerate, diff, and keep only the
+ *     semantic change.
+ *   - Editing a fixture by hand and regenerating are two different operations.
+ *     Hand edits survive only until someone runs this script.
+ *
+ * Re-run after editing this file:
  *
  *   bun extension/scripts/gen-claims-fixtures.ts
- *
- * `test-work-driver-cross-group-conflicts.ts` section 20 asserts the committed
- * files still match what this generator produces, so they cannot rot silently.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
