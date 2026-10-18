@@ -8,6 +8,7 @@ import { runAdversarial } from "./work-driver-adversarial.ts";
 import { runBranch, runDevelop, stampCycleStartRef } from "./work-driver-branch-develop.ts";
 import { runCommitPr } from "./work-driver-commit.ts";
 import type { CycleContext } from "./work-driver-context.ts";
+import { continuePrPreflight } from "./work-driver-continue-pr-lookup.ts";
 import { markDraftPrReady } from "./work-driver-draft-pr.ts";
 import { runExplore } from "./work-driver-explore.ts";
 import { runHandoff } from "./work-driver-handoff.ts";
@@ -39,8 +40,9 @@ export async function runStep(
   trace(`work-driver: running step "${step}" for issue ${ctx.issue}`);
 
   switch (step) {
+    // #1468 — `--continue-pr` stops here when there is no one PR to continue.
     case "explore":
-      return runExplore(ctx, state, now);
+      return (await continuePrPreflight(ctx, state, now)) ?? runExplore(ctx, state, now);
     case "plan":
       return runPlan(ctx, state, now);
     case "branch":

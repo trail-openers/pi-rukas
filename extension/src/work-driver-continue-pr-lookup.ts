@@ -5,10 +5,18 @@
  * is touched.
  */
 
-import type { ForgeType } from "./forge-detect.ts";
+import { type ForgeType, detectForge } from "./forge-detect.ts";
+import { detectMainline } from "./work-driver-branch-mechanized.ts";
+import type { DriverContext } from "./work-driver-context.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import { netRefProblem } from "./work-driver-net-git.ts";
-import type { OpenPrLookup, OpenPrMatch } from "./work-driver-pr-preflight.ts";
+import {
+  type OpenPrLookup,
+  type OpenPrMatch,
+  listOpenPrsForIssue,
+} from "./work-driver-pr-preflight.ts";
+import { execp } from "./work-driver-verify.ts";
+import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 export type ContinueLookupOutcome =
   | { ok: true; pr: OpenPrMatch }
@@ -71,4 +79,63 @@ export async function continueHeadProblem(
     return `PR #${pr.number} targets ${pr.baseRefName ?? "(unknown)"}, not the mainline ${mainline}`;
   }
   return undefined;
+}
+
+export type ContinueCap =
+  | Extract<ContinueLookupOutcome, { cap: string }>["cap"]
+  | "continue-pr-unsafe-head";
+
+async function forgeOf(ctx: DriverContext): Promise<ForgeType> {
+  if (ctx.forge) return ctx.forge.forge;
+  try {
+    return (await detectForge(ctx.repoRoot)).forge;
+  } catch {
+    return "unknown";
+  }
+}
+
+/** The one PR to continue with a safe head, or the cap that says why not. */
+export async function continueLookup(
+  ctx: DriverContext,
+  execFn: VerifyExecFn,
+  mainline: string,
+): Promise<{ ok: true; pr: OpenPrMatch } | { cap: ContinueCap; evidence: string }> {
+  const listed = await listOpenPrsForIssue(execFn, ctx.repoRoot, ctx.issue);
+  const found = classifyContinueLookup(listed, ctx.issue, await forgeOf(ctx));
+  if (!("ok" in found)) return found;
+  const problem = await continueHeadProblem(execFn, ctx.repoRoot, found.pr, mainline);
+  return problem ? { cap: "continue-pr-unsafe-head", evidence: problem } : found;
+}
+
+/** A continue-pr cap that sends the cycle to handoff. */
+export function continueCapHit(
+  state: WorkState,
+  cap: ContinueCap | "continue-pr-head-moved" | "step-failed:branch",
+  evidence: string,
+  now: number,
+): WorkState {
+  return appendEvent(state, {
+    kind: "cap-hit",
+    at: now,
+    cap,
+    reviewRound: state.pipelineState.reviewRound,
+    nextStep: "handoff",
+    evidence,
+  });
+}
+
+/**
+ * Run at explore, so a run that cannot continue a PR stops before any
+ * dispatch is paid for. Returns the capped state, or undefined to go on.
+ * PI_ENSEMBLE_PR_PREFLIGHT does not apply: this lookup is the point of the flag.
+ */
+export async function continuePrPreflight(
+  ctx: DriverContext,
+  state: WorkState,
+  now: number,
+): Promise<WorkState | undefined> {
+  if (!ctx.continuePr || state.pipelineState.continuedPr) return undefined;
+  const execFn = ctx.verifyExecFn ?? execp;
+  const found = await continueLookup(ctx, execFn, await detectMainline(execFn, ctx.repoRoot));
+  return "ok" in found ? undefined : continueCapHit(state, found.cap, found.evidence, now);
 }
