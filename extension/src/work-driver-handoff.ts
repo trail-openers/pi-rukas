@@ -18,6 +18,7 @@ import { handoffForge } from "./work-driver-handoff-forge.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { runHandoffOpsDispatch } from "./work-driver-handoff-ops.ts";
 import {
+  applyIssueLabelDualTarget,
   captureCommittedWork,
   declinesAttentionLabel,
   makeHandoffEmittedEvent,
@@ -257,7 +258,6 @@ export async function runHandoff(
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     try {
       const delivered = await deliverHandoff({
-        repoRoot: ctx.repoRoot,
         issue: ctx.issue,
         prNumber,
         forge,
@@ -278,6 +278,29 @@ export async function runHandoff(
       trace(
         `work-driver: in-process forge fallback failed: ${(err as Error).message?.slice(0, 200)}`,
       );
+    }
+  }
+  // #798 — when prNumber is set, the fallback above applies the label to the
+  // comment target (PR) via postHandoffWithRetry. The ISSUE label is applied
+  // separately here because the retry only targets one object.
+  //
+  // This block sits OUTSIDE the swallow-all try/catch above and is guarded by
+  // `!host`: a host-owned channel never labels anything, and a forge write
+  // here must not be traced away with the rest of the fallback. Do not move it
+  // into `deliverHandoff` — that function is the try/catch's body.
+  if (!host && prNumber && !issueLabelApplied) {
+    const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
+    if (forge) {
+      // #798 — the helper APPLIES the issue label (its return is the
+      // immediately-following read-back, which can be stale/false when the
+      // server-side write has not settled). The authoritative state is a
+      // FRESH read — never trust the helper's first read for the record.
+      const ok = await applyIssueLabelDualTarget(forge, ctx.issue);
+      const verified = ok || (await verifyHandoffLabel(forge, "issue", ctx.issue));
+      issueLabelApplied = verified;
+      // Both targets or nothing: the issue label alone must not report the
+      // PR's failed label as applied (#1219).
+      labelApplied = verified && prLabelApplied === true;
     }
   }
   // #674 — carry the consolidation outcome into the handoff-emitted event so the

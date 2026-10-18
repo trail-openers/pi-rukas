@@ -8,11 +8,7 @@ import fs from "node:fs/promises";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
-import {
-  applyIssueLabelDualTarget,
-  parseHandoffOpsReply,
-  verifyHandoffLabel,
-} from "./work-driver-handoff-post.ts";
+import { parseHandoffOpsReply, verifyHandoffLabel } from "./work-driver-handoff-post.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /**
@@ -34,9 +30,14 @@ export interface HandoffDelivery {
  *
  * `dispatchFailed` gates the provenance record: the fallback's own writes count
  * as "fallback" only when the dispatch itself did not deliver.
+ *
+ * SCOPE: this is the fallback's own leg only. The #798 issue-label write
+ * (`applyIssueLabelDualTarget` + fresh read-back) deliberately does NOT live
+ * here — it sits in the step handler, OUTSIDE the swallow-all try/catch below,
+ * and is guarded by `!host`. A forge write there must be able to surface
+ * rather than be traced away, and a host-owned channel never labels.
  */
 export async function deliverHandoff(args: {
-  repoRoot: string;
   issue: number;
   prNumber?: number;
   forge: Forge | undefined;
@@ -48,7 +49,7 @@ export async function deliverHandoff(args: {
   delivery?: "dispatch" | "fallback";
   dispatchFailed: boolean;
 }): Promise<HandoffDelivery> {
-  const { repoRoot, issue, prNumber, forge, handoffBodyPath, dispatchFailed } = args;
+  const { issue, prNumber, forge, handoffBodyPath, dispatchFailed } = args;
   let { commentUrl, labelApplied, issueLabelApplied, prLabelApplied, delivery } = args;
   if (forge) {
     const objType = prNumber ? "pr" : "issue";
@@ -107,21 +108,6 @@ export async function deliverHandoff(args: {
       issueLabelApplied = true;
       labelApplied = true;
       if (dispatchFailed) delivery = "fallback";
-    }
-    // #798 — when prNumber is set, the fallback above applies the label to the
-    // comment target (PR) via postHandoffWithRetry. The ISSUE label is applied
-    // separately here because the retry only targets one object.
-    if (prNumber && !issueLabelApplied) {
-      // #798 — the helper APPLIES the issue label (its return is the
-      // immediately-following read-back, which can be stale/false when the
-      // server-side write has not settled). The authoritative state is a
-      // FRESH read — never trust the helper's first read for the record.
-      const ok = await applyIssueLabelDualTarget(forge, issue);
-      const verified = ok || (await verifyHandoffLabel(forge, "issue", issue));
-      issueLabelApplied = verified;
-      // Both targets or nothing: the issue label alone must not report the
-      // PR's failed label as applied (#1219).
-      labelApplied = verified && prLabelApplied === true;
     }
   }
   return { commentUrl, labelApplied, issueLabelApplied, prLabelApplied, delivery };
