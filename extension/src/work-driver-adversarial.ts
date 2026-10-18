@@ -94,6 +94,22 @@ export async function runAdversarial(
     parkedInfra,
   } = await fanOutAdversarial(ctx, next, ids, priorOutcomes, priorHadInfraFailure, priorBatchSpan);
   next = fannedNext;
+  // #1634 — a workstream whose diff could not be read has no verdict and can
+  // get none: halt with git's error rather than approve, retry or reject.
+  const unreadable = outcomes.filter((o) => o.diffUnreadable);
+  if (unreadable.length > 0) {
+    trace(
+      `work-driver: adversarial diff unreadable for [${unreadable.map((o) => o.id)}] — halting`,
+    );
+    return appendEvent(withParsedSiblings(next, outcomes, now), {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "adversarial-diff-unreadable",
+      reviewRound: state.pipelineState.reviewRound,
+      nextStep: "handoff",
+      evidence: unreadable.map((o) => `[${o.id}] ${o.diffUnreadable}`).join("; "),
+    });
+  }
   if (parked) {
     next = appendEvent(next, {
       kind: "cap-hit",

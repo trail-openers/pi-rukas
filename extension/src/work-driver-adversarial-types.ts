@@ -78,6 +78,9 @@ export interface AdversarialOutcome {
   completionEvent?: WorkEvent;
   failureEvent?: WorkEvent;
   branchEvent?: WorkEvent;
+  /** #1634 — the worktree diff could not be read; git's error. No review ran
+   * and none can: the step halts with `adversarial-diff-unreadable`. */
+  diffUnreadable?: string;
 }
 
 /** The `outcome` a per-workstream event records. */

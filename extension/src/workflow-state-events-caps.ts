@@ -108,6 +108,8 @@ export type WorkCapLiteral =
   // empty-diff guard APPROVED on it, merging code unreviewed. Halting
   // is cheap; approving on the absence of evidence is not.
   | "lens-diff-unreadable"
+  // #1634 — the same halt for the adversarial gate's worktree diff read.
+  | "adversarial-diff-unreadable"
   // #1398 — the review was about to run again after the PR had been marked
   // ready, and putting the PR back to a draft failed (or the cycle's
   // `pr ready` attempts are spent). Continuing would run a review on a PR

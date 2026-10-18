@@ -22,6 +22,16 @@ export function explainLens(cap: Cap, state: WorkState): string {
       const why = state.pipelineState.lensDiffError ?? "(no detail recorded)";
       return `The six-pass code review could not read the diff it is supposed to review: ${why}. The driver halted rather than approving. Before #384 an unreadable diff returned empty, and the empty-diff guard treated empty as approved — so a stale ref or a transient git error merged code that nothing had reviewed. Check that the branch is pushed and \`origin\` is current (\`git fetch origin --prune\`), then re-run.`;
     }
+    case "adversarial-diff-unreadable": {
+      // #1634 — the pre-commit gate's twin of lens-diff-unreadable.
+      const hit = [...state.eventLog]
+        .reverse()
+        .find(
+          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
+            e.kind === "cap-hit" && e.cap === "adversarial-diff-unreadable",
+        );
+      return `The adversarial gate could not read the worktree diff it is supposed to review: ${hit?.evidence ?? "(no detail recorded)"}. The driver halted rather than approving. Before #1634 an unreadable worktree diff returned empty and the empty-diff skip approved it, so code nothing had seen went on to commit. The worktree still holds the work: check it with \`git -C <worktree> status\` (the path is in the error above), fix what git reports, then re-run.`;
+    }
     case "lens-fix-not-integrated": {
       // #492 — the cap-hit itself carries the cause and the git evidence
       // that establishes it, plus the worktree the driver inspected. Read

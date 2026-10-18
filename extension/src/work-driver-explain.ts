@@ -121,6 +121,7 @@ export function explainCap(
     case "intent-park":
       return explainPrSteps(cap, state);
     case "lens-diff-unreadable":
+    case "adversarial-diff-unreadable":
       return explainLens(cap, state);
     case "adversarial-infra-failure":
       return explainOther(cap, state);
