@@ -226,6 +226,16 @@ export function humanActionFor(
     return `revise the body of #${primary} — the spec is underspecified`;
   }
   if (/explore-already-complete/.test(reason)) return `confirm and close #${primary}`;
+  // #1243 — the endpoint caused this park, not the work. The advice must match
+  // explainCap AND the driver's actual re-entry behaviour: a provider park
+  // terminalises as `interrupted` (reason `provider`), which the driver
+  // re-enters, so a plain `/work N` resumes the halted step. `--restart` would
+  // wipe the state file and rebuild a cycle whose steps are all still there to
+  // resume from. Pre-fix this advice said "resumes where it stopped" while the
+  // park terminalised as the terminal `handoff`, which REFUSES a plain re-run —
+  // advice no invocation could follow.
+  if (/provider-unavailable/.test(reason))
+    return `re-run \`/work ${primary}\` once the model endpoint answers — this park stays resumable, so the halted step re-enters and finished steps are not rebuilt; do NOT pass --restart (nothing about this cycle's code was judged: there is no defect to inspect)`;
   if (/explore-bodies-empty/.test(reason))
     return "fix the gh setup (`gh auth status`), then re-run";
   if (/round-cap|adversarial-loop|wall-clock/.test(reason)) {

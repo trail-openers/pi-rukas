@@ -11,7 +11,8 @@
  * Subagents do NOT inherit pi-rukas's permission interceptor.
  * Split (#171): types in `pi-event-shapes.ts`, helpers in `spawn-support.ts`,
  * extension forwarding in `spawn-extension-forward.ts`, event collapsing
- * in `spawn-collapse-events.ts`, this file keeps `spawnSpecialist`.
+ * in `spawn-collapse-events.ts`, the kill-flag / cap-session / wall-clock and
+ * abort arms in `spawn-watchdog.ts` (#1470), this file keeps `spawnSpecialist`.
  */
 
 import { spawn } from "node:child_process";
@@ -30,7 +31,7 @@ import { kickPiResolutionProbe } from "./pi-version-probe.ts";
 import { emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLES, type RoleName, isRoleName } from "./roles.ts";
-import { type CapSession, capKillAttribution, createCapSession } from "./spawn-caps.ts";
+import { capKillAttribution } from "./spawn-caps.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
 import {
   applyUserExtension,
@@ -43,20 +44,25 @@ import {
   createStdoutLineHandler,
   isStdinEcho,
 } from "./spawn-inflight.ts";
-import { groupSpawnOpts, killProcessTree, registerChild } from "./spawn-kill.ts";
+import { groupSpawnOpts, registerChild } from "./spawn-kill.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
 import {
   STDERR_TAIL_BYTES,
   assertLiveSpawnAllowed,
   buildChildArgs,
   buildCwdHint,
-  capKillGraceMs,
   makeRunId,
   reconcileObservedCounts,
   spawnBackstopMs,
   transcriptPathFor,
   willRetryAfter,
 } from "./spawn-support.ts";
+import {
+  armAbortSignal,
+  armCapSession,
+  armWallClockBackstop,
+  declareKillFlags,
+} from "./spawn-watchdog.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
@@ -274,47 +280,18 @@ async function spawnSpecialistInner(
     }
   };
 
-  // #543 F1/F6 — dispatch caps (loop detector + token budget). The cap
-  // session (spawn-caps.ts) owns the per-spawn detector/tracker state, the
-  // grace-window timers and the killCause priority (loop > inactivity =
-  // tool-inactivity > token-budget > timeout > abort — the most specific
-  // wins). Created
-  // BEFORE `createInterface` below because the line handler references
-  // `caps` on the first stdout line: a `const caps` initialized after the
-  // attach would be in the TDZ for any early line (ReferenceError).
-  let timedOut = false;
-  let inactivityKilled = false;
-  // #951 — the in-flight-tool silence kill: a toolCall's result never
-  // arrived, and the silence outlasted the tool-inactivity bound.
-  let toolInactivityKilled = false;
-  // #951 — the budget that actually fired (set by the inactivity poll's
-  // onKill callback; the active bound, since exactly one is armed per poll).
-  let killedBudgetMs = 0;
-  let aborted = false;
-  // #543 H1 — grace-window kill race: observed EXITS (exit + 'close') set
-  // childExited immediately, before the `once(child, "exit")` await below
-  // can resolve. The guard relies on the `exit` event's ordering (it fires
-  // before the process is reaped); `close` is belt-and-braces — it fires
-  // only after `exit`, once stdio is fully drained.
-  let childExited = false;
-  child.on("exit", () => {
-    childExited = true;
-  });
-  child.on("close", () => {
-    childExited = true;
-  });
-  const caps: CapSession = createCapSession({
+  // #543 F1/F6 — dispatch caps (loop detector + token budget), and the kill
+  // flags the session reads by closure, now live in spawn-watchdog.ts (#1470).
+  // Ordering is load-bearing: `declareKillFlags` runs first (the session
+  // closes over the flags), `armCapSession` BEFORE `createInterface` below
+  // because the line handler references `caps` on the first stdout line — a
+  // `const caps` initialized after the attach would be in the TDZ for any
+  // early line (ReferenceError).
+  const flags = declareKillFlags();
+  const caps = armCapSession(child, flags, {
     role: spec.role,
-    child,
     onSteer: opts.onSteer,
-    totalTokens: () => runningState.totalTokens,
-    timedOut: () => timedOut,
-    inactivityKilled: () => inactivityKilled,
-    toolInactivityKilled: () => toolInactivityKilled,
-    aborted: () => aborted,
-    capKillGraceMs: capKillGraceMs(),
-    childExited: () => childExited,
-    turns: () => runningState.turns,
+    runningState,
   });
   // Inactivity watchdog state (#296): ANY stdout line counts as life —
   // parseable or not. Checked on a coarse interval below.
@@ -357,19 +334,12 @@ async function spawnSpecialistInner(
   child.stderr.on("data", (d) => {
     appendStderr(d);
   });
-  // Always cap wall-clock — see SPAWN_BACKSTOP_MS. A stalled child without a
-  // timeout hangs the parent indefinitely (observed in the wild: overnight
-  // stuck session). The backstop only catches runaway loops; the inactivity
-  // watchdog below is what detects true hangs, and it does so without a view
-  // on how fast the child's model happens to be. `timedOut` / `inactivityKilled`
-  // / `aborted` are declared with the cap session above (the session reads
-  // them by closure, so they must exist before `createCapSession` runs).
+  // Always cap wall-clock — see SPAWN_BACKSTOP_MS. Armed in spawn-watchdog.ts
+  // (#1470); the `timedOut` / `inactivityKilled` / `aborted` flags it sets are
+  // declared with the cap session above (the session reads them by closure, so
+  // they must exist before `createCapSession` runs).
   const timeoutMs = opts.timeoutMs ?? spawnBackstopMs();
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    // Group kill: SIGTERM, then SIGKILL if the tree ignores SIGTERM (#1024).
-    killProcessTree(child);
-  }, timeoutMs);
+  const timeout = armWallClockBackstop(child, flags, timeoutMs);
 
   // Inactivity watchdog (#296): kill only on total stdout silence. Coarse
   // poll — half the budget, clamped to [250ms, 30s] so production budgets
@@ -384,29 +354,20 @@ async function spawnSpecialistInner(
     inFlightTools,
     lastActivityAt: () => lastActivityAt,
     onKill: (cause, budgetMs, toolNames) => {
-      if (cause === "tool-inactivity") toolInactivityKilled = true;
-      else inactivityKilled = true;
+      if (cause === "tool-inactivity") flags.setToolInactivityKilled(true);
+      else flags.setInactivityKilled(true);
       // #951 — name the tool(s) that went silent, so the report shows
       // WHAT is in flight instead of a bare cause. Inactivity kills
       // keep today's parsed.type behaviour (lastActivityKind above).
       lastActivityKind = `toolCall in flight: ${toolNames.join(", ")}`;
-      killedBudgetMs = budgetMs;
+      flags.setKilledBudgetMs(budgetMs);
     },
   });
 
-  // Propagate Pi's user-cancel (Esc) signal: kill the child so the tool
-  // execute promise resolves and Pi un-stuck immediately.
-  const onAbort = () => {
-    aborted = true;
-    killProcessTree(child);
-  };
-  if (opts.signal) {
-    if (opts.signal.aborted) {
-      onAbort();
-    } else {
-      opts.signal.addEventListener("abort", onAbort, { once: true });
-    }
-  }
+  // Propagate Pi's user-cancel (Esc) signal, armed in spawn-watchdog.ts
+  // (#1470): kill the child so the tool execute promise resolves and Pi
+  // un-stuck immediately.
+  const detachAbort = armAbortSignal(child, flags, opts.signal);
 
   let exitCode: number | null = null;
   try {
@@ -415,7 +376,7 @@ async function spawnSpecialistInner(
     clearTimeout(timeout);
     stopInactivityPoll();
     caps.cleanup();
-    opts.signal?.removeEventListener("abort", onAbort);
+    detachAbort();
     // Best-effort cleanup of the temp prompt file; ignore errors.
     fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
     // Stop the per-spawn permission broker; unlinks the socket file.
@@ -428,18 +389,18 @@ async function spawnSpecialistInner(
     }
   }
 
-  if (timedOut) {
+  if (flags.timedOut()) {
     appendStderr(`\n[pi-rukas] killed after ${timeoutMs}ms timeout`);
   }
-  if (inactivityKilled) {
-    appendStderr(`\n[pi-rukas] killed after ${killedBudgetMs}ms inactivity`);
+  if (flags.inactivityKilled()) {
+    appendStderr(`\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms inactivity`);
   }
-  if (toolInactivityKilled) {
+  if (flags.toolInactivityKilled()) {
     appendStderr(
-      `\n[pi-rukas] killed after ${killedBudgetMs}ms with a tool call in flight (tool-inactivity)`,
+      `\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms with a tool call in flight (tool-inactivity)`,
     );
   }
-  if (aborted) {
+  if (flags.aborted()) {
     appendStderr("\n[pi-rukas] cancelled by user (Esc)");
   }
 
@@ -467,8 +428,8 @@ async function spawnSpecialistInner(
   // #951 — each silence kill records the ACTIVE bound (the one the poll
   // armed), since exactly one budget is checked per poll.
   if (result.killCause === "timeout") result.killBudgetMs = timeoutMs;
-  if (result.killCause === "inactivity") result.killBudgetMs = killedBudgetMs;
-  if (result.killCause === "tool-inactivity") result.killBudgetMs = killedBudgetMs;
+  if (result.killCause === "inactivity") result.killBudgetMs = flags.killedBudgetMs();
+  if (result.killCause === "tool-inactivity") result.killBudgetMs = flags.killedBudgetMs();
   // A killed child never completed its assignment, whatever its exit code.
   if (result.killCause) {
     result.ok = false;

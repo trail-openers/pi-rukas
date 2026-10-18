@@ -35,6 +35,7 @@ import type {
   ConsolidatedVerifySkippedEvent,
   VerifyFlakeRecoveredEvent,
   VerifyFullStatusEvent,
+  VerifyRunEvent,
 } from "./workflow-state-events-verify-flake.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 // #539 — single definition in the sibling fragment module.
@@ -451,6 +452,7 @@ export type WorkEvent =
   | VerifyFlakeRecoveredEvent
   | ConsolidatedVerifySkippedEvent
   | ConsolidatedVerifyPreExistingEvent
+  | VerifyRunEvent
   | WideningScanEvent
   | MemoryEventFragment
   | WorktreeProvisionedEvent

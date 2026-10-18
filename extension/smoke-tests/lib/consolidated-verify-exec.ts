@@ -44,16 +44,23 @@ export function installVerifyCmd(repo: string, markerFile: string, opts: { fail?
  * The executor: real git, but a verify-command run is counted and replaced by
  * a canned outcome (`fail` reproduces the command's own exit-1 branch without
  * executing it). The counter lives in-memory so a counted run cannot disturb
- * tree identity. `breakAtRepoRoot` makes selected git reads at repoRoot throw
+ * tree identity. `onRun` lets a test observe state at the moment a run
+ * starts. `breakAtRepoRoot` makes selected git reads at repoRoot throw
  * — the identity-read failure case.
  */
 export function makeExec(
   counts: Counts,
-  opts: { fail?: boolean; breakAtRepoRoot?: (cmd: string) => boolean } = {},
+  opts: {
+    fail?: boolean;
+    breakAtRepoRoot?: (cmd: string) => boolean;
+    /** Called as each verify run is counted, before its outcome. */
+    onRun?: () => void;
+  } = {},
 ): NonNullable<DriverContext["verifyExecFn"]> {
   return async (cmd, o) => {
     if (cmd.startsWith("sh -c 'echo run >>")) {
       counts.runs.push({ cwd: o?.cwd ?? "?" });
+      opts.onRun?.();
       if (opts.fail) {
         throw Object.assign(new Error("verify command exited non-zero"), {
           stdout: "",

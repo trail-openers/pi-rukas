@@ -14,11 +14,21 @@ import type { ExitOrigin } from "./workflow-state-events-exit-origin.ts";
 import type { WorkStep } from "./workflow-state-events.ts";
 
 /**
- * Why a cycle was interrupted: the runner's SIGTERM / SIGINT / SIGHUP (`signal`)
- * or its own `--timeout` (`timeout`). The one vocabulary for the event field,
- * the abort reason and the exit code (headless/exit-code.ts).
+ * Why a cycle was interrupted: the runner's SIGTERM / SIGINT / SIGHUP (`signal`),
+ * its own `--timeout` (`timeout`), or a park the model ENDPOINT caused
+ * (`provider`, #1243). The one vocabulary for the event field, the abort reason
+ * and the exit code (headless/exit-code.ts).
+ *
+ * `provider` is the one reason no signal writes. A #1243 provider park terminalises
+ * as `interrupted` with this reason rather than `handoff`, because `handoff` is
+ * terminal: re-entry refuses it without `--restart`, which wipes the state file and
+ * rebuilds finished steps. The advice that cap carried said the opposite ("the step
+ * resumes where it stopped"), and a cycle the ENDPOINT stopped has nothing for a
+ * person to look at — so it is parked in the one status the driver already re-enters
+ * for free. `headless/exit-code.ts` maps it to the handoff exit code, so the host
+ * contract for a provider park is unchanged; only re-entry is.
  */
-export type InterruptReason = "signal" | "timeout";
+export type InterruptReason = "signal" | "timeout" | "provider";
 
 /**
  * The session was shut down under a running cycle (Pi's `session_shutdown`).

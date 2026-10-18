@@ -263,9 +263,55 @@ export function applyInterrupt(
     ...state,
     pipelineState: { ...state.pipelineState, status: "interrupted" as const },
   };
+  // The driver's own provider park (#1243) is the one interrupt that is a
+  // genuine boundary rather than a mid-flight halt, and the reason is the
+  // discriminator — NOT the presence of `step`. A SIGTERM fired mid-step also
+  // names its step (#1371: that step's own failure classification must not be
+  // reported as the cycle's cap), so a step-based test would silently turn a
+  // signal into a resumable park and clear its in-flight ids.
+  // `parkProviderInterrupt` is the only caller that passes reason `provider`.
+  const resumable = reason === "provider";
+  if (resumable) {
+    // The log still ends on the caller's own `cap-hit` (this appends nothing),
+    // and the pipelineState keeps the halted step that re-entry resumes at —
+    // both are the shape `nextStep()` / the resume classifier already route on.
+    // `inFlightJobIds` is cleared for the same reason `clearForResume` clears it
+    // after a crash: the dispatch that died is gone, and an id with no
+    // `dispatch-started` is corrupt state that `detectInconsistencies` would
+    // halt re-entry on — which is precisely what this park must not do.
+    return {
+      ...interrupted,
+      pipelineState: { ...interrupted.pipelineState, inFlightJobIds: [] },
+    };
+  }
   const last = state.eventLog[state.eventLog.length - 1];
   if (last?.kind === "interrupted" && last.reason === reason) return interrupted;
   return appendEvent(interrupted, { kind: "interrupted", at, reason, ...(step ? { step } : {}) });
+}
+
+/**
+ * #1243 — park a cycle whose step died of the model ENDPOINT, once its handoff
+ * was delivered.
+ *
+ * A `handoff` status is TERMINAL: `runWorkDriverInner` refuses to re-enter it
+ * without `--restart`, which wipes the state file and rebuilds steps that are
+ * all still there to resume from. That is the wrong shape for a park the
+ * endpoint caused — nothing in the cycle's code was judged, there is no defect
+ * for a person to inspect, and the whole point of the `provider-unavailable`
+ * cap is that the caller re-queues it when the endpoint answers again. So the
+ * park reuses the one status the driver already re-enters without a fight:
+ * `interrupted`, with reason `provider` and the halted step named.
+ *
+ * Every property that made `handoff` the right status is kept: the event log
+ * ends on the same `cap-hit` it did before (this appends nothing when the log
+ * already ends on an interrupted event, and the caller persists AFTER the
+ * handoff wrote its record), the handoff comment and label are already out, and
+ * the host's exit code is unchanged (see `headless/exit-code.ts`, which maps
+ * `interrupted` + this reason to `EXIT.handoff`). What changes is only that
+ * `/work N` re-enters at the halted step instead of refusing.
+ */
+export function parkProviderInterrupt(state: WorkState, step: WorkStep, at: number): WorkState {
+  return applyInterrupt(state, "provider", at, step);
 }
 
 /**

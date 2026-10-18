@@ -78,6 +78,11 @@ type FailedDispatch = Extract<WorkEvent, { kind: "dispatch-failed" | "dispatch-f
 /** Caps a failed dispatch causes: the failure is read from that dispatch. */
 const DISPATCH_CAPS: ReadonlySet<string> = new Set([
   "adversarial-infra-failure",
+  // #1243 — listed so the failed dispatch behind a provider park is read: its
+  // cause, provider message and exit code reach the host, and the KIND still
+  // comes from the cap (CAP_KIND_WINS below) rather than from the last event,
+  // which on a multi-attempt outage is whichever rung died last.
+  "provider-unavailable",
   "developer-timeout",
   "review-incomplete",
   "loop-detected",
@@ -95,7 +100,12 @@ const DISPATCH_CAPS: ReadonlySet<string> = new Set([
 
 /** Caps whose KIND comes from the cap itself, even when a failed dispatch
  *  exists to explain them (#1403). */
-const CAP_KIND_WINS: ReadonlySet<string> = new Set(["develop-child-crash"]);
+const CAP_KIND_WINS: ReadonlySet<string> = new Set([
+  "develop-child-crash",
+  // #1243 — the outage is the reason, and the cap already says so; a rung of
+  // the retry ladder that died of something else must not relabel the park.
+  "provider-unavailable",
+]);
 
 /** The kind a cap implies when no failed dispatch explains it. */
 function capKind(cap: string): FailureKind {
@@ -114,6 +124,10 @@ function capKind(cap: string): FailureKind {
       return "timeout";
     case "verify-env":
       return "environment";
+    // #1243 — the endpoint, not the work. This is the field a headless caller
+    // switches on to re-queue a cycle by itself once the provider answers.
+    case "provider-unavailable":
+      return "provider";
     case "driver-crash":
       return "driver";
     // #1403 — a develop child whose own engine died. Not `process` (that is

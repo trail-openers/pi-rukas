@@ -16,7 +16,10 @@ import { slowRecorder } from "./slow-events.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import { capKillOutcomeFields } from "./work-driver-adversarial-fanout-capkill.ts";
+import {
+  capKillOutcomeFields,
+  retryLadderKillCause,
+} from "./work-driver-adversarial-fanout-capkill.ts";
 import { outcomeEvents } from "./work-driver-adversarial-fanout-events.ts";
 import {
   interpretReview,
@@ -42,11 +45,13 @@ import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { fetchDiff } from "./work-driver-diff.ts";
 import {
   jitteredMs,
+  providerRetryWaitMs,
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
+import { providerSleep } from "./work-driver-step-router.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { driverGateCmd } from "./work-driver-verify-pr17.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -291,6 +296,10 @@ export async function fanOutAdversarial(
       // evidence) so the aggregate parks with the fixed-literal cap
       // INSTEAD of the generic infra cap (see work-driver-adversarial).
       ...capKillOutcomeFields(result),
+      // #1243 — and the watchdog kill (timeout / inactivity / tool-inactivity /
+      // abort / plan-timeout) for the retry ladder alone. Order matters:
+      // `capKillOutcomeFields` wins for loop / token-budget, which it owns.
+      ...(retryLadderKillCause(result) ? { killCause: retryLadderKillCause(result) } : {}),
       completionEvent,
       branchEvent: multi
         ? {
@@ -408,18 +417,32 @@ export async function fanOutAdversarial(
     // #486 — retry each failing workstream with the same backoff the
     // step-level router applies: provider-stated delay as floor, full
     // jitter, one shared wait so siblings that share a 429 clear together.
+    // #1243 — a provider-class failure gets the minutes-floor ladder (the 5s
+    // ladder re-spawns inside the same outage); the attempt index scales it and
+    // the total stays bounded, so a fan-out cannot sleep past the incident.
     const waitMs = transientRetryEnabled()
       ? Math.max(
           0,
           ...candidates.map((o) =>
             jitteredMs(
-              transientRetryBackoffMs() * ((localRetries[o.id] ?? 0) + 1),
+              providerRetryWaitMs(
+                classify(o),
+                (localRetries[o.id] ?? 0) + 1,
+                transientRetryBackoffMs() * ((localRetries[o.id] ?? 0) + 1),
+              ),
               classify(o).waitMs ?? 0,
             ),
           ),
         )
       : 0;
-    if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+    // #1243 — the SAME injectable seam the step router's provider ladder uses
+    // (`providerSleep` in work-driver-step-router.ts), so the offline suite
+    // records this wait instead of sleeping through it, and the abort signal
+    // still ends it early in production. The seam's default IS `abortableSleep`,
+    // so behaviour is unchanged in production; the difference is that the two
+    // ladder sites can now be observed by one test seam rather than one being
+    // hard-wired to the real timer.
+    if (waitMs > 0) await providerSleep(waitMs, ctx.signal);
     const budget: Record<string, number> = { ...localRetries };
     for (const o of candidates) {
       const incremented = (localRetries[o.id] ?? 0) + 1;
