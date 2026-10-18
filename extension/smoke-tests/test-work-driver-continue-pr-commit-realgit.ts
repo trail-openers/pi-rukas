@@ -8,17 +8,12 @@
  * pushed plainly after a verify run, with no second PR. Markers left behind,
  * a foreign push during verify, a failing fast-forward and a main that is red
  * at M each stop without a push over the PR and without the ops fallback.
+ * Edits the developer left uncommitted are committed and pushed, and a push
+ * that fails rewinds the local branch so a re-entry still sees the work.
  */
 
 import { execFile } from "node:child_process";
-import {
-  chmodSync,
-  copyFileSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -120,7 +115,12 @@ type Harness = {
 };
 
 /** The cycle's context; `onVerify` runs before the first verify command. */
-function harness(repo: string, P: string, onVerify?: () => Promise<void>): Harness {
+function harness(
+  repo: string,
+  P: string,
+  onVerify?: () => Promise<void>,
+  failPush = false,
+): Harness {
   const gh: string[] = [];
   const pushes: string[] = [];
   const dispatched: string[] = [];
@@ -141,7 +141,10 @@ function harness(repo: string, P: string, onVerify?: () => Promise<void>): Harne
       if (cmd.startsWith("gh pr list")) return { stdout: JSON.stringify([row]) };
       return { stdout: "{}" };
     }
-    if (/^git (.* )?push( |$)/.test(cmd)) pushes.push(cmd);
+    if (/^git (.* )?push( |$)/.test(cmd)) {
+      pushes.push(cmd);
+      if (failPush) throw new Error("simulated push rejection");
+    }
     if (cmd.includes("verify.sh")) {
       verifyRuns++;
       if (verifyRuns === 1) await onVerify?.();
@@ -169,8 +172,7 @@ function capOf(state: WorkState): string | undefined {
 }
 
 const remoteHead = async (origin: string) => git(origin, ["rev-parse", `refs/heads/${HEAD}`]);
-const forced = (pushes: string[]) =>
-  pushes.filter((p) => /--force|(^| )-f( |$)| \+|lease/.test(p));
+const forced = (pushes: string[]) => pushes.filter((p) => /--force|(^| )-f( |$)| \+|lease/.test(p));
 
 async function branchStep(h: Harness): Promise<WorkState> {
   const out = await runBranch(h.ctx, initialState(5), 1000);
@@ -291,7 +293,58 @@ try {
       `main red at M: the followup park reason (${capOf(out)})`,
     );
     assert((await remoteHead(origin)) === P, "main red at M: remote unchanged");
+    assert(
+      (await git(repo, ["rev-parse", `refs/heads/${HEAD}`])) === P,
+      "main red at M: the unpushed local branch is rewound to P",
+    );
     assert(h.dispatched.length === 0, "main red at M: zero dispatches");
+  }
+
+  {
+    const { repo, origin, P, M } = await fixture();
+    const h = harness(repo, P);
+    const st = await branchStep(h);
+    const wt = st.pipelineState.worktrees?.default ?? "";
+    writeFileSync(path.join(wt, "d.txt"), "developer fix\n");
+    const res = await mechanizedCommitPr(h.ctx, st, 2000);
+    const R = await remoteHead(origin);
+    const merge = await git(origin, ["rev-parse", `${R}^`]);
+    const parents = (await git(origin, ["rev-list", "--parents", "-n", "1", merge])).split(" ");
+    assert(
+      res.ok === true,
+      `uncommitted edits: commit-pr succeeds (${res.ok ? "ok" : res.reason})`,
+    );
+    assert(
+      (await git(origin, ["show", `${R}:d.txt`]).catch(() => "")) === "developer fix",
+      "uncommitted edits: the developer's file is in the pushed head",
+    );
+    assert(
+      parents[1] === P && parents[2] === M,
+      "uncommitted edits: they sit on top of the [P, M] merge",
+    );
+  }
+
+  {
+    const { repo, origin, P } = await fixture();
+    const h = harness(repo, P, undefined, true);
+    const st = await branchStep(h);
+    const wt = st.pipelineState.worktrees?.default ?? "";
+    const H = await git(wt, ["rev-parse", "HEAD"]);
+    const out = await runCommitPr(h.ctx, st, 2000);
+    assert(
+      capOf(out) === "step-failed:commit-pr",
+      `failed push: step-failed:commit-pr (${capOf(out)})`,
+    );
+    assert((await remoteHead(origin)) === P, "failed push: remote unchanged");
+    assert(
+      (await git(repo, ["rev-parse", `refs/heads/${HEAD}`])) === P,
+      "failed push: the local branch is rewound to P",
+    );
+    assert(
+      (await git(wt, ["rev-parse", "HEAD"])) === H,
+      "failed push: the worktree keeps the merge",
+    );
+    assert(h.dispatched.length === 0, "failed push: zero dispatches");
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
