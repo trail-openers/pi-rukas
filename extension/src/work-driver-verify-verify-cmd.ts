@@ -447,14 +447,12 @@ export async function runVerifyCommandGate(opts: {
     cmd,
     failures,
     notes,
-    // #1509 — the bound and knob this gate resolved, not one the reporter
-    // re-reads from the environment.
+    // #1509 — the bound and knob this gate resolved, not re-read from env.
     timeoutMs: suiteTimeoutMs,
     timeoutKnob: suiteTimeoutKnob,
     ctx,
     worktrees,
-    // #813 — the plan's declared paths let the no-fence conflict text say
-    // "likely coupled" when the failure names a file a sibling declared.
+    // #813 — declared paths let the conflict text say "likely coupled".
     workstreams: state.pipelineState.workstreams,
     perWorktreeFailuresByWs,
     singlePerWs,
