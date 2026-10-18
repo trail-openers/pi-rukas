@@ -135,7 +135,7 @@ for (const [name, render] of [
     capturedAt: 3,
   };
   s.eventLog = [
-    { kind: "cap-hit", at: 3, cap: "developer-timeout", reviewRound: 0, nextStep: "handoff" },
+    { kind: "cap-hit", at: 3, cap: "spawn-backstop", reviewRound: 0, nextStep: "handoff" },
   ] as WorkEvent[];
   const out = renderHandoffUserMessage(s, REPO, `${REPO}/tmp`);
   assert(

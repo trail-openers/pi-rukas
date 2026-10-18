@@ -27,10 +27,13 @@ import { recordedPrUrl } from "./pr-url.ts";
  * v3 (#1327): per issue `parkReason` and `handoff` (channel, marker, body).
  * v4 (#1384): the cap `wall-clock` is renamed `lens-review-timeout` — it was
  * the lens-review fix loop's budget, and a host read it as its own cycle clock.
+ * v5 (#1560): the cap `developer-timeout` is renamed `spawn-backstop` (it names
+ * the 2-h spawn backstop, not a developer bound), and the per-child run bound
+ * adds the template `child-timeout:<step>`.
  * Additive, no bump: top-level `resources` (#1325); per issue `failure`
  * (#1367), `usage.byRole` (#1368) and `continuedPr` (#1468).
  */
-export const RESULT_SCHEMA_VERSION = 4 as const;
+export const RESULT_SCHEMA_VERSION = 5 as const;
 
 /** Token and cost totals over a set of dispatches, and how many there were. */
 export type UsageTotals = DispatchUsage & { dispatches: number };

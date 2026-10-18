@@ -139,9 +139,9 @@ export interface DriverContext {
     opts?: {
       label?: string;
       skipDeck?: boolean;
-      /** #838 — see dispatchCore's deck option. */
-      deck?: { cycleKey: string; label: string; deckLabel?: string };
+      deck?: { cycleKey: string; label: string; deckLabel?: string }; // #838 — see dispatchCore
       timeoutMs?: number;
+      childBoundMs?: number; // #1560 — the per-child run bound (spawn-child-bound.ts)
       /** #1024 — the cycle's abort, and whether the child leads its own group. */
       signal?: AbortSignal;
       processGroup?: boolean;

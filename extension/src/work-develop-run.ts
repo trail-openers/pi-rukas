@@ -20,6 +20,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { buildMemoryBrief } from "./memory-brief.ts";
+import { developChildBoundMs } from "./spawn-child-bound.ts";
 import { trace } from "./trace.ts";
 import {
   type CrashVerdict,
@@ -318,6 +319,8 @@ export function makeRunOneWorkstream(
           {
             label: developerLabel,
             ...(reviewFixBoundMs !== undefined ? { timeoutMs: reviewFixBoundMs } : {}),
+            // #1560 — the per-child run bound (policy: develop 90 min).
+            childBoundMs: developChildBoundMs(),
             // #838 — the developer row's deck entry (row label `#<issue>
             // develop · <workstream>` — display only; the job label above is
             // what the cap checkpoint's `developer[<id>]` parse sees).

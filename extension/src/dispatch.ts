@@ -147,6 +147,8 @@ export function dispatchCore(
      *  never a report steer-back to the PM. */
     deck?: DriverDeckOpts;
     timeoutMs?: number;
+    /** #1560 — the per-child run bound (SpawnOptions.childBoundMs). */
+    childBoundMs?: number;
     extraArgs?: string[];
     onSlow?: OnSlowCallback;
     /**
@@ -227,6 +229,7 @@ export function dispatchCore(
         // run) and `handoffDispatchTimeoutMs` (work-driver-handoff.ts — a park
         // comment is a few gh calls and a markdown render).
         timeoutMs: opts.timeoutMs,
+        childBoundMs: opts.childBoundMs,
         // Companion-extension plumbing (lens-reporter / policy-reporter /
         // plan-reporter precedent): the plan driver pins its Phase-2 children
         // to the report_plan_item tool via `--no-skills --extension <path>`.

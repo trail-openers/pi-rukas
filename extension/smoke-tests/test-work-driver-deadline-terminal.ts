@@ -158,7 +158,7 @@ const lastCapOf = (s: WorkState) => {
   const out = terminalReasonAtHandoff(cycle175(), undefined, AT + 1);
   const cap = lastCapOf(out);
   assert(
-    cap?.cap === "developer-timeout",
+    cap?.cap === "spawn-backstop",
     `175: a developer killed at its backstop is the terminal cap, not the fence verdict (got ${cap?.cap})`,
   );
   assert(
@@ -197,7 +197,7 @@ const lastCapOf = (s: WorkState) => {
   );
   assert(
     out.eventLog.filter((e) => e.kind === "cap-hit").length === 2,
-    "exactly one cap is appended (deadline, not deadline + developer-timeout)",
+    "exactly one cap is appended (deadline, not deadline + spawn-backstop)",
   );
 }
 {
@@ -239,7 +239,7 @@ const lastCapOf = (s: WorkState) => {
   );
 }
 for (const cap of [
-  "developer-timeout",
+  "spawn-backstop",
   "deadline",
   "verify-timeout:develop",
   "step-failed:develop",
@@ -271,7 +271,7 @@ for (const cap of [
   delete process.env.PI_ENSEMBLE_CYCLE_DEADLINE;
   const none = await deadlineCheck(ctx, cycle175(), "handoff", AT + 1);
   assert(
-    !none.parked && lastCapOf(none.state)?.cap === "developer-timeout",
+    !none.parked && lastCapOf(none.state)?.cap === "spawn-backstop",
     "with no deadline set, the handoff boundary still records the backstop kill",
   );
   process.env.PI_ENSEMBLE_CYCLE_DEADLINE = String(AT - 1);
@@ -289,7 +289,7 @@ for (const cap of [
   process.env.PI_ENSEMBLE_CYCLE_DEADLINE = String(AT + HOUR);
   const before = await deadlineCheck(ctx, cycle175(), "handoff", AT + 1);
   assert(
-    lastCapOf(before.state)?.cap === "developer-timeout",
+    lastCapOf(before.state)?.cap === "spawn-backstop",
     "deadline not yet passed: the backstop kill, not deadline, is recorded",
   );
   delete process.env.PI_ENSEMBLE_CYCLE_DEADLINE;

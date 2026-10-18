@@ -45,7 +45,7 @@ function assert(cond: boolean, msg: string) {
   s = appendEvent(s, {
     kind: "cap-hit",
     at: 999_000,
-    cap: "developer-timeout",
+    cap: "spawn-backstop",
     reviewRound: 0,
     nextStep: "handoff",
   });

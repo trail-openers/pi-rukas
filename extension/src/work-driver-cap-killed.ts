@@ -9,7 +9,7 @@
  *   - the step-router's cap-string synthesis (develop / lens /
  *     adversarial HALT paths),
  *   - `runHandoff`'s mid-flight-halt check (these caps set
- *     `status: 'aborted'` like developer-timeout / step-failed),
+ *     `status: 'aborted'` like spawn-backstop / step-failed),
  *   - `runLens`'s REVIEW_INCOMPLETE branch (a loop-killed lens is
  *     not a silent 1-of-6 loss — the cap string is recorded),
  *   - the handoff renderers' caped-partial-state gate (F5).
