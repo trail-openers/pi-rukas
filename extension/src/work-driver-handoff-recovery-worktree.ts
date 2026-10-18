@@ -38,16 +38,14 @@ import type { WorkEvent, WorkState } from "./workflow-state.ts";
  * paths and HEAD SHAs — and the generic pre-branch fallback (read the
  * state file, `/work <N> --restart`) renders instead.
  *
- * The one reading of `branchExists` that would be wrong is "trust the
- * driver's own consolidation instead": the #968 restore path puts repoRoot
- * back on the operator's ORIGINAL checkout, so a handoff that consolidated
- * successfully and then failed its restore (or whose snapshot was captured
- * against a different tree) can carry a `handoff-consolidated` event with
- * no resolvable local ref. That is exactly the state this gate refuses to
- * print `git push -u origin <branch>` for. Pre-#674 state files carry
- * committed work with no `branchExists` field at all; `!== true` keeps them
- * out of the block, which is the safe direction — the generic pre-branch
- * fallback names no ref.
+ * The `handoff-consolidated` event is the one proof that outranks a failed
+ * snapshot read: the driver writes it only after it checked out (or created)
+ * the ref and moved the work onto it, so a handoff whose `git rev-parse`
+ * blipped still has a branch to name — and refusing the block there would be
+ * the same lie running the other way. Pre-#674 state files carry committed
+ * work with no `branchExists` field and no consolidation event; neither proof
+ * holds, so they stay out of the block, which is the safe direction — the
+ * generic pre-branch fallback names no ref.
  */
 export function refProvenAtHandoff(state: WorkState): boolean {
   if (state.pipelineState.handoffSnapshot?.branchExists === true) return true;
