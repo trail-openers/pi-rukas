@@ -47,8 +47,9 @@ export type VerifyFlakeRecoveredEvent = {
  * `verify-completed` carries how long it took and whether it passed.
  *
  * `command` is the verify command the gate resolved — the per-worktree and
- * consolidated runs both use it. A gate with no discoverable command runs
- * nothing and records neither event.
+ * consolidated runs both use it. The bracket is the whole gate, so a gate that
+ * ends before running it (no diff, a frontend-only diff) still records both,
+ * with a short `ms`. A gate with no discoverable command records neither.
  */
 export type VerifyStartedEvent = {
   kind: "verify-started";
