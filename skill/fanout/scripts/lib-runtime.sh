@@ -1,77 +1,39 @@
 #!/usr/bin/env bash
-# lib-runtime.sh — runtime helpers: logging, JS runtime discovery, repo/forge resolution,
-# ssh-agent ownership and pidfile claims. Sourced by lib.sh, never executed directly.
+# lib-runtime.sh — logging, JS runtime, forge url, ssh identity, bounded commands, pidfile.
+# Sourced by lib.sh, never executed directly.
 #
-# ---------------------------------------------------------------------------
-# logging
-# ---------------------------------------------------------------------------
+# Bash 3.2 (macOS /bin/bash): no associative arrays, no ${var^^}, no [[ ]], no `wait -n`.
+# Write `command -v` as `type -P`: a host guard refuses the former as a store probe.
+
 log()  { echo "[fanout] $*"; }
 warn() { echo "[fanout][warn] $*" >&2; }
 die()  { echo "[fanout][error] $*" >&2; exit "${2:-1}"; }
 
-# Node discovery.
-#
-# Do NOT use `command -v` here: a mode-independent bash guard in some host configurations
-# refuses several read-only command shapes (`command -v X`, `grep -rn`, `git -C <path>`) as
-# possible probes of the review findings store. But `which` is not a safe substitute either --
-# it is an external, not a builtin, and is absent from restricted PATHs (measured: it vanished
-# inside a command substitution in a subshell, so every structured reader silently got nothing
-# and the gates below degraded). So resolution is attempted across several independent sources
-# and the result is CACHED: one resolution per process, reused by every reader.
-# Pick a JS runtime, preferring bun. pi-rukas is a bun-first project -- bun is the package
-# manager, the test runner and the script runner (`bun run smoke-tests/...`), and it is what
-# the extension itself executes under. Node worked here only because bun runs CommonJS
-# identically, so the same `require`-style scripts load either way; but resolving to node by
-# default meant this skill disagreed with the project it drives about which runtime is normal,
-# and it made the skill's behaviour depend on an fnm shim dir being on PATH.
-#
-# Order: FANOUT_JS (explicit, any runtime) > FANOUT_NODE (old override, still honoured) >
-# bun > node. Result is CACHED: one resolution per process, reused by every reader.
-FANOUT_JS_CACHED=""
+# ---------------------------------------------------------------------------
+# JS runtime
+# ---------------------------------------------------------------------------
+# Order: FANOUT_JS > FANOUT_NODE (alias) > bun > node. An explicit override that is not
+# executable is an error, not a silent fall-through to another runtime.
+# Callers use "$(fanout_node)"; a die inside that exits only the subshell, and the empty
+# result then fails the caller loudly.
 fanout_node() {
-  [ -n "$FANOUT_JS_CACHED" ] && { printf '%s' "$FANOUT_JS_CACHED"; return 0; }
-  local b n
-  # 1. an explicit override always wins, and is trusted -- the operator may want node specifically
-  if [ -n "${FANOUT_JS:-}" ] && [ -x "${FANOUT_JS:-}" ]; then
-    FANOUT_JS_CACHED="$FANOUT_JS"; printf '%s' "$FANOUT_JS_CACHED"; return 0
+  local p=""
+  if [ -n "${FANOUT_JS:-}" ]; then
+    p="$FANOUT_JS"
+    [ -x "$p" ] || die "FANOUT_JS is set but is not an executable: $p" 2
+  elif [ -n "${FANOUT_NODE:-}" ]; then
+    p="$FANOUT_NODE"
+    [ -x "$p" ] || die "FANOUT_NODE is set but is not an executable: $p" 2
   fi
-  if [ -n "${FANOUT_NODE:-}" ] && [ -x "${FANOUT_NODE:-}" ]; then
-    FANOUT_JS_CACHED="$FANOUT_NODE"; printf '%s' "$FANOUT_JS_CACHED"; return 0
-  fi
-  # 2. bun first: it is this project's runtime and it does not need an fnm multishell on PATH
-  for b in "$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do
-    if [ -x "$b" ]; then FANOUT_JS_CACHED="$b"; printf '%s' "$FANOUT_JS_CACHED"; return 0; fi
-  done
-  if b="$(type -P bun 2>/dev/null)" && [ -n "$b" ] && [ -x "$b" ]; then
-    FANOUT_JS_CACHED="$b"; printf '%s' "$FANOUT_JS_CACHED"; return 0
-  fi
-  # 3. node as fallback. `type -P` before `which`: which is unreliable inside subshells and
-  #    under a stripped PATH, and the first version of this function led with it, so a worker
-  #    launched with a minimal environment resolved to nothing and every JSON reader failed.
-  if n="$(type -P node 2>/dev/null)" && [ -n "$n" ] && [ -x "$n" ]; then
-    FANOUT_JS_CACHED="$n"; printf '%s' "$FANOUT_JS_CACHED"; return 0
-  fi
-  n="$(command -v node 2>/dev/null || true)"
-  if [ -n "$n" ] && [ -x "$n" ]; then
-    FANOUT_JS_CACHED="$n"; printf '%s' "$FANOUT_JS_CACHED"; return 0
-  fi
-  for n in /usr/local/bin/node /opt/homebrew/bin/node /usr/bin/node; do
-    if [ -x "$n" ]; then FANOUT_JS_CACHED="$n"; printf '%s' "$FANOUT_JS_CACHED"; return 0; fi
-  done
-  # 4. nothing resolved. Die rather than cache a command that is not one path: "/usr/bin/env bun"
-  #    is two words, so "$(fanout_node)" expanded to a program named "/usr/bin/env" with an
-  #    argument, and every caller failed in a way that looked like a bad script. Callers run this
-  #    inside $(...), so this die exits only that subshell; its message still reaches the operator
-  #    and the empty result makes the caller fail rather than run anything.
-  die "no JS runtime found (tried FANOUT_JS, FANOUT_NODE, bun, node). Install bun, or set FANOUT_JS to an absolute path to an executable." 2
+  [ -n "$p" ] || p="$(type -P bun 2>/dev/null || true)"
+  [ -n "$p" ] || p="$(type -P node 2>/dev/null || true)"
+  [ -n "$p" ] && [ -x "$p" ] || die "no JS runtime found (tried FANOUT_JS, FANOUT_NODE, bun, node). Install bun, or set FANOUT_JS to an absolute path." 2
+  printf '%s' "$p"
 }
 
 # ---------------------------------------------------------------------------
-# repo / forge resolution — validated, never assumed
+# repo / forge resolution
 # ---------------------------------------------------------------------------
-# Requires $FANOUT_REPO to be a git checkout, and derives the worktree-relative dir
-# from it so a single checkout's scratch never lands in the repo root (repo-root debris
-# has aborted cycles before: a dirty `git status --porcelain` fails the branch step).
 fanout_resolve_repo() {
   [ -n "${FANOUT_REPO:-}" ] || die "no repo given — pass --repo <path> or set FANOUT_REPO" 2
   [ -d "$FANOUT_REPO" ] || die "repo does not exist: $FANOUT_REPO" 2
@@ -84,43 +46,28 @@ fanout_resolve_repo() {
   export FANOUT_REPO FANOUT_ROOT WORKERS_DIR RUNS_DIR
 }
 
-# The forge the worker's origin must point at.
-#
-# `git clone --shared <local>` makes origin the LOCAL path, so a worker would push into
-# its parent clone and the PR would never reach the forge — a cycle that looks like it
-# worked and shipped nothing. So the push url must be the real forge. A repo whose own
-# origin is already a local path (self-building from a seed clone) cannot supply it and
-# must be told explicitly.
+# The url the worker's origin must point at. A --shared clone's origin is the LOCAL parent
+# path; a worker pushing there ships nothing while reporting success, so the forge url is
+# validated, never assumed. Classification is done by a parser, not by shell globbing: a
+# glob that matches "/" anywhere lets local paths through as remotes.
 fanout_forge_url() {
-  local u="${FANOUT_FORGE_URL:-}"
+  local u="${FANOUT_FORGE_URL:-}" kind
   [ -n "$u" ] || u="$(git -C "$FANOUT_REPO" remote get-url origin 2>/dev/null || true)"
-  [ -n "$u" ] || die "cannot determine a forge url for $FANOUT_REPO (no origin, and FANOUT_FORGE_URL unset). Pass --forge-url <ssh-or-https-url>; a worker that pushes to a local path ships nothing." 3
-  # Classify the url. The pattern set AND its order are both load-bearing. The first version
-  # of this used a bare star-colon-star-slash-star as an scp-style remote test, which matches
-  # ANY absolute path containing a slash -- the leading star-colon greedily absorbs the initial
-  # slash. So a local path was accepted as a remote, the worker cloned, pushed into its parent,
-  # and the cycle reported success having shipped nothing. Reject local shapes first, then
-  # accept only an explicit scheme or an unambiguous host colon.
-  # Classify the url. The pattern set AND its order are both load-bearing, and shell globbing
-  # is the wrong tool for this decision. The first version used star-colon-star-slash-star as
-  # an scp-style remote test, which matches ANY absolute path containing a slash because the
-  # leading star-colon greedily absorbs the initial slash -- so a local path was accepted as a
-  # remote, the worker cloned, pushed into its parent, and the cycle reported success having
-  # shipped nothing. A second attempt leaked via a .git suffix arm, which a local path ending in
-  # .git satisfies. So an explicit parser decides, and the cases are pinned in the harness.
-  local kind
+  [ -n "$u" ] || die "cannot determine a forge url for $FANOUT_REPO (no origin, and FANOUT_FORGE_URL unset). Pass --forge-url <ssh-or-https-url>." 3
   kind="$(FANOUT_URL="$u" "$(fanout_node)" --input-type=module -e '
     const u = process.env.FANOUT_URL || "";
-    // Local: begins with a slash, ~/, ./ or ../ . Remote: a scheme, or scp-style host:path
-    // where the host part is non-empty and contains no slash. Anything else is unknown.
-    // file: and git+file: are local repositories under a scheme, so they are local too.
-    if (/^(\/|~\/|\.\/|\.\.\/)/.test(u) || /^(git\+)?file:/i.test(u)) { process.stdout.write("local"); }
-    else if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(u)) { process.stdout.write("remote"); }
-    else if (/^[^/\s]+:[^/]/.test(u)) { process.stdout.write("remote"); }
-    else { process.stdout.write("unknown"); }
+    // A leading dash is read as an option by whatever later runs git or ssh with this url.
+    if (u.startsWith("-")) process.stdout.write("option");
+    else if (/^(\/|~\/|\.\/|\.\.\/)/.test(u) || /^(git\+)?file:/i.test(u)) process.stdout.write("local");
+    else if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/-/.test(u)) process.stdout.write("option");
+    else if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(u)) process.stdout.write("remote");
+    // scp-style host:path. The host starts with an alphanumeric, optionally after user@.
+    else if (/^(?:[A-Za-z0-9_][A-Za-z0-9._-]*@)?[A-Za-z0-9][A-Za-z0-9._-]*:[^/]/.test(u)) process.stdout.write("remote");
+    else process.stdout.write("unknown");
   ' 2>/dev/null)"
   case "$kind" in
     remote) : ;;
+    option) die "forge url starts with '-' or names a host that does, so an option could be read from it: $u. Pass --forge-url with a real remote." 3 ;;
     local)  die "origin is a local path, which is not a forge: $u. Pass --forge-url, or workers will push into their parent clone and the PR will never appear." 3 ;;
     *)      die "origin is not a recognisable forge url (no scheme, no host colon): $u. Pass --forge-url." 3 ;;
   esac
@@ -128,29 +75,44 @@ fanout_forge_url() {
 }
 
 # ---------------------------------------------------------------------------
-# ssh-agent ownership
+# ssh identity
 # ---------------------------------------------------------------------------
-# Pushes go out over SSH. Reuse an inherited agent with usable identities; otherwise
-# start a private one and kill only our own on exit — never the user's agent.
+# Default: reuse an inherited agent that holds identities; otherwise a private agent, which
+# is killed on exit. FANOUT_SSH_KEY pins exactly one key into a private agent and forces
+# IdentitiesOnly, so the cycle cannot use the operator's other keys. Unset = no change.
 FANOUT_OWNED_AGENT_PID=""
 
 fanout_ssh_ready() {
-  [ -n "${SSH_AUTH_SOCK:-}" ] || return 1
-  [ -S "$SSH_AUTH_SOCK" ] || return 1
-  ssh-add -l >/dev/null 2>&1
+  [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ] && ssh-add -l >/dev/null 2>&1
 }
 
-fanout_ssh_ensure() {
-  fanout_ssh_ready && { log "ssh agent: reusing ${SSH_AUTH_SOCK}"; return 0; }
-  which ssh-agent >/dev/null 2>&1 || die "no ssh-agent and no usable SSH_AUTH_SOCK — pushes will fail" 3
-  log "ssh agent: no usable identities inherited, starting a private one"
+fanout_ssh_private() {
   local out
+  [ -n "$(type -P ssh-agent 2>/dev/null || true)" ] || die "no ssh-agent on PATH and no usable SSH_AUTH_SOCK — pushes will fail" 3
   out="$(ssh-agent -s 2>/dev/null)" || die "ssh-agent failed to start" 3
-  # shellcheck disable=SC2163
   eval "$out"
   export SSH_AUTH_SOCK SSH_AGENT_PID
   FANOUT_OWNED_AGENT_PID="${SSH_AGENT_PID:-}"
-  ssh-add -l >/dev/null 2>&1 || warn "private agent has no identities: pushes will fail (run ssh-add in a terminal)"
+}
+
+fanout_ssh_ensure() {
+  if [ -n "${FANOUT_SSH_KEY:-}" ]; then
+    [ -r "$FANOUT_SSH_KEY" ] || die "FANOUT_SSH_KEY is not readable: $FANOUT_SSH_KEY" 3
+    fanout_ssh_private
+    ssh-add "$FANOUT_SSH_KEY" >/dev/null 2>&1 \
+      || die "ssh-add could not load $FANOUT_SSH_KEY (passphrase-protected? load it in a terminal first)" 3
+    export GIT_SSH_COMMAND="ssh -o IdentitiesOnly=yes -i \"$FANOUT_SSH_KEY\""
+    log "ssh: pushes are restricted to $FANOUT_SSH_KEY"
+    return 0
+  fi
+  if fanout_ssh_ready; then log "ssh agent: reusing ${SSH_AUTH_SOCK}"; return 0; fi
+  fanout_ssh_private
+  ssh-add -l >/dev/null 2>&1 && return 0
+  if [ "${FANOUT_SKIP_PUSH_CHECK:-0}" = 1 ]; then
+    warn "no SSH identity loaded; FANOUT_SKIP_PUSH_CHECK=1, continuing. Pushes will fail."
+    return 0
+  fi
+  die "no SSH identity is loaded, so the push would fail after the whole cycle. Load a key with ssh-add, or set FANOUT_SSH_KEY. FANOUT_SKIP_PUSH_CHECK=1 skips this check." 3
 }
 
 fanout_ssh_cleanup() {
@@ -160,31 +122,101 @@ fanout_ssh_cleanup() {
 }
 
 # ---------------------------------------------------------------------------
+# bounded commands
+# ---------------------------------------------------------------------------
+# fanout_bounded <seconds> <command...>: prints the command's output, returns its status, or
+# 124 when the bound fired. Uses gtimeout or timeout when present; macOS ships neither, so the
+# fallback is a watchdog that sends TERM. The watchdog's output is discarded, so a caller that
+# captures the command's output is not held open for the rest of the watchdog's sleep.
+# A TERMed command may leave children running (bun spawns git); they are not reaped here.
+fanout_bounded() {
+  local secs="$1" tb flag pid watch rc
+  shift
+  tb="$(type -P gtimeout 2>/dev/null || true)"
+  [ -n "$tb" ] || tb="$(type -P timeout 2>/dev/null || true)"
+  if [ -n "$tb" ]; then
+    "$tb" "$secs" "$@"
+    return $?
+  fi
+  flag="$(mktemp "${TMPDIR:-/tmp}/fanout-bound.XXXXXX")" || return 1
+  "$@" &
+  pid=$!
+  # The watchdog's sleep is recorded so that a command finishing early takes its timer with it.
+  ( sleep "$secs" & echo "$!" >"$flag.sleep"; wait "$!" && : >"$flag" && kill -TERM "$pid" ) >/dev/null 2>&1 &
+  watch=$!
+  wait "$pid"
+  rc=$?
+  kill "$(cat "$flag.sleep" 2>/dev/null)" >/dev/null 2>&1 || true
+  kill "$watch" >/dev/null 2>&1 || true
+  wait "$watch" >/dev/null 2>&1 || true
+  if [ -e "$flag" ] && [ "$rc" -ge 128 ]; then rc=124; fi
+  rm -f -- "$flag" "$flag.sleep"
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
 # pidfile — mkdir is the atomic test-and-set
 # ---------------------------------------------------------------------------
-# A plain lock *file* leaves a window where a SIGKILL between create and write reads as
-# "no lock". The directory itself is the claim; pid/label/started are evidence inside it.
-fanout_pidfile_acquire() {  # $1 = pidfile dir, $2 = label
-  local dir="$1" label="$2" owner=""
-  if ! mkdir "$dir" 2>/dev/null; then
-    owner="$(cat "$dir/pid" 2>/dev/null || true)"
-    if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
-      return 1  # live owner — the caller decides what to say
+# The directory is the claim; pid, label and started are evidence inside it. Each evidence
+# file lands by temp-file-then-rename, so a reader never sees a torn pid.
+fanout_pidfile_write() {  # $1 = dir, $2 = label
+  printf '%s\n' "$$" >"$1/pid.$$.tmp" && mv -f "$1/pid.$$.tmp" "$1/pid"
+  printf '%s\n' "$2" >"$1/label.$$.tmp" && mv -f "$1/label.$$.tmp" "$1/label"
+  date -u +%Y-%m-%dT%H:%M:%SZ >"$1/started.$$.tmp" && mv -f "$1/started.$$.tmp" "$1/started"
+}
+
+fanout_dir_age() {  # $1 = dir -> whole seconds since its mtime; 0 when unknown (so: young)
+  local m now
+  m="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true)"
+  case "$m" in ''|*[!0-9]*) echo 0; return 0 ;; esac
+  now="$(date +%s)"
+  echo $(( now - m ))
+}
+
+# Returns 0 when this process acquired the lock, 1 when a live owner (or a pid-less lock
+# younger than 5 s, which may be mid-acquire) holds it.
+#
+# A stale lock is renamed aside only under the mutex <dir>.clearing, and the owner is re-read
+# under that mutex first. A rename outside the mutex can move a lock another process has just
+# taken, and a restore then opens a window for a third acquirer. A clearer that dies holding the
+# mutex leaves it; it is aged out after 10 s.
+fanout_pidfile_acquire() {  # $1 = dir, $2 = label
+  local dir="$1" label="$2" clear="$1.clearing" grave="$1.stale.$$" owner="" age="" tries=0
+  while [ "$tries" -lt 50 ]; do
+    tries=$((tries + 1))
+    if mkdir "$dir" 2>/dev/null; then
+      fanout_pidfile_write "$dir" "$label"
+      return 0
     fi
-    warn "clearing a stale lock at $dir (pid '${owner:-unknown}' is not running)"
-    rm -rf -- "$dir" 2>/dev/null || true
-    mkdir "$dir" 2>/dev/null || return 1
-  fi
-  echo "$$" >"$dir/pid"
-  echo "$label" >"$dir/label"
-  date -u +%Y-%m-%dT%H:%M:%SZ >"$dir/started"
-  return 0
+    owner="$(cat "$dir/pid" 2>/dev/null || true)"
+    if [ -n "$owner" ]; then
+      kill -0 "$owner" 2>/dev/null && return 1
+    else
+      # No pid yet: another acquirer may be between its mkdir and its pid write.
+      age="$(fanout_dir_age "$dir")"
+      [ "$age" -ge 5 ] || return 1
+    fi
+    if mkdir "$clear" 2>/dev/null; then
+      if [ "$(cat "$dir/pid" 2>/dev/null || true)" = "$owner" ]; then
+        rm -rf -- "$grave" 2>/dev/null || true
+        if mv "$dir" "$grave" 2>/dev/null; then
+          warn "clearing a stale lock at $dir (pid '${owner:-unknown}' is not running)"
+          rm -rf -- "$grave" 2>/dev/null || true
+        fi
+      fi
+      rmdir "$clear" 2>/dev/null || true
+    else
+      age="$(fanout_dir_age "$clear")"
+      [ "$age" -lt 10 ] || rm -rf -- "$clear" 2>/dev/null || true
+      sleep 0.05
+    fi
+  done
+  return 1
 }
 
 fanout_pidfile_release() {  # $1 = dir; removes the claim only if it is still ours
-  local dir="$1" owner=""
-  owner="$(cat "$dir/pid" 2>/dev/null || true)"
+  local owner
+  owner="$(cat "$1/pid" 2>/dev/null || true)"
   [ "$owner" = "$$" ] || return 0
-  rm -rf -- "$dir" 2>/dev/null || true
+  rm -rf -- "$1" 2>/dev/null || true
 }
-

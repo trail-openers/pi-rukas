@@ -36,12 +36,14 @@ bun <skill-dir>/scripts/gen-triage.js <validated-oldest.tsv> <triage.tsv>
 The input is a tab-separated table with at least `issue`, `verdict`, `blast-radius`,
 `files-likely-touched`, `depends-on`, `reason`, `effort` and (optionally) `bucket` columns, where
 `verdict` is one of `VALID`, `STALE-ALREADY`, `STALE-PREMISE`, `THIN`, `NEEDS-HUMAN`. The output
-is overwritten. Mapping: `VALID` becomes `ready` (or `needs-human` for `shared-infra`), the two
+replaces any existing file, but only on success. Mapping: `VALID` becomes `ready` (or `needs-human` for `shared-infra`), the two
 `STALE-*` verdicts become `park-stale`, `THIN` becomes `park-wont-merge`, and `NEEDS-HUMAN` stays
 `needs-human`. An unmapped verdict is a hard error, never a default. The script then applies the
 policy from the sections above: only one `shared-infra`/`cross-module` issue stays `ready`, a
 dependency that is not `ready` demotes its dependents to `blocked`, and two `ready` issues that
-claim the same file are not both kept. The exit code is non-zero when any row is malformed or unmapped.
+claim the same file are not both kept. Validation runs before anything is written: a malformed or
+unmapped row exits 1 and leaves any existing table untouched. Free-text cells have tabs and line
+breaks replaced by spaces, so a cell cannot forge a row.
 
 ## Verdict vocabulary
 
