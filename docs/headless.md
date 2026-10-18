@@ -426,6 +426,11 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
   "inputs": [                  // every PI_ENSEMBLE_* input this build or its wrapper reads
     { "name": "PI_ENSEMBLE_MAX_WORKSTREAMS", "type": "integer", "default": 6, "scope": "cycle" },
     { "name": "PI_ENSEMBLE_VERIFY_TIMEOUT_MS", "type": "duration-ms", "default": 600000, "scope": "cycle" },
+    // #1509 — the develop-tier bound is now per tier; each reads its own knob,
+    // then PI_ENSEMBLE_VERIFY_TIMEOUT_MS, then its `.pi/*-timeout-ms` file.
+    { "name": "PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS", "type": "duration-ms", "default": 1800000, "scope": "cycle" },
+    { "name": "PI_ENSEMBLE_VERIFY_FAST_TIMEOUT_MS", "type": "duration-ms", "default": 600000, "scope": "cycle" },
+    { "name": "PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS", "type": "duration-ms", "default": 600000, "scope": "cycle" },
     { "name": "PI_ENSEMBLE_MODEL_<ROLE>", "type": "string", "default": null, "scope": "cycle",
       "members": ["DEVELOPER", "OPS", "EXPLORE", "ADVERSARIAL_DEVELOPER", "CODE_REVIEW_SPECIALIST"] },
     { "name": "PI_ENSEMBLE_NO_SSH", "type": "boolean", "default": false, "scope": "wrapper" },
@@ -439,6 +444,7 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
   "features": {
     "resultFromMemory": true,   // #1189 — result from in-memory state, not the state file
     "cycleDeadline": true,      // #1238 — a cycle deadline that parks with a handoff
+    "cycleDeadlineHandoffAllowance": true, // #1593 — the deadline bounds the step in flight
     "handoffChannel": true,     // #1327 — PI_ENSEMBLE_HANDOFF_CHANNEL=host
     "restartClearsAttention": true, // #1327 — --restart clears needs-human-attention
     "failureReason": true,      // #1367 — issues[].failure in the result
@@ -474,6 +480,7 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
 | `files[]` | `HEADLESS_FILES` (`inputs.ts`) | The `.pi/*` files a cycle reads from the project (`path`, `kind`: `command` / `hook` / `config`, and what happens `whenAbsent`). Files the driver writes, such as `.pi/work-state/`, are state, not input, and are not listed. |
 | `features.resultFromMemory` | Constant `true` | `true` when the result is taken from the driver's in-memory state rather than re-reading the state file (#1189). |
 | `features.cycleDeadline` | Constant `true` | `true` when a cycle that hits its deadline parks with a handoff rather than being killed (#1238). |
+| `features.cycleDeadlineHandoffAllowance` | Constant `true` | `true` when the deadline is where step work ends: children running at `PI_ENSEMBLE_CYCLE_DEADLINE` are stopped there, the handoff runs within `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` after it, and a step that ended past the deadline records `deadline` as the cycle's cap (#1593). A host sets the deadline to its kill minus that allowance. |
 | `features.handoffChannel` | Constant `true` | `true` when the build honours `PI_ENSEMBLE_HANDOFF_CHANNEL` and carries the handoff in the result (#1327). |
 | `features.restartClearsAttention` | Constant `true` | `true` when `--restart` overrides the attention gate and clears `needs-human-attention` (#1327). See [`--restart` for hosts](#--restart-for-hosts). |
 | `features.failureReason` | Constant `true` | `true` when the result carries `issues[].failure`, the reason behind its `cap` (#1367). |

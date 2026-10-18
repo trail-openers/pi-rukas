@@ -32,7 +32,8 @@ assert(
   "an ended gate returns before any child is dispatched",
 );
 assert(
-  /declinesAttentionLabel\(next\.pipelineState\)/.test(read("work-driver-handoff.ts")),
+  /declinedLabelSeed\(\s*next\.pipelineState/.test(read("work-driver-handoff.ts")) &&
+    /if \(!declinesAttentionLabel\(ps\)\)/.test(read("work-driver-handoff-post.ts")),
   "handoff seeds labelApplied from the decline, so all four writers honour it",
 );
 assert(

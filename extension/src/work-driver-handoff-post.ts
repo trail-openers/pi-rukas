@@ -254,6 +254,24 @@ export function declinesAttentionLabel(ps: { handoffLabelSkipped?: boolean }): b
   return ps.handoffLabelSkipped === true;
 }
 
+/**
+ * #1472 — the initial label state for `runHandoff`. A closed-issue park starts
+ * with every target settled, so all four label writers see it; it is a
+ * deliberate decline, NOT a failure, so the HANDOFF DISPATCH INCOMPLETE banner
+ * stays quiet. Any other handoff starts with nothing applied.
+ */
+export function declinedLabelSeed(
+  ps: { handoffLabelSkipped?: boolean },
+  prNumber: number | undefined,
+): { labelApplied: boolean; issueLabelApplied?: boolean; prLabelApplied?: boolean } {
+  if (!declinesAttentionLabel(ps)) return { labelApplied: false };
+  return {
+    labelApplied: true,
+    issueLabelApplied: true,
+    prLabelApplied: prNumber ? true : undefined,
+  };
+}
+
 export async function applyIssueLabelDualTarget(forge: Forge, issue: number): Promise<boolean> {
   try {
     await forge.labelCreate(HANDOFF_LABEL, "FFAA00").catch(() => {});
