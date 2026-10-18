@@ -215,8 +215,14 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       `#297 T2: exhausted budget on a provider fault routes through cap-hit provider-unavailable (got ${capHit?.kind === "cap-hit" ? capHit.cap : "no cap"})`,
     );
     assert(
-      after?.pipelineState.status === "handoff",
-      `#297 T2: a provider park terminalizes as a handoff, not an aborted mid-flight crash (got ${after?.pipelineState.status})`,
+      // #1243 fix round — the park's ADVICE and its BEHAVIOUR now agree. The
+      // handoff says "re-run `/work N`, it resumes where it stopped; do NOT
+      // `--restart`", and `interrupted` is the one status the driver actually
+      // re-enters (`handoff` refuses a plain re-run). It is still not
+      // `aborted`: nothing here is a mid-flight crash, and the headless host
+      // still sees `EXIT.handoff` for this reason (headless/exit-code.ts).
+      after?.pipelineState.status === "interrupted",
+      `#297 T2: a provider park terminalizes as a resumable interrupt, not an aborted mid-flight crash (got ${after?.pipelineState.status})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -280,8 +286,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       `#297 T3: opt-out halts at once, still naming the provider as the cause (got ${capHit?.kind === "cap-hit" ? capHit.cap : "no cap"})`,
     );
     assert(
-      after?.pipelineState.status === "handoff",
-      `#297 T3: opt-out halts immediately, as a handoff (got ${after?.pipelineState.status})`,
+      // Same as T2: the provider park is a resumable interrupt, so the advice
+      // the operator reads matches the status the state file carries.
+      after?.pipelineState.status === "interrupted",
+      `#297 T3: opt-out halts immediately, as a resumable interrupt (got ${after?.pipelineState.status})`,
     );
   } finally {
     if (prev === undefined) delete process.env.PI_ENSEMBLE_TRANSIENT_RETRY;

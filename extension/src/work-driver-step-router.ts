@@ -40,6 +40,7 @@ import {
 } from "./work-driver-provider-park.ts";
 import { lostAttemptLine } from "./work-driver-retry-context.ts";
 import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
+import { routeFanoutHalt } from "./work-driver-step-router-fanout.ts";
 import type { CapEvidence } from "./workflow-state-cap.ts";
 import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
@@ -58,8 +59,14 @@ import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./work
  */
 let sleepFn: (ms: number, signal?: AbortSignal) => Promise<void> = abortableSleep;
 
-/** The provider-ladder wait: injected in tests, abort-aware in production. */
-async function providerSleep(ms: number, signal?: AbortSignal): Promise<void> {
+/**
+ * The provider-ladder wait: injected in tests, abort-aware in production.
+ * #1243 — exported for the adversarial fan-out's in-step retry, which must go
+ * through THIS seam (not its own `abortableSleep`) so one test seam observes
+ * every provider wait the driver takes and the abort signal is threaded the
+ * same way at both sites.
+ */
+export async function providerSleep(ms: number, signal?: AbortSignal): Promise<void> {
   await sleepFn(ms, signal);
 }
 
@@ -427,49 +434,13 @@ export async function routeStepOutcome(
     }
   }
 
-  // PR7 — multi-workstream halt-cascade router. PR3 emits
-  // `branches-converged` for N>1 fanouts (develop, lens-review).
-  // The PR5 dispatch-failed router above only watches single-dispatch
-  // tails, so all-branches-failed silently advanced into wasted
-  // adversarial + lens-review (the /work 553 2026-06-24 re-test:
-  // 3-of-3 develop branches provider-errored mid-stream, driver
-  // advanced into adversarial APPROVAL of empty diff and lens-review
-  // against header-only "diff").
-  //
-  // Doctrine: ANY failed branch on a HALT-class step routes to
-  // handoff. Partial success on multi-workstream is not a meaningful
-  // input downstream — the out-of-scope fence doctrine implies a failed
-  // branch leaves the broader decomposition incoherent.
+  // PR7 — multi-workstream halt-cascade router, in
+  // work-driver-step-router-fanout.ts (the `branches-converged` tail of an
+  // N>1 fan-out; #1243 makes its cap the provider park when every child lost
+  // the same endpoint fault).
   {
-    const tail = state.eventLog[state.eventLog.length - 1];
-    if (tail?.kind === "branches-converged" && tail.verdicts.length > 0) {
-      const anyFailed = tail.verdicts.some((v) => !v.ok);
-      const policy = STEP_FAILURE_POLICY[step];
-      if (anyFailed && policy === "HALT") {
-        state = appendEvent(state, {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap: `step-failed:${step}` as const,
-          reviewRound: state.pipelineState.reviewRound,
-          nextStep: "handoff",
-        });
-        state = {
-          ...state,
-          pipelineState: { ...state.pipelineState, currentStep: "handoff" },
-        };
-        await persistCycle(ctx, state);
-        const failedCount = tail.verdicts.filter((v) => !v.ok).length;
-        trace(
-          `work-driver: HALT on step="${step}" — ${failedCount}/${tail.verdicts.length} branches failed → handoff`,
-        );
-        return { state, retry: true };
-      }
-      // RETRY_ONCE doesn't apply to multi-workstream fanouts (no step
-      // in STEP_FAILURE_POLICY that fans out is RETRY_ONCE — develop
-      // is HALT, lens-review N>1 path uses the same N>1 fanout but
-      // its retry semantics are handled internally by runLensReview).
-      // DEGRADED_OK: fall-through.
-    }
+    const fanout = await routeFanoutHalt(ctx, state, step);
+    if (fanout !== undefined) return fanout;
   }
 
   // #1016 — a driver REFUSAL halts the step as a non-transient failure. N=1

@@ -20,6 +20,7 @@
  */
 
 import { notifyAgent } from "./agent-message.ts";
+import { lastInterruptReason } from "./headless/exit-code.ts";
 import { trace } from "./trace.ts";
 import { renderHandoffUserMessage } from "./work-driver-handoff-message.ts";
 import type { DriverHost } from "./work-driver-host.ts";
@@ -43,7 +44,18 @@ export async function deliverTerminalLine(
   state: WorkState,
 ): Promise<WorkState> {
   const final = state.pipelineState.status;
-  if (final !== "merged" && final !== "handoff" && final !== "aborted") {
+  // #1243 — `interrupted` is included for the provider park only: a park the
+  // endpoint caused still owes the operator the handoff line, and the status is
+  // the park's own, not a signal's. A SIGNAL interrupt must not come here — its
+  // cycle was cut off mid-step, `interruptIfRequested` owns that write, and
+  // there is no handoff to announce. `handoffDeliveredAt` already gates a
+  // re-send, so a provider park whose line went out is never sent twice.
+  if (
+    final !== "merged" &&
+    final !== "handoff" &&
+    final !== "aborted" &&
+    !(final === "interrupted" && lastInterruptReason(state) === "provider")
+  ) {
     return state;
   }
 

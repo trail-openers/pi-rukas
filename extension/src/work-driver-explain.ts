@@ -144,16 +144,27 @@ export function explainCap(
       // operator (and a headless caller re-queueing on its own) needs, and the
       // generic fallback gives neither: that there is nothing to fix, and what
       // the outage actually said. The provider's own words ride on the cap's
-      // evidence, written by the router off the failed dispatch. When the cap
-      // predates that field (or the router could not read one), the cause is
-      // re-derived off the log so this sentence names the fault the same way the
-      // `step-failed:adversarial` sibling does.
+      // evidence, written by the router off the failed dispatch.
+      //
+      // The re-derived cause is a FALLBACK and is not trusted. A cap written
+      // before the `evidence` field existed, or one whose dispatch the router
+      // could not read, leaves nothing authoritative to quote — and the log scan
+      // that re-derives a cause is not constrained to provider-shaped evidence:
+      // it can answer `self-killed:inactivity` or `crashed`. Printing that
+      // sentence inside a paragraph that opens "the model endpoint was down" is
+      // a contradiction, and it is the exact mislabelling #1243 exists to
+      // remove — the paragraph must not assert an outage the re-derivation
+      // contradicts. So: name the re-derived cause only when it is itself a
+      // provider cause, otherwise say plainly that the detail is unavailable.
       const hit = lastCapHit(state, "provider-unavailable");
       const cause = adversarialFailureCause(state);
+      const providerCause = /cause=(provider-severed|rate-limited:burst)\b/.test(cause);
       const ev =
         hit?.evidence ??
-        `the provider endpoint was unreachable for the whole retry ladder${cause ? ` (${cause})` : ""}`;
-      return `the model endpoint was down or severing connections and every retry met the same fault — ${ev}. NOTHING about this cycle's code was judged: there is no defect here to look at. The branch, PR and any commits are as the sections below describe. A headless caller may re-queue this cycle itself once the endpoint answers (the result's \`failure.kind\` is \`provider\`); from the chat, re-run \`/work ${state.issue}\` — the step resumes where it stopped rather than restarting the cycle. To lengthen the ladder: PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS / PI_ENSEMBLE_PROVIDER_RETRY_MAX_WAIT_MS`;
+        (providerCause
+          ? `the provider endpoint was unreachable for the whole retry ladder (${cause})`
+          : "the endpoint failed every attempt of the retry ladder — the outage detail was not recorded on this cap");
+      return `the model endpoint was down or severing connections and every retry met the same fault — ${ev}. NOTHING about this cycle's code was judged: there is no defect here to look at. The branch, PR and any commits are as the sections below describe. A headless caller may re-queue this cycle itself once the endpoint answers (the result's \`failure.kind\` is \`provider\`); from the chat, re-run \`/work ${state.issue}\` — this park keeps the cycle resumable (status \`interrupted\`, not \`handoff\`), so the halted step re-enters and finished steps are not rebuilt. Do NOT pass \`--restart\`: it wipes the state file and rebuilds a cycle whose steps are all still there to resume from, and nothing about this issue changed. To lengthen the ladder: PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS / PI_ENSEMBLE_PROVIDER_RETRY_MAX_WAIT_MS`;
     }
     case "awaiting-human-merge": {
       const hold = state.pipelineState.mergeHold;
