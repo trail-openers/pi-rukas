@@ -71,6 +71,8 @@ export const HEADLESS_FEATURES = {
   failureReason: true,
   /** #1368 — the result's `usage.byRole` sums usage per role, failed dispatches included. */
   usageByRole: true,
+  /** #1471 — `plan --start` / `--resume`: a planning session, one turn per run, filed only on a confirm. */
+  planTurns: true,
 } as const;
 
 export interface Capabilities {

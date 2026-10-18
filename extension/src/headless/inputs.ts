@@ -228,6 +228,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("PLAN_CONTRACT", true),
   int("PLAN_ISSUE", null),
   flag("PLAN_QUALITY", true),
+  dir("PLAN_SESSION_DIR", null, "cycle"),
   ms("PLAN_TIMEOUT_MS", 1_800_000),
   // #1167 — 0 leaves the planner's out-of-scope fences exactly as written
   // (the pre-#1167 shape, develop gate included) and traces that it was off.
