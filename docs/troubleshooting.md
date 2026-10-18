@@ -1297,6 +1297,16 @@ Projects with no `.pi/verify-cmd` skip the check entirely and are unaffected.
 
 A run killed at its bound (`PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS`, 15 min by default) is not a verdict that the tree does not build. It parks as `verify-timeout:commit-pr` instead, and nothing is pushed.
 
+**A gate that was already red at your base commit no longer parks the cycle (#1404).** When the consolidated verify fails, the driver runs the SAME command once more against the cycle's original base commit in a throwaway worktree, and compares the failing test names — parsed from the loop's `FAILED:` markers, from the raw stream rather than the bounded tail, which elides all but the summary. Names that fail at base too are **pre-existing**: the gate owns them, not your diff. If every failure is pre-existing the cycle continues, pushes, and opens the PR, with the names listed in the PR body and carried on the plumb-report so the handoff says which red tests the gate had been blaming unfairly. Anything else still parks, and the park reason names **only** the tests that pass at base — an operator told to "fix the consolidated tree" for five red tests, three of which the base already had, wastes three inspections on gate rot.
+
+Three things the probe cannot do, all deliberate:
+
+- **It cannot turn a red gate into a pass.** The continue decision hangs off the caller, and the gate's `ok: false` verdict is what licenses it; a probe that established nothing never sets the flag.
+- **It cannot excuse a failure it cannot name.** No `FAILED:` marker (a `tsc` or biome error prints none), a collapsed `… and N more` summary, a base run killed at its bound, or a base run that exited non-zero while its own tally said `F: 0` — every one of those is `unattributable`, and absence of evidence is never read as evidence of innocence.
+- **It must be given the cycle's ORIGINAL base.** `pipelineState.baseSha`, not a followup round's `followupBase` — the latter already carries this cycle's own commits, which would excuse every failure as pre-existing.
+
+A green gate pays nothing: the probe runs only after a failure, so healthy cycles are untouched. Fix the gate itself at some point — the names in the PR body are the list, and until you do, every cycle on this project carries a red baseline the driver has to work around.
+
 ### How a subagent's life is bounded
 
 Two mechanisms, and only one of them is meant to fire in normal operation.
@@ -1402,6 +1412,87 @@ Each cycle produces **its own PR** and its own state file (`.pi/work-state/<prim
 - **PR10 (v0.12.6–v0.12.9)**: bundled ALL N issues into ONE PR unconditionally. Empirically failed 3× (vipune `37219c9a`: convergence-drop, phantom-bundle, oversized-diff cap).
 - **PR15 (v0.12.15)**: retreated to strictly sequential one-PR-per-issue. Safe but ignored the "these issues genuinely belong together" signal.
 - **PR16 (v0.12.16+)**: deterministic grouping decides the middle path.
+
+### A dependent issue started before the issue it depends on (#1101)
+
+**Symptom:** `/work 12 13` where #13's body says `Depends-on: #12`. Both cycles
+start. One of them parks at `plan` with `cross-group-conflict` — after an
+explore and a plan dispatch have already been paid for — and nothing in the
+handoff names the other group as the cause. Re-running the parked issue with
+`--restart` usually reproduces it, in the other direction this time.
+
+**Cause:** grouping and ordering were never connected. `groupIssues()` R1
+merges issues that declare a link, but three of its own exit paths split them
+apart anyway — an `R3 Split: true` marker, a component over
+`MAX_ISSUES_PER_GROUP` (3) broken into singletons, or R1 not matching the
+phrasing at all. Once they are two groups, the queue had no ordering notion
+whatsoever: its only pre-dispatch gate is a path-overlap check that keys on
+extracted file tokens, so a pair whose bodies name no path runs side by side and
+the reactive plan-time claim check parks the loser later. The queue could see
+that two groups collided, and could not see that one was meant to wait.
+
+**What changed:** ordering statements are read from the bodies at grouping time
+and carried on the grouping result (`depsByIssue`), independently of R1's union
+decisions — so an R3 split cannot make the obligation invisible. Before a group
+dispatches, the queue requires every group it waits on to have reached `merged`.
+
+**The three things to check when an issue does not wait for its dependency:**
+
+1. **Is the statement one the scanner recognises?** The ordering set is
+   `depends on` / `depends-on` / `blocked by` / `blocked-by` / `blocked on` /
+   `requires` / `predecessor(s)`, each followed by `#N`. It is deliberately
+   narrower than R1's link regex: `closes #12`, `fixes #12`, `related to #12`
+   and `part of #12` merge, they do not order. An unnumbered "this depends on
+   the API being stable" declares nothing — guessing a group to wait for is how
+   a queue serialises work nobody asked it to order.
+2. **Are they actually two groups?** If R1 merged them, the edge is intra-group
+   and there is nothing for the queue to enforce; the whole issue runs as one
+   cycle. Check the grouping notes in the state file for `R1 link:`.
+3. **Is the dependency in this invocation?** `Depends-on: #44` where #44 was not
+   passed to `/work` is ignored and noted — it cannot block, because nothing in
+   this run will ever merge it. It does not park the dependent either.
+
+**What you see when the wait does what it should:**
+
+| Situation | Queue outcome |
+|---|---|
+| dependency merges | dependent dispatches immediately — the wait costs no timer, the queue wakes it |
+| dependency parks, fails, or refuses to start | dependent parks `cap dependency-parked:#N`, **`runGroup` never invoked**, no dispatch spent |
+| two issues depend on each other | every group in the loop parks `cap dependency-cycle`, naming its edge, before any dispatch |
+| the wait outlasts `PI_ENSEMBLE_QUEUE_DEFER_CAP_MS` | dependent parks with the reason naming the group that never released — it does **not** proceed |
+| the queue halts (a driver throw, a systemic failure) while a group was waiting | the waiting group parks `cap queue-stranded:<blocker>`, with an action naming the halt to resolve first — it never leaves a group with no reason and no action |
+
+The last row is a deliberate reversal of the old behaviour. A wait that gave up
+and proceeded was the pre-#1101 shape, and for an ordering edge it is the
+irreversible direction: the thing that was supposed to land first does not land
+at all, and the dependent is already built on top of it.
+
+**The 30-minute cap is a bound, not an interval.** Do not lower it to make the
+queue "poll faster" — waiters park on an event and are woken the instant
+anything they wait on settles, so the cap only ever fires when a dependency
+genuinely never reaches a terminal state. A healthy cycle really can take that
+long. It is injectable for tests (`deferCapMs`) and overridable via
+`PI_ENSEMBLE_QUEUE_DEFER_CAP_MS`.
+
+**Reading the report:** a queue-level park renders with a distinct mark and
+**names no step**, because nothing ran — there is no diff, no branch, no
+findings. `⏸ … at lens-review` means a cycle ran and died somewhere, and has
+work to salvage; `◌ … cap dependency-parked:#12` means the group produced
+nothing and the action to take is on #12, not on this group. The headline counts
+them separately (`2 parked (1 never dispatched)`) for the same reason. All four
+queue-raised reasons — `dependency-parked`, `dependency-timeout`,
+`dependency-cycle`, `queue-stranded` — get that treatment, and `isQueueLevelPark`
+is the one test for it. (`cross-group-conflict` is classified by its detail,
+not its name: the queue's own carries `in-flight sibling(s)`, a plan-time one
+does not and keeps its step.)
+
+Escape hatch: `PI_ENSEMBLE_QUEUE_ORDERING=0` turns the whole gate off — no
+edges are computed and the cycle park goes with them, so groups dispatch under
+the #676 overlap rule alone. That is the pre-#1101 behaviour, and it is the
+right tool when the gate itself is the problem, not when one pair should not be
+ordered. For a single pair, per-pair opt-out is simpler: delete the ordering
+statement from the dependent's body and the queue has nothing to act on. Both
+leave the queue unable to order the work, so reach for the per-pair edit first.
 
 ### Verify-full tier: "fast green, full unrun"
 
@@ -2185,6 +2276,17 @@ The `/plan` driver (`start_plan_driver`) used to serialize four dispatch barrier
 - Every plan child is bounded at **30 minutes** (`PLAN_DISPATCH_TIMEOUT_MS`) instead of the 2-hour spawn backstop, and runs with `cwd` pinned to the repo root. (Initially 8 minutes; raised 2026-09-09 after a live fixture run killed two heavy investigation angles at exactly 8m00s under concurrent load — killing a child loses its whole context, and the operator's historical floor for agent runs is 30 min.)
 - The tool result ends with a `=== TIMINGS ===` line (per-phase wall clock: inventory / investigate / gap-gate / filing / total).
 
+### The call returns a notice, not a result (#1044)
+
+`start_plan_driver` and `start_research_driver` run the pipeline in a background job. The tool returns within milliseconds with a launch notice carrying a `jobId` and **no verdict at all** — that is the contract, not a failure. The rendered result arrives later as a user message beginning `[ensemble:async]`, naming the same `jobId`.
+
+Symptoms people hit, and what they actually mean:
+
+- **"It returned 'started' and nothing happened."** Correct so far — check whether the steer arrived. The run takes minutes; the harness says so in the notice. Re-calling the tool to "check progress" starts a SECOND run (a second set of child tokens, a second ticket) and is the wrong move; `dispatch_status` is the one-shot look (metadata only, and it says so), or wait for the steer.
+- **"I killed it and got no reply."** A killed run is still owed its report: the steer says `PLAN CANCELLED` / `RESEARCH CANCELLED` and names who killed it (`dispatch_kill` vs a session teardown). A killed run never files and never reports a verdict it did not earn.
+- **"A dry run returned, so I have a digest."** No — the dry run's `reviewedDigest` is on its **report**, not on the launch notice. A confirm that echoes a digest it never received, or echoes one from a different run, is refused. Wait for the dry run's steer, then confirm with the digest it carried.
+- **"Too many jobs running."** With 50 jobs live the tools refuse with `started: false, error: "jobs-saturated"` and no `jobId`. Nothing launched, so nothing is owed a steer; finish or kill an existing job and re-call.
+
 ### A plan child hit the 30-minute bound
 
 The dispatch is killed and routed through paths that already existed: an angle fails closed (`ok=false`; if ALL angles fail, the pipeline halts with `skipped-all-angles-failed` and files nothing), a timed-out duplicate-risk child yields no risk verdict (traced, pipeline proceeds), and a timed-out gap-gate reviewer routes `gate-unavailable` (spec NOT filed — no reviewer saw it; re-run `start_plan_driver`). A child that repeatedly times out usually means a hung tool call or a suspended host (see "Host suspend is not a provider failure" in AGENTS.md §7) — check the per-phase timings line to see which phase ate the budget.
@@ -2199,7 +2301,7 @@ The deterministic pre-triage (`plan-precheck.ts`) fired: the descriptor is below
 
 ### "PLAN NOT FILED — THE REVIEWED SPEC CHANGED"
 
-A confirm echoed a dry run's `reviewedDigest`, but the reviewed spec could not be filed verbatim — the reason is in the result (the dry run expired, origin/<default> moved, or no cached dry run was found, e.g. in a fresh clone). The full pipeline re-ran and drafted different bytes, so nothing was filed: the confirmation covered the reviewed spec, not the new one. Show the new spec and confirm with the new `reviewedDigest`. For long gaps between dry run and confirm, set `PI_ENSEMBLE_PLAN_CACHE_TTL_MS` (`0` = no expiry); for a fresh clone per turn, set `PI_ENSEMBLE_PLAN_CACHE_DIR` to a directory outside the clone; a confirm then files verbatim as long as origin/<default> has not moved since the dry run ([#1224](https://github.com/trail-openers/pi-rukas/issues/1224)).
+A confirm echoed a dry run's `reviewedDigest`, but the reviewed spec could not be filed verbatim — the reason is in the result (the dry run expired, origin/<default> moved, or no cached dry run was found, e.g. in a fresh clone). The full pipeline re-ran and drafted different bytes, so nothing was filed: the confirmation covered the reviewed spec, not the new one. Show the new spec and confirm with the new `reviewedDigest` — read from the dry run's **delivered report**, which is where it actually arrives since #1044 (a confirm launched off a launch notice's placeholder digests nothing). For long gaps between dry run and confirm, set `PI_ENSEMBLE_PLAN_CACHE_TTL_MS` (`0` = no expiry); for a fresh clone per turn, set `PI_ENSEMBLE_PLAN_CACHE_DIR` to a directory outside the clone; a confirm then files verbatim as long as origin/<default> has not moved since the dry run ([#1224](https://github.com/trail-openers/pi-rukas/issues/1224)).
 
 ### Chore/spike tickets skip the adversarial gap gate
 
@@ -2323,3 +2425,18 @@ Since #1365 `extension/smoke-tests/lib/verify-loop.sh` runs tests through a boun
 The other knob is the per-test bound, unchanged by the pool: `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S` (default 300s, positive integer, else 300 with a warning). A test that hits it is reported `FAILED: <file> (timed out after <N>s)` with a `✗ timed out after <N>s` line prepended to its capture; the whole descendant tree is killed, so a hung test does not take the pool with it. Both variables are read once at startup.
 
 When the suite is on the critical path of a **gate** rather than a developer's own run, the ceiling is the gate's bound, not the pool's: this repo's `.pi/verify-cmd` passes `--jobs-from-host` to `verify-loop.sh`, which sizes the pool from the host when `PI_ENSEMBLE_VERIFY_TEST_JOBS` is unset (4 on 8 or more CPUs, 2 otherwise; an ambient setting of the variable wins) so the full develop-gate command stays inside `PI_ENSEMBLE_VERIFY_TIMEOUT_MS`. It is a flag on the script and not an inline `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf …)}"` prefix because the review-accept guard's A5 arm (#1125) admits `bash …/verify-loop.sh` only when every word after the script is `--digest` or a test path, and an expansion-word is neither (A5 is this arm's argv rule, not a general ban on expansions in a `bash` command; `test-review-accept-guard-hardened.ts` checks each `.pi/verify-cmd` arm against it). CI passes no flag, so `.github/workflows/ci.yml` keeps the shipped default of 2. `test-verify-loop-jobs-from-host.ts` pins all three branches against a stubbed `getconf`. See `docs/configuration.md` → `PI_ENSEMBLE_VERIFY_TEST_JOBS`.
+
+### A consolidated verify parks with "the verify report file …" instead of naming failing tests
+
+Since #1404 the commit-pr baseline probe reads failing-test **names** only from an out-of-band report file the smoke loop writes, never from the run's stdout/stderr. The reason is a forgery: a test that prints the loop's whole failure triad — a per-file `FAILED: <path>`, a count-matched `FAILED: 1 test(s) — <path>`, and a non-zero `P:/F:` tally — is byte-for-byte what the loop emits, so under stream-parsing a **green** base could be made to name the change's failure, the change-caused failure was excused, and the cycle pushed red code.
+
+The channel: the driver creates a private `0700` temp dir per verify call and passes `VERIFY_REPORT_FILE` to the gate. `lib/verify-report-file.sh` writes the verdict (one path per line, `FAILED-TESTS: <count>` trailer) on every exit path, and `lib/verify-kill.sh` starts every test under `env -u VERIFY_REPORT_FILE`, so a test cannot learn the path. The writer, the reader in `src/work-driver-verify-report-file.ts`, and the scrub's canary fixture are pinned by `test-verify-report-file.ts` and `test-verify-loop.ts` case 9.
+
+**Symptoms and what they mean:**
+
+- **`the verify report file was empty`** — the run was killed before its report half. Same outcome as any unattributable shape: the consolidated failure parks as before (#1404 changed the excuse path, not the park path).
+- **`no verify report file exists at the path the driver created`** — the project's verify command is not this repo's smoke loop, or the gate swallowed the environment. This is the **fail-closed default**: no report, no names, nothing excused, the cycle parks exactly as it did before the probe existed. A project that wants the pre-existing-failure excuse must run its gate through `verify-loop.sh`.
+- **`its last line was not the loop's FAILED-TESTS trailer`** — something else wrote to that path, or the loop is a stale copy. Check `extension/smoke-tests/lib/verify-report-file.sh` is present and sourced.
+- **Every cycle parks although the base is genuinely red** — the writer and reader have drifted. `bun smoke-tests/test-verify-report-file.ts` section 4 runs the real loop and reads its report back; that is the assertion that catches writer drift a parser unit test cannot see.
+
+The variable is a driver-internal process contract, not operator configuration — deliberately **not** a `PI_ENSEMBLE_*` name and not in `HEADLESS_INPUTS`. There is no supported way to set it by hand, and a relative value is refused with a warning rather than written into the checkout under test.

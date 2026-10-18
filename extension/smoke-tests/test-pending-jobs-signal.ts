@@ -402,6 +402,11 @@ wire.length = 0;
     "lens-review-tool.ts": 1,
     "adversarial-tool.ts": 1,
     "work-tool.ts": 1,
+    // #1044 — the two compiled plan/research drivers joined the async set: a
+    // dry-run spec or a research artifact is 5–45 minutes of work, and holding
+    // the PM's turn for it locked the operator out of the session.
+    "plan-tool.ts": 1,
+    "research-tool.ts": 1,
   };
   const found: string[] = [];
   for (const f of readdirSync(srcDir).filter((n) => n.endsWith(".ts"))) {
