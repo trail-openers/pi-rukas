@@ -294,16 +294,16 @@ function assert(cond: boolean, msg: string) {
   // contract, so the test asserts on the semantic content, not one worktree's
   // exact punctuation).
   assert(
-    /depends-on: <id>/i.test(p),
-    "plan-prompt: the `depends-on: <id>` line format is documented",
+    /`dependsOn`/.test(p),
+    "plan-prompt: the `dependsOn` field is documented (#1652: the tool's field names)",
   );
   assert(
-    /integration-test: <path>/i.test(p),
-    "plan-prompt: the `integration-test: <path>` line format is documented",
+    /`integrationTest`/.test(p),
+    "plan-prompt: the `integrationTest` field is documented (#1652: the tool's field names)",
   );
   assert(
-    /this workstream\(s\)/i.test(p) || /workstream\(s\)/i.test(p) || /multiple/i.test(p),
-    "plan-prompt: the depends-on line is documented (multi-dep supported)",
+    /workstream id\(s\)/i.test(p),
+    "plan-prompt: the dependsOn field is documented (multi-dep supported)",
   );
   assert(
     /REQUIRED/i.test(p) && /interdependent/i.test(p),
@@ -327,17 +327,13 @@ function assert(cond: boolean, msg: string) {
     "plan-prompt: a declared-but-untouched path is named as a missing slice that parks the cycle",
   );
   assert(
-    /Shared tests, legacy tests/i.test(p) && /go in `out-of-scope`/i.test(p),
+    /Shared tests, legacy tests/i.test(p) && /go in `outOfScope`/i.test(p),
     "plan-prompt: shared/legacy tests to keep green without editing are routed to out-of-scope",
   );
   // The pre-existing contract lines are untouched.
   assert(
-    p.includes("- paths: <comma-separated touchpoint files>"),
-    "plan-prompt: the paths line is still there",
-  );
-  assert(
-    p.includes("- out-of-scope: <comma-separated explicit exclusions — what NOT to touch>"),
-    "plan-prompt: the out-of-scope line is still there",
+    p.includes("`paths`") && p.includes("`outOfScope`"),
+    "plan-prompt: the paths and outOfScope fields are still named",
   );
   assert(/ENUMERATE/.test(p), "plan-prompt: the enumerate-first doctrine is still there");
   // #1005 — the split bias is removed: a workstream that cannot build without

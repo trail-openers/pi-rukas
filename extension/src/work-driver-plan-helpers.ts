@@ -89,11 +89,10 @@ export function planQualityEnabled(): boolean {
  * issue names: pure over (reply text, workstreams, spec), no dispatch, no I/O.
  */
 export function planSpecMismatchPlanQualityReason(
-  text: string,
   workstreams: Record<string, SpecCoverageWorkstream>,
   spec: SpecCoverageSpec | undefined,
 ): PlanSpecMismatch | undefined {
-  return planSpecMismatchReason(text, workstreams, spec);
+  return planSpecMismatchReason(workstreams, spec);
 }
 /**
  * #819 — the halts both gate sites emit, factored out of `runPlan` so the

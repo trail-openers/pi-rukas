@@ -41,6 +41,7 @@ import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runPlan } from "../src/work-driver-plan.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
+import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -61,8 +62,9 @@ function mkResult(text: string): DispatchResult {
   return {
     role: "explore",
     ok: true,
-    text,
-    toolUses: [],
+    // #1652 — the plan's workstreams are the report_workstream calls the
+    // markdown block stands for (the helper keeps each fixture's meaning).
+    ...planResultFromMarkdown(text),
     ms: 10,
     exitCode: 0,
     transcriptPath: "/tmp/stub-plan-deps-transcript.json",
@@ -116,7 +118,10 @@ function stateWithArtifact(dir: string, body: string): WorkState {
       return mkResult(calls === 1 ? primaryPlan : correctivePlan);
     });
     const next = await runPlan(ctx, stateWithArtifact(dir, "1. a\n2. b\n"), 1_000_000);
-    assert(calls === 2, "the first plan's quality issue (empty-paths on the post-merge plan) triggers exactly one corrective");
+    assert(
+      calls === 2,
+      "the first plan's quality issue (empty-paths on the post-merge plan) triggers exactly one corrective",
+    );
     assert(
       next.pipelineState.planQuality?.reason === "dropped-dependencies",
       "corrective dropped the edge → the final state says dropped-dependencies (not the stale empty-paths reason)",
@@ -165,7 +170,10 @@ function stateWithArtifact(dir: string, body: string): WorkState {
       return mkResult(primaryPlan);
     });
     const next = await runPlan(ctx, stateWithArtifact(dir, "1. a\n2. b\n"), 1_000_000);
-    assert(calls === 1, "(no-drop): the coupling merge merges task-b into task-a → no corrective is triggered (the post-merge plan has no quality issue)");
+    assert(
+      calls === 1,
+      "(no-drop): the coupling merge merges task-b into task-a → no corrective is triggered (the post-merge plan has no quality issue)",
+    );
     assert(
       next.pipelineState.workstreams && Object.keys(next.pipelineState.workstreams).length === 1,
       "(no-drop): one workstream after the coupling merge",

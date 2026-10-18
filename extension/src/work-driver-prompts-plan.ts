@@ -19,15 +19,14 @@
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 
 /**
- * #819 round-2 — the two rules whose violation is what the #818 incident
- * actually was, stated once and reused: the planner prompt, the corrective
- * steer (`correctivePlanSteer`, work-driver-plan-helpers.ts) and the gate's
- * own operator-facing evidence (work-driver-plan-spec-coverage.ts) all quote
- * this text. Three sites paraphrasing "exactly one `## Workstreams` section"
- * is how a reply can satisfy one of them and fail another.
+ * #1652 — how a workstream is reported, stated once and reused: the planner
+ * prompt and the corrective steer (`correctivePlanSteer`,
+ * work-driver-plan-steers.ts) both quote this text, so the two cannot disagree
+ * about the channel. The channel is the tool call, not a markdown block (#819's
+ * two-block ambiguity cannot arise through it).
  */
-export const PLAN_SINGLE_BLOCK_RULE =
-  "Emit EXACTLY ONE `## Workstreams` heading in your reply — two or more make the reply ambiguous, and the driver refuses it because it cannot tell which block is the plan.";
+export const PLAN_WORKSTREAM_CALL_RULE =
+  "Report EACH workstream with ONE `report_workstream` tool call — the tool calls are the plan, and prose is not read for workstreams. A call whose `id` repeats an earlier call in this reply is refused and adds nothing.";
 
 /**
  * #819 round-2 — the coverage half of the same pair: the plan-to-spec gate
@@ -38,7 +37,8 @@ export const PLAN_DELIVERABLE_PATH_RULE =
   "EVERY deliverable that declares `[paths: …]` in the spec must appear in at least one workstream's `paths:` line — a deliverable no workstream claims is a plan-to-spec rejection.";
 
 /**
- * Step 2 (plan) prompt. PR3: asks for `## Workstreams`; single-workstream
+ * Step 2 (plan) prompt. PR3 (#1652: workstreams are `report_workstream` tool
+ * calls, not a markdown block); single-workstream
  * issues return one `### default` entry (or zero, which the driver synthesises).
  */
 export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): string {
@@ -56,33 +56,25 @@ export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): strin
     "",
     "Why this matters: each workstream gets its own worktree and its own developer, and every workstream must pass the project's quality gates ALONE, applied to the base commit — a combined run that passes does not excuse a workstream that fails on its own. A workstream cannot see its siblings' commits, so a symbol introduced in one and used in another is a guess on both sides. Workstreams whose changes depend on each other are the dominant cause of a cycle failing to converge: one plan split a new type field and a new export from their consumers across four workstreams, the consumer failed the type check alone and the combined tree failed it again, while the same change as one commit applied cleanly. Decompose only where the halves can each stand alone.",
     "",
-    "Return your enumeration and reasoning, then a fenced workstreams block. Format MUST match exactly:",
+    "Return your enumeration and reasoning, then ONE `report_workstream` tool call per workstream. The tool's schema is the format: each call carries `id` (a short lowercase id), `scope` (one line), `paths` and `outOfScope`. A workstreams section in your prose is NOT read — only the tool calls count. Single-workstream plans make one call with `id: default`.",
     "",
-    "```markdown",
-    "## Workstreams",
+    "For N>1 workstreams, make one call per workstream (use short ids like `task-a`, `task-b`). The `outOfScope` field is LOAD-BEARING — issue #553 polluted PR #556 with off-scope files because nothing told the developer what was OUT. Fence the scope explicitly even when you think it's obvious.",
     "",
-    "### default — <one-line scope label>",
-    "- paths: <comma-separated touchpoint files>",
-    "- out-of-scope: <comma-separated explicit exclusions — what NOT to touch>",
-    "```",
-    "",
-    "For N>1 workstreams, repeat the `###` subheading per workstream (use short ids like `task-a`, `task-b`). The `out-of-scope` line is LOAD-BEARING — issue #553 polluted PR #556 with off-scope files because nothing told the developer what was OUT. Fence the scope explicitly even when you think it's obvious.",
-    "",
-    "EVERY workstream MUST declare a non-empty `paths:`. The driver checks the committed diff against that list to prove each workstream's slice actually landed; an empty list silently disables that check for the slice. `paths` means files the developer is EXPECTED TO MODIFY: a file you list in `paths` but never edit (e.g. a shared or legacy test whose contract you keep green without touching it) counts as a missing slice at the consolidation gate and parks the cycle. Shared tests, legacy tests, or anything you deliberately keep green without editing go in `out-of-scope` — that is what the out-of-scope line is for.",
+    "EVERY workstream MUST declare a non-empty `paths:`. The driver checks the committed diff against that list to prove each workstream's slice actually landed; an empty list silently disables that check for the slice. `paths` means files the developer is EXPECTED TO MODIFY: a file you list in `paths` but never edit (e.g. a shared or legacy test whose contract you keep green without touching it) counts as a missing slice at the consolidation gate and parks the cycle. Shared tests, legacy tests, or anything you deliberately keep green without editing go in `outOfScope` — that is what the outOfScope field is for.",
     "",
     PLAN_DELIVERABLE_PATH_RULE,
-    PLAN_SINGLE_BLOCK_RULE,
+    PLAN_WORKSTREAM_CALL_RULE,
     "",
-    "If single-workstream, ALWAYS use `### default` so the driver routes through the same code path uniformly.",
+    "If single-workstream, ALWAYS use the id `default` so the driver routes through the same code path uniformly.",
     "",
-    "Optional per-workstream lines (N>1 plans that declare workstream ORDERING, the change's contract, or integration coverage):",
+    "Optional per-workstream fields (N>1 plans that declare workstream ORDERING, the change's contract, or integration coverage) — the same names as the tool's schema:",
     "",
-    "  - `depends-on: <id>` — the workstream(s) this one builds on. The develop step defers this workstream's worktree until the referenced one commits, and sources it from that worktree's HEAD rather than the cycle's base. The graph must be a DAG: no workstream may depend on itself or on a chain that loops back to it. A reference to an undeclared id (or to a workstream folded away by the ceiling) is a plan-quality rejection.",
-    "  - `introduces: <identifiers>` — the symbols this workstream CREATES that do not exist at the base commit (new fields, exports, functions, types, variants), comma-separated, e.g. `introduces: providerRepeats, isFinalProviderFault`.",
-    "  - `consumes: <identifiers>` — the symbols this workstream USES that do not exist at the base commit. Symbols that already exist need not be listed. When a workstream consumes a symbol a sibling introduces, the driver records a `depends-on` edge for it and merges the two into one workstream — so declare the contract honestly rather than splitting around it. Over N>1 workstreams, declare both lines on every workstream whose change adds or uses a new symbol.",
+    "  - `dependsOn` — the workstream id(s) this one builds on. The develop step defers this workstream's worktree until the referenced one commits, and sources it from that worktree's HEAD rather than the cycle's base. The graph must be a DAG: no workstream may depend on itself or on a chain that loops back to it. A reference to an undeclared id (or to a workstream folded away by the ceiling) is a plan-quality rejection.",
+    '  - `introduces` — the symbols this workstream CREATES that do not exist at the base commit (new fields, exports, functions, types, variants), as a list, e.g. `["providerRepeats", "isFinalProviderFault"]`.',
+    "  - `consumes` — the symbols this workstream USES that do not exist at the base commit. Symbols that already exist need not be listed. When a workstream consumes a symbol a sibling introduces, the driver records a `depends-on` edge for it and merges the two into one workstream — so declare the contract honestly rather than splitting around it. Over N>1 workstreams, declare both lines on every workstream whose change adds or uses a new symbol.",
     "",
-    "Cross-declaration contract for N>1 workstreams: put every sibling workstream's `paths` files in your own `out-of-scope` line (and keep the contract symmetric). The driver's plan-quality gate rejects two workstreams claiming the same file, and the develop scope fence honours the cross-declaration — a `depends-on` workstream is exempted from its sibling's files for exactly that reason. Do not rely on the exemption for paths your workstream genuinely needs to edit; if two workstreams both need to edit a file, that is one workstream, not two.",
-    "  - `integration-test: <path>` — the consolidated-tree test that exercises this workstream TOGETHER with the workstream(s) it depends on. REQUIRED (plan-quality rejection otherwise) when two workstreams are interdependent through DIFFERENT files — i.e. one declares `depends-on: <other>` with a disjoint file set, or one's test file exercises the other's file. The line is a DECLARATION only: the develop step does not execute it; it exists so the plan records that integration coverage was required.",
+    "Cross-declaration contract for N>1 workstreams: put every sibling workstream's `paths` files in your own `outOfScope` list (and keep the contract symmetric). The driver's plan-quality gate rejects two workstreams claiming the same file, and the develop scope fence honours the cross-declaration — a `dependsOn` workstream is exempted from its sibling's files for exactly that reason. Do not rely on the exemption for paths your workstream genuinely needs to edit; if two workstreams both need to edit a file, that is one workstream, not two.",
+    "  - `integrationTest` — the consolidated-tree test path that exercises this workstream TOGETHER with the workstream(s) it depends on. REQUIRED (plan-quality rejection otherwise) when two workstreams are interdependent through DIFFERENT files — i.e. one declares `dependsOn: [<other>]` with a disjoint file set, or one's test file exercises the other's file. The line is a DECLARATION only: the develop step does not execute it; it exists so the plan records that integration coverage was required.",
     scratchHygieneSection(scratchDirAbs),
   ].join("\n");
 }

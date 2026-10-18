@@ -20,6 +20,7 @@
 import { runPlan } from "../src/work-driver-plan.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -111,8 +112,7 @@ try {
       return {
         role: "explore" as const,
         ok: true,
-        text: plan,
-        toolUses: [],
+        ...planResultFromMarkdown(plan),
         ms: 1,
         exitCode: 0,
       };

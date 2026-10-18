@@ -147,6 +147,8 @@ export const KNOWN_EVENT_KINDS = [
   // #1398 — a residual-findings disclosure that DID reach the PR, keyed on the
   // reviewed patch: the fact the draft-ready gate holds on.
   "lens-residuals-posted",
+  // #1652 — the plan step's refused report_workstream calls.
+  "workstream-calls-refused",
 ] as const;
 
 // #986 — compile-time exhaustiveness. If the `WorkEvent` union gains a kind

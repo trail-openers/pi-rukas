@@ -42,6 +42,7 @@ import type {
 // run concluded); these record that a run happened and what it cost.
 import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
+import type { WorkstreamCallsRefusedEvent } from "./workflow-state-events-workstream.ts";
 // #539 — single definition in the sibling fragment module.
 export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 // #775 prep — handoff event members re-exported from the sibling fragment.
@@ -478,6 +479,7 @@ export type WorkEvent =
   | WorktreeProvisionedEvent
   | SafetyNetCommitEvent
   | RetryTreeCleanEvent
+  | WorkstreamCallsRefusedEvent
   | BranchResetEvent
   | WorktreeLeftoverHandledEvent
   | DispatchSlowEvent

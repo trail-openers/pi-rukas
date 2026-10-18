@@ -14,6 +14,7 @@ import { appendEvent, initialState } from "../src/workflow-state.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { realExec } from "./lib/exec-fake.ts";
+import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
 
 /** The audit's state input: a completed ops:commit-pr dispatch + the branch fields. */
 export function auditStateFor(
@@ -116,7 +117,7 @@ export function makeCtx(opts: {
   const dispatchFn: NonNullable<DriverContext["dispatchFn"]> = async (_pi, spec, dOpts) => {
     const label = dOpts?.label ?? spec.role;
     if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
-    if (label === "plan") return mkResult({ text: PLAN_REPLY });
+    if (label === "plan") return { ...mkResult({ text: PLAN_REPLY }), ...planResultFromMarkdown(PLAN_REPLY) };
     if (label === "ops") {
       return mkResult({
         role: "ops",

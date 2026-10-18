@@ -31,6 +31,7 @@ import { placeUnplacedPath, unfenceIssueNamedPaths } from "../src/work-driver-pl
 import { runPlan } from "../src/work-driver-plan.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -350,8 +351,7 @@ const OPTS = {
     dispatchFn: async () => ({
       role: "explore" as const,
       ok: true,
-      text: planReply,
-      toolUses: [],
+      ...planResultFromMarkdown(planReply),
       ms: 1,
       exitCode: 0,
     }),
@@ -423,8 +423,7 @@ const OPTS = {
       return {
         role: "explore" as const,
         ok: true,
-        text: prompts.length === 1 ? first : second,
-        toolUses: [],
+        ...planResultFromMarkdown(prompts.length === 1 ? first : second),
         ms: 1,
         exitCode: 0,
       };

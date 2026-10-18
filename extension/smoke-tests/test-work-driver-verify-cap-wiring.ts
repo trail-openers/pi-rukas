@@ -24,6 +24,7 @@ import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { isNulStatusRead, nulStatus } from "./lib/nul-porcelain.ts";
+import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -114,7 +115,11 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           dispatchFn: async (_pi, spec, opts) => {
             const label = opts?.label ?? spec.role;
             if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
-            if (label === "plan") return mkResult({ text: "" });
+            if (label === "plan")
+              return {
+                ...mkResult({ text: "" }),
+                ...planResultFromCalls([{ id: "default", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] }]),
+              };
             if (label === "ops")
               return mkResult({ role: "ops", text: "branch: feature/issue-991" });
             if (label === "developer")
@@ -179,7 +184,11 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           dispatchFn: async (_pi, spec, opts) => {
             const label = opts?.label ?? spec.role;
             if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
-            if (label === "plan") return mkResult({ text: "" });
+            if (label.startsWith("plan"))
+              return {
+                ...mkResult({ text: "" }),
+                ...planResultFromCalls([{ id: "default", scope: "the fix", paths: [], outOfScope: [] }]),
+              };
             if (label === "ops")
               return mkResult({ role: "ops", text: "branch: feature/issue-992" });
             if (label === "developer")
@@ -191,8 +200,7 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           },
         };
         await runWorkDriver(ctx).catch(() => {});
-        const after = await readState(dir, 992);
-        assert(
+        const after = await readState(dir, 992);        assert(
           !after?.eventLog.some((e) => e.kind === "cap-hit" && e.cap === "verify-failed:develop"),
           "R4b: real develop evidence passes the gate (no verify-failed:develop)",
         );
@@ -254,7 +262,11 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           dispatchFn: async (_pi, spec, opts) => {
             const label = opts?.label ?? spec.role;
             if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
-            if (label === "plan") return mkResult({ text: "" });
+            if (label === "plan")
+              return {
+                ...mkResult({ text: "" }),
+                ...planResultFromCalls([{ id: "default", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] }]),
+              };
             if (label === "ops")
               return mkResult({ role: "ops", text: "branch: feature/issue-993" });
             if (label === "developer")

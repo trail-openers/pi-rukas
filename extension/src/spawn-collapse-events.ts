@@ -77,6 +77,20 @@ export function collapseEvents(
     }
   }
 
+  // #1652 — which tool calls Pi accepted. Refusal text is kept (bounded): it is
+  // the reason the operator reads when a plan parks on refused calls.
+  const toolResults = messages
+    .filter((m) => m.role === "toolResult" && typeof m.toolCallId === "string")
+    .map((m) => ({
+      toolCallId: m.toolCallId as string,
+      toolName: m.toolName ?? "",
+      isError: m.isError === true,
+      text: (m.content ?? [])
+        .map((b) => b.text ?? "")
+        .join("")
+        .slice(0, 300),
+    }));
+
   // Join with double-newline so distinct text blocks across turns (separated
   // by tool calls in between) stay visually delimited instead of concatenated.
   const text = textParts.filter((t) => t.trim()).join("\n\n");
@@ -111,6 +125,7 @@ export function collapseEvents(
     ok: exitCode === 0 && !errorStop,
     text: resolvedText,
     toolUses,
+    ...(toolResults.length > 0 ? { toolResults } : {}),
     ms,
     exitCode,
     usage: { ...usage, turns },
