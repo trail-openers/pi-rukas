@@ -14,14 +14,19 @@
  *   - second absent set → cap-hit `develop-incomplete-deliverables` (a
  *     DISTINCT cap, not a reuse of verify-failed) → handoff.
  *   - corrective dispatch fails (provider error, kill, or an
- *     `ok === false` result) → cap-hit with evidence that says the
- *     corrective NEVER RAN. Same cap literal (the cap-registration
- *     sites are fixed), but the recovery recipe must not tell the
- *     operator to implement work that was never attempted.
+ *     `ok === false` result) → converge is re-checked on the tree the
+ *     round left (#1248). Nothing absent any more → the success path
+ *     (the gates judge that tree). Otherwise a cap-hit whose evidence
+ *     names what ended the round (its run bound, the backstop, a
+ *     failure) and what is still missing. Same cap literal (the
+ *     cap-registration sites are fixed).
  *   - partial only      → recorded on `pipelineState.convergeEvidence` and
  *     surfaced in the handoff/PR body as a WARNING; it never blocks (the
  *     58.9% figure counts partials as the upper bound — blocking on
  *     partials is a policy decision the issue defers to review).
+ *
+ * The corrective child carries its own run bound (#1350): 20 min per
+ * missing deliverable, at most 45 (spawn-child-bound.ts).
  *
  * #1155 — `unmeasurable` gets the same treatment and the same channel: a
  * deliverable whose `[paths:]` slot parses to no concrete or glob alternative
@@ -36,6 +41,7 @@
 import path from "node:path";
 import { recordCommentEvidence } from "./comment-evidence.ts";
 import { execp } from "./exec.ts";
+import { correctiveChildBoundMs } from "./spawn-child-bound.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
@@ -48,6 +54,7 @@ import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { applySafetyNet } from "./work-driver-safety-net.ts";
 import { verifyCapFor } from "./work-driver-verify-develop-helpers.ts";
 import { recordDevelopGateEvents } from "./work-driver-verify-events.ts";
+import { fastVerifyCmdFor } from "./work-driver-verify-fast.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -99,7 +106,12 @@ export async function runConvergeGateHandler(
   const correctiveDir = resolveProbeDir(ctx, correctiveCwd);
   const headBefore = correctiveDir ? await headOf(ctx, correctiveDir) : undefined;
 
-  const prompt = buildConvergeCorrectivePrompt(next, converge);
+  const prompt = buildConvergeCorrectivePrompt(
+    next,
+    converge,
+    await fastVerifyCmdFor(ctx.repoRoot),
+  );
+  const childBoundMs = correctiveChildBoundMs(converge.absent.length);
   // Total partition over the dispatch outcome: { ok: true, ok: false,
   // no-result (undefined/null), threw }. A killed child returns a
   // DispatchResult (ok: false) rather than throwing; a falsy result is
@@ -126,33 +138,43 @@ export async function runConvergeGateHandler(
           ...driverDeckOpts(ctx.issue, "develop", "corrective"),
           label: "develop:corrective",
         },
+        // #1350 — the corrective's own run bound, scaled to what is missing.
+        childBoundMs,
       },
     );
-    if (retry?.ok !== true) {
-      correctiveNote = retry
-        ? "corrective re-dispatch FAILED (child reported failure)"
-        : "corrective re-dispatch FAILED (no result returned)";
-    }
+    if (retry?.ok !== true) correctiveNote = correctiveFailureNote(retry, childBoundMs);
   } catch (err) {
     correctiveNote = `corrective re-dispatch FAILED (${String(err).slice(0, 200)})`;
   }
 
   if (correctiveNote !== undefined) {
-    // The one-shot budget is consumed but the corrective NEVER RAN: a
-    // provider 429 or inactivity kill must not present as a completeness
-    // verdict. Same cap literal (the eight registration sites are fixed),
-    // but the evidence tells the operator the missing work was never
-    // attempted — re-running /work spends a fresh corrective budget.
-    trace(`work-driver: ${correctiveNote} — the absent set stands`);
-    next = appendEvent(next, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "develop-incomplete-deliverables",
-      reviewRound: next.pipelineState.reviewRound,
-      nextStep: "handoff",
-      evidence: `${convergeEvidence(converge)}; ${correctiveNote} — the absent set stands untested`,
-    });
-    return next;
+    // #1248 — whatever ended the round, judge the tree it left, not the
+    // verdict from before it: a round killed at its bound can still have
+    // written every missing file. When nothing is absent any more the round
+    // takes the success path below, so the gates judge that tree.
+    const recheck = await runConvergeGate(ctx, next);
+    if (recheck) recordConverge(recheck);
+    if (recheck && recheck.absent.length === 0) {
+      trace(`work-driver: ${correctiveNote} — but no deliverable is absent on its tree any more`);
+    } else {
+      // The one-shot budget is consumed: a provider 429 or a kill must not
+      // present as a completeness verdict. Same cap literal (the eight
+      // registration sites are fixed), but the evidence says what ended the
+      // round and what is still missing on the tree it left.
+      const after = recheck
+        ? `; re-checked on the tree the round left: ${convergeEvidence(recheck)}${producedNote(converge, recheck)}`
+        : " — the absent set stands untested";
+      trace(`work-driver: ${correctiveNote}${after}`);
+      next = appendEvent(next, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "develop-incomplete-deliverables",
+        reviewRound: next.pipelineState.reviewRound,
+        nextStep: "handoff",
+        evidence: `${convergeEvidence(converge)}; ${correctiveNote}${after}`,
+      });
+      return next;
+    }
   }
 
   next = appendEvent(next, {
@@ -345,6 +367,35 @@ export async function correctiveChange(
     `work-driver: corrective re-dispatch committed its work (HEAD ${headBefore.slice(0, 8)} → ${headAfter.slice(0, 8)}) — re-running the gates`,
   );
   return "changed";
+}
+
+/**
+ * What ended a failed corrective round, by its kill cause (#1350): "child
+ * reported failure" was said for the spawn backstop and for a bound kill
+ * alike, which sent the operator after a fault the child never reported.
+ */
+function correctiveFailureNote(
+  retry: { killCause?: string } | null | undefined,
+  boundMs: number,
+): string {
+  if (!retry) return "corrective re-dispatch FAILED (no result returned)";
+  switch (retry.killCause) {
+    case undefined:
+      return "corrective re-dispatch FAILED (child reported failure)";
+    case "child-bound":
+      return `corrective re-dispatch ended at its ${Math.round(boundMs / 60_000)}-min run bound (PI_ENSEMBLE_CORRECTIVE_BOUND_MS per missing deliverable, at most 45)`;
+    case "timeout":
+      return "corrective re-dispatch killed by the spawn backstop (PI_ENSEMBLE_SPAWN_TIMEOUT_MS)";
+    default:
+      return `corrective re-dispatch killed (${retry.killCause})`;
+  }
+}
+
+/** #1248 — the deliverables the round did produce, for the cap evidence. */
+function producedNote(before: ConvergeVerdict, after: ConvergeVerdict): string {
+  const still = new Set(after.absent.map((a) => a.id));
+  const produced = before.absent.filter((a) => !still.has(a.id)).map((a) => a.id);
+  return produced.length > 0 ? `; the round did produce ${produced.join(", ")}` : "";
 }
 
 /** The operator-facing evidence line for the cap-hit event. */

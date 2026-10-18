@@ -70,6 +70,13 @@ export function lensChildBoundMs(): number {
   return envMs("PI_ENSEMBLE_LENS_BOUND_MS", 30 * MINUTE_MS);
 }
 
+/** The converge corrective child's bound (#1350): 20 min per missing
+ *  deliverable (PI_ENSEMBLE_CORRECTIVE_BOUND_MS), at most 45 min. */
+export function correctiveChildBoundMs(missingDeliverables: number): number {
+  const per = envMs("PI_ENSEMBLE_CORRECTIVE_BOUND_MS", 20 * MINUTE_MS);
+  return Math.min(45 * MINUTE_MS, per * Math.max(1, missingDeliverables));
+}
+
 /** Time between the wrap-up steer and the kill (policy: 10 min). */
 export function childBoundGraceMs(): number {
   return envMs("PI_ENSEMBLE_CHILD_BOUND_GRACE_MS", 10 * MINUTE_MS);

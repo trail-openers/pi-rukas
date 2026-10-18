@@ -49,6 +49,7 @@ import { slowThresholds } from "../src/slow-notice.ts";
 import {
   childBoundGraceMs,
   developChildBoundMs,
+  correctiveChildBoundMs,
   exploreChildBoundMs,
   lensChildBoundMs,
   settledReapMs,
@@ -323,6 +324,7 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_CHILD_BOUND_GRACE_MS", childBoundGraceMs],
   ["PI_ENSEMBLE_DEVELOP_BOUND_MS", developChildBoundMs],
   ["PI_ENSEMBLE_EXPLORE_BOUND_MS", exploreChildBoundMs],
+  ["PI_ENSEMBLE_CORRECTIVE_BOUND_MS", () => correctiveChildBoundMs(1)],
   ["PI_ENSEMBLE_SETTLED_REAP_MS", settledReapMs],
   ["PI_ENSEMBLE_LENS_BOUND_MS", lensChildBoundMs],
   ["PI_ENSEMBLE_COMMENT_RETENTION_PATHS", () => COMMENT_RETENTION_PATHS.join(",")],

@@ -152,6 +152,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // judged. Default ON.
   flag("CONSOLIDATED_VERIFY_SKIP", true),
   flag("CONVERGE", true),
+  // #1350 — the converge corrective child's bound per missing deliverable (at most 45 min).
+  ms("CORRECTIVE_BOUND_MS", 1_200_000),
   flag("CROSS_GROUP_CONFLICTS", true),
   ms("CYCLE_BUDGET_MS", null),
   // An absolute deadline; a value below 1e12 (epoch seconds) is ignored. #1593 —

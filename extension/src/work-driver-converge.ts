@@ -77,6 +77,7 @@ import {
   deliverablePathAlternatives,
 } from "./work-driver-deliverable-paths.ts";
 import { porcelainPaths } from "./work-driver-doctrine.ts";
+import { developTestScopeLine } from "./work-driver-verify-fast.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -246,7 +247,12 @@ export async function runConvergeGate(
  * can implement whatever the deterministic path-presence check could not
  * judge (the LLM-assisted seam the issue describes).
  */
-export function buildConvergeCorrectivePrompt(state: WorkState, verdict: ConvergeVerdict): string {
+export function buildConvergeCorrectivePrompt(
+  state: WorkState,
+  verdict: ConvergeVerdict,
+  /** #1350 — `.pi/verify-cmd-fast`, when the project has one. */
+  fastVerifyCmd?: string,
+): string {
   const spec = state.pipelineState.normalisedSpec;
   const issue = state.issue;
   const missingByOwner = new Map<string, string[]>();
@@ -288,7 +294,16 @@ export function buildConvergeCorrectivePrompt(state: WorkState, verdict: Converg
     "CONVERGE GATE — the end-of-develop diff is missing declared deliverables.",
     "The verify gate passed (the code builds); this is a COMPLETENESS gate: the plan's",
     `deliverables (issue #${issue}) are not all present in the diff. Implement the missing work`,
-    "end-to-end, commit it in your worktree, and re-run the local quality gates.",
+    "end-to-end and commit it in your worktree.",
+    // #1350 — the old "re-run the local quality gates" sent the child into
+    // repeated full-gate runs the driver repeats anyway on the result.
+    ...(fastVerifyCmd
+      ? [
+          `Before committing, run the project's FAST verify tier — \`${fastVerifyCmd}\` — and make it pass.`,
+        ]
+      : []),
+    developTestScopeLine(Boolean(fastVerifyCmd)),
+    "Do NOT run the project's full verify command or full suite: the driver re-runs the full gate on your result.",
     "",
     "Missing deliverable(s):",
     ...missingLines,
