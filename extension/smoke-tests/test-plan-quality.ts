@@ -19,7 +19,7 @@ import {
   PLAN_DELIVERABLE_PATH_RULE,
   PLAN_WORKSTREAM_CALL_RULE,
 } from "../src/work-driver-prompts-plan.ts";
-import { workstreamsFromMarkdown } from "./lib/plan-workstream-calls.ts";
+import { workstreamsOfCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -235,14 +235,13 @@ assert(
 // ------------------------------------------------------- MAX_WORKSTREAMS
 
 {
-  const block = [
-    "## Workstreams",
-    "",
-    ...Array.from({ length: 9 }, (_, i) =>
-      [`### t${i} — scope ${i}`, `- paths: src/f${i}.ts`, "- out-of-scope: docs/", ""].join("\n"),
-    ),
-  ].join("\n");
-  const parsed = workstreamsFromMarkdown(block);
+  const calls = Array.from({ length: 9 }, (_, i) => ({
+    id: `t${i}`,
+    scope: `scope ${i}`,
+    paths: [`src/f${i}.ts`],
+    outOfScope: ["docs/"],
+  }));
+  const parsed = workstreamsOfCalls(calls);
   const ids = Object.keys(parsed);
   assert(
     // #1325 — the fold uses the ceiling lowered to the host budget.
@@ -267,20 +266,13 @@ assert(
   const prev = process.env.PI_ENSEMBLE_MAX_WORKSTREAMS;
   process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = "2";
   try {
-    const block = [
-      "## Workstreams",
-      "",
-      "### a — one",
-      "- paths: src/a.ts",
-      "",
-      "### b — two",
-      "- paths: src/b.ts",
-      "",
-      "### c — three",
-      "- paths: src/c.ts",
-    ].join("\n");
+    const calls = [
+      { id: "a", scope: "one", paths: ["src/a.ts"], outOfScope: [] },
+      { id: "b", scope: "two", paths: ["src/b.ts"], outOfScope: [] },
+      { id: "c", scope: "three", paths: ["src/c.ts"], outOfScope: [] },
+    ];
     assert(
-      Object.keys(workstreamsFromMarkdown(block)).length === 2,
+      Object.keys(workstreamsOfCalls(calls)).length === 2,
       "PI_ENSEMBLE_MAX_WORKSTREAMS tunes the ceiling",
     );
   } finally {
@@ -291,8 +283,9 @@ assert(
 }
 {
   // Regression guard: normal plans must be untouched by the ceiling.
-  const block = ["## Workstreams", "", "### default — everything", "- paths: src/a.ts"].join("\n");
-  const parsed = workstreamsFromMarkdown(block);
+  const parsed = workstreamsOfCalls([
+    { id: "default", scope: "everything", paths: ["src/a.ts"], outOfScope: [] },
+  ]);
   assert(
     Object.keys(parsed).length === 1 && parsed.default?.scope === "everything",
     "a single-workstream plan is unaffected — no fold annotation, scope intact",

@@ -1,19 +1,26 @@
 /**
  * Test helper (#1652): the tool-call transcript a /work plan child produces.
  *
- * Plan fixtures used to be markdown `## Workstreams` blocks returned as the
- * child's reply text. The plan step now reads workstreams from its
- * `report_workstream` calls, so a fixture is a `DispatchResult`-shaped object:
- * the calls in `toolUses`, and the results Pi would record in `toolResults`.
+ * The plan step reads workstreams from its `report_workstream` calls, so a
+ * fixture is a `DispatchResult`-shaped object: the calls in `toolUses`, and the
+ * results Pi would record in `toolResults`.
  *
- * `planResultFromMarkdown` converts the old block shape into those calls, so a
- * fixture's meaning is unchanged. It applies the child-side rules the real
- * companion applies (workstream-reporter.ts): a duplicate id is an error result
- * naming the duplicate, and that call contributes nothing.
+ * The results are produced by DRIVING THE REAL COMPANION (workstream-reporter.ts):
+ * each dispatch gets a fresh reporter instance, so its duplicate-id set starts
+ * empty, as a corrective re-dispatch does in production. Schema refusals come
+ * from the registered tool's own TypeBox parameters; everything else comes from
+ * its `execute`.
  */
 
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Value } from "@sinclair/typebox/value";
 import { workstreamCallsOf } from "../../src/work-driver-plan-calls.ts";
-import { extractListField, sliceMarkdownSection } from "../../src/work-driver-plan-parse.ts";
+import workstreamReporter, {
+  type WorkstreamArgs,
+  type WORKSTREAM_PARAMETERS,
+} from "../../src/workstream-reporter.ts";
+
+export type { WorkstreamArgs };
 
 export interface PlanResultShape {
   text: string;
@@ -21,16 +28,21 @@ export interface PlanResultShape {
   toolResults: Array<{ toolCallId: string; toolName: string; isError: boolean; text: string }>;
 }
 
-/** A workstream as a `report_workstream` call's arguments. */
-export interface WorkstreamArgs {
-  id: string;
-  scope: string;
-  paths: string[];
-  outOfScope: string[];
-  dependsOn?: string[];
-  integrationTest?: string;
-  introduces?: string[];
-  consumes?: string[];
+interface RegisteredReporterTool {
+  parameters: typeof WORKSTREAM_PARAMETERS;
+  execute: (id: string, raw: unknown) => Promise<{ content: { text: string }[] }>;
+}
+
+/** A fresh companion instance: its own accepted-id set, as one dispatch has. */
+function freshReporterTool(): RegisteredReporterTool {
+  let tool: RegisteredReporterTool | undefined;
+  workstreamReporter({
+    registerTool(t: RegisteredReporterTool) {
+      tool = t;
+    },
+  } as unknown as ExtensionAPI);
+  if (!tool) throw new Error("workstream-reporter did not register report_workstream");
+  return tool;
 }
 
 /** A plan result whose calls report exactly these workstreams, in order. */
@@ -42,16 +54,17 @@ export function planResultFromCalls(calls: WorkstreamArgs[], text = ""): PlanRes
 }
 
 /**
- * Calls by raw `args` — used where a test needs a call the schema would refuse
- * (the args are not validated here: the refusal is modelled by the result).
+ * Calls by raw `args` — used where a test needs a call the companion would
+ * refuse. `refused`, when given, models a channel-level refusal (the call never
+ * reached the companion) and overrides the companion's own result.
  */
 export function planResultFromRawCalls(
   entries: Array<{ id: string; args: Record<string, unknown>; refused?: string }>,
   text = "",
 ): PlanResultShape {
+  const tool = freshReporterTool();
   const toolUses: unknown[] = [];
   const toolResults: PlanResultShape["toolResults"] = [];
-  const seen = new Set<string>();
   entries.forEach((entry, i) => {
     const toolCallId = `call-${i + 1}`;
     toolUses.push({
@@ -60,68 +73,44 @@ export function planResultFromRawCalls(
       name: "report_workstream",
       arguments: entry.args,
     });
-    const id = String(entry.args.id ?? "");
-    let refusal = entry.refused;
-    if (!refusal && seen.has(id)) {
-      refusal = `workstream id '${id}' was already reported in this plan — each workstream needs a distinct id. This call was refused and added nothing; call again with a distinct id.`;
-    }
-    if (refusal) {
-      toolResults.push({ toolCallId, toolName: "report_workstream", isError: true, text: refusal });
-    } else {
-      seen.add(id);
-      toolResults.push({
-        toolCallId,
-        toolName: "report_workstream",
-        isError: false,
-        text: `recorded workstream ${id}`,
-      });
-    }
+    const outcome = entry.refused
+      ? { isError: true, text: entry.refused }
+      : companionOutcome(tool, toolCallId, entry.args);
+    toolResults.push({ toolCallId, toolName: "report_workstream", ...outcome });
   });
   return { text, toolUses, toolResults };
 }
 
 /**
- * The old markdown fixture shape → the calls it stands for. Only the FIRST
- * `## Workstreams` block is read, matching the production parser it replaces.
+ * Runs one call through the companion and reads its outcome. `execute` is async
+ * but has no await, so its promise is already settled on return; `Bun.peek`
+ * reads that settled outcome without making every fixture site async.
  */
-export function planResultFromMarkdown(markdown: string): PlanResultShape {
-  const section = sliceMarkdownSection(markdown, "Workstreams") ?? "";
-  const headingRe = /^###\s+([a-z0-9][a-z0-9_-]*)(?:\s+[—–-]\s+(.+?))?\s*$/gim;
-  const heads: Array<{ index: number; length: number; id: string; scope: string }> = [];
-  for (const m of section.matchAll(headingRe)) {
-    heads.push({
-      index: m.index ?? 0,
-      length: m[0].length,
-      id: m[1] ?? "",
-      scope: (m[2] ?? "").trim() || (m[1] ?? ""),
-    });
-  }
-  const calls: WorkstreamArgs[] = heads.map((h, i) => {
-    const body = section.slice(h.index + h.length, heads[i + 1]?.index ?? section.length);
-    const dependsOn = extractListField(body, "depends[- _]on");
-    const integrationTest = extractListField(body, "integration[- _]test")[0];
-    const introduces = extractListField(body, "introduces");
-    const consumes = extractListField(body, "consumes");
+function companionOutcome(
+  tool: RegisteredReporterTool,
+  toolCallId: string,
+  args: Record<string, unknown>,
+): { isError: boolean; text: string } {
+  if (!Value.Check(tool.parameters, args)) {
     return {
-      id: h.id,
-      scope: h.scope,
-      paths: extractListField(body, "paths"),
-      outOfScope: extractListField(body, "out[- ]of[- ]scope"),
-      ...(dependsOn.length > 0 ? { dependsOn } : {}),
-      ...(integrationTest ? { integrationTest } : {}),
-      ...(introduces.length > 0 ? { introduces } : {}),
-      ...(consumes.length > 0 ? { consumes } : {}),
+      isError: true,
+      text: `${toolCallId}: report_workstream arguments do not match the schema — call again with a valid id, scope, paths and outOfScope.`,
     };
-  });
-  return planResultFromCalls(calls, markdown);
+  }
+  const settled = tool.execute(toolCallId, args);
+  // A refusal is an expected outcome here, not an unhandled rejection to report.
+  settled.catch(() => undefined);
+  if (Bun.peek.status(settled) === "rejected") {
+    const reason = Bun.peek(settled) as unknown;
+    return { isError: true, text: reason instanceof Error ? reason.message : String(reason) };
+  }
+  const result = Bun.peek(settled) as { content: { text: string }[] };
+  return { isError: false, text: result.content[0]?.text ?? "" };
 }
 
-/**
- * The workstream map a markdown fixture's calls produce, read by the PRODUCTION
- * reader (`workstreamCallsOf`), so a test asserts on what the plan step keeps.
- */
-export function workstreamsFromMarkdown(markdown: string): Record<string, WorkstreamArgs> {
-  return workstreamCallsOf(planResultFromMarkdown(markdown)).workstreams as Record<
+/** The workstream map a plan result's calls produce, read by the PRODUCTION reader. */
+export function workstreamsOfCalls(calls: WorkstreamArgs[]): Record<string, WorkstreamArgs> {
+  return workstreamCallsOf(planResultFromCalls(calls)).workstreams as Record<
     string,
     WorkstreamArgs
   >;

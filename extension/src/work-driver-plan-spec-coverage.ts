@@ -255,8 +255,12 @@ export function findUncoveredDeliverables(
   return { uncovered, checkedCount };
 }
 
-/** The two ways a plan can fail the plan-to-spec gate (#1652: zero calls, uncovered). */
-export type PlanSpecMismatchKind = "no-workstream-calls" | "uncovered-deliverables";
+/**
+ * The ways a plan can fail the plan-to-spec gate. Zero report_workstream calls
+ * is NOT one of them (#1652): with no plan there is nothing to compare against
+ * the spec, so that outcome has its own verdict (`planNoWorkstreamCallsCap`).
+ */
+export type PlanSpecMismatchKind = "uncovered-deliverables";
 
 /** The verdict of the plan-to-spec gate. */
 export interface PlanSpecMismatch {

@@ -19,4 +19,6 @@ export type WorkstreamCallsRefusedEvent = {
   /** Calls Pi accepted in the same dispatch. */
   accepted: number;
   refused: Array<{ id?: string; reason: string }>;
+  /** Refusals beyond the recorded cap (MAX_REFUSALS_RECORDED), counted not stored. */
+  omitted?: number;
 };

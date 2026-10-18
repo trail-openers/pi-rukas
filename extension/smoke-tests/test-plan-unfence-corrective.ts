@@ -14,7 +14,7 @@
 import { runPlan } from "../src/work-driver-plan.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state.ts";
-import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
+import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -61,30 +61,24 @@ try {
     "## Out of scope",
     "- nothing else",
   ].join("\n");
-  const first = [
-    "## Workstreams",
-    "",
-    "### task-a — the fix",
-    "- paths: src/a.ts, src/a.ts",
-    "- out-of-scope: src/a.ts, docs/",
-    "",
-    "### task-b — the other half",
-    "- paths: src/b.ts",
-    "- out-of-scope: src/a.ts",
-    "",
-  ].join("\n");
-  const second = [
-    "## Workstreams",
-    "",
-    "### task-a — the fix",
-    "- paths: src/a.ts, extension/src/dispatch.ts",
-    "- out-of-scope: extension/src/dispatch.ts, docs/",
-    "",
-    "### task-b — the other half",
-    "- paths: src/b.ts",
-    "- out-of-scope: src/a.ts",
-    "",
-  ].join("\n");
+  const first = planResultFromCalls([
+    {
+      id: "task-a",
+      scope: "the fix",
+      paths: ["src/a.ts", "src/a.ts"],
+      outOfScope: ["src/a.ts", "docs/"],
+    },
+    { id: "task-b", scope: "the other half", paths: ["src/b.ts"], outOfScope: ["src/a.ts"] },
+  ]);
+  const second = planResultFromCalls([
+    {
+      id: "task-a",
+      scope: "the fix",
+      paths: ["src/a.ts", "extension/src/dispatch.ts"],
+      outOfScope: ["extension/src/dispatch.ts", "docs/"],
+    },
+    { id: "task-b", scope: "the other half", paths: ["src/b.ts"], outOfScope: ["src/a.ts"] },
+  ]);
   const tmp = `${process.env.TMPDIR ?? "/tmp"}/plan-unfence-corr-${process.pid}.md`;
   await Bun.write(tmp, body);
   const prompts: string[] = [];
@@ -98,7 +92,7 @@ try {
       return {
         role: "explore" as const,
         ok: true,
-        ...planResultFromMarkdown(prompts.length === 1 ? first : second),
+        ...(prompts.length === 1 ? first : second),
         ms: 1,
         exitCode: 0,
       };

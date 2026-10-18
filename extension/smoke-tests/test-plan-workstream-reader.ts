@@ -7,7 +7,12 @@
  * objects: no child process, no state file.
  */
 
-import { noWorkstreamCallsEvidence, workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
+import {
+  appendPlanDispatchOutcome,
+  noWorkstreamCallsEvidence,
+  workstreamCallsOf,
+} from "../src/work-driver-plan-calls.ts";
+import { type WorkEvent, initialState } from "../src/workflow-state.ts";
 import { planResultFromCalls, planResultFromRawCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
@@ -112,7 +117,8 @@ function assert(cond: boolean, msg: string) {
   );
 }
 {
-  // A call whose tool result never arrived is not a success: it is counted as refused.
+  // A call whose tool result is missing is not a success, and it is not a
+  // refusal either: the result channel failed, so the call is unreadable.
   const result = planResultFromCalls([
     { id: "task-a", scope: "a", paths: ["src/a.ts"], outOfScope: [] },
   ]);
@@ -121,17 +127,27 @@ function assert(cond: boolean, msg: string) {
     toolResults: [],
   });
   assert(
-    report.accepted === 0 && report.refused.length === 1,
-    "a call with no recorded result is not counted",
-  );
-  assert(
-    noWorkstreamCallsEvidence(report) === "no successful report_workstream call (1 refused)",
-    "the evidence says the calls were made and refused",
+    report.accepted === 0 && report.refused.length === 0 && report.unreadable === 1,
+    "a call with no recorded result is unreadable, not counted and not a refusal",
   );
   assert(
     noWorkstreamCallsEvidence(workstreamCallsOf({ toolUses: [], toolResults: [] })) ===
       "no report_workstream call",
     "the evidence for a reply with no call is 'no report_workstream call'",
+  );
+  assert(
+    noWorkstreamCallsEvidence(
+      workstreamCallsOf(
+        planResultFromRawCalls([
+          {
+            id: "Bad A",
+            args: { id: "Bad A", scope: "x", paths: ["p"], outOfScope: [] },
+            refused: "schema: refused",
+          },
+        ]),
+      ),
+    ) === "no successful report_workstream call (1 refused)",
+    "calls made and refused: the evidence counts the refusals",
   );
 }
 {
@@ -147,20 +163,59 @@ function assert(cond: boolean, msg: string) {
 
 {
   // A replay with calls but NO tool-result messages (the message_end fallback)
-  // is not a per-call refusal: the evidence says the results are unavailable.
+  // is not a per-call refusal: every call is unreadable.
   const calls = planResultFromCalls([
     { id: "task-a", scope: "a", paths: ["src/a.ts"], outOfScope: [] },
   ]);
   const report = workstreamCallsOf({ toolUses: calls.toolUses, toolResults: undefined });
   assert(
-    report.accepted === 0 && report.refused.length === 1,
-    "no results carried: the calls are not counted",
+    report.accepted === 0 && report.refused.length === 0 && report.unreadable === 1,
+    "no results carried: the calls are unreadable, not counted and not refused",
+  );
+}
+{
+  // Paths are refused by the same rules the companion applies.
+  const report = workstreamCallsOf(
+    planResultFromRawCalls([
+      {
+        id: "task-a",
+        args: { id: "task-a", scope: "a", paths: ["/etc/passwd"], outOfScope: [] },
+      },
+      {
+        id: "task-b",
+        args: { id: "task-b", scope: "b", paths: ["src/ok.ts"], outOfScope: ["../escape"] },
+      },
+      {
+        id: "task-c",
+        args: { id: "task-c", scope: "c", paths: ["src/c.ts (new)", "src/d.ts"], outOfScope: [] },
+      },
+    ]),
   );
   assert(
-    noWorkstreamCallsEvidence(report).startsWith(
-      "report_workstream results unavailable (1 call(s)",
-    ),
-    "no results carried: the evidence names unavailable results, not a refusal",
+    Object.keys(report.workstreams).join() === "task-c",
+    "absolute, traversing and whitespace-carrying paths are refused; a trailing annotation is stripped",
+  );
+  assert(
+    report.refused.length === 2 && report.refused[0]?.id === "task-a",
+    "a refused path is recorded with its reason, not silently dropped",
+  );
+}
+{
+  // The parent judges args the child would have refused, even if Pi let them through.
+  const report = workstreamCallsOf({
+    toolUses: [
+      {
+        type: "toolCall",
+        id: "c1",
+        name: "report_workstream",
+        arguments: { id: "Bad Id", scope: "a", paths: ["x"], outOfScope: [] },
+      },
+    ],
+    toolResults: [{ toolCallId: "c1", toolName: "report_workstream", isError: false, text: "ok" }],
+  });
+  assert(
+    report.accepted === 0 && report.refused.length === 1,
+    "an accepted-by-Pi call that fails the schema here is refused, not kept",
   );
 }
 {
@@ -202,7 +257,49 @@ function assert(cond: boolean, msg: string) {
       },
     ]),
   );
-  assert((report.refused[0]?.id?.length ?? 0) <= 80, "a refused id is truncated to 80 characters");
+  assert((report.refused[0]?.id?.length ?? 0) <= 64, "a refused id is truncated to 64 characters");
+  assert(
+    (report.refused[0]?.reason.length ?? 0) <= 300,
+    "a refusal reason is capped at 300 characters",
+  );
+}
+{
+  // An accepted-looking id longer than the schema's 80 is refused, not kept.
+  const long = "a".repeat(81);
+  const report = workstreamCallsOf(
+    planResultFromRawCalls([
+      { id: long, args: { id: long, scope: "s", paths: ["p"], outOfScope: [] } },
+    ]),
+  );
+  assert(
+    report.accepted === 0 && report.refused.length === 1,
+    "an 81-character id is refused by the schema, not accepted",
+  );
+}
+{
+  // Refusals beyond the recorded cap are counted, not stored.
+  const many = Array.from({ length: 25 }, (_, i) => ({
+    id: `Bad ${i}`,
+    args: { id: `Bad ${i}`, scope: "s", paths: ["p"], outOfScope: [] },
+    refused: "schema: refused",
+  }));
+  const state = appendPlanDispatchOutcome(
+    initialState(1652, 1),
+    "plan",
+    workstreamCallsOf(planResultFromRawCalls(many)),
+    { kind: "step-completed", step: "plan", at: 2 } as unknown as WorkEvent,
+  );
+  const event = state.eventLog.find((e) => e.kind === "workstream-calls-refused");
+  assert(
+    event?.kind === "workstream-calls-refused" &&
+      event.refused.length === 20 &&
+      event.omitted === 5,
+    "25 refusals: 20 are recorded and 5 are counted as omitted",
+  );
+  assert(
+    state.eventLog.at(-1)?.kind === "step-completed",
+    "the completion event stays the tail after the refusals",
+  );
 }
 
 process.exit(exit);

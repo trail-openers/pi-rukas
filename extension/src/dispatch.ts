@@ -149,7 +149,7 @@ export function dispatchCore(
     timeoutMs?: number;
     /** #1560 — the per-child run bound (SpawnOptions.childBoundMs). */
     childBoundMs?: number;
-    extraArgs?: string[];
+    extraArgs?: readonly string[];
     onSlow?: OnSlowCallback;
     /**
      * Headless S4 (#1024) — the cycle's AbortSignal. Aborting it kills the

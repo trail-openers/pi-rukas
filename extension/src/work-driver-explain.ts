@@ -103,6 +103,9 @@ export function explainCap(
       // about the wrong work. The sentence lives in the plan-step explain
       // module so this file keeps its headroom under the 500-line cap.
       return explainPlan(cap, state);
+    case "workstream-results-unreadable":
+      // #1652 — the plan's report_workstream results never reached the driver.
+      return explainPlan(cap, state);
     case "repeat-finding-seam": {
       // #280 §B — same finding shape across ≥3 files is a missing-seam
       // signal, not N independent defects. Patching each instance would
