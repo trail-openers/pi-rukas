@@ -8,6 +8,7 @@ import { execp } from "./exec.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
+import { continuedHeadMoved, headMovedCap } from "./work-driver-continue-pr-guard.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { parkLensFixOverrun, reviewFixDispatchBoundMs } from "./work-driver-lens-fix-budget.ts";
 import {
@@ -188,6 +189,9 @@ export async function runLensFix(
     // `tree !== ctx.repoRoot`: legacy state without worktrees falls back to
     // repoRoot; the reposition gate only makes sense for a separate worktree.
     const execFn: ExecFn = ctx.verifyExecFn ?? execp;
+    // #1468 — the reposition fast-forwards onto origin's tip: never onto a foreign push.
+    const moved = await continuedHeadMoved(execFn, ctx.repoRoot, state.pipelineState);
+    if (moved) return headMovedCap(state, moved, "lens-fix");
     const issueTitle = await cachedIssueTitle(state);
     const rep = await repositionLensFixWorktree(
       execFn,

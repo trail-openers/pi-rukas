@@ -3,11 +3,13 @@
  * by `currentStep`. Split out of work-driver.ts (500-line cap); the
  * PR-gone check (work-driver-pr-gone.ts) guards the steps that touch the PR.
  */
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { runAdversarial } from "./work-driver-adversarial.ts";
 import { runBranch, runDevelop, stampCycleStartRef } from "./work-driver-branch-develop.ts";
 import { runCommitPr } from "./work-driver-commit.ts";
 import type { CycleContext } from "./work-driver-context.ts";
+import { continuedHeadMoved, headMovedCap } from "./work-driver-continue-pr-guard.ts";
 import { continuePrPreflight } from "./work-driver-continue-pr-lookup.ts";
 import { markDraftPrReady } from "./work-driver-draft-pr.ts";
 import { runExplore } from "./work-driver-explore.ts";
@@ -19,6 +21,9 @@ import { runPlan } from "./work-driver-plan.ts";
 import { endIfPrGone } from "./work-driver-pr-gone.ts";
 import { runCi, runStepBack } from "./work-driver-stepback-ci.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
+
+/** #1468 — the steps the head-moved guard skips: no PR head exists yet, or the cycle is ending. */
+const UNGUARDED_STEPS: ReadonlySet<WorkStep> = new Set(["explore", "plan", "branch", "handoff"]);
 
 /**
  * Run a single step end-to-end: load template (or judge inline for PM-
@@ -38,6 +43,16 @@ export async function runStep(
 ): Promise<WorkState> {
   const now = Date.now();
   trace(`work-driver: running step "${step}" for issue ${ctx.issue}`);
+
+  // #1468 — a continued PR's head is checked at every step boundary.
+  if (state.pipelineState.continuedPr && !UNGUARDED_STEPS.has(step)) {
+    const moved = await continuedHeadMoved(
+      ctx.verifyExecFn ?? execp,
+      ctx.repoRoot,
+      state.pipelineState,
+    );
+    if (moved) return headMovedCap(state, moved, step);
+  }
 
   switch (step) {
     // #1468 — `--continue-pr` stops here when there is no one PR to continue.
