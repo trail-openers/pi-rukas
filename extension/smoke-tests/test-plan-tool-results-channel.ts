@@ -151,7 +151,7 @@ const ARGS_B = { id: "task-b", scope: "b", paths: ["src/b.ts"], outOfScope: [] }
   const section = planRefusalsSection(state.eventLog);
   assert(
     section.startsWith("## Planner refused some workstream calls") &&
-      section.includes("`Bad A` (plan): schema: id does not match the pattern") &&
+      section.includes("- `plan` · id `Bad A`: schema: id does not match the pattern") &&
       section.includes("2 more refused call(s) not listed"),
     "the PR body names each refused call, its dispatch and reason, and the count not listed",
   );

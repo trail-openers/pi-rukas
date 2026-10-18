@@ -22,3 +22,16 @@ export type WorkstreamCallsRefusedEvent = {
   /** Refusals beyond the recorded cap (MAX_REFUSALS_RECORDED), counted not stored. */
   omitted?: number;
 };
+
+/**
+ * One refusal as a markdown bullet — the single format every surface that shows
+ * refusals uses (the handoff, the PR body). `esc` is the caller's escape for
+ * planner text; the same function covers the label, the id and the reason.
+ */
+export function refusalRowMarkdown(
+  label: string,
+  refusal: { id?: string; reason: string },
+  esc: (text: string) => string,
+): string {
+  return `- \`${esc(label)}\` · id \`${esc(refusal.id ?? "(no id)")}\`: ${esc(refusal.reason)}`;
+}

@@ -19,18 +19,18 @@
 
 import path from "node:path";
 import { Value } from "@sinclair/typebox/value";
+import {
+  WORKSTREAM_PARAMETERS,
+  type WorkstreamArgs,
+  duplicateWorkstreamIdMessage,
+  workstreamPathProblem,
+} from "./plan-workstream-schema.ts";
 import { statReporterPath } from "./reporter-preflight.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { foldToCeiling, workstreamFromArgs } from "./work-driver-plan-workstreams.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
-import {
-  WORKSTREAM_PARAMETERS,
-  type WorkstreamArgs,
-  duplicateWorkstreamIdMessage,
-  workstreamPathProblem,
-} from "./workstream-reporter.ts";
 
 /** Companion extension path, loaded into the plan child with `--extension`. */
 export const WORKSTREAM_REPORTER_PATH = path.join(__dirname, "workstream-reporter.ts");
@@ -144,14 +144,26 @@ export function workstreamCallsOf(
   };
 }
 
+/** The shared opening of every zero-accepted evidence string (see isNoCallsEvidence). */
+export const NO_ACCEPTED_CALL_EVIDENCE = "no accepted report_workstream call";
+
 /**
- * The evidence a zero-accepted report reads as. Two different facts, so two
- * sentences: the planner never called the tool, or it called and every call
- * was refused — the operator needs to know which.
+ * The evidence a zero-accepted report reads as. A zero-call result cannot tell
+ * two causes apart from the driver's side: the planner ignored the tool, or the
+ * tool was never registered in the plan child (the companion did not load). So
+ * the evidence names both and the check that tells them apart. A refused call is
+ * a planner-side fact and is said as one.
  */
 export function noWorkstreamCallsEvidence(report: WorkstreamReport): string {
-  if (report.refused.length === 0) return "no report_workstream call";
-  return `no successful report_workstream call (${report.refused.length} refused)`;
+  if (report.refused.length === 0) {
+    return `${NO_ACCEPTED_CALL_EVIDENCE}: the reply made none, or report_workstream is missing from the plan child's tool list (the companion did not register)`;
+  }
+  return `${NO_ACCEPTED_CALL_EVIDENCE}: ${report.refused.length} call(s) refused`;
+}
+
+/** True when a park's evidence is the zero-accepted verdict, not a spec mismatch. */
+export function isNoCallsEvidence(evidence: string): boolean {
+  return evidence.startsWith(NO_ACCEPTED_CALL_EVIDENCE);
 }
 
 /** The evidence of an unreadable report: the calls exist, their results do not. */
@@ -208,6 +220,8 @@ export async function checkWorkstreamReporter(): Promise<string | undefined> {
     await statReporterPath(WORKSTREAM_REPORTER_PATH, reporterStatForTest);
     return undefined;
   } catch (err) {
-    return (err as Error).message;
+    return err instanceof Error
+      ? err.message
+      : `workstream reporter companion check failed: ${String(err)}`;
   }
 }

@@ -5,20 +5,20 @@
  * fixture is a `DispatchResult`-shaped object: the calls in `toolUses`, and the
  * results Pi would record in `toolResults`.
  *
- * The results are produced by DRIVING THE REAL COMPANION (workstream-reporter.ts):
- * each dispatch gets a fresh reporter instance, so its duplicate-id set starts
- * empty, as a corrective re-dispatch does in production. Schema refusals come
- * from the registered tool's own TypeBox parameters; everything else comes from
- * its `execute`.
+ * Each result is judged by the SAME rules the companion applies: Pi's schema
+ * check (TypeBox, as Pi runs it) and the companion's own refusal function
+ * (workstreamCallRefusal). A dispatch's duplicate-id set starts empty, as a
+ * corrective re-dispatch does in production. The registration itself is covered
+ * by test-plan-workstream-tool.ts.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Value } from "@sinclair/typebox/value";
-import { workstreamCallsOf } from "../../src/work-driver-plan-calls.ts";
-import workstreamReporter, {
+import {
+  WORKSTREAM_PARAMETERS,
   type WorkstreamArgs,
-  type WORKSTREAM_PARAMETERS,
-} from "../../src/workstream-reporter.ts";
+  workstreamCallRefusal,
+} from "../../src/plan-workstream-schema.ts";
+import { workstreamCallsOf } from "../../src/work-driver-plan-calls.ts";
 
 export type { WorkstreamArgs };
 
@@ -26,23 +26,6 @@ export interface PlanResultShape {
   text: string;
   toolUses: unknown[];
   toolResults: Array<{ toolCallId: string; toolName: string; isError: boolean; text: string }>;
-}
-
-interface RegisteredReporterTool {
-  parameters: typeof WORKSTREAM_PARAMETERS;
-  execute: (id: string, raw: unknown) => Promise<{ content: { text: string }[] }>;
-}
-
-/** A fresh companion instance: its own accepted-id set, as one dispatch has. */
-function freshReporterTool(): RegisteredReporterTool {
-  let tool: RegisteredReporterTool | undefined;
-  workstreamReporter({
-    registerTool(t: RegisteredReporterTool) {
-      tool = t;
-    },
-  } as unknown as ExtensionAPI);
-  if (!tool) throw new Error("workstream-reporter did not register report_workstream");
-  return tool;
 }
 
 /** A plan result whose calls report exactly these workstreams, in order. */
@@ -62,7 +45,7 @@ export function planResultFromRawCalls(
   entries: Array<{ id: string; args: Record<string, unknown>; refused?: string }>,
   text = "",
 ): PlanResultShape {
-  const tool = freshReporterTool();
+  const accepted = new Set<string>();
   const toolUses: unknown[] = [];
   const toolResults: PlanResultShape["toolResults"] = [];
   entries.forEach((entry, i) => {
@@ -75,37 +58,28 @@ export function planResultFromRawCalls(
     });
     const outcome = entry.refused
       ? { isError: true, text: entry.refused }
-      : companionOutcome(tool, toolCallId, entry.args);
+      : companionOutcome(accepted, toolCallId, entry.args);
     toolResults.push({ toolCallId, toolName: "report_workstream", ...outcome });
   });
   return { text, toolUses, toolResults };
 }
 
-/**
- * Runs one call through the companion and reads its outcome. `execute` is async
- * but has no await, so its promise is already settled on return; `Bun.peek`
- * reads that settled outcome without making every fixture site async.
- */
+/** One call's outcome: Pi's schema check, then the companion's refusal rules. */
 function companionOutcome(
-  tool: RegisteredReporterTool,
+  accepted: Set<string>,
   toolCallId: string,
   args: Record<string, unknown>,
 ): { isError: boolean; text: string } {
-  if (!Value.Check(tool.parameters, args)) {
+  if (!Value.Check(WORKSTREAM_PARAMETERS, args)) {
     return {
       isError: true,
       text: `${toolCallId}: report_workstream arguments do not match the schema — call again with a valid id, scope, paths and outOfScope.`,
     };
   }
-  const settled = tool.execute(toolCallId, args);
-  // A refusal is an expected outcome here, not an unhandled rejection to report.
-  settled.catch(() => undefined);
-  if (Bun.peek.status(settled) === "rejected") {
-    const reason = Bun.peek(settled) as unknown;
-    return { isError: true, text: reason instanceof Error ? reason.message : String(reason) };
-  }
-  const result = Bun.peek(settled) as { content: { text: string }[] };
-  return { isError: false, text: result.content[0]?.text ?? "" };
+  const refusal = workstreamCallRefusal(args, accepted);
+  if (refusal) return { isError: true, text: refusal };
+  accepted.add(args.id as string);
+  return { isError: false, text: `recorded workstream ${args.id}` };
 }
 
 /** The workstream map a plan result's calls produce, read by the PRODUCTION reader. */

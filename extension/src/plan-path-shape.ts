@@ -30,8 +30,9 @@ export function isPlainRepoRelativePath(p: string): boolean {
  * The reason a declared path is refused, or undefined when it is acceptable.
  * A trailing parenthetical annotation (`src/a.ts (new)`) is planner prose, not
  * part of the path, so it is stripped first — the same allowance the declared-
- * path normaliser makes. A leading `-` (read as a flag by git) and a NUL byte
- * are refused on top of the shared shape check.
+ * path normaliser makes. A leading `-` (read as a flag by git), a leading `:`
+ * or a glob/magic character (git pathspec magic) and a NUL byte are refused on
+ * top of the shared shape check.
  */
 export function plannedPathProblem(raw: string): string | undefined {
   const p = raw
@@ -39,6 +40,8 @@ export function plannedPathProblem(raw: string): string | undefined {
     .replace(/\s*\([^()]*\)\s*$/, "")
     .trim();
   if (p.startsWith("-")) return `'${raw}' starts with '-' (it would be read as a flag)`;
+  if (p.startsWith(":")) return `'${raw}' starts with ':' (git reads it as pathspec magic)`;
+  if (/[*?[\]!]/.test(p)) return `'${raw}' contains a glob or pathspec character (* ? [ ] !)`;
   if (p.includes("\0")) return `'${raw}' contains a NUL byte`;
   if (!isPlainRepoRelativePath(p)) {
     return `'${raw}' is not a plain repo-relative path (no absolute paths, '..' segments, whitespace or shell metacharacters)`;

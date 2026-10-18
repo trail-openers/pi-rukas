@@ -19,6 +19,7 @@ import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { verifyAttributionSectionOf } from "./work-driver-verify-select-render.ts";
 import type { VerifyAttributionRecord } from "./work-driver-verify-shared.ts";
+import { refusalRowMarkdown } from "./workflow-state-events-workstream.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 
 /**
@@ -47,10 +48,7 @@ export function planRefusalsSection(eventLog: readonly WorkEvent[]): string {
   );
   if (events.length === 0) return "";
   const lines = events.flatMap((e) =>
-    e.refused.map(
-      (r) =>
-        `- \`${neutraliseMarkdownField(r.id ?? "(no id)")}\` (${e.label}): ${neutraliseMarkdownField(r.reason)}`,
-    ),
+    e.refused.map((r) => refusalRowMarkdown(e.label, r, neutraliseMarkdownField)),
   );
   const omitted = events.reduce((n, e) => n + (e.omitted ?? 0), 0);
   if (omitted > 0) lines.push(`- ${omitted} more refused call(s) not listed`);

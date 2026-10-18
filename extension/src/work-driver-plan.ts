@@ -32,6 +32,7 @@ import { runPlanNormalisationPass } from "./work-driver-plan-coupling-pass.ts";
 import { runPlanQualityTail } from "./work-driver-plan-quality-pass.ts";
 import { planSpecMismatchReason } from "./work-driver-plan-spec-coverage.ts";
 import { execp } from "./work-driver-verify.ts";
+import type { Workstream } from "./workflow-state-schema-workstreams.ts";
 // #679 — the CANONICAL planQualityReason / correctivePlanSteer / steer builders
 // live in work-driver-plan-helpers.ts; this module re-exports them so existing
 // importers (smoke tests, cross-module consumers) keep their paths. The stale
@@ -224,9 +225,12 @@ export async function runPlan(
   // #1652 — the workstreams are the ACCEPTED report_workstream calls. Zero is
   // not a `default` any more: the quality tail's corrective asks for the calls.
   // A killed primary's calls are ignored (its recovery corrective is the plan).
+  // A killed primary keeps its REFUSALS (what the planner got wrong is still
+  // evidence) and drops its accepted calls.
+  const readout = workstreamCallsOf(result);
   const primaryReport: WorkstreamReport = planKill
-    ? emptyWorkstreamReport()
-    : workstreamCallsOf(result);
+    ? { ...emptyWorkstreamReport(), refused: readout.refused }
+    : readout;
   const event = await buildCompletionEvent(ctx, "plan", "explore", "plan", result);
   next = appendPlanDispatchOutcome(clearDispatch(next, begun.jobId), "plan", primaryReport, event);
   // #1652 — a non-kill failure (provider error, non-zero exit) is a failed
@@ -235,14 +239,18 @@ export async function runPlan(
   if (!result.ok && !planKill) return next;
   // #1652 — calls whose results never arrived cannot be judged either way: park.
   if (primaryReport.unreadable > 0) return planResultsUnreadableCap(next, primaryReport);
-  let workstreams = primaryReport.workstreams;
+  // The plan this step judges. Two views of it, and only these two: `judged` is
+  // the raw report (the primary's, or the recovery corrective's when a kill was
+  // recovered); `workstreams` is that report's map AFTER normalisation, which is
+  // assigned below from `judged` in one place per branch.
+  let judged: WorkstreamReport = primaryReport;
+  let workstreams: Record<string, Workstream> = judged.workstreams;
   // #1005 — the first plan's RAW workstreams (before the coupling merge),
   // held aside for the #849 dropped-edge check. The dropped-edge check
   // compares the first plan's RAW map (the depends-on edges as the planner
-  // declared them) against the corrective's RAW map.
-  const firstPlanRaw = workstreams;
-  // The report the quality tail judges: the primary's, unless a kill recovered.
-  let tailReport: WorkstreamReport = primaryReport;
+  // declared them) against the corrective's RAW map. A killed primary has no
+  // raw map (its calls were dropped), so this is `{}` there, as before.
+  const firstPlanRaw = primaryReport.workstreams;
   let redispatched = false;
   // #1167 (size split) — the #849/#1005 dropped-edge state (`droppedEdges` and the
   // corrective's RAW map) moved with the tail into work-driver-plan-quality-pass.ts,
@@ -353,6 +361,7 @@ export async function runPlan(
     next = recovered.state;
     workstreams = recovered.workstreams;
     redispatched = true;
+    if (recovered.report) judged = recovered.report;
     // #819 round-3 — a corrective that was KILLED or whose dispatch THREW ends
     // the step HERE. Falling through was the defect: the gates below read
     // `result.text` (the KILLED PRIMARY's text), the claims check registered a
@@ -374,7 +383,6 @@ export async function runPlan(
         "this is the one-shot corrective plan after a killed primary — it was not re-dispatched and develop never ran",
       );
     }
-    if (recovered.report) tailReport = recovered.report;
   }
   // #1167 — the plan-time unfence runs AFTER the fold and the coupling merge
   // and before the quality gate below, so the gate judges the plan the driver
@@ -386,7 +394,7 @@ export async function runPlan(
   // `normalisedOnce`).
   let normalisedSummary: PlanUnfenceSummary | undefined;
   if (!normalisedOnce) {
-    const normalised = await runPlanNormalisationPass(workstreams, next, {
+    const normalised = await runPlanNormalisationPass(judged.workstreams, next, {
       port,
       repoRoot: ctx.repoRoot,
       worktrees: next.pipelineState.worktrees,
@@ -409,7 +417,7 @@ export async function runPlan(
     ctx,
     {
       next,
-      report: tailReport,
+      report: judged,
       workstreams,
       firstPlanRaw,
       findingsCount,
