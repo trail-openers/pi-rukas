@@ -11,6 +11,11 @@
  *    Before this fix `deliverOrStandIn` swallowed `deliverReport`'s boolean, so
  *    Pi refusing the steer left a WARN in the trace and silence in the session
  *    — the exact silent-hang shape #1044 exists to remove.
+ * 2c. A driver report whose FORMATTER throws still produces the same stand-in
+ *    (#1541 review round 4, HIGH). The branch used to call `deliver(build())`
+ *    itself, outside any try, so a throw from `formatDriverReport` escaped the
+ *    whole job with no stand-in — the MEDIUM fix read the boolean and in doing
+ *    so moved the build call further out of the guarded path.
  * 3. A tool call at the registry's MAX_JOBS cap is a NAMED refusal with
  *    `started: false`, not a throw out of the tool.
  */
@@ -227,6 +232,101 @@ async function main(): Promise<void> {
     assert(
       /dispatch_status/i.test(standIn2) && !/\/nonexistent\//.test(standIn2),
       `with nothing reported by the run it falls back to dispatch_status and invents no path (got: ${standIn2.slice(-120)})`,
+    );
+  }
+
+  // ----------------------------------- 2c. a THROW from the formatter still delivers a stand-in
+  // #1541 review round 4 (HIGH). The OTHER half of the same contract, and the half
+  // the MEDIUM fix removed: the branch read `deliverReport`'s boolean by calling
+  // `deliver(build())` itself, so `build()` ran outside any try and a throw from the
+  // formatter escaped the settle with the promised steer stranded and no stand-in at
+  // all. Both failure modes now route through `deliverOrStandIn`, which catches the
+  // build AND reads the boolean.
+  //
+  // The throw is reached for real, not stubbed: `formatDriverReport` dereferences
+  // `text.trim()`, so a result carrying a `text` that is neither a string nor
+  // nullish throws at render time — exactly what a work function returning a
+  // malformed pipeline result produces.
+  {
+    const seen: string[] = [];
+    const host = makeHost();
+    host.pi.sendUserMessage = (content: string) => {
+      seen.push(content);
+    };
+    let rejected = false;
+    const job = startJob(host.pi, {
+      label: "plan: formatter threw",
+      role: "plan-driver",
+      ownerKind: "pm",
+      reportKind: "driver",
+      subject: "a spec whose renderer blew up",
+      work: async () => ({ ...ok(), text: 42 as unknown as string }),
+    });
+    await job.completion.catch(() => {
+      rejected = true;
+    });
+    // The job still settled: an escaping throw would reject `completion`, handing
+    // the caller an exception instead of the report it was promised.
+    assert(!rejected, "a formatter throw does NOT reject the job — the settle survives it");
+    const standIn = seen.find((m) => /could not be delivered/i.test(m)) ?? "";
+    assert(
+      !!standIn,
+      `a driver job whose formatter THREW still lands a stand-in in the session (got ${seen.length} message(s): ${JSON.stringify(seen.map((s) => s.slice(0, 30)))})`,
+    );
+    assert(
+      /\[ensemble:async\]/.test(standIn),
+      `the stand-in carries the \`[ensemble:async]\` prefix a client correlates on (got: ${standIn.slice(0, 60)})`,
+    );
+    assert(
+      /\(job [a-z0-9]+-[a-z0-9]+\)/.test(standIn),
+      `the stand-in carries the \`(job <id>)\` token so the operator can match it to the launch notice (got: ${standIn.slice(0, 90)})`,
+    );
+    assert(
+      /COMPLETED/i.test(standIn) && !/\bFAILED\b/.test(standIn),
+      `it still says COMPLETED — the run settled, only the render failed (got: ${standIn.slice(0, 100)})`,
+    );
+    assert(
+      /is not a function/.test(standIn),
+      "it names the formatter's own error, so the operator can tell a render bug from a refused send",
+    );
+    assert(
+      seen.length === 1,
+      `exactly one message reached the host — no half-rendered report alongside the stand-in (got ${seen.length})`,
+    );
+  }
+
+  // ------------------------------ 2d. the stand-in clamps and flattens what it interpolates
+  // #1541 review round 4: the stand-in is a STEER — it lands in the PM's context and
+  // then in the next model turn. `formatFailReport` already clamps its error
+  // (`(err.message ?? "").slice(-200)`); this one interpolated `String(err)`
+  // verbatim, so a formatter that threw on a report-sized string put that whole
+  // string, newlines and all, back in front of the model that has to recover.
+  {
+    const hostile = new Error(`trim failed:\n${"x".repeat(400)}\n...and a trailing line`);
+    const long = driverReportStandIn(
+      "job-88",
+      "plan-driver",
+      "clamp me",
+      hostile,
+      "dispatch_status (this job's row)",
+    );
+    const afterColon = long.slice(long.indexOf("could not be delivered: ") + 24);
+    const errTail = afterColon.slice(0, afterColon.indexOf(". The run is not lost"));
+    assert(
+      !errTail.includes("\n"),
+      `newlines in the error are flattened so the stand-in stays one report, not a multi-paragraph dump (got ${errTail.split("\n").length} line(s))`,
+    );
+    assert(
+      errTail.length <= 200,
+      `the interpolated error is clamped to 200 chars the way formatFailReport clamps its tail (got ${errTail.length})`,
+    );
+    assert(
+      long.includes("[ensemble:async]") && long.includes("(job job-88)") && /COMPLETED/i.test(long),
+      "clamping does not cost the stand-in its own invariants — prefix, jobId token and COMPLETED all survive",
+    );
+    assert(
+      long.includes("dispatch_status"),
+      "and the caller's `where` pointer is NOT clamped — it is what the operator acts on",
     );
   }
 

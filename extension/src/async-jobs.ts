@@ -1,10 +1,5 @@
 import type { StartJobHandle, StartJobInput, WorkHooks } from "./async-jobs-input.ts";
-import {
-  type DispatchHost,
-  deliverOrStandIn,
-  deliverReport,
-  deliverStandIn,
-} from "./async-jobs-lifecycle.ts";
+import { type DispatchHost, deliverOrStandIn, deliverStandIn } from "./async-jobs-lifecycle.ts";
 import {
   MAX_JOBS,
   type SingleJobState,
@@ -255,45 +250,35 @@ export function startJob(pi: DispatchHost, input: StartJobInput): StartJobHandle
         }
         // #1044 — a driver-shaped job has no subagent to describe: its text IS
         // the report body, so it skips the git-state read and the five-way
-        // outcome headline entirely. A throw from the formatter still falls
-        // through to deliverOrStandIn's stand-in path below.
+        // outcome headline entirely. Both ways this branch can fail to hand the
+        // report over — `formatDriverReport` throwing, or the host refusing the
+        // steer — are routed through the ONE helper, so neither strands the
+        // promised steer (#1541 review round 4 HIGH: the branch used to call
+        // `deliver(build())` outside any try, so a throwing formatter escaped
+        // without a stand-in).
         if (input.reportKind === "driver") {
           const build = () =>
             formatDriverReport(jobId, input.label, input.subject ?? input.label, result.text ?? "");
-          // #1541 review (MEDIUM) — `deliverOrStandIn` swallows the boolean
-          // `deliverReport` returns: it falls back only when BUILDING the
-          // report throws, and a `sendUserMessage` that rejects never surfaces
-          // there (it is caught inside `deliverReport`). So the one failure
-          // mode this branch actually has — Pi refusing the steer — produced
-          // a WARN in the trace and silence in the session. Read the return
-          // value and hand the caller the stand-in when it says nothing landed.
-          const deliver = input.deliverForTest ?? ((report: string) => deliverReport(pi, report));
-          const delivered = deliver(build());
-          if (!delivered) {
-            // A stand-in that ALSO fails is what `deliverOrStandIn` guards
-            // against — it never throws, so this path stays swallow-safe.
-            // #1541 review (HIGH): NOT `jobStandIn`, which says FAILED and
-            // "its result is lost; re-dispatch" — both false here, where the run
-            // settled and only the hand-over failed. This branch must not send
-            // an operator to re-run a plan that already filed its issue.
-            // Where to look: what the run reported it wrote, then what the tool
-            // knew up front, then a generic pointer. Never a fabricated path.
-            deliverStandIn(
-              pi,
-              `async job ${jobId}`,
-              new Error("sendUserMessage refused the driver report"),
-              (e) =>
-                driverReportStandIn(
-                  jobId,
-                  input.label,
-                  input.subject ?? input.label,
-                  e,
-                  [result.reportWhere, input.reportWhere]
-                    .filter((w): w is string => !!w)
-                    .join("; ") || `dispatch_status (this job's row)`,
-                ),
-            );
-          }
+          // #1541 review (MEDIUM) — the boolean `deliverReport` returns is read,
+          // not swallowed: Pi refusing the steer is the one failure mode this
+          // branch actually has, and before it was read it produced a WARN in the
+          // trace and silence in the session.
+          // #1541 review (HIGH): NOT `jobStandIn`, which says FAILED and
+          // "its result is lost; re-dispatch" — both false here, where the run
+          // settled and only the hand-over failed. This branch must not send
+          // an operator to re-run a plan that already filed its issue.
+          // Where to look: what the run reported it wrote, then what the tool
+          // knew up front, then a generic pointer. Never a fabricated path.
+          const where =
+            [result.reportWhere, input.reportWhere].filter((w): w is string => !!w).join("; ") ||
+            `dispatch_status (this job's row)`;
+          deliverOrStandIn(
+            pi,
+            `async job ${jobId}`,
+            build,
+            (e) => driverReportStandIn(jobId, input.label, input.subject ?? input.label, e, where),
+            input.deliverForTest,
+          );
           trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) finished (driver)`);
           return result;
         }
