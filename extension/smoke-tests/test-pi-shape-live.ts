@@ -86,6 +86,7 @@ const EXPECTED_ROSTER = [
   "agents_md_run",
   "adversarial_loop",
   "check_review_cap",
+  "start_review_cap",
   "dispatch_peek",
   "dispatch_parallel",
   "dispatch_lens_review",
