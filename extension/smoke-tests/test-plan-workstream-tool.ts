@@ -2,10 +2,11 @@
 /**
  * #1652 — the /work plan step reports workstreams through `report_workstream`.
  *
- * The companion tool (schema, in-child duplicate refusal), the transport (only
- * successful calls count), and runPlan end to end: the one corrective budget,
- * zero-call parks, refusal recording, killed-primary calls, the preflight.
- * Fully offline: injected dispatchFn, PI_ENSEMBLE_RESUME=0.
+ * The companion tool (schema, in-child duplicate refusal) and runPlan end to
+ * end: the one corrective budget, zero-call parks, refusal recording, killed-
+ * primary calls, the preflight. The reader's own invariants live in
+ * test-plan-workstream-reader.ts. Fully offline: injected dispatchFn,
+ * PI_ENSEMBLE_RESUME=0.
  */
 
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -21,20 +22,14 @@ import {
   PLAN_WORKSTREAM_EXTRA_ARGS,
   WORKSTREAM_REPORTER_PATH,
   checkWorkstreamReporter,
-  noWorkstreamCallsEvidence,
   setWorkstreamReporterStatForTestForTest,
-  workstreamCallsOf,
 } from "../src/work-driver-plan-calls.ts";
 import { runPlan } from "../src/work-driver-plan.ts";
 import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
 import { PLAN_WORKSTREAM_CALL_RULE } from "../src/work-driver-prompts-plan.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import workstreamReporter from "../src/workstream-reporter.ts";
-import {
-  planResultFromCalls,
-  planResultFromMarkdown,
-  planResultFromRawCalls,
-} from "./lib/plan-workstream-calls.ts";
+import { planResultFromCalls, planResultFromRawCalls } from "./lib/plan-workstream-calls.ts";
 
 process.env.PI_ENSEMBLE_RESUME = "0";
 process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
@@ -119,131 +114,7 @@ assert(
   );
 }
 
-// ------------------------------------------------------------ the transport
-
-{
-  const calls = [
-    {
-      id: "task-a",
-      scope: "scope a",
-      paths: ["src/a.ts", "src/a2.ts"],
-      outOfScope: ["docs/"],
-      dependsOn: ["task-c"],
-      integrationTest: "test/a.ts",
-      introduces: ["fieldA"],
-      consumes: ["fieldC"],
-    },
-    { id: "task-b", scope: "scope b", paths: ["src/b.ts"], outOfScope: [] },
-    {
-      id: "task-c",
-      scope: "scope c",
-      paths: ["src/c.ts"],
-      outOfScope: ["src/a.ts"],
-    },
-  ];
-  const report = workstreamCallsOf(planResultFromCalls(calls));
-  assert(
-    report.accepted === 3 && Object.keys(report.workstreams).length === 3,
-    "N distinct successful calls → N workstreams",
-  );
-  assert(
-    JSON.stringify(report.workstreams["task-a"]) ===
-      JSON.stringify({
-        id: "task-a",
-        scope: "scope a",
-        paths: ["src/a.ts", "src/a2.ts"],
-        outOfScope: ["docs/"],
-        dependsOn: ["task-c"],
-        integrationTest: "test/a.ts",
-        introduces: ["fieldA"],
-        consumes: ["fieldC"],
-      }),
-    "each workstream equals its call's fields (the optional fields carried through)",
-  );
-  assert(
-    JSON.stringify(report.workstreams["task-b"]) ===
-      JSON.stringify({
-        id: "task-b",
-        scope: "scope b",
-        paths: ["src/b.ts"],
-        outOfScope: [],
-      }),
-    "a call that omits the optional fields adds no keys",
-  );
-}
-{
-  const report = workstreamCallsOf(
-    planResultFromRawCalls([
-      {
-        id: "task-a",
-        args: { id: "task-a", scope: "a", paths: ["src/a.ts"], outOfScope: [] },
-      },
-      {
-        id: "task-a",
-        args: {
-          id: "task-a",
-          scope: "a again",
-          paths: ["src/x.ts"],
-          outOfScope: [],
-        },
-      },
-      {
-        id: "Bad Id",
-        args: {
-          id: "Bad Id",
-          scope: "bad",
-          paths: ["src/y.ts"],
-          outOfScope: [],
-        },
-        refused: "schema: id does not match the pattern — refused, adds nothing",
-      },
-    ]),
-  );
-  assert(report.accepted === 1, "a duplicate-id call and a schema-invalid call add nothing");
-  assert(
-    Object.keys(report.workstreams).join() === "task-a" &&
-      report.workstreams["task-a"]?.scope === "a",
-    "the accepted set is the first task-a only",
-  );
-  assert(report.refused.length === 2, "both refused calls are reported");
-  assert(
-    report.refused[0]?.reason.includes("task-a") === true,
-    "the duplicate refusal names the duplicate id",
-  );
-}
-{
-  // A call whose tool result never arrived is not a success: it is counted as refused.
-  const result = planResultFromCalls([
-    { id: "task-a", scope: "a", paths: ["src/a.ts"], outOfScope: [] },
-  ]);
-  const report = workstreamCallsOf({
-    toolUses: result.toolUses,
-    toolResults: [],
-  });
-  assert(
-    report.accepted === 0 && report.refused.length === 1,
-    "a call with no recorded result is not counted",
-  );
-  assert(
-    noWorkstreamCallsEvidence(report) === "no successful report_workstream call (1 refused)",
-    "the evidence says the calls were made and refused",
-  );
-  assert(
-    noWorkstreamCallsEvidence(workstreamCallsOf({ toolUses: [], toolResults: [] })) ===
-      "no report_workstream call",
-    "the evidence for a reply with no call is 'no report_workstream call'",
-  );
-}
-// biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
-{
-  // Neither other tools' calls nor prose are workstreams.
-  assert(
-    workstreamCallsOf(replyOf({ text: "## Workstreams\n\n### a\n- paths: x\n" })).accepted === 0,
-    "a markdown block in the reply's prose is not read for workstreams",
-  );
-}
-
-// -------------------------------------------------------- the plan step
+// -------------------------------------------------- the plan step
 
 function stateWithBody(dir: string, body: string): WorkState {
   const artifact = path.join(dir, "issue-body.txt");
@@ -382,7 +253,6 @@ const TWO_BLOCKS_AND_ONE_CALL = {
 }
 {
   // One budget: a plan-quality corrective that lands on zero calls parks.
-  // Primary has a real quality defect (no paths) → corrective → zero → park.
   const defect = planResultFromCalls([
     { id: "task-a", scope: "the fix", paths: [], outOfScope: [] },
   ]);
@@ -420,12 +290,7 @@ const TWO_BLOCKS_AND_ONE_CALL = {
     killCause: "timeout",
     killBudgetMs: 30 * 60_000,
     ...planResultFromCalls([
-      {
-        id: "stale",
-        scope: "before the kill",
-        paths: ["src/s.ts"],
-        outOfScope: [],
-      },
+      { id: "stale", scope: "before the kill", paths: ["src/s.ts"], outOfScope: [] },
     ]),
   });
   const { state, dispatches } = await runWith([
@@ -446,12 +311,7 @@ const TWO_BLOCKS_AND_ONE_CALL = {
 {
   // A recovery corrective with zero calls parks rather than building a default.
   const { state } = await runWith([
-    replyOf({
-      ok: false,
-      exitCode: 143,
-      killCause: "timeout",
-      killBudgetMs: 60_000,
-    }),
+    replyOf({ ok: false, exitCode: 143, killCause: "timeout", killBudgetMs: 60_000 }),
     replyOf({ text: "still nothing" }),
   ]);
   assert(
@@ -483,17 +343,6 @@ const TWO_BLOCKS_AND_ONE_CALL = {
         missing.includes("workstream-reporter"),
       "a missing companion is a named preflight error",
     );
-  } finally {
-    setWorkstreamReporterStatForTestForTest(undefined);
-  }
-}
-// biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
-{
-  // The primary dispatch is never sent without the companion.
-  setWorkstreamReporterStatForTestForTest(async () => {
-    throw new Error("ENOENT");
-  });
-  try {
     const { state, dispatches } = await runWith([replyOf(ONE_CALL)]);
     const failed = state.eventLog.find((e) => e.kind === "dispatch-failed");
     assert(dispatches.length === 0, "a missing companion spawns no plan child");
@@ -507,7 +356,7 @@ const TWO_BLOCKS_AND_ONE_CALL = {
   }
 }
 
-// ---------------------------------------------- the prompt and the refusal event
+// ---------------------------------------------- the prompt and the handoff
 
 {
   const p = inlinePlanPrompt([1652], "/tmp/scratch");
@@ -520,7 +369,6 @@ const TWO_BLOCKS_AND_ONE_CALL = {
     "the planner prompt no longer asks for a `## Workstreams` section",
   );
 }
-
 {
   // The handoff of a parked cycle names the refused calls, so the operator can
   // see what the planner got wrong without reading the state file.

@@ -39,6 +39,13 @@ export interface WorkstreamReport {
   refused: RefusedWorkstreamCall[];
 }
 
+/** Reason for a call whose result cannot be read because the replay carried no tool results at all. */
+export const TOOL_RESULTS_UNAVAILABLE =
+  "tool results unavailable for this dispatch (the replay carried no tool-result messages)";
+
+/** Longest planner-supplied id kept in state and the handoff; a longer one is truncated. */
+const ID_CAP = 80;
+
 type ToolUse = { id?: unknown; name?: unknown; arguments?: unknown };
 
 /**
@@ -52,6 +59,9 @@ export function workstreamCallsOf(
   const results = new Map((result.toolResults ?? []).map((r) => [r.toolCallId, r]));
   const accepted: Workstream[] = [];
   const refused: RefusedWorkstreamCall[] = [];
+  // Parent-side uniqueness: the child refuses duplicates in-process, but a set of
+  // accepted ids must be unique here too, or a later entry would overwrite one.
+  const seen = new Set<string>();
   for (const raw of result.toolUses) {
     if (!raw || typeof raw !== "object") continue;
     const tu = raw as ToolUse;
@@ -60,13 +70,26 @@ export function workstreamCallsOf(
       tu.arguments && typeof tu.arguments === "object"
         ? (tu.arguments as Record<string, unknown>)
         : {};
-    const id = typeof args.id === "string" ? args.id : undefined;
+    const rawId = typeof args.id === "string" ? args.id : undefined;
+    const id = rawId?.slice(0, ID_CAP);
     const r = typeof tu.id === "string" ? results.get(tu.id) : undefined;
     if (!r) {
-      refused.push({ id, reason: "no tool result was recorded for this call" });
+      refused.push({
+        id,
+        reason:
+          result.toolResults === undefined
+            ? TOOL_RESULTS_UNAVAILABLE
+            : "no tool result was recorded for this call",
+      });
     } else if (r.isError) {
       refused.push({ id, reason: r.text || "refused" });
+    } else if (rawId !== undefined && seen.has(rawId)) {
+      refused.push({
+        id,
+        reason: `workstream id '${id}' was already accepted earlier in this plan — refused by the driver`,
+      });
     } else {
+      if (rawId !== undefined) seen.add(rawId);
       accepted.push(workstreamFromArgs(args));
     }
   }
@@ -83,9 +106,11 @@ export function workstreamCallsOf(
  * was refused — the operator needs to know which.
  */
 export function noWorkstreamCallsEvidence(report: WorkstreamReport): string {
-  return report.refused.length === 0
-    ? "no report_workstream call"
-    : `no successful report_workstream call (${report.refused.length} refused)`;
+  if (report.refused.length === 0) return "no report_workstream call";
+  if (report.refused.every((r) => r.reason === TOOL_RESULTS_UNAVAILABLE)) {
+    return `report_workstream results unavailable (${report.refused.length} call(s) made; the replay recorded no tool results, so they could not be judged)`;
+  }
+  return `no successful report_workstream call (${report.refused.length} refused)`;
 }
 
 /**
