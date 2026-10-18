@@ -216,5 +216,28 @@ const capName = (s: WorkState | undefined) =>
   assert(developRuns(after) === 1 && developCapped(after), "...and the step halts, unretried");
 }
 
+// 5. #1243 fix round — EVERY child lost to the endpoint: the fan-out's cap is
+//    `provider-unavailable`, not `step-failed:develop`. That name is the only
+//    thing a headless caller switches on to re-queue the cycle by itself, so a
+//    fan-out — the shape where "the endpoint was down" is most obvious — must
+//    not park with the one cap that says "a person must look at this diff".
+//    Mutation-check: revert `dispatchFailCapHit`'s tail to non-optional with the
+//    synthesised `dispatch-failed` event in the fan-out router and this leg
+//    reports `step-failed:develop`.
+{
+  const { after } = await runFanout(2705, () => providerStop("terminated"));
+  assert(
+    capName(after) === "provider-unavailable",
+    `an all-children provider fan-out parks provider-unavailable (got ${capName(after)})`,
+  );
+  const hit = (after?.eventLog ?? []).find(
+    (e) => e.kind === "cap-hit" && e.cap === "provider-unavailable",
+  );
+  assert(
+    hit?.kind === "cap-hit" && (hit.evidence ?? "").includes("cause=provider-severed"),
+    `...with the outage evidence a caller re-queues on (got ${hit?.kind === "cap-hit" ? hit.evidence : "no cap"})`,
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

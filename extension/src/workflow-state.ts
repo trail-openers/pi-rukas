@@ -95,6 +95,7 @@ export type { CapEvidence, CapedPartialState } from "./workflow-state-schema.ts"
 export type { PipelineState, WorkState } from "./workflow-state-schema.ts";
 export { TERMINAL_STATUSES, isTerminalState } from "./workflow-state-schema.ts";
 export type { InterruptReason } from "./workflow-state-events.ts";
+export { isProviderPark } from "./workflow-state-events-interrupted.ts";
 export {
   filesPresentFromConsolidation,
   missingWorkstreamsFromConsolidation,

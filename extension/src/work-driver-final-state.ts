@@ -12,9 +12,10 @@
  * so the driver can call `reportFinal` from any of its terminal paths
  * without risking a circular dependency.
  */
+import { notifyAgent } from "./agent-message.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
-import type { WorkState } from "./workflow-state.ts";
+import { type WorkState, workStateDir } from "./workflow-state.ts";
 
 /**
  * #1189 — invoke the driver's `onFinalState` callback with a cloned copy of
@@ -29,4 +30,52 @@ export function reportFinalState(ctx: CycleContext, state: WorkState): void {
   } catch (err) {
     trace(`work-driver: onFinalState threw: ${err instanceof Error ? err.message : err}`);
   }
+}
+
+/**
+ * PR12 — refuse to start a cycle over a state file that already reached a
+ * terminal status, and tell the operator the one verb that does start one
+ * (`--restart`) with the file they would remove instead. Split from
+ * work-driver.ts (§12 size limit); the reason string is part of the surface —
+ * a smoke test pins "already terminated as handoff".
+ *
+ * `async` only to match its sibling `refuseAttentionLabelled` at the call
+ * site; nothing here awaits.
+ */
+export async function refuseAlreadyTerminated(
+  ctx: Pick<CycleContext, "host" | "repoRoot" | "issue">,
+  state: WorkState,
+): Promise<string> {
+  const terminalStatus = state.pipelineState.status;
+  const at = new Date().toISOString();
+  notifyAgent(
+    ctx.host,
+    `pi-rukas:driver-event v1 kind=refused issue=${ctx.issue} at=${at}\npi-rukas: /work for issue #${ctx.issue} already terminated as ${terminalStatus}. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with --restart:\n  /work ${ctx.issue} --restart\nOr rm ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json manually. The prior cycle's event log is preserved in the state file until you restart or remove it.`,
+  );
+  return `already terminated as ${terminalStatus}`;
+}
+
+/**
+ * The refusal reason a driver returns when a LIVE process owns the cycle
+ * (#1243 fix round — extracted so the headless runner can recognise it).
+ *
+ * The runner's `resumable` gate keys on this string. A #1243 provider park
+ * terminalises as `interrupted`, and `exitCodeForState` deliberately maps that
+ * to `EXIT.handoff` (10), not `EXIT.refused` (40) — so the runner's existing
+ * "a refusal is not resumable" rule, which tests the exit code, does NOT fire
+ * for a park a live owner refused. Its own status still says resumable, and a
+ * host that reads `resumable: true` re-queues a cycle it cannot re-enter while
+ * somebody else is running it. The two refusal kinds must not be conflated:
+ * `already terminated as X` (from `refuseAlreadyTerminated` above) is a
+ * genuinely resumable-if-restarted cycle, so it must stay outside this shape.
+ */
+export const LIVE_OWNER_REFUSAL_PREFIX = "another live process (";
+
+export function liveOwnerRefusal(ownerPid: number): string {
+  return `${LIVE_OWNER_REFUSAL_PREFIX}pid ${ownerPid}) owns this cycle`;
+}
+
+/** Did this driver refuse because a live process owns the cycle? */
+export function isLiveOwnerRefusal(reason: string): boolean {
+  return reason.startsWith(LIVE_OWNER_REFUSAL_PREFIX);
 }
