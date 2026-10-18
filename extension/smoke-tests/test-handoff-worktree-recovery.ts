@@ -73,7 +73,12 @@ function parkedDevelopState(): WorkState {
         modifiedFiles: [],
         unstagedCount: 0,
         stagedCount: 0,
-        branchExists: false,
+        // #747 — the recovery block is now gated on the branch actually
+        // existing. The #674 parked cycles had a captured branch name AND a
+        // real local ref (created at the branch step) that simply did not
+        // yet carry the work — so `branchExists` is true here, and section 5
+        // below covers the genuinely-no-branch shape (`branchExists: false`).
+        branchExists: true,
         branchPushed: false,
         repoRootHeadSha: "99998888",
         capturedAt: 1000,
@@ -397,7 +402,7 @@ function parkedDevelopConsolidatedState(): WorkState {
         modifiedFiles: [],
         unstagedCount: 0,
         stagedCount: 0,
-        branchExists: false,
+        branchExists: true,
         branchPushed: false,
         repoRootHeadSha: "99998888",
         capturedAt: 1000,

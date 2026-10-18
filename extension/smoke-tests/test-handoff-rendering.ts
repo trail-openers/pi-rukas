@@ -117,10 +117,23 @@ for (const [name, render] of [
 }
 
 // -------------------------- a real branch still gets the takeover commands
+// #747 — "a real branch" now means the handoff snapshot READ the ref, not
+// merely that a name was captured (the predicate used to key on
+// `branchName` alone). The reverse case — a captured name with no ref, which
+// must get no takeover commands — is pinned by
+// test-handoff-recovery-branch-exists-747.ts, which owns the #747 matrix.
 
 {
   const s = intentParkState();
   s.pipelineState.branchName = "feature/issue-337-x";
+  s.pipelineState.handoffSnapshot = {
+    modifiedFiles: [],
+    unstagedCount: 0,
+    stagedCount: 0,
+    branchExists: true,
+    branchPushed: false,
+    capturedAt: 3,
+  };
   s.eventLog = [
     { kind: "cap-hit", at: 3, cap: "developer-timeout", reviewRound: 0, nextStep: "handoff" },
   ] as WorkEvent[];

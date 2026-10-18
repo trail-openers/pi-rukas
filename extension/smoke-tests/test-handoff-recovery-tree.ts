@@ -39,6 +39,7 @@ function state(opts: {
   retained?: string[];
   unreadable?: string[];
   branchPushed?: boolean;
+  branchExists?: boolean;
   prNumber?: number;
 }): WorkState {
   const paths = opts.retained ?? Object.values(opts.worktrees);
@@ -47,7 +48,7 @@ function state(opts: {
     modifiedFiles: [],
     unstagedCount: 0,
     stagedCount: 0,
-    branchExists: false,
+    branchExists: opts.branchExists ?? false,
     branchPushed: opts.branchPushed ?? false,
     repoRootHeadSha: opts.rootIsRepo ? "abc1234" : "",
     capturedAt: 1,
@@ -225,8 +226,9 @@ for (const extra of [{ branchPushed: true }, { prNumber: 77 }]) {
 }
 
 // 4. Regression guard: a readable repoRoot with no worktree keeps the
-//    repoRoot commands it always had.
-for (const [name, cmds] of render(state({ worktrees: {}, rootIsRepo: true }))) {
+//    repoRoot commands it always had — when the branch exists (#747: with no
+//    local ref, `push -u origin <branch>` is withheld).
+for (const [name, cmds] of render(state({ worktrees: {}, rootIsRepo: true, branchExists: true }))) {
   assert(
     cmds.some((l) => atRoot(l) && l.endsWith(`push -u origin ${BRANCH}`)),
     `${name}: a readable repoRoot still gets its take-over commands`,

@@ -157,12 +157,73 @@ const issuesFound: WorkEvent = {
     );
   }
   // A cycle that DID create a branch still gets the takeover commands.
+  // #747 — "has a branch" now means the snapshot confirms the ref exists,
+  // not just that a name was captured, so the fixture carries that read.
   const withBranch = renderHandoffMarkdown(
-    mkState({ branchName: "feature/issue-663" }, [issuesFound]),
+    mkState(
+      {
+        branchName: "feature/issue-663",
+        handoffSnapshot: {
+          modifiedFiles: [],
+          unstagedCount: 0,
+          stagedCount: 0,
+          branchExists: true,
+          branchPushed: false,
+          capturedAt: 1,
+        },
+      },
+      [issuesFound],
+    ),
   );
   assert(
     /push -u origin feature\/issue-663/.test(withBranch),
     "a cycle that has a branch still gets the manual-takeover commands",
+  );
+  // #747 — the other half: a captured name with NO ref must not reach that
+  // block either. Before #747 the predicate was `ps.branchName` alone, so
+  // this shape printed `git add -p` / `git push -u origin <branch>` for a
+  // ref git cannot resolve.
+  const nameButNoRef = renderHandoffMarkdown(
+    mkState(
+      {
+        branchName: "feature/issue-663",
+        handoffSnapshot: {
+          modifiedFiles: [],
+          unstagedCount: 0,
+          stagedCount: 0,
+          branchExists: false,
+          branchPushed: false,
+          capturedAt: 1,
+        },
+      },
+      [issuesFound],
+    ),
+  );
+  assert(
+    !/push -u origin/.test(nameButNoRef) && !/git add -p/.test(nameButNoRef),
+    "#747: a captured branch name with no local ref gets no takeover commands (markdown)",
+  );
+  const nameButNoRefChat = renderHandoffUserMessage(
+    mkState(
+      {
+        branchName: "feature/issue-663",
+        handoffSnapshot: {
+          modifiedFiles: [],
+          unstagedCount: 0,
+          stagedCount: 0,
+          branchExists: false,
+          branchPushed: false,
+          capturedAt: 1,
+        },
+      },
+      [issuesFound],
+    ),
+    "/repo",
+    "/scratch",
+  );
+  assert(
+    !/push -u origin/.test(nameButNoRefChat) && !/git add -p/.test(nameButNoRefChat),
+    "#747: the same shape gets no takeover commands in chat either",
   );
 }
 
