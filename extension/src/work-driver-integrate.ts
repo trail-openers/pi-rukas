@@ -6,6 +6,7 @@ import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import { integrationEmptiness } from "./work-driver-integrate-emptiness.ts";
+import { fastForwardOnto } from "./work-driver-integrate-ff.ts";
 import { sweepBeforeFollowupCheckout } from "./work-driver-integrate-sweep.ts";
 import { verifyIntegration } from "./work-driver-integrate-verify-step.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
@@ -56,6 +57,11 @@ export interface IntegrateOpts {
   commitTitle: string;
   commitBody: string;
   mode: "create" | "followup";
+  /**
+   * #1468 — step 3 fast-forwards the branch to the worktree HEAD instead of
+   * cherry-picking, so a merge commit keeps both parents (`--continue-pr`).
+   */
+  fastForward?: boolean;
   /** #577 — fail if ANY workstream produced no diff (commit-pr sets this). */
   requireAllNonEmpty?: boolean;
   /** #453 — pre-existing commit SHAs from a prior attempt (resume). */
@@ -288,15 +294,17 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     // 3. Orchestrated cherry-pick + patch fallback (work-driver-cherry-pick.ts).
     //    The patch-fallback rebases a followup-mode lens-fix patch onto the
     //    branch's CURRENT head before applying it (#654 task-b).
-    const orchResult = await orchestrateCherryPick(execFn, {
-      repoRoot,
-      branchName,
-      worktrees: { ids, worktrees, commitShas: opts.commitShas ?? {} },
-      baseSha: opts.baseSha,
-      scratchDir: opts.scratchDir,
-      requireAllNonEmpty: opts.requireAllNonEmpty,
-      pickScope,
-    });
+    const orchResult = opts.fastForward
+      ? await fastForwardOnto(execFn, repoRoot, ids, worktrees)
+      : await orchestrateCherryPick(execFn, {
+          repoRoot,
+          branchName,
+          worktrees: { ids, worktrees, commitShas: opts.commitShas ?? {} },
+          baseSha: opts.baseSha,
+          scratchDir: opts.scratchDir,
+          requireAllNonEmpty: opts.requireAllNonEmpty,
+          pickScope,
+        });
 
     // Handle cherry-pick conflict — caller must abort and restore branch.
     // #750 — the claim states the VERIFIED post-condition only.
@@ -399,6 +407,13 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     if (integrationVerify.failure !== undefined) return integrationVerify.failure;
     verifyPreExisting = integrationVerify.preExistingFailures;
     verifySkipped = integrationVerify.skipped;
+
+    // #1468 — a refresh pushes nothing when main is red too; commit-pr parks.
+    if (opts.fastForward && verifyPreExisting !== undefined) {
+      await restoreRoot();
+      const names = { preExistingOnly: true, preExistingFailures: verifyPreExisting } as const;
+      return { ok: true, workstreams: appliedWorkstreams, empty: false, ...names };
+    }
 
     // 5. Push.
     const pushRefProblem = netRefProblem(branchName);
