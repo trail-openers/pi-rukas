@@ -17,6 +17,7 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { gitTestEnv } from "./git-test-env.ts";
 
 /**
  * Every file git considers part of the repo: tracked (`--cached`) plus
@@ -36,9 +37,17 @@ export function gitRepoFiles(repoRoot: string): string[] {
   // emits unquoted bytes (verified empirically — quoting only applies to the
   // non -z textual path), but the flag guards a config-level surprise in the
   // one place where a quoted path would corrupt the census listing silently.
+  // #1145 — `env: gitTestEnv()`. `--exclude-standard` consults the ignore
+  // stack, whose topmost source is the host's per-user file: with a host
+  // `~/.config/git/ignore` naming a path the census is supposed to list, that
+  // file disappears from the listing and the gate fails (or passes) on a
+  // property of the machine. `execFileSync` with no `env` inherits the REAL
+  // `environ` on bun 1.3, so the isolated set has to be threaded (see
+  // lib/git-test-env.ts).
   const out = execFileSync("git", ["-c", "core.quotepath=false", "-C", repoRoot, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
+    env: gitTestEnv(),
   });
   return out
     .split("\0")

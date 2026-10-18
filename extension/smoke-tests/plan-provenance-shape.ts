@@ -36,6 +36,7 @@ import {
   withProvenance,
 } from "../src/plan-provenance.ts";
 import { type RegisteredPlanTool, registerPlanTool } from "../src/plan-tool.ts";
+import { makeJobDeliverer } from "./plan-test-stubs.ts";
 
 type Assert = (cond: boolean, msg: string) => void;
 
@@ -68,7 +69,10 @@ const LINE_BREAKS = [0x0a, 0x0d, 0x2028, 0x2029, 0x0085, 0x000b, 0x000c].map((cp
 function schemaLinePattern(): RegExp | undefined {
   const tools: RegisteredPlanTool[] = [];
   // biome-ignore lint/suspicious/noExplicitAny: minimal stub; only registerTool is used
-  registerPlanTool({ registerTool: (def: RegisteredPlanTool) => tools.push(def) } as any);
+  registerPlanTool({
+    registerTool: (def: RegisteredPlanTool) => tools.push(def),
+    ...makeJobDeliverer(),
+  } as any);
   const prov = tools.find((t) => t.name === "start_plan_driver")?.parameters.properties?.provenance
     ?.properties as { line?: { pattern?: string } } | undefined;
   return prov?.line?.pattern ? new RegExp(prov.line.pattern, "u") : undefined;

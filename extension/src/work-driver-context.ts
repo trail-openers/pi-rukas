@@ -17,6 +17,7 @@ import type { LensReviewSummary } from "./lens-review.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
 import type { DispatchImage, DispatchResult } from "./types.ts";
+import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import type { EmitSink } from "./work-state-emit.ts";
 import { KNOWN_STATUSES } from "./workflow-state-validate.ts";
@@ -82,6 +83,21 @@ export {
  * of it), so a step that writes state cannot be compiled without a sink.
  */
 export type CycleContext = DriverContext & { emitSink: EmitSink };
+
+/**
+ * #1414 — the shell-executor shape the driver's test seams accept, written
+ * once so `verifyExecFn` and `checkpointExecFn` cannot drift.
+ *
+ * Round 2: this used to be a SECOND structural declaration of the same shape.
+ * Two literals that must stay byte-equivalent is one more thing to forget — an
+ * added option on `VerifyExecFn` would have left this one silently dropping it,
+ * which is precisely the #1279 failure the `argv` field exists to prevent.
+ * `work-driver-git.ts` is the leaf (its jsdoc header says so) and `VerifyExecFn`
+ * is its one executor type, so this is an ALIAS of it: one declaration, and the
+ * `satisfies` check there keeps `execp` honest against both names. A type-only
+ * import pulls no runtime code, so the leaf-ness claimed above is unaffected.
+ */
+export type DriverExecFn = VerifyExecFn;
 
 export interface DriverContext {
   /** The host the cycle runs in (#1020). Pi-session or a recording test host. */
@@ -193,6 +209,17 @@ export interface DriverContext {
    */
   dirtyRootExemptReadFailed?: string;
   /**
+   * #1427 — injectable process-tree walker for the gate-hang reports, threaded
+   * from the verify seams down to `runVerifyCommandGate` and the consolidated
+   * probe. Production leaves it unset and the real `ps` walk runs; smoke tests
+   * inject one so a report's tree section is an assertion rather than whatever
+   * else happens to be running on the host.
+   */
+  walkProcessTree?: (leaderPid: number) => {
+    processes: import("./work-driver-gate-hang.ts").HangProcess[];
+    treeUnavailable?: string;
+  };
+  /**
    * #1292 — the invoking session has no UI (`!ctx.hasUI`, e.g. `pi -p`). A
    * headless cycle opens its PR as a draft by default — nobody is watching
    * the review window — unless `PI_ENSEMBLE_DRAFT_PR` says otherwise.
@@ -232,23 +259,17 @@ export interface DriverContext {
    * executor used by verifyStepOutcome (git status / rev-list, the
    * project's verify command, gh pr view). Production callers omit
    * this; the default is `execp`. Mirrors `issueBodyFetcherFn`.
-   *
-   * `opts.argv` (#1005): when present, the executor runs the command in
-   * argv form (no shell re-parse) — `cmd` is the executable and
-   * `argv` its arguments. The coupling grep (rule 3) uses it because the
-   * file list is planner-controlled: a shell-built command would
-   * re-parse `$(…)`/backticks/`;` inside a path.
    */
-  verifyExecFn?: (
-    cmd: string,
-    opts?: {
-      cwd?: string;
-      timeout?: number;
-      maxBuffer?: number;
-      shell?: string;
-      argv?: string[];
-    },
-  ) => Promise<{ stdout: string; stderr?: string }>;
+  verifyExecFn?: DriverExecFn;
+  /**
+   * #1414 — optional test seam for the cap-kill checkpoint's TYPECHECK only
+   * (`typecheckWorktree`). Default `execp`; like `verifyExecFn` but NARROWER:
+   * the checkpoint's git calls keep calling `execp`, so a fake cannot make
+   * `tree: "committed"` a tautology.
+   */
+  checkpointExecFn?: DriverExecFn;
+  /** #1414 r3 — commit-only test seam; documented at its call site. */
+  checkpointCommitFn?: DriverExecFn;
   /**
    * Optional injection point for tests: replace runLensReview with a fake.
    * Production callers omit this — runLens uses the real runLensReview.
@@ -314,10 +335,9 @@ export interface DriverContext {
  * #533 — the transition table's answer, made total. Pre-#533 an unknown
  * `pipelineState.currentStep` reached the linear table's `Record<WorkStep, …>`
  * lookup, got `undefined`, and the driver loop's 64-iteration safety counter
- * fired with a message naming no field. The unknown case is now its own
- * member: the driver halts naming `pipelineState.currentStep`, and a loop
- * that spins can only do so by repeatedly RUNNING a real step, which the
- * safety counter still bounds.
+ * fired with a message naming no field. The unknown case is now its own member:
+ * the driver halts naming `pipelineState.currentStep`, and a loop that spins can
+ * only do so by repeatedly RUNNING a real step, which the safety counter bounds.
  */
 export type StepDecision =
   | { kind: "step"; step: WorkStep }

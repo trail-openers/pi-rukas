@@ -41,6 +41,7 @@ import type { DispatchResult } from "../../src/types.ts";
 import type { VerifyExecFn } from "../../src/work-driver-git.ts";
 import type { WorkCapLiteral } from "../../src/workflow-state-events-caps.ts";
 import type { WorkEvent } from "../../src/workflow-state.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 import { isKnownGitSubcommand, runFixtureGit } from "./headless-s5-git.ts";
 
 /**
@@ -65,7 +66,11 @@ export interface HeadlessRepo {
 export function headlessRepo(grant: string | undefined, dirName = "headless-s5-"): HeadlessRepo {
   const repoRoot = mkdtempSync(path.join(tmpdir(), dirName));
   const git = (...args: string[]) => {
-    const child = spawnSync("git", args, { cwd: repoRoot });
+    // #1145 — `env: gitTestEnv()`: `spawnSync` with no `env` inherits the REAL
+    // `environ` on bun 1.3, and the base SHA this repo records is where the
+    // doctrine read (#406) resolves, so a host ignore file or
+    // `init.defaultBranch` would move the composition's verdict off the code.
+    const child = spawnSync("git", args, { cwd: repoRoot, env: gitTestEnv() });
     if (child.status !== 0) {
       throw new Error(`git ${args.join(" ")}: ${child.stderr?.toString().slice(0, 200)}`);
     }

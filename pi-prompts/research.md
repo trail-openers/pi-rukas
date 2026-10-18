@@ -24,8 +24,8 @@ Your judgement covers what the driver deliberately does not:
 
 ## Execution
 
-1. Call `start_research_driver` with the topic (plus `tier`, `angles`, `context` as judged above).
-2. **Present the result**: summarize the findings for the operator, lead with any CONTRADICTIONS the driver surfaced, name the artifact path (`outputs/research-<slug>.md`) and the pinned commit. If the driver abstained (no reliably verified findings), say so plainly — an honest gap beats a confident fabrication.
+1. Call `start_research_driver` with the topic (plus `tier`, `angles`, `context` as judged above). **It launches a background job and returns immediately** with a `jobId` — end your turn; the result arrives later as one `[ensemble:async]` steer naming that jobId. The launch notice is not a result: never poll, never re-call to check whether it finished (a re-call is a second run).
+2. **Present the result** when the steer lands: summarize the findings for the operator, lead with any CONTRADICTIONS the driver surfaced, name the artifact path (`outputs/research-<slug>.md`) and the pinned commit. If the driver abstained (no reliably verified findings), say so plainly — an honest gap beats a confident fabrication.
 3. **Stay in conversation** — offer to dig deeper. Deeper = another driver call with sharper `angles` or more `context`, never a hand-rolled dispatch fan-out.
 4. When the topic is plan-relevant, offer to carry the findings into `/plan` — the artifact's findings make a strong `context` param for `start_plan_driver` (ACCEPTANCE CRITERIA / PITFALLS / OUT OF SCOPE blocks are parsed as operator directives).
 

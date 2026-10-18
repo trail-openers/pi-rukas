@@ -125,6 +125,21 @@ export type WorkCapLiteral =
   // #571 — sibling cycle holds a path claim; overlap detected at plan
   // time. Two cycles cannot edit the same files in parallel.
   | "cross-group-conflict"
+  // #1101 — the QUEUE raised these, not a cycle: a group waited on a sibling
+  // past its bound and never dispatched. `dependency-timeout` is the ordering
+  // edge that never cleared; `dependency-parked` is its sibling, the dependency
+  // settling on something other than `merged` (waiting cannot fix that, so it is
+  // a park, not a timeout). `dependency-cycle` is the pre-pass verdict for a
+  // group inside an ordering loop, and `queue-stranded` the group the scheduler
+  // was holding in the wait list when a halt released every worker. None of the
+  // four has a state file, a worktree or a diff behind it, so each routes to
+  // `isQueueLevelPark` for the never-dispatched report shape. `cross-group-conflict`
+  // above is reused for a claim wait that capped out — same condition as the
+  // plan-time check, seen earlier and more cheaply. See work-queue-cap.ts.
+  | "dependency-timeout"
+  | "dependency-parked"
+  | "dependency-cycle"
+  | "queue-stranded"
   // #543 — fixed literals (NOT `'<role>'` template shapes): a per-role
   // suffix would smuggle a cap the #533 canary doesn't know. Which role's
   // child was killed is carried in the new `role` field + capEvidence.
@@ -133,6 +148,15 @@ export type WorkCapLiteral =
   // #754 — the plan step's own bound expired on the primary plan
   // dispatch; distinct from `step-failed:plan` and `developer-timeout`.
   | "plan-timeout"
+  // #819 — the plan-to-spec gate refused the plan: no workstream declares any
+  // path of a deliverable the spec requires, or the reply carried more than
+  // one `## Workstreams` section. A DELIBERATE park terminalized as a handoff
+  // (not `step-failed:plan`, which would read as a dispatch that failed and
+  // terminalize as `aborted`, hiding that the plan was judged and found to be
+  // about the wrong work). It fires BEFORE the branch step, so nothing was
+  // written: the #818 shape — a corrective plan about a different problem,
+  // four developers and 45 minutes spent building it — is what this stops.
+  | "plan-spec-mismatch"
   // #280 §B — round-1 repeat-finding seam detection. Same finding
   // shape across ≥3 files → step-back (SDD spec-gap analysis).
   | "repeat-finding-seam"

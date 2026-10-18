@@ -27,6 +27,11 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
+import type { HangProcess } from "./work-driver-gate-hang.ts";
+import { NO_TREE_CAPTURED, captureProcessTree } from "./work-driver-gate-hang.ts";
+export { slugName, writeGateHangLog } from "./work-driver-gate-hang-log.ts";
+import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
+import { boundVerifyLog } from "./work-driver-verify-log-bounds.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -58,22 +63,6 @@ function consolidatedVerifyLogName(timestamp: string, run: 1 | 2): string {
   return `consolidated-verify-${timestamp.replace(/[:.]/g, "-")}-run${run}.log`;
 }
 
-// #841 — bound on a persisted run log. The raw stream can be large (the
-// 8 MiB maxBuffer), and the log is diagnostic, not load-bearing: past the
-// cap the operator still has the bounded tail in the evidence, so truncate
-// with a marker instead of writing multi-MB scratch files.
-const VERIFY_LOG_MAX_BYTES = 2 * 1024 * 1024;
-
-// #841 — apply the size cap to a raw run stream before it is persisted.
-function boundVerifyLog(raw: string): string {
-  if (Buffer.byteLength(raw, "utf8") <= VERIFY_LOG_MAX_BYTES) return raw;
-  const marker = "\n…[truncated — full output exceeded the 2 MiB log cap]\n";
-  const max = VERIFY_LOG_MAX_BYTES - Buffer.byteLength(marker, "utf8");
-  let out = raw;
-  while (Buffer.byteLength(out, "utf8") > max) out = out.slice(0, Math.floor(out.length / 2));
-  return out + marker;
-}
-
 /**
  * #841 — write the combined raw stdout+stderr of one consolidated verify run
  * to `<scratchDir>/consolidated-verify-<ISO timestamp>-run<1|2>.log`.
@@ -89,6 +78,7 @@ function boundVerifyLog(raw: string): string {
 export function rawOutputClause(logPath?: string): string {
   return logPath ? ` Raw output: ${logPath}.` : " Raw output: unavailable.";
 }
+
 export function writeConsolidatedVerifyLog(
   scratchDir: string,
   timestamp: string,
@@ -148,20 +138,72 @@ export async function rerunConsolidatedVerifyOnce(
   timeoutMs: number,
   scratchDir?: string,
   timestamp?: string,
-): Promise<{ raw: string; logPath?: string; timedOut: boolean } | undefined> {
+  /**
+   * #1404 — the env the re-run executes with, so the caller can point
+   * `VERIFY_REPORT_FILE` at the out-of-band report path. The re-run is the run
+   * whose failure is classified, so it is the run whose report has to exist.
+   * Absent → the ambient env, which writes no report.
+   */
+  env?: NodeJS.ProcessEnv,
+): Promise<
+  | {
+      raw: string;
+      logPath?: string;
+      timedOut: boolean;
+      /** #1427 — the tree captured at the kill, when this run was killed. */
+      tree?: { processes: HangProcess[]; treeUnavailable?: string };
+      /** #1427 — the leader pid whose group was killed, when the executor said. */
+      treeLeaderPid?: number;
+    }
+  | undefined
+> {
   trace(`work-driver: verify-flake — re-running \`${cmd}\` once in ${cwd}`);
   let rawFailure: string | undefined;
   // `killed` is how the executor reports its own timeout: the re-run was
   // stopped at the bound, so its stream ends wherever it happened to be.
   let timedOut = false;
+  let tree: { processes: HangProcess[]; treeUnavailable?: string } | undefined;
+  let treeLeaderPid: number | undefined;
   try {
     await withVerifySlot(() =>
-      execFn(cmd, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }),
+      execFn(cmd, {
+        cwd,
+        timeout: timeoutMs,
+        maxBuffer: 8 * 1024 * 1024,
+        ...(env !== undefined ? { env } : {}),
+      }),
     );
   } catch (err) {
-    const e = err as Error & { stderr?: string; stdout?: string; killed?: boolean };
+    const e = err as Error & {
+      stderr?: string;
+      stdout?: string;
+      killed?: boolean;
+      timedOutKill?: boolean;
+      overflow?: string;
+      treePid?: number;
+    };
     rawFailure = combinedExecFailureStream(e);
-    timedOut = e.killed === true;
+    // #1427 fix round — only the wall-clock kill is a hang (an overflow kill
+    // sets `killed` too, and is not one).
+    timedOut = isTimedOutKill(e);
+    // #1427 — walked synchronously in the catch, while the killed run's
+    // grandchildren may still be alive: the lantern #1054 case is precisely
+    // children that outlive the leader, and a walk after the settle would
+    // report nothing about them.
+    //
+    // #1427 round 4 — a timed-out run whose executor reported NO leader pid now
+    // carries an explicit tree saying `no tree was captured`, rather than no tree
+    // at all: this helper has no injected walker, so an absent tree would reach
+    // the caller indistinguishable from a group nobody looked at, and the clause
+    // must never render that as an observed-empty count.
+    if (timedOut) {
+      if (typeof e.treePid === "number") {
+        treeLeaderPid = e.treePid;
+        tree = captureProcessTree(e.treePid);
+      } else {
+        tree = { processes: [], treeUnavailable: NO_TREE_CAPTURED };
+      }
+    }
   }
   if (rawFailure === undefined) return undefined;
   // #841 — persist the RAW run2 stream before the bounded tail is computed:
@@ -171,7 +213,18 @@ export async function rerunConsolidatedVerifyOnce(
   // a precomputed path that does not exist on disk.
   if (scratchDir !== undefined && timestamp !== undefined) {
     const logPath = writeConsolidatedVerifyLog(scratchDir, timestamp, 2, rawFailure);
-    return { raw: rawFailure, logPath, timedOut };
+    return {
+      raw: rawFailure,
+      logPath,
+      timedOut,
+      ...(tree !== undefined ? { tree } : {}),
+      ...(treeLeaderPid !== undefined ? { treeLeaderPid } : {}),
+    };
   }
-  return { raw: rawFailure, timedOut };
+  return {
+    raw: rawFailure,
+    timedOut,
+    ...(tree !== undefined ? { tree } : {}),
+    ...(treeLeaderPid !== undefined ? { treeLeaderPid } : {}),
+  };
 }

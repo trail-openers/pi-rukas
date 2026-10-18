@@ -5,6 +5,7 @@ import {
   deadStdin,
   deliverBatchReport,
 } from "./async-jobs-batch-delivery.ts";
+import type { WorkHooks } from "./async-jobs-input.ts";
 import { type DispatchHost, deliverStandIn } from "./async-jobs-lifecycle.ts";
 import {
   type BatchMemberJobState,
@@ -17,7 +18,6 @@ import {
 } from "./async-jobs-registry.ts";
 import { type BatchReportInput, reportsGitState, totalTokens } from "./async-jobs-report.ts";
 import { makeSlowWatch } from "./async-jobs-slow.ts";
-import type { WorkHooks } from "./async-jobs.ts";
 import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { type GitLineFor, gitStateLine } from "./git-state.ts";

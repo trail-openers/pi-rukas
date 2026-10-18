@@ -221,6 +221,24 @@ export async function decideEmptyDelta(opts: {
  * `carriedFrom` marker overridden, so no field is hand-copied. It never throws:
  * a failed append is reported as `recorded: false`, and the caller then runs a
  * full review rather than claiming a carry it did not record.
+ *
+ * #1449 lens round 1 — a carry is a ledger write like any other, so it gets the
+ * `writtenTo` stamp from `appendLedgerEntry` (where every write is stamped)
+ * rather than from a copy of the previous row's fields. Before that, a carry
+ * under a leaked `PI_ENSEMBLE_REVIEW_LEDGER_FILE` put its row in the wrong file
+ * with nothing on it to say so — the guard then said "never reviewed", which is
+ * the false statement #1449 removes.
+ *
+ * #1449 lens round 2 — the outcome reads the row back through `stampedOut`,
+ * NEVER through `entry`. `appendLedgerEntry` stamps a NEW object
+ * (`{ ...entry, writtenTo: … }`) and leaves the object it was handed alone, so
+ * `entry.writtenTo` is `undefined` for the whole life of the carry — which made
+ * this function answer `{ recorded: true }` with no `landedAtPath` for a carry
+ * that really did land outside the clone. The caller (`lens-review-diff.ts`
+ * 5b) then reported "carried, recorded" for a row the merge guard will never
+ * open: the exact false statement #1449 exists to remove, restored on the one
+ * write path that read its own entry. `lens-ledger.ts` reads the holder, and
+ * `test-ledger-carry-provenance.ts` asserts this arm against a real redirect.
  */
 export async function writeCarriedEntry(
   cwd: string,
@@ -245,10 +263,18 @@ export async function writeCarriedEntry(
       carriedFrom: from,
       carryNote: CARRY_NOTE,
     };
-    const failure = await appendLedgerEntry(entry, execp, cwd);
-    return failure ? { recorded: false, reason: failure } : { recorded: true };
-  } catch (err) {
-    return { recorded: false, reason: (err as Error).message };
+    // #1449 round 2 — the stamped holder, not `entry` (see the jsdoc): the
+    // stamped row is a NEW object inside `appendLedgerEntry`, so the only
+    // trustworthy copy of the stamp is the one it hands back.
+    const stamped: { current: LedgerEntry; landedAtPath?: string } = { current: entry };
+    const failure = await appendLedgerEntry(entry, execp, cwd, stamped);
+    if (failure) return { recorded: false, reason: failure };
+    return { recorded: true, landedAtPath: stamped.landedAtPath };
+  } catch (err: unknown) {
+    // `instanceof` rather than a cast: a thrown non-Error would make
+    // `(err as Error).message` throw INSIDE this catch, and the caller reads a
+    // rejection here as "run a full review" — a crash instead of a verdict.
+    return { recorded: false, reason: err instanceof Error ? err.message : String(err) };
   }
 }
 

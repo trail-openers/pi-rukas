@@ -189,7 +189,21 @@ mark_timeout() {
 run_test_with_timeout() {
   local bound="$1" t="$2" cap="$3" idx="${4:-}" run_dir="${5:-}" pid=0 start rc=0
   start=$SECONDS
-  bun run "$t" >"$cap" 2>&1 &
+  # #1404 — the child is scrubbed of VERIFY_REPORT_FILE. The scrub is
+  # the whole point of the out-of-band channel: a test that cannot see the path
+  # cannot forge the verdict the driver reads, and the forged triad (`FAILED:`
+  # per-file + a count-matched summary + a non-zero `P:/F:` tally) is otherwise
+  # byte-identical to what the loop itself prints.
+  #
+  # It is spelled as an explicit `env -u` rather than as `unset VERIFY_REPORT_FILE`
+  # in the parent because the parent's own copy of that variable is the path the
+  # loop still has to write its report to at the end of the run — verify-loop.sh
+  # deliberately does NOT scrub it at startup. Unsetting it in the parent would
+  # silently produce no report at all, and "no report" is the
+  # unattributable shape rather than a passing one. `env -u` takes the variable
+  # out of the CHILD's environment only, and every test descendant goes through
+  # this one spawn.
+  env -u VERIFY_REPORT_FILE bun run "$t" >"$cap" 2>&1 &
   pid=$!
   # Poll every 0.1s (sleep 0.1 works on macOS and GNU coreutils), comparing
   # elapsed wall-clock via SECONDS (second resolution — the bound is still

@@ -32,6 +32,7 @@ import type { LensRunResult } from "../../src/lens-review-types.ts";
 import { LENS_ROSTER } from "../../src/lens-roster.ts";
 import type { FindingRun } from "../../src/review-findings-store.ts";
 import { recordFindingRunOutcome } from "../../src/review-findings-store.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 /** A finding a stub lens reports; `lens` is filled in by the stub. */
 export interface StubFinding {
@@ -118,8 +119,19 @@ export function setupReviewFixture(opts: {
   process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = ledgerFile;
   if (opts.withSkills !== false) process.env.PI_ENSEMBLE_SKILLS_DIR = skills;
 
+  // #1145 — `env: gitTestEnv()` on the synchronous spawn form (bun 1.3 does not
+  // propagate a `process.env` assignment to a `child_process` call that omits
+  // `env`). This clone is what `runLensReview` and the findings store read their
+  // changed ranges and dirty state from, so a host ignore file would decide the
+  // round's verdict (see lib/git-test-env.ts).
+  const gitEnv = gitTestEnv();
   const sh = (cmd: string) =>
-    execSync(cmd, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    execSync(cmd, {
+      cwd: repo,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: gitEnv,
+    }).trim();
   sh(`git init -q -b ${opts.branch ?? "main"}`);
   sh("git config user.email dev@example.com");
   sh("git config user.name dev");

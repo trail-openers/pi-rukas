@@ -289,11 +289,18 @@ function mkState(issue: number): WorkState {
     g("group-b", 101, ["src/x.ts"]),
     g("group-c", 102, ["src/z.ts"]),
   ];
+  // Concurrency 1, deliberately. The #676 version of this case ran at 3 and
+  // asserted group-c was never claimed, which was true only because a spare
+  // worker happened to be busy elsewhere — with the scan/drain split there is
+  // always somebody awake to take a claimable group, so the assertion would
+  // have been a coin flip. At K=1 the queue is strictly sequential, so the
+  // halt from group-b is guaranteed to land before group-c is ever reached,
+  // and what the case asserts is the contract rather than a scheduling accident.
   const summary = await runWorkQueue({
     repoRoot: "/repo",
     groups,
     restart: false,
-    concurrency: 3,
+    concurrency: 1,
     runGroup: async (primary) => {
       started.push(primary);
       if (primary === 100) {
@@ -409,7 +416,13 @@ function mkState(issue: number): WorkState {
 // cursor must advance (and the queue must settle) on every continue path.
 {
   let ran = 0;
-  const degenerate: IssueGroup = { id: "group-empty", scope: "", paths: [], outOfScope: [], issues: [] };
+  const degenerate: IssueGroup = {
+    id: "group-empty",
+    scope: "",
+    paths: [],
+    outOfScope: [],
+    issues: [],
+  };
   const groups: IssueGroup[] = [degenerate, g("group-b", 101, []), g("group-c", 102, [])];
   const t0 = Date.now();
   const summary = await runWorkQueue({
@@ -424,7 +437,10 @@ function mkState(issue: number): WorkState {
     readStateFn: async (_r, issue) => mkState(issue),
   });
   assert(ran === 2, "the degenerate group was skipped; the other two groups ran");
-  assert(Date.now() - t0 < 2000, "the queue settled promptly — no busy-spin on the empty-issues group");
+  assert(
+    Date.now() - t0 < 2000,
+    "the queue settled promptly — no busy-spin on the empty-issues group",
+  );
   assert(
     summary.merged === 2,
     "the two valid groups merged; the degenerate group is absent from the report",
@@ -449,6 +465,19 @@ function mkState(issue: number): WorkState {
     "distinct filenames still do not overlap (no false positive from the symmetric basename set)",
   );
 }
+
+// ================== 10. #1101 — the wait is on the sibling's SETTLEMENT
+//
+// Moved to `test-work-queue-wait.ts`, with the dependency-park cases from
+// test-work-queue-dlq.ts. Those cases are about what a WAIT waits for — a
+// sibling's SETTLEMENT, not its claim — which is a third concern alongside this
+// file's pre-dispatch overlap policy and the dlq file's park-versus-halt
+// decisions; keeping all three in one file pushed it past AGENTS.md §12's cap.
+//
+// The distinction they lock down is the bug rather than a nuance: a group is
+// claimed and then sits running for the whole of its cycle, so every "started
+// after the claim" assertion in the pre-#1101 suite was satisfied by two cycles
+// editing the same files at the same time — an ordering with no safety content.
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

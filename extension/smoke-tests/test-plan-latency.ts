@@ -114,6 +114,12 @@ setPlanDispatch(((
 
 const FAKE_PI = { registerTool: () => {} } as never;
 const REPO_ROOT = process.cwd();
+// #1132 resolves the read tree per run: `withPlanBase` may hand the pipeline a
+// base worktree instead of the checkout, so `readRoot` is not always
+// REPO_ROOT. A fetch failure falls back to the checkout; this offline gate
+// pins that shape so the cwd contract below is asserted against the tree the
+// run actually reads, not an assumption about which one it is.
+process.env.PI_ENSEMBLE_PLAN_CACHE = "0";
 const DESCRIPTOR = "add a start_plan_driver latency probe in extension/src/plan-tool.ts";
 
 {
@@ -140,7 +146,13 @@ const DESCRIPTOR = "add a start_plan_driver latency probe in extension/src/plan-
       s.timeoutMs === PLAN_DISPATCH_TIMEOUT_MS,
       `bounded dispatch: ${s.label ?? s.role} carries timeoutMs=${s.timeoutMs} (expected PLAN_DISPATCH_TIMEOUT_MS)`,
     );
-    assert(s.cwd === REPO_ROOT, `cwd pinned to repoRoot on ${s.label ?? s.role}`);
+    // The contract is that no child inherits the PARENT process cwd: every
+    // dispatch carries an explicit tree, and with the base read pinned off
+    // (PI_ENSEMBLE_PLAN_CACHE=0 above) that tree is the repo root.
+    assert(
+      s.cwd === REPO_ROOT,
+      `cwd pinned to the read root on ${s.label ?? s.role} (never inherited)`,
+    );
   }
 
   assert(

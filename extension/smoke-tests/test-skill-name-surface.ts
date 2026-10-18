@@ -20,11 +20,17 @@
  * "name → skill/<name>/SKILL.md must exist" check; the anti-vacuity count
  * aggregates over the union.
  *
- * **Exclusions.** The tool name `skill`; role keys read from agents.json
- * (developer, ops, …); tokens containing `*`; `<…>` placeholders (e.g.
- * `<skills-dir>` — the placeholder itself is not a skill name, though
- * `<skills-dir>/<name>` still yields `<name>`). A backticked token that is a
- * placeholder (starts with `<`) is dropped entirely.
+ * **Exclusions.** The bare word `skill` (a generic noun — "load the `skill`
+ * file", `skill/<name>` path forms — never a skill name); role keys read
+ * from agents.json (developer, ops, …); tokens containing `*`; `<…>`
+ * placeholders (e.g. `<skills-dir>` — the placeholder itself is not a skill
+ * name, though `<skills-dir>/<name>` still yields `<name>`). A backticked
+ * token that is a placeholder (starts with `<`) is dropped entirely. (Issue
+ * #995: the pre-#995 exclusion of the backticked token `skill` was justified
+ * as a tool name — "Load the `skill` tool" — but Pi 1.0.0 registers no
+ * `skill` tool; the doctrine naming one is being corrected. The exclusion
+ * remains as a generic-noun filter rather than a tool-name carve-out so the
+ * gate is no longer silently blind to the bare word `skill` itself.)
  *
  * **Scan roots.** agents-base/, modules/, pi-prompts/ at the repo root only —
  * .worktrees/, dist/, node_modules/, tmp/ and outputs/ are never scanned
@@ -106,7 +112,8 @@ export function extractSkillNames(root: string): Map<string, string> {
           const t = token[1];
           if (t.startsWith("<") || t.includes("*")) continue; // placeholders, globs
           if (!SKILL_TOKEN.test(t)) continue;
-          if (t === "skill" || excluded.has(t)) continue; // tool name, role key
+          if (t === "skill") continue; // generic noun ("load the `skill` file") — not a skill name; a true skill name still must exist as skill/<name>/SKILL.md
+          if (excluded.has(t)) continue; // role key
           if (!/skill/i.test(line)) continue;
           if (!names.has(t)) names.set(t, rel);
         }
@@ -114,7 +121,8 @@ export function extractSkillNames(root: string): Map<string, string> {
           re.lastIndex = 0;
           for (const m of line.matchAll(re)) {
             const t = m[1];
-            if (t === "skill" || excluded.has(t)) continue;
+            if (t === "skill") continue; // skill/skill/... path form: the word, not a name
+            if (excluded.has(t)) continue;
             if (!names.has(t)) names.set(t, rel);
           }
         }
@@ -199,7 +207,7 @@ function assert(cond: boolean, msg: string) {
     mkdirSync(path.join(fixtureRoot, "skill", "bad-skill"), { recursive: true });
     writeFileSync(
       path.join(fixtureRoot, "agents-base", "role.md"),
-      "Load the `skill` tool and use the `real-skill` or `phantom-skill` skill here.\n" +
+      "Use the `real-skill` or `phantom-skill` skill here.\n" +
         "Also a `skill/good-skill/SKILL.md` path reference, and `--skill <skills-dir>/good-skill`.\n",
     );
     writeFileSync(path.join(fixtureRoot, "skill", "good-skill", "SKILL.md"), "---\nname: good-skill\ndescription: fine\n---\n\nbody\n");
@@ -217,7 +225,7 @@ function assert(cond: boolean, msg: string) {
     );
     assert(
       !names.has("skill") && names.has("real-skill"),
-      "canary: the tool name `skill` is excluded while a bare backticked skill name on a skill line is picked up",
+      "canary: the bare word `skill` is excluded as a generic noun while a bare backticked skill name on a skill line is picked up",
     );
     assert(
       failures.some((f) => f.kind === "phantom" && f.detail.includes("phantom-skill")),
