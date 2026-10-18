@@ -8,12 +8,12 @@ import {
   decideSweepAction,
   executeSweepAction,
 } from "./work-driver-sweep-policy.ts";
+import { isLaunchingCycleOwnWorktree } from "./work-driver-sweep-rules.ts";
 import {
   type OwnerIndex,
   buildOwnerIndex,
   claimUnderWorktrees,
 } from "./work-driver-worktree-sweep-owners.ts";
-import { isLaunchingCycleOwnWorktree } from "./work-driver-sweep-rules.ts";
 import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
