@@ -58,6 +58,7 @@ expect "worker: two issues"          2 "$S/worker.sh" --repo . 1514 1515
 expect "worker: non-numeric issue"   2 "$S/worker.sh" --repo . notanumber
 expect "worker: --timeout no value"  2 "$S/worker.sh" --repo . 1514 --timeout
 expect "worker: --timeout non-int"   2 "$S/worker.sh" --repo . 1514 --timeout 5x
+expect "worker: --heap 0 refused"   2 "$S/worker.sh" --repo . 1514 --heap 0
 expect "drive: no issues"            2 "$S/drive.sh"  --repo .
 expect "drive: junk in queue"        2 "$S/drive.sh"  --repo . 1514 abc
 expect "drive: unknown flag"         2 "$S/drive.sh"  --repo . --bogus 1514
@@ -262,11 +263,11 @@ expect "no triage.tsv" 4 env FANOUT_REPO=/tmp/fanout-selftest FANOUT_FORGE_URL=h
 
 echo
 echo "== declared-file entries are normalised before the existence check =="
-check "norm: (new) entry is skipped" "$(fanout_norm_path 'src/a.ts (new)')" ""
+check "norm: (new) entry keeps its path" "$(fanout_norm_path 'src/a.ts (new)')" "src/a.ts"
 check "norm: annotation stripped" "$(fanout_norm_path 'src/a.ts (edits)')" "src/a.ts"
 check "norm: leading space trimmed" "$(fanout_norm_path ' src/b.ts')" "src/b.ts"
 check "norm: blank cell dash skipped" "$(fanout_norm_path -)" ""
-check "norm_list: dash and (new) entries vanish" "$(fanout_norm_list '-,src/q.ts (new),src/r.ts (edits)')" "src/r.ts"
+check "norm_list: dash vanishes, (new) kept" "$(fanout_norm_list '-,src/q.ts (new),src/r.ts (edits)')" "$(printf 'src/q.ts\nsrc/r.ts')"
 # The runtime is used as "$(fanout_node)". It must resolve to one executable path, never to a
 # multi-word command like the old "/usr/bin/env bun" fallback.
 node_path="$(fanout_node)"

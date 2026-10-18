@@ -10,8 +10,8 @@
 # scripts/capacity.sh, not from a remembered number.
 #
 # Exit codes: 0 when every worker finished cleanly; 1 when any worker did not. "Cleanly" is
-# exit 0 (merged), or exit 10 where the runner's own exitCode is 10 (handoff). Exit 10 alone
-# is not enough: a failed dependency install also exits 10. Per-issue detail is in summary.tsv.
+# exit 0 AND the runner's own exitCode 0 (merged), or exit 10 AND runner exitCode 10 (handoff).
+# A bare exit code is not enough: a failed install exits 10, and a worker with no result JSON exits 0. Per-issue detail is in summary.tsv.
 # 2 is a usage error, raised before anything runs.
 #
 # Per issue: triage gate, path-claim gate, then worker.sh in its own clone. A refusal records
@@ -162,7 +162,7 @@ run_one() {  # $1 = issue; returns 0 when the cycle finished cleanly, 1 otherwis
   append_row "$row"
   runner_code="$(runner_exit "$RUNS_DIR/issue-$issue/result.json")"
   case "$code" in
-    0)  ok=1 ;;
+    0)  [ "$runner_code" = 0 ] && ok=1 ;;
     10) [ "$runner_code" = 10 ] && ok=1 ;;
   esac
   log "worker $issue finished exit=$code runner=$runner_code"

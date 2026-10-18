@@ -20,6 +20,9 @@ check "runner env: verify concurrency divided" "$(grep -c '^PI_ENSEMBLE_VERIFY_C
 check "runner env: parallel work forced off" "$(grep -c '^PI_ENSEMBLE_PARALLEL_WORK=0$' "$FIX/env.dump")" 1
 check "runner env: heap cap in NODE_OPTIONS" "$(grep -c '^NODE_OPTIONS=--max-old-space-size=3072$' "$FIX/env.dump")" 1
 check "no clone was made" "$(test -e "$FIXW/issue-9002/repo" && echo yes || echo no)" no
+printf '9705\tchore\t-\tmodule\t-\t-\tready-lean\t-\tS\n' >>"$FIX/tmp/fanout/triage.tsv"
+expect "ready-lean dump run reaches the budget" 0 env FANOUT_RUNNER_ENV_DUMP="$FIX/env.lean" FANOUT_SKIP_PUSH_CHECK=1 FANOUT_FORGE_CHECK=0 FANOUT_REPO="$FIX" $NOFORGE "$S/worker.sh" --repo "$FIX" 9705
+check "ready-lean applies --lean (heap 1536MB)" "$(grep -c 'heap=1536MB' "$FIX/tmp/fanout/runs/issue-9705/budget.log")" 1
 
 echo
 echo "== the divisor is the host share, not this drive's N (finding 2) =="
@@ -266,6 +269,7 @@ drive_x 0 0;   check "merged (0) exits 0" "$?" 0
 drive_x 10 10; check "handoff (10, runner says 10) exits 0" "$?" 0
 drive_x 10 0;  check "install failure (10, runner not reached) exits 1" "$?" 1
 drive_x 20 20; check "aborted (20) exits 1" "$?" 1
+drive_x 0 none; check "exit 0 with no parseable runner result exits 1" "$?" 1
 rm -rf "$DX"
 
 echo

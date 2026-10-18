@@ -34,14 +34,26 @@ const MAP = {
 const clean = (v) => String(v ?? "").replace(/[\t\r\n]/g, " ");
 
 const src = fs.readFileSync(SRC, "utf8").split("\n").filter((l) => l.trim() && !l.startsWith("#"));
-const head = src[0].split("\t");
+const head = (src[0] || "").split("\t");
+// A missing column would otherwise become an empty cell: no dependencies, no file overlaps, and
+// no declared paths, so every fence downstream would be blind. Refuse before reading any row.
+const REQUIRED = ["issue", "files-likely-touched", "depends-on", "verdict"];
+const missingCols = REQUIRED.filter((c) => !head.includes(c));
+if (missingCols.length) {
+  console.log(`NOT WRITTEN: ${OUT} left unchanged.`);
+  console.log(`  input has no required column(s): ${missingCols.join(", ")}`);
+  process.exit(1);
+}
 const rows = [];
 const problems = [];
+const seenIssue = new Set();
 
 src.slice(1).forEach((l) => {
   const cells = l.split("\t");
   const r = {};
   head.forEach((h, i) => { r[h] = (cells[i] || "").trim(); });
+  if (seenIssue.has(r.issue)) problems.push(`issue ${r.issue}: listed more than once`);
+  seenIssue.add(r.issue);
   // hasOwn, not a bare lookup: "constructor" would otherwise resolve to Object.prototype.
   const mapper = Object.prototype.hasOwnProperty.call(MAP, r.verdict) ? MAP[r.verdict] : undefined;
   if (!mapper) { problems.push(`issue ${r.issue}: no mapping for verdict '${r.verdict}'`); return; }

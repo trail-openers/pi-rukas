@@ -34,7 +34,10 @@ fanout_live_claims() {
   local rel main workers="${WORKERS_DIR:-}" self="${1:-}" out rc
   rel="$(fanout_claims_relpath)"
   main="${FANOUT_CLAIMS_SOURCE:-$FANOUT_REPO/$rel}"
-  [ -z "${FANOUT_CLAIMS_SOURCE:-}" ] || workers=""
+  if [ -n "${FANOUT_CLAIMS_SOURCE:-}" ]; then
+    workers=""
+    warn "FANOUT_CLAIMS_SOURCE is set: the cross-clone and reservation reads are OFF for this process. Use it only as a test hook."
+  fi
   if [ -f "$main" ] && [ ! -r "$main" ]; then
     die "claims file exists but is not readable: $main — refusing to assume 'no collisions'" 11
   fi

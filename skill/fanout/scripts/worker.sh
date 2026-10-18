@@ -42,7 +42,7 @@ while [ "$#" -gt 0 ]; do
     case "$NEXT" in
       timeout) TIMEOUT_MIN="$a" ;;
       workers) WORKERS_TOTAL="$a" ;;
-      heap)    HEAP_OVR="$a" ;;
+      heap)    [ "$a" -gt 0 ] || die "--heap wants a positive whole number of MB, got '$a'" 2; HEAP_OVR="$a" ;;
     esac
     NEXT=""; continue
   fi
@@ -138,6 +138,8 @@ export FANOUT_FORGE_CHECK
 
 if [ "$OVERRIDE_TRIAGE" = 0 ]; then
   fanout_require_ready "$ISSUE"
+  # ready-lean means --lean. Apply it from the table so the verdict, not the argv, sets the budget.
+  if [ "$(fanout_row "$ISSUE" verdict)" = ready-lean ]; then LEAN=1; fi
   fanout_require_current "$ISSUE" ""
 fi
 
@@ -181,6 +183,9 @@ fanout_ssh_ensure
 # WORKERS_DIR splits the host instead of each taking all of it. Snapshot at start; host-limits.md.
 DIVISOR="$WORKERS_TOTAL"
 live="$(fanout_live_workers)"
+if [ "$live" -gt "$FANOUT_MAX_WORKERS" ]; then
+  die "$live workers (this one included) are live on this fleet, above the ceiling of $FANOUT_MAX_WORKERS across all drive.sh runs (references/host-limits.md). Wait for one to finish." 2
+fi
 if [ "$live" -gt "$DIVISOR" ]; then
   DIVISOR="$live"
   log "host share: $live workers are live on this fleet, so the budget divides by $DIVISOR, not $WORKERS_TOTAL"

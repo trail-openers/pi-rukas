@@ -50,6 +50,18 @@ fanout_check_triage_header() {
     esac
   done
   [ -z "$missing" ] || die "triage table $f has no required column(s):$missing. Regenerate it (references/triage.md)." 4
+  # Two rows for one issue: fanout_row would take the first silently, whatever its verdict.
+  dup="$(FANOUT_TSV="$f" "$(fanout_node)" --input-type=module -e '
+    import fs from "node:fs";
+    const rows = fs.readFileSync(process.env.FANOUT_TSV, "utf8")
+      .split("\n").filter((l) => l.trim() !== "" && !l.startsWith("#"));
+    if (rows.length < 2) process.exit(0);
+    const ci = rows[0].split("\t").indexOf("issue");
+    const seen = new Set(), dups = [];
+    for (const l of rows.slice(1)) { const k = l.split("\t")[ci]; if (seen.has(k)) dups.push(k); seen.add(k); }
+    process.stdout.write([...new Set(dups)].join(" "));
+  ' 2>/dev/null)"
+  [ -z "$dup" ] || die "triage table $f lists issue(s) more than once: $dup. Keep one row per issue; the first match was being used silently." 4
 }
 
 fanout_require_ready() {  # $1 = issue; exits 5 when triage says do not run it
@@ -66,12 +78,12 @@ fanout_require_ready() {  # $1 = issue; exits 5 when triage says do not run it
   esac
 }
 
-# One declared-files cell entry -> a repo-relative path, or empty. "src/a.ts (new)" names a
-# file that does not exist yet and is skipped; "src/a.ts (edits)" keeps the path; a blank
-# cell arrives as "-" and is skipped.
+# One declared-files cell entry -> a repo-relative path, or empty. An annotation is stripped:
+# "src/a.ts (new)" and "src/a.ts (edits)" both keep the path, so a file that does not exist yet
+# still claims its path in the collision fence. A blank cell arrives as "-" and is skipped.
+# The existence check (fanout_require_current) is what skips "(new)" entries.
 fanout_norm_path() {  # $1 = raw entry
   local p="$1"
-  case "$p" in *"(new)"*) return 0 ;; esac
   p="${p%%" ("*}"
   p="${p#"${p%%[![:space:]]*}"}"
   p="${p%"${p##*[![:space:]]}"}"
@@ -141,6 +153,7 @@ fanout_require_current() {
   fi
   if [ -n "$clone" ] && [ -d "$clone" ]; then
     while IFS= read -r f; do
+      case "$f" in *"(new)"*) continue ;; esac
       f="$(fanout_norm_path "$f")"
       [ -n "$f" ] || continue
       [ -e "$clone/$f" ] || missing="$missing $f"

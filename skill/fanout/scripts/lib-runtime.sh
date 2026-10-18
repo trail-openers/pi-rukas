@@ -116,6 +116,10 @@ fanout_ssh_private() {
 fanout_ssh_ensure() {
   if [ -n "${FANOUT_SSH_KEY:-}" ]; then
     [ -r "$FANOUT_SSH_KEY" ] || die "FANOUT_SSH_KEY is not readable: $FANOUT_SSH_KEY" 3
+    # The path is placed in double quotes inside GIT_SSH_COMMAND, so these characters would break it.
+    case "$FANOUT_SSH_KEY" in
+      *'"'*|*'$'*|*'`'*|*'\'*) die "FANOUT_SSH_KEY contains a quote, dollar, backtick or backslash, which breaks GIT_SSH_COMMAND: $FANOUT_SSH_KEY. Symlink the key to a plain path." 3 ;;
+    esac
     fanout_ssh_private
     ssh-add "$FANOUT_SSH_KEY" >/dev/null 2>&1 \
       || die "ssh-add could not load $FANOUT_SSH_KEY (passphrase-protected? load it in a terminal first)" 3
@@ -167,7 +171,9 @@ fanout_bounded() {
   kill "$(cat "$flag.sleep" 2>/dev/null)" >/dev/null 2>&1 || true
   kill "$watch" >/dev/null 2>&1 || true
   wait "$watch" >/dev/null 2>&1 || true
-  if [ -e "$flag" ] && [ "$rc" -ge 128 ]; then rc=124; fi
+  # Only TERM (143) means the watchdog fired. Any other status, including >=128 from a command
+  # that exited on its own, is the command's own result.
+  if [ -e "$flag" ] && [ "$rc" = 143 ]; then rc=124; fi
   rm -f -- "$flag" "$flag.sleep"
   return "$rc"
 }
