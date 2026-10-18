@@ -20,13 +20,29 @@
  *
  * Two mechanisms, one per defect: evidence supply for the contradiction,
  * deterministic grounding for the invented spec.
+ *
+ * The pure extraction/grounding RULES (`groundClaims`, `extractClaimCandidates`,
+ * the prose-does-not-ground-prose rule) moved to `test-claim-scan-rules.ts` for
+ * the 500-line gate (AGENTS.md §12); what stays here drives `runClaimScan` with
+ * a fake git and pins what the gate REPORTS.
  */
 
-import { extractClaimCandidates, groundClaims, isProseFile } from "../src/claim-scan.ts";
+import { extractClaimCandidates } from "../src/claim-scan.ts";
+import { isClaimScanProbe as isProbe } from "./lib/claim-scan-probe-fixture.ts";
+import { LANTERN_DIFF } from "./lib/claim-scan-fixture.ts";
 import { runClaimScan } from "../src/lens-evidence.ts";
 import { computeVerdict } from "../src/lens-review-format.ts";
 import type { Finding } from "../src/lens-review.ts";
-import { pathsInDiff } from "../src/work-driver-diff.ts";
+
+/** `git grep` — the token-occurrence lookup, spelled in pieces so this file's
+ * own command-matching strings are not confusable with the fixture literals. */
+const GIT_GREP = "git " + "grep";
+
+// The probe matcher lives in lib/claim-scan-probe-fixture.ts, shared with
+// test-claim-scan-probe-cost.ts — a fake that fails to recognise the probe
+// answers "the file exists" for every call, which reads as a green suite that
+// asserts nothing. The lantern diff both suites read is in
+// lib/claim-scan-fixture.ts for the same reason.
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -38,15 +54,6 @@ function assert(cond: boolean, msg: string) {
 }
 
 // ------------------------------------------------- defect #2, the real shape
-
-const LANTERN_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
---- a/docs/deployment.md
-+++ b/docs/deployment.md
-@@ -155,2 +155,4 @@
- Hardware requirements
-+The reference host is an Intel i7 with 64 GB RAM and 2 TB of NVMe storage.
-+Deployment is verified on that configuration before each release.
-`;
 
 {
   const c = extractClaimCandidates(LANTERN_DIFF);
@@ -64,123 +71,14 @@ const LANTERN_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
   );
 }
 
-// ----------------------------------- what must NOT be extracted (not vacuous)
-
-{
-  const diff = `--- a/docs/x.md
-+++ b/docs/x.md
-@@ -1,1 +1,3 @@
- intro
-+See Section 3 and Figure 2 for the 1.0 overview; roughly 100% of cases apply.
-+\`\`\`
-+Intel i9 inside a fenced block is an example, not a claim.
-`;
-  const tokens = extractClaimCandidates(diff).map((c) => c.token);
-  assert(!tokens.includes("Section 3"), "'Section 3' is a cross-reference, not a specification");
-  assert(!tokens.includes("Figure 2"), "'Figure 2' likewise");
-  assert(!tokens.some((t) => t === "1.0"), "a bare '1.0' is prose, not a version claim");
-  assert(!tokens.includes("100%"), "'100%' is rhetorical, and ignored by name");
-  assert(
-    !tokens.includes("Intel i9"),
-    "a fenced code block is an example, not an assertion — the #407 'quoting is not asserting' rule",
-  );
-}
-
-// ------------------------------- code files are not scanned; prose files are
-
-{
-  const diff = `--- a/src/spawn.ts
-+++ b/src/spawn.ts
-@@ -1,1 +1,2 @@
- x
-+const CAP = 12; // tuned for a 64 GB host
-`;
-  assert(
-    extractClaimCandidates(diff).length === 0,
-    "a code file is not scanned — an assertion in a comment is not a published claim",
-  );
-  assert(isProseFile("docs/a.md") && !isProseFile("src/a.ts"), "prose classification");
-  assert(
-    pathsInDiff(LANTERN_DIFF).join() === "docs/deployment.md",
-    "pathsInDiff reads the +++ side",
-  );
-}
-
-// ------------------------------------------------------- the grounding rule
-
-{
-  const candidates = extractClaimCandidates(LANTERN_DIFF);
-
-  // Nothing anywhere → ungrounded.
-  const none = await groundClaims(candidates, async () => []);
-  assert(none.length === candidates.length, "with no hits anywhere, every claim is ungrounded");
-
-  // Found ONLY in prose → still ungrounded. Self-reference is not evidence; if
-  // a doc could ground its own assertion, every invented spec would validate
-  // itself.
-  const proseOnly = await groundClaims(candidates, async () => ["docs/deployment.md", "README.md"]);
-  assert(
-    proseOnly.length === candidates.length,
-    "a claim found ONLY in prose is still ungrounded — prose does not ground prose",
-  );
-  assert(
-    proseOnly[0]?.proseHits.includes("docs/deployment.md"),
-    "...and the prose hits are recorded, so the message can say where it looked",
-  );
-
-  // Found in code → grounded.
-  const inCode = await groundClaims(candidates, async () => ["src/config.ts"]);
-  assert(inCode.length === 0, "a claim backed by a code file is grounded and not reported");
-
-  // A lookup that throws is "could not tell", never "fabricated".
-  const threw = await groundClaims(candidates, async () => {
-    throw new Error("git unavailable");
-  });
-  assert(
-    threw.length === 0,
-    "an unreadable repository yields NO findings — this gate blocks merges and must not manufacture one from its own failure",
-  );
-}
-
-// ---- THE false-positive canary: this repo ships docs WITH the change (§7)
-
-{
-  // A PR that adds a constant and documents it in the same commit. The README
-  // line is the only prose mention; the constant is an ADDED code line. If
-  // same-diff code did not count as a referent, this fires — and it would fire
-  // on nearly every honest PR in this repo.
-  const diff = `--- a/README.md
-+++ b/README.md
-@@ -10,1 +10,2 @@
- env table
-+| \`PI_ENSEMBLE_CLAIM_SCAN\` | \`1\` | Set to \`0\` to disable the claim scan. |
---- a/src/lens-evidence.ts
-+++ b/src/lens-evidence.ts
-@@ -1,1 +1,2 @@
- x
-+  const v = process.env.PI_ENSEMBLE_CLAIM_SCAN;
-`;
-  const candidates = extractClaimCandidates(diff);
-  assert(
-    candidates.some((c) => c.token === "PI_ENSEMBLE_CLAIM_SCAN"),
-    "the env var is extracted from the README line",
-  );
-  // The branch ref contains the added code line, so grep finds it in a .ts file.
-  const grounded = await groundClaims(candidates, async (t) =>
-    t === "PI_ENSEMBLE_CLAIM_SCAN" ? ["README.md", "src/lens-evidence.ts"] : ["src/x.ts"],
-  );
-  assert(
-    grounded.length === 0,
-    "a README citing a constant added in the SAME PR is grounded — docs-ship-with-the-change must not misfire",
-  );
-}
-
 // ----------------------------------------------- end to end, with a fake git
 
 {
-  const exec = async (cmd: string) => {
-    // Only the invented specs are absent from the branch.
-    if (/Intel i7|64 GB|2 TB/.test(cmd)) {
+  const exec = async (cmd: string, opts?: { argv?: string[] }) => {
+    // Only the invented specs are absent from the branch. The probe is argv-form,
+    // so the tree-ish is read out of `opts.argv` rather than out of `cmd`.
+    const haystack = opts?.argv?.join(" ") ?? cmd;
+    if (/Intel i7|64 GB|2 TB/.test(haystack)) {
       const e = Object.assign(new Error("exit 1"), { code: 1, stdout: "" });
       throw e;
     }
@@ -188,6 +86,123 @@ const LANTERN_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
   };
   const findings = await runClaimScan(exec, "/repo", "feature/x", LANTERN_DIFF);
   assert(findings.length === 3, "the scan produces one finding per invented spec");
+
+  // The pre-#1002 fake returned a code file for EVERY command, so the
+  // existence seam was never reached and no path-kind claim ever got here.
+  // With the real rule in place, the answer to "does it exist" is the whole
+  // difference between eight false MEDIUMs and none.
+  const SKILL_DIFF = `--- a/skill/go-idiomatic/SKILL.md
++++ b/skill/go-idiomatic/SKILL.md
+@@ -66,1 +66,2 @@
+ intro
++See \`references/patterns.md\` for idioms.
+`;
+  // Which of the two resolutions the probe asked is pinned by
+  // test-claim-scan-probe-cost.ts; here the fake answers "the branch has no such
+  // file" for BOTH — so the whole fixture turns on the wording the shared
+  // absence classifier reads (a bare 128 with no stderr is "could not tell",
+  // which would drop the claim rather than report it).
+  const grepOnly = async (cmd: string, opts?: { argv?: string[] }) => {
+    if (isProbe(cmd, opts)) {
+      throw Object.assign(new Error("exit 128"), {
+        code: 128,
+        stdout: "",
+        stderr: "fatal: path 'x' does not exist in 'y'\n",
+      });
+    }
+    return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
+  };
+  assert(
+    (await runClaimScan(grepOnly, "/repo", "feature/x", SKILL_DIFF)).length === 1,
+    "a cited references/ file that is NOT on the branch still produces an 'Unsourced path' finding",
+  );
+
+  const noGrepNoFile = async (cmd: string, opts?: { argv?: string[] }) => {
+    if (cmd.startsWith(GIT_GREP)) {
+      throw Object.assign(new Error("exit 1"), { code: 1, stdout: "" });
+    }
+    if (isProbe(cmd, opts)) {
+      throw Object.assign(new Error("exit 128"), {
+        code: 128,
+        stdout: "",
+        stderr: "fatal: path 'x' does not exist in 'y'\n",
+      });
+    }
+    return { stdout: "" };
+  };
+  assert(
+    (await runClaimScan(noGrepNoFile, "/repo", "feature/x", SKILL_DIFF)).length === 1,
+    "a SKILL.md whose cited file the branch does NOT have is an 'Unsourced path' finding — the probe is what distinguishes it, with no grep hit either way (not vacuous)",
+  );
+
+  const atBranch = async (cmd: string) => {
+    if (cmd.startsWith(GIT_GREP)) {
+      return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
+    }
+    // The existence probe answers for either resolution — asserting-dir-relative
+    // here, repo-root in the block below.
+    return { stdout: "" };
+  };
+  assert(
+    (await runClaimScan(atBranch, "/repo", "feature/x", SKILL_DIFF)).length === 0,
+    "the same claim is silent once the branch has the file — the #994 false positive, gone",
+  );
+
+  // A git that is broken (not merely "no such file") must not invent a finding.
+  const brokenGit = async (cmd: string, opts?: { argv?: string[] }) => {
+    if (isProbe(cmd, opts)) {
+      throw Object.assign(new Error("git: command not found"), { code: 127, stdout: "" });
+    }
+    return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
+  };
+  assert(
+    (await runClaimScan(brokenGit, "/repo", "feature/x", SKILL_DIFF)).length === 0,
+    "exit 128 is 'absent' and any other code is 'could not tell' — a broken git never becomes 'Unsourced path'",
+  );
+
+  // The two resolutions are an OR evaluated over `Promise.allSettled`, and the
+  // precedence between a `false` and a rejection is load-bearing in both
+  // directions. One probe says the file IS there, the other cannot answer:
+  // a fulfilled `true` grounds the claim outright.
+  const oneTrueOneBroken = async (cmd: string, opts?: { argv?: string[] }) => {
+    if (isProbe(cmd, opts)) {
+      return (opts?.argv ?? [])[2]?.includes("skill/go-idiomatic/")
+        ? { stdout: "" }
+        : Promise.reject(
+            Object.assign(new Error("git: command not found"), { code: 127, stdout: "" }),
+          );
+    }
+    return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
+  };
+  assert(
+    (await runClaimScan(oneTrueOneBroken, "/repo", "feature/x", SKILL_DIFF)).length === 0,
+    "one resolution says the file exists and the sibling cannot answer — the true still grounds it, no finding and no throw",
+  );
+
+  // The mirror: one probe says absent, its sibling cannot answer. `false` is a
+  // fact the scan reports and a rejection is a fact it swallows, so the absent
+  // answer must win — otherwise a finding the branch supports disappears.
+  const oneFalseOneBroken = async (cmd: string, opts?: { argv?: string[] }) => {
+    if (isProbe(cmd, opts)) {
+      return (opts?.argv ?? [])[2]?.includes("skill/go-idiomatic/")
+        ? Promise.reject(
+            Object.assign(new Error("git: command not found"), { code: 127, stdout: "" }),
+          )
+        : Promise.reject(
+            Object.assign(new Error("exit 128"), {
+              code: 128,
+              stdout: "",
+              stderr: "fatal: path 'x' does not exist in 'y'\n",
+            }),
+          );
+    }
+    return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
+  };
+  assert(
+    (await runClaimScan(oneFalseOneBroken, "/repo", "feature/x", SKILL_DIFF)).length === 1,
+    "one resolution says absent and the sibling cannot answer — the false outranks the rejection, the finding survives",
+  );
+
   assert(
     findings.every((f) => f.lens === "CLAIM_SCAN"),
     "findings are attributed to CLAIM_SCAN, not to a lens that did not produce them",
@@ -224,6 +239,86 @@ const LANTERN_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
   );
   if (prev === undefined) delete process.env.PI_ENSEMBLE_CLAIM_SCAN;
   else process.env.PI_ENSEMBLE_CLAIM_SCAN = prev;
+}
+
+// ------------------------------------------- an unsafe token never reaches git
+
+{
+  // A token that is not a repo path at all — it carries `..` — must NEVER reach
+  // `git cat-file`: the resolved string would be interpolated straight into a
+  // tree-ish, and `skill/x/../../../etc/passwd.md` escapes the repository. What
+  // the guard changes is git's ANSWER: with it, a `..` token throws "could not
+  // tell" and the claim is dropped; without it the probe runs, git answers 128,
+  // and the scan reports a file it never validly checked. Same reasoning as the
+  // broken-git case above, reached by a different door. (That the probe is never
+  // *asked* is pinned by `test-claim-scan-paths.ts`, which runs a real git.)
+  const UNSAFE_DIFF = `--- a/skill/go-idiomatic/SKILL.md
++++ b/skill/go-idiomatic/SKILL.md
+@@ -66,1 +66,2 @@
+ intro
++See \`../../../etc/cron.d/x.md\` for idioms.
+`;
+  const recordUnsafe = async (cmd: string, opts?: { argv?: string[] }) => {
+    if (isProbe(cmd, opts)) {
+      throw Object.assign(new Error("exit 128"), {
+        code: 128,
+        stdout: "",
+        stderr: "fatal: path 'x' does not exist in 'y'\n",
+      });
+    }
+    return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
+  };
+  const unsafe = await runClaimScan(recordUnsafe, "/repo", "feature/x", UNSAFE_DIFF);
+  assert(
+    unsafe.length === 0,
+    "a `..` token is 'could not tell', not 'Unsourced path' — the scan never validly asked whether it exists",
+  );
+}
+
+// ------------------------------- a finding title never carries a forgeable marker
+
+{
+  // The token is prose a human wrote, and the title reaches the reviewer report
+  // and the PR body. A token carrying a marker the readers parse (`VERDICT`)
+  // must not survive into the line that renders it — same rule as every sibling
+  // finding line in `lens-review-render.ts` / `lens-residuals.ts`.
+  const MARKER_DIFF = `--- a/docs/deployment.md
++++ b/docs/deployment.md
+@@ -1,1 +1,2 @@
+ intro
++See \`dir/ROLLSET/x-rollout.md\` for the rollout and \`dir/VERDICT/x-rollback.md\` for the rollback.
+`;
+  // Both tokens are ungrounded (no grep hit, and the probe says the branch has
+  // neither file), so both are reported and the titles are what this looks at.
+  const execProbe = async (cmd: string, opts?: { argv?: string[] }) => {
+    if (isProbe(cmd, opts)) {
+      throw Object.assign(new Error("exit 128"), {
+        code: 128,
+        stdout: "",
+        stderr: "fatal: path 'x' does not exist in 'y'\n",
+      });
+    }
+    throw Object.assign(new Error("exit 1"), { code: 1, stdout: "" });
+  };
+  const markerTitles = (await runClaimScan(execProbe, "/repo", "feature/x", MARKER_DIFF)).map(
+    (f) => f.title,
+  );
+  // The bracket characters are the neutraliser's own (comment-evidence.ts), so
+  // they are spelled out — a literal in this file would be confusable with the
+  // evidence it is checking.
+  const bracketed =
+    "dir/" + String.fromCharCode(0x2039) + "VERDICT" + String.fromCharCode(0x203a) + "/";
+  assert(
+    // `dir/VERDICT/…` is the case this pins: the token contains a bare marker
+    // segment, so an unguarded title carries `VERDICT` where a lenient reader
+    // (one that accepts `XVERDICT:` with no boundary) looks for one. The control
+    // beside it — a token with no marker in it at all — proves the negative half
+    // is not satisfied by "nothing was reported at all".
+    markerTitles.some((t) => t.includes("dir/ROLLSET/x-rollout.md")) &&
+      markerTitles.some((t) => t.includes(bracketed)) &&
+      !markerTitles.some((t) => /(^|[^\p{L}\p{N}\u2039])VERDICT(?![\p{L}\p{N}\u203a])/u.test(t)),
+    "a path token with a verdict-marker segment is bracketed in the title so it cannot forge one — with a control token beside it still reported (not vacuous)",
+  );
 }
 
 // ------------------------------------- the findings reach the verdict at all
