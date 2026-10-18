@@ -19,17 +19,17 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { runCiVerifyFull } from "../src/work-driver-ci-verify.ts";
+import type { CycleContext } from "../src/work-driver-context.ts";
 import { createVerifyChannel } from "../src/work-driver-integrate-verify-flake.ts";
 import { foldVerifyAttribution } from "../src/work-driver-verify-events.ts";
-import { verifyAttributionSectionOf } from "../src/work-driver-verify-select-render.ts";
 import {
   type SelectedVerifyRecord,
   withSelectedAttribution,
 } from "../src/work-driver-verify-select-exec.ts";
+import { verifyAttributionSectionOf } from "../src/work-driver-verify-select-render.ts";
 import { selectedVerifyCommand } from "../src/work-driver-verify-select.ts";
 import { initialState } from "../src/workflow-state.ts";
-import type { CycleContext } from "../src/work-driver-context.ts";
-import { runCiVerifyFull } from "../src/work-driver-ci-verify.ts";
 
 const execFileP = promisify(execFile);
 let exit = 0;
@@ -49,6 +49,9 @@ git(["init", "-q"]);
 git(["config", "user.email", "t@example.com"]);
 git(["config", "user.name", "t"]);
 writeFileSync(path.join(repo, "extension", "smoke-tests", "placeholder.txt"), "x\n");
+// The ci tier attributes only in a project that has opted in (#1647).
+mkdirSync(path.join(repo, ".pi"), { recursive: true });
+writeFileSync(path.join(repo, ".pi", "verify-select"), "");
 git(["add", "-A"]);
 git(["commit", "-q", "-m", "base"]);
 const baseSha = git(["rev-parse", "HEAD"]).trim();
@@ -212,11 +215,7 @@ const R = "smoke-tests/test-red.ts";
 }
 // Red twice, red on one base run and green on the next: one red base run does not excuse.
 {
-  const r = await attempt(
-    "base-flake",
-    { change: { [R]: 2 }, base: [R], baseFirstOnly: true },
-    [],
-  );
+  const r = await attempt("base-flake", { change: { [R]: 2 }, base: [R], baseFirstOnly: true }, []);
   assert(!r.ok && r.record.baselineRed.length === 0, "a base red on one probe only → blocks");
 }
 // Red twice, green on base: blocks.

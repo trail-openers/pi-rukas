@@ -29,6 +29,7 @@ import {
   withSelectedAttribution,
 } from "./work-driver-verify-select-exec.ts";
 import { selectVerifyTests, selectedVerifyCommand } from "./work-driver-verify-select.ts";
+import { isOfflineTest } from "./work-driver-verify-shared.ts";
 import type { ExecFn } from "./worktree.ts";
 
 export interface SelectedVerifyPlan {
@@ -43,6 +44,15 @@ export interface SelectedVerifyPlan {
 /** `PI_ENSEMBLE_VERIFY_SELECT=0` restores the full develop command exactly. */
 export function verifySelectEnabled(): boolean {
   return process.env.PI_ENSEMBLE_VERIFY_SELECT !== "0";
+}
+
+/**
+ * #1647 — selection is a capability a project opts into by having `.pi/verify-select`.
+ * Its content is not read, so the file can be empty. The ci tier's attribution
+ * follows the same switch, and the escape hatch above does not touch it.
+ */
+export function selectOptedIn(repoRoot: string): Promise<boolean> {
+  return fileExists(path.join(repoRoot, ".pi", "verify-select"));
 }
 
 async function fileExists(file: string): Promise<boolean> {
@@ -77,19 +87,22 @@ export async function planDevelopVerify(
 ): Promise<SelectedVerifyPlan> {
   const { repoRoot } = ctx;
   const fullCmd = await verifyCmdFor(repoRoot);
-  const fastCmd = await fastVerifyCmdFor(repoRoot);
-  const fastTimeoutMs = (await developTierTimeouts(repoRoot)).fast;
-  const fullPlan = (note: string): SelectedVerifyPlan => {
-    notes.push(note);
-    return {
-      cmd: fullCmd,
-      wrap: (execFn) => withFastTier(execFn, fullCmd ?? "", fastCmd, { fast: fastTimeoutMs }),
-      finish: () => {},
-    };
-  };
   if (fullCmd === undefined) {
     return { cmd: undefined, wrap: (execFn) => execFn, finish: () => {} };
   }
+  const fastCmd = await fastVerifyCmdFor(repoRoot);
+  const fastTimeoutMs = (await developTierTimeouts(repoRoot)).fast;
+  // A project that has not opted in gets the pre-#1647 develop round exactly: the
+  // full command, with no selection note.
+  const fullPlan = (note?: string): SelectedVerifyPlan => {
+    if (note !== undefined) notes.push(note);
+    return {
+      cmd: fullCmd,
+      wrap: (execFn) => withFastTier(execFn, fullCmd, fastCmd, { fast: fastTimeoutMs }),
+      finish: () => {},
+    };
+  };
+  if (!(await selectOptedIn(repoRoot))) return fullPlan();
   if (!verifySelectEnabled()) {
     return fullPlan(
       "verify selection disabled (PI_ENSEMBLE_VERIFY_SELECT=0) — the full verify command ran",
@@ -119,9 +132,7 @@ export async function planDevelopVerify(
   }
   const cmd = selectedVerifyCommand(selection.tests);
   const record: SelectedVerifyRecord = { flaky: [], baselineRed: [] };
-  const changedTests = touchedPaths
-    .map(extensionRelativeOf)
-    .filter((p) => /^smoke-tests\/test-[^/]+\.ts$/.test(p));
+  const changedTests = touchedPaths.map(extensionRelativeOf).filter(isOfflineTest);
   const timeoutMs = (await developTierTimeouts(repoRoot)).suite;
   notes.push(
     `verify selection ran ${selection.tests.length} test(s) plus ${ALWAYS_RUN.length} always-run, not the full suite (PI_ENSEMBLE_VERIFY_SELECT=0 restores it)`,

@@ -175,6 +175,11 @@ export interface BaselineProbeOutcome {
    * check rather than being asked to infer it.
    */
   changeRunNames: string[];
+  /**
+   * #1647 — the base run's own output, so the selected verify can compare the
+   * failure each test showed on base with the one it showed on this change.
+   */
+  probeOutput?: string;
 }
 
 /** A git commit is 40 hex chars; nothing else may reach `git worktree add`. */
@@ -410,5 +415,6 @@ export async function attributeAgainstBase(
     preExistingFailures: attribution.preExisting,
     changeCausedFailures: attribution.changeCaused,
     changeRunNames: [...changeNames],
+    probeOutput: baseStream,
   };
 }

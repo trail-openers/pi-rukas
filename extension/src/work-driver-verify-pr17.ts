@@ -245,7 +245,10 @@ export async function verifyStepOutcome(
     // `hangLogPaths`, is the scope the cap actually has.
     const hangSink: GateHangPathSink = {};
     let gateRecord: DevelopGateRecord | undefined;
-    let selectedVerify: SelectedVerifyRecord | undefined;
+    // #1647 — a holder, not a `let` assigned in a callback: the callback fills
+    // it and the return below reads it, and a closure-assigned `let` reads as
+    // always undefined to the type checker.
+    const selectedOut: { record?: SelectedVerifyRecord } = {};
     const verifyStarted = await beginVerifyRun(ctx, state);
     await verifyDevelopOutcome(ctx, state, execFn, failures, notes, {
       // #782 — the flake callback is wired at this layer: on recovery it
@@ -286,7 +289,7 @@ export async function verifyStepOutcome(
         gateRecord = { pass, greens: [...greens], refuted: [...refuted] };
       },
       onSelectedVerify: (record) => {
-        selectedVerify = record;
+        selectedOut.record = record;
       },
     });
     const flakeRecovered = flakeEvidenceTail !== undefined;
@@ -303,7 +306,7 @@ export async function verifyStepOutcome(
       ...(verifyEvents.length > 0 ? { verifyEvents } : {}),
       ...(buildResidueOnly ? { buildResidueOnly: true } : {}),
       ...(gateRecord !== undefined ? { gateRecord } : {}),
-      ...(selectedVerify !== undefined ? { selectedVerify } : {}),
+      ...(selectedOut.record !== undefined ? { selectedVerify: selectedOut.record } : {}),
       // #1427 round 3 — read the sink THIS call created, not the cycle context:
       // the list is exactly the reports this gate run wrote, which is what the
       // cap emit site needs. (It used to read `ctx.gateHangLogPaths`, which

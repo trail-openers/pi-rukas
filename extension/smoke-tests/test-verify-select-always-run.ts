@@ -10,7 +10,8 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ALWAYS_RUN, textReadingTests } from "../src/work-driver-verify-always-run.ts";
+import { ALWAYS_RUN } from "../src/work-driver-verify-always-run.ts";
+import { textReadingTests } from "./lib/always-run-detector.ts";
 
 let exit = 0;
 const assert = (c: boolean, m: string) => {
@@ -33,10 +34,7 @@ assert(
 );
 const stale = ALWAYS_RUN.filter((t) => !existsSync(path.join(extensionDir, t)));
 assert(stale.length === 0, `every ALWAYS_RUN entry exists (stale: ${stale.join(", ") || "none"})`);
-assert(
-  new Set(ALWAYS_RUN).size === ALWAYS_RUN.length,
-  "ALWAYS_RUN lists each test once",
-);
+assert(new Set(ALWAYS_RUN).size === ALWAYS_RUN.length, "ALWAYS_RUN lists each test once");
 
 // A fixture reader that is not listed: the completeness check must name it.
 const fixture = mkdtempSync(path.join(tmpdir(), "pi-always-run-"));

@@ -1610,9 +1610,15 @@ Escape hatches: `PI_ENSEMBLE_VERIFY_FULL=0`, `PI_ENSEMBLE_VERIFY_FULL_TIMEOUT_MS
 
 **What you see:** the develop gate's notes say `verify selection ran N test(s) plus M always-run, not the full suite`, or name the reason it fell back to the full suite (`no-selected-tests`, `non-literal-specifier`, `outside-graph`, `smoke-test-helper`). A test that failed once and passed on its rerun is listed as **flaky**; one red on the base commit as well is listed as **baseline-red**. Both appear in the PR body under their own headings, and the handoff evidence names them. A failure that blocks names the decision (`[verify-select] blocking: …`).
 
-**Fix:** a blocked selected run is a real signal — read the named test. To run the full develop command for one cycle while investigating, set `PI_ENSEMBLE_VERIFY_SELECT=0` (this restores `.pi/verify-cmd` exactly; the ci tier is unaffected). An `ALWAYS_RUN` entry that no longer exists fails `test-verify-select-always-run.ts`; regenerate the list from the detector in the same change.
+**Fix:** a blocked selected run is a real signal — read the named test. To run the full develop command for one cycle while investigating, set `PI_ENSEMBLE_VERIFY_SELECT=0` (this restores `.pi/verify-cmd` exactly at develop; the ci tier is unaffected, and the escape hatch does not touch it). An `ALWAYS_RUN` entry that no longer exists fails `test-verify-select-always-run.ts`; regenerate the list with `bun smoke-tests/lib/always-run-detector.ts --write` in the same change.
 
-**Limits:** the selector follows imports, literal `import()`/`require()` and `src/` path literals. A test that reads a repository file through a variable is caught only by `ALWAYS_RUN`, which is why that list is enumerated.
+**Opt-in:** selection runs only where the project has `.pi/verify-select` (this repo does; its content is not read). Without the file the develop round runs `.pi/verify-cmd` exactly as before #1647, and the ci tier is not attributed either.
+
+**Limits:**
+- The selector follows static and re-export `import`, literal `import()`/`require()` (extensionless, `.js` and directory forms resolve), and `src/` path literals. A non-literal `import()`/`require()` makes the graph uncomputable for its path, so the develop round runs the full suite (`non-literal-specifier`); a test that reaches such a module runs on every selection.
+- A test that reads a repository file through a variable is caught only by `ALWAYS_RUN`, which is why that list is enumerated. The detector is text-based: a reader it cannot see is a gate that never looked, and a fixture that writes and reads a `src/` path is listed as a reader too.
+- **Baseline-red is judged by name and by the first failure line.** A test is excused only when the base run fails with the same `✗` line and detail as the change run (digits folded out). Residual risk: when either run prints no `✗` line for a test, the verdict stays name-only and the trace says so, so a change that breaks a baseline-red test in a new way is excused on that path. Read the `[verify-select]` trace lines for "judged by name only" before trusting a baseline-red entry.
+- A run that fails with names the rerun cannot place (a path outside `extension/`) blocks rather than guessing. A timed-out ci run is rerun whole, not by ID, because its rest never ran.
 
 ### The develop gate ran the verify command twice on the same tree (#1240)
 

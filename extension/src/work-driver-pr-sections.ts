@@ -16,10 +16,8 @@
  */
 
 import { renderLensFindings } from "./lens-findings-render.ts";
-import {
-  type VerifyAttributionRecord,
-  verifyAttributionSectionOf,
-} from "./work-driver-verify-select-render.ts";
+import { verifyAttributionSectionOf } from "./work-driver-verify-select-render.ts";
+import type { VerifyAttributionRecord } from "./work-driver-verify-shared.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 
 /**
