@@ -5,27 +5,45 @@
  * so write-fence.ts can judge each one with the same rule as the write tools.
  * It is not a shell. The existing tokenisers in bash-command-parser.ts replace
  * every quoted argument with a sentinel, so they cannot yield a target; this
- * module has its own small lexer instead.
+ * module has its own small lexer instead. Per-command meaning (which operands
+ * cp, tee, sed and friends write) lives in write-fence-bash-commands.ts.
  *
- * Checked: output redirects (`>`, `>>`, `&>`, `>|`), `cd`, and the operands that
- * name a file a command writes, moves or removes (cp/mv/install/ln, tee, touch,
- * mkdir, rm/rmdir, sed/perl -i, `git -C` / `--git-dir` / `--work-tree`).
- * Every simple command in a pipeline, chain, subshell or `$(…)` is checked.
+ * Checked: output redirects (`>`, `>>`, `&>`, `>|`), `cd`, and the operands of
+ * the commands in write-fence-bash-commands.ts, reached through wrappers
+ * (`env`, `timeout`, `xargs`, …) and keywords (`if`, `then`, `do`, `{`). Every
+ * simple command in a pipeline, chain, subshell or `$(…)` is checked. A
+ * subshell's `cd` does not end with the subshell, so each target is judged
+ * against every directory the command may have reached.
  *
  * Not checked, by design: a body handed to `sh -c`, `bash -c` or `eval` (it is
  * an opaque string here; the after-the-fact residue detection stays the
  * backstop), a `$VAR` other than `$HOME`, `cd -` (OLDPWD is not known
- * statically), and `dd of=` (not in the checked set). A command that does not lex (an unterminated quote) yields no
+ * statically). A command that does not lex (an unterminated quote) yields no
  * targets, so it is allowed.
  */
 
 import os from "node:os";
+import {
+  commandName,
+  copyLikeTargets,
+  hardLinkSources,
+  makesLinks,
+  operands,
+  stripPrefix,
+  writtenOperands,
+} from "./write-fence-bash-commands.ts";
 import { resolveLikeOs } from "./write-fence-path.ts";
 
 /** One path a command writes, judged against the cwd it runs in. */
 export interface BashTarget {
   path: string;
   cwd: string;
+  /**
+   * The command also creates a link, and this path is not that link's own
+   * name. The path cannot be judged before the command runs (a link it creates
+   * may change what the path resolves to), so the fence refuses it.
+   */
+  linkedCommand: boolean;
 }
 
 type Tok = { kind: "word"; text: string } | { kind: "op"; text: string };
@@ -259,9 +277,6 @@ function simpleCommands(toks: Tok[]): Simple[] {
   return out;
 }
 
-/** Shell-level names that run their operand as the command: skipped to reach the real one. */
-const WRAPPERS = new Set(["env", "nohup", "exec", "command", "builtin", "time", "!"]);
-
 /** Redirect targets that are never a file write. */
 const DEVICE_SINKS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr"]);
 
@@ -274,155 +289,77 @@ function expandHome(p: string): string {
   return p;
 }
 
-/** Non-option operands: `--` ends the options and `-` alone is stdin/stdout. */
-function operands(args: string[]): string[] {
-  const out: string[] = [];
-  let optionsOver = false;
-  for (const a of args) {
-    if (!optionsOver && a === "--") {
-      optionsOver = true;
-      continue;
-    }
-    if (!optionsOver && a.startsWith("-") && a !== "-") continue;
-    out.push(a);
+/** Resolve `p` from `base`, or undefined when it cannot be resolved (a symlink loop). */
+function resolveFrom(base: string, p: string): string | undefined {
+  try {
+    return resolveLikeOs(p.startsWith("/") ? p : `${base}/${p}`);
+  } catch {
+    return undefined;
   }
-  return out;
 }
 
-/** The value of `-t DIR` / `--target-directory=DIR`, when present. */
-function targetDirectory(args: string[]): string | undefined {
-  for (let k = 0; k < args.length; k++) {
-    const a = args[k] ?? "";
-    if (a === "-t" || a === "--target-directory") return args[k + 1];
-    if (a.startsWith("--target-directory=")) return a.slice("--target-directory=".length);
-  }
-  return undefined;
-}
-
-/** Targets of cp / mv / install / ln: the destination, or every operand when moving or creating directories. */
-function copyLikeTargets(name: string, args: string[]): string[] {
-  const ops = operands(args);
-  const dir = targetDirectory(args);
-  if (dir !== undefined) {
-    // With -t the operands are sources: mv removes them, so they are writes too; cp, install and ln only read them.
-    return name === "mv" ? [dir, ...ops] : [dir];
-  }
-  if (name === "mv") return ops;
-  if (name === "install" && args.some((a) => /^-[A-Za-z]*d/.test(a) || a === "--directory")) {
-    return ops;
-  }
-  const last = ops[ops.length - 1];
-  return last === undefined ? [] : [last];
-}
-
-/** `sed -i` / `perl -i`: the files are the operands after the script (or all of them under -e/-f). */
-function inPlaceTargets(args: string[]): string[] {
-  const inPlace = args.some((a) => /^-[A-Za-z]*i/.test(a) || a.startsWith("--in-place"));
-  if (!inPlace) return [];
-  const files: string[] = [];
-  let scriptGiven = false;
-  const positional: string[] = [];
-  for (let k = 0; k < args.length; k++) {
-    const a = args[k] ?? "";
-    if (
-      a === "-e" ||
-      a === "-f" ||
-      a === "--expression" ||
-      a === "--file" ||
-      /^-[A-Za-z]*[ef]$/.test(a)
-    ) {
-      scriptGiven = true;
-      k++;
-      continue;
-    }
-    if (a.startsWith("-") && a !== "-") continue;
-    positional.push(a);
-  }
-  files.push(...(scriptGiven ? positional : positional.slice(1)));
-  return files;
-}
-
-/** `git -C DIR`, `--git-dir=DIR`, `--work-tree=DIR` — the global options that point git at another tree. */
-function gitTreeTargets(args: string[]): string[] {
-  const out: string[] = [];
-  let k = 0;
-  while (k < args.length && (args[k] ?? "").startsWith("-")) {
-    const a = args[k] ?? "";
-    if (a === "-C") {
-      if (args[k + 1] !== undefined) out.push(args[k + 1] ?? "");
-      k += 2;
-      continue;
-    }
-    if (a === "-c") {
-      k += 2;
-      continue;
-    }
-    for (const flag of ["--git-dir", "--work-tree"]) {
-      if (a.startsWith(`${flag}=`)) out.push(a.slice(flag.length + 1));
-      else if (a === flag && args[k + 1] !== undefined) out.push(args[k + 1] ?? "");
-    }
-    k++;
-  }
-  return out;
-}
-
-/** Names a command as the basename of its path (`/bin/cp` is `cp`). */
-function commandName(word: string): string {
-  return word.slice(word.lastIndexOf("/") + 1);
+/** A path the command names, before it is judged against every cwd the command may reach. */
+interface RawTarget {
+  path: string;
+  /** The path is the name of a link this command creates: not judged as a link-dependent write. */
+  creation: boolean;
 }
 
 /**
- * Every path the bash command would write or change into, in source order,
- * each with the cwd it runs under. `cwd` is the child's own working directory.
+ * Every path the bash command would write or change into, each with a cwd it
+ * may run under. `cwd` is the child's own working directory.
  */
 export function bashWriteTargets(command: string, cwd: string): BashTarget[] {
   const toks = lex(command);
   if (!toks) return [];
-  const out: BashTarget[] = [];
+  const raw: RawTarget[] = [];
+  // Every directory the command may be in: the start, and each cd or `env -C` it reaches.
+  // A subshell's cd does not end with the subshell, so no single cwd is the true one.
+  const visited = new Set<string>([cwd]);
   let here = cwd;
+  let linksMade = false;
   for (const simple of simpleCommands(toks)) {
-    const push = (p: string) => {
-      const target = expandHome(p);
-      if (target !== "" && !DEVICE_SINKS.has(target)) out.push({ path: target, cwd: here });
-    };
-    for (const r of simple.redirects) push(r);
-    let words = simple.words;
-    while (
-      words.length > 0 &&
-      (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? "") || WRAPPERS.has(words[0] ?? ""))
-    ) {
-      words = words.slice(1);
+    for (const r of simple.redirects) raw.push({ path: expandHome(r), creation: false });
+    const { words, chdir } = stripPrefix(simple.words);
+    for (const dir of chdir) {
+      raw.push({ path: expandHome(dir), creation: false });
+      const abs = resolveFrom(here, expandHome(dir));
+      if (abs !== undefined) visited.add(abs);
     }
     const first = words[0];
     if (first === undefined) continue;
     const name = commandName(first);
     const args = words.slice(1);
     if (name === "cd") {
-      const dest = operands(args)[0] ?? "~";
+      const dest = expandHome(operands(args)[0] ?? "~");
       if (dest === "-") continue;
-      const target = expandHome(dest);
-      out.push({ path: target, cwd: here });
-      try {
-        here = resolveLikeOs(target.startsWith("/") ? target : `${here}/${target}`);
-      } catch {
-        // An unresolvable cd is refused by the target just pushed; the cwd after it is moot.
+      raw.push({ path: dest, creation: false });
+      const abs = resolveFrom(here, dest);
+      if (abs !== undefined) {
+        here = abs;
+        visited.add(abs);
       }
       continue;
     }
-    if (name === "cp" || name === "mv" || name === "install" || name === "ln") {
-      for (const t of copyLikeTargets(name, args)) push(t);
-    } else if (
-      name === "tee" ||
-      name === "touch" ||
-      name === "mkdir" ||
-      name === "rm" ||
-      name === "rmdir"
-    ) {
-      for (const t of operands(args)) push(t);
-    } else if (name === "sed" || name === "perl") {
-      for (const t of inPlaceTargets(args)) push(t);
-    } else if (name === "git") {
-      for (const t of gitTreeTargets(args)) push(t);
+    if (makesLinks(name, args)) linksMade = true;
+    if (name === "cp" || name === "mv" || name === "install" || name === "ln" || name === "link") {
+      const creation = makesLinks(name, args);
+      for (const t of copyLikeTargets(name, args)) {
+        raw.push({ path: expandHome(t), creation });
+      }
+    }
+    for (const s of hardLinkSources(name, args)) raw.push({ path: expandHome(s), creation: false });
+    for (const t of writtenOperands(name, args)) raw.push({ path: expandHome(t), creation: false });
+  }
+  const out: BashTarget[] = [];
+  for (const r of raw) {
+    if (r.path === "" || DEVICE_SINKS.has(r.path)) continue;
+    for (const dir of visited) {
+      out.push({
+        path: r.path,
+        cwd: dir,
+        linkedCommand: linksMade && !r.creation,
+      });
     }
   }
   return out;

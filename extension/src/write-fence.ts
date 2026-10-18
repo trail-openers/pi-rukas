@@ -44,7 +44,9 @@ function refusalFor(toolName: string, input: unknown, cfg: FenceConfig): Refusal
   if (toolName === "bash") {
     if (typeof args.command !== "string") return undefined;
     for (const t of bashWriteTargets(args.command, cwd)) {
-      const judged = judgeWrite(t.path, t.cwd, cfg);
+      const judged = judgeWrite(t.path, t.cwd, cfg, {
+        linkedCommand: t.linkedCommand,
+      });
       if (!judged.ok) return { tool: "bash", path: t.path, message: judged.message };
     }
     return undefined;

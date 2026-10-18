@@ -10,7 +10,7 @@
  * refused.
  */
 
-import { rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -20,7 +20,7 @@ import {
   loadFenceConfig,
   resolveLikeOs,
 } from "../src/write-fence-path.ts";
-import { buildFenceFixture } from "./lib/write-fence-fixture.ts";
+import { buildFenceFixture, pause } from "./lib/write-fence-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -98,6 +98,40 @@ assert(
   "refuse: a node_modules link whose target is not named node_modules (not a provisioned dependency tree)",
 );
 
+// ------------------------------------------- a link the child made after it started
+{
+  // Same shape as the provisioned root link, but created AFTER the fence loaded.
+  pause(5);
+  mkdirSync(path.join(fx.wt, "newpkg"));
+  symlinkSync(
+    path.join(fx.repo, "node_modules"),
+    path.join(fx.wt, "newpkg", "node_modules"),
+    "dir",
+  );
+  assert(
+    !allowed("newpkg/node_modules/pkg/x.js"),
+    "refuse: a node_modules link the child made after the fence loaded is not a provisioned tree",
+  );
+  assert(
+    allowed("node_modules/pkg/new.js"),
+    "allow: the provisioned root link, made before the fence loaded, still passes",
+  );
+}
+
+// ------------------------------------------- the same-command link probe
+assert(
+  !judgeWrite("copy2/keep", fx.wt, cfg, { linkedCommand: true }).ok,
+  "refuse: a write under a path that does not exist, in a command that creates links",
+);
+assert(
+  judgeWrite("src", fx.wt, cfg, { linkedCommand: true }).ok,
+  "allow: an existing path in a command that creates links",
+);
+assert(
+  judgeWrite("copy2/keep", fx.wt, cfg).ok,
+  "allow: the same path with no link-creating command (the write is judged as it stands)",
+);
+
 // ------------------------------------------------ a loop is refused, never hung on
 assert(!allowed("loop/x"), "refuse: a self-referencing symlink loop (resolution fails closed)");
 
@@ -152,7 +186,10 @@ for (const [label, root] of [
 // ------------------------------------------------ the fence is off without a root
 assert(loadFenceConfig({}) === undefined, "off: no PI_ENSEMBLE_WRITE_ROOT → no fence");
 assert(
-  loadFenceConfig({ PI_ENSEMBLE_WRITE_ROOT: fx.wt, PI_ENSEMBLE_WRITE_FENCE: "0" }) === undefined,
+  loadFenceConfig({
+    PI_ENSEMBLE_WRITE_ROOT: fx.wt,
+    PI_ENSEMBLE_WRITE_FENCE: "0",
+  }) === undefined,
   "off: PI_ENSEMBLE_WRITE_FENCE=0 is the escape hatch",
 );
 
