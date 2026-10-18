@@ -5,6 +5,7 @@
  * union of both files' imports, and `work-driver-explore.ts` re-exports
  * `runExplore` so existing imports keep their path.
  */
+import { execp } from "./exec.ts";
 import { flattenAndClip } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
@@ -21,8 +22,14 @@ import {
   fetchIssueBodyViaGh,
   fetchIssueBodyWithRetry,
 } from "./work-driver-explore.ts";
+import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { deleteSpecArtifact, persistSpecArtifact } from "./work-driver-intent-artifact.ts";
 import { finaliseSpecVerdict } from "./work-driver-intent-finalise.ts";
+import {
+  awaitingReviewPr,
+  parkEvidence,
+  readCitedPrStates,
+} from "./work-driver-intent-park-evidence.ts";
 import { intentResolutionEnabled } from "./work-driver-intent.ts";
 import { issueImagesFor } from "./work-driver-issue-images.ts";
 import {
@@ -317,6 +324,16 @@ export async function runExplore(
       if (finalSpec.verdict === "park") {
         // #657 — carry the machine-readable park reason on the cap-hit itself
         // so the renderers can show `intent-park (contradicted-by-code)`.
+        // #1561 — and the decisive evidence, so the headless `failure.message`
+        // says why; a cited PR's state is read from the forge, not the prose.
+        const prStates = await readCitedPrStates(
+          finalSpec,
+          ctx.forge ??
+            (await forgeForCycle(ctx, ctx.verifyExecFn ?? execp, new Map(), {
+              execOpts: { timeout: 20_000 },
+            })),
+        );
+        const openPr = awaitingReviewPr(finalSpec, prStates);
         return appendEvent(next, {
           kind: "cap-hit",
           at: Date.now(),
@@ -324,6 +341,8 @@ export async function runExplore(
           reviewRound: next.pipelineState.reviewRound,
           nextStep: "handoff",
           ...(finalSpec.parkReason ? { parkReason: finalSpec.parkReason } : {}),
+          evidence: parkEvidence(finalSpec, ctx.issue, prStates),
+          ...(openPr !== undefined ? { awaitingReviewPr: openPr } : {}),
         });
       }
       return next;
