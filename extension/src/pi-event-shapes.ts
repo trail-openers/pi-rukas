@@ -34,6 +34,12 @@ export interface SpawnOptions {
    */
   timeoutMs?: number;
   /**
+   * #1560 — the per-child run bound (spawn-child-bound.ts): a wrap-up steer
+   * at this many ms, the kill (or done-ending) a grace period later. Set by
+   * the /work driver per step; absent means no bound beyond `timeoutMs`.
+   */
+  childBoundMs?: number;
+  /**
    * Pi's tool-execute AbortSignal — fires when the user hits Esc to cancel
    * the running tool. We listen on this and kill the child with SIGTERM so
    * cancellation actually propagates instead of leaving Pi stuck.

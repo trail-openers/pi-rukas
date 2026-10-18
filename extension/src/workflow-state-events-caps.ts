@@ -20,7 +20,7 @@ export type WorkCapLiteral =
   // completed. This used to be reported as "adversarial-loop".
   | "review-incomplete"
   | "ci-retry"
-  | "developer-timeout"
+  | "spawn-backstop"
   | "explore-already-complete"
   | "explore-needs-clarification"
   // PR11: pre-condition failure — `gh issue view <N>` returned empty
@@ -177,7 +177,7 @@ export type WorkCapLiteral =
   | "loop-detected"
   | "token-budget"
   // #754 — the plan step's own bound expired on the primary plan
-  // dispatch; distinct from `step-failed:plan` and `developer-timeout`.
+  // dispatch; distinct from `step-failed:plan` and `spawn-backstop`.
   | "plan-timeout"
   // #819 — the plan-to-spec gate refused the plan: no workstream declares any
   // path of a deliverable the spec requires, or the reply carried more than
@@ -195,6 +195,9 @@ export type WorkCapLiteral =
   // #1324 — the step's verify run was killed at its bound and reached no
   // verdict: distinct from verify-failed:<step>, which judged the code.
   | `verify-timeout:${WorkStep}`
+  // #1560 — a child outlived its per-child run bound: steered to wrap up at
+  // the bound, ended a grace period later with nothing committed or reported.
+  | `child-timeout:${WorkStep}`
   // #1349 — the gate could not run: the system refused to start a process
   // (fork failed / EAGAIN) for every failure that is not a timeout. No
   // verdict on the code, like verify-timeout.

@@ -300,7 +300,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 
 // T4 (#296) — a killCause-carrying developer result produces an accurate
 // self-kill errorTail (never provider blame) and, after transient retries
-// exhaust, the developer-timeout cap shape (previously dead code).
+// exhaust, the spawn-backstop cap shape (previously dead code).
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-killcause-"));
   try {
@@ -362,8 +362,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     );
     const capHit = (after?.eventLog ?? []).find((e) => e.kind === "cap-hit");
     assert(
-      capHit?.kind === "cap-hit" && capHit.cap === "developer-timeout",
-      "#296 T4: developer cap kill classifies as cap='developer-timeout'",
+      capHit?.kind === "cap-hit" && capHit.cap === "spawn-backstop",
+      "#296 T4: developer cap kill classifies as cap='spawn-backstop'",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

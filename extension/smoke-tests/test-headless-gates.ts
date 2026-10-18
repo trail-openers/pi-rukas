@@ -291,8 +291,8 @@ initEnv();
   );
   assert(!("continuedPr" in fresh), "a cycle that did not continue a PR has no continuedPr");
   assert(
-    RESULT_SCHEMA_VERSION === 4,
-    "the result field is additive: RESULT_SCHEMA_VERSION stays 4",
+    RESULT_SCHEMA_VERSION === 5,
+    "the result field is additive: RESULT_SCHEMA_VERSION stays 5",
   );
 }
 

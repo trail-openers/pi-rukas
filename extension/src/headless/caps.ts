@@ -27,6 +27,8 @@ export const CAP_TEMPLATES = {
   "pr-not-open": "step",
   /** #1472 — a person CLOSED the cycle's issue while the cycle was running. */
   "issue-closed": "step",
+  /** #1560 — a child outlived its per-child run bound (wrap-up steer, then kill). */
+  "child-timeout": "step",
   "step-failed": "step",
   "driver-crash": "step",
   /** The number of commits the local branch is ahead of origin. */
@@ -69,7 +71,6 @@ export const FIXED_CAPS = [
   "dependency-timeout",
   "develop-child-crash",
   "develop-incomplete-deliverables",
-  "developer-timeout",
   // #1398 — the review re-ran after the PR was marked ready and the driver
   // could not put the PR back to a draft.
   "draft-rearm-failed",
@@ -106,6 +107,9 @@ export const FIXED_CAPS = [
   "repo-root-residue",
   "review-incomplete",
   "round-cap",
+  // #1567 — the 2-h spawn backstop killed a develop child (was
+  // `developer-timeout` before result schema v5).
+  "spawn-backstop",
   "step-back-revise-spec",
   "token-budget",
   "worktree-listing-unreadable",

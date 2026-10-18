@@ -369,10 +369,12 @@ export async function runHandoff(
   const capKilledCap =
     capShape === "loop-detected" || capShape === "token-budget" ? capShape : undefined;
   const isMidFlightHalt =
-    capShape === "developer-timeout" ||
-    // #754 — a plan-timeout kill is a mid-flight halt like developer-timeout:
+    capShape === "spawn-backstop" ||
+    // #754 — a plan-timeout kill is a mid-flight halt like spawn-backstop:
     // the cycle parked on a bound we chose, and the terminal status says so.
     capShape === "plan-timeout" ||
+    // #1560 — the per-child run bound ended a child: the same kind of halt.
+    (capShape?.startsWith("child-timeout:") ?? false) ||
     Boolean(capKilledCap) ||
     (capShape?.startsWith("step-failed:") ?? false);
   if (capShape === "provider-unavailable") {

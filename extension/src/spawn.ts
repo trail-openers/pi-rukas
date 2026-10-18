@@ -34,6 +34,7 @@ import { emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLES, type RoleName, isRoleName } from "./roles.ts";
 import { capKillAttribution } from "./spawn-caps.ts";
+import { applyChildBound, armChildBound } from "./spawn-child-bound.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
 import {
   applyUserExtension,
@@ -353,6 +354,19 @@ async function spawnSpecialistInner(
     },
   });
 
+  // #1560 — the per-child run bound: wrap-up steer, then end it (spawn-child-bound.ts).
+  const childBound = armChildBound({
+    child,
+    boundMs: opts.childBoundMs,
+    cwd,
+    onSteer: opts.onSteer,
+    stdin: child.stdin,
+    reported: () => promptCompleted,
+    childExited: flags.childExited,
+    preempted: () => flags.aborted() || flags.timedOut(),
+    commits: spec.role === "developer" && spec.cwd !== undefined,
+  });
+
   // Inactivity watchdog (#296): kill only on total stdout silence. Coarse
   // poll — half the budget, clamped to [250ms, 30s] so production budgets
   // poll cheaply and short test budgets still fire promptly.
@@ -388,6 +402,7 @@ async function spawnSpecialistInner(
     [exitCode] = (await once(child, "exit")) as [number | null];
   } finally {
     stopWallClockBackstop();
+    childBound.stop();
     stopInactivityPoll();
     caps.cleanup();
     detachAbortKill();
@@ -434,6 +449,7 @@ async function spawnSpecialistInner(
   // evidence (loopEvidence / tokenBudget) follow #296's structured-kill
   // contract, resolved by priority in spawn-caps.ts's capKillAttribution.
   capKillAttribution(caps, spec, runningState.totalTokens, appendStderr, result);
+  applyChildBound(childBound, result);
   result.transcriptPath = transcriptPath;
   result.modelSource = modelChoice.source;
   // The cap-kill cause + evidence were already resolved above (capKillAttribution,

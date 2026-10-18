@@ -20,8 +20,9 @@
  *   reason the cycle stopped.
  * - otherwise, a child of that step killed at its backstop (`killCause:
  *   timeout`) and never re-run to completion → the cap the router gives a
- *   backstop kill of its own: `developer-timeout` for develop,
- *   `step-failed:<step>` elsewhere.
+ *   backstop kill of its own: `spawn-backstop` for develop,
+ *   `step-failed:<step>` elsewhere. A child ended at its per-child run bound
+ *   (`killCause: child-bound`, #1560) records `child-timeout:<step>`.
  *
  * Caps that already name a clock, a kill or a guard are left alone, and so is
  * `awaiting-human-merge` (finished work waiting on a person). Pure.
@@ -37,7 +38,7 @@ type FailedDispatch = Extract<WorkEvent, { kind: "dispatch-failed" }>;
 const STANDS_AS_IS = new Set<string>([
   "deadline",
   "awaiting-human-merge",
-  "developer-timeout",
+  "spawn-backstop",
   "plan-timeout",
   "lens-review-timeout",
   "loop-detected",
@@ -45,7 +46,12 @@ const STANDS_AS_IS = new Set<string>([
   "provider-unavailable",
   "develop-child-crash",
 ]);
-const STANDS_AS_IS_PREFIXES = ["step-failed:", "verify-timeout:", "driver-crash:"];
+const STANDS_AS_IS_PREFIXES = [
+  "step-failed:",
+  "verify-timeout:",
+  "driver-crash:",
+  "child-timeout:",
+];
 
 const EVIDENCE_QUOTE_MAX = 300;
 
@@ -64,7 +70,7 @@ function backstopKills(window: readonly WorkEvent[]): FailedDispatch[] {
   return window.filter(
     (e, i): e is FailedDispatch =>
       e.kind === "dispatch-failed" &&
-      e.killCause === "timeout" &&
+      (e.killCause === "timeout" || e.killCause === "child-bound") &&
       !window
         .slice(i + 1)
         .some((later) => later.kind === "dispatch-completed" && later.label === e.label),
@@ -119,7 +125,11 @@ export function terminalReasonAtHandoff(
   const kill = kills[kills.length - 1];
   if (!kill) return state;
   const backstopCap: WorkCapLiteral =
-    step === "develop" ? "developer-timeout" : (`step-failed:${step}` as const);
+    kill.killCause === "child-bound"
+      ? `child-timeout:${step}`
+      : step === "develop"
+        ? "spawn-backstop"
+        : `step-failed:${step}`;
   return appendEvent(state, {
     kind: "cap-hit",
     at: now,

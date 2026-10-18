@@ -27,7 +27,7 @@ export const CAP_HIT_FIXED_LITERALS = [
   "lens-review-timeout",
   "review-incomplete",
   "ci-retry",
-  "developer-timeout",
+  "spawn-backstop",
   "explore-already-complete",
   "explore-needs-clarification",
   "explore-bodies-empty",
