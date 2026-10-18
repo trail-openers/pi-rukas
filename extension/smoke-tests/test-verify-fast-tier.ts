@@ -126,6 +126,11 @@ async function developGate(
   const notes: string[] = [];
   await runVerifyCommandGate({
     execFn: withFastTier(stubExec(calls, outcomeFor), FULL, await fastVerifyCmdFor(repo)),
+    // #1509 — the develop gate passes its own tier in rather than letting the
+    // gate guess: this caller runs the project's full command, so it is the
+    // suite tier. Callers that do not pass one keep the pre-#1509 shared
+    // bound, which is why this is an argument and not a default.
+    suiteTierTimeoutMs: await suiteTierTimeoutMs(repo),
     cmd: FULL,
     ctx: {
       host: {} as unknown as DriverContext["host"],
@@ -140,7 +145,7 @@ async function developGate(
     failures,
     notes,
   });
-  return { failures, calls, state };
+  return { failures, calls, state, repoRoot: repo };
 }
 
 // 1 — the file is optional and read like .pi/verify-cmd.
@@ -293,7 +298,7 @@ await pinDefaultVerifyTimeout(async () => {
   // to raise a knob that no longer governs this run — exactly the mis-diagnosis
   // the per-tier split removes. Both strings are derived from the production
   // helper rather than spelled as literals here.
-  const suiteBound = boundText(await suiteTierTimeoutMs(root));
+  const suiteBound = boundText(await suiteTierTimeoutMs(r.repoRoot));
   assert(
     text.includes("TIMED OUT") && text.includes(suiteBound),
     `timeout: the handoff says it timed out, with the SUITE tier's bound (${suiteBound})`,

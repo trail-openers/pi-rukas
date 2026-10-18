@@ -41,7 +41,6 @@ import { aggregateVerifyOutcome } from "./work-driver-verify-aggregate.ts";
 import {
   TIER_KNOB,
   fastTierTimeoutMs as resolveFastTierTimeoutMs,
-  suiteTierTimeoutMs,
 } from "./work-driver-verify-budget.ts";
 import {
   buildConsolidatedRetry,
@@ -53,6 +52,7 @@ import {
   isTimedOutKill,
   isVerifyTimeoutFailure,
   verifyHangFailure,
+  verifyTimeoutMs,
 } from "./work-driver-verify-develop-helpers.ts";
 import { developVerifiedTree } from "./work-driver-verify-eligibility.ts";
 import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
@@ -113,6 +113,16 @@ export async function runVerifyCommandGate(opts: {
   /** #1509 — the knob the consolidated run's timeout failure names. Defaults
    *  to the suite tier's; the commit-pr seam passes its own. */
   suiteTimeoutKnob?: string;
+  /**
+   * #1509 — the bound this run is bounded by, resolved by the caller.
+   *
+   * An OPT-IN, deliberately not defaulted to the suite tier: callers that
+   * migrated pass their tier, and callers that did not keep the bound they were
+   * written against. Defaulting it would let a run that used to be killed at 10
+   * minutes run for 30 while its own failure text still reported "10-min
+   * timeout". Absent, the gate falls back to the shared `verifyTimeoutMs()`.
+   */
+  suiteTierTimeoutMs?: number;
   /**
    * #814 — structured fence violations recorded by the scope gate earlier
    * in this same develop verify (the gate runs BEFORE the consolidated
@@ -177,6 +187,7 @@ export async function runVerifyCommandGate(opts: {
     onBuildResidueOnly,
     fastTierTimeoutMs: fastTimeoutMs,
     suiteTimeoutKnob,
+    suiteTierTimeoutMs: suiteTierTimeoutMsOpt,
   } = opts;
   const VALID_SHA_RE = /^[0-9a-f]{40}$/;
   const isValidSha = (s: string | undefined) => typeof s === "string" && VALID_SHA_RE.test(s);
@@ -185,7 +196,7 @@ export async function runVerifyCommandGate(opts: {
   // resolver (one for exec, one for the message) could name a bound other than
   // the one the run was bounded by, and N per-worktree runs each re-reading the
   // environment could disagree with each other about which bound fired.
-  const suiteTimeoutMs = await suiteTierTimeoutMs(ctx.repoRoot);
+  const suiteTimeoutMs = suiteTierTimeoutMsOpt ?? (await verifyTimeoutMs());
   const perWorktreeVerifyFailures: string[] = [];
   // #1427 — the scratch dir a killed run's hang report is persisted to, created
   // lazily by the write. Named once here so the per-worktree loop and the
@@ -470,13 +481,9 @@ export async function runVerifyCommandGate(opts: {
     },
   });
   // Post-run reconciliation and base attribution — extracted to
-  // work-driver-verify-aggregate.ts (AGENTS.md §12 file-size cap). Once the two
-  // execution legs have run and reported, nothing here starts another gate
-  // except the baseline probe: it reads the two results, the caller's
-  // `failures`/`notes`, and attributes a failure against the base commit.
-  // Moved as-is — the #1005 aggregation rule and the "only once the command
-  // already failed, never when the host could not fork" condition for paying
-  // for the probe both travel with their comments.
+  // work-driver-verify-aggregate.ts (§12 size cap). Moved as-is: the #1005
+  // aggregation rule and the condition for paying for the baseline probe both
+  // travel with their comments, which sit on the code in the new module.
   await aggregateVerifyOutcome({
     execFn,
     ctx,

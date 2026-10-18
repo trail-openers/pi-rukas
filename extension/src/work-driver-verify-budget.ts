@@ -292,3 +292,24 @@ export async function suiteTierTimeoutMs(repoRoot: string): Promise<number> {
 export async function smokeTierTimeoutMs(repoRoot: string): Promise<number> {
   return resolveVerifyTierTimeoutMs(repoRoot, "smoke");
 }
+
+/**
+ * Both bounds the develop gate threads downward, resolved from one repoRoot in
+ * one call.
+ *
+ * The develop step is the only caller that needs both, and it needs them
+ * together: the fast exec takes `fast` through the wrapper and the full exec
+ * takes `suite` as an argument, and the two must come from the same read of
+ * the same project files. Resolving them separately invited a call site that
+ * passed one and defaulted the other, which is the mixed state where a run is
+ * bounded by one number and its failure text names another.
+ */
+export async function developTierTimeouts(
+  repoRoot: string,
+): Promise<{ fast: number; suite: number }> {
+  const [fast, suite] = await Promise.all([
+    resolveVerifyTierTimeoutMs(repoRoot, "fast"),
+    resolveVerifyTierTimeoutMs(repoRoot, "suite"),
+  ]);
+  return { fast, suite };
+}
