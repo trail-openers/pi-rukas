@@ -161,20 +161,24 @@ export function reportConsolidatedVerifyOutcome(
           `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). The develop scope fence recorded a sibling-declared violation BEFORE this conflict: ${named}. The declared paths are disjoint — the decomposition is fine; the fence was violated and the conflict is its consequence at consolidation. Re-splitting the plan will NOT fix this; restore the fence boundary (the touching workstream's commit must not include that file) and re-run`,
         );
       } else {
-        // #813 — no fence record: report what was OBSERVED (the conflict
-        // detail, which pick failed, what applied cleanly before it) instead
-        // of asserting "two workstreams edited the same lines; the
-        // decomposition is incoherent". #1005 merges coupled workstreams at
-        // plan time, so the pair that still collides is usually coupled
-        // through types with disjoint declared paths — where re-splitting is
-        // not the fix. One renderer's sentence, shared with the cap
-        // explanation via describeObservedConsolidationConflict.
+        // #813 — no fence record: report what was OBSERVED (which patch
+        // failed, what applied cleanly before it) instead of asserting "two
+        // workstreams edited the same lines; the decomposition is
+        // incoherent". #1005 merges coupled workstreams at plan time, so the
+        // pair that still collides is usually coupled through types with
+        // disjoint declared paths — where re-splitting is not the fix. One
+        // renderer's sentence, shared with the cap explanation via
+        // describeObservedConsolidationConflict. `cons.detail` is deliberately
+        // NOT passed as `evidence`: this renderer already embeds it in the
+        // lead, and only the structured pick fields are trustworthy enough to
+        // license the "likely coupled" wording — a `detail` string is an
+        // ungoverned message that could manufacture that diagnosis.
         failures.push(
           describeObservedConsolidationConflict({
             lead: `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail})`,
-            evidence: cons.detail,
             conflictedWorkstream: cons.conflictedWorkstream,
             appliedBeforeConflict: cons.appliedBeforeConflict,
+            conflictedFile: cons.conflictedFile,
             declaredPathsByWorkstream: declaredPathsByWorkstream(workstreams),
           }),
         );

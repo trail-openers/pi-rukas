@@ -16,7 +16,9 @@
  * The two surfaces each own a renderer, so the no-fence branch is covered
  * for BOTH (the acceptance criteria), plus the reporter's `#1005`
  * "likely coupled" branch that fires when the failure names a file another
- * workstream declared.
+ * workstream declared. The BATCH layer — what `cherryPickWorkstreams` records
+ * and how `conflictedFile` is extracted from git's output — is
+ * test-consolidation-conflict-batch-813.ts.
  *
  * The conflict branch of the reporter is driven through the REAL
  * `runConsolidatedVerify` with an injected executor that aborts the batch,
@@ -25,7 +27,9 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -54,15 +58,24 @@ function assert(cond: boolean, msg: string) {
  * conflicts: `git cherry-pick --no-commit <sha>` throws for workstream `b`,
  * the abort runs, and no verify command is ever reached.
  */
-function conflictingExec(failedId: "a" | "b") {
-  const shas: Record<string, string> = {};
+function conflictingExec(failedId: "a" | "b", opts?: { gitOutputWithoutFile?: boolean }) {
   const calls: string[] = [];
+  // The file git names on the aborted pick's stderr. The batch extracts it
+  // into `conflictedFile` (case 8) so the reporter can name the colliding
+  // file without parsing free prose.
+  const CONFLICTED_FILE = failedId === "b" ? "src/b.ts" : "src/a.ts";
   const exec = async (cmd: string): Promise<{ stdout: string }> => {
     calls.push(cmd);
     if (cmd.startsWith("git rev-list")) {
       const wt = cmd.match(/--reverse --first-parent (\S+)\.\.HEAD/)?.[1] ?? "";
       const id = wt.endsWith("wt-a") ? "a" : wt.endsWith("wt-b") ? "b" : "?";
-      const sha = shas[id] ?? "0000000000000000000000000000000000000001";
+      // The SHAs must differ per workstream: `cherryPickWorkstreams` skips a
+      // pick whose SHA matches a recorded `commitShas` entry, so one shared
+      // SHA would have made BOTH picks skip and no conflict would ever fire.
+      const sha =
+        id === "a"
+          ? "1111111111111111111111111111111111111111"
+          : "2222222222222222222222222222222222222222";
       return { stdout: `${sha}\n` };
     }
     if (cmd.startsWith("git rev-parse HEAD"))
@@ -71,18 +84,22 @@ function conflictingExec(failedId: "a" | "b") {
     if (cmd.includes("cat-file -e")) throw new Error("not on branch");
     if (cmd.startsWith("git cherry-pick --no-commit")) {
       const sha = cmd.match(/--no-commit (\S+)/)?.[1] ?? "";
-      // The batch fails on the SECOND pick (workstream b).
       const pickIndex = calls.filter((c) => c.startsWith("git cherry-pick --no-commit")).length;
-      if (pickIndex >= 2) {
+      if (cmd.includes("--no-commit") && pickIndex >= 2) {
         const e = new Error(`could not apply ${sha}`) as Error & { stderr?: string };
-        e.stderr = "CONFLICT (content): Merge conflict";
+        // git's empty-cherry-pick abort: the same failure whose output names
+        // no path — the field must then stay absent rather than be invented.
+        e.stderr =
+          opts?.gitOutputWithoutFile === true
+            ? "error: The previous cherry-pick is now empty, possibly due to conflict resolution"
+            : `CONFLICT (content): Merge conflict in ${CONFLICTED_FILE}`;
         throw e;
       }
       return { stdout: "" };
     }
     return { stdout: "" };
   };
-  return { exec, calls, shas };
+  return { exec, calls };
 }
 
 function runReporter(
@@ -168,8 +185,17 @@ try {
       `case 1 reporter: the failure names WHICH pick failed (got: ${conflictFailure?.slice(0, 260)})`,
     );
     assert(
-      !!conflictFailure && /do NOT re-split on this alone/.test(conflictFailure),
+      !!conflictFailure &&
+        /do NOT re-split on this alone|merge the pair|merge-and-retry/.test(conflictFailure),
       `case 1 reporter: the failure tells the operator re-splitting is not the fix (got: ${conflictFailure?.slice(0, 260)})`,
+    );
+    // Case 1's git output names a file and that file is a declared path, so
+    // the coupling branch is the one that runs here — which is why the
+    // neutral "do NOT re-split" sentence is absent. Case 1b covers the
+    // branch where git named no file at all.
+    assert(
+      !!conflictFailure && /likely coupled/i.test(conflictFailure),
+      `case 1 reporter: git's named file makes the run report the pair as coupled (got: ${conflictFailure?.slice(0, 260)})`,
     );
     assert(
       !!conflictFailure && /verified restored/.test(conflictFailure),
@@ -178,57 +204,99 @@ try {
   }
 
   // ──────────────────────────────────────────────────────────────────────
-  // Case 2 — the explainCap renderer, no fence record (the SECOND renderer).
+  // Case 1b — git named NO file for the aborted pick (an empty-cherry-pick
+  // abort, a index write failure: output with no path in it). The text must
+  // then say so and run the neutral diagnosis — it must not invent a file.
   // ──────────────────────────────────────────────────────────────────────
   {
-    const s = initialState(813, 1_000_000);
-    s.pipelineState = {
-      ...s.pipelineState,
-      worktrees: { a: "/w/a", b: "/w/b" },
+    const { exec: noFileExec } = conflictingExec("b", { gitOutputWithoutFile: true });
+    const cons = await runConsolidatedVerify(noFileExec, {
+      repoRoot: "/repo",
+      baseSha: "abc1234",
+      worktrees: { a: "/w/wt-a", b: "/w/wt-b" },
+      scratchDir: path.join(root, "scratch-1b"),
+      verifyCmd: "bun test",
+      timeoutMs: 60_000,
+    });
+    assert(
+      cons.status === "conflict" && cons.conflictedFile === undefined,
+      `case 1b: output naming no path leaves the field absent (got: ${JSON.stringify(cons).slice(0, 200)})`,
+    );
+    const failures = runReporter(cons, {
+      worktrees: { a: "/w/wt-a", b: "/w/wt-b" },
       workstreams: {
         a: { id: "a", scope: "x", paths: ["src/a.ts"], outOfScope: ["src/b.ts"] },
         b: { id: "b", scope: "y", paths: ["src/b.ts"], outOfScope: ["src/a.ts"] },
       },
-    };
-    s.eventLog.push({
-      kind: "cap-hit",
-      at: 1,
-      cap: "consolidated-verify-conflict",
-      reviewRound: 0,
-      nextStep: "handoff",
-      evidence:
-        "consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict",
     });
-    const text = explainCap("consolidated-verify-conflict", s);
+    const f = failures.find((x) => /could not combine/.test(x));
     assert(
-      !/incoherent/.test(text),
-      `case 2 explainCap: no-fence text does NOT say "incoherent" (got: ${text.slice(0, 260)})`,
-    );
-    assert(
-      !/edited the same lines, so the work is individually plausible/.test(text),
-      `case 2 explainCap: the "edited the same lines" inference is gone (got: ${text.slice(0, 260)})`,
-    );
-    assert(
-      !/fix is to re-split the work into non-overlapping/.test(text),
-      `case 2 explainCap: the text does not tell the operator to re-split (got: ${text.slice(0, 260)})`,
-    );
-    assert(
-      /which workstream|could not be combined/.test(text),
-      `case 2 explainCap: the text states what was observed (got: ${text.slice(0, 260)})`,
-    );
-    assert(
-      /1005/.test(text) || /merge[ds]? the pair|merge-and-retry/.test(text),
-      `case 2 explainCap: the text points at the #1005 merge behaviour (got: ${text.slice(0, 260)})`,
-    );
-    assert(
-      /Worktrees:/.test(text),
-      `case 2 explainCap: the worktree list is preserved (got: ${text.slice(0, 200)})`,
+      !!f && !/likely coupled/i.test(f) && /do NOT re-split on this alone/.test(f),
+      `case 1b reporter: no file observed → no coupling claim, the neutral diagnosis runs (got: ${f?.slice(0, 300)})`,
     );
   }
 
   // ──────────────────────────────────────────────────────────────────────
-  // Case 3 — the failure names a file another workstream DECLARED → the
+  // Case 3 — the pick failed in a file another workstream DECLARED → the
   // "likely coupled" diagnosis + the #1005 pointer (reporter side).
+  //
+  // The real observation behind "these two workstreams touch the same file"
+  // is `conflictedFile`: what the batch pulled out of git's own conflict
+  // output ("could not apply src/b.ts") and handed back as a field. The
+  // reporters scan that field, never `cons.detail` — free prose deciding the
+  // diagnosis is the #813 defect again (that is case 3b's point).
+  // ──────────────────────────────────────────────────────────────────────
+  {
+    const cons: ConsolidatedVerifyResult = {
+      status: "conflict",
+      kind: "conflict",
+      detail: "cherry-pick conflict — the batch aborted; verified restored",
+      conflictedWorkstream: "b",
+      appliedBeforeConflict: ["a"],
+      conflictedFile: "src/b.ts",
+    };
+    const failures = runReporter(cons, {
+      worktrees: { a: "/w/a", b: "/w/b" },
+      // Workstream b's declared path is the file the pick was applying — the
+      // shape a real "could not apply src/b.ts" conflict carries.
+      workstreams: {
+        a: { id: "a", scope: "x", paths: ["src/a.ts"], outOfScope: ["src/b.ts"] },
+        b: { id: "b", scope: "y", paths: ["src/b.ts"], outOfScope: ["src/a.ts"] },
+      },
+    });
+    const f = failures.find((x) => /could not combine/.test(x));
+    assert(!!f, `case 3: a conflict failure string is produced (got: ${failures.join("; ")})`);
+    assert(
+      !!f && !/incoherent/.test(f),
+      `case 3 reporter: no "incoherent" claim (got: ${f?.slice(0, 260)})`,
+    );
+    assert(
+      !!f && /workstream 'b' failed/.test(f) && /src\/b\.ts/.test(f),
+      `case 3 reporter: names the file and its declaring workstream (got: ${f?.slice(0, 300)})`,
+    );
+    // The structured file is what licenses the claim — so it must render.
+    assert(
+      !!f && /conflict names `src\/b\.ts`/.test(f),
+      `case 3 reporter: attributes the named file to its declaring workstream (got: ${f?.slice(0, 300)})`,
+    );
+    assert(
+      !!f && /likely coupled/i.test(f),
+      `case 3 reporter: says the workstreams are LIKELY COUPLED (got: ${f?.slice(0, 260)})`,
+    );
+    assert(
+      !!f && /#1005/.test(f) && /merge/i.test(f),
+      `case 3 reporter: points at the #1005 merge behaviour (got: ${f?.slice(0, 260)})`,
+    );
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Case 3b — ungoverned prose alone does NOT license the coupling claim.
+  //
+  // Same conflict, same declared paths, but the batch recorded nothing about
+  // which pick failed and the file name appears only inside `cons.detail`
+  // (an ungoverned message the reporter embeds, never scans). Asserting
+  // "likely coupled" here would be the #813 defect wearing a different hat:
+  // a diagnosis presented as an observation it never made.
   // ──────────────────────────────────────────────────────────────────────
   {
     const cons: ConsolidatedVerifyResult = {
@@ -244,66 +312,22 @@ try {
       },
     });
     const f = failures.find((x) => /could not combine/.test(x));
-    assert(!!f, `case 3: a conflict failure string is produced (got: ${failures.join("; ")})`);
+    assert(!!f, `case 3b: a conflict failure string is produced (got: ${failures.join("; ")})`);
     assert(
-      !!f && !/incoherent/.test(f),
-      `case 3 reporter: no "incoherent" claim (got: ${f?.slice(0, 260)})`,
+      !!f && !/likely coupled/i.test(f),
+      `case 3b reporter: a path in ungoverned detail prose does NOT assert coupling (got: ${f?.slice(0, 260)})`,
     );
     assert(
-      !!f && /src\/a\.ts/.test(f) && /workstream a/.test(f),
-      `case 3 reporter: names the file and its declaring workstream (got: ${f?.slice(0, 260)})`,
-    );
-    assert(
-      !!f && /likely coupled/i.test(f),
-      `case 3 reporter: says the workstreams are LIKELY COUPLED (got: ${f?.slice(0, 260)})`,
-    );
-    assert(
-      !!f && /#1005/.test(f) && /merge/i.test(f),
-      `case 3 reporter: points at the #1005 merge behaviour (got: ${f?.slice(0, 260)})`,
-    );
-  }
-
-  // ──────────────────────────────────────────────────────────────────────
-  // Case 4 — the same shape on the explainCap renderer: cap evidence names
-  // a file the OTHER workstream declared → likely coupled + #1005.
-  // ──────────────────────────────────────────────────────────────────────
-  {
-    const s = initialState(813, 1_000_000);
-    s.pipelineState = {
-      ...s.pipelineState,
-      worktrees: { a: "/w/a", b: "/w/b" },
-      workstreams: {
-        a: { id: "a", scope: "x", paths: ["src/a.ts"], outOfScope: ["src/b.ts"] },
-        b: { id: "b", scope: "y", paths: ["src/b.ts"], outOfScope: ["src/a.ts"] },
-      },
-    };
-    s.eventLog.push({
-      kind: "cap-hit",
-      at: 1,
-      cap: "consolidated-verify-conflict",
-      reviewRound: 0,
-      nextStep: "handoff",
-      evidence:
-        "consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict on src/a.ts",
-    });
-    const text = explainCap("consolidated-verify-conflict", s);
-    assert(
-      !/incoherent/.test(text),
-      `case 4 explainCap: no "incoherent" claim (got: ${text.slice(0, 260)})`,
-    );
-    assert(
-      /likely coupled/i.test(text) && /#1005/.test(text),
-      `case 4 explainCap: names the coupling and points at #1005 (got: ${text.slice(0, 260)})`,
-    );
-    assert(
-      /src\/a\.ts/.test(text) && /workstream a\b/.test(text),
-      `case 4 explainCap: names the file and the declaring workstream (got: ${text.slice(0, 260)})`,
+      !!f && /do NOT re-split on this alone/.test(f),
+      `case 3b reporter: the neutral observed diagnosis runs instead (got: ${f?.slice(0, 260)})`,
     );
   }
 
   // ──────────────────────────────────────────────────────────────────────
   // Case 5 — the fence-recorded branch is UNCHANGED by this fix (regression
-  // guard for the pre-existing #814 attribution, on both renderers).
+  // guard for the pre-existing #814 attribution, reporter side; the cap
+  // renderer's half of the same guard is
+  // test-consolidation-conflict-cap-813.ts case 3).
   // ──────────────────────────────────────────────────────────────────────
   {
     const fence: FenceViolationRecord[] = [
@@ -328,69 +352,10 @@ try {
       !!f && f.includes(describeSiblingFenceViolations(fence) ?? "«never»"),
       `case 5 reporter: the sibling-declared attribution still renders verbatim (got: ${f?.slice(0, 260)})`,
     );
-
-    const s = initialState(813, 1_000_000);
-    s.pipelineState = {
-      ...s.pipelineState,
-      worktrees: { a: "/w/a", b: "/w/b" },
-      verifyEvidence: { step: "develop", failures: [], at: 1, fenceViolations: fence },
-    };
-    s.eventLog.push({
-      kind: "cap-hit",
-      at: 1,
-      cap: "consolidated-verify-conflict",
-      reviewRound: 0,
-      nextStep: "handoff",
-      evidence: "cherry-pick conflict",
-    });
-    const text = explainCap("consolidated-verify-conflict", s);
-    assert(
-      text.includes("workstream b touched src/a.ts, declared by workstream a"),
-      `case 5 explainCap: the fence attribution still wins when a record exists (got: ${text.slice(0, 260)})`,
-    );
-    assert(
-      !/incoherent/.test(text),
-      `case 5 explainCap: still no "incoherent" with a fence record (got: ${text.slice(0, 200)})`,
-    );
   }
 
   // ──────────────────────────────────────────────────────────────────────
-  // Case 6 — the undeclared-only branch is unchanged: an `undeclared` record
-  // is a warning, so the no-fence diagnosis runs (and no longer over-claims).
-  // ──────────────────────────────────────────────────────────────────────
-  {
-    const s = initialState(813, 1_000_000);
-    s.pipelineState = {
-      ...s.pipelineState,
-      worktrees: { a: "/w/a", b: "/w/b" },
-      verifyEvidence: {
-        step: "develop",
-        failures: [],
-        at: 1,
-        fenceViolations: [{ workstreamId: "a", file: "src/extra.ts", kind: "undeclared" }],
-      },
-    };
-    s.eventLog.push({
-      kind: "cap-hit",
-      at: 1,
-      cap: "consolidated-verify-conflict",
-      reviewRound: 0,
-      nextStep: "handoff",
-      evidence: "cherry-pick conflict",
-    });
-    const text = explainCap("consolidated-verify-conflict", s);
-    assert(
-      !text.includes("fence was violated"),
-      `case 6 explainCap: an undeclared record does not trigger the fence attribution (got: ${text.slice(0, 200)})`,
-    );
-    assert(
-      !/incoherent/.test(text),
-      `case 6 explainCap: the no-fence branch no longer over-claims (got: ${text.slice(0, 200)})`,
-    );
-  }
-
-  // ──────────────────────────────────────────────────────────────────────
-  // Case 7 — the dirty-root refusal keeps its OWN wording (the routing the
+  // Case 6 — the dirty-root refusal keeps its OWN wording (the routing the
   // #725 discriminator protects must not move when the conflict text moves).
   // ──────────────────────────────────────────────────────────────────────
   {
@@ -402,7 +367,7 @@ try {
     const failures = runReporter(cons, { worktrees: { a: "/w/a" } });
     assert(
       failures.some((f) => /was refused/.test(f) && !/could not combine/.test(f)),
-      `case 7: a dirty-root refusal is still reported as a refusal, not a conflict (got: ${failures.join("; ")})`,
+      `case 6: a dirty-root refusal is still reported as a refusal, not a conflict (got: ${failures.join("; ")})`,
     );
   }
 } finally {

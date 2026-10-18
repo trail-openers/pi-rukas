@@ -13,7 +13,7 @@
  * guess is now the wrong advice.
  */
 import { trace } from "./trace.ts";
-import type { CherryPickConflict } from "./work-driver-cherry-pick-conflict.ts";
+import { type CherryPickConflict, conflictedFileFrom } from "./work-driver-cherry-pick-conflict.ts";
 import type { CherryPickEntry, WorkStreamPickScope } from "./work-driver-cherry-pick.ts";
 import { pickScopeBase } from "./work-driver-cherry-pick.ts";
 import { isCommitOnBranch } from "./work-driver-integrate.ts";
@@ -47,12 +47,27 @@ export async function cherryPickWorkstreams(
     pickScope?: WorkStreamPickScope;
   },
 ): Promise<CherryPickEntry[] | CherryPickConflict> {
+  // #813 — the exec seam is typed to the success shape in the public
+  // signature, but the real one (`DriverContext["verifyExecFn"]`) also
+  // resolves `stderr`, and an execFile rejection carries it on the Error.
+  // The conflict branch reads both, so it sees git's named file whichever
+  // shape the seam hands back.
+  const gitErrText = (err: unknown): string => {
+    const e = err as { stderr?: unknown; message?: unknown };
+    return [
+      typeof e?.stderr === "string" ? e.stderr : "",
+      typeof e?.message === "string" ? e.message : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  };
   const { repoRoot, branchName, worktrees, commitShas } = opts;
   const scope: WorkStreamPickScope = opts.pickScope ?? { globalBaseSha: opts.baseSha };
   const ids = Object.keys(worktrees);
   const entries: CherryPickEntry[] = [];
   const rangeFellBack = new Map<string, { workstreamId: string; error: string }>();
   let conflictedAt: string | undefined;
+  let conflictedFile: string | undefined;
   // #813 — the picks that landed BEFORE the aborting one, so the caller can
   // say which workstream applied cleanly rather than guessing that both
   // sides edited the same lines.
@@ -134,10 +149,13 @@ export async function cherryPickWorkstreams(
         });
         entries.push({ sha, status: "cherry-picked", rangeReadError: rangeFellBack.get(id) });
         appliedBeforeConflict.add(id);
-      } catch {
+      } catch (gitErr) {
         // Cherry-pick failed — this is a conflict. Abort the batch and record
-        // which workstream caused it.
+        // which workstream caused it, plus the file git named for the pick
+        // (#813 — git prints the colliding path on its own stderr, so the
+        // reporters can name a file without scanning free prose).
         conflictedAt = id;
+        conflictedFile = conflictedFileFrom(gitErrText(gitErr));
         break;
       }
     }
@@ -160,6 +178,7 @@ export async function cherryPickWorkstreams(
       __conflict: true,
       conflictedAt,
       appliedBeforeConflict: [...appliedBeforeConflict],
+      ...(conflictedFile !== undefined ? { conflictedFile } : {}),
     };
   }
   return entries;

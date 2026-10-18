@@ -97,6 +97,8 @@ export interface OrchestratedCherryPickResult {
    */
   _conflictedWorkstream?: CherryPickConflict["conflictedAt"];
   _conflictAppliedBefore?: CherryPickConflict["appliedBeforeConflict"];
+  /** #813 — the file git named for the aborted pick (see `CherryPickConflict`). */
+  _conflictedFile?: CherryPickConflict["conflictedFile"];
   /** Error discriminator: requireAllNonEmpty failed for this workstream id. */
   _noDiffRequireFail?: string;
   /** Error discriminator: git apply failed during patch fallback. */
@@ -223,6 +225,7 @@ export async function orchestrateCherryPick(
         _conflict: "conflict",
         _conflictedWorkstream: pick.conflictedAt,
         _conflictAppliedBefore: pick.appliedBeforeConflict,
+        ...(pick.conflictedFile !== undefined ? { _conflictedFile: pick.conflictedFile } : {}),
       };
     }
     const entries = pick;

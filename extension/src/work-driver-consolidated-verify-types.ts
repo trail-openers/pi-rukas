@@ -180,4 +180,12 @@ export type ConsolidatedVerifyResult =
        * pick. Absent when the batch never got that far or the read failed.
        */
       appliedBeforeConflict?: string[];
+      /**
+       * #813 — the file git named for the aborted pick, extracted by the
+       * batch itself. Structured so the reporter can name the colliding file
+       * (and recognise it as a sibling's declared path) without parsing an
+       * arbitrary `detail` string, which would let the message decide the
+       * diagnosis.
+       */
+      conflictedFile?: string;
     };

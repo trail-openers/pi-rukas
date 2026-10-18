@@ -85,9 +85,11 @@ export function explainConsolidation(cap: Cap, state: WorkState): string {
           (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
             e.kind === "cap-hit" && e.cap === "consolidated-verify-conflict",
         );
-      const ev =
-        hit?.evidence ??
-        "(no conflict detail recorded — inspect the worktrees to see which files both workstreams edited)";
+      // #813 — an absent evidence field is an ABSENCE, so it reads as one
+      // (`undefined`) rather than as a placeholder sentence that the coupling
+      // scan then reads: a placeholder that happened to name a file would
+      // make "likely coupled" fire on nothing.
+      const ev = hit?.evidence?.trim() || undefined;
       const wts = state.pipelineState.worktrees ?? {};
       const wtList = Object.entries(wts)
         .map(([id, p]) => `${id}: ${p}`)
@@ -131,7 +133,8 @@ export function explainConsolidation(cap: Cap, state: WorkState): string {
       // type-coupled pair with disjoint declared paths.
       return describeObservedConsolidationConflict({
         lead: `the develop step's consolidated verify could not combine the workstreams' commits into a single tree`,
-        observed: ev,
+        observed: ev ?? "no conflict detail was recorded on the cap — inspect the worktrees",
+        evidence: ev,
         worktrees: wtList || "(none recorded)",
         declaredPathsByWorkstream: declaredPathsFor(state),
       });
@@ -192,6 +195,13 @@ function fenceAttribution(fence: FenceViolationRecord[]): string | undefined {
  * failure names a file another workstream DECLARED, it says the workstreams
  * are likely coupled and points at the #1005 merge behaviour. The caller
  * keeps the fence-attribution branch first — this is the fallback.
+ *
+ * Trust boundary on the "likely coupled" wording: only governed text is
+ * scanned for a declared path — `evidence` / `observed` / `detail` (what the
+ * driver recorded) and the pick line (deterministically rendered from the
+ * batch's structured fields). The caller-authored `lead` is never scanned, so
+ * quoting a path in one's own lead-in cannot have the coupling diagnosis come
+ * back looking like an observation.
  */
 export function describeObservedConsolidationConflict(opts: {
   /** The conflict detail from the consolidated run (may be absent). */
@@ -208,6 +218,12 @@ export function describeObservedConsolidationConflict(opts: {
   /** Workstreams whose picks applied cleanly before the aborting pick. */
   appliedBeforeConflict?: string[];
   /**
+   * The file the batch says its pick collided on. Structured (never lifted
+   * out of `detail` prose), and the ONLY reporter-side text scanned for a
+   * declared path — it is what licenses "likely coupled".
+   */
+  conflictedFile?: string;
+  /**
    * Declared paths by workstream id — used ONLY to recognise that a file
    * named in the failure belongs to a sibling, which is what licenses the
    * "likely coupled" wording. Empty/absent → the neutral sentence.
@@ -216,10 +232,11 @@ export function describeObservedConsolidationConflict(opts: {
   /**
    * Text scanned for a declared path (the cap evidence or the conflict
    * detail). Read as-is; no path inference beyond an exact substring hit.
-   * Defaults to `observed ?? detail` when absent.
+   * Defaults to `observed` / `detail` / the pick line when absent — NOT to
+   * `lead`, which is caller-authored prose.
    */
   evidence?: string;
-  /** Lead-in so both surfaces read in their own voice. */
+  /** Lead-in so both surfaces read in their own voice. Not scanned. */
   lead: string;
   /** Pre-rendered "id: path" list of the worktrees to inspect (cap renderer). */
   worktrees?: string;
@@ -246,18 +263,22 @@ export function describeObservedConsolidationConflict(opts: {
     (opts.observed ?? opts.detail ?? "").trim(),
   );
   const detailText = restatesLead ? "" : (opts.observed ?? opts.detail ?? "").trim();
-  const evidenceText =
-    opts.evidence ?? [opts.lead, opts.observed, opts.detail, pickLine].filter(Boolean).join("; ");
   if (pickLine) observed.push(pickLine);
   if (detailText) observed.push(detailText);
   const observedText =
     observed.length > 0
       ? observed.join("; ")
       : "which workstream's patch could not be combined was not recorded";
-  // The scan text is what the diagnosis reads for a declared-path hit — the
-  // cap evidence or the conflict detail, so a file named there (or in the
-  // pick line) licenses the "likely coupled" wording.
-  const coupled = coupledWorkstreamClause(evidenceText, opts.declaredPathsByWorkstream ?? {});
+  // The scan text is what the diagnosis reads for a declared-path hit: the
+  // governed evidence (cap `evidence` / `observed`) plus the structured
+  // fields the batch recorded (`conflictedFile`, and the pick line rendered
+  // deterministically from `conflictedWorkstream`). `lead` and `detail` are
+  // free prose: they render, but a path appearing only there does NOT license
+  // the coupling claim — that would be the #813 defect wearing a different hat.
+  const coupled = coupledWorkstreamClause(
+    opts.evidence ?? [opts.observed, opts.conflictedFile, pickLine].filter(Boolean).join("; "),
+    opts.declaredPathsByWorkstream ?? {},
+  );
   // #813 — the operator still needs the worktrees to inspect (the pre-#813
   // text carried them); rendered here so both surfaces state where to look.
   const where = opts.worktrees ? ` Worktrees: ${opts.worktrees}.` : "";
@@ -274,7 +295,7 @@ export function describeObservedConsolidationConflict(opts: {
  * ("src/a.ts (new)") cannot hide a hit and a coincidental word in the
  * failure prose cannot manufacture one.
  */
-export function coupledWorkstreamClause(
+function coupledWorkstreamClause(
   evidence: string,
   declaredPathsByWorkstream: Record<string, string[]>,
 ): string | undefined {

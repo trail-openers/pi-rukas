@@ -180,6 +180,9 @@ export async function runConsolidatedVerifyUnlocked(
         ...(orchResult._conflictAppliedBefore !== undefined
           ? { appliedBeforeConflict: orchResult._conflictAppliedBefore }
           : {}),
+        ...(orchResult._conflictedFile !== undefined
+          ? { conflictedFile: orchResult._conflictedFile }
+          : {}),
       };
     }
     if (orchResult._applyConflict !== undefined) {
