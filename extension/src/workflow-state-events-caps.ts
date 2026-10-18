@@ -116,6 +116,15 @@ export type WorkCapLiteral =
   // mergeable PR.
   | "draft-rearm-failed"
   | "existing-pr-detected"
+  // #1468 — `--continue-pr` could not continue the issue's open PR: the
+  // lookup was not one PR, the PR is a fork or its head is unsafe, the head
+  // moved under the run, or the merge of the mainline was left unfinished.
+  | "continue-pr-ambiguous"
+  | "continue-pr-fork"
+  | "continue-pr-head-moved"
+  | "continue-pr-not-found"
+  | "continue-pr-unresolved"
+  | "continue-pr-unsafe-head"
   // #844 — the ops-fallback branch path's post-dispatch merge-base check
   // failed: the branch ops created does not sit on the driver-resolved
   // baseSha (ops built off a stale local ref — the #830 shape).
