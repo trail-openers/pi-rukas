@@ -34,7 +34,7 @@ if (!cfg) throw new Error("fixture config did not load");
 /** The first target the command writes that the rule refuses, or undefined when all pass. */
 function refusedTarget(command: string, cwd: string = fx.wt): string | undefined {
   for (const t of bashWriteTargets(command, cwd)) {
-    const judged = judgeWrite(t.path, t.cwd, cfg);
+    const judged = judgeWrite(t.path, t.cwd, cfg, { linkedCommand: t.linkedCommand });
     if (!judged.ok) return t.path;
   }
   return undefined;
@@ -65,6 +65,24 @@ const refused: Array<[string, string]> = [
   [`/bin/cp a ${REPO_BIN}/b`, "cp named by its absolute path"],
   ["cd ..", "cd out of the worktree"],
   ["echo x > $HOME/fence-check", "a redirect to $HOME"],
+  // #1655 review r1 — a subshell's cd does not end with the subshell.
+  ["(cd src); echo x > ../../other/f", "a subshell cd does not carry a `..` write out of the root"],
+  ["(cd src); echo x > ../x", "a subshell cd does not carry a `..` write to a sibling"],
+  // Keywords and wrappers in front of the command name.
+  [`if true; then rm ${REPO_BIN}/keep; fi`, "rm after `then`"],
+  [`for f in x; do touch ${REPO_BIN}/$f; done`, "touch after `do`"],
+  [`{ rm ${REPO_BIN}/keep; }`, "rm inside a brace group"],
+  [`timeout 5 cp a ${REPO_BIN}/b`, "cp behind timeout and its duration"],
+  [`nice -n 5 tee ${REPO_BIN}/x`, "tee behind nice -n"],
+  [`xargs cp a ${REPO_BIN}/b`, "cp behind xargs"],
+  [`env -C ${fx.repo} touch x`, "a relative touch after env -C into the repo root"],
+  // Hard links: the new name shares the source's inode.
+  ["ln ../../bin/keep k", "a hard link to a file outside the root"],
+  ["cp -l ../../bin/keep k", "cp -l hard link to a file outside the root"],
+  ["link ../../bin/keep k", "link(2) hard link to a file outside the root"],
+  // A link created in the same call, written under its name.
+  ["ln -s src lnk && echo x > lnk/f", "a write under a symlink created in the same command"],
+  ["cp -R out copy2 && echo x > copy2/keep", "a write under a copied link, same command"],
 ];
 for (const [command, why] of refused) {
   assert(refusedTarget(command) !== undefined, `refuse: ${why} — \`${command}\``);
@@ -90,6 +108,11 @@ const allowedForms: Array<[string, string]> = [
   ["cat <<EOF > out.txt\nrm /repo/bin/keep\nEOF", "a heredoc body is data, not commands"],
   ["ls -la && cat src/a.ts | grep x", "read-only commands in a chain"],
   ["cp node_modules/pkg/x.js node_modules/pkg/y.js", "cp inside the provisioned dependency tree"],
+  ["ln -s src lnk", "a symlink created in the worktree (its name is not written through)"],
+  [
+    "cp -r src copy3",
+    "a recursive copy into a new directory (the new name is not written through)",
+  ],
 ];
 for (const [command, why] of allowedForms) {
   assert(refusedTarget(command) === undefined, `allow: ${why} — \`${command}\``);
@@ -117,10 +140,19 @@ assert(refusedTarget("") === undefined, "an empty command has no targets");
 // ------------------------------------------------ cd is tracked for later relative targets
 {
   const targets = bashWriteTargets("cd src && echo x > out.txt", fx.wt);
-  const redirect = targets.find((t) => t.path === "out.txt");
   assert(
-    redirect?.cwd === path.join(fx.wt, "src"),
-    "tracking: a redirect after `cd src` resolves against src",
+    targets.some((t) => t.path === "out.txt" && t.cwd === path.join(fx.wt, "src")),
+    "tracking: a redirect after `cd src` is judged from src",
+  );
+  assert(
+    targets.every((t) => t.linkedCommand === false),
+    "tracking: a command that creates no link is never flagged linked",
+  );
+  const sub = bashWriteTargets("(cd src); echo x > out.txt", fx.wt);
+  assert(
+    sub.some((t) => t.path === "out.txt" && t.cwd === fx.wt) &&
+      sub.some((t) => t.path === "out.txt" && t.cwd === path.join(fx.wt, "src")),
+    "tracking: after a subshell cd the redirect is judged from both the start and src",
   );
 }
 

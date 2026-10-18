@@ -22,6 +22,15 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+/**
+ * Block for `ms` milliseconds. The path rule treats a dependency link older than
+ * the fence's load time as provisioned, so a test that makes a link the child
+ * "created" must let the clock move past the load first.
+ */
+export function pause(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 export interface FenceFixture {
   base: string;
   repo: string;
@@ -62,5 +71,7 @@ export function buildFenceFixture(tag: string): FenceFixture {
   );
   symlinkSync(path.join(repo, "bin"), path.join(wt, "out"), "dir");
   symlinkSync(path.join(repo, "bin"), path.join(wt2, "node_modules"), "dir");
+  // The provisioned links are older than any fence loaded over this fixture.
+  pause(20);
   return { base, repo, wt, wt2, other, scratch };
 }
