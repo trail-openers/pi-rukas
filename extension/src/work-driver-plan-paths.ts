@@ -20,6 +20,10 @@
  *
  * Not hypothetical: measured on this host, current cycles are routinely N>1
  * (lantern 664 = 3 workstreams, 673 = 2, 677 = 3).
+ *
+ * #1581 — the collision check also covers NEW files nobody declared: two
+ * workstreams whose scope each says it creates the same file collide as an
+ * add/add conflict at consolidation, just like a shared declared path.
  */
 
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
@@ -85,9 +89,15 @@ export interface TestSubjectSplit {
  * Paths are normalised first (`normaliseDeclaredPath`) because they are prose
  * from a planner, not `git` output: without it, `src/a.ts (new)` and `src/a.ts`
  * read as different files and the check is evaded by an annotation.
+ *
+ * #1581 — a file two workstreams each intend to CREATE collides too, even
+ * when neither declared it: each developer adds its own copy and the second
+ * is an add/add conflict at consolidation. The intent is read by `newFilesOf`,
+ * and only a pair of intents is compared — a sibling that merely mentions the
+ * file is not a second creator.
  */
 export function findPathCollisions(
-  workstreams: Record<string, { paths: string[] }>,
+  workstreams: Record<string, { paths: string[]; scope?: string }>,
 ): PathCollision[] {
   const normalised = Object.entries(workstreams).map(([id, ws]) => ({
     id,
@@ -108,8 +118,84 @@ export function findPathCollisions(
       }
     }
   }
+  const intents = Object.entries(workstreams).map(([id, ws]) => ({ id, files: newFilesOf(ws) }));
+  for (let i = 0; i < intents.length; i++) {
+    for (let j = i + 1; j < intents.length; j++) {
+      const a = intents[i];
+      const b = intents[j];
+      if (!a || !b || collisions.some((c) => c.a === a.id && c.b === b.id)) continue;
+      for (const fa of a.files) {
+        const fb = b.files.find((f) => sameFile(fa, f));
+        if (fb === undefined) continue;
+        const path = fa === fb ? fa : `${fa} / ${fb}`;
+        collisions.push({ a: a.id, b: b.id, path: `${path} (each creates it as a new file)` });
+        break;
+      }
+    }
+  }
   return collisions;
 }
+
+/** A file-shaped token: the last segment carries an extension. */
+const FILE_TOKEN = String.raw`([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z][A-Za-z0-9]*)`;
+/**
+ * `create(s) [a|the] [new] <file>` or `a new <file>`, allowing only a kind noun
+ * and an `(e.g.` / `called` / `named` / `at` lead-in in between. `the new
+ * src/x.ts` is a reference to a sibling's file, not a creation, and so is
+ * anything with another word between the verb and the file (`uses the new
+ * helper in src/x.ts`): neither matches, and the read fails open.
+ */
+const CREATES_LEAD = String.raw`\b(?:creat(?:e|es|ed|ing)\s+(?:(?:a|an|the)\s+)?(?:new\s+)?|an?\s+new\s+)(?:(?:smoke[- ]?)?test|file|module|source file|helper|script)?\s*(?:\((?:e\.g\.|i\.e\.)?\s*|called\s+|named\s+|at\s+)?`;
+const CREATES = new RegExp(`${CREATES_LEAD}\`?${FILE_TOKEN}`, "gi");
+const ANNOTATED_NEW = new RegExp(`\`?${FILE_TOKEN}\`?${String.raw`\s*\(new\)`}`, "gi");
+
+/** True when `index` sits inside an unclosed `(` — an aside such as
+ * `(task-a creates src/x.ts)` describes a sibling, not this workstream. */
+function insideParens(text: string, index: number): boolean {
+  let depth = 0;
+  for (const ch of text.slice(0, index)) depth += ch === "(" ? 1 : ch === ")" ? -1 : 0;
+  return depth > 0;
+}
+
+/**
+ * #1581 — the files a workstream says it will create: `create <file>` or
+ * `a new <file>` in its scope label, or a declared path annotated `(new)`.
+ * An inference from planner prose, so it is deliberately narrow (`CREATES`).
+ */
+export function newFilesOf(ws: { paths: string[]; scope?: string }): string[] {
+  const out = new Set<string>();
+  const scope = ws.scope ?? "";
+  for (const re of [CREATES, ANNOTATED_NEW]) {
+    for (const m of scope.matchAll(re)) {
+      if (re === CREATES && insideParens(scope, m.index ?? 0)) continue;
+      const p = normaliseDeclaredPath(m[1] ?? "");
+      if (p && isPlainRepoRelativePath(p)) out.add(p);
+    }
+  }
+  for (const raw of ws.paths ?? []) {
+    const p = normaliseDeclaredPath(raw);
+    if (p && /\(new\)\s*$/i.test(raw)) out.add(p);
+  }
+  return [...out];
+}
+
+/**
+ * Same file, by `findPathCollisions`' containment rule — or by basename when
+ * one side is a bare filename, because scope prose often names a new file
+ * without its directory (`plus a new test-handoff-post-retry.ts`). A generic
+ * basename (`index.ts`, `mod.rs`) names no particular file, so it never
+ * matches by basename alone.
+ */
+function sameFile(a: string, b: string): boolean {
+  if (a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)) return true;
+  if (a.includes("/") && b.includes("/")) return false;
+  const base = a.split("/").pop() ?? "";
+  if (GENERIC_BASENAME.test(base)) return false;
+  return base === b.split("/").pop();
+}
+
+const GENERIC_BASENAME =
+  /^(?:index|mod|main|lib|types|utils?|helpers?|config|constants|setup|readme|__init__)\.[^.]+$/i;
 
 /** A fence entry that contradicts the workstream declaring it (#1167). */
 export interface FenceContradiction {

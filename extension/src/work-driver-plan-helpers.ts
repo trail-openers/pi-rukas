@@ -68,6 +68,8 @@ import { normaliseDeclaredPath } from "./work-driver-verify.ts";
  */
 export interface PlanQualityWorkstream {
   paths: string[];
+  /** The heading's scope label; read for new-file intents (#1581). */
+  scope?: string;
   dependsOn?: string[];
   integrationTest?: string;
 }

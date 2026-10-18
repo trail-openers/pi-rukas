@@ -376,6 +376,8 @@ The hook is the escape hatch for the inexpressible: anything the symlink allowli
 
 Each workstream gets its own worktree and its own developer, running in parallel, so a file in two `paths` lists means two developers editing it at once — which used to surface much later as a `git apply` conflict at commit-pr. The plan step now catches it and re-plans once. If it persists, the issue probably needs those workstreams merged.
 
+The same check covers a new file that two workstreams each say they will create (`a new <file>` / `create <file>` in the workstream heading, or a path declared as `<file> (new)`), even when neither lists it in `paths`: the two copies would otherwise meet as an add/add conflict at consolidation (#1581). The collision line ends with "(each creates it as a new file)". A sibling that only mentions the file does not count.
+
 ### A parallel plan parks at `verify-failed:develop` with a type error no workstream caused alone
 
 **Symptom:** every developer reports success, yet develop parks with a type error such as *"Property 'x' does not exist"* or *"Module has no exported member 'y'"*, and the consolidated tree fails with the same error.
