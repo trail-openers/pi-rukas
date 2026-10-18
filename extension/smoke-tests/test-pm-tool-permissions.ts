@@ -111,11 +111,11 @@ assert(
   const known = new Set([...registered, ...Object.keys(NOT_FOR_PM)]);
   // A grant for a tool that no longer exists is dead config that hides a typo
   // in a real one. Tool-shaped keys are the ones that follow the dispatch /
-  // loop / check_review_cap naming; everything else (write, edit, webfetch, `*`,
+  // loop / *_review_cap naming; everything else (write, edit, webfetch, `*`,
   // the bash subcommand allowlist, and the #598 `gh issue create*` deny) is a
   // permission entry for a Pi builtin or a bash subcommand, not a tool grant.
   const toolShaped = (k: string) =>
-    k.startsWith("dispatch_") || k.endsWith("_loop") || k === "check_review_cap";
+    k.startsWith("dispatch_") || k.endsWith("_loop") || k.endsWith("_review_cap");
   const orphans = Object.keys(perm).filter((k) => toolShaped(k) && !known.has(k));
   assert(
     orphans.length === 0,

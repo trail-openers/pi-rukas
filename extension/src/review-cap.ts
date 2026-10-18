@@ -6,9 +6,13 @@
  * PM to track 90 minutes itself and halt — trust-the-model. Brittle: PM
  * might miscount, forget, or never call dispatch_status before extending.
  *
- * The cap now lives in extension state. PM calls `check_review_cap` with a
- * per-loop key (typically the issue or PR number) on every relevant
- * decision point; the tool answers deterministically.
+ * The cap now lives in extension state. PM starts it with `start_review_cap`
+ * and reads it with `check_review_cap` (a per-loop key, typically the issue or
+ * PR number) on every relevant decision point; the tool answers
+ * deterministically. #1313 — the two are separate tools: a PM that only meant
+ * to read the budget called the one tool with no `reset`, started a timer for
+ * a key nothing used, and could not tell which budget it had touched. The read
+ * never writes.
  *
  * State is per-key — multiple concurrent /work cycles on different issues
  * don't pollute each other's timers. Keys are scoped to this Pi session
@@ -77,6 +81,8 @@ interface CheckResult {
   reset: boolean;
   /** Human-readable reason when ok=false; otherwise the elapsed/remaining summary. */
   message: string;
+  /** #1313 — a read-only check found no timer for the key (nothing was started). */
+  missing?: true;
 }
 
 /**
@@ -91,9 +97,15 @@ interface CheckResult {
  * Subsequent calls: compare `now - startedAt` against the cap; return
  * ok=false when exceeded.
  *
- * Exposed for tests; production callers use the registered tool.
+ * `readOnly` (the `check_review_cap` tool, #1313): never start or reset a
+ * timer; an unknown key answers ok with `missing: true`.
+ *
+ * Exposed for tests; production callers use the registered tools.
  */
-export function checkReviewCap(key: string, opts: { reset?: boolean } = {}): CheckResult {
+export function checkReviewCap(
+  key: string,
+  opts: { reset?: boolean; readOnly?: boolean } = {},
+): CheckResult {
   const now = Date.now();
   // Resolved per call, so the operator's PI_ENSEMBLE_REVIEW_CAP_MS applies to
   // a check made mid-cycle rather than being frozen at module load.
@@ -113,7 +125,19 @@ export function checkReviewCap(key: string, opts: { reset?: boolean } = {}): Che
       message: `Invalid cap key (${key.length === 0 ? "empty" : `${key.length} chars; max ${MAX_KEY_LENGTH}`}) — pass a short identifier like "issue-42". Timer not started; cap not enforced for this call.`,
     };
   }
-  if (opts.reset || !caps.has(key)) {
+  if (opts.readOnly && !caps.has(key)) {
+    return {
+      ok: true,
+      key,
+      startedAt: now,
+      elapsedMs: 0,
+      capMs,
+      reset: false,
+      missing: true,
+      message: `No review timer for "${key}" — nothing was started; start_review_cap starts one. A running /work cycle keeps its own review budget, which this tool does not read: the driver enforces it and parks by itself.`,
+    };
+  }
+  if (!opts.readOnly && (opts.reset || !caps.has(key))) {
     caps.set(key, now);
     evictOldestCap();
     return {
@@ -142,35 +166,37 @@ export function checkReviewCap(key: string, opts: { reset?: boolean } = {}): Che
   };
 }
 
+const KEY_PARAM = Type.String({
+  description:
+    "Per-loop identifier — typically `issue-<N>` or `pr-<N>`. Different keys = independent timers, so concurrent loops on different issues don't share a cap.",
+});
+
+function reply(result: CheckResult) {
+  return { content: [{ type: "text" as const, text: result.message }], details: result };
+}
+
 export function registerCheckReviewCapTool(pi: ExtensionAPI) {
   pi.registerTool({
     name: "check_review_cap",
-    label: "Check Step 7 Wall-Clock Cap",
+    label: "Check Review Wall-Clock Cap",
     description:
       // #1429 — the advertised number follows the configured ceiling, so the
       // tool no longer tells the agent "90 minutes" while enforcing something
       // else. `registerTool` runs once at session start, so this reflects the
       // environment as the operator set it for this session.
-      `Check whether the ${reviewCapMs() / 60_000}-minute wall-clock cap for a /work Step 7 fix loop has been exceeded. Call with a per-loop key (typically \`issue-<N>\` or \`pr-<N>\`) on first entry to Step 7 with \`reset: true\` to start the timer, then before each new round in 7f WITHOUT \`reset\` to check elapsed. Returns \`{ok: false, ...}\` when ${reviewCapMs() / 60_000} minutes have elapsed since the timer started — halt the loop and escalate to the user. Returns \`{ok: true, ...}\` otherwise.`,
-    parameters: Type.Object({
-      key: Type.String({
-        description:
-          "Per-loop identifier — typically `issue-<N>` or `pr-<N>`. Different keys = independent timers, so concurrent /work cycles on different issues don't share a cap.",
-      }),
-      reset: Type.Optional(
-        Type.Boolean({
-          description:
-            "Set true to (re)start the timer at the current moment. Use at the start of every Step 7 fix loop. Subsequent calls in the same loop should omit this (or set false) to check against the original start.",
-        }),
-      ),
-    }),
+      `Read-only: check the ${reviewCapMs() / 60_000}-minute wall-clock cap of a fix loop whose timer start_review_cap started. Never starts or resets a timer. Returns \`{ok: false, ...}\` once the cap has elapsed — halt the loop and escalate; \`{ok: true, missing: true}\` when no timer exists for the key. A running /work cycle's own review budget is the driver's, not this tool's.`,
+    parameters: Type.Object({ key: KEY_PARAM }),
     async execute(_id, raw) {
-      const params = raw as { key: string; reset?: boolean };
-      const result = checkReviewCap(params.key, { reset: params.reset });
-      return {
-        content: [{ type: "text", text: result.message }],
-        details: result,
-      };
+      return reply(checkReviewCap((raw as { key: string }).key, { readOnly: true }));
+    },
+  });
+  pi.registerTool({
+    name: "start_review_cap",
+    label: "Start Review Wall-Clock Cap",
+    description: `Start (or restart) the ${reviewCapMs() / 60_000}-minute wall-clock timer for a fix loop, at the start of the loop. Restarting mid-loop defeats the cap. Read it afterwards with check_review_cap.`,
+    parameters: Type.Object({ key: KEY_PARAM }),
+    async execute(_id, raw) {
+      return reply(checkReviewCap((raw as { key: string }).key, { reset: true }));
     },
   });
 }

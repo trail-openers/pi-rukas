@@ -264,6 +264,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // Sorted after PROVIDER_LENS_*: "PROVIDER_R" > "PROVIDER_L".
   ms("PROVIDER_RETRY_FLOOR_MS", 60_000),
   ms("PROVIDER_RETRY_MAX_WAIT_MS", 1_800_000),
+  // #1313 — a headless PM question inside a running cycle: act on the default after this.
+  ms("QUESTION_DEADLINE_MS", 300_000),
   // #1101 — how long a group may wait on a sibling it depends on before the
   // queue caps the wait (`dependency-timeout`).
   ms("QUEUE_DEFER_CAP_MS", 1_800_000),
