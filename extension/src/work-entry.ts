@@ -36,7 +36,10 @@ import { renderQueueSummary, runWorkQueue } from "./work-queue.ts";
 
 export { parseWorkArgs, type WorkInvocation } from "./work-args.ts";
 
-type CycleFlags = Pick<WorkInvocation, "restart" | "mergeGrant" | "protectedGrant" | "headless">;
+/** #1260 — `signal`: the job's abort signal (`dispatch_kill`, `killAllJobs`), ending the cycle. */
+type CycleFlags = Pick<WorkInvocation, "restart" | "mergeGrant" | "protectedGrant" | "headless"> & {
+  signal?: AbortSignal;
+};
 
 /**
  * Test seams for the grouped entry path (#1101 fix-round).
@@ -54,7 +57,12 @@ export interface EntrySeams {
   /** Instead of `runWorkDriver` (a Pi-spawned cycle), for one group. */
   runDriver?: (
     primary: number,
-    ctx: { issues?: number[]; parallelCycles?: number; invocationStartRef?: string },
+    ctx: {
+      issues?: number[];
+      parallelCycles?: number;
+      invocationStartRef?: string;
+      signal?: AbortSignal;
+    },
   ) => Promise<void>;
 }
 
@@ -134,7 +142,7 @@ export async function runGroupedIssues(
   notify: (text: string) => void,
   seams?: EntrySeams,
 ): Promise<string> {
-  const { restart, mergeGrant, protectedGrant, headless } = flags;
+  const { restart, mergeGrant, protectedGrant, headless, signal } = flags;
   const bodiesByIssue = seams?.fetchBodies
     ? await seams.fetchBodies(repoRoot, issues)
     : await fetchIssueBodies(repoRoot, issues);
@@ -187,6 +195,7 @@ export async function runGroupedIssues(
     mergeGrant,
     protectedGrant,
     headless,
+    signal,
     ordering,
     issues,
     makeResult,
@@ -257,9 +266,9 @@ export async function launchWork(
       role: "work-driver",
       skipDeck: true,
       ownerKind: "driver" as const,
-      work: async () => {
+      work: async (signal) => {
         try {
-          await runSingleIssue(pi, repoRoot, soleIssue, flags);
+          await runSingleIssue(pi, repoRoot, soleIssue, { ...flags, signal });
           // #808 — record the outcome in the accumulating queue summary index.
           await recordSingleCycleOutcome(repoRoot, soleIssue);
           return makeResult(true, `Completed issue #${soleIssue}${restartTag}`, Date.now());
@@ -363,10 +372,13 @@ export async function runDriver(
     repoRoot: string;
     invocation: WorkInvocation;
     sink: WorkLaunchSink;
+    /** #1260 — the job's abort signal (see CycleFlags). */
+    signal?: AbortSignal;
   },
 ): Promise<DispatchResult> {
-  const { repoRoot, invocation, sink } = opts;
-  const { issues, ...flags } = invocation;
+  const { repoRoot, invocation, sink, signal } = opts;
+  const { issues, ...rest } = invocation;
+  const flags = { ...rest, signal };
   const { restart } = flags;
   const restartTag = restart ? " (restart — prior state wiped)" : "";
   const startMs = Date.now();
@@ -408,7 +420,7 @@ export async function runDriver(
   trace(`/work (grouped) → ${summary}`);
 
   try {
-    const summaryResult = await runGroupedIssues(pi, repoRoot, issues, invocation, (t) => {
+    const summaryResult = await runGroupedIssues(pi, repoRoot, issues, flags, (t) => {
       void notifyAgent(pi, t);
     });
     return makeResult(true, summaryResult, startMs);

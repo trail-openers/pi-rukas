@@ -96,6 +96,7 @@
  */
 
 import { fstatSync } from "node:fs";
+import { killLiveProcessGroups } from "./spawn-kill.ts";
 // The vocabulary is owned by the schema layer, not by the tracker that happens
 // to produce it: the validator reads the same tuple to reject an origin no
 // tracker could have written (workflow-state-events-exit-origin.ts).
@@ -204,6 +205,9 @@ function record(o: ExitOrigin): void {
 function restoreDefaultDisposition(sig: NodeJS.Signals): void {
   if (process.listenerCount(sig) === 1) {
     process.removeListener(sig, handlerFor(sig));
+    // #1260 — the process is about to die without an `exit` event: take the
+    // children that lead their own process groups with it.
+    killLiveProcessGroups();
     process.kill(process.pid, sig);
   }
 }
