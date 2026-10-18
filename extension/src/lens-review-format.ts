@@ -140,8 +140,8 @@ export interface LensReviewSummary {
  * `APPROVED` — only sub-threshold (or no) findings AND all lenses completed
  * with evidence. `ISSUES_FOUND` — a finding at or above the threshold.
  * `CRITICAL_ISSUES_FOUND` — any CRITICAL finding; it blocks regardless of the
- * threshold. `REVIEW_INCOMPLETE` — at least one lens failed all retry attempts
- * or was aborted without evidence: the review is incomplete and the user/PM
+ * threshold. `REVIEW_INCOMPLETE` — at least one lens failed all retry attempts,
+ * was ended at its run bound (#1564), or was aborted without evidence: the review is incomplete and the user/PM
  * must decide whether to retry the whole pass, override, or halt — never
  * silently downgrade a six-pass review to a five-pass one (#3).
  *

@@ -64,6 +64,12 @@ export function settledReapMs(): number {
   return envMs("PI_ENSEMBLE_SETTLED_REAP_MS", 60_000);
 }
 
+/** A lens child's bound (policy default 30 min, #1564). A lens ended at it is
+ *  not retried: its lane is recorded not-reviewed and the round is incomplete. */
+export function lensChildBoundMs(): number {
+  return envMs("PI_ENSEMBLE_LENS_BOUND_MS", 30 * MINUTE_MS);
+}
+
 /** Time between the wrap-up steer and the kill (policy: 10 min). */
 export function childBoundGraceMs(): number {
   return envMs("PI_ENSEMBLE_CHILD_BOUND_GRACE_MS", 10 * MINUTE_MS);

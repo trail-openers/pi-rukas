@@ -49,6 +49,7 @@
 
 import { notifyAgent } from "./agent-message.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
+import { childBoundGraceMs, lensChildBoundMs } from "./spawn-child-bound.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { MIN_USEFUL_MS } from "./work-driver-deadline.ts";
@@ -115,6 +116,19 @@ export function reviewFixDispatchBoundMs(
   const remaining = reviewRemainingMs(state, now);
   if (remaining === undefined) return undefined;
   return Math.min(Math.max(remaining, MIN_FIX_DISPATCH_MS), boundCeiling(requestedTimeoutMs));
+}
+
+/**
+ * #1242 / #1564 — each lens child's run bound: its own (30 min), shortened so
+ * the wrap-up steer lands a grace before the loop budget runs out and the kill
+ * at it. A round that crosses the cap ends there, its unfinished lanes
+ * not-reviewed, instead of every lens running on past it.
+ */
+export function lensRoundChildBoundMs(state: WorkState, now: number): number {
+  const own = lensChildBoundMs();
+  const remaining = reviewRemainingMs(state, now);
+  if (remaining === undefined) return own;
+  return Math.min(own, Math.max(MIN_FIX_DISPATCH_MS, remaining - childBoundGraceMs()));
 }
 
 /** Never lengthen a dispatch the caller already bounded. */

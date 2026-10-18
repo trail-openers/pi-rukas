@@ -15,7 +15,9 @@ export type WorkCapLiteral =
   | "adversarial-loop"
   | "round-cap"
   | "lens-review-timeout"
-  // A lens failed every retry, so the six-pass review is incomplete.
+  // A lens gave no verdict (failed, was stopped by a cap or its run bound, or
+  // returned silence), so the six-pass review is incomplete. The evidence
+  // names each such lane (#1564).
   // Distinct from the round cap: nothing capped, the review could not be
   // completed. This used to be reported as "adversarial-loop".
   | "review-incomplete"

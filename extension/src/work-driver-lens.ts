@@ -23,7 +23,7 @@ import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { recordLensResidualsPosted } from "./work-driver-draft-disclosure.ts";
 import { lastCapIsRearmFailure, rearmDraftForReview } from "./work-driver-draft-rearm.ts";
 import { lensCapKillEvent, lensTimingsOf } from "./work-driver-lens-capkill.ts";
-import { parkLensRoundNoFit } from "./work-driver-lens-fix-budget.ts";
+import { lensRoundChildBoundMs, parkLensRoundNoFit } from "./work-driver-lens-fix-budget.ts";
 import { applyLensVerdict } from "./work-driver-lens-verdicts.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
 import { recordResidualsPost } from "./work-driver-pr-gone.ts";
@@ -204,6 +204,7 @@ export async function runLens(
       // #1024 — the cycle's signal and group policy reach every lens child.
       signal: ctx.signal,
       processGroup: ctx.processGroup,
+      childBoundMs: lensRoundChildBoundMs(next, Date.now()), // #1242 / #1564
       pr: ps.prNumber, // the disclosure goes to this cycle's PR, merged or not
     });
     next = await recordResidualsPost(ctx, next, summary, round);
