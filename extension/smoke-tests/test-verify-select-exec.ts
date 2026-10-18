@@ -62,6 +62,8 @@ interface Scenario {
   base: string[];
   /** When set, the change run is killed at its bound. */
   killed?: boolean;
+  /** When set, only the first change run is killed at its bound; the rerun is green. */
+  killedFirst?: boolean;
   /** When set, the change run fails without writing a report (a tsc-style failure). */
   noReport?: boolean;
   /** When set, only the first change run fails without a report; the rerun is green. */
@@ -105,7 +107,7 @@ function stubExec(s: Scenario, calls: { change: number; probe: number }) {
         stderr: "",
       });
     }
-    if (!isProbe && s.killed) {
+    if (!isProbe && (s.killed || (s.killedFirst === true && calls.change === 1))) {
       throw Object.assign(new Error("killed"), {
         killed: true,
         timedOutKill: true,
@@ -275,6 +277,16 @@ const R = "smoke-tests/test-red.ts";
 {
   const r = await attempt("timeout", { change: {}, base: [], killed: true }, []);
   assert(!r.ok && r.calls.change === 1, "a run killed at its bound → blocks, not rerun");
+}
+// ci tier: a timed-out run is rerun once (as runVerifyFull's retry did), and a green rerun passes.
+{
+  const r = await attempt("ci-timeout-once", { change: {}, base: [], killedFirst: true }, [], true);
+  assert(r.ok && r.calls.change === 2, "ci: a run killed at its bound is rerun once and passes");
+}
+// ci tier: timing out twice still blocks.
+{
+  const r = await attempt("ci-timeout-twice", { change: {}, base: [], killed: true }, [], true);
+  assert(!r.ok && r.calls.change === 2, "ci: a run killed at its bound twice blocks");
 }
 
 // The ci tier runs the same attribution over the full suite.
