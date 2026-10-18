@@ -67,7 +67,8 @@ export function verifyEvidenceLines(state: WorkState, style: "markdown" | "chat"
   if (ev.baseline === undefined && ev.outputTail === undefined) return [];
   const md = style === "markdown";
   const lines: string[] = [md ? "### Verify output" : "Verify output:", ""];
-  if (ev.baseline !== undefined) lines.push(`${md ? "" : "  "}Baseline: ${ev.baseline}`, "");
+  if (ev.baseline !== undefined)
+    lines.push(`${md ? "" : "  "}Baseline: ${redactSecrets(ev.baseline).text}`, "");
   if (ev.outputTail !== undefined) {
     const tail = redactSecrets(ev.outputTail).text;
     const longest = Math.max(2, ...(tail.match(/`+/g) ?? []).map((r) => r.length));
