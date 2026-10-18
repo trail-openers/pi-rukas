@@ -112,6 +112,18 @@ export const CAP_HIT_FIXED_LITERALS = [
   "deadline",
   // #571 — a sibling cycle holds a path claim that overlaps this plan.
   "cross-group-conflict",
+  // #1101 — the queue, not a cycle, raised these: a group waited on a sibling
+  // past its bound and never dispatched. `dependency-parked` is the dependency
+  // settling non-merged (a wait cannot fix it); `dependency-timeout` is the
+  // wait outlasting its bound; `dependency-cycle` is the pre-pass verdict for a
+  // group inside an ordering loop; `queue-stranded` is the group still held in
+  // the wait list when a halt released every worker. All four name a group that
+  // wrote nothing, so the handoff must not send the operator to a diff — and the
+  // validator must know each literal or a re-entry of a live parked cycle halts
+  // on "unrecognised value" and tells the operator to delete the record.
+  "dependency-cycle",
+  "dependency-parked",
+  "dependency-timeout",
   // #754 — the plan step's own bound expired on the primary plan dispatch.
   "plan-timeout",
   // #819 — the plan-to-spec gate refused the plan (declared paths cover no
@@ -124,6 +136,11 @@ export const CAP_HIT_FIXED_LITERALS = [
   "repeat-finding-seam",
   // #1349 — the adversarial fix pass parked on its own checks.
   "fix-pass-park",
+  // #1101 — the group still held in the queue's wait list when a halt released
+  // every worker (`sweepStranded`). Fourth of the queue-raised family; the
+  // validator must know it or a re-entry of a stranded cycle halts on
+  // "unrecognised value".
+  "queue-stranded",
 ] as const satisfies readonly FixedCap[];
 
 // Compile-time exhaustiveness: a fixed cap in WorkCapLiteral but not listed

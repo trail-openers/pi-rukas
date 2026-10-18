@@ -5,27 +5,73 @@
  * parked / not-started / halted), the parked entry's `failedStep` and
  * `humanAction` on their own lines.
  *
- * `parkReason` and `humanActionFor` stay in work-queue.ts — they are the
- * queue's DECISION logic (which step died, what the operator must do),
- * not rendering; only this text builder moves.
+ * #1101 — the parked line has to say WHICH kind of park it is, because the two
+ * kinds ask the operator for opposite things. A cycle that ran and parked has a
+ * diff, a branch and findings to read; a group the queue never dispatched has
+ * none of those, and the same `⏸ … cap …` line for both sends someone to look
+ * for work that was never written. The glyph and the step suffix are therefore
+ * derived from the reason, not assumed from the outcome — see `parkMark`.
+ *
+ * `parkReason` and `humanActionFor` stay in work-queue.ts / work-queue-cap.ts —
+ * they are the queue's DECISION logic (which step died, what the operator must
+ * do), not rendering; only this text builder moves.
  */
 
+import { isQueueLevelPark } from "./work-queue-park-reason.ts";
 import type { QueueSummary } from "./work-queue.ts";
+
+/**
+ * The mark in front of a parked group, and whether to name a step after it.
+ *
+ * A queue-level park has no `failedStep` because nothing failed: no dispatch was
+ * made and no gate ran. Printing the group's last completed step there would
+ * imply the cycle got somewhere, which is the same false report the `humanAction`
+ * was fixed for. The distinct glyph is what makes the difference visible while
+ * skimming — an operator scanning for `⏸` to find work to salvage should not be
+ * shown groups that contain none.
+ *
+ * #1101 fix-round — the return is just the glyph. It used to carry a `step`
+ * field that every branch set to `""`, so the `queued ? step : …` ternary below
+ * could only ever print nothing for a queue-level park — the behaviour is
+ * correct and was always correct, and the field was a second place a reader
+ * could believe a step existed.
+ */
+function parkMark(reason: string | undefined): string {
+  return isQueueLevelPark(reason) ? "◌" : "⏸";
+}
+
+/** Groups the queue parked without ever dispatching them (#1101). */
+function neverDispatchedCount(s: QueueSummary): number {
+  return s.entries.filter((e) => e.outcome === "parked" && isQueueLevelPark(e.reason)).length;
+}
 
 /** Render the end-of-queue report. One entry per group. */
 export function renderQueueSummary(s: QueueSummary): string {
+  // #1101 — `parked` alone hides the distinction that matters most here. Of
+  // two parked groups, one may have a branch, a PR and three rounds of review
+  // findings, and the other may have produced literally nothing. Counting them
+  // together under one word is how an operator decides to go look for salvage
+  // that is not there, so the headline breaks the number out when any of the
+  // parks is the never-dispatched kind.
+  const never = neverDispatchedCount(s);
   const lines = [
     `pi-rukas: /work queue finished — ${s.merged} merged, ${s.parked} parked${
-      s.refused > 0 ? `, ${s.refused} did not start` : ""
-    }${s.notStarted.length > 0 ? `, ${s.notStarted.length} never reached` : ""}`,
+      never > 0 ? ` (${never} never dispatched)` : ""
+    }${s.refused > 0 ? `, ${s.refused} did not start` : ""}${
+      s.notStarted.length > 0 ? `, ${s.notStarted.length} never reached` : ""
+    }`,
   ];
   for (const e of s.entries) {
     const issues = `#${e.issues.join(", #")}`;
     if (e.outcome === "merged") {
       lines.push(`  ✓ ${e.groupId} (${issues}) — merged`);
     } else if (e.outcome === "parked") {
+      const glyph = parkMark(e.reason);
+      const queued = isQueueLevelPark(e.reason);
       lines.push(
-        `  ⏸ ${e.groupId} (${issues}) — ${e.reason}${e.failedStep ? ` at ${e.failedStep}` : ""}`,
+        `  ${glyph} ${e.groupId} (${issues}) — ${e.reason}${
+          queued ? "" : e.failedStep ? ` at ${e.failedStep}` : ""
+        }`,
       );
       if (e.humanAction) lines.push(`      → ${e.humanAction}`);
     } else if (e.outcome === "not-started") {

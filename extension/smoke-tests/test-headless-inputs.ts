@@ -81,7 +81,8 @@ import { prPreflightEnabled } from "../src/work-driver-pr-preflight.ts";
 import { resumeEnabled, sessionReattachEnabled } from "../src/work-driver-resume.ts";
 import { stepNoticeThresholdMs } from "../src/work-driver-step-notice.ts";
 import { testDeleteTolerance, verifyTimeoutMs } from "../src/work-driver-verify-develop-helpers.ts";
-import { queueHaltOnFailure } from "../src/work-queue.ts";
+import { queueDeferCapMs, queueHaltOnFailure } from "../src/work-queue.ts";
+import { queueOrderingEnabled } from "../src/work-queue-scheduler.ts";
 import { wrapperEnvReads } from "./lib/wrapper-env-reads.ts";
 
 let exit = 0;
@@ -352,7 +353,9 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_POLICY_JUDGE", policyJudgeEnabled],
   ["PI_ENSEMBLE_PR_PREFLIGHT", prPreflightEnabled],
   ["PI_ENSEMBLE_PROTECTED_PATHS", protectedPathsEnabled],
+  ["PI_ENSEMBLE_QUEUE_DEFER_CAP_MS", () => queueDeferCapMs()],
   ["PI_ENSEMBLE_QUEUE_HALT_ON_FAILURE", queueHaltOnFailure],
+  ["PI_ENSEMBLE_QUEUE_ORDERING", queueOrderingEnabled],
   ["PI_ENSEMBLE_RESUME", resumeEnabled],
   ["PI_ENSEMBLE_REVIEW_CAP_MS", () => reviewCapMs()],
   ["PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS", () => reviewWallClockMs()],
