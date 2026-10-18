@@ -76,6 +76,11 @@ export function liveCycles(): number[] {
   return [...new Set(held.values())].sort((a, b) => a - b);
 }
 
+/** Every issue a live cycle in this process holds, ascending (#1361). */
+export function liveCycleIssues(): number[] {
+  return [...held.keys()].sort((a, b) => a - b);
+}
+
 /**
  * The live cycle whose worktree `cwd` is, or is inside — undefined when none.
  *

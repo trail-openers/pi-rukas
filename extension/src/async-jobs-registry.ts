@@ -4,6 +4,7 @@
  * dispatch_peek / dispatch_steer use to resolve a jobId to live state.
  */
 import type { Writable } from "node:stream";
+import { liveCycleIssues } from "./work-driver-registry.ts";
 
 export type JobKind = "single" | "batch-member" | "batch-orchestrator";
 
@@ -274,6 +275,30 @@ export function isDriverOwnedJob(jobId: string): boolean {
 /** What every PM-facing surface says about a driver-owned child. */
 export const DRIVER_OWNED_NOTICE =
   "This is the running /work driver's own child, NOT a job you dispatched: the driver chose its worktree and brief, is awaiting it, and retries or parks by itself when it fails. Slow is not wrong — do not kill it to re-dispatch your own, and never dispatch a developer or ops into the cycle's worktree.";
+
+/** "#112" / "#10, #11" — the issues the live cycles in this process own. */
+function liveIssuesText(): string {
+  return liveCycleIssues()
+    .map((n) => `#${n}`)
+    .join(", ");
+}
+
+/**
+ * DRIVER_OWNED_NOTICE plus the issues the live cycle owns (#1361). Without
+ * them a PM named the child's issue from memory, got it wrong, and spent
+ * twelve minutes working an issue the cycle was never given.
+ */
+export function driverOwnedNotice(): string {
+  const issues = liveIssuesText();
+  if (!issues) return DRIVER_OWNED_NOTICE;
+  return `${DRIVER_OWNED_NOTICE} The /work cycle in this session owns ${issues} and no other issue: this child works on that, whatever number you remember.`;
+}
+
+/** The short owner tag on dispatch_status and dispatch_peek rows. */
+export function driverOwnerTag(): string {
+  const issues = liveIssuesText();
+  return `owned by the /work driver${issues ? ` (cycle ${issues})` : ""}, not you`;
+}
 
 /**
  * Job-issue mapping — associates a jobId with the GitHub issue(s) it is
