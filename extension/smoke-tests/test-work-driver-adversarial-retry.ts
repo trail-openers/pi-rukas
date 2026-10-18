@@ -31,6 +31,7 @@ function assert(cond: boolean, msg: string) {
 // loopFn + rejecting dispatchFn), so no real spawn can start; these caps
 // only keep any accidental path from hanging the suite.
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
+process.env.PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS = "0";
 process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
