@@ -3,7 +3,7 @@
 `pi-rukas-headless` runs `/work` cycles without an interactive Pi session. It is invoked as:
 
 ```
-pi-rukas-headless work <issue> [more issues] [--restart] [--timeout <minutes>] [--json]
+pi-rukas-headless work <issue> [more issues] [--restart] [--continue-pr] [--timeout <minutes>] [--json]
 pi-rukas-headless plan <descriptor> (--dry-run | --file) [--type <t>] [--context <text>] [--reviewed-digest <d>] [--json]
 pi-rukas-headless research <topic> [--tier quick|standard|deep|adoption] [--context <text>] [--json]
 pi-rukas-headless agents-md <create|update|check> [root] [file] [--deep] [--json]
@@ -128,6 +128,7 @@ With `--json`, stdout carries exactly one JSON document:
 | `issues[].branch`, `prNumber`, `prUrl` | when known | `prUrl` is present only when unambiguous: the PR URL the driver recorded (its handoff comment on the PR), else one built from the project's git remote when there is exactly one remote, the forge is GitHub or GitLab, and the web address is certain (an `http(s)` remote, or ssh to github.com / gitlab.com; GitLab subgroups and explicit https ports are kept). Otherwise only `prNumber` is set. |
 | `issues[].usage` | when a state existed | Tokens, cost and turns summed over every dispatch the cycle recorded (`dispatch-completed`, `dispatch-failed` and `dispatch-failed-provider` events), and the dispatch count. It covers the current cycle only: `--restart` discards the state, so earlier cycles' cost is not included. `usage.byRole` (#1368, added in this release) holds the same seven numbers per dispatch `role` (the `role` on the `dispatch-*` events, e.g. `developer`, `adversarial`), summed over the same dispatches, failed ones included, so its rows add up to the total. |
 | `issues[].resumable` | always | `true` when running `work <issue>` again **without** `--restart` continues this cycle (it was interrupted, or stopped while running). Always `false` on a refusal (exit 40: another live process owns the cycle, so a re-run is refused again until it ends) and when `PI_ENSEMBLE_RESUME=0`. A terminal cycle needs `--restart` for a fresh one. |
+| `issues[].continuedPr` | when a `--continue-pr` cycle reached the branch step | The PR it continued (#1468): `number`, `headRefName`, `startHeadSha` (the PR head when the run started) and `mainlineSha` (the mainline commit merged into it). See [`--continue-pr` for hosts](#--continue-pr-for-hosts). |
 | `issues[].stateFile` | always | A path for a person to inspect. Not a host contract: see below. |
 | `issues[].questions` | exit 11 only | The clarification questions, numbered `q1`, `q2`, … |
 | `issues[].diverged` | on divergence | The in-memory and on-disk states disagreed; the exit code is 30. |
@@ -135,7 +136,7 @@ With `--json`, stdout carries exactly one JSON document:
 
 An optional top-level `error` (`{ code, message }`) is present when the runner detected a divergence (e.g. `state-diverged`) or another runner-level failure.
 
-`resources` (#1325, added in this release; an additive field, so no schema bump) is the host budget and the parallelism limits the run chose — see [Resource report](#resource-report). `failure` (#1367) and `usage.byRole` (#1368) are additive fields too, so the schema stays at 3; a host detects them with `features.failureReason` and `features.usageByRole` in `--capabilities`.
+`resources` (#1325, added in this release; an additive field, so no schema bump) is the host budget and the parallelism limits the run chose — see [Resource report](#resource-report). `failure` (#1367), `usage.byRole` (#1368) and `continuedPr` (#1468) are additive fields too, so they need no schema bump; a host detects them with `features.failureReason`, `features.usageByRole` and `features.continuePr` in `--capabilities`.
 
 ### The `failure` object
 
@@ -345,12 +346,45 @@ What `--restart` does:
 
 What `--restart` does not reset or check:
 
-- **The forge.** An open PR for the issue is found and reused (`PI_ENSEMBLE_PR_PREFLIGHT`), not duplicated.
+- **The forge.** An open PR for the issue is not duplicated. Without `--continue-pr` the run stops at the branch step with the cap `existing-pr-detected` (`PI_ENSEMBLE_PR_PREFLIGHT=0` turns that check off). With [`--continue-pr`](#--continue-pr-for-hosts) the run continues that PR.
 - **Worktrees and branches.** A leftover worktree with no uncommitted or unpushed work is recreated, and one that holds work is refused (see [troubleshooting.md](troubleshooting.md)).
 - **The intent-park record.** A restart that parks again for the same reason, on the same issue text and commit, links the earlier park comment instead of posting a new one.
 - **Nothing about a live cycle.** `--restart` skips the check for another live process that owns the issue (that check is part of resuming). A host must never restart an issue it is still running; wait for the first run to exit.
 
 Use `--restart` only when a person, or the host acting on a person's answer, has dealt with the handoff. Passing it on every run turns the gate off entirely, and the same handoff repeats.
+
+## `--continue-pr` for hosts
+
+`work <issue> --continue-pr` (#1468) continues the issue's open pull request instead of stopping on `existing-pr-detected`. A host uses it to refresh a PR that has fallen behind or conflicts with the mainline. The flag is additive: without it, nothing changes.
+
+What it does:
+
+- **Finds the PR.** Before explore, it lists the open PRs (`gh pr list --state open --limit 500`) and keeps those that close the issue in their body or name it in their branch. Exactly one must match, its head must be in the same repository, and its base must be the mainline. Otherwise the run stops before the branch step with one of the caps below, and nothing is written.
+- **Merges the mainline into the PR head.** The branch step checks out the PR head as it is on the remote and merges `origin/<mainline>` into it with a merge commit. It never rebases. A conflicted merge is left in progress in the worktree, and the developer is told to resolve the markers and finish the merge, and to do no other work. The base of the cycle is the mainline tip, so the gates and the reviews judge the PR's whole diff against the mainline.
+- **Pushes a fast-forward.** At commit-pr the PR branch is fast-forwarded to the result and pushed with a plain push. It never force-pushes, never opens a second PR and never runs the ops fallback. The PR's title and body are not changed.
+- **Stops if someone else pushes.** At the start of each later step, and before a lens-fix round moves its worktree, it checks that the remote head is still one of its own commits. A push someone else made in between is rejected, never overwritten. If someone else pushed to it, deleted it or rewound it, the run stops on `continue-pr-head-moved`.
+
+Limits:
+
+- **One issue.** `--continue-pr` with more than one issue is refused with exit 40 (`bad-arguments`).
+- **A terminal state still needs `--restart`.** A `merged`, `handoff` or `aborted` state file is refused with exit 40 as before. Pass `--restart --continue-pr` to run the issue again.
+- **`PI_ENSEMBLE_PR_PREFLIGHT` is ignored.** The lookup always runs in this mode.
+- **A red mainline parks the refresh.** When the verify command already fails at the mainline tip, commit-pr stops on `integration-verify-failed` and nothing is pushed. Fix the mainline first.
+- **At most 500 open PRs.** A full page cannot prove that only one PR matches, so the lookup fails closed with `continue-pr-not-found`.
+- **GitHub only.** Another forge gives `continue-pr-not-found`.
+
+The caps (each has a row in [troubleshooting.md](troubleshooting.md)):
+
+| Cap | When | Before the branch step |
+|---|---|---|
+| `continue-pr-ambiguous` | Two or more open PRs match the issue. `evidence` lists them. | yes |
+| `continue-pr-fork` | The one match comes from a fork. | yes |
+| `continue-pr-not-found` | No PR matches, or the lookup could not prove exactly one (a `gh` error, unreadable output, a full page, a forge that is not GitHub). | yes |
+| `continue-pr-unsafe-head` | The head branch name is unsafe or is the mainline, the PR's base is not the mainline, the local branch is ahead of or diverged from the PR head, or another worktree holds the branch at another commit. | yes |
+| `continue-pr-head-moved` | The PR head changed after the lookup, or someone else pushed to it, deleted it or rewound it during the run. | no |
+| `continue-pr-unresolved` | At commit-pr the merge is still unfinished: a conflict, a leftover conflict marker, or a history that no longer has the PR head as its first parent. Nothing is pushed and the worktree is kept. | no |
+
+Any other failure in this mode stops on `step-failed:branch` or `step-failed:commit-pr`. A successful run ends like any other cycle that opened a PR, usually `awaiting-human-merge` with exit 10, and the result carries `issues[].continuedPr`. A host detects the flag with `verbs.work.flags` and `features.continuePr` in `--capabilities`.
 
 ## `--capabilities` answer
 
@@ -379,7 +413,7 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
     }
   },
   "verbs": {
-    "work": { "flags": ["--restart", "--json", "--timeout"] },
+    "work": { "flags": ["--restart", "--continue-pr", "--json", "--timeout"] },
     "plan": { "flags": ["--dry-run", "--file", "--type", "--context", "--reviewed-digest", "--json"] },
     "research": { "flags": ["--tier", "--context", "--json"] },
     "agents-md": { "flags": ["--deep", "--json"] },
@@ -404,7 +438,8 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
     "handoffChannel": true,     // #1327 — PI_ENSEMBLE_HANDOFF_CHANNEL=host
     "restartClearsAttention": true, // #1327 — --restart clears needs-human-attention
     "failureReason": true,      // #1367 — issues[].failure in the result
-    "usageByRole": true         // #1368 — issues[].usage.byRole in the result
+    "usageByRole": true,        // #1368 — issues[].usage.byRole in the result
+    "continuePr": true          // #1468 — work --continue-pr and issues[].continuedPr
   },
   "resources": { … }            // #1325 — the host budget and limits; see Resource report
 }
@@ -439,6 +474,7 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
 | `features.restartClearsAttention` | Constant `true` | `true` when `--restart` overrides the attention gate and clears `needs-human-attention` (#1327). See [`--restart` for hosts](#--restart-for-hosts). |
 | `features.failureReason` | Constant `true` | `true` when the result carries `issues[].failure`, the reason behind its `cap` (#1367). |
 | `features.usageByRole` | Constant `true` | `true` when the result's `usage` carries `byRole`, failed dispatches included (#1368). |
+| `features.continuePr` | Constant `true` | `true` when `work` accepts `--continue-pr` and the result carries `issues[].continuedPr` (#1468). See [`--continue-pr` for hosts](#--continue-pr-for-hosts). |
 | `resources` | `resourceReport()` (`resource-budget.ts`) | The host budget and the limits a cycle started now would run with, read when the answer is built. See [Resource report](#resource-report). |
 
 ### How a caller uses this
