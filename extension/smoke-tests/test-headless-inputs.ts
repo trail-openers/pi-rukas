@@ -35,6 +35,7 @@ import { commentRetentionEnabled } from "../src/comment-retention.ts";
 import { COMMENT_RETENTION_PATHS } from "../src/comment-retention.ts";
 import { buildCapabilities } from "../src/headless/capabilities.ts";
 import { HEADLESS_FILES, HEADLESS_INPUTS, type HostInput } from "../src/headless/inputs.ts";
+import { hostSpawnCap, hostSpawnWaitMs } from "../src/host-spawn-slots.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../src/lens-evidence.ts";
 import { lensRoundCap } from "../src/lens-round-cap.ts";
 import { loopDetectorEnabled } from "../src/loop-detector.ts";
@@ -341,6 +342,8 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_SLOW_NOTICE_TOKENS", () => slowThresholds().tokens],
   ["PI_ENSEMBLE_SLOW_NOTICE_TURNS", () => slowThresholds().turns],
   ["PI_ENSEMBLE_SPAWN_CAP", spawnCap],
+  ["PI_ENSEMBLE_HOST_SPAWN_CAP", hostSpawnCap],
+  ["PI_ENSEMBLE_HOST_SPAWN_WAIT_MS", hostSpawnWaitMs],
   ["PI_ENSEMBLE_SPAWN_TIMEOUT_MS", spawnBackstopMs],
   ["PI_ENSEMBLE_STEP_NOTICE_MS", stepNoticeThresholdMs],
   ["PI_ENSEMBLE_TEST_DELETE_TOLERANCE", testDeleteTolerance],
