@@ -18,6 +18,16 @@ import type { WorkState } from "./workflow-state-schema.ts";
  */
 export const FIX_PASS_EVIDENCE_PREFIX = "adversarial fix pass: ";
 
+/**
+ * #1543 — the `evidence` prefix of an `integration-worktree-violation` cap the
+ * commit-pr fallback raises when it could not CREATE the integrate worktree.
+ * The same cap also reports the post-dispatch branch-holder audit (#861), and
+ * the renderers told the audit's story — an ops child in the wrong tree — for a
+ * `git worktree add` that failed before any ops child existed. One constant,
+ * both sides.
+ */
+export const INTEGRATE_CREATE_FAILED_PREFIX = "integrate worktree could not be created: ";
+
 /** Leads the failure string of a commit-pr re-entry refused on a PR that is not open. */
 export const PR_NOT_OPEN_MARKER = "[pr-not-open]";
 

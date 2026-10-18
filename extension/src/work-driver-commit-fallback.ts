@@ -23,6 +23,7 @@ import { integrateWorktreePath } from "./work-driver-integrate-worktree.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCommitPrPrompt } from "./work-driver-prompts-late.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
+import { INTEGRATE_CREATE_FAILED_PREFIX } from "./workflow-state-cap.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
 import { workStateFile } from "./workflow-state.ts";
@@ -176,7 +177,7 @@ export async function ensureIntegrateWorktreeOrHalt(
     trace(
       `work-driver: integrate worktree creation failed — halting (no unpinned ops dispatch): ${detail.slice(0, 200)}`,
     );
-    const capBody = `integrate worktree could not be created: ${detail.slice(0, 200)}`;
+    const capBody = `${INTEGRATE_CREATE_FAILED_PREFIX}${detail.slice(0, 200)}`;
     // #1173 — the ref travels on the error (ensureIntegrateWorktree attaches
     // it), so the handoff names it without parsing the message.
     const backupRef = err.backupRef;
