@@ -330,6 +330,11 @@ export type WorkEvent =
        */
       parkReason?: string;
       /**
+       * #1561 — on an `already-implemented` intent park, the cited PR the
+       * forge reported OPEN: the work awaits review, so the issue is not done.
+       */
+      awaitingReviewPr?: number;
+      /**
        * What the driver will do next: "handoff" (terminal), "step-back"
        * (Step 7h), or "ci" (Step 8).
        *

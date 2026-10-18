@@ -156,6 +156,8 @@ An optional top-level `error` (`{ code, message }`) is present when the runner d
 
 Every text field has secrets redacted before it is cut to its bound.
 
+On an `intent-park` (#1561), `message` names the park reason and the evidence the park rests on, e.g. `intent-park (already-implemented): PR #12 (MERGED) — …` or `… commit 58c2bf4 — …`; `evidence` adds the resolver's decisive rows and rationale. A cited PR's state is read from the forge (`state not read` when it could not be). When an `already-implemented` park rests on an OPEN PR, the message says the work is awaiting review in that PR rather than that the issue is done.
+
 A failed dispatch is read only for the caps a failed dispatch causes (`step-failed:<step>`, `adversarial-infra-failure`, `provider-unavailable`, `developer-timeout`, `review-incomplete`, `loop-detected`, `token-budget`, `plan-timeout`): the last `dispatch-failed*` event between the start of the stopped step's last run and the cap. Usually its kind wins over the cap's — except for `provider-unavailable` and `develop-child-crash`, whose kind comes from the cap even when a failed dispatch exists to explain them. For `provider-unavailable` that matters on a multi-attempt outage: the cap is only chosen when the dispatch that ENDED the step was itself severed by the provider or hit a short-burst 429, and a rung of the ladder that died of something else must not relabel the park.
 
 | `kind` | Meaning |
