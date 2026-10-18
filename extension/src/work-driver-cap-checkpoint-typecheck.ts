@@ -176,14 +176,24 @@ export function sanitiseReason(raw: string): string {
 }
 
 /** The last few non-empty lines of a failure, bounded — the record is an
- * operator-facing note, not a log. */
+ * operator-facing note, not a log.
+ *
+ * #1414 round 3 — routed through {@link sanitiseReason} like `why` is. Both
+ * strings land in the same two operator-facing surfaces (the handoff bullet and
+ * the status file), and before this only one of them was cleaned: a `detail`
+ * kept its embedded newlines and ANSI escapes, so the same child output broke
+ * the markdown list item in one field and not the other. `sanitiseReason`
+ * bounds to 200 chars (tighter than the 240 the join could produce); the line
+ * selection is the part `detail` keeps and the reason does not have.
+ */
 function evidenceTail(text: string): string {
-  return text
-    .split("\n")
-    .filter((l) => l.trim().length > 0)
-    .slice(-6)
-    .join(" | ")
-    .slice(0, 240);
+  return sanitiseReason(
+    text
+      .split("\n")
+      .filter((l) => l.trim().length > 0)
+      .slice(-6)
+      .join(" | "),
+  );
 }
 
 /**
@@ -202,14 +212,13 @@ function evidenceTail(text: string): string {
  * caller and passed in rather than re-read here: `verifyTimeoutMs()` reads the
  * environment, so a classifier that called it itself could name a bound other
  * than the one the command was actually bounded by — the same two-sources-of-
- * truth shape #1414 is about, one layer down. The default keeps the function
- * callable standalone (the pure classifier tests) and is the same value the
- * run site captures.
+ * truth shape #1414 is about, one layer down. It is a REQUIRED parameter, not
+ * one defaulted from the same environment helper it exists to bypass: a default
+ * is a second source that fires silently whenever a caller forgets it, which is
+ * the defect the parameter closes. The one pure-classifier caller that has no
+ * run behind it passes `verifyTimeoutMs()` explicitly.
  */
-export function classifyTypecheckRejection(
-  err: unknown,
-  timeoutMs: number = verifyTimeoutMs(),
-): TypecheckOutcome {
+export function classifyTypecheckRejection(err: unknown, timeoutMs: number): TypecheckOutcome {
   // The checkpoint is contractually non-throwing and a rejection may be a
   // non-Error, so every field is read through a guard, never blind.
   const e = (err ?? {}) as {
@@ -235,13 +244,20 @@ export function classifyTypecheckRejection(
   // through to the verdict arms below. Checked BEFORE the diagnostic test on
   // purpose — a compiler killed mid-run can have printed TS errors for the
   // files it got through, and those describe a partial run, not a verdict.
+  //
+  // The flags are the ENTIRE contract — the message fallback this arm used to
+  // carry (`/timed out after/i.test(message)") is gone. A message is the
+  // compiler's own prose, and a `tsc` run that printed that phrase was reported
+  // to the operator as a stalled run whose bound fired when nothing of the kind
+  // happened. The executors that kill at a bound stamp the flags (`exec.ts`
+  // `groupKillError`, `exec-tree.ts`), so the fallback never carried a real
+  // timeout the flags do not already cover; it only ever widened the arm.
   if (
     isTimedOutKill({
       killed: e.killed === true,
       ...(typeof e.timedOutKill === "boolean" ? { timedOutKill: e.timedOutKill } : {}),
       ...(typeof e.overflow === "string" ? { overflow: e.overflow } : {}),
-    }) ||
-    /timed out after/i.test(message)
+    })
   ) {
     return {
       verdict: undefined,
@@ -312,7 +328,10 @@ export async function typecheckWorktree(cwd: string, run: DriverExecFn): Promise
     };
   }
   // The bound is captured ONCE and threaded into the classifier, so the reason
-  // can only ever name the bound this run was given.
+  // can only ever name the bound this run was given. The classifier takes it as
+  // a REQUIRED parameter (round 3) — an unrun check has no bound of its own, so
+  // this call names the run's configured bound explicitly rather than letting a
+  // default read the environment behind the caller's back.
   const timeoutMs = verifyTimeoutMs();
   try {
     await withVerifySlot(() =>
