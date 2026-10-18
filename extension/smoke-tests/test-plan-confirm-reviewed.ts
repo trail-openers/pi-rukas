@@ -11,15 +11,20 @@
  * entry so a repeated confirm cannot file the same spec twice.
  */
 
-import { mkdir, readdir, rm, utimes } from "node:fs/promises";
+import {
+  mkdir,
+  readdir,
+  rm,
+  utimes } from "node:fs/promises";
 import path from "node:path";
 import { fileReviewedDryRun } from "../src/plan-confirm.ts";
 import {
   claimFileableDryRun,
   concurrentFilingOf,
   reviewedDigestOf,
-} from "../src/plan-filing-claim.ts";
-import { type RegisteredPlanTool, registerPlanTool } from "../src/plan-tool.ts";
+  } from "../src/plan-filing-claim.ts";
+import { type RegisteredPlanTool,
+  registerPlanTool } from "../src/plan-tool.ts";
 import { FORGE_BODY_MAX } from "../src/plan-validate.ts";
 import {
   DESC,
@@ -39,6 +44,7 @@ import {
   newPlanCache,
   pipeline,
   teardownPlanCache,
+  makeJobDeliverer,
 } from "./plan-test-stubs.ts";
 
 let exit = 0;
@@ -209,7 +215,10 @@ assert(
 {
   const tools: RegisteredPlanTool[] = [];
   // biome-ignore lint/suspicious/noExplicitAny: minimal stub; only registerTool is used
-  registerPlanTool({ registerTool: (d: RegisteredPlanTool) => tools.push(d) } as any);
+  registerPlanTool({
+    registerTool: (d: RegisteredPlanTool) => tools.push(d),
+    ...makeJobDeliverer(),
+  } as any);
   await newPlanCache();
   installCountingDispatch(GAP_HIGH);
   const dryOut = await invokePlanTool(tools, { descriptor: DESC, dryRun: true });

@@ -2250,6 +2250,17 @@ The `/plan` driver (`start_plan_driver`) used to serialize four dispatch barrier
 - Every plan child is bounded at **30 minutes** (`PLAN_DISPATCH_TIMEOUT_MS`) instead of the 2-hour spawn backstop, and runs with `cwd` pinned to the repo root. (Initially 8 minutes; raised 2026-09-09 after a live fixture run killed two heavy investigation angles at exactly 8m00s under concurrent load — killing a child loses its whole context, and the operator's historical floor for agent runs is 30 min.)
 - The tool result ends with a `=== TIMINGS ===` line (per-phase wall clock: inventory / investigate / gap-gate / filing / total).
 
+### The call returns a notice, not a result (#1044)
+
+`start_plan_driver` and `start_research_driver` run the pipeline in a background job. The tool returns within milliseconds with a launch notice carrying a `jobId` and **no verdict at all** — that is the contract, not a failure. The rendered result arrives later as a user message beginning `[ensemble:async]`, naming the same `jobId`.
+
+Symptoms people hit, and what they actually mean:
+
+- **"It returned 'started' and nothing happened."** Correct so far — check whether the steer arrived. The run takes minutes; the harness says so in the notice. Re-calling the tool to "check progress" starts a SECOND run (a second set of child tokens, a second ticket) and is the wrong move; `dispatch_status` is the one-shot look (metadata only, and it says so), or wait for the steer.
+- **"I killed it and got no reply."** A killed run is still owed its report: the steer says `PLAN CANCELLED` / `RESEARCH CANCELLED` and names who killed it (`dispatch_kill` vs a session teardown). A killed run never files and never reports a verdict it did not earn.
+- **"A dry run returned, so I have a digest."** No — the dry run's `reviewedDigest` is on its **report**, not on the launch notice. A confirm that echoes a digest it never received, or echoes one from a different run, is refused. Wait for the dry run's steer, then confirm with the digest it carried.
+- **"Too many jobs running."** With 50 jobs live the tools refuse with `started: false, error: "jobs-saturated"` and no `jobId`. Nothing launched, so nothing is owed a steer; finish or kill an existing job and re-call.
+
 ### A plan child hit the 30-minute bound
 
 The dispatch is killed and routed through paths that already existed: an angle fails closed (`ok=false`; if ALL angles fail, the pipeline halts with `skipped-all-angles-failed` and files nothing), a timed-out duplicate-risk child yields no risk verdict (traced, pipeline proceeds), and a timed-out gap-gate reviewer routes `gate-unavailable` (spec NOT filed — no reviewer saw it; re-run `start_plan_driver`). A child that repeatedly times out usually means a hung tool call or a suspended host (see "Host suspend is not a provider failure" in AGENTS.md §7) — check the per-phase timings line to see which phase ate the budget.
@@ -2264,7 +2275,7 @@ The deterministic pre-triage (`plan-precheck.ts`) fired: the descriptor is below
 
 ### "PLAN NOT FILED — THE REVIEWED SPEC CHANGED"
 
-A confirm echoed a dry run's `reviewedDigest`, but the reviewed spec could not be filed verbatim — the reason is in the result (the dry run expired, origin/<default> moved, or no cached dry run was found, e.g. in a fresh clone). The full pipeline re-ran and drafted different bytes, so nothing was filed: the confirmation covered the reviewed spec, not the new one. Show the new spec and confirm with the new `reviewedDigest`. For long gaps between dry run and confirm, set `PI_ENSEMBLE_PLAN_CACHE_TTL_MS` (`0` = no expiry); for a fresh clone per turn, set `PI_ENSEMBLE_PLAN_CACHE_DIR` to a directory outside the clone; a confirm then files verbatim as long as origin/<default> has not moved since the dry run ([#1224](https://github.com/trail-openers/pi-rukas/issues/1224)).
+A confirm echoed a dry run's `reviewedDigest`, but the reviewed spec could not be filed verbatim — the reason is in the result (the dry run expired, origin/<default> moved, or no cached dry run was found, e.g. in a fresh clone). The full pipeline re-ran and drafted different bytes, so nothing was filed: the confirmation covered the reviewed spec, not the new one. Show the new spec and confirm with the new `reviewedDigest` — read from the dry run's **delivered report**, which is where it actually arrives since #1044 (a confirm launched off a launch notice's placeholder digests nothing). For long gaps between dry run and confirm, set `PI_ENSEMBLE_PLAN_CACHE_TTL_MS` (`0` = no expiry); for a fresh clone per turn, set `PI_ENSEMBLE_PLAN_CACHE_DIR` to a directory outside the clone; a confirm then files verbatim as long as origin/<default> has not moved since the dry run ([#1224](https://github.com/trail-openers/pi-rukas/issues/1224)).
 
 ### Chore/spike tickets skip the adversarial gap gate
 

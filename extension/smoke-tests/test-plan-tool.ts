@@ -37,6 +37,7 @@ import {
   gatePrompts,
   installNoPlanCacheStub,
   invokePlanTool,
+  makeJobDeliverer,
   setPlanVipuneStub,
 } from "./plan-test-stubs.ts";
 installNoPlanCacheStub();
@@ -53,11 +54,15 @@ function assert(cond: boolean, msg: string) {
 // ------------------------------------------------------------- registration
 
 const tools: RegisteredPlanTool[] = [];
-// biome-ignore lint/suspicious/noExplicitAny: minimal stub; only registerTool is used
+// #1044: the tool now launches a background job, and a job's report is handed
+// to the pi it was REGISTERED on. A stub with only `registerTool` gets that
+// delivery WARN'd away by deliverReport, so the harness would wait forever.
+// biome-ignore lint/suspicious/noExplicitAny: minimal stub; registerTool + delivery only
 const fakePi = {
   registerTool(def: RegisteredPlanTool) {
     tools.push(def);
   },
+  ...makeJobDeliverer(),
 } as any;
 
 registerPlanTool(fakePi);
