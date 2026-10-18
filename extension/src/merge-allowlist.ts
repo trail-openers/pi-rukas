@@ -354,6 +354,24 @@ function parse(g: ForgeGrammar, words: string[]): MergeCommand {
  */
 const BODY_FLAGS = new Set(["--body", "-b"]);
 
+/**
+ * The value of a glued short-flag token, or undefined: `w` must start with a
+ * single `-` followed by a single letter (never `--`), and everything after
+ * the flag letter, cut at the first `=` (an `=`-suffix is getopt glue, not
+ * value), must be non-empty after trim. `-bmerge` → `merge`; `-bmerge=1` →
+ * `merge`; `-bx` → `x`; `-b` → undefined (no value). Single source of the
+ * "this is a glued short flag with value V" rule — merge-trigger.ts's
+ * gluedView shares it; where the call sites differ (raw command tokens vs
+ * the cleaned word list, re-emission vs a boolean) the caller applies its
+ * own predicate to the returned value.
+ */
+export function gluedShortValue(w: string): string | undefined {
+  if (w.length < 3 || w[0] !== "-" || w[1] === "-") return undefined;
+  const eq = w.indexOf("=");
+  const value = (eq > 0 ? w.slice(2, eq) : w.slice(2)).trim();
+  return value === "" ? undefined : value;
+}
+
 /** Whether `w` is one of the inline body flags in any getopt spelling. */
 function isBodyFlag(w: string): boolean {
   // The spaced form (`-b merge`) and the long `=`-prefixed form (`--body=x`)
@@ -365,10 +383,10 @@ function isBodyFlag(w: string): boolean {
   // what reaches the forge, so the flag counts as the body flag only when the
   // value itself spells a merge word — `-bx` (value `x`) does not, and a
   // separate `merge` argument is not the body. A long flag never glues.
-  if (w.length >= 4 && w[0] === "-" && w[1] !== "-" && w.slice(0, 2) === "-b") {
-    const value = w.slice(2);
-    if (MERGE_WORD.test(` ${value}`)) return true;
-  }
+  // (Caller-specific predicate: the allowlist wants a boolean, so it tests
+  // the shared value itself; the trigger's gluedView only re-emits it.)
+  const value = gluedShortValue(w);
+  if (value !== undefined && w.startsWith("-b") && MERGE_WORD.test(` ${value}`)) return true;
   return false;
 }
 

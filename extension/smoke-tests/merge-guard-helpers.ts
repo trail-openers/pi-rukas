@@ -276,6 +276,12 @@ export async function hookDecision(
      */
     holds: traces
       .filter((l) => l.includes("merge-guard: HELD") || l.includes("merge-guard: BLOCKED"))
-      .map((l) => l.trim().replace(/^\[pi-rukas\] (WARN )?/, "")),
+      .map(
+        (l) =>
+          // #1479 lens fix — strip ANY trace level word, not just `WARN`: the
+          // prefix is harness plumbing (`[pi-rukas] LEVEL msg`), and a future
+          // level must not silently change which lines the filter sees.
+          l.trim().replace(/^\[pi-rukas\] [A-Z]+ /, ""),
+      ),
   };
 }

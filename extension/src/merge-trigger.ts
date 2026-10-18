@@ -21,7 +21,7 @@
  * re-tested all four patterns over both texts even after one had matched).
  */
 
-import type { HoldReason } from "./merge-allowlist.ts";
+import { type HoldReason, gluedShortValue } from "./merge-allowlist.ts";
 import {
   BRACE_EXPANSION,
   FORGE_WORD,
@@ -79,17 +79,30 @@ export function triggerCode(command: string): HoldReason | undefined {
   // one letter; the value is everything after the second character. A long
   // flag (`--body`) never glues. `=`-prefixed forms (`-b=x`) are already
   // word-bounded by the `=`.
-  const gluedParts: string[] = [];
-  for (const w of command.split(/\s+/)) {
-    if (w.length < 4 || w[0] !== "-" || w[1] === "-") continue;
-    // The value is everything after the flag letter, up to (not including)
-    // any `=` — `-bmerge` → `merge`; `-bmerge=1` → `merge` (the `=1` is a
-    // separate getopt suffix, not part of the glued value).
-    const eq = w.indexOf("=");
-    const value = (eq > 0 ? w.slice(2, eq) : w.slice(2)).trim();
-    if (value !== "" && MERGE_WORD.test(` ${value}`)) gluedParts.push(value);
-  }
-  const gluedView = gluedParts.length > 0 ? `${command} ${gluedParts.join(" ")}` : command;
+  // Pre-check: the glued view costs a split and a per-word pass, and this
+  // runs on every bash tool_call, so it is built only when a glued value
+  // spelling a merge word is even possible — the text must contain `merge`
+  // as a substring (case-insensitive; the word-boundary test would miss the
+  // very case this view exists for, where the value is glued to a flag
+  // letter and the boundary test fails), and a glued shape (a `-` next to a
+  // letter) at all. Both tests are cheap linear scans; the common case
+  // (no merge substring, no flag) exits here with the input unchanged and
+  // zero per-word work.
+  const gluedView: string =
+    command.toLowerCase().includes("merge") && /-\p{L}/u.test(command)
+      ? (() => {
+          // (Caller-specific: the trigger RE-EMITS each merged value as its
+          // own word for the patterns; the allowlist only wants a boolean.
+          // The "is this a glued short flag with value V" rule is shared —
+          // see gluedShortValue in merge-allowlist.ts.)
+          const gluedParts: string[] = [];
+          for (const w of command.split(/\s+/)) {
+            const value = gluedShortValue(w);
+            if (value !== undefined && MERGE_WORD.test(` ${value}`)) gluedParts.push(value);
+          }
+          return gluedParts.length > 0 ? `${command} ${gluedParts.join(" ")}` : command;
+        })()
+      : command;
   let verb = false;
   let merge = false;
   let forge = false;
