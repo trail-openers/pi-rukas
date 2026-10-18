@@ -74,6 +74,24 @@ fanout_forge_url() {
   echo "$u"
 }
 
+# fanout_url_slug <forge url> -> "host/path", the form `gh --repo` and `glab -R` accept.
+# Without it, forge calls resolve against the caller's cwd, so drive.sh run from another
+# checkout reads that checkout's forge. Exit 3 when the url is not a remote with a path; a
+# wrong path is the forge CLI's failure to report, and it does.
+fanout_url_slug() {
+  local slug
+  slug="$(FANOUT_URL="$1" "$(fanout_node)" --input-type=module -e '
+    const u = process.env.FANOUT_URL || "";
+    const m = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/(?:[^@\/]*@)?([^\/:]+)(?::\d+)?\/(.+)$/.exec(u)
+      || /^(?:[^@\/]*@)?([^\/:]+):(.+)$/.exec(u);
+    if (!m) process.exit(3);
+    const repo = m[2].replace(/\/+$/, "").replace(/\.git$/, "");
+    if (!repo) process.exit(3);
+    process.stdout.write(m[1] + "/" + repo);
+  ' 2>/dev/null)" || return 3
+  printf '%s' "$slug"
+}
+
 # ---------------------------------------------------------------------------
 # ssh identity
 # ---------------------------------------------------------------------------

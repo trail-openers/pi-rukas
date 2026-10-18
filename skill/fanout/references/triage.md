@@ -139,7 +139,7 @@ is what converts a park into a merge.
 ## Where to look for the facts
 
 ```bash
-cd "$REPO" && gh issue view <N> --json title,body,labels,comments
+gh issue view <N> --repo "$SLUG" --json title,body,labels,comments   # SLUG = host/owner/repo of origin
 ```
 
 and the code it names. The driver's own state files under

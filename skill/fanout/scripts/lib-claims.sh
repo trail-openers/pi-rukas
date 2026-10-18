@@ -72,7 +72,9 @@ fanout_live_claims() {
       try { rows = JSON.parse(text); } catch { code = 4; continue; }
       if (!Array.isArray(rows)) { code = 5; continue; }
       for (const r of rows) {
-        if (!r || typeof r.issue !== "number" || !Array.isArray(r.paths)) continue;
+        // A row we cannot read is a claim we cannot judge. Skipping it would pass a collision
+        // for the same reason an unreadable file must not, so it is refused like a bad file.
+        if (!r || typeof r !== "object" || typeof r.issue !== "number" || !Array.isArray(r.paths)) { code = 6; break; }
         // Aliveness must be PROVED. kill(-1, 0) and kill(0, 0) signal whole process groups and
         // succeed, so a claim with pid -1 or 0 would read as permanently live.
         if (!Number.isInteger(r.pid) || r.pid < 1) continue;
@@ -93,6 +95,7 @@ fanout_live_claims() {
       3) die "a claims file could not be read under $FANOUT_REPO or $WORKERS_DIR — refusing to assume no collisions" 11 ;;
       4) die "a claims file is not valid JSON — refusing to assume no collisions. Inspect the $rel files under the repo, worker clones and reservations." 11 ;;
       5) die "a claims file is not a JSON array — refusing to assume no collisions. Inspect the $rel files under the repo, worker clones and reservations." 11 ;;
+      6) die "a claims row is malformed ('issue' must be a number, 'paths' an array) — refusing to assume no collisions. Inspect the $rel files under the repo, worker clones and reservations." 11 ;;
       *) die "could not evaluate the claims files (exit $rc) — refusing to assume no collisions. Point FANOUT_CLAIMS_SOURCE at a readable copy to inspect." 11 ;;
     esac
   fi

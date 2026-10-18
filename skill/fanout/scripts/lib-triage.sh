@@ -87,9 +87,12 @@ fanout_norm_path() {  # $1 = raw entry
 # FANOUT_FORGE_STATE and FANOUT_FORGE_LABELS. Failure and timeout both exit 5 (fail closed).
 # No `gh -q` template: its pipes read as a shell pipe to the host guard.
 fanout_forge_read() {
-  local issue="$1" raw rc parsed
+  local issue="$1" raw rc parsed slug
   [ "$FANOUT_FORGE_READ_ISSUE" = "$issue" ] && return 0
-  raw="$(fanout_bounded "${FANOUT_TIMEOUT_GH:-60}" gh issue view "$issue" --json state,labels 2>/dev/null)"
+  # --repo, never the caller's cwd: the same origin worker.sh clones from and pushes to.
+  slug="$(fanout_url_slug "$(fanout_forge_url)")" \
+    || die "cannot derive the forge repo from origin for $FANOUT_REPO. Pass --forge-url <ssh-or-https-url>." 3
+  raw="$(fanout_bounded "${FANOUT_TIMEOUT_GH:-60}" gh issue view "$issue" --repo "$slug" --json state,labels 2>/dev/null)"
   rc=$?
   [ "$rc" != 124 ] || die "gh issue view $issue timed out after ${FANOUT_TIMEOUT_GH:-60}s (FANOUT_TIMEOUT_GH), so forge state is unknown. Fix the forge connection, raise the bound, or set FANOUT_FORGE_CHECK=0." 5
   parsed="$(printf '%s' "$raw" | "$(fanout_node)" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const o=JSON.parse(s);if(typeof o.state==="string")process.stdout.write("OK:"+o.state+"\t"+(o.labels||[]).map((l)=>l.name).join(","))}catch{}})')"

@@ -204,6 +204,20 @@ echo "== the claims gate fails LOUD, not open =="
 # a nonzero exit (fatal), which is what these two cases assert.
 printf 'not json at all' > /tmp/fanout-selftest/.pi/work-state/path-claims.json
 expect "corrupt claims file is a hard error" 11 env FANOUT_REPO=/tmp/fanout-selftest FANOUT_FORGE_URL=https://example.invalid/x.git "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9002
+# A row with a non-numeric issue or a non-array paths is a claim we cannot judge. It was skipped
+# silently, which passed a collision for the same reason an unreadable file must not.
+FANOUT_ALIVE_PID="$HARNESS_PID" "$JS" -e '
+const fs=require("fs");
+fs.writeFileSync("/tmp/fanout-selftest/.pi/work-state/path-claims.json", JSON.stringify([
+  { issue: "9093", pid: parseInt(process.env.FANOUT_ALIVE_PID,10), startedAt: Date.now(), paths: ["src/a.ts"] }
+]));'
+expect "claim with a string issue is a hard error" 11 env FANOUT_REPO=/tmp/fanout-selftest FANOUT_FORGE_URL=https://example.invalid/x.git "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9002
+FANOUT_ALIVE_PID="$HARNESS_PID" "$JS" -e '
+const fs=require("fs");
+fs.writeFileSync("/tmp/fanout-selftest/.pi/work-state/path-claims.json", JSON.stringify([
+  { issue: 9092, pid: parseInt(process.env.FANOUT_ALIVE_PID,10), startedAt: Date.now(), paths: "src/a.ts" }
+]));'
+expect "claim with a non-array paths is a hard error" 11 env FANOUT_REPO=/tmp/fanout-selftest FANOUT_FORGE_URL=https://example.invalid/x.git "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9002
 # A claim owned by the worker's OWN pid is valid evidence of a live cycle and must never be
 # treated as stale. Write the file, then let that node exit, so the claim names a pid that has
 # definitively gone -- the same ESRCH distinction as DEAD_PID, reached from the other side.
@@ -260,12 +274,20 @@ case "$node_path" in /*) node_kind=absolute ;; *) node_kind="not absolute: $node
 check "fanout_node is one absolute path" "$node_kind" absolute
 
 echo
+echo "== forge repo slug (gh/glab --repo) is derived from the origin url =="
+check "slug: https with .git" "$(FANOUT_REPO=/tmp/fanout-selftest fanout_url_slug https://github.com/acme/widgets.git)" github.com/acme/widgets
+check "slug: scp-style ssh" "$(FANOUT_REPO=/tmp/fanout-selftest fanout_url_slug git@github.com:acme/widgets.git)" github.com/acme/widgets
+check "slug: ssh with port and nested group" "$(FANOUT_REPO=/tmp/fanout-selftest fanout_url_slug ssh://git@gitlab.example.com:2222/grp/sub/repo.git)" gitlab.example.com/grp/sub/repo
+check "slug: a local path is not a forge slug" "$(FANOUT_REPO=/tmp/fanout-selftest fanout_url_slug /srv/git/repo >/dev/null 2>&1; echo $?)" 3
+
+echo
 echo "== forge reads fail closed (stub gh, no network) =="
 FG_BIN=/tmp/fanout-selftest-bin
 rm -rf "$FG_BIN"
 mkdir -p "$FG_BIN"
 cat >"$FG_BIN/gh" <<'GH'
 #!/bin/bash
+[ -z "${GH_ARGS_LOG:-}" ] || printf '%s\n' "$*" >>"$GH_ARGS_LOG"
 case "$GH_STUB" in
   dead) exit 1 ;;
   slow) sleep 30 ;;
@@ -280,6 +302,13 @@ FG_ENV="FANOUT_REPO=/tmp/fanout-selftest FANOUT_FORGE_URL=https://example.invali
 expect "unreadable forge refuses (fail closed)" 5 env $FG_ENV GH_STUB=dead PATH="$FG_BIN:$PATH" "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9002
 expect "CLOSED issue refused" 5 env $FG_ENV GH_STUB=closed PATH="$FG_BIN:$PATH" "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9002
 expect "OPEN, unlabelled issue passes" 0 env $FG_ENV GH_STUB=open PATH="$FG_BIN:$PATH" "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9002
+# Run from an unrelated cwd: the forge read must name the origin repo itself, not inherit the
+# caller's checkout (drive.sh run from another repo read that repo's issues).
+FG_LOG=/tmp/fanout-selftest-gh.args
+rm -f "$FG_LOG"
+( cd /tmp && env $FG_ENV GH_STUB=open GH_ARGS_LOG="$FG_LOG" PATH="$FG_BIN:$PATH" "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9002 >/dev/null 2>&1 )
+check "forge read names the origin repo with --repo" "$(grep -c -- '--repo example.invalid/x' "$FG_LOG" 2>/dev/null)" 1
+rm -f "$FG_LOG"
 rm -rf "$FG_BIN"
 
 echo
@@ -288,6 +317,7 @@ echo
 # fixtures above are shared with them. Kept apart to hold each file under the size gate.
 . "$S/selftest-part-b.sh"
 . "$S/selftest-part-c.sh"
+. "$S/selftest-part-d.sh"
 
 echo
 echo "===================================="
