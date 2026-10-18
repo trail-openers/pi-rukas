@@ -27,6 +27,7 @@
  * Split from work-driver-lens-fix-commit.ts for the 500-line gate.
  */
 import { trace } from "./trace.ts";
+import type { ExecFn as DevelopExecFn } from "./work-develop-git.ts";
 import { inlineCodeSafe } from "./work-driver-conflict-evidence.ts";
 import {
   backupLensFixTree,
@@ -41,6 +42,8 @@ import {
   resolveBranchTip,
 } from "./work-driver-lens-fix-reposition-queries.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
+import { cleanWorktreeForRetry, retryTreeLine } from "./work-retry-tree-clean.ts";
+import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -84,7 +87,12 @@ export type RepositionResult =
       /** The backup ref created before the cherry-landed move (the old tree HEAD). */
       backupRef?: string;
     }
-  | { kind: "dirty"; detail: string }
+  | {
+      kind: "dirty";
+      detail: string;
+      /** #1391 — the dirt is the residue of a lens-fix child this cycle lost. */
+      attemptLost?: boolean;
+    }
   | { kind: "unlanded"; detail: string; backupRef?: string; aheadShas?: string[] }
   | { kind: "diverged"; detail: string; backupRef?: string; aheadShas?: string[] }
   | { kind: "git-failed"; detail: string; backupRef?: string };
@@ -112,6 +120,13 @@ export async function repositionLensFixWorktree(
   branchName: string,
   issues: number[],
   issueTitle: string | undefined,
+  /**
+   * #1391 — set when this cycle already lost a lens-fix child into `tree`
+   * (`lostAttemptOnStep`). Dirt is then the driver's own residue: it goes
+   * through the retry save-then-clean and the tree is re-read. Unset, a dirty
+   * tree parks exactly as before, with nothing saved, cleaned or written.
+   */
+  lostAttempt?: { repoRoot: string; issue: number; state: WorkState },
 ): Promise<RepositionResult> {
   // 1. Fetch the branch, then resolve the tip from the local + remote
   //    refs (documented tip selection, module header). A fetch failure or
@@ -155,20 +170,41 @@ export async function repositionLensFixWorktree(
 
   // 2. Dirty check — a worktree with uncommitted changes is never moved
   //    (moving HEAD under an in-flight fix would lose or corrupt it), and
-  //    the fixer is not dispatched onto one either. Nothing is stashed; the
-  //    operator inspects and clears it.
-  let porcelain: string;
-  try {
-    const st = await execFn("git", {
-      cwd: tree,
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: 64 * 1024,
-      argv: ["status", "--porcelain"],
+  //    the fixer is not dispatched onto one either. Operator dirt is never
+  //    stashed or cleaned; the operator inspects and clears it. Dirt a lost
+  //    attempt left (#1391) is saved, then cleaned, then re-read.
+  const readStatus = async (): Promise<string | RepositionResult> => {
+    try {
+      const st = await execFn("git", {
+        cwd: tree,
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: 64 * 1024,
+        argv: ["status", "--porcelain"],
+      });
+      return st.stdout.trim();
+    } catch (e) {
+      trace(`${TRACE_PREFIX}: git-failed (status): ${e}`);
+      return { kind: "git-failed", detail: `git status --porcelain failed: ${e}` };
+    }
+  };
+  let porcelain = await readStatus();
+  if (typeof porcelain !== "string") return porcelain;
+  let saved = "";
+  if (porcelain !== "" && lostAttempt !== undefined) {
+    const clean = await cleanWorktreeForRetry({
+      execFn: execFn as DevelopExecFn,
+      ...lostAttempt,
+      step: "lens-fix",
+      tree,
     });
-    porcelain = st.stdout.trim();
-  } catch (e) {
-    trace(`${TRACE_PREFIX}: git-failed (status): ${e}`);
-    return { kind: "git-failed", detail: `git status --porcelain failed: ${e}` };
+    saved =
+      clean.kind === "none"
+        ? ""
+        : ` (left by the lens-fix attempt this cycle lost — ${retryTreeLine(clean)})`;
+    if (clean.kind === "cleaned")
+      trace(`${TRACE_PREFIX}: lost attempt's residue — ${retryTreeLine(clean)}`);
+    porcelain = await readStatus();
+    if (typeof porcelain !== "string") return porcelain;
   }
   if (porcelain !== "") {
     const paths = porcelain
@@ -178,9 +214,9 @@ export async function repositionLensFixWorktree(
     // #981 LOW: porcelain paths are operator-supplied data; route them
     // through inlineCodeSafe (a backtick or newline in a path would break
     // the markdown span the handoff renders the detail into).
-    const detail = `worktree has uncommitted changes: ${paths.map((p) => inlineCodeSafe(p)).join(", ")}`;
+    const detail = `worktree has uncommitted changes: ${paths.map((p) => inlineCodeSafe(p)).join(", ")}${inlineCodeSafe(saved)}`;
     trace(`${TRACE_PREFIX}: ${detail}`);
-    return { kind: "dirty", detail };
+    return { kind: "dirty", detail, ...(lostAttempt ? { attemptLost: true } : {}) };
   }
 
   // 3. Where is the worktree relative to the tip? A clean tree at the tip

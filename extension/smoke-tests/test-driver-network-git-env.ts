@@ -219,6 +219,7 @@ const EXPECTED: Record<string, number> = {
   "work-driver-adversarial-lensfix.ts": 1,
   "work-driver-branch-ops.ts": 1,
   "work-driver-handoff-consolidate-branch.ts": 1,
+  "work-driver-handoff-capped-pr.ts": 1,
   // The sweep's network git call moved to `work-driver-sweep-policy.ts` when the
   // holder-branch sweep split out of `work-driver-worktree-sweep.ts` for the
   // 500-line gate; the row follows the call, not the file that used to host it.
@@ -227,6 +228,8 @@ const EXPECTED: Record<string, number> = {
   "work-driver-lens-fix-reposition-gate.ts": 1,
   "merge-guard.ts": 1,
   "lens-review-residuals.ts": 1,
+  "work-driver-continue-pr-branch.ts": 1,
+  "work-driver-continue-pr-guard.ts": 1,
 };
 
 function sourceFiles(dir: string): string[] {

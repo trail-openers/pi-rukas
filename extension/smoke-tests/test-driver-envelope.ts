@@ -164,7 +164,7 @@ function assert(cond: boolean, msg: string) {
   s = appendEvent(s, {
     kind: "cap-hit",
     at: 999_000,
-    cap: "wall-clock",
+    cap: "lens-review-timeout",
     reviewRound: 2,
     nextStep: "handoff",
   });

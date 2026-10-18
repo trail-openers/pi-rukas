@@ -29,6 +29,7 @@ import { execp } from "./work-driver-verify.ts";
 
 export { parseWorktreesBlock };
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { runContinueBranch } from "./work-driver-continue-pr-branch.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { findOpenPrForIssue, prPreflightEnabled } from "./work-driver-pr-preflight.ts";
@@ -115,6 +116,7 @@ export async function runBranch(
   // #545/#730 — the cycle's scratch dir, home of the dirty-worktree salvage
   // (used by both the residue pass below and the refusal path further down).
   const salvageScratch = scratchDir(ctx.repoRoot, ctx.issue);
+  if (ctx.continuePr) return runContinueBranch(ctx, incoming, now, execFnPre, salvageScratch);
   // #362 — pre-flight BEFORE the dispatch: `--restart` wipes the state file
   // but not GitHub, so without this the driver would open a second PR.
   let state: WorkState = incoming;

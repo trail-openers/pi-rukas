@@ -9,14 +9,19 @@ import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { settleDraftPrAtHandoff } from "./work-driver-draft-pr.ts";
 import { countAheadOfBase, workNotYetOnBranch } from "./work-driver-handoff-ahead.ts";
+import { openDraftPrForCappedWork } from "./work-driver-handoff-capped-pr.ts";
 import { handoffChannel, withHandoffMarker } from "./work-driver-handoff-channel.ts";
-import { handoffConsolidateWorktrees } from "./work-driver-handoff-consolidate-step.ts";
+import {
+  handoffConsolidateWorktrees,
+  lastConsolidatedEvent,
+} from "./work-driver-handoff-consolidate-step.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { runHandoffOpsDispatch } from "./work-driver-handoff-ops.ts";
 import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
 import {
   applyIssueLabelDualTarget,
   captureCommittedWork,
+  declinedLabelSeed,
   makeHandoffEmittedEvent,
   parseHandoffOpsReply,
   verifyHandoffLabel,
@@ -89,6 +94,10 @@ export async function runHandoff(
   if (consolidated.event) {
     next = appendEvent(next, consolidated.event);
   }
+  // #1402 — an adversarial-loop cap skipped commit-pr: push the branch and
+  // open a draft PR carrying the findings, so the work is reachable. Before
+  // the snapshot, so the handoff reports the branch as pushed.
+  next = await openDraftPrForCappedWork(ctx, next);
   // PR5: capture the worktree snapshot FIRST so handoff surfaces (in-chat
   // sendUserMessage, GitHub body, /work-status terminal) can answer
   // WHERE the work is without re-shelling git. Snapshot persists into
@@ -163,7 +172,7 @@ export async function runHandoff(
   // (The dispatch leg itself lives in work-driver-handoff-ops.ts — §12
   // file-size split; the bound, the write-ahead resume bookkeeping and the
   // completion / dispatch-failed event construction moved verbatim.)
-  const prNumber = state.pipelineState.prNumber;
+  const prNumber = next.pipelineState.prNumber;
   const target = prNumber ? `pr #${prNumber}` : `issue #${ctx.issue}`;
   // A freshly re-resolved intent park that matches the one already reported
   // (work-driver-park-memory.ts) has its comment on the issue: no ops
@@ -196,13 +205,15 @@ export async function runHandoff(
   let commentUrl = parseHandoffCommentUrl(opsReplyText) ?? priorHandoffCommentUrl(next.eventLog);
   commentUrl ??= park.repeatOf?.commentUrl;
   if (parsed.commentUrl && !commentUrl) commentUrl = parsed.commentUrl;
-  let labelApplied = false;
   // #798 — per-target label state. When prNumber is set, the driver labels
   // BOTH the issue (the entry-gate target) and the PR (the review target);
   // each is verified independently. When prNumber is absent, only the issue
-  // is targeted and issueLabelApplied mirrors labelApplied.
-  let issueLabelApplied: boolean | undefined;
-  let prLabelApplied: boolean | undefined;
+  // is targeted and issueLabelApplied mirrors labelApplied. #1472 seeds all
+  // three settled for a closed-issue park — see `declinedLabelSeed`.
+  let { labelApplied, issueLabelApplied, prLabelApplied } = declinedLabelSeed(
+    next.pipelineState,
+    prNumber,
+  );
   // #775 — provenance of the recorded state. "dispatch" is asserted only
   // when the driver verified it (URL parsed or label read-back succeeded);
   // a reply whose state could not be verified records no provenance.
@@ -343,13 +354,7 @@ export async function runHandoff(
   // #674 — carry the consolidation outcome into the handoff-emitted event so the
   // renderers can print either the branch-contains-the-work path or the accurate
   // per-worktree fallback. The `handoff-consolidated` event is the audit trail.
-  const consEvent = next.eventLog
-    .slice()
-    .reverse()
-    .find(
-      (e): e is Extract<WorkEvent, { kind: "handoff-consolidated" }> =>
-        e.kind === "handoff-consolidated",
-    );
+  const consEvent = lastConsolidatedEvent(next.eventLog);
   // #1421 — WHY consolidation did not happen. The event carried a single
   // fixed sentence, "consolidation infeasible (work remains on its worktree
   // detached HEADs)", for every failure including one where the only thing in

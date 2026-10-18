@@ -8,12 +8,12 @@
  * No Pi spawns — just exercises the synthesis logic.
  */
 
-import { LENS_REVIEW_DIFF_DESCRIPTION, type Finding, type LensName } from "../src/lens-review.ts";
+import path from "node:path";
 import { extractFindings } from "../src/lens-findings-extract.ts";
 import { computeVerdict, dedupeFindings } from "../src/lens-review-format.ts";
 import { renderSummary } from "../src/lens-review-render.ts";
+import { type Finding, LENS_REVIEW_DIFF_DESCRIPTION, type LensName } from "../src/lens-review.ts";
 import { buildLensRoster } from "../src/lens-roster.ts";
-import path from "node:path";
 
 // The repo's own skill/ dir — the offline stand-in for the installed skills
 // dir (never ~/.pi). The six repo lenses keep their relative order; the
@@ -101,10 +101,7 @@ assert(
 // 8. Different lines → distinct findings
 {
   const merged = dedupeFindings(
-    [
-      mk("SECURITY", "HIGH", "a.ts", 1, "leak"),
-      mk("SECURITY", "HIGH", "a.ts", 2, "leak"),
-    ],
+    [mk("SECURITY", "HIGH", "a.ts", 1, "leak"), mk("SECURITY", "HIGH", "a.ts", 2, "leak")],
     REPO_ROSTER,
   );
   assert(merged.length === 2, "same file/title at different lines stay distinct");
@@ -181,7 +178,11 @@ assert(
   assert(findings[0]?.severity === "HIGH", "first severity HIGH");
   assert(findings[1]?.severity === "LOW", "lowercase 'low' normalised to LOW");
   assert(findings[1]?.path === "util.ts", "leading './' stripped from path");
-  assert(findings[1]?.line === 0, "missing line defaults to 0");
+  // #1469 — the old shape coerced a missing line to `0`, which the round then
+  // dropped, so "no line" was expressible only as a hash coincidence. The
+  // extractor now says so explicitly and never puts a 0 in the Finding shape.
+  assert(findings[1]?.line === undefined, "missing line is an explicit no-line finding");
+  assert(findings[0]?.line === 42, "a reported line is carried through unchanged");
   assert(findings[0]?.lens === "SECURITY", "lens stamped from caller");
 }
 
@@ -388,8 +389,7 @@ function lensResult(
   // the ref-range alternative. The pre-#859 core substring is preserved
   // verbatim (a few words dropped in a #859 follow-up to fit the 500-line
   // gate); the new ref-range sentence is appended after it.
-  const PRE_859_CORE =
-    "The full PR/MR diff to review. Fetch it once";
+  const PRE_859_CORE = "The full PR/MR diff to review. Fetch it once";
   assert(
     LENS_REVIEW_DIFF_DESCRIPTION.startsWith(PRE_859_CORE),
     "#859: the pre-#859 opening of the diff description is preserved",

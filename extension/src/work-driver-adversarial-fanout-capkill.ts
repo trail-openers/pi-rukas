@@ -51,8 +51,16 @@ export function capKillOutcomeFields(result: DispatchResult): Partial<Adversaria
  */
 type RetryLadderKillCause = Exclude<
   NonNullable<DispatchResult["killCause"]>,
-  "loop" | "token-budget"
+  "loop" | "token-budget" | SupervisionKillCause
 >;
+
+/**
+ * #1567 — the child-supervision kills are off the ladder: each ends a child
+ * the driver judged done with its time or frozen, and retrying it buys the
+ * same bound again. The piece that emits a cause moves it onto the ladder if
+ * its policy says a retry helps.
+ */
+type SupervisionKillCause = "child-bound" | "no-progress" | "stuck-tool";
 
 const RETRY_LADDER_KILL_CAUSES: readonly RetryLadderKillCause[] = [
   "timeout",

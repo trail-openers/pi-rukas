@@ -73,4 +73,28 @@ assert(
 );
 assert(print.details.deferred === undefined, "print: nothing is deferred");
 
+// #1401 — options sent as their JSON encoding are decoded before validation.
+assert(tool.prepareArguments !== undefined, "prepareArguments is registered");
+const encoded = tool.prepareArguments({
+  question: "Batch atomicity?",
+  options: JSON.stringify(params.options),
+});
+assert(
+  JSON.stringify(encoded.options) === JSON.stringify(params.options),
+  "prepareArguments: a JSON-string options array is decoded",
+);
+assert(
+  tool.prepareArguments(params) === params,
+  "prepareArguments: well-formed arguments are passed through untouched",
+);
+const garbage = { question: "q", options: "not json" };
+assert(
+  tool.prepareArguments(garbage) === garbage,
+  "prepareArguments: a non-JSON string is left for the validator to reject",
+);
+assert(
+  tool.description.includes("ask_user"),
+  "description names the made-up aliases so a model maps them to question",
+);
+
 process.exit(exit);

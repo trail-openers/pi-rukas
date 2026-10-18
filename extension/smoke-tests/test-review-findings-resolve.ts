@@ -8,7 +8,18 @@
  *   A. the PR deletes the file an open row cites → the row resolves and the
  *      verdict is APPROVED (the row does not block it);
  *   B. a no-line open row the next complete review does not re-report, on a
- *      present file, stays open (its cited code still stands);
+ *      present file, RESOLVES (#1469 — supersedes the pre-fix "stays open"
+ *      contract, which made a line-less row unkillable): a row with no cited
+ *      line has no cited code that could still stand, so a COMPLETE full review
+ *      that no longer reports it (same lens, path and title) is the evidence it
+ *      is gone. A delta or incomplete review never retires it — the same
+ *      guarantee the line-bearing scenarios J and K give;
+ *   S. the unkillable row of #1469: a line-less CRITICAL on a PRESENT file
+ *      retires on a complete full review that no longer reports it, and stays
+ *      open under a delta or an incomplete round; a pre-fix row (no `line`,
+ *      empty snippet hash, no marker) retires under the same rule; a row whose
+ *      path is invalid at head still carries; and a carried line-less finding
+ *      renders `path:?`, never `path:undefined`;
  *   C. a no-line open row the next complete review DOES re-report → stays open;
  *   D. the cited line is past the end of the file → resolves;
  *   E. a neighbour edit inside the ±2 window → carried (the cited line stands);
@@ -26,12 +37,18 @@
  *   O. a HIGH row whose window gets a comment, cited line unchanged: carried;
  *   P. a legacy row without lineHash whose window is edited: carried.
  * Every resolution records its reason on the row and in the summary (#1125).
+ *
+ * The line-less scenarios of #1469 (the row that could never retire) live in
+ * test-review-findings-lineless.ts, with the unit view of the rule in
+ * test-review-findings-fate.ts; this file keeps the line-bearing scenarios and
+ * scenario B, whose pre-fix "stays open" contract #1469 supersedes.
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { renderSummary } from "../src/lens-review-render.ts";
 import { runLensReview } from "../src/lens-review.ts";
+import { snippetHashAt } from "../src/review-findings-match.ts";
 import { FINDINGS_FILE, readBranchRows } from "../src/review-findings-store.ts";
 import { FULL_DIFF, type StubFinding, setupReviewFixture } from "./lib/review-findings-fixtures.ts";
 
@@ -104,18 +121,22 @@ try {
   const b1 = await runRound("feat/noline", head(), [
     { severity: "MEDIUM", path: "src/keep.ts", title: "Unclear naming" },
   ]);
-  assert(b1.verdict === "ISSUES_FOUND", `B round 1: the no-line finding is reported`);
+  assert(b1.verdict === "ISSUES_FOUND", "B round 1: the no-line finding is reported");
   writeFileSync(path.join(repo, "src", "keep.ts"), "export const k = 2;\n");
   sh("git commit -qam keep-changed");
   const b2 = await runRound("feat/noline", head(), []);
   const bRows = await readBranchRows(repo, "feat/noline");
   assert(
-    bRows.length === 1 && bRows[0]?.status === "open",
-    "B round 2: the no-line row not re-reported on a present file stays open",
+    bRows.length === 1 && bRows[0]?.status === "resolved",
+    `B round 2: the no-line row not re-reported on a present file resolves (${bRows[0]?.status})`,
   );
   assert(
-    b2.verdict === "ISSUES_FOUND" && b2.findings.some((f) => f.title === "Unclear naming"),
-    `B round 2: the carried no-line finding still blocks (${b2.verdict})`,
+    bRows[0]?.resolvedReason === "not-reported",
+    `B round 2: the reason is not-reported (${bRows[0]?.resolvedReason})`,
+  );
+  assert(
+    b2.verdict === "APPROVED" && !b2.findings.some((f) => f.title === "Unclear naming"),
+    `B round 2: the retired no-line finding no longer blocks (${b2.verdict})`,
   );
 
   // C — a no-line open row the next complete review re-reports stays open.
@@ -441,7 +462,9 @@ try {
   const unsafeStored = JSON.parse(readFileSync(unsafeFile, "utf8")) as {
     rows: Array<Record<string, unknown>>;
   };
-  for (const r of unsafeStored.rows) if (r.branch === "feat/unsafe") r.path = "../x";
+  for (const r of unsafeStored.rows) {
+    if (r.branch === "feat/unsafe") r.path = "../x";
+  }
   writeFileSync(unsafeFile, JSON.stringify(unsafeStored));
   const r2 = await runRound("feat/unsafe", head(), []);
   assert(

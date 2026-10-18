@@ -100,6 +100,8 @@ assert(caps.verbs.work.flags.length >= 3, "work flags has at least --restart, --
 assert(caps.verbs.work.flags.includes("--restart"), "work flags includes --restart");
 assert(caps.verbs.work.flags.includes("--json"), "work flags includes --json");
 assert(caps.verbs.work.flags.includes("--timeout"), "work flags includes --timeout");
+// #1468 — tehas checks for this flag before it asks for a refresh.
+assert(caps.verbs.work.flags.includes("--continue-pr"), "work flags includes --continue-pr");
 
 // ── #1021 — the S6 subcommands are listed with the flags their parsers accept,
 // and every verb the CLI dispatches is listed (and nothing else).
@@ -161,6 +163,12 @@ assert(
 );
 assert(caps.features.resultFromMemory === true, "features.resultFromMemory is true");
 assert(caps.features.cycleDeadline === true, "features.cycleDeadline is true");
+assert(caps.features.continuePr === true, "features.continuePr is true");
+assert(CAPABILITIES_VERSION === 2, "--continue-pr is additive: CAPABILITIES_VERSION stays 2");
+assert(
+  caps.features.cycleDeadlineHandoffAllowance === true,
+  "features.cycleDeadlineHandoffAllowance is true (#1593)",
+);
 
 // ── The answer has exactly the documented top-level keys (no missing, no extra).
 {

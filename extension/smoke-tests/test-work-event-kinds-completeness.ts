@@ -294,6 +294,18 @@ const everyKindEvent: WorkEvent[] = [
     newSha: "b",
   },
   {
+    kind: "retry-tree-clean",
+    at: 1,
+    step: "lens-fix",
+    attempt: 1,
+    outcome: "cleaned",
+    worktree: "/wt",
+    files: ["a.ts"],
+    fileCount: 1,
+    ref: "refs/pi-rukas/retry-preserved/issue-1/lens-fix-1",
+    patch: "/r/tmp/issue-1/retry-lens-fix-1.patch",
+  },
+  {
     kind: "dispatch-slow",
     at: 1,
     step: "develop",

@@ -23,13 +23,17 @@
     "scripts/**/*",
     "smoke-tests/lib/merge-allowlist-target.ts",
     "smoke-tests/lib/bun-test.d.ts",
+    "smoke-tests/lib/worktree-sweep-assert.ts",
+    "smoke-tests/lib/worktree-sweep-fixture.ts",
     "smoke-tests/test-merge-size-bound.ts",
+    "smoke-tests/test-work-driver-worktree-sweep.ts",
     "smoke-tests/lib/writer-shape-mock-arms.test.ts",
     "smoke-tests/test-adversarial-ledger-writer-shapes.ts",
     "smoke-tests/test-ledger-override-provenance.ts",
     "smoke-tests/lib/review-ledger-test-helpers.ts",
     "smoke-tests/test-ledger-writer-stamp-raw.ts",
     "smoke-tests/test-merge-guard-hostile-stamp.ts",
-    "smoke-tests/test-auto-delta-carry-provenance.ts"
+    "smoke-tests/test-auto-delta-carry-provenance.ts",
+    "smoke-tests/test-work-driver-worktree-sweep-rules.ts"
   ]
 }

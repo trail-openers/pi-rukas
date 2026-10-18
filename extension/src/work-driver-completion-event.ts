@@ -52,6 +52,13 @@ export function overrideEnvForKillCause(
     // the value that actually killed the child.
     case "tool-inactivity":
       return "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS";
+    // #1567 — the child-supervision kills are driver caps, so the knob that
+    // turns them off is the caps master switch. The piece that emits each
+    // cause adds its own bound knob here when it introduces one.
+    case "child-bound":
+    case "no-progress":
+    case "stuck-tool":
+      return "PI_ENSEMBLE_DISPATCH_CAPS";
   }
 }
 
@@ -109,6 +116,9 @@ export async function buildCompletionEvent(
       detail =
         `[pi-rukas] killed after ${result.killBudgetMs}ms — the plan step's own wall-clock bound expired` +
         ` (override: ${overrideEnvForKillCause(result.killCause)})`;
+    } else if (result.killedAtCycleDeadline) {
+      // #1593 — the caller's deadline, not the backstop, set this bound.
+      detail = `[pi-rukas] killed after ${result.killBudgetMs}ms at the caller's cycle deadline (PI_ENSEMBLE_CYCLE_DEADLINE)`;
     } else {
       detail =
         `[pi-rukas] killed after ${result.killBudgetMs}ms ${result.killCause}` +

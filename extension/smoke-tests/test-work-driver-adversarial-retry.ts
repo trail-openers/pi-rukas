@@ -13,6 +13,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { __setSleepFn } from "../src/work-driver-step-router.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
@@ -35,6 +36,12 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_VERIFY = "0";
+
+// Provider retries have a separate backoff floor; observe waits without sleeping.
+const waits: number[] = [];
+const restoreSleep = __setSleepFn(async (ms) => {
+  waits.push(ms);
+});
 
 function makeFakePi(): ExtensionAPI {
   // biome-ignore lint/suspicious/noExplicitAny: stub; only sendUserMessage is called
@@ -442,6 +449,12 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+restoreSleep();
+assert(
+  waits.length === 5 && waits.every((ms) => ms > 0),
+  "provider backoff waits are recorded without sleeping (one recovered retry and two exhausted pairs)",
+);
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

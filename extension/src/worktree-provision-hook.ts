@@ -447,8 +447,21 @@ const IN_TREE_DEP_MARKERS = [
  * look for a nested `node_modules`. #481's discovery signal — depth-1
  * directories with any of these are scanned, so a nested-package monorepo
  * provisions without a hook and without knowing its own layout.
+ *
+ * EXPORTED for the sweep's dependency guard: `work-driver-sweep-rules.ts`'s
+ * `hasRealDependencyTree` asks the same question at sweep time and must look in
+ * exactly the places provisioning linked from. It cannot call `packageDirsAt`
+ * (async, and the sweep's guard runs sync inside `executeSweepAction`), so it
+ * reads THIS list and does its own `existsSync` pass — one list, two consumers,
+ * pinned by `test-work-driver-worktree-sweep-rules.ts`.
  */
-const DEPENDENCY_MARKERS = [...IN_TREE_DEP_MARKERS, "go.mod", "go.sum", "Cargo.toml", "Gemfile"];
+export const DEPENDENCY_MARKERS = [
+  ...IN_TREE_DEP_MARKERS,
+  "go.mod",
+  "go.sum",
+  "Cargo.toml",
+  "Gemfile",
+];
 
 async function fileExists(abs: string): Promise<boolean> {
   try {

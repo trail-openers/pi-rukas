@@ -143,8 +143,8 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers["tool_call"]?.length ?? 0;
   assert(
-    n === 4,
-    `registers exactly 4 tool_call hooks (the mode-independent guards incl. #1105 review-accept, oo-rewrite excluded; got ${n})`,
+    n === 5,
+    `registers exactly 5 tool_call hooks (the mode-independent guards incl. #1105 review-accept and #1113 developer-push, oo-rewrite excluded; got ${n})`,
   );
   assert(fake.registeredTools.length === 0, "registers no tools (hook-only companion)");
   assert(fake.registeredCommands.length === 0, "registers no commands");
@@ -317,6 +317,11 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
     "registerMergeGuard",
     "registerIssueCreationGuard",
     "registerDestructiveGitGuard",
+    // #1113 — the one ROLE-scoped member: it refuses `git push` for
+    // PI_ENSEMBLE_ROLE=developer only. It belongs in the shared block for the
+    // same reason the other three do — trust and sandbox children get nothing
+    // but this block — and its role clause keeps every other role inert.
+    "registerDeveloperPushGuard",
   ];
   // The companion delegates to the shared block — the single list.
   assert(
@@ -333,13 +338,25 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
       `canary: the companion does NOT register ${name} directly (no duplicate of the shared block)`,
     );
   }
-  // The shared block contains EXACTLY the three guards.
+  // The shared block contains EXACTLY the guards in `expected`.
   for (const name of expected) {
     assert(
       new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(shared),
       `canary: the shared block registers ${name}(pi)`,
     );
   }
+  // Fails in the other direction too: a guard added to the block without
+  // joining `expected` is invisible to this test's refuse-table, which is how
+  // a guard ships wired but untested.
+  const registered = [...shared.matchAll(/(?:^|[^\w])(register\w+Guard)\s*\(pi\)/g)].map(
+    (m) => m[1] as string,
+  );
+  // review-accept is registered from inside issue-creation, not the block.
+  const strays = registered.filter((name) => !expected.includes(name as never));
+  assert(
+    strays.length === 0,
+    `canary: the shared block registers nothing outside the expected set (unexpected: ${strays.join(", ") || "none"})`,
+  );
   const notInShared = ["registerPmBashGuard", "registerOoRewriteGuard"];
   for (const name of notInShared) {
     assert(
