@@ -297,3 +297,17 @@ export type WorkCapLiteral =
   // parks with the git error as evidence rather than removing nothing and
   // reporting a clean pass.
   | "worktree-listing-unreadable";
+
+/**
+ * #1652 — the plan step's verdict behind a `plan-spec-mismatch` park, carried as
+ * data on the cap-hit so the explainer and the recovery branch on it, never on
+ * the evidence text.
+ */
+export type PlanVerdict = "no-calls" | "all-refused" | "uncovered-deliverables";
+
+/** The runtime list of {@link PlanVerdict}, for validating a persisted value. */
+export const PLAN_VERDICTS: readonly PlanVerdict[] = [
+  "no-calls",
+  "all-refused",
+  "uncovered-deliverables",
+];

@@ -11,6 +11,7 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
+import { PLAN_VERDICTS } from "./workflow-state-events-caps.ts";
 import { isKnownExitOrigin } from "./workflow-state-events-exit-origin.ts";
 import { WORK_STEPS, type WorkEvent, type WorkStep } from "./workflow-state-events.ts";
 import { prDraftFindings } from "./workflow-state-schema-pr-draft.ts";
@@ -285,6 +286,16 @@ export function validateDiscriminants(state: unknown): string[] {
       // a template value). #1263/#753/#973: an unknown cap fails re-entry.
       if (e.kind === "cap-hit" && typeof e.cap === "string" && !isKnownCap(e.cap)) {
         out.push(`eventLog[${i}].cap has unknown value ${JSON.stringify(e.cap)}`);
+      }
+      // #1652 — the plan verdict routes the explainer and the recovery, so an
+      // unknown value would be rendered as a confident wrong cause. Optional.
+      if (
+        e.kind === "cap-hit" &&
+        e.planVerdict !== undefined &&
+        // The value is untrusted input here, so compare as a string.
+        !(PLAN_VERDICTS as readonly unknown[]).includes(e.planVerdict)
+      ) {
+        out.push(`eventLog[${i}].planVerdict has unknown value ${JSON.stringify(e.planVerdict)}`);
       }
       // #1247 — a `cycle-interrupted` origin must be one the process tracker
       // can actually write. The field is OPTIONAL (state files pre-#1247 have

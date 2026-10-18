@@ -18,6 +18,7 @@ import {
   noWorkstreamCallsEvidence,
   workstreamCallsOf,
 } from "../src/work-driver-plan-calls.ts";
+import { correctiveNoWorkstreamCallsSteer } from "../src/work-driver-plan-steers.ts";
 import { type WorkEvent, initialState } from "../src/workflow-state.ts";
 import { planResultFromCalls, planResultFromRawCalls } from "./lib/plan-workstream-calls.ts";
 
@@ -156,7 +157,7 @@ function assert(cond: boolean, msg: string) {
           },
         ]),
       ),
-    ) === "no accepted report_workstream call: 1 call(s) refused",
+    ).startsWith("no accepted report_workstream call: 1 call(s) refused —"),
     "calls made and refused: the evidence counts the refusals",
   );
 }
@@ -366,6 +367,116 @@ function assert(cond: boolean, msg: string) {
       scope: "x".repeat(WORKSTREAM_SCOPE_MAX + 1),
     }) === false,
     "an over-long scope is refused by the schema",
+  );
+}
+
+// ------------------------------------------------ the planner's path grammar
+
+{
+  // #1652 — real repo paths the old markdown parser accepted must stay accepted.
+  const accepted = ["app/[id]/page.tsx", "app/(group)/page.tsx", "docs/my file.md"];
+  const refused = [
+    "/etc/passwd",
+    "a/../b",
+    "-rf",
+    ":(top)x",
+    "src/*.ts",
+    "src/a?.ts",
+    "src/a!.ts",
+    "a`b`",
+    "a$b",
+    "a;b",
+    "a&b",
+    "a|b",
+    "a<b",
+    "a>b",
+    "a{b}",
+    "a\\b",
+    'a"b',
+    "a'b",
+    "a\tb",
+    "x\u0000y",
+  ];
+  const ok = (p: string) =>
+    workstreamCallRefusal(
+      { id: "task-a", scope: "a", paths: [p], outOfScope: [] },
+      new Set<string>(),
+    ) === undefined;
+  assert(
+    accepted.every(ok),
+    "paths with [ ] ( ) or a space are accepted (argv/data consumers only)",
+  );
+  assert(
+    refused.every((p) => !ok(p)),
+    "absolute, '..', leading '-' or ':', glob, shell and whitespace-other-than-space paths are still refused",
+  );
+  assert(
+    ok("src/a.ts (new)") && ok("app/(group)") && workstreamCallRefusal(
+      { id: "task-a", scope: "a", paths: ["app/(group)"], outOfScope: [] },
+      new Set<string>(),
+    ) === undefined,
+    "a trailing annotation is stripped, but a directory ending in (group) keeps its name",
+  );
+}
+
+// ------------------------------------- refused-only evidence names the reasons
+
+{
+  // #1652 — refused calls prove the tool registered: the evidence quotes the
+  // refusal reasons and never suggests the registration cause.
+  const refusedOnly = workstreamCallsOf({
+    toolUses: [
+      {
+        type: "toolCall",
+        id: "c1",
+        name: "report_workstream",
+        arguments: { id: "task-a", scope: "a", paths: ["/abs"], outOfScope: [] },
+      },
+    ],
+    toolResults: [{ toolCallId: "c1", toolName: "report_workstream", isError: true, text: "nope" }],
+  });
+  const evidence = noWorkstreamCallsEvidence(refusedOnly);
+  assert(
+    evidence.includes("1 call(s) refused") &&
+      evidence.includes("task-a:") &&
+      !evidence.includes("did not register") &&
+      !evidence.includes("tool list"),
+    "a refused-only park's evidence names the refusals and not the tool registration",
+  );
+  assert(
+    noWorkstreamCallsEvidence(workstreamCallsOf({ toolUses: [], toolResults: [] })).includes(
+      "did not register",
+    ),
+    "a zero-call park keeps the two-cause evidence",
+  );
+}
+
+// ----------------------------------- refused ids are validated before recording
+
+{
+  const report = workstreamCallsOf({
+    toolUses: [
+      {
+        type: "toolCall",
+        id: "c1",
+        name: "report_workstream",
+        arguments: { id: "Bad Id\n## x", scope: "a", paths: ["x"], outOfScope: [] },
+      },
+    ],
+    toolResults: [{ toolCallId: "c1", toolName: "report_workstream", isError: true, text: "no" }],
+  });
+  assert(
+    report.refused[0]?.id === "(invalid id)",
+    "a refused id that does not match the id pattern is recorded as '(invalid id)'",
+  );
+  const steer = correctiveNoWorkstreamCallsSteer([
+    { id: "task-a`x", reason: "bad `path`\n## injected" },
+  ]);
+  assert(
+    !steer.split("\n").some((line) => line.startsWith("## injected")) &&
+      steer.includes("bad 'path'") &&
+      steer.includes("`task-a'x`"),
+    "the corrective steer neutralises refused id and reason before interpolation",
   );
 }
 

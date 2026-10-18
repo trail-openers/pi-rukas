@@ -22,13 +22,13 @@
  * (nessie 664 = 3 workstreams, 673 = 2, 677 = 3).
  */
 
-import { isPlainRepoRelativePath } from "./plan-path-shape.ts";
+import { isPlainRepoRelativePath, isPlannedRepoRelativePath } from "./plan-path-shape.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
-// #1005 / #819 — the predicate lives in plan-path-shape.ts (import-free, so the
-// report_workstream companion can use it inside the child). Re-exported here so
+// #1005 / #819 — the predicates live in plan-path-shape.ts (import-free, so the
+// report_workstream companion can use them inside the child). Re-exported here so
 // every existing importer keeps its path and there is still one copy.
-export { isPlainRepoRelativePath };
+export { isPlainRepoRelativePath, isPlannedRepoRelativePath };
 
 /** A file two workstreams both claimed. */
 export interface PathCollision {

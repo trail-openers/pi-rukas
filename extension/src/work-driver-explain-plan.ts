@@ -10,7 +10,6 @@
  * operator off to inspect a diff or push a branch that was never created.
  */
 
-import { isNoCallsEvidence } from "./work-driver-plan-calls.ts";
 import { lastCapHit } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
@@ -31,12 +30,17 @@ export function explainPlan(cap: Cap, state: WorkState): string {
     case "plan-spec-mismatch": {
       const hit = lastCapHit(state, "plan-spec-mismatch");
       const evidence = hit?.evidence ?? "(no detail recorded)";
-      // #1652 — zero accepted calls is not a judged plan. The driver cannot tell
-      // "the planner ignored the tool" from "the tool never reached the child", so
-      // the sentence names both and the check that separates them, and does not
-      // assert the planner drifted.
-      if (isNoCallsEvidence(evidence)) {
+      // #1652 — zero accepted calls is not a judged plan. With no call at all the
+      // driver cannot tell "the planner ignored the tool" from "the tool never
+      // reached the child", so the sentence names both and the check that
+      // separates them.
+      if (hit?.planVerdict === "no-calls") {
         return `the plan reply carried no accepted report_workstream call: ${evidence}. The driver cannot tell the two causes apart from the reply. Check the plan child's tool list in its transcript for report_workstream (the companion is loaded with --extension), and run test-pi-shape-live.ts against the installed Pi. If the tool is listed, the planner ignored it and a re-run may succeed; if it is not, the companion did not register and a re-run will park the same way. Nothing was written; the cycle cost one planning dispatch`;
+      }
+      // #1652 — the calls reached the driver and were refused, so the tool is
+      // registered. The refusal reasons are the cause; the tool list is not.
+      if (hit?.planVerdict === "all-refused") {
+        return `the plan's report_workstream calls were all refused by the driver's checks: ${evidence}. The tool is registered (a refusal proves it), so the cause is in the calls: a schema mismatch, a duplicate workstream id, or a path the planner grammar does not accept. Nothing was written; re-run \`/work ${state.issue} --restart\` (one planning dispatch), and the corrective re-dispatch receives these reasons`;
       }
       // #819 — the plan-to-spec gate. The plan was JUDGED, not lost: what the
       // cycle would have built matches nothing the spec asked for.

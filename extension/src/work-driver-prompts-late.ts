@@ -1,4 +1,4 @@
-import { neutraliseFenceEntry } from "./plan-workstream-schema.ts";
+import { quotedOutOfScope } from "./plan-workstream-schema.ts";
 import { handoffOpsPromptWithoutLabel } from "./work-driver-handoff-ops-label.ts";
 import type { MergeMethod } from "./work-driver-merged-mechanized.ts";
 import {
@@ -147,7 +147,7 @@ export function inlineCommitPrPrompt(
     (workstream) =>
       `  - \`${workstream.id}\`: ${
         workstream.outOfScope.length > 0
-          ? `DO NOT STAGE anything these out-of-scope entries name: ${workstream.outOfScope.map(neutraliseFenceEntry).join("; ")}`
+          ? `DO NOT STAGE anything these out-of-scope entries name — ${quotedOutOfScope(workstream.outOfScope)}`
           : "no out-of-scope paths declared; still stage only reviewed in-scope paths or developer-created new files"
       }`,
   );
