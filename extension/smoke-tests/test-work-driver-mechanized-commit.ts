@@ -197,7 +197,14 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           "M1: consolidation oracle (verifyConsolidation) passes on the mechanized result",
         );
         assert(
-          !after?.eventLog.some((e) => e.kind === "plumb-report"),
+          // #1472 scopes this: the closed-issue gate legitimately records a
+          // plumb-report when it cannot read the issue, so "no plumb-report at
+          // all" is no longer the right invariant. What M1 claims is that the
+          // MECHANIZED commit-pr path fell back to nothing — the roles that
+          // mean that are the commit-pr/consolidation ones, not the gates.
+          !after?.eventLog.some(
+            (e) => e.kind === "plumb-report" && e.role !== "issue-gate",
+          ),
           "M1: no fallback plumb-report — mechanized path completed cleanly",
         );
       } finally {
