@@ -46,6 +46,7 @@ import { loadPlanImages } from "./plan-images.ts";
 import { armPmMode, isPmModeActive, peekDoctrinePending, takeDoctrinePending } from "./pm-mode.ts";
 import { transcriptsSummary } from "./runs.ts";
 import { trace } from "./trace.ts";
+import { currentVersionLine } from "./version-info.ts";
 import { groupIssues, resolvedParallelGroups } from "./work-driver-grouping.ts";
 import { piSessionHost } from "./work-driver-host.ts";
 import { issueImagesSection, toDispatchImages } from "./work-driver-issue-images.ts";
@@ -303,6 +304,7 @@ export function registerCommands(pi: ExtensionAPI) {
           : "active (sticky preamble injected every turn; strip not yet performed)"
         : "idle";
       const lines = [
+        `version:          ${currentVersionLine()}`,
         `prompts dir:      ${PI_PROMPTS_DIR}`,
         `PM prompt file:   ${PM_PROMPT_FILE}`,
         `PM mode:          ${pmModeLine}`,
@@ -312,7 +314,7 @@ export function registerCommands(pi: ExtensionAPI) {
               `PM tools stripped:  ${stripInfo.removed} from ${stripInfo.total} active: ${stripInfo.names.join(", ") || "(none)"}`,
             ]
           : []),
-        "commands:         /start /research /plan /work /review /audit /runs /ensemble-model /ensemble-debug",
+        "commands:         /start /research /plan /work /review /audit /runs /ensemble-model /ensemble-debug /pi-rukas-version",
         "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop, dispatch_lens_review (all async),",
         "                  dispatch_status, dispatch_kill, dispatch_peek, dispatch_steer, check_review_cap",
         ...(runsLine ? [`transcripts:      ${runsLine}`] : []),

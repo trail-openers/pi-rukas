@@ -30,6 +30,7 @@ import { pruneOldRuns, registerRunsCommand } from "./runs.ts";
 import { registerSandboxFsGuard } from "./sandbox-fs-guard.ts";
 import * as sessionAutosave from "./session-autosave.ts";
 import { trace } from "./trace.ts";
+import { registerVersionInfo } from "./version-info.ts";
 import { registerWorkTools } from "./work-tool.ts";
 import * as workWidget from "./work-widget.ts";
 
@@ -75,6 +76,8 @@ export default async function (pi: ExtensionAPI) {
   registerAdversarialTool(pi);
   registerLensReviewTool(pi);
   registerCommands(pi);
+  // #1614 — version + commit at session start, and /pi-rukas-version.
+  registerVersionInfo(pi);
   // #408 — PM can start the compiled driver instead of hand-rolling it. Must
   // follow registerCommands: the doctrine tool reads the same prompt bodies.
   registerWorkTools(pi);

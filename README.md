@@ -28,7 +28,7 @@ Seven slash commands, an orchestrator-shaped system prompt, and nine tools that 
 | `/review [#PR \| path \| latest N]` | On-demand six-pass code review of a PR, file, directory, or the latest N PRs. Returns a deduplicated, precedence-merged verdict (APPROVED / ISSUES_FOUND / CRITICAL_ISSUES_FOUND). |
 | `/audit [<path> \| "full"]` | Standards-first repo/path audit. Derives expectations from docs/config/CI/memory/examples, then reports misalignments across bugs, dead code, style drift, architecture drift, and quality-gate gaps. |
 
-Plus utility commands: `/ensemble-model` (per-role subagent model picker), `/runs` (browse subagent transcripts), `/ensemble-debug` (show resolved configuration), `/work-status` (live `/work` cycle status; postmortem layout in a terminal state).
+Plus utility commands: `/ensemble-model` (per-role subagent model picker), `/runs` (browse subagent transcripts), `/ensemble-debug` (show resolved configuration), `/pi-rukas-version` (version, commit and Pi version for bug reports — the version and short commit also appear at session start), `/work-status` (live `/work` cycle status; postmortem layout in a terminal state).
 
 ## When to use which command
 
