@@ -137,6 +137,13 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
       "underspecified with parkReasonSource=default (#404 — an invented reason must never license building)",
   },
   {
+    token: "IMPLEMENTED-AT",
+    values: "<commit sha, 7-40 hex> (`IMPLEMENTED-AT: <sha>` line on an already-implemented park)",
+    consumer: "work-driver-intent-grounding.ts",
+    onAbsence:
+      "the stated park stands, traced as not checked against mainline (#1351 — only a cited commit that is off the mainline overturns it)",
+  },
+  {
     token: "DUPLICATE_RISK",
     values: ["high", "medium", "low", "none"],
     consumer: "plan-investigate.ts",
