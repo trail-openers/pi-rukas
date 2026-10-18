@@ -13,7 +13,10 @@ import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { extractListField, sliceMarkdownSection } from "./work-driver-plan-parse.ts";
 
 // Re-exported: several modules read plan/spec markdown through this module.
-export { sliceMarkdownSection, splitOutsideParens } from "./work-driver-plan-parse.ts";
+export {
+  sliceMarkdownSection,
+  splitOutsideParens,
+} from "./work-driver-plan-parse.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
@@ -56,7 +59,10 @@ export {
 // #1167 (size split) — the corrective steers moved to work-driver-plan-steers.ts
 // so this step handler stays inside the §12 cap; the re-export keeps every
 // existing importer's path working, which is the whole reason they live here.
-export { correctivePlanSteer, correctiveTestSubjectSplitSteer } from "./work-driver-plan-steers.ts";
+export {
+  correctivePlanSteer,
+  correctiveTestSubjectSplitSteer,
+} from "./work-driver-plan-steers.ts";
 // #819 round-3 — the gate's HALT is now reachable from `runPlan`'s own tail (the
 // backstop under the `primaryGateRefused` assertion), so a caller that reads the
 // gate's verdict must be able to read the halt it produces from the same module.
@@ -130,7 +136,10 @@ export async function runPlan(
   // is exercised. Production never sets it; closures, not env vars.
   planThrowForTest?.();
   let next = appendEvent(
-    { ...state, pipelineState: { ...state.pipelineState, currentStep: "plan" } },
+    {
+      ...state,
+      pipelineState: { ...state.pipelineState, currentStep: "plan" },
+    },
     { kind: "step-started", step: "plan", at: now },
   );
   const issues = activeIssuesOf(state);
@@ -222,6 +231,10 @@ export async function runPlan(
     appendWorkstreamRefusals(clearDispatch(next, begun.jobId), "plan", primaryReport),
     event,
   );
+  // #1652 — a non-kill failure (provider error, non-zero exit) is a failed
+  // dispatch, not a silent planner: its completion event is the tail and the
+  // step router halts on it. Judging it for zero calls would send a false steer.
+  if (!result.ok && !planKill) return next;
   let workstreams = primaryReport.workstreams;
   // #1005 — the first plan's RAW workstreams (before the coupling merge),
   // held aside for the #849 dropped-edge check. The dropped-edge check
@@ -278,7 +291,10 @@ export async function runPlan(
   const runNormalisation = async (
     raw: typeof workstreams,
     state: WorkState,
-  ): Promise<{ workstreams: typeof workstreams; summary?: PlanUnfenceSummary }> =>
+  ): Promise<{
+    workstreams: typeof workstreams;
+    summary?: PlanUnfenceSummary;
+  }> =>
     runPlanNormalisationPass(raw, state, {
       port,
       repoRoot: ctx.repoRoot,
@@ -350,7 +366,10 @@ export async function runPlan(
     if (recovered.report && recovered.report.accepted === 0) {
       return planSpecMismatchCap(
         next,
-        { kind: "no-workstream-calls", evidence: noWorkstreamCallsEvidence(recovered.report) },
+        {
+          kind: "no-workstream-calls",
+          evidence: noWorkstreamCallsEvidence(recovered.report),
+        },
         "this is the one-shot corrective plan after a killed primary — it was not re-dispatched and develop never ran",
       );
     }
