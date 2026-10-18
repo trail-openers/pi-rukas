@@ -32,8 +32,28 @@ const WT = `${REPO}/.worktrees/issue-1-default`;
 const BRANCH = "feature/issue-1-example-fix";
 const NOT_A_REPO = `git rev-parse HEAD in ${REPO}: fatal: not a git repository (or any parent up to mount point /home/ops/orchard/work)`;
 
-function state(opts: { worktrees: Record<string, string>; rootIsRepo: boolean }): WorkState {
-  const paths = Object.values(opts.worktrees);
+type Snap = NonNullable<WorkState["pipelineState"]["handoffSnapshot"]>;
+function state(opts: {
+  worktrees: Record<string, string>;
+  rootIsRepo: boolean;
+  retained?: string[];
+  unreadable?: string[];
+  branchPushed?: boolean;
+  prNumber?: number;
+}): WorkState {
+  const paths = opts.retained ?? Object.values(opts.worktrees);
+  const unreadable = [...(opts.rootIsRepo ? [] : [NOT_A_REPO]), ...(opts.unreadable ?? [])];
+  const snap: Snap = {
+    modifiedFiles: [],
+    unstagedCount: 0,
+    stagedCount: 0,
+    branchExists: false,
+    branchPushed: opts.branchPushed ?? false,
+    repoRootHeadSha: opts.rootIsRepo ? "abc1234" : "",
+    capturedAt: 1,
+    ...(paths.length > 0 ? { retainedWorktrees: paths } : {}),
+    ...(unreadable.length > 0 ? { unreadable } : {}),
+  };
   return {
     schemaVersion: 1,
     resumable: false,
@@ -49,17 +69,8 @@ function state(opts: { worktrees: Record<string, string>; rootIsRepo: boolean })
       inFlightJobIds: [],
       branchName: BRANCH,
       worktrees: opts.worktrees,
-      handoffSnapshot: {
-        modifiedFiles: [],
-        unstagedCount: 0,
-        stagedCount: 0,
-        branchExists: false,
-        branchPushed: false,
-        repoRootHeadSha: opts.rootIsRepo ? "abc1234" : "",
-        capturedAt: 1,
-        ...(paths.length > 0 ? { retainedWorktrees: paths } : {}),
-        ...(opts.rootIsRepo ? {} : { unreadable: [NOT_A_REPO] }),
-      },
+      ...(opts.prNumber !== undefined ? { prNumber: opts.prNumber } : {}),
+      handoffSnapshot: snap,
     },
     eventLog: [
       {
@@ -148,12 +159,88 @@ for (const [name, cmds] of render(state({ worktrees: {}, rootIsRepo: false }))) 
   );
 }
 
+// 3c. Review F1 — a worktree whose own `git status` read proved it is not a
+//     repository gets no commands; with none left, nothing git is printed.
+{
+  const wtFail = `git status in ${WT}: fatal: not a git repository: ${REPO}/.git/worktrees/issue-1-default`;
+  const s = state({ worktrees: { default: WT }, rootIsRepo: false, unreadable: [wtFail] });
+  for (const [name, cmds] of render(s)) {
+    assert(
+      !cmds.some((l) => l.startsWith("git ")),
+      `${name} (F1): no git command for a worktree proven not a repo (got ${cmds.join(" | ")})`,
+    );
+  }
+  const wts = { a: `${REPO}/.worktrees/issue-1-a`, b: `${REPO}/.worktrees/issue-1-b` };
+  const half = state({
+    worktrees: wts,
+    rootIsRepo: false,
+    unreadable: [`git status in ${wts.a}: fatal: not a git repository`],
+  });
+  for (const [name, cmds] of render(half)) {
+    assert(
+      !cmds.some((l) => l.startsWith(`git -C ${wts.a} `)) &&
+        cmds.includes(`git -C ${wts.b} push origin HEAD:refs/heads/${BRANCH}-b`),
+      `${name} (F1): only the readable worktree keeps its commands`,
+    );
+  }
+}
+
+// 3d. Review F2 — the branch suffix follows the RECORDED workstreams (as the
+//     snapshot block does): one retained worktree of two never pushes to the
+//     cycle's real branch, and a retained real path keeps its recorded id.
+{
+  const wts = { a: `${REPO}/.worktrees/issue-1-a`, b: `${REPO}/.worktrees/issue-1-b` };
+  const real = "/mnt/real/.worktrees/issue-1-a";
+  for (const retained of [[wts.a], [real]]) {
+    const s = state({ worktrees: wts, rootIsRepo: false, retained });
+    for (const [name, cmds] of render(s)) {
+      const wt = retained[0];
+      assert(
+        cmds.includes(`git -C ${wt} push origin HEAD:refs/heads/${BRANCH}-a`) &&
+          !cmds.some((l) => l.endsWith(`refs/heads/${BRANCH}`)),
+        `${name} (F2): retained ${wt} of two pushes to ${BRANCH}-a, never ${BRANCH}`,
+      );
+    }
+  }
+}
+
+// 3e. Review F3 — origin already has the branch: no push from the detached
+//     worktree HEAD (non-fast-forward); point at the existing branch / PR.
+for (const extra of [{ branchPushed: true }, { prNumber: 77 }]) {
+  const s = state({ worktrees: { default: WT }, rootIsRepo: false, ...extra });
+  for (const [name, cmds] of render(s)) {
+    assert(
+      !cmds.some((l) => / push /.test(l)) &&
+        cmds.includes(`git -C ${WT} log --oneline HEAD --not origin/${BRANCH}`),
+      `${name} (F3, ${JSON.stringify(extra)}): compares with origin's branch instead of pushing over it`,
+    );
+  }
+  const md = renderHandoffMarkdown(s, REPO);
+  assert(
+    !md.includes("open the PR yourself") &&
+      md.includes(`origin already has ${BRANCH}`) &&
+      (extra.prNumber === undefined || md.includes("PR #77")),
+    `md (F3, ${JSON.stringify(extra)}): names the existing branch/PR, not 'open the PR yourself'`,
+  );
+}
+
 // 4. Regression guard: a readable repoRoot with no worktree keeps the
 //    repoRoot commands it always had.
 for (const [name, cmds] of render(state({ worktrees: {}, rootIsRepo: true }))) {
   assert(
     cmds.some((l) => atRoot(l) && l.endsWith(`push -u origin ${BRANCH}`)),
     `${name}: a readable repoRoot still gets its take-over commands`,
+  );
+}
+
+// 4b. A readable repoRoot WITH a recorded worktree: intentionally changed —
+//     the commands target the worktree (where the work is), never repoRoot.
+for (const [name, cmds] of render(state({ worktrees: { default: WT }, rootIsRepo: true }))) {
+  assert(
+    !cmds.some(atRoot) &&
+      cmds.includes(`git -C ${WT} status`) &&
+      cmds.includes(`git -C ${WT} push origin HEAD:refs/heads/${BRANCH}`),
+    `${name}: readable repoRoot + worktree → worktree commands only (got ${cmds.filter((l) => l.startsWith("git ")).join(" | ")})`,
   );
 }
 

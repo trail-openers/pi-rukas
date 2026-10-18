@@ -14,6 +14,7 @@ import { resolve } from "node:path";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import { processAlive } from "./work-driver-resume.ts";
+import { groupClaimedByState, hasRealDependencyTree } from "./work-driver-sweep-rules.ts";
 import type { SweepTargetResult } from "./work-driver-worktree-sweep.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
 import type { WorkEvent } from "./workflow-state.ts";
@@ -48,6 +49,10 @@ export interface DecideOpts {
   launchingCycleIssue: number;
   /** Executor for running git commands. */
   execFn: ExecFn;
+  /** Shared ceiling on network proofs across this sweep. */
+  netProofBudget?: { remaining: number };
+  /** Whether this call may run a network proof. */
+  allowNetworkProof?: boolean;
 }
 
 /**
@@ -64,6 +69,7 @@ export type SweepAction =
 export interface SweepResult {
   stdout: string;
   stderr?: string;
+  purgeSkipped?: boolean;
 }
 
 /**
@@ -71,13 +77,25 @@ export interface SweepResult {
  * Implements the 6-rule decision engine.
  */
 export async function decideSweepAction(opts: DecideOpts): Promise<SweepAction> {
-  const { state, target, selfPid, liveCycles, launchingCycleIssue, execFn } = opts;
+  const {
+    state,
+    target,
+    selfPid,
+    liveCycles,
+    launchingCycleIssue,
+    execFn,
+    netProofBudget,
+    allowNetworkProof,
+  } = opts;
 
   // Rule 1: Already handled by resolveSweepTarget (returns error if invalid)
   // Rule 2: Directory absence - handled by resolveSweepTarget (not-a-directory)
 
   // Rule 3: Live owner check
   const issueNumber = state.issue;
+  if (groupClaimedByState(state, target.name)) {
+    return { type: "skip", reason: `group-claimed ${target.name}` };
+  }
   const ownerPid = state.owner?.pid;
   if (ownerPid !== undefined && ownerPid !== selfPid && processAlive(ownerPid)) {
     return { type: "skip", reason: `live-owner pid=${ownerPid}` };
@@ -94,8 +112,11 @@ export async function decideSweepAction(opts: DecideOpts): Promise<SweepAction> 
   }
 
   // Rule 5: Work provably on remote → full removal
-  if (await isWorkProvablyOnRemote(state, target.realPath, execFn)) {
-    return { type: "remove", target };
+  if (allowNetworkProof !== false && netProofBudget && netProofBudget.remaining > 0) {
+    netProofBudget.remaining -= 1;
+    if (await isWorkProvablyOnRemote(state, target.realPath, execFn)) {
+      return { type: "remove", target };
+    }
   }
 
   // Rule 6: Fallback → artifact purge only
@@ -176,35 +197,24 @@ export async function executeSweepAction(
     case "skip":
       return { stdout: "" };
     case "purge":
+      if (hasRealDependencyTree(action.target.realPath)) {
+        return {
+          stdout: "",
+          stderr: "purge skipped: real dependency tree present",
+          purgeSkipped: true,
+        };
+      }
       return await execFn("git clean -fdX", {
         cwd: action.target.realPath,
         maxBuffer: 256 * 1024,
       });
     case "remove": {
-      // We need to run the command from the parent directory of the worktree
-      const worktreeDir = action.target.realPath;
-      const parentDir = resolve(worktreeDir, "..");
-      const relativePath = relative(parentDir, worktreeDir);
-      return await execFn(`git worktree remove --force ${JSON.stringify(relativePath)}`, {
-        cwd: parentDir,
+      return await execFn(`git worktree remove --force ${JSON.stringify(action.target.realPath)}`, {
+        cwd: resolve(action.target.realPath, "..", ".."),
         maxBuffer: 256 * 1024,
       });
     }
     default:
       return { stdout: "" };
   }
-}
-
-// Helper function to compute relative path
-function relative(from: string, to: string): string {
-  const fromParts = from.split(/[\\/]/);
-  const toParts = to.split(/[\\/]/);
-  let i = 0;
-  while (i < fromParts.length && i < toParts.length && fromParts[i] === toParts[i]) {
-    i++;
-  }
-  const upSteps = fromParts.length - i;
-  const downParts = toParts.slice(i);
-  const parts = Array(upSteps).fill("..").concat(downParts);
-  return parts.length === 0 ? "." : parts.join("/");
 }

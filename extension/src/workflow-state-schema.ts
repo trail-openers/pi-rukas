@@ -51,6 +51,7 @@ export {
   type DirtyRootExemptBaseline,
   dirtyRootExemptBaselineFindings,
 } from "./workflow-state-dirty-root.ts";
+import type { IssueClosedState } from "./workflow-state-schema-issue-closed.ts";
 
 /**
  * Pipeline snapshot — the driver's "where are we" view, reconstructible
@@ -58,7 +59,7 @@ export {
  * diverge, eventLog is authoritative.
  */
 
-export interface PipelineState {
+export interface PipelineState extends IssueClosedState {
   /** Current step. Drives template selection and transition table. */
   currentStep: WorkStep;
   /**
@@ -157,12 +158,10 @@ export interface PipelineState {
    */
   activeIssues?: number[];
   /**
-   * PR11 — per-issue body-fetch failure list. Populated by `runExplore`
-   * when `gh issue view <N>` returns empty stdout or rejects for any
-   * issue in the cycle. Drives the operator-facing handoff body — each
-   * entry names which `gh` call broke so the operator can target the
-   * actual failure (gh auth, gh version, network, extension hijack).
-   * Absent for normal cycles where every issue body fetched cleanly.
+   * PR11 — per-issue body-fetch failure list, set by `runExplore` when
+   * `gh issue view <N>` returns empty stdout or rejects. Each entry names the
+   * `gh` call that broke (auth, version, network, extension hijack) for the
+   * handoff body. Absent when every issue body fetched cleanly.
    */
   emptyBodyIssues?: Array<{ issue: number; reason: string }>;
   /**
