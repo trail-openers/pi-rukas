@@ -378,6 +378,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("WORKTREE_TEARDOWN", true),
   // #1655 — the write fence: the escape hatch, then the worktree and scratch the driver sets on a fenced child.
   flag("WRITE_FENCE", true),
+  str("WRITE_REPO", null, "internal"),
   str("WRITE_ROOT", null, "internal"),
   str("WRITE_SCRATCH", null, "internal"),
 ];

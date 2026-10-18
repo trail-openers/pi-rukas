@@ -57,6 +57,7 @@ async function toolCall(
 
 const ENV_KEYS = [
   "PI_ENSEMBLE_WRITE_ROOT",
+  "PI_ENSEMBLE_WRITE_REPO",
   "PI_ENSEMBLE_WRITE_SCRATCH",
   "PI_ENSEMBLE_WRITE_FENCE",
   "PI_ENSEMBLE_SUBAGENT_MODE",
@@ -75,6 +76,7 @@ function restore() {
 const fx = buildFenceFixture("hook");
 const REPO_BIN_KEEP = path.join(fx.repo, "bin", "keep");
 process.env.PI_ENSEMBLE_WRITE_ROOT = fx.wt;
+process.env.PI_ENSEMBLE_WRITE_REPO = fx.repo;
 process.env.PI_ENSEMBLE_WRITE_SCRATCH = fx.scratch;
 Reflect.deleteProperty(process.env, "PI_ENSEMBLE_WRITE_FENCE");
 Reflect.deleteProperty(process.env, "PI_ENSEMBLE_SUBAGENT_MODE");
@@ -167,11 +169,11 @@ for (const [tool, input] of directAllowed) {
     last.tool === "write" && last.path === "../../bin/keep",
     "C: the log line names the tool and the path",
   );
-  const total = await countWriteFenceRefusals(fx.scratch);
+  const { count: total, unreadable } = await countWriteFenceRefusals(fx.scratch);
   // The refusals so far: 9 direct refusals (7 write-tool + 2 bash) + 1 codemode + 1 here.
   assert(
-    total === 11,
-    `C: the driver's reader sums every refusal across the scratch dir (got ${total}, want 11)`,
+    total === 11 && unreadable === 0,
+    `C: the driver's reader sums every refusal across the scratch dir (got ${total}, unreadable ${unreadable}, want 11, 0)`,
   );
 }
 
@@ -257,6 +259,35 @@ for (const [tool, input] of directAllowed) {
 }
 
 restore();
+// ============================================================
+// G. A judging fault is a refusal, never a pass (#1655 MEDIUM 9).
+// ============================================================
+{
+  // restore() above put the environment back, so the fence's env is set again for this section.
+  process.env.PI_ENSEMBLE_WRITE_ROOT = fx.wt;
+  process.env.PI_ENSEMBLE_WRITE_REPO = fx.repo;
+  process.env.PI_ENSEMBLE_WRITE_SCRATCH = fx.scratch;
+  const faulty = fakePi();
+  registerWriteFence(faulty);
+  // A getter that throws stands in for any internal fault in the judge.
+  const broken = await toolCall(faulty, {
+    toolName: "bash",
+    toolCallId: "t9",
+    input: {
+      get command(): string {
+        throw new Error("boom");
+      },
+    },
+  });
+  assert(
+    broken?.block === true && broken.reason === "write fence could not judge this call: boom",
+    `G: a judging fault blocks the call with the named reason (got ${JSON.stringify(broken)})`,
+  );
+  const after = await countWriteFenceRefusals(fx.scratch);
+  // C's 11 refusals, D's two repo-root refusals, and this one.
+  assert(after.count === 14, `G: the unjudged call is counted as a refusal (got ${after.count}, want 14)`);
+}
+
 rmSync(fx.base, { recursive: true, force: true });
 if (exit === 0) console.log("✓ all write-fence hook assertions passed");
 process.exit(exit);

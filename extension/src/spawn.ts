@@ -69,7 +69,7 @@ import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 import { vipuneChildEnv } from "./vipune.ts";
-import { writeFenceChildEnv } from "./write-fence-log.ts";
+import { childEnvFor, writeFenceChildEnv } from "./write-fence-log.ts";
 
 // `buildChildArgs` lives in spawn-support.ts (§12): argument construction is
 // invocation plumbing, which that module already holds. Re-exported here
@@ -171,7 +171,7 @@ async function spawnSpecialistInner(
   // No positional prompt — sent over stdin RPC channel below.
   const invocation = getPiInvocation(childArgs);
 
-  const childEnv: Record<string, string> = { ...process.env, PI_ENSEMBLE_ROLE: spec.role };
+  const childEnv = childEnvFor(process.env, spec.role);
   Object.assign(childEnv, vipuneChildEnv(), writeFenceChildEnv(opts.writeFence));
   // #1571 — the child works in `cwd`; an inherited GIT_DIR & co. would point
   // its git at another tree (git-env.ts).

@@ -27,6 +27,7 @@ function assert(cond: boolean, msg: string) {
 const fx = buildFenceFixture("bash");
 const cfg = loadFenceConfig({
   PI_ENSEMBLE_WRITE_ROOT: fx.wt,
+  PI_ENSEMBLE_WRITE_REPO: fx.repo,
   PI_ENSEMBLE_WRITE_SCRATCH: fx.scratch,
 });
 if (!cfg) throw new Error("fixture config did not load");
@@ -53,7 +54,43 @@ const refused: Array<[string, string]> = [
   [`rm ${REPO_BIN}/keep`, "rm of a repo-root file"],
   [`ln -s x ${REPO_BIN}/link`, "ln creating a link in the repo root"],
   [`mkdir -p ${REPO_BIN}/newdir`, "mkdir in the repo root"],
-  [`git -C ${fx.repo} status`, "git -C pointing at the repo root"],
+  [`git -C ${fx.repo} commit -m x`, "git -C a write subcommand at the repo root"],
+  // #1655 adversarial A — a substitution in a path hides its target: opaque, so refused.
+  [`echo x > $(echo ${REPO_BIN})/keep`, "a redirect whose path is a command substitution"],
+  [`rm $(echo ${REPO_BIN})/keep`, "rm of a path built from a command substitution"],
+  ["echo x > `echo /repo`/keep", "a redirect whose path is a backtick substitution"],
+  // #1655 adversarial B — ANSI-C escapes decode to the path they name.
+  ["echo x > $'\\x2e\\x2e/bin/keep'", "an ANSI-C escaped ../ climbing out of the root"],
+  // #1655 adversarial C — ~user and ~- are not expanded; refused as opaque.
+  ["echo x > ~root/keep", "a redirect to ~user, which the fence cannot resolve"],
+  ["echo x > ~-/keep", "a redirect to ~-, which the fence cannot resolve"],
+  ["echo x > ~+/../bin/keep", "~+ is the working directory, so ~+/../bin escapes the root"],
+  // A variable in a write target is opaque: its value is unknown when the command is judged.
+  ["echo x > $OUT/keep", "a redirect through a variable"],
+  ["echo x > \"$OUT\"", "a quoted redirect through a variable"],
+  // #1655 MEDIUM 2 — a link the command creates, or overwrites, under a later path.
+  ["ln -s /repo/bin x && echo y > x/new", "a write under a link created earlier in the same command"],
+  ["ln -sfn /tmp out && echo y > out/keep", "a write under an existing worktree link the command overwrites"],
+  // #1655 MEDIUM 3 — writers the fence now covers.
+  [`dd if=/dev/zero of=${REPO_BIN}/keep bs=1 count=1`, "dd of= into the repo root"],
+  [`truncate -s 0 ${REPO_BIN}/keep`, "truncate into the repo root"],
+  [`chmod 600 ${REPO_BIN}/keep`, "chmod of a repo-root file"],
+  [`chown root ${REPO_BIN}/keep`, "chown of a repo-root file"],
+  [`curl -o ${REPO_BIN}/keep https://example.com/x`, "curl -o into the repo root"],
+  [`wget -O ${REPO_BIN}/keep https://example.com/x`, "wget -O into the repo root"],
+  [`tar -xf a.tgz -C ${REPO_BIN}`, "tar extraction into the repo root"],
+  [`unzip a.zip -d ${REPO_BIN}`, "unzip -d into the repo root"],
+  [`find ${REPO_BIN} -delete`, "find -delete under the repo root"],
+  [`find . -name x -fprint ${REPO_BIN}/out`, "find -fprint into the repo root"],
+  [`sort -o ${REPO_BIN}/keep x`, "sort -o into the repo root"],
+  [`go build -o ${REPO_BIN}/bin ./cmd`, "go build -o into the repo root"],
+  [`git config --file ${REPO_BIN}/cfg user.name x`, "git config --file into the repo root"],
+  [`git clone x ${REPO_BIN}/c`, "git clone into the repo root"],
+  [`rsync -a src/ ${REPO_BIN}/`, "rsync into the repo root"],
+  ["cd " + fx.repo + " && tar -xf a.tgz", "a relative tar extraction after cd to the repo root"],
+  // #1655 MEDIUM 4 — a command that does not lex is refused whole.
+  [`echo "unterminated > ${REPO_BIN}/x`, "an unterminated quote is unparseable, so refused"],
+  [`echo $'unterminated > ${REPO_BIN}/x`, "an unterminated ANSI-C string is unparseable, so refused"],
   [`sed -i 's/a/b/' ${REPO_BIN}/keep`, "sed -i on a repo-root file"],
   [`echo x | tee ${REPO_BIN}/x`, "a repo-root tee in a pipeline"],
   [`true && echo x > ${REPO_BIN}/x`, "a repo-root redirect after &&"],
@@ -117,6 +154,26 @@ const allowedForms: Array<[string, string]> = [
     "cp -r src copy3",
     "a recursive copy into a new directory (the new name is not written through)",
   ],
+  // #1655 D — a read-only git subcommand writes nothing, wherever -C points.
+  [`git -C ${fx.repo} status`, "git -C at the repo root, read-only subcommand"],
+  [`git -C ${fx.repo} log --oneline`, "git -C at the repo root, log"],
+  // #1655 MEDIUM 3 — the same writers inside the worktree pass.
+  ["dd if=/dev/zero of=out.bin bs=1 count=1", "dd of= inside the worktree"],
+  ["truncate -s 0 out.txt", "truncate inside the worktree"],
+  ["chmod 600 src/a.ts", "chmod inside the worktree"],
+  ["curl -o out.json https://example.com/x", "curl -o inside the worktree"],
+  ["tar -czf out.tgz src", "tar creating an archive writes nothing"],
+  ["unzip -l a.zip", "unzip listing writes nothing"],
+  ["find src -name '*.ts'", "find without -delete writes nothing"],
+  ["sort -o out.txt in.txt", "sort -o inside the worktree"],
+  ["go build ./...", "go build without -o writes nothing the fence names"],
+  // #1655 A — a substitution in the body of a command, with the target inside the worktree.
+  ["echo $(date) > out.txt", "a substitution in the body, the target inside the worktree"],
+  // #1655 B — an ANSI-C escape that names a path inside the worktree.
+  ["echo x > $'out\\x2etxt'", "an ANSI-C escaped name inside the worktree"],
+  ["echo x > $'out\\u002etxt'", "an ANSI-C \\u escape inside the worktree"],
+  // #1655 MEDIUM 4 — a command that lexes but is not a known writer is allowed: no write is named.
+  [`frobnicate ${REPO_BIN}/keep`, "an unknown command name is parseable, so it is not refused"],
 ];
 for (const [command, why] of allowedForms) {
   assert(refusedTarget(command) === undefined, `allow: ${why} — \`${command}\``);
@@ -132,8 +189,10 @@ assert(
   "best-effort: an eval body is opaque here",
 );
 assert(
-  refusedTarget(`echo "unterminated > ${REPO_BIN}/x`) === undefined,
-  "best-effort: a command that does not lex is allowed",
+  bashWriteTargets(`echo "unterminated > ${REPO_BIN}/x`, fx.wt)[0]?.opaque?.includes(
+    "unparseable bash; refused by the write fence",
+  ) === true,
+  "fail-closed: a command that does not lex is refused with the unparseable reason",
 );
 assert(
   refusedTarget("cd -") === undefined,

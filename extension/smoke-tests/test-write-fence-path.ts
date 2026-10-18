@@ -35,6 +35,7 @@ const fx = buildFenceFixture("path");
 symlinkSync(path.join(fx.wt, "loop"), path.join(fx.wt, "loop"));
 const loaded = loadFenceConfig({
   PI_ENSEMBLE_WRITE_ROOT: fx.wt,
+  PI_ENSEMBLE_WRITE_REPO: fx.repo,
   PI_ENSEMBLE_WRITE_SCRATCH: fx.scratch,
 });
 if (!loaded) throw new Error("fixture config did not load");
@@ -90,13 +91,53 @@ assert(
 // ------------------------------------------- a link the worktree did not provision
 const wt2Cfg = loadFenceConfig({
   PI_ENSEMBLE_WRITE_ROOT: fx.wt2,
+  PI_ENSEMBLE_WRITE_REPO: fx.repo,
   PI_ENSEMBLE_WRITE_SCRATCH: fx.scratch,
 });
 if (!wt2Cfg) throw new Error("wt2 config did not load");
 assert(
   !allowed("node_modules/new", fx.wt2, wt2Cfg),
-  "refuse: a node_modules link whose target is not named node_modules (not a provisioned dependency tree)",
+  "refuse: a node_modules link whose target is not the main checkout's own tree (not a provisioned dependency tree)",
 );
+
+// #1655 MEDIUM 7 — a look-alike: named node_modules, its basename matches, but it points at a sibling's tree.
+assert(
+  !allowed("lookalike/node_modules/pkg/new.js"),
+  "refuse: a node_modules link to another worktree's node_modules (a look-alike, not the main checkout's tree)",
+);
+assert(
+  allowed("extension/node_modules/pkg/new.js"),
+  "allow: the same location as the main checkout's own tree still passes",
+);
+
+// #1655 D — the worktree named through a symlink: the dependency link is still recognised.
+{
+  const viaLink = path.join(fx.base, "wt-via-link");
+  symlinkSync(fx.wt, viaLink, "dir");
+  const linked = loadFenceConfig({
+    PI_ENSEMBLE_WRITE_ROOT: viaLink,
+    PI_ENSEMBLE_WRITE_REPO: fx.repo,
+    PI_ENSEMBLE_WRITE_SCRATCH: fx.scratch,
+  });
+  if (!linked) throw new Error("symlinked-root config did not load");
+  assert(
+    allowed(path.join(viaLink, "node_modules", "pkg", "new.js"), fx.wt, linked),
+    "allow: a provisioned dependency link under a root the child names through a symlink",
+  );
+}
+
+// #1655 MEDIUM 7 — no main checkout is configured: a dependency link cannot be proven provisioned, so it is refused.
+{
+  const noRepo = loadFenceConfig({
+    PI_ENSEMBLE_WRITE_ROOT: fx.wt,
+    PI_ENSEMBLE_WRITE_SCRATCH: fx.scratch,
+  });
+  if (!noRepo) throw new Error("no-repo config did not load");
+  assert(
+    !allowed("node_modules/pkg/new.js", fx.wt, noRepo),
+    "refuse: without PI_ENSEMBLE_WRITE_REPO a dependency link is not provisioned",
+  );
+}
 
 // ------------------------------------------- a link the child made after it started
 {

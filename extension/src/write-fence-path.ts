@@ -14,22 +14,32 @@
  *
  * Allowed, by resolved realpath: the write root, the cycle scratch dir, the OS
  * temp dirs, and — through the worktree's own provisioned dependency links only
- * — the tree that link points at. Everything else is refused. A root that is set
- * but unusable fails closed: only scratch and temp stay writable.
+ * — the tree that link points at. A provisioned link is one the worktree
+ * provisioning made: its target must be the main checkout's own tree at the same
+ * relative location. Everything else is refused. A root that is set but unusable
+ * fails closed: only scratch and temp stay writable.
  */
 
 import { lstatSync, readlinkSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SHAREABLE_DEPS } from "./worktree-provision.ts";
+import { NESTED_DEP, SHAREABLE_DEPS } from "./worktree-dep-contract.ts";
 
 /** Symlink hops allowed before a resolution is treated as a loop. */
 const MAX_SYMLINK_DEPTH = 32;
 
+/** A directory the fence compares against, held both as the child named it and as its realpath. */
+interface Dir {
+  lexical: string;
+  real: string;
+}
+
 /** The fence's view of the environment the companion was loaded into. */
 export interface FenceConfig {
-  /** Usable write root: lexical (for the dependency-link prefix) and real (for containment). */
-  root?: { lexical: string; real: string };
+  /** Usable write root. Undefined when the root the driver set is unusable: then only scratch and temp are writable. */
+  root?: Dir;
+  /** The main checkout's realpath. A provisioned dependency link must point at its own tree there. */
+  repo?: string;
   /** The root exactly as the driver set it, named in every refusal. */
   rootLabel: string;
   /** Realpaths of the trees a write may always land in: scratch and the OS temp dirs. */
@@ -40,11 +50,29 @@ export interface FenceConfig {
 
 /** Options for judgeWrite. */
 export interface JudgeOpts {
-  /** The bash command creates a link too (see BashTarget.linkedCommand). */
+  /**
+   * The command may create links whose names cannot be known in advance
+   * (archive extraction, `cp -a`). A path that does not exist yet is then refused.
+   */
   linkedCommand?: boolean;
+  /**
+   * Absolute lexical names of the symbolic links this command creates (`ln -s`).
+   * A path under one of them is refused: the link may change what it resolves to.
+   */
+  throughLinks?: string[];
 }
 
 export type WriteJudgement = { ok: true } | { ok: false; message: string };
+
+/** `~` and `~/` as the home directory. Every other path, including `~user`, is returned unchanged. */
+export function expandHome(p: string): string {
+  return p === "~" || p.startsWith("~/") ? homeDir() + p.slice(1) : p;
+}
+
+/** The home directory every `~` and `$HOME` expansion resolves to (one normalisation for the fence). */
+export function homeDir(): string {
+  return os.homedir();
+}
 
 function lstatOf(p: string) {
   try {
@@ -108,8 +136,9 @@ function isPlainName(seg: string): boolean {
   return seg !== "" && seg !== "." && seg !== "..";
 }
 
-function usableRoot(raw: string): FenceConfig["root"] {
-  if (!path.isAbsolute(raw)) return undefined;
+/** An absolute path that names an existing directory, as lexical and real. Undefined otherwise. */
+function usableDir(raw: string | undefined): Dir | undefined {
+  if (raw === undefined || !path.isAbsolute(raw)) return undefined;
   try {
     if (!statSync(raw).isDirectory()) return undefined;
   } catch {
@@ -128,7 +157,6 @@ function usableRoot(raw: string): FenceConfig["root"] {
 export function loadFenceConfig(env: NodeJS.ProcessEnv): FenceConfig | undefined {
   const rawRoot = env.PI_ENSEMBLE_WRITE_ROOT;
   if (rawRoot === undefined || env.PI_ENSEMBLE_WRITE_FENCE === "0") return undefined;
-  const allowed: string[] = [];
   const scratch = env.PI_ENSEMBLE_WRITE_SCRATCH;
   const dirs = [
     scratch && path.isAbsolute(scratch) ? scratch : undefined,
@@ -136,48 +164,59 @@ export function loadFenceConfig(env: NodeJS.ProcessEnv): FenceConfig | undefined
     "/tmp",
     "/private/tmp",
   ];
+  const allowed = new Set<string>();
   for (const dir of dirs) {
     const real = dir === undefined ? undefined : safeResolve(dir);
-    if (real !== undefined) allowed.push(real);
+    if (real !== undefined) allowed.add(real);
   }
   return {
-    root: usableRoot(rawRoot),
+    root: usableDir(rawRoot),
+    repo: usableDir(env.PI_ENSEMBLE_WRITE_REPO)?.real,
     rootLabel: rawRoot,
-    allowed,
+    allowed: [...allowed],
     loadedAt: Date.now(),
   };
 }
 
 /**
- * A write to `abs` is inside the worktree's own provisioned dependency tree when
- * its LEXICAL path runs through a dependency link the worktree owns, and the
- * resolved target lies inside what that link points at. The link must be one
- * `worktree-provision.ts` creates (a shareable dep at the root, or `node_modules`
- * one package directory down) and must point at a tree of the same name, so a
- * symlink a child made itself to `/etc` is not a dependency tree.
+ * The path of `abs` relative to the worktree, when it lies inside it. The child's
+ * cwd may name the worktree through a symlink, so both spellings are tried.
  */
-function dependencyLinkAllows(
-  abs: string,
-  rootLexical: string,
-  resolved: string,
-  loadedAt: number,
-): boolean {
-  const prefix = rootLexical + path.sep;
-  if (!abs.startsWith(prefix)) return false;
-  const [first, second] = abs.slice(prefix.length).split(path.sep);
+function relativeToRoot(abs: string, root: Dir): string | undefined {
+  for (const base of [root.lexical, root.real]) {
+    if (abs.startsWith(base + path.sep)) return abs.slice(base.length + 1);
+  }
+  return undefined;
+}
+
+/**
+ * A write to `abs` is inside the worktree's own provisioned dependency tree when
+ * its path runs through a dependency link the worktree owns, and the resolved
+ * target lies inside what that link points at. A provisioned link is one of the
+ * shareable deps at the root, or `node_modules` one package directory down, and
+ * it must point at the main checkout's OWN tree at the same relative location
+ * (`<worktree>/extension/node_modules` → `<repo>/extension/node_modules`). A link
+ * to any other `node_modules` is not provisioned, whatever its name.
+ */
+function dependencyLinkAllows(abs: string, cfg: FenceConfig, resolved: string): boolean {
+  const { root, repo } = cfg;
+  if (!root || repo === undefined) return false;
+  const rel = relativeToRoot(abs, root);
+  if (rel === undefined) return false;
+  const [first, second] = rel.split(path.sep);
   if (first === undefined || !isPlainName(first)) return false;
   const links: string[] = [];
-  if ((SHAREABLE_DEPS as readonly string[]).includes(first)) {
-    links.push(path.join(rootLexical, first));
-  }
-  if (second === "node_modules") links.push(path.join(rootLexical, first, second));
-  return links.some((link) => {
+  if ((SHAREABLE_DEPS as readonly string[]).includes(first)) links.push(first);
+  if (second === NESTED_DEP) links.push(path.join(first, second));
+  return links.some((linkRel) => {
+    const link = path.join(root.real, linkRel);
     const st = lstatOf(link);
     // A link the child made after it started is not provisioned, whatever it points at.
-    if (!st?.isSymbolicLink() || st.ctimeMs >= loadedAt) return false;
+    if (!st?.isSymbolicLink() || st.ctimeMs >= cfg.loadedAt) return false;
     const real = safeResolve(link);
-    if (real === undefined) return false;
-    return path.basename(real) === path.basename(link) && isInside(resolved, real);
+    const expected = safeResolve(path.join(repo, linkRel));
+    if (real === undefined || real !== expected) return false;
+    return isInside(resolved, real);
   });
 }
 
@@ -207,6 +246,13 @@ export function judgeWrite(
       "it is under a path this command creates, so it cannot be checked before the command runs. Write it in a separate command",
     );
   }
+  const lexical = path.resolve(abs);
+  if ((opts.throughLinks ?? []).some((name) => lexical !== name && isInside(lexical, name))) {
+    return refuse(
+      target,
+      "it is under a link this command creates, so it cannot be checked before the command runs. Write it in a separate command",
+    );
+  }
   if (cfg.allowed.some((dir) => isInside(resolved, dir))) return { ok: true };
   if (!cfg.root) {
     return refuse(
@@ -215,13 +261,14 @@ export function judgeWrite(
     );
   }
   if (isInside(resolved, cfg.root.real)) return { ok: true };
-  if (dependencyLinkAllows(abs, cfg.root.lexical, resolved, cfg.loadedAt)) return { ok: true };
+  if (dependencyLinkAllows(abs, cfg, resolved)) return { ok: true };
   return refuse(
     target,
     `it is outside your write root (${cfg.rootLabel}). Write only inside that worktree`,
   );
 }
 
-function refuse(target: string, why: string): WriteJudgement {
+/** A refusal's message. `why` is a clause without its final full stop. */
+export function refuse(target: string, why: string): WriteJudgement {
   return { ok: false, message: `Refused: ${target} — ${why}.` };
 }

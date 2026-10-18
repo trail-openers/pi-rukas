@@ -11,7 +11,7 @@ import { dispatchCore } from "./dispatch.ts";
 import { execp } from "./exec.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { trace, traceWarn } from "./trace.ts";
-import type { DispatchResult } from "./types.ts";
+import type { DispatchResult, WriteFenceOpt } from "./types.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
@@ -42,7 +42,6 @@ import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import { type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 import { worktreePrune, worktreeRemove } from "./worktree.ts";
-import type { WriteFence } from "./write-fence-log.ts";
 
 export { buildCompletionEvent, overrideEnvForKillCause } from "./work-driver-completion-event.ts";
 
@@ -88,7 +87,7 @@ export async function runSingleDispatch(
   label: string,
   now: number,
   buildPrompt: () => string,
-  opts?: { timeoutMs?: number; cwd?: string; writeFence?: WriteFence },
+  opts?: WriteFenceOpt & { timeoutMs?: number; cwd?: string },
 ): Promise<WorkState> {
   let next = appendEvent(
     { ...state, pipelineState: { ...state.pipelineState, currentStep: step } },

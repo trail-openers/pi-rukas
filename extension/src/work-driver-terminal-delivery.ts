@@ -24,6 +24,7 @@ import { trace } from "./trace.ts";
 import { renderHandoffUserMessage } from "./work-driver-handoff-message.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
+import { foldWriteFenceCount } from "./work-driver-write-fence.ts";
 import { type WorkState, isProviderPark } from "./workflow-state.ts";
 
 /** Terminal delivery of issue #808's driver. `repoRoot`/`issue` anchor the scratch dir + envelope. */
@@ -48,9 +49,13 @@ export type TerminalDeliveryCtx = {
  */
 export async function deliverTerminalLine(
   ctx: TerminalDeliveryCtx,
-  state: WorkState,
+  stateIn: WorkState,
   park?: WorkState,
 ): Promise<WorkState> {
+  // #1655 — every terminal state passes here, including a resumed cycle's, and
+  // neither the handoff step nor a resume reaches routeStepOutcome. Fold the
+  // refusal total first, so the handoff line and the returned state carry it.
+  const state = await foldWriteFenceCount(ctx, stateIn);
   // Where the interrupted/park facts come from: the caller's snapshot when it
   // gave one, otherwise its own state (every non-resume caller has no separate
   // disk copy to offer).

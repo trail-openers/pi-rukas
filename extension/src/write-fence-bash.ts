@@ -3,311 +3,114 @@
  *
  * Best-effort: it lists the paths a bash command would WRITE (or change into),
  * so write-fence.ts can judge each one with the same rule as the write tools.
- * It is not a shell. The existing tokenisers in bash-command-parser.ts replace
- * every quoted argument with a sentinel, so they cannot yield a target; this
- * module has its own small lexer instead. Per-command meaning (which operands
- * cp, tee, sed and friends write) lives in write-fence-bash-commands.ts.
+ * It is not a shell. The lexer (write-fence-bash-lex.ts) keeps each word's text,
+ * the splitter (write-fence-bash-split.ts) finds the simple commands, and the
+ * writers (write-fence-bash-writers.ts) say what each command writes.
  *
- * Checked: output redirects (`>`, `>>`, `&>`, `>|`), `cd`, and the operands of
- * the commands in write-fence-bash-commands.ts, reached through wrappers
- * (`env`, `timeout`, `xargs`, …) and keywords (`if`, `then`, `do`, `{`). Every
- * simple command in a pipeline, chain, subshell or `$(…)` is checked. A
- * subshell's `cd` does not end with the subshell, so each target is judged
- * against every directory the command may have reached.
+ * Checked: output redirects (`>`, `>>`, `&>`, `>|`), `cd`, and the writes of the
+ * commands in write-fence-bash-writers.ts, reached through wrappers (`env`,
+ * `timeout`, `xargs`, …) and keywords (`if`, `then`, `do`, `{`). Every simple
+ * command in a pipeline, chain, subshell, or `$(…)` / backtick substitution is
+ * checked. A subshell's `cd` does not end with the subshell, so each target is
+ * judged against every directory the command may have reached.
  *
- * Not checked, by design: a body handed to `sh -c`, `bash -c` or `eval` (it is
- * an opaque string here; the after-the-fact residue detection stays the
- * backstop), a `$VAR` other than `$HOME`, `cd -` (OLDPWD is not known
- * statically). A command that does not lex (an unterminated quote) yields no
- * targets, so it is allowed.
+ * A word the fence cannot resolve (a `$VAR` other than `$HOME`, a `~user`, a
+ * substitution inside a path) is refused where it is written, since its path is
+ * unknown. A command that does not lex is refused whole: the fence does not
+ * guess its shape.
+ *
+ * Not checked, by design: a body handed to `sh -c`, `bash -c` or `eval` (an
+ * opaque string here; the after-the-fact residue detection stays the backstop),
+ * `cd -` (OLDPWD is not known statically), and a command whose NAME is itself
+ * an expansion. Unknown commands are allowed.
  */
 
-import os from "node:os";
+import path from "node:path";
+import { type Word, lex } from "./write-fence-bash-lex.ts";
+import { commandName, operands, simpleCommands, stripPrefix } from "./write-fence-bash-split.ts";
 import {
-  commandName,
   copyLikeTargets,
   hardLinkSources,
   makesLinks,
-  operands,
-  stripPrefix,
+  symlinkNames,
   writtenOperands,
-} from "./write-fence-bash-commands.ts";
-import { resolveLikeOs } from "./write-fence-path.ts";
+} from "./write-fence-bash-writers.ts";
+import { homeDir, resolveLikeOs } from "./write-fence-path.ts";
 
 /** One path a command writes, judged against the cwd it runs in. */
 export interface BashTarget {
   path: string;
   cwd: string;
   /**
-   * The command also creates a link, and this path is not that link's own
-   * name. The path cannot be judged before the command runs (a link it creates
-   * may change what the path resolves to), so the fence refuses it.
+   * The command also creates links whose names are not in its arguments (an
+   * archive, a recursive copy). A path that does not exist yet cannot be judged.
    */
   linkedCommand: boolean;
-  /**
-   * The path uses brace expansion (`{../..,src}/x`, `{1..3}`). Bash would expand
-   * it into several paths; the literal word cannot be judged, so the fence refuses it.
-   */
-  opaque: boolean;
+  /** Absolute lexical names of the symlinks this command creates (`ln -s`). */
+  throughLinks: string[];
+  /** Why this path cannot be judged, when it cannot. Undefined for a path the rule can judge. */
+  opaque?: string;
 }
 
-type Tok = { kind: "word"; text: string } | { kind: "op"; text: string };
+/** Why a command is refused whole: it does not lex. */
+export const UNPARSEABLE_REASON =
+  "unparseable bash; refused by the write fence (the command does not lex, for example an unterminated quote)";
 
-/** Lexer output where a `$(`/backtick/subshell is a `;` separator. Undefined when it does not lex. */
-function lex(src: string): Tok[] | undefined {
-  const toks: Tok[] = [];
-  const heredocs: Array<{ delim: string; strip: boolean }> = [];
-  let word: string | undefined;
-  let i = 0;
-  const n = src.length;
-  const addWord = (s: string) => {
-    word = (word ?? "") + s;
-  };
-  const endWord = () => {
-    if (word !== undefined) toks.push({ kind: "word", text: word });
-    word = undefined;
-  };
-  const op = (text: string) => {
-    endWord();
-    toks.push({ kind: "op", text });
-  };
-  while (i < n) {
-    const ch = src[i] ?? "";
-    const next = src[i + 1] ?? "";
-    if (ch === "\\") {
-      // `\<newline>` is a line continuation: it joins nothing and is not a word break.
-      if (next !== "\n") addWord(next);
-      i += 2;
-      continue;
-    }
-    if (ch === "'") {
-      const end = src.indexOf("'", i + 1);
-      if (end < 0) return undefined;
-      addWord(src.slice(i + 1, end));
-      i = end + 1;
-      continue;
-    }
-    if (ch === '"') {
-      // Inside double quotes only `$(` and backticks still start a command.
-      word ??= "";
-      i++;
-      let closed = false;
-      while (i < n) {
-        const c = src[i] ?? "";
-        if (c === '"') {
-          closed = true;
-          i++;
-          break;
-        }
-        if (c === "\\" && i + 1 < n) {
-          const nx = src[i + 1] ?? "";
-          if (nx !== "\n") addWord(nx);
-          i += 2;
-          continue;
-        }
-        if (c === "$" && src[i + 1] === "(") {
-          op(";");
-          i += 2;
-          continue;
-        }
-        if (c === "`") {
-          op(";");
-          i++;
-          continue;
-        }
-        addWord(c);
-        i++;
-      }
-      if (!closed) return undefined;
-      continue;
-    }
-    if (ch === " " || ch === "\t") {
-      endWord();
-      i++;
-      continue;
-    }
-    if (ch === "\n") {
-      op("\n");
-      i++;
-      // A heredoc body runs from the line after its operator to the delimiter line; it is data, not commands.
-      for (const doc of heredocs.splice(0)) {
-        while (i < n) {
-          const eol = src.indexOf("\n", i);
-          const line = src.slice(i, eol < 0 ? n : eol);
-          i = eol < 0 ? n : eol + 1;
-          if ((doc.strip ? line.replace(/^\t+/, "") : line) === doc.delim) break;
-        }
-      }
-      continue;
-    }
-    if (ch === "#" && word === undefined) {
-      const end = src.indexOf("\n", i);
-      i = end < 0 ? n : end;
-      continue;
-    }
-    if (ch === "&" && next === "&") {
-      op("&&");
-      i += 2;
-      continue;
-    }
-    if (ch === "|" && next === "|") {
-      op("||");
-      i += 2;
-      continue;
-    }
-    if (ch === "|") {
-      op("|");
-      i += next === "&" ? 2 : 1;
-      continue;
-    }
-    if (ch === ";" || ch === "(" || ch === ")") {
-      op(";");
-      i++;
-      continue;
-    }
-    if (ch === "$" && next === "(") {
-      op(";");
-      i += 2;
-      continue;
-    }
-    if (ch === "`") {
-      op(";");
-      i++;
-      continue;
-    }
-    if (ch === "&" && next === ">") {
-      // `&>file` and `&>>file` write the file.
-      const append = src[i + 2] === ">";
-      op(">");
-      i += append ? 3 : 2;
-      continue;
-    }
-    if (ch === "&") {
-      op("&");
-      i++;
-      continue;
-    }
-    if (ch === ">") {
-      // A bare fd number before `>` (`2>file`) is the redirect's fd, not an argument.
-      if (word !== undefined && /^\d+$/.test(word)) word = undefined;
-      if (next === "&") {
-        // `>&N` / `>&-` duplicate a descriptor; `>&file` writes the file.
-        const after = src[i + 2] ?? "";
-        if (/[\d-]/.test(after)) {
-          op("dup");
-          i += 2;
-        } else {
-          op(">");
-          i += 2;
-        }
-        continue;
-      }
-      op(">");
-      i += next === ">" || next === "|" ? 2 : 1;
-      continue;
-    }
-    if (ch === "<") {
-      if (word !== undefined && /^\d+$/.test(word)) word = undefined;
-      if (next === "<" && src[i + 2] === "<") {
-        op("<");
-        i += 3;
-        continue;
-      }
-      if (next === "<") {
-        // A heredoc: the delimiter word is consumed here so it is not read as a command.
-        let j = i + 2;
-        const strip = src[j] === "-";
-        if (strip) j++;
-        while (src[j] === " " || src[j] === "\t") j++;
-        let delim = "";
-        while (j < n && !/[\s;&|()<>]/.test(src[j] ?? "")) {
-          const c = src[j] ?? "";
-          if (c === '"' || c === "'") {
-            const close = src.indexOf(c, j + 1);
-            if (close < 0) return undefined;
-            delim += src.slice(j + 1, close);
-            j = close + 1;
-            continue;
-          }
-          if (c !== "\\") delim += c;
-          j++;
-        }
-        heredocs.push({ delim, strip });
-        op("<<");
-        i = j;
-        continue;
-      }
-      op("<");
-      i++;
-      continue;
-    }
-    addWord(ch);
-    i++;
-  }
-  endWord();
-  return toks;
-}
-
-/** A simple command: its words (assignments and wrappers not yet stripped) and its redirect targets. */
-interface Simple {
-  words: string[];
-  redirects: string[];
-}
-
-/** Split the token stream at separators, collecting each command's redirect targets. */
-function simpleCommands(toks: Tok[]): Simple[] {
-  const out: Simple[] = [];
-  let cur: Simple = { words: [], redirects: [] };
-  for (let k = 0; k < toks.length; k++) {
-    const t = toks[k];
-    if (!t) continue;
-    if (t.kind === "word") {
-      cur.words.push(t.text);
-      continue;
-    }
-    if (t.text === ">" || t.text === "<" || t.text === "dup") {
-      // A redirect consumes the next word: its target for `>`, a discarded operand otherwise.
-      const nx = toks[k + 1];
-      if (nx?.kind === "word") {
-        k++;
-        if (t.text === ">") cur.redirects.push(nx.text);
-      }
-      continue;
-    }
-    if (t.text === "<<") continue;
-    out.push(cur);
-    cur = { words: [], redirects: [] };
-  }
-  out.push(cur);
-  return out;
+/** A word a command writes. `link`: the command makes it a symbolic link's name. `creation`: it is the name the command creates. */
+interface RawTarget {
+  word: Word;
+  link: boolean;
+  creation?: boolean;
 }
 
 /** Redirect targets that are never a file write. */
 const DEVICE_SINKS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr"]);
 
-/** `~` and a leading `$HOME` are the only expansions resolved statically. */
-function expandHome(p: string): string {
-  const home = os.homedir();
-  if (p === "~" || p.startsWith("~/")) return home + p.slice(1);
-  if (p.startsWith("$HOME/") || p === "$HOME") return home + p.slice("$HOME".length);
-  if (p.startsWith("${HOME}")) return home + p.slice("${HOME}".length);
-  return p;
-}
+/** Commands whose words are destinations, judged by writers.ts's copy rules. */
+const COPY_LIKE = new Set(["cp", "mv", "install", "ln", "link"]);
 
-/** Resolve `p` from `base`, or undefined when it cannot be resolved (a symlink loop). */
-function resolveFrom(base: string, p: string): string | undefined {
+/** Brace expansion (`{../..,src}/x`, `{1..3}`): several paths, none of them the literal word. */
+const BRACE = /\{[^{}]*(,|\.\.)[^{}]*\}/;
+
+/** Resolve a word from `base`, or undefined when it is dynamic or cannot be resolved (a symlink loop). */
+function resolveFrom(base: string, w: Word): string | undefined {
+  if (w.dyn) return undefined;
   try {
-    return resolveLikeOs(p.startsWith("/") ? p : `${base}/${p}`);
+    return resolveLikeOs(path.isAbsolute(w.text) ? w.text : path.join(base, w.text));
   } catch {
     return undefined;
   }
 }
 
-/** A path the command names, before it is judged against every cwd the command may reach. */
-interface RawTarget {
-  path: string;
-  /** The path is the name of a link this command creates: not judged as a link-dependent write. */
-  creation: boolean;
+/** Why a word cannot be judged, or undefined when it can. */
+function opaqueReason(w: Word): string | undefined {
+  if (w.dyn) {
+    return "it uses a shell expansion the fence cannot resolve (a variable, a substitution, or ~user), so the path cannot be judged";
+  }
+  if (BRACE.test(w.text)) {
+    return "it uses brace expansion, which the fence does not expand. Name each path literally";
+  }
+  return undefined;
+}
+
+/** The targets of one command's raw words, judged from one directory it may run in. */
+function targetsFrom(raw: RawTarget[], dir: string, linksAnywhere: boolean): BashTarget[] {
+  const throughLinks = raw
+    .filter((r) => r.link && !r.word.dyn && r.word.text !== "")
+    .map((r) => path.resolve(dir, r.word.text));
+  const out: BashTarget[] = [];
+  for (const r of raw) {
+    const text = r.word.text;
+    if (!r.word.dyn && (text === "" || text === "-" || DEVICE_SINKS.has(text))) continue;
+    out.push({
+      path: text,
+      cwd: dir,
+      linkedCommand: linksAnywhere && !r.creation,
+      throughLinks,
+      opaque: opaqueReason(r.word),
+    });
+  }
+  return out;
 }
 
 /**
@@ -315,30 +118,39 @@ interface RawTarget {
  * may run under. `cwd` is the child's own working directory.
  */
 export function bashWriteTargets(command: string, cwd: string): BashTarget[] {
-  const toks = lex(command);
-  if (!toks) return [];
+  const lexed = lex(command);
+  if (!lexed) {
+    return [
+      {
+        path: "the command",
+        cwd,
+        linkedCommand: false,
+        throughLinks: [],
+        opaque: UNPARSEABLE_REASON,
+      },
+    ];
+  }
   const raw: RawTarget[] = [];
   // Every directory the command may be in: the start, and each cd or `env -C` it reaches.
-  // A subshell's cd does not end with the subshell, so no single cwd is the true one.
   const visited = new Set<string>([cwd]);
   let here = cwd;
-  let linksMade = false;
-  for (const simple of simpleCommands(toks)) {
-    for (const r of simple.redirects) raw.push({ path: expandHome(r), creation: false });
+  let linksAnywhere = false;
+  for (const simple of simpleCommands(lexed.toks)) {
+    for (const r of simple.redirects) raw.push({ word: r, link: false });
     const { words, chdir } = stripPrefix(simple.words);
     for (const dir of chdir) {
-      raw.push({ path: expandHome(dir), creation: false });
-      const abs = resolveFrom(here, expandHome(dir));
+      raw.push({ word: dir, link: false });
+      const abs = resolveFrom(here, dir);
       if (abs !== undefined) visited.add(abs);
     }
     const first = words[0];
     if (first === undefined) continue;
-    const name = commandName(first);
+    const name = commandName(first.text);
     const args = words.slice(1);
     if (name === "cd") {
-      const dest = expandHome(operands(args)[0] ?? "~");
-      if (dest === "-") continue;
-      raw.push({ path: dest, creation: false });
+      const dest = operands(args)[0] ?? { text: homeDir(), dyn: false };
+      if (dest.text === "-" && !dest.dyn) continue;
+      raw.push({ word: dest, link: false });
       const abs = resolveFrom(here, dest);
       if (abs !== undefined) {
         here = abs;
@@ -346,28 +158,22 @@ export function bashWriteTargets(command: string, cwd: string): BashTarget[] {
       }
       continue;
     }
-    if (makesLinks(name, args)) linksMade = true;
-    if (name === "cp" || name === "mv" || name === "install" || name === "ln" || name === "link") {
-      const creation = makesLinks(name, args);
+    if (makesLinks(name, args)) linksAnywhere = true;
+    if (COPY_LIKE.has(name)) {
+      // A destination is the name the command creates, so it is not judged as a path a link may redirect.
+      const symbolic = symlinkNames(name, args).length > 0;
       for (const t of copyLikeTargets(name, args)) {
-        raw.push({ path: expandHome(t), creation });
+        raw.push({ word: t, link: symbolic, creation: true });
       }
     }
-    for (const s of hardLinkSources(name, args)) raw.push({ path: expandHome(s), creation: false });
-    for (const t of writtenOperands(name, args)) raw.push({ path: expandHome(t), creation: false });
+    for (const s of hardLinkSources(name, args)) raw.push({ word: s, link: false });
+    for (const t of writtenOperands(name, args)) raw.push({ word: t, link: false });
   }
   const out: BashTarget[] = [];
-  for (const r of raw) {
-    if (r.path === "" || DEVICE_SINKS.has(r.path)) continue;
-    const opaque = /\{[^{}]*(,|\.\.)[^{}]*\}/.test(r.path);
-    for (const dir of visited) {
-      out.push({
-        path: r.path,
-        cwd: dir,
-        linkedCommand: linksMade && !r.creation,
-        opaque,
-      });
-    }
+  for (const dir of visited) out.push(...targetsFrom(raw, dir, linksAnywhere));
+  // A substitution is a command of its own: judged from every directory this one may run in.
+  for (const body of lexed.subs) {
+    for (const dir of visited) out.push(...bashWriteTargets(body, dir));
   }
   return out;
 }

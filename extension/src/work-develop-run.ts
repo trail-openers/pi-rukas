@@ -330,7 +330,7 @@ export function makeRunOneWorkstream(
             },
             // #1655 — the developer writes only inside its worktree; the scratch
             // dir is its other allowed home. The speculative explore is read-only.
-            writeFence: { root: cwd, scratch: scratchAbs },
+            writeFence: { root: cwd, repo: ctx.repoRoot, scratch: scratchAbs },
           },
         ),
         speculativeOn
