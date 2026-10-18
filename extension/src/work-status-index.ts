@@ -14,6 +14,7 @@
 
 import fs from "node:fs/promises";
 import { MAX_REVIEW_ROUNDS, STEP_ORDINAL } from "./work-driver-context.ts";
+import { terminalPathOf } from "./work-driver-handoff-message.ts";
 import { humanActionFor } from "./work-queue.ts";
 import { lastInterruptReason } from "./work-status-interrupted.ts";
 import { isProviderPark } from "./workflow-state-events-interrupted.ts";
@@ -108,7 +109,7 @@ export function renderCycleIndex(
       cap?.kind === "cap-hit"
         ? `cap ${cap.cap}${parkReason ? `:${parkReason}` : ""}`
         : c.state.pipelineState.status;
-    lines.push(`  ⏸ #${c.issue}  ${reason} at ${c.state.pipelineState.lastCompletedStep ?? "?"}`);
+    lines.push(`  ⏸ #${c.issue}  ${reason} at ${terminalPathOf(c.state).step ?? "?"}`);
     lines.push(`      → ${humanActionFor(reason, c.issue)}`);
   }
   if (done.length > 0) {
