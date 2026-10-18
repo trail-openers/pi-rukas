@@ -37,6 +37,11 @@ expect() {  # $1 label, $2 expected exit, rest = command
   fi
 }
 
+check() {  # $1 label, $2 got, $3 want
+  if [ "$2" = "$3" ]; then pass=$((pass+1)); printf '  PASS  %-46s %s\n' "$1" "$2"
+  else fail=$((fail+1)); printf '  FAIL  %-46s got=%s want=%s\n' "$1" "$2" "$3"; fi
+}
+
 echo "== forbidden flags are refused before ANY side effect =="
 expect "worker --restart"            2 "$S/worker.sh" --repo . --restart 1514
 expect "worker --merge"              2 "$S/worker.sh" --repo . --merge 1514
@@ -101,6 +106,9 @@ assert_url "./relative/repo"                                 local
 assert_url "../sibling/repo"                                 local
 assert_url "~/home/repo"                                     local
 assert_url "/a/b/myrepo.git"                                 local   # the .git-suffix trap
+assert_url "file:///srv/repo.git"                          local   # a file scheme is a local repo
+assert_url "git+file:///srv/repo.git"                      local
+assert_url "FILE:///srv/repo.git"                          local
 assert_url "https://github.com/o/r.git"                      remote
 assert_url "http://host/r"                                   remote
 assert_url "ssh://git@github.com/o/r.git"                    remote
@@ -239,6 +247,35 @@ rm -f /tmp/fanout-selftest/tmp/fanout/triage.tsv
 expect "no triage.tsv" 4 env FANOUT_REPO=/tmp/fanout-selftest FANOUT_FORGE_URL=https://example.invalid/x.git "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9002
 
 echo
+echo "== declared-file entries are normalised before the existence check =="
+check "norm: (new) entry is skipped" "$(fanout_norm_path 'src/a.ts (new)')" ""
+check "norm: annotation stripped" "$(fanout_norm_path 'src/a.ts (edits)')" "src/a.ts"
+check "norm: leading space trimmed" "$(fanout_norm_path ' src/b.ts')" "src/b.ts"
+check "norm: blank cell dash skipped" "$(fanout_norm_path -)" ""
+
+echo
+echo "== forge reads fail closed (stub gh, no network) =="
+FG_BIN=/tmp/fanout-selftest-bin
+rm -rf "$FG_BIN"
+mkdir -p "$FG_BIN"
+cat >"$FG_BIN/gh" <<'GH'
+#!/bin/bash
+case "$GH_STUB" in
+  dead) exit 1 ;;
+  open) case "$*" in *state*) echo '{"state":"OPEN"}' ;; *) echo '{"labels":[]}' ;; esac ;;
+  closed) echo '{"state":"CLOSED"}' ;;
+esac
+GH
+chmod +x "$FG_BIN/gh"
+printf 'issue\ttitle-bucket\tfiles-likely-touched\tblast-radius\tdepends-on\tcollides-with-live\tverdict\tblocked-reason\teffort\n' >/tmp/fanout-selftest/tmp/fanout/triage.tsv
+printf '9002\tchore\t-\tmodule\t-\t-\tready\t-\tS\n' >>/tmp/fanout-selftest/tmp/fanout/triage.tsv
+FG_ENV="FANOUT_REPO=/tmp/fanout-selftest FANOUT_FORGE_URL=https://example.invalid/x.git FANOUT_FORGE_CHECK=1"
+expect "unreadable forge refuses (fail closed)" 5 env $FG_ENV GH_STUB=dead PATH="$FG_BIN:$PATH" "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9002
+expect "CLOSED issue refused" 5 env $FG_ENV GH_STUB=closed PATH="$FG_BIN:$PATH" "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9002
+expect "OPEN, unlabelled issue passes" 0 env $FG_ENV GH_STUB=open PATH="$FG_BIN:$PATH" "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9002
+rm -rf "$FG_BIN"
+
+echo
 echo "== capacity =="
 FANOUT_REPO="$REPO" "$S/capacity.sh" 2>&1 | sed 's/^/  /'
 FANOUT_REPO="$REPO" FANOUT_LEAN=1 "$S/capacity.sh" --observed 2>&1 | head -8 | sed 's/^/  /'
@@ -258,19 +295,66 @@ console.log((ok?"  PASS":"  FAIL")+"  N=4 -> spawn_cap/verify/ws = "+got.join("/
 process.exit(ok?0:1);'
 
 echo
-echo "== pidfile: one worker per issue =="
-FANOUT_LIB_PATH="$LIB" FANOUT_REPO="$REPO" "$JS" -e '
-const {execSync}=require("child_process");
-const run=(c)=>{try{return{code:0,out:execSync(c+" 2>&1",{encoding:"utf8",env:process.env})}}catch(e){return{code:e.status,out:(e.stdout||"")+e.stderr}}};
-const A=`/bin/bash -c '"'"'set -uo pipefail; . "$FANOUT_LIB_PATH"; fanout_pidfile_acquire /tmp/fanout-selftest.lock t && echo acquired'"'"'`;
-const r1=run(A);
-console.log("  first acquire: exit="+r1.code+" "+r1.out.trim());
-const B=`/bin/bash -c '"'"'set -uo pipefail; . "$FANOUT_LIB_PATH"; fanout_pidfile_acquire /tmp/fanout-selftest.lock t; echo rc=$?'"'"'`;
-const r2=run(B);
-const live=/rc=1/.test(r2.out) || /clearing a stale/.test(r2.out);
-// Our own $$ is alive in r1 only within that process, so a dead pid -> stale-clear is correct too.
-console.log((live?"  PASS":"  FAIL")+"  second acquire behaved: "+r2.out.trim().split("\n").join(" | "));'
-rm -rf /tmp/fanout-selftest.lock
+echo
+echo "== pidfile: a LIVE owner refuses the second worker =="
+# The holder is a real live process recorded as owner, the way acquire records it. The earlier
+# version let the first acquire's own process exit, so the second acquire always saw a dead pid and
+# took the stale-clear branch: the live-owner refusal (the exit-6 protection) was never exercised.
+PF_LOCK=/tmp/fanout-selftest-pidfile.lock
+PF_SCRIPT=/tmp/fanout-selftest-pidfile.sh
+rm -rf "$PF_LOCK"
+cat >"$PF_SCRIPT" <<'PF'
+set -uo pipefail
+. "$FANOUT_LIB_PATH"
+mkdir "$PF_LOCK"
+sleep 30 >/dev/null 2>&1 &
+holder=$!
+echo "$holder" >"$PF_LOCK/pid"
+echo t >"$PF_LOCK/label"
+if fanout_pidfile_acquire "$PF_LOCK" second; then echo acquired-over-live-owner; else echo "refused rc=$?"; fi
+kill "$holder" >/dev/null 2>&1 || true
+PF
+pf_out="$(FANOUT_LIB_PATH="$LIB" PF_LOCK="$PF_LOCK" /bin/bash "$PF_SCRIPT" 2>&1)"
+if [ "$pf_out" = "refused rc=1" ] && [ -d "$PF_LOCK" ]; then
+  pass=$((pass+1)); echo "  PASS  live owner refused, lock kept"
+else
+  fail=$((fail+1)); echo "  FAIL  second acquire: out='$pf_out'"
+fi
+rm -rf "$PF_LOCK" "$PF_SCRIPT"
+
+echo
+echo "== drive.sh honours --parallel (the throttle counts its own children) =="
+# Stand-in worker: logs start/end around a one-second sleep and writes the result drive.sh parses.
+# Never clones. The peak number of concurrently running workers is what --parallel must bound.
+PAR=/tmp/fanout-selftest-par
+rm -rf "$PAR"
+mkdir -p "$PAR/scripts" "$PAR/root"
+cp "$S/drive.sh" "$S"/lib*.sh "$PAR/scripts/"
+cat >"$PAR/scripts/worker.sh" <<'FAKE'
+#!/bin/bash
+issue=""
+for a in "$@"; do issue="$a"; done
+echo "start $issue" >>"$FAKE_LOG"
+sleep 1
+echo "end $issue" >>"$FAKE_LOG"
+mkdir -p "$FANOUT_ROOT/runs/issue-$issue"
+echo '{"exitCode":0,"issues":[{"status":"merged","usage":{"cost":0.1,"dispatches":1}}]}' >"$FANOUT_ROOT/runs/issue-$issue/result.json"
+exit 0
+FAKE
+chmod +x "$PAR/scripts/worker.sh"
+
+peak_of() { awk '/^start/{r++; if (r>m) m=r} /^end/{r--} END{print m+0}' "$1"; }
+run_par() {  # $1 = --parallel value
+  rm -rf "$PAR/root" "$PAR/log"
+  mkdir -p "$PAR/root"
+  env FANOUT_ROOT="$PAR/root" FAKE_LOG="$PAR/log" "$PAR/scripts/drive.sh" --repo /tmp/fanout-selftest --parallel "$1" 9201 9202 9203 >"$PAR/out" 2>&1
+}
+run_par 1
+check "--parallel 1 peak concurrency" "$(peak_of "$PAR/log")" 1
+expect "summary rows are 12 fields (header too)" 0 awk -F'\t' 'NF!=12{b=1} END{exit b}' "$PAR/root/summary.tsv"
+run_par 2
+check "--parallel 2 peak concurrency" "$(peak_of "$PAR/log")" 2
+rm -rf "$PAR"
 
 echo
 echo "===================================="

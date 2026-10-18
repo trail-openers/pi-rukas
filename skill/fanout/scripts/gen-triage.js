@@ -89,8 +89,10 @@ for (let iter = 0; iter < rows.length + 1; iter += 1) {
   const byIssue = new Map(rows.map((r) => [r[0], r]));
   rows.forEach((r) => {
     if (r[6] !== "ready") return;
-    const deps = (r[4] || "").split(/[,\s]+/).filter(Boolean);
-    const blockers = deps.filter((d) => { const dep = byIssue.get(d); return dep && dep[6] !== "ready"; });
+    const deps = (r[4] || "").split(/[,\s]+/).filter(Boolean).map((d) => d.replace(/^#/, ""));
+    // An unknown dependency is a blocker: a dependency absent from the validated table was never
+    // judged, so it cannot be assumed clear.
+    const blockers = deps.filter((d) => { const dep = byIssue.get(d); return !dep || dep[6] !== "ready"; });
     if (blockers.length) {
       demote(r, "blocked", `depends on ${blockers.join(", ")} which ${blockers.length === 1 ? "is" : "are"} not ready`);
       changed = true;

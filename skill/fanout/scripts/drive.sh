@@ -116,10 +116,13 @@ append_row() {  # one row, under a mkdir lock so parallel writers cannot interle
 # Read the headless --json result and emit one tab-separated row. Falls back to a
 # row that names the parse failure rather than silently dropping the run — a lost
 # row is worse than an ugly one, because the operator sizes N from this table.
-row_from_result() {  # $1 = issue, $2 = exit code, $3 = result json path
+row_from_result() {  # $1 = issue, $2 = exit code, $3 = result json path, $4 = run dir
+  # Emits the 12 columns of the summary header exactly once, run_dir and finished_at included.
+  # The caller appends the row as-is; splicing columns onto it after the fact is what put
+  # finished_at under the wrong header and produced 13 fields.
   "$(fanout_node)" -e '
     const fs = require("fs");
-    const [issue, code, path] = process.argv.slice(1);
+    const [issue, code, path, rundir] = process.argv.slice(1);
     const t = (s) => String(s ?? "-").replace(/[\t\n]/g, " ");
     try {
       const d = JSON.parse(fs.readFileSync(path, "utf8"));
@@ -127,12 +130,12 @@ row_from_result() {  # $1 = issue, $2 = exit code, $3 = result json path
       const u = i.usage || {};
       console.log([issue, t(i.status), t(i.cap), t(i.failedStep), t(code),
         t(u.cost), t(Math.round((i.durationMs || 0) / 1000)), t(u.dispatches),
-        t(i.prNumber), t(i.branch), "", t(new Date().toISOString())].join("\t"));
+        t(i.prNumber), t(i.branch), t(rundir), t(new Date().toISOString())].join("\t"));
     } catch (e) {
       console.log([issue, "unparsed:" + e.message.slice(0, 40), "-", "-", t(code),
-        "-","-","-","-","-", "", t(new Date().toISOString())].join("\t"));
+        "-","-","-","-","-", t(rundir), t(new Date().toISOString())].join("\t"));
     }
-  ' "$1" "$2" "$3" 2>/dev/null || printf '%s\t%s\t-\t-\t%s\t-\t-\t-\t-\t-\t\t%s\n' "$1" "unparsed" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  ' "$1" "$2" "$3" "$4" 2>/dev/null || printf '%s\t%s\t-\t-\t%s\t-\t-\t-\t-\t-\t%s\t%s\n' "$1" "unparsed" "$2" "$4" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 
 run_one() {  # $1 = issue
@@ -145,8 +148,7 @@ run_one() {  # $1 = issue
   code=$?
   mkdir -p "$RUNS_DIR/issue-$issue"
   # shellcheck disable=SC2086
-  row="$(row_from_result "$issue" "$code" "$RUNS_DIR/issue-$issue/result.json")"
-  row="${row%	*}	$RUNS_DIR/issue-$issue	$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  row="$(row_from_result "$issue" "$code" "$RUNS_DIR/issue-$issue/result.json" "$RUNS_DIR/issue-$issue")"
   append_row "$row"
   log "worker $issue finished exit=$code"
   return "$code"
@@ -191,13 +193,28 @@ __QUEUE__
   exit 0
 fi
 
+# Count live workers by PID in THIS shell. `jobs -rp` inside a command substitution runs in a
+# subshell whose job table does not hold the parent's background jobs, so the count read 0 and
+# --parallel was silently ignored. A kill -0 probe of tracked PIDs has no such dependency.
+# The count is set in LIVE, not echoed, for the same reason: no subshell is involved at all.
+PIDS=()
+LIVE=0
+count_live() {
+  LIVE=0
+  local p
+  for p in ${PIDS[@]+"${PIDS[@]}"}; do
+    if kill -0 "$p" 2>/dev/null; then LIVE=$((LIVE + 1)); fi
+  done
+}
+
 i=0
 while [ "$i" -lt "${#ISSUES[@]}" ]; do
-  # Reap finished slots before claiming one, so `jobs -p` never grows without bound.
-  while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$MAX_PARALLEL" ]; do sleep 1; done
+  count_live
+  while [ "$LIVE" -ge "$MAX_PARALLEL" ]; do sleep 1; count_live; done
   issue="${ISSUES[$i]}"
   mkdir -p "$RUNS_DIR/issue-$issue"
   run_one "$issue" &
+  PIDS+=("$!")
   i=$((i + 1))
 done
 wait
