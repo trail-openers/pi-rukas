@@ -407,17 +407,14 @@ export function mergeExec(
     if (line.includes("--json mergeStateStatus,mergeable,state")) {
       return { stdout: mergeView(opts.merge, pr, mergeAsked).evidence };
     }
-    // #1472 — the closed-issue gate reads the issue's own state through the
-    // forge (`gh issue view N --json …,state,…`), and so does the attention
-    // check. Unanswered, those reads land in `unexpected` and every case that
-    // reaches a step boundary fails the clean-log assertion. The cycle's issue
-    // is OPEN unless a case says otherwise — a fixture that answered CLOSED
-    // would silently make every cycle park.
+    // #1472 — the closed-issue gate and the attention check both read the
+    // issue state through the forge. Unanswered, they land in `unexpected` and
+    // every case reaching a step boundary fails the clean-log assertion. OPEN
+    // unless a case asks otherwise: a fixture answering CLOSED would park
+    // every cycle.
     if (line.includes("gh issue view")) {
       log.issueViewCmds.push(line);
-      return {
-        stdout: opts.issueState === "CLOSED" ? ISSUE_CLOSED_JSON : ISSUE_OPEN_JSON,
-      };
+      return { stdout: opts.issueState === "CLOSED" ? ISSUE_CLOSED_JSON : ISSUE_OPEN_JSON };
     }
     if (line.includes("gh pr checks")) return { stdout: mergeView(opts.merge, pr, mergeAsked).checks };
     if (line.includes("gh pr view")) {
