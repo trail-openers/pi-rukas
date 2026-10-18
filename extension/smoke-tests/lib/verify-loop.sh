@@ -337,6 +337,14 @@ fi
 # across TMPDIR and needed JOB_FILES to remember them.
 RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
 chmod 700 "$RUN_DIR" 2>/dev/null || true
+# #1606 — every test's temp fixtures land in a per-run dir that the trap below
+# removes. Dozens of tests mkdtemp under tmpdir() without cleanup, and
+# a watchdog SIGKILL defeats any in-process hook; ~40 prefixes at one dir per
+# run each exhausted this host's /tmp inodes. Nested runs nest, which is fine.
+# A short sibling of RUN_DIR rather than a child of it: tests bind unix sockets
+# under tmpdir(), and macOS's ~49-char TMPDIR leaves little of sun_path's 104.
+_fixture_tmp="$(mktemp -d "${TMPDIR:-/tmp}/vl.XXXXXX" 2>/dev/null)" || _fixture_tmp=""
+if [ -n "$_fixture_tmp" ]; then export TMPDIR="$_fixture_tmp"; fi
 # One trap cleans everything on every exit path: the per-test capture, the
 # #1028/​#827 failure captures, and the #1069 ledger temp dir (empty when an
 # operator-supplied override was honoured).
@@ -360,6 +368,7 @@ _extra_cleanup() {
   # three lines above — the EXIT trap's last status IS the shell's exit status,
   # so a cleanup that can fail must not be the thing that decides the verdict.
   if [ -n "${_git_iso:-}" ]; then rm -rf "$_git_iso" || :; fi
+  if [ -n "${_fixture_tmp:-}" ]; then rm -rf "$_fixture_tmp" || :; fi
 }
 trap '_extra_cleanup' EXIT
 

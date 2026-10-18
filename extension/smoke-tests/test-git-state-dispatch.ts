@@ -7,13 +7,13 @@
  * per-member in a batch.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { startBatch, startJob } from "../src/async-jobs.ts";
 import { UNTRUSTED_NAMES_MARKER } from "../src/git-state.ts";
 import type { DispatchResult } from "../src/types.ts";
+import { trackedTempDir } from "./lib/git-test-env.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -27,7 +27,7 @@ function assert(cond: boolean, msg: string) {
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe" });
 
 function mkRepo(dirty: boolean): string {
-  const dir = mkdtempSync(join(tmpdir(), "git-state-dispatch-"));
+  const dir = trackedTempDir("git-state-dispatch-");
   git(dir, "init", "-q");
   git(dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i");
   if (dirty) writeFileSync(join(dir, "zz-dirty-marker.txt"), "x");
