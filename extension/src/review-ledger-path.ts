@@ -194,6 +194,15 @@ export async function cloneLedgerPathFor(
  * never-reviewed refusal, which is the right text for "we have nothing to
  * name".
  */
+/**
+ * The length cap `sanitiseLedgerProvenancePath` clamps to. Exported so the
+ * #1449 fixtures can size a path *past* it from the same number the
+ * sanitiser uses — a literal in a test is a second source of truth that
+ * drifts the day the cap moves, and on a host with a short temp root a
+ * hand-counted fixture silently becomes the short case instead.
+ */
+export const LEDGER_PROVENANCE_PATH_MAX = 240;
+
 export function sanitiseLedgerProvenancePath(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   // Stripping C0/C1 IS the operation, so the class is written from the character
@@ -208,7 +217,7 @@ export function sanitiseLedgerProvenancePath(value: unknown): string | undefined
     .join("")
     .trim();
   if (!stripped) return undefined;
-  return stripped.slice(0, 240);
+  return stripped.slice(0, LEDGER_PROVENANCE_PATH_MAX);
 }
 
 /**

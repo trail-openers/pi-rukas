@@ -17,22 +17,25 @@
  * happened. The fix is the split this file pins: the stamp is the raw resolved
  * path, and sanitising happens only where the value is rendered.
  *
- * The fixtures are synthetically DEEP (many short components — a single
- * filesystem component is capped at 255 bytes), and each arm asserts its own
- * premise (`length > 240`), because a tempdir shorter on another host would
- * otherwise turn the arm into the short case twice and stay green.
+ * The fixtures are synthetically DEEP, and each arm asserts its own premise
+ * (`length > LEDGER_PROVENANCE_PATH_MAX`). The depth is COMPUTED, not counted:
+ * `padTo` measures the actual prefix and the exported cap, so the fixture is
+ * past the cap by a fixed margin whether the host's temp root is macOS
+ * `/var/folders/…/T/` or Linux `/tmp/` — CI run 39099227496 was the second
+ * shape, where the old fixed segment count landed 34 chars short and the arm
+ * that pins this bug was quietly the short case twice.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { LEDGER_PROVENANCE_PATH_MAX, sameResolvedPath } from "../src/review-ledger-path.ts";
 import {
   type LedgerEntry,
   appendLedgerEntry,
   ledgerPathFor,
   readLedgerFile,
 } from "../src/review-ledger.ts";
-import { sameResolvedPath } from "../src/review-ledger-path.ts";
 import { realExec } from "./lib/exec-fake.ts";
 
 let passed = 0;
@@ -57,9 +60,35 @@ const BRANCH = "feature/writer-stamp-raw";
  * and the local `/bin/sh` wrapper was exactly that shape. */
 const realGitExec = realExec;
 
-/** A deep path under `root`, past the sanitiser's cap on any host. */
-function deepUnder(root: string, tag: string, segments: number): string {
-  return path.join(root, tag, ...Array.from({ length: segments }, (_, i) => `${tag}${i}`));
+/**
+ * How many chars past the cap a fixture must land. A margin, not a hair: the
+ * arms below all compare against the same number, so the fixture is
+ * meaningfully over rather than one byte over whatever the host's temp root
+ * happens to be.
+ */
+const OVER_CAP_BY = 40;
+
+/**
+ * The path the fixture wants, padded to `target` chars by lengthening the
+ * caller's own prefix rather than by counting segments.
+ *
+ * #1449 CI: the previous fixture picked a segment count and trusted the host's
+ * temp root to be long. macOS `/var/folders/…/T/` gave 261 chars, Linux
+ * `/tmp/…` gave 206 — the cap, the premise assertions, and the bug it guards
+ * were all silently the short case on CI while staying green locally. Padding
+ * from the actual prefix length and the exported cap makes the fixture's
+ * length a property of the fixture on any host.
+ */
+function padTo(target: number, ...components: string[]): string {
+  const base = path.join(...components);
+  const sep = path.sep;
+  const fill = target - base.length - sep.length;
+  if (fill < 1) {
+    throw new Error(`cannot pad to ${target}: the prefix is already ${base.length} chars`);
+  }
+  // One long component, not many short ones: a filesystem component caps at
+  // 255 bytes and `fill` is far under that, so this never collides with it.
+  return `${base}${sep}${"z".repeat(fill)}`;
 }
 
 const dir = mkdtempSync(path.join(os.tmpdir(), "p1449-writer-stamp-"));
@@ -72,13 +101,17 @@ try {
   // enough: `appendLedgerEntry` stamps before it reads or writes the file's
   // contents, so the arm exercises the stamp and the comparison without needing
   // a patch identity.
-  const deepClone = deepUnder(dir, "c", 40);
+  const deepClone = padTo(
+    LEDGER_PROVENANCE_PATH_MAX - "/review-ledger.json".length + OVER_CAP_BY,
+    dir,
+    "c",
+  );
   mkdirSync(deepClone, { recursive: true });
   execFileSync("git", ["init", "-q", deepClone], { stdio: "ignore" });
   const deepLedger = path.join(deepClone, ".git", "review-ledger.json");
   assert(
-    deepLedger.length > 240,
-    `#1449 the writer fixture's ledger path is past the sanitiser's cap (${deepLedger.length} chars) — on a host with a short tmpdir this arm would be the short case twice`,
+    deepLedger.length > LEDGER_PROVENANCE_PATH_MAX,
+    `#1449 the writer fixture's ledger path is past the sanitiser's cap of ${LEDGER_PROVENANCE_PATH_MAX} (${deepLedger.length} chars) — on a host with a short tmpdir this arm would be the short case twice`,
   );
   process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = deepLedger;
   {
@@ -98,7 +131,7 @@ try {
     );
     assert(
       holder.landedAtPath === undefined,
-      `#1449 a write to the clone's OWN ledger on a path past the 240-char cap reports no misdirection (${holder.landedAtPath}) — stamping the sanitised path collapses it to a prefix and makes this a false redirect`,
+      `#1449 a write to the clone's OWN ledger on a path past the ${LEDGER_PROVENANCE_PATH_MAX}-char cap reports no misdirection (${holder.landedAtPath}) — stamping the sanitised path collapses it to a prefix and makes this a false redirect`,
     );
     const row = existsSync(deepLedger) ? readLedgerFile(deepLedger).entries.at(-1) : undefined;
     assert(
@@ -106,7 +139,7 @@ try {
       "#1449 the row itself carries the RAW resolved path, not the clamped one — the guard's comparison depends on it",
     );
     assert(
-      row?.writtenTo === undefined || row.writtenTo.length > 240,
+      row?.writtenTo === undefined || row.writtenTo.length > LEDGER_PROVENANCE_PATH_MAX,
       "#1449 the stamped value is genuinely past the cap, so the assertion above is not the short case by accident",
     );
   }
@@ -137,16 +170,16 @@ try {
   // directly so a future edit that sanitises before comparing has a named arm
   // going red, rather than only the end-to-end one above.
   {
-    const long = deepUnder(dir, "d", 60) + "/review-ledger.json";
+    const long = padTo(LEDGER_PROVENANCE_PATH_MAX + OVER_CAP_BY, dir, "d", "review-ledger.json");
     assert(
-      long.length > 240,
-      `#1449 the deep comparison fixture is past the cap (${long.length} chars)`,
+      long.length > LEDGER_PROVENANCE_PATH_MAX,
+      `#1449 the deep comparison fixture is past the cap of ${LEDGER_PROVENANCE_PATH_MAX} (${long.length} chars)`,
     );
     assert(
       sameResolvedPath(long, long) === true,
       "#1449 the same deep path compares equal to itself — the bug was comparing its truncation",
     );
-    const truncated = long.slice(0, 240);
+    const truncated = long.slice(0, LEDGER_PROVENANCE_PATH_MAX);
     assert(
       truncated !== long,
       "#1449 the truncated prefix really differs from the full path (else the arm above is vacuous)",
@@ -180,8 +213,7 @@ try {
         "#1449 a dangling link naming a different file than the clone ledger still reads as a redirect",
       );
       assert(
-        sameResolvedPath(linkPath, path.join(cloneDir, "never-written.json")) === false ||
-          true,
+        sameResolvedPath(linkPath, path.join(cloneDir, "never-written.json")) === false || true,
         "#1449 the dangling-link comparison answers rather than throwing",
       );
     } else {
