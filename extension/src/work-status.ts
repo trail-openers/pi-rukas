@@ -8,6 +8,7 @@ import { trace } from "./trace.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS, STEP_ORDINAL } from "./work-driver-context.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
+import { genericRecoveryLines } from "./work-driver-handoff-recovery-tree.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { describeBranchState } from "./work-driver-handoff-view.ts";
 import { mergedLine } from "./work-driver-terminal-delivery.ts";
@@ -288,7 +289,6 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
 
   // Recovery commands (only for non-merged terminal states).
   if (ps.status !== "merged") {
-    const branchForCmd = ps.branchName ?? "<branch>";
     const target = ps.prNumber ? `pr ${ps.prNumber}` : `issue ${issue}`;
     const objType = ps.prNumber ? "pr" : "issue";
     const targetId = ps.prNumber ?? issue;
@@ -315,19 +315,8 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
             `  cat .pi/work-state/${issue}/spec.txt`,
             `  /work ${issue} --restart`,
           ]
-        : [
-            "  # 1. Inspect what survived:",
-            "  git status",
-            "  git diff --stat",
-            "",
-            "  # 2. Discard the cycle and start over (worktree is kept):",
-            `  rm .pi/work-state/${issue}.json`,
-            "",
-            "  # 3. Take over manually:",
-            "  git add -p",
-            "  git commit",
-            `  git push -u origin ${branchForCmd}`,
-          ]),
+        : // #1565 — the same trees the handoff found, not repoRoot blindly.
+          genericRecoveryLines(state).map((l) => (l ? `  ${l}` : l))),
     );
     if (
       handoffEvt?.kind === "handoff-emitted" &&

@@ -490,9 +490,10 @@ export interface PipelineState {
 }
 
 // #1362 — WORK_STEPS' home is workflow-state-events.ts (its own note there
-// explains why); it and WorkState both left this module for the 500-line gate
+// explains why); it and WorkState (workflow-state-schema-workstate.ts, with
+// #1454's single terminal-status notion) left this module for the 500-line gate
 // and are re-exported so every importer keeps its path.
-// WorkState moved to workflow-state-schema-workstate.ts (500-line gate); re-exported.
+export { TERMINAL_STATUSES, isTerminalState } from "./workflow-state-schema-workstate.ts";
 export type { WorkState } from "./workflow-state-schema-workstate.ts";
 
 // The state constructors/mutators (`initialState`, `appendEvent`,

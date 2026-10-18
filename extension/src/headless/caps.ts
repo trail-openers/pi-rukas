@@ -78,6 +78,10 @@ export const FIXED_CAPS = [
   "lens-diff-unreadable",
   "lens-fix-not-integrated",
   "lens-fix-reposition",
+  // #1384 — the lens-review fix loop outlived its own budget
+  // (PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS). Was `wall-clock` before result schema
+  // v4, a name a host read as its own cycle clock.
+  "lens-review-timeout",
   "loop-detected",
   "no-review-outcome",
   "ops-merge-base-mismatch",
@@ -97,7 +101,6 @@ export const FIXED_CAPS = [
   "round-cap",
   "step-back-revise-spec",
   "token-budget",
-  "wall-clock",
   "worktree-listing-unreadable",
 ] as const satisfies readonly FixedCap[];
 

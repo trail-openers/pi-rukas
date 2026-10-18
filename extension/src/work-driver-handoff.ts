@@ -9,6 +9,7 @@ import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { settleDraftPrAtHandoff } from "./work-driver-draft-pr.ts";
 import { countAheadOfBase, workNotYetOnBranch } from "./work-driver-handoff-ahead.ts";
+import { openDraftPrForCappedWork } from "./work-driver-handoff-capped-pr.ts";
 import { handoffChannel, withHandoffMarker } from "./work-driver-handoff-channel.ts";
 import { handoffConsolidateWorktrees } from "./work-driver-handoff-consolidate-step.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
@@ -25,6 +26,7 @@ import { providerParkResumeStep } from "./work-driver-handoff-provider-resume.ts
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
 import { readParkMemory, recordPark } from "./work-driver-park-memory.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
+import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
 import {
@@ -88,6 +90,10 @@ export async function runHandoff(
   if (consolidated.event) {
     next = appendEvent(next, consolidated.event);
   }
+  // #1402 — an adversarial-loop cap skipped commit-pr: push the branch and
+  // open a draft PR carrying the findings, so the work is reachable. Before
+  // the snapshot, so the handoff reports the branch as pushed.
+  next = await openDraftPrForCappedWork(ctx, next);
   // PR5: capture the worktree snapshot FIRST so handoff surfaces (in-chat
   // sendUserMessage, GitHub body, /work-status terminal) can answer
   // WHERE the work is without re-shelling git. Snapshot persists into
@@ -162,7 +168,7 @@ export async function runHandoff(
   // (The dispatch leg itself lives in work-driver-handoff-ops.ts — §12
   // file-size split; the bound, the write-ahead resume bookkeeping and the
   // completion / dispatch-failed event construction moved verbatim.)
-  const prNumber = state.pipelineState.prNumber;
+  const prNumber = next.pipelineState.prNumber;
   const target = prNumber ? `pr #${prNumber}` : `issue #${ctx.issue}`;
   // A freshly re-resolved intent park that matches the one already reported
   // (work-driver-park-memory.ts) has its comment on the issue: no ops
@@ -398,8 +404,11 @@ export async function runHandoff(
   next = appendEvent(next, emitted);
   await recordPark(ctx, park, commentUrl);
   // #571 — release the path claim so sibling cycles can proceed.
+  // #1454 — every issue in the group, not just the primary: a grouped cycle
+  // claims all of them, so clearing one left a sibling entry to park the next
+  // cycle against.
   try {
-    await releaseClaim(ctx.repoRoot, ctx.issue);
+    await releaseClaim(ctx.repoRoot, activeIssuesOf(next));
   } catch {
     /* best-effort; handoff must always emit regardless */
   }
