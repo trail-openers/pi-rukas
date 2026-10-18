@@ -1,13 +1,26 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import { processAlive } from "./work-driver-resume.ts";
-import type { WorkEvent, WorkState } from "./workflow-state.ts";
+import {
+  type OwnerIndex,
+  buildOwnerIndex,
+  claimUnderWorktrees,
+} from "./work-driver-worktree-sweep-owners.ts";
+import type { WorkEvent, WorkState, WorkStep } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
 const defaultExecFn: ExecFn = execp;
+
+/**
+ * The steps whose work could plausibly be on the remote. `aborted` is NOT a
+ * WorkStep (the old `["merged","handoff","aborted"].includes(currentStep)`
+ * only type-checked because the array inferred as `string[]`), so aborted
+ * cycles took the safe PURGE branch before and still do. See the caller.
+ */
+const REMOTE_PROVABLE_STEPS: readonly WorkStep[] = ["merged", "handoff"];
 
 /**
  * Result of resolving a sweep target.
@@ -41,8 +54,16 @@ export function resolveSweepTarget(
   repoRoot: string,
   candidate: string,
 ): SweepTargetResult | SweepTargetError {
-  // Use realpathSync for validation to match how git worktree resolves symlinks
-  const validationPath = realpathSync(candidate);
+  // realpathSync matches how git worktree resolves symlinks. Guarded: the
+  // owner index may name a since-removed tree — a nonexistent path is an
+  // unresolvable target, not a crash (same shape as the lstat below).
+  let validationPath: string;
+  try {
+    validationPath = realpathSync(candidate);
+  } catch (err) {
+    console.error(`resolveSweepTarget: realpathSync failed for ${candidate}: ${err}`);
+    return { ok: false, reason: "unresolvable" };
+  }
   let validationStats: ReturnType<typeof lstatSync>;
   try {
     validationStats = lstatSync(validationPath);
@@ -85,7 +106,7 @@ export function resolveSweepTarget(
   const gitFile = join(validationPath, ".git");
   let gitFileContent: string;
   try {
-    gitFileContent = require("node:fs").readFileSync(gitFile, "utf8");
+    gitFileContent = readFileSync(gitFile, "utf8");
   } catch {
     return { ok: false, reason: "not-our-worktree" };
   }
@@ -192,11 +213,17 @@ async function isWorkProvablyOnRemote(
   worktreePath: string,
   execFn: ExecFn,
 ): Promise<boolean> {
-  const status = state.pipelineState.currentStep;
+  // DELIBERATELY `currentStep`, NOT the shared `isTerminalState`/
+  // `TERMINAL_STATUSES`. That predicate means "finished"; this means "the work
+  // is on the remote AND the tree is clean" — only plausible once the driver
+  // reached the step that pushes. `status` flips to handoff while unpushed work
+  // is still in the tree, so using the status list would turn PURGE (tree kept
+  // inspectable) into REMOVE for a cycle whose commits never landed. The two
+  // lists share three words but mean different things, so this stays.
+  const currentStep = state.pipelineState.currentStep;
   const branchName = state.pipelineState.branchName;
   if (!branchName) return false;
-  // Status must be merged, handoff, or aborted
-  if (!["merged", "handoff", "aborted"].includes(status)) return false;
+  if (!REMOTE_PROVABLE_STEPS.includes(currentStep)) return false;
 
   // A branch name that is not git-safe is never fetched: not swept (keep it).
   if (netRefProblem(branchName) !== undefined) return false;
@@ -256,45 +283,29 @@ export async function executeSweepAction(
 }
 
 /**
- * #1454 — find the state file of the cycle a worktree belongs to.
- *
- * Primary source: `pipelineState.worktrees` (the id→absolute-path map the
- * branch step records). When no state file claims the tree, null is returned
- * and the caller skips it — the old code fell back to a `<basename>.json`
- * guess that could never match (`issue-1421-task-a.json` is not a state file),
- * so it produced the same skip through a misleading reason.
- *
- * The launching cycle's own tree is returned as `null` — the sweep must never
- * touch the cycle that is running it, which is the invariant the old
- * `launching-cycle-own` basename check carried.
+ * #1454 — find the state file of the cycle a worktree belongs to, through
+ * `pipelineState.worktrees` (the id→path map the branch step records). The old
+ * code guessed `.pi/work-state/<basename>.json`, which never matches a
+ * multi-workstream tree. An unclaimed tree, or the launching cycle's own tree,
+ * returns null — the sweep never touches the cycle running it. The index is
+ * built once per sweep, not once per worktree.
  */
 export function findOwningCycleState(
   repoRoot: string,
   worktreePath: string,
   launchingCycleIssue: number,
+  index: OwnerIndex = buildOwnerIndex(repoRoot),
 ): { state: WorkState | null; ownerIssue?: number } {
-  const dir = join(repoRoot, ".pi", "work-state");
-  let files: string[];
-  try {
-    files = require("node:fs").readdirSync(dir) as string[];
-  } catch {
-    return { state: null };
-  }
-  for (const f of files) {
-    if (!f.endsWith(".json")) continue;
-    let parsed: WorkState;
-    try {
-      parsed = JSON.parse(require("node:fs").readFileSync(join(dir, f), "utf8")) as WorkState;
-    } catch {
-      continue;
-    }
-    const wt = parsed.pipelineState?.worktrees ?? {};
-    const owns = Object.values(wt).some((p) => resolve(String(p)) === worktreePath);
-    if (!owns) continue;
-    if (parsed.issue === launchingCycleIssue) return { state: null };
-    return { state: parsed, ownerIssue: parsed.issue };
-  }
-  return { state: null };
+  // Cheap, I/O-free containment backstop: a state file is operator-editable and
+  // cannot name a path outside .worktrees/ for the sweep to `git clean`. The
+  // full git-worktree gate stays in resolveSweepTarget, where purge/remove fires
+  // (the sweep loop runs it on the candidate before calling here).
+  const resolved = claimUnderWorktrees(repoRoot, worktreePath);
+  if (resolved === null) return { state: null };
+  const owner = index.byPath.get(resolved);
+  if (owner === undefined) return { state: null };
+  if (owner.state.issue === launchingCycleIssue) return { state: null };
+  return { state: owner.state, ownerIssue: owner.state.issue };
 }
 
 /**
@@ -319,10 +330,18 @@ export async function runWorktreeSweep(opts: {
   }
 
   const { repoRoot, launchingCycleIssue, liveCycles, execFn = defaultExecFn } = opts;
+  // ONE read of `.pi/work-state/` for the whole sweep — findOwningCycleState
+  // used to reopen and reparse it once per worktree.
+  const ownerIndex = buildOwnerIndex(repoRoot);
+  if (ownerIndex.corrupt.length > 0) {
+    trace(
+      `worktree-sweep: skipped ${ownerIndex.corrupt.length} corrupt state file(s): ${ownerIndex.corrupt.join(", ")}`,
+    );
+  }
   const worktreesDir = join(repoRoot, ".worktrees");
   let dirs: string[];
   try {
-    const entries = require("node:fs").readdirSync(worktreesDir) as string[];
+    const entries = readdirSync(worktreesDir);
     dirs = entries.filter((entry) => {
       const full = join(worktreesDir, entry);
       return lstatSync(full).isDirectory();
@@ -346,16 +365,15 @@ export async function runWorktreeSweep(opts: {
     }
     checked.push(resolved.realPath);
 
-    // #1454 — resolve the owning cycle's state file by WORKTREE PATH, not by
-    // guessing a filename from the directory basename. The basename is
-    // `issue-<N>-<workstream>` (or `issue-<N>-integrate`) while state files
-    // are `<N>.json`, so every multi-workstream tree resolved to
-    // "state-unreadable" and was skipped — the sweep could never reap a
-    // multi-workstream zombie, whatever its liveness. The authoritative
-    // id→path map is `pipelineState.worktrees`. An unclaimed tree is skipped:
-    // there is no owner whose liveness could be judged, and the old code
-    // reached the same skip through a misleading reason.
-    const owner = findOwningCycleState(repoRoot, resolved.realPath, launchingCycleIssue);
+    // #1454 — the owner is resolved by WORKTREE PATH, not a basename guess
+    // (see findOwningCycleState). An unclaimed tree is skipped: no owner whose
+    // liveness could be judged.
+    const owner = findOwningCycleState(
+      repoRoot,
+      resolved.realPath,
+      launchingCycleIssue,
+      ownerIndex,
+    );
     if (!owner.state) {
       skipped.push({ path: resolved.realPath, reason: "state-unreadable" });
       continue;

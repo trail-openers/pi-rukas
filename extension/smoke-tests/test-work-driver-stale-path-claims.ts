@@ -20,6 +20,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
+  CLAIM_STALE_MIN_FLOOR_MS,
   CLAIM_STALE_MS,
   type PathClaimEntry,
   checkAndRegisterClaims,
@@ -283,6 +284,92 @@ function assert(cond: boolean, msg: string) {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// ================================================================ 24b. #1454 r2 — a CORRUPT claimant state expires, not parks forever
+{
+  // `readState` returns undefined for ENOENT and THROWS for corrupt JSON or a
+  // schemaVersion mismatch. If a throw were swallowed into "claimant is
+  // undefined but I have no reason to say so", the entry would look verified
+  // and hold its paths indefinitely. The throw must land in the same branch as
+  // "no state file": the age bound decides.
+  const dir = tmpDir();
+  const now = 1_800_000_000_000;
+  try {
+    const fresh: PathClaimEntry = {
+      issue: 1502,
+      pid: process.pid,
+      paths: ["src/a.ts"],
+      startedAt: now - 60_000,
+    };
+    const aged: PathClaimEntry = { ...fresh, issue: 1503, startedAt: now - CLAIM_STALE_MS - 1 };
+    const throws = async () => {
+      throw new Error("work-state: .../1502.json is not valid JSON");
+    };
+    assert(
+      (await claimStaleReason(dir, fresh, now, throws)) === null,
+      "a corrupt claimant state under the bound still reserves its paths (no premature prune)",
+    );
+    assert(
+      (await claimStaleReason(dir, aged, now, throws)) === "unreadable-state",
+      "a corrupt claimant state past the bound goes stale — it does NOT hold forever",
+    );
+    // The distinguishing case: ENOENT (undefined) and a throw must reach the
+    // SAME verdict shape, differing only in the reason string the trace shows.
+    assert(
+      (await claimStaleReason(dir, aged, now, async () => undefined)) === "unverifiable-age",
+      "the missing-state path keeps its own reason, distinct from the corrupt one",
+    );
+
+    // End-to-end through the gate: a live owner whose state file is corrupt
+    // must stop parking siblings once the bound has passed. Without the fix
+    // this is the six-cycle park: pid alive, state unreadable, no reason.
+    const wd = path.join(dir, ".pi", "work-state");
+    mkdirSync(wd, { recursive: true });
+    writeFileSync(path.join(wd, "1504.json"), "{ this is not json");
+    seedClaims(dir, [
+      { issue: 1504, pid: process.pid, paths: CLAIMED_PATHS, startedAt: now - CLAIM_STALE_MS - 1 },
+    ]);
+    const parked = await checkAndRegisterClaims(
+      makeCtx(dir, 1505),
+      makeState(1505, dir),
+      { "task-a": { paths: OVERLAPPING_PATHS } },
+      now,
+    );
+    assert(
+      parked.pipelineState.status === "running",
+      "a corrupt-claimant claim past the bound does NOT park the sibling",
+    );
+    assert(
+      !rawClaims(dir).some((c) => c.issue === 1504),
+      "the corrupt-claimant entry is pruned from the registry",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ================================================================ 24c. #1454 r2 — the age bound is floored, not trusted
+{
+  // `PI_ENSEMBLE_CLAIM_STALE_MS=1` would expire every claim the instant it
+  // was written, which is the "two cycles, one file" false-positive the
+  // registry exists to prevent. The value is clamped, not believed.
+  const src = readFileSync(
+    path.join(import.meta.dirname, "..", "src", "work-driver-path-claims.ts"),
+    "utf8",
+  );
+  assert(
+    /Math\.max\(value,\s*CLAIM_STALE_MIN_FLOOR_MS\)/.test(src),
+    "CLAIM_STALE_MS is clamped to the floor rather than returned verbatim",
+  );
+  assert(
+    CLAIM_STALE_MIN_FLOOR_MS === 300_000,
+    "the floor is the documented 5 minutes (below it, no claim survives a write)",
+  );
+  assert(
+    CLAIM_STALE_MS >= CLAIM_STALE_MIN_FLOOR_MS,
+    "the exported bound never sits below the floor",
+  );
 }
 
 // ================================================================ 25. #1454 — fixtures are the repro's shape, and stay in sync

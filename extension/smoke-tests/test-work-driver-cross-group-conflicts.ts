@@ -26,9 +26,15 @@ import {
   releaseClaim,
 } from "../src/work-driver-path-claims.ts";
 import { processAlive } from "../src/work-driver-resume.ts";
-import { initialState } from "../src/workflow-state-update.ts";
 import type { WorkState } from "../src/workflow-state.ts";
-import { makeCtx, rawClaims, seedClaims, spawnLivePid, tmpDir } from "./lib/claims-test-helpers.ts";
+import {
+  makeCtx,
+  makeState,
+  rawClaims,
+  seedClaims,
+  spawnLivePid,
+  tmpDir,
+} from "./lib/claims-test-helpers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -37,17 +43,6 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
-}
-
-// Helper: build a minimal workstate.
-function makeState(issue: number, repoRoot: string): WorkState {
-  return {
-    ...initialState(issue, repoRoot),
-    pipelineState: {
-      ...initialState(issue, repoRoot).pipelineState,
-      workstreams: {},
-    },
-  };
 }
 
 // ================================================================ 1. Atomic write/release

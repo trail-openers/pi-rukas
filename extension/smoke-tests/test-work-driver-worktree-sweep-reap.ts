@@ -1,13 +1,14 @@
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
   findOwningCycleState,
   resolveSweepTarget,
   runWorktreeSweep,
 } from "../src/work-driver-worktree-sweep.ts";
+import { buildOwnerIndex } from "../src/work-driver-worktree-sweep-owners.ts";
 
 const execAsync = promisify(execFile);
 
@@ -188,8 +189,116 @@ async function testRunWorktreeSweepReapsDeadOwner() {
   }
 }
 
+/**
+ * #1454 r2 — `findOwningCycleState` matched `pipelineState.worktrees` paths
+ * with a bare `resolve()`, so a claim that pointed outside `.worktrees/` was
+ * trusted from the map and handed to the ladder, which ends in `git clean
+ * -fdX`. State files are operator-editable disk data: the same
+ * `resolveSweepTarget` gate the sweep loop applies to every directory it
+ * walks must apply to every path a state file NAMES.
+ *
+ * Also pinned here: the state-file filters. `*.json` pulled in
+ * `path-claims.json`, `queue-summary.json` and `writeSnapshot`'s `*.tmp`
+ * scratch as candidate WorkStates, and a file that parsed but was not a
+ * WorkState reached `decideSweepAction`, which reads `eventLog.filter`.
+ */
+async function testOwnerClaimsAreValidated() {
+  console.log("\nTesting sweep owner-path validation (#1454 r2)...");
+  const dir = await scratchRepo();
+  const legit = join(dir, ".worktrees", "issue-1440-task-a");
+  try {
+    const stateDir = join(dir, ".pi", "work-state");
+    await fs.mkdir(stateDir, { recursive: true });
+
+    // A real, claimable worktree — the control the hostile claims sit beside.
+    await execAsync("git", ["worktree", "add", "--detach", legit, "HEAD"], { cwd: dir });
+
+    // The repo root and a path outside .worktrees/, both named by state files.
+    await fs.writeFile(join(dir, "victim.txt"), "must not be cleaned\n");
+
+    const state = (issue: number, worktrees: Record<string, string>) => ({
+      schemaVersion: 1,
+      resumable: false,
+      owner: { pid: 999999, at: Date.now() - 7_200_000 },
+      issue,
+      startedAt: Date.now() - 7_200_000,
+      updatedAt: Date.now() - 7_200_000,
+      pipelineState: {
+        currentStep: "develop",
+        inFlightJobIds: [],
+        worktrees,
+        reviewRound: 0,
+        ciRetryCount: 0,
+        plumbReports: [],
+        status: "running",
+      },
+      eventLog: [],
+    });
+
+    await fs.writeFile(
+      join(stateDir, "1440.json"),
+      JSON.stringify(state(1440, { "task-a": legit })),
+    );
+    // A state file whose ONLY claim is the repo root — the self-grant shape.
+    await fs.writeFile(join(stateDir, "1441.json"), JSON.stringify(state(1441, { default: dir })));
+    // And one claiming an arbitrary file outside .worktrees/.
+    await fs.writeFile(
+      join(stateDir, "1442.json"),
+      JSON.stringify(state(1442, { default: join(dir, "victim.txt") })),
+    );
+
+    const legitFound = findOwningCycleState(dir, legit, 1427);
+    assertTrue(legitFound.state !== null, "a claim inside .worktrees/ still resolves");
+    assertEquals(legitFound.ownerIssue, 1440, "the legit claim's owner is the claiming cycle");
+
+    const rootClaim = findOwningCycleState(dir, dir, 1427);
+    assertTrue(rootClaim.state === null, "a state file claiming the repo root is refused");
+    const fileClaim = findOwningCycleState(dir, join(dir, "victim.txt"), 1427);
+    assertTrue(fileClaim.state === null, "a state file claiming a plain file is refused");
+
+    const index = buildOwnerIndex(dir);
+    const indexedPaths = [...index.byPath.keys()];
+    assertTrue(
+      indexedPaths.every((p) => p.startsWith(join(dir, ".worktrees"))),
+      "buildOwnerIndex indexes nothing outside .worktrees/",
+    );
+    assertTrue(
+      index.byPath.has(legit) || index.byPath.has(resolve(legit)),
+      "the valid claim is present in the index",
+    );
+
+    // Non-state files in the same directory are never read as WorkStates.
+    await fs.writeFile(join(stateDir, "path-claims.json"), JSON.stringify([{ issue: 7 }]));
+    await fs.writeFile(join(stateDir, "queue-summary.json"), JSON.stringify({ groups: [] }));
+    await fs.writeFile(join(stateDir, "1443.json.1234.tmp"), "{ half written");
+    // A file that parses but is not a WorkState — the shape that would reach
+    // decideSweepAction's `state.eventLog.filter`.
+    await fs.writeFile(join(stateDir, "1444.json"), JSON.stringify({ hello: "world" }));
+    const index2 = buildOwnerIndex(dir);
+    assertTrue(
+      index2.corrupt.includes("1444.json"),
+      "a parseable non-WorkState is recorded as corrupt, not silently skipped",
+    );
+    const claims7 = [...index2.byPath.values()].some((e) => e.state.issue === 7);
+    assertTrue(!claims7, "path-claims.json is never read as a cycle state file");
+
+    await fs.writeFile(join(stateDir, "1445.json"), "{ not json");
+    const index3 = buildOwnerIndex(dir);
+    assertTrue(
+      index3.corrupt.includes("1445.json"),
+      "unparseable JSON is traced in the corrupt list rather than swallowed",
+    );
+  } finally {
+    await execAsync("git", ["worktree", "remove", "--force", legit], { cwd: dir }).catch(
+      () => undefined,
+    );
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
 async function runTests() {
   await testDeadClaimWorktreeResolution();
+  await testOwnerClaimsAreValidated();
   await testRunWorktreeSweepReapsDeadOwner();
   console.log(exitCode === 0 ? "\nAll tests passed." : "\nFAILED");
   process.exit(exitCode);

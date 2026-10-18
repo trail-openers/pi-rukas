@@ -22,6 +22,8 @@ export const SEAMS_1454: Seam[] = [
         "the one staleness predicate, exported so the suite pins the age bound and the claimant-terminal rule against an injected `now` and state reader (readClaims calls it in production)",
       CLAIM_STALE_MS:
         "the named age bound; the suite asserts the default and drives the rule at the boundary (the old `_STALE_MS` was declared and read nowhere)",
+      CLAIM_STALE_MIN_FLOOR_MS:
+        "the 5-minute floor on the age bound; the suite pins it so a hand-edited PI_ENSEMBLE_CLAIM_STALE_MS cannot expire every claim on write",
       readClaims:
         "the liveness-filtered read; the suite asserts prune-on-read reaches the raw file",
       checkCrossGroupClaimsSync:

@@ -54,7 +54,10 @@ export interface WorkState {
    * Pointers to other GitHub artefacts (plan issue, parent PR). Reserved for
    * inter-command composition; the v1 driver does not read these.
    */
-  upstreamRefs?: Array<{ kind: "plan-issue" | "parent-pr" | "other"; ref: string }>;
+  upstreamRefs?: Array<{
+    kind: "plan-issue" | "parent-pr" | "other";
+    ref: string;
+  }>;
   pipelineState: PipelineState;
   eventLog: WorkEvent[];
 }
@@ -73,9 +76,18 @@ export interface WorkState {
  * the claims gate and the worktree sweep must not disagree about what
  * "finished" means.
  */
-export const TERMINAL_STATUSES: readonly string[] = ["merged", "handoff", "aborted"];
+export const TERMINAL_STATUSES = [
+  "merged",
+  "handoff",
+  "aborted",
+] as const satisfies readonly WorkState["pipelineState"]["status"][];
 
 /** Whether this state file describes a cycle that has finished. */
 export function isTerminalState(state: WorkState | undefined): boolean {
-  return state !== undefined && TERMINAL_STATUSES.includes(state.pipelineState.status);
+  return (
+    state !== undefined &&
+    (TERMINAL_STATUSES as readonly WorkState["pipelineState"]["status"][]).includes(
+      state.pipelineState.status,
+    )
+  );
 }

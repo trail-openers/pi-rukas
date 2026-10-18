@@ -160,12 +160,23 @@ export function crossGroupConflictsEnabled(): boolean {
  * one file. An earlier revision carried this constant as `_STALE_MS` and read
  * it nowhere — a stale rule that exists on paper is indistinguishable from no
  * rule, which is the bug this file had.
+ *
+ * FLOORED at 5 minutes. The bound is the only thing standing between a
+ * hand-edited `PI_ENSEMBLE_CLAIM_STALE_MS=1` and every claim expiring the
+ * instant it is written — two cycles then claim the same file and collide at
+ * integration under `git apply`, which is the failure this whole registry
+ * exists to prevent. A sub-5-minute bound is never what an operator means, and
+ * the cost of ignoring it is a lost claim, so the value is clamped rather than
+ * trusted.
  * Override: `PI_ENSEMBLE_CLAIM_STALE_MS`.
  */
+export const CLAIM_STALE_MIN_FLOOR_MS = 300_000;
+
 export const CLAIM_STALE_MS: number = (() => {
   const raw = process.env.PI_ENSEMBLE_CLAIM_STALE_MS;
   const parsed = raw === undefined || raw === "" ? Number.NaN : Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 3_600_000;
+  const value = Number.isFinite(parsed) && parsed > 0 ? parsed : 3_600_000;
+  return Math.max(value, CLAIM_STALE_MIN_FLOOR_MS);
 })();
 
 /**
@@ -183,11 +194,13 @@ export async function claimStaleReason(
 ): Promise<string | null> {
   if (!processAlive(entry.pid)) return "owner-exited";
   let claimant: WorkState | undefined;
+  let stateUnreadable = false;
   try {
     claimant = await stateReader(repoRoot, entry.issue);
   } catch (err) {
+    stateUnreadable = true;
     trace(
-      `work-driver-path-claims: could not read claimant #${entry.issue}: ${(err as Error).message?.slice(0, 200)}`,
+      `work-driver-path-claims: claimant #${entry.issue} state is unreadable — the age bound decides: ${(err as Error).message?.slice(0, 200)}`,
     );
     claimant = undefined;
   }
@@ -195,7 +208,9 @@ export async function claimStaleReason(
     return `claimant-${claimant.pipelineState.status}`;
   }
   const startedAt = entry.startedAt;
-  if (!Number.isFinite(startedAt) || now - startedAt > CLAIM_STALE_MS) return "unverifiable-age";
+  if (!Number.isFinite(startedAt) || now - startedAt > CLAIM_STALE_MS) {
+    return stateUnreadable ? "unreadable-state" : "unverifiable-age";
+  }
   return null;
 }
 
@@ -207,9 +222,11 @@ export async function claimStaleReason(
  * reader repeats the work). The prune is what makes a re-run start from a
  * clean claim set instead of inheriting a crashed cycle's footprint.
  */
-export async function readClaims(repoRoot: string): Promise<PathClaimEntry[]> {
+export async function readClaims(
+  repoRoot: string,
+  now: number = Date.now(),
+): Promise<PathClaimEntry[]> {
   const all = await readRawClaims(repoRoot);
-  const now = Date.now();
   const fresh: PathClaimEntry[] = [];
   const stale: PathClaimEntry[] = [];
   for (const entry of all) {
@@ -367,11 +384,13 @@ export async function checkAndRegisterClaims(
   ctx: CycleContext,
   state: WorkState,
   workstreams: Record<string, { paths?: string[]; outOfScope?: string[] }>,
+  /** Injectable clock, threaded to `readClaims` so the suite can age a claim without sleeping. */
+  now: number = Date.now(),
 ): Promise<WorkState> {
   const allPaths = Object.values(workstreams).flatMap((ws) => ws.paths ?? []);
   if (allPaths.length === 0) return state; // nothing to claim
 
-  const claims = await readClaims(ctx.repoRoot);
+  const claims = await readClaims(ctx.repoRoot, now);
   const conflicts = checkCrossGroupClaimsSync(ctx.issue, workstreams, claims);
 
   if (conflicts.length > 0) {
@@ -391,7 +410,11 @@ export async function checkAndRegisterClaims(
     });
     return {
       ...next,
-      pipelineState: { ...next.pipelineState, status: "handoff", currentStep: "plan" },
+      pipelineState: {
+        ...next.pipelineState,
+        status: "handoff",
+        currentStep: "plan",
+      },
     };
   }
   // No conflicts — register so siblings see our claim.
@@ -414,7 +437,7 @@ export async function registerClaim(
   // `readClaims` is the single place staleness is decided — the same
   // predicate the gate runs, so a claim cannot be pruned by one path and
   // honoured by the other.
-  const all = await readClaims(repoRoot);
+  const all = await readClaims(repoRoot, Date.now());
   // Remove our own previous claim (same issue, possibly re-registered).
   const withoutSelf = all.filter((c) => c.issue !== issue);
   // Add our new claim.
