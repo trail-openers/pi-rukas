@@ -232,12 +232,16 @@ The same object appears in the `--json` result and in `--capabilities` (`extensi
     "parallelGroups":    { "value": 1, "source": "budget" },  // env | budget | default
     "maxWorkstreams":    { "value": 6, "source": "default" },
     "verifyConcurrency": { "value": 2, "source": "budget" },  // 0 = unbounded
-    "lensConcurrency":   { "value": 3, "source": "budget" }   // env | budget; 0 = unbounded
+    "lensConcurrency":   { "value": 3, "source": "budget" },  // env | budget; 0 = unbounded
+    "spawnCap":     { "value": 64, "source": "default", "scope": "process" },  // 0 = unbounded
+    "hostSpawnCap": { "value": 64, "source": "default", "scope": "host" }      // 0 = unbounded
   }
 }
 ```
 
 `host` is what the machine allows: `os.availableParallelism()` and `os.totalmem()`, each lowered by a cgroup CPU quota or memory limit when one is set. `budget` is derived from it: `workstreamSlots` is two per CPU or one per GiB, whichever is lower; `verifyConcurrency` is one per two CPUs or per 2 GiB, at least 1; `lensSlots` (#1591) is `workstreamSlots` lowered to one per 1024 of the cgroup's `pids.max` (which counts threads too), at least 1. `limits` are what a cycle runs with. `source: "env"` means an explicit setting decided the value, `"budget"` that the host budget lowered the default, `"default"` that the static default applied. The budget never raises a default. The group and workstream defaults hold from about 9 CPUs and 18 GiB up.
+
+**Several workers on one host (#1528).** Every limit above is per process except `hostSpawnCap`. `spawnCap` (`PI_ENSEMBLE_SPAWN_CAP`) bounds one process's live children. `hostSpawnCap` (`PI_ENSEMBLE_HOST_SPAWN_CAP`, default 64) bounds the children of every process that shares its slot directory (`PI_ENSEMBLE_HOST_SPAWN_DIR`, default a per-user directory under the OS temp dir). N workers on one host therefore share one ceiling instead of getting N of them; containers share it only if they mount the same directory. A spawn that waits longer than `PI_ENSEMBLE_HOST_SPAWN_WAIT_MS` (30 min) for a slot fails with an error naming the bound and the holding pids. A slot left by a crashed worker is recovered once its pid is gone, but only by a process on the same hostname: a pid from another container's namespace proves nothing, so a slot a crashed container left stays until its `slot-<n>` file is deleted. `0` turns either cap off; it does not mean zero children.
 
 ### The `cap` vocabulary
 

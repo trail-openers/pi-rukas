@@ -25,6 +25,7 @@ import { preflightChildGuards } from "./child-guards.ts";
 import { ChildProgress } from "./child-progress.ts";
 import { clampToCycleDeadline } from "./cycle-deadline-clock.ts";
 import { scrubGitLocation } from "./git-env.ts";
+import { withHostSpawnSlot } from "./host-spawn-slots.ts";
 import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
@@ -85,7 +86,10 @@ export async function spawnSpecialist(
   spec: DispatchSpec,
   opts: SpawnOptions = {},
 ): Promise<DispatchResult> {
-  return withSpawnSlot(() => spawnSpecialistInner(spec, opts));
+  // #1528 — the per-process cap first, then the host-wide one (host-spawn-slots.ts).
+  return withSpawnSlot(() =>
+    withHostSpawnSlot(() => spawnSpecialistInner(spec, opts), opts.signal),
+  );
 }
 
 async function spawnSpecialistInner(
