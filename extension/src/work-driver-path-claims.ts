@@ -10,7 +10,32 @@
  *   - normalised paths claimed
  *   - cycle start timestamp
  *
- * Stale claims (process no longer running) are auto-skipped on read.
+ * A claim is only honoured while its owner is a cycle that could still write.
+ * #1454 — that was `process.kill(pid, 0)` in a private helper, which disagreed
+ * with the driver's own liveness primitive in BOTH directions (it read pid 1 /
+ * EPERM as dead and pid 0 — "signal my whole process group" — as alive), and
+ * it honoured a claim left behind by a cycle that had already reached a
+ * terminal status. Six observed parks were of that shape: the claimant had
+ * exited or parked, never released, and every later cycle touching the same
+ * files parked against it while the claims file an operator was told to
+ * inspect read `[]`.
+ *
+ * So staleness is now one predicate — `claimStaleReason` — that reads:
+ *   - `processAlive` from work-driver-resume.ts, the SAME primitive
+ *     classifyRunningState uses for state-file owners. There is deliberately
+ *     no module-local kill(pid,0) here: two liveness notions in one harness
+ *     diverge, and they did.
+ *   - the claimant's OWN state file: a terminal status means finished, and a
+ *     finished cycle holds nothing (this is what catches the live-but-dead
+ *     owner a pid probe cannot).
+ *   - `CLAIM_STALE_MS` as the last resort, for an entry whose state file
+ *     cannot be read at all — bounded so a corrupt entry eventually stops
+ *     parking cycles, generous so it cannot race a legitimately long develop
+ *     dispatch.
+ *
+ * Stale entries are dropped on read AND pruned from the file by the next
+ * writer, so the footprint does not survive a crash indefinitely.
+ *
  * Escape hatch: PI_ENSEMBLE_CROSS_GROUP_CONFLICTS=0 disables the check.
  *
  * #1101 — `claimWaitsForIssues` is the boundary between the two kinds of
@@ -28,8 +53,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
+import { processAlive } from "./work-driver-resume.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
-import { workStateDir } from "./workflow-state.ts";
+import type { WorkState } from "./workflow-state.ts";
+import { isTerminalState, readState, workStateDir } from "./workflow-state.ts";
 
 /** A single path claim entry in the registry. */
 export interface PathClaimEntry {
@@ -41,7 +68,6 @@ export interface PathClaimEntry {
 
 const CLAIMS_FILE = "path-claims.json";
 const PID = process.pid;
-const _STALE_MS = 3_600_000; // 1 hour — generous: a /work cycle rarely exceeds 30 min.
 
 /**
  * #1101 — issues whose cycle is a sibling of this one IN THE SAME PROCESS, and
@@ -120,10 +146,89 @@ export function crossGroupConflictsEnabled(): boolean {
 }
 
 /**
+ * #1454 — how long an UNREADABLE-claimant entry may still park a cycle.
+ *
+ * The bound applies ONLY when the claimant's state file cannot be read (a
+ * fresh claim whose branch step has not run, or a state file that is corrupt).
+ * A claim whose state file is terminal, or whose owner pid has exited, is
+ * stale at any age — no clock involved.
+ *
+ * Generous on purpose: a single develop dispatch can legitimately run tens of
+ * minutes without the claimant's state file being readable by a sibling, and
+ * pruning a live claim is exactly the false-positive that lets two cycles edit
+ * one file. An earlier revision carried this constant as `_STALE_MS` and read
+ * it nowhere — a stale rule that exists on paper is indistinguishable from no
+ * rule, which is the bug this file had.
+ * Override: `PI_ENSEMBLE_CLAIM_STALE_MS`.
+ */
+export const CLAIM_STALE_MS: number = (() => {
+  const raw = process.env.PI_ENSEMBLE_CLAIM_STALE_MS;
+  const parsed = raw === undefined || raw === "" ? Number.NaN : Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 3_600_000;
+})();
+
+/**
+ * Why a claim is not honoured, or null when it still reserves its paths.
+ *
+ * `now` and `stateReader` are injectable so the offline suite can pin the age
+ * rule and the terminal-status rule without sleeping or writing real state
+ * files. Production callers pass neither.
+ */
+export async function claimStaleReason(
+  repoRoot: string,
+  entry: PathClaimEntry,
+  now: number = Date.now(),
+  stateReader: (repoRoot: string, issue: number) => Promise<WorkState | undefined> = readState,
+): Promise<string | null> {
+  if (!processAlive(entry.pid)) return "owner-exited";
+  let claimant: WorkState | undefined;
+  try {
+    claimant = await stateReader(repoRoot, entry.issue);
+  } catch (err) {
+    trace(
+      `work-driver-path-claims: could not read claimant #${entry.issue}: ${(err as Error).message?.slice(0, 200)}`,
+    );
+    claimant = undefined;
+  }
+  if (claimant !== undefined && isTerminalState(claimant)) {
+    return `claimant-${claimant.pipelineState.status}`;
+  }
+  const startedAt = entry.startedAt;
+  if (!Number.isFinite(startedAt) || now - startedAt > CLAIM_STALE_MS) return "unverifiable-age";
+  return null;
+}
+
+/**
  * Read the path-claims registry from disk.
- * Returns all entries whose process is still alive (PID liveness check).
+ *
+ * Returns the entries that still reserve their paths. Stale ones are skipped
+ * AND pruned from the file (best-effort — a prune failure only means the next
+ * reader repeats the work). The prune is what makes a re-run start from a
+ * clean claim set instead of inheriting a crashed cycle's footprint.
  */
 export async function readClaims(repoRoot: string): Promise<PathClaimEntry[]> {
+  const all = await readRawClaims(repoRoot);
+  const now = Date.now();
+  const fresh: PathClaimEntry[] = [];
+  const stale: PathClaimEntry[] = [];
+  for (const entry of all) {
+    if (await claimStaleReason(repoRoot, entry, now)) stale.push(entry);
+    else fresh.push(entry);
+  }
+  // #1101 — drop same-process sibling claims the queue is already waiting on.
+  // Those are the claims that used to park a runnable cycle at plan; the queue
+  // holds the dependent back instead, so the reactive check is left to what
+  // only it can see (a claim no queue in this process is tracking). Deliberately
+  // AFTER the staleness pass and before the prune is handed the stale list:
+  // a sibling the queue is coordinating is neither fresh nor stale, and must
+  // never join the prune — the queue's own cycle still holds it.
+  const gateable = fresh.filter((entry) => !claimWaitsForIssues(entry.issue, entry.pid));
+  if (stale.length > 0) await pruneClaims(repoRoot, stale);
+  return gateable;
+}
+
+/** Read the file verbatim — no liveness, no pruning. For writers and diagnostics. */
+async function readRawClaims(repoRoot: string): Promise<PathClaimEntry[]> {
   const file = path.join(workStateDir(repoRoot), CLAIMS_FILE);
   let raw: string;
   try {
@@ -143,24 +248,55 @@ export async function readClaims(repoRoot: string): Promise<PathClaimEntry[]> {
     return [];
   }
   if (!Array.isArray(parsed)) return [];
-  // Filter to alive processes only.
-  // #1101 — and drop same-process sibling claims the queue is already waiting
-  // on. Those are the claims that used to park a runnable cycle at plan; the
-  // queue holds the dependent back instead, so the reactive check is left to
-  // what only it can see (a claim no queue in this process is tracking).
-  return (parsed as PathClaimEntry[]).filter(
-    (entry) => isProcessAlive(entry.pid) && !claimWaitsForIssues(entry.issue, entry.pid),
-  );
+  // #1454 — no liveness filter HERE. `readClaims` is the reader that decides
+  // staleness (`claimStaleReason`) and prunes; `registerClaim`/`releaseClaim`
+  // read this raw file because a writer must never lose an entry it did not
+  // set out to remove. The pre-#1454 shape filtered here, which made every
+  // writer's snapshot lossy.
+  //
+  // #1101 — the same-process sibling filter lives in `readClaims` (the gate's
+  // read), not here, for exactly that reason: hiding a sibling's claim is a
+  // *reading* decision, and a writer that hid it would prune a live sibling.
+  return parsed as PathClaimEntry[];
 }
 
-/** Check whether a process with the given PID is still running. */
-function isProcessAlive(pid: number): boolean {
+/**
+ * Remove specific entries from the file, leaving every other entry alone.
+ *
+ * #1454 — matching is by issue AND pid, not by issue alone: two entries for
+ * one issue can coexist (a re-run after a crash), and pruning by issue would
+ * delete the live one with the corpse.
+ *
+ * Deliberately NOT a rewrite from `readClaims()`: that filtered read drops
+ * entries it merely failed to verify, so releasing one issue used to silently
+ * erase an unrelated sibling's ownership.
+ */
+async function pruneClaims(repoRoot: string, stale: PathClaimEntry[]): Promise<void> {
+  const file = path.join(workStateDir(repoRoot), CLAIMS_FILE);
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
+    const current = await readRawClaims(repoRoot);
+    const isStale = (c: PathClaimEntry) =>
+      stale.some((s) => s.issue === c.issue && s.pid === c.pid);
+    const remaining = current.filter((c) => !isStale(c));
+    if (remaining.length === current.length) return;
+    await writeClaims(file, remaining);
+    trace(
+      `work-driver-path-claims: pruned ${stale.length} stale claim(s): ${stale.map((s) => `#${s.issue}@${s.pid}`).join(", ")}`,
+    );
+  } catch (err) {
+    // A failed prune must not cost a cycle whose claim check is otherwise
+    // sound: the entries are already skipped on read, so the only cost of a
+    // failed prune is that the next reader repeats it.
+    trace(`work-driver-path-claims: prune failed: ${(err as Error).message?.slice(0, 200)}`);
   }
+}
+
+/** Atomic write + rename — the one writer shape for the claims file. */
+async function writeClaims(file: string, entries: PathClaimEntry[]): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  await fs.writeFile(tmp, `${JSON.stringify(entries, null, 2)}\n`, "utf8");
+  await fs.rename(tmp, file);
 }
 
 /**
@@ -215,13 +351,7 @@ export function checkCrossGroupClaimsSync(
   return conflicts;
 }
 
-/**
- * #571 — integrated claim check + register, returning an updated state
- * with a cap-hit event when a conflict is found. When no conflict exists,
- * registers the claim and returns state unchanged.
- */
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import type { WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
 
 export async function checkAndRegisterClaims(
@@ -244,7 +374,9 @@ export async function checkAndRegisterClaims(
       kind: "cap-hit",
       at: Date.now(),
       cap: "cross-group-conflict" as const,
-      evidence: `issue #${sibling.issue} claims: ${sibling.paths.join(", ")}; overlapping: ${overlap.join(", ")}`,
+      // `claimant<N>` is the machine-readable carrier humanActionFor and
+      // explainCap read — prose is not a stable interface.
+      evidence: `claimant${sibling.issue} issue #${sibling.issue} claims: ${sibling.paths.join(", ")}; overlapping: ${overlap.join(", ")}`,
       reviewRound: next.pipelineState.reviewRound,
       nextStep: "handoff" as const,
     });
@@ -270,11 +402,12 @@ export async function registerClaim(
   const normalised = [...new Set(paths.map(normaliseDeclaredPath).filter(Boolean))];
   if (normalised.length === 0) return [];
 
+  // `readClaims` is the single place staleness is decided — the same
+  // predicate the gate runs, so a claim cannot be pruned by one path and
+  // honoured by the other.
   const all = await readClaims(repoRoot);
   // Remove our own previous claim (same issue, possibly re-registered).
   const withoutSelf = all.filter((c) => c.issue !== issue);
-  // Remove stale claims.
-  const alive = withoutSelf.filter((c) => isProcessAlive(c.pid));
   // Add our new claim.
   const entry: PathClaimEntry = {
     issue,
@@ -282,32 +415,38 @@ export async function registerClaim(
     paths: normalised,
     startedAt: Date.now(),
   };
-  const updated = [...alive, entry];
+  const updated = [...withoutSelf, entry];
 
-  // Atomic write.
-  const dir = workStateDir(repoRoot);
-  const file = path.join(dir, CLAIMS_FILE);
-  await fs.mkdir(dir, { recursive: true });
-  const tmp = `${file}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(updated, null, 2)}\n`, "utf8");
-  await fs.rename(tmp, file);
+  await writeClaims(path.join(workStateDir(repoRoot), CLAIMS_FILE), updated);
   return updated;
 }
 
 /**
- * Release (unregister) the claim for the given issue. Returns the remaining
- * claims after removal.
+ * Release (unregister) a cycle's claims. Returns the remaining claims.
+ *
+ * One issue, or the whole group: a grouped cycle (`/work 10 11`) claims EVERY
+ * issue in the group (that is what work-driver-registry.claimCycle does), so
+ * clearing only the primary leaves a sibling entry behind to park the next
+ * cycle — the same zombie, one issue short. Callers that know the group pass
+ * every number; `releaseClaim(repoRoot, 1421)` is the single-issue form.
+ *
+ * #1454 — this writes the raw registry minus the released issues rather than
+ * `readClaims()` minus them. The old shape rebuilt the file from a
+ * liveness-FILTERED read, so releasing one issue silently erased every other
+ * entry the read could not verify — a live sibling's ownership could evaporate
+ * as a side effect of an unrelated release. A release now removes exactly what
+ * it is told to and nothing else.
  */
-export async function releaseClaim(repoRoot: string, issue: number): Promise<PathClaimEntry[]> {
-  const all = await readClaims(repoRoot);
-  const remaining = all.filter((c) => c.issue !== issue);
-  // Write empty array instead of deleting file so consumers that read it
-  // get a consistent shape.
-  const dir = workStateDir(repoRoot);
-  const file = path.join(dir, CLAIMS_FILE);
-  await fs.mkdir(dir, { recursive: true });
-  const tmp = `${file}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(remaining, null, 2)}\n`, "utf8");
-  await fs.rename(tmp, file);
+export async function releaseClaim(
+  repoRoot: string,
+  issue: number | number[],
+): Promise<PathClaimEntry[]> {
+  const file = path.join(workStateDir(repoRoot), CLAIMS_FILE);
+  const all = await readRawClaims(repoRoot);
+  const mine = new Set(Array.isArray(issue) ? issue : [issue]);
+  const remaining = all.filter((c) => !mine.has(c.issue));
+  // Write the empty array rather than deleting the file, so consumers that
+  // read it always get a consistent shape.
+  await writeClaims(file, remaining);
   return remaining;
 }

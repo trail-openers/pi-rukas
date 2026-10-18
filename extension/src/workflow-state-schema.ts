@@ -490,7 +490,9 @@ export interface PipelineState {
 // tuple without pulling a value edge through the validator's cap vocabulary — see
 // the comment on the tuple). It moved out of this module for the 500-line gate and
 // is re-exported above so every importer keeps its path.
-// WorkState moved to workflow-state-schema-workstate.ts (500-line gate); re-exported.
+// WorkState moved to workflow-state-schema-workstate.ts (500-line gate); re-exported,
+// and with it #1454's single terminal-status notion, beside the shape it reads.
+export { TERMINAL_STATUSES, isTerminalState } from "./workflow-state-schema-workstate.ts";
 export type { WorkState } from "./workflow-state-schema-workstate.ts";
 
 // The state constructors/mutators (`initialState`, `appendEvent`,

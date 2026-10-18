@@ -93,6 +93,7 @@ export type {
 export type { CommitPrRootState } from "./workflow-state-schema.ts";
 export type { CapEvidence, CapedPartialState } from "./workflow-state-schema.ts";
 export type { PipelineState, WorkState } from "./workflow-state-schema.ts";
+export { TERMINAL_STATUSES, isTerminalState } from "./workflow-state-schema.ts";
 export type { InterruptReason } from "./workflow-state-events.ts";
 export {
   filesPresentFromConsolidation,

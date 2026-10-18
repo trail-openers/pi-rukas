@@ -40,6 +40,7 @@ import {
   mergeHoldGrantAction,
 } from "./work-driver-merge-authority.ts";
 import { HOST_EXHAUSTION_SUFFIX } from "./work-queue-park-reason.ts";
+import { crossGroupAction } from "./work-queue-parks-claims.ts";
 import { deferredLeftoverAction } from "./work-queue-parks.ts";
 import type { BlockReason } from "./work-queue-scheduler.ts";
 
@@ -207,6 +208,18 @@ export function humanActionFor(
     return `revise the body of #${primary} — the spec is underspecified`;
   }
   if (/explore-already-complete/.test(reason)) return `confirm and close #${primary}`;
+  // #1454 — a PLAN-TIME cross-group park names the CLAIMANT, not just the parked
+  // issue. The generic advice ("inspect your own state file and --restart") sent
+  // operators to re-run an unchanged issue into the same park, six times over.
+  //
+  // Ordered BEFORE the anchored `^cap <wait-cap>` rule above is not possible
+  // (that rule is deliberately first so a queue park keeps its own action), so
+  // this one is deliberately UNANCHORED and sits after it: the queue's own
+  // sighting is classified by `QUEUE_WAIT_CAPS` / `isQueueLevelPark` through its
+  // `in-flight sibling(s) …` detail, and only a reason that is NOT a queue park
+  // falls through to here. That is the same provenance split work-queue-park-
+  // reason.ts draws — one cap name, two producers, two pieces of advice.
+  if (/cross-group-conflict/.test(reason)) return crossGroupAction(reason, primary);
   if (/explore-bodies-empty/.test(reason))
     return "fix the gh setup (`gh auth status`), then re-run";
   if (/round-cap|adversarial-loop|wall-clock/.test(reason)) {

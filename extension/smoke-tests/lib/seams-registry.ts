@@ -25,6 +25,13 @@ export interface Seam {
    * make visible.
    */
   canary: { symbol: string; importer: string };
+  /**
+   * #1454 — a symbol whose ONLY caller is inside its own module (the read
+   * filter, the sweep loop). The canary excludes the seam's own file, so a
+   * self-call cannot satisfy it; this field asserts the internal call site
+   * still exists, which is the reachability claim the canary cannot make.
+   */
+  selfCall?: { symbol: string; by: string };
 }
 
 export const SEAMS: Seam[] = [

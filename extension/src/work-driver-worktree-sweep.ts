@@ -99,6 +99,21 @@ export function resolveSweepTarget(
 }
 
 /**
+ * #1454 — resolve a sweep target from a repo root and a worktree path, the
+ * shape the claims gate holds (an absolute path from `pipelineState.worktrees`)
+ * rather than a directory it has already walked. Path traversal is validated
+ * exactly as hard as when the sweep discovers the directory itself: a path
+ * that is not under `<repoRoot>/.worktrees/` is refused, never operated on.
+ */
+export function resolveSweepTargetByPath(
+  repoRoot: string,
+  worktreePath: string,
+): SweepTargetResult | SweepTargetError {
+  const candidate = resolve(repoRoot, worktreePath);
+  return resolveSweepTarget(repoRoot, candidate);
+}
+
+/**
  * Options for deciding sweep action.
  */
 export interface DecideOpts {
@@ -256,6 +271,48 @@ export async function executeSweepAction(
 }
 
 /**
+ * #1454 — find the state file of the cycle a worktree belongs to.
+ *
+ * Primary source: `pipelineState.worktrees` (the id→absolute-path map the
+ * branch step records). When no state file claims the tree, null is returned
+ * and the caller skips it — the old code fell back to a `<basename>.json`
+ * guess that could never match (`issue-1421-task-a.json` is not a state file),
+ * so it produced the same skip through a misleading reason.
+ *
+ * The launching cycle's own tree is returned as `null` — the sweep must never
+ * touch the cycle that is running it, which is the invariant the old
+ * `launching-cycle-own` basename check carried.
+ */
+export function findOwningCycleState(
+  repoRoot: string,
+  worktreePath: string,
+  launchingCycleIssue: number,
+): { state: WorkState | null; ownerIssue?: number } {
+  const dir = join(repoRoot, ".pi", "work-state");
+  let files: string[];
+  try {
+    files = require("node:fs").readdirSync(dir) as string[];
+  } catch {
+    return { state: null };
+  }
+  for (const f of files) {
+    if (!f.endsWith(".json")) continue;
+    let parsed: WorkState;
+    try {
+      parsed = JSON.parse(require("node:fs").readFileSync(join(dir, f), "utf8")) as WorkState;
+    } catch {
+      continue;
+    }
+    const wt = parsed.pipelineState?.worktrees ?? {};
+    const owns = Object.values(wt).some((p) => resolve(String(p)) === worktreePath);
+    if (!owns) continue;
+    if (parsed.issue === launchingCycleIssue) return { state: null };
+    return { state: parsed, ownerIssue: parsed.issue };
+  }
+  return { state: null };
+}
+
+/**
  * Top-level: scan .worktrees/, read state files, sweep other cycles' leftovers
  */
 export async function runWorktreeSweep(opts: {
@@ -304,25 +361,20 @@ export async function runWorktreeSweep(opts: {
     }
     checked.push(resolved.realPath);
 
-    // Read the state file for this worktree
-    const stateFilePath = join(repoRoot, ".pi", "work-state", `${resolved.name}.json`);
-    let state: WorkState | null = null;
-    try {
-      const stateContent = require("node:fs").readFileSync(stateFilePath, "utf8");
-      state = JSON.parse(stateContent) as WorkState;
-    } catch {
-      // Unreadable state file - skip
+    // #1454 — resolve the owning cycle's state file by WORKTREE PATH, not by
+    // guessing a filename from the directory basename. The basename is
+    // `issue-<N>-<workstream>` (or `issue-<N>-integrate`) while state files
+    // are `<N>.json`, so every multi-workstream tree resolved to
+    // "state-unreadable" and was skipped — the sweep could never reap a
+    // multi-workstream zombie, whatever its liveness. The authoritative
+    // id→path map is `pipelineState.worktrees`; scanning every state file is
+    // the fallback for trees written before it was populated.
+    const owner = findOwningCycleState(repoRoot, resolved.realPath, launchingCycleIssue);
+    if (!owner.state) {
       skipped.push({ path: resolved.realPath, reason: "state-unreadable" });
       continue;
     }
-
-    // Exclude the launching cycle's own state file
-    if (resolved.name === `${opts.launchingCycleIssue}-default`) {
-      // Note: the spec says the launch sweep excludes the launching cycle's own state file by path.
-      // We'll skip it here.
-      skipped.push({ path: resolved.realPath, reason: "launching-cycle-own" });
-      continue;
-    }
+    const state = owner.state;
 
     const decideOpts: DecideOpts = {
       state,

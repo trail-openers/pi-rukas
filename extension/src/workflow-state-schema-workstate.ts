@@ -58,3 +58,24 @@ export interface WorkState {
   pipelineState: PipelineState;
   eventLog: WorkEvent[];
 }
+
+/**
+ * #1454 — the ONE terminal-status notion. A cycle that reached one of these
+ * is finished: it will not write again, so nothing it holds (a path claim, a
+ * worktree) may still be treated as a live reservation.
+ *
+ * `interrupted` is deliberately NOT here — it is a SIGTERM/SIGINT snapshot of
+ * a cycle that is resumable (`reenterInterrupted`), so an interrupted owner
+ * still owns its claim until its pid is gone.
+ *
+ * This predicate, not a re-derived status string per call site, is what
+ * `isClaimStale` reads. Keeping the list in exactly one place is the point:
+ * the claims gate and the worktree sweep must not disagree about what
+ * "finished" means.
+ */
+export const TERMINAL_STATUSES: readonly string[] = ["merged", "handoff", "aborted"];
+
+/** Whether this state file describes a cycle that has finished. */
+export function isTerminalState(state: WorkState | undefined): boolean {
+  return state !== undefined && TERMINAL_STATUSES.includes(state.pipelineState.status);
+}
