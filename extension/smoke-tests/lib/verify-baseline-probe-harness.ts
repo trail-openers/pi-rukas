@@ -70,7 +70,8 @@ export async function redGateFixture(
   changeGateFiles?: string[],
   baseSeed: Record<string, string> = {},
 ) {
-  const fixtures = path.join(import.meta.dirname, "..", "fixtures", "verify-loop");  const dir = path.join(root, name);
+  const fixtures = path.join(import.meta.dirname, "..", "fixtures", "verify-loop");
+  const dir = path.join(root, name);
   const originDir = path.join(dir, "origin.git");
   const repo = path.join(dir, "repo");
   const scratch = path.join(dir, "scratch");

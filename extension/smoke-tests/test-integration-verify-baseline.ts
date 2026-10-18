@@ -43,24 +43,26 @@ function assert(cond: boolean, msg: string) {
 
 /**
  * The roots the attribution rule needs: the integration checkout and the
- * probe's throwaway worktree under it. The two-set cases below use BARE names,
- * so each name is declared in the membership sets — that is the only shape in
- * which two bare spellings may be compared at all.
+ * probe's throwaway worktree under it. Names are ALWAYS rooted — the rule has
+ * no bare-name branch, so the two-set cases below prefix each name with the
+ * tree its run executed in and compare by path relative to that root.
  */
-const bare = (...names: string[]): NameRoots => ({
-  changeRoots: ["/repo"],
-  probeRoot: "/repo/.worktrees/baseline-verify-cp",
-  changeUnrooted: names,
-  probeUnrooted: names,
-});
+const CHANGE_ROOT = "/tmp/cycle-attr/repo";
+const PROBE_ROOT = `${CHANGE_ROOT}/.worktrees/baseline-verify-commit-pr`;
+const attrRooted = (change: string[], base: string[]) =>
+  attributeFailuresByName(
+    change.map((n) => `${CHANGE_ROOT}/${n}`),
+    base.map((n) => `${PROBE_ROOT}/${n}`),
+    { changeRoots: [CHANGE_ROOT], probeRoot: PROBE_ROOT },
+  );
 const attr = (change: string[], base: string[], roots?: NameRoots) =>
-  attributeFailuresByName(change, base, roots ?? bare(...change, ...base));
+  attributeFailuresByName(change, base, roots ?? { changeRoots: [CHANGE_ROOT], probeRoot: PROBE_ROOT });
 
 // ── 7. per-test attribution: the mixed run parks naming ONLY the new tests.
 {
-  const a = attr(
-    ["test-old.ts", "test-new.ts", "test-also-old.ts"],
-    ["test-old.ts", "test-also-old.ts", "test-unrelated-at-base.ts"],
+  const a = attrRooted(
+    ["tests/test-old.ts", "tests/test-new.ts", "tests/test-also-old.ts"],
+    ["tests/test-old.ts", "tests/test-also-old.ts", "tests/test-unrelated-at-base.ts"],
   );
   assert(
     a.unattributable === undefined,
@@ -68,19 +70,23 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
   );
   assert(
     a.preExisting.length === 2 &&
-      a.preExisting.includes("test-old.ts") &&
-      a.preExisting.includes("test-also-old.ts"),
+      a.preExisting.includes(`${CHANGE_ROOT}/tests/test-old.ts`) &&
+      a.preExisting.includes(`${CHANGE_ROOT}/tests/test-also-old.ts`),
     `both names that fail at base are pre-existing (got ${JSON.stringify(a.preExisting)})`,
   );
   assert(
-    a.changeCaused.length === 1 && a.changeCaused[0] === "test-new.ts",
+    a.changeCaused.length === 1 &&
+      a.changeCaused[0] === `${CHANGE_ROOT}/tests/test-new.ts`,
     `only the test that passes at base is change-caused (got ${JSON.stringify(a.changeCaused)})`,
   );
 }
 
 // ── 8. all pre-existing → nothing for the change to answer for.
 {
-  const a = attr(["test-a.ts", "test-b.ts"], ["test-a.ts", "test-b.ts"]);
+  const a = attrRooted(["tests/test-a.ts", "tests/test-b.ts"], [
+    "tests/test-a.ts",
+    "tests/test-b.ts",
+  ]);
   assert(
     a.changeCaused.length === 0 && a.preExisting.length === 2,
     "every failing name at base → zero change-caused (the continue case)",
@@ -89,7 +95,7 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
 
 // ── 9. a name present ONLY at base does not affect the verdict.
 {
-  const a = attr(["test-a.ts"], ["test-a.ts", "test-renamed-away.ts"]);
+  const a = attrRooted(["tests/test-a.ts"], ["tests/test-a.ts", "tests/test-renamed-away.ts"]);
   assert(
     a.changeCaused.length === 0 && a.preExisting.length === 1,
     "a test the change deleted/renamed (red at base, absent from the change run) is not counted against the change",
@@ -98,10 +104,29 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
 
 // ── 10. duplicates in the change run do not double-count.
 {
-  const a = attr(["test-a.ts", "test-a.ts"], ["test-a.ts"]);
+  const a = attrRooted(["tests/test-a.ts", "tests/test-a.ts"], ["tests/test-a.ts"]);
   assert(
     a.preExisting.length === 1 && a.changeCaused.length === 0,
     "a name printed twice (normal mode's echo) is one test, not two",
+  );
+}
+
+// ── 10a. a BARE name is unattributable. There is no bare-name branch any
+// more: a name with no root prefix records nothing about which tree printed it,
+// and two runs agreeing on `test-a.ts` is a coincidence a forger can arrange on
+// purpose (the report file is the only thing that makes a name trustworthy, and
+// the root is what makes it comparable).
+{
+  const barePair = attributeFailuresByName(
+    ["test-a.ts"],
+    ["test-a.ts"],
+    { changeRoots: ["/repo"], probeRoot: "/repo/.worktrees/baseline-verify-cp" },
+  );
+  assert(
+    barePair.unattributable !== undefined &&
+      barePair.preExisting.length === 0 &&
+      barePair.changeCaused.length === 0,
+    `two identical BARE names are unattributable, not a match (got ${JSON.stringify(barePair)})`,
   );
 }
 
@@ -143,15 +168,36 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
   // a coincidence in a rule that can only ever EXCUSE is a pushed red gate.
   // Anchored to the two known roots they are NOT equal, so the change run's
   // name is change-caused and the cycle parks.
+  // THE adversarial case, restated for the bare-name refusal: these two are
+  // different files whose tails coincide (`tests/test-x.ts` under one root,
+  // `p/q/r/s/tests/test-x.ts` under the other). Under the old shared-tail rule
+  // the coincidence EXCUSED, which is a pushed red gate. With no bare-name
+  // branch neither name can be placed at all, so the run is unattributable —
+  // park, which is at least as safe as `different` and does not depend on
+  // guessing.
   const deep = attr(["tests/test-x.ts"], ["p/q/r/s/tests/test-x.ts"], {
     changeRoots: ["/base/repo"],
     probeRoot: "/base/repo/.worktrees/baseline-verify-cp",
-    changeUnrooted: ["tests/test-x.ts"],
-    probeUnrooted: ["p/q/r/s/tests/test-x.ts"],
   });
   assert(
-    deep.changeCaused.length === 1 && deep.preExisting.length === 0,
-    `a same-basename test from a DIFFERENT tree is not an excuse — it stays change-caused and the cycle parks (got ${JSON.stringify(deep)})`,
+    deep.unattributable !== undefined &&
+      deep.preExisting.length === 0 &&
+      deep.changeCaused.length === 0,
+    `a same-basename test from a DIFFERENT tree excuses nothing — unplaceable names park rather than match (got ${JSON.stringify(deep)})`,
+  );
+  // The anchored form of the same claim, with both names placed: the shared
+  // tail does not make them one test.
+  const deepAnchored = attr(
+    ["/base/repo/tests/test-x.ts"],
+    ["/base/repo/.worktrees/baseline-verify-cp/p/q/r/s/tests/test-x.ts"],
+    {
+      changeRoots: ["/base/repo"],
+      probeRoot: "/base/repo/.worktrees/baseline-verify-cp",
+    },
+  );
+  assert(
+    deepAnchored.changeCaused.length === 1 && deepAnchored.preExisting.length === 0,
+    `a same-basename test from a DIFFERENT directory is not an excuse — it stays change-caused and the cycle parks (got ${JSON.stringify(deepAnchored)})`,
   );
   assert(
     !sameFailingTest("tests/test-x.ts", "p/q/r/s/tests/test-x.ts"),
@@ -171,8 +217,7 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
     compareNames(`${TREE}/tests/a.ts`, `${PROBE}/tests/a.ts`, roots) === "same" &&
       compareNames(`${TREE}/tests/a.ts`, `${PROBE}/tests/b.ts`, roots) === "different" &&
       compareNames("outside.ts", "outside.ts", roots) === "unknown" &&
-      compareNames("a/x.ts", "b/x.ts", { ...roots, changeUnrooted: ["a/x.ts", "b/x.ts"] }) ===
-        "different",
+      compareNames("a/x.ts", "b/x.ts", roots) === "unknown",
     "compareNames answers same / different / unknown, and unknown is reachable",
   );
   assert(
@@ -180,8 +225,8 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
     "a bare basename alone never excuses — same-named files in different dirs are different tests",
   );
   assert(
-    sameFailingTest("tests/t.ts", "tests/t.ts") && !sameFailingTest("a/t.ts", "b/c/t.ts"),
-    "sameFailingTest agrees on bare names and refuses a differing pair",
+    !sameFailingTest("tests/t.ts", "tests/t.ts") && !sameFailingTest("a/t.ts", "b/c/t.ts"),
+    "sameFailingTest excuses nothing without roots — a bare-name match is exactly what this seam refused",
   );
   // The degenerate configuration: one tree for both runs makes relative-path
   // equality prove nothing, so it must excuse nothing.
@@ -225,12 +270,23 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
 // of these used to be absent, and both erred in the direction that excuses.
 {
   const { attributeAgainstBase } = await import("../src/work-driver-verify-attribution.ts");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const pp = await import("node:path");
+  const { createVerifyReportDir, createVerifyReportFile } = await import(
+    "../src/work-driver-verify-report-path.ts"
+  );
   const SHA = "0123456789abcdef0123456789abcdef01234567";
-  const CHANGE = "FAILED: /repo/tests/test-red.ts\nFAILED: 1 test(s) — /repo/tests/test-red.ts";
+  const REPO = "/repo";
+  const PROBE = `${REPO}/.worktrees/baseline-verify-commit-pr`;
+  /** The names the CHANGE run's report carries (its own spelling). */
+  const CHANGE_NAMES = [`${REPO}/tests/test-red.ts`];
   /**
    * Scripted exec. Git/worktree plumbing succeeds; the gate run fails the way
    * `execFile` fails a non-zero child — a thrown error carrying `stdout` — so
-   * the probe actually reads a red base rather than a green one.
+   * the probe actually reads a red base rather than a green one. The stream it
+   * carries is the loop's normal summary shape, which is what `probed` and the
+   * tally cross-check read; the NAMES never come from it.
    */
   const scripted =
     (gate: { stdout: string; code: number }) =>
@@ -254,37 +310,54 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
       `FAILED: ${count} test(s) — ${names.join(", ")}`,
       `P: 3  F: ${count}`,
     ].join("\n");
-  const opts = (verifyCmd: string) => ({
-    repoRoot: "/repo",
+  // The driver's private report dir, and a writer for a scripted report body.
+  const reportDir = createVerifyReportDir("pi-1404-seam-");
+  const writeReport = (path: string, names: string[]): void => {
+    fs.writeFileSync(path, names.length === 0 ? `FAILED-TESTS: 0\n` : `${names.join("\n")}\nFAILED-TESTS: ${names.length}\n`);
+  };
+  const newReport = (label: string): string => createVerifyReportFile(reportDir, label);
+  const changeReport = newReport("change");
+  writeReport(changeReport, CHANGE_NAMES);
+  const opts = (verifyCmd: string, probeReport: string) => ({
+    repoRoot: REPO,
     baseSha: SHA,
     verifyCmd,
     changeRoots: ["/wt-a"],
     timeoutMs: 5000,
+    reportDir,
+    changeReportFile: changeReport,
+    probeReportFile: probeReport,
+    probeEnv: { VERIFY_REPORT_FILE: probeReport },
   });
 
   // (a) The base run exits non-zero while its tally says NOTHING failed. The
   // two pieces of evidence disagree, so nothing may be excused on the
-  // optimistic one — `F: 0` plus names is not a red base, it is a forgery.
+  // optimistic one — `F: 0` plus a report that names a test is not a red base,
+  // it is a forgery or a broken harness.
+  const probeA = newReport("base-a");
+  writeReport(probeA, [`${PROBE}/tests/test-red.ts`]);
   const contradictory = await attributeAgainstBase(
     scripted({
-      stdout: `${baseStream(["/repo/.worktrees/baseline-verify-commit-pr/tests/test-red.ts"], 1)}\nP: 4  F: 0`,
+      stdout: `${baseStream([`${PROBE}/tests/test-red.ts`], 1)}\nP: 4  F: 0`,
       code: 1,
     }),
-    opts("sh gate.sh"),
-    CHANGE,
+    opts("sh gate.sh", probeA),
+    "",
   );
   assert(
     contradictory === undefined,
-    `#1404: a base whose tally says zero failures while naming failures is a contradiction — it excuses nothing and the cycle parks (got ${JSON.stringify(contradictory)})`,
+    `#1404: a base whose tally says zero failures while its report names failures is a contradiction — it excuses nothing and the cycle parks (got ${JSON.stringify(contradictory)})`,
   );
 
   // (b) The base run exited non-zero but printed NO summary at all (a killed
   // shell, a non-loop gate). "It failed" is not evidence that THIS test failed,
   // and a silent non-zero exit must never read as a valid red verdict.
+  const probeB = newReport("base-b");
+  writeReport(probeB, [`${PROBE}/tests/test-red.ts`]);
   const unprobed = await attributeAgainstBase(
     scripted({ stdout: "some tool complained, no markers here", code: 1 }),
-    opts("sh gate.sh"),
-    CHANGE,
+    opts("sh gate.sh", probeB),
+    "",
   );
   assert(
     unprobed === undefined,
@@ -292,13 +365,15 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
   );
 
   // (c) Control: a base red on a DIFFERENT test does not excuse the change's.
+  const probeC = newReport("base-c");
+  writeReport(probeC, [`${PROBE}/tests/test-other.ts`]);
   const clear = await attributeAgainstBase(
     scripted({
-      stdout: baseStream(["/repo/.worktrees/baseline-verify-commit-pr/tests/test-other.ts"], 1),
+      stdout: baseStream([`${PROBE}/tests/test-other.ts`], 1),
       code: 1,
     }),
-    opts("sh gate.sh"),
-    CHANGE,
+    opts("sh gate.sh", probeC),
+    "",
   );
   assert(
     clear !== undefined &&
@@ -309,13 +384,15 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
 
   // (d) Control: the coherent case still excuses, which is what makes (a)/(b)
   // the contradiction and the silence doing the work rather than a broken seam.
+  const probeD = newReport("base-d");
+  writeReport(probeD, [`${PROBE}/tests/test-red.ts`]);
   const agreed = await attributeAgainstBase(
     scripted({
-      stdout: baseStream(["/repo/.worktrees/baseline-verify-commit-pr/tests/test-red.ts"], 1),
+      stdout: baseStream([`${PROBE}/tests/test-red.ts`], 1),
       code: 1,
     }),
-    opts("sh gate.sh"),
-    CHANGE,
+    opts("sh gate.sh", probeD),
+    "",
   );
   assert(
     agreed !== undefined &&
@@ -323,7 +400,49 @@ const attr = (change: string[], base: string[], roots?: NameRoots) =>
       agreed.changeCausedFailures.length === 0,
     `#1404 (control): a coherent base red on the SAME test excuses it, so the seam works and (a)/(b) fail closed on their own merits (got ${JSON.stringify(agreed)})`,
   );
+
+  // (e) THE forgery this round exists to close: the base run is GREEN — its
+  // stream carries no failure at all — but the stream prints the whole triad a
+  // test can print, and the base's REPORT FILE is ABSENT (nothing ever wrote
+  // it). Under the old stream-parsing seam the triad alone named the test and
+  // excused the change. Now the names have nowhere to come from: park.
+  const probeE = newReport("base-e");
+  const forged = await attributeAgainstBase(
+    scripted({
+      stdout: `${baseStream([`${PROBE}/tests/test-red.ts`], 1)}`,
+      code: 1,
+    }),
+    { ...opts("sh gate.sh", probeE), reportDir: "/somewhere/else" },
+    "",
+  );
+  assert(
+    forged === undefined,
+    `#1404: a report path outside the driver's private dir is never read — no report, no names, no excuse (got ${JSON.stringify(forged)})`,
+  );
+
+  // (f) The same run but with the path inside the dir and the file left EMPTY
+  // (created by the driver, never written by a loop that reached no report
+  // half): still unattributable, never "zero failures at base".
+  const probeF = newReport("base-f");
+  const empty = await attributeAgainstBase(
+    scripted({
+      stdout: baseStream([`${PROBE}/tests/test-red.ts`], 1),
+      code: 1,
+    }),
+    opts("sh gate.sh", probeF),
+    "",
+  );
+  assert(
+    empty === undefined,
+    `#1404: an empty report file is unattributable, not "the base named nothing so nothing is excused by it" (got ${JSON.stringify(empty)})`,
+  );
+
+  fs.rmSync(reportDir, { recursive: true, force: true });
 }
+
+// ── 14. the report READER — the forger's every move, refused. Lives in its
+// own file (test-verify-report-file.ts) so this file stays under the size cap;
+// both run in the offline loop, and this one keeps the attribution-rule cases.
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

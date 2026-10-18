@@ -44,6 +44,12 @@ import { type HangProcess, NO_TREE_CAPTURED, captureProcessTree } from "./work-d
 import type { CommitPrConsolidatedVerifyResult } from "./work-driver-integrate-verify-result.ts";
 import { commitPrSkipDecision } from "./work-driver-integrate-verify-skip.ts";
 import { attributeAgainstBase } from "./work-driver-verify-attribution.ts";
+import {
+  createVerifyReportDir,
+  createVerifyReportFile,
+  removeVerifyReportDir,
+  verifyReportEnv,
+} from "./work-driver-verify-report-path.ts";
 
 /**
  * Escape hatch for #1404's baseline probe. `0` skips the probe entirely, so
@@ -163,8 +169,6 @@ export async function runCommitPrConsolidatedVerify(
      * lives in. A name under none of them is unattributable, never excused.
      */
     changeRoots?: readonly string[];
-    /** #1404 — names the change run printed without a root prefix. */
-    changeUnrooted?: readonly string[];
     /**
      * #1427 round 3 — no `walkProcessTree` here, deliberately. It was declared
      * as a test seam and had no caller: neither `verifyIntegration` (its only
@@ -194,13 +198,31 @@ export async function runCommitPrConsolidatedVerify(
   const fastCmd = await fastVerifyCmdFor(opts.repoRoot);
   const verifyExec = withFastTier(execFn, opts.verifyCmd, fastCmd);
 
+  // #1404 — the out-of-band report channel, set up before ANY run so every
+  // exec path (including the #1240 skip, which returns before a run happens)
+  // tears it down. One private 0700 dir per call, holding the change run's
+  // report and the base probe's report. Both paths are chosen by the driver
+  // from a random temp name: nothing under the project's control
+  // (`.pi/verify-cmd` is a project file) contributes either, so neither the
+  // project nor a test can point the reader at a file of its own.
+  const reportDir = createVerifyReportDir();
+  const changeReportFile = createVerifyReportFile(reportDir, "change");
+  const probeReportFile = createVerifyReportFile(reportDir, "base");
+  // Every return below goes through `done`. The function has six exits, and a
+  // leak per verify call under a long-lived driver is a disk story with no
+  // upside — so cleanup is one wrapper rather than six remembered calls.
+  const done = <T>(value: T): T => {
+    removeVerifyReportDir(reportDir);
+    return value;
+  };
+
   // #1240 — the duplicate-run check (`commitPrSkipDecision`): why the tree is
   // read here, after the caller committed the integration, and why residue in
   // the index forbids the skip. Every non-skip outcome falls through to the
   // run below.
   const skip = await commitPrSkipDecision(execFn, opts.repoRoot, opts.alreadyVerifiedTree);
   if (skip !== undefined) {
-    return { ok: true, skipped: skip };
+    return done({ ok: true, skipped: skip });
   }
   let timedOut = false;
   let ranCmd = opts.verifyCmd;
@@ -217,6 +239,9 @@ export async function runCommitPrConsolidatedVerify(
           cwd: opts.repoRoot,
           maxBuffer: 8 * 1024 * 1024,
           timeout: opts.timeoutMs,
+          // #1404 — the loop writes its own verdict here; a test child never
+          // sees the variable (the loop `env -u`s it at its single spawn).
+          env: verifyReportEnv(process.env, changeReportFile),
         }),
       );
       return undefined;
@@ -258,7 +283,7 @@ export async function runCommitPrConsolidatedVerify(
     `work-driver: commit-pr — verifying the consolidated tree before the push: ${opts.verifyCmd.slice(0, 120)}`,
   );
   let firstFailure = await runOnce();
-  if (firstFailure === undefined) return { ok: true };
+  if (firstFailure === undefined) return done({ ok: true });
 
   // #782 — on the first run, with every per-worktree verify passed and N>1,
   // re-run the SAME command ONCE in the SAME still-checked-out integration
@@ -283,6 +308,12 @@ export async function runCommitPrConsolidatedVerify(
       opts.timeoutMs ?? 30 * 60_000,
       undefined,
       undefined,
+      // #1404 — the re-run is the run whose failure is classified and
+      // attributed, so it is the run whose report must exist. Passing the same
+      // path is right: the first run's names are worthless once a second run
+      // judged the same tree, and the loop truncates the file before writing,
+      // so no stale list from run one can be read as run two's verdict.
+      verifyReportEnv(process.env, changeReportFile),
     );
     if (secondRun === undefined) {
       trace(
@@ -294,7 +325,7 @@ export async function runCommitPrConsolidatedVerify(
       // verifyEvidence (eventLog is append-only; the recovered path
       // appends no cap).
       opts.onRecover?.(firstFailure);
-      return { ok: true, recovered: true };
+      return done({ ok: true, recovered: true });
     }
     // The re-run failed — classify the second run's tail exactly as a
     // single-run failure would be classified (a test that fails twice is
@@ -355,14 +386,14 @@ export async function runCommitPrConsolidatedVerify(
     // #1427 fix round — no `runningTests` / `processes` on the result: the
     // clause above is the whole deliverable at this seam (nothing reads a
     // structured tree here, and no scratch dir exists to write a report to).
-    return {
+    return done({
       ok: false,
       failureTail,
       attributed,
       verdict,
       classifiedMessage,
       timedOut,
-    };
+    });
   }
   const classifiedMessage = consolidatedFailureMessage(verdict, ranCmd);
 
@@ -402,7 +433,15 @@ export async function runCommitPrConsolidatedVerify(
           // gate that resolves its own script path prints names under the tree
           // the script lives in, not the cwd it was run from.
           ...(opts.changeRoots !== undefined ? { changeRoots: opts.changeRoots } : {}),
-          ...(opts.changeUnrooted !== undefined ? { changeUnrooted: opts.changeUnrooted } : {}),
+          // #1404 — the out-of-band names. The change run wrote its report to
+          // `changeReportFile`; the base run is given `probeEnv` so the loop
+          // writes ITS report to `probeReportFile`. All three paths live in the
+          // driver's private 0700 dir, and `attributeAgainstBase` refuses any
+          // path that does not resolve inside it.
+          reportDir,
+          changeReportFile,
+          probeReportFile,
+          probeEnv: verifyReportEnv(process.env, probeReportFile),
         },
         failure,
       );
@@ -426,7 +465,7 @@ export async function runCommitPrConsolidatedVerify(
         // allows to continue, and it still reports `ok: false` — the probe has
         // no authority to turn the gate's verdict into a pass.
         if (caused.length === 0 && pre.length > 0) {
-          return {
+          return done({
             ok: false,
             failureTail,
             attributed,
@@ -434,9 +473,9 @@ export async function runCommitPrConsolidatedVerify(
             classifiedMessage: message,
             preExistingOnly: true,
             preExistingFailures: pre,
-          };
+          });
         }
-        return {
+        return done({
           ok: false,
           failureTail,
           attributed,
@@ -444,9 +483,9 @@ export async function runCommitPrConsolidatedVerify(
           classifiedMessage: message,
           ...(pre.length > 0 ? { preExistingFailures: pre } : {}),
           ...(caused.length > 0 ? { changeCausedFailures: caused } : {}),
-        };
+        });
       }
     }
   }
-  return { ok: false, failureTail, attributed, verdict, classifiedMessage };
+  return done({ ok: false, failureTail, attributed, verdict, classifiedMessage });
 }

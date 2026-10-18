@@ -32,12 +32,17 @@ export const realExec: ExecFn = (cmd, opts) =>
     ? pExecFile(cmd, opts.argv, {
         cwd: opts?.cwd,
         maxBuffer: opts?.maxBuffer,
-        env: gitTestEnv(),
+        // #1404 — the caller's `env` is honoured when it passed one, on top of
+        // the isolated git view. Without this, a driver that threads a variable
+        // to the gate (the out-of-band `VERIFY_REPORT_FILE`) has it silently
+        // dropped by the test's own executor, and every e2e assertion about the
+        // report would be checking a channel that never existed.
+        env: opts?.env ? { ...gitTestEnv(), ...opts.env } : gitTestEnv(),
       })
     : pExec(cmd, {
         cwd: opts?.cwd,
         maxBuffer: opts?.maxBuffer,
-        env: gitTestEnv(),
+        env: opts?.env ? { ...gitTestEnv(), ...opts.env } : gitTestEnv(),
       })) as ReturnType<ExecFn>;
 /** The command as a readable line, argv joined by spaces, for assertions. */
 export const shown = (cmd: string, opts?: { argv?: string[] }) =>

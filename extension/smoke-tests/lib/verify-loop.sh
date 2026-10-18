@@ -112,6 +112,16 @@ export LC_ALL=C
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX \
   GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
 
+# #1404 — VERIFY_REPORT_FILE is deliberately NOT scrubbed here. It is the path
+# the loop itself writes its out-of-band verdict to at the end of the run, so an
+# early `unset` in this file would silently produce no report at all — and "no
+# report" is the unattributable shape, not a passing one. The scrub a test must
+# not see the path is done at the one place a test is started: the `bun run` in
+# verify-kill.sh's run_test_with_timeout runs under `env -u VERIFY_REPORT_FILE`,
+# which removes the variable from the CHILD's environment and leaves the
+# parent's copy intact for the final write. Every test descendant goes through
+# that spawn, so nothing a test forks can inherit it either.
+
 # #1145 — the git-isolation half (the isolated `HOME`, `XDG_CONFIG_HOME`,
 # `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_NOSYSTEM` exports, the escape-hatch
 # announcement, and the `_git_iso` name the EXIT trap below removes) lives in
@@ -193,6 +203,43 @@ for _verify_fn in report_results emit_tally; do
   fi
 done
 unset _verify_fn
+
+# #1404 — the out-of-band verdict channel (lib/verify-report-file.sh). When the
+# caller sets VERIFY_REPORT_FILE to an absolute path, the loop writes its own
+# verdict there — one failing test path per line plus a `FAILED-TESTS: <n>`
+# trailer — AFTER every test has finished, and scrubs the variable from every
+# test child's environment (`env -u` in verify-kill.sh's run_test_with_timeout)
+# so a test cannot learn the path. The commit-pr baseline probe reads failing
+# names ONLY from that file, never from the stream: the stream's `FAILED:`
+# markers are an ordinary string a test can print, and a test that prints the
+# whole triad the loop prints (per-file marker + count-matched summary + a
+# non-zero `P:/F:` tally) is indistinguishable from the loop's own verdict —
+# which is how a green base came to excuse a change-caused failure and the
+# cycle pushed. See that file's header for the contract and the write
+# discipline. Same hard name check as the other halves: a missing half here
+# would leave the driver reading a stream it must not read, which is the bug
+# this exists to close, so `write_verify_report` is not optional when the
+# reporter is loaded.
+. "$(dirname "${BASH_SOURCE[0]}")/verify-report-file.sh"
+for _report_fn in write_verify_report; do
+  if [ "$(type -t "$_report_fn")" != function ]; then
+    echo "error: verify-loop: lib/verify-report-file.sh did not define $_report_fn — the out-of-band verdict channel is broken; refusing to run" >&2
+    exit 2
+  fi
+done
+unset _report_fn
+
+# The channel is opt-in, and only in the shape it was designed for. A relative
+# path would be resolved against whatever cwd the gate happens to run in, so the
+# report could land anywhere in the tree (a verify command runs in the checkout
+# under test) — an unattributable outcome is better than a stray write. An
+# unusable value is announced, the variable is dropped, and the run proceeds
+# normally: this is the shape the offline suite and CI run in, where no report
+# is wanted at all and the gate's own output is the deliverable.
+if [ -n "${VERIFY_REPORT_FILE:-}" ] && [ "${VERIFY_REPORT_FILE#/}" = "$VERIFY_REPORT_FILE" ]; then
+  echo "warn: verify-loop: VERIFY_REPORT_FILE must be an absolute path; got '${VERIFY_REPORT_FILE}', ignoring the out-of-band report" >&2
+  VERIFY_REPORT_FILE=""
+fi
 
 # The source above is not optional and not best-effort. If verify-pool.sh is
 # missing, truncated, or a stale copy from before #1365, `set -u` alone will

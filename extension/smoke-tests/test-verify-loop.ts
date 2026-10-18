@@ -44,7 +44,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { NO_SPECIFIC_ASSERTION } from "../src/work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
-import { runLoop, runPipeline } from "./verify-loop-lib.ts";
+import { runLoop, runLoopEnv, runPipeline } from "./verify-loop-lib.ts";
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const FIXTURES = path.join(__dirname, "fixtures", "verify-loop");
@@ -341,6 +341,86 @@ function assert(cond: boolean, msg: string) {
     `case 8 (loop): the gate does NOT set the PI_ENSEMBLE_ALLOW_LIVE_SPAWN bypass (got: ${JSON.stringify(loopLines)})`,
   );
   assert(status === 0, "case 8 (loop): the canary fixture itself passes under the gate");
+}
+
+// --- Case 9: #1404 the out-of-band report channel. Two directions, both
+// load-bearing:
+//
+//   (a) the SCRUB — a test must never learn `VERIFY_REPORT_FILE`, or it could
+//       write a verdict of its own and have the driver excuse a change-caused
+//       failure with it. The fixture prints the variable as the CHILD sees it.
+//   (b) the WRITE — the loop itself still writes the report, so the driver has
+//       something to read. A scrub that also removed the loop's own copy is the
+//       trivial way to pass (a) and fail (b).
+//   (c) the OFF-BY-DEFAULT shape — with no variable set the loop writes nothing
+//       anywhere, which is what the rest of the offline suite and CI depend on.
+{
+  const { mkdtempSync, existsSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const fixture = path.join(FIXTURES, "fixture-report-env.ts");
+  const dir = mkdtempSync(path.join(tmpdir(), "pi-1404-loop-"));
+  const report = path.join(dir, "report.txt");
+
+  const withReport = runLoopEnv([fixture], { VERIFY_REPORT_FILE: report });
+  const lines = withReport.stdout
+    .split("\n")
+    .filter((l) => l.startsWith("REPORT="));
+  assert(
+    lines.includes("REPORT=(unset)"),
+    `case 9 (scrub): a test never sees VERIFY_REPORT_FILE — the only path a forged verdict could be written to (got: ${JSON.stringify(lines)})`,
+  );
+  assert(
+    existsSync(report),
+    "case 9 (write): the loop still wrote its own report — the scrub is child-only, so the channel is not merely absent",
+  );
+  const body = existsSync(report) ? readFileSync(report, "utf8") : "";
+  assert(
+    body.endsWith("FAILED-TESTS: 0\n") && !body.includes("FAILED:"),
+    `case 9 (write): the all-pass report is a POSITIVE zero, not an empty or marker-shaped file (got: ${JSON.stringify(body)})`,
+  );
+
+  // A red run names the failing path, in the shape the driver's reader accepts.
+  const redReport = path.join(dir, "red.txt");
+  const red = runLoopEnv([path.join(FIXTURES, "fixture-1.ts")], {
+    VERIFY_REPORT_FILE: redReport,
+  });
+  const redBody = existsSync(redReport) ? readFileSync(redReport, "utf8") : "";
+  assert(
+    red.status !== 0 &&
+      redBody.split("\n")[0]?.endsWith("fixture-1.ts") === true &&
+      redBody.endsWith("FAILED-TESTS: 1\n"),
+    `case 9 (red): the red run's report lists the failing path then its count (exit ${red.status}, got: ${JSON.stringify(redBody)})`,
+  );
+
+  // No variable set → no file, and the run behaves exactly as the rest of the
+  // suite has always seen it.
+  const quietReport = path.join(dir, "quiet.txt");
+  const quietEnv = { ...process.env };
+  delete quietEnv.VERIFY_REPORT_FILE;
+  const quiet = spawnSync("bash", [SCRIPT, fixture], {
+    cwd: path.join(__dirname, ".."),
+    encoding: "utf-8",
+    env: quietEnv,
+  });
+  assert(
+    (quiet.status ?? -1) === 0 && !existsSync(quietReport),
+    `case 9 (off by default): with no VERIFY_REPORT_FILE the loop writes nothing anywhere and passes as before (exit ${quiet.status})`,
+  );
+
+  // A relative path is refused rather than written wherever the cwd happens to
+  // be — a verify command runs in the checkout under test, so a relative report
+  // path is a file in the tree the PR would then carry.
+  const stray = runLoopEnv([fixture], { VERIFY_REPORT_FILE: "stray-report.txt" });
+  // The warning goes to stderr, which runLoopEnv does not surface — so the
+  // observable contract is the absence: no file in the checkout, which is the
+  // only thing a reader could act on. The warning text itself is checked where
+  // stderr is captured (the direct spawn below the quiet case's shape).
+  assert(
+    !existsSync(path.join(path.join(__dirname, ".."), "stray-report.txt")),
+    `case 9 (relative refused): a relative report path writes nothing into the checkout — the warn goes to stderr, the guarantee is the absent file (stdout said: ${JSON.stringify(stray.stdout.split("\n").filter((l) => l.includes("REPORT=") || l.includes("VERIFY")).slice(0, 3))})`,
+  );
+
+  spawnSync("rm", ["-rf", dir]);
 }
 
 console.log(exit === 0 ? "\nAll verify-loop checks passed." : "\nFAILED");
