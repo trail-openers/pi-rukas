@@ -1,97 +1,76 @@
 #!/usr/bin/env bash
-# lib-budget.sh — divided per-worker budgets and the preflight summary written to each run log.
+# lib-budget.sh — divided per-worker budgets, the worker-count limit and the preflight summary.
 # Sourced by lib.sh, never executed directly.
 #
-# ---------------------------------------------------------------------------
-# divided budgets
-# ---------------------------------------------------------------------------
-# Everything below is divided because pi-rukas holds these as PER-PROCESS module state
-# with no cross-process coordinator: PI_ENSEMBLE_SPAWN_CAP (default 64) and the verify
-# slot pool are module-scope `let active`, and hostBudget() is memoised per process from
-# os.totalmem(). N workers therefore multiply every limit by N. Divide by N, floored so a
-# worker is never starved into a livelock.
-#
-# Two traps that make this worse than it looks:
-#   PI_ENSEMBLE_SPAWN_CAP=0 DISABLES the semaphore (runs unguarded) — it does not mean
-#     "zero children", so an operator setting 0 to cap things removes the cap entirely.
-#   Setting PI_ENSEMBLE_PARALLEL_GROUPS or PI_ENSEMBLE_MAX_WORKSTREAMS explicitly
-#     SHORT-CIRCUITS the host budget for that limit, reintroducing the unbounded shape.
-fanout_apply_budget() {  # $1 = workers-total, $2 = lean (0|1), $3 = heap override (may be empty)
-  local total="$1" lean="$2" heap_ovr="${3:-}"
-  case "$total" in ''|*[!0-9]*) total=1 ;; esac
-  [ "$total" -ge 1 ] || total=1
+# Every pi-rukas bound is per-process (PI_ENSEMBLE_SPAWN_CAP, the verify pool, and
+# hostBudget()), so N workers multiply each limit by N. The division is done here, floored
+# so a worker is never starved to zero. The floors and the N ceiling are in host-limits.md.
 
-  # The divisors are the UNDIVIDED defaults pi-rukas would use for a single cycle, taken
-  # from references/host-limits.md: spawn cap 64, verify pool ~4 on a 10-core host, and
-  # max workstreams 6. They must be comfortably larger than N x the floor, or the floors
-  # below silently become the answer and every worker gets the same budget at N=2 and N=8
-  # -- which looks correct in the logs and oversubscribes the host exactly as badly as
-  # forgetting the division entirely. That is a silent failure, so print the raw numbers
-  # and let the operator see a clamp rather than infer one.
-  local CAP_DEFAULT="${FANOUT_CAP_DEFAULT:-64}"
-  local CONC_DEFAULT="${FANOUT_CONC_DEFAULT:-4}"
-  local WS_DEFAULT="${FANOUT_WS_DEFAULT:-6}"
+# Above this, the verify-concurrency and workstream floors take over and the division
+# stops meaning anything. Measured numbers: host-limits.md.
+FANOUT_MAX_WORKERS=4
 
-  cap=$(( CAP_DEFAULT / total )); conc=$(( CONC_DEFAULT / total )); ws=$(( WS_DEFAULT / total )); heap=3072
-  if [ "$lean" = 1 ]; then
-    # Lean changes only the workstream count and the heap. Spawn cap and verify slots still
-    # divide by N: lean must never multiply the spawn cap, or N x lean exceeds N x default.
-    ws=1; heap=1536
-  fi
-  # Floors keep a worker from livelocking (zero slots = it waits forever). A clamp is a
-  # signal that N is above what these budgets can carry, so it is reported, not hidden.
-  clamped=""
-  [ "$cap"  -ge 4 ] || { cap=4;  clamped="${clamped} spawn_cap"; }
-  [ "$conc" -ge 1 ] || { conc=1; clamped="${clamped} verify_conc"; }
-  [ "$ws"   -ge 1 ] || { ws=1;   clamped="${clamped} max_workstreams"; }
-  [ -z "$heap_ovr" ] || heap="$heap_ovr"
-
-  export PI_ENSEMBLE_SPAWN_CAP="${FANOUT_SPAWN_CAP:-$cap}"
-  export PI_ENSEMBLE_VERIFY_CONCURRENCY="${FANOUT_VERIFY_CONCURRENCY:-$conc}"
-  export PI_ENSEMBLE_MAX_WORKSTREAMS="${FANOUT_MAX_WORKSTREAMS:-$ws}"
-  # Headless already runs one group at a time (headless/run.ts), so intra-process
-  # workstream fan-out is what would oversubscribe. Say it explicitly rather than rely
-  # on the default.
-  export PI_ENSEMBLE_PARALLEL_WORK=0
-  # Unattended: post no handoff comment and apply no label. The body comes back in the
-  # JSON result and the driver decides what the operator sees. 60 parked cycles posting
-  # comments to the forge is spam, not signal.
-  export PI_ENSEMBLE_HANDOFF_CHANNEL=host
-  # A heap cap makes an OOM a loud crash (exit 30 in the result) rather than letting the
-  # kernel choose a victim, which may be the user's own interactive cycle.
-  export NODE_OPTIONS="${FANOUT_NODE_OPTIONS:---max-old-space-size=$heap}"
-  # Make the applied numbers visible in runner.log; a worker that silently kept the
-  # defaults is indistinguishable from a correctly divided one. This line is the single
-  # artifact that distinguishes "the fleet is misconfigured" from "pi-rukas did this".
-  echo "budget: workers=$total lean=$lean spawn_cap=$PI_ENSEMBLE_SPAWN_CAP verify_conc=$PI_ENSEMBLE_VERIFY_CONCURRENCY max_workstreams=$PI_ENSEMBLE_MAX_WORKSTREAMS heap=${heap}MB"
-  if [ -n "$clamped" ]; then
-    echo "budget: CLAMPED at N=$total for:$clamped -- those limits cannot divide further."
-    echo "budget:   Each worker still gets a whole verify slot / workstream, so the host"
-    echo "budget:   carries N x those. Lower N, or raise FANOUT_CONC_DEFAULT / FANOUT_WS_DEFAULT"
-    echo "budget:   only if you have confirmed the host can hold N x the raised value."
+# fanout_check_workers <flag> <n>: refuses a non-integer or an N above FANOUT_MAX_WORKERS.
+# Called at argument parse, before any side effect.
+fanout_check_workers() {
+  case "$2" in ''|*[!0-9]*) die "$1 wants a positive integer, got '$2'" 2 ;; esac
+  if [ "$2" -lt 1 ] || [ "$2" -gt "$FANOUT_MAX_WORKERS" ]; then
+    die "$1 $2 is outside 1..$FANOUT_MAX_WORKERS. Above $FANOUT_MAX_WORKERS the verify and workstream floors become the budget, so the division no longer bounds the host (references/host-limits.md)." 2
   fi
 }
 
-# ---------------------------------------------------------------------------
-# preflight summary
-# ---------------------------------------------------------------------------
-# One place that states, in the run's own log, what the fleet believes about the host. When
-# N workers misbehave, the first question is always "did the division apply" and the answer
-# should already be on disk rather than reconstructed from four env vars.
-fanout_log_preflight() {  # $1 = issue, $2 = extra note (may be empty)
-  local issue="$1" note="${2:-}"
-  {
-    printf 'preflight: issue=%s\n' "$issue"
-    printf 'preflight: repo=%s\n' "${FANOUT_REPO:-unset}"
-    printf 'preflight: root=%s\n' "${FANOUT_ROOT:-unset}"
-    printf 'preflight: forge=%s\n' "${FANOUT_FORGE_URL:-derived-from-origin}"
-    printf 'preflight: spawn_cap=%s verify_conc=%s max_workstreams=%s parallel_work=%s handoff=%s\n' \
-      "${PI_ENSEMBLE_SPAWN_CAP:-unset}" "${PI_ENSEMBLE_VERIFY_CONCURRENCY:-unset}" \
-      "${PI_ENSEMBLE_MAX_WORKSTREAMS:-unset}" "${PI_ENSEMBLE_PARALLEL_WORK:-unset}" \
-      "${PI_ENSEMBLE_HANDOFF_CHANNEL:-unset}"
-    printf 'preflight: node_options=%s\n' "${NODE_OPTIONS:-unset}"
-    printf 'preflight: stale_gate=%s attention_gate=%s forge_check=%s\n' \
-      "${FANOUT_SKIP_STALE:-0}" "${FANOUT_ALLOW_ATTENTION:-0}" "${FANOUT_FORGE_CHECK:-1}"
-    [ -z "$note" ] || printf 'preflight: note: %s\n' "$note"
-  }
+# fanout_budget_values <divisor> <lean 0|1> [heap override]
+# Pure: prints "cap conc ws heap clamped" and writes nothing. worker.sh and capacity.sh both
+# read it, so the two cannot drift. clamped is "none" or a comma list of floored limits.
+fanout_budget_values() {
+  local total="$1" lean="$2" heap_ovr="${3:-}"
+  local cap_d="${FANOUT_CAP_DEFAULT:-64}" conc_d="${FANOUT_CONC_DEFAULT:-4}" ws_d="${FANOUT_WS_DEFAULT:-6}"
+  local cap conc ws heap clamped=""
+  cap=$(( cap_d / total )); conc=$(( conc_d / total )); ws=$(( ws_d / total )); heap=3072
+  # Lean changes only the workstream count and the heap; spawn cap and verify slots still divide.
+  if [ "$lean" = 1 ]; then ws=1; heap=1536; fi
+  if [ "$cap" -lt 4 ]; then cap=4; clamped="${clamped}spawn_cap,"; fi
+  if [ "$conc" -lt 1 ]; then conc=1; clamped="${clamped}verify_conc,"; fi
+  if [ "$ws" -lt 1 ]; then ws=1; clamped="${clamped}max_workstreams,"; fi
+  [ -z "$heap_ovr" ] || heap="$heap_ovr"
+  clamped="${clamped%,}"
+  printf '%s %s %s %s %s\n' "$cap" "$conc" "$ws" "$heap" "${clamped:-none}"
+}
+
+# fanout_live_workers: how many worker lock directories under WORKERS_DIR have a live owner.
+# The budget divides by max(requested N, this): two drive.sh runs on one host then split the
+# host between them, not each give itself the whole machine. A snapshot at worker start, so a
+# worker started before another keeps the larger share. See host-limits.md.
+fanout_live_workers() {
+  local d owner
+  printf '%s\n' "$WORKERS_DIR"/issue-*.lock 2>/dev/null | while IFS= read -r d; do
+    [ -d "$d" ] || continue
+    owner="$(cat "$d/pid" 2>/dev/null || true)"
+    if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then echo live; fi
+  done | awk 'END { print NR + 0 }'
+}
+
+# fanout_apply_budget <divisor> <lean> [heap override]: exports the limits for the runner and
+# prints the applied line. Prints; the caller redirects. Never pipe this: a pipeline runs the
+# function in a subshell and its exports are lost, which is how the first version shipped
+# budgets that never reached the runner.
+fanout_apply_budget() {
+  local total="$1" lean="$2" heap_ovr="${3:-}" cap conc ws heap clamped
+  read -r cap conc ws heap clamped <<__BUDGET__
+$(fanout_budget_values "$total" "$lean" "$heap_ovr")
+__BUDGET__
+  export PI_ENSEMBLE_SPAWN_CAP="${FANOUT_SPAWN_CAP:-$cap}"
+  export PI_ENSEMBLE_VERIFY_CONCURRENCY="${FANOUT_VERIFY_CONCURRENCY:-$conc}"
+  export PI_ENSEMBLE_MAX_WORKSTREAMS="${FANOUT_MAX_WORKSTREAMS:-$ws}"
+  # Headless already runs one group at a time, so intra-process fan-out is what would
+  # oversubscribe. Set it explicitly rather than rely on the default.
+  export PI_ENSEMBLE_PARALLEL_WORK=0
+  # Unattended: no forge comment, no label. The handoff body returns in the JSON result.
+  export PI_ENSEMBLE_HANDOFF_CHANNEL=host
+  # A heap cap turns an OOM into a loud exit 30 instead of a kernel-chosen victim.
+  export NODE_OPTIONS="${FANOUT_NODE_OPTIONS:---max-old-space-size=$heap}"
+  echo "budget: workers=$total lean=$lean spawn_cap=$PI_ENSEMBLE_SPAWN_CAP verify_conc=$PI_ENSEMBLE_VERIFY_CONCURRENCY max_workstreams=$PI_ENSEMBLE_MAX_WORKSTREAMS heap=${heap}MB"
+  if [ "$clamped" != none ]; then
+    echo "budget: CLAMPED at N=$total for: $clamped. Those limits cannot divide further, so the host carries N x the floor."
+  fi
 }

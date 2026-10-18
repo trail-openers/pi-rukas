@@ -57,10 +57,6 @@ else
           console.log("issue\ttitle-bucket\tfiles-likely-touched\tblast-radius\tdepends-on\tcollides-with-live\tverdict\tblocked-reason\teffort");
           for (const r of rows) {
             const title = (r.title || "").replace(/[\t\n]/g, " ");
-            // A cheap first-pass bucket from the title prefix; it is a hint for sorting,
-            // not a verdict, and must never be used as one.
-            const m = title.match(/^\s*(feat|fix|bug|chore|docs|refactor|test|ci|perf|epic)\b/i);
-            const bucket = (m ? m[1] : "other").toLowerCase();
             console.log([r.number, JSON.stringify(title.slice(0, 60)), "", "unknown", "", "", "", "", ""].join("\t"));
           }
         });'

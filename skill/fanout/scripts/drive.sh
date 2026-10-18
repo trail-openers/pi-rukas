@@ -1,28 +1,24 @@
 #!/usr/bin/env bash
-# drive.sh — run a list of issues across N independent workers; append one row per
-# finished cycle to <repo>/tmp/fanout/summary.tsv.
+# drive.sh — run a list of issues across N workers; append one row per finished cycle to
+# <root>/summary.tsv.
 #
 #   drive.sh --repo <path> [--parallel N] [--forge-url <url>] [--dry-run] <issue>...
 #   drive.sh --repo <path> --from-file queue.txt
 #   echo 1514 1515 | drive.sh --repo <path> -
 #
-# --parallel is the concurrency, i.e. how many workers run at once. Size it from
-# scripts/capacity.sh, not from a remembered number: pi-rukas's own budget reads
-# os.totalmem(), so a machine that is already starved still advertises full capacity.
-# Starting at 2 and raising from measured RSS beats starting high and discovering it via
-# OOM kills — the victim of an unbounded OOM may be the user's own interactive cycle.
+# --parallel is how many workers run at once, 1..4 (host-limits.md). Size it from
+# scripts/capacity.sh, not from a remembered number.
 #
-# What it does per issue:
-#   1. triage gate  — a verdict other than `ready`/`ready-lean` records `skipped-triage`
-#                     and never spawns. A refusal is usually correct; read it.
-#   2. claim gate   — likely files intersecting a LIVE cycle's path claims record
-#                     `skipped-claim-collision`. Claims are filtered on owner-pid aliveness.
-#   3. worker.sh    — ephemeral --shared clone, own .git, divided budgets, one cycle.
-#   4. summary row  — appended under a per-file lock so parallel writers cannot lose a row.
+# Exit codes: 0 when every worker finished cleanly; 1 when any worker did not. "Cleanly" is
+# exit 0 (merged), or exit 10 where the runner's own exitCode is 10 (handoff). Exit 10 alone
+# is not enough: a failed dependency install also exits 10. Per-issue detail is in summary.tsv.
+# 2 is a usage error, raised before anything runs.
 #
-# Never forwarded, refused on argv outright: --restart, --merge, --auto-merge,
-# --allow-unreviewed, --sandboxed, --allow-protected. See worker.sh + design.md §6-§7.
-# Never run anywhere in this tree: git gc / repack / prune / worktree prune (design.md §2).
+# Per issue: triage gate, path-claim gate, then worker.sh in its own clone. A refusal records
+# a summary row and never spawns.
+#
+# Never forwarded, refused on argv: --restart, --merge, --auto-merge, --allow-unreviewed,
+# --sandboxed, --allow-protected. See worker.sh and design.md §6–§7.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -57,14 +53,14 @@ while [ "$#" -gt 0 ]; do
     --from-file) [ "$#" -ge 1 ] || die "--from-file needs a path" 2
                  FROM_FILE="$1"; shift
                  [ -r "$FROM_FILE" ] || die "cannot read $FROM_FILE" 2
-                 # One issue per line, or whitespace-separated; # starts a comment.
+                 # One issue per line or whitespace-separated; # starts a comment.
                  while IFS= read -r line || [ -n "$line" ]; do
                    line="${line%%#*}"
                    for x in $line; do ISSUES+=("$x"); done
                  done <"$FROM_FILE" ;;
     --dry-run)   DRY_RUN=1 ;;
     --lean|--force-clone|--override-triage) EXTRA_WORKER_ARGS+=("$a") ;;
-    -)           # stdin: same lexing as --from-file
+    -)           # stdin, lexed like --from-file
                  while IFS= read -r line || [ -n "$line" ]; do
                    line="${line%%#*}"
                    for x in $line; do ISSUES+=("$x"); done
@@ -74,17 +70,21 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+[ -z "$NEXT" ] || die "--$NEXT given with no value" 2
+fanout_check_workers --parallel "$MAX_PARALLEL"
+case "${FANOUT_SUMMARY_LOCK_WAIT:-60}" in
+  ''|*[!0-9]*) die "FANOUT_SUMMARY_LOCK_WAIT must be a whole number of seconds, got '$FANOUT_SUMMARY_LOCK_WAIT'" 2 ;;
+esac
 fanout_resolve_repo
 [ "${#ISSUES[@]}" -gt 0 ] || die "no issues given (pass numbers, '-', or --from-file <path>)" 2
 
-# Reject a malformed queue loudly. Silently dropping "1514x" would run a subset and report
-# the whole queue as done, which is the worst kind of partial success. awk does the
-# iteration: a mode-independent bash guard on some hosts denies `for ... in` loops.
+# Reject a malformed queue. Silently dropping "1514x" would run a subset and report the whole
+# queue as done. awk does the iteration: a host guard denies `for ... in` loops.
 bad="$(printf '%s\n' "${ISSUES[@]}" | awk '/[^0-9]|^$/ { print; exit }')"
 [ -z "$bad" ] || die "issue numbers must be digits only; got '$bad' (check the queue file)" 2
 
-# Drop duplicates: two workers on one issue is refused by the pidfile anyway, but only
-# after both clone and install, which is minutes of waste for a mistake in the queue.
+# Drop duplicates before any clone: two workers on one issue are refused by the pidfile only
+# after clone and install, which is minutes of waste for a mistake in the queue.
 DEDUPED="$(printf '%s\n' "${ISSUES[@]}" | awk 'NF && !seen[$0]++')"
 n_before="$(printf '%s\n' "${ISSUES[@]}" | grep -c .)"
 n_after="$(printf '%s\n' "$DEDUPED" | grep -c .)"
@@ -95,21 +95,18 @@ ISSUES=()
 while IFS= read -r x; do [ -n "$x" ] && ISSUES+=("$x"); done <<__DEDUP__
 $DEDUPED
 __DEDUP__
-[ "$MAX_PARALLEL" -ge 1 ] || MAX_PARALLEL=1
 
 mkdir -p "$RUNS_DIR"
 SUMMARY="$FANOUT_ROOT/summary.tsv"
 LOCK="$FANOUT_ROOT/.summary.lock"
 
-# Header only when creating, so an appended row can never be mistaken for the schema.
+# Header only when creating, so an appended row cannot be mistaken for the schema.
 if [ ! -f "$SUMMARY" ]; then
   printf 'issue\tstatus\tcap\tfailedStep\texit\tcost_usd\tduration_s\tdispatches\tpr\tbranch\trun_dir\tfinished_at\n' >"$SUMMARY"
 fi
 
 append_row() {  # one row, under a mkdir lock so parallel writers cannot interleave
   local row="$1" waited=0
-  # Bounded: a lock left behind by a killed drive.sh used to hang every worker forever with no
-  # output. Wait FANOUT_SUMMARY_LOCK_WAIT seconds (default 60), then say which directory to remove.
   while ! mkdir "$LOCK" 2>/dev/null; do
     sleep 0.05
     waited=$((waited + 1))
@@ -121,13 +118,19 @@ append_row() {  # one row, under a mkdir lock so parallel writers cannot interle
   rmdir "$LOCK" 2>/dev/null || true
 }
 
-# Read the headless --json result and emit one tab-separated row. Falls back to a
-# row that names the parse failure rather than silently dropping the run — a lost
-# row is worse than an ugly one, because the operator sizes N from this table.
-row_from_result() {  # $1 = issue, $2 = exit code, $3 = result json path, $4 = run dir
-  # Emits the 12 columns of the summary header exactly once, run_dir and finished_at included.
-  # The caller appends the row as-is; splicing columns onto it after the fact is what put
-  # finished_at under the wrong header and produced 13 fields.
+# The runner's own exitCode from its result JSON, or "-" when there is none.
+runner_exit() {  # $1 = result json path
+  "$(fanout_node)" -e '
+    const fs = require("fs");
+    try { const d = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      console.log(d.exitCode === undefined ? "-" : String(d.exitCode));
+    } catch (e) { console.log("-"); }
+  ' "$1" 2>/dev/null || echo "-"
+}
+
+# One summary row per cycle, from the headless --json result. An unparseable result still
+# yields a row that names the failure: a lost row is worse than an ugly one.
+row_from_result() {  # $1 = issue, $2 = worker exit code, $3 = result json, $4 = run dir
   "$(fanout_node)" -e '
     const fs = require("fs");
     const [issue, code, path, rundir] = process.argv.slice(1);
@@ -146,8 +149,8 @@ row_from_result() {  # $1 = issue, $2 = exit code, $3 = result json path, $4 = r
   ' "$1" "$2" "$3" "$4" 2>/dev/null || printf '%s\t%s\t-\t-\t%s\t-\t-\t-\t-\t-\t%s\t%s\n' "$1" "unparsed" "$2" "$4" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 
-run_one() {  # $1 = issue
-  local issue="$1" code row
+run_one() {  # $1 = issue; returns 0 when the cycle finished cleanly, 1 otherwise
+  local issue="$1" code row runner_code ok=0
   log "worker $issue starting"
   # shellcheck disable=SC2086
   "$SCRIPT_DIR/worker.sh" --repo "$FANOUT_REPO" --workers "$MAX_PARALLEL" \
@@ -155,37 +158,28 @@ run_one() {  # $1 = issue
     >"$RUNS_DIR/issue-$issue/worker.out" 2>&1
   code=$?
   mkdir -p "$RUNS_DIR/issue-$issue"
-  # shellcheck disable=SC2086
   row="$(row_from_result "$issue" "$code" "$RUNS_DIR/issue-$issue/result.json" "$RUNS_DIR/issue-$issue")"
   append_row "$row"
-  log "worker $issue finished exit=$code"
-  return "$code"
+  runner_code="$(runner_exit "$RUNS_DIR/issue-$issue/result.json")"
+  case "$code" in
+    0)  ok=1 ;;
+    10) [ "$runner_code" = 10 ] && ok=1 ;;
+  esac
+  log "worker $issue finished exit=$code runner=$runner_code"
+  [ "$ok" = 1 ]
 }
 
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # dispatch — a bounded worker pool
-# --------------------------------------------------------------------------
-# Issues are consumed in the order given, so priority order is the caller's argument
-# order. A worker that finishes frees a slot for the next issue; nothing waits for a
-# whole batch.
+# ---------------------------------------------------------------------------
+# Issues are consumed in the order given, so the caller's argument order is the priority.
+# A finished worker frees its slot at once; nothing waits for a whole batch.
 log "queue: ${#ISSUES[@]} issues, parallel=$MAX_PARALLEL, repo=$FANOUT_REPO"
 
 if [ "$DRY_RUN" = 1 ]; then
-  # `while read` over a here-string rather than a `for ... in` loop: a mode-independent bash
-  # guard on some hosts denies for-loops, and a documented command an agent cannot run is a
-  # worse bug than the verbosity this costs.
-  #
-  # ONE invocation per issue, capturing output. The first version ran worker.sh twice -- once
-  # to test the exit code and again to capture the message -- which doubled the refusals and
-  # allowed the two runs to disagree (a live-claim gate is not idempotent when a sibling worker
-  # started between them).
-  #
-  # ${arr[@]+${arr[@]}} is the bash-3.2-safe way to expand a possibly-empty array under set -u;
-  # a bare $EXTRA_WORKER_ARGS aborts the script with "unbound variable", which is how this
-  # first presented -- and only on the --dry-run path with no extra flags, so it hid until now.
-  # ${ISSUES[*]} joins with the first char of IFS, which is a SPACE -- so the whole queue
-  # arrived as one "issue number". Set IFS to newline for the expansion, and quote it so
-  # word-splitting cannot re-break it.
+  # One worker.sh call per issue, output captured. The `while read` over a here-string avoids
+  # a for-loop, which a host guard denies. ${ISSUES[*]} would join on a space, so the queue is
+  # printed one issue per line instead.
   while IFS= read -r i; do
     [ -n "$i" ] || continue
     out="$("$SCRIPT_DIR/worker.sh" --repo "$FANOUT_REPO" --dry-run ${EXTRA_WORKER_ARGS[@]+"${EXTRA_WORKER_ARGS[@]}"} "$i" 2>&1)"
@@ -201,10 +195,8 @@ __QUEUE__
   exit 0
 fi
 
-# Count live workers by PID in THIS shell. `jobs -rp` inside a command substitution runs in a
-# subshell whose job table does not hold the parent's background jobs, so the count read 0 and
-# --parallel was silently ignored. A kill -0 probe of tracked PIDs has no such dependency.
-# The count is set in LIVE, not echoed, for the same reason: no subshell is involved at all.
+# Count live workers by PID in THIS shell. A `jobs -rp` inside a command substitution runs in a
+# subshell that does not hold the parent's job table, so it reads 0 and --parallel is ignored.
 PIDS=()
 LIVE=0
 count_live() {
@@ -225,7 +217,17 @@ while [ "$i" -lt "${#ISSUES[@]}" ]; do
   PIDS+=("$!")
   i=$((i + 1))
 done
-wait
+
+# Collect each worker's status. Waiting on each pid, not a bare `wait`, keeps the status.
+FAILED=0
+j=0
+while [ "$j" -lt "${#PIDS[@]}" ]; do
+  if ! wait "${PIDS[$j]}"; then
+    FAILED=$((FAILED + 1))
+    warn "issue ${ISSUES[$j]} did not finish cleanly — see its row in $SUMMARY"
+  fi
+  j=$((j + 1))
+done
 
 echo
 echo "done — $SUMMARY"
@@ -242,3 +244,5 @@ echo "done — $SUMMARY"
   console.log("outcomes: " + Object.entries(tally).map(([k, v]) => k + "=" + v).join("  "));
   console.log("total cost: $" + Math.round(cost * 100) / 100);
 ' "$SUMMARY" 2>/dev/null || cat "$SUMMARY"
+
+[ "$FAILED" = 0 ] || exit 1

@@ -11,20 +11,16 @@
 # host's available memory at a fixed cadence into <rundir>/rss.log, which is what
 # capacity.sh then derives N from.
 #
-# Two bugs this replaced, both of which corrupted N in OPPOSITE directions, which is why
-# neither was obvious from a plausible-looking log:
-#   1. macOS page size was hardcoded to 4096. This host reports 16384, so host-available was
-#      4x LOW -- and capacity.sh divides N by available, so it recommended a 4x too SMALL N.
-#      The page size is now read from the system, never assumed.
-#   2. RSS was summed over EVERY bun/node process on the host, which includes the operator's
-#      own interactive pi session and every other worker. Measured: it reported ~1030 MiB for
-#      a worker tree that actually held ~351 MiB. That inflates per-worker cost ~3x and so
-#      UNDERSTATES safe N. RSS is now attributed to the worker's own process tree by walking
-#      descendants of a root pid.
-# Getting the denominator wrong in either direction is the whole failure mode of this file,
-# so both numbers are labelled with how they were obtained.
-fanout_sampler_start() {  # $1 = pidfile dir, $2 = output file, $3 = root pid
-  local pidfile="$1" out="$2" root="${3:-$}" sp
+# Invariants:
+#   - The page size is read from the system, never assumed: a wrong constant scales every N.
+#   - RSS is attributed to the worker's own process tree, rooted at a pid. A host-wide sum
+#     counts other people's processes.
+#   - Both numbers are labelled with how they were obtained, so the denominator is auditable.
+fanout_sampler_start() {  # $1 = pidfile dir, $2 = output file, $3 = root pid (default: this shell)
+  local pidfile="$1" out="$2" root="${3:-$$}" sp
+  case "$root" in
+    ''|*[!0-9]*|0) warn "sampler not started: root pid '$root' is not a positive integer"; return 1 ;;
+  esac
   : >"$out"
   sp="$(cat "$pidfile/sampler" 2>/dev/null || true)"
   [ -z "$sp" ] || kill "$sp" >/dev/null 2>&1 || true

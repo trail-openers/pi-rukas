@@ -31,6 +31,36 @@ Two things follow: model concurrency is **not** the bottleneck — set it genero
 child costs ~120k tokens for one tool call, so cost scales with dispatch count, not wall
 clock. Budget against dispatches.
 
+## The worker ceiling, and why it is 4
+
+Each limit is divided by N and floored at a minimum, so a worker never gets zero. The floor
+is also where the division stops meaning anything, because N x floor can exceed the undivided
+default. Measured against the defaults (spawn cap 64, verify concurrency 4, workstreams 6):
+
+| N | spawn cap (64/N, floor 4) | verify (4/N, floor 1) | workstreams (6/N, floor 1) | host total verify |
+|---|---|---|---|---|
+| 1 | 64 | 4 | 6 | 4 |
+| 2 | 32 | 2 | 3 | 4 |
+| 3 | 21 | 1 | 2 | 3 |
+| 4 | 16 | 1 | 1 | 4 |
+| 5 | 12 | **1 (floor)** | 1 | **5, above one cycle's default** |
+
+At N=5 the verify floor takes over, so the host carries more verify slots than one undivided
+cycle would. The division no longer bounds the host. So `FANOUT_MAX_WORKERS` is 4, and both
+`worker.sh --workers` and `drive.sh --parallel` refuse anything above it (exit 2) before any side
+effect. A per-cycle limit set at 4 gives a host total of 4 verify slots, which is the default.
+
+A `FANOUT_CONC_DEFAULT` or `FANOUT_WS_DEFAULT` override that makes the floors bite lower than
+this is reported as `budget: CLAMPED ...` in `runner.log`. Read that line before raising N.
+
+### The host share when two drives run
+
+The divisor is `max(requested N, live workers on this WORKERS_DIR)`. Two `drive.sh` runs on one
+host therefore split it, instead of each taking all of it. The count is a snapshot at worker
+start. A worker started earlier keeps the larger share it started with. Two drives on one host
+are supported as long as they share a `WORKERS_DIR`. Two repos have two `WORKERS_DIR`s, so their
+fleets do not see each other. Keep one fleet per host, or give each one its own budget.
+
 ## Memory is the constraint, and `totalmem` is the wrong number
 
 `hostBudget()` reads **total** memory and there is no cgroup on macOS, so it advertises
