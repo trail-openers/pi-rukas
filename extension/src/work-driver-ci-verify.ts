@@ -25,7 +25,10 @@ import {
   type SelectedVerifyRecord,
   withSelectedAttribution,
 } from "./work-driver-verify-select-exec.ts";
-import { verifyAttributionSectionOf } from "./work-driver-verify-select-render.ts";
+import {
+  replaceAttributionBlock,
+  verifyAttributionSectionOf,
+} from "./work-driver-verify-select-render.ts";
 import { SHA_RE, isOfflineTest } from "./work-driver-verify-shared.ts";
 import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -122,42 +125,52 @@ export async function runCiVerifyFull(
   }
 }
 
+export type DisclosureResult = { ok: true } | { ok: false; reason: string };
+
 /**
- * Append the carried tests to the PR body. Returns false when it could not be
- * written: the caller then fails the ci tier, because a red gate that was not
- * disclosed is the state this exists to prevent. The names are written from the
- * caller's `record`, which lists only the names the PR body does not carry yet.
+ * Write the cycle's whole attribution record into the PR body, replacing the
+ * marked block the develop round wrote. Called only on a passing tier, with the
+ * record already folded into state, so the block is the complete account and a
+ * repeated write changes nothing. A failure returns its reason: the caller then
+ * fails the tier, because a red gate that was not disclosed is the state this
+ * exists to prevent.
  */
 export async function discloseInPrBody(
   ctx: CycleContext,
   state: WorkState,
   execFn: ExecFn,
-  record: SelectedVerifyRecord,
-): Promise<boolean> {
-  // The develop round may already have written its own sections; the ci tier's
-  // are headed apart so the PR body never carries two identical headings.
-  const section = verifyAttributionSectionOf(record, "full suite");
-  if (section === "") return true;
+): Promise<DisclosureResult> {
   const prNumber = state.pipelineState.prNumber;
-  if (prNumber === undefined) return false;
+  if (prNumber === undefined) return { ok: false, reason: "the PR number is not known" };
+  const block = verifyAttributionSectionOf(state.pipelineState.verifyAttribution);
   try {
     const view = await execFn("gh", {
-      argv: ["pr", "view", String(prNumber), "--json", "body", "--jq", ".body"],
+      argv: ["pr", "view", String(prNumber), "--json", "body"],
       cwd: ctx.repoRoot,
     });
+    // `null` is an empty body; anything else that is not a string is a read
+    // this writer does not understand, and writing over it could blank the PR.
+    const parsed = JSON.parse(view.stdout) as { body?: unknown };
+    if (parsed.body !== null && typeof parsed.body !== "string") {
+      return { ok: false, reason: "the PR body could not be read as text, so it was not edited" };
+    }
+    const current = parsed.body ?? "";
+    const next = replaceAttributionBlock(current, block);
+    if (next === current) return { ok: true };
     const dir = path.join(ctx.repoRoot, "tmp", `issue-${ctx.issue}`);
     await fs.mkdir(dir, { recursive: true });
     const bodyFile = path.join(dir, `pr-body-verify-${prNumber}.md`);
-    await fs.writeFile(bodyFile, `${view.stdout.replace(/\s+$/, "")}\n${section}\n`, "utf8");
+    await fs.writeFile(bodyFile, next, "utf8");
     await execFn("gh", {
       argv: ["pr", "edit", String(prNumber), "--body-file", bodyFile],
       cwd: ctx.repoRoot,
     });
-    return true;
+    return { ok: true };
   } catch (err) {
+    const message = (err as Error).message?.slice(0, 160) ?? String(err);
     trace(
-      `work-driver: ci step — could not disclose the flaky and baseline-red tests in PR #${prNumber}: ${(err as Error).message?.slice(0, 160)}`,
+      `work-driver: ci step — could not disclose the flaky and baseline-red tests in PR #${prNumber}: ${message}`,
     );
-    return false;
+    return { ok: false, reason: `the PR body write failed: ${message}` };
   }
 }

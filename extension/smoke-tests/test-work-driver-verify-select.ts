@@ -215,15 +215,15 @@ assert(
 
 // --- edge extraction ----------------------------------------------------------
 assert(
-  edgesOf("src/x.ts", "// await import(spec)\nconst s = 'import(y)';\n").dynamic === false,
+  edgesOf("src/x.ts", "// await import(spec)\nconst s = 'import(y)';\n")?.dynamic === false,
   "a dynamic-import call inside a comment or a string is not a non-literal call",
 );
 assert(
-  edgesOf("src/x.ts", "await import(spec);\n").dynamic === true,
+  edgesOf("src/x.ts", "await import(spec);\n")?.dynamic === true,
   "a dynamic import through a variable is a non-literal call",
 );
 assert(
-  edgesOf("src/x.ts", "const t = `await import(${spec})`;\n").dynamic === false,
+  edgesOf("src/x.ts", "const t = `await import(${spec})`;\n")?.dynamic === false,
   "a template literal that quotes import(${…}) is a string, not a call",
 );
 assert(

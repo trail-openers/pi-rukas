@@ -19,10 +19,12 @@
  *     → flaky, not blocking;
  *   - failing again → a test this cycle changed or added blocks (a base run
  *     would test an older file); otherwise a per-test base probe runs exactly
- *     those tests through verify-loop. Red on base only, FOR THE SAME FAILURE
- *     LINE (work-driver-verify-signature), → baseline-red, not blocking; any
- *     change-caused name, a different failure on base, or an unresolved probe →
- *     blocks.
+ *     those tests through verify-loop, twice. Red on base only, FOR THE SAME
+ *     FAILURE LINE, → baseline-red, not blocking; any change-caused name, a
+ *     different failure on base, or an unresolved probe → blocks.
+ *
+ * The decisions themselves are pure and live in work-driver-verify-select-verdict;
+ * this module gathers the facts (runs, probes) and asks them.
  *
  * One wall clock covers the whole call: the first run, its rerun and both probes
  * draw on the same budget, and exhausting it blocks with that reason named.
@@ -37,6 +39,12 @@ import { attributeAgainstBase } from "./work-driver-verify-attribution.ts";
 import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
 import { readVerifyReport } from "./work-driver-verify-report-file.ts";
 import { createVerifyReportFile, verifyReportEnv } from "./work-driver-verify-report-path.ts";
+import {
+  type ProbeFacts,
+  firstRunPlan,
+  judgeProbe,
+  placeable,
+} from "./work-driver-verify-select-verdict.ts";
 import { type VerifyAttributionRecord, extensionRelative } from "./work-driver-verify-shared.ts";
 import { failureSignatures } from "./work-driver-verify-signature.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -102,17 +110,6 @@ function probeCommand(rels: readonly string[]): string {
   return `cd extension && bash smoke-tests/lib/verify-loop.sh --jobs-from-host ${rels.map((r) => `"$PWD/${r}"`).join(" ")}`;
 }
 
-/** The names as extension-relative paths, or undefined when any one of them cannot be placed. */
-function placeable(names: readonly string[]): string[] | undefined {
-  const rels: string[] = [];
-  for (const name of names) {
-    const rel = extensionRelative(name);
-    if (rel === undefined) return undefined;
-    rels.push(rel);
-  }
-  return rels;
-}
-
 async function runOnce(
   o: SelectedVerifyOptions,
   execFn: ExecFn,
@@ -125,6 +122,11 @@ async function runOnce(
   let env = opts?.env ?? process.env;
   try {
     reportFile = createVerifyReportFile(o.channel.reportDir, label);
+    // The path reaches the verify command, and the loop passes it to no test:
+    // verify-kill.sh runs every test under `env -u VERIFY_REPORT_FILE`. The
+    // channel makes a FAILING test unable to name a passing run; it is not a
+    // defence against the cycle's own code, which can edit any test. That limit
+    // is stated in docs/troubleshooting.md → "Selected verify: what attribution does not defend".
     env = verifyReportEnv(env, reportFile);
   } catch (err) {
     trace(
@@ -160,7 +162,6 @@ async function runOnce(
         ok: false,
         err: e,
         timedOut,
-        reportFile,
         reason: `the failing tests cannot be named (${report.reason ?? "no report"}), so this is not a test failure this gate can attribute — a tsc or biome failure, or a loop that did not finish`,
       };
     }
@@ -178,12 +179,16 @@ async function runOnce(
   }
 }
 
-/** Serialises base probes in this process. */
-let probeChain: Promise<unknown> = Promise.resolve();
+/**
+ * Base probes queue per repository, not per process: each one creates a
+ * worktree under its repoRoot's `.git`, and two repoRoots share no such state.
+ */
+const probeChains = new Map<string, Promise<unknown>>();
 
 /**
- * One base probe of exactly `rels`. Passes only when every name is red on base
- * and the change run has no name that is green there.
+ * One base probe of exactly `rels`. Returns the facts the probe established, or
+ * the reason it could not establish any. A probe that throws is a named block,
+ * never an escape: the caller's evidence must say why the gate blocked.
  */
 async function probeOnce(
   o: SelectedVerifyOptions,
@@ -193,7 +198,7 @@ async function probeOnce(
   changeReportFile: string,
   label: string,
   timeoutMs: number,
-): Promise<{ ok: true; probeOutput: string } | { blocks: string }> {
+): Promise<{ facts: ProbeFacts } | { blocks: string }> {
   let probeReportFile: string;
   try {
     probeReportFile = createVerifyReportFile(o.channel.reportDir, label);
@@ -201,7 +206,8 @@ async function probeOnce(
     return { blocks: "the base probe's report could not be created, so it cannot run" };
   }
   const probeEnv = verifyReportEnv(process.env, probeReportFile);
-  const run = probeChain.then(() =>
+  const prior = probeChains.get(o.repoRoot) ?? Promise.resolve();
+  const settled = prior.then(() =>
     attributeAgainstBase(rawExec, {
       repoRoot: o.repoRoot,
       verifyCmd: probeCommand(rels),
@@ -215,33 +221,30 @@ async function probeOnce(
       probeLabel: o.probeLabel,
     }),
   );
-  probeChain = run.catch(() => undefined);
-  const probe = await run;
+  probeChains.set(
+    o.repoRoot,
+    settled.catch(() => undefined),
+  );
+  let probe: Awaited<typeof settled>;
+  try {
+    probe = await settled;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { blocks: `the base probe failed: ${message.slice(0, 200)}` };
+  }
   if (probe === undefined) {
     return {
       blocks:
         "the base probe did not establish a red base for these tests (green on base, or the probe was unresolved), so the failure is not attributed",
     };
   }
-  if (probe.changeCausedFailures.length > 0) {
-    return {
-      blocks: `red on this change and green on base: ${probe.changeCausedFailures.join(", ")}`,
-    };
-  }
-  const redOnBase = new Set(
-    probe.preExistingFailures.map(extensionRelative).filter((r): r is string => r !== undefined),
-  );
-  if (!rels.every((r) => redOnBase.has(r))) {
-    return { blocks: "a failing test was not shown to be red on the base commit" };
-  }
-  return { ok: true, probeOutput: probe.probeOutput ?? "" };
+  return { facts: probe };
 }
 
 /**
  * Judge a twice-failing run's names. Returns the names that are baseline-red,
  * or the reason the failure blocks. Two base runs must agree: one red run on a
  * loaded host would otherwise excuse a test the change breaks deterministically.
- * Each base run must also fail for the same reason the change run did.
  */
 async function judge(
   o: SelectedVerifyOptions,
@@ -266,7 +269,7 @@ async function judge(
   if (baseSha === undefined) return { blocks: "there is no base commit to probe" };
   const changeSignatures = failureSignatures(changeOutput);
   for (const label of ["probe", "probe2"]) {
-    const verdict = await probeOnce(
+    const probed = await probeOnce(
       o,
       rawExec,
       baseSha,
@@ -275,41 +278,16 @@ async function judge(
       label,
       budget(`the ${label} run`),
     );
+    if ("blocks" in probed) return probed;
+    const verdict = judgeProbe(rels, probed.facts, changeSignatures);
     if ("blocks" in verdict) return verdict;
-    const clash = signatureClash(rels, changeSignatures, failureSignatures(verdict.probeOutput));
-    if (clash !== undefined) return { blocks: clash };
+    if (verdict.unsigned.length > 0) {
+      trace(
+        `work-driver: verify-select — no failure signature for ${verdict.unsigned.join(", ")}; judged by name only`,
+      );
+    }
   }
   return { baselineRed: rels };
-}
-
-/**
- * The reason a baseline-red verdict cannot stand: a test that fails on base for
- * a different line than it fails on this change. A test with no extractable
- * signature on either side keeps the name-only verdict, and the trace says so.
- */
-function signatureClash(
-  rels: readonly string[],
-  change: ReadonlyMap<string, string>,
-  base: ReadonlyMap<string, string>,
-): string | undefined {
-  const unsigned: string[] = [];
-  for (const rel of rels) {
-    const c = change.get(rel);
-    const b = base.get(rel);
-    if (c === undefined || b === undefined) {
-      unsigned.push(rel);
-      continue;
-    }
-    if (c !== b) {
-      return `${rel} fails on this change with "${c}" and on base with "${b}" — red on base for a different reason, so it is not excused`;
-    }
-  }
-  if (unsigned.length > 0) {
-    trace(
-      `work-driver: verify-select — no failure signature for ${unsigned.join(", ")}; judged by name only`,
-    );
-  }
-  return undefined;
 }
 
 /**
@@ -336,11 +314,12 @@ function recordFlaky(o: SelectedVerifyOptions, names: readonly string[]): void {
 
 /**
  * Attach a blocking reason to the error the run produced, so the caller's
- * evidence says why the gate blocked. Anything thrown is narrowed first: a
- * non-Error value has no stderr to extend.
+ * evidence says why the gate blocked. With no run to attach to (the wall clock
+ * ran out before the first run), a named Error carries the reason instead.
  */
-function block(err: unknown, reason: string): ExecError {
-  const e: ExecError = err instanceof Error ? err : Object.assign(new Error(String(err)), {});
+function block(err: ExecError | undefined, reason: string): ExecError {
+  const e: ExecError =
+    err ?? new Error("verify-select: no run produced output to attach the block to");
   const line = `[verify-select] blocking: ${reason}`;
   e.stderr = `${e.stderr ?? ""}\n${line}`;
   // runVerifyFull reads err.message before stderr, so the ci evidence would
@@ -393,15 +372,13 @@ async function attribute(
   if (first.ok) return first.out;
   last.err = first.err;
   const firstNames = first.names ?? [];
-  // Develop blocks on any failure that is timed out or names nothing; ci reruns both.
-  if (o.rerunUnnamed !== true && (first.timedOut || firstNames.length === 0)) {
-    throw block(first.err, first.reason);
-  }
+  const plan = firstRunPlan(firstNames, first.timedOut, o.rerunUnnamed === true);
+  if (plan.kind === "block") throw block(first.err, first.reason);
   // A named failure reruns its IDs through the probe's shape. A timed-out run
   // never reached the rest of the suite, and an unnamed failure names nothing,
   // so both rerun the whole command.
   let rerunCmd = o.cmd;
-  if (firstNames.length > 0 && first.timedOut !== true) {
+  if (plan.kind === "rerun-named") {
     const rels = placeable(firstNames);
     if (rels === undefined) {
       const bad = firstNames.find((n) => extensionRelative(n) === undefined);

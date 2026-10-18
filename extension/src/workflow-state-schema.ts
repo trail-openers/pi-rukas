@@ -451,10 +451,7 @@ export interface PipelineState extends IssueClosedState {
    * too). Commit-pr renders both into the PR body and the handoff renders them.
    * Absent = none recorded.
    */
-  verifyAttribution?: VerifyAttributionRecord & {
-    /** The names the PR body is known to list; absent until the ci tier pins it (work-driver-verify-events). */
-    disclosed?: VerifyAttributionRecord;
-  };
+  verifyAttribution?: VerifyAttributionRecord;
   /**
    * Terminal status. "running" while active; flips on `merged` or `handoff`.
    * S4a (#1162) — "interrupted" is written by `markInterrupted` (SIGTERM /

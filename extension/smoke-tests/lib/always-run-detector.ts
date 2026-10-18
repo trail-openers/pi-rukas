@@ -100,6 +100,8 @@ if (import.meta.main && process.argv.includes("--write")) {
   const file = path.join(extensionDir, "src", "work-driver-verify-always-run.ts");
   const source = readFileSync(file, "utf8");
   const start = source.indexOf("export const ALWAYS_RUN");
+  // A missing marker must fail loudly: slicing at -1 would truncate the file.
+  if (start < 0) throw new Error(`no "export const ALWAYS_RUN" marker in ${file}`);
   const head = source.slice(0, start);
   writeFileSync(
     file,

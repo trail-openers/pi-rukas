@@ -27,7 +27,11 @@ import {
   type SelectedVerifyRecord,
   withSelectedAttribution,
 } from "../src/work-driver-verify-select-exec.ts";
-import { verifyAttributionSectionOf } from "../src/work-driver-verify-select-render.ts";
+import {
+  ATTRIBUTION_BEGIN,
+  ATTRIBUTION_END,
+  verifyAttributionSectionOf,
+} from "../src/work-driver-verify-select-render.ts";
 import { selectedVerifyCommand } from "../src/work-driver-verify-select.ts";
 import { initialState } from "../src/workflow-state.ts";
 
@@ -331,6 +335,10 @@ const R = "smoke-tests/test-red.ts";
   assert(
     body.includes("## Tests red on the base commit") && body.includes(`\`${R}\``),
     "the PR body lists the baseline-red tests",
+  );
+  assert(
+    body.startsWith(ATTRIBUTION_BEGIN) && body.endsWith(ATTRIBUTION_END),
+    "the section is one block between the replaceable markers",
   );
   assert(verifyAttributionSectionOf(undefined) === "", "no section when nothing was carried");
   const folded = foldVerifyAttribution(

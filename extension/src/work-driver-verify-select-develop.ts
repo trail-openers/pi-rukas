@@ -47,12 +47,21 @@ export function verifySelectEnabled(): boolean {
 }
 
 /**
- * #1647 — selection is a capability a project opts into by having `.pi/verify-select`.
- * Its content is not read, so the file can be empty. The ci tier's attribution
- * follows the same switch, and the escape hatch above does not touch it.
+ * #1647 — selection is a capability a project opts into by having `.pi/verify-select`
+ * as a regular file. Its content is not read, so the file can be empty. The ci
+ * tier's attribution follows the same switch, and the escape hatch above does
+ * not touch it.
  */
 export function selectOptedIn(repoRoot: string): Promise<boolean> {
-  return fileExists(path.join(repoRoot, ".pi", "verify-select"));
+  return isRegularFile(path.join(repoRoot, ".pi", "verify-select"));
+}
+
+async function isRegularFile(file: string): Promise<boolean> {
+  try {
+    return (await fs.stat(file)).isFile();
+  } catch {
+    return false;
+  }
 }
 
 async function fileExists(file: string): Promise<boolean> {

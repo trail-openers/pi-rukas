@@ -22,12 +22,7 @@ import {
 } from "./work-driver-merge-authority.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCiPrompt, inlineStepBackPrompt } from "./work-driver-prompts-late.ts";
-import {
-  foldVerifyAttribution,
-  markDisclosed,
-  snapshotDisclosed,
-  uncarriedNames,
-} from "./work-driver-verify-events.ts";
+import { foldVerifyAttribution } from "./work-driver-verify-events.ts";
 import { verifyCmdFullFor } from "./work-driver-verify-full.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -193,11 +188,8 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
         `work-driver: ci step — running verify-full in worktree ${primaryWorktreeId}: ${cmd.slice(0, 100)}`,
       );
       // #1647 — the tier's full suite is attributed (flaky / baseline-red do not
-      // block). Non-blocking tests are written to the PR body before the tier can
-      // pass: a disclosure that fails fails the tier.
-      // Pinned before the run, so a failed disclosure below cannot make its names
-      // look already disclosed on the next attempt (work-driver-verify-events).
-      next = snapshotDisclosed(next);
+      // block). The cycle's whole record goes into the PR body before a passing
+      // tier can stand: a disclosure that fails fails the tier.
       const run = await runCiVerifyFull(
         ctx,
         next,
@@ -208,23 +200,19 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
       );
       // Folded on failure too: a failing tier's flaky and baseline-red names are
       // what the handoff and the next commit-pr must still show.
-      const carried = run.record;
-      // Disclosed only on a passing tier, and only the names the PR body does not
-      // already list (the develop round wrote its own).
-      const fresh =
-        carried === undefined || run.outcome !== "success"
-          ? undefined
-          : uncarriedNames(next, carried);
-      const disclosed = fresh === undefined || (await discloseInPrBody(ctx, next, execp, fresh));
-      if (fresh !== undefined && disclosed) next = markDisclosed(next, fresh);
-      const result = disclosed
-        ? run
-        : {
-            ...run,
-            outcome: "failure" as const,
-            output: `${run.output}\n[verify-full] the flaky and baseline-red tests could not be written to the PR body, so the tier fails`,
-          };
-      if (carried !== undefined) next = foldVerifyAttribution(next, carried);
+      next = foldVerifyAttribution(next, run.record);
+      const written =
+        run.outcome === "success" && next.pipelineState.verifyAttribution !== undefined
+          ? await discloseInPrBody(ctx, next, execp)
+          : { ok: true as const };
+      const result =
+        written.ok === true
+          ? run
+          : {
+              ...run,
+              outcome: "failure" as const,
+              output: `${run.output}\n[verify-full] the flaky and baseline-red tests could not be written to the PR body (${written.reason}), so the tier fails`,
+            };
       // #782 — a recovered re-run (first failed, second passed) surfaces as
       // status:success with recovered:true, so the handoff can distinguish it
       // from a normal success. The first run's tail is preserved on the event
