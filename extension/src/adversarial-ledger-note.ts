@@ -48,9 +48,19 @@ import type { DispatchResult } from "./types.ts";
  * are NOT misdirections. Reporting a skip as a misdirection would cry wolf on
  * every detached-head run; reporting a redirect as a skip would hand the next
  * run a round the ledger already consumed.
+ *
+ * The parameter is `AdversarialLedgerOutcome | undefined` because its caller
+ * cannot promise the shape it receives: `makeLedgerWrite` tolerates ANY return
+ * from the writer (#1449 — a writer that hands back nothing must not cost a
+ * review), so `undefined` reaches here and reads as "nothing to report", which
+ * is the same answer as a by-design skip. The guard is written as a positive
+ * requirement (`recorded === true`) rather than a negative one precisely so an
+ * absent value falls on the silent side.
  */
-export function misdirectedLedgerNote(outcome: AdversarialLedgerOutcome): string | undefined {
-  if (outcome.recorded !== true || !outcome.landedAtPath) return undefined;
+export function misdirectedLedgerNote(
+  outcome: AdversarialLedgerOutcome | undefined,
+): string | undefined {
+  if (!outcome || outcome.recorded !== true || !outcome.landedAtPath) return undefined;
   return `${MISDIRECTED_LEDGER_NOTE}\n\nWrote to: ${outcome.landedAtPath}`;
 }
 

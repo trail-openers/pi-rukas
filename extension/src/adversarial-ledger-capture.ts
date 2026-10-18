@@ -42,6 +42,29 @@ export interface BindingState {
 }
 
 /**
+ * #1449 — the ledger writer behind a one-line mutable seam.
+ *
+ * `makeLedgerWrite` must not assume the writer's return is chainable or that it
+ * cannot throw before returning, because "a ledger problem never costs a review"
+ * is the CALL SITE's invariant, not one writer's implementation detail. But the
+ * real writer ends in `write().catch(...)`, so neither failure mode is reachable
+ * through it — and a guard for an unreachable failure is an untested guard. The
+ * seam is how `test-adversarial-ledger-writer-shapes.ts` reaches both: it installs
+ * a writer returning `undefined` (the shape `mock.module` gives a bare
+ * `(r, p) => { push() }`), one throwing synchronously, and one rejecting, and
+ * asserts none of them damages the loop's result. Deleting the `Promise.resolve`
+ * or the `try`/`catch` turns an arm red (mutation-checked).
+ *
+ * A box (`.current`) rather than a setter, so the swap is one assignment the test
+ * restores in a `finally`. Production never writes it: every non-test process
+ * calls the real `writeAdversarialLedgerEntry`. Same precedent as the `execFn`
+ * seam #1360 threads through this module — one injectable point per dependency.
+ */
+export const LEDGER_WRITER: {
+  current: typeof writeAdversarialLedgerEntry;
+} = { current: writeAdversarialLedgerEntry };
+
+/**
  * Take this round's capture.
  *
  * The capture is best-effort: `captureBinding` swallows its own git failures
@@ -144,7 +167,7 @@ export function makeLedgerWrite(opts: {
   /** #1449 — called with the resolved write outcome. Defaults to the
    * misdirection-note reporter; a caller that wants the raw outcome (a test)
    * replaces it. */
-  onLedgerOutcome?: (outcome: AdversarialLedgerOutcome) => void | Promise<void>;
+  onLedgerOutcome?: (outcome: AdversarialLedgerOutcome | undefined) => void | Promise<void>;
 }): (raw: DispatchResult) => DispatchResult {
   return (raw) => {
     const result = opts.decorate(raw);
@@ -155,7 +178,7 @@ export function makeLedgerWrite(opts: {
     let live = result;
     const deliver =
       opts.onLedgerOutcome ??
-      ((outcome: AdversarialLedgerOutcome) => {
+      ((outcome: AdversarialLedgerOutcome | undefined) => {
         // Default reporter: append the misdirection note to the held result.
         // A no-op on every outcome but a row that landed outside the per-clone
         // ledger (see `misdirectedLedgerNote`), so the overwhelming majority of
@@ -169,25 +192,60 @@ export function makeLedgerWrite(opts: {
         // only on the synchronous path could never see a redirect.
         if (note) live = opts.note({ ...live, text: `${live.text}\n\n${note}` });
       });
-    const ledgerWrite = writeAdversarialLedgerEntry(result, {
-      workCwd: opts.workCwd,
-      resolvedBranch: opts.resolvedBranch,
-      branch: opts.branch,
-      head: opts.state.captured?.headRef,
-      callerSuppliedDiff: opts.callerSuppliedDiff === true,
-      // #1360 — the tool path's provenance marker and its round capture.
-      base: opts.baseRef,
-      toolPath: opts.toolPath === true,
-      binding: opts.state.captured?.binding,
-      execFn: opts.execFn,
-    });
+    // #1449 — the writer is called through a SEAM (`LEDGER_WRITER`) rather than
+    // by name, and the result is normalised before ANYTHING is chained onto it.
+    // Two layers, both load-bearing, neither reachable through the real writer:
+    // `writeAdversarialLedgerEntry` ends in `write().catch(...)`, so a fault in
+    // its BODY can only ever be a rejection — an unreachable throw and an
+    // unchainable return would make the `try`/`catch` and the `Promise.resolve`
+    // decorative, and an unreachable guard is an untested one. The seam lets a
+    // test install a writer that returns `undefined` (the shape `mock.module`
+    // gives a bare `(r, p) => { push() }`, which took down
+    // `test-adversarial-tool-guards` in CI with `TypeError: undefined is not an
+    // object`) or throws synchronously, and prove neither reaches the loop's
+    // exit. Production never sets the seam; it is the real writer throughout.
+    let ledgerWrite: unknown;
+    try {
+      ledgerWrite = LEDGER_WRITER.current(result, {
+        workCwd: opts.workCwd,
+        resolvedBranch: opts.resolvedBranch,
+        branch: opts.branch,
+        head: opts.state.captured?.headRef,
+        callerSuppliedDiff: opts.callerSuppliedDiff === true,
+        // #1360 — the tool path's provenance marker and its round capture.
+        base: opts.baseRef,
+        toolPath: opts.toolPath === true,
+        binding: opts.state.captured?.binding,
+        execFn: opts.execFn,
+      });
+    } catch {
+      // A writer that throws synchronously is a ledger fault, not a review
+      // fault: nothing is reported (there is no outcome to report) and the loop
+      // returns its result exactly as it would have without the write.
+      ledgerWrite = undefined;
+    }
     // The promise never rejects (the writer's own catch), so the only
     // bookkeeping here is delivering the report; a callback that throws must
     // not break the loop, hence the swallow. The reporter always runs — the
     // default IS the misdirection note, so the adversarial half of #1449 is
     // never a capability a caller has to opt into (a caller that wants the raw
-    // outcome instead, e.g. a test, replaces it).
-    void ledgerWrite.then((outcome) => deliver(outcome)).catch(() => undefined);
+    // outcome instead, e.g. a test, replaces it). `Promise.resolve` is what
+    // makes the chain safe when `ledgerWrite` is undefined / a non-promise / a
+    // thenable that never settles — see the guard above. A non-`undefined`
+    // non-promise return reaches the reporter as no outcome (normalised, so the
+    // reporter's contract is one type whatever the writer returned);
+    // `misdirectedLedgerNote` reads only `recorded` / `landedAtPath` / `reason`,
+    // so a shape it has never seen yields no note rather than a crash or an
+    // invented claim.
+    void Promise.resolve(ledgerWrite)
+      .then((outcome) =>
+        deliver(
+          outcome === undefined || outcome === null
+            ? undefined
+            : (outcome as AdversarialLedgerOutcome),
+        ),
+      )
+      .catch(() => undefined);
     return opts.note(live);
   };
 }
