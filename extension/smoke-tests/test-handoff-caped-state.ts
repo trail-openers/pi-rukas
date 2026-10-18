@@ -197,5 +197,75 @@ const capRenderers = [
   }
 }
 
+// (g) #1414 round 2 — the typecheck reached NO VERDICT (the field is absent).
+// Pre-fix this shape was indistinguishable from "broken", in BOTH
+// directions: a command that could not run reached the renderer as `false`
+// (the broken-code bullet, a lie), and once round 2 makes the field honestly
+// absent, the renderer must not fall into "no bullet, therefore it passed".
+// It says plainly that nothing was judged, names the reason, and claims
+// neither way about the code.
+{
+  const s = capedState("loop-detected", "developer", {
+    tree: "committed",
+    commitSha: "bbb2222",
+    typechecked: undefined,
+    typecheckReason: "could not run (sh: tsc: command not found)",
+    statusFile: `${REPO}/tmp/issue-543/status-developer.md`,
+  });
+  for (const [name, out] of capRenderers.map(([n, f]) => [n, f(s)] as const)) {
+    assert(
+      !/typecheck FAILED/.test(out),
+      `${name} (g): a check that never ran is NEVER reported as a failed typecheck`,
+    );
+    assert(
+      /typecheck: no verdict/.test(out),
+      `${name} (g): the no-verdict bullet renders — silence here would read as "it passed"`,
+    );
+    assert(
+      out.includes("could not run"),
+      `${name} (g): the handoff carries the REASON the operator can act on`,
+    );
+    assert(
+      out.includes(TYPECHECK_CMD) && !/\bbunx\b/.test(out) && !out.includes("--no-emit"),
+      `${name} (g): names the command it meant, spelled correctly`,
+    );
+    assert(
+      !/the code is broken as-is/.test(out),
+      `${name} (g): makes no broken-code claim without a verdict`,
+    );
+  }
+}
+
+// (h) #1414 round 2 — mutation direction for (g): a REAL diagnostic still
+// produces the broken-code bullet. Without this case, deleting the `false`
+// branch (or routing everything to the no-verdict bullet) would pass (g).
+{
+  const s = capedState("loop-detected", "developer", {
+    tree: "committed",
+    commitSha: "ccc3333",
+    typechecked: false,
+  });
+  for (const [name, out] of capRenderers.map(([n, f]) => [n, f(s)] as const)) {
+    assert(/typecheck FAILED at checkpoint/.test(out), `${name} (h): a real verdict still blames the code`);
+    assert(!/typecheck: no verdict/.test(out), `${name} (h): a verdict is not rendered as no-verdict`);
+  }
+}
+
+// (i) #1414 round 2 — a clean tree with no verdict needs no warning: nothing
+// was committed, so nothing is being passed off as sound.
+{
+  const s = capedState("token-budget", "explore", {
+    tree: "clean",
+    reportOnly: true,
+    typechecked: undefined,
+  });
+  for (const [name, out] of capRenderers.map(([n, f]) => [n, f(s)] as const)) {
+    assert(
+      !/typecheck/.test(out),
+      `${name} (i): a report-only / clean checkpoint makes no typecheck claim at all`,
+    );
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

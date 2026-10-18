@@ -81,6 +81,23 @@ export function capedPartialStateLines(state: WorkState, indent: string): string
       `${indent}- **typecheck FAILED at checkpoint** — the driver's \`${CHECKPOINT_TYPECHECK_CMD}\` in the worktree failed before the checkpoint commit: the code is broken as-is. Fix the typecheck before pushing.`,
     );
   }
+  // #1414 round 2 — the absence of `typechecked` is NOT a passing check. The
+  // field is omitted when the checkpoint's typecheck reached no verdict (could
+  // not run, killed at its bound, or no `extension/` to check) and pre-fix that
+  // same shape reached here as `false` and got the broken-code bullet. The
+  // status file carries the specific reason; the handoff says plainly that no
+  // verdict was reached and claims NEITHER way about the code.
+  //
+  // The `typechecked === undefined` guard is load-bearing, not tidiness: this
+  // branch is an `else` on the `false` test, so without it a tree that
+  // typechecked cleanly (typechecked: true) would also be told "no verdict",
+  // contradicting the record two lines above it. `test-handoff-caped-state.ts`
+  // case (f) is that assertion.
+  else if (cps.typechecked === undefined && cps.tree !== "clean" && !cps.reportOnly) {
+    lines.push(
+      `${indent}- **typecheck: no verdict** — the driver's \`${CHECKPOINT_TYPECHECK_CMD}\` did not reach a verdict at the checkpoint (it could not run, was killed at its bound, or there was no \`extension/\` to check). No claim is made about whether this code typechecks; the checkpoint committed partial work and the full gate runs on the integrated branch.\n${indent}  — reason: ${cps.typecheckReason ?? "not recorded; see the status file below"}`,
+    );
+  }
   // #543 (M7) — on a REVIEW_INCOMPLETE cap (one lens cap-killed, the rest
   // completed), the handoff's "verdicts shown above" promise is FALSE:
   // there is no lens-issues-found event for a killed-lens round. Render the

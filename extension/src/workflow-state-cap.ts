@@ -118,9 +118,20 @@ export interface CapedPartialState {
    * #544 — the checkpoint runs `CHECKPOINT_TYPECHECK_CMD` (see
    * work-driver-cap-checkpoint.ts) in the worktree's `extension/` directory
    * BEFORE committing (recovery, not the full gate — that runs on the
-   * integrated branch). `false` means the checkpoint commit is known-broken
-   * as-is and the handoff surfaces say so. Absent when the check could not
-   * run (worktree has no `extension/`).
+   * integrated branch).
+   *
+   * #1414 round 2 — the three states are NOT interchangeable, and `false` is
+   * the only one that indicts the code:
+   *
+   *   - `true`  — tsc exited 0. The tree typechecked.
+   *   - `false` — tsc RAN and reported diagnostics (non-zero exit carrying
+   *     `TSxxxx` output). The checkpoint commit is known-broken as-is and the
+   *     handoff surfaces say so.
+   *   - absent — the check never got to judge anything: no `extension/` to
+   *     check, the executor could not be forked / the binary was not found,
+   *     or the run was killed at its bound. A no-verdict is not a verdict on
+   *     the code, so the handoff names the reason and never claims the code
+   *     is broken. Pre-fix, all three landed as `false`.
    *
    * The command here is named by reference, not spelled: this module is
    * type-only, so importing the constant would invert the dependency, and
@@ -128,5 +139,14 @@ export interface CapedPartialState {
    * (#1414) would have to keep in step by hand.
    */
   typechecked?: boolean;
+  /**
+   * #1414 round 2 — why the typecheck reached NO verdict, alongside the field
+   * being absent. Three causes share the absent state (no `extension/`, the
+   * command could not be run, killed at its bound) and the operator cannot act
+   * on "absent": "add a \`.pi/worktree-setup\`" is the fix for one of them and
+   * nonsense for the other two. Recorded when the checkpoint's typecheck
+   * returned no verdict; absent whenever `typechecked` is present.
+   */
+  typecheckReason?: string;
   at: number;
 }

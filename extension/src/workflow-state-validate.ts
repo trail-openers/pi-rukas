@@ -422,6 +422,12 @@ export function validateDiscriminants(state: unknown): string[] {
         if (cpso.typechecked !== undefined && typeof cpso.typechecked !== "boolean") {
           out.push("pipelineState.capedPartialState.typechecked is not a boolean");
         }
+        // #1414 round 2 — the no-verdict reason. Optional, and a string when
+        // present: it is rendered into the handoff, so a non-string would
+        // reach the operator as "[object Object]".
+        if (cpso.typecheckReason !== undefined && typeof cpso.typecheckReason !== "string") {
+          out.push("pipelineState.capedPartialState.typecheckReason is not a string");
+        }
         if (cpso.tree === "committed" && typeof cpso.commitSha !== "string") {
           out.push(
             "pipelineState.capedPartialState.commitSha is missing or not a string (required when tree is 'committed')",
