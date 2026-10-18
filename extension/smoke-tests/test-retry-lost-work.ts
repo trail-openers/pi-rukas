@@ -19,6 +19,7 @@ import { type LifecycleDetails, attach, detach } from "../src/lifecycle-events.t
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { interruptedDevelopNote, lostAttemptLine } from "../src/work-driver-retry-context.ts";
+import { FAILURE_REASON_CHARS, failureCauseReason } from "../src/work-driver-failure-taxonomy.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, writeState } from "../src/workflow-state.ts";
 
@@ -32,6 +33,9 @@ function assert(cond: boolean, msg: string) {
 }
 
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
+// #1243 — the provider-class floor is minutes by default; zero it so the retry
+// legs of this test do not sleep.
+process.env.PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS = "0";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_VERIFY = "0";
@@ -65,6 +69,35 @@ const severed = {
     lostAttemptLine("explore", 1, bare) ===
       "explore attempt 1 lost: 15m09s — the step restarts from the beginning",
     "an event without usage reports elapsed only, never a synthesised 0",
+  );
+}
+
+// 1b. #1243 — the reason beside that line is not cut. The three tehas cycles all
+//     printed `subagent failed: Adversarial loop infrastructure failure: round 2
+//     review disp` — 60 characters of our own composite text, so the cost that
+//     followed was invisible and the number that survived read like a constant.
+{
+  const longMessage = `Adversarial loop infrastructure failure: round 2 review dispatch provider/transport error: Request timed out. ${"chain ".repeat(60)}`;
+  const line = failureCauseReason({
+    kind: "dispatch-failed-provider",
+    providerMessage: longMessage,
+  });
+  assert(
+    line.includes("round 2 review dispatch") && line.includes("Request timed out."),
+    `the whole reason survives, not its first clause (got: ${line.slice(0, 120)}…)`,
+  );
+  assert(
+    line.length <= longMessage.length && line.length > 60 + 40,
+    `the reason keeps ${FAILURE_REASON_CHARS} chars rather than 60 (got ${line.length})`,
+  );
+  // The lost cost is the attempt's own, not a constant: two attempts with
+  // different durations read differently, which is the half of the incident the
+  // identical "3m54s" in all three cycles made look like a fixed string.
+  const slow = lostAttemptLine("explore", 1, { ...severed, ms: 234_000, usage: undefined });
+  const fast = lostAttemptLine("explore", 1, { ...severed, ms: 12_000, usage: undefined });
+  assert(
+    slow.includes("3m54s") && fast.includes("12") && slow !== fast,
+    `each attempt reports its own elapsed (got ${slow} / ${fast})`,
   );
 }
 

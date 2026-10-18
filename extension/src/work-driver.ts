@@ -483,11 +483,16 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
   // send first, record handoffDeliveredAt only after a successful send, and
   // trace (never escape) a delivery throw so a resume can re-attempt it.
   state = await deliverTerminalLine(ctx, state);
-  if (final === "handoff" || final === "aborted") {
-    // Persist the updated state (handoffDeliveredAt set on success, or
-    // unchanged when the send threw — in which case the next invocation
-    // retries the delivery). On a send failure this write is the only
-    // record that the driver reached its terminal boundary at all.
+  // #1243 — a provider park terminalises as `interrupted`, not `handoff`, so it
+  // needs this write too (the in-memory state is the one carrying the park).
+  // `deliverTerminalLine` sets `handoffDeliveredAt` only on a successful send,
+  // so a park whose line did not go out is written with the field unset and the
+  // next invocation re-attempts it. A signal interrupt deliberately does NOT
+  // come here: `interruptIfRequested` owns that write, and re-persisting a
+  // possibly stale snapshot would be #1024's stale-`running` hazard reopened.
+  if (final === "handoff" || final === "aborted" || final === "interrupted") {
+    // On a send failure this write is the only record that the driver reached
+    // its terminal boundary at all.
     await persistCycle(ctx, state);
   }
   reportFinalState(ctx, state);
