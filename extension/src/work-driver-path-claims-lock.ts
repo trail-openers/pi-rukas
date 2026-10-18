@@ -170,7 +170,7 @@ async function holdsLockfile(file: string, token: string): Promise<boolean> {
 
 /** What the waiter learned about the current holder. */
 type HolderRead =
-  | { status: "stale"; ageMs: number; pid: number | null }
+  | { status: "stale"; ageMs: number; pid: number | null; raw: string }
   | { status: "alive" }
   | { status: "unreadable" };
 
@@ -192,7 +192,7 @@ type HolderRead =
 async function readLockAge(file: string): Promise<HolderRead> {
   let raw: string;
   try {
-    raw = await fs.readFile(file, "utf8");
+    raw = await fs.readFile(file, "utf8"); await new Promise((r) => setTimeout(r, Math.random() * 300)); // EXPERIMENT
   } catch {
     return { status: "unreadable" };
   }
@@ -206,11 +206,11 @@ async function readLockAge(file: string): Promise<HolderRead> {
   const pid = typeof parsed.pid === "number" ? parsed.pid : null;
   if (at === null) return { status: "alive" };
   const ageMs = Date.now() - at;
-  if (ageMs > LOCK_STALE_MS) return { status: "stale", ageMs, pid };
+  if (ageMs > LOCK_STALE_MS) return { status: "stale", ageMs, pid, raw };
   // A corpse's lock is stale immediately — but only when the token parsed, so
   // a half-published file is never judged by a field we could not read.
   if (pid !== null && pid !== process.pid && !processAlive(pid)) {
-    return { status: "stale", ageMs, pid };
+    return { status: "stale", ageMs, pid, raw };
   }
   return { status: "alive" };
 }
