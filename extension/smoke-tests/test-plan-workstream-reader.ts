@@ -7,6 +7,12 @@
  * objects: no child process, no state file.
  */
 
+import { Value } from "@sinclair/typebox/value";
+import {
+  WORKSTREAM_PARAMETERS,
+  WORKSTREAM_SCOPE_MAX,
+  workstreamCallRefusal,
+} from "../src/plan-workstream-schema.ts";
 import {
   appendPlanDispatchOutcome,
   noWorkstreamCallsEvidence,
@@ -131,9 +137,13 @@ function assert(cond: boolean, msg: string) {
     "a call with no recorded result is unreadable, not counted and not a refusal",
   );
   assert(
-    noWorkstreamCallsEvidence(workstreamCallsOf({ toolUses: [], toolResults: [] })) ===
-      "no report_workstream call",
-    "the evidence for a reply with no call is 'no report_workstream call'",
+    noWorkstreamCallsEvidence(workstreamCallsOf({ toolUses: [], toolResults: [] })).startsWith(
+      "no accepted report_workstream call: the reply made none",
+    ) &&
+      noWorkstreamCallsEvidence(workstreamCallsOf({ toolUses: [], toolResults: [] })).includes(
+        "tool list",
+      ),
+    "the evidence for a reply with no call names both causes (no call, or the tool not registered)",
   );
   assert(
     noWorkstreamCallsEvidence(
@@ -146,7 +156,7 @@ function assert(cond: boolean, msg: string) {
           },
         ]),
       ),
-    ) === "no successful report_workstream call (1 refused)",
+    ) === "no accepted report_workstream call: 1 call(s) refused",
     "calls made and refused: the evidence counts the refusals",
   );
 }
@@ -182,8 +192,14 @@ function assert(cond: boolean, msg: string) {
         args: { id: "task-a", scope: "a", paths: ["/etc/passwd"], outOfScope: [] },
       },
       {
+        // outOfScope is free text: a `..` in prose is an exclusion, not a path.
         id: "task-b",
-        args: { id: "task-b", scope: "b", paths: ["src/ok.ts"], outOfScope: ["../escape"] },
+        args: {
+          id: "task-b",
+          scope: "b",
+          paths: ["src/ok.ts"],
+          outOfScope: ["the ../escape folder"],
+        },
       },
       {
         id: "task-c",
@@ -192,11 +208,11 @@ function assert(cond: boolean, msg: string) {
     ]),
   );
   assert(
-    Object.keys(report.workstreams).join() === "task-c",
-    "absolute, traversing and whitespace-carrying paths are refused; a trailing annotation is stripped",
+    Object.keys(report.workstreams).join() === "task-b,task-c",
+    "absolute, traversing and whitespace-carrying paths are refused; prose outOfScope is kept; a trailing annotation is stripped",
   );
   assert(
-    report.refused.length === 2 && report.refused[0]?.id === "task-a",
+    report.refused.length === 1 && report.refused[0]?.id === "task-a",
     "a refused path is recorded with its reason, not silently dropped",
   );
 }
@@ -299,6 +315,57 @@ function assert(cond: boolean, msg: string) {
   assert(
     state.eventLog.at(-1)?.kind === "step-completed",
     "the completion event stays the tail after the refusals",
+  );
+}
+{
+  // The schema is closed: a misspelled key is refused, not dropped, so the fence
+  // the planner meant to write cannot silently vanish.
+  const report = workstreamCallsOf(
+    planResultFromRawCalls([
+      {
+        id: "task-a",
+        args: { id: "task-a", scope: "a", paths: ["src/a.ts"], outOfscope: ["docs"] },
+      },
+    ]),
+  );
+  assert(
+    report.accepted === 0 && report.refused.length === 1,
+    "a misspelled outOfScope key is refused by the schema, not silently dropped",
+  );
+}
+{
+  // Git pathspec magic and globs are refused in `paths`; prose is not checked there.
+  const report = workstreamCallsOf(
+    planResultFromRawCalls([
+      { id: "task-a", args: { id: "task-a", scope: "a", paths: [":(top)x"], outOfScope: [] } },
+      { id: "task-b", args: { id: "task-b", scope: "b", paths: ["src/*.ts"], outOfScope: [] } },
+      { id: "task-c", args: { id: "task-c", scope: "c", paths: ["src/c.ts"], outOfScope: ["no"] } },
+    ]),
+  );
+  assert(
+    Object.keys(report.workstreams).join() === "task-c" && report.refused.length === 2,
+    "a leading ':' and a glob character are refused in paths",
+  );
+}
+{
+  // The companion's refusal rules, called directly: prose fences are accepted.
+  const prose = {
+    id: "task-p",
+    scope: "prose fence",
+    paths: ["src/p.ts"],
+    outOfScope: ["the public API of foo, not its internals"],
+  };
+  assert(
+    Value.Check(WORKSTREAM_PARAMETERS, prose) &&
+      workstreamCallRefusal(prose, new Set<string>()) === undefined,
+    "prose outOfScope is accepted by the schema and the refusal rules",
+  );
+  assert(
+    Value.Check(WORKSTREAM_PARAMETERS, {
+      ...prose,
+      scope: "x".repeat(WORKSTREAM_SCOPE_MAX + 1),
+    }) === false,
+    "an over-long scope is refused by the schema",
   );
 }
 

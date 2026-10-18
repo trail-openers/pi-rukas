@@ -32,7 +32,10 @@ import { describeBranchState } from "./work-driver-handoff-view.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import { dispatchDurations } from "./work-status-dispatch-durations.ts";
 import { fmtElapsed } from "./work-status-events.ts";
-import type { WorkstreamCallsRefusedEvent } from "./workflow-state-events-workstream.ts";
+import {
+  type WorkstreamCallsRefusedEvent,
+  refusalRowMarkdown,
+} from "./workflow-state-events-workstream.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /**
@@ -424,12 +427,7 @@ function workstreamRefusalSection(state: WorkState): string[] {
   return [
     "### Workstream calls the planner had refused",
     "",
-    ...rows.flatMap((r) =>
-      r.refused.map(
-        (x) =>
-          `- \`${r.label}\`${x.id ? ` id \`${inlineCodeSafe(x.id)}\`` : ""}: ${inlineCodeSafe(x.reason)}`,
-      ),
-    ),
+    ...rows.flatMap((r) => r.refused.map((x) => refusalRowMarkdown(r.label, x, inlineCodeSafe))),
     "",
   ];
 }

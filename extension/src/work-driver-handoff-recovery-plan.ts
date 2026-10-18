@@ -15,6 +15,7 @@
 import type { ForgeType } from "./forge-detect.ts";
 import { LINE_TERMINATORS, dropC0Controls } from "./work-driver-consolidation-note.ts";
 import { type RecoveryStep, forgeRecoveryLines } from "./work-driver-handoff-recovery.ts";
+import { isNoCallsEvidence } from "./work-driver-plan-calls.ts";
 import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -61,6 +62,38 @@ export function planSpecMismatchSteps(
   // `sanitizeRecoveryEvidence` for what an unescaped newline costs inside a
   // ```bash fence.
   const evidence = sanitizeRecoveryEvidence(hit?.evidence ?? "(no detail recorded)");
+  // #1652 — zero accepted calls is not a spec verdict: the spec-coverage advice
+  // (revise the issue) would send the operator at the wrong thing. Two causes
+  // look identical here, so the steps check the channel, then re-run.
+  if (isNoCallsEvidence(evidence)) {
+    return [
+      {
+        section: "plan-spec-mismatch",
+        comment: [
+          "1. The plan reply had no accepted report_workstream call, and the evidence names two",
+          "   causes: the planner ignored the tool, or the tool never reached the plan child:",
+          `   ${evidence.slice(0, 300)}`,
+        ],
+        lines: [`cat .pi/work-state/${issue}.json`],
+      },
+      {
+        section: "plan-spec-mismatch",
+        comment: [
+          "2. Check the companion: report_workstream must be in the plan child's tool list",
+          "   (it loads with --extension). From extension/, run the live shape check:",
+        ],
+        lines: ["bun run smoke-tests/test-pi-shape-live.ts"],
+      },
+      {
+        section: "plan-spec-mismatch",
+        comment: [
+          "3. If the tool was listed, the planner ignored it: re-run, the plan step is one",
+          "   dispatch. If it was not listed, fix the companion load first, or the re-run parks the same way:",
+        ],
+        lines: [`/work ${issue} --restart`],
+      },
+    ];
+  }
   return [
     {
       section: "plan-spec-mismatch",

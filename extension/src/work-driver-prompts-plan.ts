@@ -60,6 +60,8 @@ export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): strin
     "",
     "Use short ids like `task-a`, `task-b` for N>1 workstreams. The `outOfScope` field is LOAD-BEARING — issue #553 polluted PR #556 with off-scope files because nothing told the developer what was OUT. Fence the scope explicitly even when you think it's obvious.",
     "",
+    "The two list fields are different kinds of thing. `paths` is a list of plain repo-relative file paths (e.g. `src/foo.ts`) — nothing else: no globs, no `..`, no leading `/`, no annotations beyond a trailing `(new)`. `outOfScope` is FREE TEXT — short phrases or sentences naming what must not be touched (e.g. `the docs folder`, `the public API of foo`). The developer reads it. Only a file path written there is also enforced by the scope gate, so name a file by path when the fence must be mechanical.",
+    "",
     "EVERY workstream MUST declare a non-empty `paths:`. The driver checks the committed diff against that list to prove each workstream's slice actually landed; an empty list silently disables that check for the slice. `paths` means files the developer is EXPECTED TO MODIFY: a file you list in `paths` but never edit (e.g. a shared or legacy test whose contract you keep green without touching it) counts as a missing slice at the consolidation gate and parks the cycle. Shared tests, legacy tests, or anything you deliberately keep green without editing go in `outOfScope` — that is what the outOfScope field is for.",
     "",
     PLAN_DELIVERABLE_PATH_RULE,

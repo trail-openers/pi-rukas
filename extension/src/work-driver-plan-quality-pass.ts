@@ -92,8 +92,6 @@ export type PlanQualityInput = {
   planKill: boolean;
   /** Whether a corrective has already run for this plan. */
   redispatched: boolean;
-  /** The corrective's RAW map, when a corrective ran. */
-  correctiveRaw?: Record<string, Workstream>;
   /**
    * #1167 round-3 — the primary plan's unfence record (see `unfenceSummary`).
    * The corrective runs its own pass and its record replaces this one, because
@@ -148,7 +146,9 @@ export async function runPlanQualityTail(
   let workstreams = input.workstreams;
   let redispatched = input.redispatched;
   let firstPlanWorkstreams: Record<string, Workstream> | undefined;
-  let correctiveRaw = input.correctiveRaw;
+  // The corrective's RAW map, set when this tail runs a corrective (the #1005
+  // dropped-edge check reads it against the first plan's raw map).
+  let correctiveRaw: Record<string, Workstream> | undefined;
   let droppedEdges: { from: string; to: string }[] | undefined;
   let unfence = input.unfence;
 

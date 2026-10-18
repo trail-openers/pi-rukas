@@ -216,8 +216,10 @@ const TWO_BLOCKS_AND_ONE_CALL = {
   );
   const cap = state.eventLog.findLast((e) => e.kind === "cap-hit");
   assert(
-    cap?.kind === "cap-hit" && cap.evidence.includes("no report_workstream call"),
-    "the park's evidence says 'no report_workstream call'",
+    cap?.kind === "cap-hit" &&
+      cap.evidence.startsWith("no accepted report_workstream call") &&
+      cap.evidence.includes("tool list"),
+    "the park's evidence names the zero-call verdict and the tool-list check",
   );
 }
 {
@@ -238,8 +240,8 @@ const TWO_BLOCKS_AND_ONE_CALL = {
   const cap = state.eventLog.findLast((e) => e.kind === "cap-hit");
   assert(
     cap?.kind === "cap-hit" &&
-      cap.evidence.includes("no successful report_workstream call (2 refused)"),
-    "every call refused → the evidence says 'no successful report_workstream call (2 refused)'",
+      cap.evidence.includes("no accepted report_workstream call: 2 call(s) refused"),
+    "every call refused → the evidence says 'no accepted report_workstream call: 2 call(s) refused'",
   );
   const refusedEvent = state.eventLog.find((e) => e.kind === "workstream-calls-refused");
   assert(

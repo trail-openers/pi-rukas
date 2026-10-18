@@ -10,10 +10,10 @@
  */
 
 import { hostBudget } from "./host-resources.ts";
+import { WORKSTREAM_ID_MAX, type WorkstreamArgs } from "./plan-workstream-schema.ts";
 import { trace } from "./trace.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { foldTwo } from "./workstream-fold.ts";
-import { WORKSTREAM_ID_MAX, type WorkstreamArgs } from "./workstream-reporter.ts";
 
 /**
  * A `report_workstream` call's arguments, already checked against the schema by
