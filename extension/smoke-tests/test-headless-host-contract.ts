@@ -245,8 +245,15 @@ const capHit = (cap: string, at: number): WorkEvent =>
     "utf8",
   );
   assert(
-    /build-args: \|\s*\n\s*GITHUB_SHA=\$\{\{ github\.sha \}\}/.test(workflow),
-    "publish-image.yml passes GITHUB_SHA as a build arg",
+    /build-args: \|\s*\n\s*GITHUB_SHA=\$\{\{ needs\.gate\.outputs\.sha \}\}/.test(workflow),
+    "publish-image.yml passes the gated commit as GITHUB_SHA",
+  );
+  // Under workflow_run, github.sha is main's tip when the run starts, not
+  // the commit CI checked — the gate must take workflow_run.head_sha.
+  assert(
+    /RUN_SHA: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/.test(workflow) &&
+      /sha="\$\{RUN_SHA:-\$GITHUB_SHA\}"/.test(workflow),
+    "publish-image.yml's gate resolves the commit from workflow_run.head_sha",
   );
   const lines = docker.split("\n");
   const argAt = lines.findIndex((l) => /^ARG GITHUB_SHA\b/.test(l));
