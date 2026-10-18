@@ -389,6 +389,9 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       verifyExecFn: opts.verifyExecFn,
       verifyTimeoutMs: opts.verifyTimeoutMs,
       baselineBaseSha: opts.baselineBaseSha,
+      // #1404 — the workstream worktrees are extra trees the change run's
+      // failing-test names may live under (see IntegrationVerifyOpts).
+      changeRoots: Object.values(worktrees),
       verifyRetry: opts.verifyRetry,
       restoreRoot,
       claimFor,

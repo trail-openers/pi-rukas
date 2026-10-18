@@ -32,6 +32,7 @@ import {
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { VERIFY_TIMEOUT_LABEL, boundText } from "./work-driver-verify-develop-helpers.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
+import { summaryCount } from "./work-driver-verify-names.ts";
 import { looksLikeMissingDeps, provisionWorktree } from "./worktree-provision.ts";
 import { type ExecFn, worktreePath } from "./worktree.ts";
 
@@ -40,8 +41,30 @@ export const BASELINE_RED_MARKER = "[baseline-red]";
 
 export type BaselineVerdict =
   | { status: "green" }
-  /** `assertion` is null when nothing assertion-shaped could be extracted. */
-  | { status: "red"; assertion: string | null; timedOut: boolean; rawStream?: string }
+  /**
+   * `assertion` is null when nothing assertion-shaped could be extracted.
+   *
+   * #1404 — `probed` is the positive signal that the base run reached the
+   * gate's own verdict (the smoke loop printed its summary and tally) rather
+   * than dying somewhere else with a non-zero exit. The develop step never
+   * needed it — it compares one extracted assertion and treats a red base as
+   * park-with-context either way. The commit-pr step PUSHES on the strength
+   * of this verdict, so it demands the evidence rather than the exit code.
+   */
+  | {
+      status: "red";
+      assertion: string | null;
+      timedOut: boolean;
+      rawStream?: string;
+      probed?: boolean;
+      /**
+       * The child's exit code, when it had one. `attributeAgainstBase` refuses
+       * to excuse anything when a non-zero exit is paired with a tally claiming
+       * zero failures — two pieces of evidence about the same run that disagree
+       * are not evidence.
+       */
+      exitCode?: number | null;
+    }
   | { status: "unknown"; reason: string };
 
 export async function probeBaselineVerify(
@@ -93,7 +116,13 @@ export async function probeBaselineVerify(
       );
       return { status: "green" };
     } catch (err) {
-      const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
+      const e = err as Error & {
+        stdout?: string;
+        stderr?: string;
+        killed?: boolean;
+        /** `execFile` puts the child's exit code here on a non-zero exit. */
+        code?: number;
+      };
       if (e.killed === true) return { status: "red", assertion: null, timedOut: true };
       const raw = combinedExecFailureStream(e);
       // A bare worktree fails every dependency-needing command; that says
@@ -115,6 +144,16 @@ export async function probeBaselineVerify(
         assertion: assertion === NO_SPECIFIC_ASSERTION ? null : assertion.slice(0, 200),
         timedOut: false,
         rawStream: raw,
+        // #1404 — the gate judged itself. The loop's own SUMMARY line
+        // (`verify-report.sh`'s `FAILED: <n> test(s) — …`) is the positive
+        // signal, and it is printed in BOTH modes — digest mode additionally
+        // prints the `P:/F:` tally, normal mode does not, so the tally cannot
+        // be the requirement without leaving every non-digest base run
+        // unevidenced. A run that exited non-zero WITHOUT the summary never
+        // reached the report half, so its failure is not evidence about the
+        // base commit's tests.
+        probed: summaryCount(raw) !== undefined,
+        exitCode: typeof e.code === "number" ? e.code : null,
       };
     }
   } finally {

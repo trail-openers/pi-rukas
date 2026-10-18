@@ -47,6 +47,13 @@ export interface IntegrationVerifyOpts {
   verifyExecFn?: ExecFn;
   verifyTimeoutMs?: number;
   /**
+   * #1404 — the workstream worktrees, handed to the baseline probe's name
+   * comparison as trees the change run's names may live under. A gate script
+   * that resolves its own directory prints paths under the checkout the script
+   * lives in, so the integration checkout alone cannot anchor every name.
+   */
+  changeRoots?: readonly string[];
+  /**
    * #1404 — the cycle's original base commit for the baseline probe (see
    * `IntegrateOpts.baselineBaseSha`). Absent → no probe, every consolidated
    * failure fails the integration as before.
@@ -108,6 +115,7 @@ export async function verifyIntegration(
     // #1404 — the cycle's base commit, so a consolidated failure can be
     // attributed per failing test instead of parking on the combination alone.
     ...(opts.baselineBaseSha !== undefined ? { baseSha: opts.baselineBaseSha } : {}),
+    ...(opts.changeRoots !== undefined ? { changeRoots: opts.changeRoots } : {}),
     // #782 — the single flake retry fires only on the FIRST consolidated run
     // (the cycle's ciRetryCount unset).
     isCiRetry: (opts.verifyRetry?.ciRetryCount ?? 0) > 0,

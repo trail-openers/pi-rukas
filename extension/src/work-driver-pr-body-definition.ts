@@ -20,6 +20,7 @@
  */
 
 import { carriedAdversarialFindings, renderCarriedFindings } from "./adversarial-findings.ts";
+import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { renderAssumptions } from "./work-driver-intent.ts";
 import type { NormalisedSpec } from "./work-driver-intent.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
@@ -172,7 +173,7 @@ export function preExistingFailuresSectionOf(names: readonly string[] | undefine
     "",
     `The commit-pr consolidated verify failed, but every failing test \u2014 ${names.length} of them \u2014 also fails on a clean checkout of this PR's base commit, so none of them is caused by this change:`,
     "",
-    ...names.map((n) => `- \`${n}\``),
+    ...names.map((n) => `- \`${neutraliseMarkdownField(n)}\``),
     "",
     "These are gate failures owned by the base commit, not by this PR. They are listed rather than excused silently so the next reviewer (and the next cycle, which parks on the same red gate) can tell the two apart.",
   ].join("\n");
