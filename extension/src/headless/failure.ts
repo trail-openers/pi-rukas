@@ -119,7 +119,7 @@ function capKind(cap: string): FailureKind {
     case "verify-timeout":
     case "developer-timeout":
     case "plan-timeout":
-    case "wall-clock":
+    case "lens-review-timeout":
     case "deadline":
       return "timeout";
     case "verify-env":

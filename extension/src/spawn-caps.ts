@@ -30,7 +30,7 @@ import type { PiContentBlock } from "./pi-event-shapes.ts";
 import type { LoopObserver } from "./progress.ts";
 import { killProcessTree } from "./spawn-kill.ts";
 import { TokenBudgetTracker, tokenBudgetEnvKey } from "./spawn-support.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import { turnNudgeEnabled, turnNudgeText, turnNudgeThreshold } from "./turn-nudge.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -270,9 +270,16 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
   // which aborts the parent and takes down every sibling child still in
   // flight. It stays on the caller side rather than inside `killChild` /
   // `killProcessTree` because those already swallow their own signal errors
-  // (`signalChild` / `signalGroupPid`); the reachable throw is above them — a
-  // child handle without a `kill` method, or the prologue of
-  // `killProcessTree` itself.
+  // (`signalChild` / `signalGroupPid`) — no injectable child handle reaches
+  // this catch in a test, so the guard is defence-in-depth for the
+  // pre-signal throws (the `isGroupChild` WeakMap receiver, the escalation
+  // `setTimeout`), not a branch an offline assertion can witness. It is
+  // therefore reported, never merely swallowed: `traceWarn` at default log
+  // level, NOT the `PI_ENSEMBLE_DEBUG`-gated `trace` — a kill that could not
+  // land is outcome-changing, the child keeps spending against a budget that
+  // already fired while `killCause()` still reports "token-budget", which is
+  // what makes `work-driver-adversarial-capkill.ts` park a cycle on a child
+  // nobody killed. Same reasoning as `review-budget.ts`'s silent-reject fix.
   const budgetKill = () => {
     if (opts.childExited()) return; // H1 — the child is already gone
     try {
@@ -281,10 +288,8 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
       // The kill signal is a best-effort side effect; the tracker set its own
       // `killed` flag BEFORE calling, so `killCause()` and the `tokenBudget`
       // evidence pair survive a swallowed throw — crash path and attribution
-      // path stay separate. Traced rather than swallowed silently, mirroring
-      // the loop detector's `trace()` sites, so a kill that cannot land is
-      // recorded (PI_ENSEMBLE_DEBUG=1) instead of lost.
-      trace(`token-budget killChild failed: ${String(err)}`);
+      // path stay separate.
+      traceWarn(`token-budget killChild failed: ${String(err)}`);
     }
   };
   const tracker =

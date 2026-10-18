@@ -40,7 +40,7 @@ The headless runner's contract with its caller is four independent surfaces, eac
 | Contract | Version constant | Module | Description |
 |---|---|---|---|
 | Exit codes | `EXIT` object (`exit-code.ts`) | `extension/src/headless/exit-code.ts` | The process exit code. 7 named values: `merged` (0), `handoff` (10), `clarification` (11), `aborted` (20), `interrupted` (21), `crash` (30), `refused` (40). |
-| `--json` result schema | `RESULT_SCHEMA_VERSION` (3) | `extension/src/headless/result.ts` | The JSON document on stdout when `--json` is used. See below. Its `cap` values come from a published vocabulary (`extension/src/headless/caps.ts`). |
+| `--json` result schema | `RESULT_SCHEMA_VERSION` (4) | `extension/src/headless/result.ts` | The JSON document on stdout when `--json` is used. See below. Its `cap` values come from a published vocabulary (`extension/src/headless/caps.ts`). |
 | NDJSON progress | `NDJSON_VERSION` (1); stable subset `NDJSON_STABLE_VERSION` (1) | `extension/src/headless/ndjson.ts` | One JSON object per line on stderr. Every line carries `v` (1), `kind`, `at` (ISO-8601). Driver event lines additionally carry `issue` and `key` (idempotency key `<issue>:<index>:<at>`). Only a declared subset of kinds is stable; every other line is marked `unstable: true`. |
 | Capabilities | `CAPABILITIES_VERSION` (2) | `extension/src/headless/capabilities.ts` | The JSON object `--capabilities` prints. See below. |
 
@@ -60,13 +60,13 @@ A grouped run exits 21 if any issue was interrupted, otherwise the highest per-i
 
 A signal outranks the failure of the step it lands in. The step that was running when the signal fired is not routed: no cap, no handoff, exit 21, `resumable: true`, and its `interrupted` event names it (`step`). A cap that step recorded on its way out (an aborted child, an issue-body fetch cut short) is the abort's doing, so the result does not report it as `cap`; running `work <issue>` again re-runs the step. The one exception is the `handoff` step itself: a signal that lands there arrives after the cycle has already stopped on its cap, so the handoff finishes and the run exits with the handoff's code.
 
-### `--json` result schema (v3)
+### `--json` result schema (v4)
 
 With `--json`, stdout carries exactly one JSON document:
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "buildCommit": "d39f8731f34d…",
   "buildVersion": "0.12.79",
   "exitCode": 10,
@@ -116,7 +116,7 @@ With `--json`, stdout carries exactly one JSON document:
 
 | Field | Present | Meaning |
 |---|---|---|
-| `schemaVersion` | always | `RESULT_SCHEMA_VERSION`. Version 2 (#1326) added `schemaVersion`, `buildCommit`, `buildVersion`, `failedStep`, `prUrl`, `usage` and `resumable`. Version 3 (#1327) added `parkReason` and `handoff`. |
+| `schemaVersion` | always | `RESULT_SCHEMA_VERSION`. Version 2 (#1326) added `schemaVersion`, `buildCommit`, `buildVersion`, `failedStep`, `prUrl`, `usage` and `resumable`. Version 3 (#1327) added `parkReason` and `handoff`. Version 4 (#1384) renamed the cap `wall-clock` to `lens-review-timeout` (see [the `cap` vocabulary](#the-cap-vocabulary)). |
 | `buildCommit` | always | The full 40-hex commit the running build was made from (the image's baked `.pi/pi-rukas-commit`, else the HEAD of the pi-rukas checkout), or `null` when nothing records it. Never anything else, so a host can safely run `git merge-base --is-ancestor <fix> <buildCommit>` when it is non-null. |
 | `buildVersion` | always | The release version of the running build (`extension/package.json`). |
 | `issues[].status` | always | `merged`, `handoff`, `aborted`, `interrupted`, `running` (the driver returned without a terminal state) or `not-started`. |
@@ -161,7 +161,7 @@ A failed dispatch is read only for the caps a failed dispatch causes (`step-fail
 | `kind` | Meaning |
 |---|---|
 | `provider` | A dispatch stopped on a provider error: an outage, a 429, a spend cap, an unknown model (`cause` says which). The case a host may retry later on its own. |
-| `timeout` | A time bound ended it: a child killed for time or silence, `verify-timeout:<step>`, `developer-timeout`, `plan-timeout`, `wall-clock`, `deadline`. |
+| `timeout` | A time bound ended it: a child killed for time or silence, `verify-timeout:<step>`, `developer-timeout`, `plan-timeout`, `lens-review-timeout`, `deadline`. |
 | `guard` | pi-rukas ended the child on a guard: a loop, the token budget, an abort. |
 | `process` | The child process failed with no structured cause (a dispatch cap with no failed dispatch recorded is `process` too). |
 | `verify` | The verify gate ran and judged the code red: `verify-failed:<step>`, `verify-baseline-red:<step>`, `integration-verify-failed`, `consolidated-verify-consolidation-created`. |
@@ -201,6 +201,8 @@ The same object appears in the `--json` result and in `--capabilities` (`extensi
 - `templates` — a prefix plus one parameter: `verify-failed:<step>` (the gate ran and judged the code), `verify-timeout:<step>` (the verify command hit its time bound), `verify-env:<step>` (the system refused to start a process, so the gate never ran), `verify-baseline-red:<step>` (the verify command already fails at the cycle's base commit, on the same assertion as the change or by timing out on both), `pr-not-open:<step>` (the cycle's PR was merged or closed when the step started), `step-failed:<step>`, `driver-crash:<step>` (with the step list in `values`), and `branch-ahead:<count>`.
 
 **`verify-failed:<step>` was narrowed in result schema v2.** It now means only that the gate ran and judged the change. A gate that hit its bound, could not start a process, or was red at the base commit, and the PR-not-open and fix-pass parks, used to share it and now have the caps above (see [troubleshooting](troubleshooting.md#what-verify-failedstep-means-and-the-caps-that-split-from-it-1349)). This changes what an existing cap means, and the narrowing is deliberate. It is covered by the tolerate-the-unknown rule below: a host that meets one of the new caps treats it as a generic handoff. It ships in the same release as schema v2, so no released v2 build used the old meaning and the version is not bumped again. A host that read `verify-failed:` as "the gate parked" should also match the new caps, or treat them as unknown caps (below).
+
+**`wall-clock` was renamed `lens-review-timeout` in result schema v4 (#1384).** pi-rukas used `wall-clock` for one clock only: the lens-review fix loop's own budget (`PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS`, 90 min by default). A host that ends cycles on its own time limit reads `wall-clock` as that limit, so an operator was sent to raise the wrong number. pi-rukas no longer emits `wall-clock`; each time bound it raises has its own id (`lens-review-timeout`, `plan-timeout`, `developer-timeout`, `verify-timeout:<step>`, `deadline`), and a host is free to use `wall-clock` for its own kill. Removing a value changes the vocabulary, so the result schema version moved from 3 to 4. The cap-hit carries the reason as `evidence`, so `failure.message` names the elapsed time and the budget rather than repeating the cap.
 
 A host switches on these values instead of strings found in pi-rukas source. The list is checked against the driver's cap type at compile time, so the build cannot record a cap the vocabulary omits. Exit code 11 is reserved for `intent-park` and `explore-needs-clarification`.
 

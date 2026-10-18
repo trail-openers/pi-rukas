@@ -40,8 +40,10 @@ import {
 } from "./spawn-extension-forward.ts";
 import {
   InFlightTools,
+  attachAbortKill,
   createInactivityPoll,
   createStdoutLineHandler,
+  createWallClockBackstop,
   isStdinEcho,
 } from "./spawn-inflight.ts";
 import { groupSpawnOpts, registerChild } from "./spawn-kill.ts";
@@ -57,12 +59,7 @@ import {
   transcriptPathFor,
   willRetryAfter,
 } from "./spawn-support.ts";
-import {
-  armAbortSignal,
-  armCapSession,
-  armWallClockBackstop,
-  declareKillFlags,
-} from "./spawn-watchdog.ts";
+import { armCapSession, declareKillFlags } from "./spawn-watchdog.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
@@ -334,12 +331,20 @@ async function spawnSpecialistInner(
   child.stderr.on("data", (d) => {
     appendStderr(d);
   });
-  // Always cap wall-clock — see SPAWN_BACKSTOP_MS. Armed in spawn-watchdog.ts
-  // (#1470); the `timedOut` / `inactivityKilled` / `aborted` flags it sets are
-  // declared with the cap session above (the session reads them by closure, so
-  // they must exist before `createCapSession` runs).
+  // Always cap wall-clock — see SPAWN_BACKSTOP_MS and createWallClockBackstop
+  // (spawn-inflight.ts). The backstop catches runaway loops; the inactivity
+  // watchdog below detects true hangs. The kill-cause flags are declared with
+  // the cap session above (read by closure, so they predate `createCapSession`).
   const timeoutMs = opts.timeoutMs ?? spawnBackstopMs();
-  const timeout = armWallClockBackstop(child, flags, timeoutMs);
+  const stopWallClockBackstop = createWallClockBackstop({
+    child,
+    timeoutMs,
+    // `timedOut` first, so `killCause()` reports "timeout" even if the signal
+    // cannot land; the guarded kill lives in the factory (#1510).
+    onTimeout: () => {
+      flags.setTimedOut(true);
+    },
+  });
 
   // Inactivity watchdog (#296): kill only on total stdout silence. Coarse
   // poll — half the budget, clamped to [250ms, 30s] so production budgets
@@ -364,19 +369,21 @@ async function spawnSpecialistInner(
     },
   });
 
-  // Propagate Pi's user-cancel (Esc) signal, armed in spawn-watchdog.ts
-  // (#1470): kill the child so the tool execute promise resolves and Pi
-  // un-stuck immediately.
-  const detachAbort = armAbortSignal(child, flags, opts.signal);
+  // Propagate Pi's user-cancel (Esc) signal: kill the child so the tool
+  // execute promise resolves and Pi un-stuck immediately (guarded in the
+  // helper, #1510).
+  const detachAbortKill = attachAbortKill(child, opts.signal, () => {
+    flags.setAborted(true);
+  });
 
   let exitCode: number | null = null;
   try {
     [exitCode] = (await once(child, "exit")) as [number | null];
   } finally {
-    clearTimeout(timeout);
+    stopWallClockBackstop();
     stopInactivityPoll();
     caps.cleanup();
-    detachAbort();
+    detachAbortKill();
     // Best-effort cleanup of the temp prompt file; ignore errors.
     fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
     // Stop the per-spawn permission broker; unlinks the socket file.

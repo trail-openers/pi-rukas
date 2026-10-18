@@ -143,7 +143,7 @@ try {
       groupId: "single-904",
       issues: [904],
       outcome: "parked",
-      reason: "cap wall-clock",
+      reason: "cap lens-review-timeout",
     });
     const after = await readQueueSummary(dir);
     assert(
@@ -258,7 +258,7 @@ try {
         dir5,
         [
           // Same issues as g1 → replace g1's row; 935 is new → add a row.
-          { groupId: "g1-rerun", issues: [931, 932], outcome: "parked", reason: "cap wall-clock" },
+          { groupId: "g1-rerun", issues: [931, 932], outcome: "parked", reason: "cap lens-review-timeout" },
           { groupId: "g4", issues: [935], outcome: "merged" },
         ],
         ["g5 (#936)"],

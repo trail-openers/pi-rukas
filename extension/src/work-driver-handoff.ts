@@ -26,6 +26,7 @@ import { providerParkResumeStep } from "./work-driver-handoff-provider-resume.ts
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
 import { readParkMemory, recordPark } from "./work-driver-park-memory.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
+import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
 import {
@@ -403,8 +404,11 @@ export async function runHandoff(
   next = appendEvent(next, emitted);
   await recordPark(ctx, park, commentUrl);
   // #571 — release the path claim so sibling cycles can proceed.
+  // #1454 — every issue in the group, not just the primary: a grouped cycle
+  // claims all of them, so clearing one left a sibling entry to park the next
+  // cycle against.
   try {
-    await releaseClaim(ctx.repoRoot, ctx.issue);
+    await releaseClaim(ctx.repoRoot, activeIssuesOf(next));
   } catch {
     /* best-effort; handoff must always emit regardless */
   }
