@@ -18,6 +18,7 @@ import type { CycleContext } from "./work-driver-context.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { type DevelopGateRecord, gatePassKey } from "./work-driver-verify-gate-reuse.ts";
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
+import type { VerifyAttributionRecord } from "./work-driver-verify-shared.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { makeConsolidatedVerifySkippedEvent } from "./workflow-state-events-verify-flake.ts";
 import type { VerifyRunEventFragment, VerifyStartedEvent } from "./workflow-state-events-verify.ts";
@@ -149,20 +150,69 @@ function withGateRecord(state: WorkState, record: DevelopGateRecord | undefined)
 }
 
 /**
- * #1647 — the part of `record` the cycle has not already carried. The PR body
- * already lists what the develop round carried, so the ci tier discloses only
- * the new names, and a name in both tiers appears once.
+ * #1647 — the names the PR body is known to list. Written only when a PR-body
+ * write succeeded, so a failed write leaves them out and the next ci attempt
+ * discloses them again.
+ */
+function disclosedOf(state: WorkState): VerifyAttributionRecord {
+  const d = state.pipelineState.verifyAttribution?.disclosed;
+  return { flaky: d?.flaky ?? [], baselineRed: d?.baselineRed ?? [] };
+}
+
+/**
+ * #1647 — pin the disclosed set before the ci tier can record anything new. The
+ * PR body commit-pr wrote lists everything recorded up to then, so that is the
+ * starting point; a later failed disclosure then cannot make its names look
+ * already disclosed. A state with nothing recorded has nothing to pin.
+ */
+export function snapshotDisclosed(state: WorkState): WorkState {
+  const a = state.pipelineState.verifyAttribution;
+  if (a === undefined || a.disclosed !== undefined) return state;
+  return {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      verifyAttribution: {
+        ...a,
+        disclosed: { flaky: [...a.flaky], baselineRed: [...a.baselineRed] },
+      },
+    },
+  };
+}
+
+/** #1647 — the names the ci tier's PR-body write carried, added to the disclosed set. */
+export function markDisclosed(state: WorkState, names: VerifyAttributionRecord): WorkState {
+  const prev = state.pipelineState.verifyAttribution ?? { flaky: [], baselineRed: [] };
+  const d = disclosedOf(state);
+  return {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      verifyAttribution: {
+        ...prev,
+        disclosed: {
+          flaky: [...new Set([...d.flaky, ...names.flaky])],
+          baselineRed: [...new Set([...d.baselineRed, ...names.baselineRed])],
+        },
+      },
+    },
+  };
+}
+
+/**
+ * #1647 — the part of `record` the PR body does not list yet. A name in both
+ * tiers appears once.
  */
 export function uncarriedNames(
   state: WorkState,
   record: SelectedVerifyRecord,
 ): SelectedVerifyRecord {
-  const prev = state.pipelineState.verifyAttribution;
-  const flakyPrev = new Set(prev?.flaky ?? []);
-  const redPrev = new Set(prev?.baselineRed ?? []);
+  const disclosed = disclosedOf(state);
+  const flakyDone = new Set(disclosed.flaky);
+  const redDone = new Set(disclosed.baselineRed);
   return {
-    flaky: record.flaky.filter((n) => !flakyPrev.has(n)),
-    baselineRed: record.baselineRed.filter((n) => !redPrev.has(n)),
+    flaky: record.flaky.filter((n) => !flakyDone.has(n)),
+    baselineRed: record.baselineRed.filter((n) => !redDone.has(n)),
   };
 }
 
@@ -183,6 +233,7 @@ export function foldVerifyAttribution(
     pipelineState: {
       ...state.pipelineState,
       verifyAttribution: {
+        ...prev,
         flaky: [...new Set([...prev.flaky, ...record.flaky])],
         baselineRed: [...new Set([...prev.baselineRed, ...record.baselineRed])],
       },

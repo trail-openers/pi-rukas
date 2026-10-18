@@ -14,16 +14,21 @@
  *     reruns both once, as its pre-#1647 `runVerifyFull(…, {retry: true})` did:
  *     a full suite on a loaded host is exactly the run that can hit its bound
  *     once and pass the next time;
- *   - the run is repeated ONCE (the #782 single-rerun mechanism, here per
- *     selected run): passing on the rerun → flaky, not blocking;
+ *   - the failing IDs are rerun ONCE, through the probe's verify-loop shape; an
+ *     unnamed failure (ci only) reruns the whole command. Passing on the rerun
+ *     → flaky, not blocking;
  *   - failing again → a test this cycle changed or added blocks (a base run
  *     would test an older file); otherwise a per-test base probe runs exactly
- *     those tests through verify-loop. Red on base only → baseline-red, not
- *     blocking; any change-caused name, or an unresolved probe → blocks.
+ *     those tests through verify-loop. Red on base only, FOR THE SAME FAILURE
+ *     LINE (work-driver-verify-signature), → baseline-red, not blocking; any
+ *     change-caused name, a different failure on base, or an unresolved probe →
+ *     blocks.
  *
- * Only tsc and biome failures always block without a test to attribute; every
- * other outcome is the rule above, which is what the resolved decisions on
- * #1647 settle.
+ * One wall clock covers the whole call: the first run, its rerun and both probes
+ * draw on the same budget, and exhausting it blocks with that reason named.
+ *
+ * "Non-attributable" is exactly two outcomes, flaky and baseline-red (#1647 resolved
+ * decisions). Every other failure blocks.
  */
 
 import { trace } from "./trace.ts";
@@ -32,14 +37,12 @@ import { attributeAgainstBase } from "./work-driver-verify-attribution.ts";
 import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
 import { readVerifyReport } from "./work-driver-verify-report-file.ts";
 import { createVerifyReportFile, verifyReportEnv } from "./work-driver-verify-report-path.ts";
+import { type VerifyAttributionRecord, extensionRelative } from "./work-driver-verify-shared.ts";
+import { failureSignatures } from "./work-driver-verify-signature.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /** What a selected run let through without blocking, for the cycle's record. */
-export interface SelectedVerifyRecord {
-  /** Tests that failed once and passed on the rerun. */
-  flaky: string[];
-  /** Tests that failed twice and are red on the base commit too. */
-  baselineRed: string[];
+export interface SelectedVerifyRecord extends VerifyAttributionRecord {
   /** Set when the run was recovered by its rerun: the first run's output, for the ci tier's #782 signal. */
   recovered?: { firstRunOutput: string };
 }
@@ -49,6 +52,7 @@ export interface SelectedVerifyOptions {
   cmd: string;
   channel: VerifyChannel;
   repoRoot: string;
+  /** The cycle's base commit, already validated as a 40-hex SHA by the caller, or undefined when there is none. */
   baseSha: string | undefined;
   /** Every tree the run may execute in (the worktrees and the integration checkout). */
   changeRoots: readonly string[];
@@ -56,6 +60,7 @@ export interface SelectedVerifyOptions {
   changedTests: readonly string[];
   /** The base probe's worktree label; each seam passes its own (#1647). */
   probeLabel: string;
+  /** The wall clock for the whole call, shared by the run, its rerun and both probes. */
   timeoutMs: number;
   record: SelectedVerifyRecord;
   /**
@@ -85,19 +90,11 @@ type RunResult =
       reason: string;
     };
 
-const EXT_MARK = "/extension/";
-const SMOKE_TEST_REL_RE = /^smoke-tests\/[A-Za-z0-9_.-]+\.ts$/;
-
-/**
- * A failing-test name the loop printed, as a path relative to `extension/`.
- * Undefined for anything else: the rule the names must satisfy is the one the
- * probe command needs, because the name is written into a shell argument.
- */
-export function extensionRelative(name: string): string | undefined {
-  const at = name.lastIndexOf(EXT_MARK);
-  if (at < 0) return undefined;
-  const rel = name.slice(at + EXT_MARK.length);
-  return SMOKE_TEST_REL_RE.test(rel) ? rel : undefined;
+/** Thrown when the shared wall clock runs out; the wrapper turns it into a named block. */
+class BudgetExhausted extends Error {
+  constructor(readonly step: string) {
+    super(step);
+  }
 }
 
 /** The base probe: the same verify-loop, given only the failing tests. */
@@ -105,11 +102,24 @@ function probeCommand(rels: readonly string[]): string {
   return `cd extension && bash smoke-tests/lib/verify-loop.sh --jobs-from-host ${rels.map((r) => `"$PWD/${r}"`).join(" ")}`;
 }
 
+/** The names as extension-relative paths, or undefined when any one of them cannot be placed. */
+function placeable(names: readonly string[]): string[] | undefined {
+  const rels: string[] = [];
+  for (const name of names) {
+    const rel = extensionRelative(name);
+    if (rel === undefined) return undefined;
+    rels.push(rel);
+  }
+  return rels;
+}
+
 async function runOnce(
   o: SelectedVerifyOptions,
   execFn: ExecFn,
   opts: Parameters<ExecFn>[1],
   label: string,
+  cmd: string,
+  timeoutMs: number,
 ): Promise<RunResult> {
   let reportFile: string | undefined;
   let env = opts?.env ?? process.env;
@@ -122,7 +132,7 @@ async function runOnce(
     );
   }
   try {
-    const out = await execFn(o.cmd, { ...opts, env });
+    const out = await execFn(cmd, { ...opts, env, timeout: timeoutMs });
     return { ok: true, out };
   } catch (err) {
     const e = err as ExecError;
@@ -178,10 +188,12 @@ let probeChain: Promise<unknown> = Promise.resolve();
 async function probeOnce(
   o: SelectedVerifyOptions,
   rawExec: ExecFn,
+  baseSha: string,
   rels: readonly string[],
   changeReportFile: string,
   label: string,
-): Promise<{ ok: true } | { blocks: string }> {
+  timeoutMs: number,
+): Promise<{ ok: true; probeOutput: string } | { blocks: string }> {
   let probeReportFile: string;
   try {
     probeReportFile = createVerifyReportFile(o.channel.reportDir, label);
@@ -193,8 +205,8 @@ async function probeOnce(
     attributeAgainstBase(rawExec, {
       repoRoot: o.repoRoot,
       verifyCmd: probeCommand(rels),
-      baseSha: o.baseSha as string,
-      timeoutMs: o.timeoutMs,
+      baseSha,
+      timeoutMs,
       changeRoots: [...o.changeRoots],
       changeReportFile,
       reportDir: o.channel.reportDir,
@@ -222,26 +234,28 @@ async function probeOnce(
   if (!rels.every((r) => redOnBase.has(r))) {
     return { blocks: "a failing test was not shown to be red on the base commit" };
   }
-  return { ok: true };
+  return { ok: true, probeOutput: probe.probeOutput ?? "" };
 }
 
 /**
  * Judge a twice-failing run's names. Returns the names that are baseline-red,
  * or the reason the failure blocks. Two base runs must agree: one red run on a
  * loaded host would otherwise excuse a test the change breaks deterministically.
+ * Each base run must also fail for the same reason the change run did.
  */
 async function judge(
   o: SelectedVerifyOptions,
   rawExec: ExecFn,
   names: readonly string[],
   changeReportFile: string,
+  changeOutput: string,
+  baseSha: string | undefined,
+  budget: (step: string) => number,
 ): Promise<{ baselineRed: string[] } | { blocks: string }> {
-  const rels: string[] = [];
-  for (const name of names) {
-    const rel = extensionRelative(name);
-    if (rel === undefined)
-      return { blocks: `the failing test "${name}" is not a smoke test this gate can place` };
-    rels.push(rel);
+  const rels = placeable(names);
+  if (rels === undefined) {
+    const bad = names.find((n) => extensionRelative(n) === undefined);
+    return { blocks: `the failing test "${bad}" is not a smoke test this gate can place` };
   }
   const changed = rels.filter((r) => o.changedTests.includes(r));
   if (changed.length > 0) {
@@ -249,31 +263,90 @@ async function judge(
       blocks: `${changed.join(", ")} changed or added by this cycle, so it is not probed against base (its base version is not the test that just failed)`,
     };
   }
-  if (o.baseSha === undefined) return { blocks: "there is no base commit to probe" };
+  if (baseSha === undefined) return { blocks: "there is no base commit to probe" };
+  const changeSignatures = failureSignatures(changeOutput);
   for (const label of ["probe", "probe2"]) {
-    const verdict = await probeOnce(o, rawExec, rels, changeReportFile, label);
+    const verdict = await probeOnce(
+      o,
+      rawExec,
+      baseSha,
+      rels,
+      changeReportFile,
+      label,
+      budget(`the ${label} run`),
+    );
     if ("blocks" in verdict) return verdict;
+    const clash = signatureClash(rels, changeSignatures, failureSignatures(verdict.probeOutput));
+    if (clash !== undefined) return { blocks: clash };
   }
   return { baselineRed: rels };
 }
 
-/** Record the names that failed once and did not fail on the rerun. */
+/**
+ * The reason a baseline-red verdict cannot stand: a test that fails on base for
+ * a different line than it fails on this change. A test with no extractable
+ * signature on either side keeps the name-only verdict, and the trace says so.
+ */
+function signatureClash(
+  rels: readonly string[],
+  change: ReadonlyMap<string, string>,
+  base: ReadonlyMap<string, string>,
+): string | undefined {
+  const unsigned: string[] = [];
+  for (const rel of rels) {
+    const c = change.get(rel);
+    const b = base.get(rel);
+    if (c === undefined || b === undefined) {
+      unsigned.push(rel);
+      continue;
+    }
+    if (c !== b) {
+      return `${rel} fails on this change with "${c}" and on base with "${b}" — red on base for a different reason, so it is not excused`;
+    }
+  }
+  if (unsigned.length > 0) {
+    trace(
+      `work-driver: verify-select — no failure signature for ${unsigned.join(", ")}; judged by name only`,
+    );
+  }
+  return undefined;
+}
+
+/**
+ * Record the names that failed once and did not fail on the rerun. A name that
+ * is not a smoke test path is kept as written: the record is what a reviewer
+ * reads, and dropping the name would drop the evidence with it.
+ */
 function recordFlaky(o: SelectedVerifyOptions, names: readonly string[]): void {
-  const flaky = names.map(extensionRelative).filter((r): r is string => r !== undefined);
-  if (flaky.length === 0) return;
+  if (names.length === 0) return;
+  const flaky = names.map((n) => {
+    const rel = extensionRelative(n);
+    if (rel === undefined) {
+      trace(
+        `work-driver: verify-select — flaky name is not a smoke test path, recorded as written: ${n}`,
+      );
+    }
+    return rel ?? n;
+  });
   o.record.flaky.push(...flaky);
   trace(
-    `work-driver: verify-select \u2014 ${flaky.join(", ")} failed once and passed on the rerun (flaky, not blocking)`,
+    `work-driver: verify-select — ${flaky.join(", ")} failed once and passed on the rerun (flaky, not blocking)`,
   );
 }
 
-function block(err: ExecError, reason: string): ExecError {
+/**
+ * Attach a blocking reason to the error the run produced, so the caller's
+ * evidence says why the gate blocked. Anything thrown is narrowed first: a
+ * non-Error value has no stderr to extend.
+ */
+function block(err: unknown, reason: string): ExecError {
+  const e: ExecError = err instanceof Error ? err : Object.assign(new Error(String(err)), {});
   const line = `[verify-select] blocking: ${reason}`;
-  err.stderr = `${err.stderr ?? ""}\n${line}`;
+  e.stderr = `${e.stderr ?? ""}\n${line}`;
   // runVerifyFull reads err.message before stderr, so the ci evidence would
   // otherwise carry only "Command failed" and hide why the gate blocked.
-  err.message = `${err.message}\n${line}`;
-  return err;
+  e.message = `${e.message}\n${line}`;
+  return e;
 }
 
 /**
@@ -287,39 +360,93 @@ export function withSelectedAttribution(
 ): ExecFn {
   return async (cmd, opts) => {
     if (cmd !== o.cmd) return execFn(cmd, opts);
-    const first = await runOnce(o, execFn, opts, "first");
-    if (first.ok) return first.out;
-    if (first.timedOut && o.rerunUnnamed !== true) throw block(first.err, first.reason);
-    const firstNames = first.names ?? [];
-    if (firstNames.length === 0 && o.rerunUnnamed !== true) {
-      throw block(first.err, first.reason);
+    const deadline = Date.now() + o.timeoutMs;
+    const budget = (step: string): number => {
+      const left = deadline - Date.now();
+      if (left <= 0) throw new BudgetExhausted(step);
+      return left;
+    };
+    const last: { err?: ExecError } = {};
+    try {
+      return await attribute(execFn, rawExec, o, opts, budget, last);
+    } catch (err) {
+      if (err instanceof BudgetExhausted) {
+        throw block(
+          last.err,
+          `the selected verify's ${o.timeoutMs} ms wall clock ran out before ${err.step}`,
+        );
+      }
+      throw err;
     }
-    const second = await runOnce(o, execFn, opts, "rerun");
-    if (second.ok) {
-      recordFlaky(o, firstNames);
-      o.record.recovered = {
-        firstRunOutput: `${first.err.stdout ?? ""}\n${first.err.stderr ?? ""}`.trim(),
-      };
-      return second.out;
-    }
-    if (second.timedOut || second.names === undefined || second.names.length === 0) {
-      throw block(second.err, second.reason);
-    }
-    if (second.reportFile === undefined) throw block(second.err, second.reason);
-    // Failed on the first run and passed the rerun is flaky. A name that failed
-    // on the first run but not the second is one of those, so it is recorded
-    // before the second run is judged: a blocked cycle still discloses it.
-    const secondSet = new Set(second.names);
-    recordFlaky(
-      o,
-      firstNames.filter((n) => !secondSet.has(n)),
-    );
-    const verdict = await judge(o, rawExec, second.names, second.reportFile);
-    if ("blocks" in verdict) throw block(second.err, verdict.blocks);
-    o.record.baselineRed.push(...verdict.baselineRed);
-    trace(
-      `work-driver: verify-select — ${verdict.baselineRed.join(", ")} red on base too (baseline-red, not blocking)`,
-    );
-    return { stdout: second.err.stdout ?? "", stderr: second.err.stderr ?? "" };
   };
+}
+
+async function attribute(
+  execFn: ExecFn,
+  rawExec: ExecFn,
+  o: SelectedVerifyOptions,
+  opts: Parameters<ExecFn>[1],
+  budget: (step: string) => number,
+  last: { err?: ExecError },
+): ReturnType<ExecFn> {
+  const first = await runOnce(o, execFn, opts, "first", o.cmd, budget("the first run"));
+  if (first.ok) return first.out;
+  last.err = first.err;
+  const firstNames = first.names ?? [];
+  // Develop blocks on any failure that is timed out or names nothing; ci reruns both.
+  if (o.rerunUnnamed !== true && (first.timedOut || firstNames.length === 0)) {
+    throw block(first.err, first.reason);
+  }
+  // A named failure reruns its IDs through the probe's shape. A timed-out run
+  // never reached the rest of the suite, and an unnamed failure names nothing,
+  // so both rerun the whole command.
+  let rerunCmd = o.cmd;
+  if (firstNames.length > 0 && first.timedOut !== true) {
+    const rels = placeable(firstNames);
+    if (rels === undefined) {
+      const bad = firstNames.find((n) => extensionRelative(n) === undefined);
+      throw block(
+        first.err,
+        `the failing test "${bad}" is not a smoke test this gate can place, so it cannot be rerun by its ID`,
+      );
+    }
+    rerunCmd = probeCommand(rels);
+  }
+  const second = await runOnce(o, execFn, opts, "rerun", rerunCmd, budget("the rerun"));
+  if (second.ok) {
+    recordFlaky(o, firstNames);
+    o.record.recovered = {
+      firstRunOutput: `${first.err.stdout ?? ""}\n${first.err.stderr ?? ""}`.trim(),
+    };
+    return second.out;
+  }
+  last.err = second.err;
+  if (second.timedOut || second.names === undefined || second.names.length === 0) {
+    throw block(second.err, second.reason);
+  }
+  if (second.reportFile === undefined) throw block(second.err, second.reason);
+  // Failed on the first run and passed the rerun is flaky. A name that failed
+  // on the first run but not the second is one of those, so it is recorded
+  // before the second run is judged: a blocked cycle still discloses it.
+  const secondSet = new Set(second.names);
+  recordFlaky(
+    o,
+    firstNames.filter((n) => !secondSet.has(n)),
+  );
+  const changeOutput = `${second.err.stdout ?? ""}\n${second.err.stderr ?? ""}`;
+  const verdict = await judge(
+    o,
+    rawExec,
+    second.names,
+    second.reportFile,
+    changeOutput,
+    o.baseSha,
+    budget,
+  );
+  if ("blocks" in verdict) throw block(second.err, verdict.blocks);
+  o.record.baselineRed.push(...verdict.baselineRed);
+  trace(
+    `work-driver: verify-select — ${verdict.baselineRed.join(", ")} red on base too (baseline-red, not blocking)`,
+  );
+  return { stdout: second.err.stdout ?? "", stderr: second.err.stderr ?? "" };
 }

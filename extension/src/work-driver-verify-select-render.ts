@@ -10,12 +10,7 @@
  */
 
 import { neutraliseMarkdownField } from "./comment-evidence.ts";
-
-/** The attribution a cycle recorded: `flaky` and `baselineRed` test names. */
-export interface VerifyAttributionRecord {
-  flaky: readonly string[];
-  baselineRed: readonly string[];
-}
+import type { VerifyAttributionRecord } from "./work-driver-verify-shared.ts";
 
 function listSection(title: string, intro: string, names: readonly string[]): string {
   return [

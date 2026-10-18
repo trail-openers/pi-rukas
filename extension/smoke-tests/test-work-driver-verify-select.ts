@@ -14,7 +14,11 @@ import path from "node:path";
 import type { CycleContext } from "../src/work-driver-context.ts";
 import { ALWAYS_RUN } from "../src/work-driver-verify-always-run.ts";
 import { planDevelopVerify } from "../src/work-driver-verify-select-develop.ts";
-import { edgesOf, selectVerifyTests, selectedVerifyCommand } from "../src/work-driver-verify-select.ts";
+import {
+  edgesOf,
+  selectVerifyTests,
+  selectedVerifyCommand,
+} from "../src/work-driver-verify-select.ts";
 
 let exit = 0;
 const assert = (c: boolean, m: string) => {
@@ -67,10 +71,7 @@ write(
 // A top-level module reached by a test only through a nested module (#1647 review).
 write("src/trace2.ts", "export const t2 = 9;\n");
 write("src/headless/inputs2.ts", 'import { t2 } from "../trace2.ts";\nexport const i2 = t2;\n');
-write(
-  "smoke-tests/test-nested.ts",
-  'import { i2 } from "../src/headless/inputs2.ts";\nvoid i2;\n',
-);
+write("smoke-tests/test-nested.ts", 'import { i2 } from "../src/headless/inputs2.ts";\nvoid i2;\n');
 
 write("src/k.ts", "export const k = 7;\n");
 write(
@@ -102,7 +103,9 @@ assert(
 rmSync(spawnRoot, { recursive: true, force: true });
 const deleted = sel(["smoke-tests/test-deleted.ts"]);
 assert(
-  deleted.mode === "full" && deleted.tests.length === 0 && deleted.fallbackReason?.startsWith("no-selected-tests") === true,
+  deleted.mode === "full" &&
+    deleted.tests.length === 0 &&
+    deleted.fallbackReason?.startsWith("no-selected-tests") === true,
   "a deleted smoke test is not selected (it cannot run); the selection falls back rather than running a missing file",
 );
 
@@ -204,7 +207,9 @@ assert(
 );
 assert(
   command.includes('"$PWD/smoke-tests/test-a.ts"') &&
-    command.startsWith("cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.smoke-tests.json && bash smoke-tests/lib/verify-loop.sh"),
+    command.startsWith(
+      "cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.smoke-tests.json && bash smoke-tests/lib/verify-loop.sh",
+    ),
   "the selected command typechecks the smoke tree, then runs verify-loop on the selected tests",
 );
 
@@ -222,11 +227,11 @@ assert(
   "a template literal that quotes import(${…}) is a string, not a call",
 );
 assert(
-  edgesOf("smoke-tests/t.ts", 'import x from "./y.js";\n').deps.includes("smoke-tests/y.ts"),
-  "a .js specifier resolves to the .ts file it names",
+  edgesOf("smoke-tests/t.ts", 'import x from "./y.js";\n')?.specifiers.includes("./y.js") === true,
+  "a relative specifier is read as written, for the resolver to place",
 );
 assert(
-  edgesOf("smoke-tests/t.ts", 'import chalk from "chalk";\n').deps.length === 0,
+  edgesOf("smoke-tests/t.ts", 'import chalk from "chalk";\n')?.specifiers.length === 0,
   "a bare package specifier is not an edge",
 );
 
@@ -238,13 +243,14 @@ const planFile = (rel: string, text: string) => {
 };
 planFile(".pi/verify-cmd", "cd extension && echo full-suite\n");
 planFile(".pi/verify-cmd-fast", "cd extension && echo fast-tier\n");
+planFile(".pi/verify-select", "");
 planFile("extension/src/a.ts", "export const a = 1;\n");
 planFile("extension/smoke-tests/test-a.ts", 'import { a } from "../src/a.ts";\nvoid a;\n');
 // The planner needs only a repo root from the cycle context.
 const ctx = { repoRoot: repo } as unknown as CycleContext;
 const plan = async (env: string | undefined) => {
   const prior = process.env.PI_ENSEMBLE_VERIFY_SELECT;
-  if (env === undefined) delete process.env.PI_ENSEMBLE_VERIFY_SELECT;
+  if (env === undefined) Reflect.deleteProperty(process.env, "PI_ENSEMBLE_VERIFY_SELECT");
   else process.env.PI_ENSEMBLE_VERIFY_SELECT = env;
   try {
     const notes: string[] = [];
@@ -259,7 +265,7 @@ const plan = async (env: string | undefined) => {
     planned.finish();
     return { cmd: planned.cmd, notes };
   } finally {
-    if (prior === undefined) delete process.env.PI_ENSEMBLE_VERIFY_SELECT;
+    if (prior === undefined) Reflect.deleteProperty(process.env, "PI_ENSEMBLE_VERIFY_SELECT");
     else process.env.PI_ENSEMBLE_VERIFY_SELECT = prior;
   }
 };
@@ -275,6 +281,14 @@ assert(
     escaped.notes.some((n) => n.includes("PI_ENSEMBLE_VERIFY_SELECT=0")),
   "PI_ENSEMBLE_VERIFY_SELECT=0 restores the full .pi/verify-cmd exactly",
 );
+// Without the opt-in file the develop round is the pre-#1647 one: the full command, and no selection note.
+rmSync(path.join(repo, ".pi", "verify-select"));
+const notOptedIn = await plan(undefined);
+assert(
+  notOptedIn.cmd === "cd extension && echo full-suite" && notOptedIn.notes.length === 0,
+  "a project without .pi/verify-select gets the full develop command with no selection note",
+);
+planFile(".pi/verify-select", "");
 
 rmSync(repo, { recursive: true, force: true });
 rmSync(root, { recursive: true, force: true });

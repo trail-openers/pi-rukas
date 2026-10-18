@@ -8,19 +8,25 @@
  * directly or through other modules?
  *
  * The graph is built from the source text, not from a bundler:
- *   - static `import` / `export … from` / side-effect `import "x"`;
- *   - a literal dynamic `import("x")` or `require("x")`;
+ *   - static `import` / `export … from` / side-effect `import "x"`, and a
+ *     literal dynamic `import("x")` or `require("x")`, all resolved relative to
+ *     the importing file, with extensionless and directory forms (`./x` →
+ *     `./x.ts` or `./x/index.ts`);
  *   - an `src/…ts` path string literal in a smoke test, because a test that
  *     reads a source file by name has a dependency no import shows.
- * Only relative specifiers are edges; a package name cannot be a changed file.
+ * Comments and literals are removed by one tokenizer (work-driver-verify-select-lex),
+ * so an import inside a comment or a string creates no edge.
  *
  * Every doubt selects more. The selector returns `mode: "full"` (with the
- * reason recorded) for any changed file outside the graph, any change under
- * `smoke-tests/lib/`, any changed module that selects no test, and any dynamic
- * specifier whose target cannot be read. The ALWAYS_RUN list is the other half
- * of the bargain: a test that reads repository source or config AS TEXT depends
- * on files no import graph can show, so it runs on every develop round, and
- * `test-verify-select-always-run.ts` fails when a new such test is missing.
+ * reason recorded) for: a changed file outside the graph; any change under
+ * `smoke-tests/lib/`; a changed module that selects no test; a file the
+ * tokenizer cannot read; a non-literal dynamic import or an unresolvable
+ * relative specifier on the walk path; and a name that is not safe to spell in
+ * a shell argument. A test with a non-literal dynamic import, or one that
+ * transitively imports such a module, is selected on every selection, because
+ * it can load anything. The ALWAYS_RUN list is the other half of the bargain:
+ * a test that reads repository source or config AS TEXT depends on files no
+ * import graph can show, so it runs on every develop round.
  *
  * Paths here are relative to `extension/`, the directory the smoke tests run
  * from. Callers holding repo-relative paths strip the `extension/` prefix first.
@@ -29,6 +35,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { ALWAYS_RUN } from "./work-driver-verify-always-run.ts";
+import { type LexedSource, lexSource } from "./work-driver-verify-select-lex.ts";
+import { SMOKE_TEST_NAME_RE, isOfflineTest } from "./work-driver-verify-shared.ts";
 
 export { ALWAYS_RUN };
 
@@ -43,121 +51,110 @@ export interface VerifySelection {
   fallbackReason?: string;
 }
 
-/** `smoke-tests/test-*.ts`, one level deep. */
-const TEST_RE = /^smoke-tests\/test-[^/]+\.ts$/;
+/** Any smoke test, live or not: a node nothing imports, so it can end a walk. */
+const TEST_NODE_RE = /^smoke-tests\/test-[^/]+\.ts$/;
 /**
  * Files that may be graph nodes: source modules at any depth under `src/` (a
  * nested module imported only by another nested module must still reach the
  * tests above it) and top-level smoke files.
  */
 const NODE_RE = /^(?:src\/(?:[^/]+\/)*[^/]+\.ts|smoke-tests\/[^/]+\.ts)$/;
+/** A relative specifier: `./x`, `../x`, `.`, `..`. Bare package names are not edges. */
+const RELATIVE_SPEC_RE = /^\.\.?(?:\/|$)/;
+/** A static import or re-export on lexed code: the specifier is the string token that ends the statement head. */
+const STATIC_RE = /\b(?:import|export)\s+(?:type\s+)?(?:[\w*{}\s,$]+\s+from\s+)?(\d+)/g;
+/** A call head `import(` or `require(`, on lexed code. */
+const CALL_RE = /\b(import|require)\s*\(/g;
+/** A string token as the first argument of a call, the rest of the call's head. */
+const LITERAL_ARG_RE = /^\s*(\d+)\s*\)/;
+/** `src/x.ts` (optionally `extension/`- or `../`-prefixed) as a whole string value. */
+const PATH_LITERAL_RE = /^(?:\.{1,2}\/)*(?:extension\/)?(src\/[^\s]+?\.ts)$/;
 
-// A static import or re-export: the specifier is the last quoted string before
-// the statement ends. `[\w*{}\s,$]` covers default, namespace and named lists,
-// including multi-line ones.
-const STATIC_RE =
-  /\b(?:import|export)\s+(?:type\s+)?(?:[\w*{}\s,$]+\s+from\s+)?["']([^"'\n]+)["']/g;
-const LITERAL_DYNAMIC_RE = /\bimport\s*\(\s*["'`]([^"'`\n]+)["'`]\s*\)/g;
-const LITERAL_REQUIRE_RE = /\brequire\s*\(\s*["'`]([^"'`\n]+)["'`]\s*\)/g;
-const ANY_DYNAMIC_RE = /\bimport\s*\(/g;
-const ANY_REQUIRE_RE = /\brequire\s*\(/g;
-// The same two calls on masked text (see `maskStringsAndComments`), where a
-// quoted specifier is the single token `S`.
-const MASKED_LITERAL_DYNAMIC_RE = /\bimport\s*\(\s*S\s*\)/g;
-const MASKED_LITERAL_REQUIRE_RE = /\brequire\s*\(\s*S\s*\)/g;
-// `src/x.ts` (optionally `extension/`- or `../`-prefixed) as a whole string literal.
-const PATH_LITERAL_RE = /["'`](?:\.{1,2}\/)*(?:extension\/)?(src\/[^"'`\s]+?\.ts)["'`]/g;
-
-interface FileEdges {
-  /** Extension-relative targets this file references. */
-  deps: string[];
-  /** True when a dynamic import/require names its target through a variable. */
+export interface FileEdges {
+  /** Relative specifiers this file imports (static, re-export, literal dynamic or literal require). */
+  specifiers: string[];
+  /** Extension-relative `src/…ts` targets named by a path string literal. */
+  paths: string[];
+  /** True when a dynamic import or require names its target through a non-literal. */
   dynamic: boolean;
   /**
-   * True when a smoke test spells a bare `"src"` segment (`path.join(ext, "src", "x.ts")`):
+   * True when a smoke test spells a bare `"src"` string (`path.join(ext, "src", "x.ts")`):
    * it reaches source modules through a path no specifier shows, so it depends on all of them.
    */
   touchesSrc: boolean;
 }
 
-// Comments and string literals, in one alternation: a match that starts with `/`
-// is a comment (dropped), anything else is kept as written.
-const COMMENT_OR_STRING_RE =
-  /`(?:[^`\\]|\\.)*`|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
-
-/** The text with comments removed, so a comment inside an import list cannot hide the specifier. */
-function stripComments(text: string): string {
-  return text.replace(COMMENT_OR_STRING_RE, (m) => (m.startsWith("/") ? " " : m));
+/**
+ * The edges of one file, from its text. Undefined when the tokenizer cannot
+ * close a comment, string, template or regex: the file is then unreadable, and
+ * the selector falls back rather than trust a graph built from it.
+ */
+export function edgesOf(fileRel: string, raw: string): FileEdges | undefined {
+  const lexed = lexSource(raw);
+  if (lexed === undefined) return undefined;
+  return factsOf(fileRel, lexed);
 }
 
-/** Resolve a relative specifier against the importing file. Bare names are not edges. */
-function resolveSpecifier(fromRel: string, spec: string): string | undefined {
-  if (!spec.startsWith(".")) return undefined;
-  const joined = path.posix.normalize(path.posix.join(path.posix.dirname(fromRel), spec));
-  if (joined.startsWith("..")) return undefined;
-  // The repo imports `./x.ts`; a `.js` spelling names the same file.
-  if (joined.endsWith(".js")) return `${joined.slice(0, -3)}.ts`;
-  return joined.endsWith(".ts") ? joined : `${joined}.ts`;
-}
-
-/** Edges of one file, from its text. Exported for the selector's own tests. */
-export function edgesOf(fileRel: string, raw: string): FileEdges {
-  const text = stripComments(raw);
-  const deps: string[] = [];
-  const add = (spec: string) => {
-    const target = resolveSpecifier(fileRel, spec);
-    if (target !== undefined) deps.push(target);
+function factsOf(fileRel: string, lexed: LexedSource): FileEdges {
+  const { code, strings } = lexed;
+  const specifiers: string[] = [];
+  const add = (spec: string | undefined) => {
+    if (spec !== undefined && RELATIVE_SPEC_RE.test(spec)) specifiers.push(spec);
   };
-  for (const m of text.matchAll(STATIC_RE)) add(m[1] ?? "");
-  for (const m of text.matchAll(LITERAL_DYNAMIC_RE)) add(m[1] ?? "");
-  for (const m of text.matchAll(LITERAL_REQUIRE_RE)) add(m[1] ?? "");
-  const isSmoke = fileRel.startsWith("smoke-tests/");
-  if (isSmoke) {
-    for (const m of text.matchAll(PATH_LITERAL_RE)) deps.push(m[1] ?? "");
+  for (const m of code.matchAll(STATIC_RE)) add(strings[Number(m[1])]);
+  let dynamic = false;
+  for (const m of code.matchAll(CALL_RE)) {
+    const from = (m.index ?? 0) + m[0].length;
+    const lit = LITERAL_ARG_RE.exec(code.slice(from, from + 64));
+    if (lit) add(strings[Number(lit[1])]);
+    else dynamic = true;
   }
-  const touchesSrc = isSmoke && /["'`]src["'`]/.test(text);
-  // A call whose argument is not a literal is one the regexes above cannot
-  // see. Counting calls against literal calls, on text with strings and
-  // comments masked, is the cheapest honest test: a smoke test often generates
-  // a child script whose `import(${x})` lives inside a template literal, and
-  // that is not a call this file makes.
-  const masked = maskStringsAndComments(text);
-  const dynamicCalls = [...masked.matchAll(ANY_DYNAMIC_RE)].length;
-  const literalCalls = [...masked.matchAll(MASKED_LITERAL_DYNAMIC_RE)].length;
-  const requireCalls = [...masked.matchAll(ANY_REQUIRE_RE)].length;
-  const literalRequires = [...masked.matchAll(MASKED_LITERAL_REQUIRE_RE)].length;
+  const isSmoke = fileRel.startsWith("smoke-tests/");
+  const paths: string[] = [];
+  if (isSmoke) {
+    for (const s of strings) {
+      const m = PATH_LITERAL_RE.exec(s);
+      if (m?.[1] !== undefined) paths.push(m[1]);
+    }
+  }
   return {
-    deps,
-    dynamic: dynamicCalls > literalCalls || requireCalls > literalRequires,
-    touchesSrc,
+    specifiers,
+    paths,
+    dynamic,
+    touchesSrc: isSmoke && strings.includes("src"),
   };
 }
 
 /**
- * Replace template literals with `T`, quoted strings with `S`, and drop
- * comments. What remains is code, so a call is found where it is made rather
- * than where it is quoted. A template is `T` even when it holds a plain string,
- * which makes `import(\`x\`)` count as non-literal: the conservative side.
+ * Resolve a relative specifier to a graph node: the file as written (with a
+ * `.js` spelling read as `.ts`), then the same name with `.ts`, then a directory
+ * index. Undefined when nothing in the graph matches.
  */
-function maskStringsAndComments(text: string): string {
-  return text.replace(
-    /`(?:[^`\\]|\\.)*`|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g,
-    (m) => (m.startsWith("`") ? "T" : m.startsWith("/") ? " " : "S"),
-  );
+function resolveSpecifier(
+  fromRel: string,
+  spec: string,
+  nodes: ReadonlySet<string>,
+): string | undefined {
+  const joined = path.posix.normalize(path.posix.join(path.posix.dirname(fromRel), spec));
+  if (joined === ".." || joined.startsWith("../")) return undefined;
+  const stem = /\.(?:ts|js)$/.test(joined) ? joined.slice(0, -3) : joined;
+  for (const candidate of [`${stem}.ts`, `${stem}/index.ts`]) {
+    if (nodes.has(candidate)) return candidate;
+  }
+  return undefined;
 }
 
-/** The graph: every source module and top-level smoke file, keyed extension-relative. */
 interface Graph {
-  importers: Map<string, Set<string>>;
-  dynamic: Set<string>;
   nodes: Set<string>;
+  /** target → the files that reference it. */
+  importers: Map<string, Set<string>>;
+  /** Nodes with a non-literal dynamic import or require. */
+  dynamic: Set<string>;
+  /** Nodes with a relative specifier that names no graph node. */
+  unresolved: Set<string>;
 }
 
-function buildGraph(extensionDir: string): Graph {
-  const nodes = new Set<string>();
-  const importers = new Map<string, Set<string>>();
-  const dynamic = new Set<string>();
-  const srcTouchers: string[] = [];
+function listNodes(extensionDir: string): string[] {
   const files: string[] = [];
   const walk = (rel: string) => {
     for (const entry of readdirSync(path.join(extensionDir, rel), { withFileTypes: true })) {
@@ -171,27 +168,69 @@ function buildGraph(extensionDir: string): Graph {
     const rel = `smoke-tests/${name}`;
     if (NODE_RE.test(rel)) files.push(rel);
   }
+  return files;
+}
+
+/** The graph, or the first file the tokenizer could not read. */
+function buildGraph(extensionDir: string): Graph | { unreadable: string } {
+  const files = listNodes(extensionDir);
+  const nodes = new Set(files);
+  const importers = new Map<string, Set<string>>();
+  const dynamic = new Set<string>();
+  const unresolved = new Set<string>();
+  const addImporter = (target: string, from: string) => {
+    const set = importers.get(target) ?? new Set<string>();
+    set.add(from);
+    importers.set(target, set);
+  };
+  const srcTouchers: string[] = [];
   for (const rel of files) {
-    nodes.add(rel);
     const edges = edgesOf(rel, readFileSync(path.join(extensionDir, rel), "utf8"));
+    if (edges === undefined) return { unreadable: rel };
     if (edges.dynamic) dynamic.add(rel);
     if (edges.touchesSrc) srcTouchers.push(rel);
-    for (const dep of edges.deps) {
-      const set = importers.get(dep) ?? new Set<string>();
-      set.add(rel);
-      importers.set(dep, set);
+    for (const spec of edges.specifiers) {
+      const target = resolveSpecifier(rel, spec, nodes);
+      if (target === undefined) unresolved.add(rel);
+      else addImporter(target, rel);
     }
+    for (const p of edges.paths) if (nodes.has(p)) addImporter(p, rel);
   }
   // A test that builds a src path itself is an importer of every src module.
   for (const toucher of srcTouchers) {
-    for (const src of files) {
-      if (!src.startsWith("src/")) continue;
-      const set = importers.get(src) ?? new Set<string>();
-      set.add(toucher);
-      importers.set(src, set);
+    for (const src of files) if (src.startsWith("src/")) addImporter(src, toucher);
+  }
+  return { nodes, importers, dynamic, unresolved };
+}
+
+/** Every node that imports `start`, transitively, plus `start`. */
+function importersClosure(graph: Graph, start: string): Set<string> {
+  const reached = new Set<string>([start]);
+  const queue = [start];
+  while (queue.length > 0) {
+    const node = queue.shift() as string;
+    for (const importer of graph.importers.get(node) ?? []) {
+      if (reached.has(importer)) continue;
+      reached.add(importer);
+      queue.push(importer);
     }
   }
-  return { importers, dynamic, nodes };
+  return reached;
+}
+
+/**
+ * The reason a walk over `reached` cannot be trusted, or undefined. A
+ * non-literal dynamic import or an unresolved relative specifier on the walk
+ * path may import something the graph cannot see. A test is exempt: nothing
+ * imports it, so its own unseen edges cannot hide another test's dependency.
+ */
+function untrustedNode(graph: Graph, reached: ReadonlySet<string>): string | undefined {
+  for (const node of reached) {
+    if (TEST_NODE_RE.test(node)) continue;
+    if (graph.dynamic.has(node)) return `non-literal-specifier:${node}`;
+    if (graph.unresolved.has(node)) return `unresolved-specifier:${node}`;
+  }
+  return undefined;
 }
 
 /**
@@ -216,36 +255,25 @@ export function selectVerifyTests(
     if (!NODE_RE.test(f)) return full(`outside-graph:${f}`);
   }
   const graph = buildGraph(extensionDir);
+  if ("unreadable" in graph) return full(`unlexable:${graph.unreadable}`);
   const selected = new Set<string>();
-  const perChanged = new Map<string, Set<string>>();
   for (const start of changed) {
-    // Walk up the importers. A module on this path with a dynamic specifier may
-    // import something the walk cannot see, so the path is not trustworthy. A
-    // test is exempt: nothing imports it, so its own unseen edges cannot hide
-    // another test's dependency (see the always-selected rule below).
-    const reached = new Set<string>([start]);
-    const queue = [start];
-    while (queue.length > 0) {
-      const node = queue.shift() as string;
-      if (graph.dynamic.has(node) && !TEST_RE.test(node)) {
-        return full(`non-literal-specifier:${node}`);
-      }
-      for (const importer of graph.importers.get(node) ?? []) {
-        if (reached.has(importer)) continue;
-        reached.add(importer);
-        queue.push(importer);
-      }
-    }
+    const reached = importersClosure(graph, start);
+    const untrusted = untrustedNode(graph, reached);
+    if (untrusted !== undefined) return full(untrusted);
     // A deleted test is not a node, so it is never selected: running a missing file
     // is not a verdict on the diff. Its importers still are, so a broken import blocks.
-    const tests = [...reached].filter((n) => TEST_RE.test(n) && graph.nodes.has(n));
+    const tests = [...reached].filter((n) => isOfflineTest(n) && graph.nodes.has(n));
     if (tests.length === 0) return full(`no-selected-tests:${start}`);
-    perChanged.set(start, new Set(tests));
     for (const t of tests) selected.add(t);
   }
-  // A test whose dynamic import target is unreadable could load anything, so it
-  // is run on every selection rather than trusted to a graph that cannot see it.
-  for (const d of graph.dynamic) if (TEST_RE.test(d)) selected.add(d);
+  // A module with a non-literal dynamic import may load anything, so every test
+  // that reaches it runs on every selection, whatever the diff touched.
+  for (const d of graph.dynamic) {
+    for (const t of importersClosure(graph, d)) if (isOfflineTest(t)) selected.add(t);
+  }
+  const names = [...selected, ...ALWAYS_RUN];
+  if (names.some((n) => !SMOKE_TEST_NAME_RE.test(n))) return full("unsafe-test-name");
   return {
     mode: "selected",
     tests: [...selected].sort(),

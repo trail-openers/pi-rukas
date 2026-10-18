@@ -22,7 +22,12 @@ import {
 } from "./work-driver-merge-authority.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCiPrompt, inlineStepBackPrompt } from "./work-driver-prompts-late.ts";
-import { foldVerifyAttribution, uncarriedNames } from "./work-driver-verify-events.ts";
+import {
+  foldVerifyAttribution,
+  markDisclosed,
+  snapshotDisclosed,
+  uncarriedNames,
+} from "./work-driver-verify-events.ts";
 import { verifyCmdFullFor } from "./work-driver-verify-full.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -190,6 +195,9 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
       // #1647 — the tier's full suite is attributed (flaky / baseline-red do not
       // block). Non-blocking tests are written to the PR body before the tier can
       // pass: a disclosure that fails fails the tier.
+      // Pinned before the run, so a failed disclosure below cannot make its names
+      // look already disclosed on the next attempt (work-driver-verify-events).
+      next = snapshotDisclosed(next);
       const run = await runCiVerifyFull(
         ctx,
         next,
@@ -208,6 +216,7 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
           ? undefined
           : uncarriedNames(next, carried);
       const disclosed = fresh === undefined || (await discloseInPrBody(ctx, next, execp, fresh));
+      if (fresh !== undefined && disclosed) next = markDisclosed(next, fresh);
       const result = disclosed
         ? run
         : {
