@@ -65,6 +65,7 @@ const PLAIN_CAPS = [
   "intent-park",
   "awaiting-human-merge",
   "lens-diff-unreadable",
+  "adversarial-diff-unreadable",
   "draft-rearm-failed",
   "existing-pr-detected",
   "ops-merge-base-mismatch",

@@ -108,6 +108,8 @@ export function roundsRecords(result: DispatchResult): AdversarialRoundRecord[] 
  * other cause is a genuine failure that the retry cannot fix.
  */
 export function isTransientAdversarialOutcome(o: AdversarialOutcome): boolean {
+  // #1634 — an unreadable diff halts the step; it is not a provider blip.
+  if (o.diffUnreadable) return false;
   if (!o.ok && o.infra) return classifyAdversarialOutcome(o).shouldRetry;
   if (!o.ok && o.threw) {
     const cls = classifyFailureCause({ kind: "dispatch-failed", errorTail: o.errorTail });

@@ -1,11 +1,65 @@
 /**
  * work-driver-adversarial-fanout-events — the event batch one fan-out pass
  * appends (#485/#486). Split from work-driver-adversarial-fanout.ts
- * (AGENTS.md §12 file-size limit). Pure: outcomes in, WorkEvents out.
+ * (AGENTS.md §12 file-size limit). Pure: outcomes in, WorkEvents out. Also
+ * holds `preReviewOutcome`, the outcome of a workstream whose diff read
+ * ends it before any review (#286 empty skip, #1634 unreadable).
  */
 
 import { type AdversarialOutcome, outcomeOf } from "./work-driver-adversarial-types.ts";
+import type { WorktreeDiff } from "./work-driver-diff.ts";
 import type { WorkEvent } from "./workflow-state.ts";
+
+/**
+ * The outcome of a workstream whose diff read ends it before a review, or
+ * undefined when the review must run. #1634 — an unreadable diff is never
+ * the empty skip: it is a no-verdict outcome carrying git's error, which the
+ * step turns into the `adversarial-diff-unreadable` halt. #286 — a diff read
+ * POSITIVELY as empty skips (a pass) unless
+ * `PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP=0`.
+ */
+export function preReviewOutcome(
+  read: WorktreeDiff,
+  w: { id: string; multi: boolean; startedAt: number; priorInfra: boolean },
+): AdversarialOutcome | undefined {
+  const base = { id: w.id, rounds: 0, records: [], infra: false, priorInfra: w.priorInfra };
+  const branch = (ok: boolean): WorkEvent | undefined =>
+    w.multi
+      ? {
+          kind: "branch-completed",
+          step: "adversarial",
+          workstreamId: w.id,
+          ok,
+          ms: Date.now() - w.startedAt,
+          at: Date.now(),
+        }
+      : undefined;
+  if (!read.ok) {
+    return {
+      ...base,
+      ok: false,
+      threw: true,
+      skipped: false,
+      diffUnreadable: read.reason,
+      errorTail: read.reason,
+      rejectionText: `adversarial diff unreadable: ${read.reason}`,
+      branchEvent: branch(false),
+    };
+  }
+  if (process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP === "0" || read.diff.trim()) return undefined;
+  return {
+    ...base,
+    ok: true,
+    threw: false,
+    skipped: true,
+    completionEvent: {
+      kind: "adversarial-skipped-empty-diff",
+      at: Date.now(),
+      workstreamId: w.id,
+    },
+    branchEvent: branch(true),
+  };
+}
 
 /**
  * Append per-workstream events in deterministic order: dispatch-completed

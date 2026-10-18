@@ -20,7 +20,7 @@ import {
   capKillOutcomeFields,
   retryLadderKillCause,
 } from "./work-driver-adversarial-fanout-capkill.ts";
-import { outcomeEvents } from "./work-driver-adversarial-fanout-events.ts";
+import { outcomeEvents, preReviewOutcome } from "./work-driver-adversarial-fanout-events.ts";
 import {
   interpretReview,
   reviewRoundFor,
@@ -42,7 +42,7 @@ import {
   outcomeOf,
 } from "./work-driver-adversarial-types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { fetchDiff } from "./work-driver-diff.ts";
+import { fetchDiff, readWorktreeDiff } from "./work-driver-diff.ts";
 import {
   jitteredMs,
   providerRetryWaitMs,
@@ -136,39 +136,22 @@ export async function fanOutAdversarial(
     // diff against the detach point. Without baseSha we fall back to
     // `git diff HEAD` (pre-commit semantics for uncommitted work).
     const baseSha = state.pipelineState.baseSha;
-    const diff = await fetchDiff(cwd, baseSha);
-
-    // #286 — empty-diff short-circuit (a full reviewer spawn on an empty
-    // diff is pure waste; lens review has had this guard since PR6).
-    const emptySkipDisabled = process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP === "0";
-    if (!emptySkipDisabled && !diff.trim()) {
-      trace(`work-driver: adversarial[${id}] skipped — empty diff`);
-      return {
-        id,
-        ok: true,
-        rounds: 0,
-        records: [],
-        infra: false,
-        threw: false,
-        skipped: true,
-        priorInfra: priorOutcomes.get(id) === "infra-failure",
-        completionEvent: {
-          kind: "adversarial-skipped-empty-diff",
-          at: Date.now(),
-          workstreamId: id,
-        },
-        branchEvent: multi
-          ? {
-              kind: "branch-completed",
-              step: "adversarial",
-              workstreamId: id,
-              ok: true,
-              ms: Date.now() - startedAt,
-              at: Date.now(),
-            }
-          : undefined,
-      };
+    // #1634 — read so that "empty" and "unreadable" stay distinct: the empty
+    // skip (#286, a pass) needs a positively empty diff, never a failed read.
+    const read = await readWorktreeDiff(cwd, baseSha);
+    const early = preReviewOutcome(read, {
+      id,
+      multi,
+      startedAt,
+      priorInfra: priorOutcomes.get(id) === "infra-failure",
+    });
+    if (early) {
+      trace(
+        `work-driver: adversarial[${id}] ${early.skipped ? "skipped — empty diff" : `diff unreadable — ${early.diffUnreadable}`}`,
+      );
+      return early;
     }
+    const diff = read.ok ? read.diff : "";
 
     const loopFn = ctx.adversarialLoopFn ?? runAdversarialLoop;
     let result: DispatchResult;

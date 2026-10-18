@@ -41,6 +41,8 @@ export type FixedCap = Exclude<WorkCapLiteral, TemplateCap>;
 
 /** Every fixed-literal cap the driver can record, sorted. */
 export const FIXED_CAPS = [
+  // #1634 — the adversarial gate could not read its worktree diff.
+  "adversarial-diff-unreadable",
   "adversarial-infra-failure",
   "adversarial-loop",
   "awaiting-human-merge",

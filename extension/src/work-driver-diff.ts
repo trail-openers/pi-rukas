@@ -48,7 +48,9 @@ const VALID_BASEDIFF_SHA_RE = /^[0-9a-f]{40}$/;
  * protects: no new bare `git diff HEAD` in a REPO-ROOT verification or
  * diff-fetch path, and this per-worktree call stays documented.
  *
- * Failure modes return "":
+ * Failure modes return "" — so `fetchDiff` cannot tell "nothing changed"
+ * from "could not read". A gate that skips on empty must call
+ * `readWorktreeDiff` instead (#1634):
  *  - cwd is undefined (no worktree resolved yet — early steps before
  *    branch creation)
  *  - cwd isn't a git repo
@@ -59,39 +61,45 @@ const VALID_BASEDIFF_SHA_RE = /^[0-9a-f]{40}$/;
  */
 export async function fetchDiff(cwd: string | undefined, baseSha?: string): Promise<string> {
   if (!cwd) return "";
-  // #453 — try committed diff first when baseSha is available and valid.
-  // `git diff baseSha..HEAD` shows everything the developer committed,
-  // which `git diff HEAD` misses once the working tree is clean.
-  if (baseSha && VALID_BASEDIFF_SHA_RE.test(baseSha)) {
+  const r = await readWorktreeDiff(cwd, baseSha);
+  return r.ok ? r.diff : "";
+}
+
+/** A worktree diff read that can say "I could not tell" (#1634). */
+export type WorktreeDiff = { ok: true; diff: string } | { ok: false; reason: string };
+
+/**
+ * #1634 — `fetchDiff` with the failure case preserved: the adversarial gate's
+ * counterpart of `readIntegratedDiff` (#384). The gate skips, and so approves,
+ * on an empty diff, and `fetchDiff` returned "" for a failed read too, so a
+ * worktree git could not read ("not a git repository") was approved unseen.
+ *
+ * Empty is established POSITIVELY: every read must exit 0 in a readable
+ * worktree, and with a baseSha an empty `baseSha..HEAD` (nothing committed
+ * yet) is confirmed against the working tree with `git diff <baseSha>`, so
+ * tracked changes the developer left uncommitted are reviewed, not skipped.
+ * Any failed read is `ok: false` carrying git's error.
+ */
+export async function readWorktreeDiff(cwd: string, baseSha?: string): Promise<WorktreeDiff> {
+  // #1153 — a baseSha that is not a full SHA is never interpolated.
+  const base = baseSha && VALID_BASEDIFF_SHA_RE.test(baseSha) ? baseSha : undefined;
+  // #453 — committed work first: `git diff baseSha..HEAD` is what the
+  // developer committed, which `git diff HEAD` misses once the tree is clean.
+  // Without a baseSha, `git diff HEAD` — DELIBERATE pre-commit semantics.
+  const ranges = base ? [`${base}..HEAD`, base] : ["HEAD"];
+  let diff = "";
+  for (const range of ranges) {
     try {
-      const stdout = await execGit(execp, cwd, ["diff", "--end-of-options", `${baseSha}..HEAD`], {
-        maxBuffer: 1024 * 1024,
+      diff = await execGit(execp, cwd, ["diff", "--end-of-options", range], {
+        maxBuffer: 1024 * 1024, // 1 MiB cap
       });
-      if (stdout.trim()) return stdout;
     } catch (err) {
-      trace(
-        `work-driver: fetchDiff(${cwd}, baseSha..HEAD) failed: ${(err as Error).message?.slice(0, 200)}`,
-      );
+      trace(`work-driver: readWorktreeDiff(${cwd}, ${range}) failed: ${errText(err)}`);
+      return { ok: false, reason: `git diff ${range} in ${cwd} failed: ${errText(err)}` };
     }
+    if (diff.trim()) break;
   }
-  // Fallback: uncommitted diff — DELIBERATE pre-commit semantics for callers
-  // without a baseSha and for the case where baseSha..HEAD is empty
-  // (developer hasn't committed yet).
-  try {
-    // Prefer `git diff <baseSha>..HEAD` when baseSha is available — this
-    // captures committed work. Without baseSha, fall back to `git diff HEAD`
-    // (uncommitted changes only), which is correct for pre-commit scenarios.
-    // #1153 — the SHA gate applies here too: the primary branch above already
-    // refuses an invalid baseSha, and interpolating one into the fallback
-    // would just move the unsanitised value to the other call site.
-    const diffRange = baseSha && VALID_BASEDIFF_SHA_RE.test(baseSha) ? `${baseSha}..HEAD` : "HEAD";
-    return await execGit(execp, cwd, ["diff", "--end-of-options", diffRange], {
-      maxBuffer: 1024 * 1024, // 1 MiB cap
-    });
-  } catch (err) {
-    trace(`work-driver: fetchDiff(${cwd}) failed: ${(err as Error).message?.slice(0, 200)}`);
-    return "";
-  }
+  return { ok: true, diff };
 }
 
 /**
