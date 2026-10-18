@@ -152,7 +152,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("CONVERGE", true),
   flag("CROSS_GROUP_CONFLICTS", true),
   ms("CYCLE_BUDGET_MS", null),
-  // An absolute deadline; a value below 1e12 (epoch seconds) is ignored.
+  // An absolute deadline; a value below 1e12 (epoch seconds) is ignored. #1593 —
+  // where step work ends: a host sets it to its kill minus HANDOFF_TIMEOUT_MS.
   int("CYCLE_DEADLINE", null, "cycle", { unit: "epoch-ms" }),
   flag("DEBUG", false),
   family(int("DECISION_BUDGET_<SEAM>", null, "cycle", { unit: "tokens" }), SEAM_MEMBERS),

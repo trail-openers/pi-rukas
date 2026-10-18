@@ -12,25 +12,32 @@
  * (an absolute epoch ms) or `PI_ENSEMBLE_CYCLE_BUDGET_MS` (resolved to an
  * epoch once, then persisted in `pipelineState.cycleDeadlineMs`).
  *
- * Semantics: the deadline means "do not START a new step after this point".
- * At each step boundary the driver parks with cap `deadline` (and routes to
- * handoff) once `now + handoff grace >= deadline`. It does not reserve a
- * step's worst-case bound — those bounds are backstops measured in hours,
- * and reserving them would park a 6-hour cycle after 3. A step that started
- * before the deadline may finish past it; the caller picks the deadline with
- * its own margin (its hard kill minus its longest tolerable step).
+ * Semantics: the deadline is where step work ends; only the handoff runs
+ * after it. The caller sets it to its hard kill minus its handoff allowance
+ * and passes that allowance as `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` (#1593, the
+ * example-owner/orchard#355 contract), so the handoff has the allowance to itself.
  *
- * - NO mid-step hard kill: the check runs at the step boundary only.
- * - The handoff grace (`handoffDispatchTimeoutMs()`) is kept back so the
- *   park's handoff comment posts before the deadline. The handoff step
- *   itself runs with its full bound and is never parked.
+ * - At each step boundary the driver parks with cap `deadline` (and routes
+ *   to handoff) once `now + handoff grace >= deadline`: a step that would
+ *   have less than the grace to run is not started. A step's worst-case
+ *   bound is not reserved — those bounds are backstops measured in hours.
+ * - A step already running when the deadline arrives does not run on: every
+ *   child the cycle spawns is bounded by what the deadline leaves, and the
+ *   handoff's child by the allowance after it (cycle-deadline-clock.ts).
+ *   Before #1593 such a step ran to its own backstop, into the caller's kill.
+ * - A step that ends past the deadline does not get to name the cycle's
+ *   terminal reason: the handoff boundary records `deadline` after its
+ *   verdict (work-driver-terminal-reason.ts).
+ * - The handoff step itself is never parked.
  * - No env var set → no deadline: the default behaviour is unchanged.
  */
 
 import { notifyAgent } from "./agent-message.ts";
+import { noteCycleDeadline, runWithCycleClock } from "./cycle-deadline-clock.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { handoffDispatchTimeoutMs } from "./work-driver-handoff.ts";
+import { terminalReasonAtHandoff } from "./work-driver-terminal-reason.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
 
 /** Below this an epoch is in seconds, not ms (1e12 ms is September 2001). */
@@ -96,18 +103,24 @@ export async function deadlineCheck(
 ): Promise<{ parked: boolean; state: WorkState; deadline?: number }> {
   void ctx; // the caller persists the returned state; the check itself never writes
   const deadline = readCycleDeadline(state, now);
+  // #1593 — the children this step spawns are bounded by what the deadline leaves.
+  noteCycleDeadline(deadline, handoffDispatchTimeoutMs(), step);
   if (deadline === undefined) {
-    if (state.pipelineState.cycleDeadlineMs === undefined) return { parked: false, state };
-    const { cycleDeadlineMs: _stale, ...ps } = state.pipelineState;
-    return { parked: false, state: { ...state, pipelineState: ps } };
+    const s = step === "handoff" ? terminalReasonAtHandoff(state, undefined, now) : state;
+    if (s.pipelineState.cycleDeadlineMs === undefined) return { parked: false, state: s };
+    const { cycleDeadlineMs: _stale, ...ps } = s.pipelineState;
+    return { parked: false, state: { ...s, pipelineState: ps } };
   }
   const next =
     state.pipelineState.cycleDeadlineMs === deadline
       ? state
       : { ...state, pipelineState: { ...state.pipelineState, cycleDeadlineMs: deadline } };
-  if (step === "handoff" || step === "merged") {
-    return { parked: false, state: next, deadline };
+  if (step === "handoff") {
+    // #1593 — a step that ended past the deadline, or on a backstop kill, does
+    // not leave its own verdict standing as the cycle's terminal reason.
+    return { parked: false, state: terminalReasonAtHandoff(next, deadline, now), deadline };
   }
+  if (step === "merged") return { parked: false, state: next, deadline };
   const grace = handoffDispatchTimeoutMs();
   const remaining = deadline - now;
   if (now + grace < deadline) return { parked: false, state: next, deadline };
@@ -156,4 +169,13 @@ export async function parkAtDeadlineBoundary(
   };
   await persistCycle(ctx, toHandoff);
   return toHandoff;
+}
+
+/**
+ * #1593 — run a cycle under its own deadline clock (cycle-deadline-clock.ts):
+ * every child it spawns is then bounded by the deadline the boundary check
+ * resolved, and the handoff's by the allowance after it.
+ */
+export function withCycleClock<T>(fn: () => Promise<T>): Promise<T> {
+  return runWithCycleClock(fn);
 }

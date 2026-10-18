@@ -11,14 +11,17 @@ import { settleDraftPrAtHandoff } from "./work-driver-draft-pr.ts";
 import { countAheadOfBase, workNotYetOnBranch } from "./work-driver-handoff-ahead.ts";
 import { openDraftPrForCappedWork } from "./work-driver-handoff-capped-pr.ts";
 import { handoffChannel, withHandoffMarker } from "./work-driver-handoff-channel.ts";
-import { handoffConsolidateWorktrees } from "./work-driver-handoff-consolidate-step.ts";
+import {
+  handoffConsolidateWorktrees,
+  lastConsolidatedEvent,
+} from "./work-driver-handoff-consolidate-step.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { runHandoffOpsDispatch } from "./work-driver-handoff-ops.ts";
 import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
 import {
   applyIssueLabelDualTarget,
   captureCommittedWork,
-  declinesAttentionLabel,
+  declinedLabelSeed,
   makeHandoffEmittedEvent,
   parseHandoffOpsReply,
   verifyHandoffLabel,
@@ -202,21 +205,15 @@ export async function runHandoff(
   let commentUrl = parseHandoffCommentUrl(opsReplyText) ?? priorHandoffCommentUrl(next.eventLog);
   commentUrl ??= park.repeatOf?.commentUrl;
   if (parsed.commentUrl && !commentUrl) commentUrl = parsed.commentUrl;
-  // #1472 — see `labelSkipped` below: a closed-issue park declines the label.
-  let labelApplied = declinesAttentionLabel(next.pipelineState);
   // #798 — per-target label state. When prNumber is set, the driver labels
   // BOTH the issue (the entry-gate target) and the PR (the review target);
   // each is verified independently. When prNumber is absent, only the issue
-  // is targeted and issueLabelApplied mirrors labelApplied.
-  let issueLabelApplied: boolean | undefined;
-  let prLabelApplied: boolean | undefined;
-  // #1472 — a closed-issue park declines the label. Seeded here so all four
-  // writers see it settled; it is a deliberate decline, NOT a failure, so the
-  // HANDOFF DISPATCH INCOMPLETE banner stays quiet. See PipelineState.
-  if (labelApplied) {
-    issueLabelApplied = true;
-    prLabelApplied = prNumber ? true : undefined;
-  }
+  // is targeted and issueLabelApplied mirrors labelApplied. #1472 seeds all
+  // three settled for a closed-issue park — see `declinedLabelSeed`.
+  let { labelApplied, issueLabelApplied, prLabelApplied } = declinedLabelSeed(
+    next.pipelineState,
+    prNumber,
+  );
   // #775 — provenance of the recorded state. "dispatch" is asserted only
   // when the driver verified it (URL parsed or label read-back succeeded);
   // a reply whose state could not be verified records no provenance.
@@ -357,13 +354,7 @@ export async function runHandoff(
   // #674 — carry the consolidation outcome into the handoff-emitted event so the
   // renderers can print either the branch-contains-the-work path or the accurate
   // per-worktree fallback. The `handoff-consolidated` event is the audit trail.
-  const consEvent = next.eventLog
-    .slice()
-    .reverse()
-    .find(
-      (e): e is Extract<WorkEvent, { kind: "handoff-consolidated" }> =>
-        e.kind === "handoff-consolidated",
-    );
+  const consEvent = lastConsolidatedEvent(next.eventLog);
   // #1421 — WHY consolidation did not happen. The event carried a single
   // fixed sentence, "consolidation infeasible (work remains on its worktree
   // detached HEADs)", for every failure including one where the only thing in
