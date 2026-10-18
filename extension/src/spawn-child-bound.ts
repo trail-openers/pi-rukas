@@ -20,8 +20,18 @@
  * The work a killed child leaves stays in its worktree; every driver path that
  * resets a tree saves it first (#1391 / #1016).
  *
- * Inert when no bound is passed and under `PI_ENSEMBLE_DISPATCH_CAPS=0` (the
- * caps master switch). One instance per spawn.
+ * The same "done" test settles a child at the other two ends (#1521, P4):
+ *
+ *   - the 2-h backstop: a child that has committed or reported when it fires
+ *     is ended as done, not as a `timeout` kill (`atBackstop`);
+ *   - reaping: a child whose prompt's `agent_end` arrived (stdin closed) should
+ *     exit by itself; one still alive `PI_ENSEMBLE_SETTLED_REAP_MS` (60 s)
+ *     later is ended as done rather than left for the inactivity watchdog to
+ *     kill as a hang 25 minutes on (`onReported`).
+ *
+ * The bound timers are armed only when a bound is passed; all of it is inert
+ * under `PI_ENSEMBLE_DISPATCH_CAPS=0` (the caps master switch). One instance
+ * per spawn.
  */
 
 import { type ChildProcess, execFile } from "node:child_process";
@@ -47,6 +57,11 @@ export function developChildBoundMs(): number {
 /** The explore child's bound (policy default 30 min). */
 export function exploreChildBoundMs(): number {
   return envMs("PI_ENSEMBLE_EXPLORE_BOUND_MS", 30 * MINUTE_MS);
+}
+
+/** How long a child that reported may linger before it is reaped (60 s). */
+export function settledReapMs(): number {
+  return envMs("PI_ENSEMBLE_SETTLED_REAP_MS", 60_000);
 }
 
 /** Time between the wrap-up steer and the kill (policy: 10 min). */
@@ -85,6 +100,14 @@ export interface ChildBound {
   endedAsDone(): DoneSignal | undefined;
   /** The bound the child was given, ms. */
   readonly boundMs: number;
+  /**
+   * The wall-clock backstop fired. Returns true when this took the kill over
+   * (it ends the child as done if it has settled, else calls `timedOut` first);
+   * false after calling `timedOut`, for the caller to kill as before.
+   */
+  atBackstop(timedOut: () => void): boolean;
+  /** The prompt's `agent_end` arrived: reap the child if it does not exit. */
+  onReported(): void;
   stop(): void;
 }
 
@@ -124,18 +147,62 @@ export function armChildBound(o: {
     killed: () => killed,
     endedAsDone: () => done,
     boundMs,
+    atBackstop: (timedOut) => {
+      timedOut();
+      return false;
+    },
+    onReported: () => undefined,
     stop: () => {
       for (const t of timers) clearTimeout(t);
     },
   };
-  if (boundMs <= 0 || process.env.PI_ENSEMBLE_DISPATCH_CAPS === "0") return result;
-  const graceMs = o.graceMs ?? childBoundGraceMs();
+  if (process.env.PI_ENSEMBLE_DISPATCH_CAPS === "0") return result;
   const head = o.head ?? readHead;
   const headAtStart = o.commits ? head(o.cwd) : Promise.resolve(undefined);
-  const { wrapAtMs, killAtMs, stopInMs } = childBoundSchedule(boundMs, graceMs, Date.now());
   // The exit event can lag the exit itself; read the handle too.
   const gone = () =>
     o.childExited() || o.child.exitCode != null || o.child.signalCode != null || o.preempted();
+  const settled = async (): Promise<DoneSignal | undefined> => {
+    if (o.reported()) return "reported";
+    if (!o.commits) return undefined;
+    const [before, now] = await Promise.all([headAtStart, head(o.cwd)]);
+    return before && now && before !== now ? "committed" : undefined;
+  };
+  const kill = (why: string) => {
+    trace(`child-bound: ${why}`);
+    try {
+      killProcessTree(o.child);
+    } catch (err) {
+      traceWarn(`child-bound kill failed: ${String(err)}`);
+    }
+  };
+  const arm = (fn: () => void, ms: number) => {
+    const t = setTimeout(fn, ms);
+    t.unref();
+    timers.push(t);
+  };
+  result.onReported = () =>
+    arm(() => {
+      if (gone() || done || killed) return;
+      done = "reported";
+      kill("reaped a child that reported but did not exit");
+    }, settledReapMs());
+  result.atBackstop = (timedOut) => {
+    if (!o.reported() && !o.commits) {
+      timedOut();
+      return false;
+    }
+    void settled().then((signal) => {
+      if (gone() || done || killed) return;
+      if (signal) done = signal;
+      else timedOut();
+      kill(`backstop fired (${signal ? `${signal}, ended as done` : "timeout"})`);
+    });
+    return true;
+  };
+  if (boundMs <= 0) return result;
+  const graceMs = o.graceMs ?? childBoundGraceMs();
+  const { wrapAtMs, killAtMs, stopInMs } = childBoundSchedule(boundMs, graceMs, Date.now());
 
   const wrapUp = () => {
     if (gone() || o.reported()) return;
@@ -148,25 +215,11 @@ export function armChildBound(o: {
     }
   };
   const end = async () => {
-    let signal: DoneSignal | undefined = o.reported() ? "reported" : undefined;
-    if (!signal && o.commits) {
-      const [before, now] = await Promise.all([headAtStart, head(o.cwd)]);
-      if (before && now && before !== now) signal = "committed";
-    }
-    if (gone()) return;
+    const signal = await settled();
+    if (gone() || done || killed) return;
     if (signal) done = signal;
     else killed = true;
-    trace(`child-bound: ended at ${boundMs}ms bound + grace (${signal ?? "killed"})`);
-    try {
-      killProcessTree(o.child);
-    } catch (err) {
-      traceWarn(`child-bound kill failed: ${String(err)}`);
-    }
-  };
-  const arm = (fn: () => void, ms: number) => {
-    const t = setTimeout(fn, ms);
-    t.unref();
-    timers.push(t);
+    kill(`ended at ${boundMs}ms bound + grace (${signal ?? "killed"})`);
   };
   arm(wrapUp, wrapAtMs);
   if (killAtMs !== undefined) arm(() => void end(), killAtMs);

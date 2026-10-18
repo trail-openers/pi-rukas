@@ -206,11 +206,12 @@ export function createInactivityPoll(opts: {
 export function createWallClockBackstop(opts: {
   child: ChildProcess;
   timeoutMs: number;
-  onTimeout: () => void;
+  /** Returns true when it took the kill over itself (#1521: a settled child). */
+  onTimeout: () => boolean | undefined;
 }): () => void {
   const { child, timeoutMs, onTimeout } = opts;
   const timeout = setTimeout(() => {
-    onTimeout();
+    if (onTimeout() === true) return;
     try {
       killProcessTree(child);
     } catch (err) {
