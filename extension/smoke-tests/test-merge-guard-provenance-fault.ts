@@ -27,7 +27,8 @@
  * Plus the adversarial half of #1449: the note a misdirected adversarial row
  * produces has a PRODUCTION caller (the loop's own `makeLedgerWrite`), which is
  * what `test-seams-wired.ts` cannot tell a wired helper from a returning-the-
- * wrong-thing one.
+ * wrong-thing one. The sibling question — can the WRITER's return shape damage
+ * the LOOP — is `test-adversarial-ledger-writer-shapes.ts`.
  *
  * Isolation: every arm runs against a fresh temp clone and pins
  * `PI_ENSEMBLE_REVIEW_LEDGER_FILE` to its own path, restored in `finally`. The

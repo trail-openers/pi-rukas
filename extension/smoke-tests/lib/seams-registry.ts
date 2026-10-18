@@ -268,6 +268,13 @@ export const SEAMS: Seam[] = [
     // gate. Both halves are called by the loop.
     file: "adversarial-ledger-capture.ts",
     pending: {},
+    // #1449 — the writer seam. Production reads it, never writes it; only a test
+    // installs an off-contract writer, so the `Promise.resolve` / `try`-`catch`
+    // guards at the call site are reachable and therefore testable at all.
+    testOnly: {
+      LEDGER_WRITER:
+        "the injectable ledger writer; installed by test-adversarial-ledger-writer-shapes.ts to prove a no-promise or throwing writer cannot cost a review",
+    },
     canary: { symbol: "captureRound", importer: "adversarial.ts" },
   },
   {
