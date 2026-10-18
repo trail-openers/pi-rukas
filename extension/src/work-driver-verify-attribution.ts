@@ -35,14 +35,20 @@
  */
 
 import { trace } from "./trace.ts";
-import { probeBaselineVerify } from "./work-driver-verify-baseline.ts";
+import { baselineProbeWorktreePath, probeBaselineVerify } from "./work-driver-verify-baseline.ts";
 import {
   type NameRoots,
   compareNames,
   emptyBaseReason,
-  failingTestNames,
   isContradictoryTally,
 } from "./work-driver-verify-names.ts";
+import { readVerifyReport } from "./work-driver-verify-report-file.ts";
+import {
+  createVerifyReportFile,
+  isInsideReportDir,
+  isRegularReportFile,
+  verifyReportEnv,
+} from "./work-driver-verify-report-path.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /** The three-way per-test verdict over the change run's failing test names. */
@@ -145,13 +151,23 @@ const SHA_RE = /^[0-9a-f]{40}$/;
 /**
  * #1404 — run the base probe and diff the failing-test-name sets.
  *
+ * NAMES COME FROM REPORT FILES, NOT FROM THE STREAM. The caller hands in the
+ * path each run wrote its out-of-band verdict to (`changeReportFile` for the
+ * run that just failed, `probeReportFile` for the base run this function makes
+ * it produce). Names parsed out of stdout/stderr are a string a test can print
+ * — and the triad shape (per-file `FAILED:` + a count-matched summary + a
+ * non-zero `P:/F:` tally) is byte-identical to the loop's own output, so a
+ * green base could be made to name the change's failure and the cycle would
+ * push. The stream is still read, and still cross-checked, but it can now only
+ * ever REFUSE an excuse, never grant one.
+ *
  * Returns `undefined` — the park stands with the original reason — for every
- * shape the probe cannot establish: the sha is not a sha, the base could not
- * be checked out, the base run died for want of dependencies, the base run was
- * killed at its bound, the probe ran a DIFFERENT command than the change run
- * did, the probe could not positively confirm it ran the gate to a verdict, no
- * failing-test name parsed from either stream, or a contradiction like an
- * all-pass tally beside a non-zero exit. Fail-closed is the default: a wrong
+ * shape the probe cannot establish: the sha is not a sha, either report file
+ * is missing / empty / malformed / self-contradictory or lives outside the
+ * driver's private report dir, the base could not be checked out, the base run
+ * died for want of dependencies, the base run was killed at its bound, the
+ * probe ran a DIFFERENT command than the change run did, or the two pieces of
+ * evidence about the base run disagree. Fail-closed is the default: a wrong
  * "not the change" is worse than a park, so absence of evidence is never read
  * as evidence of innocence.
  *
@@ -182,10 +198,32 @@ export async function attributeAgainstBase(
      * unplaceable, and therefore unattributable.
      */
     changeRoots?: readonly string[];
-    /** Names the change run printed without a root prefix. */
-    changeUnrooted?: readonly string[];
-    /** Names the base run printed without a root prefix. */
-    probeUnrooted?: readonly string[];
+    /**
+     * The change run's out-of-band report file, as created by the caller in its
+     * private 0700 report dir and written by the smoke loop. REQUIRED: without
+     * it there is no trustworthy name list, and a caller that has none gets the
+     * pre-#1404 park rather than a stream-derived excuse.
+     */
+    changeReportFile: string;
+    /**
+     * The driver's private report directory. Both report paths must resolve
+     * inside it, or neither is read — this is what stops a project (whose
+     * `.pi/verify-cmd` is a project file) from steering the reader at a file a
+     * test wrote.
+     */
+    reportDir: string;
+    /**
+     * The env the base run executes with — the caller's env plus
+     * `VERIFY_REPORT_FILE` pointing at `probeReportFile`. Absent → the ambient
+     * env, which writes no report, which reads as unattributable.
+     */
+    probeEnv?: NodeJS.ProcessEnv;
+    /**
+     * Where the base run's report must be written. Created by the caller (in
+     * `reportDir`) so its name is not derivable from anything the project
+     * controls.
+     */
+    probeReportFile: string;
   },
   changeStream: string,
 ): Promise<BaselineProbeOutcome | undefined> {
@@ -195,7 +233,36 @@ export async function attributeAgainstBase(
     );
     return undefined;
   }
-  const changeNames = failingTestNames(changeStream);
+  const probeTree = baselineProbeWorktreePath(opts.repoRoot, "commit-pr");
+  // Every name the comparison will use has to come from a file inside the
+  // driver's own report dir. Checked BEFORE the base run is paid for: a
+  // misconfigured caller should not cost a full gate run to discover it cannot
+  // attribute anything.
+  for (const [which, file] of [
+    ["change", opts.changeReportFile],
+    ["base", opts.probeReportFile],
+  ] as const) {
+    if (!isInsideReportDir(file, opts.reportDir)) {
+      trace(
+        `work-driver: commit-pr verify — the ${which} run's verify report path does not resolve inside the driver's private report directory, so it is not a file the driver created and is not read; the consolidated failure parks as before`,
+      );
+      return undefined;
+    }
+    if (!isRegularReportFile(file)) {
+      trace(
+        `work-driver: commit-pr verify — the ${which} run's verify report path is not a regular file the driver can read; the consolidated failure parks as before`,
+      );
+      return undefined;
+    }
+  }
+  const changeReport = readVerifyReport(opts.changeReportFile);
+  if (changeReport.names === undefined) {
+    trace(
+      `work-driver: commit-pr verify — the change run's failing tests are unattributable (${changeReport.reason}); the consolidated failure parks as before`,
+    );
+    return undefined;
+  }
+  const changeNames = changeReport.names;
   const bound = opts.timeoutMs ?? 30 * 60_000;
   const verdict = await probeBaselineVerify(execFn, {
     repoRoot: opts.repoRoot,
@@ -206,6 +273,7 @@ export async function attributeAgainstBase(
     issue: "commit-pr",
     cmd: opts.verifyCmd,
     timeoutMs: bound,
+    ...(opts.probeEnv !== undefined ? { env: opts.probeEnv } : {}),
   });
   if (verdict.status !== "red") {
     trace(
@@ -219,71 +287,66 @@ export async function attributeAgainstBase(
     );
     return undefined;
   }
-  // The probe must have positively JUDGED the gate: its own summary line
-  // present. A base run whose stream carries none is a run that died somewhere
-  // other than the gate's verdict (a killed shell, a broken harness), and "the
-  // base failed too" would then be an inference from an unexamined exit code.
+  const baseStream = verdict.rawStream ?? "";
+  // The base run's NAMES come from its report file. The stream is still read
+  // here, and still read sceptically: `probed` and `isContradictoryTally` can
+  // each veto an excuse, and neither can ever create one. Both are derived from
+  // the stream, which is precisely why they were not allowed to be the source
+  // of the names — a stream that can be forged can forge "I judged the gate"
+  // as easily as it can forge a name.
   if (verdict.probed !== true) {
     trace(
       "work-driver: commit-pr verify — the baseline run did not report its own verdict (no `FAILED: <n> test(s)` summary in its output), so its exit code says nothing about the gate; the consolidated failure parks as before",
     );
     return undefined;
   }
-  const baseStream = verdict.rawStream ?? "";
   // The two pieces of evidence about the base run must AGREE. A run that
   // exited non-zero while its own tally reported `F: 0` is either a broken
   // harness or a forged stream, and in neither case does it establish that any
-  // particular test was already red. The optimistic half (the tally, which
-  // would excuse, or the names, which would too) is never taken alone.
+  // particular test was already red. The optimistic half is never taken alone.
   if ((verdict.exitCode ?? 1) !== 0 && isContradictoryTally(baseStream) === true) {
     trace(
       `work-driver: commit-pr verify — ${emptyBaseReason(false, baseStream)}; the consolidated failure parks as before`,
     );
     return undefined;
   }
-  const baseNames = failingTestNames(baseStream);
-  // Anchor the comparison in the trees each run ACTUALLY executed in. The
-  // probe's worktree is one of them (the probe created it, so `probeWorktreePath`
-  // names the same path). The other is where the CHANGE run's names came from,
-  // which the caller cannot know from `repoRoot` alone: the gate is a script,
-  // and a script that resolves its own path (`$(dirname "$0")`, which is how a
-  // committed `gate.sh` names its test list) prints paths under the tree the
-  // script lives in — so in a followup round, or a ci retry that re-runs on a
-  // different checkout, the change run's names sit under a third tree entirely.
-  // Hence `changeRoots`: every tree the change run may have run in. A name that
-  // sits under NONE of them is `unknown`, and `unknown` parks — it never excuses.
-  const attribution = attributeFailuresByName(changeNames, baseNames, {
-    changeRoots: [
-      probeWorktreePath(opts.repoRoot, "commit-pr"),
-      opts.repoRoot,
-      ...(opts.changeRoots ?? []),
-    ],
-    probeRoot: probeWorktreePath(opts.repoRoot, "commit-pr"),
-    ...(opts.changeUnrooted ? { changeUnrooted: opts.changeUnrooted } : {}),
-    ...(opts.probeUnrooted ? { probeUnrooted: opts.probeUnrooted } : {}),
-  });
-  if (attribution.unattributable !== undefined) {
-    const why =
-      changeNames.length === 0
-        ? attribution.unattributable
-        : baseNames.length === 0
-          ? emptyBaseReason(false, baseStream)
-          : attribution.unattributable;
-    trace(`work-driver: commit-pr verify — the baseline probe is unattributable: ${why}`);
+  const baseReport = readVerifyReport(opts.probeReportFile);
+  if (baseReport.names === undefined) {
+    trace(
+      `work-driver: commit-pr verify — the base run's failing tests are unattributable (${baseReport.reason}); the consolidated failure parks as before`,
+    );
     return undefined;
   }
+  const baseNames = baseReport.names;
+  // Anchor the comparison in the trees each run ACTUALLY executed in. The
+  // probe's worktree is one of them (the probe created it, so the exported
+  // naming rule names the same path). The other is where the CHANGE run's names
+  // came from, which the caller cannot know from `repoRoot` alone: the gate is a
+  // script, and a script that resolves its own path (`$(dirname "$0")`, which is
+  // how a committed `gate.sh` names its test list) prints paths under the tree
+  // the script lives in — so in a followup round, or a ci retry that re-runs on
+  // a different checkout, the change run's names sit under a third tree
+  // entirely. Hence `changeRoots`: every tree the change run may have run in. A
+  // name that sits under NONE of them is `unknown`, and `unknown` parks — it
+  // never excuses.
+  const attribution = attributeFailuresByName(changeNames, baseNames, {
+    changeRoots: [probeTree, opts.repoRoot, ...(opts.changeRoots ?? [])],
+    probeRoot: probeTree,
+  });
+  if (attribution.unattributable !== undefined) {
+    trace(
+      `work-driver: commit-pr verify — the baseline probe is unattributable: ${attribution.unattributable}`,
+    );
+    return undefined;
+  }
+  // `changeStream` is retained in the signature for the caller's error path
+  // only (the tail the classifier reads is built upstream from the same
+  // stream); nothing here reads it to decide an excuse. Declared and unused on
+  // purpose rather than deleted, so a future caller cannot reintroduce the
+  // stream as a name source by passing it back in a different position.
+  void changeStream;
   return {
     preExistingFailures: attribution.preExisting,
     changeCausedFailures: attribution.changeCaused,
   };
-}
-
-/**
- * The probe's worktree path, by the one naming rule `probeBaselineVerify`
- * uses. Duplicated as a pure function here so the caller can hand the
- * attribution rule the tree the probe actually ran in — the probe itself
- * keeps the single source of truth for creating and removing it.
- */
-export function probeWorktreePath(repoRoot: string, label: string): string {
-  return `${repoRoot.replace(/\/+$/, "")}/.worktrees/baseline-verify-${label}`;
 }

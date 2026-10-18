@@ -19,11 +19,11 @@
 import { realpathSync } from "node:fs";
 
 /**
- * The two trees a failing-test name may be anchored in, plus the bare/relative
- * names each run printed. `*Unrooted` is a MEMBERSHIP set, not a guess: a name
- * is treated as bare only when a run is recorded as having printed that exact
- * string, so an absolute path can never borrow the bare-name comparison and be
- * excused by a same-named file somewhere else in the tree.
+ * The two trees a failing-test name may be anchored in. There is no bare-name
+ * membership set: a name that carries no root prefix is NOT comparable, because
+ * nothing about it records which tree it came from, and two runs agreeing on a
+ * bare spelling is a coincidence a forger can arrange on purpose. Bare names
+ * are unattributable (park), not compared.
  */
 export interface NameRoots {
   /**
@@ -34,10 +34,6 @@ export interface NameRoots {
   changeRoots: readonly string[];
   /** The probe's detached worktree at the base commit. */
   probeRoot: string;
-  /** Names the change run printed that carry no root prefix. */
-  changeUnrooted?: readonly string[];
-  /** Names the base run printed that carry no root prefix. */
-  probeUnrooted?: readonly string[];
 }
 
 /** The summary form: `FAILED: <n> test(s) — <name>, <name>, …` (or collapsed). */
@@ -141,7 +137,13 @@ export function isContradictoryTally(stream: string): boolean {
   const lines = stream.split("\n").map((l) => l.trim());
   const last = [...lines].reverse().find((l) => TALLY_RE.test(l));
   if (last === undefined) return false;
-  const fails = digestTallyFailCount(stream);
+  // The verdict is the tally THIS function located — the last one in the
+  // stream, which is the loop's own — read off the same `last` line rather than
+  // re-derived by a second scan that could land on a different line and call
+  // the pair coherent. `failingTestNames` is the other half of the
+  // contradiction: a stream that names failures can never be an all-pass, no
+  // matter what its final tally claims.
+  const fails = Number(TALLY_RE.exec(last)?.[2]);
   return fails === 0 && failingTestNames(stream).length > 0;
 }
 
@@ -230,35 +232,21 @@ function relativeTo(name: string, root: string): string | undefined {
   return n.startsWith(`${r}/`) ? n.slice(r.length + 1) : undefined;
 }
 
-/** True when `name` is one of the names `run` is recorded as having printed. */
-function printedBy(name: string, run: readonly string[] | undefined): boolean {
-  if (run === undefined) return false;
-  const n = asPath(name);
-  return run.some((r) => asPath(r) === n);
-}
-
 /**
  * Compare two failing-test names produced by two runs in two trees.
  *
  * Each name is stripped against the root it lives under and the remainders
- * must be EQUAL. `*Unrooted` records which names each run printed bare (a
- * relative-path rule `.pi/verify-cmd` takes when handed file names); a name in
- * one of those sets is compared by exact spelling only when BOTH sides are
- * recorded as bare, so an absolute path can never borrow that rule.
+ * must be EQUAL. There is no bare-name branch: a name that carries no root
+ * prefix records nothing about which tree printed it, so it cannot be placed
+ * and cannot excuse anything. The degenerate configuration — no change tree of
+ * its own, or one that resolves to the probe's own directory — is `unknown`
+ * too, because relative-path equality there proves nothing about which run
+ * printed what.
  *
- * `unknown` is the answer whenever a name cannot be placed, whenever the two
- * runs share no distinct change tree, or whenever one side is anchored and the
- * other is not. The caller parks on `unknown`.
+ * `unknown` is the answer whenever a name cannot be placed. The caller parks on
+ * `unknown`.
  */
 export function compareNames(a: string, b: string, roots: NameRoots): NameComparison {
-  const aBare = printedBy(a, roots.changeUnrooted) || printedBy(a, roots.probeUnrooted);
-  const bBare = printedBy(b, roots.changeUnrooted) || printedBy(b, roots.probeUnrooted);
-  // Both bare: compared by exact spelling. This is the shape `.pi/verify-cmd`
-  // takes when it hands the loop bare file names — no root is involved, so no
-  // tree can be forged and the only way two runs agree on a bare name is that
-  // the gate was handed that name both times. Checked FIRST so the degenerate
-  // one-root case below cannot swallow it.
-  if (aBare && bBare) return asPath(a) === asPath(b) ? "same" : "different";
   // The degenerate configuration: with no change tree of its own (or one that
   // resolves to the probe's own directory), relative-path equality proves
   // nothing about which run printed what, so nothing may be excused. Compared
@@ -286,18 +274,14 @@ export function compareNames(a: string, b: string, roots: NameRoots): NameCompar
 
 /**
  * True when two parsed names denote the same test across two runs in two
- * trees, with NO roots supplied — so only two identical bare spellings may
- * match. Exposed for callers that want the boolean; the attribution path uses
+ * trees. Exposed for callers that want the boolean; the attribution path uses
  * `compareNames` with the real roots so `unknown` stays distinguishable from
  * `different` and turns into a park rather than a silent `different`.
+ *
+ * With no roots the answer is always `unknown` — and therefore always `false`.
+ * That is the point: a bare-name comparison is what this seam refused to do,
+ * so the convenience wrapper must not be a door back to it.
  */
 export function sameFailingTest(a: string, b: string): boolean {
-  return (
-    compareNames(a, b, {
-      changeRoots: [],
-      probeRoot: "",
-      changeUnrooted: [a],
-      probeUnrooted: [b],
-    }) === "same"
-  );
+  return compareNames(a, b, { changeRoots: [], probeRoot: "" }) === "same";
 }

@@ -39,6 +39,21 @@ import { type ExecFn, worktreePath } from "./worktree.ts";
 /** Leads the failure string of a red baseline; the explain renderer keys on it. */
 export const BASELINE_RED_MARKER = "[baseline-red]";
 
+/**
+ * The ONE naming rule for a baseline probe's throwaway worktree. Exported
+ * because the attribution seam has to name the same tree the probe creates —
+ * it hands that path to the name comparison as the root the base run's names
+ * live under, and two spellings of one directory is how a comparison silently
+ * stops matching anything.
+ *
+ * Deliberately NOT `issue-<N>-…`: the same-issue leftover scan reads that
+ * prefix as a workstream's worktree, and a probe tree leaked by a killed
+ * process must never park the next cycle as "dirty leftover work".
+ */
+export function baselineProbeWorktreePath(repoRoot: string, label: number | string): string {
+  return worktreePath(repoRoot, `baseline-verify-${label}`);
+}
+
 export type BaselineVerdict =
   | { status: "green" }
   /**
@@ -82,13 +97,21 @@ export async function probeBaselineVerify(
     issue: number | string;
     cmd: string;
     timeoutMs: number;
+    /**
+     * #1404 — the env the base run executes with. The commit-pr seam uses it to
+     * point `VERIFY_REPORT_FILE` at a file only the loop can write, so the
+     * names it reads back are the loop's own verdict rather than a stream a
+     * test may have printed. Absent → the ambient env, which produces no report
+     * at all (the offline suite's and CI's shape).
+     */
+    env?: NodeJS.ProcessEnv;
   },
 ): Promise<BaselineVerdict> {
   const { repoRoot, baseSha, cmd, timeoutMs } = opts;
   // Deliberately NOT `issue-<N>-…`: the same-issue leftover scan reads that
   // prefix as a workstream's worktree, and a probe tree leaked by a killed
   // process must never park the next cycle as "dirty leftover work".
-  const abs = worktreePath(repoRoot, `baseline-verify-${opts.issue}`);
+  const abs = baselineProbeWorktreePath(repoRoot, opts.issue);
   const remove = () =>
     execFn(`git worktree remove --force ${JSON.stringify(abs)}`, {
       cwd: repoRoot,
@@ -112,7 +135,12 @@ export async function probeBaselineVerify(
     trace(`work-driver: baseline verify — running \`${cmd}\` at base ${baseSha.slice(0, 12)}`);
     try {
       await withVerifySlot(() =>
-        execFn(cmd, { cwd: abs, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }),
+        execFn(cmd, {
+          cwd: abs,
+          timeout: timeoutMs,
+          maxBuffer: 8 * 1024 * 1024,
+          ...(opts.env !== undefined ? { env: opts.env } : {}),
+        }),
       );
       return { status: "green" };
     } catch (err) {
