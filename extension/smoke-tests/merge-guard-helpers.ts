@@ -266,15 +266,17 @@ export async function hookDecision(
     reason: (r as { reason?: string } | undefined)?.reason,
     calls: env.calls,
     /**
-     * Every `merge-guard: HELD …` OR `merge-guard: BLOCKED …` line the hook
-     * emitted for this command. #1479 — the filter used to match `HELD` only,
-     * so a blocked merge (kind `merge`, unresolvable number) logged its
+     * Every `merge-guard: HELD …` OR `merge-guard: BLOCKED …` trace line the
+     * hook emitted for this command. #1479 — the filter used to match `HELD`
+     * only, so a blocked merge (kind `merge`, unresolvable number) logged its
      * `merge-guard: BLOCKED` trace line and no test could ever see it. The
      * line is stored WITHOUT the `[pi-rukas] WARN ` prefix `traceWarn` adds,
      * so an assertion can anchor on `^merge-guard:` without depending on the
      * console prefix — which is harness plumbing, not the trace contract.
+     * (Renamed from `holds` in #1479: it now carries BLOCKED lines too, and
+     * `traces` matches the doc — these are the guard's trace lines.)
      */
-    holds: traces
+    traces: traces
       .filter((l) => l.includes("merge-guard: HELD") || l.includes("merge-guard: BLOCKED"))
       .map(
         (l) =>

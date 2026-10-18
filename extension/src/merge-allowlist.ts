@@ -58,6 +58,7 @@
  * safety switch to unblock a read is handed the wrong remedy.
  */
 
+import { isInertFileWrite } from "./merge-inert-write.ts";
 import { MERGE_WORD, VERB_PAIR } from "./merge-lex-views.ts";
 import { lexedWhy } from "./merge-refusals.ts";
 import { analysisBound } from "./merge-size.ts";
@@ -421,6 +422,13 @@ export function readMergeCommand(command: string): MergeCommand {
   // only what the steps below would have had to read (merge-size.ts), so a
   // long command naming no forge — or spelling no merge word — answers `none`
   // here exactly as it would below the bound.
+  //
+  // #1559 — ahead of even the bound: a command whose every command word is a
+  // text writer redirected to a file (merge-inert-write.ts) execs no forge,
+  // whatever its quoted text or heredoc body spells. It answers only `none`,
+  // so it can never reach current-branch PR resolution, which is the one
+  // thing the bound exists to prevent.
+  if (isInertFileWrite(command)) return { kind: "none" };
   const bounded = analysisBound(command);
   if (bounded !== undefined) return bounded;
   const lexed = lex(command);
@@ -432,7 +440,7 @@ export function readMergeCommand(command: string): MergeCommand {
   if (!("words" in lexed)) {
     return refuse(
       lexed.code,
-      `triggered by ${trigger.detail}; the text also holds ${lexedWhy(lexed.code)}`,
+      `triggered by ${trigger.detail}; the text also holds ${lexedWhy(lexed.code)}${writeHint(command)}`,
     );
   }
   const words = lexed.words;
@@ -440,6 +448,17 @@ export function readMergeCommand(command: string): MergeCommand {
   if (g !== undefined) return parse(g, words);
   return refuse(
     "not-a-forge-command",
-    `triggered by ${trigger.detail}, but the command word is \`${(words[0] ?? "<empty>").slice(0, 40)}\`, not \`gh\` or \`glab\`,`,
+    `triggered by ${trigger.detail}, but the command word is \`${(words[0] ?? "<empty>").slice(0, 40)}\`, not \`gh\` or \`glab\`${writeHint(command)},`,
   );
+}
+
+/**
+ * #1559 — a held command that starts like a text write did not satisfy
+ * `isInertFileWrite`; say what would, so the agent converges in one retry
+ * instead of re-encoding the same text until no command spells a merge.
+ */
+function writeHint(command: string): string {
+  const head = /^\s*(\S+)/.exec(command)?.[1] ?? "";
+  if (!["cat", "printf", "echo", "mkdir"].includes(head)) return "";
+  return "; a text write is never held when every command in it is `cat`/`printf`/`echo` with stdout redirected to a file (`cat > FILE <<'EOF'`, `printf '%s\\n' … > FILE`) and nothing in it pipes or substitutes";
 }
