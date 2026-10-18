@@ -46,6 +46,13 @@ export type VerifyExecFn = (
     // merge's rule-3 grep uses this so planner-controlled paths arrive
     // verbatim.
     argv?: string[];
+    // #1095 / #1414 r3 — kill the whole process group on timeout or overflow.
+    // Declared here because `execp` satisfies this signature (asserted below)
+    // and every executor that honours `argv` routes through the same shared
+    // executor, which implements it. Without it a caller cannot ASK for a
+    // group kill: the checkpoint's typecheck needs one, because `bun x tsc`
+    // spawns a `tsc` grandchild that a plain timeout leaves compiling.
+    killGroup?: boolean;
   },
 ) => Promise<{ stdout: string; stderr?: string }>;
 

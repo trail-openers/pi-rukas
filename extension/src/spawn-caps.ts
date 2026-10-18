@@ -262,6 +262,31 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
       : undefined;
   loopGracePoll?.unref();
 
+  // The budget kill, symmetric with `loops()` above (#1510). The tracker
+  // invokes this from BOTH of its paths — `poll()` on the driver's 500 ms
+  // `setInterval` (grace > 0) and `check()` synchronously (grace == 0) — so
+  // the guard lives HERE, on the injected closure, rather than in either
+  // branch: a throw escaping `poll()` is an uncaught exception at timer level,
+  // which aborts the parent and takes down every sibling child still in
+  // flight. It stays on the caller side rather than inside `killChild` /
+  // `killProcessTree` because those already swallow their own signal errors
+  // (`signalChild` / `signalGroupPid`); the reachable throw is above them — a
+  // child handle without a `kill` method, or the prologue of
+  // `killProcessTree` itself.
+  const budgetKill = () => {
+    if (opts.childExited()) return; // H1 — the child is already gone
+    try {
+      killChild(opts.child);
+    } catch (err) {
+      // The kill signal is a best-effort side effect; the tracker set its own
+      // `killed` flag BEFORE calling, so `killCause()` and the `tokenBudget`
+      // evidence pair survive a swallowed throw — crash path and attribution
+      // path stay separate. Traced rather than swallowed silently, mirroring
+      // the loop detector's `trace()` sites, so a kill that cannot land is
+      // recorded (PI_ENSEMBLE_DEBUG=1) instead of lost.
+      trace(`token-budget killChild failed: ${String(err)}`);
+    }
+  };
   const tracker =
     capsOn && opts.onSteer
       ? new TokenBudgetTracker(
@@ -269,9 +294,7 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
           opts.onSteer,
           // H1 — same race as the loop kill: the tracker kills on its own
           // schedule, so gate the kill on the child's observed exit too.
-          () => {
-            if (!opts.childExited()) killChild(opts.child);
-          },
+          budgetKill,
           opts.totalTokens,
           graceMs,
         )

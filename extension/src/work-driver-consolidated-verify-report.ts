@@ -59,6 +59,11 @@ export interface ConsolidatedVerifyReporting {
    * failure beside it must still reach `verify-failed:develop`.
    */
   onBuildResidueOnly?: () => void;
+  /**
+   * #1427 — called with the path of the persisted gate-hang report, when the
+   * consolidated run was killed at its bound and the write succeeded.
+   */
+  onGateHangLogPath?: (logPath: string) => void;
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void;
 }
 
@@ -78,6 +83,7 @@ export function reportConsolidatedVerifyOutcome(
     onVerifyFlakeRecovered,
     onConsolidatedVerifySkipped,
     onBuildResidueOnly,
+    onGateHangLogPath,
   }: ConsolidatedVerifyReporting,
 ): void {
   // The decision is recorded ONCE by the consolidated run (the caller's
@@ -217,7 +223,11 @@ export function reportConsolidatedVerifyOutcome(
     // failure further down.
     failures.push(
       (cons.timedOut === true
-        ? `${verifyTimeoutFailure(cmd, `on the CONSOLIDATED tree at ${ctx.repoRoot}`, verifyTimeoutMs())}.`
+        ? // #1427 — the hang report carries the test names, the process tree and
+          // the output tail, so the headline stays the plain timeout sentence and
+          // the report is pointed at structurally (`hangLogPath` below, thence to
+          // the cap event and the handoff).
+          `${verifyTimeoutFailure(cmd, `on the CONSOLIDATED tree at ${ctx.repoRoot}`, verifyTimeoutMs())}.`
         : isHostForkExhaustion(classifierInput)
           ? hostExhaustionFailure(
               `verify command \`${cmd}\` on the CONSOLIDATED tree`,
@@ -230,6 +240,9 @@ export function reportConsolidatedVerifyOutcome(
     // return — undefined when the write failed, in which case there is
     // nothing to record structurally).
     if (cons.logPath !== undefined) onConsolidatedLogPath?.(cons.logPath);
+    // #1427 — the hang report's path, on the same structural channel #841 uses
+    // for the raw logs, so the cap event carries it and no renderer greps prose.
+    if (cons.hangLogPath !== undefined) onGateHangLogPath?.(cons.hangLogPath);
   } else {
     // #1240 — the probe was skipped because its tree is the tree that just
     // passed the per-worktree run. Recorded as an explicit note rather than

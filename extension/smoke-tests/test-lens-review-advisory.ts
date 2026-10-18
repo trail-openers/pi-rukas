@@ -36,7 +36,6 @@ import { runLensReview } from "../src/lens-review.ts";
 import { LENS_ROSTER } from "../src/lens-roster.ts";
 import { readBranchRows } from "../src/review-findings-store.ts";
 import type { LedgerEntry } from "../src/review-ledger.ts";
-import { validEntries } from "../src/review-ledger.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import {
   CHANGED_LINE_DIFF as DIFF,
@@ -92,14 +91,10 @@ const lensRows = (entries: LedgerEntry[]): LedgerEntry[] =>
 /** Wait until the branch's lens entry records round `n` (one lens row per
  * branch). The poll returns the entries it accepted; a timeout is a null. */
 const waitForRound = (n: number): Promise<LedgerEntry | undefined> =>
-  waitForLensRound(ledgerFile, "feat/x", n, lensRows, (file) =>
-    validEntries(JSON.parse(readFileSync(file, "utf8")).entries as unknown[]),
-  );
+  waitForLensRound(ledgerFile, "feat/x", n, lensRows);
 /** The branch's latest lens row — the one `hasCritical` is asserted on. */
 const latestLensEntry = (): LedgerEntry | undefined =>
-  latestLensEntryOf(ledgerFile, "feat/x", lensRows, (file) =>
-    validEntries(JSON.parse(readFileSync(file, "utf8")).entries as unknown[]),
-  );
+  latestLensEntryOf(ledgerFile, "feat/x", lensRows);
 
 try {
   // A finding literal, for the shapes no lens produces (no path, no line, a
@@ -277,6 +272,11 @@ try {
   // the BRANCH changed, outside that delta. It blocks — the round's ranges are
   // the PR's `base...head`, not the delta's.
   seedStore([{ severity: "MEDIUM", path: "src/a.ts", line: 11, title: "branch-line medium" }]);
+  // #1145 — the round just finished and its ledger write is still in flight on a
+  // thread the summary did not wait for. Everything below mutates the clone, and
+  // the writer runs `git status`/`git diff` against it, so the two race for
+  // `.git/index.lock`. Drain it first (see `awaitLedgerWrite`).
+  await fixture.awaitLedgerWrite();
   const deltaHead = sh("git rev-parse HEAD");
   writeFileSync(path.join(repo, "src", "b.ts"), "export const z = 1;\n");
   sh("git add -A");
@@ -296,6 +296,8 @@ try {
     `a delta round keeps a carried MEDIUM on a branch-changed line blocking (verdict ${rDelta.verdict})`,
   );
   setReport([]);
+  // The delta round's own write must settle before the rename mutates the clone.
+  await fixture.awaitLedgerWrite();
 
   // 5c-ter. RENAME AGREEMENT (#1125 round 3): the two sources of changed lines —
   // the diff the review computed and the `base...head` git read — must answer the

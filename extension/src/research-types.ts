@@ -232,6 +232,14 @@ export interface ResearchResult {
    */
   abstained: boolean;
   halt?: { reason: ResearchHaltReason; detail: string };
+  /**
+   * #1541 review (MEDIUM) — set when the run stopped because its async job was
+   * aborted (dispatch_kill, or session shutdown). Distinct from `halt`: a halt
+   * is a verdict about the research (nothing verified, reporter broken) and
+   * still writes an honest artifact; a cancellation is an outside act that
+   * produced no verdict, wrote nothing, and is remedied by re-running.
+   */
+  cancelled?: { by: string; phase: string };
   /** Deep tier: whether the entailment pass ran ("unavailable" = dispatch failed; claims stay unannotated). */
   entailment?: "ran" | "unavailable";
   timings: PlanPhaseTiming[];

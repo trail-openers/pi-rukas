@@ -108,7 +108,10 @@ try {
       requireAllNonEmpty: true,
       verifyCmd,
     });
-    assert(r.ok, "flake-recover: a fail-then-pass verify → integrate() succeeds (retry recovered the flake)");
+    assert(
+      r.ok,
+      "flake-recover: a fail-then-pass verify → integrate() succeeds (retry recovered the flake)",
+    );
     // The flag file must exist now (created by the first run's `touch`).
     let flagExists = false;
     try {
@@ -118,10 +121,16 @@ try {
     } catch {
       flagExists = false;
     }
-    assert(flagExists, "flake-recover: the first run created the flag file (stateful fixture confirms a retry happened)");
+    assert(
+      flagExists,
+      "flake-recover: the first run created the flag file (stateful fixture confirms a retry happened)",
+    );
     // The branch must have been pushed.
     const { stdout } = await execFileP("git", ["branch", "-a"], { cwd: f.originDir });
-    assert(stdout.includes("feature/flake-recover"), "flake-recover: the branch reached origin after the flake recovered");
+    assert(
+      stdout.includes("feature/flake-recover"),
+      "flake-recover: the branch reached origin after the flake recovered",
+    );
   }
 
   // ------------------------- case 2 — fail-both (genuine defect)
@@ -153,17 +162,25 @@ try {
       requireAllNonEmpty: true,
       verifyCmd,
     });
-    assert(!r.ok, "flake-failboth: a verify that fails both runs → integrate() fails (the retry did not mask a real failure)");
+    assert(
+      !r.ok,
+      "flake-failboth: a verify that fails both runs → integrate() fails (the retry did not mask a real failure)",
+    );
     assert(
       !r.ok && r.failure === "verify",
       "flake-failboth: the failure is tagged `verify` — the gate still halts on a genuine defect",
     );
     assert(
-      !r.ok && /\[consolidation-created\]|\[per-workstream-defect\]|\[needs-human-decision\]/.test(r.reason),
+      !r.ok &&
+        /\[consolidation-created\]|\[per-workstream-defect\]|\[needs-human-decision\]/.test(
+          r.reason,
+        ),
       "flake-failboth: the reason carries the classification label (both runs failed, so classification proceeded)",
     );
     // The branch must NOT have been pushed.
-    const { stdout: remoteBranches } = await execFileP("git", ["branch", "-a"], { cwd: f.originDir });
+    const { stdout: remoteBranches } = await execFileP("git", ["branch", "-a"], {
+      cwd: f.originDir,
+    });
     assert(
       !remoteBranches.includes("feature/flake-failboth"),
       "flake-failboth: the branch never reached origin (the retry did not launder a genuine failure)",
@@ -237,13 +254,18 @@ try {
       verifyCmd,
       verifyRetry: { ciRetryCount: 1, onRecover: () => {} },
     });
-    assert(!r.ok, "flake-ciretry: with ciRetryCount > 0 the retry is skipped → integrate() fails (no second run)");
+    assert(
+      !r.ok,
+      "flake-ciretry: with ciRetryCount > 0 the retry is skipped → integrate() fails (no second run)",
+    );
     assert(
       !r.ok && r.failure === "verify",
       "flake-ciretry: the failure is tagged `verify` — the ci-retry guard prevents a second flake retry",
     );
     // The branch must NOT have been pushed.
-    const { stdout: remoteBranches } = await execFileP("git", ["branch", "-a"], { cwd: f.originDir });
+    const { stdout: remoteBranches } = await execFileP("git", ["branch", "-a"], {
+      cwd: f.originDir,
+    });
     assert(
       !remoteBranches.includes("feature/flake-ciretry"),
       "flake-ciretry: the branch never reached origin",

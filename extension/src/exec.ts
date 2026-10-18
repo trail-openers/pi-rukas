@@ -70,9 +70,19 @@ function execGroup(cmd: string, argv: string[] | undefined, opts: ExecOpts): Pro
     let timer: ReturnType<typeof setTimeout> | undefined;
     // A group kill carries the exec error shape: execFile's timeout error has
     // `killed` and `signal`, and every rejection carries the captured output.
-    const groupKillError = (message: string) =>
+    //
+    // #1414 round 3 — the two kill paths are distinguished the way
+    // `exec-tree.ts` distinguishes them: `killed` says the group was
+    // signalled, `timedOutKill` says the WALL CLOCK is what signalled it, and
+    // `overflow` names the stream that broke its bound. Stamping `killed`
+    // alone on the overflow path let every consumer read a chatty run as a
+    // hung one — the checkpoint's typecheck classifier is such a consumer
+    // (finding 3), and `isTimedOutKill` is the shared reader.
+    const groupKillError = (message: string, streamOverflowed?: string) =>
       Object.assign(new Error(message), {
         killed: true,
+        timedOutKill: streamOverflowed === undefined,
+        ...(streamOverflowed === undefined ? {} : { overflow: streamOverflowed }),
         signal: "SIGKILL",
         code: null,
         stdout,
@@ -95,7 +105,9 @@ function execGroup(cmd: string, argv: string[] | undefined, opts: ExecOpts): Pro
     if (opts.timeout !== undefined) {
       timer = setTimeout(() => {
         killGroup();
-        finish(() => reject(groupKillError(`command timed out after ${opts.timeout}ms: ${cmd}`)));
+        finish(() =>
+          reject(groupKillError(`command timed out after ${opts.timeout}ms: ${cmd}`, undefined)),
+        );
       }, opts.timeout);
     }
     child.stdout.setEncoding("utf8");
@@ -104,7 +116,7 @@ function execGroup(cmd: string, argv: string[] | undefined, opts: ExecOpts): Pro
       stdout += d;
       if (stdout.length > maxBuffer) {
         killGroup();
-        finish(() => reject(groupKillError(`stdout maxBuffer exceeded: ${cmd}`)));
+        finish(() => reject(groupKillError(`stdout maxBuffer exceeded: ${cmd}`, "stdout")));
       }
     });
     child.stderr.on("data", (d: string) => {

@@ -8,6 +8,11 @@
  * check, so every PR-shaped git read names its range the same way. Imports
  * nothing from work-driver-*: it is a neutral leaf, which keeps those modules
  * from depending on each other through it.
+ *
+ * It also owns the git "that is not there" rule. `gitSaysAbsent` (ref probe) and
+ * `gitCatFileSaysAbsent` (tree-object probe) are exported because a hand-rolled
+ * copy of that rule in a caller is the bug pattern this module's existence
+ * prevents — see each function's docstring.
  */
 
 import type { ExecFn } from "./worktree.ts";
@@ -212,12 +217,58 @@ export async function aheadOfBase(
  *   `fatal: not a git repository` — same code, different question — which is
  *   exactly what the wording clause separates.
  */
-function gitSaysAbsent(err: unknown): boolean {
+export function gitSaysAbsent(err: unknown): boolean {
   const e = err as { code?: unknown; killed?: unknown; signal?: unknown } | null;
   if (e?.code !== 1 && e?.code !== 128) return false;
   if (e.killed === true) return false;
   if (e.signal !== null && e.signal !== undefined) return false;
   return gitWordingSaysRefMissing(err);
+}
+
+/**
+ * The `git cat-file -e <ref>:<path>` sibling of `gitSaysAbsent` (#1002).
+ *
+ * `git cat-file -e` answers "is this object in the database" with an exit code
+ * and no stdout, so the exit code carries most of the verdict — which is
+ * exactly what makes it easy to read wrongly. Two shapes share exit 128:
+ *
+ *   - **`fatal: not a git repository`** (or `dubious ownership`) — the clone
+ *     itself is broken. Same question as `gitSaysAbsent`'s, where it must stay
+ *     "could not tell", so git's wording is what separates it from a real
+ *     "that path is not in the tree".
+ *   - **`fatal: path '…' does not exist in '…'`** — git read the commit and
+ *     answered. That is a fact about the path, and the caller acts on it.
+ *
+ * A killed or signalled probe carries a numeric code too and says nothing about
+ * the path — refused for the same reason `gitSaysAbsent` refuses it.
+ *
+ * `not a valid object name` is deliberately NOT in the wording set, unlike
+ * `gitSaysAbsent`'s list: that is git's answer when the REV part of the
+ * tree-ish is unresolvable, which says nothing about the path. Reading it as
+ * absent would report "the branch does not have this file" about a ref nobody
+ * resolved. It belongs to `gitWordingSaysRefMissing`, where the question IS the
+ * ref.
+ *
+ * This is the ONLY place that reads git's "not there" wording for the tree
+ * probe. `lens-evidence.ts` used to hand-roll "exit 128 means absent", which is
+ * the second copy this module exists to prevent: a wording fix applied here
+ * would have left that site confidently wrong.
+ */
+const CATFILE_ABSENT_CODES: ReadonlySet<unknown> = new Set([1, 128]);
+
+export function gitCatFileSaysAbsent(err: unknown): boolean {
+  const e = err as {
+    code?: unknown;
+    killed?: unknown;
+    signal?: unknown;
+    stderr?: unknown;
+  } | null;
+  if (!e || !CATFILE_ABSENT_CODES.has(e.code)) return false;
+  if (e.killed === true) return false;
+  if (e.signal !== null && e.signal !== undefined) return false;
+  const stderr = typeof e.stderr === "string" ? e.stderr : "";
+  if (/not a git repository|dubious ownership/i.test(stderr)) return false;
+  return /does not exist|no such (?:path|object|tree|file)/i.test(stderr);
 }
 
 /**

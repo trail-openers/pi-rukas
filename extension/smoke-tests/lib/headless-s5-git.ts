@@ -10,6 +10,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { gitTestEnv } from "./git-test-env.ts";
 
 /**
  * The git subcommands the seam answers from the fixture's own repo.
@@ -54,7 +55,12 @@ export function isKnownGitSubcommand(argv: string[]): boolean {
 
 /** Run git in the fixture's repo, throwing the shape the exec seam's callers expect. */
 export function runFixtureGit(args: string[], repoRoot: string): { stdout: string } {
-  const child = spawnSync("git", args, { cwd: repoRoot, encoding: "utf8" });
+  // #1145 — `env: gitTestEnv()`. This is the seam the cycle's own git reads go
+  // through, and `spawnSync` with no `env` inherits the REAL `environ` on bun
+  // 1.3: a host ignore file or `init.defaultBranch` would change what
+  // `status`/`rev-parse` report here and decide the merge-evidence verdict on
+  // the machine rather than the code (see lib/git-test-env.ts).
+  const child = spawnSync("git", args, { cwd: repoRoot, encoding: "utf8", env: gitTestEnv() });
   if (child.status !== 0) {
     throw Object.assign(new Error(child.stderr?.slice(0, 200) ?? "git failed"), {
       stdout: child.stdout ?? "",

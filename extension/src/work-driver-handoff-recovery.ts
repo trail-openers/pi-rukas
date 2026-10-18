@@ -44,6 +44,8 @@ export type RecoverySection =
   | "step-back-revise-spec"
   | "commit-pr-incomplete-consolidation"
   | "intent-park"
+  // #819 — the plan-to-spec gate refused the plan before branch/develop.
+  | "plan-spec-mismatch"
   | "review-incomplete"
   | "worktree-work-consolidated"
   | "worktree-work-fallback"
@@ -69,6 +71,15 @@ export interface RecoveryStep {
  * surface; keeping it a named const here is what lets the shared decision
  * and the surface stay byte-identical by construction. */
 export const CONSOLIDATE_APPLY = "git apply --3way --binary --index";
+
+/** #612 — forge-appropriate recovery commands: `github` byte-for-byte, `gitlab`
+ * glab equivalent, `unknown` falls back to github (advisory text). The git / rm
+ * / cat / `#` lines are forge-agnostic. Lives here (not in the per-cap table)
+ * so a split-out recipe module — work-driver-handoff-recovery-plan.ts — shares
+ * the one forge mapping instead of copying a third copy of the rule. */
+export function forgeRecoveryLines(forge: ForgeType, github: string[], gitlab: string[]): string[] {
+  return forge === "gitlab" ? gitlab : github;
+}
 
 /**
  * #544 — re-qualify a markdown-surface line to the CHAT surface (absolute

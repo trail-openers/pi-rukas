@@ -246,6 +246,17 @@ const everyKindEvent: WorkEvent[] = [
     worktree: "/tmp/wt-default",
     workstreamCount: 1,
   },
+  // #1404 — the consolidated verify failed and the cycle pushed anyway, every
+  // failing test red at base. Same reason as the skip above: an absent kind
+  // makes the validator's tuple stale, and this event is the only record a
+  // red-gate-pushed cycle leaves in the state file.
+  {
+    kind: "consolidated-verify-pre-existing",
+    at: 1,
+    step: "commit-pr",
+    failures: ["extension/smoke-tests/test-a.ts"],
+    baseSha: "1".repeat(40),
+  },
   { kind: "widening-scan", at: 1, findings: [] },
   {
     kind: "memory-write",

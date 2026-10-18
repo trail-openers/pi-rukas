@@ -31,6 +31,11 @@
  *   - a round whose ledger write did not land still consumes its number for
  *     the rest of the process (the note says so), so a failed write can never
  *     hand the same round to the next run;
+ *   - #1449 — a round whose row landed OUTSIDE the per-clone ledger (an
+ *     inherited `PI_ENSEMBLE_REVIEW_LEDGER_FILE`) is reported too, and
+ *     deliberately NOT counted as unrecorded: the row exists, the guard just
+ *     cannot see it. The note names the file it wrote to, and says plainly that
+ *     this round is invisible to the next run's budget and delta base.
  *   - a corrupt `round` or `incompleteRuns` on the latest entry refuses, naming
  *     the field (fail closed);
  *   - the operator's environment variable `PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE=1`,
@@ -59,7 +64,11 @@ import { resolveBudgetKey } from "./lens-budget-key.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import type { LensReviewSummary } from "./lens-review-format.ts";
 import { acquireLedgerLock } from "./review-ledger-lock.ts";
-import { ledgerPathFor } from "./review-ledger-path.ts";
+import {
+  MISDIRECTED_LEDGER_NOTE,
+  ledgerPathFor,
+  misdirectedLedgerWrite,
+} from "./review-ledger-path.ts";
 import {
   type LedgerEntry,
   latestEntry,
@@ -165,6 +174,18 @@ export async function readRecordedLens(cwd: string, branch: string): Promise<Rec
   try {
     const file = await ledgerPathFor(execp, cwd);
     if (!file) return { ok: false, reason: "no review-ledger path for this checkout" };
+    // #1449 — the budget reads the file the WRITE went to, so when that is not
+    // the clone's own ledger the operator is told: the round it is about to
+    // count is invisible to this read, which is why a redirected run keeps
+    // looking like a first review. Still `ok: true` — the read succeeded, and
+    // refusing a review because an env var points elsewhere would be a new
+    // failure mode, not a fix.
+    const misdirected = await misdirectedLedgerWrite(execp, cwd, file);
+    if (misdirected) {
+      trace(
+        `lens-round-cap: the round budget reads ${misdirected} (an overridden path), not the per-clone ledger — the recorded round there is invisible to this check`,
+      );
+    }
     const release = await acquireLedgerLock(file);
     try {
       if (!existsSync(file)) return { ok: true, latest: undefined };
@@ -235,6 +256,32 @@ function noteUnrecorded(key: string, round: number | undefined, reason: string):
 }
 
 /**
+ * #1449 — the note a run carries when its row landed OUTSIDE the per-clone
+ * ledger.
+ *
+ * The round is NOT counted as unrecorded: the row genuinely exists (a redirect
+ * is `recorded: true` with a `landedAtPath`), it simply sits in a file the #912
+ * guard will never open. Double-counting it would hand the next run a round
+ * number the ledger already consumed, and the #1127 invariant the unrecorded
+ * counter exists to protect — "a failed write can never hand the same round to
+ * the next run" — would be broken in the other direction.
+ *
+ * The reason and the path are both named so the operator reading only the tool
+ * text can tell this apart from the by-design no-writes (which say nothing at
+ * all, or say "no branch to key the ledger entry on" / "no patch id").
+ */
+function noteMisdirected(key: string, round: number | undefined, landedAtPath: string): string {
+  trace(
+    `lens-round-cap: round ${round ?? "?"} on ${key} wrote to ${landedAtPath}, not the clone ledger`,
+  );
+  return [
+    MISDIRECTED_LEDGER_NOTE,
+    `Wrote to: ${landedAtPath}`,
+    `Round ${round ?? "?"} on \`${key}\` is recorded only in that file — the next run's round budget and delta base will not see it, because they read the per-clone ledger.`,
+  ].join("\n");
+}
+
+/**
  * Reserve one in-flight slot for `key`. The returned release is idempotent.
  * Given the run's ledger-write promise, it frees the slot only once that write
  * settles: until then the run's round is not on the ledger, so a concurrent
@@ -259,9 +306,11 @@ function reserve(key: string, round?: number): RoundRelease {
     return ledgerWrite.then(
       (outcome) => {
         free();
-        return outcome && outcome.recorded === false
-          ? noteUnrecorded(key, round, outcome.reason)
-          : undefined;
+        if (!outcome) return undefined;
+        if (outcome.recorded === false) return noteUnrecorded(key, round, outcome.reason);
+        // #1449 — a recorded write to a redirected path is reportable
+        // infrastructure, not an unrecorded round: see `noteMisdirected`.
+        return outcome.landedAtPath ? noteMisdirected(key, round, outcome.landedAtPath) : undefined;
       },
       (err: unknown) => {
         const reason = (err as Error)?.message ?? String(err);
