@@ -49,6 +49,18 @@ function assert(cond: boolean, msg: string) {
   assert(unknown.length === 0, `every validator cap literal is published (${unknown.join(", ")})`);
   assert(new Set(fixed).size === fixed.length, "published caps are unique");
   assert(JSON.stringify([...fixed].sort()) === JSON.stringify(fixed), "published caps are sorted");
+  const continueCaps = [
+    "ambiguous",
+    "fork",
+    "head-moved",
+    "not-found",
+    "unresolved",
+    "unsafe-head",
+  ];
+  assert(
+    continueCaps.every((c) => fixed.includes(`continue-pr-${c}`)),
+    "the six continue-pr caps are published (#1468)",
+  );
   const vocab = capVocabulary();
   const verify = vocab.templates.find((t) => t.prefix === "verify-failed:");
   assert(

@@ -300,6 +300,10 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
       lastCap?.kind === "cap-hit" &&
       (lastCap.cap === "intent-park" ||
         lastCap.cap === "existing-pr-detected" ||
+        lastCap.cap === "continue-pr-ambiguous" ||
+        lastCap.cap === "continue-pr-fork" ||
+        lastCap.cap === "continue-pr-not-found" ||
+        lastCap.cap === "continue-pr-unsafe-head" ||
         String(lastCap.cap).startsWith("explore-"));
     lines.push(
       "",
