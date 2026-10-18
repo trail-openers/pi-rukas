@@ -11,6 +11,7 @@ import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { capedPartialStateLines } from "./work-driver-caped-state.ts";
+import { inlineCodeSafe } from "./work-driver-conflict-evidence.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { draftPrHandoffLines } from "./work-driver-draft-pr-handoff.ts";
 import { explainCap } from "./work-driver-explain.ts";
@@ -127,6 +128,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     ...commitPrFallbackPlumbSection(state, capForExplain),
     ...adversarialOutcomeSection(state),
     ...plumbReportSection(state),
+    ...retryTreeSection(state),
     ...consolidationNotesSection(state),
     "### What was attempted",
     ...dispatchRows,
@@ -385,6 +387,28 @@ function plumbReportSection(state: WorkState): string[] {
     "### Plumbing that failed (the cycle continued anyway)",
     "",
     ...reports.map((r) => `- \`${r.step}\`: ${r.body}`),
+    "",
+  ];
+}
+
+/**
+ * #1391 — what the driver did with the trees lost attempts left behind. The
+ * ref and the patch are the recovery handles for work a retry cleared away.
+ */
+function retryTreeSection(state: WorkState): string[] {
+  const rows = state.eventLog.filter((e) => e.kind === "retry-tree-clean");
+  if (rows.length === 0) return [];
+  return [
+    "### Work lost step attempts left behind",
+    "",
+    ...rows.map((r) => {
+      const handles = [
+        r.ref ? `ref \`${inlineCodeSafe(r.ref)}\`` : "",
+        r.patch ? `patch \`${inlineCodeSafe(r.patch)}\`` : "",
+      ].filter(Boolean);
+      const why = r.detail ? ` — ${inlineCodeSafe(r.detail)}` : "";
+      return `- \`${r.step}\` attempt ${r.attempt}: ${r.outcome}, ${r.fileCount} file(s)${handles.length ? ` · ${handles.join(" · ")}` : ""}${why}`;
+    }),
     "",
   ];
 }

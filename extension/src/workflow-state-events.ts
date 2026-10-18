@@ -28,6 +28,7 @@ import type {
   LensResidualsPostFailedEvent,
   LensResidualsPostedEvent,
 } from "./workflow-state-events-residuals.ts";
+import type { RetryTreeCleanEvent } from "./workflow-state-events-retry-tree.ts";
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
 import type { DispatchSlowEvent } from "./workflow-state-events-slow.ts";
 import type {
@@ -471,6 +472,7 @@ export type WorkEvent =
   | MemoryEventFragment
   | WorktreeProvisionedEvent
   | SafetyNetCommitEvent
+  | RetryTreeCleanEvent
   | BranchResetEvent
   | WorktreeLeftoverHandledEvent
   | DispatchSlowEvent

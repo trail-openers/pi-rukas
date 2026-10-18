@@ -1305,6 +1305,15 @@ It used to continue. The failure was recorded in `plumbReports` rather than the 
 
 **A committed fix that could not be integrated is named.** When the fixer committed and the pick onto the branch failed, the handoff gives the fix's sha, the worktree holding it and the conflicting paths — the PR does not contain that commit, so land it by hand before merging. On an older build the second lens-fix round parked this way on its own: integration re-picked a commit that was already on the branch behind the tip (`Committing is not possible because you have unmerged files` in the evidence), stranding the round's real fix one commit ahead in the worktree. Fixed: a commit already in the branch's history is skipped.
 
+### A retried step started on a clean tree — where did the lost attempt's work go?
+
+When a `develop` or `lens-fix` child is lost (a severed provider connection, a watchdog kill) and the router retries the step, the driver first saves what the dead child left in its worktree and then cleans the tree, so the retry no longer parks on its predecessor's dirt (#1391: on an older build, `lens-fix-reposition: worktree has uncommitted changes: …` one second into the retried round). The work is in two places, both named on the `↻` retry line, in `/work-status` (`retry-tree-clean`) and in the handoff ("Work lost step attempts left behind"):
+
+- a ref, `refs/pi-rukas/retry-preserved/issue-<N>/<step>-<k>` — `git show <ref>` to read it, `git checkout <ref> -- <path>` to restore a file;
+- a patch, `tmp/issue-<N>/retry-<step>-<k>.patch` — `git -C <worktree> apply <patch>`. The retried child is told about it and may already have applied it.
+
+A tree carrying commits is never reset (`kept`): the develop retry builds on them and lens-fix integration lands them. If the save itself fails, nothing is cleaned and the cycle parks at `step-failed:<step>` with the git error as evidence — the tree still holds every byte the child wrote. The `adversarial` step's tree is never touched: its uncommitted diff is the work under review.
+
 ### A second `commit-pr` after `lens-fix`, then `integration-worktree-violation` and a non-fast-forward push
 
 Symptom: after `lens-fix` and a long re-review the driver ran `commit-pr` again instead of `lens-review`, logged `integrate worktree creation failed … refusing to force-remove existing worktree …/issue-<N>-default — it holds unrecoverable work: (unpushed commits: N)` and `! [rejected] … (non-fast-forward)`, and parked. Two causes, both fixed: a `dispatch-slow` event (any dispatch past the slow-run threshold) was appended after the step's verdict, and the driver routes on the last event — so the approval was shadowed and the cycle fell through to `commit-pr` (#1235); and the fallback's integrate worktree treated the cycle's own workstream tree as a foreign leftover (#1185). On an older build the work is intact in `.worktrees/issue-<N>-<id>` (detached HEAD) — cherry-pick it onto the branch.

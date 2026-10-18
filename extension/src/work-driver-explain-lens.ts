@@ -96,7 +96,11 @@ export function explainLens(cap: Cap, state: WorkState): string {
       const backup = ref
         ? ` The backup ref \`${ref}\` points at the worktree's pre-move HEAD (taken before the move / failed checkout) — restoring it (\`git checkout ${ref}\`) returns the tree to the exact state the guard refused to discard, so nothing was lost to the park. Before re-running, inspect the evidence above and decide whether to restore from the backup, commit the unlanded work onto the branch, or clean the tree.`
         : "";
-      return `the lens-fix reposition guard could not establish the correct base for the next round: ${cause}. ${where}${backup} The cycle halted rather than dispatching a fix onto a stale or diverged worktree, because a fix built there would not integrate cleanly (the #978 shape: round 2 built on the old base while the branch advanced by round 1). Inspect the worktree and the evidence above — commit or clean uncommitted work, land the missing commit on the branch, or restore from the backup ref — then re-run the cycle`;
+      // #1391 — dirt a lost lens-fix child left is the driver's, not the operator's.
+      const ownership = cause.includes("left by the lens-fix attempt this cycle lost")
+        ? " The dirt is NOT operator work: it is what a lens-fix child this cycle lost left behind, and the driver could not clear it (the evidence names the saved ref and patch, or why the save was refused). The fixer was not dispatched, so the round's findings are still open on the branch."
+        : "";
+      return `the lens-fix reposition guard could not establish the correct base for the next round: ${cause}. ${where}${ownership}${backup} The cycle halted rather than dispatching a fix onto a stale or diverged worktree, because a fix built there would not integrate cleanly (the #978 shape: round 2 built on the old base while the branch advanced by round 1). Inspect the worktree and the evidence above — commit or clean uncommitted work, land the missing commit on the branch, or restore from the backup ref — then re-run the cycle`;
     }
     case "draft-rearm-failed": {
       // #1398 — the review was about to run a second time and the PR was still
