@@ -471,15 +471,12 @@ else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandbox;
   );
   const chained = pmBashRefusal(pmVerdict(chain));
   assert(!/injection/i.test(chained), "#1233: a chained command is not called an injection");
-  assert(
-    /ONE allowlisted command per call/.test(chained) && /its own bash call/.test(chained),
-    "#1233: the refusal says to run each part separately",
-  );
+  assert(/its own bash call/.test(chained), "#1233: the refusal says to run each part separately");
   assert(/git -C <dir>/.test(chained), "#1233: the refusal names the cd-free form");
   const offList = pmBashRefusal(pmVerdict("git push origin main"));
   assert(pmVerdict("git push origin main") !== "allow", "#1233: a mutation is still refused");
   assert(
-    /not on the PM bash allowlist/.test(offList) && !/ONE allowlisted command per call/.test(offList),
+    /not on the PM bash allowlist/.test(offList) && !/its own bash call/.test(offList),
     "#1233: a single off-list command gets the allowlist message, not the chain one",
   );
 }
