@@ -9,6 +9,10 @@
  *   - every fix-developer spawn carries cwd === workCwd.
  *   - the caller repository's `git status --porcelain` is snapshotted around
  *     each fix round; a change there is reported as a violation.
+ *   - #1449: the ledger write is fire-and-forget and NEVER costs a review — the
+ *     mock below returns `undefined` (not a promise) on purpose, which is the
+ *     shape that took this suite down in CI when the call site chained `.then`
+ *     onto the writer's return unguarded. Arm L pins it.
  *
  * Drives the REAL runAdversarialLoop with fixFence (what the tool
  * passes) over real scratch git repos. The spawn seam, the ledger writer and
@@ -67,12 +71,17 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
   },
 }));
 const realLedger = await import("../src/adversarial-ledger.ts");
+// #1449 — returns `undefined`, NOT a promise. That is deliberate and it is the
+// shape the loop must survive: `makeLedgerWrite` may not assume the writer's
+// return is chainable, because a ledger problem must never cost a review. Do
+// not "fix" this mock to return a resolved promise — it would make arm L vacuous
+// and put the CI failure back.
 mock.module(new URL("../src/adversarial-ledger.ts", import.meta.url).href, () => ({
   ...realLedger,
   writeAdversarialLedgerEntry: (
     r: { loopOutcome?: string; text: string },
     p: { callerSuppliedDiff?: boolean } = {},
-  ) => {
+  ): void => {
     ledgerResults.push({
       loopOutcome: r.loopOutcome,
       text: r.text,
