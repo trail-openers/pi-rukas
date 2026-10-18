@@ -70,6 +70,26 @@ export function triggerCode(command: string): HoldReason | undefined {
     .replace(/\\\r?\n/g, "")
     .replace(/\$(?=['"])/g, "")
     .replace(/['"\\]/g, "");
+  // #1479 — the glued-view: a short flag's value that is glued to the flag
+  // letter (`-bmerge` = flag `-b` + value `merge`) is invisible to the word-
+  // boundary patterns above, because the value shares the flag's token. The
+  // view re-emits each glued value as its own word so the patterns can see it.
+  // Only values that already spell a trigger word are added, so the view is a
+  // no-op for the overwhelming majority of commands. A short flag is `-` +
+  // one letter; the value is everything after the second character. A long
+  // flag (`--body`) never glues. `=`-prefixed forms (`-b=x`) are already
+  // word-bounded by the `=`.
+  const gluedParts: string[] = [];
+  for (const w of command.split(/\s+/)) {
+    if (w.length < 4 || w[0] !== "-" || w[1] === "-") continue;
+    // The value is everything after the flag letter, up to (not including)
+    // any `=` — `-bmerge` → `merge`; `-bmerge=1` → `merge` (the `=1` is a
+    // separate getopt suffix, not part of the glued value).
+    const eq = w.indexOf("=");
+    const value = (eq > 0 ? w.slice(2, eq) : w.slice(2)).trim();
+    if (value !== "" && MERGE_WORD.test(` ${value}`)) gluedParts.push(value);
+  }
+  const gluedView = gluedParts.length > 0 ? `${command} ${gluedParts.join(" ")}` : command;
   let verb = false;
   let merge = false;
   let forge = false;
@@ -77,7 +97,7 @@ export function triggerCode(command: string): HoldReason | undefined {
   let verbText: string | undefined;
   let mergeText: string | undefined;
   let forgeText: string | undefined;
-  for (const t of [command, widened]) {
+  for (const t of [command, gluedView, widened]) {
     if (!verb && VERB_PAIR.test(t)) {
       verb = true;
       verbText = t;

@@ -22,7 +22,10 @@
  *   0b. READ-ONLY GH. A command lexing as ONE simple command whose words are
  *      `gh` + a genuine read (or a creation with no inline body) is not a
  *      merge, whatever merge words its titles or searches carry —
- *      `READ_ONLY_GH` is the list, `BODY_FLAGS` the creation split.
+ *      `READ_ONLY_GH` is the list, `BODY_FLAGS` the creation split. The noun
+ *      and verb are matched EXACTLY (#1431 round 3): `gh label create` merely
+ *      contains the word `create`, and it mutates the forge, so it is not
+ *      `pr create` and it is not exempt.
  *      Comments, edits, reviews and workflow/run verbs are NOT exempt: refused
  *      when they carry a merge word (put prose in `--body-file`).
  *   1. TRIGGER (cheap, on the raw text, case-insensitive — merge-trigger.ts
@@ -55,7 +58,7 @@
  * safety switch to unblock a read is handed the wrong remedy.
  */
 
-import { isInertFileWrite } from "./merge-inert-write.ts";
+import { MERGE_WORD, VERB_PAIR } from "./merge-lex-views.ts";
 import { lexedWhy } from "./merge-refusals.ts";
 import { analysisBound } from "./merge-size.ts";
 import { triggerCode } from "./merge-trigger.ts";
@@ -158,6 +161,7 @@ const READ_ONLY_GH = new Set([
   "release view",
   "label list",
   "repo view",
+  "extension list",
 ]);
 
 interface ForgeGrammar {
@@ -333,13 +337,45 @@ function parse(g: ForgeGrammar, words: string[]): MergeCommand {
  * a file") — refusing it would make the documented way out a dead end. It is
  * also how this harness posts bodies (`forge-commands.ts`, and the /work
  * driver's ops fallback). A title is prose and stays exempt.
+ *
+ * #1431 round 3 — getopt forms count as the flag too. bash accepts
+ * `-b=merge` and the glued `-bmerge` exactly as it accepts `-b merge`, so all
+ * three name an inline body and the merge word inside them is the one the
+ * guard has to see. So the rule is: the spaced flag, the `=`-prefixed form
+ * (`-b=…`, `--body=…`), and a glued short cluster — whose value is scanned,
+ * since the step-0 exemption runs BEFORE the trigger and a merge word that
+ * only ever appears inside a glued value (`-bmerge`) is seen nowhere else.
+ * What is NOT the flag is a name that merely starts with it: `--body-file`
+ * (the guard's own documented remedy — see above) and `-bx`. A long flag never
+ * glues, and a short cluster whose tail is another flag (`-bs -s`) is not a
+ * body. A creation whose body happens to be another flag's name (`-b -x`) is
+ * read the way the grammar reads it — the value is missing — rather than by
+ * guessing that a dash began prose.
  */
 const BODY_FLAGS = new Set(["--body", "-b"]);
+
+/** Whether `w` is one of the inline body flags in any getopt spelling. */
+function isBodyFlag(w: string): boolean {
+  // The spaced form (`-b merge`) and the long `=`-prefixed form (`--body=x`)
+  // match the flag verbatim or in their `=`-head.
+  if (BODY_FLAGS.has(w)) return true;
+  const eq = w.indexOf("=");
+  if (eq > 0 && BODY_FLAGS.has(w.slice(0, eq))) return true;
+  // Glued short form: `-bmerge` = flag `-b` + value `merge`. The value is
+  // what reaches the forge, so the flag counts as the body flag only when the
+  // value itself spells a merge word — `-bx` (value `x`) does not, and a
+  // separate `merge` argument is not the body. A long flag never glues.
+  if (w.length >= 4 && w[0] === "-" && w[1] !== "-" && w.slice(0, 2) === "-b") {
+    const value = w.slice(2);
+    if (MERGE_WORD.test(` ${value}`)) return true;
+  }
+  return false;
+}
 
 function isCreationWithBody(words: string[]): boolean {
   const [, noun = "", verb = ""] = words;
   if (verb !== "create" || (noun !== "pr" && noun !== "issue")) return false;
-  return words.some((w) => BODY_FLAGS.has(w) || BODY_FLAGS.has(w.split("=")[0] ?? ""));
+  return words.some(isBodyFlag);
 }
 
 /** Whether the words are one of the known read-only or creating gh subcommands. */
@@ -347,7 +383,15 @@ function isReadOnlyGh(words: string[]): boolean {
   if (words[0] !== "gh") return false;
   if (isCreationWithBody(words)) return false;
   const [, noun = "", verb = ""] = words;
+  // `search` is exempt whatever it searches — every subcommand is a read. It
+  // is matched by noun ALONE, so a search that spells its own subcommand as an
+  // empty argument (`gh search "" merge`) cannot dodge the exemption by
+  // shifting the verb slot.
   if (noun === "search") return true;
+  // #1431 round 3 — EXACT pair, never a substring: `${noun} ${verb}` is built
+  // from the two words bash would dispatch on, so `gh release create` (which
+  // contains `create`) and a plugin verb of that shape answer `false` here and
+  // reach the grammar like any other mutating command.
   return READ_ONLY_GH.has(`${noun} ${verb}`);
 }
 
@@ -359,13 +403,6 @@ export function readMergeCommand(command: string): MergeCommand {
   // only what the steps below would have had to read (merge-size.ts), so a
   // long command naming no forge — or spelling no merge word — answers `none`
   // here exactly as it would below the bound.
-  //
-  // #1559 — ahead of even the bound: a command whose every command word is a
-  // text writer redirected to a file (merge-inert-write.ts) execs no forge,
-  // whatever its quoted text or heredoc body spells. It answers only `none`,
-  // so it can never reach current-branch PR resolution, which is the one
-  // thing the bound exists to prevent.
-  if (isInertFileWrite(command)) return { kind: "none" };
   const bounded = analysisBound(command);
   if (bounded !== undefined) return bounded;
   const lexed = lex(command);
@@ -377,7 +414,7 @@ export function readMergeCommand(command: string): MergeCommand {
   if (!("words" in lexed)) {
     return refuse(
       lexed.code,
-      `triggered by ${trigger.detail}; the text also holds ${lexedWhy(lexed.code)}${writeHint(command)}`,
+      `triggered by ${trigger.detail}; the text also holds ${lexedWhy(lexed.code)}`,
     );
   }
   const words = lexed.words;
@@ -385,17 +422,6 @@ export function readMergeCommand(command: string): MergeCommand {
   if (g !== undefined) return parse(g, words);
   return refuse(
     "not-a-forge-command",
-    `triggered by ${trigger.detail}, but the command word is \`${(words[0] ?? "<empty>").slice(0, 40)}\`, not \`gh\` or \`glab\`${writeHint(command)},`,
+    `triggered by ${trigger.detail}, but the command word is \`${(words[0] ?? "<empty>").slice(0, 40)}\`, not \`gh\` or \`glab\`,`,
   );
-}
-
-/**
- * #1559 — a held command that starts like a text write did not satisfy
- * `isInertFileWrite`; say what would, so the agent converges in one retry
- * instead of re-encoding the same text until no command spells a merge.
- */
-function writeHint(command: string): string {
-  const head = /^\s*(\S+)/.exec(command)?.[1] ?? "";
-  if (!["cat", "printf", "echo", "mkdir"].includes(head)) return "";
-  return "; a text write is never held when every command in it is `cat`/`printf`/`echo` with stdout redirected to a file (`cat > FILE <<'EOF'`, `printf '%s\\n' … > FILE`) and nothing in it pipes or substitutes";
 }
