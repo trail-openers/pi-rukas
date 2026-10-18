@@ -27,6 +27,7 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
 /** Result of one explore attempt. `reply` is set only for a completed dispatch. */
 export interface ExploreAttempt {
   state: WorkState;
+  /** The job id on the event that recorded this attempt's outcome (#1548). */
   jobId: string;
   reply?: DispatchResult;
 }
@@ -160,7 +161,7 @@ export async function dispatchExploreAttempt(
   // A dispatch that FAILED has no reply to route on (nessie #686/#693).
   return {
     state: after,
-    jobId: begun.jobId,
+    jobId: event.jobId,
     reply: event.kind === "dispatch-completed" ? exploreDispatch : undefined,
   };
 }

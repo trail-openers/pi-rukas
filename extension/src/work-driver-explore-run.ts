@@ -244,12 +244,17 @@ export async function runExplore(
   // attempt's reply is not re-checked here, so control flow cannot come back
   // to this block.
   if (shouldRetryExplore({ useIntent, spec: resolved?.spec })) {
-    trace("work-driver: explore reply has no `## Spec` — re-dispatching explore once (#1094)");
+    // #1548 — a verdict without its `## Spec` is not an accepted verdict: the
+    // event names what the first reply lacked, so the re-dispatch reads as the
+    // deliberate re-verdict it is.
+    const missing = noSpecEvidence(responseText, false);
+    trace(`work-driver: explore ${first.jobId}: ${missing} — re-dispatching explore once (#1094)`);
     next = appendEvent(next, {
       kind: "explore-retried",
       step: "explore",
       at: Date.now(),
       verdictParsed: hasIntentVerdictToken(responseText),
+      missing,
       firstJobId: first.jobId,
     });
     if (useIntent) await deleteSpecArtifact(ctx.repoRoot, ctx.issue);
