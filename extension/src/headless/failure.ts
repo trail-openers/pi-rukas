@@ -162,6 +162,7 @@ function dispatchKind(e: FailedDispatch): FailureKind {
       return "timeout";
     case "loop":
     case "token-budget":
+    case "no-progress":
     case "abort":
       return "guard";
     default:

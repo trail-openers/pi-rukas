@@ -300,6 +300,8 @@ export async function fanOutAdversarial(
       // abort / plan-timeout) for the retry ladder alone. Order matters:
       // `capKillOutcomeFields` wins for loop / token-budget, which it owns.
       ...(retryLadderKillCause(result) ? { killCause: retryLadderKillCause(result) } : {}),
+      // #1313 — a stall kill parks; without its cause it reads as a provider fault and is retried.
+      ...(result.killCause === "no-progress" ? { killCause: "no-progress" as const } : {}),
       completionEvent,
       branchEvent: multi
         ? {

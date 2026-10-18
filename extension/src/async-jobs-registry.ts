@@ -274,7 +274,7 @@ export function isDriverOwnedJob(jobId: string): boolean {
 
 /** What every PM-facing surface says about a driver-owned child. */
 export const DRIVER_OWNED_NOTICE =
-  "This is the running /work driver's own child, NOT a job you dispatched: the driver chose its worktree and brief, is awaiting it, and retries or parks by itself when it fails. Slow is not wrong — do not kill it to re-dispatch your own, and never dispatch a developer or ops into the cycle's worktree.";
+  "This is the running /work driver's own child, NOT a job you dispatched: the driver chose its worktree and brief, is awaiting it, and handles its stalls by itself — it ends a child frozen across slow-run levels, and retries or parks a child that fails. Slow is not wrong and a stall is not yours to decide: do not kill it to re-dispatch your own, do not ask the operator what to do about it, and never dispatch a developer or ops into the cycle's worktree.";
 
 /** "#112" / "#10, #11" — the issues the live cycles in this process own. */
 function liveIssuesText(): string {

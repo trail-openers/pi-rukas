@@ -147,6 +147,7 @@ function seamLabelFor(
     case "self-killed:token-budget":
     case "self-killed:plan-timeout":
     case "self-killed:child-bound":
+    case "self-killed:no-progress":
     case "success":
     // #79 — matched only on the provider's own 404 message: exact.
     case "provider-model-unavailable":
@@ -313,6 +314,11 @@ export function classifyFailureCause(tail: FailureTail): FailureClass {
   if (tail.killCause === "child-bound") {
     return { cause: "self-killed:child-bound", shouldRetry: false, maxRetries: 0 };
   }
+  // #1313 — the driver ended a child frozen across slow levels (spawn-stall.ts).
+  // A re-run of the same brief meets the same stall, so it parks.
+  if (tail.killCause === "no-progress") {
+    return { cause: "self-killed:no-progress", shouldRetry: false, maxRetries: 0 };
+  }
 
   // 429 rate-limit. #366 — read the delay the provider actually asked for
   // instead of treating every 429 as permanently fatal. A per-minute token
@@ -409,43 +415,7 @@ export function failureCauseReason(tail: {
   killCause?: string;
   providerRepeats?: number;
 }): string {
-  const cls = classifyFailureCause(tail);
-  switch (cls.cause) {
-    case "self-killed:timeout":
-      return "killed by pi-rukas (wall-clock timeout)";
-    case "self-killed:inactivity":
-      return "killed by pi-rukas (inactivity watchdog)";
-    case "self-killed:tool-inactivity":
-      return "killed by pi-rukas (tool-inactivity watchdog — a tool call never returned)";
-    case "self-killed:abort":
-      return "cancelled (abort signal)";
-    case "self-killed:loop":
-      return "killed by pi-rukas (loop detected — the same tool call repeated; retrying would loop again)";
-    case "self-killed:token-budget":
-      return "killed by pi-rukas (token budget crossed — a cost cap, not a provider fault)";
-    case "self-killed:plan-timeout":
-      return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
-    case "self-killed:child-bound":
-      return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
-    case "rate-limited:429":
-      return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
-    case "rate-limited:burst":
-      return `provider rate-limited (429), asked us to wait ${Math.round((cls.waitMs ?? 0) / 1000)}s — waiting it out and resuming`;
-    case "rate-limited:quota-window":
-      return `provider rate-limited (429), asked us to wait ~${Math.round((cls.waitMs ?? 0) / 3600000)}h — a quota window, not a burst`;
-    case "rate-limited:quota-terminal":
-      return "provider spend cap reached — waiting will not clear this";
-    case "provider-severed":
-      return `provider/transport error: ${clip(tail.providerMessage ?? tail.errorTail) ?? "connection lost"}${repeatsNote(tail)}`;
-    case "provider-model-unavailable":
-      return `provider does not serve the configured model — re-dispatching cannot help: ${clip(tail.providerMessage ?? tail.errorTail)}`;
-    case "crashed":
-      return `subagent failed: ${clip(tail.errorTail) ?? "non-zero exit"}`;
-    case "crashed-unknown":
-      return `subagent failed (unexpected event): ${clip(tail.errorTail) ?? "unknown failure"}`;
-    case "success":
-      return "(success — no failure reason)";
-  }
+  return failureCauseReasonForClass(tail, classifyFailureCause(tail), true);
 }
 
 /**
@@ -455,7 +425,9 @@ export function failureCauseReason(tail: {
  */
 export function failureCauseReasonForClass(
   tail: { errorTail?: string; providerMessage?: string; providerRepeats?: number },
-  cls: { cause: DispatchFailureCause },
+  cls: { cause: DispatchFailureCause; waitMs?: number },
+  /** Name the wait the provider stated (failureCauseReason's headline). */
+  statedWait = false,
 ): string {
   switch (cls.cause) {
     case "self-killed:timeout":
@@ -474,12 +446,18 @@ export function failureCauseReasonForClass(
       return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
     case "self-killed:child-bound":
       return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
+    case "self-killed:no-progress":
+      return "ended by pi-rukas: no progress across a whole slow-run level, not even an answer to the slow-run steer — a stall, not a provider fault";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":
-      return "provider rate-limited (429) within the burst window — waiting it out and resuming";
+      return statedWait
+        ? `provider rate-limited (429), asked us to wait ${Math.round((cls.waitMs ?? 0) / 1000)}s — waiting it out and resuming`
+        : "provider rate-limited (429) within the burst window — waiting it out and resuming";
     case "rate-limited:quota-window":
-      return "provider rate-limited (429) on a quota window — retrying now cannot help; come back after the reset";
+      return statedWait
+        ? `provider rate-limited (429), asked us to wait ~${Math.round((cls.waitMs ?? 0) / 3600000)}h — a quota window, not a burst`
+        : "provider rate-limited (429) on a quota window — retrying now cannot help; come back after the reset";
     case "rate-limited:quota-terminal":
       return "provider spend cap reached — waiting will not clear this";
     case "provider-severed":

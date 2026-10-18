@@ -230,6 +230,8 @@ export function dispatchCore(
         // comment is a few gh calls and a markdown render).
         timeoutMs: opts.timeoutMs,
         childBoundMs: opts.childBoundMs,
+        // #1313 — every dispatchCore child is the driver's: it acts on a stall.
+        stallKill: true,
         // Companion-extension plumbing (lens-reporter / policy-reporter /
         // plan-reporter precedent): the plan driver pins its Phase-2 children
         // to the report_plan_item tool via `--no-skills --extension <path>`.

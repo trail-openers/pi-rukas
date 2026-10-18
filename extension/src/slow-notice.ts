@@ -22,7 +22,9 @@
  *      tokens, elapsed, last tool, a short snippet of the last assistant
  *      text, and the job id the PM can pass to `dispatch_peek` /
  *      `dispatch_steer`. Driver-owned children (ownerKind "driver") notify
- *      the PM too — the operator wants to be prompted for those.
+ *      the PM too — the operator wants to be prompted for those — but the
+ *      notice says no action is needed: the driver itself ends a child frozen
+ *      across these levels (spawn-stall.ts, #1313).
  *   2. The child receives ONE automatic steer through `steerChild` (the
  *      lifecycle-logged core the driver's caps already use), demanding a
  *      ≤3-line status report. It never kills.
@@ -178,7 +180,9 @@ function noticeText(w: Watch, s: RunningState, triggered: string[], excludedMs: 
     s.lastToolName ? `Last tool: ${s.lastToolName}` : "",
     snippet,
     w.driverOwned ? driverOwnedNotice() : "",
-    `Use dispatch_peek ${w.id} to inspect it or dispatch_steer ${w.id} to course-correct it. A steer only lands once the current tool call returns — if it is hung in one, dispatch_kill ${w.id}${w.driverOwned ? " with force: true" : ""}.`,
+    w.driverOwned
+      ? `No action is needed from you. dispatch_peek ${w.id} shows it; only a child hung inside one tool call warrants dispatch_kill ${w.id} with force: true.`
+      : `Use dispatch_peek ${w.id} to inspect it or dispatch_steer ${w.id} to course-correct it. A steer only lands once the current tool call returns — if it is hung in one, dispatch_kill ${w.id}.`,
   ]
     .filter(Boolean)
     .join("\n");

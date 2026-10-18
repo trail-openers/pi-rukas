@@ -319,6 +319,8 @@ export type DispatchFailureCause =
   /** #754 — the plan step's own wall-clock bound expired; a budget kill, not a provider fault — the plan step's corrective re-dispatch is the recovery, not a wholesale retry. */
   | "self-killed:plan-timeout"
   | "self-killed:child-bound"
+  /** #1313 — the driver ended a child frozen across slow levels; re-running it buys the same stall. */
+  | "self-killed:no-progress"
   | "crashed"
   | "crashed-unknown";
 
