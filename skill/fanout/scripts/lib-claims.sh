@@ -52,10 +52,11 @@ fanout_live_claims() {  # -> "path<TAB>issue<TAB>pid<TAB>age_s" per live claim
         //   - an error other than ESRCH is unknown, not alive. Treating unknown as live
         //     fail-CLOSES the fence, which is the safe direction, but such a claim should be
         //     inspected rather than silently honoured forever.
-        if (typeof r.pid === "number") {
-          if (!Number.isInteger(r.pid) || r.pid < 1) continue;
-          try { process.kill(r.pid, 0); } catch (e) { if (e.code === "ESRCH") continue; }
-        }
+        // A pid that is not a positive integer NUMBER (a string, null, absent, a float) cannot
+        // be probed, so it cannot be proved alive: skip it. Gating only typeof-number claims
+        // let a string pid bypass the probe and read as live forever.
+        if (!Number.isInteger(r.pid) || r.pid < 1) continue;
+        try { process.kill(r.pid, 0); } catch (e) { if (e.code === "ESRCH") continue; }
         for (const p of r.paths) {
           process.stdout.write([String(p), r.issue, r.pid, Math.round((now - (r.startedAt || 0)) / 1000)].join("\t") + "\n");
         }

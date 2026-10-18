@@ -155,7 +155,11 @@ if [ "$OVERRIDE_TRIAGE" = 0 ]; then
     # Runs under --dry-run too, deliberately. The whole purpose of a dry run is to predict
     # what the real run will do; a gate that only bites at runtime means the dry run silently
     # approves a collision the real run refuses, which is worse than having no dry run at all.
-    hit="$(fanout_intersection "$(fanout_live_claims)" "$files")"
+    # fanout_live_claims dies (exit 11) on an unreadable claims file, but `die` inside a
+    # command substitution only exits the subshell. Capture it on its own line and propagate
+    # the status, or a corrupt claims file reads as "no live claims" and the gate fails OPEN.
+    claims="$(fanout_live_claims)" || exit "$?"
+    hit="$(fanout_intersection "$claims" "$files")"
     [ "$hit" = "[]" ] || die "issue $ISSUE collides with a LIVE cycle's declared paths: $hit — two PRs over one file is a guaranteed conflict and a wasted cycle" 7
   else
     warn "issue $ISSUE has no files-likely-touched in triage.tsv; the path-claim gate is therefore blind for it"
