@@ -85,37 +85,75 @@ export function deliverStandIn(
 }
 
 /**
- * Deliver `build()`; if building throws **or the send refuses**, fall back to the
- * stand-in. Never throws.
+ * How a caller takes over the send in `deliverOrStandIn`'s `options`.
+ *
+ * #1541 review round 5: the two opt-ins are ONE options object rather than two
+ * positional params, because `deliver` and `standInOnRefusal` are meaningful only
+ * together — an injected `deliver` whose refusal nobody reads is the pre-#1541
+ * bug the MEDIUM review caught, and a positional pair lets exactly that typo
+ * through.
+ */
+export interface DeliverOrStandInOptions {
+  /**
+   * Send the built report instead of `deliverReport` against `host`, reporting
+   * whether it landed. Production passes nothing (the default); the driver
+   * report path threads its `deliverForTest` seam through here.
+   */
+  deliver?: (report: string) => boolean;
+  /**
+   * Treat a `false` from `deliver` — a host that refused the send — as a failure
+   * needing the stand-in, the same as a throw from `build`.
+   *
+   * #1541 review round 5 (CI regression): OPT-IN, and only the driver branch
+   * passes it. The three sibling call sites (`formatSingleReport`, the rejection
+   * fail-report, and the smoke test's `probe`) kept their pre-#1541 contract —
+   * ONLY a build THROW falls back — because their tests pin one send per job:
+   * a refused send there was swallowed by `deliverReport` and produced exactly
+   * one attempted call. Making the fallback unconditional made every refused
+   * send a SECOND send, and `test-pending-jobs-signal-honest-zero.ts` 3a/6a/7a
+   * read "the host rejected it" as "zero reports delivered".
+   */
+  standInOnRefusal?: boolean;
+}
+
+/**
+ * Deliver `build()`; if building throws, fall back to the stand-in. With
+ * `options.standInOnRefusal` the stand-in also covers a send the host REFUSED.
+ * Never throws.
  *
  * #1389: the build-failure line is a `traceWarn`, not a debug-gated `trace` — a
  * report the PM was promised and did not get is a fault, not a diagnostic, and
  * the criterion this closes is that no path publishes "0" with nothing handed
  * over.
  *
- * #1541 review round 4 (HIGH) — the `deliver` seam. Two failure modes, one
- * contract: the promised steer must never be stranded. `build()` throwing is the
- * one this function has always caught. `deliverReport` cannot throw, but it
- * returns `false` when the host rejected the send — a signal that used to be
- * read at one call site by hand, which meant the formatter-throw case there had
- * no fallback at all (the caller evaluated `build()` outside any try). Passing
- * the boolean *through* this function is what makes "either half fails → one
- * stand-in" a property of the helper rather than of each caller remembering to
- * check. `deliver` defaults to the real `deliverReport` against `host`, so the
- * three pre-existing call sites are unchanged in behaviour; `deliverForTest`
- * threads the injected form through it.
+ * #1541 review round 4 (HIGH) — the `deliver` seam. `build()` throwing is the
+ * failure this function has always caught. `deliverReport` cannot throw, but it
+ * returns `false` when the host rejected the send — a signal the driver branch
+ * used to read by hand, which meant its formatter-throw case had no fallback at
+ * all (the caller evaluated `build()` outside any try). Routing both halves here
+ * is what makes "either half fails → one stand-in" a property of the helper
+ * rather than of each caller remembering to check.
+ *
+ * #1541 review round 5 (CI regression) — the read of that boolean is scoped to
+ * the caller that asked for it (`standInOnRefusal`), not applied to all four
+ * call sites. The siblings' contract is one send per report; the driver branch's
+ * is "a refused steer is never silent", and only it pays for the second send.
  */
 export function deliverOrStandIn(
   host: DispatchHost,
   label: string,
   build: () => string,
   standIn: (failure: unknown) => string,
-  deliver: (report: string) => boolean = (report) => deliverReport(host, report),
+  options: DeliverOrStandInOptions = {},
 ): void {
+  const deliver = options.deliver ?? ((report: string) => deliverReport(host, report));
   let failure: unknown;
   try {
     const report = build();
     if (deliver(report)) return;
+    // The default is the pre-#1541 shape: `deliverReport` already WARNed about
+    // the refusal, and this caller's contract is one send — no stand-in.
+    if (!options.standInOnRefusal) return;
     failure = new Error("the host refused the report");
     traceWarn(`${label} report refused by the host: ${String(failure)}`);
   } catch (err) {
