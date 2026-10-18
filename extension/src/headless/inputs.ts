@@ -183,6 +183,10 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // Host directories bind-mounted read-only; EXTRA_IMAGE_DIRS appends to them.
   list("IMAGE_DIRS", ":", "~/Downloads:~/Desktop:~/Pictures", "wrapper"),
   ms("INACTIVITY_TIMEOUT_MS", 1_800_000),
+  // #1404 — 0 skips the commit-pr baseline probe, so a consolidated verify
+  // failure parks exactly as it did before the feature. The probe can only ever
+  // EXCUSE failures, so this knob only ever makes the gate stricter.
+  flag("INTEGRATION_VERIFY_BASELINE_PROBE", true),
   ms("INTEGRATION_VERIFY_TIMEOUT_MS", 900_000),
   flag("INTENT", true),
   flag("INTENT_CRITICALITY", true),
