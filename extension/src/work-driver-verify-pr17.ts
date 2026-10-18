@@ -18,7 +18,9 @@ import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
+import { beginVerifyRun, finishVerifyRun } from "./work-driver-verify-events.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
+import type { VerifyRunEvent } from "./workflow-state-events-verify-flake.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 // #1134 follow-up — the argv form must be honoured: the previous
@@ -187,6 +189,12 @@ export async function verifyStepOutcome(
    * `consolidated-verify-skipped` event (`makeConsolidatedVerifySkippedEvent`).
    */
   consolidatedVerifySkipped?: AlreadyVerifiedTree;
+  /**
+   * #1415 — `verify-started` (already persisted, so the stream showed it while
+   * the gate ran) and `verify-completed`; the caller appends both through
+   * `recordDevelopGateEvents`. Absent when no verify command was resolved.
+   */
+  verifyEvents?: VerifyRunEvent[];
 }> {
   const failures: string[] = [];
   const notes: string[] = [];
@@ -226,6 +234,7 @@ export async function verifyStepOutcome(
     // killed nothing at all. One sink per call, returned as this call's
     // `hangLogPaths`, is the scope the cap actually has.
     const hangSink: GateHangPathSink = {};
+    const verifyStarted = await beginVerifyRun(ctx, state);
     await verifyDevelopOutcome(ctx, state, execFn, failures, notes, {
       // #782 — the flake callback is wired at this layer: on recovery it
       // returns a success verdict carrying the flag the caller routes.
@@ -262,6 +271,7 @@ export async function verifyStepOutcome(
       hangSink,
     });
     const flakeRecovered = flakeEvidenceTail !== undefined;
+    const verifyEvents = finishVerifyRun(verifyStarted, failures.length === 0);
     return {
       ok: failures.length === 0,
       failures,
@@ -271,6 +281,7 @@ export async function verifyStepOutcome(
       ...(consolidatedLogPath !== undefined ? { logPath: consolidatedLogPath } : {}),
       ...(baselineRedOnly ? { baselineRedOnly: true } : {}),
       ...(consolidatedVerifySkipped !== undefined ? { consolidatedVerifySkipped } : {}),
+      ...(verifyEvents.length > 0 ? { verifyEvents } : {}),
       ...(buildResidueOnly ? { buildResidueOnly: true } : {}),
       // #1427 round 3 — read the sink THIS call created, not the cycle context:
       // the list is exactly the reports this gate run wrote, which is what the
