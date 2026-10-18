@@ -64,7 +64,39 @@ write(
   'import { c } from "../src/c.ts";\nconst child = `const m = await import(${JSON.stringify(x)});`;\nvoid [c, child];\n',
 );
 
+write("src/k.ts", "export const k = 7;\n");
+write(
+  "smoke-tests/test-comment.ts",
+  'import {\n  k, // a comment inside the import list\n} from "../src/k.ts";\nvoid k;\n',
+);
 const sel = (changed: string[]) => selectVerifyTests(ext, changed);
+
+// --- comments, deletions and path-joined sources ------------------------------
+assert(
+  sel(["src/k.ts"]).tests.includes("smoke-tests/test-comment.ts"),
+  "a comment inside a multi-line import list does not hide the import edge",
+);
+// A separate tree: a path-joined src reader depends on every src module, which
+// would leave no module in the main fixture without a selected test.
+const spawnRoot = mkdtempSync(path.join(tmpdir(), "pi-verify-select-spawn-"));
+const spawnExt = path.join(spawnRoot, "extension");
+mkdirSync(path.join(spawnExt, "src"), { recursive: true });
+mkdirSync(path.join(spawnExt, "smoke-tests"), { recursive: true });
+writeFileSync(path.join(spawnExt, "src", "q.ts"), "export const q = 8;\n");
+writeFileSync(
+  path.join(spawnExt, "smoke-tests", "test-spawn.ts"),
+  'const file = path.join(ext, "src", "q.ts");\nvoid file;\n',
+);
+assert(
+  selectVerifyTests(spawnExt, ["src/q.ts"]).tests.includes("smoke-tests/test-spawn.ts"),
+  "a smoke test that builds a src path with path.join depends on every src module",
+);
+rmSync(spawnRoot, { recursive: true, force: true });
+const deleted = sel(["smoke-tests/test-deleted.ts"]);
+assert(
+  deleted.mode === "full" && deleted.tests.length === 0 && deleted.fallbackReason?.startsWith("no-selected-tests") === true,
+  "a deleted smoke test is not selected (it cannot run); the selection falls back rather than running a missing file",
+);
 
 // --- static, re-export, dynamic-literal and path-literal edges ---------------
 const a = sel(["src/a.ts"]);
