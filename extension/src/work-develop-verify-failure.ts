@@ -9,6 +9,7 @@
 import { trace } from "./trace.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
 import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
+import { plumbQuestion, withDeveloperPlumbReplies } from "./work-driver-adversarial-plumb.ts";
 import { verifyCapFor } from "./work-driver-verify-develop-helpers.ts";
 import type { verifyStepOutcome } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -96,6 +97,10 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
   // capped (the #841 unbounded-evidence fix).
   const failureEvidence =
     conflictFailure ?? consolidationCreatedFailure ?? boundJoinFailures(gate.failures);
+  // #1332 — a round that changed nothing because the developer stopped on a
+  // question: the question is the park reason, not only the empty-diff text.
+  const asked = emptyRoundQuestion(next, gate.failures);
+  next = asked.state;
   // #841 — the log path the gate actually wrote, carried STRUCTURALLY on
   // the cap event (the explain renderer renders it without regexing the
   // evidence prose); absent when the gate wrote no log.
@@ -115,8 +120,40 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
         ? fenceProse
           ? ` [fence: ${fenceProse}]`
           : ""
-        : ""),
+        : "") +
+      (asked.question ? ` — ${asked.question}` : ""),
     ...(logPaths !== undefined ? { logPaths } : {}),
   });
   return next;
+}
+
+/** The develop gate's failure for a round in which no worktree changed anything. */
+const EMPTY_ROUND_FAILURE = /every assessed worktree has an empty diff/;
+
+/**
+ * #1332 — when every worktree came back empty, the developer's
+ * `[ensemble:plumb]` reply from THIS develop step (events after its last
+ * `step-started`) is recorded in plumbReports, so the handoff renders it, and
+ * returned as the question the cap evidence carries. Cycle 129 parked on
+ * generic empty-diff text while the one question that explained it was
+ * dropped. Any other failure shape returns the state unchanged.
+ */
+function emptyRoundQuestion(
+  state: WorkState,
+  failures: readonly string[],
+): { state: WorkState; question: string | null } {
+  if (!failures.some((f) => EMPTY_ROUND_FAILURE.test(f))) return { state, question: null };
+  const log = state.eventLog;
+  let from = 0;
+  for (let i = log.length - 1; i >= 0; i--) {
+    const e = log[i];
+    if (e?.kind === "step-started" && e.step === "develop") {
+      from = i;
+      break;
+    }
+  }
+  const prior = new Set((state.pipelineState.plumbReports ?? []).map((r) => r.body));
+  const recorded = withDeveloperPlumbReplies(state, from, prior);
+  const fresh = (recorded.pipelineState.plumbReports ?? []).filter((r) => !prior.has(r.body));
+  return { state: recorded, question: plumbQuestion(fresh) };
 }

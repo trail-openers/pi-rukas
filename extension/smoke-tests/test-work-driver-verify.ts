@@ -337,6 +337,13 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
           noPrGate.failures.some((f) => /not backed by an actual PR/.test(f)),
           "commit-pr gate: failure names the hollow PR claim",
         );
+        // #1332 — the gate states what it measured; it never attributes a
+        // claim to an ops reply it did not read (cycle 129's ops said the
+        // opposite of what the old text put in its mouth).
+        assert(
+          ![...zeroGate.failures, ...noPrGate.failures].some((f) => /ops claimed/.test(f)),
+          "commit-pr gate: failures do not put a claim in the ops reply's mouth",
+        );
 
         // prNumber set but gh pr view errors → failure.
         const ghosted: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
