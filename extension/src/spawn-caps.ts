@@ -117,7 +117,19 @@ export function capKillAttribution(
       `\n[pi-rukas] killed: token budget exceeded (${totalTokens} tokens used; override: ${tokenBudgetEnvKey(spec.role)})`,
     );
   }
-  const killCause = caps.killCause();
+  // #1569 — a child that crossed the budget and then exited cleanly inside
+  // the grace window (it heeded the wrap-up steer) was never killed, so no
+  // cause above names it, yet it did not finish its assignment. Applied only
+  // when nothing else ended the child and its exit looked clean: an abort, a
+  // timeout or a crash keeps its own cause and retry semantics.
+  const endedOverBudget =
+    caps.killCause() === undefined && result.ok && caps.tokenBudgetTracker?.exceeded === true;
+  if (endedOverBudget) {
+    appendStderr(
+      `\n[pi-rukas] token budget exceeded; the child exited before the kill (${totalTokens} tokens used; override: ${tokenBudgetEnvKey(spec.role)})`,
+    );
+  }
+  const killCause = caps.killCause() ?? (endedOverBudget ? "token-budget" : undefined);
   if (killCause) {
     result.killCause = killCause;
     if (killCause === "loop") {
