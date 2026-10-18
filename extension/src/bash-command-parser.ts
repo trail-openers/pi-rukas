@@ -64,7 +64,7 @@ export function stripQuotedSegments(command: string): string {
       }
       if (!foundClose) {
         trace(
-          "permission-guard: stripQuotedSegments: unterminated single quote — returning raw command for fail-closed injection check",
+          `permission-guard: stripQuotedSegments: unterminated single quote — returning raw command for fail-closed injection check: ${command}`,
         );
         return command;
       }
@@ -96,10 +96,18 @@ export function stripQuotedSegments(command: string): string {
       }
       if (!foundClose) {
         trace(
-          "permission-guard: stripQuotedSegments: unterminated double quote — returning raw command for fail-closed injection check",
+          `permission-guard: stripQuotedSegments: unterminated double quote — returning raw command for fail-closed injection check: ${command}`,
         );
         return command;
       }
+    } else if (ch === "\\" && i + 1 < n) {
+      // Backslash outside quotes: bash makes the next char literal, so an
+      // escaped quote never opens a quoted run — `'driver'\''s'` is how an
+      // apostrophe gets into a single-quoted argument (#1352). Both chars are
+      // kept, so an escaped operator (`\;`, `\$`) still trips the injection
+      // check: conservative, never a new way past it.
+      result += command.slice(i, i + 2);
+      i += 2;
     } else {
       result += ch;
       i++;

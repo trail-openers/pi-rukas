@@ -12,11 +12,24 @@
  * matcher is keyed on the issue number.
  */
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execp } from "../src/exec.ts";
 import { runBranch } from "../src/work-driver-branch-develop.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
-import { matchPrForIssue } from "../src/work-driver-pr-preflight.ts";
+import {
+  classifyContinueLookup,
+  continueHeadProblem,
+} from "../src/work-driver-continue-pr-lookup.ts";
+import type { VerifyExecFn } from "../src/work-driver-git.ts";
+import {
+  listOpenPrsForIssue,
+  matchPrForIssue,
+  type OpenPrLookup,
+} from "../src/work-driver-pr-preflight.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -208,6 +221,133 @@ assert(
       `handoff ${surface}: does NOT fall through to the generic discard-and-retry boilerplate`,
     );
   }
+}
+
+// ------------------------------------------- #1468 continue-pr lookup
+
+const prRow = (n: number, over: Record<string, unknown> = {}) => ({
+  number: n,
+  headRefName: `feature/issue-5-x${n}`,
+  headRefOid: "a".repeat(40),
+  baseRefName: "main",
+  isCrossRepository: false,
+  headRepository: { name: "repo" },
+  body: "Fixes #5",
+  ...over,
+});
+
+function ghExec(out: string | Error, seen: string[][] = []): VerifyExecFn {
+  return async (cmd, opts) => {
+    seen.push([cmd, ...(opts?.argv ?? [])]);
+    if (out instanceof Error) throw out;
+    return { stdout: out };
+  };
+}
+
+async function lookup(out: string | Error): Promise<OpenPrLookup> {
+  return listOpenPrsForIssue(ghExec(out), "/tmp/does-not-exist", 5);
+}
+
+{
+  const seen: string[][] = [];
+  await listOpenPrsForIssue(ghExec("[]", seen), "/tmp/x", 5);
+  assert(
+    seen[0]?.join(" ") ===
+      "gh pr list --state open --limit 500 --json number,headRefName,headRefOid,baseRefName,isCrossRepository,headRepository,body",
+    "continue lookup: gh runs in argv form with --limit 500 and the head/base/fork fields",
+  );
+
+  const one = await lookup(JSON.stringify([prRow(358), prRow(9, { headRefName: "x", body: "" })]));
+  assert(
+    one.kind === "ok" && one.prs.length === 1 && one.prs[0]?.matchedBy === "both",
+    "continue lookup: body and branch match on the same number count as one PR (matchedBy both)",
+  );
+  const c1 = classifyContinueLookup(one, 5, "github");
+  assert("pr" in c1 && c1.pr.number === 358, "continue classify: exactly one PR → ok");
+
+  const two = await lookup(
+    JSON.stringify([prRow(358, { body: "" }), prRow(360, { headRefName: "y" })]),
+  );
+  assert(
+    two.kind === "ok" && two.prs.map((p) => p.matchedBy).join() === "branch,body",
+    "continue lookup: a branch-only and a body-only match are both kept",
+  );
+  const c2 = classifyContinueLookup(two, 5, "github");
+  assert(
+    "cap" in c2 &&
+      c2.cap === "continue-pr-ambiguous" &&
+      /358/.test(c2.evidence) &&
+      /360/.test(c2.evidence),
+    "continue classify: two PR numbers → ambiguous, evidence lists both",
+  );
+
+  const zero = classifyContinueLookup(await lookup("[]"), 5, "github");
+  assert(
+    "cap" in zero && zero.cap === "continue-pr-not-found",
+    "continue classify: 0 PRs → not-found",
+  );
+
+  const failed: Array<[string, string | Error, RegExp]> = [
+    ["gh throw", new Error("gh: could not connect"), /could not connect/],
+    ["bad JSON", "this is not json", /JSON/i],
+    ["not an array", "{}", /array/i],
+    ["500-row page", JSON.stringify(Array.from({ length: 500 }, (_, i) => prRow(1000 + i))), /500/],
+  ];
+  for (const [name, out, re] of failed) {
+    const r = await lookup(out);
+    const c = classifyContinueLookup(r, 5, "github");
+    assert(
+      r.kind === "unreadable" &&
+        "cap" in c &&
+        c.cap === "continue-pr-not-found" &&
+        re.test(c.evidence),
+      `continue lookup: ${name} → unreadable → not-found with the reason in evidence`,
+    );
+  }
+
+  const gl = classifyContinueLookup(one, 5, "gitlab");
+  assert(
+    "cap" in gl && gl.cap === "continue-pr-not-found" && /gitlab/.test(gl.evidence),
+    "continue classify: forge=gitlab → not-found naming the forge",
+  );
+
+  for (const [name, over] of [
+    ["isCrossRepository true", { isCrossRepository: true }],
+    ["isCrossRepository missing", { isCrossRepository: undefined }],
+    ["headRepository null", { headRepository: null }],
+  ] as const) {
+    const c = classifyContinueLookup(await lookup(JSON.stringify([prRow(358, over)])), 5, "github");
+    assert("cap" in c && c.cap === "continue-pr-fork", `continue classify: ${name} → fork`);
+  }
+}
+
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "continue-head-"));
+  const exec: VerifyExecFn = (cmd, opts) => execp(cmd, { ...opts, cwd: dir });
+  const pr = (headRefName: string, baseRefName = "main") => ({
+    ...prRow(358, { headRefName, baseRefName }),
+    matchedBy: "body" as const,
+  });
+  assert(
+    (await continueHeadProblem(exec, dir, pr("feature/issue-5-x"), "main")) === undefined,
+    "continue head: a plain feature branch on main passes",
+  );
+  for (const [name, head, base] of [
+    ["command substitution", "x$(touch pwned)", "main"],
+    ["backtick", "x`touch pwned`", "main"],
+    ["leading dash", "-x", "main"],
+    ["git-invalid name", "feature/x.lock", "main"],
+    ["head is the mainline", "main", "main"],
+    ["base is not the mainline", "feature/issue-5-x", "release"],
+  ] as const) {
+    const problem = await continueHeadProblem(exec, dir, pr(head, base), "main");
+    assert(typeof problem === "string" && problem.length > 0, `continue head: ${name} → unsafe`);
+  }
+  assert(
+    !fs.existsSync(path.join(dir, "pwned")),
+    "continue head: no untrusted name reached a shell",
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(`\nexit ${exit}`);

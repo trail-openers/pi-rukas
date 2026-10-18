@@ -6,11 +6,13 @@
  *   0  merged (or completed with nothing to merge)
  *  10  handoff for any cap other than the clarification caps, or awaiting-human-merge
  *  11  handoff whose cap is intent-park or explore-needs-clarification
+ *  12  `plan` turns only (#1471): a drafted plan waits for a confirm
  *  20  aborted
  *  21  interrupted by a signal
  *  30  the driver threw, or interrupted by the runner's own --timeout
  *  40  refused to start (claimed by a live cycle, needs-human-attention without
  *      --restart, bad arguments, an unknown flag such as --merge)
+ *  41  `plan` turns only (#1471): the session to resume no longer exists
  *
  * A grouped run exits 21 if any issue was interrupted, otherwise the highest
  * per-issue code. The JSON result carries every issue regardless.
@@ -31,6 +33,10 @@ export const EXIT = {
   interrupted: 21,
   crash: 30,
   refused: 40,
+  /** `plan` turns only (#1471): a drafted plan waits for the operator's confirm. */
+  shown: 12,
+  /** `plan` turns only (#1471): the session to resume no longer exists. */
+  lost: 41,
 } as const;
 
 const CLARIFICATION_CAPS = [

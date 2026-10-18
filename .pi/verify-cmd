@@ -11,11 +11,25 @@
 # `--jobs-from-host` sizes the smoke pool from the host CPU count when
 # PI_ENSEMBLE_VERIFY_TEST_JOBS is unset: 4 jobs on a host reporting 8+ CPUs, 2
 # otherwise, an explicit ambient setting always winning. Measured on a 10-core
-# host at the suite stage: 4 jobs → 4m49s, versus ~19 min under load at 2 — past
-# the binding bound, the develop gate's PI_ENSEMBLE_VERIFY_TIMEOUT_MS (10 min).
+# host at the suite stage: 4 jobs → 4m49s, versus ~19 min under load at 2. That
+# second figure is the reason this tier has its OWN bound (#1509): the suite
+# tier is governed by PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS (default 30 min, or
+# .pi/verify-timeout-ms), NOT the 10-minute fast/smoke number it used to share.
 # It is a flag rather than an inline `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf
 # …)}"` prefix because review-accept-guard A5 admits `bash …/verify-loop.sh` only
 # when every following word is `--digest` or a test path (see
 # test-review-accept-guard-hardened.ts, which checks each arm here against A5).
 # See docs/configuration.md (`PI_ENSEMBLE_VERIFY_TEST_JOBS`).
-cd extension && bun x tsc --noEmit && bun x tsc --noEmit -p tsconfig.smoke-tests.json && cd .. && bun run check && cd extension && bash smoke-tests/lib/verify-loop.sh --jobs-from-host smoke-tests/test-*.ts
+#
+# The typecheck names the compiler by PATH, not by alias (#1414/#1118). The
+# `bun x` form is an npx-style lookup, and on the host this was filed from it
+# resolved a GLOBAL TypeScript 7 that printed its usage and exited 0 — a
+# typecheck gate that judged nothing while reporting every tree as typechecking.
+# `node node_modules/typescript/bin/tsc` is the CLI the `typescript`
+# devDependency ships, so the compiler that answers is the one package.json
+# pins, and no PATH entry can stand in for it. Same relative spelling as
+# CHECKPOINT_TYPECHECK_CMD in
+# extension/src/work-driver-cap-checkpoint-typecheck.ts, because both run with
+# cwd = extension/. The gate that pins the two to one another is
+# `test-verify-cmd-no-bare-alias` under extension/smoke-tests.
+cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.smoke-tests.json && cd .. && bun run check && cd extension && bash smoke-tests/lib/verify-loop.sh --jobs-from-host smoke-tests/test-*.ts

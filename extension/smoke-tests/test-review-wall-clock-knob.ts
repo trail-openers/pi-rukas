@@ -201,8 +201,8 @@ async function main() {
     const parked = await atNow(NOW, () => parkLensFixOverrun(ctx, stateWithClock(50 * MIN), NOW));
     const tail = parked.eventLog[parked.eventLog.length - 1];
     assert(
-      tail?.kind === "cap-hit" && tail.cap === "wall-clock",
-      `…→ past the moved ceiling the cycle records a wall-clock cap-hit (got ${tail?.kind})`,
+      tail?.kind === "cap-hit" && tail.cap === "lens-review-timeout",
+      `…→ past the moved ceiling the cycle records a lens-review-timeout cap-hit (got ${tail?.kind})`,
     );
     const ev = (tail as { evidence?: string }).evidence ?? "";
     assert(

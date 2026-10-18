@@ -115,7 +115,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   const capValues = [
     "adversarial-loop",
     "round-cap",
-    "wall-clock",
+    "lens-review-timeout",
     "ci-retry",
     "developer-timeout",
     // PR6 — explore verdict caps

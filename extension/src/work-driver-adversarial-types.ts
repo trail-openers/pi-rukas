@@ -65,7 +65,10 @@ export interface AdversarialOutcome {
     | "abort"
     | "loop"
     | "token-budget"
-    | "plan-timeout";
+    | "plan-timeout"
+    | "child-bound"
+    | "no-progress"
+    | "stuck-tool";
   /** #543 — the F1 streak evidence for a loop kill, threaded from the inner
    * spawn's DispatchResult so the driver can persist `capEvidence`. */
   loopEvidence?: { tool: string; count: number };

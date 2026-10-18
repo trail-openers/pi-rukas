@@ -52,6 +52,8 @@ export interface HeadlessRunOptions {
   repoRoot: string;
   issues: number[];
   restart: boolean;
+  /** #1468 — continue the issue's open PR. Absent = false. */
+  continuePr?: boolean;
   /** Runner-level wall clock. Absent = no timeout. */
   timeoutMs?: number;
   /** Milliseconds the driver gets to reach a step boundary after an abort. */
@@ -299,6 +301,7 @@ async function runGroup(
     issue: primary,
     issues: members,
     restart: opts.restart,
+    continuePr: opts.continuePr,
     signal,
     processGroup: true,
     // Nobody watches a headless review window: its PR opens as a draft by default.

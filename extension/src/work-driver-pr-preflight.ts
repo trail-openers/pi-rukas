@@ -48,6 +48,17 @@ export function prPreflightEnabled(): boolean {
   return v !== "0" && v !== "false";
 }
 
+/** The body and branch patterns that tie a PR to `issue`; see matchPrForIssue. */
+export function issueMatchers(issue: number): { bodyRe: RegExp; branchRe: RegExp } {
+  return {
+    bodyRe: new RegExp(
+      String.raw`\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#${issue}(?!\d)`,
+      "i",
+    ),
+    branchRe: new RegExp(String.raw`issues?-?${issue}(?!\d)`, "i"),
+  };
+}
+
 /**
  * Match an open PR against an issue number, most-reliable signal first.
  *
@@ -66,11 +77,7 @@ export function prPreflightEnabled(): boolean {
  * PRs, which is where bundling comes from in the first place.
  */
 export function matchPrForIssue(prs: PrListRow[], issue: number): ExistingPr | undefined {
-  const bodyRe = new RegExp(
-    String.raw`\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#${issue}(?!\d)`,
-    "i",
-  );
-  const branchRe = new RegExp(String.raw`issues?-?${issue}(?!\d)`, "i");
+  const { bodyRe, branchRe } = issueMatchers(issue);
   const byBody = prs.find((pr) => bodyRe.test(pr.body ?? ""));
   if (byBody) {
     return {
@@ -134,6 +141,93 @@ export async function findOpenPrForIssue(
     return undefined;
   }
   return matchPrForIssue(rows, issue);
+}
+
+/** #1468: one open PR row as `--continue-pr` reads it. */
+export interface OpenPrRow {
+  number: number;
+  headRefName?: string;
+  headRefOid?: string;
+  baseRefName?: string;
+  isCrossRepository?: boolean;
+  headRepository?: { name?: string } | null;
+  body?: string;
+}
+
+export type OpenPrMatch = OpenPrRow & { matchedBy: "body" | "branch" | "both" };
+
+export type OpenPrLookup =
+  | { kind: "ok"; prs: OpenPrMatch[] }
+  | { kind: "unreadable"; reason: string };
+
+/** A full page means more PRs may exist than were read. */
+const CONTINUE_PR_LIMIT = 500;
+
+/**
+ * #1468: every open PR that matches `issue`, one entry per number. Fails
+ * CLOSED, unlike findOpenPrForIssue: `--continue-pr` must prove there is
+ * exactly one PR, so a gh error, bad JSON or a full page is "unreadable".
+ */
+export async function listOpenPrsForIssue(
+  execFn: VerifyExecFn,
+  repoRoot: string,
+  issue: number,
+): Promise<OpenPrLookup> {
+  const fields = "number,headRefName,headRefOid,baseRefName,isCrossRepository,headRepository,body";
+  let stdout: string;
+  try {
+    ({ stdout } = await execFn("gh", {
+      argv: [
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        String(CONTINUE_PR_LIMIT),
+        "--json",
+        fields,
+      ],
+      cwd: repoRoot,
+      maxBuffer: 16 * 1024 * 1024,
+    }));
+  } catch (err) {
+    return {
+      kind: "unreadable",
+      reason: `gh pr list failed: ${(err as Error).message?.slice(0, 200)}`,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch (err) {
+    return {
+      kind: "unreadable",
+      reason: `gh pr list returned bad JSON: ${(err as Error).message?.slice(0, 120)}`,
+    };
+  }
+  if (!Array.isArray(parsed))
+    return { kind: "unreadable", reason: "gh pr list did not return an array" };
+  if (parsed.length >= CONTINUE_PR_LIMIT) {
+    return {
+      kind: "unreadable",
+      reason: `gh pr list returned a full page of ${CONTINUE_PR_LIMIT} PRs`,
+    };
+  }
+  const { bodyRe, branchRe } = issueMatchers(issue);
+  const byNumber = new Map<number, OpenPrMatch>();
+  for (const row of parsed as OpenPrRow[]) {
+    if (typeof row?.number !== "number") continue;
+    const body = bodyRe.test(row.body ?? "");
+    const branch = branchRe.test(row.headRefName ?? "");
+    if (!body && !branch) continue;
+    const matchedBy = body && branch ? "both" : body ? "body" : "branch";
+    const prev = byNumber.get(row.number);
+    byNumber.set(row.number, {
+      ...row,
+      matchedBy: prev && prev.matchedBy !== matchedBy ? "both" : matchedBy,
+    });
+  }
+  return { kind: "ok", prs: [...byNumber.values()] };
 }
 
 /**

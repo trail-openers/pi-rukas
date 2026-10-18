@@ -15,6 +15,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
+import type { CherryPickConflict } from "./work-driver-cherry-pick-conflict.ts";
 import { measureConsolidationCompleteness } from "./work-driver-completeness.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import { type NoDiff, isCommitOnBranch } from "./work-driver-integrate.ts";
@@ -32,14 +33,14 @@ export type WorkStreamPickScope = {
   workstreamBaseShas?: Record<string, string>;
 };
 
-function pickScopeBase(id: string, scope: WorkStreamPickScope): string | undefined {
+export function pickScopeBase(id: string, scope: WorkStreamPickScope): string | undefined {
   const per = scope.workstreamBaseShas?.[id];
   if (per && /^[0-9a-f]{40}$/.test(per)) return per;
   return scope.globalBaseSha;
 }
 
 /** The worktree SHA + whether it was cherry-picked or skipped. */
-interface CherryPickEntry {
+export interface CherryPickEntry {
   sha: string;
   /** `cherry-picked` when a new commit landed; `skipped` when already applied. */
   status: "cherry-picked" | "skipped";
@@ -51,7 +52,7 @@ interface CherryPickEntry {
   rangeReadError?: { workstreamId: string; error: string };
 }
 /** Workstream ids ordered by the caller's iteration. */
-interface WorkstreamList {
+export interface WorkstreamList {
   /** Ordered workstream ids (matches worktrees keys in the same order). */
   ids: string[];
   /** Workstream id → worktree path. */
@@ -86,6 +87,18 @@ export interface OrchestratedCherryPickResult {
   hadNewCommits: boolean;
   /** Error discriminator: cherry-pick batch conflicted and was aborted. */
   _conflict?: "conflict";
+  /**
+   * #813 — the OBSERVATION behind a conflicted batch: which pick failed,
+   * and what applied cleanly before it. Shape + rationale in
+   * `CherryPickConflict` (work-driver-cherry-pick-conflict.ts). The
+   * consolidated-verify reporters read these to describe the failure rather
+   * than infer "two workstreams edited the same lines; the decomposition is
+   * incoherent". Absent = the read failed; absence is reported as absence.
+   */
+  _conflictedWorkstream?: CherryPickConflict["conflictedAt"];
+  _conflictAppliedBefore?: CherryPickConflict["appliedBeforeConflict"];
+  /** #813 — the file git named for the aborted pick (see `CherryPickConflict`). */
+  _conflictedFile?: CherryPickConflict["conflictedFile"];
   /** Error discriminator: requireAllNonEmpty failed for this workstream id. */
   _noDiffRequireFail?: string;
   /** Error discriminator: git apply failed during patch fallback. */
@@ -100,142 +113,12 @@ export interface OrchestratedCherryPickResult {
    */
   completeness?: ConsolidationCompleteness;
 }
-/**
- * Cherry-pick each workstream's FULL committed range (parent→child) onto
- * the integration branch — #728: the pre-#728 pick used only the worktree's
- * HEAD SHA, so a ≥2-commit workstream (the #723 shape) staged the last
- * commit's files and silently dropped the earlier ones.
- * The batch is atomic: on the first conflict the in-progress abort is
- * attempted and `"conflict"` is returned explicitly (the pre-#750 `[]`
- * return collapsed "all skipped" with "conflict aborted" for a
- * single-workstream batch). No partial picks survive — the caller's
- * verified restore (#750) unwinds every staged pick and verifies the root.
- */
-export async function cherryPickWorkstreams(
-  execFn: (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => Promise<{ stdout: string }>,
-  opts: {
-    repoRoot: string;
-    branchName: string;
-    /** Workstream id → worktree path. Only workstreams listed here are cherry-picked. */
-    worktrees: Record<string, string>;
-    /** SHA already applied from a previous attempt; keyed by workstream id. */
-    commitShas: Record<string, string>;
-    /** Scratch dir for conflict artifacts. */
-    scratchDir?: string;
-    /** Legacy single base the `baseSha..HEAD` range is measured against. */
-    baseSha?: string;
-    /** #794 — per-workstream own-range selection (see `WorkStreamPickScope`). */
-    pickScope?: WorkStreamPickScope;
-  },
-): Promise<CherryPickEntry[] | "conflict"> {
-  const { repoRoot, branchName, worktrees, commitShas } = opts;
-  const scope: WorkStreamPickScope = opts.pickScope ?? { globalBaseSha: opts.baseSha };
-  const ids = Object.keys(worktrees);
-  const entries: CherryPickEntry[] = [];
-  const rangeFellBack = new Map<string, { workstreamId: string; error: string }>();
-  let conflictedAt: string | undefined;
-  // #728 — resolve each workstream's committed range (parent→child) once so
-  // every SHA is deduplicated and picked in order; a range read failure
-  // degrades to the legacy HEAD-only pick for that workstream (traced).
-  const ranges: Record<string, string[]> = {};
-  const rangeReadErrors = new Map<string, string>();
-  for (const id of ids) {
-    const wtPath = worktrees[id];
-    if (!wtPath) continue;
-    // #794 — the range base is the workstream's own effective base (its
-    // dependency's tip when stacked) so ancestor commits are not re-picked.
-    const rangeBase = pickScopeBase(id, scope);
-    let list: string[] = [];
-    if (rangeBase) {
-      try {
-        const { stdout } = await execFn(
-          `git rev-list --reverse --first-parent ${JSON.stringify(rangeBase)}..HEAD`,
-          { cwd: wtPath, maxBuffer: 1024 * 1024 },
-        );
-        list = stdout
-          .split("\n")
-          .map((l) => l.trim())
-          .filter((l) => /^[0-9a-f]{7,}$/.test(l));
-      } catch (err) {
-        const msg = (err as Error).message?.slice(0, 200) ?? "unknown";
-        rangeReadErrors.set(id, msg);
-        trace(
-          `work-driver: cherry-pick — could not list range for '${id}', falling back to HEAD only: ${msg}`,
-        );
-      }
-    }
-    if (list.length === 0) {
-      const { stdout } = await execFn("git rev-parse HEAD", {
-        cwd: wtPath,
-        maxBuffer: 64 * 1024,
-      });
-      const sha = stdout.trim();
-      if (sha && sha.length >= 7) list = [sha];
-      // #728 (task-c) — a range-read failure degraded to the HEAD-only pick;
-      // record it so the completeness evidence (task-a) can name the cause
-      // instead of a bare dropped-path list.
-      const rangeErr = rangeReadErrors.get(id);
-      if (rangeErr) rangeFellBack.set(id, { workstreamId: id, error: rangeErr });
-    }
-    ranges[id] = list;
-  }
-  for (const id of ids) {
-    const wt = worktrees[id];
-    if (!wt) continue;
-    for (const sha of ranges[id] ?? []) {
-      if (sha.length < 7) continue;
-      // Check if this SHA is already on the integration branch.
-      const alreadyOnBranch = await isCommitOnBranch(execFn, repoRoot, branchName, sha);
-      if (alreadyOnBranch) {
-        trace(
-          `work-driver: cherry-pick — SHA ${sha.slice(0, 8)} for '${id}' already on branch, skipping`,
-        );
-        entries.push({ sha, status: "skipped", rangeReadError: rangeFellBack.get(id) });
-        continue;
-      }
-      // Also skip if the SHA matches an already-recorded `commitShas` entry
-      // for a DIFFERENT workstream (cross-workstream overlap).
-      const recordSha = commitShas[id];
-      if (recordSha && recordSha === sha) {
-        trace(
-          `work-driver: cherry-pick — SHA ${sha.slice(0, 8)} for '${id}' already recorded, skipping`,
-        );
-        entries.push({ sha, status: "skipped", rangeReadError: rangeFellBack.get(id) });
-        continue;
-      }
-      // Cherry-pick the SHA.
-      try {
-        await execFn(`git cherry-pick --no-commit ${sha}`, {
-          cwd: repoRoot,
-          maxBuffer: 8 * 1024 * 1024,
-        });
-        entries.push({ sha, status: "cherry-picked", rangeReadError: rangeFellBack.get(id) });
-      } catch {
-        // Cherry-pick failed — this is a conflict. Abort the batch and record
-        // which workstream caused it.
-        conflictedAt = id;
-        break;
-      }
-    }
-  }
-  // If any cherry-pick conflicted, attempt the in-progress abort and return
-  // the explicit conflict marker. #750: `git cherry-pick --no-commit` often
-  // leaves no CHERRY_PICK_HEAD, in which case `--abort` REFUSES (exit 128)
-  // — that refusal is neither success nor the only recovery, so it is
-  // traced and the caller's verified restore (`verifiedRestoreRoot`) is the
-  // actual recovery, verified by its own porcelain read.
-  if (conflictedAt !== undefined) {
-    try {
-      await execFn("git cherry-pick --abort", { cwd: repoRoot, maxBuffer: 64 * 1024 });
-    } catch (abortErr) {
-      trace(
-        `work-driver: cherry-pick — abort refused after conflict in '${conflictedAt}' (no CHERRY_PICK_HEAD for a --no-commit pick; caller restores): ${(abortErr as Error).message?.slice(0, 200)}`,
-      );
-    }
-    return "conflict";
-  }
-  return entries;
-}
+// #813 — split to their own modules (AGENTS.md §12 file-size limit);
+// re-exported so importers keep this path.
+import { cherryPickWorkstreams } from "./work-driver-cherry-pick-batch.ts";
+export { cherryPickWorkstreams } from "./work-driver-cherry-pick-batch.ts";
+export type { CherryPickConflict } from "./work-driver-cherry-pick-conflict.ts";
+
 /**
  * Orchestrates the full cherry-pick integration for all workstreams.
  * Two-phase: first tries cherry-pick for worktrees with commits ahead of
@@ -327,7 +210,7 @@ export async function orchestrateCherryPick(
       baseSha,
       pickScope: scope,
     });
-    if (pick === "conflict") {
+    if ("__conflict" in pick) {
       // The batch aborted; every staged pick is unwound by the caller's
       // verified restore. #750: explicit marker — the caller restores the
       // branch and fails rather than shipping a partial batch.
@@ -340,6 +223,9 @@ export async function orchestrateCherryPick(
         emptyWorkstreams,
         hadNewCommits: false,
         _conflict: "conflict",
+        _conflictedWorkstream: pick.conflictedAt,
+        _conflictAppliedBefore: pick.appliedBeforeConflict,
+        ...(pick.conflictedFile !== undefined ? { _conflictedFile: pick.conflictedFile } : {}),
       };
     }
     const entries = pick;
