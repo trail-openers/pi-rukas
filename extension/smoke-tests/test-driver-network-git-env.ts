@@ -224,6 +224,8 @@ const EXPECTED: Record<string, number> = {
   "work-driver-lens-fix-reposition-gate.ts": 1,
   "merge-guard.ts": 1,
   "lens-review-residuals.ts": 1,
+  "work-driver-continue-pr-branch.ts": 1,
+  "work-driver-continue-pr-guard.ts": 1,
 };
 
 function sourceFiles(dir: string): string[] {
