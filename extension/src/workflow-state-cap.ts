@@ -115,12 +115,64 @@ export interface CapedPartialState {
    * expect any committed work, only the child's report. */
   reportOnly?: boolean;
   /**
-   * #544 — the checkpoint runs `bunx tsc --noEmit` in the worktree's
-   * `extension/` directory BEFORE committing (recovery, not the full gate —
-   * that runs on the integrated branch). `false` means the checkpoint
-   * commit is known-broken as-is and the handoff surfaces say so. Absent
-   * when the check could not run (worktree has no `extension/`).
+   * #544 — the checkpoint runs `CHECKPOINT_TYPECHECK_CMD` (see
+   * work-driver-cap-checkpoint.ts) in the worktree's `extension/` directory
+   * BEFORE committing (recovery, not the full gate — that runs on the
+   * integrated branch).
+   *
+   * #1414 round 2 — the three states are NOT interchangeable, and `false` is
+   * the only one that indicts the code:
+   *
+   *   - `true`  — tsc exited 0. The tree typechecked.
+   *   - `false` — tsc RAN and reported diagnostics (non-zero exit carrying
+   *     `TSxxxx` output). The checkpoint commit is known-broken as-is and the
+   *     handoff surfaces say so.
+   *   - absent — the check never got to judge anything: no `extension/` to
+   *     check, the executor could not be forked / the binary was not found,
+   *     or the run was killed at its bound. A no-verdict is not a verdict on
+   *     the code, so the handoff names the reason and never claims the code
+   *     is broken. Pre-fix, all three landed as `false`.
+   *
+   * The command here is named by reference, not spelled: this module is
+   * type-only, so importing the constant would invert the dependency, and
+   * spelling it would be a second source of truth the no-bare-alias gate
+   * (#1414) would have to keep in step by hand.
    */
   typechecked?: boolean;
+  /**
+   * #1414 round 2 — why the typecheck reached NO verdict, alongside the field
+   * being absent. Three causes share the absent state (no `extension/`, the
+   * command could not be run, killed at its bound) and the operator cannot act
+   * on "absent": "add a \`.pi/worktree-setup\`" is the fix for one of them and
+   * nonsense for the other two. Recorded when the checkpoint's typecheck
+   * returned no verdict; absent whenever `typechecked` is present.
+   */
+  typecheckReason?: string;
+  /**
+   * #1414 round 3 — was the typecheck ATTEMPTED at all? `true` when the
+   * checkpoint reached the point of running it (whatever the outcome),
+   * absent when it never got there: a report-only kill (a write-gated role —
+   * no stage, no commit, no reason to compile) or a tree that was clean at
+   * kill time (nothing to save, so nothing to check).
+   *
+   * Why the two existing fields cannot answer this: `typechecked` absent
+   * means BOTH "attempted and reached no verdict" and "never attempted", and
+   * the handoff has to say different things about them — "it could not run,
+   * here is why" is actionable, whereas claiming a verdict-less check for a
+   * checkpoint that never ran one is a new version of the #1414 lie. Old
+   * state files predate the field and read as "not attempted", which is the
+   * safe direction: the bullet is omitted, never a false claim.
+   *
+   * #1414 round 3 — the whole dirty branch sets the field AT THE CALL SITE, so a
+   * checkpoint whose COMMIT failed after the check ran keeps `true` and keeps the
+   * verdict it observed. Pre-round-3 the assignment sat ahead of the call inside
+   * the branch's outer try, so any escape past that point (a stage or commit
+   * throw landing in the outer catch, which resets only `tree`) dropped BOTH the
+   * attempt and the verdict: the operator was told the tree was never compiled
+   * when the driver had compiled it and had the result in a local variable.
+   * `test-work-driver-cap-checkpoint-attempted.ts` forces the commit to fail and
+   * asserts the record survives.
+   */
+  typecheckAttempted?: true;
   at: number;
 }
