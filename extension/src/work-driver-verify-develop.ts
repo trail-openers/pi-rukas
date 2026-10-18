@@ -43,6 +43,7 @@ import {
   runSmokeGate,
 } from "./work-driver-verify-develop-gates.ts";
 import { normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
+import { runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
 import { fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
@@ -316,32 +317,21 @@ export async function verifyDevelopOutcome(
   );
 
   // --- Protected-path gate (#406) ---
-  // A cycle must not edit the files that decide whether its own work passes.
-  // Policy prose (AGENTS.md, CLAUDE.md) is deliberately NOT halted here — it
-  // is neutralised instead, by reading doctrine at baseSha in the merge gate —
-  // so that this repo's own "docs ship with the PR" rule keeps working.
-  if (protectedGateOn) {
-    // #1378 — the union carries the rename sources; the #285/#1012/#679 gates
-    // above consumed `touchedPaths` alone and are byte-identical to before.
-    const protectedHits = protectedPathsIn([...touchedPaths, ...protectedOnlyPaths]);
-    // #1090 — only the operator's invocation grant (ctx), never the state file.
-    const ungranted = ungrantedProtectedPaths(protectedHits, ctx.protectedGrant);
-    if (ungranted.length > 0) {
-      failures.push(explainProtectedPaths(ungranted, protectedHits, state.issues ?? [state.issue]));
-    }
-    const granted = protectedHits.filter((p) => !ungranted.includes(p));
-    if (granted.length > 0) {
-      notes.push(`operator grant (--allow-protected) admitted ${granted.join(", ")}`);
-    }
-    const prose = doctrineProsePathsIn([...touchedPaths, ...protectedOnlyPaths]);
-    if (prose.length > 0) {
-      notes.push(
-        `develop changed policy prose (${prose.join(", ")}) — allowed, and inert for this cycle: merge authority is read at the base commit, so a grant added here cannot take effect until an operator merges it`,
-      );
-    }
-  } else {
-    notes.push("PI_ENSEMBLE_PROTECTED_PATHS=0 — protected-path gate disabled");
-  }
+  // Extracted to work-driver-verify-develop-protected.ts (AGENTS.md §12
+  // file-size cap, same per-gate pattern as #679/#285/#451). A cycle must not
+  // edit the files that decide whether its own work passes. Policy prose
+  // (AGENTS.md, CLAUDE.md) is deliberately NOT halted here — it is neutralised
+  // instead, by reading doctrine at baseSha in the merge gate — so that this
+  // repo's own "docs ship with the PR" rule keeps working.
+  runProtectedPathGate({
+    protectedGateOn,
+    touchedPaths,
+    protectedOnlyPaths,
+    protectedGrant: ctx.protectedGrant,
+    issues: state.issues ?? [state.issue],
+    failures,
+    notes,
+  });
 
   // --- Scope/fanout gate (#285) — extracted to work-driver-scope-fanout.ts ---
   // #725 — each workstream's fence is evaluated against its OWN effective-base

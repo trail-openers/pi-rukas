@@ -83,11 +83,8 @@ import { prPreflightEnabled } from "../src/work-driver-pr-preflight.ts";
 import { resumeEnabled, sessionReattachEnabled } from "../src/work-driver-resume.ts";
 import { stepNoticeThresholdMs } from "../src/work-driver-step-notice.ts";
 import { testDeleteTolerance, verifyTimeoutMs } from "../src/work-driver-verify-develop-helpers.ts";
-import {
-  fastTierTimeoutMs,
-  smokeTierTimeoutMs,
-  suiteTierTimeoutMs,
-} from "../src/work-driver-verify-budget.ts";
+import { verifyTimeoutMs } from "../src/work-driver-verify-budget.ts";
+import { tierDefaultReader } from "./lib/verify-tier-pin.ts";
 import { queueDeferCapMs, queueHaltOnFailure } from "../src/work-queue.ts";
 import { queueOrderingEnabled } from "../src/work-queue-scheduler.ts";
 import { wrapperEnvReads } from "./lib/wrapper-env-reads.ts";
@@ -312,44 +309,6 @@ assert(
 function defaultOf(name: string): HostInput["default"] | undefined {
   return HEADLESS_INPUTS.find((e) => e.name === name)?.default;
 }
-/**
- * #1509 — a tier's documented default, as the LIVE table needs it: a reader
- * with no repoRoot (so no `.pi/*-timeout-ms` file can answer) and with every
- * verify knob deleted (so an ambient setting cannot answer either). What is
- * left is the fallback the reader itself declares, which is exactly the value
- * `HEADLESS_INPUTS` spells — comparing against the ambient environment instead
- * would make the assertion a tautology on any host that exports a verify knob.
- *
- * The reader is async (a tier resolves through a file read); the LIVE loop
- * awaits each entry, so the sync readers are unaffected.
- */
-function tierDefaultReader(tier: "fast" | "suite" | "smoke"): () => unknown {
-  const knobs = [
-    "PI_ENSEMBLE_VERIFY_TIMEOUT_MS",
-    "PI_ENSEMBLE_VERIFY_FAST_TIMEOUT_MS",
-    "PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS",
-    "PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS",
-  ];
-  return () => {
-    const saved = knobs.map((k) => [k, process.env[k]] as const);
-    for (const k of knobs) delete process.env[k];
-    try {
-      // A nonexistent repoRoot IS the "no project file" case: the resolver
-      // treats an unreadable file as absent, exactly as a repo without one.
-      return tier === "fast"
-        ? fastTierTimeoutMs("/nonexistent-pi-rukas-tier-default")
-        : tier === "smoke"
-          ? smokeTierTimeoutMs("/nonexistent-pi-rukas-tier-default")
-          : suiteTierTimeoutMs("/nonexistent-pi-rukas-tier-default");
-    } finally {
-      for (const [k, v] of saved) {
-        if (v === undefined) delete process.env[k];
-        else process.env[k] = v;
-      }
-    }
-  };
-}
-
 const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS", adversarialPhaseBudgetMs],
   ["PI_ENSEMBLE_CAP_KILL_GRACE_MS", capKillGraceMs],
