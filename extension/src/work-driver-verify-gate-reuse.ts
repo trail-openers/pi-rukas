@@ -340,6 +340,13 @@ export type GateRecorded = (
   refuted: readonly string[],
 ) => void;
 
+/** One `GateRecorded` call, as data — what `verifyStepOutcome` hands its caller. */
+export interface DevelopGateRecord {
+  pass: GatePass | undefined;
+  greens: Array<readonly [string, WorkstreamGreen]>;
+  refuted: string[];
+}
+
 export async function gatePassPlan(
   execFn: ExecFn,
   opts: {

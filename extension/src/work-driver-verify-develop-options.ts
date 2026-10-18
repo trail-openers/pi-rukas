@@ -75,4 +75,6 @@ export interface VerifyDevelopOutcomeOptions {
    * caller does not route on the paths, and the reports are still written.
    */
   hangSink?: import("./work-driver-gate-hang.ts").GateHangPathSink;
+  /** #1415 — the gate's reuse records, forwarded to `runVerifyCommandGate`. */
+  onGateRecorded?: import("./work-driver-verify-gate-reuse.ts").GateRecorded;
 }

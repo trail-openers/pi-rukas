@@ -337,7 +337,7 @@ withEnv({ PI_ENSEMBLE_VERIFY_CONCURRENCY: "lots" }, () =>
 {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
   const sites = [
-    "work-driver-verify-verify-cmd.ts",
+    "work-driver-verify-per-worktree.ts",
     "work-driver-consolidated-verify.ts",
     "work-driver-verify-flake.ts",
     "work-driver-integrate-verify.ts",

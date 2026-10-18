@@ -86,6 +86,7 @@ export async function verifyDevelopOutcome(
     onBuildResidueOnly,
     walkProcessTree,
     hangSink, // #1427 r3 — per-call hang sink, threaded to the gate below
+    onGateRecorded, // #1415 — the reuse records, threaded to the gate below
   } = options;
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
@@ -423,10 +424,8 @@ export async function verifyDevelopOutcome(
       // probe error, opt-in disabled): record it but still run the gate.
       // Only an actual skip suppresses the derived chain.
       if (skipDecision.reason) notes.push(skipDecision.reason);
-      // #794 — the per-worktree loop + consolidated run + classification is
-      // extracted to work-driver-verify-verify-cmd.ts (500-line gate); the
-      // failure messages, the flake-retry precondition and the aggregation
-      // semantics all live there unchanged.
+      // #794 — the per-worktree loop, consolidated run and classification
+      // live in work-driver-verify-verify-cmd.ts (500-line gate).
       const before = failures.length;
       let attributed = false;
       // #1509 — both tier bounds come from one repoRoot in one call (see
@@ -466,6 +465,7 @@ export async function verifyDevelopOutcome(
         // per-call sink this gate's reports land on, scoping a cap's logPaths.
         ...(walkProcessTree !== undefined ? { walkProcessTree } : {}),
         ...(hangSink !== undefined ? { hangSink } : {}),
+        ...(onGateRecorded !== undefined ? { onGateRecorded } : {}),
       });
       // #1349 — only a base that fails the way the change does excuses it.
       verifyCmdEnd = before === 0 && attributed ? failures.length : undefined;

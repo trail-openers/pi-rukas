@@ -247,12 +247,20 @@ const everyKindEvent: WorkEvent[] = [
     workstreamCount: 1,
   },
   // #1415 — the develop gate's verify run, bracketed.
-  { kind: "verify-started", at: 1, step: "develop", command: "bash scripts/verify.sh" },
+  {
+    kind: "verify-started",
+    at: 1,
+    step: "develop",
+    command: "bash scripts/verify.sh",
+    target: { kind: "consolidated" },
+  },
   {
     kind: "verify-completed",
     at: 2,
     step: "develop",
     command: "bash scripts/verify.sh",
+    target: { kind: "consolidated" },
+    status: "success",
     ok: true,
     ms: 1,
   },

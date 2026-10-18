@@ -305,7 +305,7 @@ Only these kinds are a host contract, versioned by `NDJSON_STABLE_VERSION` (1) a
 | `dispatch-started` | `step`, `role`, `jobId`, `at` |
 | `dispatch-completed` | `step`, `role`, `jobId`, `ok`, `ms`, `at`, `usage` |
 | `verify-started` | `step`, `command`, `at` — the develop gate's verify is about to run (#1415, added in this release); written before the command starts, so it arrives while the gate is still running |
-| `verify-completed` | `step`, `command`, `ok`, `ms`, `at` — how that gate ended and how long it took |
+| `verify-completed` | `step`, `command`, `ok`, `status`, `ms`, `at` — how that gate ended and how long it took; `status` (`success` / `failure` / `skipped` / `timeout`) says why `ok` is false, and `ms` is absent for `skipped` |
 | `cap-hit` | `cap`, `at`, `nextStep` |
 | `handoff-emitted` | `at`, `commentUrl`, `labelApplied` |
 | `ci-status` | `at`, `status`, `runUrl` |

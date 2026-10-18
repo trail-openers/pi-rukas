@@ -48,6 +48,7 @@ import {
   validateNdjsonLine,
 } from "../src/headless/ndjson.ts";
 import { fmtEvent, fmtRecentEvents } from "../src/work-status-events.ts";
+import { makeVerifyRunEvents } from "../src/workflow-state-events-verify.ts";
 import { KNOWN_EVENT_KINDS, validateDiscriminants } from "../src/workflow-state-validate.ts";
 import {
   type WorkEvent,
@@ -71,32 +72,21 @@ const START = "verify-started";
 const COMPLETE = "verify-completed";
 
 /**
- * Build one of the two events through the codebase's own vocabulary.
- *
- * `make*Event` factories are preferred when they exist (a literal here would
- * silently keep compiling if task B renamed a field, and the test would pass
- * while asserting nothing). Falls back to a literal — still typed as
- * `WorkEvent`, so a field the union does not have is a compile error, which is
- * the whole point of typing it.
+ * Build one of the two events through the codebase's own factory,
+ * `makeVerifyRunEvents` — the one the driver emits through. This used to probe
+ * for factories that never landed and fall back to a cast literal in a guessed
+ * vocabulary (`cmd`, `ok`, no `target`), so the suite pinned a schema no code
+ * emits and failed on the real renderer for the wrong reason.
  */
 async function build(kind: string, at: number): Promise<WorkEvent | undefined> {
-  const mod = await import("../src/workflow-state-events-verify-flake.ts");
-  const factoryName =
-    kind === START
-      ? "makeVerifyStartedEvent"
-      : kind === COMPLETE
-        ? "makeVerifyCompletedEvent"
-        : null;
-  const factory = factoryName ? (mod as Record<string, unknown>)[factoryName] : undefined;
-  if (typeof factory === "function") {
-    const f = factory as (a: unknown, b: unknown, c: unknown) => WorkEvent;
-    return kind === START ? f("develop", CMD, at) : f("develop", CMD, 1_234_567, at);
-  }
-  const literal =
-    kind === START
-      ? { kind, at, step: "develop", cmd: CMD }
-      : { kind, at, step: "develop", cmd: CMD, ms: 1_234_567, ok: true };
-  return literal as WorkEvent;
+  const { started, completed } = makeVerifyRunEvents({
+    step: "develop",
+    command: CMD,
+    target: { kind: "consolidated" },
+    status: "success",
+    ms: 1_234_567,
+  });
+  return kind === START ? { ...started, at } : kind === COMPLETE ? { ...completed, at } : undefined;
 }
 
 /** The field carrying the duration, however it is named (task B owns the name). */
