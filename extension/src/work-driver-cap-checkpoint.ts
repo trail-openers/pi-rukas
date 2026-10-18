@@ -51,6 +51,7 @@ import {
   typecheckWorktree,
 } from "./work-driver-cap-checkpoint-typecheck.ts";
 import type { CycleContext } from "./work-driver-context.ts";
+import { mergeInProgress } from "./work-driver-continue-pr-guard.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
@@ -198,10 +199,14 @@ export async function checkpointCapedDispatch(
   // `typecheck`: the two are different facts, and a path that calls the check
   // without assigning would otherwise claim no attempt for a compile that ran.
   let typecheckAttempted = false;
+  let mergeOpen = false;
   try {
     if (reportOnly) {
       // (M5) — skip the stage+commit entirely for write-gated roles. The
       // status file below + the child's report are the whole checkpoint.
+    } else if (await mergeInProgress(checkpointExecp, cwd)) {
+      // #1468 — a bare commit here would finish the merge with its markers.
+      mergeOpen = true;
     } else {
       // Read the porcelain status first: a clean tree means nothing was on
       // disk (the cap kill happened after the developer committed its last
@@ -373,6 +378,9 @@ export async function checkpointCapedDispatch(
     "## Done",
     "",
     done,
+    ...(mergeOpen
+      ? ["A merge is in progress (MERGE_HEAD): the checkpoint staged and committed nothing."]
+      : []),
     typecheckLine,
     "",
     "## Remaining (uncommitted after the checkpoint)",
