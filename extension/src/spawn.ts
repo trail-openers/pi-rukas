@@ -22,6 +22,7 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { preflightChildGuards } from "./child-guards.ts";
+import { ChildProgress } from "./child-progress.ts";
 import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
@@ -305,10 +306,13 @@ async function spawnSpecialistInner(
   // tool-inactivity bound applies to the silence; when it is empty the
   // model-silence bound applies — exactly one budget is armed at any poll.
   const inFlightTools = new InFlightTools();
+  // #1567 — what counts as progress, per spawn (child-progress.ts).
+  const childProgress = new ChildProgress();
   const stdoutRl = createInterface({ input: child.stdout });
   const lineHandler = createStdoutLineHandler({
     start,
     inFlightTools,
+    childProgress,
     appendStderr,
     runningState,
     caps,
