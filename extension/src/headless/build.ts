@@ -14,6 +14,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { GIT_LOCATION_VARS } from "../git-env.ts";
 
 /** The pi-rukas checkout this module runs from (extension/src/headless → root). */
 export const INSTALL_ROOT = path.resolve(import.meta.dirname, "..", "..", "..");
@@ -56,13 +57,7 @@ const SHA = /^[0-9a-f]{40}$/;
  * the probe answer for `root` alone.
  */
 const GIT_ENV_SCRUB = [
-  "GIT_DIR",
-  "GIT_WORK_TREE",
-  "GIT_INDEX_FILE",
-  "GIT_NAMESPACE",
-  "GIT_COMMON_DIR",
-  "GIT_OBJECT_DIRECTORY",
-  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  ...GIT_LOCATION_VARS,
   "GIT_CEILING_DIRECTORIES",
   "GIT_CONFIG_GLOBAL",
   "GIT_CONFIG_SYSTEM",

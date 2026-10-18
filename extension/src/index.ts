@@ -13,6 +13,7 @@ import { registerDispatchStatusTool } from "./dispatch-status.ts";
 import { registerDispatchSteerTool } from "./dispatch-steer.ts";
 import { registerDispatchTools } from "./dispatch.ts";
 import { armExitCause } from "./exit-cause.ts";
+import { scrubGitLocation } from "./git-env.ts";
 import { registerLensReviewTool } from "./lens-review-tool.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import { loadOverrides } from "./model-config.ts";
@@ -35,6 +36,11 @@ import * as workWidget from "./work-widget.ts";
 
 export default async function (pi: ExtensionAPI) {
   trace("extension activated");
+  // #1571 — every git command this process runs or spawns is addressed by
+  // cwd; an inherited GIT_DIR & co. would retarget all of them (git-env.ts).
+  // Done once here so the driver's many direct git calls are covered too.
+  const scrubbed = scrubGitLocation(process.env);
+  if (scrubbed.length > 0) trace(`extension: removed inherited ${scrubbed.join(", ")}`);
   // #1247 — arm the process-level origin trackers (signal / stdin-EOF) the
   // moment the extension is registered, not on `session_start`: `pi --mode
   // rpc` can shut down without ever emitting one, and a headless session is

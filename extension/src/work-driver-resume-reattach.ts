@@ -10,6 +10,7 @@
 
 import { spawn } from "node:child_process";
 import { notifyAgent } from "./agent-message.ts";
+import { scrubGitLocation } from "./git-env.ts";
 import { emitStepCompleted } from "./lifecycle-events.ts";
 import { getPiInvocation } from "./pi-binary-resolve.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
@@ -88,6 +89,7 @@ export async function attemptReattach(
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined) childEnv[k] = v;
   }
+  scrubGitLocation(childEnv); // #1571 — see git-env.ts
 
   if (spawnReattach !== defaultSpawnReattach) {
     return spawnReattach(childArgs, childEnv, { type: "prompt", message: resumePromptText })
