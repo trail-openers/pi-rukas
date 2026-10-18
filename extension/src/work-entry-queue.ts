@@ -23,7 +23,7 @@ import { setSiblingClaimWait } from "./work-driver-path-claims.ts";
 import { runWorkDriver } from "./work-driver.ts";
 import type { EntrySeams } from "./work-entry.ts";
 import type { OrderingPlan } from "./work-queue-deps.ts";
-import type { IssueGroup } from "./work-queue-types.ts";
+import type { IssueGroup, QueueSummary } from "./work-queue-types.ts";
 import { runWorkQueue } from "./work-queue.ts";
 
 /**
@@ -69,7 +69,7 @@ export interface QueueLaunch {
  * scope that is still correct — the plan-time claim check must see the sibling
  * set for the whole life of the queue, and must not see it afterwards.
  */
-export async function launchQueue(pi: DriverHost, launch: QueueLaunch): Promise<unknown> {
+export async function launchQueue(pi: DriverHost, launch: QueueLaunch): Promise<QueueSummary> {
   const {
     repoRoot,
     groups,

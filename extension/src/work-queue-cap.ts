@@ -15,13 +15,22 @@
  * one sees it first, the operator reads one cap name. The queue-level one is
  * the cheap sighting (no dispatch burned), which is the whole point of #1101.
  *
+ * #1101 fix-round — every one of these caps is a member of `WorkCapLiteral`
+ * (`workflow-state-events-caps.ts`), of `CAP_HIT_FIXED_LITERALS` (the
+ * state-file validator) and of `FIXED_CAPS` (the headless vocabulary, sorted —
+ * `test-headless-host-contract.ts` asserts the sort). A queue-raised cap that
+ * joins only this union fails the validator's exhaustiveness check the same
+ * way a cycle-side one does; the queue is not a special case of the grammar.
+ *
  * `dependency-timeout` has no cycle-side twin. There is no cycle-side analogue
  * of "your dependency never finished", because a cycle that never started
  * cannot observe anything.
  *
  * `dependency-parked` is the third shape and is NOT a cap family of its own —
- * see `recordQueuePark` in work-queue-worker.ts, which writes it as
- * `cap dependency-parked:#N`.
+ * see `recordQueuePark` in work-queue-outcome.ts, which writes it as
+ * `cap dependency-parked:#N`. `queue-stranded` is the fourth: a group the
+ * scheduler had taken into the wait list when a halt released every worker
+ * (`sweepStranded` in work-queue.ts). None of the four is raised by a cycle.
  */
 
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
@@ -36,6 +45,14 @@ import type { BlockReason } from "./work-queue-scheduler.ts";
 
 /** The caps a waiting group can end on. */
 export type QueueWaitCap = "dependency-timeout" | "cross-group-conflict";
+
+/**
+ * The two names, as one list. `humanActionFor` builds its matcher from this
+ * rather than repeating the alternation, so a cap added to `QueueWaitCap` and
+ * `queueWaitAction` cannot be invisible to the router — `tsc` names the switch
+ * it is missing from, and there is no second regex to update.
+ */
+const QUEUE_WAIT_CAPS: readonly QueueWaitCap[] = ["dependency-timeout", "cross-group-conflict"];
 
 /** The cap family and the reason string a capped wait reports. */
 export function waitCapFor(reason: Exclude<BlockReason, null>): {
@@ -71,6 +88,24 @@ export function queueWaitAction(primary: number, cap: QueueWaitCap): string {
 }
 
 /**
+ * Operator action for the fourth queue-raised park: a group the scheduler had
+ * taken into the wait list when a halt released every worker (`sweepStranded`
+ * in work-queue.ts).
+ *
+ * Separate from `queueWaitAction` because the blocker is different in kind. A
+ * wait cap names ONE sibling the group was holding its place behind; a
+ * stranded group was abandoned by the queue itself, so the operator resolves
+ * the halt first and only then re-runs. It lives here rather than inline at
+ * the call site for the reason #1101's contract is the same everywhere: one
+ * writer of queue-park action text, so the renderers and `/work-status` cannot
+ * disagree about what a `cap queue-stranded:` group asks for.
+ */
+export function queueStrandedAction(issues: number[], blocker: string): string {
+  const slug = issues.join(" ");
+  return `the queue halted while #${slug} was still waiting on ${blocker} — resolve the halt /work-status reports, then re-run \`/work ${slug} --restart\`; this group never started, so nothing was built`;
+}
+
+/**
  * Human action for a parked group. Moved out of work-queue.ts (#1101) to keep
  * that module under AGENTS.md §12's 500-line cap; the matching rules are
  * unchanged and this is their single source of truth.
@@ -79,7 +114,14 @@ export function queueWaitAction(primary: number, cap: QueueWaitCap): string {
  * the system cannot do itself; "it failed" is not that. If we cannot name an
  * action, we say so plainly rather than inventing one.
  */
-export function humanActionFor(reason: string, primary: number): string {
+export function humanActionFor(
+  reason: string,
+  primary: number,
+  /** The group's full issue list, for a park whose recovery re-runs the whole
+   * group. Defaults to `primary` — a cycle park's `--restart` must re-run every
+   * member, not only the one issue the call happened to name. */
+  issues: number[] = [primary],
+): string {
   // #1101 — a group the queue never dispatched, because a dependency settled
   // non-merged, an ordering cycle has no valid order, or a wait outlasted its
   // bound. Checked first: the generic fallback below recommends inspecting a
@@ -88,22 +130,38 @@ export function humanActionFor(reason: string, primary: number): string {
   if (dependencyParked) {
     return `get #${primary}'s dependency ${dependencyParked[1]} merged (or drop the declared dependency from its body), then re-run \`/work ${primary} --restart\` — this group never started, so nothing was built`;
   }
-  if (/cap dependency-cycle\b/.test(reason)) {
+  if (/^cap dependency-cycle\b/.test(reason)) {
     const loop = reason.match(/waits on ([^)]+)\)/);
-    return `break the declared dependency cycle${loop ? ` (${loop[1]})` : ""} — remove or reverse one \`Depends-on\` / \`blocked by\` statement, then re-run \`/work ${primary} --restart\`; nothing was built, so there is nothing to salvage`;
+    return `break the declared dependency cycle${loop ? ` (${loop[1]})` : ""} — remove or reverse one \`Depends-on\` / \`blocked by\` statement, then re-run \`/work ${issues.join(" ")} --restart\`; nothing was built, so there is nothing to salvage`;
   }
-  const waitCap = reason.match(/cap (dependency-timeout|cross-group-conflict)\b/);
+  // #1101 — the two caps `waitCapFor` can raise, derived from the same const
+  // the switch in `queueWaitAction` branches on. A hand-written alternation
+  // here was a second list of the same two names, and a third cap added to
+  // that switch fell through this one to "inspect a diff that does not exist".
+  const waitCap = reason.match(new RegExp(`^cap (${QUEUE_WAIT_CAPS.join("|")})\\b`));
   if (waitCap) return queueWaitAction(primary, waitCap[1] as QueueWaitCap);
   // #753 — a dirty-leftover park (deferred worktree creation refused):
   // salvage the leftover BEFORE any re-run — --restart would hit the same
   // refusal.
-  if (reason.includes("deferred-creation:develop")) {
+  //
+  // NOT anchored to the `cap ` prefix, unlike the queue rules above and the
+  // `intent-park` / `deadline` rules below. `cap deferred-creation:develop` is
+  // itself a template-shaped literal — the colon is part of the name, not the
+  // reason/detail separator `recordQueuePark` writes — and a queue park whose
+  // free-text detail MENTIONED a leftover path would be the misclassification
+  // the anchoring exists to stop, not this one. The path suffix the action
+  // reads is only ever produced by `parkReason`.
+  if (/cap deferred-creation:develop/.test(reason)) {
     return deferredLeftoverAction(reason, primary);
   }
   // #378 — intent parks carry their own specific action; the generic
   // "inspect the state file and --restart" fallback is useless here, because
   // re-running an unresolvable issue unchanged produces the same park.
-  const intentPark = reason.match(/intent-park(?::([a-z-]+))?/);
+  // Anchored to the `cap ` prefix, for the same reason as the wait-cap rule
+  // above: a queue-raised park's free-text detail can *mention* an intent
+  // park's reason word without being one, and the intent advice would then
+  // replace the true one.
+  const intentPark = reason.match(/^cap intent-park(?::([a-z-]+))?/);
   if (intentPark) {
     return parkAction((intentPark[1] ?? "underspecified") as ParkReason, primary);
   }
@@ -154,7 +212,11 @@ export function humanActionFor(reason: string, primary: number): string {
   if (/round-cap|adversarial-loop|wall-clock/.test(reason)) {
     return `review the findings on #${primary}'s PR — the fix loop did not converge`;
   }
-  if (/\bdeadline\b/.test(reason)) {
+  // Anchored like the two above: `deadline` is ordinary English and the
+  // queue's park details are free text (`dependency group(s) … never reached
+  // a terminal state`), so an unanchored match let a queue park take the
+  // cycle-deadline action.
+  if (/^cap deadline\b/.test(reason)) {
     return `the caller's cycle deadline was reached — raise or clear PI_ENSEMBLE_CYCLE_DEADLINE/PI_ENSEMBLE_CYCLE_BUDGET_MS and re-run \`/work ${primary} --restart\` (the handoff names the branch, PR and round the work reached)`;
   }
   // #1421 — checked BEFORE the `verify-env:` rule below: a build-residue park

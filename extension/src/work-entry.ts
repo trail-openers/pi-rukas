@@ -192,7 +192,7 @@ export async function runGroupedIssues(
     makeResult,
     seams,
   });
-  return renderQueueSummary(summaryResult as QueueSummary);
+  return renderQueueSummary(summaryResult);
 }
 
 /**

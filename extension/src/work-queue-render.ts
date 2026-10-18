@@ -10,7 +10,7 @@
  * diff, a branch and findings to read; a group the queue never dispatched has
  * none of those, and the same `⏸ … cap …` line for both sends someone to look
  * for work that was never written. The glyph and the step suffix are therefore
- * derived from the reason, not assumed from the outcome — see `parkGlyph`.
+ * derived from the reason, not assumed from the outcome — see `parkMark`.
  *
  * `parkReason` and `humanActionFor` stay in work-queue.ts / work-queue-cap.ts —
  * they are the queue's DECISION logic (which step died, what the operator must

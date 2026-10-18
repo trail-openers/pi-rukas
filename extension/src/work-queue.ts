@@ -33,6 +33,10 @@ import { trace } from "./trace.ts";
 import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
 import { captureInvocationStartRef } from "./work-driver-git.ts";
 import type { GroupingResult } from "./work-driver-grouping.ts";
+// The queue-raised parks all go through `recordQueuePark` so one function owns
+// the reason format and the operator action; `humanActionFor` is re-exported
+// below and the cycle-park text is built there.
+import { recordQueuePark } from "./work-queue-outcome.ts";
 import { mergeQueueSummaryEntries } from "./work-queue-summary.ts";
 import { type WorkerState, queueOrderingEnabled, runQueueWorker } from "./work-queue-worker.ts";
 import { type WorkState, readState } from "./workflow-state.ts";
@@ -104,17 +108,29 @@ export function queueHaltOnFailure(): boolean {
  */
 export const DEFER_CAP_MS = 30 * 60 * 1000;
 
-/** The env-overridable defer cap; falls back to {@link DEFER_CAP_MS}. */
+/**
+ * The env-overridable defer cap; falls back to {@link DEFER_CAP_MS}.
+ *
+ * #1101 fix-round — the number is validated here for BOTH sources. An operator
+ * `PI_ENSEMBLE_QUEUE_DEFER_CAP_MS=abc` used to parse to NaN, fail the finite
+ * test, and fall back — but an INJECTED `deferCapMs` went through untouched, so
+ * a test (or a future caller) passing 0, a negative or a NaN got a cap that
+ * either parks every wait instantly or never at all. `queueDeferCapMs()` is the
+ * one gate for the env path; `validDeferCapMs()` is the same rule for anything
+ * that reached the queue by another door.
+ */
+export function validDeferCapMs(n: number | undefined): number | undefined {
+  // A cap of 0 would make every wait a cap-out, which is a silent way to
+  // disable the ordering gate; a negative or NaN parse is a typo. Any of them
+  // is ignored rather than obeyed.
+  return n !== undefined && Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
 export function queueDeferCapMs(): number {
-  const raw = process.env.PI_ENSEMBLE_QUEUE_DEFER_CAP_MS;
-  if (raw) {
-    const n = Number.parseInt(raw, 10);
-    // A cap of 0 would make every wait a cap-out, which is a silent way to
-    // disable the ordering gate; a negative parse is a typo. Either is ignored
-    // rather than obeyed.
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  return DEFER_CAP_MS;
+  return (
+    validDeferCapMs(Number.parseInt(process.env.PI_ENSEMBLE_QUEUE_DEFER_CAP_MS ?? "", 10)) ??
+    DEFER_CAP_MS
+  );
 }
 
 /**
@@ -266,11 +282,11 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
     settled: new Set<string>(),
     resolved: new Set<string>(),
     merged: new Set<string>(),
-    outcomeOf: new Map<string, QueueEntry["outcome"]>(),
     deferralStart: new Map<string, number>(),
     dependencies: opts.dependencies ?? {},
     orderingEnabled: queueOrderingEnabled(),
-    deferCapMs: opts.deferCapMs ?? queueDeferCapMs(),
+    // One validation for both sources — see `validDeferCapMs`.
+    deferCapMs: validDeferCapMs(opts.deferCapMs) ?? queueDeferCapMs(),
     invocationStartRef,
   };
 
@@ -285,17 +301,20 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
       // `owners` is what keeps a worker from re-examining a group; `claimed`
       // never guarded the scan (`work-queue-waitlist.ts` says why) and is gone.
       state.owners.add(g.id);
-      state.settled.add(g.id);
-      state.resolved.add(g.id);
-      state.outcomeOf.set(g.id, "parked");
       const others = (opts.dependencies?.[g.id]?.blockingGroupIds ?? []).join(", ") || g.id;
-      entries.set(gi, {
-        groupId: g.id,
-        issues: g.issues,
-        outcome: "parked",
-        reason: `cap dependency-cycle: ${g.id} is part of an ordering cycle (waits on ${others})`,
-        humanAction: `break the declared dependency cycle among ${g.issues.map((n) => `#${n}`).join(", ")} (remove or reverse one \`Depends-on\` / \`blocked by\` statement), then re-run \`/work ${g.issues.join(" ")} --restart\` — this group never started, so nothing was built`,
-      });
+      // #1101 fix-round — the pre-pass park is a queue-raised park like any
+      // other, so it goes through `recordQueuePark` rather than building its
+      // own entry and its own copy of the action text. It stamps `settled` and
+      // `resolved` there (the two the workers read) plus `owners` here, which
+      // is what makes the "runGroup was never called for them" assertion true
+      // by construction.
+      recordQueuePark(
+        state,
+        gi,
+        g,
+        "dependency-cycle",
+        `${g.id} is part of an ordering cycle (waits on ${others})`,
+      );
       trace(`work-queue: ${g.id} parked — it is part of a dependency cycle`);
     }
   }
@@ -363,16 +382,9 @@ function sweepStranded(state: WorkerState): void {
       waitingOn.length > 0
         ? `dependency group(s) ${waitingOn.join(", ")}`
         : `the queue halted before it dispatched ${g.id}`;
-    state.outcomeOf.set(g.id, "parked");
-    state.resolved.add(g.id);
-    state.settled.add(g.id);
-    state.entries.set(gi, {
-      groupId: g.id,
-      issues: g.issues,
-      outcome: "parked",
-      reason: `cap queue-stranded:${blocker}`,
-      humanAction: `the queue halted while ${g.id} was still waiting on ${blocker} — resolve the halt /work-status reports, then re-run \`/work ${g.issues.join(" ")} --restart\`; this group never started, so nothing was built`,
-    });
+    // #1101 fix-round — through the one writer, so the reason format and the
+    // action for a stranded group cannot drift from the other three queue parks.
+    recordQueuePark(state, gi, g, "queue-stranded", blocker);
     trace(`work-queue: ${g.id} parked — the queue stopped while it was waiting (${blocker})`);
   }
 }

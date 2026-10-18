@@ -1434,6 +1434,7 @@ dispatches, the queue requires every group it waits on to have reached `merged`.
 | dependency parks, fails, or refuses to start | dependent parks `cap dependency-parked:#N`, **`runGroup` never invoked**, no dispatch spent |
 | two issues depend on each other | every group in the loop parks `cap dependency-cycle`, naming its edge, before any dispatch |
 | the wait outlasts `PI_ENSEMBLE_QUEUE_DEFER_CAP_MS` | dependent parks with the reason naming the group that never released — it does **not** proceed |
+| the queue halts (a driver throw, a systemic failure) while a group was waiting | the waiting group parks `cap queue-stranded:<blocker>`, with an action naming the halt to resolve first — it never leaves a group with no reason and no action |
 
 The last row is a deliberate reversal of the old behaviour. A wait that gave up
 and proceeded was the pre-#1101 shape, and for an ordering edge it is the
@@ -1452,11 +1453,20 @@ long. It is injectable for tests (`deferCapMs`) and overridable via
 findings. `⏸ … at lens-review` means a cycle ran and died somewhere, and has
 work to salvage; `◌ … cap dependency-parked:#12` means the group produced
 nothing and the action to take is on #12, not on this group. The headline counts
-them separately (`2 parked (1 never dispatched)`) for the same reason.
+them separately (`2 parked (1 never dispatched)`) for the same reason. All four
+queue-raised reasons — `dependency-parked`, `dependency-timeout`,
+`dependency-cycle`, `queue-stranded` — get that treatment, and `isQueueLevelPark`
+is the one test for it. (`cross-group-conflict` is classified by its detail,
+not its name: the queue's own carries `in-flight sibling(s)`, a plan-time one
+does not and keeps its step.)
 
-Escape hatch: there is none for the edge itself. Set no ordering statement and
-the queue has nothing to act on, which is the pre-#1101 behaviour and the
-correct way to opt out per-pair.
+Escape hatch: `PI_ENSEMBLE_QUEUE_ORDERING=0` turns the whole gate off — no
+edges are computed and the cycle park goes with them, so groups dispatch under
+the #676 overlap rule alone. That is the pre-#1101 behaviour, and it is the
+right tool when the gate itself is the problem, not when one pair should not be
+ordered. For a single pair, per-pair opt-out is simpler: delete the ordering
+statement from the dependent's body and the queue has nothing to act on. Both
+leave the queue unable to order the work, so reach for the per-pair edit first.
 
 ### Verify-full tier: "fast green, full unrun"
 

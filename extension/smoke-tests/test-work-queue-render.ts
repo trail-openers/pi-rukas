@@ -117,6 +117,11 @@ function mixed(): QueueSummary {
     "cap dependency-parked:#2",
     "cap dependency-timeout: dependency group(s) group-a never reached a terminal state",
     "cap dependency-cycle: group-c is part of an ordering cycle (waits on group-b)",
+    // #1101 fix-round — the fourth queue-raised reason. It was missing from
+    // `QUEUE_PARK_REASONS`, so a group the halt left in the wait list rendered
+    // with the running-cycle glyph and a step suffix — the exact false report
+    // this section exists to prevent. `sweepStranded` writes this shape.
+    "cap queue-stranded:dependency group(s) group-a",
   ]) {
     const summary: QueueSummary = {
       entries: [

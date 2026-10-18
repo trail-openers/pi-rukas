@@ -29,36 +29,35 @@ export const BUILD_RESIDUE_SUFFIX = "build-residue";
  * #1101 — queue-raised park reasons, recognised here as well as in
  * `work-queue-cap.ts`.
  *
- * These three never came from a cycle: the queue raised them about a group it
- * never dispatched. `parkReason` reads a STATE FILE, and for these groups there
- * is none — so the shapes below are not reasons this function produces, they
- * are the reasons it must not mistake for one. A queue-level park writes an
- * entry with no state file behind it, and a renderer or a `/work-status` reader
- * that walks in expecting `cap <cycle-cap>` + a step to inspect will send the
+ * These never came from a cycle: the queue raised them about a group it never
+ * dispatched. `parkReason` reads a STATE FILE, and for these groups there is
+ * none — so the shapes below are not reasons this function produces, they are
+ * the reasons it must not mistake for one. A queue-level park writes an entry
+ * with no state file behind it, and a renderer or a `/work-status` reader that
+ * walks in expecting `cap <cycle-cap>` + a step to inspect will send the
  * operator to a diff that was never written. `isQueueLevelPark` is the single
  * test for that, shared so the two places cannot drift.
  *
- * #1101 fix-round — `cross-group-conflict` was deliberately left out of this
- * list on the reasoning that only the queue's *sighting* of it produces no
- * state file, and that `work-queue-cap.ts` distinguishes the two by route.
- * Under the sibling filter that reasoning is now backwards: `readClaims` hides
- * every same-process sibling's claim, so the plan-time check can no longer
- * raise `cross-group-conflict` for an in-invocation pair at all — the only
- * route left that writes it is `waitCapFor`, i.e. the queue. Listing it here is
- * #1101 fix-round — `cross-group-conflict` shares its name with the reactive
- * plan-time check, which raises it from inside a cycle that HAD dispatched, so
- * the name alone cannot answer the question the renderer asks and the bare word
- * must not earn the never-dispatched treatment: that cycle has a diff to read.
- * The queue's own route (`waitCapFor`) always writes an
- * `in-flight sibling(s) …` detail, and no reactive reason carries that text —
- * which is the provenance `QUEUE_SIDE_CONFLICT` reads. Keeping it out of the
- * name list below is what lets `parkReason`'s state-file guard and the
- * `at <step>` suffix stay correct for the cycle-side sighting.
+ * `cross-group-conflict` is deliberately NOT in this list. It shares its name
+ * with the reactive plan-time check in `work-driver-path-claims.ts`, which
+ * raises it from inside a cycle that HAD dispatched — so the bare word cannot
+ * answer the question the renderer asks, and must not earn the never-dispatched
+ * treatment: that cycle has a diff to read. The queue's own route (`waitCapFor`)
+ * always writes an `in-flight sibling(s) …` detail and no reactive reason
+ * carries that text, which is the provenance `QUEUE_SIDE_CONFLICT` below reads.
+ * Keeping the name out of this list is what lets `parkReason`'s state-file
+ * guard and the `at <step>` suffix stay correct for the cycle-side sighting.
  */
 export const QUEUE_PARK_REASONS = [
   "dependency-parked",
   "dependency-timeout",
   "dependency-cycle",
+  // #1101 fix-round — the fourth shape: a group the scheduler had taken into
+  // the wait list when a halt released every worker (`sweepStranded`). It was
+  // missing, so the stranded group rendered with the running-cycle glyph and a
+  // step suffix, exactly like the parks that DO have work to salvage — the one
+  // thing this list exists to prevent.
+  "queue-stranded",
 ] as const;
 
 /**
