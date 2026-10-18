@@ -63,7 +63,7 @@ import {
 } from "./work-driver-transition-safety.ts";
 import { scratchDir, setupWorkspaceTmp, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import { runWorktreeSweep } from "./work-driver-worktree-sweep.ts";
-import { foldWriteFenceCount } from "./work-driver-write-fence.ts";
+import { foldWriteFenceCount, resetWriteFenceLogs } from "./work-driver-write-fence.ts";
 import * as workWidget from "./work-widget.ts";
 import { type WorkEvent, appendEvent } from "./workflow-state.ts";
 import {
@@ -74,7 +74,6 @@ import {
   readState,
   workStateDir,
 } from "./workflow-state.ts";
-import { clearWriteFenceLogs } from "./write-fence-log.ts";
 
 export { DriverNotImplementedError } from "./work-driver-context.ts";
 
@@ -156,7 +155,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
   let state = reenterInterrupted(disk ?? initialState(ctx.issue));
   if (ctx.restart === true) {
     trace(`work-driver: --restart wiped state for issue #${ctx.issue} (fresh cycle)`);
-    await clearWriteFenceLogs(scratchDir(ctx.repoRoot, ctx.issue)); // #1655 — the new cycle's count starts at zero
+    await resetWriteFenceLogs(scratchDir(ctx.repoRoot, ctx.issue)); // #1655 — the new cycle's count starts at zero
   }
   // PR10 — persist multi-issue list on first run; honour existing on resume
   // (don't widen scope silently). --restart yields issues===undefined → flows through.

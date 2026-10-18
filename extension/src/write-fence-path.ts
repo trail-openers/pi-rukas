@@ -23,6 +23,7 @@
 import { lstatSync, readlinkSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { trace } from "./trace.ts";
 import { NESTED_DEP, SHAREABLE_DEPS } from "./worktree-dep-contract.ts";
 
 /** Symlink hops allowed before a resolution is treated as a loop. */
@@ -74,11 +75,16 @@ export function homeDir(): string {
   return os.homedir();
 }
 
+/**
+ * The entry at `p`, or undefined when there is none. Any other failure (EACCES on
+ * a parent, ENOTDIR under a file) throws: the path cannot be judged, so it is refused.
+ */
 function lstatOf(p: string) {
   try {
     return lstatSync(p);
-  } catch {
-    return undefined;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
   }
 }
 
@@ -157,21 +163,36 @@ function usableDir(raw: string | undefined): Dir | undefined {
 export function loadFenceConfig(env: NodeJS.ProcessEnv): FenceConfig | undefined {
   const rawRoot = env.PI_ENSEMBLE_WRITE_ROOT;
   if (rawRoot === undefined || env.PI_ENSEMBLE_WRITE_FENCE === "0") return undefined;
+  const root = usableDir(rawRoot);
+  const repoRaw = env.PI_ENSEMBLE_WRITE_REPO;
+  const repo = usableDir(repoRaw)?.real;
+  if (repoRaw !== undefined && repo === undefined) {
+    trace(
+      `write-fence: PI_ENSEMBLE_WRITE_REPO (${repoRaw}) is not a usable directory; no dependency link is provisioned`,
+    );
+  }
+  // The main checkout and its .git: a temp dir that holds or sits inside either is not a temp dir.
+  const guards = [root?.real, repo, repo && safeResolve(path.join(repo, ".git"))].filter(
+    (g): g is string => g !== undefined,
+  );
   const scratch = env.PI_ENSEMBLE_WRITE_SCRATCH;
-  const dirs = [
-    scratch && path.isAbsolute(scratch) ? scratch : undefined,
-    os.tmpdir(),
-    "/tmp",
-    "/private/tmp",
-  ];
   const allowed = new Set<string>();
-  for (const dir of dirs) {
-    const real = dir === undefined ? undefined : safeResolve(dir);
-    if (real !== undefined) allowed.add(real);
+  const scratchReal = scratch && path.isAbsolute(scratch) ? safeResolve(scratch) : undefined;
+  if (scratchReal !== undefined) allowed.add(scratchReal);
+  for (const dir of [os.tmpdir(), "/tmp", "/private/tmp"]) {
+    const real = safeResolve(dir);
+    if (real === undefined) continue;
+    if (guards.some((g) => isInside(g, real) || isInside(real, g))) {
+      trace(
+        `write-fence: temp dir ${dir} holds or sits inside the repo; not writable through the fence`,
+      );
+      continue;
+    }
+    allowed.add(real);
   }
   return {
-    root: usableDir(rawRoot),
-    repo: usableDir(env.PI_ENSEMBLE_WRITE_REPO)?.real,
+    root,
+    repo,
     rootLabel: rawRoot,
     allowed: [...allowed],
     loadedAt: Date.now(),
@@ -269,6 +290,11 @@ export function judgeWrite(
 }
 
 /** A refusal's message. `why` is a clause without its final full stop. */
+export function refusalText(target: string, why: string): string {
+  return `Refused: ${target} — ${why}.`;
+}
+
+/** A refused judgement. */
 export function refuse(target: string, why: string): WriteJudgement {
-  return { ok: false, message: `Refused: ${target} — ${why}.` };
+  return { ok: false, message: refusalText(target, why) };
 }

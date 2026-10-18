@@ -29,14 +29,14 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { geteuid } from "node:process";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { geteuid } from "node:process";
 import { promisify } from "node:util";
 import { missingDepsFailure } from "../src/work-driver-deps-gate.ts";
 import type { WorkState } from "../src/workflow-state.ts";
-import { ignoredStatus, provisionWorktree } from "../src/worktree-provision.ts";
 import { runHookProvisioning } from "../src/worktree-provision-hook.ts";
+import { ignoredStatus, provisionWorktree } from "../src/worktree-provision.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { realExec } from "./lib/exec-fake.ts";
 

@@ -46,6 +46,8 @@ export function buildFenceFixture(tag: string): FenceFixture {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const base = path.join(here, "..", "..", "..", "tmp", "issue-1655", `${tag}-${process.pid}`);
   rmSync(base, { recursive: true, force: true });
+  // Removed on exit, pass or fail, so a run never leaves a tree behind. Named by pid, so runs cannot collide.
+  process.on("exit", () => rmSync(base, { recursive: true, force: true }));
   const repo = path.join(base, "repo");
   const wt = path.join(repo, ".worktrees", "wt");
   const wt2 = path.join(repo, ".worktrees", "wt2");

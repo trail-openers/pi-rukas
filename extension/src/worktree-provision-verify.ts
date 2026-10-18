@@ -20,7 +20,8 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { type ExecFn, SHAREABLE_DEPS, ignoredStatus } from "./worktree-provision.ts";
+import { SHAREABLE_DEPS } from "./worktree-dep-contract.ts";
+import { type ExecFn, ignoredStatus } from "./worktree-provision.ts";
 import type { IgnoreVerdict } from "./worktree-provision.ts";
 
 /** A directory probe that cannot fail: what it found, and why if it could not look. */

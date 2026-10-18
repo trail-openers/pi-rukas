@@ -69,7 +69,7 @@ import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 import { vipuneChildEnv } from "./vipune.ts";
-import { childEnvFor, writeFenceChildEnv } from "./write-fence-log.ts";
+import { childEnvFor, writeFenceChildEnv } from "./write-fence-contract.ts";
 
 // `buildChildArgs` lives in spawn-support.ts (§12): argument construction is
 // invocation plumbing, which that module already holds. Re-exported here

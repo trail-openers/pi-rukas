@@ -10,7 +10,7 @@
  * refused.
  */
 
-import { mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -233,6 +233,51 @@ assert(
   }) === undefined,
   "off: PI_ENSEMBLE_WRITE_FENCE=0 is the escape hatch",
 );
+
+// ------------------------------------------------ #1655 review r3 — a temp dir that holds the repo is not a temp dir
+for (const [label, tmp] of [
+  ["holds the main checkout", fx.repo],
+  ["sits inside the worktree", path.join(fx.wt, "tmp-inside")],
+] as const) {
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = tmp;
+  try {
+    const cfgWithTmp = loadFenceConfig({
+      PI_ENSEMBLE_WRITE_ROOT: fx.wt,
+      PI_ENSEMBLE_WRITE_REPO: fx.repo,
+      PI_ENSEMBLE_WRITE_SCRATCH: fx.scratch,
+    });
+    if (!cfgWithTmp) throw new Error("TMPDIR config did not load");
+    assert(
+      !allowed(path.join(fx.repo, "bin", "new"), fx.wt, cfgWithTmp),
+      `TMPDIR ${label}: the repo root is still refused`,
+    );
+    assert(
+      allowed("/tmp/fence-check", fx.wt, cfgWithTmp),
+      `TMPDIR ${label}: the fallback /tmp still allows`,
+    );
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = saved;
+  }
+}
+
+// ------------------------------------------------ #1655 review r3 — an unreadable parent is refused, not read as missing
+if (process.getuid?.() === 0) {
+  console.log("· skipped: the unreadable-parent case needs a non-root user (root reads every mode)");
+} else {
+  const locked = path.join(fx.wt, "locked");
+  mkdirSync(locked);
+  chmodSync(locked, 0o000);
+  try {
+    assert(
+      !allowed("locked/x"),
+      "refuse: a write under a directory the fence cannot stat (EACCES) is refused, not taken as a missing path",
+    );
+  } finally {
+    chmodSync(locked, 0o755);
+  }
+}
 
 // ------------------------------------------------ isInside is containment, not prefix
 assert(isInside("/a/b", "/a/b"), "isInside: a path is inside itself");

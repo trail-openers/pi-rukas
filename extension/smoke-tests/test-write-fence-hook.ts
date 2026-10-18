@@ -285,7 +285,33 @@ restore();
   );
   const after = await countWriteFenceRefusals(fx.scratch);
   // C's 11 refusals, D's two repo-root refusals, and this one.
-  assert(after.count === 14, `G: the unjudged call is counted as a refusal (got ${after.count}, want 14)`);
+  assert(
+    after.count === 14,
+    `G: the unjudged call is counted as a refusal (got ${after.count}, want 14)`,
+  );
+  // #1655 review r3 — a call whose path or command is not text is refused, never waved through.
+  const badPath = await toolCall(faulty, {
+    toolName: "write",
+    toolCallId: "t10",
+    input: { path: 42 },
+  });
+  assert(
+    badPath?.block === true && badPath.reason.includes("could not be judged"),
+    `G: a write whose path is not text is refused (got ${JSON.stringify(badPath)})`,
+  );
+  const badCommand = await toolCall(faulty, {
+    toolName: "bash",
+    toolCallId: "t11",
+    input: { command: ["echo", "x"] },
+  });
+  assert(
+    badCommand?.block === true && badCommand.reason.includes("could not be judged"),
+    `G: a bash call whose command is not text is refused (got ${JSON.stringify(badCommand)})`,
+  );
+  assert(
+    (await countWriteFenceRefusals(fx.scratch)).count === 16,
+    "G: both unjudged shapes are counted as refusals",
+  );
 }
 
 rmSync(fx.base, { recursive: true, force: true });

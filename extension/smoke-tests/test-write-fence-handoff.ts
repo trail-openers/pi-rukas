@@ -80,7 +80,7 @@ try {
   const unknownBody = unknown.eventLog.find((e) => e.kind === "handoff-emitted");
   assert(
     unknownBody?.kind === "handoff-emitted" &&
-      unknownBody.body.includes("Count unknown (1 refusal log unreadable)"),
+      unknownBody.body.includes("Count unknown (1 refusal source unreadable or unlogged)"),
     "b: the handoff body says the count is unknown rather than reporting zero",
   );
 

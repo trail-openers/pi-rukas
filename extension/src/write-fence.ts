@@ -25,7 +25,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { trace } from "./trace.ts";
 import { bashWriteTargets } from "./write-fence-bash.ts";
 import { appendWriteFenceRefusal } from "./write-fence-log.ts";
-import { type FenceConfig, expandHome, judgeWrite, loadFenceConfig } from "./write-fence-path.ts";
+import {
+  type FenceConfig,
+  expandHome,
+  judgeWrite,
+  loadFenceConfig,
+  refusalText,
+} from "./write-fence-path.ts";
 
 /** The write tools whose `path` argument is the file they write. */
 const WRITE_TOOLS = new Set(["write", "edit", "multiedit"]);
@@ -54,10 +60,10 @@ function refusalFor(toolName: string, input: unknown, cfg: FenceConfig): Refusal
   >;
   const cwd = process.cwd();
   if (toolName === "bash") {
-    if (typeof args.command !== "string") return undefined;
+    if (typeof args.command !== "string") return notJudged(toolName, "the command is not text");
     for (const t of bashWriteTargets(args.command, cwd)) {
       if (t.opaque !== undefined) {
-        return { tool: "bash", path: t.path, message: `Refused: ${t.path} — ${t.opaque}.` };
+        return { tool: "bash", path: t.path, message: refusalText(t.path, t.opaque) };
       }
       const judged = judgeWrite(t.path, t.cwd, cfg, {
         linkedCommand: t.linkedCommand,
@@ -67,11 +73,18 @@ function refusalFor(toolName: string, input: unknown, cfg: FenceConfig): Refusal
     }
     return undefined;
   }
-  if (WRITE_TOOLS.has(toolName) && typeof args.path === "string") {
+  if (WRITE_TOOLS.has(toolName)) {
+    if (typeof args.path !== "string") return notJudged(toolName, "the path is not text");
     const judged = judgeWrite(piExpandPath(args.path), cwd, cfg);
     if (!judged.ok) return { tool: toolName, path: args.path, message: judged.message };
   }
   return undefined;
+}
+
+/** A call whose arguments are not the shape the fence reads: it is refused, not waved through. */
+function notJudged(toolName: string, why: string): Refusal {
+  const path = `(${toolName} call)`;
+  return { tool: toolName, path, message: refusalText(path, `it could not be judged: ${why}`) };
 }
 
 /** Register the fence for this child. A no-op unless the dispatch set PI_ENSEMBLE_WRITE_ROOT. */
