@@ -10,13 +10,14 @@
  * half re-exports every name so existing importers keep their path.
  */
 
-import { type Stats, lstatSync, readdirSync } from "node:fs";
+import { type Stats, existsSync, lstatSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import { processAlive } from "./work-driver-resume.ts";
-import type { SweepTargetResult } from "./work-driver-worktree-sweep.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
+import { DEPENDENCY_MARKERS } from "./worktree-provision-hook.ts";
+import { SHAREABLE_DEPS } from "./worktree-provision.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -78,6 +79,10 @@ export type StateClaim = Pick<WorkState, "issue" | "issues"> & {
  * secondary — and therefore whether the tree belongs to a cycle that has not
  * reached a terminal status.
  *
+ * Takes the worktree NAME and does its own parsing: a name that encodes no
+ * issue encodes no claim either, so it answers `false` rather than comparing
+ * against a sentinel a caller had to invent.
+ *
  * #1265 round 1 — two loss paths the owner/liveCycles guards do not cover, both
  * reachable the moment the sweep stops being dark:
  *
@@ -98,15 +103,145 @@ export type StateClaim = Pick<WorkState, "issue" | "issues"> & {
  * `merged`; 2 are `running`. So this guard skips the two live trees and the
  * sweep still removes the dead ones.
  */
-export function groupClaimedByState(state: StateClaim, worktreeIssue: number): boolean {
-  return (
-    state.pipelineState.status === "running" &&
-    (state.issue === worktreeIssue || (state.issues?.includes(worktreeIssue) ?? false))
-  );
+export function groupClaimedByState(state: StateClaim, worktreeName: string): boolean {
+  if (state.pipelineState.status !== "running") return false;
+  const worktreeIssue = parseWorktreeIssue(worktreeName);
+  if (worktreeIssue === undefined) return false;
+  return state.issue === worktreeIssue || (state.issues?.includes(worktreeIssue) ?? false);
 }
 
-/** The dependency locations `worktree-provision.ts` links into every worktree. */
-const PROVISIONED_DEP_NAMES = ["node_modules", ".venv", "vendor"];
+/**
+ * The worktree shape the decision engine reads.
+ *
+ * Lives HERE rather than in the executor module because the rules are the only
+ * consumer that must not depend on the executor: a `purge`/`remove` action
+ * carries a resolved target, and a rule module importing its own consumer's
+ * types inverts the layering the split was drawn at. The executor re-exports
+ * the name so existing importers keep their path.
+ */
+export interface SweepTargetResult {
+  ok: true;
+  /** Absolute path to the worktree directory. */
+  realPath: string;
+  /** Basename of the worktree (e.g., "issue-477-default"). */
+  name: string;
+}
+
+/**
+ * Error result from resolving a sweep target. Also declared here, for the same
+ * reason as `SweepTargetResult`.
+ */
+export interface SweepTargetError {
+  ok: false;
+  /** Reason for failure. */
+  reason:
+    | "unresolvable"
+    | "candidate-is-repo-root"
+    | "outside-worktrees"
+    | "not-a-directory"
+    | "not-our-worktree";
+}
+
+/**
+ * The dependency locations `worktree-provision.ts` links into every worktree:
+ * that module's `SHAREABLE_DEPS`, read rather than restated. A copy of the
+ * names here would silently stop suppressing the purge the day the provisioner
+ * links one more (or one fewer) directory, and the copy would keep passing.
+ */
+export const PROVISIONED_DEP_NAMES: readonly string[] = SHAREABLE_DEPS;
+
+/**
+ * The same list under the name the provisioner uses. The guard below reads this
+ * one so "what counts as a dependency location" is spelled once in this module.
+ */
+const DEP_NAMES = PROVISIONED_DEP_NAMES;
+
+/**
+ * The marker files that make a depth-1 directory "a package", i.e. a place the
+ * provisioner looks for a nested `node_modules`.
+ *
+ * THIS IS `worktree-provision-hook.ts`'s `DEPENDENCY_MARKERS`, imported rather
+ * than restated: the sweep's dependency guard must look in exactly the places
+ * provisioning links from, and a private copy would silently narrow what the
+ * sweep protects the day the provisioner learns a new ecosystem. `hasReal
+ * DependencyTree` cannot call the provisioner's own `packageDirsAt` — it is
+ * async (`fs/promises.access`) while this guard runs sync inside
+ * `executeSweepAction` — so it takes the list and does its own `existsSync`
+ * pass. Pinned by a rules-test assertion.
+ */
+export const PACKAGE_DIR_MARKERS = DEPENDENCY_MARKERS;
+
+/**
+ * Whether one dependency location holds a REAL (non-symlink) directory.
+ *
+ * The symlink test is on the `lstat` result. The previous shape called
+ * `isSymbolicLink()` on the stat a filesystem had already followed, which is
+ * `false` for every input: a symlink was read as a real tree, and a DANGLING
+ * one made `isDirectory()` false as well — so the broken link became the one
+ * case the guard wrongly protected, and the real install became the case it
+ * stopped protecting. Both are fixed by asking `lstat` and nothing else.
+ */
+function realDependencyDir(abs: string): boolean {
+  let stat: Stats;
+  try {
+    stat = lstatSync(abs);
+  } catch {
+    // A location that cannot be looked at is not evidence of a tree; the
+    // unreadable-WHOLE-TREE case is handled by the caller, which returns true.
+    return false;
+  }
+  if (stat.isSymbolicLink()) return false;
+  // An unresolvable link target is not a tree to protect either: `git clean`
+  // costs nothing to drop it, and the next provision re-makes it.
+  try {
+    if (realpathSync(abs) !== abs) return false;
+  } catch {
+    return false;
+  }
+  return stat.isDirectory();
+}
+
+/**
+ * Whether one worktree holds a dependency directory the provisioner would have
+ * linked: any `SHAREABLE_DEPS` location at the root, or `node_modules` in a
+ * depth-1 package directory (the same `candidatesForDir` rule the provisioner
+ * applies — only Node keeps its tree in a package dir).
+ *
+ * Sync, and deliberately so: `executeSweepAction` calls this in a tight loop
+ * over every candidate tree, and the provisioner's own discovery
+ * (`packageDirsAt`) is async. The marker list above is pinned equal to the
+ * provisioner's by a rules-test assertion, so the two cannot drift silently.
+ *
+ * An unreadable directory is never evidence of a tree; the caller has already
+ * answered the unreadable-WHOLE-TREE case by returning true.
+ */
+function hasLinkableDependencyDir(worktreePath: string): boolean {
+  let entries: string[];
+  try {
+    entries = readdirSync(worktreePath);
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    if (DEP_NAMES.includes(entry) && realDependencyDir(join(worktreePath, entry))) {
+      return true;
+    }
+    // Depth-1 package dirs: only `node_modules` counts there, and only in a
+    // directory that carries a package marker.
+    if (entry.startsWith(".") || entry === "node_modules" || entry === ".worktrees") continue;
+    if (!hasPackageMarker(join(worktreePath, entry))) continue;
+    if (realDependencyDir(join(worktreePath, entry, "node_modules"))) return true;
+  }
+  return false;
+}
+
+/** Does this directory carry one of the package markers? */
+function hasPackageMarker(dir: string): boolean {
+  for (const marker of PACKAGE_DIR_MARKERS) {
+    if (existsSync(join(dir, marker))) return true;
+  }
+  return false;
+}
 
 /**
  * Whether a worktree holds a provisioned dependency tree worth keeping —
@@ -123,25 +258,22 @@ const PROVISIONED_DEP_NAMES = ["node_modules", ".venv", "vendor"];
  * suppresses the artifact purge; a tree with no provisioned deps still cleans
  * normally, and a symlink still does. A tree that cannot be read is treated as
  * worth keeping, because the safe default is not to clean.
+ *
+ * The scan covers the depth-1 package directories as well as the root, because
+ * that is where a nested-package monorepo keeps its trees — pi-rukas's own real
+ * `node_modules` lives at `extension/node_modules`, and a root-only scan read
+ * that tree's absence as "nothing worth keeping". Same marker set and the same
+ * per-directory candidate rule the provisioner applies.
  */
 export function hasRealDependencyTree(worktreePath: string): boolean {
-  let entries: string[];
   try {
-    entries = readdirSync(worktreePath);
+    readdirSync(worktreePath);
   } catch {
+    // A tree that cannot be read is treated as worth keeping: the safe default
+    // is not to clean.
     return true;
   }
-  for (const entry of entries) {
-    if (!PROVISIONED_DEP_NAMES.includes(entry)) continue;
-    let stat: Stats;
-    try {
-      stat = lstatSync(join(worktreePath, entry));
-    } catch {
-      continue;
-    }
-    if (stat.isDirectory() && !stat.isSymbolicLink()) return true;
-  }
-  return false;
+  return hasLinkableDependencyDir(worktreePath);
 }
 
 /**
@@ -180,6 +312,13 @@ export type SweepAction =
 export interface SweepResult {
   stdout: string;
   stderr?: string;
+  /**
+   * Set when a `purge` was SUPPRESSED rather than run — the tree holds a real
+   * dependency directory `git clean -fdX` would have destroyed. Without this
+   * flag the executor's two outcomes are indistinguishable to a caller that
+   * discards the result, and the sweep reports a clean that never happened.
+   */
+  purgeSkipped?: boolean;
 }
 
 /**
@@ -209,8 +348,11 @@ export async function decideSweepAction(opts: DecideOpts): Promise<SweepAction> 
   // Rule 3: Live owner check
   const issueNumber = state.issue;
   // The group claim, read from the state file rather than the name alone, so a
-  // running group's non-primary workstream is not swept. See the helper.
-  if (groupClaimedByState(state, parseWorktreeIssue(target.name) ?? -1)) {
+  // running group's non-primary workstream is not swept. The name is handed to
+  // the rule rather than a pre-parsed number: a name encoding no issue claims
+  // nothing, and the `-1` sentinel it used to reach here was a number no real
+  // worktree has, which only accidentally meant "false".
+  if (groupClaimedByState(state, target.name)) {
     return { type: "skip", reason: `group-claimed ${target.name}` };
   }
   const ownerPid = state.owner?.pid;

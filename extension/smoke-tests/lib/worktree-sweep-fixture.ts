@@ -37,6 +37,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseWorktreeIssue } from "../../src/work-driver-sweep-rules.ts";
 import type { WorkCapLiteral } from "../../src/workflow-state-events-caps.ts";
 import {
   type WorkEvent,
@@ -61,19 +62,25 @@ function git(cwd: string, args: string[]): string {
  * The basename → state-file resolution the sweep performs, in ONE place so a
  * test can pin the rule and the fixture cannot disagree with the code.
  *
- * The shapes `work-driver-branch-mechanized.ts` actually writes:
- * `issue-${issue}-${id}` for a single-issue group, `issues-${a}-${b}-${id}` for
- * a grouped one, and `issue-${issue}-integrate` for the driver-owned tree.
- * The FIRST number is the primary issue — the key of the state file.
+ * DELEGATES to `parseWorktreeIssue` in `src/work-driver-sweep-rules.ts` — it is
+ * not a second implementation of the same rule. The fixture exists to make a
+ * test see exactly what production sees, and a private regex here would let the
+ * test and the sweep disagree about which state file a name points at while
+ * both still passed: the shape of the #1265 bug itself, reproduced in the
+ * harness. `parseWorktreeIssue` answers `undefined` for anything that is not a
+ * driver worktree name (no prefix, issue 0, leading zeros, no trailing
+ * separator); that becomes `{ ok: false }` with the reason here, because the
+ * fixture's callers want a message rather than a bare `undefined`.
  */
 export function parseSweepWorktreeName(
   name: string,
 ): { ok: true; issue: number } | { ok: false; reason: string } {
-  const m = /^(?:issue|issues)-(\d+)-/.exec(name);
-  if (!m) return { ok: false, reason: "no issue-<N>- / issues-<N>- prefix" };
-  const issue = Number(m[1]);
-  if (!Number.isSafeInteger(issue) || issue <= 0) {
-    return { ok: false, reason: "issue number is not a positive integer" };
+  const issue = parseWorktreeIssue(name);
+  if (issue === undefined) {
+    return {
+      ok: false,
+      reason: "not a driver worktree name: issue-<N>-<id> expected",
+    };
   }
   return { ok: true, issue };
 }
@@ -84,7 +91,10 @@ export function sweepGitdirLine(repoRoot: string, name: string): string {
 }
 
 /** A repo with one committed base on `main`, plus an empty `.worktrees/`. */
-export function makeSweepRepo(name: string): { repoRoot: string; baseSha: string } {
+export function makeSweepRepo(name: string): {
+  repoRoot: string;
+  baseSha: string;
+} {
   const repoRoot = realpathSync(mkdtempSync(join(tmpdir(), `${name}-`)));
   git(repoRoot, ["init", "-q", "--initial-branch=main"]);
   git(repoRoot, ["config", "user.email", "sweep@test.invalid"]);
@@ -125,12 +135,22 @@ export interface SweepWorktree {
  * `installDeps` lays down a REAL (non-symlink) `node_modules` — the expensive
  * shape `git clean -fdX` would destroy, and the one the dependency-suppression
  * rule keys on. git sees it as ignored, so the tree stays "clean" either way.
+ *
+ * `installNestedDeps` lays the same real tree one level down, at
+ * `pkg/node_modules` beside a `pkg/package.json` marker — the shape a
+ * nested-package monorepo has, and the one pi-rukas itself has at
+ * `extension/node_modules`. A root-only dependency scan reads it as nothing
+ * worth keeping, which is the finding #1265's FIX 2 closes.
  */
 export function makeSweepWorktree(
   repoRoot: string,
   baseSha: string,
   name: string,
-  opts: { dirty?: boolean; installDeps?: boolean } = {},
+  opts: {
+    dirty?: boolean;
+    installDeps?: boolean;
+    installNestedDeps?: boolean;
+  } = {},
 ): SweepWorktree {
   const path = join(repoRoot, ".worktrees", name);
   git(repoRoot, ["worktree", "add", "--detach", path, baseSha]);
@@ -138,6 +158,11 @@ export function makeSweepWorktree(
   if (opts.installDeps) {
     mkdirSync(join(path, "node_modules"), { recursive: true });
     writeFileSync(join(path, "node_modules", "dep.js"), "installed\n");
+  }
+  if (opts.installNestedDeps) {
+    mkdirSync(join(path, "pkg", "node_modules"), { recursive: true });
+    writeFileSync(join(path, "pkg", "package.json"), '{"name":"pkg"}\n');
+    writeFileSync(join(path, "pkg", "node_modules", "dep.js"), "installed\n");
   }
   if (opts.dirty) writeFileSync(join(path, "leftover.txt"), "uncommitted\n");
   return { name, path, expectedGitdir };

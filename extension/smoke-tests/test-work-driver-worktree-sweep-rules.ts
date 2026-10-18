@@ -18,19 +18,24 @@
  * count of commands issued.
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  PACKAGE_DIR_MARKERS,
+  PROVISIONED_DEP_NAMES,
   type SweepAction,
   type SweepTargetResult,
   decideSweepAction,
   executeSweepAction,
+  hasRealDependencyTree,
   resolveSweepTarget,
   runWorktreeSweep,
   runWorktreeTeardown,
 } from "../src/work-driver-worktree-sweep.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
+import { DEPENDENCY_MARKERS } from "../src/worktree-provision-hook.ts";
+import { SHAREABLE_DEPS } from "../src/worktree-provision.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import {
   PAST,
@@ -74,7 +79,10 @@ async function testDecideSweepAction() {
     });
 
   // Rule 3a: a live owner's pid is never swept, whatever else the state says.
-  const a1 = await decide({ ...abortedState(1), owner: { pid: process.pid, at: PAST } });
+  const a1 = await decide({
+    ...abortedState(1),
+    owner: { pid: process.pid, at: PAST },
+  });
   assertEquals(a1.type, "skip", "a live owner skips");
   assertEquals(
     a1.type === "skip" ? a1.reason : "",
@@ -127,9 +135,15 @@ async function testDecideSweepAction() {
     pipelineState: { ...held.pipelineState, mergeHold: undefined },
   };
   const a5 = await decide(capWithoutHold);
-  assertTrue(
-    a5.type === "purge" || a5.type === "remove",
-    "a cap-hit with no mergeHold falls through to the remote check rather than Rule 4",
+  // The concrete arm, not a disjunction: Rule 4 does not fire (no mergeHold) and
+  // `decide()` runs with no `netProofBudget`, so Rule 5 cannot fire either — the
+  // only answer the rule engine can give is Rule 6's artifact purge. An
+  // `"purge" || "remove"` assertion here accepted either verdict and therefore
+  // could not notice Rule 5 starting to fire on an unproven tree.
+  assertEquals(
+    a5.type,
+    "purge",
+    "a cap-hit with no mergeHold is NOT a Rule 4 hold, and falls through to the purge",
   );
 
   // Rule 4 reads the LAST cap-hit, not the first: a cycle that hit the merge
@@ -139,8 +153,14 @@ async function testDecideSweepAction() {
     eventLog: [sweepCapHit("awaiting-human-merge", PAST), sweepCapHit("round-cap", PAST + 1)],
   };
   const a5b = await decide(twoCaps);
-  assertTrue(
-    a5b.type !== "purge" || a5b.type === "purge",
+  // Same reasoning as `a5` above, and the reason a disjunction here was worth
+  // nothing: `a5b.type !== "purge" || a5b.type === "purge"` is true for every
+  // possible value, so it asserted nothing about Rule 4's last-cap-hit rule.
+  // With the later cap (`round-cap`) governing, Rule 4 does not fire and the
+  // answer is Rule 6's purge.
+  assertEquals(
+    a5b.type,
+    "purge",
     "a later cap-hit does not inherit Rule 4 from an earlier awaiting-human-merge",
   );
   const lastIsHold: WorkState = {
@@ -200,24 +220,30 @@ async function testExecuteSweepAction() {
   // the operation under test), so it must not run on the tree the later purge
   // assertion still needs on disk.
   const removable = makeSweepWorktree(repoRoot, baseSha, "issue-9-default");
-  const withDeps = makeSweepWorktree(repoRoot, baseSha, "issue-8-default", { installDeps: true });
-  const target = (wt: { path: string; name: string }) =>
-    ({ ok: true, realPath: wt.path, name: wt.name }) as SweepTargetResult;
+  const withDeps = makeSweepWorktree(repoRoot, baseSha, "issue-8-default", {
+    installDeps: true,
+  });
+  const target = (wt: { path: string; name: string }): SweepTargetResult => ({
+    ok: true,
+    realPath: wt.path,
+    name: wt.name,
+  });
   const calls: { cmd: string; cwd?: string }[] = [];
   const rec: ExecFn = async (cmd, opts) => {
     calls.push({ cmd, cwd: opts?.cwd });
     return { stdout: "", stderr: "" };
   };
 
-  const skip = await executeSweepAction({ type: "skip", reason: "test" } as SweepAction, rec);
+  const skip = await executeSweepAction({ type: "skip", reason: "test" }, rec);
   assertEquals(skip.stdout, "", "skip issues nothing");
   assertEquals(calls.length, 0, "skip makes no exec call");
 
-  await executeSweepAction({ type: "purge", target: target(plain) } as SweepAction, rec);
+  const plainPurge = await executeSweepAction({ type: "purge", target: target(plain) }, rec);
+  assertEquals(plainPurge.purgeSkipped, undefined, "a plain tree's purge actually ran");
   assertEquals(calls[0]?.cmd, "git clean -fdX", "purge runs git clean -fdX on a plain tree");
   assertEquals(calls[0]?.cwd, plain.path, "inside the worktree");
 
-  await executeSweepAction({ type: "remove", target: target(removable) } as SweepAction, rec);
+  await executeSweepAction({ type: "remove", target: target(removable) }, rec);
   assertEquals(calls[1]?.cwd, repoRoot, "remove runs from the repo root, not .worktrees");
   assertTrue(
     (calls[1]?.cmd ?? "").startsWith("git worktree remove --force "),
@@ -231,10 +257,54 @@ async function testExecuteSweepAction() {
   // #1265 round 1 — a tree holding a REAL dependency directory is not `git
   // clean -fdX`-ed: that flag removes exactly the ignored files, which is the
   // whole provisioned tree, and rebuilding it is the 30-60 min cost. The arm
-  // returns without running anything, so no further command is recorded.
-  await executeSweepAction({ type: "purge", target: target(withDeps) } as SweepAction, rec);
-  await executeSweepAction({ type: "purge", target: target(withDeps) } as SweepAction, rec);
+  // returns without running anything, and says so: `purgeSkipped` is the field
+  // that keeps a caller's `purged` list honest (#1265 lens FIX 4).
+  const suppressed = await executeSweepAction({ type: "purge", target: target(withDeps) }, rec);
+  assertEquals(suppressed.purgeSkipped, true, "the suppressed purge reports itself");
+  await executeSweepAction({ type: "purge", target: target(withDeps) }, rec);
   assertEquals(calls.length, 2, "the dependency tree suppressed the clean — no 4th command");
+
+  // #1265 lens FIX 2 — the guard reads depth-1 PACKAGE directories too. pi-rukas's
+  // own real tree lives at `extension/node_modules`; a root-only scan read its
+  // absence as "nothing worth keeping" and cleaned a 30-60 minute install.
+  const nested = makeSweepWorktree(repoRoot, baseSha, "issue-11-default", {
+    installNestedDeps: true,
+  });
+  const nestedPurge = await executeSweepAction({ type: "purge", target: target(nested) }, rec);
+  assertEquals(nestedPurge.purgeSkipped, true, "a nested package dir's tree suppresses the purge");
+  assertEquals(calls.length, 2, "and it issued no command");
+
+  // #1265 lens FIX 2b — a BROKEN symlink is not a real tree. The pre-fix shape
+  // asked `isSymbolicLink()` of a stat the fs had already followed (always
+  // false) and `isDirectory()` of the same (false for a dangling link), which
+  // protected exactly the case with nothing to protect.
+  const dangling = makeSweepWorktree(repoRoot, baseSha, "issue-12-default");
+  symlinkSync(join(dangling.path, "nowhere"), join(dangling.path, "node_modules"));
+  assertFalse(hasRealDependencyTree(dangling.path), "a dangling node_modules is not a real tree");
+  const danglingPurge = await executeSweepAction({ type: "purge", target: target(dangling) }, rec);
+  assertEquals(danglingPurge.purgeSkipped, undefined, "so the clean runs anyway");
+  assertEquals(calls.length, 3, "and the arm issued its git clean");
+
+  // A symlink to a REAL tree is the other half: following it would have read a
+  // link as an install. It is not one — the provisioner's own links are free to
+  // drop and re-make.
+  const linked = makeSweepWorktree(repoRoot, baseSha, "issue-13-default");
+  symlinkSync(join(withDeps.path, "node_modules"), join(linked.path, "node_modules"));
+  assertFalse(hasRealDependencyTree(linked.path), "a symlink to a real tree is still a symlink");
+
+  // The names the guard protects are the provisioner's, not a copy of them.
+  // FIX 1: a stale local list would silently stop suppressing the purge the day
+  // `SHAREABLE_DEPS` gained a member — and the copy would keep passing.
+  assertEquals(
+    PROVISIONED_DEP_NAMES.join(","),
+    SHAREABLE_DEPS.join(","),
+    "the sweep's dependency names ARE worktree-provision.ts's SHAREABLE_DEPS",
+  );
+  assertEquals(
+    PACKAGE_DIR_MARKERS.join(","),
+    DEPENDENCY_MARKERS.join(","),
+    "and its package markers ARE worktree-provision-hook.ts's DEPENDENCY_MARKERS",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -244,13 +314,22 @@ async function testExecuteSweepAction() {
 async function testRunWorktreeTeardown() {
   console.log("\n3. in-cycle teardown retains what it must and removes what it may");
   const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-teardown");
-  const wt = makeSweepWorktree(repoRoot, baseSha, "issue-7-default", { dirty: true });
+  const wt = makeSweepWorktree(repoRoot, baseSha, "issue-7-default", {
+    dirty: true,
+  });
   const state: WorkState = {
     ...abortedState(7),
-    pipelineState: { ...abortedState(7).pipelineState, worktrees: { default: wt.path } },
+    pipelineState: {
+      ...abortedState(7).pipelineState,
+      worktrees: { default: wt.path },
+    },
   };
   const rec = recordingExec();
-  const retained = await runWorktreeTeardown({ repoRoot, state, execFn: rec.exec });
+  const retained = await runWorktreeTeardown({
+    repoRoot,
+    state,
+    execFn: rec.exec,
+  });
   assertEquals(retained.length, 1, "a dirty tree is retained by teardown");
   assertEquals(retained[0], wt.path, "naming the retained worktree");
   assertEquals(rec.countMatching("git worktree remove"), 0, "teardown removed nothing");
@@ -365,7 +444,11 @@ async function testGroupClaimProtectsSecondaryWorkstream() {
     // NO owner: the file was persisted at a step boundary before the first
     // dispatch, so Rule 3a has no pid to test. liveCycles is this process's
     // group (just the launcher 99) and cannot see the sibling's cycle.
-    pipelineState: { ...st.pipelineState, status: "running", currentStep: "develop" },
+    pipelineState: {
+      ...st.pipelineState,
+      status: "running",
+      currentStep: "develop",
+    },
   };
   writeSweepStateForWorktree(repoRoot, secondary.name, {
     ownerPid: deadPid(),
@@ -398,7 +481,11 @@ async function testFetchBudgetBoundsTheLaunchSweep() {
   const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-budget");
   const origin = join(repoRoot, "origin.git");
   const run = (args: string[], cwd: string) =>
-    execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
   run(["init", "--bare", "--initial-branch=main", origin], repoRoot);
   run(["remote", "add", "origin", origin], repoRoot);
   run(["push", "-q", "origin", "main"], repoRoot);
