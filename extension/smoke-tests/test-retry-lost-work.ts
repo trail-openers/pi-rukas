@@ -18,9 +18,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type LifecycleDetails, attach, detach } from "../src/lifecycle-events.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { interruptedDevelopNote, lostAttemptLine } from "../src/work-driver-retry-context.ts";
 import { FAILURE_REASON_CHARS, failureCauseReason } from "../src/work-driver-failure-taxonomy.ts";
+import {
+  interruptedDevelopNote,
+  interruptedLensFixNote,
+  lostAttemptLine,
+  lostAttemptOnStep,
+} from "../src/work-driver-retry-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
+import { retryTreeLine } from "../src/work-retry-tree-clean.ts";
 import { initialState, writeState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -56,7 +62,8 @@ const severed = {
 {
   const line = lostAttemptLine("explore", 1, severed);
   assert(
-    line === "explore attempt 1 lost: 15m09s, 45 turns, 412k tokens — the step restarts from the beginning",
+    line ===
+      "explore attempt 1 lost: 15m09s, 45 turns, 412k tokens — the step restarts from the beginning",
     `explore loss line is complete (got: ${line})`,
   );
   const dev = lostAttemptLine("develop", 2, { ...severed, step: "develop", role: "developer" });
@@ -117,6 +124,65 @@ const severed = {
   assert(note.includes("15m09s, 45 turns"), "note says how far the lost attempt got");
   assert(note.includes("git status --short"), "note sends the developer to the worktree first");
   assert(!note.includes("terminated"), "the provider's own message stays out of the prompt");
+}
+
+// 2b. #1391 — the retry line carries what the clean did, a retried fixer is told
+//     where the saved work is, and attribution reads BOTH retry budgets.
+{
+  const tree = retryTreeLine({
+    kind: "cleaned",
+    tree: "/r/.worktrees/w",
+    files: ["DESIGN.md"],
+    ref: "refs/pi-rukas/retry-preserved/issue-1/lens-fix-1",
+    patch: "/r/tmp/issue-1/retry-lens-fix-1.patch",
+  });
+  const line = lostAttemptLine("lens-fix", 1, { ...severed, step: "lens-fix" }, tree);
+  assert(
+    line.includes("refs/pi-rukas/retry-preserved/issue-1/lens-fix-1") &&
+      line.includes("retry-lens-fix-1.patch") &&
+      line.includes('"DESIGN.md"'),
+    "the retry line names the files, the saved ref and the patch",
+  );
+  assert(
+    retryTreeLine({ kind: "none" }) === undefined,
+    "a clean tree adds nothing to the retry line, so it never claims a save",
+  );
+  const base = initialState(1391, 1);
+  assert(interruptedLensFixNote(base) === undefined, "a normal lens-fix round carries no note");
+  const retried = {
+    ...base,
+    eventLog: [
+      ...base.eventLog,
+      { ...severed, step: "lens-fix" as const, role: "developer" },
+      {
+        kind: "retry-tree-clean" as const,
+        at: 3,
+        step: "lens-fix" as const,
+        attempt: 1,
+        outcome: "cleaned" as const,
+        worktree: "/r/.worktrees/w",
+        files: ["DESIGN.md"],
+        fileCount: 1,
+        ref: "refs/pi-rukas/retry-preserved/issue-1391/lens-fix-1",
+        patch: "/r/tmp/issue-1391/retry-lens-fix-1.patch",
+      },
+    ],
+    pipelineState: { ...base.pipelineState, transientRetryAttempts: { "lens-fix": 1 } },
+  };
+  const note = interruptedLensFixNote(retried) ?? "";
+  assert(
+    note.includes("git apply /r/tmp/issue-1391/retry-lens-fix-1.patch"),
+    "a retried fixer is told how to restore the saved work",
+  );
+  assert(lostAttemptOnStep(retried, "lens-fix"), "a transient retry attributes the dirt");
+  assert(
+    lostAttemptOnStep(
+      { ...base, pipelineState: { ...base.pipelineState, retryAttempts: { "lens-fix": 1 } } },
+      "lens-fix",
+    ),
+    "a RETRY_ONCE retry attributes the dirt too",
+  );
+  assert(!lostAttemptOnStep(retried, "develop"), "attribution is scoped to the step");
 }
 
 // 3. End to end: a developer severed once is re-dispatched with the note, and
@@ -196,7 +262,10 @@ const severed = {
 
     assert(devPrompts.length === 2, `developer re-dispatched once (got ${devPrompts.length})`);
     const [first = "", second = ""] = devPrompts;
-    assert(!first.includes("was interrupted"), "first developer prompt carries no interruption note");
+    assert(
+      !first.includes("was interrupted"),
+      "first developer prompt carries no interruption note",
+    );
     assert(
       second.includes("A previous attempt at this step was interrupted") &&
         second.includes("cause: provider-severed") &&
