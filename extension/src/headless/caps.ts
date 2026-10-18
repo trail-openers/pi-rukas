@@ -48,6 +48,11 @@ export const FIXED_CAPS = [
   "cross-group-conflict",
   "deadline",
   "deferred-creation:develop",
+  // #1101 — queue-raised waits (a group that never dispatched). Sorted with the
+  // rest; the sort order is asserted by test-headless-host-contract.ts.
+  "dependency-cycle",
+  "dependency-parked",
+  "dependency-timeout",
   "develop-child-crash",
   "develop-incomplete-deliverables",
   "developer-timeout",
@@ -72,6 +77,10 @@ export const FIXED_CAPS = [
   // #819 — the plan-to-spec gate refused the plan before branch/develop.
   "plan-spec-mismatch",
   "plan-timeout",
+  // #1101 — the group the scheduler had taken into the wait list when a halt
+  // released every worker (`sweepStranded`). Same family as the four above,
+  // sorted where the sort puts it.
+  "queue-stranded",
   "repeat-finding-seam",
   "repo-root-residue",
   "review-incomplete",

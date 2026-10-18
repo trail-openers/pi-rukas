@@ -118,6 +118,14 @@ export function haltResult(args: {
   failure: FilingFailure;
   timings: PlanPhaseTiming[];
   capHit?: boolean;
+  /**
+   * The gap-gate routing reason a halt carries (the corrective re-draft's halt
+   * is the only one today). Optional and forwarded verbatim: the loop's own
+   * cap reasons are set by the driver post-loop, so this is only for a halt
+   * that STOPS the gate — and having it here means a halt cannot silently omit
+   * the reason Phase 5 and the renderer both branch on.
+   */
+  capReason?: GapGateLoopCapReason;
   failedAngles?: { name: string; detail: string }[];
 }): PlanResult {
   return buildPlanResult({
@@ -128,6 +136,7 @@ export function haltResult(args: {
     priorContext: args.priorContext.slice(0, 15),
     filingFailure: args.failure,
     capHit: args.capHit,
+    capReason: args.capReason,
     failedAngles: args.failedAngles,
     timings: args.timings,
   });

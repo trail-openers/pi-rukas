@@ -32,6 +32,7 @@ import {
   installOfflineVipuneStub,
   invokePlanTool,
   log,
+  makeJobDeliverer,
   mutateEntry,
   newPlanCache,
   pipeline,
@@ -265,7 +266,9 @@ assert((await cacheFiles()).length === 0, "a halted dry run writes no cache entr
     registerTool(def: RegisteredPlanTool) {
       tools.push(def);
     },
-    // biome-ignore lint/suspicious/noExplicitAny: minimal stub; only registerTool is used
+    // #1044: the launched job's report is delivered to the registered pi.
+    ...makeJobDeliverer(),
+    // biome-ignore lint/suspicious/noExplicitAny: minimal stub; registerTool + delivery
   } as any;
   registerPlanTool(fakePi);
   await newPlanCache();

@@ -27,6 +27,7 @@
  * result so the caller can record the visible event.
  */
 
+import { trace } from "./trace.ts";
 import { commitPrVerifiedTree } from "./work-driver-integrate-eligibility.ts";
 import { runCommitPrConsolidatedVerify } from "./work-driver-integrate-verify.ts";
 import type { IntegrateOpts, IntegrateResult } from "./work-driver-integrate.ts";
@@ -46,6 +47,19 @@ export interface IntegrationVerifyOpts {
   verifyCmd?: string;
   verifyExecFn?: ExecFn;
   verifyTimeoutMs?: number;
+  /**
+   * #1404 — the workstream worktrees, handed to the baseline probe's name
+   * comparison as trees the change run's names may live under. A gate script
+   * that resolves its own directory prints paths under the checkout the script
+   * lives in, so the integration checkout alone cannot anchor every name.
+   */
+  changeRoots?: readonly string[];
+  /**
+   * #1404 — the cycle's original base commit for the baseline probe (see
+   * `IntegrateOpts.baselineBaseSha`). Absent → no probe, every consolidated
+   * failure fails the integration as before.
+   */
+  baselineBaseSha?: string;
   verifyRetry?: IntegrateOpts["verifyRetry"];
   /** Restores repoRoot to the ref `integrate()` recorded; see its docstring. */
   restoreRoot: () => Promise<VerifiedRestoreResult>;
@@ -54,8 +68,24 @@ export interface IntegrationVerifyOpts {
 }
 
 export interface IntegrationVerifyOutcome {
-  /** A failure the caller returns verbatim; `undefined` means proceed to push. */
+  /**
+   * A failure the caller returns verbatim; `undefined` means proceed to push.
+   *
+   * #1404 — the ONE exception is a failure the base commit accounts for
+   * entirely: when `preExistingFailures` is set the failure object is still
+   * present (the gate did fail, and this module has no authority to call that
+   * a pass) but the field says every failing test is red at base too, and the
+   * caller — `integrate()`, which owns the push — proceeds and carries the
+   * names. So the contract is "return the failure verbatim UNLESS
+   * `preExistingFailures` is set"; no other field licenses continuing.
+   */
   failure?: Extract<IntegrateResult, { ok: false }>;
+  /**
+   * #1404 — failing test names that also fail at the cycle's base commit,
+   * set ONLY when they are every failure the run produced. `integrate()`
+   * pushes on it and records the names for the PR body and the handoff.
+   */
+  preExistingFailures?: string[];
   /** The identity that justified skipping the run, when the run was skipped. */
   skipped?: AlreadyVerifiedTree;
 }
@@ -83,6 +113,10 @@ export async function verifyIntegration(
     workstreamCount: opts.ids.length,
     workstreamIds: opts.ids,
     timeoutMs: opts.verifyTimeoutMs,
+    // #1404 — the cycle's base commit, so a consolidated failure can be
+    // attributed per failing test instead of parking on the combination alone.
+    ...(opts.baselineBaseSha !== undefined ? { baseSha: opts.baselineBaseSha } : {}),
+    ...(opts.changeRoots !== undefined ? { changeRoots: opts.changeRoots } : {}),
     // #782 — the single flake retry fires only on the FIRST consolidated run
     // (the cycle's ciRetryCount unset).
     isCiRetry: (opts.verifyRetry?.ciRetryCount ?? 0) > 0,
@@ -90,6 +124,27 @@ export async function verifyIntegration(
     ...(alreadyVerifiedTree !== undefined ? { alreadyVerifiedTree } : {}),
   });
   if (vr.ok === false) {
+    // #1404 — every failing test is red at the cycle's base commit too, so
+    // this failure is not the change's doing: no restore, no failure — the
+    // caller pushes and makes the names visible. Everything else (no probe,
+    // no red base established, ANY change-caused or unattributable failure)
+    // restores and fails exactly as before.
+    // `continueOnPreExisting` is where the three conditions live (a non-empty
+    // change report, every name accounted for at base, nothing left as the
+    // change's own) and it is the ONLY shape that sets `preExistingOnly`. This
+    // site deliberately does not re-derive that judgement from the two arrays:
+    // `preExistingFailures.length > 0` alone is the shape a zero-name change
+    // report used to reach, and two independent readers of one rule is how one
+    // of them ends up being the permissive one.
+    if (vr.preExistingOnly === true) {
+      const names = vr.preExistingFailures ?? [];
+      if (names.length > 0) return { preExistingFailures: names };
+      // A marker with no names behind it is a contradiction, not a pass. Fail
+      // closed to the park rather than trusting the flag.
+      trace(
+        "work-driver: commit-pr verify — a pre-existing-only verdict arrived with no test names, which is not a shape the probe produces; the consolidated failure parks",
+      );
+    }
     const restore = await opts.restoreRoot();
     return {
       failure: {

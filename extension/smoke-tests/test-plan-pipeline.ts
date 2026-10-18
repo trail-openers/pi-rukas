@@ -18,6 +18,7 @@ import {
   installNoPlanCacheStub,
   invokePlanTool,
   makeDispatchStub,
+  makeJobDeliverer,
 } from "./plan-test-stubs.ts";
 installNoPlanCacheStub();
 
@@ -97,6 +98,9 @@ const fakePi = {
   registerTool(def: RegisteredPlanTool) {
     tools.push(def);
   },
+  // #1044: the tool launches a background job and the job's report is handed
+  // to the pi it was registered on, so the stub answers sendUserMessage too.
+  ...makeJobDeliverer(),
 } as any;
 
 registerPlanTool(fakePi);

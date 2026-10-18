@@ -138,6 +138,13 @@ export async function rerunConsolidatedVerifyOnce(
   timeoutMs: number,
   scratchDir?: string,
   timestamp?: string,
+  /**
+   * #1404 — the env the re-run executes with, so the caller can point
+   * `VERIFY_REPORT_FILE` at the out-of-band report path. The re-run is the run
+   * whose failure is classified, so it is the run whose report has to exist.
+   * Absent → the ambient env, which writes no report.
+   */
+  env?: NodeJS.ProcessEnv,
 ): Promise<
   | {
       raw: string;
@@ -159,7 +166,12 @@ export async function rerunConsolidatedVerifyOnce(
   let treeLeaderPid: number | undefined;
   try {
     await withVerifySlot(() =>
-      execFn(cmd, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }),
+      execFn(cmd, {
+        cwd,
+        timeout: timeoutMs,
+        maxBuffer: 8 * 1024 * 1024,
+        ...(env !== undefined ? { env } : {}),
+      }),
     );
   } catch (err) {
     const e = err as Error & {
