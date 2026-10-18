@@ -81,14 +81,14 @@ export const SPAWN_BACKSTOP_MS = 2 * 60 * 60_000;
  * (provider stream stalled through every retry layer, or a wedged local
  * process). Healthy children emit an event at least every turn boundary;
  * this bound is the MODEL-silence budget — it applies only when no tool
- * call is in flight (the in-flight-tool window is `toolInactivityTimeoutMs`'s
- * job, #951). The model-silence default moved 25 → 30 min (#951): the
+ * call is in flight (a call in flight is bounded by the call budget,
+ * spawn-call-budget.ts, #1465). The model-silence default moved 25 → 30 min (#951): the
  * ~15-min healthy-gap measurement this budget once cited included LONG BASH
  * EXECUTIONS, and that is exactly the gap the in-flight tool-call exemption
  * now covers — the model-silence budget only has to clear a slow provider
  * turn, so it is raised rather than left defending the shape the tool bound
  * owns. Override: PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS (0 disables ONLY this
- * watch — the tool-inactivity bound is a separate knob, #951).
+ * watch — the call budget is a separate knob).
  *
  * #799 — why this watchdog cannot fire on a productive child: the clock
  * resets on ANY stdout line (spawn.ts, parseable or not), so a child that
@@ -102,27 +102,6 @@ export function inactivityTimeoutMs(): number {
   const env = Number(process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS);
   if (Number.isFinite(env) && env >= 0) return env;
   return 30 * 60_000;
-}
-
-/**
- * Tool-inactivity watchdog (#951): the bound that applies WHILE a tool call
- * is in flight (a toolCall block seen, its toolResult not yet arrived).
- * The in-flight state itself lives in spawn-inflight.ts; this is its budget.
- *
- * Why a separate, LARGER bound: a silent in-flight tool is the normal shape
- * of a long bash execution (a full offline gate, a CI watch) — the very gap
- * that motivated the #296 watchdog's own 25-min number. Killing it at the
- * model-silence budget is the bug #951 fixes (a productive child SIGTERMed
- * mid-tool); the tool bound is the backstop for the OTHER shape — a wedged
- * tool (an interactive prompt, a hung network call) — which the 2 h wall-clock
- * backstop used to be the only thing that could reach, 186 minutes later.
- * Override: PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS (0 disables ONLY this
- * watch — the model-silence bound is a separate knob).
- */
-export function toolInactivityTimeoutMs(): number {
-  const env = Number(process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS);
-  if (Number.isFinite(env) && env >= 0) return env;
-  return 60 * 60_000;
 }
 
 /**

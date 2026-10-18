@@ -59,7 +59,6 @@ async function fixture772w6(): Promise<void> {
       totalTokens: () => 0,
       timedOut: () => false,
       inactivityKilled: () => false,
-      toolInactivityKilled: () => false,
       aborted: () => false,
       capKillGraceMs: 2000,
       childExited: () => false,

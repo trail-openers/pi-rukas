@@ -174,7 +174,6 @@ const emptyResult = (role: string): DispatchResult => ({
 const CAP_BASE = {
   timedOut: () => false,
   inactivityKilled: () => false,
-  toolInactivityKilled: () => false,
   aborted: () => false,
   childExited: () => false,
 };

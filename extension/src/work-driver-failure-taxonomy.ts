@@ -147,6 +147,7 @@ function seamLabelFor(
     case "self-killed:token-budget":
     case "self-killed:plan-timeout":
     case "self-killed:child-bound":
+    case "self-killed:stuck-tool":
     case "success":
     // #79 — matched only on the provider's own 404 message: exact.
     case "provider-model-unavailable":
@@ -313,6 +314,12 @@ export function classifyFailureCause(tail: FailureTail): FailureClass {
   if (tail.killCause === "child-bound") {
     return { cause: "self-killed:child-bound", shouldRetry: false, maxRetries: 0 };
   }
+  // #1465 — the call budget ended the child after a call-kill did not free it
+  // (or could not be aimed). Off the retry ladder like the other supervision
+  // kills: a fresh child re-runs the same command into the same budget.
+  if (tail.killCause === "stuck-tool") {
+    return { cause: "self-killed:stuck-tool", shouldRetry: false, maxRetries: 0 };
+  }
 
   // 429 rate-limit. #366 — read the delay the provider actually asked for
   // instead of treating every 429 as permanently fatal. A per-minute token
@@ -397,6 +404,31 @@ export function stepRetryBudget(
   return infra ? cls.maxRetries : 1;
 }
 
+type SelfKillCause = Extract<DispatchFailureCause, `self-killed:${string}`>;
+
+/** The headline for each self-kill; the same in both reason functions below. */
+const SELF_KILL_REASON: Record<SelfKillCause, string> = {
+  "self-killed:timeout": "killed by pi-rukas (wall-clock timeout)",
+  "self-killed:inactivity": "killed by pi-rukas (inactivity watchdog)",
+  "self-killed:tool-inactivity":
+    "killed by pi-rukas (tool-inactivity watchdog — a tool call never returned)",
+  "self-killed:abort": "cancelled (abort signal)",
+  "self-killed:loop":
+    "killed by pi-rukas (loop detected — the same tool call repeated; retrying would loop again)",
+  "self-killed:token-budget":
+    "killed by pi-rukas (token budget crossed — a cost cap, not a provider fault)",
+  "self-killed:plan-timeout":
+    "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)",
+  "self-killed:child-bound":
+    "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault",
+  "self-killed:stuck-tool":
+    "ended by pi-rukas for a stuck tool call (the same command stuck twice past its call budget, or a stuck call it could not kill alone) — not a provider fault",
+};
+
+function isSelfKill(cause: DispatchFailureCause): cause is SelfKillCause {
+  return cause.startsWith("self-killed:");
+}
+
 /**
  * #309 — produce the operator-facing reason string for a dispatch failure.
  * Used by lifecycle emitStepRetry and any downstream reporting. Each cause
@@ -410,23 +442,8 @@ export function failureCauseReason(tail: {
   providerRepeats?: number;
 }): string {
   const cls = classifyFailureCause(tail);
+  if (isSelfKill(cls.cause)) return SELF_KILL_REASON[cls.cause];
   switch (cls.cause) {
-    case "self-killed:timeout":
-      return "killed by pi-rukas (wall-clock timeout)";
-    case "self-killed:inactivity":
-      return "killed by pi-rukas (inactivity watchdog)";
-    case "self-killed:tool-inactivity":
-      return "killed by pi-rukas (tool-inactivity watchdog — a tool call never returned)";
-    case "self-killed:abort":
-      return "cancelled (abort signal)";
-    case "self-killed:loop":
-      return "killed by pi-rukas (loop detected — the same tool call repeated; retrying would loop again)";
-    case "self-killed:token-budget":
-      return "killed by pi-rukas (token budget crossed — a cost cap, not a provider fault)";
-    case "self-killed:plan-timeout":
-      return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
-    case "self-killed:child-bound":
-      return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":
@@ -457,23 +474,8 @@ export function failureCauseReasonForClass(
   tail: { errorTail?: string; providerMessage?: string; providerRepeats?: number },
   cls: { cause: DispatchFailureCause },
 ): string {
+  if (isSelfKill(cls.cause)) return SELF_KILL_REASON[cls.cause];
   switch (cls.cause) {
-    case "self-killed:timeout":
-      return "killed by pi-rukas (wall-clock timeout)";
-    case "self-killed:inactivity":
-      return "killed by pi-rukas (inactivity watchdog)";
-    case "self-killed:tool-inactivity":
-      return "killed by pi-rukas (tool-inactivity watchdog — a tool call never returned)";
-    case "self-killed:abort":
-      return "cancelled (abort signal)";
-    case "self-killed:loop":
-      return "killed by pi-rukas (loop detected — the same tool call repeated; retrying would loop again)";
-    case "self-killed:token-budget":
-      return "killed by pi-rukas (token budget crossed — a cost cap, not a provider fault)";
-    case "self-killed:plan-timeout":
-      return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
-    case "self-killed:child-bound":
-      return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":

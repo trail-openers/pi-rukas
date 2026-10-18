@@ -44,7 +44,7 @@ const FINDINGS =
 
 // Rendered lazily via the assertion helper so the watchdog guard pins the env
 // the prompt is BUILT with, not only the env it is compared against — an
-// ambient PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS would otherwise move the
+// ambient PI_ENSEMBLE_CALL_BUDGET_MS would otherwise move the
 // derived bound out from under the `timeout <n>` the prompt carries.
 assertLensFixPromptTestScope(assert, () => inlineLensFixPrompt(FINDINGS, "/tmp/scratch"));
 

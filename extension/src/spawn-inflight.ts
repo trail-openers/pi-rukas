@@ -27,7 +27,7 @@ import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { type RunningState, ingestEvent } from "./progress.ts";
 import type { CapSession } from "./spawn-caps.ts";
 import { killProcessTree } from "./spawn-kill.ts";
-import { inactivityTimeoutMs, toolInactivityTimeoutMs, willRetryAfter } from "./spawn-support.ts";
+import { inactivityTimeoutMs, willRetryAfter } from "./spawn-support.ts";
 import { traceWarn } from "./trace.ts";
 
 /** A span one event opens: the call's id, tool name and arguments. */
@@ -135,43 +135,29 @@ export function isStdinEcho(kind: string): boolean {
 }
 
 /**
- * #951 — the dual-budget inactivity watchdog. ONE poll, two budgets: while
- * the in-flight set (above) is non-empty the silence belongs to a running
- * tool, so the TOOL-inactivity bound applies (a long bash — the full offline
- * gate, a CI watch — is the NORMAL shape); when the set is empty the
- * model-silence bound applies (a stalled provider turn). Exactly one budget
- * is armed at any poll, so there is no both-expired race.
- *
- * The poll period takes the smaller positive budget (a tighter budget is
- * the tighter poll) so a test-shortened tool budget still fires promptly;
- * production clamps both to 30s. `toolInactivityKilled` / `inactivityKilled`
- * are exclusive by construction.
+ * The model-silence watchdog (#296). It applies only while the in-flight set
+ * (above) is empty: a silent child with no call running is a stalled provider
+ * turn. While a call is in flight the silence belongs to that call, and the
+ * call budget bounds it instead (#1465, spawn-call-budget.ts) — it kills the
+ * call, not the child. #951's separate tool-inactivity bound, which killed the
+ * whole child after 60 min of silence with a call in flight, is gone: silence
+ * cannot tell a hung call from a suite that prints nothing until it ends.
  */
 export function createInactivityPoll(opts: {
   /** Headless S4 (#1024): the child leads its own process group (spawn-kill.ts). */
   child: ChildProcess;
   inFlightTools: InFlightTools;
   lastActivityAt: () => number;
-  onKill: (cause: "inactivity" | "tool-inactivity", budgetMs: number, toolNames: string[]) => void;
+  onKill: (budgetMs: number) => void;
 }): () => void {
   const { child, inFlightTools, lastActivityAt, onKill } = opts;
   const inactivityMs = inactivityTimeoutMs();
-  const toolInactivityMs = toolInactivityTimeoutMs();
-  const armedBudget = () =>
-    inFlightTools.active
-      ? { ms: toolInactivityMs, cause: "tool-inactivity" as const }
-      : { ms: inactivityMs, cause: "inactivity" as const };
-  const pollBudgetMs = Math.min(
-    inactivityMs > 0 ? inactivityMs : Number.POSITIVE_INFINITY,
-    toolInactivityMs > 0 ? toolInactivityMs : Number.POSITIVE_INFINITY,
-  );
-  if (pollBudgetMs === Number.POSITIVE_INFINITY) return () => undefined;
+  if (inactivityMs <= 0) return () => undefined;
   const interval = setInterval(
     () => {
-      const budget = armedBudget();
-      if (budget.ms <= 0) return; // this budget is disabled; the other is checked in its own branch
-      if (Date.now() - lastActivityAt() >= budget.ms) {
-        onKill(budget.cause, budget.ms, inFlightTools.toolNames());
+      if (inFlightTools.active) return;
+      if (Date.now() - lastActivityAt() >= inactivityMs) {
+        onKill(inactivityMs);
         // #1510 — this runs on its OWN setInterval, so a throw here is an
         // uncaught exception at timer level: it aborts the parent and takes
         // down every sibling child still in flight, exactly the shape the
@@ -185,7 +171,7 @@ export function createInactivityPoll(opts: {
         }
       }
     },
-    Math.min(30_000, Math.max(250, Math.floor(pollBudgetMs / 2))),
+    Math.min(30_000, Math.max(250, Math.floor(inactivityMs / 2))),
   );
   interval.unref();
   return () => clearInterval(interval);

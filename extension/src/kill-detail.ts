@@ -31,12 +31,14 @@ const WHY: Record<string, string> = {
     "hit the wall-clock backstop — that only catches runaway loops, so this means the work needs splitting or manual takeover",
   inactivity:
     "produced no output at all for the watchdog window — a genuine hang, or a provider stall that outlasted every retry",
-  // #951 — the in-flight-tool variant: the silence happened WHILE a tool call
-  // was running, so the distinction for the operator is which bound fired
-  // (PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS, not the model-silence knob) and
-  // that a tool — not the model — is what went quiet.
+  // #951 — the in-flight-tool variant, written only by pi-rukas before #1465;
+  // the call budget (PI_ENSEMBLE_CALL_BUDGET_MS) now owns that window.
   "tool-inactivity":
-    "went silent while a tool call was in flight — the tool (not the model) is what stopped answering; the bound is PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS, not the model-silence knob",
+    "went silent while a tool call was in flight — the tool (not the model) is what stopped answering; that window now belongs to the call budget, PI_ENSEMBLE_CALL_BUDGET_MS",
+  // #1465 — the call budget: a stuck call is killed alone first; this is the
+  // end of the child after that did not free it.
+  "stuck-tool":
+    "had a tool call stuck past its call budget with no new output — the same command stuck again after its call-kill, or the call's process could not be killed alone (PI_ENSEMBLE_CALL_BUDGET_MS / PI_ENSEMBLE_CALL_STALE_MS)",
   abort: "was cancelled",
   // #1560 — the per-child run bound: steered to wrap up, ended a grace later.
   "child-bound":

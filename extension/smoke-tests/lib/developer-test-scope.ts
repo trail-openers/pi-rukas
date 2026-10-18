@@ -22,10 +22,10 @@ import { withEnv } from "./env-scope.ts";
 
 type Assert = (cond: boolean, msg: string) => void;
 
-const KNOB = "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS";
+const KNOB = "PI_ENSEMBLE_CALL_BUDGET_MS";
 
 /**
- * Run `body` with `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` set to `ms`, and
+ * Run `body` with `PI_ENSEMBLE_CALL_BUDGET_MS` set to `ms`, and
  * with it DELETED when `ms` is undefined. Delegation to the shared `withEnv`
  * rather than a local copy of the save/restore dance: this helper and that one
  * had byte-identical semantics, and a forked copy is where the two drift — a
@@ -40,7 +40,7 @@ const KNOB = "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS";
  * do with the code under test.
  *
  * The knob is pinned on EVERY block, including the "default" one: an ambient
- * `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` in the developer's shell is
+ * `PI_ENSEMBLE_CALL_BUDGET_MS` in the developer's shell is
  * otherwise a value the assertions silently compare against 1200, so both
  * files here fail for a reason no contributor can reproduce.
  */
@@ -62,19 +62,18 @@ function withWatchdog(ms: string | undefined, body: () => void): void {
  * The floor cases are the mirror image of the ceiling cases. `timeout 0` is
  * coreutils for NO timeout, so a derivation that yields 0 does not tighten
  * the bound — it deletes it, and tells the child to run unbounded in the
- * exact words that are supposed to bound it. Three inputs produce 0 before the
- * clamp: a watchdog under 3 s (integer division), a watchdog of 0 (the knob
- * accepts it), and an empty/non-numeric value (`Number` of the empty string
- * is 0, which passes the `>= 0` guard).
+ * exact words that are supposed to bound it. Two inputs produce 0 before the
+ * clamp: a floor under 1 s (integer division) and a floor of 0 (the knob
+ * accepts it — it disables the call watch).
  */
 export function assertSuiteBoundDerivation(assert: Assert): void {
   withWatchdog(undefined, () => {
-    assert(suiteTimeoutSeconds() === 1200, "derived bound: the 60-min default gives 1200s");
+    assert(suiteTimeoutSeconds() === 1200, "derived bound: the 20-min call-budget floor gives 1200s");
   });
   withWatchdog("60000", () => {
     assert(
-      suiteTimeoutSeconds() === 20,
-      "derived bound: a 60s watchdog shrinks the suite bound to 20s — the prompt cannot outlive the watchdog it sits under",
+      suiteTimeoutSeconds() === 60,
+      "derived bound: a 60s call-budget floor shrinks the suite bound to 60s",
     );
   });
   withWatchdog("12000000", () => {
@@ -89,26 +88,22 @@ export function assertSuiteBoundDerivation(assert: Assert): void {
       "derived bound: a watchdog of 0 yields 1s, NOT 0 — `timeout 0` means no timeout at all, so a 0 here is the opposite of a bound",
     );
   });
-  withWatchdog("1000", () => {
+  withWatchdog("500", () => {
     assert(
       suiteTimeoutSeconds() === 1,
-      "derived bound: a sub-3s watchdog (1000ms → 0.33s) floors at 1s rather than rounding to a no-timeout 0",
+      "derived bound: a 1s floor gives 1s, never a no-timeout 0",
     );
   });
   withWatchdog("", () => {
     assert(
-      suiteTimeoutSeconds() === 1,
-      "derived bound: an empty env value reads as 0ms and still floors at 1s — an unset-looking knob must not disable the bound",
+      suiteTimeoutSeconds() === 1200,
+      "derived bound: an empty env value is unreadable and falls back to the default floor — an unset-looking knob must not disable the bound",
     );
   });
-  // A value the parser REJECTS — including the string `"NaN"` (`Number("NaN")`
-  // is NaN) and a negative — is replaced by the 60-min default inside
-  // `toolInactivityTimeoutMs`, so both derive the default's 1200 rather than
-  // reaching the non-finite branch. The expectation is 1200 because that is
-  // what the code does, and it is the right behaviour: a knob nobody can read
-  // falls back to the same bound as no knob at all, never to a missing bound.
-  // The non-finite branch the `Number.isFinite` guard exists for is exercised
-  // by the overflow case below, which IS a value the parser accepts.
+  // A value the parser REJECTS — the string `"NaN"`, a negative, an overflow
+  // to Infinity — is replaced by the 20-min default inside `callBudgetFloorMs`,
+  // so each derives the default's 1200: a knob nobody can read falls back to
+  // the same bound as no knob at all, never to a missing bound.
   withWatchdog("NaN", () => {
     assert(
       suiteTimeoutSeconds() === 1200,
@@ -121,11 +116,8 @@ export function assertSuiteBoundDerivation(assert: Assert): void {
       "derived bound: a negative watchdog is rejected by the parser and falls back to the default's 1200s, not to a negative or a no-bound 0",
     );
   });
-  // The branch the clamp's `Number.isFinite` guard actually exists for: a
-  // value the parser ACCEPTS (`Number.isFinite` passes `1e400` → Infinity)
-  // that then derives non-finite. `Math.max(1, Math.min(1200, Infinity))` is
-  // Infinity, which would put `timeout Infinity` in front of the child — so it
-  // falls to the ceiling too.
+  // `Math.max(1, Math.min(1200, Infinity))` would put `timeout Infinity` in
+  // front of the child, so an overflowing knob must not reach the clamp.
   withWatchdog("1e400", () => {
     assert(
       suiteTimeoutSeconds() === 1200,
@@ -142,8 +134,8 @@ export function assertSuiteBoundDerivation(assert: Assert): void {
       "derived bound: the watchdog helper really pins the knob for the duration of the body — the assertions above compare against a bound the environment actually holds",
     );
     assert(
-      suiteTimeoutSeconds() === 20,
-      "derived bound: inside the pinned block the derived bound and the pinned knob agree (60000ms → 20s)",
+      suiteTimeoutSeconds() === 60,
+      "derived bound: inside the pinned block the derived bound and the pinned knob agree (60000ms → 60s)",
     );
   });
   withWatchdog(undefined, () => {
@@ -153,7 +145,7 @@ export function assertSuiteBoundDerivation(assert: Assert): void {
     );
     assert(
       suiteTimeoutSeconds() === 1200,
-      "derived bound: with the knob deleted the derivation reads the 60-min default (1200s)",
+      "derived bound: with the knob deleted the derivation reads the 20-min default (1200s)",
     );
   });
 }
@@ -239,7 +231,7 @@ export function assertDevelopPromptTestScope(
       "#1156 fallback: with no `timeout` the command runs bare and stays under the tool watchdog",
     );
     assert(
-      /PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS/.test(developTestScopeLine()),
+      /PI_ENSEMBLE_CALL_BUDGET_MS/.test(developTestScopeLine()),
       "#1156 fallback: the bare-run bound names the watchdog knob, so the two timeout rules resolve to one",
     );
     assert(
@@ -301,8 +293,8 @@ export function assertDevelopPromptTestScope(
   withWatchdog("60000", () => {
     const small = rendered();
     assert(
-      small.includes("timeout 20") && !small.includes("timeout 1200"),
-      "#1156: a small PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS shrinks the prompt's bound — no frozen 1200 outliving the watchdog",
+      small.includes("timeout 60") && !small.includes("timeout 1200"),
+      "#1156: a small PI_ENSEMBLE_CALL_BUDGET_MS shrinks the prompt's bound — no frozen 1200",
     );
   });
 

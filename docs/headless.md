@@ -188,11 +188,11 @@ An optional top-level `error` (`{ code, message }`) is present when the runner d
 | `kind` | always | A coarse class, from `contracts.resultSchema.failureKinds` in `--capabilities` (below). |
 | `step` | when known | The step it belongs to, the same as `failedStep`. |
 | `role` | when a dispatch failed, or a guard cap names one | The failed dispatch's role (or the role a `loop-detected` / `token-budget` cap killed). |
-| `cause` | when a dispatch failed | The driver's root-cause reading of the failed dispatch, the one its retry router acts on: `provider-severed`, `rate-limited:429`, `rate-limited:burst`, `rate-limited:quota-window`, `rate-limited:quota-terminal`, `provider-model-unavailable`, `self-killed:<timeout\|inactivity\|tool-inactivity\|abort\|loop\|token-budget\|plan-timeout>`, `crashed` or `crashed-unknown`. Additive: show an unknown one to a person. |
+| `cause` | when a dispatch failed | The driver's root-cause reading of the failed dispatch, the one its retry router acts on: `provider-severed`, `rate-limited:429`, `rate-limited:burst`, `rate-limited:quota-window`, `rate-limited:quota-terminal`, `provider-model-unavailable`, `self-killed:<timeout\|inactivity\|tool-inactivity\|abort\|loop\|token-budget\|plan-timeout\|child-bound\|stuck-tool>`, `crashed` or `crashed-unknown`. Additive: show an unknown one to a person. |
 | `message` | always | One plain-text sentence, at most 500 characters: the failed dispatch's cause in words, else the first line of the cap's evidence, else the cap. |
 | `providerMessage` | provider failures | The provider's own error message, at most 1000 characters. |
 | `errorTail` | process failures | The end of the failed child's output, at most 2000 characters. |
-| `killCause` | when pi-rukas ended the child | `timeout`, `inactivity`, `tool-inactivity`, `abort`, `loop`, `token-budget` or `plan-timeout`. |
+| `killCause` | when pi-rukas ended the child | `timeout`, `inactivity`, `abort`, `loop`, `token-budget`, `plan-timeout`, `child-bound`, `no-progress` or `stuck-tool`. `tool-inactivity` appears only on records written before #1465 replaced it with the call budget. |
 | `exitCode` | when the failed child exited | Its exit code (`null` when killed by a signal). |
 | `evidence` | when the cap recorded some | The cap's evidence, at most 2000 characters. Plain text for a person; do not parse it. |
 

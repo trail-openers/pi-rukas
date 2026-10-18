@@ -174,9 +174,10 @@ for (const [killCause, needle] of [
   for (const [killCause, needle] of [
     ["loop", "PI_ENSEMBLE_DISPATCH_CAPS"],
     ["token-budget", "PI_ENSEMBLE_CAP_KILL_GRACE_MS"],
-    // #951 — tool-inactivity names the tool-inactivity knob, NOT the
-    // model-silence knob.
-    ["tool-inactivity", "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS"],
+    // #1465 — a stuck call names the call-budget knob, NOT the model-silence
+    // knob; so does a pre-#1465 record's tool-inactivity, the window it owned.
+    ["stuck-tool", "PI_ENSEMBLE_CALL_BUDGET_MS"],
+    ["tool-inactivity", "PI_ENSEMBLE_CALL_BUDGET_MS"],
   ] as const) {
     const ev = await buildCompletionEvent(ctx, "develop", "developer", "developer", {
       role: "developer",

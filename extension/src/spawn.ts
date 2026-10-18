@@ -35,6 +35,7 @@ import { kickPiResolutionProbe } from "./pi-version-probe.ts";
 import { emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLES, type RoleName, isRoleName } from "./roles.ts";
+import { applyCallBudget, armCallBudget } from "./spawn-call-budget.ts";
 import { capKillAttribution } from "./spawn-caps.ts";
 import { applyChildBound, armChildBound } from "./spawn-child-bound.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
@@ -309,8 +310,8 @@ async function spawnSpecialistInner(
   // silence is a SILENCE, and an in-flight tool is work, not silence. A
   // toolCall block inside an assistant message_end opens a span; the matching
   // toolResult closes it (error or not). While the set is non-empty the
-  // tool-inactivity bound applies to the silence; when it is empty the
-  // model-silence bound applies — exactly one budget is armed at any poll.
+  // silence is the call's, bounded by the call budget (#1465,
+  // spawn-call-budget.ts); when it is empty the model-silence bound applies.
   const inFlightTools = new InFlightTools();
   // #1567 — what counts as progress, per spawn (child-progress.ts).
   const childProgress = new ChildProgress();
@@ -378,23 +379,25 @@ async function spawnSpecialistInner(
   // poll — half the budget, clamped to [250ms, 30s] so production budgets
   // poll cheaply and short test budgets still fire promptly.
   //
-  // #951 — ONE poll, two budgets (spawn-inflight.ts createInactivityPoll):
-  // while the in-flight set is non-empty the tool-inactivity bound applies;
-  // when it is empty the model-silence bound applies. Exactly one budget
-  // is armed at any poll, so there is no both-expired race.
+  // #1465 — only while no tool call is in flight (spawn-inflight.ts
+  // createInactivityPoll); a call in flight is bounded by the call budget,
+  // which kills the call, not the child (spawn-call-budget.ts).
   const stopInactivityPoll = createInactivityPoll({
     child,
     inFlightTools,
     lastActivityAt: () => lastActivityAt,
-    onKill: (cause, budgetMs, toolNames) => {
-      if (cause === "tool-inactivity") flags.setToolInactivityKilled(true);
-      else flags.setInactivityKilled(true);
-      // #951 — name the tool(s) that went silent, so the report shows
-      // WHAT is in flight instead of a bare cause. Inactivity kills
-      // keep today's parsed.type behaviour (lastActivityKind above).
-      lastActivityKind = `toolCall in flight: ${toolNames.join(", ")}`;
+    onKill: (budgetMs) => {
+      flags.setInactivityKilled(true);
       flags.setKilledBudgetMs(budgetMs);
     },
+  });
+  const callBudget = armCallBudget({
+    child,
+    progress: childProgress,
+    onSteer: opts.onSteer,
+    stdin: child.stdin,
+    childExited: flags.childExited,
+    appendStderr,
   });
 
   // Propagate Pi's user-cancel (Esc) signal: kill the child so the tool
@@ -410,6 +413,7 @@ async function spawnSpecialistInner(
   } finally {
     stopWallClockBackstop();
     childBound.stop();
+    callBudget.stop();
     stopInactivityPoll();
     caps.cleanup();
     detachAbortKill();
@@ -430,11 +434,6 @@ async function spawnSpecialistInner(
   }
   if (flags.inactivityKilled()) {
     appendStderr(`\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms inactivity`);
-  }
-  if (flags.toolInactivityKilled()) {
-    appendStderr(
-      `\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms with a tool call in flight (tool-inactivity)`,
-    );
   }
   if (flags.aborted()) {
     appendStderr("\n[pi-rukas] cancelled by user (Esc)");
@@ -457,17 +456,15 @@ async function spawnSpecialistInner(
   // contract, resolved by priority in spawn-caps.ts's capKillAttribution.
   capKillAttribution(caps, spec, runningState.totalTokens, appendStderr, result);
   applyChildBound(childBound, result);
+  applyCallBudget(callBudget, result);
   result.transcriptPath = transcriptPath;
   result.modelSource = modelChoice.source;
   // The cap-kill cause + evidence were already resolved above (capKillAttribution,
   // after the stderr lines are appended). The wall-clock budgets for the
   // timeout/inactivity kills are set HERE — only meaningful for those causes.
-  // #951 — each silence kill records the ACTIVE bound (the one the poll
-  // armed), since exactly one budget is checked per poll.
   if (result.killCause === "timeout") result.killBudgetMs = timeoutMs;
   if (result.killCause === "timeout" && bound.clamped) result.killedAtCycleDeadline = true;
   if (result.killCause === "inactivity") result.killBudgetMs = flags.killedBudgetMs();
-  if (result.killCause === "tool-inactivity") result.killBudgetMs = flags.killedBudgetMs();
   // A killed child never completed its assignment, whatever its exit code.
   if (result.killCause) {
     result.ok = false;

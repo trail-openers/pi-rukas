@@ -115,7 +115,6 @@ const withEnvAsync = async <T>(
       totalTokens: () => 1_000_000, // over budget — check() will trigger
       timedOut: () => false,
       inactivityKilled: () => false,
-      toolInactivityKilled: () => false,
       aborted: () => false,
       capKillGraceMs: 600,
       childExited: () => exited,
@@ -172,7 +171,6 @@ const withEnvAsync = async <T>(
       totalTokens: () => 100_000, // far over the 100-token budget
       timedOut: () => false,
       inactivityKilled: () => false,
-      toolInactivityKilled: () => false,
       aborted: () => false,
       capKillGraceMs: GRACE,
       childExited: () => false,
@@ -239,7 +237,6 @@ const withEnvAsync = async <T>(
         totalTokens: () => 0,
         timedOut: () => false,
         inactivityKilled: () => false,
-        toolInactivityKilled: () => false,
         aborted: () => false,
         capKillGraceMs: 1000,
         childExited: () => false,
@@ -285,7 +282,6 @@ const withEnvAsync = async <T>(
       totalTokens: () => 0,
       timedOut: () => false,
       inactivityKilled: () => false,
-      toolInactivityKilled: () => false,
       aborted: () => false,
       capKillGraceMs: 30_000,
       childExited: () => false,

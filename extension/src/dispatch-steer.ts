@@ -76,7 +76,9 @@ export type SteerSource =
    * crossing; notice + steer, never a kill). */
   | "driver-slow-notice"
   /** #1560 — the per-child run bound's wrap-up steer (spawn-child-bound.ts). */
-  | "driver-child-bound";
+  | "driver-child-bound"
+  /** #1465 — the call budget's steer after a call-kill (spawn-call-budget.ts). */
+  | "driver-call-kill";
 
 /**
  * The driver-callable steer core (#543 F2).

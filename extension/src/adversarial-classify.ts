@@ -42,14 +42,15 @@ export function classifyDispatchOutcome(r: DispatchResult): {
       headline: "killed by pi-rukas (inactivity watchdog)",
     };
   }
-  // #951 — the in-flight-tool silence kill: same hang shape as inactivity
-  // (a tool that never returned), so it is retried the same way.
-  if (r.killCause === "tool-inactivity") {
+  // #1465 — the call budget ended the child (a command stuck again after its
+  // call-kill, or one it could not kill alone). Not retried: a fresh reviewer
+  // re-runs the same command into the same budget (as the driver taxonomy).
+  if (r.killCause === "stuck-tool") {
     return {
-      cause: "self-killed:tool-inactivity",
-      shouldRetry: true,
-      maxRetries: 1,
-      headline: "killed by pi-rukas (tool-inactivity watchdog — a tool call never returned)",
+      cause: "self-killed:stuck-tool",
+      shouldRetry: false,
+      maxRetries: 0,
+      headline: "ended by pi-rukas for a stuck tool call — a fresh child would re-run it",
     };
   }
   if (r.killCause === "abort") {

@@ -229,7 +229,6 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     resolveKillCause({
       loopKilled: false,
       inactivityKilled: false,
-      toolInactivityKilled: false,
       timedOut: true,
       tokenBudgetKilled: true,
       aborted: false,
@@ -240,7 +239,6 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     resolveKillCause({
       loopKilled: false,
       inactivityKilled: false,
-      toolInactivityKilled: false,
       timedOut: false,
       tokenBudgetKilled: true,
       aborted: false,
@@ -251,65 +249,38 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     resolveKillCause({
       loopKilled: false,
       inactivityKilled: false,
-      toolInactivityKilled: false,
       timedOut: true,
       tokenBudgetKilled: false,
       aborted: false,
     }) === "timeout",
     "C1: timedOut alone → 'timeout' (the #296 semantics are untouched)",
   );
-  // #951 — tool-inactivity alone → 'tool-inactivity'
-  assert(
-    resolveKillCause({
-      loopKilled: false,
-      inactivityKilled: false,
-      toolInactivityKilled: true,
-      timedOut: false,
-      tokenBudgetKilled: false,
-      aborted: false,
-    }) === "tool-inactivity",
-    "C1: toolInactivityKilled alone → 'tool-inactivity' (#951)",
-  );
-  // full priority order: loop > inactivity = tool-inactivity > token-budget > timeout > abort
+  // full priority order: loop > inactivity > token-budget > timeout > abort
+  // (#1465 — tool-inactivity is no longer produced; the call budget replaced it)
   assert(
     resolveKillCause({
       loopKilled: true,
       inactivityKilled: true,
-      toolInactivityKilled: true,
       timedOut: true,
       tokenBudgetKilled: true,
       aborted: true,
     }) === "loop",
-    "C1: all six facts → 'loop' wins",
+    "C1: all five facts → 'loop' wins",
   );
   assert(
     resolveKillCause({
       loopKilled: false,
       inactivityKilled: true,
-      toolInactivityKilled: false,
       timedOut: true,
       tokenBudgetKilled: true,
       aborted: true,
     }) === "inactivity",
     "C1: inactivity beats timeout + token-budget + abort",
   );
-  // #951 — tool-inactivity also beats timeout + token-budget + abort
   assert(
     resolveKillCause({
       loopKilled: false,
       inactivityKilled: false,
-      toolInactivityKilled: true,
-      timedOut: true,
-      tokenBudgetKilled: true,
-      aborted: true,
-    }) === "tool-inactivity",
-    "C1: tool-inactivity beats timeout + token-budget + abort (#951)",
-  );
-  assert(
-    resolveKillCause({
-      loopKilled: false,
-      inactivityKilled: false,
-      toolInactivityKilled: false,
       timedOut: false,
       tokenBudgetKilled: false,
       aborted: true,
@@ -320,7 +291,6 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     resolveKillCause({
       loopKilled: false,
       inactivityKilled: false,
-      toolInactivityKilled: false,
       timedOut: false,
       tokenBudgetKilled: false,
       aborted: false,
@@ -332,7 +302,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   const none = {
     loopKilled: false,
     inactivityKilled: false,
-    toolInactivityKilled: false,
+    
     timedOut: false,
     tokenBudgetKilled: false,
     aborted: false,

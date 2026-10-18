@@ -34,7 +34,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnCap } from "../src/spawn-semaphore.ts";
-import { SPAWN_BACKSTOP_MS, inactivityTimeoutMs, spawnBackstopMs, toolInactivityTimeoutMs } from "../src/spawn-support.ts";
+import { callBudgetFloorMs, callStaleMs } from "../src/spawn-call-budget.ts";
+import { SPAWN_BACKSTOP_MS, inactivityTimeoutMs, spawnBackstopMs } from "../src/spawn-support.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -131,18 +132,14 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     inactivityTimeoutMs() < SPAWN_BACKSTOP_MS,
     "canary: liveness fires well before the backstop — otherwise the backstop is the de-facto detector",
   );
-  // #951 — the tool-inactivity bound is a separate knob, 60 min default,
-  // and larger than the model-silence bound (a silent in-flight tool is the
-  // NORMAL shape of a long bash; the tool bound is the backstop for a wedged tool).
+  // #1465 — a call in flight is bounded by the call budget (policy: 20-min
+  // floor, stuck after 10 min without progress), not by stdout silence.
   assert(
-    withEnv({ PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS: undefined }, () =>
-      toolInactivityTimeoutMs(),
-    ) === 60 * 60_000,
-    "canary: the tool-inactivity bound is 60 min (a separate knob from the model-silence budget)",
-  );
-  assert(
-    toolInactivityTimeoutMs() > inactivityTimeoutMs(),
-    "canary: the tool bound is larger than the model-silence bound — a silent in-flight tool is the normal shape",
+    withEnv(
+      { PI_ENSEMBLE_CALL_BUDGET_MS: undefined, PI_ENSEMBLE_CALL_STALE_MS: undefined },
+      () => callBudgetFloorMs() === 20 * 60_000 && callStaleMs() === 10 * 60_000,
+    ),
+    "canary: the call budget's floor is 20 min and its no-progress window 10 min (#1567 policy item 3)",
   );
 }
 

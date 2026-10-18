@@ -52,7 +52,6 @@ function session(tokens: number, aborted = false) {
     capKillGraceMs: 60_000,
     timedOut: () => false,
     inactivityKilled: () => false,
-    toolInactivityKilled: () => false,
     aborted: () => aborted,
     childExited: () => true,
   });

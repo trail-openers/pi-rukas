@@ -30,7 +30,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { toolInactivityTimeoutMs } from "./spawn-support.ts";
+import { callBudgetFloorMs } from "./spawn-call-budget.ts";
 import { trace } from "./trace.ts";
 import { readFirstConfigLine } from "./work-driver-verify-cmd.ts";
 
@@ -135,46 +135,31 @@ export function developVerifyLine(verifyCmd?: string, fastCmd?: string): string 
 
 /**
  * The wall-clock bound every suite command a developer runs carries, derived
- * from the tool-inactivity watchdog rather than frozen as a literal.
+ * from the call budget's floor (`PI_ENSEMBLE_CALL_BUDGET_MS`, 20 min) rather
+ * than frozen as a literal.
  *
- * Prompt-layer only — nothing in the harness parses or enforces it. Measured
- * on a `/work` fan-out: developers ran the whole offline suite in parallel
- * worktrees with no bound at all and one stuck ~20 minutes on a single suite
- * call, so the slowest child set the pace of every gate.
+ * Prompt-layer only — nothing in the harness parses it as an instruction.
+ * Measured on a `/work` fan-out: developers ran the whole offline suite in
+ * parallel worktrees with no bound at all and one stuck ~20 minutes on a
+ * single suite call, so the slowest child set the pace of every gate.
  *
- * A third of the watchdog is the shape that was always intended: the command
- * reports what hung instead of the child being killed for silence. Deriving
- * it keeps that true when an operator shrinks
- * `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` — a frozen 1200 told the developer
- * to wrap a command in a bound LONGER than the watchdog that would then take
- * it down, which is the opposite of a bound. The 1200 ceiling is the number
- * the derivation already gives at the 60-min default, and it keeps the prompt
- * sane at an enlarged watchdog rather than telling a child to let one suite
- * run for hours.
+ * The call budget (#1465, spawn-call-budget.ts) gives a command with its own
+ * `timeout N` a budget of N + 2 min, so the command reports what hung before
+ * any watchdog acts. The floor is what an unwrapped command gets, so a bound
+ * at the floor never asks for more than a bare call would have had. The 1200
+ * ceiling is the number the default floor gives, and it keeps the prompt sane
+ * at an enlarged floor rather than telling a child to let one suite run for
+ * hours.
  *
  * The floor of 1 is load-bearing in a way the ceiling is not. The knob accepts
- * `0` — coreutils treats `timeout 0` as *no timeout at all* — so the very shape
- * this bound exists to prevent, a suite running until the watchdog takes the
- * whole child, is what a `timeout 0` in the prompt instructs the child to do.
- * Same reason `withFastTier` above floors its derived bound with
- * `Math.max(1, ...)`.
- *
- * The clamp is written as one `Number.isFinite` guard rather than nested
- * `Math.max`/`Math.min`, because both propagate a non-finite operand —
- * `Math.max(1, NaN)` is `NaN` and `Math.min(1200, Infinity)` is `Infinity` —
- * and either would put `timeout NaN` / `timeout Infinity` literally in front of
- * the child, which is no bound at all. `toolInactivityTimeoutMs` rejects what
- * `Number()` cannot read (`""`, `"abc"`, `"NaN"`, a negative) to the 60-min
- * default, so those resolve through the ordinary path; the value that DOES pass
- * its guard and still derives non-finite is an unparseably large one
- * (`"1e400"` → Infinity), and that is the case the guard catches. Any
- * non-finite derivation falls to the 1200 ceiling: the number the default
- * already gives, so a prompt that could not read the knob carries a real bound
- * rather than no bound.
+ * `0` — coreutils treats `timeout 0` as *no timeout at all* — so a `timeout 0`
+ * in the prompt would instruct the child to run unbounded. Same reason
+ * `withFastTier` above floors its derived bound with `Math.max(1, ...)`.
+ * `callBudgetFloorMs` rejects what it cannot read (`""`, `"NaN"`, a negative,
+ * an overflow to Infinity) to its default, so the result is always finite.
  */
 export function suiteTimeoutSeconds(): number {
-  const s = Math.floor(toolInactivityTimeoutMs() / 3000);
-  return Number.isFinite(s) ? Math.max(1, Math.min(1200, s)) : 1200;
+  return Math.max(1, Math.min(1200, Math.floor(callBudgetFloorMs() / 1000)));
 }
 
 /**
@@ -206,6 +191,6 @@ export function developTestScopeLine(adHocOnly = false): string {
     : `Wrap every suite or test command in \`timeout ${seconds}\` (e.g. \`timeout ${seconds} bun test extension/smoke-tests/test-foo.ts\`) so a single stuck test can never consume the dispatch.`;
   const probe = "`command -v timeout || command -v gtimeout`";
   const fallback =
-    "Only where the probe prints nothing — run the command bare and keep it under the tool watchdog (`PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS`).";
+    "Only where the probe prints nothing — run the command bare; it then gets the call budget (`PI_ENSEMBLE_CALL_BUDGET_MS`), and a call past it with no new output for 10 minutes is killed.";
   return `Scope your own testing: run the smoke tests for the files you changed, plus typecheck and lint. Do NOT run the full test suite — the driver runs the full suite once on your worktree after you finish, and several workstreams each running it whole in parallel only slow every gate down. ${binding} Probe for a timeout binary first: ${probe} (POSIX-specified; \`gtimeout\` is Homebrew coreutils' same tool). ${fallback}`;
 }

@@ -113,6 +113,16 @@ export function killProcessTree(child: ChildProcess): void {
   if (!group) escalate.unref();
 }
 
+/**
+ * #1465 — SIGTERM one process group by its leader's pid, SIGKILL after
+ * KILL_GRACE_MS. For a group this process did not spawn: a child's tool call
+ * (spawn-call-budget.ts). A group already gone is a no-op.
+ */
+export function killGroup(pgid: number): void {
+  if (!signalGroupPid(pgid, "SIGTERM")) return;
+  setTimeout(() => signalGroupPid(pgid, "SIGKILL"), KILL_GRACE_MS).unref();
+}
+
 const REAPER = Symbol.for("pi-rukas.spawn-kill.group-reaper");
 
 /**

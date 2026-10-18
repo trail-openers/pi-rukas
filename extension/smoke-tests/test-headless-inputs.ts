@@ -53,11 +53,8 @@ import {
   settledReapMs,
 } from "../src/spawn-child-bound.ts";
 import { spawnCap } from "../src/spawn-semaphore.ts";
-import {
-  inactivityTimeoutMs,
-  spawnBackstopMs,
-  toolInactivityTimeoutMs,
-} from "../src/spawn-support.ts";
+import { callBudgetFloorMs, callStaleMs } from "../src/spawn-call-budget.ts";
+import { inactivityTimeoutMs, spawnBackstopMs } from "../src/spawn-support.ts";
 import { capKillGraceMs } from "../src/spawn-token-budget.ts";
 import { acceptanceCoverageEnabled } from "../src/work-driver-acceptance-coverage.ts";
 import { integrationVerifyTimeoutMs } from "../src/work-driver-commit-title.ts";
@@ -344,12 +341,13 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_SLOW_NOTICE_TOKENS", () => slowThresholds().tokens],
   ["PI_ENSEMBLE_SLOW_NOTICE_TURNS", () => slowThresholds().turns],
   ["PI_ENSEMBLE_SPAWN_CAP", spawnCap],
+  ["PI_ENSEMBLE_CALL_BUDGET_MS", callBudgetFloorMs],
+  ["PI_ENSEMBLE_CALL_STALE_MS", callStaleMs],
   ["PI_ENSEMBLE_HOST_SPAWN_CAP", hostSpawnCap],
   ["PI_ENSEMBLE_HOST_SPAWN_WAIT_MS", hostSpawnWaitMs],
   ["PI_ENSEMBLE_SPAWN_TIMEOUT_MS", spawnBackstopMs],
   ["PI_ENSEMBLE_STEP_NOTICE_MS", stepNoticeThresholdMs],
   ["PI_ENSEMBLE_TEST_DELETE_TOLERANCE", testDeleteTolerance],
-  ["PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS", toolInactivityTimeoutMs],
   ["PI_ENSEMBLE_TRANSCRIPT_RETENTION_DAYS", transcriptRetentionDays],
   ["PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS", transientRetryBackoffMs],
   ["PI_ENSEMBLE_VERIFY_TIMEOUT_MS", verifyTimeoutMs],

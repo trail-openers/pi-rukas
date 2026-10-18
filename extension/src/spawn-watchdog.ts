@@ -13,7 +13,7 @@
  * Two seams, deliberately kept apart because the ordering between them is
  * load-bearing:
  *
- *   1. `declareKillFlags` — the six mutable kill flags, returned as
+ *   1. `declareKillFlags` — the five mutable kill flags, returned as
  *      getter/setter closures. The spawn body reads them AFTER
  *      `await once(child, "exit")` (the stderr attribution lines, `killCause`,
  *      `killBudgetMs`, `lastActivity`), so a snapshot at construction would
@@ -58,12 +58,7 @@ export interface KillFlags {
   /** #296 — the model-silence arm of the inactivity poll fired. */
   inactivityKilled(): boolean;
   setInactivityKilled(v: boolean): void;
-  /** #951 — the in-flight-tool silence kill: a toolCall's result never
-   * arrived, and the silence outlasted the tool-inactivity bound. */
-  toolInactivityKilled(): boolean;
-  setToolInactivityKilled(v: boolean): void;
-  /** #951 — the budget that actually fired (set by the inactivity poll's
-   * onKill callback; the active bound, since exactly one is armed per poll). */
+  /** The model-silence budget that fired (set by the inactivity poll's onKill). */
   killedBudgetMs(): number;
   setKilledBudgetMs(v: number): void;
   /** Pi's user-cancel (Esc) signal propagated to the child. */
@@ -75,13 +70,12 @@ export interface KillFlags {
 }
 
 /**
- * Declare the six kill flags every spawn reports with. Fresh per call — the
+ * Declare the five kill flags every spawn reports with. Fresh per call — the
  * state is per-spawn and must not outlive the child.
  */
 export function declareKillFlags(): KillFlags {
   let timedOut = false;
   let inactivityKilled = false;
-  let toolInactivityKilled = false;
   let killedBudgetMs = 0;
   let aborted = false;
   let childExited = false;
@@ -93,10 +87,6 @@ export function declareKillFlags(): KillFlags {
     inactivityKilled: () => inactivityKilled,
     setInactivityKilled: (v) => {
       inactivityKilled = v;
-    },
-    toolInactivityKilled: () => toolInactivityKilled,
-    setToolInactivityKilled: (v) => {
-      toolInactivityKilled = v;
     },
     killedBudgetMs: () => killedBudgetMs,
     setKilledBudgetMs: (v) => {
@@ -126,7 +116,7 @@ export function declareKillFlags(): KillFlags {
  *
  * #543 F1/F6 — the cap session (spawn-caps.ts) owns the per-spawn
  * detector/tracker state, the grace-window timers and the killCause priority
- * (loop > inactivity = tool-inactivity > token-budget > timeout > abort — the
+ * (loop > inactivity > token-budget > timeout > abort — the
  * most specific wins). `capKillGraceMs()` is read exactly ONCE here and handed
  * to the session, which passes it to both caps — a per-poll re-read would let
  * a mid-spawn env mutation desync the token-budget grace window.
@@ -154,7 +144,6 @@ export function armCapSession(
     totalTokens: () => session.runningState.totalTokens,
     timedOut: flags.timedOut,
     inactivityKilled: flags.inactivityKilled,
-    toolInactivityKilled: flags.toolInactivityKilled,
     aborted: flags.aborted,
     capKillGraceMs: capKillGraceMs(),
     childExited: flags.childExited,

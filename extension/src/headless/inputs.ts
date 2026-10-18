@@ -134,6 +134,9 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   list("ALLOWED_ROOTS", ":", null, "sandbox"),
   flag("AUTO_STEER", true),
   flag("AUTOSAVE", false, "interactive"),
+  // #1465 — the call budget: floor (0 disables the call watch) and the no-progress window.
+  ms("CALL_BUDGET_MS", 1_200_000),
+  ms("CALL_STALE_MS", 600_000),
   ms("CAP_KILL_GRACE_MS", 300_000),
   // #1560 — the per-child run bound: wrap-up steer at the bound, kill this long after.
   ms("CHILD_BOUND_GRACE_MS", 600_000),
@@ -334,7 +337,6 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   int("TEST_DELETE_TOLERANCE", 0),
   // Unset: no budget, except code-review-specialist (8,000,000).
   family(int("TOKEN_BUDGET_<ROLE>", null, "cycle", { unit: "tokens" }), ROLE_MEMBERS),
-  ms("TOOL_INACTIVITY_TIMEOUT_MS", 3_600_000),
   input("TRANSCRIPT_RETENTION_DAYS", "number", 5, "cycle", { unit: "days" }),
   flag("TRANSIENT_RETRY", true),
   ms("TRANSIENT_RETRY_BACKOFF_MS", 5_000),

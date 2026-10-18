@@ -23,7 +23,7 @@ timeout 1200 bun test extension/smoke-tests/test-foo.ts
 timeout 1200 cargo test --test auth
 ```
 
-Probe for a timeout binary — don't assume the platform: whether one exists is a fact about the machine you are on, and `command -v timeout || command -v gtimeout` answers it (the `||` form is the one POSIX specifies for `command -v`; a multi-argument form is not). `timeout` is GNU coreutils and macOS ships none by default, but Homebrew coreutils installs the identical tool as `gtimeout` — so a Linux container, a CI image, or a Mac with coreutils already has one, and running unbounded there is a choice you made without looking. **Only where the probe prints nothing** do you run the command bare, and then stay under the tool watchdog — name the knob `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` when you reason about it: that is the same bound as the one in ⛔ Git safety → "When you run a long command yourself", which says keep the wrapper `timeout` below `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS`. Read the two rules as one rule, not two unrelated timeouts, and keep your wrapper below that number — a bound larger than the watchdog is not a bound. Where the brief names a project verify command, run exactly that command (it is the one the gate will run); the rule above governs everything *else* you might otherwise run.
+Probe for a timeout binary — don't assume the platform: whether one exists is a fact about the machine you are on, and `command -v timeout || command -v gtimeout` answers it (the `||` form is the one POSIX specifies for `command -v`; a multi-argument form is not). `timeout` is GNU coreutils and macOS ships none by default, but Homebrew coreutils installs the identical tool as `gtimeout` — so a Linux container, a CI image, or a Mac with coreutils already has one, and running unbounded there is a choice you made without looking. **Only where the probe prints nothing** do you run the command bare, and then it runs under the call budget — name the knob `PI_ENSEMBLE_CALL_BUDGET_MS` when you reason about it: that is the same bound as the one in ⛔ Git safety → "When you run a long command yourself". Read the two rules as one rule, not two unrelated timeouts: a command past its budget with no new output for 10 minutes is killed, and a second stuck run of the same command ends your session. Where the brief names a project verify command, run exactly that command (it is the one the gate will run); the rule above governs everything *else* you might otherwise run.
 
 ### Size caps: split files, never shorten comments
 
@@ -69,8 +69,11 @@ refuses these shapes outright — but do not emit them:
   credentials, report it — do not retry in a loop.
 
 When you run a long command yourself (the full gate, a CI watch), keep it
-under the watchdog: either split it into steps that each print output, or
-keep the wrapper `timeout` below `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS`.
+under the call budget: wrap it in `timeout N` (its budget is then N + 2
+minutes), or split it into steps that each print output. A bare command gets
+`PI_ENSEMBLE_CALL_BUDGET_MS` (20 min, or 3 × its longest earlier run); past
+that with no new output for 10 minutes, pi-rukas kills the command — not you
+— and tells you. A second stuck run of the same command ends your session.
 
 ## Before Starting Work
 

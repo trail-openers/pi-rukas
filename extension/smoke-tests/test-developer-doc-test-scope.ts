@@ -23,7 +23,7 @@ import { suiteTimeoutSeconds } from "../src/work-driver-verify-fast.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { assertSuiteBoundDerivation } from "./lib/developer-test-scope.ts";
 
-const KNOB = "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS";
+const KNOB = "PI_ENSEMBLE_CALL_BUDGET_MS";
 
 /**
  * Run `body` with the watchdog knob pinned to `ms` (deleted when undefined).
@@ -31,7 +31,7 @@ const KNOB = "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS";
  * save/restore dance — same semantics, one implementation, no fork to drift.
  *
  * The knob MUST be pinned for every assertion that compares the doc against a
- * derived number: an ambient `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` in the
+ * derived number: an ambient `PI_ENSEMBLE_CALL_BUDGET_MS` in the
  * operator's shell otherwise moves `suiteTimeoutSeconds()` out from under the
  * literal 1200 hardcoded in `developer.md`, and this file fails on a machine
  * -wide env var nobody changed.
@@ -119,12 +119,12 @@ await withWatchdog(undefined, async () => {
     "#1156 fallback: with no `timeout` the command runs bare",
   );
   assert(
-    /stay under the tool watchdog|under the tool watchdog/i.test(src),
-    "#1156 fallback: the bare-run fallback is bounded by the tool watchdog, not left unbounded",
+    /runs under the call budget/i.test(src),
+    "#1156 fallback: the bare-run fallback is bounded by the call budget (#1465), not left unbounded",
   );
   assert(
-    /PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS/.test(src),
-    "#1156 fallback: the watchdog bound is named by its knob, so the two timeout rules resolve to one",
+    /PI_ENSEMBLE_CALL_BUDGET_MS/.test(src) && !/PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS/.test(src),
+    "#1156 fallback: the bound is named by its knob (the call budget, not the removed tool-inactivity knob), so the two timeout rules resolve to one",
   );
   // The doctrine number is pinned here rather than left as prose a reader
   // trusts. `developer.md` hardcodes the literal; this is the only thing

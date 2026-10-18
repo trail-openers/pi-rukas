@@ -149,8 +149,9 @@ export interface DispatchResult {
   // #1567 child-supervision policy — "child-bound" = the per-child time
   // limit expired (wrap-up steer, then kill at bound + 10 min);
   // "no-progress" = the driver ended a child frozen across slow levels;
-  // "stuck-tool" = a second call-kill on the same command. Reserved here
-  // (P1); the pieces that enforce each policy emit them.
+  // "stuck-tool" = a second call-kill on the same command (spawn-call-budget.ts,
+  // #1465). "tool-inactivity" is no longer produced — the call budget replaced
+  // it — and stays readable for records written before.
   killCause?:
     | "timeout"
     | "inactivity"
@@ -319,6 +320,8 @@ export type DispatchFailureCause =
   /** #754 — the plan step's own wall-clock bound expired; a budget kill, not a provider fault — the plan step's corrective re-dispatch is the recovery, not a wholesale retry. */
   | "self-killed:plan-timeout"
   | "self-killed:child-bound"
+  /** #1465 — the call budget ended the child: a second stuck run of one command, or a stuck call it could not kill alone. */
+  | "self-killed:stuck-tool"
   | "crashed"
   | "crashed-unknown";
 

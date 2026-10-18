@@ -73,6 +73,8 @@ export function commandFingerprint(toolName: string, args: unknown): string {
 interface OpenCall extends InFlightCall {
   /** The last update payload seen, to tell new bytes from a repeat. */
   lastPayload: string | undefined;
+  /** #1465 — the call budget killed it; its duration is not a run of the command. */
+  killed?: boolean;
 }
 
 export class ChildProgress {
@@ -108,6 +110,12 @@ export class ChildProgress {
     return this.longest;
   }
 
+  /** #1465 — the call budget killed this call: do not record its duration as a run. */
+  markKilled(toolCallId: string): void {
+    const call = this.calls.get(toolCallId);
+    if (call) call.killed = true;
+  }
+
   /** The driver saw HEAD move or the dirty tree change. */
   recordWorkspaceChange(): void {
     this.mark();
@@ -124,7 +132,13 @@ export class ChildProgress {
     const { opens, closes } = spanEdges(event);
     for (const o of opens) {
       if (o.name === REPORT_FINDING_TOOL) this.mark();
-      if (this.calls.has(o.id)) continue;
+      const open = this.calls.get(o.id);
+      if (open) {
+        // #1465 — the call opened at its assistant message_end; it STARTS when
+        // Pi executes it, which can be later (a sequential batch, a hook).
+        if (event.type === "tool_execution_start") open.startedAt = open.lastUpdateAt = t;
+        continue;
+      }
       const fingerprint = commandFingerprint(o.name, o.args);
       this.calls.set(o.id, {
         toolCallId: o.id,
@@ -142,6 +156,7 @@ export class ChildProgress {
       const call = this.calls.get(id);
       if (!call) continue;
       this.calls.delete(id);
+      if (call.killed) continue;
       const ms = t - call.startedAt;
       if (ms > (this.longest.get(call.fingerprint) ?? -1)) this.longest.set(call.fingerprint, ms);
     }

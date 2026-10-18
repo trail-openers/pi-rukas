@@ -47,19 +47,19 @@ export function overrideEnvForKillCause(
     case "inactivity":
     case "abort":
       return "PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS";
-    // #951 — the in-flight-tool silence kill: its bound is a SEPARATE knob
-    // (PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS), so the operator is pointed at
-    // the value that actually killed the child.
-    case "tool-inactivity":
-      return "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS";
     // #1567 — the child-supervision kills are driver caps, so the knob that
     // turns them off is the caps master switch. The piece that emits each
     // cause adds its own bound knob here when it introduces one.
     case "child-bound":
       return "PI_ENSEMBLE_DEVELOP_BOUND_MS / PI_ENSEMBLE_EXPLORE_BOUND_MS";
     case "no-progress":
-    case "stuck-tool":
       return "PI_ENSEMBLE_DISPATCH_CAPS";
+    // #1465 — the call budget replaced #951's tool-inactivity bound; a record
+    // written before still carries "tool-inactivity", and the knob that now
+    // owns that window is the call budget's.
+    case "stuck-tool":
+    case "tool-inactivity":
+      return "PI_ENSEMBLE_CALL_BUDGET_MS / PI_ENSEMBLE_CALL_STALE_MS";
   }
 }
 
