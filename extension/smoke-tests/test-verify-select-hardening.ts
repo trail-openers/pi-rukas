@@ -9,28 +9,29 @@
  *   - the attribution compares failure signatures before it excuses a baseline-red
  *     test, shares one wall clock across its runs and probes, reruns named failures
  *     by ID, and blocks on a name it cannot place;
- *   - the disclosed set moves only after a PR-body write succeeds.
+ *   - the PR body's attribution block is replaced, not appended to: a repeated
+ *     write converges, a null body is written, and a body the writer cannot read
+ *     as text (or cannot read at all) is never edited.
  *
  * The attribution stub is the one the exec suite uses: verify-loop's out-of-band
  * report and its `FAILED:` stream, with real git for the base probe.
  */
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { discloseInPrBody } from "../src/work-driver-ci-verify.ts";
+import type { CycleContext } from "../src/work-driver-context.ts";
 import { createVerifyChannel } from "../src/work-driver-integrate-verify-flake.ts";
 import { ALWAYS_RUN } from "../src/work-driver-verify-always-run.ts";
-import {
-  foldVerifyAttribution,
-  markDisclosed,
-  snapshotDisclosed,
-  uncarriedNames,
-} from "../src/work-driver-verify-events.ts";
+import { foldVerifyAttribution } from "../src/work-driver-verify-events.ts";
 import {
   type SelectedVerifyRecord,
   withSelectedAttribution,
 } from "../src/work-driver-verify-select-exec.ts";
+import { ATTRIBUTION_BEGIN } from "../src/work-driver-verify-select-render.ts";
+import type { ExecFn } from "../src/worktree.ts";
 import {
   edgesOf,
   selectVerifyTests,
@@ -369,33 +370,107 @@ async function attempt(
   );
 }
 
-// --- disclosure: the set moves only after a PR-body write ----------------------
+// --- disclosure: one replaceable block, written only from a readable PR body ----
 {
   const T2 = "smoke-tests/test-flaky-a.ts";
   const T3 = "smoke-tests/test-flaky-b.ts";
-  const committed = foldVerifyAttribution(initialState(9), { flaky: [T2], baselineRed: [] });
-  const pinned = snapshotDisclosed(committed);
-  const later = { flaky: [T2, T3], baselineRed: [] };
-  assert(
-    uncarriedNames(pinned, later).flaky.join() === T3,
-    "the commit-pr body carried what was recorded before ci; only the new name is fresh",
+  const state = foldVerifyAttribution(
+    { ...initialState(9), pipelineState: { ...initialState(9).pipelineState, prNumber: 77 } },
+    { flaky: [T2], baselineRed: [] },
   );
-  // The ci tier's PR-body write fails: the name is folded for the handoff, not disclosed.
-  const failed = foldVerifyAttribution(pinned, { flaky: [T3], baselineRed: [] });
-  assert(
-    uncarriedNames(failed, later).flaky.join() === T3,
-    "a failed disclosure leaves its names fresh for the next ci attempt",
+  // discloseInPrBody reads only the repo root and the issue number.
+  const ctx = { repoRoot: root, issue: 9 } as unknown as CycleContext;
+  const ghWith = (view: () => string, edits: string[]): ExecFn =>
+    (async (cmd: string, opts?: { argv?: string[] }) => {
+      const argv = opts?.argv ?? [];
+      if (cmd !== "gh") throw new Error(`unexpected command ${cmd}`);
+      if (argv[1] === "view") return { stdout: view(), stderr: "" };
+      if (argv[1] === "edit") {
+        edits.push(readFileSync(argv[argv.indexOf("--body-file") + 1] ?? "", "utf8"));
+        return { stdout: "", stderr: "" };
+      }
+      throw new Error(`unexpected gh ${argv.join(" ")}`);
+    }) as unknown as ExecFn;
+  const bodyOf = (body: string | null) => JSON.stringify({ body });
+
+  // First write: the intro is kept and the block is appended once.
+  const edits1: string[] = [];
+  const first = await discloseInPrBody(
+    ctx,
+    state,
+    ghWith(() => bodyOf("Intro text"), edits1),
   );
-  const written = markDisclosed(failed, { flaky: [T3], baselineRed: [] });
+  assert(first.ok && edits1.length === 1, "a readable body with no block is written once");
+  const written1 = edits1[0] ?? "";
   assert(
-    uncarriedNames(written, later).flaky.length === 0,
-    "after a successful PR-body write the names are disclosed",
+    written1.startsWith("Intro text") &&
+      written1.split(ATTRIBUTION_BEGIN).length === 2 &&
+      written1.includes(T2),
+    "the written body keeps the intro and carries exactly one attribution block naming the flaky test",
+  );
+  // A repeated write of the same record is a no-op: the block converges.
+  const edits2: string[] = [];
+  const again = await discloseInPrBody(
+    ctx,
+    state,
+    ghWith(() => bodyOf(written1), edits2),
+  );
+  assert(again.ok && edits2.length === 0, "writing the same record again changes nothing");
+  // A grown record replaces the block rather than appending a second one.
+  const grown = foldVerifyAttribution(state, { flaky: [T3], baselineRed: [] });
+  const edits3: string[] = [];
+  await discloseInPrBody(
+    ctx,
+    grown,
+    ghWith(() => bodyOf(written1), edits3),
+  );
+  const written3 = edits3[0] ?? "";
+  assert(
+    written3.split(ATTRIBUTION_BEGIN).length === 2 &&
+      written3.includes(T3) &&
+      written3.includes(T2),
+    "a later write replaces the block with the whole record, not a second block",
+  );
+  // A null body is an empty PR body, so it is written rather than refused.
+  const edits4: string[] = [];
+  const nullBody = await discloseInPrBody(
+    ctx,
+    state,
+    ghWith(() => bodyOf(null), edits4),
+  );
+  assert(nullBody.ok && edits4.length === 1, "a null PR body is treated as empty and written");
+  // A body that is not text is refused, and nothing is edited.
+  const edits5: string[] = [];
+  const notText = await discloseInPrBody(
+    ctx,
+    state,
+    ghWith(() => bodyOf(7 as never), edits5),
   );
   assert(
-    foldVerifyAttribution(written, { flaky: [T2], baselineRed: [] }).pipelineState.verifyAttribution
-      ?.disclosed?.flaky.length === 2,
-    "folding a later record keeps the disclosed set",
+    !notText.ok && edits5.length === 0 && notText.reason.includes("could not be read as text"),
+    "a PR body that is not a string is refused with the reason named, and never edited",
   );
+  // A failed read is named and nothing is edited.
+  const edits6: string[] = [];
+  const unread = await discloseInPrBody(
+    ctx,
+    state,
+    ghWith(() => {
+      throw new Error("gh: network down");
+    }, edits6),
+  );
+  assert(
+    !unread.ok && edits6.length === 0 && unread.reason.includes("network down"),
+    "a PR body read that throws is named and the body is left alone",
+  );
+  // Half-marked markers are a body the writer does not understand: refused, not patched.
+  const edits7: string[] = [];
+  const halfMarked = await discloseInPrBody(
+    ctx,
+    state,
+    ghWith(() => bodyOf(`x\n${ATTRIBUTION_BEGIN}\nno end`), edits7),
+  );
+  assert(!halfMarked.ok && edits7.length === 0, "unpaired attribution markers are refused");
 }
 rmSync(attrRoot, { recursive: true, force: true });
 

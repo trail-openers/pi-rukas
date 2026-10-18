@@ -32,6 +32,13 @@
  * fail-closed: the only shapes that excuse a test are ones whose evidence is
  * complete and anchored (see `compareNames` for the anchoring, `summaryCount`
  * for what a summary is allowed to claim).
+ *
+ * "Pre-existing" has a second definition in the selected verify (#1647,
+ * work-driver-verify-select-verdict). That one needs two agreeing base runs
+ * and the same failure line on both sides, because it runs on loaded develop
+ * hosts where one red run is often a timing failure. This seam runs once at a
+ * quiet point and keeps the one-run rule. Unifying them is out of scope for
+ * #1647; the difference is deliberate, not drift.
  */
 
 import { trace } from "./trace.ts";
@@ -49,6 +56,7 @@ import {
   isRegularReportFile,
   verifyReportEnv,
 } from "./work-driver-verify-report-path.ts";
+import { SHA_RE } from "./work-driver-verify-shared.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /** The three-way per-test verdict over the change run's failing test names. */
@@ -181,9 +189,6 @@ export interface BaselineProbeOutcome {
    */
   probeOutput?: string;
 }
-
-/** A git commit is 40 hex chars; nothing else may reach `git worktree add`. */
-const SHA_RE = /^[0-9a-f]{40}$/;
 
 /**
  * #1404 — run the base probe and diff the failing-test-name sets.

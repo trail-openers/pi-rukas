@@ -206,9 +206,10 @@ function buildGraph(extensionDir: string): Graph | { unreadable: string } {
 /** Every node that imports `start`, transitively, plus `start`. */
 function importersClosure(graph: Graph, start: string): Set<string> {
   const reached = new Set<string>([start]);
+  // A for-of over an array sees the entries pushed during the walk, so the
+  // queue needs no shift and no cast.
   const queue = [start];
-  while (queue.length > 0) {
-    const node = queue.shift() as string;
+  for (const node of queue) {
     for (const importer of graph.importers.get(node) ?? []) {
       if (reached.has(importer)) continue;
       reached.add(importer);
