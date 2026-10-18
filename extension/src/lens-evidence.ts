@@ -28,7 +28,8 @@
  *      wrong commit, so the filesystem is not an option.
  */
 
-import { gitCatFileSaysAbsent } from "./git-range.ts";
+import { neutraliseEvidence } from "./comment-evidence.ts";
+import { DEFAULT_GIT_TIMEOUT_MS, gitCatFileSaysAbsent } from "./git-range.ts";
 
 import {
   type PathExistenceLookup,
@@ -63,13 +64,6 @@ export function claimScanEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_CLAIM_SCAN;
   return v !== "0" && v !== "false";
 }
-
-/**
- * Bound on one `git cat-file -e` probe. Same bound as every other driver git
- * read (`DEFAULT_GIT_TIMEOUT_MS` via `execGit`): a wedged object store must
- * cost the lens step its claim scan, not the lens step.
- */
-const PROBE_TIMEOUT_MS = 10 * 60_000;
 
 export function evidenceSupplyEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_LENS_EVIDENCE;
@@ -175,7 +169,11 @@ export async function runClaimScan(
     severity: "MEDIUM" as const,
     path: c.file,
     line: c.line,
-    title: `Unsourced ${c.kind}: ${c.token}`,
+    // The token is prose a human wrote, so the title goes through the same
+    // neutraliser as every sibling finding line (`lens-review-render.ts`,
+    // `lens-residuals.ts`): a token shaped like `VERDICT: APPROVED` or a fence
+    // would otherwise read as this report's own verdict.
+    title: neutraliseEvidence(`Unsourced ${c.kind}: ${c.token}`),
     description: explainUngrounded(c),
     suggestion: `Replace \`${c.token}\` with a value the repository actually contains, cite where it comes from, or drop the claim.`,
   }));
@@ -194,7 +192,7 @@ export async function runClaimScan(
 const SAFE_PATH = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
 
 /** Whether a path may be interpolated into a `git cat-file` tree-ish. */
-function isSafePath(value: string): boolean {
+function isSafePath(value: string): value is string {
   if (!SAFE_PATH.test(value) || value.startsWith("/")) return false;
   return !value.split("/").some((seg) => seg === "." || seg === "..");
 }
@@ -242,7 +240,7 @@ function pathExistsAtBranch(
     const fresh = execFn("git", {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
-      timeout: PROBE_TIMEOUT_MS,
+      timeout: DEFAULT_GIT_TIMEOUT_MS,
       argv: ["cat-file", "-e", `origin/${branchName}:${resolved}`],
     }).then(
       () => true,
@@ -271,64 +269,19 @@ function pathExistsAtBranch(
     if (candidates.length === 0) {
       throw new Error(`could not judge path \`${token}\` — not a repo path`);
     }
-    // The two resolutions are an OR, so they run together — but they do not
-    // both AWAIT. The short-circuit that `anySettledTrue` enforces is the one
-    // that makes parallelism safe here: a resolution git could not answer must
-    // not turn "absent" into "could not tell" when its sibling already answered
-    // absent, because that would silently drop a finding the branch supports.
-    const outcomes = await anySettledTrue(candidates.map(probe));
-    if (outcomes.some((o) => o === true)) return true;
-    if (outcomes.some((o) => o === undefined)) {
-      throw new Error(`could not read the branch for path \`${token}\``);
-    }
-    return false;
+    // The two resolutions are an OR, so they run together. `Promise.allSettled`
+    // is the combinator: it awaits every probe and never rejects, so a sibling
+    // that could not answer can neither strand an answer the branch already
+    // gave nor leave an unawaited rejection behind. The precedence below is the
+    // load-bearing part: `false` is a fact the scan reports and a rejection is a
+    // fact it swallows, so once one resolution has said "absent", a sibling that
+    // could not answer must not upgrade the answer to "could not tell".
+    const outcomes = await Promise.allSettled(candidates.map(probe));
+    if (outcomes.some((o) => o.status === "fulfilled" && o.value === true)) return true;
+    if (outcomes.some((o) => o.status === "fulfilled" && o.value === false)) return false;
+    // Not one probe answered: the branch could not be read, which is not "absent".
+    throw new Error(`could not read the branch for path \`${token}\``);
   };
-}
-
-/**
- * Run `suits` concurrently and return their outcomes, as soon as one resolves
- * `true`.
- *
- * Each element is `true` (seen), `false` (settled absent) or `undefined`
- * (rejected, or settled after an early `true` and never observed). An early
- * `true` does NOT cancel the siblings — an unawaited rejection would surface as
- * an unhandled rejection — they are merely no longer waited for.
- *
- * The short-circuit is load-bearing for the caller's semantics, not a latency
- * nicety: `false` is a fact the scan reports and a rejection is a fact it
- * swallows, so once one resolution has said "absent", a sibling that could not
- * answer must not upgrade the answer to "could not tell".
- */
-async function anySettledTrue(suits: Array<Promise<boolean>>): Promise<Array<boolean | undefined>> {
-  const settled: Array<boolean | undefined> = suits.map(() => undefined);
-  return new Promise<Array<boolean | undefined>>((resolve) => {
-    let pending = suits.length;
-    let done = false;
-    const finish = () => {
-      if (done || pending > 0) return;
-      done = true;
-      resolve(settled);
-    };
-    suits.forEach((suit, i) => {
-      suit.then(
-        (v) => {
-          settled[i] = v;
-          if (v && !done) {
-            done = true;
-            resolve(settled);
-            return;
-          }
-          pending -= 1;
-          finish();
-        },
-        () => {
-          settled[i] = undefined;
-          pending -= 1;
-          finish();
-        },
-      );
-    });
-  });
 }
 
 /**

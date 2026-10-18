@@ -38,6 +38,30 @@ assert(
   gitCatFileSaysAbsent(at({ code: 128, stderr: ABSENT_WORDS })) === true,
   "cat-file: exit 128 + git's 'does not exist in' wording is absent — the fact a path finding rests on",
 );
+// The unresolvable-REV trap (#1002 round 2): `not a valid object name` is git's
+// answer when the REF half of `<ref>:<path>` is unresolvable — a typo'd or
+// unfetched branch, nothing about the path. Reading it as absent turns "nobody
+// resolved the ref" into "the branch does not have this file", which the claim
+// scan reports as an Unsourced path. It belongs to `gitSaysAbsent`'s wording
+// list, where the question IS the ref.
+assert(
+  gitCatFileSaysAbsent(
+    at({ code: 128, stderr: "fatal: not a valid object name origin/feature/x:docs/x.md\n" }),
+  ) === false,
+  "cat-file: exit 128 + 'not a valid object name' is an unresolvable REV, NOT a missing path — could-not-tell",
+);
+assert(
+  // Not vacuous: pairing the same sentence with git's real path wording keeps
+  // the finding a finding, so the assertion above fails on the wording set and
+  // not on the code guard.
+  gitCatFileSaysAbsent(
+    at({
+      code: 128,
+      stderr: "fatal: not a valid object name foo\nfatal: path 'x' does not exist in 'y'\n",
+    }),
+  ) === true,
+  "cat-file: 'not a valid object name' beside git's 'does not exist in' is still absent — the guard is the wording set, not the phrase",
+);
 assert(
   gitCatFileSaysAbsent(at({ code: 1, stderr: "fatal: does not exist\n" })) === true,
   "cat-file: exit 1 with the same wording is absent too",
