@@ -18,6 +18,7 @@
  * Lives in `lib/` so the suite glob does not pick it up as a test of its own.
  */
 import { mock } from "bun:test";
+import type { AdversarialLedgerOutcome } from "../../src/adversarial-ledger.ts";
 
 const ARM = process.env.PI_1449_ARM || "undefined";
 
@@ -34,12 +35,28 @@ const writers: Record<string, Writer> = {
   // never throws — `mock.module` treats a throwing mock factory as a mock failure
   // ("Expected a function") and falls back to the ORIGINAL writer, which would
   // leave this arm green while exercising nothing.
-  rejectNonError: () => REJECTED_WITH_STRING,
+  //
+  // The REJECTING promise is a fresh one per call, and it is IMMEDIATELY caught.
+  // Both halves matter. Fresh, because a process-wide `Promise<never>` handed out
+  // by reference types awkwardly against the `Writer` record and is a promise a
+  // caller might await twice. Caught, because bun treats an unhandled rejection
+  // as a fatal error and reports it on the child's stderr — and the rejecting
+  // promise is what `makeLedgerWrite` chains, so a bare `Promise.reject(…)` left
+  // the chain's own `.catch` attached too late: the arm's JSON line printed, the
+  // reporter callback never ran, and `reason` stayed undefined. The sibling
+  // promise is swallowed where it is created; the one the call site tolerates is
+  // swallowed by the call site (`Promise.resolve(ledgerWrite).then(…).catch(…)`).
+  rejectNonError: () => {
+    const rejecting = Promise.reject("string-boom");
+    rejecting.catch(() => undefined);
+    return rejecting;
+  },
 };
 
-const REJECTED_WITH_STRING: Promise<never> = Promise.reject("string-boom");
-// The parent judges the outcome; an unhandled rejection would kill the child.
-REJECTED_WITH_STRING.catch(() => undefined);
+// The rejecting arm builds a fresh promise per call (see the note on
+// `rejectNonError` above): a single process-wide `Promise<never>` handed out by
+// reference is typed awkwardly against the `Writer` record and is a promise a
+// caller could await twice, neither of which the mock needs.
 
 mock.module("../../src/adversarial-ledger.ts", () => ({
   writeAdversarialLedgerEntry: writers[ARM],
@@ -71,6 +88,13 @@ let threw = false;
 let text = "REVIEW DONE";
 let reason: string | undefined;
 let rejected = false;
+// Did the reporter run at all? Distinct from `reason`: the rejection carries a
+// bare string, so the normalised outcome is `undefined` and `reason` is
+// legitimately undefined even when delivery worked. Without this the parent
+// could not tell "the reporter never ran" (the bug) from "the reporter ran and
+// correctly had nothing to say" (the contract) — and asserted the former while
+// the latter was true.
+let delivered = false;
 try {
   const write = makeLedgerWrite({
     state: { captured: { binding: {}, headRef: undefined } },
@@ -94,8 +118,14 @@ try {
     // `makeLedgerWrite`'s options does not accept cleanly.
     onLedgerOutcome:
       ARM === "rejectNonError"
-        ? (o: { reason?: string } | undefined) => {
-            reason = o?.reason;
+        ? (o: AdversarialLedgerOutcome | undefined) => {
+            delivered = true;
+            // `reason` only exists on the `recorded: false` arm, so it is read
+            // through the discriminant rather than by widening the parameter
+            // type to a shape the writer never produces (which is what made
+            // TS2322 fire: a `{ reason?: string }` parameter is not a valid
+            // substitute for the declared callback parameter).
+            reason = o && o.recorded === false ? o.reason : undefined;
           }
         : undefined,
   });
@@ -107,6 +137,9 @@ try {
 // The delivery is fire-and-forget; give it a tick before judging the text.
 await new Promise((r) => setTimeout(r, 60));
 // A rejection that escaped the call site's tolerance shows up here: the callback
-// above never runs, so `reason` stays undefined even though the writer rejected.
-if (ARM === "rejectNonError" && reason === undefined) rejected = true;
-process.stdout.write(JSON.stringify({ arm: ARM, threw, text, probe, reason, rejected }));
+// above never runs, so `delivered` stays false even though the writer rejected.
+// #1449 round 2 — `rejected` is also set on the throw path just above, so the
+// parent distinguishes "the loop threw" from "the report never arrived"; both
+// are the failure this arm forbids.
+if (ARM === "rejectNonError" && !delivered) rejected = true;
+process.stdout.write(JSON.stringify({ arm: ARM, threw, text, probe, reason, rejected, delivered }));

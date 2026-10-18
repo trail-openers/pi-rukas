@@ -55,9 +55,9 @@ import {
   cloneLedgerPathFor,
   identityBase,
   ledgerPathFor,
+  ledgerWriteLandedAt,
   remoteName,
   sameResolvedPath,
-  sanitiseLedgerProvenancePath,
 } from "./review-ledger-path.ts";
 import { latestEntry, readLedgerFile, validEntries } from "./review-ledger-read.ts";
 import { bumpLensRound } from "./review-ledger-round.ts";
@@ -116,12 +116,21 @@ export interface LedgerEntry {
   carriedFrom?: string;
   /** #1176 round 2 \u2014 carried entries only: the trust assumption the row states (mainline changes merged in were not re-reviewed by this branch). */
   carryNote?: string;
-  /** #1449 — the path this row's write resolved to, recorded ONLY when it was
-   * NOT this clone's own ledger file (an inherited `PI_ENSEMBLE_REVIEW_LEDGER_FILE`
-   * redirected it). Presence is the whole signal: a row carrying it is a row
-   * the #912 guard's normal read will never open, and the guard's refusal names
-   * it so an operator can tell "never reviewed" from "reviewed, write
-   * misdirected". A row written to the clone's own ledger never carries it. */
+  /** #1449 — the path this row's write resolved to. #1449 round 2 changed the
+   * contract: the stamp is now written on EVERY row (by `appendLedgerEntry`, the
+   * one function that holds the resolved path), so a new writer cannot forget it
+   * and an ordinary row is evidence of where it landed rather than of nothing.
+   *
+   * **Presence is therefore NOT the misdirection signal** — the misdirection is
+   * DERIVED, by comparing the stamp against the clone's own ledger path
+   * (`cloneLedgerPathFor`, the override-blind answer) with `sameResolvedPath`.
+   * A row stamped with the clone's own path is an ordinary row. The only
+   * consumer, `misdirectedWriteOf` (merge-guard-provenance.ts), is a
+   * DIAGNOSTIC: it changes the refusal's TEXT, never a verdict — no path in the
+   * guard reads this field to decide whether a merge happens, and none may
+   * (see that module's failure contract). Rendered consumers sanitise it
+   * (`sanitiseLedgerProvenancePath`) because the value names a file the
+   * environment chose. */
   writtenTo?: string;
   /** #1360 — adversarial entries written from the `adversarial_loop` TOOL only:
    * the base SHA the review resolved, and the head SHA it reviewed. Stored so
@@ -365,19 +374,28 @@ export async function appendLedgerEntry(
     // Sanitised on the way in because the value is later printed into a refusal
     // string. An existing stamp is OVERWRITTEN, not honoured: a row carried from
     // another file must report where it landed HERE.
-    const stamped: LedgerEntry = {
-      ...entry,
-      writtenTo: sanitiseLedgerProvenancePath(file) ?? file,
-    };
+    // The stamp is the RAW resolved path, not the sanitised one: sanitising is a
+    // RENDER-time operation (the guard prints the value into a refusal) and
+    // `sanitiseLedgerProvenancePath` caps at 240 chars, so a long real path — a
+    // deep worktree, a long temp prefix — clamped to a PREFIX of the clone path
+    // and `sameResolvedPath` then read an ordinary write as a redirect on every
+    // single review. Compare raw, sanitise only where it is rendered.
+    const stamped: LedgerEntry = { ...entry, writtenTo: file };
     // #1449 round 2 — `landedAtPath` means "somewhere other than where the guard
     // looks", so it is set only when the resolved path differs from the clone's own
-    // ledger (compared resolved, and realpath'd when that works — a symlinked or
+    // ledger (compared RAW and realpath'd where that works — a symlinked or
     // relative override is one file in two spellings). The ROW still carries the
     // full stamp either way: the guard's own comparison needs it.
-    const clone = await cloneLedgerPathFor(execFn, cwd);
+    //
+    // `ledgerWriteLandedAt` owns the short-circuit that keeps the extra
+    // `git rev-parse` off the 99% path, and the reasoning for why skipping it is
+    // safe (no override ⇒ same resolver, same fileName ⇒ equal by construction;
+    // no parent directory ⇒ nothing that can alias). Kept in the path module so
+    // the predicate that decides "misdirected" has one definition, next to the
+    // resolver whose output it compares.
     if (stampedOut) {
       stampedOut.current = stamped;
-      stampedOut.landedAtPath = sameResolvedPath(stamped.writtenTo, clone) ? undefined : file;
+      stampedOut.landedAtPath = await ledgerWriteLandedAt(execFn, cwd, file);
     }
     const dir = path.dirname(file);
     if (!existsSync(dir)) {

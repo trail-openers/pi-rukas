@@ -56,10 +56,18 @@ import { BRANCH, forgeExec, ledgerFile, setupRepo } from "./lib/adversarial-ledg
 // clone's shared ledger — the file other PRs' merges depend on.
 // ---------------------------------------------------------------------------
 const sentinelDir = mkdtempSync(path.join(os.tmpdir(), "pi-1449-sentinel-"));
-process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = path.join(sentinelDir, "never-written.json");
+// Named, because `withoutOverride` below restores it and a second `path.join`
+// at that call site is a second definition of the same value — the reason the
+// restore read an identifier that did not exist.
+const sentinelFile = path.join(sentinelDir, "never-written.json");
+process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = sentinelFile;
 
 let passed = 0;
 let failed = 0;
+// Two arguments, always. The third argument this helper used to accept was
+// silently dropped — a call site that passed one (the every-row invariant
+// below passed a stale second message) believed it was asserting two things
+// while asserting one, which is the failure mode a second parameter invites.
 function assert(cond: unknown, msg: string) {
   try {
     if (!cond) throw new Error("falsy");
@@ -72,6 +80,11 @@ function assert(cond: unknown, msg: string) {
 }
 
 const previousOverride = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+// The sentinel is the ONLY value this process sets (see the module block
+// above), and it is the value the finally block must not restore — restoring
+// it would point a later test file in the same process at a directory this one
+// is about to delete. `previousOverride` is therefore captured BEFORE it, so
+// "what the importing process had" means exactly that.
 const fixture = setupRepo();
 const repo = fixture.dir;
 
@@ -114,8 +127,7 @@ async function withoutOverride<T>(body: () => Promise<T>): Promise<T> {
     return await body();
   } finally {
     if (saved === undefined) process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = sentinelFile;
-    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = saved;
-  }
+    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = saved;  }
 }
 
 try {
@@ -127,9 +139,16 @@ try {
   const clean = await withoutOverride(() =>
     writeLensLedgerEntry("APPROVED", "MEDIUM", repo, BRANCH, false),
   );
-  assert(clean.recorded === true, "baseline: the lens write records on the clone's ledger");
   assert(
-    clean.landedAtPath === undefined,
+    clean.recorded === true,
+    "baseline: the lens write records on the clone's ledger",
+  );
+  // `landedAtPath` lives on the `recorded: true` arm only, so the discriminant
+  // is re-tested here rather than narrowed by a cast: `{ recorded: true }` is
+  // already known, and the question this arm asks is whether the optional field
+  // is absent.
+  assert(
+    clean.recorded === true && clean.landedAtPath === undefined,
     "baseline: with no override set the outcome carries no misdirection path",
   );
   const cleanRow = existsSync(cloneLedger) ? readLedgerFile(cloneLedger).entries.at(-1) : undefined;
@@ -253,8 +272,12 @@ try {
   // "No override set" is what the arm is testing, so the env is genuinely
   // cleared for the duration — but the sentinel outside the window is what keeps
   // a cleared env from ever being what a writer sees if this arm throws.
-  let again: Awaited<ReturnType<typeof writeAdversarialLedgerEntry>>;
-  let homeRows: ReturnType<typeof readLedgerFile>["entries"];
+  // `| undefined` on the declarations (not `!:`) so the reads below go through
+  // the optional chain: an arm that threw inside `withoutOverride` would leave
+  // them unset, and an undefined here fails an assertion rather than throwing
+  // `undefined is not an object` out of the fixture.
+  let again: Awaited<ReturnType<typeof writeAdversarialLedgerEntry>> | undefined;
+  let homeRows: ReturnType<typeof readLedgerFile>["entries"] | undefined;
   const homePath = ledgerFile(repo);
   await withoutOverride(async () => {
     again = await writeAdversarialLedgerEntry(APPROVED_OK, {
@@ -266,21 +289,21 @@ try {
     homeRows = existsSync(homePath) ? readLedgerFile(homePath).entries : [];
   });
   assert(
-    again.recorded === true,
+    again?.recorded === true,
     "#1449 the adversarial write records normally once the env is clean",
   );
   assert(
-    again.recorded && again.landedAtPath === undefined,
+    again?.recorded === true && again.landedAtPath === undefined,
     "#1449 with no override set, the normal write reports no misdirection",
   );
   // The clone's ledger is read through the harness's own path resolution, and
   // a missing file there is reported as "no row" rather than throwing — the
   // row's presence is what the arm asserts, and a writer that skipped silently
   // has to fail an assertion, not crash the fixture.
-  const home = homeRows.find((e) => e.kind === "adversarial");
+  const home = homeRows?.find((e) => e.kind === "adversarial");
   assert(
     home !== undefined,
-    `#1449 the clean adversarial row is on the clone's ledger (${homeRows.length} row(s) there)`,
+    `#1449 the clean adversarial row is on the clone's ledger (${homeRows?.length ?? "unset"} row(s) there)`,
   );
   assert(
     home?.writtenTo === cloneLedger,
@@ -294,9 +317,8 @@ try {
   // A row on the clone's ledger stamped with anything else would mean the writer
   // resolved one path and wrote another.
   assert(
-    homeRows.every((e) => e.writtenTo === cloneLedger),
+    (homeRows ?? []).every((e) => e.writtenTo === cloneLedger),
     "#1449 every row on the clone's ledger is stamped with the clone's own path — the stamp always names the file actually written",
-    "#1449 no row on the clone's ledger carries a writtenTo stamp",
   );
 
   // ---- 6. the refusal distinguishes "never reviewed" from "redirected" ---

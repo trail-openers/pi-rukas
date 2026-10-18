@@ -30,10 +30,11 @@
  * here, direct or type-only.
  */
 
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { resolveMainline } from "./mainline.ts";
 import type { LedgerExecFn } from "./review-ledger.ts";
+import { LOCAL_GIT_TIMEOUT_MS } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
 
 /**
@@ -112,7 +113,15 @@ export async function ledgerPathFor(
  */
 async function cloneGitDir(execFn: LedgerExecFn, cwd: string): Promise<string | undefined> {
   try {
-    const { stdout } = await execFn("git rev-parse --git-common-dir", { cwd, maxBuffer: 8 * 1024 });
+    // `LOCAL_GIT_TIMEOUT_MS` — the bound every other guard-side git read uses
+    // (review-patch-identity.ts, and the same value review-branch.ts carries).
+    // A stalled `git` here used to hang the ledger write with no bound at all,
+    // and on the guard's path it hangs the merge evaluation with it.
+    const { stdout } = await execFn("git rev-parse --git-common-dir", {
+      cwd,
+      maxBuffer: 8 * 1024,
+      timeout: LOCAL_GIT_TIMEOUT_MS,
+    });
     const raw = stdout.trim();
     if (!raw) return undefined;
     const commonDir = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
@@ -121,8 +130,13 @@ async function cloneGitDir(execFn: LedgerExecFn, cwd: string): Promise<string | 
     return raw.startsWith("worktrees/") && !commonDir.endsWith(".git")
       ? path.join(commonDir, "..", "..")
       : commonDir;
-  } catch (err) {
-    trace(`review-ledger: cannot resolve git common dir: ${(err as Error).message}`);
+  } catch (err: unknown) {
+    // `instanceof`, never a cast: `(err as Error).message` is erased at compile
+    // time and throws a TypeError INSIDE this catch when what threw was not an
+    // Error — a bare string from a stub executor, or an odd property access —
+    // turning "git could not answer" into "the ledger module exploded".
+    const reason = err instanceof Error ? err.message : String(err);
+    trace(`review-ledger: cannot resolve git common dir: ${reason}`);
     return undefined;
   }
 }
@@ -227,20 +241,108 @@ export const MISDIRECTED_LEDGER_NOTE =
  * outcome (the tool summary, the round-cap note) goes through this ONE
  * predicate, so the two writers can never disagree about what a misdirection
  * is.
+ *
+ * #1449 round 2 — the comparison must be fed the RAW resolved paths, never the
+ * sanitised stamp: `sanitiseLedgerProvenancePath` clamps at 240 chars, so a
+ * long clone path clamps to a PREFIX of itself and every ordinary write would
+ * read as a redirect. Sanitising is a render-time operation (the guard prints
+ * the value) and this predicate is a decision-time one.
  */
 export function sameResolvedPath(a: string | undefined, b: string | undefined): boolean {
   if (!a || !b) return false;
   const x = path.resolve(a);
   const y = path.resolve(b);
   if (x === y) return true;
+  // #1449 round 2 — resolve BOTH sides independently instead of letting one
+  // failure collapse the whole comparison. `realpathSync` throws ENOENT for a
+  // path that does not exist yet, and a ledger file legitimately does not exist
+  // before the first write — so the old blanket `catch` fired on the ORDINARY
+  // first review of a fresh clone and reported it as a redirect. The lexical
+  // equality above already ruled out the trivial case; what is left to decide
+  // is whether either side is a symlink (or a `..`-laden spelling) of the
+  // other, and that only needs the side that EXISTS resolved.
+  //
+  // So each side falls back to its own lexical resolve when realpath fails,
+  // rather than the pair falling back to "different". A side that cannot be
+  // realpath'd is compared as its absolute path — which is what both callers
+  // handed in anyway (`ledgerPathFor` / `cloneLedgerPathFor` both `path.resolve`
+  // their output), so the comparison stays meaningful. The fail direction is
+  // unchanged for the case the catch was written for: two paths that differ and
+  // cannot both be resolved still compare unequal, and the caller still reports
+  // a redirect rather than hiding one.
+  return realpathOrSelf(x) === realpathOrSelf(y);
+}
+
+/**
+ * True when `p`'s PARENT DIRECTORY exists.
+ *
+ * Exists so the writer — which compares paths BEFORE it has written anything —
+ * can settle "same file?" without a `git rev-parse` when no aliasing is
+ * possible. A path whose parent directory does not exist cannot be a symlink
+ * and cannot contain one, so the lexical comparison is the whole truth and the
+ * extra spawn would buy nothing. When the parent DOES exist, a symlink anywhere
+ * in it is possible and the caller pays the git call to find out.
+ */
+function pathParentExists(p: string): boolean {
   try {
-    return realpathSync(x) === realpathSync(y);
+    return statSync(path.dirname(p)).isDirectory();
   } catch {
-    // "Could not tell them apart" is not evidence of a difference — but this
-    // predicate's callers read FALSE as "different", so the fail direction here
-    // REPORTS a redirect rather than hiding one. That is the safe side for both
-    // consumers: the guard keeps its explanation, the writer keeps its note.
     return false;
+  }
+}
+
+/**
+ * #1449 round 2 — "did this row land outside the clone's own ledger?" Answered
+ * from the two RAW resolved paths.
+ *
+ * #1449 round 2 — note what is NOT sanitised here. `sanitiseLedgerProvenancePath`
+ * clamps at 240 chars, so stamping (or comparing) the sanitised value makes a
+ * long clone path collapse to a PREFIX of itself and every ordinary write past
+ * the cap reads as a redirect. The stamp is therefore the raw resolved path
+ * (review-ledger.ts) and this comparison consumes raw paths; sanitising happens
+ * only where the value is RENDERED, in `misdirectedWriteOf`. The comparison is
+ * deliberately a SEPARATE function from `sameResolvedPath` — one call site that
+ * sanitises before comparing would otherwise re-introduce the bug by editing the
+ * wrong one of two callers.
+ *
+ * Two things separate it from plain `sameResolvedPath`:
+ *
+ * 1. the arguments are RAW, never the sanitised stamp.
+ * 2. the no-spawn fast path. `appendLedgerEntry` wants to skip
+ *    `cloneLedgerPathFor` (a `git rev-parse` on EVERY write) when it cannot
+ *    change the answer. With no override the two paths come from the same
+ *    resolver and the same `fileName`, so they are equal by construction — but
+ *    that claim does not cover the case where the override points at a COPY of
+ *    the clone's ledger (an operator's scratch file moved into the git dir, a
+ *    fixture that copied it): then the override IS set and the two paths can
+ *    coincide textually or through a symlink. So the spawn is skipped only when
+ *    no aliasing is possible: no override set, or the ledger's parent directory
+ *    absent (nothing there can be a symlink).
+ *
+ * Returns the resolved path when the write landed outside the clone's ledger,
+ * undefined when it landed in it (or there was nothing to compare against).
+ */
+export async function ledgerWriteLandedAt(
+  execFn: LedgerExecFn,
+  cwd: string,
+  resolved: string,
+  fileName = "review-ledger.json",
+): Promise<string | undefined> {
+  if (!process.env[LEDGER_OVERRIDE_ENV]?.trim()) return undefined;
+  const clone = pathParentExists(resolved)
+    ? await cloneLedgerPathFor(execFn, cwd, fileName)
+    : path.join(path.dirname(resolved), fileName);
+  return sameResolvedPath(resolved, clone) ? undefined : resolved;
+}
+
+/** `realpathSync` when the path exists; the absolute path itself when it does not. */
+function realpathOrSelf(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    // ENOENT (not yet written) and ENOTDIR (a parent is a file) both mean
+    // "nothing more to learn here" — the lexical path is the best answer.
+    return p;
   }
 }
 
