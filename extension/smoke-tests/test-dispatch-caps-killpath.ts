@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 /**
- * #1510 — the cap-kill crash-path cases, split out of
- * `test-dispatch-caps-timing.ts` to keep both files under the 500-line hard
- * limit (AGENTS.md §12). No assertion was weakened in the split; the H1,
- * chatty-child, H2-inertness and spawn#6 blocks stay in the timing file.
+ * #1510 — the cap-kill attribution cases. The H1, chatty-child,
+ * H2-inertness and spawn#6 blocks stay in `test-dispatch-caps-timing.ts`;
+ * this file is NEW, added by the #1510 fix (both files sit under the 500-line
+ * hard limit, AGENTS.md §12).
  *
- * The token-budget kill path called `killChild` with NO try/catch while its
+ * The token-budget kill path called `killChild` with NO guard while its
  * sibling loop kill (`loops()`) had one. The tracker invokes the injected kill
  * from BOTH of its paths — `poll()` (grace > 0, inside the session's 500 ms
  * `setInterval`) and `check()` (grace == 0, synchronously on the message_end
@@ -18,6 +18,24 @@
  * installs its own `uncaughtCrash` handler that calls `process.exit(1)`, so a
  * setTimeout-still-fires assertion would fail for the wrong reason even after a
  * correct fix.
+ *
+ * WHAT THIS FILE DOES AND DOES NOT COVER — read before "fixing" a red block.
+ * The catch `#1510` adds to `budgetKill` is reached by NO assertion in this
+ * file, and cannot be reached from a test: `signalChild` wraps `child.kill()`
+ * and `signalGroupPid` wraps `process.kill(-pid)`, so every throw a child
+ * handle can inject is swallowed one level below the catch before it can
+ * escape. That makes the guard legitimate defence-in-depth (the surviving
+ * throws are pre-signal — the `isGroupChild` WeakMap receiver, the escalation
+ * `setTimeout`) and simultaneously UNTESTABLE through a handle. Measured, not
+ * assumed: reverting the catch to the pre-fix inline closure leaves every
+ * assertion below green, so the catch itself is regression-blind. The
+ * assertions here are witnesses to the properties the fix MUST preserve — the
+ * kill was reached, `killed` / `killCause` / `result.tokenBudget` survive —
+ * and `kills() > 0` is the ONLY site-reaching witness in the file; nothing
+ * else distinguishes "the kill landed" from "the kill never ran". Deleting the
+ * guard is therefore NOT caught by this file, and no assertion here should be
+ * read as covering it. The positive control in (0) is what proves the
+ * escape-counter below CAN detect an escape when one is actually wired.
  */
 
 import { capKillAttribution, createCapSession } from "../src/spawn-caps.ts";
@@ -113,9 +131,13 @@ async function unguardedKillCrashes(): Promise<{ died: boolean; detail: string }
  * `child.kill()` and `signalGroupPid` wraps `process.kill(-pid)` in their own
  * try/catch. A test built on an ESRCH-shaped double therefore passes on the
  * unfixed shape and witnesses nothing — which is exactly what the first draft
- * of these blocks did. A handle without a usable `kill` is the reachable shape
- * that still reaches `budgetKill` / `loops()` uncaught, which is what the catch
- * added here has to hold. spawn-kill.ts stays out of scope.
+ * of these blocks did. THIS shape does not escape either, for the same reason:
+ * a handle whose `kill` throws is still swallowed inside `signalChild`, so
+ * `budgetKill` / `loops()` never see a throw and the catch added here is
+ * never entered. What the shape DOES do is make the kill site observable
+ * through `kills()` — the anti-vacuity witness below — which is the only
+ * honest claim it supports. `spawn-kill.ts` stays out of scope, so the catch
+ * stays untestable (see the module header).
  *
  * `once` is stubbed because `registerChild` touches the handle.
  *
@@ -198,8 +220,10 @@ const CAP_BASE = {
           kills() > 0,
           `#1510(a): the kill site was REACHED (${kills()} child.kill attempts) — a block that never reached it would pass on the unfixed shape`,
         );
-        assert(true, "#1510(a): throwing kill under grace>0 raised nothing at timer level");
-        assert(tracker?.killed === true, "#1510(a): tracker still marks the budget kill");
+        assert(
+          tracker?.killed === true,
+          "#1510(a): tracker still marks the budget kill",
+        );
         assert(
           session.killCause() === "token-budget",
           `#1510(a): killCause survives the swallowed throw (got ${session.killCause()})`,
@@ -212,7 +236,6 @@ const CAP_BASE = {
           "#1510(a): capKillAttribution still writes the budget/used pair (NEW coverage — asserted nowhere before #1510)",
         );
         session.cleanup();
-        assert(true, "#1510(a): cleanup() runs after the throwing kill (both timers cleared)");
       } catch {
         threw = true;
       }
@@ -250,8 +273,10 @@ const CAP_BASE = {
           kills() > 0,
           `#1510(b): the kill site was REACHED (${kills()} child.kill attempts) — without the budget env this block armed nothing and passed vacuously`,
         );
-        assert(true, "#1510(b): throwing kill at grace==0 raised nothing on the sync path");
-        assert(tracker?.killed === true, "#1510(b): tracker still marks the budget kill");
+        assert(
+          tracker?.killed === true,
+          "#1510(b): tracker still marks the budget kill",
+        );
         assert(
           session.killCause() === "token-budget",
           `#1510(b): killCause survives the swallowed throw (got ${session.killCause()})`,
@@ -264,7 +289,6 @@ const CAP_BASE = {
           "#1510(b): attribution survives the synchronous kill path too",
         );
         session.cleanup();
-        assert(true, "#1510(b): cleanup() runs after the throwing kill");
       } catch {
         threw = true;
       }
@@ -275,9 +299,13 @@ const CAP_BASE = {
 
 // (c) THE PAIRED LOOP-KILL CASE — `loops()` already carries the try/catch and
 // NEITHER catch was exercised by any existing test: no offline block had ever
-// fed a child whose `kill` throws. Without this pair a regression that deletes
-// the loop catch passes the suite, and the asymmetry #1510 fixes silently
-// returns on the other side.
+// fed a child whose `kill` throws. This pair is the symmetry witness for
+// #1510 (the loop side keeps the same attribution properties the budget side
+// now has). It is NOT a regression net for the catch: for the same reason as
+// the budget path — `signalChild` swallows the injected throw before `loops()`
+// can see it — deleting the loop catch leaves these assertions green
+// (measured). They prove the kill site was reached and its attribution
+// survives, not that the guard holds.
 async function loopKillThrows(label: string, graceMs: number): Promise<void> {
   const { child: thrower, kills } = throwingChild(label);
   let threw = false;
@@ -300,17 +328,12 @@ async function loopKillThrows(label: string, graceMs: number): Promise<void> {
     }
     if (graceMs > 0) await new Promise((r) => setTimeout(r, 800));
     assert(kills() > 0, `${label}: the loop kill site was REACHED (${kills()} attempts)`);
-    assert(
-      true,
-      `${label}: throwing loop kill raised nothing on the ${graceMs > 0 ? "timer" : "sync"} path`,
-    );
     assert(session.loopKilled() === true, `${label}: loop kill still recorded`);
     assert(
       session.killCause() === "loop",
       `${label}: killCause survives the swallowed throw (got ${session.killCause()})`,
     );
     session.cleanup();
-    assert(true, `${label}: cleanup() runs after the throwing loop kill`);
   } catch {
     threw = true;
   }

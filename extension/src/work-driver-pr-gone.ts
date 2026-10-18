@@ -31,6 +31,7 @@ import { recordedPrState } from "./work-driver-commit-reentry.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
+import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { PR_NOT_OPEN_MARKER } from "./workflow-state-cap.ts";
 import type { WorkStep } from "./workflow-state-events.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -152,7 +153,8 @@ async function mergedDuringReview(
 ): Promise<WorkState> {
   trace(`work-driver: PR #${prNumber} was merged by someone else before ${step} — cycle ends`);
   try {
-    await releaseClaim(ctx.repoRoot, ctx.issue);
+    // #1454 — the whole group, not just the primary (see runMerged/runHandoff).
+    await releaseClaim(ctx.repoRoot, activeIssuesOf(state));
   } catch (err) {
     // best-effort, as on the driver's own merge — but traced, not invisible
     trace(`work-driver: releaseClaim after the human merge failed: ${String(err)}`);
