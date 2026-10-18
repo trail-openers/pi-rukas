@@ -16,6 +16,7 @@
 import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { commitPrDirtyRootStep } from "./work-driver-handoff-commitpr.ts";
+import { genericRecoveryLines } from "./work-driver-handoff-recovery-tree.ts";
 import {
   type RecoveryStep,
   consolidatedRestoreClaim,
@@ -302,17 +303,14 @@ export function recoveryCommandsChat(
     lines.push(
       "",
       ...killDetail(state).map((l) => `  ${l}`),
-      "  # 1. Inspect what survived before deciding:",
-      `     git -C ${repoRoot} status`,
-      `     git -C ${repoRoot} diff --stat`,
-      "",
-      "  # 2. Discard the cycle and start over (worktree changes are kept):",
-      `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
-      "",
-      `  # 3. Take over manually — commit + push what's there, open the PR yourself:`,
-      `     git -C ${repoRoot} add -p`,
-      `     git -C ${repoRoot} commit`,
-      `     git -C ${repoRoot} push -u origin ${ps.branchName}`,
+      // #1565 — built from the trees the snapshot found, not repoRoot blindly.
+      ...genericRecoveryLines(state).map((l) =>
+        l === ""
+          ? l
+          : l.startsWith("#")
+            ? `  ${l}`
+            : `     ${requalifyLine(l, repoRoot, scratchDirAbs, forge)}`,
+      ),
     );
   }
   return lines;
