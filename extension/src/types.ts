@@ -196,6 +196,11 @@ export interface DispatchResult {
    */
   killBudgetMs?: number;
   /**
+   * #1593 — the "timeout" kill came from the caller's cycle deadline
+   * (`PI_ENSEMBLE_CYCLE_DEADLINE`), which tightened the child's own bound.
+   */
+  killedAtCycleDeadline?: boolean;
+  /**
    * #543 — set when killCause is "loop". The structured trigger evidence the
    * F1 detector had at kill time: the tool name and the streak count.
    * `buildCompletionEvent` uses this so the state-file errorTail names WHAT

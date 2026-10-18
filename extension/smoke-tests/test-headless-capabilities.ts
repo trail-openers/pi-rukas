@@ -161,6 +161,10 @@ assert(
 );
 assert(caps.features.resultFromMemory === true, "features.resultFromMemory is true");
 assert(caps.features.cycleDeadline === true, "features.cycleDeadline is true");
+assert(
+  caps.features.cycleDeadlineHandoffAllowance === true,
+  "features.cycleDeadlineHandoffAllowance is true (#1593)",
+);
 
 // ── The answer has exactly the documented top-level keys (no missing, no extra).
 {

@@ -116,6 +116,9 @@ export async function buildCompletionEvent(
       detail =
         `[pi-rukas] killed after ${result.killBudgetMs}ms — the plan step's own wall-clock bound expired` +
         ` (override: ${overrideEnvForKillCause(result.killCause)})`;
+    } else if (result.killedAtCycleDeadline) {
+      // #1593 — the caller's deadline, not the backstop, set this bound.
+      detail = `[pi-rukas] killed after ${result.killBudgetMs}ms at the caller's cycle deadline (PI_ENSEMBLE_CYCLE_DEADLINE)`;
     } else {
       detail =
         `[pi-rukas] killed after ${result.killBudgetMs}ms ${result.killCause}` +

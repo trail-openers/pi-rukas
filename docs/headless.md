@@ -401,6 +401,7 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
   "features": {
     "resultFromMemory": true,   // #1189 — result from in-memory state, not the state file
     "cycleDeadline": true,      // #1238 — a cycle deadline that parks with a handoff
+    "cycleDeadlineHandoffAllowance": true, // #1593 — the deadline bounds the step in flight
     "handoffChannel": true,     // #1327 — PI_ENSEMBLE_HANDOFF_CHANNEL=host
     "restartClearsAttention": true, // #1327 — --restart clears needs-human-attention
     "failureReason": true,      // #1367 — issues[].failure in the result
@@ -435,6 +436,7 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
 | `files[]` | `HEADLESS_FILES` (`inputs.ts`) | The `.pi/*` files a cycle reads from the project (`path`, `kind`: `command` / `hook` / `config`, and what happens `whenAbsent`). Files the driver writes, such as `.pi/work-state/`, are state, not input, and are not listed. |
 | `features.resultFromMemory` | Constant `true` | `true` when the result is taken from the driver's in-memory state rather than re-reading the state file (#1189). |
 | `features.cycleDeadline` | Constant `true` | `true` when a cycle that hits its deadline parks with a handoff rather than being killed (#1238). |
+| `features.cycleDeadlineHandoffAllowance` | Constant `true` | `true` when the deadline is where step work ends: children running at `PI_ENSEMBLE_CYCLE_DEADLINE` are stopped there, the handoff runs within `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` after it, and a step that ended past the deadline records `deadline` as the cycle's cap (#1593). A host sets the deadline to its kill minus that allowance. |
 | `features.handoffChannel` | Constant `true` | `true` when the build honours `PI_ENSEMBLE_HANDOFF_CHANNEL` and carries the handoff in the result (#1327). |
 | `features.restartClearsAttention` | Constant `true` | `true` when `--restart` overrides the attention gate and clears `needs-human-attention` (#1327). See [`--restart` for hosts](#--restart-for-hosts). |
 | `features.failureReason` | Constant `true` | `true` when the result carries `issues[].failure`, the reason behind its `cap` (#1367). |
