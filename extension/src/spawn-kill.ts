@@ -1,16 +1,26 @@
 /**
  * spawn-kill — terminate a spawned child AND every process it forked (#1024).
  *
- * A headless cycle's children are spawned `detached: true`, which makes each
- * one the leader of its own process group. `process.kill(-pid, sig)` then
+ * A group child is spawned `detached: true`, which makes it the leader of
+ * its own process group. `process.kill(-pid, sig)` then
  * reaches the whole tree: the `sleep` a shell backgrounded, the ssh a git call
  * spawned. `child.kill()` signals the leader alone, so a grandchild survived
  * every abort, timeout and inactivity kill and was orphaned.
  *
- * Only the headless runner asks for a group (`processGroup`). An interactive
- * Pi session keeps its children in the terminal's foreground process group, so
- * Ctrl-C reaches them as it always did; for those, a kill signals the leader
- * handle alone.
+ * A child leads its own group when the caller asks (`processGroup`, the
+ * headless runner) or when this process has no terminal on stdin (#1260):
+ * `pi --mode rpc` driven by a factory, a pipe, a CI job. Without a terminal
+ * there is no foreground process group for a child to share, and a kill that
+ * reaches only the leader orphans the test suite its bash tool started, which
+ * then keeps writing into a worktree the retry has already reset. An
+ * interactive Pi session keeps its children in the terminal's foreground
+ * process group, so Ctrl-C reaches them as it always did; for those, a kill
+ * signals the leader handle alone. `leadsProcessGroup` is that one decision.
+ *
+ * A group is outside the terminal's reach, so the parent reaps live groups as
+ * it goes: on `exit` (`armGroupReaper`, idempotent across extension reloads)
+ * and just before a fatal signal is re-raised (exit-cause.ts). A parent ended
+ * by SIGKILL cannot reap; its rpc children still exit on stdin EOF.
  *
  * The group decision is made once, at spawn time, and stored on the child
  * handle (`registerChild`). Every kill site then reads that one policy through
@@ -35,7 +45,15 @@ export const KILL_GRACE_MS = 2_000;
 /** Grace between SIGTERM and SIGKILL for a lone leader (interactive). */
 export const INTERACTIVE_KILL_GRACE_MS = 5_000;
 
-/** Spawn options for a child: its own process group only when a headless run asks. */
+/**
+ * #1260 — whether a child spawned now leads its own process group: when the
+ * caller asks, or when stdin is not a terminal (see the module doc).
+ */
+export function leadsProcessGroup(requested: boolean | undefined): boolean {
+  return requested === true || process.stdin.isTTY !== true;
+}
+
+/** Spawn options for a child: its own process group when `leadsProcessGroup` says so. */
 export function groupSpawnOpts(processGroup: boolean): { detached: boolean } {
   return { detached: processGroup };
 }
@@ -95,9 +113,24 @@ export function killProcessTree(child: ChildProcess): void {
   if (!group) escalate.unref();
 }
 
+const REAPER = Symbol.for("pi-rukas.spawn-kill.group-reaper");
+
+/**
+ * #1260 — reap live groups when this process exits. One listener per process:
+ * a reloaded extension replaces the previous module copy's listener.
+ */
+export function armGroupReaper(): void {
+  const slot = globalThis as { [REAPER]?: () => void };
+  const prev = slot[REAPER];
+  if (prev) process.removeListener("exit", prev);
+  slot[REAPER] = killLiveProcessGroups;
+  process.on("exit", killLiveProcessGroups);
+}
+
 /**
  * Synchronously SIGKILL every tracked group. For the runner's `exit` and
- * SIGHUP handlers, where no timer can run.
+ * SIGHUP handlers, and the extension's `exit` hook (index.ts), where no
+ * timer can run.
  */
 export function killLiveProcessGroups(): void {
   for (const child of liveGroups) {

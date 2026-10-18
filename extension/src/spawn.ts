@@ -51,7 +51,7 @@ import {
   createWallClockBackstop,
   isStdinEcho,
 } from "./spawn-inflight.ts";
-import { groupSpawnOpts, registerChild } from "./spawn-kill.ts";
+import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
 import {
   STDERR_TAIL_BYTES,
@@ -199,6 +199,7 @@ async function spawnSpecialistInner(
     childEnv.PI_ENSEMBLE_TRUST_MODE = "1";
   }
 
+  const leadsGroup = leadsProcessGroup(opts.processGroup);
   const child = spawn(invocation.command, invocation.args, {
     cwd,
     shell: false,
@@ -208,12 +209,11 @@ async function spawnSpecialistInner(
     // agent_end has fired.
     stdio: ["pipe", "pipe", "pipe"],
     env: childEnv,
-    // #1024 — headless only: own process group, so a kill reaches grandchildren
-    // (spawn-kill.ts). Normal exit still ends the child through the stdin-close
-    // path above.
-    ...groupSpawnOpts(opts.processGroup === true),
+    // #1024/#1260 — own process group when headless or stdin is no TTY, so a kill
+    // reaches grandchildren (spawn-kill.ts); normal exit still closes stdin.
+    ...groupSpawnOpts(leadsGroup),
   });
-  registerChild(child, opts.processGroup === true);
+  registerChild(child, leadsGroup);
 
   // #932 — universal EPIPE backstop (stdin-guard.ts): EPIPE fires async as `error`,
   // so without this listener the kickoff write, end(), or any later steer becomes
