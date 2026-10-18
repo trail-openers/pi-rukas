@@ -44,6 +44,7 @@ import {
 } from "./work-driver-adversarial-plumb.ts";
 import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { parkDevelopFixNoFit } from "./work-driver-lens-fix-budget.ts";
 import { beginDispatch } from "./work-driver-resume.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { execp as argvExecp } from "./work-driver-verify.ts";
@@ -328,6 +329,9 @@ export async function runAdversarialFixPass(
   pending: PendingFix[],
   now: number,
 ): Promise<WorkState> {
+  // #1644 — a fix pass the review-loop budget cannot fit is not started.
+  const noFit = await parkDevelopFixNoFit(ctx, state, now);
+  if (noFit !== state) return noFit;
   const ps: PipelineState = state.pipelineState;
   const execFn = ctx.verifyExecFn ?? defaultExec;
   const requests: FixRequest[] = pending.map((p) => ({

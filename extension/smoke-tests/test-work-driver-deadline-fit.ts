@@ -22,9 +22,11 @@ import {
   runWithCycleClock,
 } from "../src/cycle-deadline-clock.ts";
 import { FIXED_CAPS } from "../src/headless/caps.ts";
+import { runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
 import { deadlineCheck } from "../src/work-driver-deadline.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import {
+  parkDevelopFixNoFit,
   parkLensFixOverrun,
   parkLensRoundNoFit,
   reviewFixDispatchBoundMs,
@@ -207,6 +209,37 @@ try {
     assert(
       (await parkLensRoundNoFit(ctx, first, T0)) === first,
       "the first round (no clock yet) always starts",
+    );
+
+    // #1644 — the develop fix pass inside the loop gets the lens-fix rule.
+    const dev = await parkDevelopFixNoFit(ctx, at(CAP - 14 * MIN), T0);
+    const devTail = dev.eventLog[dev.eventLog.length - 1];
+    assert(
+      devTail?.kind === "cap-hit" &&
+        devTail.cap === "lens-review-timeout" &&
+        /develop fix pass not dispatched/.test(devTail.evidence ?? "") &&
+        dev.pipelineState.currentStep === "handoff",
+      "#1644: a develop fix pass with 14 min of the loop left parks lens-review-timeout, naming the step",
+      devTail?.kind === "cap-hit" ? devTail.evidence : devTail?.kind,
+    );
+    const devOk = at(CAP - 15 * MIN);
+    assert((await parkDevelopFixNoFit(ctx, devOk, T0)) === devOk, "…with 15 min it is dispatched");
+    const noClock = initialState(1644, 1) as WorkState;
+    assert(
+      (await parkDevelopFixNoFit(ctx, noClock, T0)) === noClock,
+      "a fix pass before the review loop (no clock) always runs",
+    );
+    // runAdversarialFixPass refuses before planning or dispatching anything.
+    const pass = await runAdversarialFixPass(
+      ctx as never,
+      at(CAP - 5 * MIN),
+      [{ workstreamId: "default", round: 1, findings: "x" }],
+      T0,
+    );
+    assert(
+      !pass.eventLog.some((e) => e.kind === "step-started") &&
+        pass.pipelineState.currentStep === "handoff",
+      "#1644: runAdversarialFixPass parks before starting the develop step",
     );
 
     // runLens itself refuses the round before it counts or starts it.

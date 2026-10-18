@@ -134,7 +134,7 @@ function boundCeiling(requestedTimeoutMs?: number): number {
 async function parkReviewNoFit(
   ctx: CycleContext,
   state: WorkState,
-  step: "lens-fix" | "lens-review",
+  step: "lens-fix" | "lens-review" | "develop",
   now: number,
 ): Promise<WorkState> {
   const remaining = reviewRemainingMs(state, now);
@@ -144,7 +144,11 @@ async function parkReviewNoFit(
   const elapsedMin = Math.round((capMs - remaining) / 60_000);
   const round = state.pipelineState.reviewRound;
   const what =
-    step === "lens-fix" ? "lens-fix not dispatched" : `lens-review round ${round + 1} not started`;
+    step === "lens-fix"
+      ? "lens-fix not dispatched"
+      : step === "develop"
+        ? "develop fix pass not dispatched"
+        : `lens-review round ${round + 1} not started`;
   const why =
     remaining <= 0
       ? "so the step was stopped before it started rather than left running past its own printed budget"
@@ -188,4 +192,19 @@ export function parkLensRoundNoFit(
   now: number,
 ): Promise<WorkState> {
   return parkReviewNoFit(ctx, state, "lens-review", now);
+}
+
+/**
+ * #1644 — the pre-dispatch park for the develop fix pass inside the review
+ * loop (the adversarial gate's fix for a rejected workstream). It needs the
+ * same 15 min a lens-fix does: dispatched with less, it was bounded to the
+ * 1-min floor and killed mid-edit, leaving a half-applied fix. Outside the
+ * review loop (no clock) it always runs.
+ */
+export function parkDevelopFixNoFit(
+  ctx: CycleContext,
+  state: WorkState,
+  now: number,
+): Promise<WorkState> {
+  return parkReviewNoFit(ctx, state, "develop", now);
 }
