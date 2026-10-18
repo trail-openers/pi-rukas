@@ -1,0 +1,14 @@
+{
+  "$comment": "The stale-repro PAIR the bug report names: a dead-pid claim plus the claimant's own .pi/work-state/<issue>.json carrying owner.pid and updatedAt. A dead pid ALONE already releases it; the pair is what the operator's on-disk state actually looks like, and what the sweep resolves through.",
+  "claims": [
+    {
+      "issue": 1421,
+      "pid": 0,
+      "paths": [
+        "extension/src/worktree-provision.ts",
+        "extension/src/work-driver-verify-develop-helpers.ts"
+      ],
+      "startedAt": "@AGE(-5220000)"
+    }
+  ]
+}

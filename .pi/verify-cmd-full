@@ -2,4 +2,7 @@
 # Used by the driver's second-tier verify. PI_ENSEMBLE_VIPUNE_REQUIRED=1 makes the
 # memory tests FAIL rather than skip when the binary is absent — a skipped
 # calibration test is how the retrieval rule stayed dead for the life of #394.
-cd extension && bun x tsc --noEmit && cd .. && bun run check && cd extension && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-vipune-capability.ts && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-memory-brief.ts
+#
+# The typecheck names the compiler by PATH, never by alias (#1414/#1118) — see
+# the note in .pi/verify-cmd for why `bun x tsc` silently passed everything.
+cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && cd .. && bun run check && cd extension && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-vipune-capability.ts && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-memory-brief.ts

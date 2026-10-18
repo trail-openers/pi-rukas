@@ -28,6 +28,21 @@ export interface ConsolidatedVerifyOpts {
   verifyCmd: string;
   timeoutMs: number;
   /**
+   * #1509 — the knob the timeout failure for THIS run names. The develop gate
+   * and the commit-pr seam bound the same command with different knobs, and
+   * the reporter must name the one that actually governed the run rather than
+   * deriving it from the step name. Absent = the suite tier's knob.
+   */
+  suiteTimeoutKnob?: string;
+  /**
+   * #1509 — the fast tier's own bound, when the caller resolved one. Present
+   * means the consolidated timeout failure names the SUITE knob for the full
+   * command and the FAST knob for a fast-tier kill; absent means the caller
+   * kept the pre-#1509 shared-bound shape and the reporter says nothing about
+   * a fast-tier budget it did not set.
+   */
+  fastTierTimeoutMs?: number;
+  /**
    * #1427 — called with the path of the hang report this run persisted, so the
    * caller can record it structurally on the cap-hit event. Absent = the caller
    * wants no report written (nothing is then written for the consolidated run).
@@ -166,4 +181,26 @@ export type ConsolidatedVerifyResult =
        * `build/[build-residue].log` is prose the router must never route on).
        */
       buildResidueOnly?: boolean;
+      /**
+       * #813 — WHICH workstream's pick failed, when the batch aborted on a
+       * cherry-pick. Carried structurally (never regexed out of `detail`) so
+       * the reporter states what was observed — the pick that failed, and
+       * what applied cleanly before it — rather than asserting that two
+       * workstreams edited the same lines and the decomposition is
+       * incoherent. `undefined` for the other conflict `kind`s.
+       */
+      conflictedWorkstream?: string;
+      /**
+       * #813 — workstreams whose picks applied cleanly before the aborting
+       * pick. Absent when the batch never got that far or the read failed.
+       */
+      appliedBeforeConflict?: string[];
+      /**
+       * #813 — the file git named for the aborted pick, extracted by the
+       * batch itself. Structured so the reporter can name the colliding file
+       * (and recognise it as a sibling's declared path) without parsing an
+       * arbitrary `detail` string, which would let the message decide the
+       * diagnosis.
+       */
+      conflictedFile?: string;
     };

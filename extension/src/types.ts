@@ -145,6 +145,12 @@ export interface DispatchResult {
   // the tool-inactivity bound. A sibling of "inactivity": same poll, one
   // budget active at a time (the tool bound while the in-flight set is
   // non-empty, the model-silence bound when it is empty).
+  //
+  // #1567 child-supervision policy — "child-bound" = the per-child time
+  // limit expired (wrap-up steer, then kill at bound + 10 min);
+  // "no-progress" = the driver ended a child frozen across slow levels;
+  // "stuck-tool" = a second call-kill on the same command. Reserved here
+  // (P1); the pieces that enforce each policy emit them.
   killCause?:
     | "timeout"
     | "inactivity"
@@ -152,7 +158,10 @@ export interface DispatchResult {
     | "loop"
     | "token-budget"
     | "plan-timeout"
-    | "tool-inactivity";
+    | "tool-inactivity"
+    | "child-bound"
+    | "no-progress"
+    | "stuck-tool";
   /**
    * #298 — set only on the SYNTHESIZED adversarial-loop result (role
    * "adversarial-loop"): "rejected" is a COMPLETED reviewer verdict (must be
@@ -186,6 +195,11 @@ export interface DispatchResult {
    * model-silence bound otherwise).
    */
   killBudgetMs?: number;
+  /**
+   * #1593 — the "timeout" kill came from the caller's cycle deadline
+   * (`PI_ENSEMBLE_CYCLE_DEADLINE`), which tightened the child's own bound.
+   */
+  killedAtCycleDeadline?: boolean;
   /**
    * #543 — set when killCause is "loop". The structured trigger evidence the
    * F1 detector had at kill time: the tool name and the streak count.

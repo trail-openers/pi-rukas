@@ -25,6 +25,8 @@ export const CAP_TEMPLATES = {
   "verify-baseline-red": "step",
   /** #1349 — the cycle's PR was not open when the step started. */
   "pr-not-open": "step",
+  /** #1472 — a person CLOSED the cycle's issue while the cycle was running. */
+  "issue-closed": "step",
   "step-failed": "step",
   "driver-crash": "step",
   /** The number of commits the local branch is ahead of origin. */
@@ -45,6 +47,13 @@ export const FIXED_CAPS = [
   "consolidated-verify-conflict",
   "consolidated-verify-consolidation-created",
   "consolidation-incomplete",
+  // #1468 — `--continue-pr` could not continue the issue's open PR.
+  "continue-pr-ambiguous",
+  "continue-pr-fork",
+  "continue-pr-head-moved",
+  "continue-pr-not-found",
+  "continue-pr-unresolved",
+  "continue-pr-unsafe-head",
   "cross-group-conflict",
   "deadline",
   "deferred-creation:develop",
@@ -71,6 +80,10 @@ export const FIXED_CAPS = [
   "lens-diff-unreadable",
   "lens-fix-not-integrated",
   "lens-fix-reposition",
+  // #1384 — the lens-review fix loop outlived its own budget
+  // (PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS). Was `wall-clock` before result schema
+  // v4, a name a host read as its own cycle clock.
+  "lens-review-timeout",
   "loop-detected",
   "no-review-outcome",
   "ops-merge-base-mismatch",
@@ -90,7 +103,6 @@ export const FIXED_CAPS = [
   "round-cap",
   "step-back-revise-spec",
   "token-budget",
-  "wall-clock",
   "worktree-listing-unreadable",
 ] as const satisfies readonly FixedCap[];
 

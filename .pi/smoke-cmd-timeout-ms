@@ -1,0 +1,11 @@
+# Product-smoke gate budget (#1509).
+#
+# The wall clock the driver gives `.pi/smoke-cmd` (this repo has none, so the
+# gate notes the omission and never runs). Kept separate from the suite tier on
+# purpose: one product path is a seconds-scale check, and it must not widen
+# just because the offline suite needs half an hour. First non-empty,
+# non-comment line, a positive number of milliseconds.
+#
+# Precedence: PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS →
+# PI_ENSEMBLE_VERIFY_TIMEOUT_MS → this file → the documented default (10 min).
+600000

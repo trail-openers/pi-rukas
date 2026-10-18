@@ -46,6 +46,7 @@ import {
 import { queueOrderingPlan } from "../src/work-entry-ordering.ts";
 import { type EntrySeams, type WorkInvocation, runGroupedIssues } from "../src/work-entry.ts";
 import { renderQueueSummary } from "../src/work-queue.ts";
+import { rawClaims } from "./lib/claims-test-helpers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -362,7 +363,14 @@ try {
       h.setsDuringQueue.every((s) => s.join(",") === "100,101"),
       "and the set in force was the whole invocation, read from inside a running group",
     );
-    assert((await readClaims(h.repoRoot)).length === 1, "after the queue, the claim is visible again");
+    // The claim survives the queue IN THE FILE. Read the registry verbatim
+    // rather than through `readClaims`: #1454 makes a claim whose OWNER reached
+    // a terminal status stale at any age (a finished cycle holds nothing), and
+    // this stub's group settles `merged`, so the filtered read is correctly
+    // empty. What this case pins is that nothing DELETED the queue's claim
+    // while it ran — the queue releases it from the cycle's terminal step, and
+    // a prune-on-read that erased it first is the lost-ownership bug.
+    assert(rawClaims(h.repoRoot).length === 1, "after the queue, the claim is visible again");
     assert(
       siblingClaimWaitSnapshot().length === 0,
       "the `finally` cleared the set, so a later cycle is not left blind to its own siblings",

@@ -122,6 +122,13 @@ export function parkReason(state: WorkState | undefined): { reason: string; fail
       const granted = state.pipelineState.mergeHold?.authorityGranted ? "granted" : "no-authority";
       suffix = `:${granted}:pr${state.pipelineState.prNumber ?? 0}`;
       if (state.pipelineState.mergeHold?.evidenceFailureKind === "tooling") suffix += ":tooling";
+    } else if (cap.cap === "cross-group-conflict") {
+      // #1454 — the claimant's number is the only thing that makes this park
+      // actionable: the operator has to check ONE cycle, not the whole
+      // claims file. Carried machine-readably from the cap's evidence rather
+      // than parsed out of prose at the action site.
+      const claimant = cap.evidence?.match(/claimant(\d+)/);
+      if (claimant) suffix = `:claimant${claimant[1]}`;
     } else if (cap.cap === "deferred-creation:develop") {
       // #753 — name the leftover on the reason so the queue action can
       // point at the exact path (salvage-before-rerun, never --restart).

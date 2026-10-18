@@ -169,6 +169,29 @@ const allows = (entry: string, file: string): boolean =>
 const cleaned = (p: string): string =>
   path.posix.normalize(p.replace(/\s+\([^)]*\)$/, "").trim()).replace(/^\.\/+/, "");
 
+const listed = (xs: readonly string[]): string => (xs.length > 0 ? xs.join(", ") : "none");
+
+/**
+ * #1522 — the scope-fence park names the fence it checked (both sets), what
+ * the findings said about each stray, where the change sits and how to clear
+ * it. The bare clause left the operator to rebuild all of that from the state.
+ */
+function strayReason(plan: PassPlan, strays: readonly string[], basis: string): string {
+  const fence =
+    plan.declared.length > 0
+      ? `declared paths: ${listed(plan.declared)}`
+      : `files it already changed: ${listed(plan.before.names)}`;
+  const naming = strays
+    .map((f) =>
+      pathTokenIn(plan.findings, f)
+        ? `A finding names ${f}, but it does not widen the fence (a named file widens only when it is tracked at base, unprotected, and in the directory of a declared or already-changed non-root path)`
+        : `No finding names ${f}`,
+    )
+    .join("; ");
+  const files = strays.join(", ");
+  return `${plan.id} changed ${files} — outside ${basis} (${fence}; finding-named files it admits: ${listed(plan.named)}). ${naming}. The change is still in ${plan.worktree}. To clear it: if a finding's fix needs ${files}, the declared scope is what is wrong — name ${files} in the issue's scope and re-run \`/work <issue> --restart\`; otherwise the pass overreached — revert ${files} in that worktree and land the rest by hand, or re-run \`/work <issue> --restart\``;
+}
+
 /**
  * The post-pass checks, in order: the pass changed something, every file it
  * changed is allowed (uncommitted and untracked included), and a declared
@@ -214,7 +237,7 @@ export async function postPassFault(
         plan.declared.length > 0
           ? "its declared paths and the files the findings name"
           : "the files it already changed and the files the findings name";
-      return { reason: `${plan.id} changed ${strays.join(", ")} — outside ${basis}`, diffs };
+      return { reason: strayReason(plan, strays, basis), diffs };
     }
     if (plan.declared.length > 0) {
       const limit = fanoutLimitFor(plan.declared.length);

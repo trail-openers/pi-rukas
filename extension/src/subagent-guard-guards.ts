@@ -8,6 +8,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerDeveloperPushGuard } from "./developer-push-guard.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
 import { registerMergeGuard } from "./merge-guard.ts";
 import { registerDestructiveGitGuard } from "./permission-subagent-guard.ts";
@@ -37,4 +38,13 @@ export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   // self-report plus CI in trust/sandbox mode. The review ledger is the
   // structural floor; the guard fires before every bypass.
   registerMergeGuard(pi);
+  // #1113 — the developer push ban, and the one guard in this list that is
+  // ROLE-scoped rather than universal: it refuses `git push` only when
+  // PI_ENSEMBLE_ROLE is `developer` (read in the hook body, so the parent and
+  // every other role are untouched). The permission layer granted it —
+  // agents.json had `"git push*": "allow"` for developer — and trust/sandbox
+  // mode consult neither, which is how PM-authored "push your branch" briefs
+  // reached the remote on 2026-10-11. Same placement reasoning as above: after
+  // the bypasses it would never run.
+  registerDeveloperPushGuard(pi);
 }
