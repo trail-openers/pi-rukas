@@ -254,15 +254,10 @@ async function spawnSpecialistInner(
   // child's entire lifetime, not just after the initial prompt.
   opts.onStdin?.(child.stdin);
 
-  // Send the kickoff prompt via the RPC channel. Pi treats this as the
-  // first user turn for the agent.
-  //
-  // When the caller passed `spec.cwd`, prepend a runtime context note so
-  // the subagent knows its concrete working directory from line 1. This
-  // exists because weak local models (Qwen3-class) skim past generic
-  // doctrine ("do not cd"); a concrete absolute path in the runtime prompt
-  // is a much harder cue to ignore. See PR #192 + arxiv 2505.18135 on the
-  // measured strength of runtime context vs. system-prompt-only steering.
+  // Send the kickoff prompt via the RPC channel (Pi's first user turn). With
+  // `spec.cwd`, a runtime note names the concrete working directory from line
+  // 1: weak local models skim past generic "do not cd" doctrine, and a runtime
+  // absolute path is a much harder cue to ignore (PR #192).
   const cwdHint = buildCwdHint(spec.cwd);
   try {
     child.stdin.write(
@@ -281,6 +276,7 @@ async function spawnSpecialistInner(
   const completePrompt = () => {
     if (promptCompleted) return;
     promptCompleted = true;
+    childBound.onReported(); // #1521: reap it if it does not exit
     try {
       child.stdin?.end();
     } catch {
@@ -356,10 +352,9 @@ async function spawnSpecialistInner(
     child,
     timeoutMs,
     // `timedOut` first, so `killCause()` reports "timeout" even if the signal
-    // cannot land; the guarded kill lives in the factory (#1510).
-    onTimeout: () => {
-      flags.setTimedOut(true);
-    },
+    // cannot land; the guarded kill lives in the factory (#1510). #1521: a
+    // child that committed or reported is ended as done instead.
+    onTimeout: () => childBound.atBackstop(() => flags.setTimedOut(true)),
   });
 
   // #1560 — the per-child run bound: wrap-up steer, then end it (spawn-child-bound.ts).
@@ -371,7 +366,11 @@ async function spawnSpecialistInner(
     stdin: child.stdin,
     reported: () => promptCompleted,
     childExited: flags.childExited,
-    preempted: () => flags.aborted() || flags.timedOut(),
+    preempted: () =>
+      flags.aborted() ||
+      flags.timedOut() ||
+      flags.inactivityKilled() ||
+      flags.toolInactivityKilled(),
     commits: spec.role === "developer" && spec.cwd !== undefined,
   });
 

@@ -22,6 +22,7 @@ import {
   developChildBoundMs,
   exploreChildBoundMs,
 } from "../src/spawn-child-bound.ts";
+import { createWallClockBackstop } from "../src/spawn-inflight.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { classifyFailureCause } from "../src/work-driver-failure-taxonomy.ts";
 import { terminalReasonAtHandoff } from "../src/work-driver-terminal-reason.ts";
@@ -176,6 +177,127 @@ assert(exploreChildBoundMs() === 30 * 60_000, "explore bound defaults to 30 min"
 {
   const r = await run({ preempted: true });
   assert(!r.bound.killed() && r.child.kills.length === 0, "a preempted child keeps its own cause");
+}
+
+// ── #1521: the backstop ends a settled child as done; reaping a lingering one.
+async function backstop(opts: { reported?: boolean; heads?: string[]; commits?: boolean }) {
+  const child = fakeChild();
+  const heads = [...(opts.heads ?? ["a", "a"])];
+  const bound = armChildBound({
+    child,
+    boundMs: undefined,
+    cwd: "/nowhere",
+    stdin: new PassThrough(),
+    reported: () => opts.reported === true,
+    childExited: () => false,
+    preempted: () => false,
+    commits: opts.commits !== false,
+    head: async () => heads.shift(),
+  });
+  let timedOut = false;
+  const took = bound.atBackstop(() => {
+    timedOut = true;
+  });
+  await wait(20);
+  bound.stop();
+  return { took, timedOut, bound, child };
+}
+{
+  const rep = await backstop({ reported: true });
+  assert(
+    rep.took && !rep.timedOut && rep.bound.endedAsDone() === "reported",
+    "backstop: a reported child is done, not timed out",
+  );
+  const com = await backstop({ heads: ["a", "b"] });
+  assert(
+    !com.timedOut && com.bound.endedAsDone() === "committed",
+    "backstop: a committed child is done, not timed out",
+  );
+  assert(com.child.kills.length > 0, "backstop: the settled child is still ended");
+  const busy = await backstop({});
+  assert(
+    busy.timedOut && !busy.bound.endedAsDone(),
+    "backstop: a child with nothing committed is a timeout",
+  );
+  const ro = await backstop({ commits: false });
+  assert(
+    !ro.took && ro.timedOut,
+    "backstop: a non-committing, unreported child keeps the plain timeout path",
+  );
+  const res = base();
+  applyChildBound(com.bound, res);
+  assert(
+    res.ok && res.killCause === undefined,
+    "backstop: the done child's result is a completion",
+  );
+
+  // The child exits (or another kill lands) during the slow HEAD read: nothing more happens.
+  {
+    const child = fakeChild();
+    let exited = false;
+    const late = armChildBound({
+      child,
+      boundMs: undefined,
+      cwd: "/nowhere",
+      stdin: new PassThrough(),
+      reported: () => false,
+      childExited: () => exited,
+      preempted: () => false,
+      commits: true,
+      head: () => new Promise((r) => setTimeout(() => r(exited ? "b" : "a"), 15)),
+    });
+    let lateTimedOut = false;
+    late.atBackstop(() => {
+      lateTimedOut = true;
+    });
+    exited = true;
+    await wait(40);
+    late.stop();
+    assert(
+      child.kills.length === 0 && !lateTimedOut && !late.endedAsDone(),
+      "backstop: a child that exits during the HEAD read is neither killed nor timed out",
+    );
+  }
+
+  process.env.PI_ENSEMBLE_SETTLED_REAP_MS = "20";
+  const child = fakeChild();
+  const reap = armChildBound({
+    child,
+    boundMs: undefined,
+    cwd: "/nowhere",
+    stdin: new PassThrough(),
+    reported: () => true,
+    childExited: () => false,
+    preempted: () => false,
+    commits: false,
+  });
+  reap.onReported();
+  await wait(60);
+  reap.stop();
+  delete process.env.PI_ENSEMBLE_SETTLED_REAP_MS;
+  assert(
+    child.kills.length > 0 && reap.endedAsDone() === "reported",
+    "a reported child that lingers is reaped as done",
+  );
+}
+
+// The backstop factory leaves the kill to a hook that took it over.
+{
+  const taken = fakeChild();
+  const stopTaken = createWallClockBackstop({ child: taken, timeoutMs: 5, onTimeout: () => true });
+  const plain = fakeChild();
+  const stopPlain = createWallClockBackstop({
+    child: plain,
+    timeoutMs: 5,
+    onTimeout: () => undefined,
+  });
+  await wait(30);
+  stopTaken();
+  stopPlain();
+  assert(
+    taken.kills.length === 0 && plain.kills.length > 0,
+    "the factory skips its kill only when the hook took it over",
+  );
 }
 
 // ── The caps master switch turns it off.
