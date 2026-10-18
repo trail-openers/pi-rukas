@@ -77,6 +77,9 @@ export const FIXED_CAPS = [
   // #819 — the plan-to-spec gate refused the plan before branch/develop.
   "plan-spec-mismatch",
   "plan-timeout",
+  // #1243 — the step parked on a provider outage; a headless caller re-queues
+  // these itself when the endpoint answers again, so it is a published cap.
+  "provider-unavailable",
   // #1101 — the group the scheduler had taken into the wait list when a halt
   // released every worker (`sweepStranded`). Same family as the four above,
   // sorted where the sort puts it.

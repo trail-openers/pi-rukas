@@ -234,6 +234,15 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("PROTECTED_PATHS", true),
   family(str("PROVIDER_<ROLE>", null), ROLE_MEMBERS),
   family(str("PROVIDER_LENS_<LENS>", null), LENS_MEMBERS),
+  // #1243 — the provider-class backoff. A transient retry used to wait 5s then
+  // 10s, so every re-spawn landed inside the same endpoint outage (measured: the
+  // three orchard cycles 45/61/63 parked within 30 minutes with sub-second waits).
+  // A provider-class failure now waits at least FLOOR, scaled by the attempt;
+  // MAX_WAIT is the clamp on EACH wait, not a budget across the cycle. `0`
+  // restores the pre-#1243 shape.
+  // Sorted after PROVIDER_LENS_*: "PROVIDER_R" > "PROVIDER_L".
+  ms("PROVIDER_RETRY_FLOOR_MS", 60_000),
+  ms("PROVIDER_RETRY_MAX_WAIT_MS", 1_800_000),
   // #1101 — how long a group may wait on a sibling it depends on before the
   // queue caps the wait (`dependency-timeout`).
   ms("QUEUE_DEFER_CAP_MS", 1_800_000),
