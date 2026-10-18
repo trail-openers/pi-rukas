@@ -98,6 +98,10 @@ const directRefusals: Array<[string, Record<string, unknown>]> = [
   ["multiedit", { path: REPO_BIN_KEEP, edits: [] }],
   ["bash", { command: `cp a ${fx.repo}/bin/b` }],
   ["bash", { command: "echo x > ../../bin/foo" }],
+  // #1655 review r2 — Pi expands `~` and strips a leading `@` before it writes.
+  ["write", { path: "~/fence-check", content: "x" }],
+  ["write", { path: "@../../bin/keep", content: "x" }],
+  ["edit", { path: "@~/fence-check", edits: [] }],
 ];
 for (const [tool, input] of directRefusals) {
   const block = await toolCall(pi, { toolName: tool, toolCallId: "t1", input });
@@ -106,6 +110,7 @@ for (const [tool, input] of directRefusals) {
 
 const directAllowed: Array<[string, Record<string, unknown>]> = [
   ["write", { path: "src/new.ts", content: "x" }],
+  ["write", { path: "@src/new.ts", content: "x" }],
   ["edit", { path: "src/a.ts", edits: [] }],
   ["multiedit", { path: "node_modules/pkg/new.js", edits: [] }],
   ["write", { path: path.join(fx.scratch, "notes.md"), content: "x" }],
@@ -163,10 +168,10 @@ for (const [tool, input] of directAllowed) {
     "C: the log line names the tool and the path",
   );
   const total = await countWriteFenceRefusals(fx.scratch);
-  // The refusals so far: 6 direct refusals (4 write-tool + 2 bash) + 1 codemode + 1 here.
+  // The refusals so far: 9 direct refusals (7 write-tool + 2 bash) + 1 codemode + 1 here.
   assert(
-    total === 8,
-    `C: the driver's reader sums every refusal across the scratch dir (got ${total}, want 8)`,
+    total === 11,
+    `C: the driver's reader sums every refusal across the scratch dir (got ${total}, want 11)`,
   );
 }
 

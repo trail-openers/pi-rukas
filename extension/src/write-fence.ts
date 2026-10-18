@@ -18,6 +18,7 @@
  * `parentToolCallId`), so this hook sees it like any other write.
  */
 
+import os from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { trace } from "./trace.ts";
 import { bashWriteTargets } from "./write-fence-bash.ts";
@@ -26,6 +27,18 @@ import { type FenceConfig, judgeWrite, loadFenceConfig } from "./write-fence-pat
 
 /** The write tools whose `path` argument is the file they write. */
 const WRITE_TOOLS = new Set(["write", "edit", "multiedit"]);
+
+/**
+ * The path Pi's write tools actually open: a leading `@` is stripped and `~` /
+ * `~/` expand to the home directory (Pi's expandPath). The fence must judge
+ * this value, not the raw argument, or `~/x` and `@../../x` pass as in-tree names.
+ */
+export function piExpandPath(p: string): string {
+  const stripped = p.startsWith("@") ? p.slice(1) : p;
+  return stripped === "~" || stripped.startsWith("~/")
+    ? os.homedir() + stripped.slice(1)
+    : stripped;
+}
 
 interface Refusal {
   tool: string;
@@ -44,6 +57,13 @@ function refusalFor(toolName: string, input: unknown, cfg: FenceConfig): Refusal
   if (toolName === "bash") {
     if (typeof args.command !== "string") return undefined;
     for (const t of bashWriteTargets(args.command, cwd)) {
+      if (t.opaque) {
+        return {
+          tool: "bash",
+          path: t.path,
+          message: `Refused: ${t.path} — it uses brace expansion, which the fence does not expand. Name each path literally.`,
+        };
+      }
       const judged = judgeWrite(t.path, t.cwd, cfg, {
         linkedCommand: t.linkedCommand,
       });
@@ -52,7 +72,7 @@ function refusalFor(toolName: string, input: unknown, cfg: FenceConfig): Refusal
     return undefined;
   }
   if (WRITE_TOOLS.has(toolName) && typeof args.path === "string") {
-    const judged = judgeWrite(args.path, cwd, cfg);
+    const judged = judgeWrite(piExpandPath(args.path), cwd, cfg);
     if (!judged.ok) return { tool: toolName, path: args.path, message: judged.message };
   }
   return undefined;
