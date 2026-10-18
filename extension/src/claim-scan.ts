@@ -62,6 +62,13 @@
  * quantity, product, flag, or env token that happens to look like a path — or a
  * file name that happens to exist — still needs a non-prose referent, because
  * for those kinds the question really is "does anything back this up?".
+ *
+ * The escape answers a question only git can answer, so it inherits git's
+ * failure modes rather than inventing its own: a token that is not a valid repo
+ * path (`..`, a leading `/`) and a git that cannot be read are both "could not
+ * tell", which drops the claim. Neither is "absent" — reporting a file the scan
+ * never successfully looked for is the same fabrication this module exists to
+ * catch.
  */
 
 /** A prose file — where unsupported claims are asserted rather than executed. */

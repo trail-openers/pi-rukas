@@ -184,25 +184,72 @@ const SKILL_BODY = "# Go Skill\n\nRead `references/patterns.md` before writing a
   );
 }
 
+// ---------------------- the two resolutions are an OR, and `./` is the same claim
+
+{
+  // Three citations from one file in a subdirectory, each answerable by a
+  // DIFFERENT resolution — or by neither. An implementation that tried only one
+  // resolution, or that ANDed them, gets at least one of these four wrong:
+  //
+  //   - `./notes/setup.md` — dir-relative, and the `./` must not survive into
+  //     the tree-ish (`app/deep/./notes/setup.md` resolves for git, but a
+  //     normaliser that dropped nothing would be untested here).
+  //   - `notes/roster.md` — dir-relative only; a repo-root probe would look for
+  //     `notes/roster.md` and find nothing.
+  //   - `shared/runbook.md` — root-relative only; the dir-relative probe would
+  //     look for `app/deep/shared/runbook.md` and find nothing.
+  //   - `notes/ghost.md` — exists nowhere, and must still be a finding.
+  const { repo, diff } = await buildRepo({
+    "app/deep/NOTES.md":
+      "# Notes\n\nSee `./notes/setup.md`, `notes/roster.md`, `shared/runbook.md` and `notes/ghost.md`.\n",
+    "app/deep/notes/setup.md": "# Setup\n",
+    "app/deep/notes/roster.md": "# Roster\n",
+    "shared/runbook.md": "# Runbook\n",
+  });
+
+  const titles = (await runClaimScan(execp, repo, "feature/x", diff)).map((f) => f.title);
+  assert(
+    !titles.some((t) => t.includes("setup.md")),
+    "a `./`-prefixed path is the same claim as the bare one — the prefix is normalised, not probed verbatim",
+  );
+  assert(
+    !titles.some((t) => t.includes("notes/roster.md")),
+    "a token that exists ONLY under the asserting file's directory grounds (dir-relative leg)",
+  );
+  assert(
+    !titles.some((t) => t.includes("shared/runbook.md")),
+    "a token that exists ONLY at the repo root grounds (root-relative leg) — OR, not AND",
+  );
+  assert(
+    titles.some((t) => t.includes("notes/ghost.md")),
+    "and the one token that exists under NEITHER resolution still fires (not vacuous)",
+  );
+}
+
 // ------------------------------------------- an unsafe token never reaches git
 
 {
-  // `..` is the traversal shape. It must not be interpolated into a tree-ish,
-  // and it must not crash the scan — an unusable token is simply "not grounded
-  // by existence", which is the same answer as absence.
+  // Not a repo path at all — it carries `..` — so `git cat-file` is never
+  // asked. Two consequences, both asserted: the traversal string never reaches
+  // a tree-ish, and the scan does NOT report the file as unsourced, because it
+  // never checked. Reporting an unprobed file is a fabricated finding.
   const { repo, diff } = await buildRepo({
     "docs/x.md": "# X\n\nSee `../../../etc/passwd.md` and `../outside/foo.md`.\n",
   });
 
   const findings = await runClaimScan(execp, repo, "feature/x", diff);
-  const titles = findings.map((f) => f.title);
+  const pathFindings = findings.filter((f) => f.title.startsWith("Unsourced path:"));
   assert(
-    titles.some((t) => t.includes("../outside/foo.md")),
-    "a `..` path token stays an ordinary ungrounded path claim rather than escaping the repo",
+    pathFindings.length === 0,
+    "an unsafe `..` token is 'could not tell', not 'Unsourced path' — the scan never asked git whether it exists",
   );
   assert(
-    findings.length > 0,
-    "the scan completes on an unsafe token instead of throwing or hanging",
+    !findings.some((f) => f.title.includes("../") || f.description?.includes("/etc/")),
+    "and no traversal token is echoed back as a claim the scan judged",
+  );
+  assert(
+    findings.every((f) => f.severity === "MEDIUM"),
+    "the scan completes on the unsafe line instead of throwing — severities untouched where it does report",
   );
 }
 

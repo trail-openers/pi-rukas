@@ -164,11 +164,20 @@ export async function runClaimScan(
 /**
  * A path that is safe to interpolate into a git command.
  *
- * Same shape as `SAFE_PATH` in `work-driver-diff.ts`. A claim token is
- * untrusted text lifted out of prose, and `..` is what a token like
- * `../escape/foo.md` would otherwise smuggle into a tree-ish.
+ * Same character class as `SAFE_PATH` in `work-driver-diff.ts` — plus the
+ * segment rule that one lacks. There, the path arrives from `git diff --name-
+ * only`, which cannot produce `..`; here it arrives from prose a human wrote,
+ * so `../outside/foo.md` is a real shape the scan will meet. A character class
+ * that admits `.` admits `..`, so the guard is a segment check, not a charset
+ * check: no segment may be `.` or `..`, and the token may not begin with `/`.
  */
 const SAFE_PATH = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
+
+/** Whether a path may be interpolated into a `git cat-file` tree-ish. */
+function isSafePath(value: string): boolean {
+  if (!SAFE_PATH.test(value) || value.startsWith("/")) return false;
+  return !value.split("/").some((seg) => seg === "." || seg === "..");
+}
 
 /**
  * Does the file a path claim points at exist ON THE BRANCH?
@@ -199,18 +208,19 @@ function pathExistsAtBranch(
   branchName: string,
 ): PathExistenceLookup {
   return async (token, assertingFile) => {
-    if (!SAFE_PATH.test(branchName) || !SAFE_PATH.test(token)) {
-      // Not a repo path at all (it carries `..`, a backslash, or characters
-      // outside the safe set). The existence question is unanswerable, which is
-      // "absent" — the token stays eligible for the token-occurrence rule that
-      // already ran above, so an unusual-but-real path can still ground by
-      // appearing in code.
-      return false;
+    // Not a repo path at all (it carries `..`, a backslash, or characters
+    // outside the safe set). The existence question is unanswerable, which is
+    // NOT the same answer as "absent": `git cat-file` was never asked, so
+    // calling the file unsourced would report something the scan did not check.
+    // It is "could not tell" — the same signal as a broken git — and the token
+    // stays eligible for the token-occurrence rule, which ran before this.
+    if (!SAFE_PATH.test(branchName) || !isSafePath(token)) {
+      throw new Error(`could not judge path \`${token}\` — not a repo path`);
     }
     const candidates = [joinAgainstAssertingDir(token, assertingFile), token];
     let couldNotTell = false;
     for (const resolved of candidates) {
-      if (!SAFE_PATH.test(resolved)) continue;
+      if (!isSafePath(resolved)) continue;
       try {
         await execFn(`git cat-file -e ${JSON.stringify(`origin/${branchName}:${resolved}`)}`, {
           cwd: repoRoot,

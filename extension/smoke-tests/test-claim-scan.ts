@@ -251,6 +251,29 @@ const LANTERN_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
     "an existence check that cannot read the branch drops the claim rather than fabricating a finding",
   );
 
+  // The existence lookup is consulted AFTER the token-occurrence rule, as an
+  // OR. Flip the order and a non-prose grep hit would be thrown away on path
+  // claims — docs-ship-with-the-change would start firing again on every path a
+  // PR documents alongside its own code.
+  const grepFirst = await groundClaims(
+    extractClaimCandidates(
+      `--- a/docs/guide.md
++++ b/docs/guide.md
+@@ -1,1 +1,2 @@
+ intro
++See \`src/config.ts\`, which this PR adds.
+`,
+    ),
+    async () => ["src/config.ts"],
+    async () => {
+      throw new Error("the existence lookup must not be reached once a code hit grounds the claim");
+    },
+  );
+  assert(
+    grepFirst.length === 0,
+    "a path claim already grounded by a non-prose grep hit never pays for the existence probe — the escape is an OR, evaluated second",
+  );
+
   // The escape is kind-gated. `Serverless v2` at postgres-database/SKILL.md:83
   // is a product claim described only in prose, and the ticket keeps it a
   // finding: a file that exists must not vouch for a spec that is not a path.
@@ -357,6 +380,39 @@ const LANTERN_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
   assert(
     (await runClaimScan(brokenGit, "/repo", "feature/x", SKILL_DIFF)).length === 0,
     "exit 128 is 'absent' and any other code is 'could not tell' — a broken git never becomes 'Unsourced path'",
+  );
+
+  // A token that is not a repo path at all — it carries `..` — must NEVER reach
+  // `git cat-file`: the resolved string would be interpolated straight into a
+  // tree-ish, and `skill/x/../../../etc/passwd.md` escapes the repository.
+  // Refusing to probe is a safety property, so it is asserted on the command
+  // log as well as the finding count — "no finding" and "a fabricated finding"
+  // are both wrong answers here, and only the log tells them apart.
+  const UNSAFE_DIFF = `--- a/skill/go-idiomatic/SKILL.md
++++ b/skill/go-idiomatic/SKILL.md
+@@ -66,1 +66,2 @@
+ intro
++See \`../../../etc/cron.d/x.md\` for idioms.
+`;
+  const unsafeProbes: string[] = [];
+  const recordUnsafe = async (cmd: string) => {
+    unsafeProbes.push(cmd);
+    if (cmd.startsWith("git grep")) {
+      return { stdout: "origin/feature/x:skill/go-idiomatic/SKILL.md\n" };
+    }
+    return { stdout: "" };
+  };
+  // The `git grep` lookup runs once per candidate BEFORE the existence rule,
+  // so a probe log from a single-candidate diff cannot show whether the probe
+  // was skipped — it is never empty either way. What the skip does change is
+  // git's ANSWER: with the guard a `..` token throws "could not tell" and the
+  // claim is dropped; without it the probe runs, git answers 128, and the scan
+  // reports a file it never validly checked. Same reasoning as the broken-git
+  // case above, reached by a different door.
+  const unsafe = await runClaimScan(recordUnsafe, "/repo", "feature/x", UNSAFE_DIFF);
+  assert(
+    unsafe.length === 0,
+    "a `..` token is 'could not tell', not 'Unsourced path' — the scan never validly asked whether it exists",
   );
 
   // `git grep` exits 1 with no output when there are simply no matches. That is
