@@ -18,7 +18,9 @@
  * "likely coupled" branch that fires when the failure names a file another
  * workstream declared. The BATCH layer — what `cherryPickWorkstreams` records
  * and how `conflictedFile` is extracted from git's output — is
- * test-consolidation-conflict-batch-813.ts.
+ * test-consolidation-conflict-batch-813.ts. The STACKED cap renderer and the
+ * sibling-only attribution are in test-consolidation-conflict-stacked-813.ts
+ * (split for the §12 file-size cap).
  *
  * The conflict branch of the reporter is driven through the REAL
  * `runConsolidatedVerify` with an injected executor that aborts the batch,
@@ -61,9 +63,14 @@ function assert(cond: boolean, msg: string) {
 function conflictingExec(failedId: "a" | "b", opts?: { gitOutputWithoutFile?: boolean }) {
   const calls: string[] = [];
   // The file git names on the aborted pick's stderr. The batch extracts it
-  // into `conflictedFile` (case 8) so the reporter can name the colliding
-  // file without parsing free prose.
-  const CONFLICTED_FILE = failedId === "b" ? "src/b.ts" : "src/a.ts";
+  // into `conflictedFile` so the reporter can name the colliding file without
+  // parsing free prose.
+  //
+  // #813 fix round: it is the file a SIBLING declared. The pick that failed is
+  // `failedId`, so git's named file belongs to the OTHER workstream — which is
+  // the shape the coupling clause reads (a conflicted workstream colliding
+  // with its own file proves nothing about the pair; see case 3).
+  const CONFLICTED_FILE = failedId === "b" ? "src/a.ts" : "src/b.ts";
   const exec = async (cmd: string): Promise<{ stdout: string }> => {
     calls.push(cmd);
     if (cmd.startsWith("git rev-list")) {
@@ -245,6 +252,18 @@ try {
   // output ("could not apply src/b.ts") and handed back as a field. The
   // reporters scan that field, never `cons.detail` — free prose deciding the
   // diagnosis is the #813 defect again (that is case 3b's point).
+  //
+  // #813 FIX ROUND — the file the pick was applying belongs to a SIBLING. The
+  // fixture used to name workstream b's OWN declared path (`src/b.ts`) and the
+  // assertions below pinned the clause rendering "which workstream b declared"
+  // alongside `conflictedWorkstream: "b"`. That is SELF-attribution: the
+  // conflicted workstream's own commit colliding with its own file is what a
+  // conflict always is, so the sentence reported a tautology as a finding. The
+  // clause now skips `id === conflictedWorkstream`, so this fixture names a
+  // file SIBLING `a` declared — the shape the clause exists to recognise.
+  // So: `src/b.ts` → `src/a.ts` here, and the three file-naming assertions
+  // moved with it. This is the case the brief expected not to pin
+  // self-attribution; it did, in its fixture as well as its assertions.
   // ──────────────────────────────────────────────────────────────────────
   {
     const cons: ConsolidatedVerifyResult = {
@@ -253,12 +272,12 @@ try {
       detail: "cherry-pick conflict — the batch aborted; verified restored",
       conflictedWorkstream: "b",
       appliedBeforeConflict: ["a"],
-      conflictedFile: "src/b.ts",
+      conflictedFile: "src/a.ts",
     };
     const failures = runReporter(cons, {
       worktrees: { a: "/w/a", b: "/w/b" },
-      // Workstream b's declared path is the file the pick was applying — the
-      // shape a real "could not apply src/b.ts" conflict carries.
+      // Workstream a — the SIBLING of the failed pick — declared the file the
+      // pick was applying. That is the observation licensing the coupling claim.
       workstreams: {
         a: { id: "a", scope: "x", paths: ["src/a.ts"], outOfScope: ["src/b.ts"] },
         b: { id: "b", scope: "y", paths: ["src/b.ts"], outOfScope: ["src/a.ts"] },
@@ -271,13 +290,18 @@ try {
       `case 3 reporter: no "incoherent" claim (got: ${f?.slice(0, 260)})`,
     );
     assert(
-      !!f && /workstream 'b' failed/.test(f) && /src\/b\.ts/.test(f),
+      !!f && /workstream 'b' failed/.test(f) && /src\/a\.ts/.test(f),
       `case 3 reporter: names the file and its declaring workstream (got: ${f?.slice(0, 300)})`,
     );
     // The structured file is what licenses the claim — so it must render.
     assert(
-      !!f && /conflict names `src\/b\.ts`/.test(f),
+      !!f && /conflict names `src\/a\.ts`/.test(f),
       `case 3 reporter: attributes the named file to its declaring workstream (got: ${f?.slice(0, 300)})`,
+    );
+    // And it must name the SIBLING, never the workstream whose own pick failed.
+    assert(
+      !!f && !/which workstream b declared/.test(f),
+      `case 3 reporter: no self-attribution to the conflicted workstream (got: ${f?.slice(0, 300)})`,
     );
     assert(
       !!f && /likely coupled/i.test(f),

@@ -17,8 +17,14 @@
  * field.
  *
  * Both halves are pinned: the batch records what git named, and
- * `conflictedFileFrom` reads git's three conflict phrasings and NOTHING else
- * — a blob that names no path leaves the field absent rather than invented.
+ * `conflictedFileFrom` reads git's conflict phrasings and NOTHING else — a
+ * blob that names no path leaves the field absent rather than invented. The
+ * cue rows in case 3 also pin the two path-shape bugs: a `Merge conflict in
+ * <path>` whose path contains a SPACE (a `\S+` capture truncated it to
+ * `src/my`, a path that does not exist — git prints the path to end of line,
+ * so the rest of the line IS the path), a git-quoted path (quotes stripped,
+ * not kept), and the `could not apply` cue running only beside a `CONFLICT (`
+ * line (alone it names the COMMIT and its free-text subject, not a file).
  */
 
 import { cherryPickWorkstreams } from "../src/work-driver-cherry-pick-batch.ts";
@@ -111,17 +117,48 @@ function assert(cond: boolean, msg: string) {
 // else. The negative rows are the load-bearing ones: a commit abbreviation
 // ("abc1234...") and a bare word are NOT paths, and an invented file is the
 // #813 defect reintroduced one layer down.
+//
+// The spaced / quoted rows pin the truncation bug: a path with a space came
+// back as its first token, which the renderer then attributed to a workstream
+// as though git had named a file that exists. For this cue git prints the path
+// to END OF LINE, so the rest of the line is the only delimiter a spaced path
+// has — a spaced path git printed unquoted cannot be delimited any other way.
 // ──────────────────────────────────────────────────────────────────────────
 {
   const read = (s: string) => String(conflictedFileFrom(s));
   assert(
-    conflictedFileFrom("error: could not apply abc1234... src/foo/bar.ts") === "src/foo/bar.ts",
-    `case 3: 'could not apply <path>' is read (got: ${read("error: could not apply abc1234... src/foo/bar.ts")})`,
+    conflictedFileFrom(
+      "error: could not apply abc1234... workstream b\nCONFLICT (content): Merge conflict in src/foo/bar.ts",
+    ) === "src/foo/bar.ts",
+    `case 3: 'could not apply <path>' is read when a CONFLICT line proves a pick failed (got: ${read("error: could not apply abc1234... workstream b\nCONFLICT (content): Merge conflict in src/foo/bar.ts")})`,
+  );
+  assert(
+    // The cue's own tail form, still beside a CONFLICT line: git's `Updating
+    // index...`-style output can put the path on the `could not apply` line.
+    conflictedFileFrom(
+      "CONFLICT (content): a note\nerror: could not apply abc1234... src/foo/bar.ts",
+    ) === "src/foo/bar.ts",
+    `case 3: 'could not apply <path>' with a CONFLICT line reads its own tail (got: ${read("CONFLICT (content): a note\nerror: could not apply abc1234... src/foo/bar.ts")})`,
   );
   assert(
     conflictedFileFrom("CONFLICT (content): Merge conflict in extension/src/x.ts") ===
       "extension/src/x.ts",
     `case 3: 'Merge conflict in <path>' is read (got: ${read("CONFLICT (content): Merge conflict in extension/src/x.ts")})`,
+  );
+  assert(
+    conflictedFileFrom("CONFLICT (content): Merge conflict in src/my file.ts") === "src/my file.ts",
+    `case 3: a path with a SPACE is read whole, not truncated at the space (got: ${read("CONFLICT (content): Merge conflict in src/my file.ts")})`,
+  );
+  assert(
+    conflictedFileFrom('CONFLICT (content): Merge conflict in "src/my file.ts"') ===
+      "src/my file.ts",
+    `case 3: a QUOTED path is read whole with the quotes stripped (got: ${read('CONFLICT (content): Merge conflict in "src/my file.ts"')})`,
+  );
+  assert(
+    conflictedFileFrom(
+      "Auto-merging src/a.ts\nCONFLICT (content): Merge conflict in tests/fixtures/a b/expected out.txt",
+    ) === "tests/fixtures/a b/expected out.txt",
+    `case 3: a spaced path on the 2nd line of a multi-line blob is read whole (got: ${read("Auto-merging src/a.ts\nCONFLICT (content): Merge conflict in tests/fixtures/a b/expected out.txt")})`,
   );
   assert(
     conflictedFileFrom("The previous cherry-pick is now empty") === undefined,
@@ -138,6 +175,29 @@ function assert(cond: boolean, msg: string) {
   assert(
     conflictedFileFrom("error: could not apply abc1234... workstream b") === undefined,
     `case 3: a commit abbreviation is not a file (got: ${read("error: could not apply abc1234... workstream b")})`,
+  );
+  // The `could not apply` cue ALONE names the commit and its free-text subject
+  // — a path-shaped word in a commit message is not a file git observed. It is
+  // trusted only beside a `CONFLICT (` line proving a pick really failed.
+  assert(
+    conflictedFileFrom("error: could not apply abc1234... add src/thing.ts to the build") ===
+      undefined,
+    `case 3: 'could not apply' with no CONFLICT line names a COMMIT subject, not a file (got: ${read("error: could not apply abc1234... add src/thing.ts to the build")})`,
+  );
+  assert(
+    conflictedFileFrom(
+      "error: could not apply abc1234... add src/thing.ts to the build\nCONFLICT (content): Merge conflict in src/real.ts",
+    ) === "src/real.ts",
+    `case 3: 'could not apply' beside a CONFLICT line still yields the file (got: ${read("error: could not apply abc1234... add src/thing.ts to the build\nCONFLICT (content): Merge conflict in src/real.ts")})`,
+  );
+  // Ordering must not decide the answer: the strongest cue (git's own
+  // `Merge conflict in <path>`) wins over a path-shaped word that only sits in
+  // a commit subject on a later line.
+  assert(
+    conflictedFileFrom(
+      "CONFLICT (content): Merge conflict in src/real.ts\nerror: could not apply abc1234... add src/thing.ts to the build",
+    ) === "src/real.ts",
+    `case 3: the CONFLICT line's path wins over a commit subject, whatever the line order (got: ${read("CONFLICT (content): Merge conflict in src/real.ts\nerror: could not apply abc1234... add src/thing.ts to the build")})`,
   );
 }
 

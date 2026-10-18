@@ -85,11 +85,18 @@ export function explainConsolidation(cap: Cap, state: WorkState): string {
           (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
             e.kind === "cap-hit" && e.cap === "consolidated-verify-conflict",
         );
-      // #813 — an absent evidence field is an ABSENCE, so it reads as one
-      // (`undefined`) rather than as a placeholder sentence that the coupling
-      // scan then reads: a placeholder that happened to name a file would
-      // make "likely coupled" fire on nothing.
+      // #813 — an absent evidence field is an ABSENCE for the COUPLING SCAN,
+      // so `ev` stays `undefined` rather than becoming a placeholder sentence
+      // the scan then reads: a placeholder that happened to name a file would
+      // make "likely coupled" fire on nothing. `evText` is the same absence
+      // RENDERED — the flat branch below passes the same fallback as
+      // `observed`, and a stacked cycle must not print a bare `undefined`
+      // where the flat one names the gap (work-driver-converge-gate.ts
+      // appends this cap with NO evidence whenever the gate's failures carry
+      // the conflict phrase but no single string matched, so the absent case
+      // is the reachable one).
       const ev = hit?.evidence?.trim() || undefined;
+      const evText = ev ?? "no conflict detail was recorded on the cap — inspect the worktrees";
       const wts = state.pipelineState.worktrees ?? {};
       const wtList = Object.entries(wts)
         .map(([id, p]) => `${id}: ${p}`)
@@ -112,7 +119,7 @@ export function explainConsolidation(cap: Cap, state: WorkState): string {
         const fence = state.pipelineState.verifyEvidence?.fenceViolations ?? [];
         const fenceText = fenceAttribution(fence);
         if (fenceText) return fenceText;
-        return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict, even though each workstream's own range was picked against its dependency's tip (stacked cycle: ancestor commits are NOT re-picked). ${ev} Worktrees: ${wtList || "(none recorded)"}. Do NOT re-split on this alone: the conflict is either a genuine content overlap between workstreams (two workstreams editing the same lines) or a dependency whose tip diverged from the SHA the dependent's worktree was based on. Inspect the conflicting file, resolve it by hand, and re-run; check the dependency tips only if the conflicting lines belong to a dependency's own work`;
+        return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict, even though each workstream's own range was picked against its dependency's tip (stacked cycle: ancestor commits are NOT re-picked). ${evText} Worktrees: ${wtList || "(none recorded)"}. Do NOT re-split on this alone: the conflict is either a genuine content overlap between workstreams (two workstreams editing the same lines) or a dependency whose tip diverged from the SHA the dependent's worktree was based on. Inspect the conflicting file, resolve it by hand, and re-run; check the dependency tips only if the conflicting lines belong to a dependency's own work`;
       }
       // #814 — fence attribution takes precedence over any conflict guess:
       // when the driver recorded a sibling-declared fence violation
@@ -278,6 +285,10 @@ export function describeObservedConsolidationConflict(opts: {
   const coupled = coupledWorkstreamClause(
     opts.evidence ?? [opts.observed, opts.conflictedFile, pickLine].filter(Boolean).join("; "),
     opts.declaredPathsByWorkstream ?? {},
+    // The workstream whose OWN pick failed. A pick's collisions are its own
+    // work by definition, so a file it declared itself proves nothing about
+    // the pair — only a SIBLING's declaration licenses the coupling claim.
+    opts.conflictedWorkstream,
   );
   // #813 — the operator still needs the worktrees to inspect (the pre-#813
   // text carried them); rendered here so both surfaces state where to look.
@@ -294,13 +305,23 @@ export function describeObservedConsolidationConflict(opts: {
  * exact substring test on the NORMALISED declared path, so a plan annotation
  * ("src/a.ts (new)") cannot hide a hit and a coincidental word in the
  * failure prose cannot manufacture one.
+ *
+ * `conflictedWorkstream` is skipped: the clause means "the file the pick
+ * could not apply belongs to a SIBLING", which is the observation that
+ * licenses a coupling claim. The workstream whose own pick failed declaring
+ * the file is not evidence of coupling — its own commit colliding with its
+ * own file is what a conflict always is — so attributing the file back to
+ * the conflicted workstream made the sentence assert a tautology as a
+ * finding.
  */
 function coupledWorkstreamClause(
   evidence: string,
   declaredPathsByWorkstream: Record<string, string[]>,
+  conflictedWorkstream?: string,
 ): string | undefined {
   if (!evidence) return undefined;
   for (const [id, paths] of Object.entries(declaredPathsByWorkstream)) {
+    if (conflictedWorkstream !== undefined && id === conflictedWorkstream) continue;
     for (const raw of paths) {
       const file = normaliseConsolidationPath(raw);
       if (file.length > 0 && evidence.includes(file)) {

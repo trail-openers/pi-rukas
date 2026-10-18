@@ -18,6 +18,8 @@
  * reader decides whether the workstreams are coupled.
  */
 
+import { conflictedFileFromCue } from "./work-driver-cherry-pick-cue.ts";
+
 export interface CherryPickConflict {
   /**
    * The discriminator. A structural marker (not a bare string) so the type
@@ -35,8 +37,10 @@ export interface CherryPickConflict {
    * rather than by a caller. Structured because the reporters must be able to
    * say WHICH file collided without scanning an arbitrary stderr blob for a
    * path — free prose deciding the diagnosis is the #813 defect again. Only
-   * git's two conflict phrasings are read, and the tail must look like a path,
-   * so a bare word in unrelated output yields `undefined`.
+   * git's conflict phrasings are read, and the tail must look like a path,
+   * so a bare word in unrelated output yields `undefined`. The `could not
+   * apply` cue needs a `CONFLICT (` line in the same output — alone that cue
+   * names a COMMIT, not a file.
    */
   conflictedFile?: string;
 }
@@ -44,26 +48,11 @@ export interface CherryPickConflict {
 /**
  * The batch's own extraction of git's named file — kept here, next to the
  * field it fills, so the batch calls it at the moment it reads the error and
- * no caller has to parse stderr itself.
+ * no caller has to parse stderr itself. The READING rule (git's cue shapes,
+ * quoted and unquoted paths, and why `could not apply` is trusted only beside
+ * a `CONFLICT (` line) lives in work-driver-cherry-pick-cue.ts; this is the
+ * single entry point the batch calls.
  */
 export function conflictedFileFrom(gitOutput: string): string | undefined {
-  // git's three collision phrasings, each with its own cue: git prints the
-  // colliding path explicitly, so the cue is "in <path>" / "<path>: " and not
-  // "could not apply <abbrev>..." (which names the COMMIT, not the file).
-  // Requiring a path-looking tail is what keeps a commit abbreviation out of
-  // the field — an observation the batch did not make must not populate it.
-  const cues: Array<RegExp> = [
-    /Merge conflict in\s+(\S+)/i,
-    /CONFLICT \([^)]*\):\s*(?:[^\n]*?:\s*)?([\w./-]+\.\w+)/,
-    /could not apply\s+[^\n]*?([\w./-]+\.\w+)/i,
-  ];
-  for (const cue of cues) {
-    const candidate = gitOutput.match(cue)?.[1]?.replace(/^"|"$/g, "");
-    if (!candidate || candidate.length < 2) continue;
-    // A path, not a bare word: git names file paths, so a candidate with no
-    // extension and no separator is prose that happened to sit after the cue.
-    if (!/\//.test(candidate) && !/\.[\w]+$/.test(candidate)) continue;
-    return candidate;
-  }
-  return undefined;
+  return conflictedFileFromCue(gitOutput);
 }
