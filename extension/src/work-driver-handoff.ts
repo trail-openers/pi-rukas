@@ -55,7 +55,6 @@ export { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
 export {
   handoffDispatchFailed,
   parseHandoffCommentUrl,
-  parseHandoffOpsReply,
   priorHandoffCommentUrl,
 } from "./work-driver-handoff-deliver.ts";
 export { handoffForge } from "./work-driver-handoff-forge.ts";

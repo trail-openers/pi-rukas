@@ -8,14 +8,14 @@ import fs from "node:fs/promises";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
-import { parseHandoffOpsReply, verifyHandoffLabel } from "./work-driver-handoff-post.ts";
+import { verifyHandoffLabel } from "./work-driver-handoff-post.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /**
  * Outcome of the delivery leg: what the comment/label ended up as, and where
  * the driver's record of each came from.
  */
-export interface HandoffDelivery {
+export interface DeliveryOutcome {
   commentUrl?: string;
   labelApplied: boolean;
   issueLabelApplied?: boolean;
@@ -48,7 +48,7 @@ export async function deliverHandoff(args: {
   prLabelApplied?: boolean;
   delivery?: "dispatch" | "fallback";
   dispatchFailed: boolean;
-}): Promise<HandoffDelivery> {
+}): Promise<DeliveryOutcome> {
   const { issue, prNumber, forge, handoffBodyPath, dispatchFailed } = args;
   let { commentUrl, labelApplied, issueLabelApplied, prLabelApplied, delivery } = args;
   if (forge) {
@@ -109,14 +109,18 @@ export async function deliverHandoff(args: {
       labelApplied = true;
       if (dispatchFailed) delivery = "fallback";
     }
+  } else {
+    // No forge resolved — the fallback cannot run. The handoff is still
+    // recorded (handoff-emitted), but the comment/label are NOT posted.
+    // The operator sees the HANDOFF DISPATCH INCOMPLETE banner.
+    trace("work-driver: handoff: no forge resolved — in-process fallback skipped");
   }
   return { commentUrl, labelApplied, issueLabelApplied, prLabelApplied, delivery };
 }
 
 /** Whether this state's event log records a failed handoff ops dispatch. */
 export function handoffDispatchFailed(state: WorkState): boolean {
-  return state.eventLog
-    .slice()
+  return [...state.eventLog]
     .reverse()
     .some(
       (e) =>
@@ -148,6 +152,3 @@ export function priorHandoffCommentUrl(eventLog: readonly WorkEvent[]): string |
   const url = prior?.commentUrl;
   return typeof url === "string" && url.length > 0 ? url : undefined;
 }
-
-/** The ops reply's parsed label state, re-exported for the step handler. */
-export { parseHandoffOpsReply };
