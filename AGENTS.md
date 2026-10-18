@@ -76,9 +76,9 @@ pi-rukas has **two distinct codebases** that need different handling. Misidentif
 ### Path D — Sandbox image (`.devcontainer/`, image-baked tools)
 
 - Sandbox Docker image: source in `.devcontainer/Dockerfile` + `.devcontainer/entrypoint.sh`.
-- Image is auto-published to GHCR (`ghcr.io/trail-openers/pi-rukas:latest` + `sha-<commit>` + `vX.Y.Z` on release) by `.github/workflows/publish-image.yml` on every merge to main that touches image-baked files.
+- Image is auto-published to GHCR (`ghcr.io/trail-openers/pi-rukas:latest` + `sha-<commit>` + `vX.Y.Z` on release) by `.github/workflows/publish-image.yml` after CI passes on a push to main (`workflow_run`), so `latest` is never built from a red commit.
 - Users run `./install.sh` → pulls the published image (~10-20s). Local builds happen only on pull failure or with `--build`.
-- Workflow path-filter list (`.devcontainer/**`, `extension/**`, `bin/pi-rukas`, `install.sh`, `agents-base/**`, `modules/**`, `manifests/**`, `agents.json`, `build.sh`) covers everything that ends up in the image; PRs touching only docs / plan files don't trigger a republish.
+- Debounced: a main build is skipped when main has already moved past its commit (the newer commit publishes), and a newer build cancels an in-flight one. If the newest commit's CI fails, `latest` stays at the last green image until the next green merge.
 - Contributors do NOT need to manually `docker build` + push; the workflow handles it.
 - Retention: `.github/workflows/cleanup-images.yml` (weekly) prunes `sha-*` and untagged versions older than 14 days; `latest` and `v*` release tags are kept forever. Per-commit images are not reproducible (several tools install unpinned), so anything durable pins a release tag.
 - Layer order in the Dockerfile is a cost decision: everything after `COPY . /opt/pi-rukas` rebuilds and re-pushes on every merge, per arch. Steps that don't read the checkout go above it.
