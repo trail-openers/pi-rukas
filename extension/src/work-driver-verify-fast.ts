@@ -6,9 +6,23 @@
  * the full verify command wherever the driver runs it: each worktree, the
  * consolidated tree at develop and at commit-pr, and the baseline probe. A
  * fast failure short-circuits the full run, so a type error surfaces in
- * seconds instead of after the whole suite. Both tiers share the full run's
- * bound: the full run gets what the fast run left of it, so a timeout still
- * means "the gate did not finish inside PI_ENSEMBLE_VERIFY_TIMEOUT_MS".
+ * seconds instead of after the whole suite.
+ *
+ * #1509 — the two tiers NO LONGER SHARE one bound. Pre-#1509 the full run got
+ * `Math.max(1, bound - fastElapsed)` from one `opts.timeout`, so one number
+ * had to cover a 400 ms lint run and a 641-file suite, and a suite that
+ * legitimately needs longer parked the cycle. Each tier now carries its own
+ * bound (see `work-driver-verify-budget.ts`): the fast run gets the fast
+ * tier's, the full run gets the suite tier's untouched, and the fast tier's
+ * elapsed time subtracts from nothing. The clamp that remains is a guard
+ * against a caller that passed no bound at all — a `timeout: 0` would reach
+ * exec as "no bound", so a derived bound still floors at 1 ms.
+ *
+ * Tier selection stays on the `cmd !== fullCmd` identity it has always used,
+ * BUT the bound no longer rides on that comparison: each exec is handed its
+ * tier's number explicitly, so the hazard the #1509 spec names — a per-tier
+ * bound keyed off the same string equality silently handing the fast tier the
+ * full budget — cannot arise.
  *
  * Absent the file, `withFastTier` returns the executor unchanged and the
  * develop prompt names the full command as before.
@@ -51,24 +65,53 @@ type Exec<O extends { timeout?: number }> = (
  * a closing line naming the tier (and `fastTier` set, see `failedVerifyCmd`),
  * so the gate's existing failure handling
  * (timeout, missing deps, host exhaustion, tail extraction) applies as is.
+ *
+ * #1509 — `tierTimeouts` carries each tier's OWN bound, resolved by the caller
+ * (which is the only place that knows the repoRoot to read a `.pi/*-timeout-ms`
+ * file from). The fast exec gets `tierTimeouts.fast`; the full exec gets the
+ * caller's `opts.timeout` untouched — that is already the suite tier's bound,
+ * resolved by the same resolver. When the caller supplies no `tierTimeouts`
+ * (a test, or a seam that has one bound for both), the pre-#1509 sharing is
+ * preserved exactly: the full run gets what the fast run left.
  */
+export interface VerifyTierTimeouts {
+  /** The bound the fast tier's exec carries. */
+  fast?: number;
+}
+
 export function withFastTier<O extends { timeout?: number }>(
   execFn: Exec<O>,
   fullCmd: string,
   fastCmd: string | undefined,
+  tierTimeouts?: VerifyTierTimeouts,
 ): Exec<O> {
   if (!fastCmd) return execFn;
   return async (cmd, opts) => {
     if (cmd !== fullCmd) return execFn(cmd, opts);
     const started = Date.now();
+    // A caller that resolved a fast-tier bound owns it outright: the fast tier
+    // must never inherit the suite tier's number, and reading `opts.timeout`
+    // as a fallback when it is absent would let a 10-minute `opts.timeout`
+    // answer for a tier that has its own knob.
+    const fastTimeout = tierTimeouts?.fast;
     try {
-      await execFn(fastCmd, opts);
+      await execFn(
+        fastCmd,
+        (fastTimeout === undefined ? opts : ({ ...opts, timeout: fastTimeout } as O)) as O,
+      );
     } catch (err) {
       const e = err as Error & { stderr?: string; fastTier?: string };
       e.fastTier = fastCmd;
       e.stderr = `${e.stderr ?? ""}\n${FAST_TIER_LABEL} the fast tier \`${fastCmd}\` failed, so the full verify \`${fullCmd}\` was not run`;
       trace(`work-driver: fast verify tier failed — full verify skipped: ${fastCmd.slice(0, 120)}`);
       throw e;
+    }
+    if (tierTimeouts?.fast !== undefined) {
+      // Per-tier bounds: the full run keeps the bound the caller resolved for
+      // it. Subtracting the fast tier's elapsed time from a DIFFERENT bound is
+      // what made a generous suite budget clamp toward 1 ms and fake an instant
+      // timeout, so the subtraction is gone whenever the tiers are separated.
+      return execFn(cmd, opts);
     }
     const bound = opts?.timeout;
     const timeout = bound === undefined ? undefined : Math.max(1, bound - (Date.now() - started));

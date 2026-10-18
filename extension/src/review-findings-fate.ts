@@ -8,7 +8,9 @@
  *   1. The row's path is absent at head → `resolve("path-gone")` on a complete
  *      full review, else `carry`.
  *   2. No usable line (no stored line, the empty-snippet hash, or no head lines)
- *      → `carry`.
+ *      → `resolve("not-reported")` on a complete full review that no longer
+ *      reports it (#1469), else `carry`. See `linelessFate` for why silence is
+ *      evidence for THIS class of row and for no other.
  *   3. The row's ±2-line window hash is found at ANY line of the head file →
  *      `carry`. Something near the cited code changed; the code did not.
  *   4. The row's cited-line hash (`lineHash`) is found at ANY line of the head
@@ -65,6 +67,9 @@ export type RowFate = { kind: "resolve"; reason: ResolveReason } | { kind: "carr
 export type ReviewKind = "full" | "delta" | "incomplete";
 
 const CARRY: RowFate = { kind: "carry" };
+
+/** The resolve reason a line-less row takes when a complete review no longer reports it (#1469). */
+const NOT_REPORTED: RowFate = { kind: "resolve", reason: "not-reported" };
 
 /** The snippet hash of a finding with no resolvable line. */
 const NO_LINE_SNIPPET = snippetHashAt([], undefined);
@@ -141,13 +146,60 @@ export function rowFate(
 ): RowFate {
   const full = review === "full";
   switch (head.kind) {
+    // An invalid path (unsafe spelling, or a directory/tree at head) has no
+    // automatic exit at all — including #1469's: a path that cannot name a file
+    // is not evidence the finding is gone, so the line-less rule never runs here.
     case "invalid":
-      return CARRY;
+      return linelessFate(review, { headInvalid: true, accepted: row.status === "accepted" });
     case "missing":
       return full ? { kind: "resolve", reason: "path-gone" } : CARRY;
     case "lines":
       return linesFate(row, head.lines, full, review, ctx.deltaRanges);
   }
+}
+
+/**
+ * The fate of a row with no usable cited line (#1469).
+ *
+ * Such a row is a claim about the FILE, not about a line: it cites no code, so
+ * none of the code-equality rules below can ever speak for it — they all key on
+ * a snippet or a `lineHash` the row does not have. Carrying it forever was the
+ * bug: the row blocked the verdict every round, the operator-facing acceptance
+ * exit refuses every CRITICAL, and the only ways out were deleting the file or
+ * hand-editing `.git/review-findings.json`.
+ *
+ * So the rule is the one piece of evidence a file-level claim answers to: a
+ * COMPLETE full review of the branch that no longer reports it. The matching
+ * half already happened in `applyFindingRound` — a row the round re-reported
+ * (same lens, path and title, per `pickMatch`/`sameTitle`) was touched and never
+ * reaches this function — so reaching here IS the round's silence.
+ *
+ * That silence counts only when the round actually reviewed everything, which is
+ * why the gate is the caller's `review`, never an inferred "there was no delta":
+ *   - `delta` carries: the round saw only its own changed ranges, so it never
+ *     looked at the whole file and its silence says nothing;
+ *   - `incomplete` carries: a blocked lens reached no verdict, which is the same
+ *     absence of coverage under a different name.
+ *
+ * `headInvalid` carries for any review kind: a path that is unsafe, or a
+ * directory rather than a file, is not evidence the code is gone (#1303), and
+ * this rule must not become a second exit around that one.
+ *
+ * `accepted` carries for the same reason. An open row's silence-retirement is
+ * sound because its next report re-matches it; an ACCEPTED row has no such
+ * counterweight — the operator's decision suppresses it, so the round is
+ * forbidden to report it, and a rule that retires rows on the round's silence
+ * would lapse every file-level acceptance on the first full review that did not
+ * mention it. The store's own rule for an accepted row is eviction on PROOF only
+ * (its path absent from the reviewed commit), and "not re-reported" is precisely
+ * the absence of evidence that rule refuses to act on.
+ */
+export function linelessFate(
+  review: ReviewKind,
+  opts: { headInvalid?: boolean; accepted?: boolean } = {},
+): RowFate {
+  if (opts.headInvalid || opts.accepted) return CARRY;
+  return review === "full" ? NOT_REPORTED : CARRY;
 }
 
 /** The fate of a row whose path is a readable file at head. */
@@ -158,7 +210,9 @@ function linesFate(
   review: ReviewKind,
   deltaRanges: ChangedRanges | undefined,
 ): RowFate {
-  if (row.line === undefined || row.snippetHash === NO_LINE_SNIPPET) return CARRY;
+  if (row.line === undefined || row.snippetHash === NO_LINE_SNIPPET) {
+    return linelessFate(review, { accepted: row.status === "accepted" });
+  }
   const index = indexOf(lines);
   if (index.windows.has(row.snippetHash)) return CARRY;
   if (row.lineHash !== undefined && index.lineHashes.has(row.lineHash)) return CARRY;

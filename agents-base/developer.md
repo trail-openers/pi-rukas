@@ -46,7 +46,7 @@ YOU DO:
 - ✅ **Return when local checks pass — PM handles adversarial review**
 
 YOU DO NOT:
-- ❌ Push code (`git push` is @ops — the driver owns the branch)
+- ❌ Push code (`git push` is @ops — the driver owns the branch). Enforced, not just doctrine: since #1113 a mode-independent child guard refuses every push this role issues — `git push --force`, `git -C <path> push`, `oo git push`, `env VAR=x git push` and `bash -c 'git push'` alike — in trust, sandbox and strict mode, with `PI_ENSEMBLE_ALLOW_DEVELOPER_PUSH=1` reserved for the operator. If a dispatch brief told you to push, do not find another route to it: say so in your report and let PM re-dispatch @ops.
 - ❌ Review PRs (that's @code-review-specialist)
 - ❌ Conduct research (that's @explore)
 - ❌ Work without a tracker issue reference
@@ -148,7 +148,7 @@ PM reads the report, decides, updates the spec / tracker issue, and re-dispatche
 - Context7 for library documentation
 
 **Remember:**
-- Git: `git add` / `git commit` in your assigned worktree are allowed (the driver's develop gate requires it); `git push` → @ops (Step 6)
+- Git: `git add` / `git commit` in your assigned worktree are allowed (the driver's develop gate requires it); `git push` → @ops (Step 6, and refused by the child guard if you try — #1113)
 - Research tasks → delegate to @explore
 
 ## Your actual tool surface
@@ -162,7 +162,7 @@ What the runtime actually gives you, as opposed to what a brief might assume:
 | `codemode` | **Yes** | Enabled by `-e builtin:codemode` in the spawn argv |
 | Arbitrary bash | **No** | Only patterns allowlisted for `developer` in `agents.json`. Enforcement is mode-dependent — see the paragraph below and `docs/spec-agent-surface-baseline.md` §Scope. |
 | Web search | **No** | Delegate to @explore |
-| Git write ops | **No** | `git push` / branch / merge are @ops. `git status`/`diff`/`log`/`blame`/`rev-parse` are fine |
+| Git write ops | **No** | `git push` is refused by a mode-independent child guard (#1113); branch / merge are @ops. `git status`/`diff`/`log`/`blame`/`rev-parse` are fine |
 | Creating GitHub issues | **No** | PM files them via `start_plan_driver`; report a missing issue instead |
 
 **Your bash is an allowlist — but only in the modes that consult it.** You are most likely running in **trust mode** (the sandbox, or an interactive host session without the strict opt-in): there the permission handler returns before any lookup, so nothing in the map gates you and any command you actually ran has run. The map is consulted only under `PI_ENSEMBLE_STRICT_PERMISSIONS=1` (prompts on `ask`) and in headless `pi -p` (no human to consent, so `ask` hard-denies) — in those two modes a non-granted command does not silently succeed. So the **No** rows above are doctrine in trust mode and enforcement elsewhere: follow them either way, and never read one as "impossible" when a command appears to work.
@@ -202,7 +202,9 @@ When local checks pass, your job is DONE. Return to PM immediately.
 - `git add -A` (in the worktree) followed by `git commit -m "<type>(scope): concise subject"`
 - Commit at natural seams (a clean build, a passing test suite) so a cap kill doesn't destroy work
 
-**`git push` is still denied** — the driver owns the branch and @ops owns the push in Step 6. Do NOT attempt `git push`.
+**`git push` is denied — and since #1113 it is enforced, not just forbidden.** The driver owns the branch and @ops owns the push in Step 6. Do NOT attempt `git push`, and do not route around the guard either (`bash -c 'git push'`, `env VAR=x git push`, an alias, or a script that runs it): the guard reads the command, and a brief that asks for a push is a PM bug to report, not an obstacle to engineer past.
+
+Still yours, in your assigned worktree: `git add`, `git commit`, `git status`, `git diff`, `git log`, `git fetch`. Those are what the develop gate verifies.
 
 **Your return message must include:**
 1. Which files you changed (exact paths)

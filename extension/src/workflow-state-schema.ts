@@ -453,7 +453,5 @@ export interface PipelineState extends IssueClosedState {
 // and are re-exported so every importer keeps its path.
 export { TERMINAL_STATUSES, isTerminalState } from "./workflow-state-schema-workstate.ts";
 export type { WorkState } from "./workflow-state-schema-workstate.ts";
-
-// The state constructors/mutators (`initialState`, `appendEvent`,
-// `detectInconsistencies`) live in `workflow-state-update.ts` —
-// `workflow-state.ts` re-exports them so existing imports keep working.
+// The constructors/mutators (`initialState`, `appendEvent`, `detectInconsistencies`)
+// live in `workflow-state-update.ts`; `workflow-state.ts` re-exports them.
