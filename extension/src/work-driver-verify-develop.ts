@@ -38,6 +38,7 @@ import {
 } from "./work-driver-verify-cmd.ts";
 import {
   collectCommentEvidence,
+  runContinuePrGate,
   runSkipRatchetGate,
   runSmokeGate,
 } from "./work-driver-verify-develop-gates.ts";
@@ -471,10 +472,8 @@ export async function verifyDevelopOutcome(
     }
   }
 
-  // --- Skip-ratchet gate (PR277) + product smoke gate (PR277) ---
-  // #451 — extracted to work-driver-verify-develop-gates.ts (AGENTS.md §12
-  // file-size cap). The #782 flake-retry logic above pushed this file past
-  // the 500-line limit; the two independent post-verify gates move there.
+  // --- Skip-ratchet + product smoke gates (PR277) --- #451: they live in
+  // work-driver-verify-develop-gates.ts (AGENTS.md §12 file-size cap).
   // #1012 — these gates run UNCONDITIONALLY: the frontend-only skip above
   // gates only the verifyCmdFor → runVerifyCommandGate chain, never the
   // ratchet/smoke/comment-retention checks.
@@ -491,6 +490,7 @@ export async function verifyDevelopOutcome(
     commentEvidence.push(check);
   }
   await runSmokeGate(execFn, ctx.repoRoot, changedWorktrees, failures, notes);
+  await runContinuePrGate(execFn, state, worktrees, failures);
   // The probe's marker leads the list (it is unshifted); no check before or
   // after the verify command added a failure of its own.
   if (failures.length === verifyCmdEnd && failures[0]?.startsWith(BASELINE_RED_MARKER)) {
