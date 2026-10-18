@@ -1538,6 +1538,14 @@ and the develop event log keeps its `verifyEvidence` / duration recording untouc
 
 **Escape hatch:** `PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP` set to `0`, `false`, `off` or `no` (trimmed, case-insensitive) restores the always-run behaviour (for example, to reproduce a gate failure that only appears in the probe's checkout).
 
+### `develop` is silent for many minutes after the developer finished (#1415)
+
+**Symptom:** the developer child reports done, then nothing reaches the console or the headless stream until `develop` completes 10–25 minutes later.
+
+**Cause:** that gap is the develop gate running the project's verify command (per worktree, then the consolidated run). It is not a stall. Before #1415 nothing was recorded while it ran.
+
+**What you see now:** the gate records `verify-started` (with the command) before the command runs, so it reaches the stream and `/work-status` while the gate is still running, and `verify-completed` when it ends, with `ok` and the duration in `ms`. Both are stable NDJSON kinds ([headless.md](headless.md#the-stable-subset)). A gate with no discoverable verify command runs nothing and records neither. The per-round repetition itself was removed for N=1 cycles by #1240 (above); a slow project gate is the project's to speed up — `.pi/verify-cmd-fast` and `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` are the knobs.
+
 ### Type-widening scan
 
 Before each lens review the integrated diff is scanned for removed compiler-enforced invariants: `T` → `Option<T>` (Rust), `T` → `T | null` / `| undefined` and added `?:` (TS), removed `readonly`/`final`/`const`, narrowing to `any`/`unknown`, removed `assert`/`debug_assert!`, removed `pub`/`mut`.

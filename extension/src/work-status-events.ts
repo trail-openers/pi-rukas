@@ -201,6 +201,10 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // test is red at the base commit too. Names and base ride on the event
       // so an operator can confirm the claim without the raw verify log.
       return `  consolidated-verify-pre-existing · ${e.step} · ${e.failures.length} failing test(s) red at base ${e.baseSha.slice(0, 8)}: ${e.failures.slice(0, 3).join(", ")}${e.failures.length > 3 ? ` (+${e.failures.length - 3} more)` : ""}`;
+    case "verify-started":
+      return `  verify-started · ${e.step} · ${e.command.slice(0, 60)}`;
+    case "verify-completed":
+      return `  verify-completed · ${e.step} · ${e.ok ? "passed" : "FAILED"} · ${fmtElapsed(e.ms)} · ${e.command.slice(0, 60)}`;
     case "widening-scan":
       return `  widening-scan · ${e.findings.length} finding(s)`;
     case "memory-write":
