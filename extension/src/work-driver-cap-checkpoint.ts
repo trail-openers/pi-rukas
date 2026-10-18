@@ -29,8 +29,14 @@
  * #1414 round 2 — the typecheck RUN itself (its bound, its verify slot, and
  * the classifier that tells "could not run" from "broken") lives in
  * `work-driver-cap-checkpoint-typecheck.ts`. This file stays the checkpoint's
- * git / commit / status-file half, and keeps the exported command constant so
- * the no-bare-alias gate has one file to read the literal from.
+ * git / commit / status-file half.
+ *
+ * #1414 round 3 — the dependency used to run BOTH ways: this file imported
+ * `typecheckWorktree` from the sibling while the sibling value-imported
+ * `CHECKPOINT_TYPECHECK_CMD` back from here. The constant now lives in the
+ * leaf and this file re-exports it (`export { CHECKPOINT_TYPECHECK_CMD } from
+ * …`), so every edge points checkpoint → typecheck and the no-bare-alias gate
+ * keeps reading the literal from the file whose jsdoc explains the spelling.
  */
 
 import fs from "node:fs/promises";
@@ -40,6 +46,7 @@ import { excludeToolListFor } from "./role-tools.ts";
 import { isRoleName } from "./roles.ts";
 import { trace } from "./trace.ts";
 import {
+  CHECKPOINT_TYPECHECK_CMD,
   type TypecheckOutcome,
   typecheckWorktree,
 } from "./work-driver-cap-checkpoint-typecheck.ts";
@@ -51,25 +58,30 @@ import type { WorkState } from "./workflow-state-schema.ts";
 import { type CapedPartialState, persistCycle, readState } from "./workflow-state.ts";
 
 /**
- * #1414 — the ONE spelling of the checkpoint's typecheck command. The
- * executed call (in work-driver-cap-checkpoint-typecheck.ts), the status-file
- * lines below and the handoff bullet (work-driver-caped-state.ts) all carry
- * this exact text, so what the driver RUNS and what it TELLS the operator it
- * ran cannot drift. The no-bare-alias gate under `smoke-tests/` pins the
- * exported value, the executed literal and each prose site to one another.
+ * #1414 — the ONE spelling of the checkpoint's typecheck command, RE-EXPORTED
+ * from its leaf module (it is defined in
+ * `work-driver-cap-checkpoint-typecheck.ts`, beside the call that runs it),
+ * re-exported here so the operator-facing rationale below and the no-bare-alias
+ * gate both keep a stable site. The executed call, the status-file lines below
+ * and the handoff bullet (work-driver-caped-state.ts) all carry this exact
+ * text, so what the driver RUNS and what it TELLS the operator it ran cannot
+ * drift. The gate under `smoke-tests/` pins the exported value, the executed
+ * literal and each prose site to one another.
  *
  * `bun x` — not the hyphenless alias the gate refuses — dispatches through
  * the one bun binary always on PATH (#1118); `--noEmit` is the real tsc
  * flag — the hyphenated form is not one, so the old literal failed on every
  * host and the handoff falsely reported committed code as broken.
  *
- * This is the module's one EXPORTED constant, and it stays here (with its
- * doc comment and every other prose mention of the command) even though the
- * call site lives in the typecheck sibling: the #1414 gate reads THIS file's
- * source for the literal, and the jsdoc above is what says why the spelling
- * is load-bearing. The sibling imports it, so there is still exactly one.
+ * #1414 round 3 — re-export, not definition, and the direction is
+ * load-bearing: defining the constant here meant the leaf imported from its
+ * own consumer (a runtime cycle, kept invisible only because a hoisted `const`
+ * read at call time never observes the TDZ). The `export … from` form (not a
+ * local `const` plus a bare re-export) is what the gate under `smoke-tests/`
+ * pins by SOURCE, so an edge that points the wrong way again is a gate failure
+ * rather than a silent cycle.
  */
-export const CHECKPOINT_TYPECHECK_CMD = "bun x tsc --noEmit";
+export { CHECKPOINT_TYPECHECK_CMD } from "./work-driver-cap-checkpoint-typecheck.ts";
 
 /** #543 (M5) — structurally write-gated roles: the SAME set role-tools.ts
  * passes `--exclude-tools write,edit,multiedit` to (explore /
@@ -182,6 +194,13 @@ export async function checkpointCapedDispatch(
   // check never judged anything) keeps the field OFF the record and says why in
   // the status file; only `false` indicts the code.
   let typecheck: TypecheckOutcome | undefined;
+  // #1414 round 3 — the attempt is recorded AT THE CALL SITE, not derived from
+  // `typecheck` afterwards. The two are not the same fact: `typecheck` is set
+  // only if the call both started and settled, so a `typecheckWorktree` that
+  // ever rejected — or any future code path that calls it and does not assign —
+  // would leave a record claiming no attempt for a compile the driver really
+  // ran, and the handoff would tell the operator the tree was never checked.
+  let typecheckAttempted = false;
   try {
     if (reportOnly) {
       // (M5) — skip the stage+commit entirely for write-gated roles. The
@@ -206,6 +225,7 @@ export async function checkpointCapedDispatch(
         // but the commit must not silently claim a tree that does not even
         // typecheck: the `typechecked` flag lets the handoff say so — and only
         // when the check actually RAN (#1414 round 2).
+        typecheckAttempted = true;
         typecheck = await typecheckWorktree(cwd, ctx.checkpointExecFn ?? checkpointExecp);
         // Stage the porcelain paths (skip driver artefacts: .pi/ and tmp/)
         // and commit. The commit message is driver-attributed so the
@@ -369,6 +389,12 @@ export async function checkpointCapedDispatch(
         typecheck
         ? { typecheckReason: typecheck.why }
         : {}),
+    // #1414 round 3 — the record distinguishes "attempted, reached no
+    // verdict" from "never attempted". Set at the call site above, so it says
+    // what the driver DID rather than what the check concluded: a report-only
+    // kill and a clean tree never reach the call, and a tree whose commit
+    // failed after the check ran still reports the attempt it made.
+    ...(typecheckAttempted ? { typecheckAttempted: true as const } : {}),
   };
   // #544 (8f) — MERGE the checkpoint into the on-disk state file: read the
   // current file (routeStepOutcome may have written it since this step's

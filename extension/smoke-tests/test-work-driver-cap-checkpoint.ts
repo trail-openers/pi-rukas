@@ -29,6 +29,7 @@ import path from "node:path";
 import { execp } from "../src/exec.ts";
 import { checkpointCapedDispatch } from "../src/work-driver-cap-checkpoint.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { verifyTimeoutMs } from "../src/work-driver-verify-develop-helpers.ts";
 import { initialState, writeState } from "../src/workflow-state.ts";
 
@@ -61,7 +62,11 @@ function makeRepo(): string {
   return dir;
 }
 
-function capKillState(repoRoot: string, issue: number): ReturnType<typeof initialState> {
+function capKillState(
+  repoRoot: string,
+  issue: number,
+  role: "developer" | "explore" = "developer",
+): ReturnType<typeof initialState> {
   let s = initialState(issue, Date.now());
   s = {
     ...s,
@@ -78,7 +83,9 @@ function capKillState(repoRoot: string, issue: number): ReturnType<typeof initia
       {
         kind: "dispatch-failed" as const,
         step: "develop" as const,
-        role: "developer" as const,
+        role: role as ReturnType<typeof initialState>["eventLog"][number] extends { role: infer R }
+          ? R
+          : never,
         jobId: "j1",
         label: "developer",
         ms: 1000,
@@ -109,7 +116,9 @@ const fakePi = { sendUserMessage: () => {} } as unknown as ExtensionAPI;
  * test that exists to observe them. `optsReceived` is what the bound assertions
  * read.
  */
-function typecheckSpy(behaviour: "resolve" | "reject" | "reject-non-error" = "resolve"): {
+function typecheckSpy(
+  behaviour: "resolve" | "reject" | "reject-non-error" | "reject-could-not-run" = "resolve",
+): {
   fn: NonNullable<DriverContext["checkpointExecFn"]>;
   calls: { cmd: string; cwd?: string }[];
   optsReceived: Array<Record<string, unknown> | undefined>;
@@ -122,6 +131,14 @@ function typecheckSpy(behaviour: "resolve" | "reject" | "reject-non-error" = "re
       optsReceived.push(opts as Record<string, unknown> | undefined);
       if (behaviour === "resolve") return { stdout: "", stderr: "" };
       if (behaviour === "reject") throw new Error("tsc exited 2: type errors");
+      if (behaviour === "reject-could-not-run") {
+        // #1414 round 3 — the shape that must NOT indict the code: the shell
+        // could not run the command at all.
+        throw Object.assign(
+          new Error("Command failed: bun x tsc --noEmit\nsh: tsc: command not found"),
+          { code: 127, stdout: "", stderr: "sh: tsc: command not found" },
+        );
+      }
       // A non-Error rejection must still land as typechecked: false — the
       // checkpoint is contractually non-throwing.
       throw "tsc blew up without an Error";
@@ -350,6 +367,14 @@ function typecheckSpy(behaviour: "resolve" | "reject" | "reject-non-error" = "re
       `#1414: cwd is the worktree's extension/ dir (got ${JSON.stringify(spy.calls[0]?.cwd)})`,
     );
     assert(cps?.typechecked === true, "#1414: a resolving typecheck records typechecked:true");
+    // #1414 round 3 — the record says the check was ATTEMPTED, which is what
+    // lets the handoff tell "attempted, no verdict" from "never ran". Without
+    // it a `typechecked: true` record and a never-attempted one look alike to
+    // any consumer that does not re-derive it from `tree` / `reportOnly`.
+    assert(
+      cps?.typecheckAttempted === true,
+      `#1414-r3: an attempted check records typecheckAttempted (got ${String(cps?.typecheckAttempted)})`,
+    );
     assert(cps?.tree === "committed", "#1414: the injected executor does not stop the commit");
     const passFile = path.join(repo, "tmp", "issue-9905", "status-developer.md");
     const passContent = await readFile(passFile, "utf8").catch(() => "");
