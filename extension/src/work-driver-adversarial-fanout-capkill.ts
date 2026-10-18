@@ -44,22 +44,26 @@ export function capKillOutcomeFields(result: DispatchResult): Partial<Adversaria
  * not un-hang a hung child. The structured cause existed on the DispatchResult
  * the whole time; the projection dropped it.
  *
- * The union is inlined (as it is in `types.ts`) rather than named: there is no
- * exported kill-cause type to import, and minting one for this call site would
- * be a second vocabulary to keep in step with the first.
+ * The union is DERIVED from `DispatchResult["killCause"]` rather than written
+ * out: a new kill cause added to the spawn's union is then a compile error here
+ * until this list says whether it belongs to the ladder. An inlined copy of the
+ * vocabulary is exactly what drifts silently.
  */
-type RetryLadderKillCause = "timeout" | "inactivity" | "tool-inactivity" | "abort" | "plan-timeout";
+type RetryLadderKillCause = Exclude<
+  NonNullable<DispatchResult["killCause"]>,
+  "loop" | "token-budget"
+>;
 
-const RETRY_LADDER_KILL_CAUSES: readonly string[] = [
+const RETRY_LADDER_KILL_CAUSES: readonly RetryLadderKillCause[] = [
   "timeout",
   "inactivity",
   "tool-inactivity",
   "abort",
   "plan-timeout",
-];
+] as const;
 
 function isRetryLadderKillCause(cause: string): cause is RetryLadderKillCause {
-  return RETRY_LADDER_KILL_CAUSES.includes(cause);
+  return (RETRY_LADDER_KILL_CAUSES as readonly string[]).includes(cause);
 }
 
 /**

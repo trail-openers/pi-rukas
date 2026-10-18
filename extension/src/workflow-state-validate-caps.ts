@@ -97,11 +97,18 @@ export const CAP_HIT_FIXED_LITERALS = [
   "adversarial-infra-failure",
   // #1243 — the step parked on a provider outage (an endpoint timeout, a
   // transport severance, a short-burst 429) rather than on a failure of the
-  // work. A deliberate park terminalized as a handoff — NOT `step-failed:`
-  // (that prefix would read as a mid-flight crash and mark the cycle `aborted`
-  // when the branch may hold finished, committed work). The caller re-queues it
-  // when the endpoint answers again, so the validator must know the literal or
-  // a re-entry of a live parked cycle would halt on "unrecognised value".
+  // work. NOT `step-failed:` (that prefix would read as a mid-flight crash and
+  // mark the cycle `aborted` when the branch may hold finished, committed work).
+  // The caller re-queues it when the endpoint answers again, so the validator
+  // must know the literal or a re-entry of a live parked cycle would halt on
+  // "unrecognised value".
+  //
+  // #1243 fix round — the park terminalises as `interrupted` (reason `provider`),
+  // NOT `handoff`: `handoff` is terminal and re-entry refuses it without
+  // `--restart`, which is the one verb this park's own advice forbids. It keeps
+  // the handoff EXIT code and the delivered comment + label, so the host contract
+  // is unchanged; only re-entry differs. The `step-failed:` exclusion still
+  // matters because the cap literal is what decides the status.
   "provider-unavailable",
   "loop-detected",
   "token-budget",

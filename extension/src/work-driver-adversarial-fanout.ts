@@ -11,7 +11,6 @@
  */
 
 import { runAdversarialLoop } from "./adversarial.ts";
-import { abortableSleep } from "./dispatch-retry.ts";
 import { adversarialFixDelta } from "./fix-delta.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { makeRunId } from "./spawn.ts";
@@ -52,6 +51,7 @@ import {
 } from "./work-driver-failure-taxonomy.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
+import { providerSleep } from "./work-driver-step-router.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { driverGateCmd } from "./work-driver-verify-pr17.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -300,7 +300,6 @@ export async function fanOutAdversarial(
       // abort / plan-timeout) for the retry ladder alone. Order matters:
       // `capKillOutcomeFields` wins for loop / token-budget, which it owns.
       ...(retryLadderKillCause(result) ? { killCause: retryLadderKillCause(result) } : {}),
-      ...capKillOutcomeFields(result),
       completionEvent,
       branchEvent: multi
         ? {
@@ -436,7 +435,14 @@ export async function fanOutAdversarial(
           ),
         )
       : 0;
-    if (waitMs > 0) await abortableSleep(waitMs, ctx.signal);
+    // #1243 — the SAME injectable seam the step router's provider ladder uses
+    // (`providerSleep` in work-driver-step-router.ts), so the offline suite
+    // records this wait instead of sleeping through it, and the abort signal
+    // still ends it early in production. The seam's default IS `abortableSleep`,
+    // so behaviour is unchanged in production; the difference is that the two
+    // ladder sites can now be observed by one test seam rather than one being
+    // hard-wired to the real timer.
+    if (waitMs > 0) await providerSleep(waitMs, ctx.signal);
     const budget: Record<string, number> = { ...localRetries };
     for (const o of candidates) {
       const incremented = (localRetries[o.id] ?? 0) + 1;

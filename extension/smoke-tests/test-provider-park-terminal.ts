@@ -233,18 +233,16 @@ void classifierReadsTheTerminalFailure();
       cap?.kind === "cap-hit" && cap.cap === "adversarial-infra-failure",
       `a crash terminal failure does NOT park as provider-unavailable (got ${cap?.kind === "cap-hit" ? cap.cap : "no cap"})`,
     );
-    // The driver leg's mutation signal: hand the seam the window the router saw
-    // (blip first, crash terminal). Pre-fix it scanned the window and said
-    // provider; the terminal reading says the crash.
-    (globalThis as Record<string, unknown>).__MIXED_WINDOW__ = [
-      { ...providerEvent, jobId: "j-win-blip" },
-      { ...crashEvent, jobId: "j-win-crash" },
-    ];
+    // The driver leg's mutation signal: the tail the router actually resolved
+    // is the crash, and the cap it writes for that tail is not the provider
+    // park. Pre-fix, the classifier scanned the whole window and said provider;
+    // the terminal reading says the crash. Nothing is injected — the driver
+    // above already recorded the window (blip first, crash terminal) and the
+    // assertions below read it back from the state file.
     assert(
       dispatchFailCapFor("adversarial", crashEvent) === "step-failed:adversarial",
       "the cap the router writes for that tail is not the provider park (a window scan would flip it)",
     );
-    (globalThis as Record<string, unknown>).__MIXED_WINDOW__ = undefined;
     assert(
       cap?.kind === "cap-hit" && cap.evidence === undefined,
       "the crash park carries no provider evidence for a caller to re-queue on",
@@ -396,14 +394,24 @@ void classifierReadsTheTerminalFailure();
   );
 
   const why = explainCap("provider-unavailable", outage);
+  // #1243 fix round — the advice and the behaviour have to agree. The park now
+  // terminalises as `interrupted` (reason `provider`) precisely so a plain
+  // `/work N` re-enters, so the advice says that, and says `--restart` is the
+  // wrong verb. An earlier version of this test asserted a phrase no driver
+  // path honoured: the park was a terminal `handoff`, which refuses a plain
+  // re-run. Asserting the WORDS is the point — not that a substring appears.
   assert(
-    /resumes where it stopped/.test(why) && !/--restart/.test(why),
-    "explainCap tells the operator the step resumes where it stopped",
+    /re-run `\/work 1243`/.test(why) && /Do NOT pass `--restart`/.test(why),
+    `explainCap tells the operator to re-run without --restart (got: ${why.slice(0, 260)})`,
+  );
+  assert(
+    /resumable/.test(why) && /interrupted/.test(why),
+    "explainCap names the status that makes the park re-enterable, so the claim is checkable against the state file",
   );
   const action = humanActionFor("cap provider-unavailable", 1243);
   assert(
-    /resumes where it stopped/.test(action) && /do NOT pass --restart/.test(action),
-    `humanActionFor matches explainCap — the resume advice, never a bare --restart (got: ${action})`,
+    /re-run `\/work 1243`/.test(action) && /do NOT pass --restart/.test(action),
+    `humanActionFor matches explainCap — the re-run advice, never a bare --restart (got: ${action})`,
   );
   // The prohibition must survive a substring grep too: a reader scanning the
   // action for "--restart" must not conclude the queue recommends it.
