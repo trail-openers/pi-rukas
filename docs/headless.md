@@ -95,6 +95,8 @@ The headless runner's contract with its caller is four independent surfaces, eac
 
 A grouped run exits 21 if any issue was interrupted, otherwise the highest per-issue code. The `--json` result carries every issue regardless.
 
+A `provider-unavailable` park (#1243 — the model endpoint, not the code) reports `issues[].status` as `interrupted` with `reason: "provider"` and exits as `handoff` (10), not 21: nothing was cut off and the handoff was delivered, so the host's contract is unchanged; only re-entry differs, in that running `work <issue>` again resumes the halted step instead of needing `--restart`.
+
 A signal outranks the failure of the step it lands in. The step that was running when the signal fired is not routed: no cap, no handoff, exit 21, `resumable: true`, and its `interrupted` event names it (`step`). A cap that step recorded on its way out (an aborted child, an issue-body fetch cut short) is the abort's doing, so the result does not report it as `cap`; running `work <issue>` again re-runs the step. The one exception is the `handoff` step itself: a signal that lands there arrives after the cycle has already stopped on its cap, so the handoff finishes and the run exits with the handoff's code.
 
 ### `--json` result schema (v4)

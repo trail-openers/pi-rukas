@@ -41,6 +41,8 @@
 import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { deliverTerminalLine } from "./work-driver-terminal-delivery.ts";
+import { isProviderPark } from "./workflow-state-events-interrupted.ts";
 import { type WorkState, type WorkStep, persistCycle } from "./workflow-state.ts";
 
 /** #382 escape hatch: PI_ENSEMBLE_RESUME=0 restores the pre-#382 behaviour. */
@@ -316,6 +318,48 @@ export function clearForResume(state: WorkState): WorkState {
 export function reenterInterrupted(state: WorkState): WorkState {
   if (state.pipelineState.status !== "interrupted") return state;
   return { ...state, pipelineState: { ...state.pipelineState, status: "running" } };
+}
+
+/**
+ * #1243 fix round — re-deliver a provider park's handoff line when the crash
+ * that interrupted it happened BEFORE the terminal-delivery write landed.
+ *
+ * Why the classifier alone is not enough: `applyInterrupt` clears
+ * `inFlightJobIds` (the dispatch that died is gone), so the `resume` verdict
+ * cannot fire for such a park — it is the clean-boundary case, `fresh` — and
+ * the driver's loop would exit at once with the line still owed. A second
+ * provider failure after a resume therefore reached the operator as nothing at
+ * all. `deliverTerminalLine` is the idempotent re-attempt (`handoffDeliveredAt`
+ * gates a line that did go out) and `runHandoff` short-circuits on that same
+ * marker, so a park that resumes re-delivers and a park already delivered does
+ * not re-post the comment — the outcome the park's own advice promises: re-run
+ * `/work N`, the halted step re-enters, the operator hears about it.
+ *
+ * Reads the state as it was when this invocation opened it (`disk`), not the
+ * in-memory copy the re-entry already flipped to `running` — and reads it as
+ * the ONLY thing that decides. The in-memory copy has already been through
+ * `reenterInterrupted`, which flips `interrupted` to `running`, and
+ * `persistCycle` writes `running` back as `interrupted` under an aborted
+ * signal: a decision made from the live copy is made from state this
+ * invocation mutated.
+ *
+ * The gate is the shared `isProviderPark(disk)`, not the status alone. A
+ * SIGTERM interrupt is `interrupted` too and its cycle was cut off mid-step —
+ * `interruptIfRequested` owns that write and there is no handoff to announce,
+ * so a status-only test re-posted a handoff line for a cycle nobody handed off.
+ */
+export async function redeliverUndeliveredPark(
+  ctx: Pick<CycleContext, "repoRoot" | "emitSink" | "signal" | "host" | "issue">,
+  verdict: RunningVerdict,
+  disk: WorkState | undefined,
+  state: WorkState,
+): Promise<WorkState> {
+  if (verdict.action !== "fresh") return state;
+  if (disk === undefined || !isProviderPark(disk)) return state;
+  if (disk.pipelineState.handoffDeliveredAt !== undefined) return state;
+  const next = await deliverTerminalLine(ctx, state, disk);
+  await persistCycle(ctx, next);
+  return next;
 }
 
 /** Operator-facing message for a refused re-entry. */

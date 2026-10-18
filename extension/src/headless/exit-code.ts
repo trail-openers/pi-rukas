@@ -19,6 +19,7 @@
  */
 
 import type { WorkCapLiteral } from "../workflow-state-events-caps.ts";
+import { isProviderPark } from "../workflow-state-events-interrupted.ts";
 import type { InterruptReason, WorkEvent, WorkState } from "../workflow-state.ts";
 
 /** Version of the exit-code contract. Bump on any change to the code values or their meanings. */
@@ -98,14 +99,16 @@ export function exitCodeForState(state: WorkState): number {
     case "aborted":
       return EXIT.aborted;
     case "interrupted": {
-      const reason = lastInterruptReason(state);
       // #1243 — a provider park is NOT a signal interrupt: nothing was cut off,
       // the handoff was delivered, and the host's contract for a park the
       // endpoint caused is the handoff code it already got (`failure.kind ===
       // "provider"`, re-queueable). It keeps EXIT.handoff so a host that
       // switches on 10 sees no change; only re-entry differs from a `handoff`
       // status. A signal stays 21 and the runner's own `--timeout` stays 30.
-      if (reason === "provider") {
+      // The test is the shared `isProviderPark`, not a local read of the reason
+      // — one discriminator for every surface that has to tell the two apart.
+      const reason = lastInterruptReason(state);
+      if (isProviderPark(state)) {
         const cap = lastCap(state);
         return cap !== undefined && (CLARIFICATION_CAPS as readonly string[]).includes(cap)
           ? EXIT.clarification
