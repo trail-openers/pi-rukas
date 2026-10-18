@@ -28,7 +28,7 @@ import { recordedPrUrl } from "./pr-url.ts";
  * v4 (#1384): the cap `wall-clock` is renamed `lens-review-timeout` — it was
  * the lens-review fix loop's budget, and a host read it as its own cycle clock.
  * Additive, no bump: top-level `resources` (#1325); per issue `failure`
- * (#1367) and `usage.byRole` (#1368).
+ * (#1367), `usage.byRole` (#1368) and `continuedPr` (#1468).
  */
 export const RESULT_SCHEMA_VERSION = 4 as const;
 
@@ -100,6 +100,8 @@ export interface IssueResult {
   durationMs: number;
   steps: StepTiming[];
   exitCode: number;
+  /** #1468 — the PR a `--continue-pr` cycle continued; `startHeadSha` is its head at the start. */
+  continuedPr?: { number: number; headRefName: string; startHeadSha: string; mainlineSha: string };
   /** Present once the cycle emitted a handoff (#1327). */
   handoff?: HandoffResult;
   /** Clarification questions (exit 11): the cap's bullet evidence, numbered q1, q2… */
@@ -287,6 +289,15 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
     result.prNumber = prNumber;
     const url = recordedPrUrl(state, prNumber);
     if (url) result.prUrl = url;
+  }
+  const cp = state.pipelineState.continuedPr;
+  if (cp) {
+    result.continuedPr = {
+      number: cp.number,
+      headRefName: cp.headRefName,
+      startHeadSha: cp.headSha,
+      mainlineSha: cp.mainlineSha,
+    };
   }
   if (exitCode === 11) result.questions = questionsOf(state);
   const capHit = lastEvent(state, "cap-hit");

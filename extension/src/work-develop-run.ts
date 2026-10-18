@@ -28,6 +28,7 @@ import {
   crashedBranchCompleted,
 } from "./work-develop-crash.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { continuePrNote } from "./work-driver-continue-pr-guard.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { reviewFixDispatchBoundMs, reviewLoopActive } from "./work-driver-lens-fix-budget.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
@@ -182,6 +183,13 @@ export function parkDeferredLeftover(
   return true;
 }
 
+/** The develop note: the continue-PR note (#1468), then the interrupted-attempt note. */
+export function developNote(state: WorkState): string | undefined {
+  const cp = state.pipelineState.continuedPr;
+  const parts = [cp && continuePrNote(cp), interruptedDevelopNote(state)].filter(Boolean);
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
 /** Create the per-workstream dispatch closure (captures `stateRef` for memory-inject events). */
 export function makeRunOneWorkstream(
   s: DevelopRunState,
@@ -302,7 +310,7 @@ export function makeRunOneWorkstream(
               verifyCmd,
               issueBodyArtifactPaths,
               ws?.fixFindings,
-              interruptedDevelopNote(s.stateRef.current),
+              developNote(s.stateRef.current),
               fastVerifyCmd,
             ),
             cwd,

@@ -47,6 +47,13 @@ export const FIXED_CAPS = [
   "consolidated-verify-conflict",
   "consolidated-verify-consolidation-created",
   "consolidation-incomplete",
+  // #1468 — `--continue-pr` could not continue the issue's open PR.
+  "continue-pr-ambiguous",
+  "continue-pr-fork",
+  "continue-pr-head-moved",
+  "continue-pr-not-found",
+  "continue-pr-unresolved",
+  "continue-pr-unsafe-head",
   "cross-group-conflict",
   "deadline",
   "deferred-creation:develop",
