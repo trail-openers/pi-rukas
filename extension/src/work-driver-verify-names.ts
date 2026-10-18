@@ -36,6 +36,22 @@ export interface NameRoots {
   probeRoot: string;
 }
 
+/**
+ * Per-call memo of filesystem walks, threaded through the name comparison so
+ * one run resolves each path once instead of once per comparison. Declared
+ * structurally (a `get`/`set` pair) rather than as `Map<string, …>` so the
+ * attribution module that owns `createNameResolution()` is the only thing that
+ * has to agree with it on a concrete type, and a `Map` satisfies it without an
+ * import in this direction.
+ *
+ * `get` returns `undefined` for "not yet attempted" and `null` for "attempted,
+ * the whole path did not resolve" — the two states a caller must not conflate.
+ */
+export interface NameResolution {
+  get(key: string): string | null | undefined;
+  set(key: string, value: string | null): unknown;
+}
+
 /** The summary form: `FAILED: <n> test(s) — <name>, <name>, …` (or collapsed). */
 const SUMMARY_RE = /^FAILED: (\d+) test\(s\) —(.*)$/;
 
@@ -198,14 +214,38 @@ export type NameComparison = "same" | "different" | "unknown";
  * probe removes its own worktree before the attribution runs, so the probe's
  * path is a string that no longer names a directory — resolving its parent
  * still puts it in the same spelling as every other path in the comparison.
+ *
+ * `memo` short-circuits the WHOLE-PATH walk (the common case: the path exists,
+ * the first probe hits). The prefix fallback still walks, because a memoised
+ * "this path did not resolve" says nothing about which of its prefixes do.
  */
-function asPath(value: string): string {
+function asPath(value: string, memo?: NameResolution): string {
   const parts = value
     .trim()
     .replace(/\\/g, "/")
     .split("/")
     .filter((p) => p.length > 0 && p !== ".");
   if (parts.length === 0) return "";
+  const absolute = value.trim().startsWith("/");
+  // The whole-path form first, from the memo when one is threaded: in the
+  // comparison every name and every root is a real path, so this is the walk
+  // that succeeds and the one worth caching. `null` is a remembered miss, so a
+  // path that never resolves is attempted once and falls through here.
+  const whole = `/${parts.join("/")}`;
+  const cached = memo?.get(value);
+  if (cached === null) {
+    // Remembered miss: fall through to the prefix walk without a realpath call.
+  } else if (cached !== undefined) {
+    return absolute ? cached : cached.replace(/^[/]+/, "");
+  } else {
+    try {
+      const realWhole = realpathSync(whole);
+      memo?.set(value, realWhole);
+      return absolute ? realWhole : realWhole.replace(/^[/]+/, "");
+    } catch {
+      memo?.set(value, null);
+    }
+  }
   for (let i = parts.length; i >= 1; i--) {
     const head = `/${parts.slice(0, i).join("/")}`;
     try {
@@ -213,21 +253,21 @@ function asPath(value: string): string {
       const rest = parts.slice(i);
       const base = realHead.endsWith("/") ? realHead.slice(0, -1) : realHead;
       const joined = rest.length === 0 ? base : `${base}/${rest.join("/")}`;
-      if (value.trim().startsWith("/")) return joined;
+      if (absolute) return joined;
       // A relative spelling stays relative on both sides of every comparison.
       return joined.replace(/^[/]+/, "");
     } catch {
       // Shorten and try again.
     }
   }
-  return value.trim().startsWith("/") ? `/${parts.join("/")}` : parts.join("/");
+  return absolute ? `/${parts.join("/")}` : parts.join("/");
 }
 
 /** `name` relative to `root`, or undefined when it does not live under it. */
-function relativeTo(name: string, root: string): string | undefined {
-  const r = asPath(root);
+function relativeTo(name: string, root: string, memo?: NameResolution): string | undefined {
+  const r = asPath(root, memo);
   if (r === "") return undefined;
-  const n = asPath(name);
+  const n = asPath(name, memo);
   if (n === r) return "";
   return n.startsWith(`${r}/`) ? n.slice(r.length + 1) : undefined;
 }
@@ -245,28 +285,43 @@ function relativeTo(name: string, root: string): string | undefined {
  *
  * `unknown` is the answer whenever a name cannot be placed. The caller parks on
  * `unknown`.
+ *
+ * `resolution` is the per-call memo described on `NameResolution`: each root
+ * resolves once for the whole call and each name once, rather than once per
+ * (change-name, base-name) pair.
  */
-export function compareNames(a: string, b: string, roots: NameRoots): NameComparison {
+export function compareNames(
+  a: string,
+  b: string,
+  roots: NameRoots,
+  resolution?: NameResolution,
+): NameComparison {
   // The degenerate configuration: with no change tree of its own (or one that
   // resolves to the probe's own directory), relative-path equality proves
   // nothing about which run printed what, so nothing may be excused. Compared
   // AFTER normalisation, because `repoRoot` and the probe path can name one
   // directory in two spellings (a symlinked root) — that is the degenerate case
   // too, not two trees.
+  //
+  // The roots are resolved ONCE per call and reused: they are the same handful
+  // of directories for every pair in the run, and re-walking them per pair was
+  // 2·C·B realpath walks for a set that never changes inside a call.
+  const probeResolved = asPath(roots.probeRoot, resolution);
   const changeTrees = roots.changeRoots
-    .map((r) => asPath(r))
-    .filter((r) => r !== "" && r !== asPath(roots.probeRoot));
+    .map((r) => asPath(r, resolution))
+    .filter((r) => r !== "" && r !== probeResolved);
   if (changeTrees.length === 0) return "unknown";
   // The probe tree is nested INSIDE the integration checkout, so each name is
   // stripped against the probe root FIRST: stripping against the outer root
   // first would leave the probe's own path as `.worktrees/baseline-verify-…/x`
   // and report the same test as a different file.
-  const aRel =
-    relativeTo(a, roots.probeRoot) ??
-    roots.changeRoots.map((r) => relativeTo(a, r)).find((r): r is string => r !== undefined);
-  const bRel =
-    relativeTo(b, roots.probeRoot) ??
-    roots.changeRoots.map((r) => relativeTo(b, r)).find((r): r is string => r !== undefined);
+  const rel = (name: string): string | undefined =>
+    relativeTo(name, roots.probeRoot, resolution) ??
+    roots.changeRoots
+      .map((r) => relativeTo(name, r, resolution))
+      .find((r): r is string => r !== undefined);
+  const aRel = rel(a);
+  const bRel = rel(b);
   if (aRel !== undefined && bRel !== undefined) return aRel === bRel ? "same" : "different";
   // Unplaceable on at least one side: an unknown name never excuses a failure.
   return "unknown";

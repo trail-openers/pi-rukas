@@ -355,11 +355,21 @@ function assert(cond: boolean, msg: string) {
 //   (c) the OFF-BY-DEFAULT shape — with no variable set the loop writes nothing
 //       anywhere, which is what the rest of the offline suite and CI depend on.
 {
-  const { mkdtempSync, existsSync, readFileSync } = await import("node:fs");
+  const { mkdtempSync, existsSync, readFileSync, writeFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const fixture = path.join(FIXTURES, "fixture-report-env.ts");
   const dir = mkdtempSync(path.join(tmpdir(), "pi-1404-loop-"));
-  const report = path.join(dir, "report.txt");
+  // #1404 fix round 3 — the writer refuses a path that is not an existing
+  // regular file (a symlink would turn it into an arbitrary-file writer), and
+  // the DRIVER creates the file with `O_EXCL` before the run. These fixtures
+  // stand in for the driver, so they create it too: an empty regular file, the
+  // exact state a real run starts from. A test that handed the loop a path
+  // nobody created would be testing a shape the driver never produces.
+  const preCreate = (p: string): string => {
+    writeFileSync(p, "");
+    return p;
+  };
+  const report = preCreate(path.join(dir, "report.txt"));
 
   const withReport = runLoopEnv([fixture], { VERIFY_REPORT_FILE: report });
   const lines = withReport.stdout
@@ -380,7 +390,7 @@ function assert(cond: boolean, msg: string) {
   );
 
   // A red run names the failing path, in the shape the driver's reader accepts.
-  const redReport = path.join(dir, "red.txt");
+  const redReport = preCreate(path.join(dir, "red.txt"));
   const red = runLoopEnv([path.join(FIXTURES, "fixture-1.ts")], {
     VERIFY_REPORT_FILE: redReport,
   });
