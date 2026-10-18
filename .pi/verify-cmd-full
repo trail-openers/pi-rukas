@@ -3,6 +3,15 @@
 # memory tests FAIL rather than skip when the binary is absent — a skipped
 # calibration test is how the retrieval rule stayed dead for the life of #394.
 #
+# #1647 — the offline suite runs here, once, at the ci step; the develop round runs
+# only the tests its diff can affect. The last command is the suite, spelled with
+# "$PWD" so the failing names it reports are absolute paths the attribution can
+# place under the tree it ran in (see work-driver-ci-verify.ts). `-live.ts` tests
+# spawn real Pi children and cost tokens (AGENTS.md §1), so the list drops them
+# here rather than leaning on verify-loop to skip them. An empty enumeration fails
+# the tier: a suite of zero tests that passes is the vacuous green this tier exists
+# to prevent.
+#
 # The typecheck names the compiler by PATH, never by alias (#1414/#1118) — see
 # the note in .pi/verify-cmd for why `bun x tsc` silently passed everything.
-cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && cd .. && bun run check && cd extension && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-vipune-capability.ts && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-memory-brief.ts
+cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && cd .. && bun run check && cd extension && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-vipune-capability.ts && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-memory-brief.ts && { files=$(ls "$PWD"/smoke-tests/test-*.ts | grep -v -- '-live[.]ts$'); [ -n "$files" ] || { echo "verify-cmd-full: no offline smoke tests enumerated, refusing to pass an empty suite" >&2; exit 1; }; } && bash smoke-tests/lib/verify-loop.sh --jobs-from-host $files

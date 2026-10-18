@@ -77,4 +77,8 @@ export interface VerifyDevelopOutcomeOptions {
   hangSink?: import("./work-driver-gate-hang.ts").GateHangPathSink;
   /** #1415 — the gate's reuse records, forwarded to `runVerifyCommandGate`. */
   onGateRecorded?: import("./work-driver-verify-gate-reuse.ts").GateRecorded;
+  /** #1647 — the selected develop run's flaky and baseline-red tests, once per gate call. */
+  onSelectedVerify?: (
+    record: import("./work-driver-verify-select-exec.ts").SelectedVerifyRecord,
+  ) => void;
 }

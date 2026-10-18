@@ -128,6 +128,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     ...commitPrFallbackPlumbSection(state, capForExplain),
     ...adversarialOutcomeSection(state),
     ...plumbReportSection(state),
+    ...verifyAttributionSection(state),
     ...retryTreeSection(state),
     ...consolidationNotesSection(state),
     "### What was attempted",
@@ -387,6 +388,23 @@ function plumbReportSection(state: WorkState): string[] {
     "### Plumbing that failed (the cycle continued anyway)",
     "",
     ...reports.map((r) => `- \`${r.step}\`: ${r.body}`),
+    "",
+  ];
+}
+
+/**
+ * #1647 — the tests the selected verify carried without blocking: the cycle
+ * passed the gate on them, so the handoff is where a reader learns they were
+ * ever in question.
+ */
+function verifyAttributionSection(state: WorkState): string[] {
+  const a = state.pipelineState.verifyAttribution;
+  if (!a || (a.flaky.length === 0 && a.baselineRed.length === 0)) return [];
+  return [
+    "### Tests the verify gate carried without blocking (#1647)",
+    "",
+    ...a.flaky.map((n) => `- \`${inlineCodeSafe(n)}\` — flaky (failed once, passed on the rerun)`),
+    ...a.baselineRed.map((n) => `- \`${inlineCodeSafe(n)}\` — red on the base commit too`),
     "",
   ];
 }

@@ -6,6 +6,7 @@
 import type { Verdict } from "./lens-review.ts";
 import type { ContinuedPr } from "./work-driver-continue-pr-state.ts";
 import type { NormalisedSpec } from "./work-driver-intent.ts";
+import type { VerifyAttributionRecord } from "./work-driver-verify-shared.ts";
 import type { CapEvidence, CapedPartialState } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 // #679/#728 — workstream shape + consolidation record, split for the 500-line gate.
@@ -444,6 +445,13 @@ export interface PipelineState extends IssueClosedState {
     /** Per-workstream greens; the whole-gate skip needs every workstream's. */
     workstreamGreens: Record<string, WorkstreamGreen>;
   };
+  /**
+   * #1647 — tests the selected verify let through without blocking: `flaky`
+   * (failed once, passed on the rerun) and `baselineRed` (red on the base commit
+   * too). Commit-pr renders both into the PR body and the handoff renders them.
+   * Absent = none recorded.
+   */
+  verifyAttribution?: VerifyAttributionRecord;
   /**
    * Terminal status. "running" while active; flips on `merged` or `handoff`.
    * S4a (#1162) — "interrupted" is written by `markInterrupted` (SIGTERM /
