@@ -81,7 +81,10 @@ import { type CapedPartialState, persistCycle, readState } from "./workflow-stat
  * pins by SOURCE, so an edge that points the wrong way again is a gate failure
  * rather than a silent cycle.
  */
-export { CHECKPOINT_TYPECHECK_CMD } from "./work-driver-cap-checkpoint-typecheck.ts";
+export {
+  CHECKPOINT_TYPECHECK_CMD,
+  LOCAL_TSC_CMD,
+} from "./work-driver-cap-checkpoint-typecheck.ts";
 
 /** #543 (M5) — structurally write-gated roles: the SAME set role-tools.ts
  * passes `--exclude-tools write,edit,multiedit` to (explore /

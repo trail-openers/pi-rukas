@@ -2143,7 +2143,17 @@ One real failure next to any of these is a code failure, so the cap stays `verif
 
 #### `verify-timeout:<step>`: the gate did not finish
 
-**Symptom:** The cycle parks as `verify-timeout:develop` or `verify-timeout:commit-pr`. The evidence lines start with `[verify-timeout]` and say the verify command *exceeded its 10-min timeout* (or whatever bound applied), and the handoff says the command TIMED OUT.
+**Symptom:** The cycle parks as `verify-timeout:develop` or `verify-timeout:commit-pr`. The evidence lines start with `[verify-timeout]` and say the verify command *exceeded its <N>-min timeout*, and the handoff says the command TIMED OUT. Since #1509 the bound is per tier, so the number and the variable named tell you **which** gate did not finish — read them, they are the diagnosis:
+
+| The evidence names | The gate that timed out | The knob that governs it |
+|---|---|---|
+| `PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS` (or `.pi/verify-timeout-ms`) | the project's verify command — in a worktree, the consolidated tree, or the baseline probe | `PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS`, default 30 min |
+| `PI_ENSEMBLE_VERIFY_FAST_TIMEOUT_MS` (or `.pi/verify-cmd-fast-timeout-ms`) | the fast tier — `.pi/verify-cmd-fast`, typecheck plus lint | `PI_ENSEMBLE_VERIFY_FAST_TIMEOUT_MS`, default 10 min |
+| `PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS` (or `.pi/smoke-cmd-timeout-ms`) | the product-smoke gate — `.pi/smoke-cmd` | `PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS`, default 10 min |
+| `PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS` | the consolidated verify at commit-pr | `PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS`, default 15 min |
+| `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` | a project with one knob and nothing declared in `.pi/` — the shared fallback | `PI_ENSEMBLE_VERIFY_TIMEOUT_MS`, default 10 min |
+
+Each failure string renders its bound through the same shared minutes/seconds formatting as every other timeout, so a non-minute-aligned value prints seconds rather than `0-min`, and it names the variable and `.pi/` file that actually decided that number — the one you would edit. When the tiers have separate bounds (the normal shape since #1509) a consolidated run's own string says so explicitly, because otherwise "verify command exceeded its 30-min timeout" would mislead an operator into widening a knob that belongs to a different tier.
 
 **What hung is in the handoff.** Since #1427 a killed run also writes a **gate hang report** (`<repoRoot>/tmp/issue-<N>/gate-hang-<ISO>.log`, owner-only) and the handoff's timeout block leads with `What hung: <path>`. The report names the test the runner itself had flagged (cargo/libtest, Go and bun all print one), the gate's process tree taken *before* the kill — including the grandchildren that outlived their parent, which is how a test's own `git pull` leaves a `git remote-https` holding a worktree — and the last lines the run printed. Read that file before suspecting the diff. Where the runner printed no slow-test line, the report says so and the process tree is the only name the driver could establish; where the executor reported no gate pid (a test fake, a rethrown fast-tier error), it declines to walk anything rather than blame an unrelated process. The report is an addition to the failure: it never turns one into a pass, and a failure that was not killed writes none.
 
@@ -2151,9 +2161,18 @@ One real failure next to any of these is a code failure, so the cap stays `verif
 
 This cap is distinct from `verify-failed:<step>`, which means the gate judged the change. It fires only when every failure is a timeout. One real failure next to a timeout still parks as `verify-failed:<step>`, because that failure is a verdict.
 
+**Handoff criteria — what the handoff must state for you to act on it (#1509/#1041).** A timeout handoff is actionable when it names, all four:
+
+1. the **cap** (`verify-timeout:develop` / `:commit-pr`) and the **step**;
+2. the **command** that did not finish, with the tier it is (worktree / consolidated / baseline probe / fast tier / smoke gate);
+3. the **bound that applied**, as a formatted duration, and **the variable and `.pi/` file that decided it** — not a fixed 10-minute string;
+4. where relevant, the **baseline probe's own outcome** — a timeout at the cycle's base commit too means the gate does not fit the bound on this host, and the fix is the budget, not the diff.
+
+If the handoff names a bound but not the knob, that is a documentation gap worth reporting: the whole point of the per-tier split is that the operator edits one number and knows which gate it moves.
+
 **Fix:** Give the gate more time or more of the host, then re-run the cycle:
 
-- Raise `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` (develop), or `PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS` (the consolidated run at commit-pr).
+- Raise the knob the evidence named (see the table above). For the offline-suite tier specifically, prefer a project-level declaration — a `.pi/verify-timeout-ms` holding the milliseconds this repo's suite actually needs (#1041) — so the budget travels with the project instead of living in each operator's shell. Precedence is env → `.pi/` file → documented default, and a value that is not a positive integer is ignored with a trace rather than taken as `0` (a zero timeout means *no bound* to the executor).
 - Reduce concurrency: fewer workstreams (`PI_ENSEMBLE_MAX_WORKSTREAMS`), fewer cycles at once (`PI_ENSEMBLE_PARALLEL_GROUPS`), or nothing else heavy on the host.
 - Add a `.pi/verify-cmd-fast` (see "Verify command discovery" below). Developers then stop running the full suite in parallel, and a type error fails in seconds instead of after the whole suite.
 
@@ -2258,7 +2277,7 @@ The command is capped at 10 minutes (`PI_ENSEMBLE_VERIFY_TIMEOUT_MS` to override
 ### If the gate keeps failing
 
 - **Verify command fails on code the developer didn't touch** — the project was already broken before the cycle started. Fix the baseline first, or point `.pi/verify-cmd` at a narrower command (e.g., `cargo check -p <crate>`). The driver now checks this itself: when the verify command fails at develop it is re-run once on a clean checkout of the cycle's base commit (a temporary `.worktrees/baseline-verify-<N>`, removed afterwards; never on a passing cycle). If it fails there too, the handoff leads with a `[baseline-red]` finding naming the base sha and the assertion, and the cap is `verify-baseline-red:develop` (see above; `verify-failed:develop` when another check failed too, and before #1349). The gate cannot pass, so the cycle still parks, but the change is not what to inspect.
-- **`exceeded its 10-min timeout on the CONSOLIDATED tree`** — the run was killed at the bound, so it says nothing about the code (this used to render as `specific assertion: (no specific assertion could be extracted)`). When every failure is a timeout, the cap is `verify-timeout:develop`; see "`verify-timeout:<step>`: the gate did not finish" above. If the `[baseline-red]` finding reports a timeout at the base commit as well, the gate does not fit the bound on this host: raise `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` or make the gate faster.
+- **`exceeded its <N>-min timeout on the CONSOLIDATED tree`** — the run was killed at the bound, so it says nothing about the code (this used to render as `specific assertion: (no specific assertion could be extracted)`). When every failure is a timeout, the cap is `verify-timeout:develop`; see "`verify-timeout:<step>`: the gate did not finish" above. If the `[baseline-red]` finding reports a timeout at the base commit as well, the gate does not fit the bound on this host: raise the suite tier's budget (`PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS`, or a `.pi/verify-timeout-ms` that ships with the project) or make the gate faster.
 - **Verify command too slow / needs services** — put a cheaper command in `.pi/verify-cmd` (typecheck-only is the intent; full test suites belong to CI).
 - **False alarm you need to bypass right now** — `PI_ENSEMBLE_VERIFY=0` disables the gate entirely (not recommended as a steady state; it re-opens the phantom-handoff class the gate exists to catch).
 
