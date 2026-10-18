@@ -59,7 +59,7 @@
  */
 
 import { isInertFileWrite } from "./merge-inert-write.ts";
-import { MERGE_WORD, VERB_PAIR } from "./merge-lex-views.ts";
+import { MERGE_WORD } from "./merge-lex-views.ts";
 import { lexedWhy } from "./merge-refusals.ts";
 import { analysisBound } from "./merge-size.ts";
 import { triggerCode } from "./merge-trigger.ts";

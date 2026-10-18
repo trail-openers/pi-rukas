@@ -87,9 +87,11 @@ export function triggerCode(command: string): HoldReason | undefined {
   // letter and the boundary test fails), and a glued shape (a `-` next to a
   // letter) at all. Both tests are cheap linear scans; the common case
   // (no merge substring, no flag) exits here with the input unchanged and
-  // zero per-word work.
+  // zero per-word work. `lower` is the one lowered copy the substring scan
+  // reads (the regex is case-insensitive, so it does not need the copy).
+  const lower = command.toLowerCase();
   const gluedView: string =
-    command.toLowerCase().includes("merge") && /-\p{L}/u.test(command)
+    lower.includes("merge") && /-\p{L}/u.test(command)
       ? (() => {
           // (Caller-specific: the trigger RE-EMITS each merged value as its
           // own word for the patterns; the allowlist only wants a boolean.
