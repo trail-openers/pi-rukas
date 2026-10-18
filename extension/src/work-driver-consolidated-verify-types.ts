@@ -181,4 +181,26 @@ export type ConsolidatedVerifyResult =
        * `build/[build-residue].log` is prose the router must never route on).
        */
       buildResidueOnly?: boolean;
+      /**
+       * #813 — WHICH workstream's pick failed, when the batch aborted on a
+       * cherry-pick. Carried structurally (never regexed out of `detail`) so
+       * the reporter states what was observed — the pick that failed, and
+       * what applied cleanly before it — rather than asserting that two
+       * workstreams edited the same lines and the decomposition is
+       * incoherent. `undefined` for the other conflict `kind`s.
+       */
+      conflictedWorkstream?: string;
+      /**
+       * #813 — workstreams whose picks applied cleanly before the aborting
+       * pick. Absent when the batch never got that far or the read failed.
+       */
+      appliedBeforeConflict?: string[];
+      /**
+       * #813 — the file git named for the aborted pick, extracted by the
+       * batch itself. Structured so the reporter can name the colliding file
+       * (and recognise it as a sibling's declared path) without parsing an
+       * arbitrary `detail` string, which would let the message decide the
+       * diagnosis.
+       */
+      conflictedFile?: string;
     };

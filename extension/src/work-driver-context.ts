@@ -162,13 +162,13 @@ export interface DriverContext {
    * passes `/work N --restart` to wipe a prior terminal cycle's state
    * and run fresh (e.g., after revising the issue body via /plan).
    * This flag only resets the driver's state file — it does NOT clean up
-   * branches, worktrees, or an already-open PR. #362 adds a branch-step
-   * pre-flight that halts when an open PR already covers the issue,
-   * because wiping state alone made the driver rebuild #5 from scratch
-   * and open a duplicate PR (#358 orphaned by #359). Default behaviour
-   * (omitted / false) reads the existing state if present.
+   * branches, worktrees, or an already-open PR. #362's branch-step
+   * pre-flight halts when an open PR already covers the issue (#358
+   * orphaned by #359). Omitted / false reads the existing state.
    */
   restart?: boolean;
+  /** #1468 — `/work N --restart --continue-pr`: continue the issue's open PR. */
+  continuePr?: boolean;
   /**
    * #380 — the operator's in-session grant of merge authority, from
    * `/work N --merge`. Merging is the one irreversible act in the cycle and

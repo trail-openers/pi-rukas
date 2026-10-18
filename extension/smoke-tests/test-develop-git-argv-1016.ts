@@ -222,6 +222,8 @@ try {
     const sub = subOf(o.argv);
     if (sub === "status") return { stdout: "?? bad.ts\0" };
     if (sub === "rev-list") return { stdout: "0\n" };
+    // #1468 — no merge in progress: `rev-parse -q --verify MERGE_HEAD` exits 1.
+    if (o.argv.includes("MERGE_HEAD")) throw Object.assign(new Error("no MERGE_HEAD"), { code: 1 });
     if (sub === "add") throw new Error("add refused");
     return { stdout: "" };
   }) as unknown as typeof execFn;

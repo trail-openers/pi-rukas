@@ -4,6 +4,7 @@
  */
 
 import type { Verdict } from "./lens-review.ts";
+import type { ContinuedPr } from "./work-driver-continue-pr-state.ts";
 import type { NormalisedSpec } from "./work-driver-intent.ts";
 import type { CapEvidence, CapedPartialState } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
@@ -169,21 +170,19 @@ export interface PipelineState extends IssueClosedState {
    */
   activeIssues?: number[];
   /**
-   * PR11 — per-issue body-fetch failure list. Populated by `runExplore`
-   * when `gh issue view <N>` returns empty stdout or rejects for any
-   * issue in the cycle. Drives the operator-facing handoff body — each
-   * entry names which `gh` call broke so the operator can target the
-   * actual failure (gh auth, gh version, network, extension hijack).
-   * Absent for normal cycles where every issue body fetched cleanly.
+   * PR11 — per-issue body-fetch failure list, set by `runExplore` when
+   * `gh issue view <N>` returns empty stdout or rejects. Each entry names the
+   * `gh` call that broke (auth, version, network, extension hijack) for the
+   * handoff body. Absent when every issue body fetched cleanly.
    */
   emptyBodyIssues?: Array<{ issue: number; reason: string }>;
   /**
-   * #362 — the open PR the branch-step pre-flight found already covering
-   * this issue, which is why the cycle halted with cap
-   * `existing-pr-detected`. Drives the handoff body (PR number, its head
-   * branch, and which signal matched). Absent for every cycle that ran.
+   * #362 — the open PR that halted the branch step with cap
+   * `existing-pr-detected`; drives the handoff body. Absent otherwise.
    */
   existingPr?: { number: number; headRefName: string; matchedBy: "body" | "branch" };
+  /** #1468 — the open PR `--continue-pr` continues. Absent otherwise. */
+  continuedPr?: ContinuedPr;
   /**
    * #287 — bookkeeping for the integration step. `reintegrations` counts
    * lens-fix follow-up commits applied onto the branch after the first

@@ -85,9 +85,18 @@ export function explainConsolidation(cap: Cap, state: WorkState): string {
           (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
             e.kind === "cap-hit" && e.cap === "consolidated-verify-conflict",
         );
-      const ev =
-        hit?.evidence ??
-        "(no conflict detail recorded — inspect the worktrees to see which files both workstreams edited)";
+      // #813 — an absent evidence field is an ABSENCE for the COUPLING SCAN,
+      // so `ev` stays `undefined` rather than becoming a placeholder sentence
+      // the scan then reads: a placeholder that happened to name a file would
+      // make "likely coupled" fire on nothing. `evText` is the same absence
+      // RENDERED — the flat branch below passes the same fallback as
+      // `observed`, and a stacked cycle must not print a bare `undefined`
+      // where the flat one names the gap (work-driver-converge-gate.ts
+      // appends this cap with NO evidence whenever the gate's failures carry
+      // the conflict phrase but no single string matched, so the absent case
+      // is the reachable one).
+      const ev = hit?.evidence?.trim() || undefined;
+      const evText = ev ?? "no conflict detail was recorded on the cap — inspect the worktrees";
       const wts = state.pipelineState.worktrees ?? {};
       const wtList = Object.entries(wts)
         .map(([id, p]) => `${id}: ${p}`)
@@ -110,26 +119,49 @@ export function explainConsolidation(cap: Cap, state: WorkState): string {
         const fence = state.pipelineState.verifyEvidence?.fenceViolations ?? [];
         const fenceText = fenceAttribution(fence);
         if (fenceText) return fenceText;
-        return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict, even though each workstream's own range was picked against its dependency's tip (stacked cycle: ancestor commits are NOT re-picked). ${ev} Worktrees: ${wtList || "(none recorded)"}. Do NOT re-split on this alone: the conflict is either a genuine content overlap between workstreams (two workstreams editing the same lines) or a dependency whose tip diverged from the SHA the dependent's worktree was based on. Inspect the conflicting file, resolve it by hand, and re-run; check the dependency tips only if the conflicting lines belong to a dependency's own work`;
+        return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict, even though each workstream's own range was picked against its dependency's tip (stacked cycle: ancestor commits are NOT re-picked). ${evText} Worktrees: ${wtList || "(none recorded)"}. Do NOT re-split on this alone: the conflict is either a genuine content overlap between workstreams (two workstreams editing the same lines) or a dependency whose tip diverged from the SHA the dependent's worktree was based on. Inspect the conflicting file, resolve it by hand, and re-run; check the dependency tips only if the conflicting lines belong to a dependency's own work`;
       }
-      // #814 — fence attribution takes precedence over the incoherent-
-      // decomposition claim: when the driver recorded a sibling-declared
-      // fence violation (workstream W touched a file sibling S declared),
-      // the conflict is the FENCE materialising at consolidation — the
-      // declared paths were DISJOINT, so the plan was fine and re-splitting
-      // fixes nothing. The structured records on `verifyEvidence`
-      // carry the attribution (violating workstream, file, declaring
-      // sibling); read them (not `failures`) for that, and fall back to
-      // the incoherent-decomposition text when they are absent or empty
-      // (a genuine declared-path overlap — there, "incoherent" is true).
+      // #814 — fence attribution takes precedence over any conflict guess:
+      // when the driver recorded a sibling-declared fence violation
+      // (workstream W touched a file sibling S declared), the conflict is the
+      // FENCE materialising at consolidation — the declared paths were
+      // DISJOINT, so the plan was fine and re-splitting fixes nothing. The
+      // structured records on `verifyEvidence` carry the attribution
+      // (violating workstream, file, declaring sibling); read them (not
+      // `failures`) for that, and fall back to the #813 observed-conflict
+      // text when they are absent or empty.
       const fence = state.pipelineState.verifyEvidence?.fenceViolations ?? [];
       const fenceText = fenceAttribution(fence);
       if (fenceText) return fenceText;
-      return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict means two workstreams edited the same lines, so the work is individually plausible but the decomposition is incoherent. ${ev} Worktrees: ${wtList || "(none recorded)"}. This is NOT the same as a verify failure: the fix is to re-split the work into non-overlapping file sets (or resolve the overlap by hand), not to retry the verify command`;
+      // #813 — no fence record: state what the driver OBSERVED (the cap's
+      // own evidence, plus which pick failed if that was recorded) rather
+      // than asserting the decomposition is incoherent. The old text told
+      // the operator to re-split, which #1005 makes the wrong advice for a
+      // type-coupled pair with disjoint declared paths.
+      return describeObservedConsolidationConflict({
+        lead: `the develop step's consolidated verify could not combine the workstreams' commits into a single tree`,
+        observed: ev ?? "no conflict detail was recorded on the cap — inspect the worktrees",
+        evidence: ev,
+        worktrees: wtList || "(none recorded)",
+        declaredPathsByWorkstream: declaredPathsFor(state),
+      });
     }
     default:
       return `unhandled consolidation cap: ${cap}`;
   }
+}
+
+/**
+ * #813 — the per-workstream declared paths, for the coupled-pair clause of
+ * the no-fence conflict text. Reads the plan's `paths` (already on state);
+ * an absent plan yields `{}` and the neutral sentence.
+ */
+function declaredPathsFor(state: WorkState): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [id, ws] of Object.entries(state.pipelineState.workstreams ?? {})) {
+    if (ws && Array.isArray(ws.paths) && ws.paths.length > 0) out[id] = ws.paths;
+  }
+  return out;
 }
 
 /**
@@ -149,6 +181,165 @@ function fenceAttribution(fence: FenceViolationRecord[]): string | undefined {
   const named = describeSiblingFenceViolations(fence);
   if (!named) return undefined;
   return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict that the develop scope fence ALREADY predicted: the declared paths were DISJOINT (the decomposition was fine), but the fence was violated — ${named}. Re-splitting the plan will NOT fix this conflict; it is the fence violation materialising at consolidation. Restore the fence boundary (the violating workstream's commit must not include that file — split the change so each file is touched by exactly one workstream) and re-run`;
+}
+
+/**
+ * #813 — the no-fence-record conflict sentence, shared by both operator
+ * surfaces (the develop gate's failure string and the
+ * `consolidated-verify-conflict` cap explanation).
+ *
+ * The pre-#813 text asserted "two workstreams edited the same lines; the
+ * decomposition is incoherent" whenever the driver had recorded no fence
+ * violation. That is an inference, not an observation, and since #1005
+ * merges genuinely coupled workstreams at plan time it is usually WRONG for
+ * the pair that still collides: disjoint declared paths that couple through
+ * TYPES (the #792 DeliverableStatus/ConvergeEvidence shape) collide at
+ * consolidation without either workstream violating its fence, and
+ * re-splitting is not the fix — #1005's merge-and-retry is.
+ *
+ * So the text now states only what the driver can see: the failure detail,
+ * which pick failed, and which picks applied cleanly before it. Where the
+ * failure names a file another workstream DECLARED, it says the workstreams
+ * are likely coupled and points at the #1005 merge behaviour. The caller
+ * keeps the fence-attribution branch first — this is the fallback.
+ *
+ * Trust boundary on the "likely coupled" wording: only governed text is
+ * scanned for a declared path — `evidence` / `observed` / `detail` (what the
+ * driver recorded) and the pick line (deterministically rendered from the
+ * batch's structured fields). The caller-authored `lead` is never scanned, so
+ * quoting a path in one's own lead-in cannot have the coupling diagnosis come
+ * back looking like an observation.
+ */
+export function describeObservedConsolidationConflict(opts: {
+  /** The conflict detail from the consolidated run (may be absent). */
+  detail?: string;
+  /**
+   * A sentence naming what was observed, spliced in verbatim ahead of the
+   * diagnosis. The cap renderer passes the cap's own `evidence` here (the
+   * gate's failure string, which already names the failing pick); the
+   * reporter leaves this absent and `detail` / the pick fields carry it.
+   */
+  observed?: string;
+  /** The workstream whose pick failed, when the batch reported it. */
+  conflictedWorkstream?: string;
+  /** Workstreams whose picks applied cleanly before the aborting pick. */
+  appliedBeforeConflict?: string[];
+  /**
+   * The file the batch says its pick collided on. Structured (never lifted
+   * out of `detail` prose), and the ONLY reporter-side text scanned for a
+   * declared path — it is what licenses "likely coupled".
+   */
+  conflictedFile?: string;
+  /**
+   * Declared paths by workstream id — used ONLY to recognise that a file
+   * named in the failure belongs to a sibling, which is what licenses the
+   * "likely coupled" wording. Empty/absent → the neutral sentence.
+   */
+  declaredPathsByWorkstream?: Record<string, string[]>;
+  /**
+   * Text scanned for a declared path (the cap evidence or the conflict
+   * detail). Read as-is; no path inference beyond an exact substring hit.
+   * Defaults to `observed` / `detail` / the pick line when absent — NOT to
+   * `lead`, which is caller-authored prose.
+   */
+  evidence?: string;
+  /** Lead-in so both surfaces read in their own voice. Not scanned. */
+  lead: string;
+  /** Pre-rendered "id: path" list of the worktrees to inspect (cap renderer). */
+  worktrees?: string;
+}): string {
+  const observed: string[] = [];
+  const pickLine = (() => {
+    if (!opts.conflictedWorkstream) return undefined;
+    const before = (opts.appliedBeforeConflict ?? []).filter(
+      (id) => id !== opts.conflictedWorkstream,
+    );
+    return before.length > 0
+      ? `the pick for workstream '${opts.conflictedWorkstream}' failed after ${before.map((id) => `'${id}'`).join(" and ")} applied cleanly`
+      : `the pick for workstream '${opts.conflictedWorkstream}' failed`;
+  })();
+  // #813 — the two surfaces state the observation in their own shape:
+  // - the cap renderer passes `observed` (the gate's failure string, which
+  //   already carries the detail) and no pick fields — render it verbatim.
+  // - the reporter passes the structured pick fields and no `observed` —
+  //   render the pick line, and fall back to `detail` when nothing was
+  //   recorded about which pick failed.
+  // The lead-in always carries the "could not combine" clause, so a bare
+  // restatement of it in the detail adds nothing and is dropped.
+  const restatesLead = /^\s*(consolidated verify|the develop step).*could not combine/i.test(
+    (opts.observed ?? opts.detail ?? "").trim(),
+  );
+  const detailText = restatesLead ? "" : (opts.observed ?? opts.detail ?? "").trim();
+  if (pickLine) observed.push(pickLine);
+  if (detailText) observed.push(detailText);
+  const observedText =
+    observed.length > 0
+      ? observed.join("; ")
+      : "which workstream's patch could not be combined was not recorded";
+  // The scan text is what the diagnosis reads for a declared-path hit: the
+  // governed evidence (cap `evidence` / `observed`) plus the structured
+  // fields the batch recorded (`conflictedFile`, and the pick line rendered
+  // deterministically from `conflictedWorkstream`). `lead` and `detail` are
+  // free prose: they render, but a path appearing only there does NOT license
+  // the coupling claim — that would be the #813 defect wearing a different hat.
+  const coupled = coupledWorkstreamClause(
+    opts.evidence ?? [opts.observed, opts.conflictedFile, pickLine].filter(Boolean).join("; "),
+    opts.declaredPathsByWorkstream ?? {},
+    // The workstream whose OWN pick failed. A pick's collisions are its own
+    // work by definition, so a file it declared itself proves nothing about
+    // the pair — only a SIBLING's declaration licenses the coupling claim.
+    opts.conflictedWorkstream,
+  );
+  // #813 — the operator still needs the worktrees to inspect (the pre-#813
+  // text carried them); rendered here so both surfaces state where to look.
+  const where = opts.worktrees ? ` Worktrees: ${opts.worktrees}.` : "";
+  const diagnosis = coupled
+    ? `${coupled} The workstreams are likely COUPLED through that file or the types it declares — #1005 merges coupled workstreams at plan time and retries consolidation on the merged pair, so re-splitting the same split will not converge: merge the pair (or let the fence-recovery merge run) and re-run`
+    : `Nothing here proves the decomposition is wrong, so do NOT re-split on this alone: inspect the file the pick could not apply, decide whether the workstreams are coupled (types, a shared symbol, a shared fixture), and if they are, #1005's merge-and-retry is the fix rather than a new split`;
+  return `${opts.lead} — ${observedText}.${where} ${diagnosis}`;
+}
+
+/**
+ * #813 — the "these workstreams are likely coupled" clause, or `undefined`
+ * when the failure names no file any workstream declared. Matching is an
+ * exact substring test on the NORMALISED declared path, so a plan annotation
+ * ("src/a.ts (new)") cannot hide a hit and a coincidental word in the
+ * failure prose cannot manufacture one.
+ *
+ * `conflictedWorkstream` is skipped: the clause means "the file the pick
+ * could not apply belongs to a SIBLING", which is the observation that
+ * licenses a coupling claim. The workstream whose own pick failed declaring
+ * the file is not evidence of coupling — its own commit colliding with its
+ * own file is what a conflict always is — so attributing the file back to
+ * the conflicted workstream made the sentence assert a tautology as a
+ * finding.
+ */
+function coupledWorkstreamClause(
+  evidence: string,
+  declaredPathsByWorkstream: Record<string, string[]>,
+  conflictedWorkstream?: string,
+): string | undefined {
+  if (!evidence) return undefined;
+  for (const [id, paths] of Object.entries(declaredPathsByWorkstream)) {
+    if (conflictedWorkstream !== undefined && id === conflictedWorkstream) continue;
+    for (const raw of paths) {
+      const file = normaliseConsolidationPath(raw);
+      if (file.length > 0 && evidence.includes(file)) {
+        return `the conflict names \`${file}\`, which workstream ${id} declared`;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** #813 — same shape as `normaliseDeclaredPath`, kept local to avoid a cycle. */
+function normaliseConsolidationPath(raw: string): string {
+  return raw
+    .trim()
+    .replace(/\s*\([^()]*\)\s*$/, "")
+    .replace(/^[`*\s]+|[`*\s]+$/g, "")
+    .replace(/^\.\//, "")
+    .trim();
 }
 
 /**
