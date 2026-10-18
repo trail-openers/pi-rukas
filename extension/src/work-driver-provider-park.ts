@@ -14,7 +14,11 @@
  * the cap is the only thing a headless host switches on.
  */
 
-import { classifyFailureCause, failureCauseReason } from "./work-driver-failure-taxonomy.ts";
+import {
+  FAILURE_REASON_CHARS,
+  classifyFailureCause,
+  failureCauseReason,
+} from "./work-driver-failure-taxonomy.ts";
 import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
@@ -88,7 +92,8 @@ export function dispatchFailCapFor(
  * reaches handoff through the latter — carries the same account as a develop or
  * explore one.
  */
-export function providerParkEvidence(tail: DispatchFailureEvent): string {
+export function providerParkEvidence(tail: DispatchFailureEvent | undefined): string {
+  if (tail === undefined) return "";
   const providerText =
     tail.kind === "dispatch-failed-provider"
       ? (tail.providerMessage ?? "")
@@ -96,20 +101,38 @@ export function providerParkEvidence(tail: DispatchFailureEvent): string {
   // The classified cause is named explicitly: a reader (and the handoff test)
   // should not have to infer `provider-severed` from the prose shape.
   const cause = `cause=${classifyFailureCause(tail).cause}`;
-  return [failureCauseReason(tail), providerText, cause]
+  const joined = [failureCauseReason(tail), providerText, cause]
     .filter((part) => part.trim().length > 0)
     .join(" · ");
+  // #1243 fix round — the cap's `evidence` is rendered verbatim by BOTH the
+  // handoff body and the headless `failure` block, and it is stored in the
+  // durable state file. `failureCauseReason` clips its own input to
+  // FAILURE_REASON_CHARS but the provider message / error tail concatenated
+  // here did not, so a stack-trailing provider body could dominate the handoff
+  // and the state file. Same budget as the taxonomy's own, not a second number.
+  return joined.length > FAILURE_REASON_CHARS
+    ? `${joined.slice(0, FAILURE_REASON_CHARS)}…`
+    : joined;
 }
 
 /**
  * A cap-hit parked on a dispatch failure, with the provider park's evidence.
  * The `evidence` field is what makes a provider park legible in the durable
  * state file and the `--json` result, not just in the live scrollback.
+ *
+ * The `tail` is OPTIONAL (#1243 fix round): a HALT-class fan-out can end on
+ * `branches-converged` with failed verdicts and no dispatch-failure event
+ * behind it at all (a driver refusal inside the fan-out — `failureEventOf`
+ * declines those by design). The caller used to synthesise a bare
+ * `dispatch-failed` inline to satisfy a non-optional parameter; an absent tail
+ * is the honest answer, it can only ever mean "not a provider park", and the
+ * synthesised event was a second shape of the same nothing. The `tail` param
+ * already accepts `undefined` everywhere else in this module.
  */
 export function dispatchFailCapHit(
   step: WorkStep,
   state: WorkState,
-  tail: DispatchFailureEvent,
+  tail: DispatchFailureEvent | undefined,
 ): Extract<WorkEvent, { kind: "cap-hit" }> {
   const cap = dispatchFailCapFor(step, tail);
   return {

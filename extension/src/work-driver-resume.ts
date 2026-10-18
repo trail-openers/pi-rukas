@@ -41,6 +41,7 @@
 import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { deliverTerminalLine } from "./work-driver-terminal-delivery.ts";
 import { type WorkState, type WorkStep, persistCycle } from "./workflow-state.ts";
 
 /** #382 escape hatch: PI_ENSEMBLE_RESUME=0 restores the pre-#382 behaviour. */
@@ -316,6 +317,38 @@ export function clearForResume(state: WorkState): WorkState {
 export function reenterInterrupted(state: WorkState): WorkState {
   if (state.pipelineState.status !== "interrupted") return state;
   return { ...state, pipelineState: { ...state.pipelineState, status: "running" } };
+}
+
+/**
+ * #1243 fix round — re-deliver a provider park's handoff line when the crash
+ * that interrupted it happened BEFORE the terminal-delivery write landed.
+ *
+ * Why the classifier alone is not enough: `applyInterrupt` clears
+ * `inFlightJobIds` (the dispatch that died is gone), so the `resume` verdict
+ * cannot fire for such a park — it is the clean-boundary case, `fresh` — and
+ * the driver's loop would exit at once with the line still owed. A second
+ * provider failure after a resume therefore reached the operator as nothing at
+ * all. `deliverTerminalLine` is the idempotent re-attempt (`handoffDeliveredAt`
+ * gates a line that did go out) and `runHandoff` short-circuits on that same
+ * marker, so a park that resumes re-delivers and a park already delivered does
+ * not re-post the comment — the outcome the park's own advice promises: re-run
+ * `/work N`, the halted step re-enters, the operator hears about it.
+ *
+ * Reads the state as it was when this invocation opened it (`disk`), not the
+ * in-memory copy the re-entry already flipped to `running`.
+ */
+export async function redeliverUndeliveredPark(
+  ctx: Pick<CycleContext, "repoRoot" | "emitSink" | "signal" | "host" | "issue">,
+  verdict: RunningVerdict,
+  disk: WorkState | undefined,
+  state: WorkState,
+): Promise<WorkState> {
+  if (verdict.action !== "fresh") return state;
+  if (disk?.pipelineState.status !== "interrupted") return state;
+  if (disk.pipelineState.handoffDeliveredAt !== undefined) return state;
+  const next = await deliverTerminalLine(ctx, state);
+  await persistCycle(ctx, next);
+  return next;
 }
 
 /** Operator-facing message for a refused re-entry. */

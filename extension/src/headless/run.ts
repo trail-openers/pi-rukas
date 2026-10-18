@@ -33,7 +33,13 @@ import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { type DriverOutcome, runWorkDriver } from "../work-driver.ts";
 import { fetchIssueBodies } from "../work-entry.ts";
 import { createEmitSink } from "../work-state-emit.ts";
-import { interruptReasonOf, markInterrupted, readState, workStateFile } from "../workflow-state.ts";
+import {
+  interruptReasonOf,
+  isProviderPark,
+  markInterrupted,
+  readState,
+  workStateFile,
+} from "../workflow-state.ts";
 import type { WorkState } from "../workflow-state.ts";
 import { EXIT, exitCodeForGroup, exitCodeForState } from "./exit-code.ts";
 import { type LineWriter, createHeadlessHost } from "./host.ts";
@@ -72,8 +78,30 @@ export interface HeadlessRunResult {
 }
 
 const DEFAULT_GRACE_MS = 10_000;
-/** States whose exit code is already decided: an expired signal does not override them. */
+/**
+ * States whose exit code is already decided: an expired signal does not
+ * override them.
+ *
+ * #1243 fix round — the provider park is in this set deliberately. It
+ * terminalises as `interrupted` (reason `provider`) precisely so `/work N`
+ * re-enters it, and `exitCodeForState` already gives it `EXIT.handoff` — but
+ * `interrupted` is also the status a signal leaves behind, so a grace expiry
+ * that fired after the park had been written would see a non-terminal status,
+ * substitute `expiredCode`, and report 21/30 for a cycle that handed off. The
+ * park had run to its terminal boundary and delivered its comment; the runner
+ * arriving late must not relabel that. A signal that cut a cycle off mid-step
+ * is still not in the set — it is genuinely the abort's outcome.
+ */
 const TERMINAL_STATUSES = new Set<string>(["merged", "handoff", "aborted"]);
+
+/**
+ * Did this state reach a terminal boundary the runner must not relabel? The
+ * three terminal statuses, plus a #1243 provider park (which is `interrupted`
+ * by status but terminal by outcome — see `isProviderPark`).
+ */
+function terminalForExitCode(state: WorkState): boolean {
+  return TERMINAL_STATUSES.has(state.pipelineState.status) || isProviderPark(state);
+}
 /** After grace expires, how long the runner waits for a driver that was mid-step. */
 const LATE_DRIVER_MS = 5_000;
 
@@ -362,7 +390,7 @@ async function runGroup(
     // a live owner's `running` state is one.
     const refusedHere = refused && state.pipelineState.status === "running";
     let code: number;
-    if (outcome === "expired" && !TERMINAL_STATUSES.has(state.pipelineState.status)) {
+    if (outcome === "expired" && !terminalForExitCode(state)) {
       code = expiredCode;
     } else if (refusedHere) code = EXIT.refused;
     else code = exitCodeForState(state);

@@ -28,19 +28,32 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { exitCodeForState } from "../src/headless/exit-code.ts";
 import { failureOf } from "../src/headless/failure.ts";
 import type { DispatchResult, ExtensionAPI } from "../src/types.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
+import type { DriverHost } from "../src/work-driver-host.ts";
+import { providerParkEvidence } from "../src/work-driver-provider-park.ts";
 import {
   type DispatchFailureEvent,
   dispatchFailCapFor,
   dispatchFailCapHit,
   stepParkedOnProvider,
 } from "../src/work-driver-provider-park.ts";
+import { runWorkDriver } from "../src/work-driver.ts";
+import { singleCycleQueueEntry } from "../src/work-queue-single-entry.ts";
 import { humanActionFor } from "../src/work-queue.ts";
-import { type WorkState, initialState, readState, writeState } from "../src/workflow-state.ts";
+import { renderCycleIndex } from "../src/work-status-index.ts";
+import { renderStatus } from "../src/work-status.ts";
+import {
+  type WorkState,
+  initialState,
+  isProviderPark,
+  readState,
+  writeState,
+} from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -49,6 +62,40 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
+}
+
+/**
+ * A provider park that reached its terminal boundary: the outage's cap-hit,
+ * then the `interrupted` event with reason `provider` that `parkProviderInterrupt`
+ * writes after the handoff was delivered.
+ */
+function parked(issue: number): WorkState {
+  const s = initialState(issue, 1_000_000);
+  s.pipelineState = {
+    ...s.pipelineState,
+    status: "interrupted",
+    currentStep: "adversarial",
+    lastCompletedStep: "commit-pr",
+    branchName: "feature/issue-1243",
+    prNumber: 1554,
+    handoffDeliveredAt: new Date().toISOString(),
+  };
+  return {
+    ...s,
+    eventLog: [
+      { kind: "step-started", step: "adversarial", at: 1 },
+      { ...providerEvent, jobId: "j-park" },
+      {
+        kind: "cap-hit",
+        at: 2,
+        cap: "provider-unavailable",
+        reviewRound: 0,
+        nextStep: "handoff",
+        evidence: `${OUTAGE} · cause=provider-severed`,
+      },
+      { kind: "interrupted", at: 3, reason: "provider", step: "adversarial" },
+    ],
+  } as unknown as WorkState;
 }
 
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
@@ -425,6 +472,12 @@ void classifierReadsTheTerminalFailure();
     `a crash park keeps the inspect-and-restart advice (got: ${crashAction})`,
   );
 }
+
+// The SURFACES a park reaches (status renderer, queue entry, re-entry, handoff
+// re-delivery, exit code) are the sibling file's job:
+// test-provider-park-surfaces.ts, split for AGENTS.md §12's size limit. This
+// file owns WHEN a cycle earns the park; that one owns what every reader then
+// says about it, and they share the same `isProviderPark`.
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);
