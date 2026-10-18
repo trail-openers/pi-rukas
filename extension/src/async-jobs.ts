@@ -1,4 +1,4 @@
-import type { Writable } from "node:stream";
+import type { StartJobHandle, StartJobInput, WorkHooks } from "./async-jobs-input.ts";
 import { type DispatchHost, deliverOrStandIn, deliverStandIn } from "./async-jobs-lifecycle.ts";
 import {
   MAX_JOBS,
@@ -10,6 +10,8 @@ import {
   newJobId,
 } from "./async-jobs-registry.ts";
 import {
+  driverReportStandIn,
+  formatDriverReport,
   formatFailReport,
   formatSingleReport,
   reportsGitState,
@@ -18,17 +20,19 @@ import {
 import { makeSlowWatch } from "./async-jobs-slow.ts";
 import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
-import { type GitLineFor, gitStateLine } from "./git-state.ts";
+import { gitStateLine } from "./git-state.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import * as pendingJobs from "./pending-jobs-signal.ts";
-import type { PiJsonEvent } from "./pi-event-shapes.ts";
-import type { RunningState } from "./progress.ts";
 import * as sessionAutosave from "./session-autosave.ts";
-import { type OnSlowCallback, feedSlowProgress } from "./slow-notice.ts";
+import { feedSlowProgress } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
 import { type DispatchResult, isRateLimit429Msg } from "./types.ts";
 
-export { formatSingleReport } from "./async-jobs-report.ts";
+export {
+  driverReportStandIn,
+  formatDriverReport,
+  formatSingleReport,
+} from "./async-jobs-report.ts";
 export { startBatch } from "./async-jobs-batch.ts";
 export {
   getChildHandle,
@@ -71,104 +75,13 @@ export {
  *      steer when ALL children complete — never N out-of-order arrivals.
  */
 
-/** Live-progress hooks passed to a job's work function. */
-export interface WorkHooks {
-  /**
-   * Forward a child's RunningState update. Wired to the dispatch deck so the
-   * footer can render live activity (#117). Work functions should pass this
-   * straight through to spawnSpecialist's onProgress option.
-   */
-  onProgress: (state: RunningState) => void;
-  /**
-   * #839 — raw-event observer for the dispatch deck's live view. Work
-   * functions pass this through to spawnSpecialist's onRawEvent option
-   * (OPTIONAL there); it feeds the job's ring buffer (dispatch-deck-live.ts).
-   */
-  onRawEvent: (event: PiJsonEvent) => void;
-  /**
-   * Stdin-handle callback (#153). Called once after the child is spawned,
-   * before the kickoff prompt is written. Work functions pass this through
-   * to spawnSpecialist's onStdin option so the async-jobs registry can
-   * record the handle for dispatch_steer lookups.
-   */
-  onStdin: (stdin: Writable) => void;
-  /**
-   * Orchestrator-shaped work functions (adversarial_loop) need to know their
-   * own job id so they can register the currently-running inner child via
-   * `setOrchestratorActiveChild`. Provided to every work function for
-   * symmetry; single dispatches ignore it.
-   */
-  jobId: string;
-}
-
-interface StartJobInput {
-  /** Human-readable subagent label (role + optional tag, e.g. "code-review-specialist[security]"). */
-  label: string;
-  /** #1015 — resolved dispatch cwd; the developer/ops report's git-state line is computed
-   * against it. Absent → the line reads "unverified (no cwd)", never process.cwd(). */
-  cwd?: string;
-  /** Test seam for the git-state line; defaults to gitStateLine. */
-  gitLineFor?: GitLineFor;
-  /** Role name for telemetry. */
-  role: string;
-  /**
-   * Work function. Receives an AbortSignal tied to our internal abort
-   * controller (NOT the tool's exec signal — that one is gone the moment we
-   * return from execute()). Should call spawnSpecialist internally and
-   * forward `hooks.onProgress` to it.
-   */
-  work: (signal: AbortSignal, hooks: WorkHooks) => Promise<DispatchResult>;
-  /**
-   * Skip the automatic dispatch-deck entry. Set true for orchestrators that
-   * fan out internally (lens-review, adversarial) and manage their own
-   * per-child deck entries — otherwise the orchestrator's "synthetic" row
-   * would mask the real children behind it.
-   */
-  skipDeck?: boolean;
-  /** #838 — batch key the job's deck entry groups under (the driver's
-   *  per-cycle header, "work:<issue>"); ignored when `skipDeck`. */
-  batchKey?: string;
-  /** #838 — display label for the deck entry (row + batch grouping); the
-   *  job's own events keep `label` (the driver's cap checkpoint parses the
-   *  workstream id out of it). Absent → the deck entry shows `label`. */
-  deckLabel?: string;
-  /**
-   * Who consumes the result. Default "pm" — preserves the existing
-   * send-as-steer behaviour every dispatch tool depends on. Set "driver"
-   * when an in-process caller (e.g. the work-driver) will await the
-   * `completion` promise directly; we then skip the sendUserMessage steer
-   * so PM doesn't see a `[ensemble:async]` it didn't ask for.
-   *
-   * See SingleJobState.ownerKind for the full rationale.
-   */
-  ownerKind?: "pm" | "driver";
-  /**
-   * #799 — invoked by the slow-run watch (slow-notice.ts) on each threshold
-   * crossing, before the PM notice and the auto-steer. The driver threads
-   * its `dispatch-slow` event appender through `dispatchCore`; PM jobs never
-   * set it (their watch has no cycle state to append to). Must be sync and
-   * must not throw (the watch catches, but the contract is synchronous).
-   */
-  onSlow?: OnSlowCallback;
-}
-
-export interface StartJobHandle {
-  jobId: string;
-  /**
-   * Resolves with the DispatchResult when the work function settles. Always
-   * returned. PM-owned callers normally ignore it (the steer is the
-   * contract). Driver-owned callers await this to consume the result
-   * directly — `deliverReport` is skipped for them so PM never sees an
-   * `[ensemble:async]` it didn't initiate.
-   *
-   * Note: this promise resolves (not rejects) for both ok and failed
-   * dispatches — failure is encoded in `result.ok === false` /
-   * `result.errorStop`. It DOES reject if the work function throws
-   * (transport / spawn-level errors before any DispatchResult is produced).
-   * Driver code should catch that explicitly.
-   */
-  completion: Promise<DispatchResult>;
-}
+/**
+ * The job-input contract lives in async-jobs-input.ts (WorkHooks, StartJobInput,
+ * StartJobHandle). Re-exported so every existing `from "./async-jobs.ts"` import
+ * of these types keeps working — async-jobs-batch.ts imports WorkHooks, and the
+ * dispatch tools import StartJobHandle through here.
+ */
+export type { StartJobHandle, StartJobInput, WorkHooks } from "./async-jobs-input.ts";
 
 /** The stand-in for a single job whose report could not be built or handed to Pi. */
 function jobStandIn(jobId: string, label: string, err: unknown): string {
@@ -189,6 +102,22 @@ export function startJob(pi: DispatchHost, input: StartJobInput): StartJobHandle
     );
   }
   const ownerKind: "pm" | "driver" = input.ownerKind ?? "pm";
+  // #1541 review (HIGH) — the `reportKind === "driver"` branch below delivers
+  // its steer WITHOUT the `ownerKind === "pm"` gate every sibling path has, so
+  // `ownerKind` decided only the badges and the pending-count for these jobs.
+  // That is safe only while one invariant holds: a driver-shaped report is a
+  // tool-launched pipeline (plan / research) whose ONLY consumer is the PM's
+  // steer, so it is always PM-owned. A `reportKind: "driver"` job marked
+  // driver-owned would deliver a duplicate `[ensemble:async]` to a PM that
+  // never asked for one, or — if the gate were added naively — deliver nothing
+  // at all and leave the caller holding a promise no operator ever reads.
+  // Refuse the combination at the door rather than carry the invariant as
+  // folklore.
+  if (input.reportKind === "driver" && ownerKind !== "pm") {
+    throw new Error(
+      `async-jobs: reportKind "driver" requires ownerKind "pm" (got "${ownerKind}") — a driver-shaped report is delivered to the PM as the run's only result; an in-process caller consumes the completion promise instead.`,
+    );
+  }
   const jobId = newJobId();
   const abort = new AbortController();
   const state: SingleJobState = {
@@ -317,6 +246,46 @@ export function startJob(pi: DispatchHost, input: StartJobInput): StartJobHandle
               jobStandIn(jobId, input.label, e),
             );
           }
+          return result;
+        }
+        // #1044 — a driver-shaped job has no subagent to describe: its text IS
+        // the report body, so it skips the git-state read and the five-way
+        // outcome headline entirely. Both ways this branch can fail to hand the
+        // report over — `formatDriverReport` throwing, or the host refusing the
+        // steer — are routed through the ONE helper, so neither strands the
+        // promised steer (#1541 review round 4 HIGH: the branch used to call
+        // `deliver(build())` outside any try, so a throwing formatter escaped
+        // without a stand-in).
+        //
+        // #1541 review round 5 (CI regression): `standInOnRefusal` is what makes
+        // this branch differ from its three siblings. They deliver one report per
+        // job and their tests pin that single send; this branch is the run's ONLY
+        // result, so a steer Pi refused has to be answered with a stand-in even
+        // though it costs a second send. The helper's default is the siblings' shape.
+        if (input.reportKind === "driver") {
+          const build = () =>
+            formatDriverReport(jobId, input.label, input.subject ?? input.label, result.text ?? "");
+          // #1541 review (MEDIUM) — the boolean `deliverReport` returns is read,
+          // not swallowed: Pi refusing the steer is the one failure mode this
+          // branch actually has, and before it was read it produced a WARN in the
+          // trace and silence in the session.
+          // #1541 review (HIGH): NOT `jobStandIn`, which says FAILED and
+          // "its result is lost; re-dispatch" — both false here, where the run
+          // settled and only the hand-over failed. This branch must not send
+          // an operator to re-run a plan that already filed its issue.
+          // Where to look: what the run reported it wrote, then what the tool
+          // knew up front, then a generic pointer. Never a fabricated path.
+          const where =
+            [result.reportWhere, input.reportWhere].filter((w): w is string => !!w).join("; ") ||
+            `dispatch_status (this job's row)`;
+          deliverOrStandIn(
+            pi,
+            `async job ${jobId}`,
+            build,
+            (e) => driverReportStandIn(jobId, input.label, input.subject ?? input.label, e, where),
+            { deliver: input.deliverForTest, standInOnRefusal: true },
+          );
+          trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) finished (driver)`);
           return result;
         }
         // Driver-owned jobs skip the steer: the in-process caller is awaiting

@@ -53,7 +53,6 @@ function assert(cond: boolean, msg: string) {
 
 const SRC = path.resolve(import.meta.dirname, "..", "src");
 
-
 /**
  * Comments are not callers.
  *
@@ -128,9 +127,7 @@ for (const seam of SEAMS) {
     (name) =>
       !(name in seam.pending) &&
       !(name in testOnly) &&
-      !allSources.some(
-        (f) => f.name !== seam.file && new RegExp(`\\b${name}\\b`).test(f.text),
-      ),
+      !allSources.some((f) => f.name !== seam.file && new RegExp(`\\b${name}\\b`).test(f.text)),
   );
   assert(
     unwired.length === 0,
