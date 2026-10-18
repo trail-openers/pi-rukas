@@ -107,17 +107,19 @@ export interface StartJobInput {
   /**
    * #1541 review — what the "driver" report shape does when its steer never
    * reaches the host. `deliverReport` cannot throw but returns `false` when
-   * `sendUserMessage` rejected, and the sibling PM paths all fall back to a
-   * stand-in on that signal. Without an equivalent here the promise PM was
-   * handed — "the result arrives later as one `[ensemble:async]` steer" —
-   * evaporated: a killed or completed run, and nothing in the session.
+   * `sendUserMessage` rejected, and only this branch reads that signal: the
+   * driver report is the run's ONLY result, so a refused steer would otherwise
+   * leave the promise PM was handed — "the result arrives later as one
+   * `[ensemble:async]` steer" — evaporated: a killed or completed run, and
+   * nothing in the session. The sibling PM paths deliberately keep the older
+   * shape (only a build THROW falls back) — see `DeliverOrStandInOptions`.
    *
    * Test seam only. Production always runs the real stand-in fallback; a test
    * passes `false` to prove the branch actually reads the boolean rather than
    * assuming the send worked.
    *
    * #1541 review round 4 (HIGH): it is now threaded into `deliverOrStandIn` as
-   * its `deliver` argument rather than called by the branch itself, so the
+   * its `options.deliver` rather than called by the branch itself, so the
    * formatter-throw path and the refused-send path share one fallback — and a
    * test that injects it still exercises the real build-and-deliver sequence.
    */

@@ -256,6 +256,12 @@ export function startJob(pi: DispatchHost, input: StartJobInput): StartJobHandle
         // promised steer (#1541 review round 4 HIGH: the branch used to call
         // `deliver(build())` outside any try, so a throwing formatter escaped
         // without a stand-in).
+        //
+        // #1541 review round 5 (CI regression): `standInOnRefusal` is what makes
+        // this branch differ from its three siblings. They deliver one report per
+        // job and their tests pin that single send; this branch is the run's ONLY
+        // result, so a steer Pi refused has to be answered with a stand-in even
+        // though it costs a second send. The helper's default is the siblings' shape.
         if (input.reportKind === "driver") {
           const build = () =>
             formatDriverReport(jobId, input.label, input.subject ?? input.label, result.text ?? "");
@@ -277,7 +283,7 @@ export function startJob(pi: DispatchHost, input: StartJobInput): StartJobHandle
             `async job ${jobId}`,
             build,
             (e) => driverReportStandIn(jobId, input.label, input.subject ?? input.label, e, where),
-            input.deliverForTest,
+            { deliver: input.deliverForTest, standInOnRefusal: true },
           );
           trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) finished (driver)`);
           return result;
