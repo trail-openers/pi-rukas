@@ -481,4 +481,18 @@ export const SEAMS: Seam[] = [
     },
     canary: { symbol: "setSiblingClaimWait", importer: "work-entry-queue.ts" },
   },
+  {
+    // #1002 round 1 — git's "that is not there" rule, the one place that reads
+    // git's exit code + wording for an absent ref or tree object. `gitSaysAbsent`
+    // is consumed inside this module by `refResolves`; `gitCatFileSaysAbsent` has
+    // a real production caller in `lens-evidence.ts`. The former is exported only
+    // so the wording rule can be asserted directly rather than through a probe.
+    file: "git-range.ts",
+    pending: {},
+    testOnly: {
+      gitSaysAbsent:
+        "the ref-probe absence rule, exercised through refResolves and pinned directly by test-git-range-1153.ts",
+    },
+    canary: { symbol: "gitCatFileSaysAbsent", importer: "lens-evidence.ts" },
+  },
 ];
