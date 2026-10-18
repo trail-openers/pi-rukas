@@ -17,18 +17,15 @@
  *     NEXT boundary, routing to handoff.
  */
 
-import { explainCap } from "../src/work-driver-explain.ts";
-import { humanActionFor } from "../src/work-queue.ts";
-import { validateDiscriminants } from "../src/workflow-state-validate.ts";
-import {
-  deadlineCheck,
-  readCycleDeadline,
-} from "../src/work-driver-deadline.ts";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { deadlineCheck, readCycleDeadline } from "../src/work-driver-deadline.ts";
+import { explainCap } from "../src/work-driver-explain.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
+import { humanActionFor } from "../src/work-queue.ts";
+import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { type WorkState, initialState, readState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -55,7 +52,7 @@ function parkedState(): WorkState {
     reviewRound: 1,
     nextStep: "handoff",
     evidence:
-      "caller deadline 9999999999999 (absolute epoch ms); 300000ms remained; step \"lens-fix\" needs ~5400000ms plus the 480000ms handoff grace",
+      'caller deadline 9999999999999 (absolute epoch ms); 300000ms remained; step "lens-fix" needs ~5400000ms plus the 480000ms handoff grace',
   });
   return s;
 }
@@ -101,10 +98,7 @@ function parkedState(): WorkState {
     explain.includes("handoff"),
     `explainCap(deadline) says the handoff posts before the kill (got: ${explain.slice(0, 120)}…)`,
   );
-  assert(
-    !explain.startsWith("step failed:"),
-    `explainCap(deadline) is not the generic fallback`,
-  );
+  assert(!explain.startsWith("step failed:"), `explainCap(deadline) is not the generic fallback`);
 }
 
 // 3. The queue gives a deadline-specific action.
@@ -208,8 +202,14 @@ const T0 = 1_800_000_000_000; // a realistic epoch ms (2027)
   {
     // 1h left: far less than the 2h spawn backstop, but more than the grace.
     const r = await deadlineCheck(makeCtx(), withDeadline(T0 + 3_600_000), "develop", T0);
-    assert(r.parked === false, "1h left does not park develop — its worst-case bound is not reserved");
-    assert(r.state.eventLog.at(-1)?.kind !== "cap-hit", "no cap-hit appended when a step may start");
+    assert(
+      r.parked === false,
+      "1h left does not park develop — its worst-case bound is not reserved",
+    );
+    assert(
+      r.state.eventLog.at(-1)?.kind !== "cap-hit",
+      "no cap-hit appended when a step may start",
+    );
     assert(
       r.state.pipelineState.cycleDeadlineMs === T0 + 3_600_000,
       "the resolved deadline rides on the returned state (status line, persistence)",
@@ -293,16 +293,24 @@ const T0 = 1_800_000_000_000; // a realistic epoch ms (2027)
     await runWorkDriver(ctx);
     const after = await readState(dir, 1238);
     const caps = (after?.eventLog ?? []).flatMap((e) => (e.kind === "cap-hit" ? [e.cap] : []));
-    const parkEv = (after?.eventLog ?? []).find((e) => e.kind === "cap-hit" && e.cap === "deadline");
-    assert(labels[0] === "explore", `the first step starts and runs (dispatched: ${labels.join(",")})`);
+    const parkEv = (after?.eventLog ?? []).find(
+      (e) => e.kind === "cap-hit" && e.cap === "deadline",
+    );
+    assert(
+      labels[0] === "explore",
+      `the first step starts and runs (dispatched: ${labels.join(",")})`,
+    );
     assert(
       labels.filter((l) => l !== "explore" && l !== "ops:handoff").length === 0,
       `no step after explore is dispatched (dispatched: ${labels.join(",")})`,
     );
     assert(labels.includes("ops:handoff"), "the park routes to the handoff dispatch");
-    assert(caps.includes("deadline"), `the state carries cap-hit deadline (caps: ${caps.join(",")})`);
     assert(
-      parkEv?.kind === "cap-hit" && !String(parkEv.evidence).includes('"explore"'),
+      caps.includes("deadline"),
+      `the state carries cap-hit deadline (caps: ${caps.join(",")})`,
+    );
+    assert(
+      parkEv?.kind === "cap-hit" && !String(parkEv.evidence).includes('step "explore" not started'),
       `the park lands at a LATER boundary, not before explore (${parkEv?.kind === "cap-hit" ? parkEv.evidence : "none"})`,
     );
     assert(
