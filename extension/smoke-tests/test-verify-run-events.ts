@@ -100,6 +100,7 @@ try {
     assert(
       completed?.kind === "verify-completed" &&
         completed.status === "success" &&
+        completed.ok === true &&
         completed.command === r.cmd &&
         completed.ms >= 0 &&
         completed.ms === completed.at - (started?.at ?? Number.NaN),
@@ -128,7 +129,7 @@ try {
     const completed = r.gate.verifyEvents?.[1];
     assert(r.kindsAtRun.length > 0 && !r.gate.ok, "d: the command ran and the gate fails");
     assert(
-      completed?.kind === "verify-completed" && completed.status === "failure",
+      completed?.kind === "verify-completed" && completed.status === "failure" && !completed.ok,
       `d: verify-completed records failure (got ${JSON.stringify(completed)})`,
     );
   }
@@ -159,6 +160,7 @@ try {
         command: "bash scripts/verify.sh",
         target: { kind: "consolidated" },
         status: "success",
+        ok: true,
         ms: 1_347_000,
       },
     ];
@@ -168,7 +170,7 @@ try {
     const lines = events.map((e) => fmtEvent(e));
     assert(
       lines[0]?.includes("verify-started") === true &&
-        lines[1]?.includes("passed") === true &&
+        lines[1]?.includes("success") === true &&
         lines[1]?.includes("22m27s") === true,
       `f: /work-status renders both (got ${JSON.stringify(lines)})`,
     );
