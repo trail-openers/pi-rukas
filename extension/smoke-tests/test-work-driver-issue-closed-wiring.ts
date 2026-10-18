@@ -54,12 +54,18 @@ assert(
   "work-driver.ts stays at main exactly — the gate does NOT live in the capped file",
 );
 assert(
-  /const refused = await parkIfIssueClosed\(ctx, state, step\)/.test(runStep),
+  /const issueGate = await parkIfIssueClosed\(ctx, state, step\)/.test(runStep),
   "runStep parks a CLOSED issue",
 );
+// The fail-open contract, asserted as TEXTURE not vibes: only a state that is
+// NOT the one we handed in counts as a park. An unreadable issue returns the
+// same object, so the step must run — a plumb-report note appended to the state
+// would otherwise be truthy and abort the cycle on a transient gh outage.
 assert(
-  /if \(refused\) return refused;[\s\S]*?if \(step !== "handoff"/.test(runStep),
-  "the park returns before the step gate and before any child is dispatched",
+  /if \(issueGate && issueGate !== state\) return issueGate;[\s\S]*?if \(step !== "handoff"/.test(
+    runStep,
+  ),
+  "the park returns before the step gate, and ONLY when the state actually changed",
 );
 // The step boundary itself must be gated, not just entry: a mid-cycle CLOSE has
 // to stop the NEXT step. Asserted per ungated step so deleting the call for one

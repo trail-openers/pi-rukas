@@ -58,8 +58,12 @@ export async function runStep(
   // already passed, and refusing it would destroy finished, approved work
   // because an issue was closed afterwards — `endIfPrGone` stays that step's
   // authority, since a merge acts on the PR.
-  const refused = await parkIfIssueClosed(ctx, state, step);
-  if (refused) return refused;
+  const issueGate = await parkIfIssueClosed(ctx, state, step);
+  // ONLY a CLOSED issue parks. An unreadable state returns the SAME state it was
+  // handed — distinguishable by identity — and must fall through: the gate
+  // fails open. Truthiness is not the test here, because the plumb-report note
+  // is also a WorkState.
+  if (issueGate && issueGate !== state) return issueGate;
   if (step !== "handoff" && step !== "merged") {
     const gate = await endIfIssueClosed(ctx, state, step);
     if (gate.ended) return gate.ended;

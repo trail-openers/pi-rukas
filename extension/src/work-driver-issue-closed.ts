@@ -266,6 +266,16 @@ export function issueClosedPark(
 }
 
 /** The issue state stayed unreadable: the step runs, and the note says why. */
+/**
+ * Fail-open disclosure as a plumb-report EVENT.
+ *
+ * Only `endIfIssueClosed` may return this: it hands back `{ state }`, so the
+ * caller can never confuse a note with an ended cycle. `parkIfIssueClosed`
+ * traces instead — its contract is to return the caller's own `state`
+ * UNTOUCHED on the fail-open path, and an appended event would be truthy and
+ * read as "the cycle parked", converting a transient gh outage into the very
+ * mass abort this gate exists to prevent.
+ */
 function unreadableIssueNote(state: WorkState, group: number[], step: WorkStep): WorkState {
   return appendEvent(state, {
     kind: "plumb-report",
@@ -274,6 +284,23 @@ function unreadableIssueNote(state: WorkState, group: number[], step: WorkStep):
     role: "issue-gate",
     body: `Could not read the state of ${group.map((n) => `#${n}`).join(", ")} before the ${step} step — the step ran anyway (a cycle is never ended on a guess). If \`gh\` is unhealthy, that is why the closed-issue check did not run.`,
   });
+}
+
+/** The step-boundary fail-open path: trace only, never mutate the state. */
+function traceUnreadableIssueNote(
+  ctx: DriverContext,
+  _state: WorkState,
+  group: number[],
+  step: WorkStep,
+): void {
+  trace(
+    `work-driver: closed-issue gate did not run for ${group
+      .map((n) => `#${n}`)
+      .join(
+        ", ",
+      )} before the ${step} step — the step ran anyway (a cycle is never ended on a guess). If \`gh\` is unhealthy, that is why.`,
+  );
+  void ctx;
 }
 
 /**
@@ -337,20 +364,40 @@ export async function parkIfIssueClosed(
   opts: { forge?: Forge } = {},
 ): Promise<WorkState | undefined> {
   const group = [...new Set([ctx.issue, ...(ctx.issues ?? [])])];
-  const forge = opts.forge ?? (await cycleForge(ctx));
+  // The caller's forge, never a detected one: this runs on EVERY step boundary,
+  // and detection shells out to `gh` for a repoRoot that merely exists. Tests
+  // point repoRoot at a real temp dir precisely to stay off the network, and a
+  // gate that forks gh there reintroduces the per-step subprocess this whole
+  // change had to remove. No forge means no read and no gate.
+  const forge = opts.forge ?? ctx.forge;
   if (!forge) return undefined;
   const cached = cycleVerdicts.get(ctx);
   for (const n of group) {
     const known = cached?.get(n);
-    if (known === "CLOSED") return notifyAndPark(ctx, state, n, step, group.length);
+    if (known === "CLOSED") {
+      if (process.env.DBG1472)
+        console.error(
+          "[1472] CACHED CLOSED",
+          n,
+          "step",
+          step,
+          "cached=",
+          JSON.stringify([...(cached?.entries() ?? [])]),
+        );
+      return notifyAndPark(ctx, state, n, step, group.length);
+    }
     if (known === "OPEN") continue;
     const read = await readIssueState(forge, n, !unreadableIssueCycles.has(ctx));
     if (read.state === "CLOSED") return notifyAndPark(ctx, state, n, step, group.length);
     if (read.state === undefined) {
-      // Fail open, once per cycle, and say so.
+      // Fail open, once per cycle, and say so. Returns `state` UNTOUCHED so the
+      // caller can tell this from a park by identity: a note appended to the
+      // state would otherwise be truthy and read as "the cycle ended", turning a
+      // transient gh outage into exactly the mass abort this gate exists to
+      // avoid.
       if (!unreadableIssueCycles.has(ctx)) {
         unreadableIssueCycles.add(ctx);
-        return unreadableIssueNote(state, group, step);
+        traceUnreadableIssueNote(ctx, state, group, step);
       }
       continue;
     }

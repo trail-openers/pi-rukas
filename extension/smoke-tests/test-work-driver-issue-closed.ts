@@ -31,6 +31,7 @@ import {
   checkIssueStatesAtEntry,
   endIfIssueClosed,
   issueClosedPark,
+  parkIfIssueClosed,
 } from "../src/work-driver-issue-closed.ts";
 import { initialState } from "../src/workflow-state-update.ts";
 import type { WorkState } from "../src/workflow-state.ts";
@@ -88,7 +89,9 @@ function mkCtx(issues: number[]): CycleContext {
     issue: issues[0],
     issues,
     repoRoot: "/repo",
-    host: {} as DriverContext["host"],
+    // notifyAgent() calls sendUserMessage; a bare {} made the notify-on-park
+    // path throw in tests that never exercised it before parkIfIssueClosed.
+    host: { sendUserMessage: () => undefined } as DriverContext["host"],
     dispatchFn: async () => ({ transcriptPath: undefined }),
     emitSink: () => undefined,
   } as unknown as CycleContext;
@@ -167,6 +170,50 @@ function mkState(issue: number, issues: number[]): WorkState {
   assert(
     ps?.activeIssues === undefined || ps.activeIssues.length === 3,
     "activeIssues is not narrowed — the group is not silently continued without #11",
+  );
+}
+
+// ── 3b. parkIfIssueClosed fails open by IDENTITY, not truthiness ───────────
+// The step-boundary gate returns a WorkState either way, so "did it park?"
+// cannot be answered by truthiness. This is a regression test for a real bug:
+// the fail-open path originally returned a state with a plumb-report appended,
+// which is truthy, so an unreadable issue PARKED the cycle — a transient gh
+// outage became a mass abort, the exact failure the gate exists to avoid.
+{
+  const { forge } = mkForge({ 10: new Error("gh: could not reach api.github.com") });
+  const ctx = mkCtx([10]);
+  const state = mkState(10, [10]);
+  const out = await parkIfIssueClosed(ctx, state, "develop", { forge });
+  assert(
+    out === undefined || out === state,
+    "an UNREADABLE issue never parks: the gate returns undefined or the SAME state",
+  );
+  assert(
+    out === undefined || out.eventLog.length === state.eventLog.length,
+    "the fail-open path does not mutate the state — no event, so no truthy lookalike",
+  );
+}
+{
+  // The runStep caller mirrors that contract: a returned-but-identical state
+  // falls through to the step rather than returning early.
+  const { forge } = mkForge({ 10: new Error("gh down") });
+  const ctx = mkCtx([10]);
+  const state = mkState(10, [10]);
+  const out = await parkIfIssueClosed(ctx, state, "develop", { forge });
+  const parked = out !== undefined && out !== state;
+  assert(!parked, "runStep's identity test reads an unreadable read as 'proceed'");
+}
+{
+  // A CLOSED issue still parks, and the parked state is genuinely new.
+  const { forge } = mkForge({ 10: "CLOSED" });
+  const ctx = mkCtx([10]);
+  const state = mkState(10, [10]);
+  const out = await parkIfIssueClosed(ctx, state, "develop", { forge });
+  assert(out !== undefined && out !== state, "a CLOSED issue parks with a NEW state");
+  assert(
+    out?.pipelineState.currentStep === "handoff" &&
+      out.pipelineState.handoffLabelSkipped === true,
+    "the park routes to handoff and declines the attention label",
   );
 }
 
