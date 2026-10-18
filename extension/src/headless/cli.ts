@@ -26,6 +26,9 @@
  * with its process group (exit 21). Interactive /work is unchanged: its
  * children stay in the terminal's group, so Ctrl-C reaches them as before.
  *
+ * `work` runs as a child of a supervisor (supervise.ts, #1591), so a runner that
+ * dies without writing its result still gets one, projected from the state files.
+ *
  * There is no `--merge`: merge authority comes only from the project's AGENTS.md
  * (judged by the policy judge), as it does for start_work_driver.
  */
@@ -45,6 +48,7 @@ import { runResearchVerb } from "./research.ts";
 import { resultDocument } from "./result.ts";
 import { runHeadless } from "./run.ts";
 import { type StderrCapture, captureStrayOutput } from "./stderr.ts";
+import { SUPERVISED_ENV, superviseWork } from "./supervise.ts";
 import type { VerbContext, VerbOutcome } from "./verb.ts";
 
 /** The S6 subcommands (#1021), keyed by verb. */
@@ -151,6 +155,14 @@ async function main(argv: string[]): Promise<number> {
       `${JSON.stringify({ error: { code: "bad-arguments", message: args.error } })}\n`,
     );
     return EXIT.refused;
+  }
+  if (process.env[SUPERVISED_ENV] !== "1") {
+    return superviseWork({
+      repoRoot: await resolveRepoRoot(process.cwd()),
+      issues: args.issues,
+      json: args.json,
+      command: [process.execPath, process.argv[1] as string, ...argv],
+    });
   }
   capture = captureStrayOutput();
   const repoRoot = await resolveRepoRoot(process.cwd());

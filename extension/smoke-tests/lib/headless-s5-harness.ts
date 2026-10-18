@@ -220,6 +220,7 @@ export async function mergedRun(opts: {
     calls: [],
     mergeCmds: [],
     prViewAnswers: [],
+    issueViewCmds: [],
     unexpected: [],
     doctrineReads: [],
   };
