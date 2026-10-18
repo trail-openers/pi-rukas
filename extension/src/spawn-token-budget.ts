@@ -28,7 +28,9 @@ import { CODE_REVIEW_SPECIALIST_ROLE } from "./roles.ts";
  * cost bound: the loop-detector (F1) is the primary time/money stop. When the
  * cumulative total crosses the budget, spawn steers the child to wrap up, then
  * kills after the grace window (see capKillGraceMs) with killCause
- * "token-budget".
+ * "token-budget". A child that exits cleanly inside the window is attributed
+ * "token-budget" too (#1569, capKillAttribution): it stopped on the steer, not
+ * because its assignment was done.
  */
 const CODE_REVIEW_SPECIALIST_DEFAULT_BUDGET = 8_000_000;
 
@@ -115,6 +117,18 @@ export class TokenBudgetTracker {
    * a re-read of the env, which can differ if the env was mutated mid-spawn. */
   get budgetTokens(): number {
     return this.budget;
+  }
+
+  /**
+   * #1569 — the budget was crossed, whether or not the kill landed. A child
+   * that crosses it, gets the wrap-up steer and ends on its own inside the
+   * grace window exits 0 before `poll()` can kill it; and tokens counted from
+   * toolResult usage can cross it with no `message_end` left to call
+   * `check()`. Either way the dispatch did not complete its assignment, so
+   * attribution reads this rather than `killed` alone.
+   */
+  get exceeded(): boolean {
+    return this.budget > 0 && (this.triggered || this.tokens() >= this.budget);
   }
 
   /** Called on every assistant message_end. Triggers the budget cap once. */
