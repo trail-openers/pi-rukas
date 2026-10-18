@@ -18,21 +18,34 @@
 
 import type { WorkState } from "./workflow-state.ts";
 
-/** The snapshot proved repoRoot is not a git repository. */
-function repoRootNotARepo(ps: WorkState["pipelineState"]): boolean {
+/** The snapshot's read `<prefix>…` failed with "not a git repository". */
+function provedNotARepo(ps: WorkState["pipelineState"], prefix: string): boolean {
   return (ps.handoffSnapshot?.unreadable ?? []).some(
-    (f) => f.startsWith("git rev-parse HEAD in ") && /not a git repository/i.test(f),
+    (f) => f.startsWith(prefix) && /not a git repository/i.test(f),
   );
 }
 
-/** Workstream worktrees still on disk at handoff, as `[id, path]`. */
+/**
+ * Workstream worktrees still on disk at handoff and readable by git, as
+ * `[id, path]`. Ids come from the RECORDED map, so the per-workstream branch
+ * suffix agrees with `unreadableSnapshotLines`; teardown reports real paths,
+ * so a retained path that is not a literal match is matched by basename.
+ */
 function recoveryWorktrees(ps: WorkState["pipelineState"]): Array<[string, string]> {
   const recorded = Object.entries(ps.worktrees ?? {});
   const retained = ps.handoffSnapshot?.retainedWorktrees;
+  const base = (p: string) => p.replace(/\/+$/, "").split("/").pop();
+  const idOf = (p: string, i: number) =>
+    (recorded.find(([, r]) => r === p) ?? recorded.find(([, r]) => base(r) === base(p)))?.[0] ??
+    `${i + 1}`;
   // Teardown reports what it kept; absent (teardown off or failed) means the
   // recorded worktrees were never removed.
-  if (!retained) return recorded;
-  return retained.map((p, i) => [recorded.find(([, path]) => path === p)?.[0] ?? `${i + 1}`, p]);
+  const present: Array<[string, string]> = retained
+    ? retained.map((p, i) => [idOf(p, i), p])
+    : recorded;
+  // A worktree whose own `git status` read proved it is not a repository
+  // (e.g. its `.git` file points into a repoRoot that is not one) is no tree.
+  return present.filter(([, wt]) => !provedNotARepo(ps, `git status in ${wt}:`));
 }
 
 export function genericRecoveryLines(state: WorkState): string[] {
@@ -44,24 +57,36 @@ export function genericRecoveryLines(state: WorkState): string[] {
   ];
   const wts = recoveryWorktrees(ps);
   if (wts.length > 0) {
+    // Same suffix rule as `unreadableSnapshotLines`: decided by the RECORDED
+    // workstreams, so one retained worktree of two never pushes as the branch.
+    const several = Math.max(Object.keys(ps.worktrees ?? {}).length, wts.length) > 1;
+    // origin already has the cycle's branch: a detached worktree HEAD may be
+    // behind it, and a push to it would be rejected as non-fast-forward.
+    const onOrigin = ps.handoffSnapshot?.branchPushed === true || ps.prNumber !== undefined;
+    const intoExisting = !several && onOrigin;
+    const existing = ps.prNumber !== undefined ? `${branch} (PR #${ps.prNumber})` : branch;
     return [
       "# 1. Inspect what survived in each workstream worktree before deciding:",
       ...wts.flatMap(([, wt]) => [`git -C ${wt} status`, `git -C ${wt} diff --stat`]),
       "",
       ...discard,
       "",
-      "# 3. Take over manually — commit + push each worktree's work, open the PR yourself:",
+      intoExisting
+        ? `# 3. Take over manually — origin already has ${existing}; commit here, then compare with it before updating it (a push from this HEAD may be rejected as non-fast-forward):`
+        : "# 3. Take over manually — commit + push each worktree's work, open the PR yourself:",
       ...wts.flatMap(([id, wt]) => [
         `git -C ${wt} add -p`,
         `git -C ${wt} commit`,
-        `git -C ${wt} push origin HEAD:refs/heads/${wts.length > 1 ? `${branch}-${id}` : branch}`,
+        intoExisting
+          ? `git -C ${wt} log --oneline HEAD --not origin/${branch}`
+          : `git -C ${wt} push origin HEAD:refs/heads/${several ? `${branch}-${id}` : branch}`,
       ]),
     ];
   }
-  if (repoRootNotARepo(ps)) {
+  if (provedNotARepo(ps, "git rev-parse HEAD in ")) {
     return [
-      "# No git repository was found: repoRoot is not a checkout (see the",
-      "# worktree state above) and no workstream worktree was recorded.",
+      "# No git repository was found: repoRoot is not a checkout and no",
+      "# workstream worktree readable by git was recorded (see the worktree state above).",
       "# 1. Read what the failing step actually reported:",
       `cat .pi/work-state/${state.issue}.json`,
       "",
