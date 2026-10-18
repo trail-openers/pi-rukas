@@ -25,6 +25,7 @@ import {
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { deleteSpecArtifact, persistSpecArtifact } from "./work-driver-intent-artifact.ts";
 import { finaliseSpecVerdict } from "./work-driver-intent-finalise.ts";
+import { groundAlreadyImplemented } from "./work-driver-intent-grounding.ts";
 import {
   awaitingReviewPr,
   parkEvidence,
@@ -309,8 +310,17 @@ export async function runExplore(
         evidence,
       });
     }
+    // #1351 — an `already-implemented` park is checked against the mainline first.
     const finalSpec = resolved
-      ? finaliseSpecVerdict(resolved.spec, primarySettled.value.stdout)
+      ? finaliseSpecVerdict(
+          await groundAlreadyImplemented(
+            resolved.spec,
+            responseText,
+            ctx.repoRoot,
+            ctx.verifyExecFn ?? execp,
+          ),
+          primarySettled.value.stdout,
+        )
       : undefined;
     if (resolved !== undefined && finalSpec !== undefined) {
       next = {
