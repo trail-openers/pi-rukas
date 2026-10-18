@@ -130,7 +130,13 @@ export type WorkEvent =
       at: number;
       /** Whether the unreadable reply still carried an `INTENT-VERDICT:` token. */
       verdictParsed: boolean;
-      /** The job id of the attempt that produced the unreadable reply. */
+      /**
+       * #1548 — what the first reply lacked, in the cap-evidence wording. A
+       * verdict without its `## Spec` is not an accepted verdict; this says so
+       * on the event. Absent on events written before #1548.
+       */
+      missing?: string;
+      /** The job id the unreadable attempt's dispatch-completed was recorded under. */
       firstJobId: string;
     }
   | {
