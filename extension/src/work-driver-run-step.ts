@@ -46,13 +46,6 @@ export async function runStep(
   trace(`work-driver: running step "${step}" for issue ${ctx.issue}`);
   let gatedState = state;
 
-  // #1472 — a person can CLOSE the issue while the cycle is running, and every
-  // step below pays for a fresh agent turn. `endIfPrGone` watches the PR; this
-  // watches the issue. `handoff` is deliberately NOT gated (the park IS a
-  // handoff, so gating it would refuse the renderer the park needs) and
-  // `merged` is NOT (it merges a PR whose review already passed; refusing it
-  // would destroy finished, approved work — `endIfPrGone` is that step's
-  // authority, since a merge acts on the PR).
   // #1472 — a person can CLOSE the issue while the cycle runs, and every step
   // below pays for a fresh agent turn. `endIfPrGone` watches the PR; this
   // watches the issue. Refused at the FIRST dispatch point of the cycle (the
