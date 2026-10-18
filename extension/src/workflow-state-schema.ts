@@ -6,7 +6,7 @@
 import type { Verdict } from "./lens-review.ts";
 import type { ContinuedPr } from "./work-driver-continue-pr-state.ts";
 import type { NormalisedSpec } from "./work-driver-intent.ts";
-import type { CapEvidence, CapedPartialState, EvidenceFailureKind } from "./workflow-state-cap.ts";
+import type { CapEvidence, CapedPartialState } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 // #679/#728 — workstream shape + consolidation record, split for the 500-line gate.
 // Re-exported so existing importers keep their paths.
@@ -18,15 +18,13 @@ export type { FenceViolation } from "./workflow-state-schema-verify.ts";
 import type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 import type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
 // #861 / #1167 — `PlanQualityReason` and `PlanUnfenceSummary` live in the
-// plan-quality fragment (the 500-line cap); re-exported just below.
-import type {
+// plan-quality fragment (the 500-line cap); re-exported here so importers of
+// this module keep their path.
+export type {
   PlanQualityReason,
   PlanUnfenceSummary,
 } from "./workflow-state-schema-plan-quality.ts";
-import type { FenceViolation, VerifyEvidenceOrigin } from "./workflow-state-schema-verify.ts";
 import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
-
-export type { PlanQualityReason, PlanUnfenceSummary };
 
 export {
   filesPresentFromConsolidation,
@@ -45,13 +43,27 @@ export { WORK_STEPS } from "./workflow-state-events.ts";
 export type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
 import type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
 export { prDraftFindings } from "./workflow-state-schema-pr-draft.ts";
-import type { PrDraftState } from "./workflow-state-schema-pr-draft.ts";
 // #1362 — cycle-start exempt-untracked baseline: type + #533 validator in workflow-state-dirty-root.ts (#540/#861 seam).
 export {
   type DirtyRootExemptBaseline,
   dirtyRootExemptBaselineFindings,
 } from "./workflow-state-dirty-root.ts";
 import type { IssueClosedState } from "./workflow-state-schema-issue-closed.ts";
+// #1292 / #1421 / #814 — the verify-gate record shapes (and the PR-draft
+// record they sit beside) live in workflow-state-schema-gates.ts (the 500-line
+// gate); re-exported here so every importer keeps its path.
+export type {
+  PrDraftState,
+  VerifyEvidence,
+  VerifyMergeHold,
+  VerifyPlanQuality,
+} from "./workflow-state-schema-gates.ts";
+import type {
+  PrDraftState,
+  VerifyEvidence,
+  VerifyMergeHold,
+  VerifyPlanQuality,
+} from "./workflow-state-schema-gates.ts";
 
 /**
  * Pipeline snapshot — the driver's "where are we" view, reconstructible
@@ -199,40 +211,8 @@ export interface PipelineState extends IssueClosedState {
    * operator does not have to reproduce it.
    */
   lensDiffError?: string;
-  mergeHold?: {
-    authorityGranted: boolean;
-    /** #407 — `doctrine` is a citation-verified grant; `citation-failed` is a
-     * judge that asserted permission it could not point at. `agents-md`
-     * remains for state files written before #407. */
-    authoritySource: "agents-md" | "doctrine" | "operator" | "none" | "citation-failed";
-    /** The AGENTS.md sentence that granted or forbade it, verbatim. */
-    authorityQuote?: string;
-    /** Why the executed-evidence gate refused. */
-    evidenceReason?: string;
-    /** The evidence refusal was a tooling failure, not a CI verdict (#745). */
-    evidenceFailureKind?: EvidenceFailureKind;
-    /** Required checks reporting `skipped`/`neutral` — green to GitHub, not to us. */
-    inconclusive?: string[];
-    /**
-     * The review round cap routed this cycle to `ci` with findings still
-     * outstanding, so the merge is held however permissive the grant is.
-     */
-    unresolvedReviewFindings?: boolean;
-  };
-  planQuality?: {
-    findingsCount: number;
-    redispatched: boolean;
-    reason?: PlanQualityReason;
-    /**
-     * #849 — the dependsOn edges the one-shot corrective re-plan dropped
-     * (reason: dropped-dependencies). Persisted alongside the reason so the
-     * original trigger's evidence isn't the only thing the operator sees;
-     * absent when no edge was dropped.
-     */
-    droppedEdges?: { from: string; to: string }[];
-    /** #1167 — the issue-named unfence's record (`PlanUnfenceSummary`). */
-    unfence?: PlanUnfenceSummary;
-  };
+  mergeHold?: VerifyMergeHold;
+  planQuality?: VerifyPlanQuality;
   /**
    * PR14/#540 — the subsumption-aware consolidation verdict: `verdicts`
    * (workstreams NOT covered by the committed diff) + `filesPresent` (what
@@ -450,29 +430,7 @@ export interface PipelineState extends IssueClosedState {
    * #782 — optional `retries`/`recovered`: the consolidated-verify gate's single
    * bounded re-run. Absent pre-#782; absent = no re-run, so schemaVersion stays 1.
    */
-  verifyEvidence?: {
-    step: WorkStep;
-    failures: string[];
-    at: number;
-    retries?: number;
-    recovered?: boolean;
-    /** Which writer raised this park; see `VerifyEvidenceOrigin`. Absent pre-origin. */
-    origin?: VerifyEvidenceOrigin;
-    /**
-     * #1421 fix round — the consolidated gate DECLINED to consolidate because
-     * the root held nothing but untracked, git-ignored build output, and
-     * nothing else was in the way. Recorded so the queue's park reason (and
-     * the advice `humanActionFor` renders from it) reads a fact the gate
-     * established, rather than substring-matching a failure string whose path
-     * text an operator or a tool chose.
-     */
-    buildResidueOnly?: boolean;
-    /**
-     * #814 — structured develop-scope-fence violations (see
-     * `FenceViolation` below). Absent = none recorded.
-     */
-    fenceViolations?: FenceViolation[];
-  };
+  verifyEvidence?: VerifyEvidence;
   /**
    * Terminal status. "running" while active; flips on `merged` or `handoff`.
    * S4a (#1162) — "interrupted" is written by `markInterrupted` (SIGTERM /
