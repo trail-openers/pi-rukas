@@ -43,7 +43,9 @@
 import { trace } from "./trace.ts";
 import { issueNamedTokens, resolveDefiningFile } from "./work-driver-plan-unfence-extract.ts";
 import {
-  fenceEntryCovering,
+  fenceCoveringBroader,
+  fenceEntryMatching,
+  keptBroaderFenceNote,
   ownerOf,
   unfencedNote,
   unresolvedIdentifierNote,
@@ -57,13 +59,21 @@ export type UnfenceExecFn = (
   opts?: { cwd?: string; timeout?: number; maxBuffer?: number; argv?: string[] },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
-/** One fence the pass removed, with the reason the operator sees. */
+/** The workstream a fence was removed from, with the reason the operator sees. */
 export interface UnfenceRecord {
   workstream: string;
   path: string;
   /** The fence entry as the planner wrote it (annotation included). */
   entry: string;
   note: string;
+  /**
+   * Set when the pass could not place the path it had just removed and so put
+   * the entry BACK — the fence is still there, and `removed` must not claim
+   * otherwise. The adversarial review of #1167 caught a warning that read
+   * "left fenced" while the entry was already gone: the word was a lie about
+   * the plan the develop gate would read.
+   */
+  restored?: string;
 }
 
 /** The verdict of the pass: the repaired plan plus what it did. */
@@ -192,7 +202,14 @@ async function issueNamedPaths(
  * directory with it. With N>1 placement needs a real shared prefix — a path
  * sharing no directory with any workstream stays fenced rather than being
  * handed to an arbitrary developer, which is how a removed fence would become
- * a scope fanout.
+ * a scope fanout. "Stays fenced" is carried out literally: the removal for
+ * that path is rolled back (see `UnfenceRecord.restored`) rather than
+ * reported and left un-done.
+ *
+ * A fence is matched EXACTLY (see `fenceEntryCovering`): an issue naming
+ * `config/app.ts` does not lift a `config/` directory fence. When a broader
+ * fence covers the path the pass keeps it and records a note, so the plan says
+ * why nothing changed.
  */
 export async function unfenceIssueNamedPaths(
   workstreams: Record<string, Workstream>,
@@ -212,24 +229,39 @@ export async function unfenceIssueNamedPaths(
 
   for (const path of paths) {
     const owner = ownerOf(next, path);
-    let removedAny = false;
+    const removals: UnfenceRecord[] = [];
     for (const id of ids) {
       const ws = next[id];
       if (!ws) continue;
       // A path owned by a sibling stays fenced for every non-owner.
       if (owner && id !== owner) continue;
-      const hit = fenceEntryCovering(ws.outOfScope, path);
+      const hit = fenceEntryMatching(ws.outOfScope, path);
       if (hit === undefined) continue;
       ws.outOfScope = ws.outOfScope.filter((entry) => entry !== hit);
-      removed.push({
+      removals.push({
         workstream: id,
         path,
         entry: hit,
         note: unfencedNote(path),
       });
-      removedAny = true;
     }
-    if (!removedAny) continue;
+    if (removals.length === 0) {
+      // Nothing was removed — but a BROADER directory fence may be covering
+      // this very path. It stays (the issue named a file, not the tree), and
+      // the plan records that rather than leaving the operator to wonder
+      // whether the pass ran at all.
+      for (const id of ids) {
+        const ws = next[id];
+        if (!ws) continue;
+        if (owner && id !== owner) continue;
+        const broader = fenceCoveringBroader(ws.outOfScope, path);
+        if (broader === undefined) continue;
+        const note = keptBroaderFenceNote(path, broader);
+        if (!notes.includes(note)) notes.push(note);
+      }
+      continue;
+    }
+    for (const rec of removals) removed.push(rec);
     const note = unfencedNote(path);
     if (!notes.includes(note)) notes.push(note);
     // Placement only when NO workstream declared the path — adding a path an
@@ -244,10 +276,23 @@ export async function unfenceIssueNamedPaths(
       ws.paths = [...ws.paths, path];
       placed.push({ path, workstream: target });
       notes.push(`${note} — placed in workstream ${target}`);
-    } else if (!target) {
-      warnings.push(
-        `unfenced ${path}: named by the issue, left fenced for placement (no workstream shares a directory)`,
-      );
+      continue;
+    }
+    if (target) continue; // already declared — nothing to place, nothing to undo
+    // No workstream can own the path, so the fence is NOT lifted: an unfence
+    // without an owner is a file no developer may touch, and a plan note that
+    // says "left fenced" while the entry is gone is a note about a plan that
+    // does not exist. Roll the removal back and say what was done.
+    for (const rec of removals) {
+      const target2 = next[rec.workstream];
+      if (!target2 || target2.outOfScope.includes(rec.entry)) continue;
+      target2.outOfScope = [...target2.outOfScope, rec.entry];
+      rec.restored = rec.entry;
+    }
+    const kept = removals.filter((rec) => rec.restored !== undefined);
+    if (kept.length > 0) {
+      const why = `unfenced ${path}: named by the issue, left fenced for placement (no workstream shares a directory)`;
+      if (!warnings.includes(why)) warnings.push(why);
     }
   }
 

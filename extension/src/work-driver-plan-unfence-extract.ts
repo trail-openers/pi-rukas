@@ -27,8 +27,24 @@
  * 2026-10-17 recorded on #1167). The `no …` branch is anchored to a clause
  * boundary, because the issue's own prose uses a mid-sentence ", not the
  * spawn path" to qualify rather than to forbid.
+ *
+ * The prohibition vocabulary is deliberately wider than negation. The
+ * adversarial review of #1167 reproduced eight phrasings that carry no
+ * auxiliary at all — "keep X untouched", "leave X alone", "X remains
+ * unchanged", "skip X", "X is not part of this change", "off-limits", "leave
+ * X as is" — and an unfence that reads only "do not …" UNFENCES every one of
+ * them, which is the wrong direction of failure. The rule this module follows
+ * is fail-closed: **when in doubt, keep the fence**, so a sentence that reads
+ * like a prohibition is treated as one.
+ *
+ * Code blocks are the other way the same defect arrives: an issue's DECISIONS
+ * section quotes an example (`import x from "src/legacy.ts"`) and the fenced
+ * file is not a requirement at all — it is an illustration of what the change
+ * must not become. Example blocks are stripped before extraction, so nothing
+ * inside one can name a fence.
  */
 
+import { stripCodeBlocks } from "./work-driver-plan-unfence-code.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
 /**
@@ -39,9 +55,99 @@ import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 const SECTION_HEADING = /^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$/;
 const SECTION_NAMES = [/^decisions$/i, /^resolved\s+decisions$/i, /^acceptance\s+criteria$/i];
 
-/** A sentence refusing an action — its paths are prohibitions, not requirements. */
-const NEGATION =
-  /\b(do\s+not|don'?t|does\s+not|doesn'?t|never|not\s+to\s+|must\s+not|may\s+not|cannot|can'?t|avoid|instead\s+of|rather\s+than|without|forbid|prohibit|refus|reject|excluded?|out\s+of\s+scope)\b|(?:^|[.!?;:]\s*|[-—]\s*)no\s+\w*(?:t|d)\b|(?:^|[.!?;:]\s*|[-—]\s*)no\s+(?:such|longer|changes?\b|commits?\b|tests?\b|files?\b|work\b|edits?\b|paths?\b|code\b|updates?\b|modif)/i;
+/**
+ * A sentence refusing an action — its paths are prohibitions, not requirements.
+ *
+ * Two families. The auxiliary-bearing ones (`do not`, `must not`, `never`,
+ * `cannot`, …) catch a refusal stated as a verb phrase. The bare-prohibition
+ * ones catch the eight phrasings the adversarial review reproduced, which
+ * refuse without any auxiliary at all: "keep X untouched", "leave X alone",
+ * "X remains unchanged", "skip X", "off-limits", "leave X as is".
+ *
+ * The two families are anchored differently on purpose. An auxiliary phrase
+ * is unambiguous wherever it appears, so it matches anywhere in the sentence.
+ * The bare words are ordinary English in other places (`remain`, `skip a
+ * release`), so they match only next to the thing they refuse: `keep` /
+ * `leave` / `leave` -ing must govern a path-shaped word ("leave the docs
+ * alone" is not a fence), and a predicate adjective (`untouched`,
+ * `off-limits`, `unchanged`) must sit either at the end of the sentence or
+ * directly against a path. That is the widest net that still reads the
+ * issue's own requirements as requirements.
+ */
+/**
+ * A sentence refusing an action — its paths are prohibitions, not
+ * requirements. Assembled from parts, but every part is a REGEX LITERAL
+ * rather than a string: an earlier revision built the alternation from
+ * `"\\s"`-style strings and one missing backslash turned `\s` into a literal
+ * `s`, so `does\s+not` silently became `does\s` + `not` against the letter s.
+ * Literals cannot drift that way.
+ *
+ * Two families, anchored differently on purpose. An auxiliary refusal (`do
+ * not`, `must not`, `never`, `cannot`, …) is unambiguous wherever it appears.
+ * The bare verbs are ordinary English (`the plan keeps its own seam`, `keep
+ * their existing tests green`), so `keep`/`leave`/`skip` only read as a
+ * prohibition when what they govern is a path (`leave config/settings.ts
+ * alone`) or a refusal word (`skip it`, `leave it alone`); a predicate
+ * adjective (`untouched`, `as is`, `off-limits`, `unchanged`) must sit at the
+ * end of the sentence or directly against a path. `keep X up to date` is a
+ * maintenance obligation and is matched out first. That is the widest net that
+ * still reads the issue's own requirements as requirements.
+ */
+const PATH_TAIL = String.raw`[\w./@-]*[\w./@-]`;
+const SRC_EXT = String.raw`ts|tsx|js|jsx|mjs|cjs|rs|go|py|rb|java|kt|sh|bash|json|md|yml|yaml|toml|css|scss|html|sql`;
+/** A path-shaped word ending in a known source extension, with nothing after it. */
+const PATH_WORD = new RegExp(
+  `(?:${PATH_TAIL}\\.(?:${SRC_EXT})/\\b|(?:${PATH_TAIL}\\.(?:${SRC_EXT}))(?:[\\s.,;:!?)]|$))`,
+);
+const REFUSAL_WORD = String.raw`(?:it|its|them|their|these|those|that|this)\s+\w+|alone|as\s+is|as-is|untouched|unchanged`;
+/**
+ * Where a bare verb may be governed by a refusal pronoun. Clause-initial
+ * only: `skip it`, `. leave them alone`. Without the anchor `keeps its own
+ * seam` reads as a refusal and the sentence's paths are silently dropped —
+ * which is the #1020 regression this whole module exists to prevent, caused
+ * by the widening intended to fix the opposite bug. `alone` / `as is` / the
+ * predicate adjectives keep no anchor: they are not ordinary English nouns.
+ */
+const CLAUSE_START = String.raw`(?:^|[.!?;:]\s*|[-—]\s*|,\s*)`;
+
+const NEGATIONS: RegExp[] = [
+  // Auxiliary refusals — unambiguous anywhere in the sentence.
+  /\b(?:do\s+not|don'?t|does\s+not|doesn'?t|never|not\s+to\s+|must\s+not|may\s+not|cannot|can'?t|avoid|instead\s+of|rather\s+than|without|forbid|prohibit|refus|reject|excluded?|out\s+of\s+scope)\b/i,
+  // Clause-initial "no …" — anchored, because the issue's own prose uses a
+  // mid-sentence ", not the spawn path" to qualify rather than to forbid.
+  /(?:^|[.!?;:]\s*|[-—]\s*)no\s+\w*(?:t|d)\b/i,
+  /(?:^|[.!?;:]\s*|[-—]\s*)no\s+(?:such|longer|changes?\b|commits?\b|tests?\b|files?\b|work\b|edits?\b|paths?\b|code\b|updates?\b|modif)/i,
+  // "keep/leave/skip <path>" or "leave it alone" — never `keep their tests`.
+  new RegExp(
+    `\\b(?:keep|keeps|keeping|kept|left|leave|leaving|skips?)\\s+(?:${PATH_WORD.source}|${CLAUSE_START}${REFUSAL_WORD}|(?:^|\\s)(?:alone|as\\s+is|as-is|untouched|unchanged))\\b`,
+    "i",
+  ),
+  // "keep X up to date" — a maintenance obligation, not a fence.
+  /\b(?:keep|keeps|keeping|kept)\s+[\w./@-]*[\w./@-]\s+up(?:\s+to\s+date)?\b/i,
+  // A predicate adjective at the end of the sentence, or hard against a path.
+  /(?:\s|^)(?:untouched|unchanged|unmodified|unaltered|as\s+is|as-is|off-?limits?|off\s+limits?|frozen|preserved)(?:\s*[.,;:!?)]|$)/i,
+  new RegExp(
+    `(?:\\s|^)(?:untouched|unchanged|unmodified|unaltered|as\\s+is|as-is|off-?limits?|off\\s+limits?|frozen|preserved)\\s+${PATH_TAIL}`,
+    "i",
+  ),
+  // "remains / stays" + a predicate adjective — "X remains unchanged".
+  /\b(?:remains|remain|stays|stay)\s+(?:untouched|unchanged|unmodified|unaltered|as\s+is|as-is|the\s+same|same|off-?limits?|frozen|preserved)\b/i,
+  // "is/was left <predicate>" — the passive, which is genuinely a refusal.
+  /\b(?:is|was)\s+left\s+(?:untouched|unchanged|unmodified|unaltered|as\s+is|as-is|the\s+same|same|off-?limits?|frozen|preserved)\b/i,
+  // "X is not part of this change" — bare `not` is NOT enough (a requirement
+  // can read "X is not yet wired"), so the whole exclusion idiom is matched.
+  /\b(?:not|never)\s+(?:part\s+of|in\s+the\s+scope\s+of|covered\s+by|touched\s+by|affected\s+by|in\s+scope\s+for)\b/i,
+  // Adjectives that are prohibitions wherever they appear.
+  /\b(?:off-?limits?|do-not-touch|hands\s+off|frozen)\b/i,
+];
+
+/** True when the sentence refuses an action — its paths stay fenced. */
+export function isProhibition(sentence: string): boolean {
+  return NEGATIONS.some((re) => {
+    re.lastIndex = 0;
+    return re.test(sentence);
+  });
+}
 
 /** Tokens that look like a repo path: they carry a `/` or a source extension. */
 const PATH_LIKE =
@@ -164,7 +270,7 @@ export function decisionSectionsOf(body: string): string[] {
       current = undefined;
     }
   };
-  for (const line of body.split("\n")) {
+  for (const line of stripCodeBlocks(body).split("\n")) {
     const heading = SECTION_HEADING.exec(line);
     if (heading) {
       const text = (heading[1] ?? "").trim();
@@ -185,7 +291,7 @@ export function issueNamedTokens(body: string): string[] {
   const tokens = new Set<string>();
   for (const section of decisionSectionsOf(body)) {
     for (const sentence of section.split(/(?<=[.!?])\s+|\n+/)) {
-      if (NEGATION.test(sentence)) continue;
+      if (isProhibition(sentence)) continue;
       // `/` is NOT a delimiter here: it is what distinguishes a path
       // (`extension/src/dispatch.ts`) from a `symbol/symbol` pair
       // (`dispatchCore/startJob`), and real issue bodies use both forms.

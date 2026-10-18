@@ -19,20 +19,15 @@
  * The #1020 case is replayed from a committed fixture rather than a live
  * dispatch — the failure is deterministic given the plan and the body, and a
  * live plan step would make this test depend on a model.
+ *
+ * The round-2 findings (auxiliary-less prohibitions, code-block leakage,
+ * broader fences and the placement rollback) are pinned in
+ * test-plan-unfence-round2.ts; this file holds the original surface.
  */
 
 import { readFileSync } from "node:fs";
-import {
-  type UnfenceResult,
-  placeUnplacedPath,
-  unfenceIssueNamedPaths,
-} from "../src/work-driver-plan-unfence.ts";
-import {
-  decisionSectionsOf,
-  definesSymbol,
-  issueNamedTokens,
-  resolveDefiningFile,
-} from "../src/work-driver-plan-unfence-extract.ts";
+import { decisionSectionsOf, issueNamedTokens } from "../src/work-driver-plan-unfence-extract.ts";
+import { placeUnplacedPath, unfenceIssueNamedPaths } from "../src/work-driver-plan-unfence.ts";
 import { runPlan } from "../src/work-driver-plan.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state.ts";
@@ -261,99 +256,6 @@ const OPTS = {
     placeUnplacedPath("src/z.ts", tie) === "task-b",
     "a tie goes to the earliest workstream in PLAN ORDER, not alphabetical order",
   );
-}
-
-// ------------------------------------------- unresolved identifiers never unfence
-
-{
-  const body = "## Decisions\n- dispatchCore and mysterySymbol both matter.\n- absentSymbol too.";
-  const plan = {
-    default: WS("default", ["src/a.ts"], ["src/ambiguous.ts", "src/nonexistent.ts"]),
-  };
-  const r: UnfenceResult = await unfenceIssueNamedPaths(plan, body, {
-    execFn: async (_c: string, o?: { argv?: string[] }) => {
-      const argv = o?.argv ?? [];
-      if (argv[0] === "grep") {
-        if (argv[4] === "mysterySymbol") {
-          return { stdout: "src/ambiguous.ts\nsrc/also.ts\n" };
-        }
-        return { stdout: "" };
-      }
-      return { stdout: "// no definition here\n" };
-    },
-    repoRoot: "/repo",
-    ref: "origin/main",
-    defaultToSingle: true,
-  });
-  assert(
-    r.workstreams.default.outOfScope.includes("src/ambiguous.ts"),
-    "an identifier matching SEVERAL source files unfences nothing (ambiguity is never resolved on a guess)",
-  );
-  assert(
-    r.workstreams.default.outOfScope.includes("src/nonexistent.ts"),
-    "an identifier matching NOTHING unfences nothing",
-  );
-  assert(
-    r.warnings.some((w) => w.startsWith("unresolved identifier mysterySymbol:")),
-    "the ambiguous name is recorded as a plan note rather than silently ignored",
-  );
-  assert(
-    r.warnings.some((w) => w.startsWith("unresolved identifier absentSymbol:")),
-    "a name with no defining file is recorded too",
-  );
-}
-
-// ------------------------------------------------------ globs are not paths
-
-{
-  const plan = { default: WS("default", ["src/a.ts"], ["src/keep.ts"]) };
-  const r = await unfenceIssueNamedPaths(
-    plan,
-    "## ACCEPTANCE CRITERIA\n- test-work-driver-plan* and test-work-driver-scope* pass.",
-    OPTS,
-  );
-  assert(
-    r.workstreams.default.outOfScope.includes("src/keep.ts"),
-    "a glob in the acceptance criteria names no file and unfences nothing",
-  );
-  assert(r.removed.length === 0, "no fence was removed by a glob-only criteria list");
-}
-
-// ------------------------------------------------- identifier resolution rules
-
-{
-  assert(
-    definesSymbol("export function dispatchCore(\n  pi: unknown,\n) {}\n", "dispatchCore"),
-    "a declaration line counts as a definition",
-  );
-  assert(
-    !definesSymbol("  // the driver calls dispatchCore once\n", "dispatchCore"),
-    "a comment mentioning the name is not a definition (that is how a test file would win)",
-  );
-  assert(
-    !definesSymbol("const dispatchCorey = 1;\n", "dispatchCore"),
-    "a name that merely starts with the symbol is not the symbol",
-  );
-  const files: string[] = [];
-  const sole = await resolveDefiningFile("thing", ["src/a.ts", "src/b.ts"], async (f) => {
-    files.push(f);
-    return f === "src/a.ts" ? "export function thing() {}\n" : "//\n";
-  });
-  assert(sole === "src/a.ts", "exactly one candidate carries a definition → that file resolves");
-  assert(
-    (await resolveDefiningFile("thing", ["src/a.ts", "src/b.ts"], async () => "//\n")) ===
-      undefined,
-    "zero definitions → ambiguous → nothing resolves",
-  );
-  assert(
-    (await resolveDefiningFile(
-      "thing",
-      ["src/a.ts", "test/a.ts", "AGENTS.md"],
-      async () => "export function thing() {}\n",
-    )) === "src/a.ts",
-    "test and prose candidates never own a symbol even when they contain the same text",
-  );
-  assert(files.length === 2, "every source candidate is read before deciding (no early win)");
 }
 
 // --------------------------- the plan step runs the pass and keeps the plan
