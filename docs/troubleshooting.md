@@ -282,6 +282,14 @@ The distinction: the permission layers answer *"may this role run git?"* — yes
 **Still allowed**, because they lose nothing: `git checkout <branch>` (git refuses to clobber local edits), `git reset` without `--hard`, `git restore --staged`, `git stash push` (recoverable via `git stash list`), and `git clean -n`.
 
 Opt out with `PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT=1`.
+
+### A subagent's git edits landed in the main checkout (`GIT_DIR` inherited)
+
+**Symptom:** a child working in `.worktrees/<id>` reports success, yet its staged files, resets or checkouts show up in the main checkout, sometimes over another session's uncommitted work. Git printed no error.
+
+**Cause:** `GIT_DIR` (or `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, …) was set in the environment pi-rukas was launched from, typically a git hook, `git rebase --exec` or a wrapper that exported it. Git honours these ahead of the working directory. `GIT_DIR` without `GIT_WORK_TREE` takes the index and objects from `GIT_DIR` and the work tree from the cwd, then exits 0 on the wrong tree.
+
+**Fix (#1571):** pi-rukas removes git's repository-location variables from its own process env at activation and from every child it spawns (`extension/src/git-env.ts`), so every git command it runs follows its `cwd`. There is no opt-out: nothing in pi-rukas sets these variables on purpose. If you need a different repository, launch pi-rukas from inside it. Work already lost this way may survive in `git stash list` or in `git fsck --lost-found` on the main checkout; don't run `git gc` until you have looked.
 ### The queue says a group "did not start"
 
 Not a failure, and not a halt. The driver declined to run that group — usually because a live cycle already owns the issue, but also for a terminal status, a `needs-human-attention` label, or state-file inconsistencies. All five of those return in about a millisecond.
