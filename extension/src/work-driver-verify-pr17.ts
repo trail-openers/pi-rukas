@@ -339,8 +339,10 @@ export async function verifyStepOutcome(
       case "ahead":
         break;
       case "empty":
+        // #1332 — state what was measured; the ops reply may have said
+        // nothing was committed, so the text never attributes a claim to it.
         failures.push(
-          `ops claimed commit+PR done but the branch has zero commits ahead of origin/${base} — nothing was committed`,
+          `the branch has zero commits ahead of origin/${base} after commit-pr — nothing was committed`,
         );
         break;
       case "unpushed":
@@ -385,7 +387,7 @@ export async function verifyStepOutcome(
     }
     if (prToCheck === undefined) {
       failures.push(
-        "ops claimed a PR was opened but no `pr: <N>` marker was parsed and no PR exists for the branch — the claim is not backed by an actual PR",
+        "no PR exists for the branch: the commit-pr reply carried no `pr: <N>` marker and the forge lists none for the head branch — the step is not backed by an actual PR",
       );
     }
   }
