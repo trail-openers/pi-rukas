@@ -149,12 +149,25 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
     "edges: a plan with no contract is unchanged",
   );
   const self = deriveContractEdges({
-    a: { id: "a", scope: "a", paths: ["x"], outOfScope: [], introduces: ["s"], consumes: ["s"] },
+    a: {
+      id: "a",
+      scope: "a",
+      paths: ["x"],
+      outOfScope: [],
+      introduces: ["s"],
+      consumes: ["s"],
+    },
   });
   assert(self.edges.length === 0, "edges: a symbol a workstream introduces itself is no edge");
   const base = deriveContractEdges({
     a: { id: "a", scope: "a", paths: ["x"], outOfScope: [], introduces: ["s"] },
-    b: { id: "b", scope: "b", paths: ["y"], outOfScope: [], consumes: ["existingAtBase"] },
+    b: {
+      id: "b",
+      scope: "b",
+      paths: ["y"],
+      outOfScope: [],
+      consumes: ["existingAtBase"],
+    },
   });
   assert(base.edges.length === 0, "edges: a consumed symbol no sibling introduces is no edge");
 }
@@ -307,12 +320,19 @@ function stateWithBody(dir: string, body: string): WorkState {
   const artifact = path.join(dir, "issue-body.txt");
   writeFileSync(artifact, body);
   const s0 = initialState(1322, 1_000_000);
-  return { ...s0, pipelineState: { ...s0.pipelineState, issueBodyArtifact: artifact } };
+  return {
+    ...s0,
+    pipelineState: { ...s0.pipelineState, issueBodyArtifact: artifact },
+  };
 }
 async function plan(
   body: string,
   reply: string,
-): Promise<{ ws: Record<string, Workstream>; prompts: string[]; reason?: string }> {
+): Promise<{
+  ws: Record<string, Workstream>;
+  prompts: string[];
+  reason?: string;
+}> {
   const dir = mkdtempSync(path.join(tmpdir(), "plan-contract-"));
   const prompts: string[] = [];
   try {

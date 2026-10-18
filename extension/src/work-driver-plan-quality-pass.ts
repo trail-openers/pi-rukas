@@ -110,7 +110,12 @@ export type PlanQualityHost = {
   /** Executor the corrective's coupling merge greps with (test seam). */
   couplingExecFn?: (
     cmd: string,
-    opts?: { cwd?: string; timeout?: number; maxBuffer?: number; argv?: string[] },
+    opts?: {
+      cwd?: string;
+      timeout?: number;
+      maxBuffer?: number;
+      argv?: string[];
+    },
   ) => Promise<{ stdout: string; stderr?: string }>;
   slow: (issue: number, step: "plan") => unknown;
   deck: (issue: number, step: "plan", label: string) => Record<string, unknown>;
@@ -252,6 +257,13 @@ export async function runPlanQualityTail(
     if (retry.killCause) {
       return halt(appendEvent(next, await planCorrectiveFailureEvent(ctx, label, retry)));
     }
+    // A corrective that failed without a kill (provider error, non-zero exit) is
+    // a failed dispatch: its completion event is the tail, not a zero-call verdict.
+    if (!retry.ok) {
+      return halt(
+        appendEvent(next, await buildCompletionEvent(ctx, "plan", "explore", label, retry)),
+      );
+    }
     // #1652 — the corrective's calls REPLACE the first set (no merge). Refusals
     // are recorded before the completion event, which stays the tail.
     const retryReport = workstreamCallsOf(retry);
@@ -261,11 +273,17 @@ export async function runPlanQualityTail(
     // #1652 — one corrective per cycle, and a corrective with no accepted call
     // leaves the cycle with no plan. The first set is discarded: it already
     // failed the gate, so proceeding on it would build what the gate refused.
+    // Second result is final — including when it is no better. One retry,
+    // never a loop; a plan step that can re-dispatch on its own verdict is a
+    // plan step that can spin.
     if (retryReport.accepted === 0) {
       return halt(
         planSpecMismatchCap(
           next,
-          { kind: "no-workstream-calls", evidence: noWorkstreamCallsEvidence(retryReport) },
+          {
+            kind: "no-workstream-calls",
+            evidence: noWorkstreamCallsEvidence(retryReport),
+          },
           "this is the one-shot corrective plan — it was not re-dispatched and develop never ran",
         ),
       );

@@ -16,6 +16,7 @@ import { Value } from "@sinclair/typebox/value";
 import { reporterPathFromArgs } from "../src/reporter-preflight.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import {
   PLAN_WORKSTREAM_EXTRA_ARGS,
   WORKSTREAM_REPORTER_PATH,
@@ -27,7 +28,6 @@ import {
 import { runPlan } from "../src/work-driver-plan.ts";
 import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
 import { PLAN_WORKSTREAM_CALL_RULE } from "../src/work-driver-prompts-plan.ts";
-import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import workstreamReporter from "../src/workstream-reporter.ts";
 import {
@@ -70,7 +70,12 @@ assert(
 );
 
 const schema = tool?.parameters as Parameters<typeof Value.Check>[0];
-const VALID = { id: "task-a", scope: "the fix", paths: ["src/a.ts"], outOfScope: ["docs/"] };
+const VALID = {
+  id: "task-a",
+  scope: "the fix",
+  paths: ["src/a.ts"],
+  outOfScope: ["docs/"],
+};
 assert(Value.Check(schema, VALID), "schema: a complete call validates");
 assert(
   !Value.Check(schema, { ...VALID, id: "Task A" }),
@@ -129,7 +134,12 @@ assert(
       consumes: ["fieldC"],
     },
     { id: "task-b", scope: "scope b", paths: ["src/b.ts"], outOfScope: [] },
-    { id: "task-c", scope: "scope c", paths: ["src/c.ts"], outOfScope: ["src/a.ts"] },
+    {
+      id: "task-c",
+      scope: "scope c",
+      paths: ["src/c.ts"],
+      outOfScope: ["src/a.ts"],
+    },
   ];
   const report = workstreamCallsOf(planResultFromCalls(calls));
   assert(
@@ -152,21 +162,39 @@ assert(
   );
   assert(
     JSON.stringify(report.workstreams["task-b"]) ===
-      JSON.stringify({ id: "task-b", scope: "scope b", paths: ["src/b.ts"], outOfScope: [] }),
+      JSON.stringify({
+        id: "task-b",
+        scope: "scope b",
+        paths: ["src/b.ts"],
+        outOfScope: [],
+      }),
     "a call that omits the optional fields adds no keys",
   );
 }
 {
   const report = workstreamCallsOf(
     planResultFromRawCalls([
-      { id: "task-a", args: { id: "task-a", scope: "a", paths: ["src/a.ts"], outOfScope: [] } },
       {
         id: "task-a",
-        args: { id: "task-a", scope: "a again", paths: ["src/x.ts"], outOfScope: [] },
+        args: { id: "task-a", scope: "a", paths: ["src/a.ts"], outOfScope: [] },
+      },
+      {
+        id: "task-a",
+        args: {
+          id: "task-a",
+          scope: "a again",
+          paths: ["src/x.ts"],
+          outOfScope: [],
+        },
       },
       {
         id: "Bad Id",
-        args: { id: "Bad Id", scope: "bad", paths: ["src/y.ts"], outOfScope: [] },
+        args: {
+          id: "Bad Id",
+          scope: "bad",
+          paths: ["src/y.ts"],
+          outOfScope: [],
+        },
         refused: "schema: id does not match the pattern — refused, adds nothing",
       },
     ]),
@@ -188,7 +216,10 @@ assert(
   const result = planResultFromCalls([
     { id: "task-a", scope: "a", paths: ["src/a.ts"], outOfScope: [] },
   ]);
-  const report = workstreamCallsOf({ toolUses: result.toolUses, toolResults: [] });
+  const report = workstreamCallsOf({
+    toolUses: result.toolUses,
+    toolResults: [],
+  });
   assert(
     report.accepted === 0 && report.refused.length === 1,
     "a call with no recorded result is not counted",
@@ -203,6 +234,7 @@ assert(
     "the evidence for a reply with no call is 'no report_workstream call'",
   );
 }
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
 {
   // Neither other tools' calls nor prose are workstreams.
   assert(
@@ -217,7 +249,10 @@ function stateWithBody(dir: string, body: string): WorkState {
   const artifact = path.join(dir, "issue-body.txt");
   writeFileSync(artifact, body);
   const s0 = initialState(1652, 1_000_000);
-  return { ...s0, pipelineState: { ...s0.pipelineState, issueBodyArtifact: artifact } };
+  return {
+    ...s0,
+    pipelineState: { ...s0.pipelineState, issueBodyArtifact: artifact },
+  };
 }
 
 function replyOf(result: Partial<DispatchResult>): DispatchResult {
@@ -237,7 +272,10 @@ function replyOf(result: Partial<DispatchResult>): DispatchResult {
 async function runWith(
   replies: DispatchResult[],
   body = "Make the fix.",
-): Promise<{ state: WorkState; dispatches: Array<{ label?: string; extraArgs?: string[] }> }> {
+): Promise<{
+  state: WorkState;
+  dispatches: Array<{ label?: string; extraArgs?: string[] }>;
+}> {
   const dir = mkdtempSync(path.join(tmpdir(), "plan-workstream-tool-"));
   const dispatches: Array<{ label?: string; extraArgs?: string[] }> = [];
   try {
@@ -382,7 +420,12 @@ const TWO_BLOCKS_AND_ONE_CALL = {
     killCause: "timeout",
     killBudgetMs: 30 * 60_000,
     ...planResultFromCalls([
-      { id: "stale", scope: "before the kill", paths: ["src/s.ts"], outOfScope: [] },
+      {
+        id: "stale",
+        scope: "before the kill",
+        paths: ["src/s.ts"],
+        outOfScope: [],
+      },
     ]),
   });
   const { state, dispatches } = await runWith([
@@ -403,7 +446,12 @@ const TWO_BLOCKS_AND_ONE_CALL = {
 {
   // A recovery corrective with zero calls parks rather than building a default.
   const { state } = await runWith([
-    replyOf({ ok: false, exitCode: 143, killCause: "timeout", killBudgetMs: 60_000 }),
+    replyOf({
+      ok: false,
+      exitCode: 143,
+      killCause: "timeout",
+      killBudgetMs: 60_000,
+    }),
     replyOf({ text: "still nothing" }),
   ]);
   assert(
@@ -415,6 +463,7 @@ const TWO_BLOCKS_AND_ONE_CALL = {
 
 // ------------------------------------------------ the reporter preflight
 
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
 {
   assert(
     reporterPathFromArgs(PLAN_WORKSTREAM_EXTRA_ARGS) === WORKSTREAM_REPORTER_PATH,
@@ -438,6 +487,7 @@ const TWO_BLOCKS_AND_ONE_CALL = {
     setWorkstreamReporterStatForTestForTest(undefined);
   }
 }
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
 {
   // The primary dispatch is never sent without the companion.
   setWorkstreamReporterStatForTestForTest(async () => {
@@ -493,6 +543,36 @@ const TWO_BLOCKS_AND_ONE_CALL = {
       md.includes("plan:corrective") &&
       md.includes("schema: id does not match the pattern"),
     "the handoff names the refused calls, their dispatch, and the reason",
+  );
+}
+
+// ------------------------------------- a failed dispatch is not a silent planner
+
+{
+  // A non-kill provider failure on the primary: its completion is the tail and
+  // the plan step ends there. No zero-call corrective, no plan-spec-mismatch.
+  const failed = replyOf({ ok: false, exitCode: 1, text: "" });
+  const { state, dispatches } = await runWith([failed]);
+  assert(dispatches.length === 1, "a failed primary (no kill) gets no corrective");
+  const tail = state.eventLog.at(-1);
+  assert(
+    tail?.kind === "dispatch-failed" && state.pipelineState.planQuality === undefined,
+    "a failed primary ends the step on its dispatch-failed tail, with no plan-quality verdict",
+  );
+}
+{
+  // A zero-call primary whose one corrective fails without a kill: the corrective's
+  // failure is the tail, not a zero-call verdict.
+  const { state, dispatches } = await runWith([
+    replyOf({ text: "no call" }),
+    replyOf({ ok: false, exitCode: 1, text: "" }),
+  ]);
+  assert(dispatches.length === 2, "a failed corrective spends the one corrective and stops");
+  const tail = state.eventLog.at(-1);
+  assert(
+    tail?.kind === "dispatch-failed" &&
+      state.pipelineState.planQuality?.reason !== "plan-spec-mismatch",
+    "a failed corrective ends on dispatch-failed, not on the zero-call verdict",
   );
 }
 

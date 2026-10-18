@@ -118,12 +118,25 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
             if (label === "plan")
               return {
                 ...mkResult({ text: "" }),
-                ...planResultFromCalls([{ id: "default", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] }]),
+                ...planResultFromCalls([
+                  {
+                    id: "default",
+                    scope: "the fix",
+                    paths: ["src/a.ts"],
+                    outOfScope: [],
+                  },
+                ]),
               };
             if (label === "ops")
-              return mkResult({ role: "ops", text: "branch: feature/issue-991" });
+              return mkResult({
+                role: "ops",
+                text: "branch: feature/issue-991",
+              });
             if (label === "developer")
-              return mkResult({ role: "developer", text: "done — implemented the fix" });
+              return mkResult({
+                role: "developer",
+                text: "done — implemented the fix",
+              });
             if (label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
             throw new Error(`unexpected dispatch: ${label}`);
           },
@@ -170,7 +183,12 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
           if (cmd.startsWith("gh pr view"))
-            return { stdout: JSON.stringify({ state: "OPEN", headRefName: "feature/issue-991" }) };
+            return {
+              stdout: JSON.stringify({
+                state: "OPEN",
+                headRefName: "feature/issue-991",
+              }),
+            };
           return { stdout: "" };
         };
         const ctx: DriverContext = {
@@ -180,27 +198,47 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           issueBodyFetcherFn: mockIssueBodyOk,
           verifyExecFn: exec,
           adversarialLoopFn: async () =>
-            mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
+            mkResult({
+              role: "adversarial-developer",
+              text: "APPROVED after round 1",
+            }),
           dispatchFn: async (_pi, spec, opts) => {
             const label = opts?.label ?? spec.role;
             if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
             if (label.startsWith("plan"))
               return {
                 ...mkResult({ text: "" }),
-                ...planResultFromCalls([{ id: "default", scope: "the fix", paths: [], outOfScope: [] }]),
+                ...planResultFromCalls([
+                  {
+                    id: "default",
+                    scope: "the fix",
+                    paths: [],
+                    outOfScope: [],
+                  },
+                ]),
               };
             if (label === "ops")
-              return mkResult({ role: "ops", text: "branch: feature/issue-992" });
+              return mkResult({
+                role: "ops",
+                text: "branch: feature/issue-992",
+              });
             if (label === "developer")
-              return mkResult({ role: "developer", text: "done — implemented" });
+              return mkResult({
+                role: "developer",
+                text: "done — implemented",
+              });
             if (label === "ops:commit-pr")
-              return mkResult({ role: "ops", text: "Committed and pushed.\npr: 556" });
+              return mkResult({
+                role: "ops",
+                text: "Committed and pushed.\npr: 556",
+              });
             if (label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
             throw new Error(`unexpected dispatch: ${label}`);
           },
         };
         await runWorkDriver(ctx).catch(() => {});
-        const after = await readState(dir, 992);        assert(
+        const after = await readState(dir, 992);
+        assert(
           !after?.eventLog.some((e) => e.kind === "cap-hit" && e.cap === "verify-failed:develop"),
           "R4b: real develop evidence passes the gate (no verify-failed:develop)",
         );
@@ -248,7 +286,12 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
           if (cmd.startsWith("gh pr list")) return { stdout: "789\n" };
           if (cmd.startsWith("gh pr view"))
-            return { stdout: JSON.stringify({ state: "OPEN", headRefName: "feature/issue-993" }) };
+            return {
+              stdout: JSON.stringify({
+                state: "OPEN",
+                headRefName: "feature/issue-993",
+              }),
+            };
           return { stdout: "" };
         };
         const ctx: DriverContext = {
@@ -258,21 +301,40 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           issueBodyFetcherFn: mockIssueBodyOk,
           verifyExecFn: exec,
           adversarialLoopFn: async () =>
-            mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
+            mkResult({
+              role: "adversarial-developer",
+              text: "APPROVED after round 1",
+            }),
           dispatchFn: async (_pi, spec, opts) => {
             const label = opts?.label ?? spec.role;
             if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
             if (label === "plan")
               return {
                 ...mkResult({ text: "" }),
-                ...planResultFromCalls([{ id: "default", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] }]),
+                ...planResultFromCalls([
+                  {
+                    id: "default",
+                    scope: "the fix",
+                    paths: ["src/a.ts"],
+                    outOfScope: [],
+                  },
+                ]),
               };
             if (label === "ops")
-              return mkResult({ role: "ops", text: "branch: feature/issue-993" });
+              return mkResult({
+                role: "ops",
+                text: "branch: feature/issue-993",
+              });
             if (label === "developer")
-              return mkResult({ role: "developer", text: "done — implemented" });
+              return mkResult({
+                role: "developer",
+                text: "done — implemented",
+              });
             if (label === "ops:commit-pr")
-              return mkResult({ role: "ops", text: "Committed and pushed. (forgot the marker)" });
+              return mkResult({
+                role: "ops",
+                text: "Committed and pushed. (forgot the marker)",
+              });
             if (label === "ops:ci") throw new Error("halt at ci: integration assertion boundary");
             if (label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
             throw new Error(`unexpected dispatch: ${label}`);
