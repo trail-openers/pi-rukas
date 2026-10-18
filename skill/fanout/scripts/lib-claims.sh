@@ -6,87 +6,128 @@
 # live path-claims — the cross-cycle collision fence
 # ---------------------------------------------------------------------------
 # The driver records each running group's declared paths in
-# <repo>/.pi/work-state/path-claims.json keyed by owning pid. Workers are separate clones,
-# so there is no filesystem collision to fence — the shared resource is the FORGE: two
-# cycles opening PRs over the same files is a guaranteed conflict and a wasted cycle.
+# <project>/.pi/work-state/path-claims.json keyed by owning pid. A headless cycle's project
+# is ITS OWN CLONE, so a claim written by a fleet worker lands in
+# $WORKERS_DIR/issue-<N>/repo/.pi/work-state/, not in the operator checkout. The fence
+# therefore reads the operator checkout AND every worker clone. Two PRs over one file is a
+# guaranteed conflict on the forge, which is the thing this fence exists to prevent.
 #
 # Claims are filtered on owner-pid ALIVENESS, not on age. A stale claim from a crashed
 # cycle is not a collision; a live-but-old claim absolutely is. Never sweep these by age.
 #
-# FAIL-DIRECTION IS A DELIBERATE CHOICE. The file being ABSENT means no cycle is running,
-# which is a genuine no-collision state and must not block a fleet. A file that EXISTS but
-# cannot be read is a different thing: a truncated write, an unreadable permission, a node
-# that went missing. Returning empty there would make every collision check silently pass,
-# which is the exact shape of a gate that cannot fail. So a present-but-unreadable claims
-# file is a hard error, and callers must not swallow it.
-fanout_live_claims() {  # -> "path<TAB>issue<TAB>pid<TAB>age_s" per live claim
-  local claims_file="${FANOUT_CLAIMS_SOURCE:-$FANOUT_REPO/.pi/work-state/path-claims.json}"
-  [ -f "$claims_file" ] || return 0        # genuinely no claims file -> no live claims
-  if [ ! -r "$claims_file" ]; then
-    die "claims file exists but is not readable: $claims_file — refusing to assume 'no collisions'" 11
+# FAIL-DIRECTION IS A DELIBERATE CHOICE. A claims file that is ABSENT means no cycle is
+# running there, which is a genuine no-collision state. A file that EXISTS but cannot be
+# read, or is not valid JSON, is a hard error: returning empty would make every collision
+# check silently pass, which is the exact shape of a gate that cannot fail.
+#
+# FANOUT_CLAIMS_SOURCE, when set, replaces the whole search (it is a test hook and an
+# explicit override), so it reads that one file and no worker clones.
+#
+# $1 (optional) is the calling worker's OWN clone. It is excluded from the search: a cycle
+# for this issue has not started yet, so any claim in its clone is a leftover from an earlier
+# run, and the fence must not refuse a worker over its own previous state.
+fanout_live_claims() {  # [$1 = own clone to skip] -> "path<TAB>issue<TAB>pid<TAB>age_s" per live claim
+  local main="${FANOUT_CLAIMS_SOURCE:-$FANOUT_REPO/.pi/work-state/path-claims.json}"
+  local workers="${WORKERS_DIR:-}"
+  local self="${1:-}"
+  [ -z "${FANOUT_CLAIMS_SOURCE:-}" ] || workers=""
+  if [ -f "$main" ] && [ ! -r "$main" ]; then
+    die "claims file exists but is not readable: $main — refusing to assume 'no collisions'" 11
   fi
   # The node source below is wrapped in single quotes, so it must contain NO single quote at
-  # all -- an apostrophe inside it closes the shell string early and the rest of the JS is then
-  # executed as SHELL. Nasty class of bug: the script appears to work until a claims file is
-  # malformed. So this JS never prints its own diagnostics; it only exits with a distinct code
-  # and bash composes the message. Every other node eval in this file is quote-free for the
-  # same reason, and that is a convention, not an accident.
+  # all: an apostrophe closes the shell string early and the rest of the JS runs as SHELL.
+  # The JS never prints diagnostics; it exits with a distinct code and bash composes the
+  # message. Every node eval in this file follows the same convention.
   local out rc
-  out="$(FANOUT_CLAIMS_FILE="$claims_file" "$(fanout_node)" --input-type=module -e '
+  out="$(FANOUT_CLAIMS_FILE="$main" FANOUT_WORKERS_DIR="$workers" FANOUT_SKIP_CLONE="$self" "$(fanout_node)" --input-type=module -e '
     import fs from "node:fs";
-    const path = process.env.FANOUT_CLAIMS_FILE;
-    let text = null;
-    try { text = fs.readFileSync(path, "utf8"); } catch { process.exitCode = 3; }
-    let rows = null;
-    if (text !== null) { try { rows = JSON.parse(text); } catch { process.exitCode = 4; } }
-    if (process.exitCode === undefined && !Array.isArray(rows)) process.exitCode = 5;
-    if (process.exitCode === undefined) {
-      const now = Date.now();
+    import path from "node:path";
+    const mainFile = process.env.FANOUT_CLAIMS_FILE || "";
+    const workersDir = process.env.FANOUT_WORKERS_DIR || "";
+    const skip = process.env.FANOUT_SKIP_CLONE ? path.resolve(process.env.FANOUT_SKIP_CLONE) : "";
+    const files = [mainFile];
+    let code = 0;
+    if (workersDir) {
+      let names = [];
+      try { names = fs.readdirSync(workersDir); } catch (e) { if (e.code !== "ENOENT") code = 3; }
+      for (const n of names) {
+        const clone = path.join(workersDir, n, "repo");
+        if (skip && path.resolve(clone) === skip) continue;
+        files.push(path.join(clone, ".pi", "work-state", "path-claims.json"));
+      }
+    }
+    const now = Date.now();
+    const out = [];
+    for (const file of files) {
+      if (code) break;
+      let text = null;
+      try { text = fs.readFileSync(file, "utf8"); } catch (e) { if (e.code !== "ENOENT") code = 3; continue; }
+      let rows = null;
+      try { rows = JSON.parse(text); } catch { code = 4; continue; }
+      if (!Array.isArray(rows)) { code = 5; continue; }
       for (const r of rows) {
         if (!r || typeof r.issue !== "number" || !Array.isArray(r.paths)) continue;
-        // Aliveness must be PROVED, not assumed. Two traps, both measured:
-        //   - kill(-1, 0) SUCCEEDS (it signals every process the caller may signal), so a
-        //     malformed claim carrying pid -1 -- or 0, the caller process group -- would read
-        //     as permanently live and block its paths forever. Requiring a positive integer
-        //     before any kill() is what keeps that from hanging the fleet.
-        //   - an error other than ESRCH is unknown, not alive. Treating unknown as live
-        //     fail-CLOSES the fence, which is the safe direction, but such a claim should be
-        //     inspected rather than silently honoured forever.
-        // A pid that is not a positive integer NUMBER (a string, null, absent, a float) cannot
-        // be probed, so it cannot be proved alive: skip it. Gating only typeof-number claims
-        // let a string pid bypass the probe and read as live forever.
+        // Aliveness must be PROVED. kill(-1, 0) and kill(0, 0) succeed (they signal whole
+        // process groups), so a claim with pid -1 or 0 would read as permanently live. Only a
+        // positive integer pid is probed; anything else cannot be proved alive and is skipped.
         if (!Number.isInteger(r.pid) || r.pid < 1) continue;
-        try { process.kill(r.pid, 0); } catch (e) { if (e.code === "ESRCH") continue; }
+        let alive = true;
+        try { process.kill(r.pid, 0); } catch (e) { if (e.code === "ESRCH") alive = false; }
+        if (!alive) continue;
         for (const p of r.paths) {
-          process.stdout.write([String(p), r.issue, r.pid, Math.round((now - (r.startedAt || 0)) / 1000)].join("\t") + "\n");
+          out.push([String(p), r.issue, r.pid, Math.round((now - (r.startedAt || 0)) / 1000)].join("\t"));
         }
       }
     }
+    if (code) process.exitCode = code;
+    else process.stdout.write(out.map((l) => l + "\n").join(""));
   ' 2>/dev/null)"
   rc=$?
   if [ "$rc" -ne 0 ]; then
-    # Empty output is the common case (a file of claims, none of them live) and is NOT an
-    # error -- only a nonzero exit is. Distinguishing the two is the whole point: returning
-    # empty on a read failure would make every collision check silently pass, which is exactly
-    # the shape of a gate that can never fail.
+    # Empty output with exit 0 is the common case and is NOT an error. Only a nonzero exit is.
     case "$rc" in
-      3) die "claims file could not be read: $claims_file -- refusing to assume no collisions" 11 ;;
-      4) die "claims file is not valid JSON: $claims_file -- refusing to assume no collisions" 11 ;;
-      5) die "claims file is not a JSON array: $claims_file -- refusing to assume no collisions" 11 ;;
-      *) die "could not evaluate the claims file at $claims_file (exit $rc) -- refusing to assume no collisions. Inspect it directly, or point FANOUT_CLAIMS_SOURCE at a readable copy." 11 ;;
+      3) die "a claims file could not be read under $FANOUT_REPO or $WORKERS_DIR — refusing to assume no collisions" 11 ;;
+      4) die "a claims file is not valid JSON — refusing to assume no collisions. Inspect the .pi/work-state/path-claims.json files under the repo and worker clones." 11 ;;
+      5) die "a claims file is not a JSON array — refusing to assume no collisions. Inspect the .pi/work-state/path-claims.json files under the repo and worker clones." 11 ;;
+      *) die "could not evaluate the claims files (exit $rc) — refusing to assume no collisions. Inspect them directly, or point FANOUT_CLAIMS_SOURCE at a readable copy." 11 ;;
     esac
   fi
   printf '%s' "$out"
+}
+
+fanout_norm_list() {  # $1 = comma or newline separated entries -> normalised, one per line
+  # Each entry goes through fanout_norm_path: a planner annotation ("src/a.ts (edits)") is
+  # stripped, a "(new)" entry and a bare "-" (what gen-triage writes for a blank cell) vanish.
+  # Comparing raw cells is how an annotated path slipped past the fence unchecked.
+  local f
+  while IFS= read -r f; do
+    f="$(fanout_norm_path "$f")"
+    [ -n "$f" ] && printf '%s\n' "$f"
+  done <<__NORM__
+$(printf '%s\n' "$1" | tr ',' '\n')
+__NORM__
+  return 0
 }
 
 fanout_intersection() {  # $1 = claim lines, $2 = candidate files (comma or newline separated)
   # Prints a JSON array of candidate paths intersecting a live claim, annotated with owner.
   # Pass the FULL claim lines: the owner annotation lives in the tab-separated tail, so
   # piping through `cut -f1` first silently loses it and every refusal becomes unattributed.
-  local claims="$1" files="$2"
+  # Both sides are normalised with fanout_norm_path before the containment test.
+  local claims="$1" files="$2" norm_claims="" line p
   [ -n "$claims" ] || { echo "[]"; return 0; }
   [ -n "$files" ]  || { echo "[]"; return 0; }
-  FANOUT_CLAIMS="$claims" FANOUT_FILES="$files" "$(fanout_node)" --input-type=module -e '
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    p="$(fanout_norm_path "${line%%$'\t'*}")"
+    [ -n "$p" ] || continue
+    norm_claims="$norm_claims$p"$'\t'"${line#*$'\t'}"$'\n'
+  done <<__CLAIMS__
+$claims
+__CLAIMS__
+  files="$(fanout_norm_list "$files")"
+  [ -n "$files" ] || { echo "[]"; return 0; }
+  FANOUT_CLAIMS="$norm_claims" FANOUT_FILES="$files" "$(fanout_node)" --input-type=module -e '
     const claims = new Set();
     const owner = new Map();
     for (const line of (process.env.FANOUT_CLAIMS || "").split("\n").filter(Boolean)) {
@@ -111,4 +152,3 @@ fanout_intersection() {  # $1 = claim lines, $2 = candidate files (comma or newl
     process.stdout.write(JSON.stringify([...new Set(hit)]) + "\n");
   '
 }
-

@@ -32,11 +32,11 @@ fanout_apply_budget() {  # $1 = workers-total, $2 = lean (0|1), $3 = heap overri
   local CONC_DEFAULT="${FANOUT_CONC_DEFAULT:-4}"
   local WS_DEFAULT="${FANOUT_WS_DEFAULT:-6}"
 
+  cap=$(( CAP_DEFAULT / total )); conc=$(( CONC_DEFAULT / total )); ws=$(( WS_DEFAULT / total )); heap=3072
   if [ "$lean" = 1 ]; then
-    # One workstream, one verify slot: ~1 bun at a time. Lets N go higher on a tight host.
-    cap=16; conc=1; ws=1; heap=1536
-  else
-    cap=$(( CAP_DEFAULT / total )); conc=$(( CONC_DEFAULT / total )); ws=$(( WS_DEFAULT / total )); heap=3072
+    # Lean changes only the workstream count and the heap. Spawn cap and verify slots still
+    # divide by N: lean must never multiply the spawn cap, or N x lean exceeds N x default.
+    ws=1; heap=1536
   fi
   # Floors keep a worker from livelocking (zero slots = it waits forever). A clamp is a
   # signal that N is above what these budgets can carry, so it is reported, not hidden.

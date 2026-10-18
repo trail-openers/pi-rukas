@@ -58,11 +58,12 @@ fanout_node() {
   for n in /usr/local/bin/node /opt/homebrew/bin/node /usr/bin/node; do
     if [ -x "$n" ]; then FANOUT_JS_CACHED="$n"; printf '%s' "$FANOUT_JS_CACHED"; return 0; fi
   done
-  # 4. last resort: let env search PATH. Better than failing, but say so, because a reader
-  #    that silently got nothing is the failure mode this whole file argues against.
-  warn "no JS runtime resolved (tried bun then node); falling back to /usr/bin/env bun"
-  FANOUT_JS_CACHED="/usr/bin/env bun"
-  printf '%s' "$FANOUT_JS_CACHED"
+  # 4. nothing resolved. Die rather than cache a command that is not one path: "/usr/bin/env bun"
+  #    is two words, so "$(fanout_node)" expanded to a program named "/usr/bin/env" with an
+  #    argument, and every caller failed in a way that looked like a bad script. Callers run this
+  #    inside $(...), so this die exits only that subshell; its message still reaches the operator
+  #    and the empty result makes the caller fail rather than run anything.
+  die "no JS runtime found (tried FANOUT_JS, FANOUT_NODE, bun, node). Install bun, or set FANOUT_JS to an absolute path to an executable." 2
 }
 
 # ---------------------------------------------------------------------------

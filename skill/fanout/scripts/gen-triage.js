@@ -39,7 +39,9 @@ src.slice(1).forEach((l) => {
   const cells = l.split("\t");
   const r = {};
   head.forEach((h, i) => { r[h] = (cells[i] || "").trim(); });
-  const mapper = MAP[r.verdict];
+  // hasOwn, not a bare lookup: "constructor" or "toString" would otherwise resolve to an
+  // Object.prototype member and be treated as a mapper.
+  const mapper = Object.prototype.hasOwnProperty.call(MAP, r.verdict) ? MAP[r.verdict] : undefined;
   if (!mapper) { problems.push(`issue ${r.issue}: no mapping for verdict '${r.verdict}'`); return; }
   let verdict = mapper(r);
   const reason = r.reason || "";
@@ -81,12 +83,17 @@ rows.forEach((r) => {
   }
 });
 
-// Pass B: a dependency that is not itself `ready` makes the dependent not-runnable. Computed
-// rather than trusted, because "blocked on #N" in an issue body is prose and prose goes
-// stale; this table says whether #N is actually clear to run.
-for (let iter = 0; iter < rows.length + 1; iter += 1) {
-  let changed = false;
-  const byIssue = new Map(rows.map((r) => [r[0], r]));
+// Passes B and C run in ONE loop until nothing changes. Run once each, in sequence, C can demote
+// a row after B has already kept its dependents `ready`: C demotes A, and D (depends on A) stays
+// ready. Demotion is one-way (ready -> not ready), so the loop always terminates.
+const byIssue = new Map(rows.map((r) => [r[0], r]));
+let changed = true;
+while (changed) {
+  changed = false;
+
+  // Pass B: a dependency that is not itself `ready` makes the dependent not-runnable. Computed
+  // rather than trusted, because "blocked on #N" in an issue body is prose and prose goes
+  // stale; this table says whether #N is actually clear to run.
   rows.forEach((r) => {
     if (r[6] !== "ready") return;
     const deps = (r[4] || "").split(/[,\s]+/).filter(Boolean).map((d) => d.replace(/^#/, ""));
@@ -98,39 +105,38 @@ for (let iter = 0; iter < rows.length + 1; iter += 1) {
       changed = true;
     }
   });
-  // A demotion can unblock nothing but can block others, so keep going until stable. Pass A
-  // re-runs implicitly through the same `ready` test above.
-  if (!changed) break;
-}
 
-// Pass C: two issues touching the SAME FILE must never be in one batch. The runtime fence
-// only compares against currently-live claims, so two queued workers over one file both spawn
-// and produce two conflicting PRs -- which is worse than a collision with a finished cycle,
-// because both cycles pay full price. This is the rule the docs told the operator to apply by
-// hand; enforcing it here is the difference between a rule and a hope.
-//
-// Note this catches cases pass A misses: 770 is radius `module` but edits the same
-// workflow-state-schema.ts as 767, so blast-radius alone is not a sufficient fence.
-const fileOwners = new Map();
-rows.forEach((r) => {
-  if (r[6] !== "ready") return;
-  const files = (r[2] || "").split(",").map((s) => s.trim()).filter((f) => f && f !== "-");
-  // A directory-ish entry claims everything under it, matching the runtime fence's semantics.
-  const clash = files.flatMap((f) => {
-    const hits = [];
-    fileOwners.forEach((owner, claimed) => {
-      if (owner.issue === r[0]) return;
-      if (claimed === f || claimed.startsWith(f + "/") || f.startsWith(claimed + "/")) hits.push(owner);
+  // Pass C: two issues touching the SAME FILE must never be in one batch. The runtime fence
+  // only compares against currently-live claims, so two queued workers over one file both spawn
+  // and produce two conflicting PRs -- which is worse than a collision with a finished cycle,
+  // because both cycles pay full price. This is the rule the docs told the operator to apply by
+  // hand; enforcing it here is the difference between a rule and a hope.
+  //
+  // Note this catches cases pass A misses: 770 is radius `module` but edits the same
+  // workflow-state-schema.ts as 767, so blast-radius alone is not a sufficient fence.
+  // Owners are rebuilt each sweep from the rows still ready, so a demotion re-runs Pass B.
+  const fileOwners = new Map();
+  rows.forEach((r) => {
+    if (r[6] !== "ready") return;
+    const files = (r[2] || "").split(",").map((s) => s.trim()).filter((f) => f && f !== "-");
+    // A directory-ish entry claims everything under it, matching the runtime fence's semantics.
+    const clash = files.flatMap((f) => {
+      const hits = [];
+      fileOwners.forEach((owner, claimed) => {
+        if (owner.issue === r[0]) return;
+        if (claimed === f || claimed.startsWith(f + "/") || f.startsWith(claimed + "/")) hits.push(owner);
+      });
+      return hits;
     });
-    return hits;
+    if (clash.length) {
+      const names = [...new Set(clash.map((c) => c.issue))].join(", ");
+      demote(r, "blocked", `overlaps file(s) already claimed by ready issue(s) ${names} in this queue -- run after they merge`);
+      changed = true;
+      return;
+    }
+    files.forEach((f) => { if (!fileOwners.has(f)) fileOwners.set(f, { issue: r[0] }); });
   });
-  if (clash.length) {
-    const names = [...new Set(clash.map((c) => c.issue))].join(", ");
-    demote(r, "blocked", `overlaps file(s) already claimed by ready issue(s) ${names} in this queue -- run after they merge`);
-    return;
-  }
-  files.forEach((f) => { if (!fileOwners.has(f)) fileOwners.set(f, { issue: r[0] }); });
-});
+}
 
 const out = [HEAD.join("\t"), ...rows.map((r) => r.join("\t"))].join("\n") + "\n";
 fs.writeFileSync(OUT, out);
