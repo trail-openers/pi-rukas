@@ -69,6 +69,8 @@ export function armQuestionDeadline(
   clear();
   pending = setTimeout(() => {
     pending = undefined;
+    // The cycle ended first: the operator can be asked again, so nothing is forced.
+    if (liveCycleIssues().length === 0) return;
     trace("question-deadline: no operator answer — telling the PM to act on its default");
     try {
       notifyAgent(pi, deadlineText(question, defaultLabel, ms));
