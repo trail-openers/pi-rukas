@@ -35,6 +35,7 @@
 import { type GapGateParse, type GapGateVerdict, parseGaps } from "./plan-gap-parse.ts";
 import type { PlanGap } from "./plan-types.ts";
 import { trace } from "./trace.ts";
+import type { DispatchResult } from "./types.ts";
 
 /**
  * The gaps that block filing: CRITICAL only. #664 transposed — the
@@ -159,6 +160,17 @@ export type GapGateDispatch = (
   errorStop?: unknown;
   text: string;
   toolUses: unknown[];
+  /**
+   * #1541 — the abort reply's kill cause, on the CONTRACT rather than only on
+   * the object plan-driver-gate.ts synthesises. Every downstream failure
+   * classifier (work-driver-completion-event.ts, work-driver-failure-taxonomy.ts)
+   * branches on `killCause` FIRST, so an aborted gate round reads as an abort
+   * rather than a provider fault — which is exactly the confusion #382's
+   * "host suspend is not a provider failure" closed for single dispatches.
+   * Typed off `DispatchResult` rather than a fresh literal so the two cannot
+   * drift.
+   */
+  killCause?: NonNullable<DispatchResult["killCause"]>;
 }>;
 
 export async function runGapGateLoop(
@@ -170,6 +182,13 @@ export async function runGapGateLoop(
   makeGatePrompt: (iteration: number) => string,
   maxIterations: number,
   onCorrective: (blocking: PlanGap[]) => void,
+  // #1541 — the job's signal, checked at the top of every round. The driver's
+  // own phase-boundary checks cannot cover this call: the investigation barrier
+  // dispatches its children in ONE tick, so a kill that lands mid-barrier is
+  // observed only after every leg has already been handed off, and whether the
+  // boundary check beats the loop's first dispatch is microtask luck. A gate
+  // round on an aborted job is a child that should never have been paid for.
+  signal?: AbortSignal,
 ): Promise<GapGateLoopResult> {
   let openPoints: PlanGap[] = [];
   let iterations = 0;
@@ -188,6 +207,15 @@ export async function runGapGateLoop(
   const allNonBlocking: PlanGap[] = [];
 
   while (iterations < maxIterations && !ready) {
+    // #1541: an aborted job does not start another round. Reported as
+    // `gate-unavailable` — the reviewer never saw the spec, which is exactly
+    // what that reason means, and the driver's cancelled branch replaces the
+    // headline before the operator reads it.
+    if (signal?.aborted) {
+      capHit = true;
+      capReason = "gate-unavailable";
+      break;
+    }
     iterations++;
     let gate = await dispatch(
       { role: "adversarial-developer", prompt: makeGatePrompt(iterations) },

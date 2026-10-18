@@ -34,6 +34,7 @@ import {
   installOfflineVipuneStub,
   invokePlanTool,
   log,
+  makeJobDeliverer,
   mutateEntry,
   newPlanCache,
   pipeline,
@@ -158,6 +159,8 @@ function withEnv<T>(name: string, value: string | undefined, fn: () => T): T {
   const tools: RegisteredPlanTool[] = [];
   registerPlanTool({
     registerTool: (d: RegisteredPlanTool) => tools.push(d),
+    // #1044: the launched job's report reaches the registered pi.
+    ...makeJobDeliverer(),
   } as unknown as Parameters<typeof registerPlanTool>[0]);
   installCountingDispatch(GAP_HIGH);
   const dry = await invokePlanTool(tools, { descriptor: DESC, dryRun: true });
