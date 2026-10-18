@@ -162,6 +162,28 @@ export function armCapSession(
   });
 }
 
+/** The stderr attribution lines of the watchdog kills, after the child exited. */
+export function appendKillLines(
+  flags: KillFlags,
+  timeoutMs: number,
+  appendStderr: (s: string) => void,
+): void {
+  if (flags.timedOut()) {
+    appendStderr(`\n[pi-rukas] killed after ${timeoutMs}ms timeout`);
+  }
+  if (flags.inactivityKilled()) {
+    appendStderr(`\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms inactivity`);
+  }
+  if (flags.toolInactivityKilled()) {
+    appendStderr(
+      `\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms with a tool call in flight (tool-inactivity)`,
+    );
+  }
+  if (flags.aborted()) {
+    appendStderr("\n[pi-rukas] cancelled by user (Esc)");
+  }
+}
+
 /**
  * The wall-clock backstop: always armed, always capped. A stalled child without
  * a timeout hangs the parent indefinitely (observed in the wild: overnight

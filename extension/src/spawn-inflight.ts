@@ -331,7 +331,7 @@ export function createStdoutLineHandler(opts: {
     // closes). Runs on the SAME hot path where lastActivityAt resets, so the
     // watchdog's poll below sees the current set at every tick.
     inFlightTools.observe(parsed);
-    // #1567 — record progress (child-progress.ts). Nothing acts on it yet.
+    // #1567 — record progress (child-progress.ts); the stall kill reads it (spawn-stall.ts).
     childProgress.observe(parsed);
     // Retain only the two events collapseEvents actually reads (the latest
     // agent_end + the latest assistant message_end as fallback). Everything

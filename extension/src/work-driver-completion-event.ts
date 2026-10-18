@@ -58,6 +58,7 @@ export function overrideEnvForKillCause(
     case "child-bound":
       return "PI_ENSEMBLE_DEVELOP_BOUND_MS / PI_ENSEMBLE_EXPLORE_BOUND_MS";
     case "no-progress":
+      return "PI_ENSEMBLE_SLOW_NOTICE_MS / PI_ENSEMBLE_DISPATCH_CAPS";
     case "stuck-tool":
       return "PI_ENSEMBLE_DISPATCH_CAPS";
   }

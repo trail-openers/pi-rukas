@@ -109,7 +109,11 @@ export const runPhaseWithInfraRetry = async (
 function capKillOrWatchdogKillCause(r: DispatchResult): DispatchResult["killCause"] | undefined {
   const cause = r.killCause;
   if (cause === undefined) return undefined;
-  return cause === "loop" || cause === "token-budget" || retryLadderKillCause(r)
+  // #1313 — and the stall kill, so the driver parks it instead of reading a provider fault.
+  return cause === "loop" ||
+    cause === "token-budget" ||
+    cause === "no-progress" ||
+    retryLadderKillCause(r)
     ? cause
     : undefined;
 }

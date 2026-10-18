@@ -53,6 +53,7 @@ import {
 } from "./spawn-inflight.ts";
 import { groupSpawnOpts, registerChild } from "./spawn-kill.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
+import { applyStallKill, armStallKill } from "./spawn-stall.ts";
 import {
   STDERR_TAIL_BYTES,
   assertLiveSpawnAllowed,
@@ -64,7 +65,7 @@ import {
   transcriptPathFor,
   willRetryAfter,
 } from "./spawn-support.ts";
-import { armCapSession, declareKillFlags } from "./spawn-watchdog.ts";
+import { appendKillLines, armCapSession, declareKillFlags } from "./spawn-watchdog.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
@@ -374,6 +375,14 @@ async function spawnSpecialistInner(
     preempted: () => flags.aborted() || flags.timedOut(),
     commits: spec.role === "developer" && spec.cwd !== undefined,
   });
+  // #1313 — the driver ends a child frozen across slow levels (spawn-stall.ts).
+  const stall = armStallKill({
+    child,
+    progress: childProgress,
+    cwd,
+    enabled: opts.stallKill === true,
+    settled: () => promptCompleted || flags.childExited() || flags.aborted() || flags.timedOut(),
+  });
 
   // Inactivity watchdog (#296): kill only on total stdout silence. Coarse
   // poll — half the budget, clamped to [250ms, 30s] so production budgets
@@ -411,6 +420,7 @@ async function spawnSpecialistInner(
   } finally {
     stopWallClockBackstop();
     childBound.stop();
+    stall.stop();
     stopInactivityPoll();
     caps.cleanup();
     detachAbortKill();
@@ -426,19 +436,9 @@ async function spawnSpecialistInner(
     }
   }
 
-  if (flags.timedOut()) {
-    appendStderr(`\n[pi-rukas] killed after ${timeoutMs}ms timeout`);
-  }
-  if (flags.inactivityKilled()) {
-    appendStderr(`\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms inactivity`);
-  }
-  if (flags.toolInactivityKilled()) {
-    appendStderr(
-      `\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms with a tool call in flight (tool-inactivity)`,
-    );
-  }
-  if (flags.aborted()) {
-    appendStderr("\n[pi-rukas] cancelled by user (Esc)");
+  appendKillLines(flags, timeoutMs, appendStderr);
+  if (stall.killed()) {
+    appendStderr(`\n[pi-rukas] killed: no progress for ${stall.frozenMs()}ms across slow levels`);
   }
 
   // Final flat string from the ring buffer (bounded; no SlowFlatten on the
@@ -458,6 +458,7 @@ async function spawnSpecialistInner(
   // contract, resolved by priority in spawn-caps.ts's capKillAttribution.
   capKillAttribution(caps, spec, runningState.totalTokens, appendStderr, result);
   applyChildBound(childBound, result);
+  applyStallKill(stall, result);
   result.transcriptPath = transcriptPath;
   result.modelSource = modelChoice.source;
   // The cap-kill cause + evidence were already resolved above (capKillAttribution,

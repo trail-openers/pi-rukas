@@ -74,6 +74,8 @@ export function makeRunPhase(opts: {
           processGroup,
           runId,
           tag,
+          // #1313 — a driver loop (it records slow events) ends a frozen round child.
+          stallKill: opts.onSlow !== undefined,
           onProgress: (state) => {
             dispatchDeck.updateEntry(deckKey, state);
             feedSlowProgress(deckKey, state);

@@ -40,6 +40,11 @@ export interface SpawnOptions {
    */
   childBoundMs?: number;
   /**
+   * #1313 — the driver ends this child when it is frozen across slow levels
+   * (spawn-stall.ts). Set for driver children only; a PM's child stays the PM's call.
+   */
+  stallKill?: boolean;
+  /**
    * Pi's tool-execute AbortSignal — fires when the user hits Esc to cancel
    * the running tool. We listen on this and kill the child with SIGTERM so
    * cancellation actually propagates instead of leaving Pi stuck.

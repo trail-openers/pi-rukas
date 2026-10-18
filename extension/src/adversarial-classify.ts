@@ -82,6 +82,17 @@ export function classifyDispatchOutcome(r: DispatchResult): {
       headline: "killed by pi-rukas (token budget crossed) — a cost cap, not a provider fault",
     };
   }
+  // #1313 — the driver ended a round child frozen across slow levels
+  // (spawn-stall.ts); the same brief would freeze the same way.
+  if (r.killCause === "no-progress") {
+    return {
+      cause: "self-killed:no-progress",
+      shouldRetry: false,
+      maxRetries: 0,
+      headline:
+        "ended by pi-rukas (no progress across a slow-run level) — a stall, not a provider fault",
+    };
+  }
 
   // Provider error-stop (transport severance, timeout, 429, missing model).
   // #79 — the driver's taxonomy decides, so a reviewer child and a step
