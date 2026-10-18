@@ -25,7 +25,11 @@ import {
   withDirtyRootExemptReadFailure,
 } from "./work-driver-dirty-root-exempt-notice.ts";
 import { DIRTY_ROOT_EXEMPT_FILE, readDirtyRootExempt } from "./work-driver-dirty-root-exempt.ts";
-import { refuseAlreadyTerminated, reportFinalState } from "./work-driver-final-state.ts";
+import {
+  liveOwnerRefusal,
+  refuseAlreadyTerminated,
+  reportFinalState,
+} from "./work-driver-final-state.ts";
 import { recordHostHandoffOnCrash } from "./work-driver-handoff-channel.ts";
 import { interruptIfRequested, recordStepCrash } from "./work-driver-interrupt.ts";
 import {
@@ -208,7 +212,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       );
       return {
         started: false,
-        reason: `another live process (pid ${verdict.ownerPid}) owns this cycle`,
+        reason: liveOwnerRefusal(verdict.ownerPid),
       };
     }
     if (verdict.action === "resume") {

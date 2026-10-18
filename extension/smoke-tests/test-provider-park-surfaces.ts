@@ -28,6 +28,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { exitCodeForState } from "../src/headless/exit-code.ts";
+import { runHeadless } from "../src/headless/run.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import type { DriverHost } from "../src/work-driver-host.ts";
 import { providerParkEvidence } from "../src/work-driver-provider-park.ts";
@@ -55,41 +56,58 @@ const providerEvent = {
   role: "adversarial-reviewer",
   label: "adversarial:review",
   ms: 1_200,
+  at: 1,
   providerMessage: OUTAGE,
-} as const;
+  jobId: "j-park",
+} as const satisfies WorkState["eventLog"][number];
 
 /**
  * A cycle the endpoint took down: the provider event, the park cap naming it,
  * and the `interrupted` entry the runner's grace period wrote. `handoffDeliveredAt`
  * is set because the cycle completed its handoff — the interrupt came after.
+ *
+ * A `"signal"` / `"timeout"` fixture is a cycle an abort cut off mid-step:
+ * `interruptIfRequested` / `markInterrupted` wrote it, so it carries no provider
+ * failure and no park cap. That matters more than it looks — keeping the
+ * provider event and the `provider-unavailable` cap in a "signal" fixture lets
+ * the resumed cycle complete a genuine handoff off that cap, and the whole-driver
+ * legs would then pass for the handoff's own reasons no matter what the gate
+ * under test did. Mutating that stale shape hid a gate mutation for exactly that
+ * reason; the shape below is the one an aborted cycle actually has.
  */
 function parked(issue: number, reason: InterruptReason = "provider"): WorkState {
   const s = initialState(issue);
+  const signal = reason !== "provider";
   return {
     ...s,
     pipelineState: {
       ...s.pipelineState,
       status: "interrupted",
-      currentStep: "adversarial",
-      lastCompletedStep: "commit-pr",
+      currentStep: signal ? "develop" : "adversarial",
+      lastCompletedStep: signal ? "plan" : "commit-pr",
       branchName: `feature/issue-${issue}`,
-      prNumber: 1554,
+      prNumber: signal ? undefined : 1554,
       handoffDeliveredAt: new Date().toISOString(),
     },
-    eventLog: [
-      { kind: "step-started", step: "adversarial", at: 1 },
-      { ...providerEvent, jobId: "j-park" },
-      {
-        kind: "cap-hit",
-        at: 2,
-        cap: "provider-unavailable",
-        reviewRound: 0,
-        nextStep: "handoff",
-        evidence: `${OUTAGE} · cause=provider-severed`,
-      },
-      { kind: "interrupted", at: 3, reason, step: "adversarial" },
-    ],
-  } as unknown as WorkState;
+    eventLog: signal
+      ? [
+          { kind: "step-started", step: "develop", at: 1 },
+          { kind: "interrupted", at: 4, reason, step: "develop" },
+        ]
+      : [
+          { kind: "step-started", step: "adversarial", at: 1 },
+          providerEvent,
+          {
+            kind: "cap-hit",
+            at: 2,
+            cap: "provider-unavailable",
+            reviewRound: 0,
+            nextStep: "handoff",
+            evidence: `${OUTAGE} · cause=provider-severed`,
+          },
+          { kind: "interrupted", at: 3, reason, step: "adversarial" },
+        ],
+  };
 }
 
 process.env.PI_ENSEMBLE_VERIFY = "0";
@@ -187,10 +205,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     // branch.
     await writeState(repo, {
       ...park,
-      eventLog: park.eventLog.map((e) =>
-        e.kind === "interrupted" ? { ...e, reason: "signal" as const } : e,
+      eventLog: park.eventLog.map((e): WorkState["eventLog"][number] =>
+        e.kind === "interrupted" ? { ...e, reason: "signal" } : e,
       ),
-    } as unknown as WorkState);
+    });
     const sigEntry = await singleCycleQueueEntry(repo, 1243);
     assert(
       sigEntry?.humanAction === "resume with /work 1243",
@@ -208,7 +226,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   try {
     mkdirSync(path.join(repo, ".git", "info"), { recursive: true });
     // pid 1 is alive on every unix box and is never this process.
-    await writeState(repo, { ...parked(1243), owner: { pid: 1, at: 1 } } as unknown as WorkState);
+    await writeState(repo, { ...parked(1243), owner: { pid: 1, at: 1 } });
     const notices: string[] = [];
     const host: DriverHost = {
       sendUserMessage: (t) => {
@@ -224,7 +242,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       dispatchFn: async () => {
         throw new Error("smoke: must not dispatch — the re-entry was refused");
       },
-    } as unknown as DriverContext;
+    } satisfies DriverContext;
     const outcome = await runWorkDriver(ctx);
     assert(
       outcome.started === false && /live process \(pid 1\)/.test(outcome.reason ?? ""),
@@ -242,6 +260,41 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     assert(
       still.pipelineState.status === "interrupted",
       "a refused re-entry leaves the provider park's status alone for its real owner",
+    );
+
+    // #1243 fix round — the same refusal through the HEADLESS host. A park's
+    // status is `interrupted` (that is what makes it resumable) and
+    // `exitCodeForState` deliberately maps it to `EXIT.handoff`, NOT
+    // `EXIT.refused` — so the runner's existing "a refusal is not resumable"
+    // sweep, which keys on 40, does not fire here, and `projectIssue` derives
+    // `resumable` from the status alone. A host that re-queues on `resumable`
+    // would re-queue a cycle it cannot enter while a live owner holds it. The
+    // runner's `isLiveOwnerRefusal` gate is what closes that; drop it and this
+    // reports resumable: true.
+    const headless = await runHeadless({
+      repoRoot: repo,
+      issues: [1243],
+      restart: false,
+      graceMs: 5,
+      signalTarget: { on: () => undefined, off: () => undefined } as unknown as NodeJS.Process,
+      driverSeams: {
+        dispatchFn: async () => {
+          throw new Error("smoke: must not dispatch — the re-entry was refused");
+        },
+        issueBodyFetcherFn: async () => ({
+          stdout: "title:\tmock\nstate:\tOPEN\n\nnon-empty mock body",
+        }),
+      },
+      write: () => undefined,
+    });
+    const row = headless.results[0];
+    assert(
+      row?.status === "interrupted" && row.resumable === false,
+      `a provider park refused for a live owner does NOT report resumable: true (got status=${row?.status} resumable=${row?.resumable} exit=${row?.exitCode})`,
+    );
+    assert(
+      row?.exitCode === 10,
+      `…and its exit code is still the park's handoff code, unchanged (got ${row?.exitCode})`,
     );
   } finally {
     rmSync(repo, { recursive: true, force: true });
@@ -261,7 +314,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await writeState(repo, {
       ...undelivered,
       pipelineState: { ...undelivered.pipelineState, handoffDeliveredAt: undefined },
-    } as unknown as WorkState);
+    });
     const notices: string[] = [];
     const host: DriverHost = {
       sendUserMessage: (t) => {
@@ -277,7 +330,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       dispatchFn: async () => {
         throw new Error("smoke: halted at the first dispatch");
       },
-    } as unknown as DriverContext;
+    } satisfies DriverContext;
     await runWorkDriver(ctx).catch(() => undefined);
     assert(
       notices.some((n) => /provider-unavailable|provider/i.test(n)),
@@ -300,7 +353,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     ...providerEvent,
     jobId: "j-long",
     providerMessage: long,
-  } as never);
+  });
   assert(
     clipped.length <= 241,
     `the park's evidence is clipped to the taxonomy's FAILURE_REASON_CHARS (got ${clipped.length})`,
@@ -309,10 +362,19 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     providerParkEvidence(undefined) === "",
     "an absent tail yields no evidence rather than a fabricated one",
   );
+  // The evidence is provider-authored text that lands in the durable state file
+  // and on the handoff body, so it rides the same redaction seam `failureOf`
+  // uses — scrubbed BEFORE it is persisted, not only at render.
+  const withSecret = providerParkEvidence({
+    ...providerEvent,
+    jobId: "j-secret",
+    providerMessage: `upstream 502 apiKey: ${"S".repeat(32)}`,
+  });
+  assert(
+    !withSecret.includes("S".repeat(32)) && /REDACTED/.test(withSecret),
+    `the park's evidence has its credential scrubbed before it is stored (got ${withSecret.slice(0, 80)})`,
+  );
 }
-
-// `initialState` is referenced through `parked`; keep the import honest.
-void initialState;
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

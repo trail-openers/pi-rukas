@@ -54,3 +54,28 @@ export async function refuseAlreadyTerminated(
   );
   return `already terminated as ${terminalStatus}`;
 }
+
+/**
+ * The refusal reason a driver returns when a LIVE process owns the cycle
+ * (#1243 fix round — extracted so the headless runner can recognise it).
+ *
+ * The runner's `resumable` gate keys on this string. A #1243 provider park
+ * terminalises as `interrupted`, and `exitCodeForState` deliberately maps that
+ * to `EXIT.handoff` (10), not `EXIT.refused` (40) — so the runner's existing
+ * "a refusal is not resumable" rule, which tests the exit code, does NOT fire
+ * for a park a live owner refused. Its own status still says resumable, and a
+ * host that reads `resumable: true` re-queues a cycle it cannot re-enter while
+ * somebody else is running it. The two refusal kinds must not be conflated:
+ * `already terminated as X` (from `refuseAlreadyTerminated` above) is a
+ * genuinely resumable-if-restarted cycle, so it must stay outside this shape.
+ */
+export const LIVE_OWNER_REFUSAL_PREFIX = "another live process (";
+
+export function liveOwnerRefusal(ownerPid: number): string {
+  return `${LIVE_OWNER_REFUSAL_PREFIX}pid ${ownerPid}) owns this cycle`;
+}
+
+/** Did this driver refuse because a live process owns the cycle? */
+export function isLiveOwnerRefusal(reason: string): boolean {
+  return reason.startsWith(LIVE_OWNER_REFUSAL_PREFIX);
+}
