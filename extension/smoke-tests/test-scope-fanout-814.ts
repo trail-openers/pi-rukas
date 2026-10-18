@@ -344,25 +344,27 @@ function run(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Case 8 — Genuinely overlapping declared paths: incoherent text preserved
+// Case 8 — No fence record: the text states the observation, not a guess
 //
-// When fenceViolations is ABSENT (no fence violation), the pre-#814
-// incoherent-decomposition text is still produced (it's true there).
+// When fenceViolations is ABSENT the text no longer asserts the decomposition
+// is incoherent (#813 — it was an inference, and #1005 makes its re-split
+// advice wrong for a type-coupled pair). The full contract of this branch, on
+// BOTH renderers, is test-consolidation-conflict-attribution-813.ts.
 // ─────────────────────────────────────────────────────────────────────────────
 {
   let s = initialState(669, 1_000_000);
   s = { ...s, pipelineState: { ...s.pipelineState, worktrees: { a: "/w/a", b: "/w/b" } } };
   s.eventLog.push({ kind: "cap-hit", at: 1, cap: "consolidated-verify-conflict", reviewRound: 0, nextStep: "handoff", evidence: "cherry-pick conflict" });
   const text = explainCap("consolidated-verify-conflict", s);
-  assert(text.includes("incoherent"), `no fenceViolations: incoherent text is preserved (got: ${text.slice(0, 200)})`);
+  assert(!text.includes("incoherent"), `#813 no fenceViolations: the incoherent claim is gone (got: ${text.slice(0, 200)})`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Case 9 — Undeclared-only records do NOT trigger the fence attribution
 //
 // When only undeclared records are present (no sibling-declared), the
-// incoherent text is still used (the undeclared hit is a warning, not a
-// blocking violation).
+// attribution does not fire (an undeclared hit warns, it does not block) and
+// the #813 observed-conflict text runs instead.
 // ─────────────────────────────────────────────────────────────────────────────
 {
   let s = initialState(669, 1_000_000);
@@ -376,7 +378,7 @@ function run(
   };
   s.eventLog.push({ kind: "cap-hit", at: 1, cap: "consolidated-verify-conflict", reviewRound: 0, nextStep: "handoff", evidence: "cherry-pick conflict" });
   const text = explainCap("consolidated-verify-conflict", s);
-  assert(text.includes("incoherent"), `undeclared-only: incoherent text is preserved (got: ${text.slice(0, 200)})`);
+  assert(!text.includes("fence was violated"), `undeclared-only: no fence attribution, the #813 text runs (got: ${text.slice(0, 200)})`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -5,9 +5,11 @@
  * for the WHY explanation used by every handoff surface.
  */
 
+import { reviewWallClockMs } from "./review-budget.ts";
 import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
+import { explainContinueCap, isContinueCap } from "./work-driver-continue-pr-explain.ts";
 import {
   commitPrConsolidationBlurb,
   explainConsolidation,
@@ -67,13 +69,14 @@ export function explainCap(
     snap && !snap.unreadable?.length ? snap.unstagedCount + snap.stagedCount : undefined;
   const fileBlurb =
     fileCount !== undefined ? `${fileCount} file(s) modified-but-uncommitted` : "uncommitted work";
+  if (isContinueCap(cap)) return explainContinueCap(cap, lastCapHit(state, cap)?.evidence);
   switch (cap) {
     case "adversarial-loop":
       return "adversarial gate ran its 3-round internal loop and could not reach APPROVED — the diff still has issues the adversarial-developer flagged";
     case "round-cap":
       return `lens-review hit its ${MAX_REVIEW_ROUNDS}-round cap with findings still open — the lens reviewers and the developer's fixes did not converge`;
-    case "wall-clock":
-      return "lens-review fix loop exceeded its 90-minute wall-clock cap — total time spent in review/fix iterations is past the budget";
+    case "lens-review-timeout":
+      return `lens-review fix loop exceeded its ${reviewWallClockMs() / 60_000}-minute budget — total time spent in review/fix iterations is past it (PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS). This is the review loop's own budget, not the cycle's time limit`;
     case "review-incomplete":
       return "at least one lens failed every retry, so the six-pass review is incomplete — the diff was not fully reviewed, which is not the same as being rejected";
     case "ci-retry":
@@ -346,12 +349,13 @@ export function explainCap(
       // #1403 — the dead-child sentence lives with its own family module.
       return explainDevelopCrash(state);
     case "deadline": {
-      // #1238 — the caller-set whole-cycle deadline: at a step boundary the
-      // deadline was within the handoff grace, so no new step started and
-      // the driver parked; the grace lets this comment post before the kill.
-      const hit = lastCapHit(state, "deadline");
-      const ev = hit?.evidence ?? "(no detail recorded)";
-      return `the caller's whole-cycle deadline (${ev}) was within the handoff grace at a step boundary, so the driver started no new step and parked. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`;
+      // #1238 — the deadline was within the handoff grace at a step boundary,
+      // so no new step started; #1593 — or a step ran past it and its own
+      // verdict (named in the evidence) is not why the cycle stopped.
+      const ev = lastCapHit(state, "deadline")?.evidence ?? "(no detail recorded)";
+      return ev.includes("passed while step")
+        ? `the caller's whole-cycle deadline ended the cycle (${ev}). The step's children were stopped at the deadline, so its verdict judged unfinished work. The handoff below says where the work is — branch, PR, and the round reached — and runs inside the caller's handoff allowance (PI_ENSEMBLE_HANDOFF_TIMEOUT_MS), before its kill. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`
+        : `the caller's whole-cycle deadline (${ev}) was within the handoff grace at a step boundary, so the driver started no new step and parked. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`;
     }
   }
   // #844 — a local branch of the resolved name holds commits the freshly

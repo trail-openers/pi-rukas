@@ -14,7 +14,7 @@ import type { WorkStep } from "./workflow-state-events.ts";
 export type WorkCapLiteral =
   | "adversarial-loop"
   | "round-cap"
-  | "wall-clock"
+  | "lens-review-timeout"
   // A lens failed every retry, so the six-pass review is incomplete.
   // Distinct from the round cap: nothing capped, the review could not be
   // completed. This used to be reported as "adversarial-loop".
@@ -116,6 +116,15 @@ export type WorkCapLiteral =
   // mergeable PR.
   | "draft-rearm-failed"
   | "existing-pr-detected"
+  // #1468 — `--continue-pr` could not continue the issue's open PR: the
+  // lookup was not one PR, the PR is a fork or its head is unsafe, the head
+  // moved under the run, or the merge of the mainline was left unfinished.
+  | "continue-pr-ambiguous"
+  | "continue-pr-fork"
+  | "continue-pr-head-moved"
+  | "continue-pr-not-found"
+  | "continue-pr-unresolved"
+  | "continue-pr-unsafe-head"
   // #844 — the ops-fallback branch path's post-dispatch merge-base check
   // failed: the branch ops created does not sit on the driver-resolved
   // baseSha (ops built off a stale local ref — the #830 shape).
@@ -188,6 +197,9 @@ export type WorkCapLiteral =
   // #1349 — the cycle's PR was no longer open when the step started (the
   // commit-pr re-entry refusal, the PR-gone park). Nothing was judged.
   | `pr-not-open:${WorkStep}`
+  // #1472 — a person CLOSED the cycle's issue mid-run: nothing judged, no
+  // child dispatched. Unlike `pr-not-open`, which reads the PR an agent opened.
+  | `issue-closed:${WorkStep}`
   // #1349 — the adversarial fix pass parked on its own checks (scope fence,
   // no-op pass, comment retention, a read that failed closed); the outcome
   // gate rejected nothing.

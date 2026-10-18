@@ -10,7 +10,7 @@
  * ## The #1398 fix, in one paragraph
  *
  * `readyHoldReason` used to ask which cap NAME had appeared after the verdict
- * (`round-cap` / `wall-clock` with `nextStep: "handoff"`, the one route that
+ * (`round-cap` / `lens-review-timeout` with `nextStep: "handoff"`, the one route that
  * does not disclose) and held only in that shape. An `ISSUES_FOUND` followed by
  * anything ELSE that stopped the cycle before the disclosure — `dispatch-failed`,
  * `verify-failed:*`, a kill cause, `ci-retry` — looked like "nothing to hold
@@ -133,7 +133,7 @@ export function readyHoldReason(
     .some(
       (e) =>
         e.kind === "cap-hit" &&
-        (e.cap === "round-cap" || e.cap === "wall-clock") &&
+        (e.cap === "round-cap" || e.cap === "lens-review-timeout") &&
         e.nextStep === "handoff",
     );
   return capped ? DISCLOSED_HOLD : undefined;

@@ -50,6 +50,15 @@ interface StoredBase {
   severity: Severity;
   lens: string;
   line?: number;
+  /**
+   * The explicit no-line marker (#1469): set when the finding was reported
+   * without a line, and also written onto a row whose line became unresolvable
+   * at head (an absent path, a directory, an unsafe spelling, or a line past
+   * EOF). A row the pre-fix code wrote carries NEITHER this nor `line`, so the
+   * fate rule treats "no `line` field" as line-less too — otherwise an
+   * already-stuck branch stays stuck after the fix ships.
+   */
+  noLine?: boolean;
   snippetHash: string;
   /** Hash of the cited line alone (#1300). Absent on rows written before it existed. */
   lineHash?: string;
@@ -58,7 +67,15 @@ interface StoredBase {
 }
 
 /** Why a row was resolved (#1125): path gone, cited line past EOF, or the cited line itself changed. */
-export const RESOLVE_REASONS = ["path-gone", "line-past-eof", "code-gone"] as const;
+export const RESOLVE_REASONS = [
+  "path-gone",
+  "line-past-eof",
+  "code-gone",
+  // #1469: a row with no cited line has no cited code to prove gone, so the
+  // only evidence that can close it is a COMPLETE full review that no longer
+  // reports it (same lens, path and title).
+  "not-reported",
+] as const;
 export type ResolveReason = (typeof RESOLVE_REASONS)[number];
 
 /** A row resolved by this round, with why its cited code is gone. */
@@ -184,6 +201,7 @@ function rowProblem(v: unknown): string | undefined {
     return `severity "${String(r.severity)}" is not one of ${SEVERITIES.join(", ")}`;
   }
   if (r.line !== undefined && typeof r.line !== "number") return "line is not a number";
+  if (r.noLine !== undefined && typeof r.noLine !== "boolean") return "noLine is not a boolean";
   if (r.lineHash !== undefined && typeof r.lineHash !== "string") {
     return "lineHash is not a string";
   }

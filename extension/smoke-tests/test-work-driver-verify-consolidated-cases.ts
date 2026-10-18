@@ -243,11 +243,24 @@ try {
     evidence: "patch-apply failed for workstream 'b': already exists",
   });
   const text = explainCap("consolidated-verify-conflict", s);
+  // #813 — this branch no longer asserts "the decomposition is incoherent".
+  // That was an inference the driver could not support, and #1005 makes its
+  // advice (re-split) wrong for the type-coupled pair that still collides.
+  // What the cap must still do is name WHICH patch failed — the observation
+  // the operator can act on — and say where the trees are.
   assert(
-    /decomposition is incoherent/.test(text),
-    "#669 cap: explainCap names the decomposition error",
+    /patch-apply failed for workstream 'b'/.test(text),
+    `#669 cap: explainCap names the patch that failed (got: ${text.slice(0, 220)})`,
   );
-  assert(/re-split|non-overlapping/.test(text), "#669 cap: the recovery names re-splitting");
+  assert(
+    /do NOT re-split on this alone/.test(text),
+    `#813 cap: the text refuses the re-split guess and points at coupling instead (got: ${text.slice(0, 220)})`,
+  );
+  assert(
+    !/decomposition is incoherent/.test(text),
+    `#813 cap: the incoherent claim is gone (got: ${text.slice(0, 220)})`,
+  );
+  assert(/Worktrees:/.test(text), "#669 cap: the worktrees to inspect are named");
 }
 
 console.log(`\nexit ${exit}`);

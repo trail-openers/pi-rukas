@@ -8,6 +8,7 @@ import {
   decideSweepAction,
   executeSweepAction,
 } from "./work-driver-sweep-policy.ts";
+import { isLaunchingCycleOwnWorktree } from "./work-driver-sweep-rules.ts";
 import {
   type OwnerIndex,
   buildOwnerIndex,
@@ -18,6 +19,13 @@ import type { ExecFn } from "./worktree.ts";
 
 export type { DecideOpts, SweepAction, SweepResult } from "./work-driver-sweep-policy.ts";
 export { decideSweepAction, executeSweepAction } from "./work-driver-sweep-policy.ts";
+export {
+  groupClaimedByState,
+  hasRealDependencyTree,
+  isLaunchingCycleOwnWorktree,
+  parseWorktreeIssue,
+} from "./work-driver-sweep-rules.ts";
+export { PACKAGE_DIR_MARKERS, PROVISIONED_DEP_NAMES } from "./work-driver-sweep-rules.ts";
 
 const defaultExecFn: ExecFn = execp;
 
@@ -82,18 +90,17 @@ export function resolveSweepTarget(
     return { ok: false, reason: "unresolvable" };
   }
 
-  // Use realpathSync for repo paths to match how git worktree resolves symlinks
-  const worktreesDir = realpathSync(resolve(repoRoot, ".worktrees"));
-  let worktreesStats: ReturnType<typeof lstatSync>;
+  let worktreesDir: string;
+  let repoRootPath: string;
+  let repoGitPath: string;
   try {
-    worktreesStats = lstatSync(worktreesDir);
+    worktreesDir = realpathSync(resolve(repoRoot, ".worktrees"));
+    repoRootPath = realpathSync(repoRoot);
+    repoGitPath = realpathSync(resolve(repoRoot, ".git"));
   } catch (err) {
-    trace(`resolveSweepTarget: lstatSync failed for ${worktreesDir}: ${err}`);
+    trace(`resolveSweepTarget: could not resolve repository paths: ${err}`);
     return { ok: false, reason: "unresolvable" };
   }
-
-  const repoRootPath = realpathSync(repoRoot);
-  const repoGitPath = realpathSync(resolve(repoRoot, ".git"));
 
   // For the returned realPath, use resolve() to match test expectations
   const resultPath = resolve(candidate);
@@ -195,6 +202,10 @@ export async function runWorktreeSweep(opts: {
   execFn?: ExecFn;
   /** Set to false to disable the sweep (for testing/env var). */
   enabled?: boolean;
+  /** Maximum number of remote proofs attempted during the launch sweep. */
+  netProofLimit?: number;
+  /** Disable remote proofs while retaining local-only purge behavior. */
+  allowNetworkProof?: boolean;
 }): Promise<{
   ran: boolean;
   checked: number;
@@ -207,6 +218,7 @@ export async function runWorktreeSweep(opts: {
   }
 
   const { repoRoot, launchingCycleIssue, liveCycles, execFn = defaultExecFn } = opts;
+  const netProofBudget = { remaining: Math.max(0, opts.netProofLimit ?? 5) };
   // ONE read of `.pi/work-state/` for the whole sweep — findOwningCycleState
   // used to reopen and reparse it once per worktree.
   const ownerIndex = buildOwnerIndex(repoRoot);
@@ -242,6 +254,11 @@ export async function runWorktreeSweep(opts: {
     }
     checked.push(resolved.realPath);
 
+    if (isLaunchingCycleOwnWorktree(resolved.name, launchingCycleIssue)) {
+      skipped.push({ path: resolved.realPath, reason: "launching-cycle-own" });
+      continue;
+    }
+
     // #1454 — the owner is resolved by WORKTREE PATH, not a basename guess
     // (see findOwningCycleState). An unclaimed tree is skipped: no owner whose
     // liveness could be judged.
@@ -264,6 +281,8 @@ export async function runWorktreeSweep(opts: {
       liveCycles,
       launchingCycleIssue: opts.launchingCycleIssue,
       execFn,
+      netProofBudget,
+      allowNetworkProof: opts.allowNetworkProof,
     };
 
     const action = await decideSweepAction(decideOpts);
@@ -277,7 +296,12 @@ export async function runWorktreeSweep(opts: {
     }
 
     if (action.type === "purge") {
-      purged.push(resolved.realPath);
+      if (result.purgeSkipped) {
+        skipped.push({ path: resolved.realPath, reason: "purge-skipped:real-deps" });
+        trace(`worktree-sweep: purge skipped for ${resolved.realPath}: real dependency tree`);
+      } else {
+        purged.push(resolved.realPath);
+      }
     } else if (action.type === "remove") {
       removed.push(resolved.realPath);
     } else if (action.type === "skip") {
@@ -315,6 +339,7 @@ export async function runWorktreeTeardown(opts: {
   }
 
   const retained: string[] = [];
+  const netProofBudget = { remaining: Object.keys(worktrees).length };
 
   for (const [worktreeName, worktreePath] of Object.entries(worktrees)) {
     // r2 — the same containment gate `buildOwnerIndex` applies to every
@@ -342,6 +367,7 @@ export async function runWorktreeTeardown(opts: {
       liveCycles: new Set([state.issue]), // Only this cycle is live for teardown purposes
       launchingCycleIssue: state.issue, // Exclude self from live check
       execFn,
+      netProofBudget,
     };
 
     const action = await decideSweepAction(decideOpts);
@@ -358,6 +384,9 @@ export async function runWorktreeTeardown(opts: {
     if (action.type === "purge") {
       // We still retain the worktree, but we've purged artifacts
       retained.push(resolved.realPath);
+      if (result.purgeSkipped) {
+        trace(`worktree-teardown: purge skipped for ${resolved.realPath}: real dependency tree`);
+      }
     } else if (action.type === "remove") {
       // Worktree removed, not retained
     } else if (action.type === "skip") {

@@ -111,10 +111,17 @@ export function prCommentCmd(forge: ForgeType, number: number, bodyFile: string)
   return `glab api --method POST --header "Content-Type: application/json" -f "body=@${bodyFile}" /projects/:id/merge_requests/${number}/notes`;
 }
 
-export function issueSearchCmd(forge: ForgeType, query: string): string {
-  if (forge === "github")
-    return `gh issue list --search ${shq(query)} --json number,title,state,url`;
-  return `glab issue list --search ${shq(query)} --output json`;
+export function issueSearchCmd(
+  forge: ForgeType,
+  query: string,
+  opts: { allStates?: boolean } = {},
+): string {
+  if (forge === "github") {
+    const state = opts.allStates ? " --state all" : "";
+    return `gh issue list --search ${shq(query)}${state} --json number,title,state,url`;
+  }
+  const state = opts.allStates ? " --all" : "";
+  return `glab issue list --search ${shq(query)}${state} --output json`;
 }
 
 /**

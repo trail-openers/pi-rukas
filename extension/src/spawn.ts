@@ -22,6 +22,8 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { preflightChildGuards } from "./child-guards.ts";
+import { ChildProgress } from "./child-progress.ts";
+import { clampToCycleDeadline } from "./cycle-deadline-clock.ts";
 import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
@@ -305,10 +307,13 @@ async function spawnSpecialistInner(
   // tool-inactivity bound applies to the silence; when it is empty the
   // model-silence bound applies — exactly one budget is armed at any poll.
   const inFlightTools = new InFlightTools();
+  // #1567 — what counts as progress, per spawn (child-progress.ts).
+  const childProgress = new ChildProgress();
   const stdoutRl = createInterface({ input: child.stdout });
   const lineHandler = createStdoutLineHandler({
     start,
     inFlightTools,
+    childProgress,
     appendStderr,
     runningState,
     caps,
@@ -335,7 +340,9 @@ async function spawnSpecialistInner(
   // (spawn-inflight.ts). The backstop catches runaway loops; the inactivity
   // watchdog below detects true hangs. The kill-cause flags are declared with
   // the cap session above (read by closure, so they predate `createCapSession`).
-  const timeoutMs = opts.timeoutMs ?? spawnBackstopMs();
+  // #1593 — never past what the cycle's deadline leaves (cycle-deadline-clock.ts).
+  const bound = clampToCycleDeadline(opts.timeoutMs ?? spawnBackstopMs(), Date.now());
+  const timeoutMs = bound.timeoutMs;
   const stopWallClockBackstop = createWallClockBackstop({
     child,
     timeoutMs,
@@ -435,6 +442,7 @@ async function spawnSpecialistInner(
   // #951 — each silence kill records the ACTIVE bound (the one the poll
   // armed), since exactly one budget is checked per poll.
   if (result.killCause === "timeout") result.killBudgetMs = timeoutMs;
+  if (result.killCause === "timeout" && bound.clamped) result.killedAtCycleDeadline = true;
   if (result.killCause === "inactivity") result.killBudgetMs = flags.killedBudgetMs();
   if (result.killCause === "tool-inactivity") result.killBudgetMs = flags.killedBudgetMs();
   // A killed child never completed its assignment, whatever its exit code.

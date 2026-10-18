@@ -66,7 +66,7 @@ const GOOD_REPLY = [
   "",
 ].join("\n");
 
-function result(text: string): DispatchResult {
+function result(text: string, n = 1): DispatchResult {
   return {
     role: "explore",
     ok: true,
@@ -74,7 +74,8 @@ function result(text: string): DispatchResult {
     toolUses: [],
     ms: 10,
     exitCode: 0,
-    transcriptPath: "/tmp/stub-transcript.json",
+    // One transcript per attempt, so each completion records its own job id.
+    transcriptPath: `/tmp/stub-transcript-${n}.json`,
   };
 }
 
@@ -103,7 +104,7 @@ async function runWith(
         const step = script[prompts.length - 1];
         if (step === undefined) throw new Error("unscripted dispatch");
         if (step instanceof Error) throw step;
-        return result(step);
+        return result(step, prompts.length);
       },
     };
     const state = await runExplore(ctx, initialState(issue, 1_000_000), 1_000_000);
@@ -172,6 +173,29 @@ async function badThenGood() {
   assert(
     retried[0]?.kind === "explore-retried" && retried[0].verdictParsed === true,
     "bad→good: retry event carries the verdict-present flag",
+  );
+  // #1548 — the retry names what the first reply lacked, so a reader of the
+  // stream does not take `verdictParsed: true` for an accepted verdict.
+  assert(
+    retried[0]?.kind === "explore-retried" &&
+      retried[0].missing === "INTENT-VERDICT present but no `## Spec` heading parsed",
+    "bad→good: retry event names what was missing from the first reply",
+  );
+  // #1548 — firstJobId is the id the first attempt's completion was recorded
+  // under, not the write-ahead template id, so the two events correlate.
+  const completions = state.eventLog.filter(
+    (e) => e.kind === "dispatch-completed" && e.step === "explore",
+  );
+  const firstCompletion = completions[0];
+  assert(
+    completions.length === 2 &&
+      firstCompletion?.kind === "dispatch-completed" &&
+      retried[0]?.kind === "explore-retried" &&
+      retried[0].firstJobId === firstCompletion.jobId &&
+      firstCompletion.jobId === "stub-transcript-1",
+    `bad→good: firstJobId names the first attempt's dispatch-completed (got ${
+      retried[0]?.kind === "explore-retried" ? retried[0].firstJobId : "none"
+    })`,
   );
 }
 

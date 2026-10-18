@@ -402,8 +402,8 @@ try {
     });
     const indepText = explainCap("consolidated-verify-conflict", indepState);
     assert(
-      /combined|overlap/.test(indepText),
-      `#794 case 5: independent cap text still explains the overlap (got: ${indepText.slice(0, 200)})`,
+      /combined|overlap|coupled/.test(indepText),
+      `#794 case 5: independent cap text still explains what the conflict means (got: ${indepText.slice(0, 200)})`,
     );
   }
 

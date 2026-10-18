@@ -39,6 +39,7 @@ import {
   stepParkedOnProvider,
 } from "./work-driver-provider-park.ts";
 import { lostAttemptLine } from "./work-driver-retry-context.ts";
+import { cleanTreeBeforeRetry } from "./work-driver-step-clean.ts";
 import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
 import { routeFanoutHalt } from "./work-driver-step-router-fanout.ts";
 import type { CapEvidence } from "./workflow-state-cap.ts";
@@ -258,8 +259,12 @@ export async function routeStepOutcome(
             },
           };
           await persistCycle(ctx, state);
+          // #1391 — save then clean what the lost child left, or park on a failed save.
+          const tree = await cleanTreeBeforeRetry(ctx, state, step, used + 1);
+          if (tree.parked) return { state: tree.state, retry: true };
+          state = tree.state;
           // The retry is a fresh child: say what the failed one took with it.
-          const lost = lostAttemptLine(step, used + 1, tail);
+          const lost = lostAttemptLine(step, used + 1, tail, tree.line);
           const reason = `${failureCauseReason(tail)} · ${lost}`;
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
@@ -397,7 +402,10 @@ export async function routeStepOutcome(
             },
           };
           await persistCycle(ctx, state);
-          const lost = lostAttemptLine(step, used + 1, tail);
+          const tree = await cleanTreeBeforeRetry(ctx, state, step, used + 1);
+          if (tree.parked) return { state: tree.state, retry: true };
+          state = tree.state;
+          const lost = lostAttemptLine(step, used + 1, tail, tree.line);
           const reason = `${failureCauseReason(tail)} · ${lost}`;
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(

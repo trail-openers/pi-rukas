@@ -204,8 +204,8 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
 
     issueComments: (number) => listIssueComments({ forge, run, withBodyFile }, number),
 
-    issueSearch: (query) =>
-      run(cmds.issueSearchCmd(forge, query), (stdout) => {
+    issueSearch: (query, opts) =>
+      run(cmds.issueSearchCmd(forge, query, opts), (stdout) => {
         const rows = asArray(stdout);
         return rows.map((raw) => {
           const o = raw as Record<string, unknown>;

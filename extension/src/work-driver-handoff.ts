@@ -1,22 +1,29 @@
 /** work-driver-handoff — Step 7g (handoff) handler. #674: worktree consolidation + forge post retry. */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execp } from "./exec.ts";
-import { type ForgeType, detectForge } from "./forge-detect.ts";
-import { type Forge, createForge } from "./forge.ts";
 import { drainSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
-import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import type { CycleContext } from "./work-driver-context.ts";
 import { settleDraftPrAtHandoff } from "./work-driver-draft-pr.ts";
-import { countAheadOfBase, workNotYetOnBranch } from "./work-driver-handoff-ahead.ts";
+import { openDraftPrForCappedWork } from "./work-driver-handoff-capped-pr.ts";
 import { handoffChannel, withHandoffMarker } from "./work-driver-handoff-channel.ts";
-import { handoffConsolidateWorktrees } from "./work-driver-handoff-consolidate-step.ts";
+import {
+  handoffConsolidateWorktrees,
+  lastConsolidatedEvent,
+} from "./work-driver-handoff-consolidate-step.ts";
+import {
+  deliverHandoff,
+  handoffDispatchFailed,
+  parseHandoffCommentUrl,
+  priorHandoffCommentUrl,
+} from "./work-driver-handoff-deliver.ts";
+import { handoffForge } from "./work-driver-handoff-forge.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { runHandoffOpsDispatch } from "./work-driver-handoff-ops.ts";
-import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
 import {
   applyIssueLabelDualTarget,
   captureCommittedWork,
+  declinedLabelSeed,
   makeHandoffEmittedEvent,
   parseHandoffOpsReply,
   verifyHandoffLabel,
@@ -25,8 +32,7 @@ import { providerParkResumeStep } from "./work-driver-handoff-provider-resume.ts
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
 import { readParkMemory, recordPark } from "./work-driver-park-memory.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
-import { activeIssuesOf } from "./work-driver-workspace.ts";
-import { scratchDir } from "./work-driver-workspace.ts";
+import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
 import {
   type WorkEvent,
@@ -34,8 +40,6 @@ import {
   appendEvent,
   parkProviderInterrupt,
 } from "./workflow-state.ts";
-import type { WorkStep } from "./workflow-state.ts";
-import type { ExecFn } from "./worktree.ts";
 
 // #1263 test seam — module-level handoff-step throw injection (offline tests
 // only), called in runHandoff just before the terminal-status write. A
@@ -48,19 +52,18 @@ export function setHandoffThrowForTestForTest(fn: (() => void) | undefined): voi
 // #775 prep — captureWorktreeSnapshot moved to work-driver-handoff-snapshot.ts
 // (§12 file-size split); re-exported so no consumer's import path changes.
 export { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
+// §12 split — the delivery half (comment/label verification, the in-process
+// forge fallback and the pure URL helpers) moved to
+// work-driver-handoff-deliver.ts; re-exported so no consumer's path changes.
+export {
+  handoffDispatchFailed,
+  parseHandoffCommentUrl,
+  priorHandoffCommentUrl,
+} from "./work-driver-handoff-deliver.ts";
+export { handoffForge } from "./work-driver-handoff-forge.ts";
 export function handoffDispatchTimeoutMs(): number {
   const env = Number(process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS);
   return Number.isFinite(env) && env > 0 ? env : 8 * 60_000;
-}
-export async function handoffForge(repoRoot: string): Promise<Forge | undefined> {
-  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
-  try {
-    const det = await detectForge(repoRoot, {});
-    if (det.forge === "unknown") return undefined;
-    return createForge(det, { cwd: repoRoot });
-  } catch {
-    return undefined;
-  }
 }
 /** Step 7g — Emit cap-hit handoff artifact. Dispatches @ops to: - render the handoff body (referencing the work-state file) - post `gh pr comment` (or `gh issue comment` if no PR yet) - apply `needs-human-attention` label After the dispatch, set status=handoff to terminate the loop. The in-process fallback (`!commentUrl || !labelApplied`) now routes its gh calls through the forge adapter — the ops child's prompt still names raw `gh` (it is a prose contract with the agent, not an exec seam), but the driver's own mechanical calls are forge-aware. */
 export async function runHandoff(
@@ -89,6 +92,10 @@ export async function runHandoff(
   if (consolidated.event) {
     next = appendEvent(next, consolidated.event);
   }
+  // #1402 — an adversarial-loop cap skipped commit-pr: push the branch and
+  // open a draft PR carrying the findings, so the work is reachable. Before
+  // the snapshot, so the handoff reports the branch as pushed.
+  next = await openDraftPrForCappedWork(ctx, next);
   // PR5: capture the worktree snapshot FIRST so handoff surfaces (in-chat
   // sendUserMessage, GitHub body, /work-status terminal) can answer
   // WHERE the work is without re-shelling git. Snapshot persists into
@@ -163,7 +170,7 @@ export async function runHandoff(
   // (The dispatch leg itself lives in work-driver-handoff-ops.ts — §12
   // file-size split; the bound, the write-ahead resume bookkeeping and the
   // completion / dispatch-failed event construction moved verbatim.)
-  const prNumber = state.pipelineState.prNumber;
+  const prNumber = next.pipelineState.prNumber;
   const target = prNumber ? `pr #${prNumber}` : `issue #${ctx.issue}`;
   // A freshly re-resolved intent park that matches the one already reported
   // (work-driver-park-memory.ts) has its comment on the issue: no ops
@@ -196,13 +203,15 @@ export async function runHandoff(
   let commentUrl = parseHandoffCommentUrl(opsReplyText) ?? priorHandoffCommentUrl(next.eventLog);
   commentUrl ??= park.repeatOf?.commentUrl;
   if (parsed.commentUrl && !commentUrl) commentUrl = parsed.commentUrl;
-  let labelApplied = false;
   // #798 — per-target label state. When prNumber is set, the driver labels
   // BOTH the issue (the entry-gate target) and the PR (the review target);
   // each is verified independently. When prNumber is absent, only the issue
-  // is targeted and issueLabelApplied mirrors labelApplied.
-  let issueLabelApplied: boolean | undefined;
-  let prLabelApplied: boolean | undefined;
+  // is targeted and issueLabelApplied mirrors labelApplied. #1472 seeds all
+  // three settled for a closed-issue park — see `declinedLabelSeed`.
+  let { labelApplied, issueLabelApplied, prLabelApplied } = declinedLabelSeed(
+    next.pipelineState,
+    prNumber,
+  );
   // #775 — provenance of the recorded state. "dispatch" is asserted only
   // when the driver verified it (URL parsed or label read-back succeeded);
   // a reply whose state could not be verified records no provenance.
@@ -210,16 +219,7 @@ export async function runHandoff(
   // #775 — track whether the ops dispatch actually failed (threw or timed out)
   // so the fallback can be gated correctly: if the dispatch succeeded and
   // the URL parsed, the fallback is skipped entirely (idempotent).
-  const dispatchFailed = next.eventLog
-    .slice()
-    .reverse()
-    .some(
-      (e) =>
-        e.kind === "dispatch-failed" &&
-        e.step === "handoff" &&
-        e.role === "ops" &&
-        e.label === "ops:handoff",
-    );
+  const dispatchFailed = handoffDispatchFailed(next);
   if (!host) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     if (commentUrl) delivery = "dispatch";
@@ -246,76 +246,30 @@ export async function runHandoff(
   // In-process fallback (with retry). When the ops dispatch failed OR the
   // commentUrl didn't parse out, the driver itself posts via the forge
   // adapter. postHandoffWithRetry retries with backoff; only after retries
-  // are exhausted does the HANDOFF DISPATCH INCOMPLETE banner surface.
+  // are exhausted does the HANDOFF DISPATCH INCOMPLETE banner surface. The
+  // delivery half lives in work-driver-handoff-deliver.ts (§12 file-size
+  // split); the try/catch stays HERE because the whole point of the leg is
+  // that a forge write must never stop a handoff from completing.
   if (!host && (!commentUrl || !labelApplied)) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     try {
-      if (!forge) {
-        // No forge resolved — the fallback cannot run. The handoff is still
-        // recorded (handoff-emitted), but the comment/label are NOT posted.
-        // The operator sees the HANDOFF DISPATCH INCOMPLETE banner.
-        trace("work-driver: no forge resolved — in-process fallback skipped");
-      } else {
-        const objType = prNumber ? "pr" : "issue";
-        const targetId = prNumber ?? ctx.issue;
-        const body = !commentUrl ? await fs.readFile(handoffBodyPath, "utf8").catch(() => "") : "";
-        // #775 — idempotency check: fetch the target's existing comments
-        // BEFORE posting so a comment the ops dispatch already posted (whose
-        // URL was lost) is not re-posted. A failed dispatch leaves no such
-        // comment, so the fallback posts exactly once.
-        let existingComments: unknown[] | undefined;
-        if (!commentUrl) {
-          try {
-            existingComments =
-              objType === "pr"
-                ? await forge.prComments(targetId)
-                : await forge.issueComments(targetId);
-          } catch (err) {
-            trace(
-              `work-driver: handoff comment-list fetch failed (non-fatal): ${(err as Error).message?.slice(0, 160)}`,
-            );
-          }
-        }
-        const posted = await postHandoffWithRetry(forge, {
-          issue: ctx.issue,
-          body,
-          expectedBody: body,
-          targetId: targetId,
-          objType,
-          needsComment: !commentUrl,
-          // #798 — the comment target is the PR (when prNumber set), but the
-          // label must land on BOTH. The retry handles the comment target's
-          // label; the issue label is applied separately below.
-          needsLabel: !labelApplied,
-          existingComments,
-        });
-        if (posted.commentUrl) {
-          commentUrl = posted.commentUrl;
-          // #775 — the fallback established the comment URL. If the dispatch
-          // also failed, this is the fallback's provenance.
-          if (dispatchFailed && !delivery) delivery = "fallback";
-        }
-        if (prNumber) {
-          // #798 — dual-target: re-verify both independently after the retry.
-          const issueVerified = await verifyHandoffLabel(forge, "issue", ctx.issue);
-          const prVerified = posted.labelApplied
-            ? await verifyHandoffLabel(forge, "pr", prNumber)
-            : (prLabelApplied ?? false);
-          if (issueVerified) {
-            issueLabelApplied = true;
-            if (dispatchFailed) delivery = "fallback";
-          }
-          if (prVerified) {
-            prLabelApplied = true;
-            if (dispatchFailed) delivery = "fallback";
-          }
-          labelApplied = issueVerified && prVerified;
-        } else if (posted.labelApplied) {
-          issueLabelApplied = true;
-          labelApplied = true;
-          if (dispatchFailed) delivery = "fallback";
-        }
-      }
+      const delivered = await deliverHandoff({
+        issue: ctx.issue,
+        prNumber,
+        forge,
+        handoffBodyPath,
+        commentUrl,
+        labelApplied,
+        issueLabelApplied,
+        prLabelApplied,
+        delivery,
+        dispatchFailed,
+      });
+      commentUrl = delivered.commentUrl;
+      labelApplied = delivered.labelApplied;
+      issueLabelApplied = delivered.issueLabelApplied;
+      prLabelApplied = delivered.prLabelApplied;
+      delivery = delivered.delivery;
     } catch (err) {
       trace(
         `work-driver: in-process forge fallback failed: ${(err as Error).message?.slice(0, 200)}`,
@@ -325,6 +279,11 @@ export async function runHandoff(
   // #798 — when prNumber is set, the fallback above applies the label to the
   // comment target (PR) via postHandoffWithRetry. The ISSUE label is applied
   // separately here because the retry only targets one object.
+  //
+  // This block sits OUTSIDE the swallow-all try/catch above and is guarded by
+  // `!host`: a host-owned channel never labels anything, and a forge write
+  // here must not be traced away with the rest of the fallback. Do not move it
+  // into `deliverHandoff` — that function is the try/catch's body.
   if (!host && prNumber && !issueLabelApplied) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     if (forge) {
@@ -343,13 +302,7 @@ export async function runHandoff(
   // #674 — carry the consolidation outcome into the handoff-emitted event so the
   // renderers can print either the branch-contains-the-work path or the accurate
   // per-worktree fallback. The `handoff-consolidated` event is the audit trail.
-  const consEvent = next.eventLog
-    .slice()
-    .reverse()
-    .find(
-      (e): e is Extract<WorkEvent, { kind: "handoff-consolidated" }> =>
-        e.kind === "handoff-consolidated",
-    );
+  const consEvent = lastConsolidatedEvent(next.eventLog);
   // #1421 — WHY consolidation did not happen. The event carried a single
   // fixed sentence, "consolidation infeasible (work remains on its worktree
   // detached HEADs)", for every failure including one where the only thing in
@@ -471,24 +424,4 @@ export async function runHandoff(
     next = { ...next, eventLog: [...next.eventLog, ...slowEvents] };
   }
   return next;
-}
-export function parseHandoffCommentUrl(text: string | undefined): string | undefined {
-  if (!text) return undefined;
-  const m = text.match(/https:\/\/github\.com\/[^\s)>]+#issuecomment-\d+/);
-  return m?.[0];
-}
-/**
- * The comment URL a PREVIOUS handoff attempt already delivered, if any —
- * the re-entry dedupe key (census 2026-09-09: a crash between the comment
- * post and the enclosing writeState re-posted a duplicate on resume). Pure;
- * newest event wins.
- */
-export function priorHandoffCommentUrl(eventLog: readonly WorkEvent[]): string | undefined {
-  const prior = [...eventLog]
-    .reverse()
-    .find(
-      (e): e is Extract<WorkEvent, { kind: "handoff-emitted" }> => e.kind === "handoff-emitted",
-    );
-  const url = prior?.commentUrl;
-  return typeof url === "string" && url.length > 0 ? url : undefined;
 }
