@@ -86,6 +86,10 @@ export const KNOWN_EVENT_KINDS = [
   // tree is the tree the per-worktree verify already judged. A fast `develop`
   // must be explainable from the state file.
   "consolidated-verify-skipped",
+  // #1404 — the consolidated verify failed and the cycle pushed anyway, because
+  // every failing test is red at the cycle's base commit too. The one shape
+  // where a red gate does not stop the push, so the state file must carry it.
+  "consolidated-verify-pre-existing",
   // #558 — the branch step's worktree provisioning record (the driver writes
   // it when it symlinks dependencies into a fresh worktree). Absent from the
   // tuple, a cycle that crashed after provisioning refused to resume.

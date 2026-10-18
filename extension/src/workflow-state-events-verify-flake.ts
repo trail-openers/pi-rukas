@@ -97,6 +97,48 @@ export type ConsolidatedVerifySkippedEvent = {
 };
 
 /**
+ * Issue #1404 — the commit-pr consolidated verify FAILED and the cycle
+ * CONTINUED, because every failing test also fails at the cycle's base commit.
+ *
+ * **Why an event.** This is the one shape in the pipeline where a red gate
+ * does not stop the push, so the state file alone must say so: an operator
+ * reading a merged cycle needs to learn the gate was red, and the next cycle
+ * needs to learn why it will park on the same tests. A note would not do —
+ * notes reach the state file on failure paths, and this is the success path.
+ *
+ * Deliberately NOT `verify-flake-recovered` (nothing was re-run and passed)
+ * nor `consolidated-verify-skipped` (the command ran and failed). The names
+ * ride with it so the record is checkable rather than a claim.
+ */
+export type ConsolidatedVerifyPreExistingEvent = {
+  kind: "consolidated-verify-pre-existing";
+  at: number;
+  /** The step whose consolidated verify excused its failures: always commit-pr. */
+  step: "commit-pr";
+  /** The failing test names the base run produced too. */
+  failures: string[];
+  /** The base commit they were measured against. */
+  baseSha: string;
+};
+
+/**
+ * Build the #1404 pre-existing-failures event. A factory for the same reason
+ * as the skip's: one place owns `step` and stamps `at` at the decision.
+ */
+export function makeConsolidatedVerifyPreExistingEvent(
+  failures: readonly string[],
+  baseSha: string,
+): ConsolidatedVerifyPreExistingEvent {
+  return {
+    kind: "consolidated-verify-pre-existing",
+    at: Date.now(),
+    step: "commit-pr",
+    failures: [...failures],
+    baseSha,
+  };
+}
+
+/**
  * Build the #1240 skip event. A factory (rather than a literal at each call
  * site) so the two seams cannot drift on `step`, and so `at` is stamped at
  * the moment of the decision rather than whenever the caller appends.
