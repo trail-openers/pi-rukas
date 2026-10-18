@@ -24,7 +24,7 @@ Prerequisites for the full table.
 |---|---|
 | `bun run build` | Assembles per-role system prompts from `modules/` + `manifests/` + `agents-base/` into `dist/prompts/standard/`. |
 | `cd extension && bun install` | Installs extension deps. |
-| `cd extension && bunx tsc --noEmit` | Type-check. |
+| `cd extension && bun x tsc --noEmit` | Type-check. |
 | `cd extension && bun run check` | Biome (lint + format check). |
 | `cd extension && bun run format` | Apply biome format fixes. |
 | `cd extension && bun run smoke-tests/test-command-flow.ts` | Integration smoke (offline) — slash commands and tools registered, sticky PM preamble. |
