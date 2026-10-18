@@ -8,6 +8,8 @@
  */
 
 import type { ForgeType } from "./forge-detect.ts";
+import { lastCap } from "./headless/exit-code.ts";
+import { failedStepOf } from "./headless/result.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { capedPartialStateLines } from "./work-driver-caped-state.ts";
 import { commitPrRootFactLines } from "./work-driver-commit-inspect.ts";
@@ -43,6 +45,27 @@ function commitPrRootLines(state: WorkState, repoRoot: string): string[] {
 }
 
 /**
+ * #1463 — the terminal path, read from the cycle's own record rather than from
+ * the status word. `runHandoff` stores `aborted` for the bound/kill caps
+ * (`developer-timeout`, `step-failed:<step>`, …), and the crash paths leave
+ * `aborted` with no cap at all, so the status alone cannot say which happened.
+ * A recorded cap means the driver routed the cycle to its handoff; only an
+ * `aborted` cycle with no cap is a mid-flight failure. The step named is the
+ * one that stopped (`failedStepOf`, shared with the headless result), never the
+ * last step that completed — that is the step BEFORE the one with the work.
+ */
+export function terminalPathOf(state: WorkState): {
+  cap: string | undefined;
+  step: string | undefined;
+  midFlight: boolean;
+} {
+  const ps = state.pipelineState;
+  const cap = lastCap(state);
+  const step = failedStepOf(state) ?? ps.lastCompletedStep ?? ps.currentStep;
+  return { cap, step, midFlight: ps.status === "aborted" && cap === undefined };
+}
+
+/**
  * PR5 — operator-facing in-chat handoff message. Multi-line; produced
  * by `runWorkDriver` to replace the PR4-and-earlier terse ~150-char
  * pointer-to-JSON. Sections:
@@ -75,10 +98,16 @@ export function renderHandoffUserMessage(
   // #657 — an intent-park cap-hit carries the machine-readable park reason;
   // surface it in the Last-step line so the operator sees WHICH park without
   // opening the state file.
+  const path = terminalPathOf(state);
   const capLabel =
     capHit?.kind === "cap-hit" && capHit.parkReason
       ? `${capHit.cap} (${capHit.parkReason})`
-      : (ps.lastCompletedStep ?? ps.currentStep);
+      : path.step;
+  const cycleTag = path.midFlight
+    ? " (mid-flight failure, not a cap-hit)"
+    : ps.status === "aborted"
+      ? ` — handoff (cap ${path.cap}, step ${path.step})`
+      : "";
   const why = explainCap(cap, state);
   const snap = ps.handoffSnapshot;
   const commentUrl = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.commentUrl : undefined;
@@ -170,7 +199,7 @@ export function renderHandoffUserMessage(
     `Why: ${why}`,
     ...openPointsChat(ps.normalisedSpec, issue),
     `Last step: ${capLabel}${ps.reviewRound > 0 ? ` · review round ${ps.reviewRound}/${MAX_REVIEW_ROUNDS}` : ""}`,
-    `Cycle: ${ps.status}${ps.status === "aborted" ? " (mid-flight failure, not a cap-hit)" : ""}`,
+    `Cycle: ${ps.status}${cycleTag}`,
     "",
     "Worktree state:",
     // #398 — when no branch exists, say that, rather than printing a

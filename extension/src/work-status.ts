@@ -8,6 +8,7 @@ import { trace } from "./trace.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS, STEP_ORDINAL } from "./work-driver-context.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
+import { terminalPathOf } from "./work-driver-handoff-message.ts";
 import { genericRecoveryLines } from "./work-driver-handoff-recovery-tree.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { describeBranchState } from "./work-driver-handoff-view.ts";
@@ -162,12 +163,15 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
   const ps = state.pipelineState;
   const elapsedTotal = Date.now() - state.startedAt;
   const issue = state.issue;
+  const terminal = terminalPathOf(state);
   const statusBadge =
     ps.status === "merged"
       ? mergedLine(state)
       : ps.status === "handoff"
         ? "HANDOFF (cap-hit, needs human attention)"
-        : "ABORTED (mid-flight failure, needs human attention)";
+        : terminal.midFlight
+          ? "ABORTED (mid-flight failure, needs human attention)"
+          : `ABORTED — handoff (cap ${terminal.cap}, step ${terminal.step}; needs human attention)`;
 
   const lines: string[] = [];
   lines.push(`/work #${issue} — ${statusBadge}`);
