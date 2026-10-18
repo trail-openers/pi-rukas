@@ -251,6 +251,10 @@ for (const rel of PROSE_FILES) {
 // gate over formatting and, worse, a `\s*`-less match on the call would pass
 // if someone wrote `run( CHECKPOINT_TYPECHECK_CMD,`.
 {
+  const typecheckSrc = readFileSync(
+    path.join(REPO_ROOT, "extension/src/work-driver-cap-checkpoint-typecheck.ts"),
+    "utf8",
+  );
   const ckptSrc = readFileSync(
     path.join(REPO_ROOT, "extension/src/work-driver-cap-checkpoint.ts"),
     "utf8",
@@ -258,19 +262,29 @@ for (const rel of PROSE_FILES) {
   const exportRe = new RegExp(
     `CHECKPOINT_TYPECHECK_CMD\\s*=\\s*["']${escapeRe(CHECKPOINT_TYPECHECK_CMD)}["']`,
   );
-  if (!exportRe.test(ckptSrc))
+  if (!exportRe.test(typecheckSrc))
     report([
-      `exported CHECKPOINT_TYPECHECK_CMD is not \`${CHECKPOINT_TYPECHECK_CMD}\` (or its declaration was reformatted past this gate's pattern)`,
+      `exported CHECKPOINT_TYPECHECK_CMD is not \`${CHECKPOINT_TYPECHECK_CMD}\` (or its declaration in the typecheck leaf was reformatted past this gate's pattern)`,
     ]);
-  // The executed call lives in the typecheck sibling the command was split
-  // into (#1414 round 2, file-size cap) — read THAT file, not the one holding
-  // the constant, or the check silently reads a file that no longer calls it.
-  const callSrc = readFileSync(
-    path.join(REPO_ROOT, "extension/src/work-driver-cap-checkpoint-typecheck.ts"),
-    "utf8",
-  );
+  // #1414 round 3 — the DEFINITION moved to the typecheck leaf (a leaf cannot
+  // value-import from its own consumer; that was the runtime cycle), and the
+  // checkpoint module keeps a RE-EXPORT so the file whose jsdoc explains the
+  // spelling stays stable. Two more assertions follow from that shape: the
+  // re-export is present, and the checkpoint has NOT grown its own copy.
+  const reExportRe =
+    /export\s*\{[^}]*\bCHECKPOINT_TYPECHECK_CMD\b[^}]*\}\s*from\s*["']\.\/work-driver-cap-checkpoint-typecheck\.ts["']/;
+  if (!reExportRe.test(ckptSrc))
+    report([
+      `work-driver-cap-checkpoint.ts no longer re-exports CHECKPOINT_TYPECHECK_CMD from the typecheck leaf — the gate reads the literal's rationale from that file`,
+    ]);
+  if (exportRe.test(ckptSrc))
+    report([
+      `work-driver-cap-checkpoint.ts defines CHECKPOINT_TYPECHECK_CMD itself — the constant belongs in the typecheck leaf (a local copy is the drift this gate catches, and re-introduces the import cycle)`,
+    ]);
+  // The executed call lives in the typecheck leaf alongside the constant
+  // (#1414 round 2 split it out; round 3 moved the constant in with it).
   const callRe = /\brun\s*\(\s*CHECKPOINT_TYPECHECK_CMD\s*,/;
-  if (!callRe.test(callSrc))
+  if (!callRe.test(typecheckSrc))
     report([
       `typecheckWorktree no longer executes CHECKPOINT_TYPECHECK_CMD — the literal may have drifted from the prose`,
     ]);
@@ -278,11 +292,53 @@ for (const rel of PROSE_FILES) {
   // literal is caught, the fixed form is not, and a REFORMATTED-but-correct
   // pair of sites still passes (a whitespace-intolerant pattern fails on
   // layout, which trains people to weaken the gate rather than fix the drift).
-  const planted = ckptSrc.replace(exportRe, `CHECKPOINT_TYPECHECK_CMD = "bunx tsc --no-emit"`);
+  const planted = typecheckSrc.replace(exportRe, `CHECKPOINT_TYPECHECK_CMD = "bunx tsc --no-emit"`);
   if (exportRe.test(planted))
     report(["GATE-BROKEN: a planted bad checkpoint literal was NOT caught"]);
   else console.log("✓ canary planted bad checkpoint literal: caught");
-  const wrapped = callSrc.replace(callRe, "run(\n        CHECKPOINT_TYPECHECK_CMD,");
+  const droppedReExport = ckptSrc.replace(
+    reExportRe,
+    `export { typecheckWorktree } from "./work-driver-cap-checkpoint-typecheck.ts";`,
+  );
+  if (reExportRe.test(droppedReExport))
+    report(["GATE-BROKEN: a deleted checkpoint re-export was NOT caught"]);
+  else console.log("✓ canary deleted checkpoint re-export: caught");
+  // Mutation directions for the duplicate-definition rule, one per check:
+  //
+  //   - `exportRe` pins the VALUE. It fires when the checkpoint file carries a
+  //     `CHECKPOINT_TYPECHECK_CMD = "<literal>"` assignment, so the fixture
+  //     plants exactly that and the check MUST match it.
+  //   - `constRe` pins the NAME. It fires on any assignment whatever its
+  //     value — the case `exportRe` is blind to, a planted local copy that
+  //     reuses the correct spelling (which is how the cycle would re-open with
+  //     the right command and no gate noticing).
+  //
+  // The live checkpoint file must trip NEITHER: it re-exports, it does not
+  // define. (Note the direction: the earlier `planted` canary above asserts
+  // the opposite sense, because there the fixture carries a BAD literal and a
+  // value-pinned pattern correctly refuses to match it.)
+  const duplicateConst = `${ckptSrc}\nconst CHECKPOINT_TYPECHECK_CMD = "${CHECKPOINT_TYPECHECK_CMD}";`;
+  if (!exportRe.test(duplicateConst))
+    report(["GATE-BROKEN: a second local definition of the checkpoint literal was NOT caught"]);
+  else console.log("✓ canary duplicate local checkpoint literal: caught");
+  const duplicateBadValue = `${ckptSrc}\nconst CHECKPOINT_TYPECHECK_CMD = "bun x tsc --noEmit --someOtherFlag";`;
+  const constRe = /\bCHECKPOINT_TYPECHECK_CMD\s*=/;
+  if (!constRe.test(duplicateBadValue))
+    report(["GATE-BROKEN: a value-agnostic duplicate-definition check did not fire"]);
+  else console.log("✓ canary duplicate local checkpoint literal (value-agnostic): caught");
+  if (constRe.test(ckptSrc))
+    report([
+      `work-driver-cap-checkpoint.ts contains a \`CHECKPOINT_TYPECHECK_CMD =\` assignment — the constant must be re-exported from the leaf, never defined here (see the cycle note in the module header)`,
+    ]);
+  // The definition must stay in the LEAF. Deleting the leaf's `const` — the
+  // shape of someone moving it back to the checkpoint module and leaving the
+  // leaf to import it — has to fail, or the value-pinned check above would go
+  // on reading a file that no longer defines anything.
+  const leafDeleted = typecheckSrc.replace(exportRe, `/* moved */`);
+  if (exportRe.test(leafDeleted))
+    report(["GATE-BROKEN: a deleted definition in the typecheck leaf was NOT caught"]);
+  else console.log("✓ canary deleted leaf definition: caught");
+  const wrapped = typecheckSrc.replace(callRe, "run(\n        CHECKPOINT_TYPECHECK_CMD,");
   if (!callRe.test(wrapped))
     report(["GATE-BROKEN: a line-wrapped (but correct) executed call was flagged as drift"]);
   else console.log("✓ canary wrapped executed call: still accepted");

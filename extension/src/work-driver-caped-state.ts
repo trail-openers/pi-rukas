@@ -28,7 +28,7 @@
  * files, or a cap other than loop/token-budget). Pure function — no I/O.
  */
 
-import { CHECKPOINT_TYPECHECK_CMD } from "./work-driver-cap-checkpoint.ts";
+import { CHECKPOINT_TYPECHECK_CMD } from "./work-driver-cap-checkpoint-typecheck.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 export function capedPartialStateLines(state: WorkState, indent: string): string[] {
@@ -93,10 +93,37 @@ export function capedPartialStateLines(state: WorkState, indent: string): string
   // typechecked cleanly (typechecked: true) would also be told "no verdict",
   // contradicting the record two lines above it. `test-handoff-caped-state.ts`
   // case (f) is that assertion.
+  //
+  // #1414 round 3 — "absent" is TWO states and only one of them has a reason
+  // to report. The checkpoint skips the typecheck entirely for a report-only
+  // kill and for a tree that was clean at kill time, so an absent field there
+  // means "there was nothing to check", not "the check could not run" — and a
+  // dirty-uncommitted checkpoint whose commit attempt failed after the check
+  // never ran at all (the pre-round-3 shape) got a bullet asserting a check
+  // that never happened, with `not recorded` where the reason should be.
+  // `typecheckAttempted` is the record's own word that the check was run, and
+  // the bullet is gated on it: when it is absent the handoff says so in one
+  // plain line instead of describing a verdict-shaped absence.
   else if (cps.typechecked === undefined && cps.tree !== "clean" && !cps.reportOnly) {
-    lines.push(
-      `${indent}- **typecheck: no verdict** — the driver's \`${CHECKPOINT_TYPECHECK_CMD}\` did not reach a verdict at the checkpoint (it could not run, was killed at its bound, or there was no \`extension/\` to check). No claim is made about whether this code typechecks; the checkpoint committed partial work and the full gate runs on the integrated branch.\n${indent}  — reason: ${cps.typecheckReason ?? "not recorded; see the status file below"}`,
-    );
+    // A recorded `typecheckReason` is itself evidence of an attempt: the field
+    // is written only when the check ran and returned no verdict, so a state
+    // file from round 2 (which predates `typecheckAttempted`) still renders the
+    // bullet it was written for. The absence of BOTH is the never-attempted
+    // case — there is no reason to print and no attempt to describe.
+    if (cps.typecheckAttempted === true || cps.typecheckReason !== undefined) {
+      lines.push(
+        `${indent}- **typecheck: no verdict** — the driver's \`${CHECKPOINT_TYPECHECK_CMD}\` did not reach a verdict at the checkpoint (it could not run, was killed at its bound, or there was no \`extension/\` to check). No claim is made about whether this code typechecks; the checkpoint committed partial work and the full gate runs on the integrated branch.\n${indent}  — reason: ${cps.typecheckReason ?? "not recorded; see the status file below"}`,
+      );
+    } else {
+      // #1414 round 3 — plain statement, no verdict-shaped language: the
+      // driver does not know whether this code typechecks and does not imply
+      // it looked. Omitting the bullet entirely was the other option and was
+      // rejected: this is the dirty-uncommitted case, the one where the
+      // operator most needs to know the tree was never compiled.
+      lines.push(
+        `${indent}- **typecheck: not attempted** — the driver did not run \`${CHECKPOINT_TYPECHECK_CMD}\` at this checkpoint, so nothing here indicates whether the code typechecks. Run it before pushing; the full gate runs on the integrated branch.`,
+      );
+    }
   }
   // #543 (M7) — on a REVIEW_INCOMPLETE cap (one lens cap-killed, the rest
   // completed), the handoff's "verdicts shown above" promise is FALSE:

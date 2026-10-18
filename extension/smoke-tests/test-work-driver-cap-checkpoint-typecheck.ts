@@ -49,7 +49,13 @@ function assert(cond: boolean, msg: string) {
 }
 
 /** The rejection shapes the executor produces, planted literally. */
-type Behaviour = "resolve" | "reject-diagnostic" | "reject-missing" | "reject-timeout" | "reject-non-error";
+type Behaviour =
+  | "resolve"
+  | "reject-diagnostic"
+  | "reject-missing"
+  | "reject-timeout"
+  | "reject-fork"
+  | "reject-non-error";
 
 /**
  * An executor that throws ONE of the real shapes for the typecheck and forwards
@@ -92,6 +98,15 @@ function typecheckSpy(behaviour: Behaviour): {
           stdout: "",
           stderr: "",
         },
+      );
+    }
+    if (behaviour === "reject-fork") {
+      // #1414 round 3 — the HOST refused to fork. Pre-round-3 this fell to the
+      // classifier's bottom arm and the handoff told the operator the committed
+      // code was broken, on the strength of a process the machine never started.
+      throw Object.assign(
+        new Error("Command failed: bun x tsc --noEmit\n/bin/sh: 1: Cannot fork"),
+        { code: 2, stdout: "", stderr: "spawn /bin/sh EAGAIN" },
       );
     }
     if (behaviour === "reject-missing") {
@@ -303,6 +318,15 @@ async function readBackState(repo: string, issue: number) {
       `#1414-r2: the driver's maxBuffer reaches the executor, not the spy's default (got ${String(spy.optsReceived[0]?.maxBuffer)})`,
     );
     assert(cps?.typechecked === true, "#1414-r2: a resolving typecheck still records true");
+    // #1414 round 3 — a timeout must take the WHOLE GROUP down. `bun x tsc`
+    // spawns a `tsc` grandchild that inherits the pipes; Node's plain exec
+    // timeout signals only the direct child, so the grandchild keeps compiling
+    // and the handoff waits on a process whose bound already fired. The driver's
+    // network git calls pass the same flag for this reason (#1095).
+    assert(
+      spy.optsReceived[0]?.killGroup === true,
+      `#1414-r3: the run is a GROUP kill on timeout — opts.killGroup === true (got ${String(spy.optsReceived[0]?.killGroup)})`,
+    );
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
@@ -312,8 +336,10 @@ async function readBackState(repo: string, issue: number) {
 for (const [behaviour, wantWhy] of [
   ["reject-missing", "could not run"],
   ["reject-timeout", "killed at its"],
+  ["reject-fork", "could not start"],
 ] as const) {
-  const issue = behaviour === "reject-missing" ? 9921 : 9922;
+  const issue =
+    behaviour === "reject-missing" ? 9921 : behaviour === "reject-timeout" ? 9922 : 9925;
   const { cps, status, repo } = await runCheckpoint(issue, behaviour);
   try {
     assert(cps?.typechecked === undefined, `${behaviour}: records NO verdict (field not false)`);

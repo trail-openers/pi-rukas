@@ -148,5 +148,21 @@ export interface CapedPartialState {
    * returned no verdict; absent whenever `typechecked` is present.
    */
   typecheckReason?: string;
+  /**
+   * #1414 round 3 — was the typecheck ATTEMPTED at all? `true` when the
+   * checkpoint reached the point of running it (whatever the outcome),
+   * absent when it never got there: a report-only kill (a write-gated role —
+   * no stage, no commit, no reason to compile) or a tree that was clean at
+   * kill time (nothing to save, so nothing to check).
+   *
+   * Why the two existing fields cannot answer this: `typechecked` absent
+   * means BOTH "attempted and reached no verdict" and "never attempted", and
+   * the handoff has to say different things about them — "it could not run,
+   * here is why" is actionable, whereas claiming a verdict-less check for a
+   * checkpoint that never ran one is a new version of the #1414 lie. Old
+   * state files predate the field and read as "not attempted", which is the
+   * safe direction: the bullet is omitted, never a false claim.
+   */
+  typecheckAttempted?: true;
   at: number;
 }
