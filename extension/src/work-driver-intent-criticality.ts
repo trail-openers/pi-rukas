@@ -1,3 +1,4 @@
+import { escapeRegExpLiteral } from "./open-points-contract.ts";
 /**
  * work-driver-intent-criticality — the #574 mechanical contradiction classifier.
  *
@@ -109,7 +110,7 @@ function assertsLoadBearingContradiction(spec: NormalisedSpec, evidence: SpecEvi
     .filter(Boolean);
   const claimTokens = criticalityTokens(evidence.claim);
   const referencesDeliverable = deliverableBasenames.some((basename) => {
-    const escaped = basename.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
+    const escaped = escapeRegExpLiteral(basename);
     return new RegExp(`(?:^|[^a-z0-9_./-])${escaped}(?:$|[^a-z0-9_./-])`, "i").test(evidence.claim);
   });
   const intentTokens = criticalityTokens(spec.intent);

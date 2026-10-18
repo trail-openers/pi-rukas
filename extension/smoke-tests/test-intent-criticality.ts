@@ -340,6 +340,33 @@ const asState = (s: NormalisedSpec): WorkState =>
 // -------------------------------------------------------------- escape hatch
 
 {
+  // A deliverable basename with a regex metacharacter ([bar].ts) used to escape
+  // into an unmatched "]" and throw SyntaxError out of the explore step, crashing
+  // the whole cycle. Pathological basenames must not throw and must still
+  // classify as load-bearing when the claim references the deliverable.
+  const pathological = spec({
+    intent: "Add a guard for the bracket-tagged config.",
+    deliverables: [{ id: "cfg", description: "add the guard", paths: ["foo/[bar].ts"] }],
+    evidence: [contradicted("[bar].ts does not exist in the tree", "foo/")],
+  });
+  let thrown = false;
+  let verdict: string | undefined;
+  let parkReason: string | undefined;
+  try {
+    const resolved = reconcileVerdict(pathological);
+    verdict = resolved.verdict;
+    parkReason = resolved.parkReason;
+  } catch {
+    thrown = true;
+  }
+  assert(!thrown, "a metacharacter basename in a deliverable path does not throw");
+  assert(
+    !thrown && verdict === "park" && parkReason === "contradicted-by-code",
+    "a metacharacter basename still classifies as load-bearing (parks)",
+  );
+}
+
+{
   process.env.PI_ENSEMBLE_INTENT_CRITICALITY = "0";
   try {
     assert(!intentCriticalityEnabled(), "PI_ENSEMBLE_INTENT_CRITICALITY=0 disables filtering");
