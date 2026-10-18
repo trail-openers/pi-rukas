@@ -5,6 +5,7 @@
  * union of both files' imports, and `work-driver-explore.ts` re-exports
  * `runExplore` so existing imports keep their path.
  */
+import { execp } from "./exec.ts";
 import { flattenAndClip } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
@@ -23,6 +24,7 @@ import {
 } from "./work-driver-explore.ts";
 import { deleteSpecArtifact, persistSpecArtifact } from "./work-driver-intent-artifact.ts";
 import { finaliseSpecVerdict } from "./work-driver-intent-finalise.ts";
+import { groundAlreadyImplemented } from "./work-driver-intent-grounding.ts";
 import { intentResolutionEnabled } from "./work-driver-intent.ts";
 import { issueImagesFor } from "./work-driver-issue-images.ts";
 import {
@@ -297,8 +299,17 @@ export async function runExplore(
         evidence,
       });
     }
+    // #1351 — an `already-implemented` park is checked against the mainline first.
     const finalSpec = resolved
-      ? finaliseSpecVerdict(resolved.spec, primarySettled.value.stdout)
+      ? finaliseSpecVerdict(
+          await groundAlreadyImplemented(
+            resolved.spec,
+            responseText,
+            ctx.repoRoot,
+            ctx.verifyExecFn ?? execp,
+          ),
+          primarySettled.value.stdout,
+        )
       : undefined;
     if (resolved !== undefined && finalSpec !== undefined) {
       next = {
