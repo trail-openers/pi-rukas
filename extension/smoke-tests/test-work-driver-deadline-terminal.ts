@@ -76,12 +76,12 @@ const BACKSTOP = 2 * HOUR;
       "a cycle without a deadline never clamps",
     );
     const D = T0 + 30 * 60_000;
-    const A = 75 * 60_000;
+    const A = 8 * 60_000;
     noteCycleDeadline(D, A, "develop");
     const c = clampToCycleDeadline(BACKSTOP, T0);
     assert(
-      c.timeoutMs === 30 * 60_000 && c.clamped,
-      `a developer started 30 min before the deadline is bounded at the deadline, not the 2 h backstop (got ${c.timeoutMs})`,
+      c.timeoutMs === 30 * 60_000 - A && c.clamped,
+      `a developer started 30 min before the deadline is bounded at the deadline less the handoff grace (#1567 item 6), not the 2 h backstop (got ${c.timeoutMs})`,
     );
     const short = clampToCycleDeadline(10 * 60_000, T0);
     assert(
@@ -94,11 +94,11 @@ const BACKSTOP = 2 * HOUR;
       "past the deadline a step child gets only the minimum bound",
     );
     noteCycleDeadline(D, A, "handoff");
-    const h = clampToCycleDeadline(A, D + 10 * 60_000);
-    const expected = D + A - handoffFallbackReserveMs(A) - (D + 10 * 60_000);
+    const h = clampToCycleDeadline(A, D + 5 * 60_000);
+    const expected = D + A - handoffFallbackReserveMs(A) - (D + 5 * 60_000);
     assert(
       h.timeoutMs === expected && h.clamped,
-      `a handoff that starts 10 min past the deadline ends before the kill (deadline + allowance), less the fallback reserve (got ${h.timeoutMs}, want ${expected})`,
+      `a handoff that starts 5 min past the deadline ends before the kill (deadline + allowance), less the fallback reserve (got ${h.timeoutMs}, want ${expected})`,
     );
     assert(
       clampToCycleDeadline(A, D).timeoutMs === Math.min(A, A - handoffFallbackReserveMs(A)),

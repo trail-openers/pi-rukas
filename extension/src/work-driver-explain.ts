@@ -336,6 +336,11 @@ export function explainCap(
           ? `the caller's whole-cycle deadline (${ev}) had already passed when the driver reached a step boundary, so the driver started no new step and parked. The handoff below says where the work is — branch, PR, and the round reached — and runs inside the caller's handoff allowance (PI_ENSEMBLE_HANDOFF_TIMEOUT_MS). Re-run \`/work <issue> --restart\` with the deadline raised or cleared`
           : `the caller's whole-cycle deadline (${ev}) was within the handoff grace at a step boundary, so the driver started no new step and parked. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`;
     }
+    case "deadline:no-fit": {
+      // #1567 item 6 — time was left, but less than the step needs to be useful.
+      const ev = lastCapHit(state, "deadline:no-fit")?.evidence ?? "(no detail recorded)";
+      return `too little time was left before the caller's whole-cycle deadline for the next step to do useful work (${ev}), so the driver did not start it and parked. Develop and lens-fix need at least 15 minutes, a lens round 10, before the deadline less the handoff grace. The handoff below says where the work is — branch, PR, and the round reached. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`;
+    }
   }
   // #844 — a local branch of the resolved name holds commits the freshly
   // fetched origin/<mainline> does not. Deliberate halt: only a human can

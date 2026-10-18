@@ -113,6 +113,9 @@ function mkCtx(repo: string, verdict: string, ghCalls: string[]) {
   return {
     repoRoot: repo,
     issue: 901,
+    // #1242 — a round the loop budget cannot fit parks before it starts, and
+    // that park notifies the operator.
+    host: { sendUserMessage: () => {} },
     lensReviewFn: async () =>
       mkLensSummary({
         verdict: verdict as "ISSUES_FOUND",

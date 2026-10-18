@@ -264,6 +264,11 @@ export type WorkCapLiteral =
   // handoff, state left `running`). Emitted at the step boundary only — no
   // mid-step hard kill.
   | "deadline"
+  // #1567 item 6 (#1447/#1547) — some useful time was left before the
+  // deadline (less the handoff grace) but less than the step needs (15 min
+  // for develop / lens-fix, 10 min for a lens round), so the step was not
+  // started. The evidence names the step, the time left and the time needed.
+  | "deadline:no-fit"
   // #1403 — a develop child's ENGINE DIED mid-pass (`the engine stopped
   // unexpectedly (exit code N)`, no `errorStop`, no `killCause`) and its
   // worktree was left with uncommitted work that its pass never committed.
