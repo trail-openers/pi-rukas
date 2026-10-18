@@ -328,6 +328,9 @@ export function makeRunOneWorkstream(
               ...driverDeckOpts(ctx.issue, "develop", deckTagFor(id)),
               label: developerLabel,
             },
+            // #1655 — the developer writes only inside its worktree; the scratch
+            // dir is its other allowed home. The speculative explore is read-only.
+            writeFence: { root: cwd, scratch: scratchAbs },
           },
         ),
         speculativeOn

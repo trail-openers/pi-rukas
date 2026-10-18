@@ -136,7 +136,7 @@ export interface DriverContext {
   dispatchFn?: (
     host: DispatchHost,
     spec: { role: string; prompt: string; cwd?: string; images?: DispatchImage[] },
-    opts?: {
+    opts?: import("./write-fence-log.ts").WriteFenceOpt & {
       label?: string;
       skipDeck?: boolean;
       deck?: { cycleKey: string; label: string; deckLabel?: string }; // #838 — see dispatchCore
