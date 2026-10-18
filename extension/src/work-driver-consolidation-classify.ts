@@ -110,6 +110,14 @@ const IS_ECHOED_COMMAND = /^\$ /;
 /** #807 — a line that carries ACTUAL failure content (priority: `✗` first). */
 const IS_ASSERTION_LINE =
   /^✗\s|^error:?\s|^Error:|error\[E\d+\]|\bTS\d{4,}\b|exit 0 \(got 1\)|zero findings \(got 1\)/;
+/**
+ * #1392 — a project gate's OWN failure line (`FAIL  <step>`, TAP `not ok N`,
+ * `go test`'s `--- FAIL:`, jest's `✕`), for gates that print no `✗` and no
+ * error-shaped line. The LAST tier: a summary line must never outrank a real
+ * compiler/toolchain diagnostic. `FAILED:` markers do not match (`FAIL` must
+ * be followed by whitespace) and stay excluded by `isNonAssertionLine`.
+ */
+const IS_GATE_FAILURE_LINE = /^FAIL\s|^not ok\s\d|--- FAIL:\s|^✕\s/;
 
 /**
  * #807 — a token-shape secret guard: the extracted assertion reaches a
@@ -136,7 +144,8 @@ function isNonAssertionLine(line: string): boolean {
  * #807 — the assertion is the FIRST line of the tail that carries actual
  * failure content, preferring a `✗` assertion (smoke loop / biome /
  * scaffold), then a compiler/linter error (tsc `error TS…`, biome
- * diagnostic, `error:`/`Error:`/`error[E…]:`). Marker lines (`FAILED: …`,
+ * diagnostic, `error:`/`Error:`/`error[E…]:`), then (#1392) a gate's own
+ * failure line (`IS_GATE_FAILURE_LINE`). Marker lines (`FAILED: …`,
  * including the `FAILED: <n> test(s) — …` summary), echoed shell command
  * lines (`$ …`), and secret-shaped lines are NEVER selected. When no line
  * qualifies, `NO_SPECIFIC_ASSERTION` is returned instead of the first
@@ -160,6 +169,10 @@ export function extractSpecificAssertion(failureTail: string): string {
   for (const line of lines) {
     if (isNonAssertionLine(line)) continue;
     if (IS_ASSERTION_LINE.test(line)) return line;
+  }
+  for (const line of lines) {
+    if (isNonAssertionLine(line)) continue;
+    if (IS_GATE_FAILURE_LINE.test(line)) return line;
   }
   return NO_SPECIFIC_ASSERTION;
 }

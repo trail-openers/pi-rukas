@@ -65,6 +65,8 @@ export type IntegrateResult =
       failure?: "dirty-repoRoot" | "apply" | "verify";
       /** #1324 — the `verify` failure was a run killed at its bound. */
       timedOut?: boolean;
+      /** #1392 — the `verify` failure's redacted, bounded output tail. */
+      outputTail?: string;
       /**
        * #1404 — the commit-pr consolidated verify ran and FAILED, but every
        * failing test also fails at the cycle's base commit, so none of them

@@ -39,6 +39,8 @@ import { type ExecFn, worktreePath } from "./worktree.ts";
 
 /** Leads the failure string of a red baseline; the explain renderer keys on it. */
 export const BASELINE_RED_MARKER = "[baseline-red]";
+/** Leads the note of a green or unestablished baseline; the park records it (#1392). */
+export const BASELINE_NOTE_PREFIX = "baseline verify ";
 
 /**
  * The ONE naming rule for a baseline probe's throwaway worktree. Exported
@@ -293,8 +295,8 @@ export async function compareWithBaseline(
   if (!isRedBaseline(verdict)) {
     opts.notes.push(
       verdict.status === "green"
-        ? `baseline verify passed — \`${cmd}\` exits 0 on a clean checkout of the base commit ${baseSha.slice(0, 12)}, so the gate was green before this change`
-        : `baseline verify not established — ${verdict.reason}`,
+        ? `${BASELINE_NOTE_PREFIX}passed — \`${cmd}\` exits 0 on a clean checkout of the base commit ${baseSha.slice(0, 12)}, so the gate was green before this change`
+        : `${BASELINE_NOTE_PREFIX}not established — ${verdict.reason}`,
     );
     return false;
   }

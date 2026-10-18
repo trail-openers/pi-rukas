@@ -26,6 +26,48 @@ import type { WorkState } from "./workflow-state.ts";
 export { runCommitPr };
 
 /**
+ * The terminal commit-pr verify park: the plumb, the cap and the verify
+ * evidence. #1392 — the cap carries `evidence` and `verifyEvidence` on a code
+ * failure too, not only on a timeout: the failure is the shape that most needs
+ * explaining, and was the one shape recorded with nothing to render.
+ */
+export function commitPrVerifyHalt(
+  state: WorkState,
+  reason: string,
+  verify: { timedOut?: boolean; outputTail?: string } | undefined,
+): WorkState {
+  const at = Date.now();
+  // #1324 — a run killed at its bound reached no verdict about the code.
+  const timedOut = verify?.timedOut === true;
+  const halted = appendEvent(
+    state,
+    { kind: "plumb-report", at, step: "commit-pr", role: "driver", body: reason },
+    {
+      kind: "cap-hit",
+      at,
+      cap: timedOut ? "verify-timeout:commit-pr" : "integration-verify-failed",
+      reviewRound: state.pipelineState.reviewRound,
+      nextStep: "handoff",
+      evidence: reason,
+    },
+  );
+  const tail = verify?.outputTail;
+  return {
+    ...halted,
+    pipelineState: {
+      ...halted.pipelineState,
+      verifyEvidence: {
+        step: "commit-pr",
+        failures: [reason],
+        at,
+        origin: "outcome-gate",
+        ...(tail !== undefined ? { outputTail: tail } : {}),
+      },
+    },
+  };
+}
+
+/**
  * Step 6 — Commit + PR. ops commits the diff, pushes, opens a PR with
  * `Fixes #N` in the body. PR4 captures the `pr: <N>` line ops's prompt
  * asks for into pipelineState.prNumber so the handoff step (7g) targets
@@ -67,28 +109,7 @@ async function runCommitPrLocked(
       // dispatch — the #841 defect class, which the strict audit would halt
       // anyway). The prepared state carries the plumb + cap already appended.
       trace(`work-driver: commit-pr halted (terminal mechanized failure): ${mech.reason}`);
-      return (
-        mech.haltedAfter ??
-        appendEvent(
-          state,
-          {
-            kind: "plumb-report",
-            at: Date.now(),
-            step: "commit-pr",
-            role: "driver",
-            body: mech.reason,
-          },
-          {
-            kind: "cap-hit",
-            at: Date.now(),
-            // #1324 — a run killed at its bound reached no verdict about the code.
-            cap: mech.timedOut ? "verify-timeout:commit-pr" : "integration-verify-failed",
-            reviewRound: state.pipelineState.reviewRound,
-            nextStep: "handoff",
-            ...(mech.timedOut ? { evidence: mech.reason } : {}),
-          },
-        )
-      );
+      return mech.haltedAfter ?? commitPrVerifyHalt(state, mech.reason, mech.verify);
     } else if (state.pipelineState.continuedPr) {
       // #1468 — the fallback's prompt opens a PR; a continued PR gets none.
       return continueCommitPrHalt(ctx, state, mech.reason, execFn);

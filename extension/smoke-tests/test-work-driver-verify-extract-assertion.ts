@@ -5,7 +5,10 @@
  * absence honestly when no assertion-shaped line exists.
  */
 
-import { extractSpecificAssertion, NO_SPECIFIC_ASSERTION } from "../src/work-driver-consolidation-classify.ts";
+import {
+  NO_SPECIFIC_ASSERTION,
+  extractSpecificAssertion,
+} from "../src/work-driver-consolidation-classify.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -23,7 +26,10 @@ function assert(cond: boolean, msg: string) {
   const tail = `FAILED: smoke-tests/test-cancel.ts
 ✗ aborted child returned within 10s (took 496954ms)`;
   const a = extractSpecificAssertion(tail);
-  assert(a === "✗ aborted child returned within 10s (took 496954ms)", `case 1 (#798): returns the ✗ assertion, not the FAILED marker (got: ${JSON.stringify(a)})`);
+  assert(
+    a === "✗ aborted child returned within 10s (took 496954ms)",
+    `case 1 (#798): returns the ✗ assertion, not the FAILED marker (got: ${JSON.stringify(a)})`,
+  );
   assert(!a.startsWith("FAILED:"), "case 1 (#798): never a FAILED: marker line");
 }
 
@@ -36,7 +42,10 @@ Checked 276 files in 61ms. No fixes applied.
 FAILED: smoke-tests/test-repo-root-residue-poisoning.ts
 ✗ check on scaffolded file: exit 0 (got 1)`;
   const a = extractSpecificAssertion(tail);
-  assert(a === "✗ check on scaffolded file: exit 0 (got 1)", `case 2 (#746): returns the ✗ assertion, not the echoed command (got: ${JSON.stringify(a)})`);
+  assert(
+    a === "✗ check on scaffolded file: exit 0 (got 1)",
+    `case 2 (#746): returns the ✗ assertion, not the echoed command (got: ${JSON.stringify(a)})`,
+  );
   assert(!a.startsWith("$ "), "case 2 (#746): never a `$ ` echoed command line");
 }
 
@@ -47,7 +56,11 @@ FAILED: smoke-tests/test-repo-root-residue-poisoning.ts
 error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
   Type 'string' is not comparable to type 'number'.`;
   const a = extractSpecificAssertion(tail);
-  assert(a === "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.", `case 3 (tsc): returns the compiler error (got: ${JSON.stringify(a)})`);
+  assert(
+    a ===
+      "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
+    `case 3 (tsc): returns the compiler error (got: ${JSON.stringify(a)})`,
+  );
 }
 
 // --- Case 4: biome failure with no FAILED marker (chain-stage shape). Returns
@@ -57,7 +70,10 @@ error TS2345: Argument of type 'string' is not assignable to parameter of type '
 ✗ use single quotes (style/useTemplate)
     --> src/biome-test.ts:10:5`;
   const a = extractSpecificAssertion(tail);
-  assert(a === "✗ use single quotes (style/useTemplate)", `case 4 (biome): returns the ✗ assertion (got: ${JSON.stringify(a)})`);
+  assert(
+    a === "✗ use single quotes (style/useTemplate)",
+    `case 4 (biome): returns the ✗ assertion (got: ${JSON.stringify(a)})`,
+  );
 }
 
 // --- Case 5: honest absence — a tail with NO assertion-shaped line (a bare
@@ -66,7 +82,10 @@ error TS2345: Argument of type 'string' is not assignable to parameter of type '
 {
   const tail = "FAILED: smoke-tests/test-mystery.ts";
   const a = extractSpecificAssertion(tail);
-  assert(a === NO_SPECIFIC_ASSERTION, `case 5 (absence): a bare FAILED: marker with no detail reports absence (got: ${JSON.stringify(a)})`);
+  assert(
+    a === NO_SPECIFIC_ASSERTION,
+    `case 5 (absence): a bare FAILED: marker with no detail reports absence (got: ${JSON.stringify(a)})`,
+  );
 }
 
 // --- Case 6: #746 echo line + no error (the exact #746 shape: the first
@@ -76,7 +95,10 @@ error TS2345: Argument of type 'string' is not assignable to parameter of type '
   const tail = `$ cd extension && bun run check
 Checked 276 files in 61ms. No fixes applied.`;
   const a = extractSpecificAssertion(tail);
-  assert(a === NO_SPECIFIC_ASSERTION, `case 6 (echo-only): an echoed command with no error reports absence, never the echo itself (got: ${JSON.stringify(a)})`);
+  assert(
+    a === NO_SPECIFIC_ASSERTION,
+    `case 6 (echo-only): an echoed command with no error reports absence, never the echo itself (got: ${JSON.stringify(a)})`,
+  );
   assert(!a.startsWith("$ "), "case 6 (echo-only): the result is not a `$ ` line");
 }
 
@@ -92,8 +114,14 @@ FAILED: smoke-tests/test-beta.ts
 ✗ beta assertion: expected 1 got 9
 FAILED: 2 test(s) — smoke-tests/test-alpha.ts, smoke-tests/test-beta.ts`;
   const a = extractSpecificAssertion(tail);
-  assert(a === "✗ alpha assertion: expected 0 got 2", `case 7 (post-#804 multi-failure): the FIRST real assertion wins (got: ${JSON.stringify(a)})`);
-  assert(!a.includes("2 test(s)"), "case 7 (post-#804 multi-failure): the summary count is NOT the assertion");
+  assert(
+    a === "✗ alpha assertion: expected 0 got 2",
+    `case 7 (post-#804 multi-failure): the FIRST real assertion wins (got: ${JSON.stringify(a)})`,
+  );
+  assert(
+    !a.includes("2 test(s)"),
+    "case 7 (post-#804 multi-failure): the summary count is NOT the assertion",
+  );
 }
 
 // --- Case 8: the summary marker as the ONLY line (post-#804, when the
@@ -101,7 +129,10 @@ FAILED: 2 test(s) — smoke-tests/test-alpha.ts, smoke-tests/test-beta.ts`;
 {
   const tail = "FAILED: 2 test(s) — smoke-tests/test-alpha.ts, smoke-tests/test-beta.ts";
   const a = extractSpecificAssertion(tail);
-  assert(a === NO_SPECIFIC_ASSERTION, `case 8 (summary-only): a summary marker alone reports absence (got: ${JSON.stringify(a)})`);
+  assert(
+    a === NO_SPECIFIC_ASSERTION,
+    `case 8 (summary-only): a summary marker alone reports absence (got: ${JSON.stringify(a)})`,
+  );
 }
 
 // --- Case 9: secret-shape guard — a line that looks like credential material
@@ -112,7 +143,10 @@ FAILED: 2 test(s) — smoke-tests/test-alpha.ts, smoke-tests/test-beta.ts`;
 Authorization: Bearer sk-a]9f2k3j8f2j9f2j9f2j9f
 ✗ build step failed: exit 1`;
   const a = extractSpecificAssertion(tail);
-  assert(a === "✗ build step failed: exit 1", `case 9 (secret-shape): a secret-shaped line is skipped; the next qualifying line is returned (got: ${JSON.stringify(a)})`);
+  assert(
+    a === "✗ build step failed: exit 1",
+    `case 9 (secret-shape): a secret-shaped line is skipped; the next qualifying line is returned (got: ${JSON.stringify(a)})`,
+  );
   assert(!/Bearer/i.test(a), "case 9 (secret-shape): the returned line carries no Bearer token");
 }
 
@@ -123,7 +157,10 @@ Authorization: Bearer sk-a]9f2k3j8f2j9f2j9f2j9f
 ✗ check on scaffolded file: exit 0 (got 1)
 ✗ check: zero findings (got 1)`;
   const a = extractSpecificAssertion(tail);
-  assert(a === "✗ check on scaffolded file: exit 0 (got 1)", `case 10 (scaffolded-file shape): the scaffolded-file ✗ line is returned (got: ${JSON.stringify(a)})`);
+  assert(
+    a === "✗ check on scaffolded file: exit 0 (got 1)",
+    `case 10 (scaffolded-file shape): the scaffolded-file ✗ line is returned (got: ${JSON.stringify(a)})`,
+  );
 }
 
 // --- Case 11: the exact #746 combined string (echo FIRST, then banner, then
@@ -137,8 +174,14 @@ FAILED: smoke-tests/test-repo-root-residue-poisoning.ts
 ✗ check on scaffolded file: exit 0 (got 1)`;
   const a = extractSpecificAssertion(tail);
   // The ✗ assertion is preferred over the tsc error (priority rule).
-  assert(a === "✗ check on scaffolded file: exit 0 (got 1)", `case 11 (exact #746 shape): the ✗ assertion wins (got: ${JSON.stringify(a)})`);
-  assert(!a.startsWith("$ ") && !a.startsWith("FAILED:"), "case 11 (exact #746 shape): neither a $ echo nor a FAILED marker");
+  assert(
+    a === "✗ check on scaffolded file: exit 0 (got 1)",
+    `case 11 (exact #746 shape): the ✗ assertion wins (got: ${JSON.stringify(a)})`,
+  );
+  assert(
+    !a.startsWith("$ ") && !a.startsWith("FAILED:"),
+    "case 11 (exact #746 shape): neither a $ echo nor a FAILED marker",
+  );
 }
 
 // --- Case 12: a tail where the FIRST line is a marker and the SECOND is the
@@ -148,7 +191,10 @@ FAILED: smoke-tests/test-repo-root-residue-poisoning.ts
   const tail = `FAILED: smoke-tests/test-x.ts
 ✗ expected 5 got 6`;
   const a = extractSpecificAssertion(tail);
-  assert(a === "✗ expected 5 got 6", `case 12 (marker→assertion): the ✗ line under the marker is returned (got: ${JSON.stringify(a)})`);
+  assert(
+    a === "✗ expected 5 got 6",
+    `case 12 (marker→assertion): the ✗ line under the marker is returned (got: ${JSON.stringify(a)})`,
+  );
 }
 
 // --- Case 13 (#827 new-tail-shape, #772 shape): the smoke loop's output when
@@ -159,8 +205,7 @@ FAILED: smoke-tests/test-repo-root-residue-poisoning.ts
 // 800-char window. The extractor must return the first real `✗` line, not the
 // summary, and the summary must still list the failing file.
 {
-  const summaryLine =
-    "FAILED: 1 test(s) — extension/smoke-tests/test-file-size-limit.ts";
+  const summaryLine = "FAILED: 1 test(s) — extension/smoke-tests/test-file-size-limit.ts";
   // The #772 shape: the failing test's per-test output emitted first, then
   // (post-fix) the repeated bounded `✗` lines, then the final summary last.
   // The pre-fix defect: the `✗` lines were thousands of chars before the
@@ -198,8 +243,14 @@ ${summaryLine}\n✗ alpha assertion: expected 0 got 2\n✗ beta assertion: expec
     a === "✗ alpha assertion: expected 0 got 2",
     `case 14 (#827 multi-failure): the FIRST real ✗ line wins (got: ${JSON.stringify(a)})`,
   );
-  assert(a !== "✗ beta assertion: expected 1 got 9", "case 14 (#827 multi-failure): the chosen assertion is alpha's, not beta's");
-  assert(!a.includes("2 test(s) —"), "case 14 (#827 multi-failure): the summary count is NOT the assertion");
+  assert(
+    a !== "✗ beta assertion: expected 1 got 9",
+    "case 14 (#827 multi-failure): the chosen assertion is alpha's, not beta's",
+  );
+  assert(
+    !a.includes("2 test(s) —"),
+    "case 14 (#827 multi-failure): the summary count is NOT the assertion",
+  );
 }
 
 // --- Case 15 (#827 new-tail-shape, secret-shaped ✗ line): a `✗` line that
@@ -220,7 +271,10 @@ ${summaryLine}\n${secretLine}\n✗ auth check failed: expected 200 got 401`;
     a === "✗ auth check failed: expected 200 got 401",
     `case 15 (#827 secret ✗): a secret-shaped ✗ line is skipped; the next qualifying line is returned (got: ${JSON.stringify(a)})`,
   );
-  assert(!/api_key/i.test(a), "case 15 (#827 secret ✗): the returned line carries no api_key token");
+  assert(
+    !/api_key/i.test(a),
+    "case 15 (#827 secret ✗): the returned line carries no api_key token",
+  );
 }
 
 // --- Case 16 (#827 new-tail-shape, tsc/biome chain-stage failure — no
@@ -233,7 +287,8 @@ error TS2345: Argument of type 'string' is not assignable to parameter of type '
   Type 'string' is not comparable to type 'number'.`;
   const a = extractSpecificAssertion(tail);
   assert(
-    a === "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
+    a ===
+      "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
     `case 16 (#827 tsc unchanged): chain-stage tsc failure still returns the compiler error (got: ${JSON.stringify(a)})`,
   );
 }
@@ -249,6 +304,32 @@ error TS2345: Argument of type 'string' is not assignable to parameter of type '
   assert(
     a === "✗ use single quotes (style/useTemplate)",
     `case 17 (#827 biome unchanged): chain-stage biome failure still returns the ✗ assertion (got: ${JSON.stringify(a)})`,
+  );
+}
+
+// --- Case 18 (#1392): a gate that prints only its own failure lines (tehas
+// `scripts/verify.sh` prints `FAIL  <step>` / `ok  <step>`, TAP prints
+// `not ok N`, go test `--- FAIL:`, jest `✕`) yields that line, not the
+// sentinel — and an error-shaped line still outranks it.
+{
+  for (const line of [
+    "FAIL  the console's tests",
+    "not ok 3 - parses the header",
+    "--- FAIL: TestParse (0.00s)",
+    "✕ renders the table (4 ms)",
+  ]) {
+    const tail = `ok    no product or host names in platform files\n${line}\nFAILED: 1 test(s) — x`;
+    const a = extractSpecificAssertion(tail);
+    assert(a === line, `case 18 (#1392): \`${line}\` is the assertion (got: ${JSON.stringify(a)})`);
+  }
+  const both = "FAIL  the console's tests\nerror: cannot find module 'x'";
+  assert(
+    extractSpecificAssertion(both) === "error: cannot find module 'x'",
+    "case 18 (#1392): an error-shaped line outranks a gate's FAIL summary line",
+  );
+  assert(
+    extractSpecificAssertion("FAILED: smoke-tests/test-a.ts") === NO_SPECIFIC_ASSERTION,
+    "case 18 (#1392): a FAILED: marker is still never the assertion",
   );
 }
 

@@ -20,6 +20,7 @@ import { openPointsChat } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsChat } from "./work-driver-handoff-recovery.chat.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { describeBranchState } from "./work-driver-handoff-view.ts";
+import { verifyEvidenceLines } from "./work-driver-verify-output-tail.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /**
@@ -230,6 +231,9 @@ export function renderHandoffUserMessage(
     const rendered = renderLensFindings(lastFindings.findings, lastFindings.verdict);
     if (rendered.length > 0) lines.push("", ...rendered);
   }
+  // #1392 — the failing verify run's baseline verdict and redacted tail.
+  const verifyLines = verifyEvidenceLines(state, "chat");
+  if (verifyLines.length > 0) lines.push("", ...verifyLines);
 
   // PR10 — per-issue verdict surface for multi-issue cycles. Shows
   // active (NEEDS_WORK) + dropped (ALREADY_COMPLETE / NEEDS_CLARIFICATION)

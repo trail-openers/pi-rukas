@@ -328,7 +328,7 @@ async function redGateCycle(
     "canary: the terminal branch is checked before the ops fallback is reached",
   );
   assert(
-    /cap: (?:mech\.timedOut \? "verify-timeout:commit-pr" : )?"integration-verify-failed"/.test(
+    /cap: (?:timedOut \? "verify-timeout:commit-pr" : )?"integration-verify-failed"/.test(
       combined,
     ),
     "canary: it halts with a named cap rather than failing silently",
