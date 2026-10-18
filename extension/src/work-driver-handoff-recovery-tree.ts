@@ -48,6 +48,14 @@ function recoveryWorktrees(ps: WorkState["pipelineState"]): Array<[string, strin
   return present.filter(([, wt]) => !provedNotARepo(ps, `git status in ${wt}:`));
 }
 
+/**
+ * #747 — the worktree take-over pushes each detached HEAD by refspec, so it
+ * needs no local branch ref; only the repoRoot fallback does.
+ */
+export function hasRecoveryWorktrees(state: WorkState): boolean {
+  return recoveryWorktrees(state.pipelineState).length > 0;
+}
+
 export function genericRecoveryLines(state: WorkState): string[] {
   const ps = state.pipelineState;
   const branch = ps.branchName ?? "<branch>";
