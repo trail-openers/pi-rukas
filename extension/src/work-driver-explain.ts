@@ -32,7 +32,7 @@ import {
 import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
-import { lastCapHit } from "./workflow-state-cap.ts";
+import { INTEGRATE_CREATE_FAILED_PREFIX, lastCapHit } from "./workflow-state-cap.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -305,6 +305,10 @@ export function explainCap(
       // wrong tree. The integrate worktree is KEPT for inspection.
       const hit = lastCapHit(state, "integration-worktree-violation");
       const evidence = hit?.evidence ?? "(no holder recorded)";
+      // #1543 — the same cap, raised before any ops child or audit existed.
+      if (evidence.startsWith(INTEGRATE_CREATE_FAILED_PREFIX)) {
+        return `commit-pr could not create the driver-owned integrate worktree — git said: ${evidence.slice(INTEGRATE_CREATE_FAILED_PREFIX.length)}. No ops child was dispatched and no branch-holder audit ran: the commit-pr fallback is pinned to that worktree and refused to work anywhere else. The git error is the cause — check that repoRoot is still a usable git repository (another process sharing the clone may have moved or removed it), then re-run \`/work <issue>\``;
+      }
       return `commit-pr's ops fallback worked in the wrong tree: after the dispatch, the integration branch is held by a worktree that is NOT the driver-owned integrate worktree — ${evidence}. The driver's post-dispatch branch-holder audit halted the cycle BEFORE the PR-verification gates, so no PR was validated from the wrong tree (the #841 defect: #841's ops child checked its branch out inside #844's worktree). The driver-owned integrate worktree is preserved for inspection; inspect the offending holder, move the branch back, and re-run`;
     }
     case "no-review-outcome": {

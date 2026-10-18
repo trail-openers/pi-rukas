@@ -20,7 +20,11 @@ import {
   forgeRecoveryLines,
 } from "./work-driver-handoff-recovery.ts";
 import { mergeHoldGrantAction } from "./work-driver-merge-authority.ts";
-import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
+import {
+  type CapHitEvent,
+  INTEGRATE_CREATE_FAILED_PREFIX,
+  lastCapHit,
+} from "./workflow-state-cap.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -319,43 +323,63 @@ export function recoveryStepsForCap(
     // tree. The holder path rides in the cap's evidence.
     const hit = lastCapHit(state, "integration-worktree-violation");
     const evidence = hit?.evidence ?? "(no holder recorded)";
-    steps.push(
-      {
-        section: "integration-worktree-violation",
-        comment: [
-          "1. The branch-holder audit found the integration branch held by a",
-          `   worktree that is NOT the driver-owned integrate worktree: ${evidence}`,
-          "   The driver-owned integrate worktree is preserved — inspect it first:",
-        ],
-        lines: [`.worktrees/issue-${issue}-integrate   # the driver kept this for inspection`],
-      },
-      {
-        section: "integration-worktree-violation",
-        comment: [
-          "2. Inspect the offending holder (the path above) — confirm whose work",
-          "   it holds, and whether it is a sibling cycle's worktree:",
-        ],
-        lines: ["git status   # at the offending holder path"],
-      },
-      {
-        section: "integration-worktree-violation",
-        comment: [
-          "3. Move the branch back: commit or push the holder's work to the right",
-          "   tree, then detach the holder and re-run the cycle (the driver",
-          "   recreates the integrate worktree on re-entry):",
-        ],
-        lines: [
-          "git checkout <branch>   # from the integrate worktree, once the holder is free",
-          `rm .pi/work-state/${issue}.json`,
-          `/work ${issue} --restart`,
-        ],
-      },
-      {
-        section: "integration-worktree-violation",
-        comment: ["4. Or abandon the cycle entirely (the integrate worktree is preserved):"],
-        lines: [`rm .pi/work-state/${issue}.json`],
-      },
-    );
+    if (evidence.startsWith(INTEGRATE_CREATE_FAILED_PREFIX)) {
+      // #1543 — creation failed: there is no holder to inspect, only git's error.
+      steps.push(
+        {
+          section: "integration-worktree-violation",
+          comment: [
+            "1. The integrate worktree could not be created (no ops child ran):",
+            `   ${evidence.slice(INTEGRATE_CREATE_FAILED_PREFIX.length)}`,
+            "   Check the clone is a usable git repository:",
+          ],
+          lines: ["git status", "git worktree list"],
+        },
+        {
+          section: "integration-worktree-violation",
+          comment: ["2. Once git answers there, re-run the cycle:"],
+          lines: [`/work ${issue}`],
+        },
+      );
+    } else {
+      steps.push(
+        {
+          section: "integration-worktree-violation",
+          comment: [
+            "1. The branch-holder audit found the integration branch held by a",
+            `   worktree that is NOT the driver-owned integrate worktree: ${evidence}`,
+            "   The driver-owned integrate worktree is preserved — inspect it first:",
+          ],
+          lines: [`.worktrees/issue-${issue}-integrate   # the driver kept this for inspection`],
+        },
+        {
+          section: "integration-worktree-violation",
+          comment: [
+            "2. Inspect the offending holder (the path above) — confirm whose work",
+            "   it holds, and whether it is a sibling cycle's worktree:",
+          ],
+          lines: ["git status   # at the offending holder path"],
+        },
+        {
+          section: "integration-worktree-violation",
+          comment: [
+            "3. Move the branch back: commit or push the holder's work to the right",
+            "   tree, then detach the holder and re-run the cycle (the driver",
+            "   recreates the integrate worktree on re-entry):",
+          ],
+          lines: [
+            "git checkout <branch>   # from the integrate worktree, once the holder is free",
+            `rm .pi/work-state/${issue}.json`,
+            `/work ${issue} --restart`,
+          ],
+        },
+        {
+          section: "integration-worktree-violation",
+          comment: ["4. Or abandon the cycle entirely (the integrate worktree is preserved):"],
+          lines: [`rm .pi/work-state/${issue}.json`],
+        },
+      );
+    }
   } else if (cap === "plan-spec-mismatch") {
     // #819 — the plan-to-spec gate: nothing was written (it fires after plan,
     // before branch), so the recipe is about the spec, not a diff. Extracted

@@ -212,6 +212,9 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
   // verbatim; the ref is load-bearing for the operator's retry).
   const claimFor = (r: VerifiedRestoreResult): string => {
     const claim = restoreClaim(r);
+    // #1543 — a failure before the ref was read never touched repoRoot; it
+    // used to read "restored to undefined (verified)".
+    if (r.restored && originalRef === undefined) return "repoRoot was not touched";
     return r.restored ? `repoRoot was restored to ${originalRef} (verified)` : claim;
   };
   try {
