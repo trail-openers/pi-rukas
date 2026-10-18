@@ -12,6 +12,9 @@
  *   3. `PI_ENSEMBLE_LENS_MODEL_CONCURRENCY`: unset, all lenses start
  *      together (today's fan-out); set, at most N run at once per resolved
  *      model, and a lens on its own model does not wait for the others.
+ *   5. #1591 — the host-wide bound: `PI_ENSEMBLE_LENS_CONCURRENCY`, else the
+ *      host budget's `lensSlots` (lowered by `pids.max`), caps lens children
+ *      across models; 0 restores the full fan-out.
  */
 
 import { mock } from "bun:test";
@@ -47,6 +50,8 @@ const VARS = [
   "PI_ENSEMBLE_LENS_MODEL_CONCURRENCY",
 ];
 for (const v of VARS) delete process.env[v];
+// Sections 1-4 measure the per-model bound alone; section 5 sets the host bound.
+process.env.PI_ENSEMBLE_LENS_CONCURRENCY = "0";
 
 // The spawn stub records each spec and the peak concurrency per model.
 const specs: Array<{ role: string; lens?: string }> = [];
@@ -82,6 +87,8 @@ const { loadOverrides, setOverride, clearAllOverrides } = await import("../src/m
 const { lensModelConcurrency, lensModelSlotStats, withLensModelSlot } = await import(
   "../src/lens-model-slots.ts"
 );
+const { lensHostSlotStats } = await import("../src/lens-model-slots.ts");
+const { __setHostBudget, budgetFor } = await import("../src/host-resources.ts");
 const { runLensReview } = await import("../src/lens-review.ts");
 const { LENS_ROSTER } = await import("../src/lens-roster.ts");
 await loadOverrides();
@@ -247,6 +254,37 @@ async function review(): Promise<void> {
   const done = lensModelSlotStats(L);
   assert(done.active === 0 && done.queued === 0, "the running lens frees its slot", done);
   delete process.env.PI_ENSEMBLE_LENS_MODEL_CONCURRENCY;
+}
+
+// ── 5. #1591 — the host-wide bound.
+{
+  delete process.env.PI_ENSEMBLE_MODEL_LENS_SECURITY;
+  process.env.PI_ENSEMBLE_LENS_CONCURRENCY = "2";
+  await review();
+  assert(peak === 2, "LENS_CONCURRENCY=2: at most 2 lenses run at once", peak);
+
+  // Across models too: the host bound is not keyed by model.
+  process.env.PI_ENSEMBLE_MODEL_LENS_SECURITY = "sec-model";
+  process.env.PI_ENSEMBLE_LENS_CONCURRENCY = "1";
+  await review();
+  assert(peak === 1, "LENS_CONCURRENCY=1 holds across models", peak);
+  delete process.env.PI_ENSEMBLE_MODEL_LENS_SECURITY;
+
+  // Unset: the host budget decides. The #1591 container (2 CPUs, 5.4 GiB,
+  // pids.max 3072) runs 3; a large host with no pid limit runs all six.
+  delete process.env.PI_ENSEMBLE_LENS_CONCURRENCY;
+  const GIB = 1024 ** 3;
+  const box = { cpuSource: "os", memorySource: "os", cgroup: "v2" } as const;
+  __setHostBudget(budgetFor({ ...box, cpus: 2, memoryBytes: 5.4 * GIB, pidsMax: 3072 }));
+  await review();
+  assert(peak === 3, "unset, the #1591 container: 3 lenses at once", peak);
+  __setHostBudget(budgetFor({ ...box, cpus: 16, memoryBytes: 64 * GIB }));
+  await review();
+  assert(peak === lensNames.length, "unset, a large host: the full fan-out", peak);
+  __setHostBudget();
+
+  const idle = lensHostSlotStats();
+  assert(idle.active === 0 && idle.queued === 0, "every host slot was released", idle);
 }
 
 process.exit(exit);

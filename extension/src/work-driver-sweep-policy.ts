@@ -209,13 +209,10 @@ export async function executeSweepAction(
         maxBuffer: 256 * 1024,
       });
     case "remove": {
-      return await execFn(
-        `git worktree remove --force ${JSON.stringify(action.target.realPath)}`,
-        {
-          cwd: resolve(action.target.realPath, "..", ".."),
-          maxBuffer: 256 * 1024,
-        },
-      );
+      return await execFn(`git worktree remove --force ${JSON.stringify(action.target.realPath)}`, {
+        cwd: resolve(action.target.realPath, "..", ".."),
+        maxBuffer: 256 * 1024,
+      });
     }
     default:
       return { stdout: "" };
