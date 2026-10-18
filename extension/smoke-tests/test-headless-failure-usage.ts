@@ -107,7 +107,7 @@ const capHit = (cap: string, at: number, extra: Record<string, unknown> = {}): W
     [
       { kind: "step-started", step: "develop", at: 1 },
       { kind: "dispatch-failed", ...base(2, "developer"), killCause: "timeout", exitCode: null },
-      capHit("developer-timeout", 3),
+      capHit("spawn-backstop", 3),
     ],
     "handoff",
   );

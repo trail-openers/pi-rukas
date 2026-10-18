@@ -267,7 +267,7 @@ function stateWithWorkstream(state: WorkState): WorkState {
       .find((e) => e.kind === "cap-hit");
     assert(
       capHit?.kind === "cap-hit" && capHit.cap === "plan-timeout",
-      "plan + plan-timeout kill → cap 'plan-timeout' (named plan step, mirroring developer-timeout)",
+      "plan + plan-timeout kill → cap 'plan-timeout' (named plan step, mirroring the develop backstop's spawn-backstop)",
     );
 
     // The taxonomy: an explicit no-retry branch — the crashed fallback's
@@ -303,7 +303,7 @@ function stateWithWorkstream(state: WorkState): WorkState {
     );
     assert(
       !/issue.*(too large|needs splitting)/i.test(explained),
-      "explainCap: no 'split the work' developer-timeout wording leaks in",
+      "explainCap: no 'split the work' backstop wording leaks in",
     );
 
     // The kill-detail block the handoff renderers print.

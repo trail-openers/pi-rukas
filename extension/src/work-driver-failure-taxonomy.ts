@@ -146,6 +146,7 @@ function seamLabelFor(
     case "self-killed:loop":
     case "self-killed:token-budget":
     case "self-killed:plan-timeout":
+    case "self-killed:child-bound":
     case "success":
     // #79 — matched only on the provider's own 404 message: exact.
     case "provider-model-unavailable":
@@ -306,6 +307,12 @@ export function classifyFailureCause(tail: FailureTail): FailureClass {
   if (tail.killCause === "plan-timeout") {
     return { cause: "self-killed:plan-timeout", shouldRetry: false, maxRetries: 0 };
   }
+  // #1560 — the per-child run bound: the child was steered to wrap up and
+  // ended a grace period later. Re-running it would spend the bound again,
+  // so it parks like the other self-kills (`child-timeout:<step>`).
+  if (tail.killCause === "child-bound") {
+    return { cause: "self-killed:child-bound", shouldRetry: false, maxRetries: 0 };
+  }
 
   // 429 rate-limit. #366 — read the delay the provider actually asked for
   // instead of treating every 429 as permanently fatal. A per-minute token
@@ -418,6 +425,8 @@ export function failureCauseReason(tail: {
       return "killed by pi-rukas (token budget crossed — a cost cap, not a provider fault)";
     case "self-killed:plan-timeout":
       return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
+    case "self-killed:child-bound":
+      return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":
@@ -463,6 +472,8 @@ export function failureCauseReasonForClass(
       return "killed by pi-rukas (token budget crossed — a cost cap, not a provider fault)";
     case "self-killed:plan-timeout":
       return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
+    case "self-killed:child-bound":
+      return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":

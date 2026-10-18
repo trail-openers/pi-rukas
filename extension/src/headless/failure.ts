@@ -83,7 +83,7 @@ const DISPATCH_CAPS: ReadonlySet<string> = new Set([
   // comes from the cap (CAP_KIND_WINS below) rather than from the last event,
   // which on a multi-attempt outage is whichever rung died last.
   "provider-unavailable",
-  "developer-timeout",
+  "spawn-backstop",
   "review-incomplete",
   "loop-detected",
   "token-budget",
@@ -117,7 +117,8 @@ function capKind(cap: string): FailureKind {
     case "consolidated-verify-consolidation-created":
       return "verify";
     case "verify-timeout":
-    case "developer-timeout":
+    case "spawn-backstop":
+    case "child-timeout":
     case "plan-timeout":
     case "lens-review-timeout":
     case "deadline":
@@ -157,6 +158,7 @@ function dispatchKind(e: FailedDispatch): FailureKind {
     case "inactivity":
     case "tool-inactivity":
     case "plan-timeout":
+    case "child-bound":
       return "timeout";
     case "loop":
     case "token-budget":
@@ -168,7 +170,9 @@ function dispatchKind(e: FailedDispatch): FailureKind {
 }
 
 function isDispatchCap(cap: string): boolean {
-  return DISPATCH_CAPS.has(cap) || cap.startsWith("step-failed:");
+  return (
+    DISPATCH_CAPS.has(cap) || cap.startsWith("step-failed:") || cap.startsWith("child-timeout:")
+  );
 }
 
 /**

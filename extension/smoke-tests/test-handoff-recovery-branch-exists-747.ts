@@ -49,7 +49,7 @@ const PLAIN_CAPS = [
   "wall-clock",
   "review-incomplete",
   "ci-retry",
-  "developer-timeout",
+  "spawn-backstop",
   "explore-already-complete",
   "explore-needs-clarification",
   "explore-bodies-empty",
@@ -448,7 +448,7 @@ function refProvenFor(state: ReturnType<typeof state>): boolean {
 {
   // No committed work, no recorded worktrees: the repoRoot fallback.
   const generic = (branchExists: boolean) => {
-    const base = state({ cap: "developer-timeout", branchExists, consolidated: false });
+    const base = state({ cap: "spawn-backstop", branchExists, consolidated: false });
     return {
       ...base,
       pipelineState: {

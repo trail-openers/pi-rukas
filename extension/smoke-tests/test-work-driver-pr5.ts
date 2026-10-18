@@ -117,7 +117,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     "round-cap",
     "lens-review-timeout",
     "ci-retry",
-    "developer-timeout",
+    "spawn-backstop",
     // PR6 — explore verdict caps
     "explore-already-complete",
     "explore-needs-clarification",
@@ -204,8 +204,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     assert(kinds.includes("cap-hit"), "HALT on develop synthesises a cap-hit event");
     const capHit = (after?.eventLog ?? []).find((e) => e.kind === "cap-hit");
     assert(
-      capHit?.kind === "cap-hit" && capHit.cap === "developer-timeout",
-      "HALT recognises SIGTERM as cap='developer-timeout' (not generic step-failed:develop)",
+      capHit?.kind === "cap-hit" && capHit.cap === "spawn-backstop",
+      "HALT recognises SIGTERM as cap='spawn-backstop' (not generic step-failed:develop)",
     );
     // The driver must NOT have dispatched adversarial after the develop
     // failure — that's the cascade we're preventing.
@@ -286,7 +286,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   s = appendEvent(s, {
     kind: "cap-hit",
     at: 1_000_400,
-    cap: "developer-timeout",
+    cap: "spawn-backstop",
     reviewRound: 0,
     nextStep: "handoff",
   });
@@ -358,7 +358,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   s = appendEvent(s, {
     kind: "cap-hit",
     at: 1_000_400,
-    cap: "developer-timeout",
+    cap: "spawn-backstop",
     reviewRound: 0,
     nextStep: "handoff",
   });

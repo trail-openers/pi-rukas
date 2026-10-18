@@ -45,6 +45,11 @@ import { reviewCapMs, reviewWallClockMs } from "../src/review-budget.ts";
 import { transcriptRetentionDays } from "../src/runs-retention.ts";
 import { autoSteerEnabled } from "../src/slow-notice.ts";
 import { slowThresholds } from "../src/slow-notice.ts";
+import {
+  childBoundGraceMs,
+  developChildBoundMs,
+  exploreChildBoundMs,
+} from "../src/spawn-child-bound.ts";
 import { spawnCap } from "../src/spawn-semaphore.ts";
 import {
   inactivityTimeoutMs,
@@ -82,11 +87,11 @@ import { policyJudgeEnabled } from "../src/work-driver-policy.ts";
 import { prPreflightEnabled } from "../src/work-driver-pr-preflight.ts";
 import { resumeEnabled, sessionReattachEnabled } from "../src/work-driver-resume.ts";
 import { stepNoticeThresholdMs } from "../src/work-driver-step-notice.ts";
-import { testDeleteTolerance, verifyTimeoutMs } from "../src/work-driver-verify-develop-helpers.ts";
 import { verifyTimeoutMs } from "../src/work-driver-verify-budget.ts";
-import { tierDefaultReader } from "./lib/verify-tier-pin.ts";
-import { queueDeferCapMs, queueHaltOnFailure } from "../src/work-queue.ts";
+import { testDeleteTolerance, verifyTimeoutMs } from "../src/work-driver-verify-develop-helpers.ts";
 import { queueOrderingEnabled } from "../src/work-queue-scheduler.ts";
+import { queueDeferCapMs, queueHaltOnFailure } from "../src/work-queue.ts";
+import { tierDefaultReader } from "./lib/verify-tier-pin.ts";
 import { wrapperEnvReads } from "./lib/wrapper-env-reads.ts";
 
 let exit = 0;
@@ -312,6 +317,9 @@ function defaultOf(name: string): HostInput["default"] | undefined {
 const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS", adversarialPhaseBudgetMs],
   ["PI_ENSEMBLE_CAP_KILL_GRACE_MS", capKillGraceMs],
+  ["PI_ENSEMBLE_CHILD_BOUND_GRACE_MS", childBoundGraceMs],
+  ["PI_ENSEMBLE_DEVELOP_BOUND_MS", developChildBoundMs],
+  ["PI_ENSEMBLE_EXPLORE_BOUND_MS", exploreChildBoundMs],
   ["PI_ENSEMBLE_COMMENT_RETENTION_PATHS", () => COMMENT_RETENTION_PATHS.join(",")],
   ["PI_ENSEMBLE_GIT_NET_TIMEOUT_MS", () => NET_GIT_TIMEOUT_DEFAULT_MS],
   ["PI_ENSEMBLE_HANDOFF_CHANNEL", handoffChannel],

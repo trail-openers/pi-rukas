@@ -310,20 +310,23 @@ export async function routeStepOutcome(
         const providerCap = capKilled === undefined && stepParkedOnProvider(tail);
         const cap =
           capKilled ??
-          (step === "develop" && killCause === "timeout"
-            ? ("developer-timeout" as const)
-            : step === "plan" && killCause === "plan-timeout"
-              ? // #754 — mirrors the develop `developer-timeout` special case:
-                //   the plan step's own bound expired and its one-shot
-                //   corrective re-dispatch did not recover, so the operator
-                //   sees a cap that names the plan step, not a generic one.
-                ("plan-timeout" as const)
-              : // #1243 — a park the ENDPOINT caused gets its own cap, so a
-                //   headless caller can re-queue it when the provider answers
-                //   again instead of treating it as a real failure.
-                providerCap
-                ? ("provider-unavailable" as const)
-                : (`step-failed:${step}` as WorkCapLiteral));
+          (killCause === "child-bound"
+            ? // #1560 — the per-child run bound ended the child.
+              (`child-timeout:${step}` as const)
+            : step === "develop" && killCause === "timeout"
+              ? ("spawn-backstop" as const)
+              : step === "plan" && killCause === "plan-timeout"
+                ? // #754 — mirrors the develop `spawn-backstop` special case:
+                  //   the plan step's own bound expired and its one-shot
+                  //   corrective re-dispatch did not recover, so the operator
+                  //   sees a cap that names the plan step, not a generic one.
+                  ("plan-timeout" as const)
+                : // #1243 — a park the ENDPOINT caused gets its own cap, so a
+                  //   headless caller can re-queue it when the provider answers
+                  //   again instead of treating it as a real failure.
+                  providerCap
+                  ? ("provider-unavailable" as const)
+                  : (`step-failed:${step}` as WorkCapLiteral));
         const capEvent: Extract<WorkEvent, { kind: "cap-hit" }> = {
           kind: "cap-hit",
           at: Date.now(),

@@ -354,7 +354,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 }
 
 // 28. PR6 — renderHandoffUserMessage produces cap-specific recovery commands
-// for explore-* caps (different from PR5's developer-timeout set).
+// for explore-* caps (different from PR5's spawn-backstop set).
 {
   let s = initialState(533, 1_000_000);
   s = {

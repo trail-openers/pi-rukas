@@ -12,6 +12,7 @@
 import { dispatchCore } from "./dispatch.ts";
 import { readMarker } from "./reply-markers.ts";
 import { slowRecorder } from "./slow-events.ts";
+import { exploreChildBoundMs } from "./spawn-child-bound.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
@@ -132,6 +133,8 @@ export async function dispatchExploreAttempt(
       {
         label: "explore",
         onSlow: slowRecorder(ctx.issue, "explore"),
+        // #1560 — the per-child run bound (policy: explore 30 min).
+        childBoundMs: exploreChildBoundMs(),
         deck: { ...driverDeckOpts(ctx.issue, "explore", "explore"), label: "explore" },
       },
     );

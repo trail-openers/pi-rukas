@@ -135,6 +135,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("AUTO_STEER", true),
   flag("AUTOSAVE", false, "interactive"),
   ms("CAP_KILL_GRACE_MS", 300_000),
+  // #1560 — the per-child run bound: wrap-up steer at the bound, kill this long after.
+  ms("CHILD_BOUND_GRACE_MS", 600_000),
   flag("CHILD_CODEMODE", true),
   ms("CI_WATCH_TIMEOUT_MS", 1_800_000),
   flag("CLAIM_SCAN", true),
@@ -165,12 +167,14 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   family(ms("DECISION_TIMEOUT_MS_<SEAM>", null), SEAM_MEMBERS),
   flag("DECISIONS", true),
   int("DECK_MAX_ROWS", 20, "interactive"),
+  ms("DEVELOP_BOUND_MS", 5_400_000),
   dir("DIR", null),
   flag("DISABLE_EXTENSION_FORWARD", false),
   flag("DISABLE_SUBAGENT_GUARD", false),
   flag("DISPATCH_CAPS", true),
   // Unset: a headless cycle opens its PR as a draft, an interactive one does not.
   flag("DRAFT_PR", null),
+  ms("EXPLORE_BOUND_MS", 1_800_000),
   input("EXTRA_IMAGE_DIRS", "list", null, "cycle", { separator: ":", manifestVersion: 1 }),
   flag("FORBID_LIVE_SPAWN", false, "test"),
   input("FORGE", "enum", null, "cycle", { values: ["github", "gitlab"] }),

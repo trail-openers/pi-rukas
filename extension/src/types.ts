@@ -201,6 +201,12 @@ export interface DispatchResult {
    */
   killedAtCycleDeadline?: boolean;
   /**
+   * #1560 — the child reached its per-child run bound + grace after it had
+   * committed ("committed") or its prompt's agent_end arrived ("reported"):
+   * it was ended as done, with no kill cause (spawn-child-bound.ts).
+   */
+  endedAsDone?: "committed" | "reported";
+  /**
    * #543 — set when killCause is "loop". The structured trigger evidence the
    * F1 detector had at kill time: the tool name and the streak count.
    * `buildCompletionEvent` uses this so the state-file errorTail names WHAT
@@ -312,6 +318,7 @@ export type DispatchFailureCause =
   | "self-killed:token-budget"
   /** #754 — the plan step's own wall-clock bound expired; a budget kill, not a provider fault — the plan step's corrective re-dispatch is the recovery, not a wholesale retry. */
   | "self-killed:plan-timeout"
+  | "self-killed:child-bound"
   | "crashed"
   | "crashed-unknown";
 

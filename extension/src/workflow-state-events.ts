@@ -299,7 +299,7 @@ export type WorkEvent =
        * ABORTed and no PR ever existed for CI to watch.
        *
        * PR5 adds two new cap shapes for halt-cascade prevention:
-       *  - "developer-timeout": developer subagent SIGTERM'd by spawn-cap.
+       *  - "spawn-backstop": developer subagent SIGTERM'd by spawn-cap.
        *    Routed by the post-step dispatch-failed router to handoff
        *    immediately so adversarial doesn't waste hours on partial work
        *    (the empirical #553 cascade).

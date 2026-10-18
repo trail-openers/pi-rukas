@@ -74,7 +74,9 @@ export type SteerSource =
   | "driver-success-keyed"
   /** #799 — the slow-run watch's automatic steer (one per threshold
    * crossing; notice + steer, never a kill). */
-  | "driver-slow-notice";
+  | "driver-slow-notice"
+  /** #1560 — the per-child run bound's wrap-up steer (spawn-child-bound.ts). */
+  | "driver-child-bound";
 
 /**
  * The driver-callable steer core (#543 F2).

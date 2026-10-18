@@ -6,6 +6,7 @@
  */
 
 import { reviewWallClockMs } from "./review-budget.ts";
+import { childBoundGraceMs } from "./spawn-child-bound.ts";
 import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
@@ -83,7 +84,7 @@ export function explainCap(
       return "at least one lens failed every retry, so the six-pass review is incomplete — the diff was not fully reviewed, which is not the same as being rejected";
     case "ci-retry":
       return `CI failed ${MAX_CI_RETRIES} times in a row (each retry re-entered develop → adversarial → lens-review → ci) — CI is permanently broken for this branch, or the develop step keeps producing the same failure`;
-    case "developer-timeout":
+    case "spawn-backstop":
       return `developer subagent hit the wall-clock backstop (PI_ENSEMBLE_SPAWN_TIMEOUT_MS, default 2 h) with ${fileBlurb} in the worktree — that backstop only catches runaway loops, so reaching it means the work needs different decomposition (split the issue into smaller workstreams) or manual takeover`;
     case "loop-detected":
       return explainDetectCaps(cap, state);
@@ -356,6 +357,10 @@ export function explainCap(
   }
   if (cap.startsWith("verify-failed:")) return explainVerifyFailed(cap, state);
   if (cap.startsWith("verify-timeout:")) return explainVerifyTimeout(cap, state);
+  if (cap.startsWith("child-timeout:")) {
+    // #1560 — the per-child run bound (spawn-child-bound.ts).
+    return `the ${cap.slice("child-timeout:".length)} child outlived its per-child run bound — it was steered to wrap up at the bound and ended ${childBoundGraceMs() / 60_000} minute(s) later without having committed or finished its reply (PI_ENSEMBLE_DEVELOP_BOUND_MS / PI_ENSEMBLE_EXPLORE_BOUND_MS). Its work is left in the worktree; split the issue or raise the bound`;
+  }
   const noVerdict = explainNoVerdictCap(cap, state); // #1349
   if (noVerdict !== undefined) return noVerdict;
   // #753 — deferred worktree-creation failure. Its own sentence, because

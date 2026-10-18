@@ -22,7 +22,7 @@ import type { WorkStep } from "./workflow-state.ts";
  * consults this table BEFORE calling `nextStep()`:
  *
  *  - **HALT**: synthesise a cap-hit `step-failed:<step>` (or the special
- *    `developer-timeout` shape when the errorTail matches the spawn
+ *    `spawn-backstop` shape when the errorTail matches the spawn
  *    timeout marker), set `status='aborted'`, route to handoff. There
  *    is no useful downstream past a HALT failure.
  *  - **RETRY_ONCE**: re-run the same step body once. Idempotent steps
