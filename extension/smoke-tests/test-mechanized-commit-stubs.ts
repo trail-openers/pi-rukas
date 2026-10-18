@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DispatchResult, DriverContext } from "../src/work-driver-context.ts";
+import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
 
 // Minimal ExtensionAPI stub — only the methods runWorkDriver actually calls.
 export function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
@@ -82,7 +83,8 @@ export const mkDispatchFn =
   ): Promise<DispatchResult> => {
     const label = dOpts?.label ?? spec.role;
     if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
-    if (label === "plan") return mkResult({ text: PLAN_REPLY });
+    if (label === "plan")
+      return { ...mkResult({ text: PLAN_REPLY }), ...planResultFromMarkdown(PLAN_REPLY) };
     if (label === "ops") return mkResult({ role: "ops", text: branchReplyFor(dir, issue) });
     if (label.startsWith("developer"))
       return mkResult({ role: "developer", text: "done — implemented" });

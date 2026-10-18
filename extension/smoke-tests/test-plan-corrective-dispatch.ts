@@ -33,6 +33,7 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { planDispatchTimeoutMs, runPlan } from "../src/work-driver-plan.ts";
 import { routeStepOutcome } from "../src/work-driver-step-router.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
+import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -52,8 +53,9 @@ function mkResult(text: string, patch: Partial<DispatchResult> = {}): DispatchRe
   return {
     role: "explore",
     ok: true,
-    text,
-    toolUses: [],
+    // #1652 — the plan's workstreams are the report_workstream calls the markdown
+    // block stands for; an empty reply carries none.
+    ...planResultFromMarkdown(text),
     ms: 10,
     exitCode: 0,
     transcriptPath: "/tmp/stub-plan-transcript.json",
@@ -212,7 +214,10 @@ function primaryKill(): DispatchResult {
       1,
       Date.now() - 100,
     );
-    const capHit = routed.state.eventLog.slice().reverse().find((e) => e.kind === "cap-hit");
+    const capHit = routed.state.eventLog
+      .slice()
+      .reverse()
+      .find((e) => e.kind === "cap-hit");
     assert(
       capHit?.kind === "cap-hit" && capHit.cap === "step-failed:plan",
       "a throwing corrective halts the plan step via the router (not a silent success into branch)",
@@ -276,7 +281,10 @@ function primaryKill(): DispatchResult {
       1,
       Date.now() - 100,
     );
-    const capHit = routed.state.eventLog.slice().reverse().find((e) => e.kind === "cap-hit");
+    const capHit = routed.state.eventLog
+      .slice()
+      .reverse()
+      .find((e) => e.kind === "cap-hit");
     assert(
       capHit?.kind === "cap-hit" && capHit.cap === "step-failed:plan",
       "a corrective-stage kill tail still halts the plan step via the router",

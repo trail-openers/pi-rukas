@@ -47,6 +47,8 @@ const NOT_FOR_PM: Record<string, string> = {
   report_plan_item: "plan-reporter.ts — registered inside each /plan Phase-2 investigation child",
   report_research_claim: "research-reporter.ts — registered inside each /research angle child",
   report_facts: "facts-reporter.ts — registered inside the /agents-md pre-pass dispatch child",
+  report_workstream:
+    "workstream-reporter.ts — registered inside each /work plan child (primary and corrective)",
 };
 
 // Every `pi.registerTool({ name: "…" })` in the extension.

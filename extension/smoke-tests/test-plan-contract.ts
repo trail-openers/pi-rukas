@@ -20,7 +20,6 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { runPlan } from "../src/work-driver-plan.ts";
 import {
   deriveContractEdges,
   detectPortReference,
@@ -29,11 +28,13 @@ import {
   symbolKey,
 } from "../src/work-driver-plan-contract.ts";
 import { mergeCoupledWorkstreams } from "../src/work-driver-plan-coupling.ts";
-import { parseWorkstreams } from "../src/work-driver-plan-workstreams.ts";
+import { runPlan } from "../src/work-driver-plan.ts";
 import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import { foldTwo } from "../src/workstream-fold.ts";
+import { workstreamsFromMarkdown } from "./lib/plan-workstream-calls.ts";
+import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -84,7 +85,7 @@ const DISJOINT = [
 
 // ── parsing ─────────────────────────────────────────────────────────────
 {
-  const ws = parseWorkstreams(PLAN_1297);
+  const ws = workstreamsFromMarkdown(PLAN_1297);
   assert(
     JSON.stringify(ws["ws-1"]?.introduces) === JSON.stringify(["`errorStop.providerRepeats`"]),
     "parse: `introduces:` is read",
@@ -94,7 +95,7 @@ const DISJOINT = [
       JSON.stringify(["providerRepeats", "isFinalProviderFault"]),
     "parse: `consumes:` is read as a comma list",
   );
-  const plain = parseWorkstreams(DISJOINT);
+  const plain = workstreamsFromMarkdown(DISJOINT);
   assert(
     !("introduces" in (plain["task-a"] ?? {})) && !("consumes" in (plain["task-a"] ?? {})),
     "parse: a plan without contract lines carries no contract keys (pre-#1322 shape)",
@@ -130,7 +131,7 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
 
 // ── derived edges ───────────────────────────────────────────────────────
 {
-  const { workstreams, edges } = deriveContractEdges(parseWorkstreams(PLAN_1297));
+  const { workstreams, edges } = deriveContractEdges(workstreamsFromMarkdown(PLAN_1297));
   assert(edges.length === 3, `edges: 3 derived (got ${edges.length})`);
   assert(
     JSON.stringify([...(workstreams["ws-3"]?.dependsOn ?? [])].sort()) ===
@@ -141,7 +142,7 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
     JSON.stringify(workstreams["ws-4"]?.dependsOn) === JSON.stringify(["ws-1"]),
     "edges: the producer of the new field depends on the type change",
   );
-  const plain = parseWorkstreams(DISJOINT);
+  const plain = workstreamsFromMarkdown(DISJOINT);
   const none = deriveContractEdges(plain);
   assert(
     none.edges.length === 0 && JSON.stringify(none.workstreams) === JSON.stringify(plain),
@@ -160,7 +161,7 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
 
 // ── the #1297 shape through the coupling merge ──────────────────────────
 {
-  const merged = await mergeWithContract(parseWorkstreams(PLAN_1297), (w) =>
+  const merged = await mergeWithContract(workstreamsFromMarkdown(PLAN_1297), (w) =>
     mergeCoupledWorkstreams(w),
   );
   const ids = Object.keys(merged.workstreams);
@@ -175,7 +176,7 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
   // Without the contract the same plan stays four parallel siblings — the
   // pre-#1322 failure, still what an undeclared plan gets.
   const raw = await mergeWithContract(
-    parseWorkstreams(PLAN_1297.replace(/^- (introduces|consumes):.*$/gm, "")),
+    workstreamsFromMarkdown(PLAN_1297.replace(/^- (introduces|consumes):.*$/gm, "")),
     (w) => mergeCoupledWorkstreams(w),
   );
   assert(
@@ -183,7 +184,7 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
     "no contract: today's single pass, four workstreams",
   );
   process.env.PI_ENSEMBLE_PLAN_CONTRACT = "0";
-  const off = await mergeWithContract(parseWorkstreams(PLAN_1297), (w) =>
+  const off = await mergeWithContract(workstreamsFromMarkdown(PLAN_1297), (w) =>
     mergeCoupledWorkstreams(w),
   );
   assert(
@@ -208,7 +209,7 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
       "- consumes: `providerRepeats`: number, isFinalProviderFault",
     )
     .replace("- consumes: errorStop.providerRepeats", "- consumes: providerRepeats: number");
-  const merged = await mergeWithContract(parseWorkstreams(typed), (w) =>
+  const merged = await mergeWithContract(workstreamsFromMarkdown(typed), (w) =>
     mergeCoupledWorkstreams(w),
   );
   assert(
@@ -267,7 +268,7 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
       `port: no reference in "${body.slice(0, 50)}…"`,
     );
   }
-  const folded = foldPortPlan(parseWorkstreams(DISJOINT), "o/r#9");
+  const folded = foldPortPlan(workstreamsFromMarkdown(DISJOINT), "o/r#9");
   const ids = Object.keys(folded);
   assert(ids.length === 1 && ids[0] === "task-a", "port fold: one workstream (the first id)");
   assert(
@@ -275,7 +276,7 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
       true && folded["task-a"]?.paths.length === 2,
     "port fold: the scope is applying the change; every path kept",
   );
-  const same = parseWorkstreams(DISJOINT);
+  const same = workstreamsFromMarkdown(DISJOINT);
   assert(foldPortPlan(same, undefined) === same, "port fold: no reference → unchanged");
 }
 
@@ -285,8 +286,8 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
   assert(/ONE workstream is the default/.test(p), "prompt: one workstream is the default");
   assert(/Split reason:/.test(p), "prompt: each split needs a stated reason");
   assert(/PARTITION BY CONTRACT, NOT BY FILE/.test(p), "prompt: partition by contract");
-  assert(/`introduces: <identifiers>`/.test(p), "prompt: documents the introduces line");
-  assert(/`consumes: <identifiers>`/.test(p), "prompt: documents the consumes line");
+  assert(/`introduces`/.test(p), "prompt: documents the introduces field");
+  assert(/`consumes`/.test(p), "prompt: documents the consumes field");
   assert(/cherry-pick it/.test(p), "prompt: a known commit is planned as a port");
 }
 
@@ -296,8 +297,7 @@ function mkResult(text: string): DispatchResult {
   return {
     role: "explore",
     ok: true,
-    text,
-    toolUses: [],
+    ...planResultFromMarkdown(text),
     ms: 10,
     exitCode: 0,
     transcriptPath: "/tmp/stub-plan-contract-transcript.json",
@@ -312,7 +312,7 @@ function stateWithBody(dir: string, body: string): WorkState {
 async function plan(
   body: string,
   reply: string,
-): Promise<{ ws: Record<string, Workstream>; prompts: string[] }> {
+): Promise<{ ws: Record<string, Workstream>; prompts: string[]; reason?: string }> {
   const dir = mkdtempSync(path.join(tmpdir(), "plan-contract-"));
   const prompts: string[] = [];
   try {
@@ -326,7 +326,11 @@ async function plan(
       },
     };
     const next = await runPlan(ctx, stateWithBody(dir, body), 1_000_000);
-    return { ws: next.pipelineState.workstreams ?? {}, prompts };
+    return {
+      ws: next.pipelineState.workstreams ?? {},
+      prompts,
+      reason: next.pipelineState.planQuality?.reason,
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -355,13 +359,15 @@ async function plan(
   );
 }
 {
+  // #1652 — a plan with no report_workstream call is no plan: one corrective,
+  // and an empty corrective parks. There is no synthetic `default` to fall back
+  // to, so the port scope the old fallback carried has nothing to attach to.
   const r = await plan("Already fixed in janit/pi-rukas#81; port it upstream.", "No workstreams.");
-  const only = Object.values(r.ws);
+  assert(r.prompts.length === 2, "runPlan: a plan with no call gets exactly one corrective");
+  assert(Object.keys(r.ws).length === 0, "runPlan: an empty corrective parks with no workstreams");
   assert(
-    only.length === 1 &&
-      only[0]?.id === "default" &&
-      /^Port janit\/pi-rukas#81: /.test(only[0]?.scope ?? ""),
-    "runPlan: an empty plan on a port issue still gets the Port scope on the synthetic default",
+    r.reason === "plan-spec-mismatch",
+    "runPlan: the empty corrective parks as plan-spec-mismatch",
   );
 }
 

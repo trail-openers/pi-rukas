@@ -17,7 +17,6 @@
  *      paths AND carries fallbackCause="dirty-repoRoot" (#539).
  */
 
-import { commandOf } from "./lib/argv-shell.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -25,6 +24,8 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 import { readState } from "../src/workflow-state.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -102,7 +103,8 @@ const mkDispatchFn =
   ): Promise<DispatchResult> => {
     const label = dOpts?.label ?? spec.role;
     if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
-    if (label === "plan") return mkResult({ text: PLAN_REPLY });
+    if (label === "plan")
+      return { ...mkResult({ text: PLAN_REPLY }), ...planResultFromMarkdown(PLAN_REPLY) };
     if (label === "ops") return mkResult({ role: "ops", text: branchReplyFor(dir, issue) });
     if (label.startsWith("developer"))
       return mkResult({ role: "developer", text: "done — implemented" });
@@ -288,7 +290,8 @@ const mkDispatchFn =
           dispatchFn: async (_pi, spec, dOpts) => {
             const label = dOpts?.label ?? spec.role;
             if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
-            if (label === "plan") return mkResult({ text: PLAN_REPLY });
+            if (label === "plan")
+              return { ...mkResult({ text: PLAN_REPLY }), ...planResultFromMarkdown(PLAN_REPLY) };
             if (label === "ops") return mkResult({ role: "ops", text: branchReplyFor(dir, 998) });
             if (label.startsWith("developer"))
               return mkResult({ role: "developer", text: "done — implemented" });

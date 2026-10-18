@@ -18,14 +18,14 @@
  * no git, no fs — the same shape `planQualityReason` is tested with.
  */
 
+import { workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
 import { correctivePlanSteer } from "../src/work-driver-plan-helpers.ts";
-import { countMarkdownSections } from "../src/work-driver-plan-parse.ts";
-import { PLAN_SINGLE_BLOCK_RULE } from "../src/work-driver-prompts-plan.ts";
 import {
   findUncoveredDeliverables,
   planSpecMismatchReason,
 } from "../src/work-driver-plan-spec-coverage.ts";
-import { parseWorkstreams } from "../src/work-driver-plan-workstreams.ts";
+import { PLAN_WORKSTREAM_CALL_RULE } from "../src/work-driver-prompts-plan.ts";
+import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -70,11 +70,7 @@ const FABRICATED = ws({
     r.uncovered.every((u) => u.paths.length > 0),
     "#818 fixture: every uncovered row carries the paths a human needs to see",
   );
-  const m = planSpecMismatchReason(
-    "## Workstreams\n### default\n- paths: install.sh\n",
-    FABRICATED,
-    SPEC_818,
-  );
+  const m = planSpecMismatchReason(FABRICATED, SPEC_818);
   assert(
     m?.kind === "uncovered-deliverables",
     "#818 fixture: the gate rejects the fabricated plan before branch/develop",
@@ -98,7 +94,7 @@ const FABRICATED = ws({
     ],
   });
   assert(
-    planSpecMismatchReason("", correct, SPEC_818) === undefined,
+    planSpecMismatchReason(correct, SPEC_818) === undefined,
     "a plan declaring every deliverable path passes the gate",
   );
   const split = ws({
@@ -110,7 +106,7 @@ const FABRICATED = ws({
     "task-c": ["extension/smoke-tests/"],
   });
   assert(
-    planSpecMismatchReason("", split, SPEC_818) === undefined,
+    planSpecMismatchReason(split, SPEC_818) === undefined,
     "coverage is measured over the UNION of workstream paths, not per workstream (a correct N=3 plan passes)",
   );
 }
@@ -174,7 +170,7 @@ const FABRICATED = ws({
     "a spec whose deliverables declare NO paths is not checkable: 0 measured, 0 uncovered — never a false mismatch",
   );
   assert(
-    planSpecMismatchReason("", ws({ a: [] }), { deliverables: [{ id: "d1", paths: [] }] }) ===
+    planSpecMismatchReason(ws({ a: [] }), { deliverables: [{ id: "d1", paths: [] }] }) ===
       undefined,
     "an empty plan against an all-pathless spec is not rejected (nothing to cover)",
   );
@@ -234,8 +230,7 @@ const FABRICATED = ws({
     "#819 round-2: prose in the paths slot produces no uncovered row (the planner cannot act on it)",
   );
   assert(
-    planSpecMismatchReason("## Workstreams\n### default\n- paths: src/a.ts\n", ws({ a: ["src/a.ts"] }), PROSE_SPEC) ===
-      undefined,
+    planSpecMismatchReason(ws({ a: ["src/a.ts"] }), PROSE_SPEC) === undefined,
     "#819 round-2: a spec whose only paths are prose never rejects the plan (the gate has nothing to judge)",
   );
   // Absolute / traversing slots are non-paths too (same predicate).
@@ -265,16 +260,16 @@ const FABRICATED = ws({
 // biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
 {
   assert(
-    planSpecMismatchReason("", FABRICATED, undefined) === undefined,
+    planSpecMismatchReason(FABRICATED, undefined) === undefined,
     "no spec → the gate has nothing to say (it does not reject; it also does not claim a pass)",
   );
   assert(
-    planSpecMismatchReason("", FABRICATED, { deliverables: [] }) === undefined,
+    planSpecMismatchReason(FABRICATED, { deliverables: [] }) === undefined,
     "a spec with zero deliverables → the gate does not fire",
   );
 }
 
-// ---------------------------------------------- multi-block: never first-wins
+// ---------------- #1652: the prose is not read; the tool calls are the plan
 
 const BLOCK_A = [
   "## Workstreams",
@@ -294,67 +289,50 @@ const TAIL = "## Verification\n- run the suite\n";
 
 // biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
 {
-  assert(countMarkdownSections(BLOCK_A, "Workstreams") === 1, "one block counts as one");
+  // The #818 reply's shape — three markdown blocks in the prose — through the
+  // channel that replaced it. The prose is not read for workstreams, so it can
+  // neither make the plan ambiguous nor change what the gate judges: the calls
+  // are the plan, and the calls cover the spec.
+  const covering = [
+    {
+      id: "task-title",
+      scope: "commit title derivation",
+      paths: [
+        "extension/src/work-driver-integrate.ts",
+        "extension/src/work-driver-handoff-subject.ts",
+        "extension/src/work-driver-commit.ts",
+        "extension/src/work-driver-prompts-early.ts",
+        "extension/smoke-tests/",
+      ],
+      outOfScope: [],
+    },
+  ];
+  const reply = `${BLOCK_A}\n${BLOCK_B}\n${BLOCK_A}\n${TAIL}`;
+  const report = workstreamCallsOf(planResultFromCalls(covering, reply));
   assert(
-    countMarkdownSections(`${BLOCK_A}\n${BLOCK_B}\n${TAIL}`, "Workstreams") === 2,
-    "two blocks count as two",
+    report.accepted === 1 && Object.keys(report.workstreams)[0] === "task-title",
+    "#1652: three markdown blocks in the prose and one valid call → the plan is the one call",
   );
   assert(
-    countMarkdownSections(`${BLOCK_A}\n${BLOCK_B}\n${BLOCK_A}\n${TAIL}`, "Workstreams") === 3,
-    "three blocks count as three (the #818 reply's shape)",
-  );
-  assert(
-    countMarkdownSections("### Workstreams\n- paths: x\n", "Workstreams") === 0,
-    "a ### subheading is not a ## section — no false ambiguity",
-  );
-  assert(countMarkdownSections("nothing here", "Workstreams") === 0, "no block counts as zero");
-}
-
-{
-  // Both orders: the parser still returns the FIRST block (byte-unchanged
-  // behaviour), which is exactly why the count must gate it.
-  const fabricatedFirst = `${BLOCK_A}\n${BLOCK_B}\n${TAIL}`;
-  const correctFirst = `${BLOCK_B}\n${BLOCK_A}\n${TAIL}`;
-  assert(
-    Object.keys(parseWorkstreams(fabricatedFirst))[0] === "task-bun",
-    "parser: first-wins is still what sliceMarkdownSection does (documented, not relied on)",
-  );
-  assert(
-    Object.keys(parseWorkstreams(correctFirst))[0] === "task-title",
-    "parser: with the correct block first, first-wins happens to be right — which is why order cannot be the rule",
-  );
-  const a = planSpecMismatchReason(fabricatedFirst, parseWorkstreams(fabricatedFirst), SPEC_818);
-  const b = planSpecMismatchReason(correctFirst, parseWorkstreams(correctFirst), SPEC_818);
-  assert(
-    a?.kind === "multiple-workstream-blocks" && a.blockCount === 2,
-    "ambiguous reply (fabricated block first) → REJECTED as ambiguous, block count recorded",
-  );
-  assert(
-    b?.kind === "multiple-workstream-blocks" && b.blockCount === 2,
-    "ambiguous reply (correct block first) → REJECTED too: last-wins/first-wins is a guess, and #818 showed the blocks come in no semantic order",
-  );
-  assert(
-    // #819 round-2 — the rule is one exported constant (PLAN_SINGLE_BLOCK_RULE)
-    // quoted by the prompt, the steer and this evidence, so the assertion is
-    // against the constant rather than a paraphrase of it.
-    (a?.evidence ?? "").includes(PLAN_SINGLE_BLOCK_RULE),
-    "the ambiguity verdict tells the planner what to emit instead (quotes the shared single-block rule)",
+    planSpecMismatchReason(report.workstreams, SPEC_818) === undefined,
+    "#1652: the covering call passes the gate — the prose's blocks do not reject it",
   );
 }
 
 {
-  // The ambiguity branch runs BEFORE coverage: the parsed map of an ambiguous
-  // reply is one arbitrary block's, so coverage over it is not a statement
-  // about the plan.
-  const ambiguousButCovering = `${BLOCK_B}\n## Workstreams\n### task-x\n- paths: extension/src/work-driver-handoff-subject.ts, extension/src/work-driver-commit.ts, extension/src/work-driver-prompts-early.ts, extension/smoke-tests/\n${TAIL}`;
-  const m = planSpecMismatchReason(
-    ambiguousButCovering,
-    parseWorkstreams(ambiguousButCovering),
-    SPEC_818,
-  );
+  // Zero calls is not judged by the coverage gate: there is no plan to judge,
+  // and the plan step's one corrective owns that case (no `default` fallback).
   assert(
-    m?.kind === "multiple-workstream-blocks",
-    "an ambiguous reply whose blocks TOGETHER cover the spec is still rejected on ambiguity, not judged on coverage",
+    planSpecMismatchReason({}, SPEC_818) === undefined,
+    "#1652: a plan with no accepted call is silent here — the plan step's corrective owns it",
+  );
+  const onlyD1 = {
+    "task-d1": { paths: ["extension/src/work-driver-integrate.ts"] },
+  };
+  const m = planSpecMismatchReason(onlyD1, SPEC_818);
+  assert(
+    m?.kind === "uncovered-deliverables" && (m.uncovered?.length ?? 0) === 4,
+    "#1652: the coverage verdict still names every deliverable the calls leave uncovered",
   );
 }
 
@@ -367,8 +345,8 @@ const TAIL = "## Verification\n- run the suite\n";
     "the corrective steer forbids re-choosing WHAT gets built — the #818 failure mode",
   );
   assert(
-    s.includes(PLAN_SINGLE_BLOCK_RULE),
-    "the steer names the single-block rule so the corrective cannot repeat the ambiguity",
+    s.includes(PLAN_WORKSTREAM_CALL_RULE),
+    "the steer names the one-call-per-workstream rule so the corrective reports through the tool",
   );
   assert(!s.includes("undefined"), "the steer renders with no details and leaks no 'undefined'");
 }
@@ -384,7 +362,7 @@ const TAIL = "## Verification\n- run the suite\n";
   let threw = false;
   for (const [w, s] of junk) {
     try {
-      planSpecMismatchReason("## Workstreams\n", w, s);
+      planSpecMismatchReason(w, s);
     } catch {
       threw = true;
     }

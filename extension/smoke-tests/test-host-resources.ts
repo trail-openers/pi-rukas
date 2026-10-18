@@ -32,7 +32,8 @@ import {
 } from "../src/host-resources.ts";
 import { resourceReport } from "../src/resource-budget.ts";
 import { effectiveParallelGroups, groupIssues } from "../src/work-driver-grouping.ts";
-import { effectiveMaxWorkstreams, parseWorkstreams } from "../src/work-driver-plan-workstreams.ts";
+import { effectiveMaxWorkstreams } from "../src/work-driver-plan-workstreams.ts";
+import { workstreamsFromMarkdown } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -231,7 +232,7 @@ withEnv({}, () => {
   assert(effectiveParallelGroups() === 1, "2 CPU / 4 GiB: groups lowered to 1");
   assert(verifyConcurrency() === 1, "2 CPU / 4 GiB: verify concurrency 1");
   const ids = Object.keys(
-    parseWorkstreams(
+    workstreamsFromMarkdown(
       [
         "## Workstreams",
         "",

@@ -13,10 +13,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseWorktreesBlock } from "../src/work-driver-branch-develop.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { parseWorkstreams } from "../src/work-driver-plan.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkEvent, readState, writeState } from "../src/workflow-state.ts";
-import { ensureGitIdentity, gitIn, makeBaseWorktrees, mockDeveloperWork } from "./lib/git-worktree-fixture.ts";
+import {
+  ensureGitIdentity,
+  gitIn,
+  makeBaseWorktrees,
+  mockDeveloperWork,
+} from "./lib/git-worktree-fixture.ts";
+import { workstreamsFromMarkdown } from "./lib/plan-workstream-calls.ts";
 
 ensureGitIdentity();
 
@@ -99,7 +104,7 @@ Some prose before the block.
 
 Trailing prose.
 `;
-  const singleResult = parseWorkstreams(single);
+  const singleResult = workstreamsFromMarkdown(single);
   assert(
     Object.keys(singleResult).length === 1 && singleResult.default !== undefined,
     "parseWorkstreams: single default workstream parsed",
@@ -133,7 +138,7 @@ Trailing prose.
 - paths: docs/api.md
 - out-of-scope: code
 `;
-  const multiResult = parseWorkstreams(multi);
+  const multiResult = workstreamsFromMarkdown(multi);
   assert(Object.keys(multiResult).length === 3, "parseWorkstreams: 3 workstreams parsed");
   assert(
     multiResult["task-a"]?.scope === "frontend UI cleanup",
@@ -147,14 +152,14 @@ Trailing prose.
   // No block → empty result (caller synthesises default).
   const noBlock = "Just some prose with no Workstreams heading anywhere.";
   assert(
-    Object.keys(parseWorkstreams(noBlock)).length === 0,
+    Object.keys(workstreamsFromMarkdown(noBlock)).length === 0,
     "parseWorkstreams: missing block returns {} (caller synthesises default)",
   );
 
   // Malformed block → empty result (never throws).
   const malformed = "## Workstreams\n\nnot a ### subheading just prose\n";
   assert(
-    Object.keys(parseWorkstreams(malformed)).length === 0,
+    Object.keys(workstreamsFromMarkdown(malformed)).length === 0,
     "parseWorkstreams: malformed block returns {} (no throw)",
   );
 
@@ -207,7 +212,7 @@ branch: feature/issue-553-fix
     "- depends_on: task-a, task-b",
     "- out-of-scope: docs/",
   ].join("\n");
-  const parsed = parseWorkstreams(depBlock);
+  const parsed = workstreamsFromMarkdown(depBlock);
   assert(
     (parsed["task-b"]?.dependsOn ?? []).length === 1 &&
       parsed["task-b"]?.dependsOn?.[0] === "task-a",

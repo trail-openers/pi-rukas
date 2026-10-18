@@ -44,6 +44,7 @@ import { classifyFailureCause, failureCauseReason } from "../src/work-driver-fai
 import { planDispatchTimeoutMs, runPlan } from "../src/work-driver-plan.ts";
 import { routeStepOutcome } from "../src/work-driver-step-router.ts";
 import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
+import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -66,8 +67,9 @@ function mkResult(text: string, patch: Partial<DispatchResult> = {}): DispatchRe
   return {
     role: "explore",
     ok: true,
-    text,
-    toolUses: [],
+    // #1652 — the plan's workstreams are the report_workstream calls the markdown
+    // block stands for.
+    ...planResultFromMarkdown(text),
     ms: 10,
     exitCode: 0,
     transcriptPath: "/tmp/stub-plan-transcript.json",

@@ -14,6 +14,7 @@
 import { runPlan } from "../src/work-driver-plan.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -49,91 +50,90 @@ function stubExec(definitions: Record<string, string[]>) {
 process.env.PI_ENSEMBLE_RESUME = "0";
 process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
 try {
-    // The issue's own decisions name dispatch.ts; the planner fences it in BOTH
-    // plans. Only the primary used to get it removed.
-    const body = [
-      "# Title",
-      "",
-      "## Resolved decisions",
-      "- The seam lives in extension/src/dispatch.ts.",
-      "",
-      "## Out of scope",
-      "- nothing else",
-    ].join("\n");
-    const first = [
-      "## Workstreams",
-      "",
-      "### task-a — the fix",
-      "- paths: src/a.ts, src/a.ts",
-      "- out-of-scope: src/a.ts, docs/",
-      "",
-      "### task-b — the other half",
-      "- paths: src/b.ts",
-      "- out-of-scope: src/a.ts",
-      "",
-    ].join("\n");
-    const second = [
-      "## Workstreams",
-      "",
-      "### task-a — the fix",
-      "- paths: src/a.ts, extension/src/dispatch.ts",
-      "- out-of-scope: extension/src/dispatch.ts, docs/",
-      "",
-      "### task-b — the other half",
-      "- paths: src/b.ts",
-      "- out-of-scope: src/a.ts",
-      "",
-    ].join("\n");
-    const tmp = `${process.env.TMPDIR ?? "/tmp"}/plan-unfence-corr-${process.pid}.md`;
-    await Bun.write(tmp, body);
-    const prompts: string[] = [];
-    const ctx = {
-      // biome-ignore lint/suspicious/noExplicitAny: the host is unused on this path
-      host: {} as any,
-      repoRoot: "/repo",
-      issue: 1167,
-      dispatchFn: async (_pi: unknown, spec: { prompt: string }) => {
-        prompts.push(spec.prompt);
-        return {
-          role: "explore" as const,
-          ok: true,
-          text: prompts.length === 1 ? first : second,
-          toolUses: [],
-          ms: 1,
-          exitCode: 0,
-        };
-      },
-      verifyExecFn: stubExec({ dispatchCore: ["extension/src/dispatch.ts"] }),
-    };
-    const state0 = {
-      ...initialState(1167, 1_000_000),
-      pipelineState: {
-        ...initialState(1167, 1_000_000).pipelineState,
-        issueBodyArtifact: tmp,
-      },
-    };
-    const next = await runPlan(ctx, state0, 1_000_000);
-    assert(
-      prompts.length === 2,
-      "the corrective re-dispatch ran (so its pass is the one under test)",
-    );
-    const ws = next.pipelineState.workstreams as Record<string, Workstream> | undefined;
-    assert(
-      !(ws?.["task-a"]?.outOfScope ?? []).includes("extension/src/dispatch.ts"),
-      "AC: the CORRECTIVE plan has no fence on the path the issue names (it is normalised like the primary's)",
-    );
-    assert(
-      (ws?.["task-a"]?.outOfScope ?? []).includes("docs/"),
-      "and the fence the issue never named survives the corrective pass too",
-    );
-    assert(
-      next.pipelineState.planQuality?.unfence?.ran === true,
-      "the operator can see from the state file that the unfence ran on this plan",
-    );
-    assert(
-      (next.pipelineState.planQuality?.unfence?.removed ?? 0) >= 1,
-      "and that it records the fence it removed",
-    );
+  // The issue's own decisions name dispatch.ts; the planner fences it in BOTH
+  // plans. Only the primary used to get it removed.
+  const body = [
+    "# Title",
+    "",
+    "## Resolved decisions",
+    "- The seam lives in extension/src/dispatch.ts.",
+    "",
+    "## Out of scope",
+    "- nothing else",
+  ].join("\n");
+  const first = [
+    "## Workstreams",
+    "",
+    "### task-a — the fix",
+    "- paths: src/a.ts, src/a.ts",
+    "- out-of-scope: src/a.ts, docs/",
+    "",
+    "### task-b — the other half",
+    "- paths: src/b.ts",
+    "- out-of-scope: src/a.ts",
+    "",
+  ].join("\n");
+  const second = [
+    "## Workstreams",
+    "",
+    "### task-a — the fix",
+    "- paths: src/a.ts, extension/src/dispatch.ts",
+    "- out-of-scope: extension/src/dispatch.ts, docs/",
+    "",
+    "### task-b — the other half",
+    "- paths: src/b.ts",
+    "- out-of-scope: src/a.ts",
+    "",
+  ].join("\n");
+  const tmp = `${process.env.TMPDIR ?? "/tmp"}/plan-unfence-corr-${process.pid}.md`;
+  await Bun.write(tmp, body);
+  const prompts: string[] = [];
+  const ctx = {
+    // biome-ignore lint/suspicious/noExplicitAny: the host is unused on this path
+    host: {} as any,
+    repoRoot: "/repo",
+    issue: 1167,
+    dispatchFn: async (_pi: unknown, spec: { prompt: string }) => {
+      prompts.push(spec.prompt);
+      return {
+        role: "explore" as const,
+        ok: true,
+        ...planResultFromMarkdown(prompts.length === 1 ? first : second),
+        ms: 1,
+        exitCode: 0,
+      };
+    },
+    verifyExecFn: stubExec({ dispatchCore: ["extension/src/dispatch.ts"] }),
+  };
+  const state0 = {
+    ...initialState(1167, 1_000_000),
+    pipelineState: {
+      ...initialState(1167, 1_000_000).pipelineState,
+      issueBodyArtifact: tmp,
+    },
+  };
+  const next = await runPlan(ctx, state0, 1_000_000);
+  assert(
+    prompts.length === 2,
+    "the corrective re-dispatch ran (so its pass is the one under test)",
+  );
+  const ws = next.pipelineState.workstreams as Record<string, Workstream> | undefined;
+  assert(
+    !(ws?.["task-a"]?.outOfScope ?? []).includes("extension/src/dispatch.ts"),
+    "AC: the CORRECTIVE plan has no fence on the path the issue names (it is normalised like the primary's)",
+  );
+  assert(
+    (ws?.["task-a"]?.outOfScope ?? []).includes("docs/"),
+    "and the fence the issue never named survives the corrective pass too",
+  );
+  assert(
+    next.pipelineState.planQuality?.unfence?.ran === true,
+    "the operator can see from the state file that the unfence ran on this plan",
+  );
+  assert(
+    (next.pipelineState.planQuality?.unfence?.removed ?? 0) >= 1,
+    "and that it records the fence it removed",
+  );
   await Bun.write(tmp, "");
   await Bun.$`rm -f ${tmp}`.quiet();
 } finally {

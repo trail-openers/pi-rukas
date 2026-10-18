@@ -8,7 +8,7 @@
  * Mirrors the test-workstream-path-normalise.ts canary pattern with variant fixtures.
  */
 
-import { parseWorkstreams } from "../src/work-driver-plan.ts";
+import { workstreamsFromMarkdown } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -32,7 +32,7 @@ function assert(cond: boolean, msg: string) {
     "- paths: src/b.ts",
     "- depends-on: task-a",
   ].join("\n");
-  const parsed = parseWorkstreams(block);
+  const parsed = workstreamsFromMarkdown(block);
   assert(
     parsed["task-b"]?.dependsOn?.length === 1 && parsed["task-b"]?.dependsOn?.[0] === "task-a",
     "depends-on: single dep parsed into dependsOn array",
@@ -58,13 +58,14 @@ function assert(cond: boolean, msg: string) {
     "- paths: src/c.ts",
     "- depends-on: task-a, task-b",
   ].join("\n");
-  const parsed = parseWorkstreams(block);
+  const parsed = workstreamsFromMarkdown(block);
   assert(
     parsed["task-c"]?.dependsOn?.length === 2,
     "depends-on: comma-separated multi-dep parsed into 2-element array",
   );
   assert(
-    parsed["task-c"]?.dependsOn?.includes("task-a") && parsed["task-c"]?.dependsOn?.includes("task-b"),
+    parsed["task-c"]?.dependsOn?.includes("task-a") &&
+      parsed["task-c"]?.dependsOn?.includes("task-b"),
     "depends-on: both deps present in the array",
   );
 }
@@ -81,7 +82,7 @@ function assert(cond: boolean, msg: string) {
     "- paths: src/b.ts",
     "- depends_on: task-a",
   ].join("\n");
-  const parsed = parseWorkstreams(block);
+  const parsed = workstreamsFromMarkdown(block);
   assert(
     parsed["task-b"]?.dependsOn?.[0] === "task-a",
     "depends_on: underscore variant parsed correctly",
@@ -100,7 +101,7 @@ function assert(cond: boolean, msg: string) {
     "- paths: src/b.ts",
     "- Depends on: task-a",
   ].join("\n");
-  const parsed = parseWorkstreams(block);
+  const parsed = workstreamsFromMarkdown(block);
   assert(
     parsed["task-b"]?.dependsOn?.[0] === "task-a",
     "Depends on: prose variant (space) parsed correctly",
@@ -121,7 +122,7 @@ function assert(cond: boolean, msg: string) {
     "- depends-on: task-a",
     "- integration-test: smoke-tests/test-integration.ts",
   ].join("\n");
-  const parsed = parseWorkstreams(block);
+  const parsed = workstreamsFromMarkdown(block);
   assert(
     parsed["task-b"]?.integrationTest === "smoke-tests/test-integration.ts",
     "integration-test: single path parsed into integrationTest field",
@@ -141,7 +142,7 @@ function assert(cond: boolean, msg: string) {
     "- depends-on: task-a",
     "- integration_test: smoke-tests/test-int.ts",
   ].join("\n");
-  const parsed = parseWorkstreams(block);
+  const parsed = workstreamsFromMarkdown(block);
   assert(
     parsed["task-b"]?.integrationTest === "smoke-tests/test-int.ts",
     "integration_test: underscore variant parsed correctly",
@@ -160,7 +161,7 @@ function assert(cond: boolean, msg: string) {
     "- paths: src/b.ts",
     "- depends-on: task-a",
   ].join("\n");
-  const parsed = parseWorkstreams(block);
+  const parsed = workstreamsFromMarkdown(block);
   assert(
     parsed["task-b"]?.integrationTest === undefined,
     "integration-test: absent line → undefined",
@@ -171,7 +172,7 @@ function assert(cond: boolean, msg: string) {
 
 {
   const block = ["## Workstreams", "", "### default — everything", "- paths: src/a.ts"].join("\n");
-  const parsed = parseWorkstreams(block);
+  const parsed = workstreamsFromMarkdown(block);
   assert(
     Object.keys(parsed).length === 1 && parsed.default?.dependsOn === undefined,
     "N=1 default workstream: no dependsOn field (byte-identical path)",
@@ -199,12 +200,9 @@ function assert(cond: boolean, msg: string) {
       "- paths: src/c.ts",
       "- depends-on: a",
     ].join("\n");
-    const parsed = parseWorkstreams(block);
+    const parsed = workstreamsFromMarkdown(block);
     const ids = Object.keys(parsed);
-    assert(
-      ids.length === 2,
-      "fold: 3 workstreams folded to ceiling of 2",
-    );
+    assert(ids.length === 2, "fold: 3 workstreams folded to ceiling of 2");
     // The folded workstream's depends-on IS preserved by the shared fold
     // (workstream-fold.ts: union of dependsOn minus the two merged ids).
     // c depends on a; c is folded into b; the merged workstream (b) keeps

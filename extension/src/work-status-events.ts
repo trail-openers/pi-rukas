@@ -236,6 +236,8 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
     case "retry-tree-clean":
       // #1391 — the ref and the patch are the recovery handles; both are shown.
       return `  retry-tree-clean · ${e.step} attempt ${e.attempt} · ${e.outcome} · ${e.fileCount} file(s)${e.ref ? ` · ref ${e.ref}` : ""}${e.patch ? ` · patch ${e.patch}` : ""}${e.detail ? ` · ${e.detail.slice(0, 80)}` : ""}`;
+    case "workstream-calls-refused":
+      return `  workstream-calls-refused · ${e.label} · ${e.accepted} accepted · ${e.refused.length} refused`;
     case "worktree-leftover-handled":
       return `  worktree-leftover-handled · ${e.path.split("/").pop()} · ${e.action}${e.refs.length ? ` · refs: ${e.refs.join(", ")}` : ""}${e.salvageDir ? ` · salvage: ${e.salvageDir}` : ""}`;
     case "branch-reset":
