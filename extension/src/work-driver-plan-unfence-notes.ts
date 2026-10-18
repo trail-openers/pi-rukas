@@ -22,8 +22,9 @@
  */
 
 import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
+import type { UnfenceResult } from "./work-driver-plan-unfence.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
-import type { Workstream } from "./workflow-state-schema.ts";
+import type { PlanUnfenceSummary, Workstream } from "./workflow-state-schema.ts";
 
 /**
  * #1167 round-3 — an issue-named token is only allowed to move a fence once it
@@ -43,7 +44,16 @@ export function isUnfenceablePath(token: string): boolean {
   return isPlainRepoRelativePath(token) && !/[*?[\]{}]/.test(token);
 }
 
-/** The fence entry in `entries` that EXACTLY equals `path` (normalised). */
+/**
+ * The fence entry in `entries` that EXACTLY equals `path` (normalised), or
+ * `undefined`.
+ *
+ * #1167 round-4 — exactness IS the rule, and it is why there is no second
+ * "covering" variant of this function beside `fenceCoveringBroader`: an issue
+ * naming `config/app.ts` says nothing about the tree around it, so it must not
+ * lift a `config/` fence. A broader fence that covers the path is left to
+ * `fenceCoveringBroader`, which keeps it and lets the caller note that.
+ */
 export function fenceEntryMatching(entries: string[], path: string): string | undefined {
   return entries.find((entry) => normaliseDeclaredPath(entry) === path);
 }
@@ -52,7 +62,6 @@ export function fenceEntryMatching(entries: string[], path: string): string | un
 export function unfencedNote(path: string): string {
   return `unfenced ${path}: named by the issue`;
 }
-
 /** The note the operator sees when a symbol could not be resolved to one file. */
 export function unresolvedIdentifierNote(name: string, candidates: string[], ref: string): string {
   return candidates.length === 0
@@ -78,27 +87,27 @@ export function ownerOf(workstreams: Record<string, Workstream>, path: string): 
 
 /**
  * A fence entry in `entries` that is a BROADER directory containing `path`
- * (`config/` covers `config/app.ts`). Kept, never removed — but it is the
+ * (`config/` or `config/**` covers `config/app.ts`). Kept, never removed — but it is the
  * reason a pass that removed nothing can still report a note, and an operator
  * reading a plan that says nothing happened cannot tell "the issue named no
  * fence" apart from "the pass found a fence it declined to open".
  */
 export function fenceCoveringBroader(entries: string[], path: string): string | undefined {
   return entries.find((entry) => {
-    // #1167 round-3 — the entry is compared AS WRITTEN, with its separator
-    // intact. `normaliseDeclaredPath` strips a trailing `/`, so a directory
-    // fence written `extension/src/` normalised to `extension/src` and the
-    // `path.startsWith("extension/src/")` comparison below matched NOTHING:
-    // the "a wider fence covers this path and we declined to open it" note
-    // never fired for the very entry shape it exists for, and a pass that
-    // declined was indistinguishable from one that saw nothing.
-    //
-    // The trailing separator also carries the meaning here: `extension/src/`
-    // says "this directory", `extension/src` does not necessarily. So the
-    // normalisation is applied to the PATH only (it may carry an annotation) and
-    // the entry is taken verbatim.
+    // #1167 round-3 / round-4 — the entry is compared AS WRITTEN except for
+    // the two spellings of "directory", which mean the same thing and are both
+    // normalised away: `extension/src/` and `extension/src/**` are one fence
+    // written two ways, and the round-3 fix for the trailing separator left
+    // the glob form matching nothing. `normaliseDeclaredPath` strips BOTH
+    // (a trailing `/` and a trailing `/**`, plus a planner annotation), so it
+    // now runs on the ENTRY as well as the PATH — and the directory judgement
+    // no longer reads the separator, because the comparison below requires a
+    // `/` boundary anyway: `extension/src` only ever covers a path *inside*
+    // `extension/src/`, never a sibling named `extension/srcfoo`.
     if (entry === path) return false;
-    return path.startsWith(`${entry.replace(/\/+$/, "")}/`);
+    const dir = normaliseDeclaredPath(entry);
+    if (dir.length === 0) return false;
+    return path.startsWith(`${dir}/`);
   });
 }
 
@@ -109,4 +118,40 @@ export function fenceCoveringBroader(entries: string[], path: string): string | 
  */
 export function keptBroaderFenceNote(path: string, entry: string): string {
   return `kept fence ${entry}: the issue named ${path}, not the whole directory`;
+}
+
+/**
+ * #1167 round-3 — the one-line record the plan step persists on
+ * `pipelineState.planQuality` so the operator can see the pass ran, what it
+ * did, and what it declined to do.
+ *
+ * Before this, notes and warnings went only to `trace()` — a stream the
+ * operator does not read during a cycle, so "the unfence found nothing" and
+ * "the unfence could not read the issue / hit its cap / failed at git" looked
+ * identical from the state file. `kept` is the count of broader-directory
+ * fences the pass deliberately did not open. `undefined` fields are absent
+ * rather than zero so a clean pass writes `{ran: true, removed: 0, kept: 0}`
+ * and nothing else.
+ *
+ * It lives beside the note builders because it READS them: `kept` and
+ * `unresolved` are counts of these exact strings, and a wording change in one
+ * place and not the other silently counts zero.
+ */
+export function unfenceSummary(
+  result: UnfenceResult,
+  issueBodyUnreadable = false,
+): PlanUnfenceSummary {
+  const kept = result.notes.filter((n) => n.startsWith("kept fence ")).length;
+  const rolledBack = result.removed.filter((r) => r.restored !== undefined).length;
+  const unresolved = result.warnings.filter((w) => w.startsWith("unresolved identifier")).length;
+  return {
+    ran: true,
+    removed: result.removed.length - rolledBack,
+    kept,
+    rolledBack,
+    unresolved,
+    ...(issueBodyUnreadable ? { issueBodyUnreadable: true } : {}),
+    ...(result.notes.length > 0 ? { notes: result.notes.slice(0, 10) } : {}),
+    ...(result.warnings.length > 0 ? { warnings: result.warnings.slice(0, 10) } : {}),
+  };
 }

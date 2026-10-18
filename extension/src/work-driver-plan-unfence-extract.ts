@@ -48,6 +48,18 @@ import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
 import { stripCodeBlocks } from "./work-driver-plan-unfence-code.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
+// The DEFINITION half of the pass lives in work-driver-plan-unfence-defines.ts
+// (the AGENTS.md §12 line cap) — a real seam, not a convenient cut: this module
+// reads the ISSUE (which sections, which tokens), that one reads the REPO (which
+// grep candidate actually DECLARES the name). Re-exported so the pass keeps one
+// import path for the unfence's two halves, as its other fragments do.
+export {
+  couldNotResolveWhy,
+  definesSymbol,
+  definesSymbolLine,
+  resolveDefiningFile,
+} from "./work-driver-plan-unfence-defines.ts";
+
 /**
  * Headings whose text names one of the three sections the extraction reads
  * (`DECISIONS`, `Resolved decisions`, `ACCEPTANCE CRITERIA`) — matched
@@ -57,12 +69,20 @@ const SECTION_HEADING = /^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$/;
 const SECTION_NAMES = [/^decisions$/i, /^resolved\s+decisions$/i, /^acceptance\s+criteria$/i];
 
 /**
- * A sentence refusing an action — its paths are prohibitions, not
- * requirements. Assembled from parts, but every part is a REGEX LITERAL
- * rather than a string: an earlier revision built the alternation from
- * `"\\s"`-style strings and one missing backslash turned `\s` into a literal
- * `s`, so `does\s+not` silently became `does\s` + `not` against the letter s.
- * Literals cannot drift that way.
+ * A sentence that REFUSES an action — its paths are prohibitions, not
+ * requirements, and stay fenced.
+ *
+ * Fail-closed by design: a sentence that merely READS like a refusal is treated
+ * as one (the rule the module header states — *when in doubt, keep the fence*),
+ * because a pass that read only "do not …" removes the eight auxiliary-free
+ * phrasings the #1167 adversarial review produced.
+ *
+ * The test is "does any rule in `NEGATIONS` below match this sentence?" — the
+ * rules, not this function, are the rule being stated. `NEGATIONS` is built from
+ * parts, but every part is a REGEX LITERAL rather than a string: an earlier
+ * revision built the alternation from `"\\s"`-style strings and one missing
+ * backslash turned `\s` into a literal `s`, so `does\s+not` silently became
+ * `does\s` + `not` against the letter s. Literals cannot drift that way.
  *
  * Two families, anchored differently on purpose. An auxiliary refusal (`do
  * not`, `must not`, `never`, `cannot`, …) is unambiguous wherever it appears.
@@ -178,6 +198,15 @@ export function isProhibition(sentence: string): boolean {
     re.lastIndex = 0;
     return re.test(sentence);
   });
+}
+
+/**
+ * What a read that FAILED must be reported as (#1167 round-4), shaped to sit
+ * beside `unresolvedIdentifierNote` in the operator's plan. A failed read is
+ * never a no-match, and the plan must not claim one.
+ */
+export function couldNotResolveNote(name: string, why: string): string {
+  return `could not resolve ${name}: ${why} — left fenced (a failed read is not a no-match)`;
 }
 
 /** Tokens that look like a repo path: they carry a `/` or a source extension. */
@@ -416,66 +445,4 @@ function isIdentifier(token: string): boolean {
   if (!IDENTIFIER.test(token)) return false;
   if (NOT_A_NAME.has(token.toLowerCase())) return false;
   return true;
-}
-
-/**
- * Files that can DEFINE a symbol. Prose and test files MENTION symbols far
- * more often than they define them, and a repo-wide `git grep` for a popular
- * name hits dozens of test files — so an identifier is resolved only against
- * files under a recognised code directory, which is what keeps a
- * widely-mentioned name from resolving to a test that merely calls it.
- */
-const CODE_DIR = /(^|\/)(src|lib|app|pkg|cmd|internal|server|client|extension)\//;
-
-/** Declaration keywords that introduce a definition, in the languages at home here. */
-const DECL_KEYWORDS =
-  "function|const|let|var|class|interface|type|enum|fn|func|def|struct|trait|impl";
-const DECL_PREFIX =
-  /^(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:async\s+)?(?:abstract\s+)?(?:static\s+)?/;
-
-/**
- * A line that DEFINES `name` rather than mentioning it: a declaration keyword
- * immediately followed by the name. The boundary check runs here in
- * TypeScript, not in the grep pattern — `git grep`'s BRE cannot be trusted
- * with `\s`/`\b`, and a silently-unsupported escape turns a definition check
- * into no check at all.
- */
-export function definesSymbolLine(line: string, name: string): boolean {
-  const stripped = line.replace(/^\s*/, "").replace(DECL_PREFIX, "");
-  if (!new RegExp(`^(?:${DECL_KEYWORDS})\\b`).test(stripped)) return false;
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^(?:${DECL_KEYWORDS})\\s+${escaped}(?:[\\s({<:=,)]|$)`).test(stripped);
-}
-
-/** True when any line of `text` defines `name`. */
-export function definesSymbol(text: string, name: string): boolean {
-  for (const line of text.split("\n")) {
-    if (definesSymbolLine(line, name)) return true;
-  }
-  return false;
-}
-
-/**
- * Narrow a `git grep -l` candidate list to the single file that DEFINES the
- * symbol: only source files qualify, and exactly one of them has to carry a
- * definition line. Zero or several definitions is an ambiguous name — the
- * caller records a note and unfences nothing rather than opening a fence on a
- * guess (the issue's own named pitfall: a popular symbol name matches half the
- * repository, and `git grep -l` cannot tell a definition from a reference).
- */
-export async function resolveDefiningFile(
-  name: string,
-  candidates: string[],
-  read: (file: string) => Promise<string>,
-): Promise<string | undefined> {
-  const source = [...new Set(candidates.filter((f) => CODE_DIR.test(f)))];
-  const defining: string[] = [];
-  for (const file of source) {
-    try {
-      if (definesSymbol(await read(file), name)) defining.push(file);
-    } catch {
-      // An unreadable candidate is not a definition — it never unfences.
-    }
-  }
-  return defining.length === 1 ? defining[0] : undefined;
 }

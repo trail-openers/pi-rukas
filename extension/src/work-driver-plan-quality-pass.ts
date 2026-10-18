@@ -34,7 +34,7 @@ import type { CycleContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-driver-path-claims.ts";
 import { foldPortPlan } from "./work-driver-plan-contract.ts";
-import { runPlanCouplingPass, runPlanUnfencePass } from "./work-driver-plan-coupling-pass.ts";
+import { runPlanNormalisationPass } from "./work-driver-plan-coupling-pass.ts";
 import { findDroppedDependencyEdges } from "./work-driver-plan-deps.ts";
 import { planQualityReason, planSpecMismatchCap } from "./work-driver-plan-helpers.ts";
 import {
@@ -244,29 +244,23 @@ export async function runPlanQualityTail(
       correctiveRaw = reparsed; // #1005 — the corrective's RAW map
     }
     redispatched = true;
-    // #1005 — the coupling merge runs AGAIN on the corrective's plan: it may
-    // merge the colliding workstreams (the overlap fix) but may also re-split
-    // coupled work, so it must see the corrective's map, not just the first
-    // plan's. Cheap: a depends-on edge short-circuits the grep.
-    workstreams = await runPlanCouplingPass(workstreams, {
+    // #1167 round-3 / round-4 — the corrective gets the SAME normalisation the
+    // primary got, through the one shared helper (`runPlanNormalisationPass`)
+    // so no path can skip half of it. It used to re-run the coupling merge but
+    // not the unfence, so a corrective that re-introduced an issue-contradicting
+    // fence (the planner rewrites the whole `out-of-scope:` line, so this is the
+    // normal case, not a corner) reached develop with a fence the primary plan
+    // had already been protected from — and the develop gate parks on it. Same
+    // body, same ref, same executor, and the unfence one line after the merge
+    // that unions the fences back together (the order reason from
+    // `runPlanNormalisationPass`).
+    const correctiveNormalised = await runPlanNormalisationPass(workstreams, next, {
       repoRoot: ctx.repoRoot,
       worktrees: next.pipelineState.worktrees,
       execFn: host.couplingExecFn,
     });
-    // #1167 round-3 — the corrective now gets the SAME normalisation the
-    // primary got. It used to re-run the coupling pass but not the unfence, so
-    // a corrective that re-introduced an issue-contradicting fence (the
-    // planner rewrites the whole `out-of-scope:` line, so this is the normal
-    // case, not a corner) reached develop with a fence the primary plan had
-    // already been protected from — and the develop gate parks on it. Same
-    // body, same ref, same executor, one line after the merge that unions the
-    // fences back together (the order reason from runPlanUnfencePass).
-    const correctiveUnfence = await runPlanUnfencePass(workstreams, next, {
-      repoRoot: ctx.repoRoot,
-      execFn: host.couplingExecFn,
-    });
-    workstreams = correctiveUnfence.workstreams;
-    if (correctiveUnfence.summary) unfence = correctiveUnfence.summary;
+    workstreams = correctiveNormalised.workstreams;
+    if (correctiveNormalised.summary) unfence = correctiveNormalised.summary;
     // #819 — the gate runs AGAIN on the corrective: #818's wrong work came
     // from the corrective, not the first plan. A corrective is already the
     // cycle's one-shot budget, so a failure here HALTS.

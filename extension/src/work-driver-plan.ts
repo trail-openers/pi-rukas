@@ -29,7 +29,7 @@ import {
   portPlanSection,
   portReferenceForCycle,
 } from "./work-driver-plan-contract.ts";
-import { runPlanCouplingPass, runPlanUnfencePass } from "./work-driver-plan-coupling-pass.ts";
+import { runPlanNormalisationPass } from "./work-driver-plan-coupling-pass.ts";
 import { runPlanQualityTail } from "./work-driver-plan-quality-pass.ts";
 import { planSpecMismatchReason } from "./work-driver-plan-spec-coverage.ts";
 import { execp } from "./work-driver-verify.ts";
@@ -90,6 +90,7 @@ import { planFindingsCount } from "./work-driver-pr-body-definition.ts";
 import { inlinePlanPrompt } from "./work-driver-prompts-early.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
+import type { PlanUnfenceSummary } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 // #1263 test seam — module-level plan-step throw injection (offline tests
@@ -212,6 +213,38 @@ export async function runPlan(
   // reads `process.env` allowed an operator flip mid-step to make the gate
   // fire at one site and not the next.
   const planGateEnabled = planQualityEnabled();
+  // #1005 — the coupling merge is a NO-OP on a single-workstream plan; the gate
+  // and the corrective steer reason about the POST-MERGE plan. Its rule-3 grep
+  // needs a real executor (`ctx.verifyExecFn` is test-only, so `execp` — it
+  // honours `opts.argv` via execFile) and a cwd: the merge runs at plan time,
+  // before the branch step, so the grep runs in `repoRoot`.
+  const planExecFn = ctx.verifyExecFn ?? execp;
+  // #1322 — the port fold and the contract's derived depends-on edges run
+  // first; a plan with neither takes exactly the pre-#1322 single pass.
+  // #819 round-3 — the pass lives in work-driver-plan-coupling-pass.ts (the
+  // §12 line cap on this file); same fold, same merge, same executor. `planExecFn`
+  // stays a local so every call site (the primary plan, the kill-recovered
+  // corrective and the quality corrective) shares the one test seam.
+  // #1167 round-4 — the fold, the merge and the unfence are ONE call now
+  // (`runPlanNormalisationPass`), which is what lets the kill-recovered path
+  // below get the identical normalisation instead of a copy that drifts. Read
+  // each state from its own argument: the three paths normalise the plan they
+  // actually hold. The SUMMARY is threaded out of the kill branch by the
+  // caller, which is the only place that knows which plan the cycle kept —
+  // letting the tail's own pass overwrite it is exactly what round-3 added
+  // (`if (correctiveUnfence.summary) unfence = …`) and the recovery path must
+  // not lose it.
+  let killUnfence: PlanUnfenceSummary | undefined;
+  const runNormalisation = async (
+    raw: typeof workstreams,
+    state: WorkState,
+  ): Promise<{ workstreams: typeof workstreams; summary?: PlanUnfenceSummary }> =>
+    runPlanNormalisationPass(raw, state, {
+      port,
+      repoRoot: ctx.repoRoot,
+      worktrees: state.pipelineState.worktrees,
+      execFn: planExecFn,
+    });
   // #792 — count only the deliverables that are expected to produce a diff.
   // A plan-time no-diff marker (settings toggle, operator action, manual
   // verification) cannot land in any diff, so it must not feed the
@@ -239,6 +272,16 @@ export async function runPlan(
       next,
       parseWorkstreams,
       planCorrectivePrompt,
+      // #1167 round-4 — the recovered plan is normalised exactly like the
+      // primary's and the quality corrective's: fold, coupling merge, unfence.
+      // Without it a plan recovered after a killed primary reached develop with
+      // the planner's fences intact, and the develop gate parked on a file the
+      // issue itself names — the #1020 shape, arriving by the recovery door.
+      async (raw, state) => {
+        const out = await runNormalisation(raw, state);
+        killUnfence = out.summary;
+        return out.workstreams;
+      },
     );
     // #819 round-2 — adopt the state even when the corrective did not recover:
     // `planTimeoutCorrective` appends the corrective's own failure event (its
@@ -263,37 +306,22 @@ export async function runPlan(
     // for develop. `recovered.state` already carries that tail.
     if (!recovered.ok) return recovered.state;
   }
-  // #1005 — the coupling merge is a NO-OP on a single-workstream plan; the gate
-  // and the corrective steer reason about the POST-MERGE plan. Its rule-3 grep
-  // needs a real executor (`ctx.verifyExecFn` is test-only, so `execp` — it
-  // honours `opts.argv` via execFile) and a cwd: the merge runs at plan time,
-  // before the branch step, so the grep runs in `repoRoot`.
-  const planExecFn = ctx.verifyExecFn ?? execp;
-  // #1322 — the port fold and the contract's derived depends-on edges run
-  // first; a plan with neither takes exactly the pre-#1322 single pass.
-  // #819 round-3 — the pass lives in work-driver-plan-coupling-pass.ts (the
-  // §12 line cap on this file); same fold, same merge, same executor. `planExecFn`
-  // stays a local so both call sites (the primary plan and the corrective) share
-  // the one test seam.
-  const runCouplingMerge = async (raw: typeof workstreams): Promise<typeof workstreams> =>
-    runPlanCouplingPass(raw, {
-      port,
-      repoRoot: ctx.repoRoot,
-      worktrees: next.pipelineState.worktrees,
-      execFn: planExecFn,
-    });
-  workstreams = await runCouplingMerge(workstreams);
-  // #1167 — the plan-time unfence, after the fold and the coupling merge and
-  // before the quality gate below, so the gate judges the plan the driver will
-  // actually develop (see runPlanUnfencePass for why the order is load-bearing).
-  // #1167 round-3 — its summary goes to the quality tail's single
-  // `planQuality` write so the operator can see the pass ran, what it removed
-  // and what it declined to do (notes used to go only to `trace()`).
-  const unfencePass = await runPlanUnfencePass(workstreams, next, {
+  // #1167 — the plan-time unfence runs AFTER the fold and the coupling merge
+  // and before the quality gate below, so the gate judges the plan the driver
+  // will actually develop (see `runPlanNormalisationPass` for why the order is
+  // load-bearing). #1167 round-3 — its summary goes to the quality tail's
+  // single `planQuality` write so the operator can see the pass ran, what it
+  // removed and what it declined to do (notes used to go only to `trace()`).
+  const normalised = await runPlanNormalisationPass(workstreams, next, {
+    port,
     repoRoot: ctx.repoRoot,
+    worktrees: next.pipelineState.worktrees,
     execFn: planExecFn,
   });
-  workstreams = unfencePass.workstreams;
+  workstreams = normalised.workstreams;
+  // The kill branch's own pass is the record of the plan the cycle keeps; a
+  // plan that never went through the recovery keeps its own summary.
+  const unfenceSummary = killUnfence ?? normalised.summary;
   // #290 — deterministic plan-quality gate (arithmetic, not judgment), the
   // #819 plan-to-spec gate, the one-shot corrective, the #849 dropped-edge
   // check, the #571 claims and the single planQuality write. #1167 (size split)
@@ -319,7 +347,7 @@ export async function runPlan(
       // #1167 round-3 — the primary plan's unfence record, persisted with the
       // rest of the plan step's evidence. The corrective's own pass overwrites
       // it (that is the plan the cycle keeps).
-      unfence: unfencePass.summary,
+      unfence: unfenceSummary,
     },
     {
       dispatch,

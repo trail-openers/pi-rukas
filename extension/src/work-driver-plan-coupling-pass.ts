@@ -73,6 +73,45 @@ export async function runPlanCouplingPass(
 }
 
 /**
+ * #1167 round-4 — the plan step's normalisation, in the ONE order that is
+ * correct: fold → coupling merge → unfence.
+ *
+ * The three plan paths (the primary plan, the #290 quality corrective and the
+ * #754 kill-recovered corrective) each need both passes over the map they end
+ * up keeping, and each used to compose them by hand. That is how the unfence
+ * came to be missing from the kill-recovered path — the quality tail had it
+ * (round-3) and `runPlan`'s kill branch did not, so a plan recovered after a
+ * killed primary reached develop with fences the primary plan would have had
+ * removed, and the develop gate parked on a file the issue itself names. One
+ * helper, one order, three callers.
+ *
+ * The order is load-bearing (see `runPlanUnfencePass`): the fold and the merge
+ * both UNION fence lists, so an unfence that ran before them can have its work
+ * reintroduced.
+ */
+export async function runPlanNormalisationPass(
+  raw: Record<string, Workstream>,
+  state: WorkState,
+  opts: {
+    port?: string;
+    repoRoot: string;
+    worktrees?: Record<string, string>;
+    execFn?: GrepExecFn;
+  },
+): Promise<{ workstreams: Record<string, Workstream>; summary?: PlanUnfenceSummary }> {
+  const merged = await runPlanCouplingPass(raw, {
+    port: opts.port,
+    repoRoot: opts.repoRoot,
+    worktrees: opts.worktrees,
+    execFn: opts.execFn,
+  });
+  return runPlanUnfencePass(merged, state, {
+    repoRoot: opts.repoRoot,
+    execFn: opts.execFn,
+  });
+}
+
+/**
  * #1167 round-3 — the escape hatch, beside `PI_ENSEMBLE_PLAN_QUALITY` and read
  * the same way (`0`/`false` disables). `0` leaves the planner's fences exactly
  * as written — the pre-#1167 behaviour, develop gate included — and says so in

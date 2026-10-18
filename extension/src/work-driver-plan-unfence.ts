@@ -41,9 +41,10 @@
  */
 
 import { trace, traceWarn } from "./trace.ts";
+import { resolveDefiningFile } from "./work-driver-plan-unfence-defines.ts";
 import {
+  couldNotResolveNote,
   issueNamedTokensWithRejections,
-  resolveDefiningFile,
 } from "./work-driver-plan-unfence-extract.ts";
 import { definingFiles, readAtRef } from "./work-driver-plan-unfence-git.ts";
 import { placeUnplacedPath, rankIdentifiers } from "./work-driver-plan-unfence-place.ts";
@@ -62,7 +63,7 @@ import {
   unresolvedIdentifierNote,
 } from "./work-driver-plan-unfence-notes.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
-import type { PlanUnfenceSummary, Workstream } from "./workflow-state-schema.ts";
+import type { Workstream } from "./workflow-state-schema.ts";
 
 /**
  * One warning per refused issue-named token (#1167 round-3). Only path-shaped
@@ -137,7 +138,7 @@ const MAX_IDENTIFIER_RESOLUTIONS = 15;
  *     the de-duplicated set of names, with the remainder recorded as a warning
  *     rather than dropped silently.
  *
- * There is no per-name pre-filter, and `relevantIdentifiers` says why.
+ * There is no per-name pre-filter, and `rankIdentifiers` says why.
  *
  * Every path — the ones the issue wrote directly and the ones an identifier
  * resolved to — passes `isUnfenceablePath` before it is returned, so an
@@ -235,8 +236,15 @@ async function issueNamedPaths(
     // the symbol never own it. Anything else is ambiguous and never unfences.
     let sole: string | undefined;
     try {
-      sole = await resolveDefiningFile(token, unique, (file) =>
-        readAtRef(file, opts.execFn, opts.repoRoot, opts.ref),
+      sole = await resolveDefiningFile(
+        token,
+        unique,
+        (file) => readAtRef(file, opts.execFn, opts.repoRoot, opts.ref),
+        // #1167 round-4 — no bare catch down in the resolver: a `git show`
+        // that FAILED is reported here as "could not resolve", never swallowed
+        // into the same empty answer as "no file defines this". Both keep the
+        // fence; only one of them is a fact about the repository.
+        (name, why) => warnings.push(couldNotResolveNote(name, why)),
       );
     } catch (err) {
       warnings.push(
@@ -292,10 +300,11 @@ function allFenceEntries(workstreams: Record<string, Workstream>): Set<string> {
  * that path is rolled back (see `UnfenceRecord.restored`) rather than
  * reported and left un-done.
  *
- * A fence is matched EXACTLY (see `fenceEntryCovering`): an issue naming
- * `config/app.ts` does not lift a `config/` directory fence. When a broader
- * fence covers the path the pass keeps it and records a note, so the plan says
- * why nothing changed.
+ * A fence is matched EXACTLY (`fenceEntryMatching` compares the normalised
+ * entry to the path and removes only an entry that equals it): an issue naming
+ * `config/app.ts` does not lift a `config/` directory fence. When such a
+ * broader fence covers the path, `fenceCoveringBroader` finds it, the pass
+ * keeps it and records a note, so the plan says why nothing changed.
  */
 export async function unfenceIssueNamedPaths(
   workstreams: Record<string, Workstream>,
@@ -387,6 +396,12 @@ export async function unfenceIssueNamedPaths(
       // issue-named file is normally on a SIBLING. Applying the filter here
       // meant the "we saw a wider fence and declined to open it" note almost
       // never fired, and a pass that declined read as a pass that saw nothing.
+      //
+      // A note is evidence about what the pass SAW, so unlike a removal it
+      // never has to be taken back: when every removal for this path is later
+      // rolled back (see `UnfenceRecord.restored`), the `unfenced …` notes go
+      // with the removal and this one stays, because the broader fence really
+      // is still there.
       for (const id of ids) {
         const ws = next[id];
         if (!ws) continue;
@@ -427,11 +442,15 @@ export async function unfenceIssueNamedPaths(
     }
     const kept = removals.filter((rec) => rec.restored !== undefined);
     if (kept.length > 0) {
-      // #1167 round-3 — the rollback has to take its own note back with it.
-      // The `unfenced …` note was pushed above on the assumption the removal
-      // stuck; leaving it in place alongside a fence that is back makes the
-      // plan say two opposite things about the same file, and the operator
-      // reading notes cannot tell which is the plan the develop gate sees.
+      // #1167 round-3 / round-4 — the rollback has to take its own notes back
+      // with it. The `unfenced …` note was pushed above on the assumption the
+      // removal stuck; leaving it in place alongside a fence that is back makes
+      // the plan say two opposite things about the same file, and the operator
+      // reading notes cannot tell which is the plan the develop gate sees. The
+      // `unfenced <path>: named by the issue` line is the same claim in a second
+      // field — round-3 removed the long form and left that one, so a fully
+      // rolled-back path still read "unfenced" beside a warning that said it was
+      // left fenced. Both go when nothing was removed.
       const dropped = unfencedNote(path);
       for (let i = notes.length - 1; i >= 0; i--) {
         if (notes[i] === dropped) notes.splice(i, 1);
@@ -454,34 +473,8 @@ export async function unfenceIssueNamedPaths(
   return { workstreams: next, notes, warnings, placed, removed };
 }
 
-/**
- * #1167 round-3 — the one-line record the plan step persists on
- * `pipelineState.planQuality` so the operator can see the pass ran, what it
- * did, and what it declined to do.
- *
- * Before this, notes and warnings went only to `trace()` — a stream the
- * operator does not read during a cycle, so "the unfence found nothing" and
- * "the unfence could not read the issue / hit its cap / failed at git" looked
- * identical from the state file. `kept` is the count of broader-directory
- * fences the pass deliberately did not open. `undefined` fields are absent
- * rather than zero so a clean pass writes `{ran: true, removed: 0, kept: 0}`
- * and nothing else.
- */
-export function unfenceSummary(
-  result: UnfenceResult,
-  issueBodyUnreadable = false,
-): PlanUnfenceSummary {
-  const kept = result.notes.filter((n) => n.startsWith("kept fence ")).length;
-  const rolledBack = result.removed.filter((r) => r.restored !== undefined).length;
-  const unresolved = result.warnings.filter((w) => w.startsWith("unresolved identifier")).length;
-  return {
-    ran: true,
-    removed: result.removed.length - rolledBack,
-    kept,
-    rolledBack,
-    unresolved,
-    ...(issueBodyUnreadable ? { issueBodyUnreadable: true } : {}),
-    ...(result.notes.length > 0 ? { notes: result.notes.slice(0, 10) } : {}),
-    ...(result.warnings.length > 0 ? { warnings: result.warnings.slice(0, 10) } : {}),
-  };
-}
+// `unfenceSummary` — the operator's persisted record of this pass — lives with
+// the note builders it counts in work-driver-plan-unfence-notes.ts (the §12
+// cap, and it reads those exact strings). Re-exported so the plan step keeps
+// one import path for the pass and its record.
+export { unfenceSummary } from "./work-driver-plan-unfence-notes.ts";

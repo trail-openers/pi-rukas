@@ -202,6 +202,18 @@ export async function planTimeoutCorrective(
     text: string,
   ) => Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }>,
   planCorrectivePrompt: (prompt: string, steer: string) => string,
+  // #1167 round-4 — the same fold + coupling merge + unfence the primary plan
+  // and the quality corrective run, supplied by the caller so this module does
+  // not import the coupling pass and the three paths cannot drift apart. An
+  // omitted normaliser is honest pass-through (a test that only exercises the
+  // dispatch), never a silent skip of the unfence in production — `runPlan`
+  // always supplies it.
+  normalise?: (
+    raw: Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }>,
+    state: WorkState,
+  ) => Promise<
+    Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }>
+  >,
 ): Promise<{
   ok: boolean;
   state: WorkState;
@@ -254,7 +266,8 @@ export async function planTimeoutCorrective(
       await buildCompletionEvent(ctx, "plan", "explore", "plan:corrective", retry),
     );
     const reparsed = parseWorkstreams(retry.text ?? "");
-    const workstreams = Object.keys(reparsed).length > 0 ? reparsed : ({} as typeof reparsed);
+    const parsed = Object.keys(reparsed).length > 0 ? reparsed : ({} as typeof reparsed);
+    const workstreams = (await normalise?.(parsed, state)) ?? parsed;
     return { ok: true, state, workstreams };
   }
 }

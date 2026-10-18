@@ -10,7 +10,7 @@
  * named no fence", which is how an extraction bug reads as a clean plan.
  */
 
-import { definesSymbol, resolveDefiningFile } from "../src/work-driver-plan-unfence-extract.ts";
+import { definesSymbol, resolveDefiningFile } from "../src/work-driver-plan-unfence-defines.ts";
 import { type UnfenceResult, unfenceIssueNamedPaths } from "../src/work-driver-plan-unfence.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 
@@ -108,14 +108,24 @@ const OPTS = {
     "a name that merely starts with the symbol is not the symbol",
   );
   const files: string[] = [];
-  const sole = await resolveDefiningFile("thing", ["src/a.ts", "src/b.ts"], async (f) => {
-    files.push(f);
-    return f === "src/a.ts" ? "export function thing() {}\n" : "//\n";
-  });
+  const silence = (): void => {};
+  const sole = await resolveDefiningFile(
+    "thing",
+    ["src/a.ts", "src/b.ts"],
+    async (f) => {
+      files.push(f);
+      return f === "src/a.ts" ? "export function thing() {}\n" : "//\n";
+    },
+    silence,
+  );
   assert(sole === "src/a.ts", "exactly one candidate carries a definition → that file resolves");
   assert(
-    (await resolveDefiningFile("thing", ["src/a.ts", "src/b.ts"], async () => "//\n")) ===
-      undefined,
+    (await resolveDefiningFile(
+      "thing",
+      ["src/a.ts", "src/b.ts"],
+      async () => "//\n",
+      silence,
+    )) === undefined,
     "zero definitions → ambiguous → nothing resolves",
   );
   assert(
@@ -123,10 +133,52 @@ const OPTS = {
       "thing",
       ["src/a.ts", "test/a.ts", "AGENTS.md"],
       async () => "export function thing() {}\n",
+      silence,
     )) === "src/a.ts",
     "test and prose candidates never own a symbol even when they contain the same text",
   );
   assert(files.length === 2, "every source candidate is read before deciding (no early win)");
+
+  // #1167 round-4 — the bare `catch` used to make a read that FAILED identical
+  // to a read that found nothing, so the plan reported "this symbol is defined
+  // nowhere" for a `git show` that broke. Failing CLOSED is unchanged; silence
+  // is what is not.
+  const notes: string[] = [];
+  assert(
+    (await resolveDefiningFile(
+      "thing",
+      ["src/a.ts", "src/b.ts"],
+      async (f) => {
+        if (f === "src/a.ts") throw new Error("git show exited 1");
+        return "export function thing() {}\n";
+      },
+      (name, why) => notes.push(`${name}: ${why}`),
+    )) === "src/b.ts",
+    "one readable file that DECLARES the symbol still resolves, despite a sibling that could not be read",
+  );
+  const failed: string[] = [];
+  assert(
+    (await resolveDefiningFile(
+      "thing",
+      ["src/a.ts", "src/b.ts"],
+      async () => {
+        throw new Error("git show killed");
+      },
+      (name, why) => failed.push(`${name}: ${why}`),
+    )) === undefined,
+    "when every read failed, nothing resolves (a failed read is never a no-match)",
+  );
+  assert(
+    failed.length === 1 &&
+      failed[0]?.startsWith("thing: could not resolve") &&
+      failed[0].includes("src/a.ts") &&
+      failed[0].includes("src/b.ts"),
+    "and the pass says which files it could not read, instead of reporting 'defined nowhere'",
+  );
+  assert(
+    notes.length === 0,
+    "a clean resolution writes no 'could not resolve' note (the warning is for failures, not for reading)",
+  );
 }
 
 console.log(exit === 0 ? "\nAll plan-unfence identifier assertions passed." : "\nFAILURES above.");

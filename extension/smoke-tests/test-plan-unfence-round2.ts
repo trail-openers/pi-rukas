@@ -196,6 +196,27 @@ const OPTS = {
     "the kept fence is recorded as a note rather than passing silently",
   );
 
+  // #1167 round-4 — the SAME fence written as a glob (`extension/src/**`) is
+  // the same directory, and a fence that has to be spelled one way to be seen
+  // is a fence the "we declined to open a wider fence" note silently misses.
+  const globbed = await unfenceIssueNamedPaths(
+    { default: WS("default", ["extension/src/app.ts"], ["extension/src/**", "other/"]) },
+    body,
+    { ...OPTS, defaultToSingle: true },
+  );
+  assert(
+    globbed.workstreams.default.outOfScope.includes("extension/src/**"),
+    "an issue naming one file does not lift a broader `dir/**` fence either",
+  );
+  assert(
+    globbed.notes.some(
+      (n) =>
+        n ===
+        "kept fence extension/src/**: the issue named extension/src/dispatch.ts, not the whole directory",
+    ),
+    "the glob-shaped directory fence is recognised as broader and recorded as a kept fence",
+  );
+
   // N>1 with no shared directory: the removal is ROLLED BACK, so "left fenced"
   // is literally true rather than a note describing a plan that does not exist.
   const orphan = await unfenceIssueNamedPaths(
@@ -217,6 +238,15 @@ const OPTS = {
   assert(
     orphan.warnings.some((w) => w.includes("left fenced for placement")),
     "the warning says why the path stayed fenced",
+  );
+  // #1167 round-4 — and the NOTES agree with that warning. Round-3 removed the
+  // long-form `unfenced … — placed in workstream X` line on rollback but left
+  // the plain `unfenced <path>: named by the issue`, so a fully rolled-back
+  // path still announced itself as unfenced in `notes` while `warnings` said it
+  // was left fenced. Nothing was removed, so no note may claim otherwise.
+  assert(
+    !orphan.notes.some((n) => n.startsWith("unfenced ")),
+    "a path whose every removal was rolled back leaves no 'unfenced' note (the notes cannot contradict the 'left fenced' warning)",
   );
 
   // N>1 WITH a shared directory: placement happens and the fence stays gone.
