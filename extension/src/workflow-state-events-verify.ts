@@ -130,6 +130,12 @@ export type VerifyCompletedEvent = {
   target: VerifyTarget;
   tier?: VerifyTier;
   status: VerifyStatus;
+  /**
+   * `status === "success"`. Released in 0.13.0 as a stable NDJSON field of this
+   * kind (docs/headless.md, the stable subset), so it stays alongside `status`:
+   * renaming a stable field is a contract break, adding one is not.
+   */
+  ok: boolean;
   /** Wall-clock ms for the run. Absent when `status` is `skipped` (nothing ran). */
   ms?: number;
   /** The verdict came from a previous passing run of the same tree, not a new exec. */
@@ -185,6 +191,7 @@ export function makeVerifyRunEvents(
       at,
       ...shared,
       status: args.status,
+      ok: args.status === "success",
       ...(args.ms !== undefined ? { ms: args.ms } : {}),
       ...(args.reused === true ? { reused: true } : {}),
       ...(args.evidenceTail !== undefined ? { evidenceTail: args.evidenceTail } : {}),

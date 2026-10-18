@@ -209,10 +209,11 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // that exists for the 22 minutes the operator used to watch empty.
       return `  verify-started · ${e.step} · ${verifyTargetText(e)} · ${e.command.slice(0, 60)}${e.tier ? ` · ${e.tier}` : ""}${e.retried ? " · re-run" : ""}`;
     case "verify-completed":
-      // The verdict + the cost. `timeout` reads differently from `failure`
+      // The verdict + the cost + the command (the line must stand alone in a
+      // trailing log whose start event scrolled off). `timeout` reads differently from `failure`
       // because a killed run judged nothing (#1324); `reused` says no command
       // was executed for this verdict at all.
-      return `  verify-completed · ${e.step} · ${verifyTargetText(e)} · ${e.status}${e.ms !== undefined ? ` · ${fmtElapsed(e.ms)}` : ""}${e.reused ? " (reused)" : ""}${e.tier ? ` · ${e.tier}` : ""}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
+      return `  verify-completed · ${e.step} · ${verifyTargetText(e)} · ${e.status}${e.ms !== undefined ? ` · ${fmtElapsed(e.ms)}` : ""}${e.reused ? " (reused)" : ""}${e.tier ? ` · ${e.tier}` : ""} · ${e.command.slice(0, 60)}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
     case "consolidated-verify-pre-existing":
       // #1404 — a red gate that did not stop the push, because every failing
       // test is red at the base commit too. Names and base ride on the event

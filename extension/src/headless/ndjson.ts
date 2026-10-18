@@ -51,7 +51,8 @@ export const NDJSON_STABLE_FIELDS = {
   // unexplained ~22-minute gap. `command`, `step` and `at` are the identity of
   // the run; `ms`/`status` on the completion are the answer.
   "verify-started": ["step", "command", "at"],
-  "verify-completed": ["step", "command", "status", "ms", "at"],
+  // `ok` is the 0.13.0 stable field; `status` was added beside it (#1613).
+  "verify-completed": ["step", "command", "ok", "status", "ms", "at"],
   "cap-hit": ["cap", "at", "nextStep"],
   "handoff-emitted": ["at", "commentUrl", "labelApplied"],
   "ci-status": ["at", "status", "runUrl"],

@@ -16,6 +16,7 @@
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
+import { type DevelopGateRecord, gatePassKey } from "./work-driver-verify-gate-reuse.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { makeConsolidatedVerifySkippedEvent } from "./workflow-state-events-verify-flake.ts";
 import type { VerifyRunEventFragment, VerifyStartedEvent } from "./workflow-state-events-verify.ts";
@@ -71,6 +72,7 @@ export function finishVerifyRun(
       command: started.command,
       target: started.target,
       status: ok ? "success" : "failure",
+      ok,
       ms: at - started.at,
     },
   ];
@@ -96,6 +98,7 @@ export function recordDevelopGateEvents(
   gate: {
     consolidatedVerifySkipped?: AlreadyVerifiedTree;
     verifyEvents?: VerifyRunEventFragment[];
+    gateRecord?: DevelopGateRecord;
   },
 ): WorkState {
   const [started, completed] = gate.verifyEvents ?? [];
@@ -114,5 +117,28 @@ export function recordDevelopGateEvents(
       : []),
     ...(completed ? [completed] : []),
   ];
-  return events.length === 0 ? state : appendEvent(state, ...events);
+  const recorded = withGateRecord(state, gate.gateRecord);
+  return events.length === 0 ? recorded : appendEvent(recorded, ...events);
+}
+
+/**
+ * #1415 — fold one gate pass's reuse records into `pipelineState.gateReuse`:
+ * the verdict it established (keyed by its triple), the greens it established,
+ * and the removal of every green it refuted. Without this the gate computed its
+ * records and nothing kept them, so no develop pass could ever reuse one.
+ */
+function withGateRecord(state: WorkState, record: DevelopGateRecord | undefined): WorkState {
+  if (record === undefined) return state;
+  const prev = state.pipelineState.gateReuse ?? { passes: {}, workstreamGreens: {} };
+  const passes = { ...prev.passes };
+  if (record.pass !== undefined) {
+    const p = record.pass;
+    passes[gatePassKey(p.treeHash, p.cmd, p.timeoutMs)] = p;
+  }
+  const workstreamGreens = { ...prev.workstreamGreens, ...Object.fromEntries(record.greens) };
+  for (const id of record.refuted) delete workstreamGreens[id];
+  return {
+    ...state,
+    pipelineState: { ...state.pipelineState, gateReuse: { passes, workstreamGreens } },
+  };
 }
