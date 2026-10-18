@@ -5,6 +5,7 @@
  * for the WHY explanation used by every handoff surface.
  */
 
+import { reviewWallClockMs } from "./review-budget.ts";
 import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
@@ -72,8 +73,8 @@ export function explainCap(
       return "adversarial gate ran its 3-round internal loop and could not reach APPROVED — the diff still has issues the adversarial-developer flagged";
     case "round-cap":
       return `lens-review hit its ${MAX_REVIEW_ROUNDS}-round cap with findings still open — the lens reviewers and the developer's fixes did not converge`;
-    case "wall-clock":
-      return "lens-review fix loop exceeded its 90-minute wall-clock cap — total time spent in review/fix iterations is past the budget";
+    case "lens-review-timeout":
+      return `lens-review fix loop exceeded its ${reviewWallClockMs() / 60_000}-minute budget — total time spent in review/fix iterations is past it (PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS). This is the review loop's own budget, not the cycle's time limit`;
     case "review-incomplete":
       return "at least one lens failed every retry, so the six-pass review is incomplete — the diff was not fully reviewed, which is not the same as being rejected";
     case "ci-retry":
