@@ -29,11 +29,13 @@ import path from "node:path";
 import { execp } from "../src/exec.ts";
 import { checkpointCapedDispatch } from "../src/work-driver-cap-checkpoint.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { verifyTimeoutMs } from "../src/work-driver-verify-develop-helpers.ts";
 import { initialState, writeState } from "../src/workflow-state.ts";
 
-/** #1414 — the command the checkpoint is supposed to run, spelled once here
- * and asserted verbatim against what the injected executor received. */
-const TYPECHECK_CMD = "bun x tsc --noEmit";
+/** #1414 — the command the checkpoint is supposed to run, imported from src (it
+ * is spelled once there too) and asserted verbatim against what the injected
+ * executor received and what the status file prints. */
+import { CHECKPOINT_TYPECHECK_CMD as TYPECHECK_CMD } from "../src/work-driver-cap-checkpoint.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -99,27 +101,36 @@ const fakePi = { sendUserMessage: () => {} } as unknown as ExtensionAPI;
  * `tree: "committed"` into a tautology; forwarding keeps those assertions
  * meaningful. Typed against the seam itself, since smoke tests are outside
  * extension/tsconfig.json's include list and would not be type-checked.
+ *
+ * Round 2 — the forward is `{ ...opts, maxBuffer: ... }`, NOT
+ * `{ maxBuffer: ..., ...opts }`. The old order put the spy's own 8 MiB default
+ * FIRST, so whatever the driver passed was overridden: the checkpoint's
+ * 256 KiB cap — and the `timeout` the binding adds — were invisible to the
+ * test that exists to observe them. `optsReceived` is what the bound assertions
+ * read.
  */
-function typecheckSpy(
-  behaviour: "resolve" | "reject" | "reject-non-error" = "resolve",
-): {
+function typecheckSpy(behaviour: "resolve" | "reject" | "reject-non-error" = "resolve"): {
   fn: NonNullable<DriverContext["checkpointExecFn"]>;
   calls: { cmd: string; cwd?: string }[];
+  optsReceived: Array<Record<string, unknown> | undefined>;
 } {
   const calls: { cmd: string; cwd?: string }[] = [];
+  const optsReceived: Array<Record<string, unknown> | undefined> = [];
   const fn: NonNullable<DriverContext["checkpointExecFn"]> = async (cmd, opts) => {
     if (cmd.includes("tsc")) {
       calls.push({ cmd, cwd: opts?.cwd });
+      optsReceived.push(opts as Record<string, unknown> | undefined);
       if (behaviour === "resolve") return { stdout: "", stderr: "" };
       if (behaviour === "reject") throw new Error("tsc exited 2: type errors");
       // A non-Error rejection must still land as typechecked: false — the
       // checkpoint is contractually non-throwing.
       throw "tsc blew up without an Error";
     }
-    // git and anything else: the real executor, unchanged.
+    // git and anything else: the real executor. The driver's own opts win —
+    // the spy supplies a floor, it does not clobber (round-2 LOW finding).
     return execp(cmd, { maxBuffer: 8 * 1024 * 1024, ...opts });
   };
-  return { fn, calls };
+  return { fn, calls, optsReceived };
 }
 
 // ------------------------------- (M6) scoped stage, foreign file NOT swept
@@ -267,7 +278,10 @@ function typecheckSpy(
       typeof checkpointCapedDispatch
     >[0];
     const out = await checkpointCapedDispatch(ctx, s, "develop");
-    assert(out.pipelineState.capedPartialState?.tree === "committed", "#1190: checkpoint committed");
+    assert(
+      out.pipelineState.capedPartialState?.tree === "committed",
+      "#1190: checkpoint committed",
+    );
     const committed = git(repo, "show", "--name-only", "--format=", "HEAD").split("\n");
     assert(committed.includes("seed.txt"), "#1190: the first ` M` record is committed whole");
     assert(committed.includes("zz-new.ts"), "#1190: the later record is committed too");
@@ -341,7 +355,12 @@ function typecheckSpy(
     const passContent = await readFile(passFile, "utf8").catch(() => "");
     assert(
       passContent.includes(`Typecheck (${TYPECHECK_CMD}) passed at the checkpoint.`),
-      `#1414: the status file names the command it ran on the pass case (got: ${JSON.stringify(passContent.split("\n").filter((l) => l.startsWith("Typecheck")).join("|"))})`,
+      `#1414: the status file names the command it ran on the pass case (got: ${JSON.stringify(
+        passContent
+          .split("\n")
+          .filter((l) => l.startsWith("Typecheck"))
+          .join("|"),
+      )})`,
     );
   } finally {
     rmSync(repo, { recursive: true, force: true });
@@ -368,6 +387,18 @@ function typecheckSpy(
     const out = await checkpointCapedDispatch(ctx, s, "develop");
     const cps = out.pipelineState.capedPartialState;
     assert(spy.calls.length === 1, "#1414-fail: the typecheck branch ran once");
+    // Round 2: the driver's own exec opts must reach the executor. The spy
+    // used to spread ITS maxBuffer first, so the checkpoint's 256 KiB cap and
+    // the `timeout` the binding adds were both invisible here — the assertions
+    // below are the ones that would have failed pre-fix.
+    assert(
+      spy.optsReceived[0]?.timeout === verifyTimeoutMs(),
+      `#1414-r2: the typecheck is BOUNDED — the executor received timeout === verifyTimeoutMs() (${String(spy.optsReceived[0]?.timeout)})`,
+    );
+    assert(
+      spy.optsReceived[0]?.maxBuffer === 256 * 1024,
+      `#1414-r2: the driver's maxBuffer is not clobbered by the spy's default (got ${String(spy.optsReceived[0]?.maxBuffer)})`,
+    );
     assert(cps?.typechecked === false, "#1414-fail: a rejecting typecheck records false");
     assert(cps?.tree === "committed", "#1414-fail: a failed typecheck still commits (recovery)");
     const failContent = await readFile(

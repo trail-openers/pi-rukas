@@ -17,6 +17,7 @@ import type { LensReviewSummary } from "./lens-review.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
 import type { DispatchImage, DispatchResult } from "./types.ts";
+import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import type { EmitSink } from "./work-state-emit.ts";
 import { KNOWN_STATUSES } from "./workflow-state-validate.ts";
@@ -85,20 +86,18 @@ export type CycleContext = DriverContext & { emitSink: EmitSink };
 
 /**
  * #1414 — the shell-executor shape the driver's test seams accept, written
- * once so `verifyExecFn` and `checkpointExecFn` cannot drift. Structurally
- * identical to `VerifyExecFn` (work-driver-git.ts), declared here rather than
- * imported so a context type does not pull in that module's git/restore code.
+ * once so `verifyExecFn` and `checkpointExecFn` cannot drift.
+ *
+ * Round 2: this used to be a SECOND structural declaration of the same shape.
+ * Two literals that must stay byte-equivalent is one more thing to forget — an
+ * added option on `VerifyExecFn` would have left this one silently dropping it,
+ * which is precisely the #1279 failure the `argv` field exists to prevent.
+ * `work-driver-git.ts` is the leaf (its jsdoc header says so) and `VerifyExecFn`
+ * is its one executor type, so this is an ALIAS of it: one declaration, and the
+ * `satisfies` check there keeps `execp` honest against both names. A type-only
+ * import pulls no runtime code, so the leaf-ness claimed above is unaffected.
  */
-export type DriverExecFn = (
-  cmd: string,
-  opts?: {
-    cwd?: string;
-    timeout?: number;
-    maxBuffer?: number;
-    shell?: string;
-    argv?: string[];
-  },
-) => Promise<{ stdout: string; stderr?: string }>;
+export type DriverExecFn = VerifyExecFn;
 
 export interface DriverContext {
   /** The host the cycle runs in (#1020). Pi-session or a recording test host. */

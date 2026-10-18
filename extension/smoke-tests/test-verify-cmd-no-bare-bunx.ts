@@ -27,18 +27,10 @@ import { readFirstConfigLine } from "../src/work-driver-verify-cmd.ts";
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BARE_BUNX = /\bbunx\b/;
 
-/**
- * #1414 — the checkpoint's typecheck command, spelled once in src and
- * repeated as prose in three files that cannot import it (one is a type-only
- * module; the others are docs). Pinned to the constant AND to itself here so
- * a rewrite of any one site fails the gate rather than quietly restoring the
- * bug's operator-facing lie.
- */
-const CHECKPOINT_CMD = "bun x tsc --noEmit";
-
 /** Where the checkpoint command is spelled, and what each site must say. */
 const PROSE_FILES: readonly string[] = [
   "extension/src/work-driver-cap-checkpoint.ts",
+  "extension/src/work-driver-cap-checkpoint-typecheck.ts",
   "extension/src/work-driver-caped-state.ts",
   "extension/src/workflow-state-cap.ts",
   "AGENTS.md",
@@ -66,19 +58,32 @@ const EXEMPT_FILES: readonly string[] = [
  * states the checkpoint's command for a human reader. */
 type ProseEntry = readonly [path: string, commandMention: string];
 
+/** Escape a literal for embedding in a RegExp (the command contains no regex
+ * metacharacters today, but a future `.` or `+` in it must not silently turn
+ * the drift gate into a pattern that matches something else). */
+function escapeRe(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * Each entry: [file, [substring that must appear]]. Substrings are checked
  * RAW (no token substitution) so a site cannot satisfy the gate by naming a
  * constant instead of the command the operator reads.
  *
- * The three src sites spell the command only inside
+ * The src sites spell the command only inside
  * `CHECKPOINT_TYPECHECK_CMD`, so their mention is that constant's name (the
  * executed literal and the exported value are pinned separately, below).
- * The doc sites carry the command itself, so their mention is the command.
+ * The doc sites carry the command itself, so their mention is
+ * `CHECKPOINT_TYPECHECK_CMD` — imported from src, so this file cannot drift
+ * from what the driver runs (it used to spell the command a second time in a
+ * local `CHECKPOINT_CMD`, which is the same two-sources-of-truth shape the
+ * gate exists to catch).
  */
 const CHECKPOINT_PROSE: readonly ProseEntry[] = [
-  // The jsdoc above typecheckWorktree.
+  // The jsdoc above the checkpoint's command constant.
   ["extension/src/work-driver-cap-checkpoint.ts", "CHECKPOINT_TYPECHECK_CMD"],
+  // The executed call, in the typecheck sibling the command was split into.
+  ["extension/src/work-driver-cap-checkpoint-typecheck.ts", "CHECKPOINT_TYPECHECK_CMD"],
   // The handoff bullet both renderers print.
   ["extension/src/work-driver-caped-state.ts", "CHECKPOINT_TYPECHECK_CMD"],
   // The record type's own doc comment (type-only module — it names the
@@ -86,10 +91,10 @@ const CHECKPOINT_PROSE: readonly ProseEntry[] = [
   // drift from what the driver runs).
   ["extension/src/workflow-state-cap.ts", "CHECKPOINT_TYPECHECK_CMD"],
   // Operator-facing docs: no constant is in scope, so they spell it out.
-  ["AGENTS.md", "bun x tsc --noEmit"],
-  ["CONTRIBUTING.md", "bun x tsc --noEmit"],
-  ["docs/configuration.md", "bun x tsc --noEmit"],
-  [".pi/worktree-setup", "bun x tsc --noEmit"],
+  ["AGENTS.md", CHECKPOINT_TYPECHECK_CMD],
+  ["CONTRIBUTING.md", CHECKPOINT_TYPECHECK_CMD],
+  ["docs/configuration.md", CHECKPOINT_TYPECHECK_CMD],
+  [".pi/worktree-setup", CHECKPOINT_TYPECHECK_CMD],
 ];
 
 const COMMAND_FILES: readonly HostFile[] = HEADLESS_FILES.filter((f) => f.kind === "command");
@@ -198,7 +203,7 @@ function checkProse(rel: string, text: string): string[] {
     if (file !== rel) continue;
     if (!text.includes(mention))
       fails.push(
-        `${rel} does not name the checkpoint command — expected \`${mention}\` (the checkpoint runs \`${CHECKPOINT_CMD}\`)`,
+        `${rel} does not name the checkpoint command — expected \`${mention}\` (the checkpoint runs \`${CHECKPOINT_TYPECHECK_CMD}\`)`,
       );
   }
   return fails;
@@ -206,8 +211,8 @@ function checkProse(rel: string, text: string): string[] {
 
 // The scope lists themselves: a dropped entry would report a clean repo over
 // files it never read, and a dead exemption hides a typo in a live one.
-if (PROSE_FILES.length < 7)
-  report([`prose scope [${PROSE_FILES.join(", ")}] must cover the 3 src files + 4 doc sites`]);
+if (PROSE_FILES.length < 8)
+  report([`prose scope [${PROSE_FILES.join(", ")}] must cover the 4 src files + 4 doc sites`]);
 for (const [file] of CHECKPOINT_PROSE) {
   if (!PROSE_FILES.includes(file))
     report([`${file} must be in PROSE_FILES — its prose is pinned but not bunx-scanned`]);
@@ -221,7 +226,9 @@ for (const rel of EXEMPT_FILES) {
     continue;
   }
   if (!BARE_BUNX.test(text))
-    report([`exempt file ${rel} no longer carries \`bunx\` — dead exemption; drop it or fix the file`]);
+    report([
+      `exempt file ${rel} no longer carries \`bunx\` — dead exemption; drop it or fix the file`,
+    ]);
 }
 
 for (const rel of PROSE_FILES) {
@@ -236,27 +243,52 @@ for (const rel of PROSE_FILES) {
   report(checkProse(rel, text));
 }
 
-// The executed literal, the exported constant and the prose must be ONE
-// string. Reading the source rather than trusting the constant is what makes
-// this a drift gate: a rewrite of the call site alone is caught.
+// The exported literal, the executed call and the prose must be ONE string.
+// Reading the SOURCE rather than trusting the constant is what makes this a
+// drift gate: a rewrite of either site alone is caught. Both patterns are
+// whitespace-tolerant — the two sites now live in different files and are
+// formatted by Biome, so a line-wrap or an added argument used to fail the
+// gate over formatting and, worse, a `\s*`-less match on the call would pass
+// if someone wrote `run( CHECKPOINT_TYPECHECK_CMD,`.
 {
-  const src = readFileSync(
+  const ckptSrc = readFileSync(
     path.join(REPO_ROOT, "extension/src/work-driver-cap-checkpoint.ts"),
     "utf8",
   );
-  if (!src.includes(`CHECKPOINT_TYPECHECK_CMD = "${CHECKPOINT_CMD}"`))
-    report([`exported CHECKPOINT_TYPECHECK_CMD is not \`${CHECKPOINT_CMD}\``]);
-  if (!src.includes(`run(CHECKPOINT_TYPECHECK_CMD,`))
+  const exportRe = new RegExp(
+    `CHECKPOINT_TYPECHECK_CMD\\s*=\\s*["']${escapeRe(CHECKPOINT_TYPECHECK_CMD)}["']`,
+  );
+  if (!exportRe.test(ckptSrc))
+    report([
+      `exported CHECKPOINT_TYPECHECK_CMD is not \`${CHECKPOINT_TYPECHECK_CMD}\` (or its declaration was reformatted past this gate's pattern)`,
+    ]);
+  // The executed call lives in the typecheck sibling the command was split
+  // into (#1414 round 2, file-size cap) — read THAT file, not the one holding
+  // the constant, or the check silently reads a file that no longer calls it.
+  const callSrc = readFileSync(
+    path.join(REPO_ROOT, "extension/src/work-driver-cap-checkpoint-typecheck.ts"),
+    "utf8",
+  );
+  const callRe = /\brun\s*\(\s*CHECKPOINT_TYPECHECK_CMD\s*,/;
+  if (!callRe.test(callSrc))
     report([
       `typecheckWorktree no longer executes CHECKPOINT_TYPECHECK_CMD — the literal may have drifted from the prose`,
     ]);
   // Canaries for THIS half of the gate, in both directions: a planted bad
-  // literal is caught, and the fixed form is not.
-  const planted = src.replace(`"${CHECKPOINT_CMD}"`, '"bunx tsc --no-emit"');
-  if (planted.includes(`CHECKPOINT_TYPECHECK_CMD = "${CHECKPOINT_CMD}"`))
+  // literal is caught, the fixed form is not, and a REFORMATTED-but-correct
+  // pair of sites still passes (a whitespace-intolerant pattern fails on
+  // layout, which trains people to weaken the gate rather than fix the drift).
+  const planted = ckptSrc.replace(exportRe, `CHECKPOINT_TYPECHECK_CMD = "bunx tsc --no-emit"`);
+  if (exportRe.test(planted))
     report(["GATE-BROKEN: a planted bad checkpoint literal was NOT caught"]);
   else console.log("✓ canary planted bad checkpoint literal: caught");
-  if (checkProse("extension/src/sentinel.ts", `const c = "${CHECKPOINT_CMD}";`).length !== 0)
+  const wrapped = callSrc.replace(callRe, "run(\n        CHECKPOINT_TYPECHECK_CMD,");
+  if (!callRe.test(wrapped))
+    report(["GATE-BROKEN: a line-wrapped (but correct) executed call was flagged as drift"]);
+  else console.log("✓ canary wrapped executed call: still accepted");
+  if (
+    checkProse("extension/src/sentinel.ts", `const c = "${CHECKPOINT_TYPECHECK_CMD}";`).length !== 0
+  )
     report(["GATE-BROKEN: the fixed checkpoint form was flagged as bad"]);
   else console.log("✓ canary fixed checkpoint form: not flagged");
 }
