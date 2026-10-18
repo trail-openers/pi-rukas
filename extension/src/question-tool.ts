@@ -20,7 +20,7 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { type Static, Type } from "@sinclair/typebox";
 
 interface OptionWithDesc {
   label: string;
@@ -52,6 +52,26 @@ const QuestionParams = Type.Object({
   options: Type.Array(OptionSchema, { description: "Options for the user to choose from" }),
 });
 
+/**
+ * Some models send a nested array as its JSON encoding (`"options": "[{…}]"`),
+ * which schema validation rejects before `execute` runs (#1401). Decode it once
+ * here; anything that is not a JSON array is passed through for the validator
+ * to reject as before.
+ */
+export function prepareQuestionArguments(args: unknown) {
+  if (typeof args !== "object" || args === null) return args as Static<typeof QuestionParams>;
+  const raw = (args as { options?: unknown }).options;
+  if (typeof raw !== "string") return args as Static<typeof QuestionParams>;
+  try {
+    const decoded: unknown = JSON.parse(raw);
+    if (Array.isArray(decoded))
+      return { ...args, options: decoded } as Static<typeof QuestionParams>;
+  } catch {
+    // not JSON — leave it for the validator
+  }
+  return args as Static<typeof QuestionParams>;
+}
+
 export const DEFERRED_QUESTION_TEXT =
   "Question recorded for the operator. This session has no terminal, so the answer cannot arrive inside this tool call. End your turn now and call no other tool: the operator's answer arrives as the next user message.";
 
@@ -76,8 +96,11 @@ export function registerQuestionTool(pi: ExtensionAPI) {
     name: "question",
     label: "Question",
     description:
-      "Ask the user a question and let them pick from options. Use when you need user input to proceed.",
+      "Ask the user a question and let them pick from options. Use when you need user input to proceed. " +
+      "One question per call: for several decisions, make one call per decision — calls run one at a time. " +
+      "This is the only tool for asking the user; there is no ask_user, AskUserQuestion or questionnaire tool.",
     parameters: QuestionParams,
+    prepareArguments: prepareQuestionArguments,
     executionMode: "sequential",
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
