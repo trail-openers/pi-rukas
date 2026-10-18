@@ -21,6 +21,7 @@ import {
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
+import { armQuestionDeadline } from "./question-deadline.ts";
 
 interface OptionWithDesc {
   label: string;
@@ -78,9 +79,10 @@ export const DEFERRED_QUESTION_TEXT =
 /**
  * The result of a question nobody can answer inside the tool call. An RPC
  * client reads `details` from the tool's end event, shows the question where
- * its operator is, and sends the answer as the next prompt.
+ * its operator is, and sends the answer as the next prompt. `note` is the
+ * deadline sentence while a /work cycle runs (question-deadline.ts).
  */
-export function deferredQuestionResult(question: string, options: OptionWithDesc[]) {
+export function deferredQuestionResult(question: string, options: OptionWithDesc[], note = "") {
   const details: QuestionDetails = {
     question,
     options: options.map((o) => o.label),
@@ -88,7 +90,7 @@ export function deferredQuestionResult(question: string, options: OptionWithDesc
     deferred: true,
     optionDetails: options.map((o) => ({ label: o.label, description: o.description ?? "" })),
   };
-  return { content: [{ type: "text" as const, text: DEFERRED_QUESTION_TEXT }], details };
+  return { content: [{ type: "text" as const, text: DEFERRED_QUESTION_TEXT + note }], details };
 }
 
 export function registerQuestionTool(pi: ExtensionAPI) {
@@ -111,7 +113,9 @@ export function registerQuestionTool(pi: ExtensionAPI) {
         ? params.options.filter((o): o is OptionWithDesc => typeof o?.label === "string")
         : [];
       if (ctx.mode === "rpc") {
-        return deferredQuestionResult(params.question ?? "", options);
+        const question = params.question ?? "";
+        const note = armQuestionDeadline(pi, question, options[0]?.label);
+        return deferredQuestionResult(question, options, note);
       }
       if (ctx.mode !== "tui") {
         return {

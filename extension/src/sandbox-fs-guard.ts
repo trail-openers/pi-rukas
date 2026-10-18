@@ -77,6 +77,7 @@ const FS_AGNOSTIC_TOOLS = new Set([
   "dispatch_lens_review",
   "adversarial_loop",
   "check_review_cap",
+  "start_review_cap",
 ]);
 
 function isInsideWorkspace(candidate: string): boolean {

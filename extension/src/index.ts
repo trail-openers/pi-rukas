@@ -23,6 +23,7 @@ import { registerPermissionGuard } from "./permission-guard.ts";
 import { registerPlanTool } from "./plan-tool.ts";
 import { setPmActive } from "./pm-active.ts";
 import { registerPmModePersistence } from "./pm-mode-persist.ts";
+import { registerQuestionDeadline } from "./question-deadline.ts";
 import { registerQuestionTool } from "./question-tool.ts";
 import { registerResearchTool } from "./research-tool.ts";
 import { warnIfRetryConfigTooLow } from "./retry-config-check.ts";
@@ -75,6 +76,8 @@ export default async function (pi: ExtensionAPI) {
   // Parent-only by construction: subagent mode returns above, before any
   // tools are registered.
   registerQuestionTool(pi);
+  // #1313 — an operator message clears a headless question's deadline.
+  registerQuestionDeadline(pi);
   // A reopened session goes back into PM mode, tools stripped, as it was.
   registerPmModePersistence(pi, () => stripPmTools(pi));
   registerDispatchTools(pi);

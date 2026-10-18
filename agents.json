@@ -151,6 +151,7 @@
         "dispatch_peek": "allow",
         "dispatch_steer": "allow",
         "check_review_cap": "allow",
+        "start_review_cap": "allow",
         "adversarial_loop": "allow",
         "start_work_driver": "allow",
         "start_plan_driver": "allow",
