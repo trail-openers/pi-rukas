@@ -6,18 +6,23 @@ import {
   type DecideOpts,
   type SweepAction,
   type SweepResult,
+  type SweepTargetError,
+  type SweepTargetResult,
   decideSweepAction,
   groupClaimedByState,
   hasRealDependencyTree,
   isLaunchingCycleOwnWorktree,
   parseWorktreeIssue,
 } from "./work-driver-sweep-rules.ts";
+import { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
 import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
 // The read-only decision surface lives in `work-driver-sweep-rules.ts` (§12
 // cap, split at the read-vs-execute seam). Re-exported so every existing
-// importer of this module — and the sweep tests — keep one import path.
+// importer of this module — and the sweep tests — keep one import path. The
+// target types are declared THERE, not here, so the rules module never imports
+// its own consumer; the re-export is what keeps that move invisible to callers.
 export {
   decideSweepAction,
   groupClaimedByState,
@@ -25,38 +30,43 @@ export {
   isLaunchingCycleOwnWorktree,
   parseWorktreeIssue,
 } from "./work-driver-sweep-rules.ts";
+export { PACKAGE_DIR_MARKERS, PROVISIONED_DEP_NAMES } from "./work-driver-sweep-rules.ts";
 export type {
   DecideOpts,
   StateClaim,
   SweepAction,
   SweepResult,
+  SweepTargetError,
+  SweepTargetResult,
 } from "./work-driver-sweep-rules.ts";
 
 const defaultExecFn: ExecFn = execp;
 
 /**
- * Result of resolving a sweep target.
+ * Parse one sweep-readable state file, rejecting a wrong schema LOUDLY rather
+ * than reading it as this build's `WorkState`.
+ *
+ * The sweep used to `JSON.parse(…) as WorkState`, which is an assertion, not a
+ * check: a v2 file (or a v0 left by an older driver) would be handed to the
+ * rules engine wearing this build's types, and Rules 4–6 would decide a tree's
+ * fate from fields that mean something else. Same version rule `workflow-state.ts`
+ * `readState` applies — kept as the small sync sibling because the sweep reads
+ * many files in a loop and must not await, and because every failure here is
+ * the SAME answer the sweep already gives for a missing or corrupt file: skip
+ * the tree, keep it, move on.
  */
-export interface SweepTargetResult {
-  ok: true;
-  /** Absolute path to the worktree directory. */
-  realPath: string;
-  /** Basename of the worktree (e.g., "issue-477-default"). */
-  name: string;
-}
-
-/**
- * Error result from resolving a sweep target.
- */
-export interface SweepTargetError {
-  ok: false;
-  /** Reason for failure. */
-  reason:
-    | "unresolvable"
-    | "candidate-is-repo-root"
-    | "outside-worktrees"
-    | "not-a-directory"
-    | "not-our-worktree";
+function readSweepState(raw: string, file: string): WorkState {
+  const parsed: unknown = JSON.parse(raw);
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error(`worktree-sweep: ${file} is not an object`);
+  }
+  const version = (parsed as { schemaVersion?: unknown }).schemaVersion;
+  if (version !== WORK_STATE_SCHEMA_VERSION) {
+    throw new Error(
+      `worktree-sweep: ${file} has schemaVersion=${String(version)}, expected ${WORK_STATE_SCHEMA_VERSION}`,
+    );
+  }
+  return parsed as WorkState;
 }
 
 /**
@@ -135,6 +145,12 @@ export function resolveSweepTarget(
 
 /**
  * Execute the decided action.
+ *
+ * The purge arm reports whether it ACTUALLY cleaned: a tree holding a real
+ * dependency directory is left alone, and that outcome is returned as
+ * `purgeSkipped` rather than being folded into "purged" — a caller that puts a
+ * suppressed tree in its `purged` list is telling the operator it cleaned
+ * something it did not touch.
  */
 export async function executeSweepAction(
   action: SweepAction,
@@ -154,7 +170,11 @@ export async function executeSweepAction(
           maxBuffer: 256 * 1024,
         });
       }
-      return { stdout: "", stderr: "purge skipped: real dependency tree present" };
+      return {
+        stdout: "",
+        stderr: "purge skipped: real dependency tree present",
+        purgeSkipped: true,
+      };
     case "remove":
       // From the repo root, the path a worktree was registered with — which is
       // what `git worktree remove` matches, and what `worktreeRemove` in
@@ -237,7 +257,8 @@ export async function runWorktreeSweep(opts: {
 
     // The launching cycle's own tree is not a leftover, whatever its state file
     // says. Checked BEFORE the state read so a cycle is never at the mercy of
-    // its own (possibly mid-write, possibly corrupt) state file.
+    // its own (possibly mid-write, possibly corrupt) state file. A pure-name
+    // check, so it fires even when the file cannot be parsed.
     if (isLaunchingCycleOwnWorktree(resolved.name, launchingCycleIssue)) {
       skipped.push({ path: resolved.realPath, reason: "launching-cycle-own" });
       continue;
@@ -249,15 +270,6 @@ export async function runWorktreeSweep(opts: {
       continue;
     }
 
-    // The launching cycle's own tree is not a leftover, whatever its state file
-    // says. Checked BEFORE the state read so a cycle is never at the mercy of
-    // its own (possibly mid-write, possibly corrupt) state file. A pure-name
-    // check, so it fires even when the file cannot be parsed.
-    if (isLaunchingCycleOwnWorktree(resolved.name, launchingCycleIssue)) {
-      skipped.push({ path: resolved.realPath, reason: "launching-cycle-own" });
-      continue;
-    }
-
     // Read the state file this worktree's NAME points at: `issue-<N>-<id>` ->
     // `<N>.json`. A name that encodes no issue has no state file to consult,
     // and a sweep that cannot say what a tree's cycle decided keeps the tree.
@@ -265,7 +277,7 @@ export async function runWorktreeSweep(opts: {
     let state: WorkState | null = null;
     try {
       const stateContent = readFileSync(stateFilePath, "utf8");
-      state = JSON.parse(stateContent) as WorkState;
+      state = readSweepState(stateContent, stateFilePath);
     } catch {
       // Unreadable state file - skip
       skipped.push({ path: resolved.realPath, reason: "state-unreadable" });
@@ -295,8 +307,9 @@ export async function runWorktreeSweep(opts: {
     };
 
     const action = await decideSweepAction(decideOpts);
+    let outcome: SweepResult;
     try {
-      await executeSweepAction(action, execFn);
+      outcome = await executeSweepAction(action, execFn);
     } catch (err) {
       trace(`worktree-sweep: action execution failed for ${resolved.realPath}: ${err}`);
       skipped.push({ path: resolved.realPath, reason: "action-failed" });
@@ -304,7 +317,15 @@ export async function runWorktreeSweep(opts: {
     }
 
     if (action.type === "purge") {
-      purged.push(resolved.realPath);
+      // A purge the executor suppressed is NOT a purge: it goes to `skipped`
+      // with the reason, never to `purged`. The list is what the operator reads
+      // as "these trees were cleaned", so it says so only when `git clean` ran.
+      if (outcome.purgeSkipped === true) {
+        trace(`worktree-sweep: purge skipped for ${resolved.realPath}: real dependency tree`);
+        skipped.push({ path: resolved.realPath, reason: "purge-skipped:real-deps" });
+      } else {
+        purged.push(resolved.realPath);
+      }
     } else if (action.type === "remove") {
       removed.push(resolved.realPath);
     } else if (action.type === "skip") {
@@ -366,8 +387,9 @@ export async function runWorktreeTeardown(opts: {
     };
 
     const action = await decideSweepAction(decideOpts);
+    let outcome: SweepResult;
     try {
-      await executeSweepAction(action, execFn);
+      outcome = await executeSweepAction(action, execFn);
     } catch (err) {
       trace(`worktree-teardown: action execution failed for ${resolved.realPath}: ${err}`);
       // On error, assume we retain the worktree (safer than removing it)
@@ -376,7 +398,12 @@ export async function runWorktreeTeardown(opts: {
     }
 
     if (action.type === "purge") {
-      // We still retain the worktree, but we've purged artifacts
+      // We still retain the worktree, but a purge that actually ran is a
+      // different fact from one the dependency guard suppressed — both retain
+      // the tree, only one cleaned it, and the trace is where an operator looks.
+      if (outcome.purgeSkipped === true) {
+        trace(`worktree-teardown: purge skipped for ${resolved.realPath}: real dependency tree`);
+      }
       retained.push(resolved.realPath);
     } else if (action.type === "remove") {
       // Worktree removed, not retained

@@ -62,7 +62,9 @@ export function finish(): never {
 }
 
 /** The `skipped` reasons of a sweep result, joined for failure messages. */
-export function skipReasons(res: { skipped: { path: string; reason: string }[] }): string {
+export function skipReasons(res: {
+  skipped: { path: string; reason: string }[];
+}): string {
   return res.skipped.map((s) => s.reason).join(",");
 }
 
@@ -92,4 +94,32 @@ export function abortedState(issue: number): WorkState {
       currentStep: "develop",
     },
   };
+}
+
+/**
+ * A raw state file whose `schemaVersion` is NOT this build's, for the sweep's
+ * read-path test (#1265 FIX 8): a file written by a different driver version
+ * must fall to the sweep's `state-unreadable` skip, never be read as a current
+ * `WorkState`.
+ *
+ * Built by hand rather than from `initialState`, because the point is a payload
+ * the writer would never produce.
+ */
+export function foreignSchemaStateJson(issue: number, schemaVersion = 99): string {
+  return JSON.stringify(
+    {
+      schemaVersion,
+      issue,
+      owner: { pid: deadPid(), at: PAST },
+      updatedAt: PAST,
+      pipelineState: {
+        status: "aborted",
+        currentStep: "develop",
+        worktrees: {},
+      },
+      eventLog: [],
+    },
+    null,
+    2,
+  );
 }
