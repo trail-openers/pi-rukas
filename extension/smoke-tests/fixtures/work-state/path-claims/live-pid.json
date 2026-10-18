@@ -1,0 +1,14 @@
+{
+  "$comment": "A claim whose owner pid is alive and whose age is recent. The gate MUST honour it — this is the concurrency protection #444 exists to provide, and the case the liveness swap must not regress.",
+  "claims": [
+    {
+      "issue": 1421,
+      "pid": -1,
+      "paths": [
+        "extension/src/worktree-provision.ts",
+        "extension/src/work-driver-verify-develop-helpers.ts"
+      ],
+      "startedAt": "@AGE(-60000)"
+    }
+  ]
+}
