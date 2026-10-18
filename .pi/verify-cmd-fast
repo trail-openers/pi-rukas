@@ -2,4 +2,13 @@
 # suite. The driver runs it before .pi/verify-cmd in every worktree and on the
 # consolidated tree; a failure here skips the full run. Developers run only
 # this one and leave .pi/verify-cmd to the driver.
-cd extension && bun x tsc --noEmit && bun run check
+#
+# #1509 — this tier has its OWN bound: PI_ENSEMBLE_VERIFY_FAST_TIMEOUT_MS
+# (default 10 min), or .pi/verify-cmd-fast-timeout-ms. It no longer shares the
+# suite tier's number, so raising the suite budget cannot make a hung typecheck
+# run for half an hour, and a slow suite cannot make this tier look like it was
+# allotted less than it needs.
+#
+# The typecheck names the compiler by PATH, never by alias (#1414/#1118) — see
+# the note in .pi/verify-cmd for why `bun x tsc` silently passed everything.
+cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && bun run check

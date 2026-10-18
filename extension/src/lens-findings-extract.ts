@@ -39,7 +39,13 @@ export function extractFindings(
       lens,
       severity: severity as Severity,
       path: normalisePath(filePath),
-      line: typeof i.line === "number" ? i.line : 0,
+      // #1469 — a call that omits `line` is a FILE-LEVEL finding, and it used to
+      // arrive as `line: 0`. The round then dropped the falsy 0, so "no line"
+      // was expressible only as a hash coincidence and the fate rule could not
+      // tell a file-level finding from anything else that had lost its line.
+      // Say it explicitly, and keep 0 out of the public Finding shape so the
+      // renderers and dedupe keys never conflate line-less with line-zero.
+      ...(typeof i.line === "number" ? { line: i.line } : {}),
       title,
       description: typeof i.description === "string" ? i.description : undefined,
       suggestion: typeof i.suggestion === "string" ? i.suggestion : undefined,

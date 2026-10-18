@@ -20,11 +20,12 @@ import {
   countMarkersInDiffLine,
   countSkipMarkersInDiffLine,
 } from "./work-driver-skip-ratchet.ts";
+import { TIER_KNOB, smokeTierTimeoutMs, verifyTimeoutMs } from "./work-driver-verify-budget.ts";
 import { readFirstConfigLine } from "./work-driver-verify-cmd.ts";
 import {
+  boundText,
   formatExecError,
   testDeleteTolerance,
-  verifyTimeoutMs,
 } from "./work-driver-verify-develop-helpers.ts";
 import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -169,11 +170,17 @@ export async function runSmokeGate(
   }
   if (smokeCmd) {
     const smokeCwd = changedWorktrees[0] ?? repoRoot;
+    // #1509 — the smoke tier has its OWN bound (`PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS`,
+    // `.pi/smoke-cmd-timeout-ms`, default 10 min). It used to inherit the
+    // develop verify number, which meant raising the suite budget also raised
+    // a bound on one product smoke path — and the failure string divided the
+    // shared number by 60000 itself, so a sub-minute bound printed "0-min".
+    const smokeTimeoutMs = await smokeTierTimeoutMs(repoRoot);
     try {
       await withVerifySlot(() =>
         execFn(smokeCmd, {
           cwd: smokeCwd,
-          timeout: verifyTimeoutMs(),
+          timeout: smokeTimeoutMs,
           maxBuffer: 4 * 1024 * 1024,
         }),
       );
@@ -186,7 +193,11 @@ export async function runSmokeGate(
       failures.push(
         formatExecError(
           e,
-          `smoke: command \`${smokeCmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout in ${smokeCwd}`,
+          // #1509 — one renderer for the bound (`boundText`, which prints
+          // seconds for a non-minute-aligned value) and the knob that governs
+          // THIS tier, so the handoff tells the operator the variable that
+          // actually moves this run.
+          `smoke: command \`${smokeCmd}\` exceeded its ${boundText(smokeTimeoutMs)} timeout in ${smokeCwd} (the bound is ${TIER_KNOB.smoke})`,
           `smoke: command \`${smokeCmd}\` failed in ${smokeCwd}`,
         ),
       );

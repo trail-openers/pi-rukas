@@ -26,13 +26,19 @@ import {
   extractRunningTests,
   gateHangClause,
 } from "./work-driver-gate-hang.ts";
+import { VERIFY_SUITE_TIMEOUT_ENV, verifyTimeoutMs } from "./work-driver-verify-budget.ts";
 
-/** PR17 — bounded wall-clock for the verify command (default 10 min). */
-export function verifyTimeoutMs() {
-  const env = Number(process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS);
-  if (Number.isFinite(env) && env > 0) return env;
-  return 10 * 60_000;
-}
+/**
+ * PR17 — bounded wall-clock for the verify command.
+ *
+ * #1509 moved the resolution into `work-driver-verify-budget.ts`; this is a
+ * plain re-export of that reader, so the 11 call sites that take the
+ * develop-tier bound (the skip ratchet's `git diff -U0`, comment retention,
+ * the lens / adversarial comment checks, the checkpoint typecheck, and the
+ * verify gate's own exec sites) all read the SAME resolver the tier bounds do.
+ * A second implementation here is the drift the #1509 spec names as the hazard.
+ */
+export { verifyTimeoutMs };
 
 /** Leads a failure string for a verify run killed at its bound (#1324). */
 export const VERIFY_TIMEOUT_LABEL = "[verify-timeout]";
@@ -62,7 +68,12 @@ export function verifyTimeoutFailure(
   cmd: string,
   where: string,
   timeoutMs: number,
-  knob = "PI_ENSEMBLE_VERIFY_TIMEOUT_MS",
+  // #1509 — the knob defaults to the SUITE tier's, because every existing
+  // caller that reaches this function is bounding the full verify command or
+  // the consolidated run of it. A fast- or smoke-tier kill names its own knob
+  // via the explicit argument; guessing the tier from the command string is
+  // the `withFastTier` `cmd !== fullCmd` hazard this avoids.
+  knob = VERIFY_SUITE_TIMEOUT_ENV,
 ): string {
   return `${VERIFY_TIMEOUT_LABEL} verify command \`${cmd}\` exceeded its ${boundText(timeoutMs)} timeout ${where} — the run was killed at the bound (${knob}), so it reached no verdict about the code`;
 }
@@ -90,7 +101,7 @@ export function verifyHangFailure(
   where: string,
   timeoutMs: number,
   run?: KilledGateRun,
-  knob = "PI_ENSEMBLE_VERIFY_TIMEOUT_MS",
+  knob = VERIFY_SUITE_TIMEOUT_ENV,
 ): string {
   const base = verifyTimeoutFailure(cmd, where, timeoutMs, knob);
   if (run === undefined) return base;
