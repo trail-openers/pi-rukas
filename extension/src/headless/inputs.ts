@@ -350,6 +350,10 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   ms("VERIFY_FAST_TIMEOUT_MS", 600_000),
   flag("VERIFY_FULL", true),
   ms("VERIFY_FULL_TIMEOUT_MS", 1_800_000),
+  // #1415 — reuse of a verify gate the cycle already passed: same tree, same
+  // command, same bound → the whole develop pass runs nothing. Default on; `0`
+  // restores the pre-#1415 "run it every round" behaviour.
+  flag("VERIFY_GATE_REUSE", true),
   ms("VERIFY_SMOKE_TIMEOUT_MS", 600_000),
   ms("VERIFY_SUITE_TIMEOUT_MS", 1_800_000),
   ms("VERIFY_TIMEOUT_MS", 600_000),

@@ -45,8 +45,13 @@ export const NDJSON_STABLE_FIELDS = {
   "step-started": ["step", "at", "round"],
   "dispatch-started": ["step", "role", "jobId", "at"],
   "dispatch-completed": ["step", "role", "jobId", "ok", "ms", "at", "usage"],
+  // #1415 — the driver's verify gate is a host-visible duration, not an
+  // internal detail: the whole point of the pair is that a host (and a human
+  // reading the host's log) can see the gate running instead of watching an
+  // unexplained ~22-minute gap. `command`, `step` and `at` are the identity of
+  // the run; `ms`/`status` on the completion are the answer.
   "verify-started": ["step", "command", "at"],
-  "verify-completed": ["step", "command", "ok", "ms", "at"],
+  "verify-completed": ["step", "command", "status", "ms", "at"],
   "cap-hit": ["cap", "at", "nextStep"],
   "handoff-emitted": ["at", "commentUrl", "labelApplied"],
   "ci-status": ["at", "status", "runUrl"],
