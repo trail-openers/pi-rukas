@@ -297,6 +297,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("SCOPE_GATE", true),
   flag("SEAM_ESCALATION", true),
   flag("SESSION_REATTACH", false),
+  // #1521 — how long a child that reported may linger before it is reaped.
+  ms("SETTLED_REAP_MS", 60_000),
   dir("SKILLS_DIR", "~/.pi/agent/skills"),
   flag("SKIP_RATCHET", true),
   flag("SLOW_NOTICE", true),

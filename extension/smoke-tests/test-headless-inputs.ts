@@ -50,6 +50,7 @@ import {
   childBoundGraceMs,
   developChildBoundMs,
   exploreChildBoundMs,
+  settledReapMs,
 } from "../src/spawn-child-bound.ts";
 import { spawnCap } from "../src/spawn-semaphore.ts";
 import {
@@ -321,6 +322,7 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_CHILD_BOUND_GRACE_MS", childBoundGraceMs],
   ["PI_ENSEMBLE_DEVELOP_BOUND_MS", developChildBoundMs],
   ["PI_ENSEMBLE_EXPLORE_BOUND_MS", exploreChildBoundMs],
+  ["PI_ENSEMBLE_SETTLED_REAP_MS", settledReapMs],
   ["PI_ENSEMBLE_COMMENT_RETENTION_PATHS", () => COMMENT_RETENTION_PATHS.join(",")],
   ["PI_ENSEMBLE_GIT_NET_TIMEOUT_MS", () => NET_GIT_TIMEOUT_DEFAULT_MS],
   ["PI_ENSEMBLE_HANDOFF_CHANNEL", handoffChannel],
