@@ -41,6 +41,11 @@ export const FIXED_CAPS = [
   "adversarial-loop",
   "awaiting-human-merge",
   "ci-retry",
+  // #1454 r3 — the claims lock refused a registration (unwritable
+  // `.pi/work-state`, or held past the wait window). Named rather than left to
+  // surface as `driver-crash:plan`. Sorted where the sort puts it: between
+  // `ci-retry` and `commit-pr-incomplete-consolidation`.
+  "claims-lock-unavailable",
   "commit-pr-incomplete-consolidation",
   "consolidated-verify-conflict",
   "consolidated-verify-consolidation-created",

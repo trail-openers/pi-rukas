@@ -8,6 +8,7 @@
 import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
+import { explainClaimsLock } from "./work-driver-explain-claims.ts";
 import {
   commitPrConsolidationBlurb,
   explainConsolidation,
@@ -214,6 +215,8 @@ export function explainCap(
       // pruned on the next read.
       return `this cycle's declared paths overlap with issue #${siblingIssue}'s path claim — two cycles cannot edit the same files in parallel. The overlapping paths are in the event log evidence field. A claim is honoured only while #${siblingIssue}'s cycle is still running: if that pid has exited, or its state file reads merged/handoff/aborted, the claim is stale and the next /work prunes it — check the pid and .pi/work-state/${siblingIssue}.json before anything else. Only when #${siblingIssue} is genuinely still running is this a real conflict; then re-plan with disjoint file sets.`;
     }
+    case "claims-lock-unavailable":
+      return explainClaimsLock(cap, state);
     case "existing-pr-detected": {
       const pr = state.pipelineState.existingPr;
       const via =
