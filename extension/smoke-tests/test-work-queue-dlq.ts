@@ -84,7 +84,6 @@ function mkState(
     schemaVersion: 1,
     issue,
     // biome-ignore lint/suspicious/noExplicitAny: only the fields the queue reads matter
-    // biome-ignore lint/suspicious/noExplicitAny: only the fields the queue reads matter
     pipelineState: {
       status,
       currentStep: "develop",
@@ -213,11 +212,13 @@ function mkState(
     "...while the identical failure with no recovery after it still halts",
   );
 }
+
+// A review cap is a single cycle's own verdict, so it must never be the thing
+// that stops the queue; and a group with no state file at all cannot be
+// systemic either — there is nothing in it to be systemic about.
 {
-  assert(
-    !isSystemicFailure(mkState(1, "handoff", { cap: "round-cap" })).systemic,
-    "a review cap is issue-scoped",
-  );
+  const reviewCap = mkState(1, "handoff", { cap: "round-cap" });
+  assert(!isSystemicFailure(reviewCap).systemic, "a review cap is issue-scoped");
   assert(!isSystemicFailure(undefined).systemic, "a missing state file is not treated as systemic");
 }
 
@@ -414,6 +415,23 @@ function mkState(
   assert(peak === 1, "concurrency 1 is strictly sequential");
   assert(started.join(",") === "100,101,102,103", "and runs groups in order");
 }
+
+// ==================================================== #1101 dependency park
+//
+// Moved to `test-work-queue-wait.ts` alongside the settlement-timing cases from
+// test-work-queue-preflight-overlap.ts. Both are about what a WAIT waits for — a
+// sibling's SETTLEMENT, not its claim — a separate concern from this file's
+// park-versus-halt decisions, and the two together pushed the file past AGENTS.md
+// §12's 500-line cap. What that file keeps and what it must not lose:
+//
+//   - the dependent's `runGroup` is NEVER invoked when its dependency settles
+//     non-merged — a park that dispatches first still burns the explore + plan
+//     dispatch, which is the whole expense #1101 exists to avoid;
+//   - the park reason is `cap dependency-parked:#N`, naming the dependency, with
+//     an action that says plainly that nothing was built;
+//   - #368 still holds across the edge: a dependency's issue-scoped park is not
+//     systemic, the queue continues past it, and the parked group counts as
+//     parked rather than as one the queue never reached.
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);
