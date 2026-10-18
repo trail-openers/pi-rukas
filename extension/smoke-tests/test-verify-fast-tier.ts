@@ -26,6 +26,10 @@ import {
   verifyCapFor,
 } from "../src/work-driver-verify-develop-helpers.ts";
 import { FAST_TIER_LABEL, fastVerifyCmdFor, withFastTier } from "../src/work-driver-verify-fast.ts";
+import {
+  VERIFY_SUITE_TIMEOUT_ENV,
+  suiteTierTimeoutMs,
+} from "../src/work-driver-verify-budget.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
@@ -53,13 +57,12 @@ const FULL = "bash scripts/verify.sh";
 const FAST = "bun x tsc --noEmit && bun run check";
 const TSC = "src/a.ts(3,1): error TS2304: Cannot find name 'nope'.\n";
 const root = mkdtempSync(path.join(tmpdir(), "pi-fast-tier-"));
-// Case 5 asserts the DEFAULT bound's text ("10-min"). Its bound comes from
-// PI_ENSEMBLE_VERIFY_TIMEOUT_MS, which the gate reads from the environment —
-// an operator who raised it (a 45-min laptop setting) would fail the case for
-// the wrong reason, so the block runs with the knob absent and the asserted
-// text is derived from the production helper. Case 6 passes its bound
-// explicitly (timeoutMs:) and never reads that env var, so it needs no pin.
-const BOUND = await defaultBoundText();
+// Case 5 asserts the DEFAULT bound's text. #1509 moved that bound to the SUITE
+// tier's own knob, so the pin below (which clears the shared
+// PI_ENSEMBLE_VERIFY_TIMEOUT_MS) still matters: an operator who raised the
+// shared knob (a 45-min laptop setting) would otherwise shift the fallback the
+// suite tier resolves through and fail the case for the wrong reason. The
+// asserted text is derived from the production helper rather than spelled here.
 await assertDefaultVerifyBound(assert);
 // The commit-pr tier's own bound (a different knob from the develop gate's),
 // spelled the same way the production helper spells it.
@@ -283,13 +286,21 @@ await pinDefaultVerifyTimeout(async () => {
   };
   st = appendEvent(st, { kind: "cap-hit", at: 2, cap, reviewRound: 0, nextStep: "handoff" });
   const text = explainCap(cap, st);
+  // #1509 — the bound this case now names is the SUITE tier's, not the shared
+  // 10-minute number, and so is the knob: the full verify command IS the tier
+  // that pays for the whole offline suite, which is the tier whose bound had to
+  // grow. The shared `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` text would send an operator
+  // to raise a knob that no longer governs this run — exactly the mis-diagnosis
+  // the per-tier split removes. Both strings are derived from the production
+  // helper rather than spelled as literals here.
+  const suiteBound = boundText(await suiteTierTimeoutMs(root));
   assert(
-    text.includes("TIMED OUT") && text.includes(BOUND),
-    "timeout: the handoff says it timed out, with the bound",
+    text.includes("TIMED OUT") && text.includes(suiteBound),
+    `timeout: the handoff says it timed out, with the SUITE tier's bound (${suiteBound})`,
   );
   assert(
-    text.includes("PI_ENSEMBLE_VERIFY_TIMEOUT_MS") && text.includes("reduce concurrency"),
-    "timeout: the handoff recovery names the knob and concurrency",
+    text.includes(VERIFY_SUITE_TIMEOUT_ENV) && text.includes("reduce concurrency"),
+    "timeout: the handoff recovery names the suite tier's knob and concurrency",
   );
   assert(!text.includes("rejected"), "timeout: the handoff does not call it a rejection");
   st.pipelineState.status = "running";

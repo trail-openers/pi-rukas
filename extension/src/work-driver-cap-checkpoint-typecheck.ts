@@ -58,6 +58,38 @@ import {
 const TYPECHECK_MAX_BUFFER = 256 * 1024;
 
 /**
+ * #1414/#1118 — the ONE spelling of a typecheck command, and it names the
+ * compiler rather than an alias that resolves it.
+ *
+ * `bun x tsc` does NOT mean "the project's tsc". Bun's x (like `npx`) walks a
+ * resolution chain that can answer with something other than the pinned
+ * dependency, and on the host this ticket was filed from it answered with a
+ * GLOBAL TypeScript 7: the invocation printed its usage and exited 0, so the
+ * driver's typecheck gate was a NO-OP that reported every tree as typechecking.
+ * The same alias is why the checkpoint used to accuse good code of being broken
+ * (#1414 round 1: no `bunx` on PATH at all, plus the `--no-emit` flag that is
+ * not a tsc flag).
+ *
+ * So the command spells the compiler as a PATH under the package's own
+ * dependency directory. Nothing in it is looked up: no `bun x`, no `bunx`, no
+ * `tsc` on PATH, no npx-style cache. `node` is the one name that must resolve,
+ * and the sandbox image installs node as a prerequisite. The file it runs is
+ * the real CLI shipped by the `typescript` devDependency, so the version that
+ * answers is the version `extension/package.json` pins — which is the whole
+ * point: a gate cannot pass a tree by running a compiler the project does not
+ * have.
+ *
+ * Written as a bare relative path because every call site runs it with cwd =
+ * the `extension/` directory (the checkpoint's `typecheckWorktree`, the develop
+ * gate's fast tier, and `.pi/verify-cmd*` all `cd extension` first), and that
+ * keeps one spelling for all three.
+ */
+const LOCAL_TSC = "node node_modules/typescript/bin/tsc";
+
+/** The project's main typecheck project, named explicitly rather than defaulted. */
+const TSC_PROJECT = "tsconfig.json";
+
+/**
  * #1414 — the ONE spelling of the checkpoint's typecheck command. The
  * executed call below, the checkpoint's status-file lines and the handoff
  * bullet (work-driver-caped-state.ts) all carry this exact text, so what the
@@ -65,10 +97,12 @@ const TYPECHECK_MAX_BUFFER = 256 * 1024;
  * no-bare-alias gate under `smoke-tests/` pins the exported value, the
  * executed literal and each prose site to one another.
  *
- * `bun x` — not the hyphenless alias the gate refuses — dispatches through
- * the one bun binary always on PATH (#1118); `--noEmit` is the real tsc
- * flag — the hyphenated form is not one, so the old literal failed on every
- * host and the handoff falsely reported committed code as broken.
+ * #1414 round 4 (#1414/#1118) — the command no longer dispatches through an
+ * alias at all: it names the pinned compiler by path. See {@link LOCAL_TSC}
+ * for why `bun x tsc` was the bug rather than the fix (on the reporting host
+ * it resolved a global TypeScript 7, printed usage, and exited 0 — a typecheck
+ * gate that judged nothing). `--noEmit` is the real tsc flag; the hyphenated
+ * form the old literal carried is not one.
  *
  * #1414 round 3 — the constant lives in the LEAF and
  * `work-driver-cap-checkpoint.ts` re-exports it (so the gate's "read the
@@ -76,7 +110,16 @@ const TYPECHECK_MAX_BUFFER = 256 * 1024;
  * way round: a leaf cannot value-import from the module that imports it, which
  * is the cycle this file used to be in. See the module header.
  */
-export const CHECKPOINT_TYPECHECK_CMD = "bun x tsc --noEmit";
+export const CHECKPOINT_TYPECHECK_CMD = `${LOCAL_TSC} --noEmit -p ${TSC_PROJECT}`;
+
+/**
+ * #1414/#1118 — the same compiler, spelled for the project's `.pi/verify-cmd*`
+ * files and any prose site that prescribes a typecheck. One exported string so
+ * the tier files, this constant and the docs cannot each keep their own idea
+ * of what "run the typecheck" means; `test-verify-cmd-no-bare-bunx.ts` asserts
+ * the tier files use exactly this prefix.
+ */
+export const LOCAL_TSC_CMD = LOCAL_TSC;
 
 /**
  * #1414 round 2 — what the checkpoint's typecheck observed, in the three
@@ -309,11 +352,11 @@ export function classifyTypecheckRejection(err: unknown, timeoutMs: number): Typ
  * spy receives as opts).
  *
  * #1414 round 3 — `killGroup: true`, so a timeout takes the WHOLE group down.
- * `bun x tsc` is not one process: bun spawns a `tsc` grandchild that inherits
- * the pipes, and Node's plain exec timeout signals only the direct child — the
- * grandchild keeps compiling and keeps the pipe open, so the handoff waits on a
- * process whose bound already fired. The driver's network git calls pass the
- * same flag for exactly this reason (#1095).
+ * A typecheck is not one process: the launcher spawns a compiler grandchild
+ * that inherits the pipes, and Node's plain exec timeout signals only the
+ * direct child — the grandchild keeps compiling and keeps the pipe open, so
+ * the handoff waits on a process whose bound already fired. The driver's
+ * network git calls pass the same flag for exactly this reason (#1095).
  */
 export async function typecheckWorktree(cwd: string, run: DriverExecFn): Promise<TypecheckOutcome> {
   const ext = path.join(cwd, "extension");

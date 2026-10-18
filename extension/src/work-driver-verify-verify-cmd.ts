@@ -40,12 +40,16 @@ import { captureProcessTree } from "./work-driver-gate-hang.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { compareWithBaseline } from "./work-driver-verify-baseline.ts";
 import {
+  TIER_KNOB,
+  fastTierTimeoutMs as resolveFastTierTimeoutMs,
+  suiteTierTimeoutMs,
+} from "./work-driver-verify-budget.ts";
+import {
   type KilledGateRun,
   formatExecError,
   isTimedOutKill,
   isVerifyTimeoutFailure,
   verifyHangFailure,
-  verifyTimeoutMs,
 } from "./work-driver-verify-develop-helpers.ts";
 import { developVerifiedTree } from "./work-driver-verify-eligibility.ts";
 import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
@@ -98,6 +102,14 @@ export async function runVerifyCommandGate(opts: {
    * run, so the caller can record the `consolidated-verify-skipped` event.
    */
   onConsolidatedVerifySkipped?: (skipped: AlreadyVerifiedTree) => void;
+  /** #1509 — the fast tier's own bound, resolved by the caller (the only site
+   *  that knows which repoRoot to read `.pi/verify-cmd-fast-timeout-ms` from)
+   *  and threaded into the fast-tier exec. Absent, the fast run keeps the
+   *  pre-#1509 shared-bound shape. */
+  fastTierTimeoutMs?: number;
+  /** #1509 — the knob the consolidated run's timeout failure names. Defaults
+   *  to the suite tier's; the commit-pr seam passes its own. */
+  suiteTimeoutKnob?: string;
   /**
    * #814 — structured fence violations recorded by the scope gate earlier
    * in this same develop verify (the gate runs BEFORE the consolidated
@@ -160,9 +172,17 @@ export async function runVerifyCommandGate(opts: {
     // appended, while the state file looked explained.
     onConsolidatedVerifySkipped,
     onBuildResidueOnly,
+    fastTierTimeoutMs: fastTimeoutMs,
+    suiteTimeoutKnob,
   } = opts;
   const VALID_SHA_RE = /^[0-9a-f]{40}$/;
   const isValidSha = (s: string | undefined) => typeof s === "string" && VALID_SHA_RE.test(s);
+  // #1509 — the bound is resolved ONCE per gate call, for the suite tier, and
+  // threaded to every exec and every failure string below. Two reads of the
+  // resolver (one for exec, one for the message) could name a bound other than
+  // the one the run was bounded by, and N per-worktree runs each re-reading the
+  // environment could disagree with each other about which bound fired.
+  const suiteTimeoutMs = await suiteTierTimeoutMs(ctx.repoRoot);
   const perWorktreeVerifyFailures: string[] = [];
   // #1427 — the scratch dir a killed run's hang report is persisted to, created
   // lazily by the write. Named once here so the per-worktree loop and the
@@ -190,7 +210,7 @@ export async function runVerifyCommandGate(opts: {
     }
     try {
       await withVerifySlot(() =>
-        execFn(cmd, { cwd, timeout: verifyTimeoutMs(), maxBuffer: 4 * 1024 * 1024 }),
+        execFn(cmd, { cwd, timeout: suiteTimeoutMs, maxBuffer: 4 * 1024 * 1024 }),
       );
     } catch (err) {
       const e = err as Error & {
@@ -200,6 +220,8 @@ export async function runVerifyCommandGate(opts: {
         timedOutKill?: boolean;
         overflow?: string;
         treePid?: number;
+        /** #1324 — set by `withFastTier` on a fast-tier rejection. */
+        fastTier?: string;
       };
       // A missing `node_modules` looks like a real defect; in a fresh worktree say so.
       // #1005 — per-worktree failures stay failures; the consolidated run adds its own.
@@ -224,7 +246,7 @@ export async function runVerifyCommandGate(opts: {
             output: `${e.stdout ?? ""}\n${e.stderr ?? ""}`,
             cmd: ran,
             cwd,
-            timeoutMs: verifyTimeoutMs(),
+            timeoutMs: suiteTimeoutMs,
             ...(killedTree !== undefined ? { tree: killedTree } : {}),
           }
         : undefined;
@@ -263,7 +285,21 @@ export async function runVerifyCommandGate(opts: {
           // #1427 round 3 — `verifyHangFailure` APPENDS the clause after the
           // whole #1324 sentence, so a wide clause costs the names rather than
           // the `[verify-timeout]` marker the cap router keys on.
-          verifyHangFailure(ran, `in ${cwd}`, verifyTimeoutMs(), hang),
+          verifyHangFailure(
+            ran,
+            `in ${cwd}`,
+            suiteTimeoutMs,
+            hang,
+            // #1509 — name the knob that governs the tier that actually timed
+            // out. `ran` is the fast tier when the fast run is what hung, and
+            // the caller resolved that tier's bound; the knob travels with the
+            // tier rather than being guessed from the command string.
+            e.fastTier === undefined
+              ? (suiteTimeoutKnob ?? TIER_KNOB.suite)
+              : fastTimeoutMs === undefined
+                ? (suiteTimeoutKnob ?? TIER_KNOB.suite)
+                : TIER_KNOB.fast,
+          ),
           `verify command \`${ran}\` failed in ${cwd}${depsHint}`,
         ),
       );
@@ -376,7 +412,13 @@ export async function runVerifyCommandGate(opts: {
     workstreamBaseShas,
     scratchDir,
     verifyCmd: cmd,
-    timeoutMs: verifyTimeoutMs(),
+    timeoutMs: suiteTimeoutMs,
+    // #1509 — the reporter renders the consolidated timeout string and must
+    // name the knob that governed THIS run, not re-read one from the tier map.
+    ...(suiteTimeoutKnob !== undefined ? { suiteTimeoutKnob } : {}),
+    // #1509 — the fast tier's bound reaches the executor through the wrapper
+    // the caller built, so the reporter needs nothing more than the knob above.
+    ...(fastTimeoutMs === undefined ? {} : { fastTierTimeoutMs: fastTimeoutMs }),
     // #1240 — the N=1 duplicate run: same tree, same verdict.
     ...(alreadyVerifiedTree !== undefined ? { alreadyVerifiedTree } : {}),
     // #1362 — the repoRoot dirty-root preflight inside honours the project's
@@ -421,6 +463,10 @@ export async function runVerifyCommandGate(opts: {
     cmd,
     failures,
     notes,
+    // #1509 — the bound and knob this gate resolved, not one the reporter
+    // re-reads from the environment.
+    timeoutMs: suiteTimeoutMs,
+    timeoutKnob: suiteTimeoutKnob,
     ctx,
     worktrees,
     perWorktreeFailuresByWs,
@@ -481,7 +527,7 @@ export async function runVerifyCommandGate(opts: {
       baseSha: baseSha as string,
       issue: ctx.issue,
       cmd,
-      timeoutMs: verifyTimeoutMs(),
+      timeoutMs: suiteTimeoutMs,
       changeFailures: [
         ...(cons.status === "failed"
           ? [{ text: cons.rawFailure ?? "", timedOut: cons.timedOut === true }]

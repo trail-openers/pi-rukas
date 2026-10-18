@@ -15,7 +15,7 @@ CI is for VERIFICATION, not DISCOVERY. All gates pass locally before `git push`.
 bun run build
 
 # 2. Type-check, lint, and smoke-test (extension/)
-cd extension && bun x tsc --noEmit && bun run check && \
+cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && bun run check && \
   bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts
 ```
 
@@ -350,7 +350,7 @@ Three supporting defects fixed with it: the diff was computed once and re-sent t
 
 *Two workstreams must not claim the same file (#444).* `runDevelop` fans one developer per workstream into its own worktree, so two `paths` lists naming the same file is two developers editing it in parallel — surfacing only at commit-pr, as a bare `git apply` failure during consolidation, after the whole develop and adversarial spend. Nothing checked. `findPathCollisions` (`work-driver-plan-paths.ts`) is now a third `planQualityReason`, so it inherits the existing one-shot corrective re-dispatch rather than adding a halt path: the planner can re-split, which is the better outcome. Containment counts (`src/foo` vs `src/foo/bar.ts`) but a shared prefix does not, and paths are normalised first so an annotation like `"src/a.ts (new)"` cannot hide an overlap.
 
-*This repo's develop gate is now the real §1 gate.* With no `.pi/verify-cmd`, `verifyCmdFor` fell through to `npm run test` — three smoke tests out of ~120, no typecheck, no lint. The gate that proves a developer's diff builds was proving almost nothing. `.pi/verify-cmd` now runs `tsc --noEmit`, `bun run check` and the full offline suite; `.pi/verify-cmd-full` remains the deeper second tier the ci step runs once.
+*This repo's develop gate is now the real §1 gate.* With no `.pi/verify-cmd`, `verifyCmdFor` fell through to `npm run test` — three smoke tests out of ~120, no typecheck, no lint. The gate that proves a developer's diff builds was proving almost nothing. `.pi/verify-cmd` now runs the typecheck, `bun run check` and the full offline suite; `.pi/verify-cmd-full` remains the deeper second tier the ci step runs once. The typecheck names the compiler by PATH (`node node_modules/typescript/bin/tsc`), never a launcher alias: `bun x tsc` is an npx-style lookup that on one host resolved a global TypeScript 7, printed usage and exited 0, so the gate passed every tree while judging nothing (#1414/#1118). Each verify tier also carries its own wall clock since #1509 — see docs/configuration.md.
 
 *Throughput, measured (v0.12.41).* An operator complaint — "/work doesn't finish work" — measured against 69 terminal cycles in the durable session store and 29 state files. **15 merged, 22%**; pi-rukas 59%, nessie 12% (last autonomous merge 26 June), llm-iac and vipune 0. **Every one of the 10 autonomous merges ran with zero other cycles in flight, N=1, median 78.5 lines and 18.2 minutes.** Nothing outside that shape has ever merged. v0.12.41 moved `MAX_PARALLEL_GROUPS_DEFAULT` from 3 → 1 on this measurement: concurrency was the strongest predictor of failure, every role ran ~2.4× slower with another cycle in flight, and two of the four nessie cycles that reached commit-pr were destroyed by each other through the shared repo root.
 
@@ -608,7 +608,7 @@ CLI flags and event shapes change between Pi minor versions. The dev pins in `ex
 |---|---|
 | Install (after clone) | `./install.sh` |
 | Build role prompts | `bun run build` |
-| Type-check extension | `cd extension && bun x tsc --noEmit` |
+| Type-check extension | `cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json` |
 | Lint + format check | `cd extension && bun run check` |
 | Apply format | `cd extension && bun x biome format --write src/` |
 | All offline smoke tests | (see § 1 pre-push) |

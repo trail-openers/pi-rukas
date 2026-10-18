@@ -31,6 +31,7 @@ import {
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
+import { fastTierTimeoutMs as fastTierTimeoutMsFor } from "./work-driver-verify-budget.ts";
 import {
   declaredPathsHaveSource,
   shouldSkipVerifyForFrontendOnly,
@@ -437,9 +438,18 @@ export async function verifyDevelopOutcome(
       // semantics all live there unchanged.
       const before = failures.length;
       let attributed = false;
+      // #1509 — the fast tier's bound is resolved HERE (the only site holding
+      // the repoRoot the `.pi/*-timeout-ms` files are read from) and handed to
+      // the wrapper, so the fast exec carries the fast tier's number and the
+      // full exec keeps the suite tier's the gate resolves below. Deriving the
+      // fast bound from `opts.timeout` inside the wrapper is what handed the
+      // fast tier the suite budget.
+      const fastTierTimeoutMs = await fastTierTimeoutMsFor(ctx.repoRoot);
       await runVerifyCommandGate({
         // #1324 — `.pi/verify-cmd-fast` runs before every full run of `cmd`.
-        execFn: withFastTier(execFn, cmd, await fastVerifyCmdFor(ctx.repoRoot)),
+        execFn: withFastTier(execFn, cmd, await fastVerifyCmdFor(ctx.repoRoot), {
+          fast: fastTierTimeoutMs,
+        }),
         cmd,
         ctx,
         state,
