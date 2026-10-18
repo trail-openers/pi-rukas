@@ -96,6 +96,9 @@ export const KNOWN_EVENT_KINDS = [
   // every failing test is red at the cycle's base commit too. The one shape
   // where a red gate does not stop the push, so the state file must carry it.
   "consolidated-verify-pre-existing",
+  // #1415 — the develop gate's verify run, bracketed so its time is visible.
+  "verify-started",
+  "verify-completed",
   // #558 — the branch step's worktree provisioning record (the driver writes
   // it when it symlinks dependencies into a fresh worktree). Absent from the
   // tuple, a cycle that crashed after provisioning refused to resume.

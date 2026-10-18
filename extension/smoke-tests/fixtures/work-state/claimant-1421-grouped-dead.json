@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "resumable": false,
+  "owner": {
+    "pid": 0,
+    "at": "@AGE(-120000)"
+  },
+  "issue": 1421,
+  "issues": [1421, 1422],
+  "startedAt": "@AGE(-180000)",
+  "updatedAt": "@AGE(-120000)",
+  "pipelineState": {
+    "currentStep": "develop",
+    "inFlightJobIds": [],
+    "worktrees": {
+      "task-a": "@WORKTREE(issue-1421-task-a)",
+      "task-b": "@WORKTREE(issue-1421-task-b)"
+    },
+    "reviewRound": 0,
+    "ciRetryCount": 0,
+    "plumbReports": [],
+    "status": "running"
+  },
+  "eventLog": []
+}

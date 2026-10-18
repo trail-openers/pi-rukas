@@ -1,24 +1,19 @@
 /**
- * work-driver-sweep-rules — the worktree sweep's READ-ONLY decision surface.
+ * work-driver-sweep-rules — worktree-name and dependency-preservation guards.
  *
  * Split out of `work-driver-worktree-sweep.ts` for the §12 500-line cap, at the
  * seam that already matters: the sweep is a pure set of rules over a worktree's
  * name and its state file, and then an IO half that turns a rule's verdict into
  * a `git` command. Everything here inspects and never executes, so the two live
- * tree-loss guards #1265 round 1 added — the group claim and the symlink check —
- * sit on the side a test can drive without a filesystem under it. The executor
- * half re-exports every name so existing importers keep their path.
+ * tree-loss guards #1265 added — group ownership and dependency preservation.
+ * The decision ladder and executor live in `work-driver-sweep-policy.ts`.
  */
 
 import { type Stats, existsSync, lstatSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { trace } from "./trace.ts";
-import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
-import { processAlive } from "./work-driver-resume.ts";
-import type { WorkEvent, WorkState } from "./workflow-state.ts";
+import type { WorkState } from "./workflow-state.ts";
 import { DEPENDENCY_MARKERS } from "./worktree-provision-hook.ts";
 import { SHAREABLE_DEPS } from "./worktree-provision.ts";
-import type { ExecFn } from "./worktree.ts";
 
 /**
  * The issue a worktree directory name encodes, or undefined when it does not
@@ -108,38 +103,6 @@ export function groupClaimedByState(state: StateClaim, worktreeName: string): bo
   const worktreeIssue = parseWorktreeIssue(worktreeName);
   if (worktreeIssue === undefined) return false;
   return state.issue === worktreeIssue || (state.issues?.includes(worktreeIssue) ?? false);
-}
-
-/**
- * The worktree shape the decision engine reads.
- *
- * Lives HERE rather than in the executor module because the rules are the only
- * consumer that must not depend on the executor: a `purge`/`remove` action
- * carries a resolved target, and a rule module importing its own consumer's
- * types inverts the layering the split was drawn at. The executor re-exports
- * the name so existing importers keep their path.
- */
-export interface SweepTargetResult {
-  ok: true;
-  /** Absolute path to the worktree directory. */
-  realPath: string;
-  /** Basename of the worktree (e.g., "issue-477-default"). */
-  name: string;
-}
-
-/**
- * Error result from resolving a sweep target. Also declared here, for the same
- * reason as `SweepTargetResult`.
- */
-export interface SweepTargetError {
-  ok: false;
-  /** Reason for failure. */
-  reason:
-    | "unresolvable"
-    | "candidate-is-repo-root"
-    | "outside-worktrees"
-    | "not-a-directory"
-    | "not-our-worktree";
 }
 
 /**
@@ -274,173 +237,4 @@ export function hasRealDependencyTree(worktreePath: string): boolean {
     return true;
   }
   return hasLinkableDependencyDir(worktreePath);
-}
-
-/**
- * Options for deciding sweep action.
- */
-export interface DecideOpts {
-  /** The worktree state from the state file. */
-  state: WorkState;
-  /** The resolved sweep target (from resolveSweepTarget). */
-  target: SweepTargetResult;
-  /** The current process PID (for self-exemption). */
-  selfPid: number;
-  /** Set of live issue numbers from the registry. */
-  liveCycles: Set<number>;
-  /** The launching cycle's own issue number (to exclude from live check). */
-  launchingCycleIssue: number;
-  /** Executor for running git commands. */
-  execFn: ExecFn;
-  /** Ceiling on the per-tree network `git fetch` the remote proof issues. */
-  netProofBudget?: { remaining: number };
-  /** Whether the sweep may run a network command at all (launch sweep sets this). */
-  allowNetworkProof?: boolean;
-}
-
-/**
- * Action to take on a worktree.
- */
-export type SweepAction =
-  | { type: "skip"; reason: string }
-  | { type: "purge"; target: SweepTargetResult }
-  | { type: "remove"; target: SweepTargetResult };
-
-/**
- * Result of executing a sweep action.
- */
-export interface SweepResult {
-  stdout: string;
-  stderr?: string;
-  /**
-   * Set when a `purge` was SUPPRESSED rather than run — the tree holds a real
-   * dependency directory `git clean -fdX` would have destroyed. Without this
-   * flag the executor's two outcomes are indistinguishable to a caller that
-   * discards the result, and the sweep reports a clean that never happened.
-   */
-  purgeSkipped?: boolean;
-}
-
-/**
- * Decide what to do with a validated worktree. The 6-rule engine.
- *
- * Lives here with the rules it reads; the executor that turns the verdict into
- * a `git` command is `executeSweepAction` in the sweep module. `isWorkProvably
- * OnRemote` is kept here because Rule 5's shape (fetch, then compare) is part
- * of the decision, and it only ever reaches the network through the injected
- * `execFn` — the rules module never runs a command itself.
- */
-export async function decideSweepAction(opts: DecideOpts): Promise<SweepAction> {
-  const {
-    state,
-    target,
-    selfPid,
-    liveCycles,
-    launchingCycleIssue,
-    execFn,
-    netProofBudget,
-    allowNetworkProof,
-  } = opts;
-
-  // Rule 1: Already handled by resolveSweepTarget (returns error if invalid)
-  // Rule 2: Directory absence - handled by resolveSweepTarget (not-a-directory)
-
-  // Rule 3: Live owner check
-  const issueNumber = state.issue;
-  // The group claim, read from the state file rather than the name alone, so a
-  // running group's non-primary workstream is not swept. The name is handed to
-  // the rule rather than a pre-parsed number: a name encoding no issue claims
-  // nothing, and the `-1` sentinel it used to reach here was a number no real
-  // worktree has, which only accidentally meant "false".
-  if (groupClaimedByState(state, target.name)) {
-    return { type: "skip", reason: `group-claimed ${target.name}` };
-  }
-  const ownerPid = state.owner?.pid;
-  if (ownerPid !== undefined && ownerPid !== selfPid && processAlive(ownerPid)) {
-    return { type: "skip", reason: `live-owner pid=${ownerPid}` };
-  }
-  // Second part of live check: issue in liveCycles and not launching cycle's own
-  const isIssueInLiveCycles = liveCycles.has(issueNumber);
-  if (isIssueInLiveCycles && launchingCycleIssue !== issueNumber) {
-    return { type: "skip", reason: `live-issue ${issueNumber}` };
-  }
-
-  // Rule 4: State is awaiting-human-merge → artifact purge only
-  if (isAwaitingHumanMerge(state)) {
-    return { type: "purge", target };
-  }
-
-  // Rule 5: Work provably on remote → full removal. The proof is one network
-  // `git fetch` per candidate, so it is tried only within the caller's budget
-  // (a launch sweep bound to a few seconds); once the budget is spent the tree
-  // falls through to the local-only purge rather than holding the cycle's
-  // startup for another fetch.
-  if (netProofBudget && netProofBudget.remaining > 0 && allowNetworkProof !== false) {
-    netProofBudget.remaining -= 1;
-    if (await isWorkProvablyOnRemote(state, target.realPath, execFn)) {
-      return { type: "remove", target };
-    }
-  }
-
-  // Rule 6: Fallback → artifact purge only
-  return { type: "purge", target };
-}
-
-/**
- * Check if the state indicates an awaiting-human-merge park.
- */
-function isAwaitingHumanMerge(state: WorkState): boolean {
-  // Find the last cap-hit event (highest array index)
-  const capHits = state.eventLog.filter(
-    (e): e is Extract<WorkEvent, { kind: "cap-hit"; cap: string }> => e.kind === "cap-hit",
-  );
-  if (capHits.length === 0) return false;
-  // Take the last one (highest index)
-  const lastCapHit = capHits[capHits.length - 1];
-  if (!lastCapHit || lastCapHit.cap !== "awaiting-human-merge") return false;
-  // Check if mergeHold is present in pipelineState
-  return !!state.pipelineState.mergeHold;
-}
-
-/**
- * Check if work is provably on the remote: HEAD matches the fetched branch tip
- * and the tree is clean. Refuses before touching the network when the branch
- * name is not git-safe or the step is not a terminal one.
- */
-async function isWorkProvablyOnRemote(
-  state: WorkState,
-  worktreePath: string,
-  execFn: ExecFn,
-): Promise<boolean> {
-  const status = state.pipelineState.currentStep;
-  const branchName = state.pipelineState.branchName;
-  if (!branchName) return false;
-  // Status must be merged, handoff, or aborted
-  if (!["merged", "handoff", "aborted"].includes(status)) return false;
-
-  // A branch name that is not git-safe is never fetched: not swept (keep it).
-  if (netRefProblem(branchName) !== undefined) return false;
-  try {
-    // Fetch the branch
-    await runNetGit(execFn, "git", {
-      cwd: worktreePath,
-      maxBuffer: 256 * 1024,
-      timeoutMs: 10_000,
-      argv: ["fetch", "origin", branchName],
-    });
-    // Check if HEAD matches FETCH_HEAD
-    const { stdout: diffOut } = await execFn("git diff --quiet --submodule=diff FETCH_HEAD", {
-      cwd: worktreePath,
-      maxBuffer: 256 * 1024,
-    });
-    // Check if working tree is clean
-    const { stdout: statusOut } = await execFn("git status --porcelain", {
-      cwd: worktreePath,
-      maxBuffer: 256 * 1024,
-    });
-    return diffOut === "" && statusOut === "";
-  } catch (err) {
-    trace(`worktree-sweep: remote check failed for ${worktreePath}: ${err}`);
-    return false;
-  }
 }

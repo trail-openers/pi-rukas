@@ -91,8 +91,22 @@ export function exitCodeForState(state: WorkState): number {
     }
     case "aborted":
       return EXIT.aborted;
-    case "interrupted":
-      return lastInterruptReason(state) === "timeout" ? EXIT.crash : EXIT.interrupted;
+    case "interrupted": {
+      const reason = lastInterruptReason(state);
+      // #1243 — a provider park is NOT a signal interrupt: nothing was cut off,
+      // the handoff was delivered, and the host's contract for a park the
+      // endpoint caused is the handoff code it already got (`failure.kind ===
+      // "provider"`, re-queueable). It keeps EXIT.handoff so a host that
+      // switches on 10 sees no change; only re-entry differs from a `handoff`
+      // status. A signal stays 21 and the runner's own `--timeout` stays 30.
+      if (reason === "provider") {
+        const cap = lastCap(state);
+        return cap !== undefined && (CLARIFICATION_CAPS as readonly string[]).includes(cap)
+          ? EXIT.clarification
+          : EXIT.handoff;
+      }
+      return reason === "timeout" ? EXIT.crash : EXIT.interrupted;
+    }
     default:
       // "running" after the driver returned: the cycle did not terminalize.
       return EXIT.crash;

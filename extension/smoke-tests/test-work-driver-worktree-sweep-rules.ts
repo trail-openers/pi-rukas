@@ -365,6 +365,7 @@ async function testGroupClaimProtectsSecondaryWorkstream() {
       ...st.pipelineState,
       status: "running",
       currentStep: "develop",
+      worktrees: { task: secondary.path },
     },
   };
   writeSweepStateForWorktree(repoRoot, secondary.name, {

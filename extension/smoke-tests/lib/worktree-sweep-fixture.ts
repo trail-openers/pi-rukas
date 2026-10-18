@@ -24,13 +24,8 @@
  * rather than approximating it, and `sweepGitdirLine` is the single source of
  * that line so the producer and any assertion cannot drift.
  *
- * The other half of #1265: worktrees are named `issue-<N>-<id>`
- * (work-driver-branch-mechanized.ts), while state files are
- * `.pi/work-state/<N>.json` (workflow-state.ts `workStateFile`). Those two
- * names are not the same string, so this module exposes the pair as ONE rule —
- * `parseSweepWorktreeName` — which both the fixture's state writer and the
- * sweep's own resolution use. A test that hand-copied either name would
- * exercise a shape production never produces.
+ * Worktree names still encode issue ids for the fixture's keyed state writer,
+ * but the sweep now resolves ownership from each state file's worktree-path map.
  */
 
 import { spawnSync } from "node:child_process";
@@ -59,8 +54,8 @@ function git(cwd: string, args: string[]): string {
 }
 
 /**
- * The basename → state-file resolution the sweep performs, in ONE place so a
- * test can pin the rule and the fixture cannot disagree with the code.
+ * The fixture's worktree-name → state-file-key parsing, in ONE place so the
+ * test and state writer cannot disagree about which numeric file to create.
  *
  * DELEGATES to `parseWorktreeIssue` in `src/work-driver-sweep-rules.ts` — it is
  * not a second implementation of the same rule. The fixture exists to make a
@@ -190,7 +185,7 @@ export function sweepCapHit(cap: WorkCapLiteral, at: number): WorkEvent {
 }
 
 /**
- * Write the state file the worktree's basename points at, and return its path.
+ * Write the worktree's numeric state file with an explicit path ownership claim.
  *
  * `updatedAt` is PINNED, not stamped by the writer: a fixture whose age comes
  * from `Date.now()` cannot tell a sweep that reasons about age from one that
@@ -271,7 +266,11 @@ export function writeSweepStateForWorktree(
         `(expected issue-<N>-<id> or issues-<N>-<M>-<id>): ${parsed.reason}`,
     );
   }
-  return writeSweepState(repoRoot, { ...params, issue: parsed.issue });
+  return writeSweepState(repoRoot, {
+    ...params,
+    issue: parsed.issue,
+    worktrees: params.worktrees ?? { default: join(repoRoot, ".worktrees", worktreeName) },
+  });
 }
 
 /**

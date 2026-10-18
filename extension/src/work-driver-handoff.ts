@@ -21,12 +21,20 @@ import {
   parseHandoffOpsReply,
   verifyHandoffLabel,
 } from "./work-driver-handoff-post.ts";
+import { providerParkResumeStep } from "./work-driver-handoff-provider-resume.ts";
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
 import { readParkMemory, recordPark } from "./work-driver-park-memory.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
+import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
-import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+import {
+  type WorkEvent,
+  type WorkState,
+  appendEvent,
+  parkProviderInterrupt,
+} from "./workflow-state.ts";
+import type { WorkStep } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
 // #1263 test seam — module-level handoff-step throw injection (offline tests
@@ -391,8 +399,11 @@ export async function runHandoff(
   next = appendEvent(next, emitted);
   await recordPark(ctx, park, commentUrl);
   // #571 — release the path claim so sibling cycles can proceed.
+  // #1454 — every issue in the group, not just the primary: a grouped cycle
+  // claims all of them, so clearing one left a sibling entry to park the next
+  // cycle against.
   try {
-    await releaseClaim(ctx.repoRoot, ctx.issue);
+    await releaseClaim(ctx.repoRoot, activeIssuesOf(next));
   } catch {
     /* best-effort; handoff must always emit regardless */
   }
@@ -411,13 +422,35 @@ export async function runHandoff(
     capShape === "plan-timeout" ||
     Boolean(capKilledCap) ||
     (capShape?.startsWith("step-failed:") ?? false);
-  next = {
-    ...next,
-    pipelineState: {
-      ...next.pipelineState,
-      status: isMidFlightHalt ? "aborted" : "handoff",
-    },
-  };
+  if (capShape === "provider-unavailable") {
+    // #1243 — the endpoint caused this park, and the advice on every surface
+    // (explainCap, `humanActionFor`, docs/troubleshooting.md) tells the caller
+    // to re-run `/work N` so the halted step re-enters. A `handoff` status
+    // REFUSES exactly that (`already terminated as handoff … re-run with
+    // --restart`), and `--restart` wipes the state file and rebuilds finished
+    // steps — the opposite of the advice, and a re-run that pays for steps the
+    // cycle already completed. So the provider park terminalises as the one
+    // status the driver re-enters without a fight: `interrupted` with reason
+    // `provider`, carrying the step that halted as its resume point. The
+    // handoff comment + label were delivered above, and the exit code is
+    // unchanged (`EXIT.handoff`, see headless/exit-code.ts).
+    //
+    // The resume point is the step the cap names when the cap names one
+    // (`step-failed:<step>` / `verify-failed:<step>` carry it in the literal),
+    // else the last `step-started` that was not this handoff — the same reading
+    // `headless/result.ts::failedStepOf` uses, so the two surfaces cannot
+    // disagree about where the cycle stopped. It is never `handoff` itself:
+    // re-entry would then re-run the delivery, not the step that failed.
+    next = parkProviderInterrupt(next, providerParkResumeStep(next), Date.now());
+  } else {
+    next = {
+      ...next,
+      pipelineState: {
+        ...next.pipelineState,
+        status: isMidFlightHalt ? "aborted" : "handoff",
+      },
+    };
+  }
   trace(
     `work-driver: handoff for issue #${ctx.issue} (${target}) — commentUrl=${commentUrl ?? "NOT POSTED"} label=${labelApplied}${prNumber ? ` (issue=${issueLabelApplied === true} pr=${prLabelApplied === true})` : ""}`,
   );

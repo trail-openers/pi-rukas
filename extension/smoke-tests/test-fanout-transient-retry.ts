@@ -131,6 +131,24 @@ const developRuns = (s: WorkState | undefined) =>
 const developCapped = (s: WorkState | undefined) =>
   (s?.eventLog ?? []).some((e) => e.kind === "cap-hit" && e.cap === "step-failed:develop");
 
+/**
+ * #1243 — the fan-out router now reads the terminal failure the same way every
+ * other cap in the pipeline does, so a fan-out that EVERY child lost to the
+ * endpoint parks `provider-unavailable` (re-queueable by a headless caller)
+ * rather than `step-failed:develop` (`failure.kind: "process"`, not
+ * re-queueable). Both halt develop; the assertions that only need a halt use
+ * this, and the cap name is printed so a switch between them is visible.
+ */
+const developHalted = (s: WorkState | undefined) =>
+  (s?.eventLog ?? []).some(
+    (e) =>
+      e.kind === "cap-hit" && (e.cap === "step-failed:develop" || e.cap === "provider-unavailable"),
+  );
+const capName = (s: WorkState | undefined) =>
+  (s?.eventLog ?? []).find(
+    (e) => e.kind === "cap-hit" && /develop|provider-unavailable/.test(e.cap),
+  )?.cap ?? "no cap";
+
 // 1. Both developers hit a burst 429 once: the step waits out the delay the
 //    provider stated and re-runs, and the cycle carries on past develop.
 {
@@ -162,7 +180,10 @@ const developCapped = (s: WorkState | undefined) =>
     count(labels, "developer[a]") === 3 && count(labels, "developer[b]") === 3,
     `persistent transient: 1 attempt + 2 retries per developer (got ${labels.join(",")})`,
   );
-  assert(developCapped(after), "...then the step halts with step-failed:develop");
+  assert(
+    developHalted(after),
+    `...then the step halts with a develop-halting cap (got ${capName(after)})`,
+  );
   assert(
     after?.pipelineState.transientRetryAttempts?.develop === 2,
     "...and the state says the retries were attempted, not skipped",

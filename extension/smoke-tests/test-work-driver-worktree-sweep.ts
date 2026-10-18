@@ -16,11 +16,13 @@
  * nothing must fail here, and so must one that issues a command into a tree
  * that is not a leftover. Three regressions, each individually invisible:
  *
- *  1. the state-file lookup (`issue-<N>-<id>` directory → `<N>.json` file);
+ *  1. basename-named files cannot claim a tree; ownership comes from a
+ *     numeric state file's explicit worktree-path map;
  *  2. the own-tree guard (the launching cycle's tree is never touched);
  *  3. the removal arm actually removing (cwd + path shape git accepts).
  *
- * Cases 1–3 pin the name→state-file rule itself, which is where the bug lived;
+ * Cases 1–3 pin the fixture's name parser and the sweep's explicit ownership
+ * rule, which replaced basename-based state lookup;
  * 4–6 pin what the sweep does once it CAN read a state file. The decision
  * engine's rules and the command each arm issues are covered by
  * `test-work-driver-worktree-sweep-rules.ts`, and the remaining sweep cases
@@ -61,7 +63,7 @@ import {
 } from "./lib/worktree-sweep-fixture.ts";
 
 function testParseWorktreeIssue() {
-  console.log("\n1. parseWorktreeIssue: the shape the sweep resolves a state file from");
+  console.log("\n1. parseWorktreeIssue: the worktree-name shape used by the fixtures");
   // The shapes work-driver-branch-mechanized.ts actually writes.
   assertEquals(parseWorktreeIssue("issue-7-default"), 7, "issue-<N>-<id> resolves to N");
   assertEquals(parseWorktreeIssue("issue-1006-task-a"), 1006, "multi-digit issue resolves");
@@ -75,7 +77,7 @@ function testParseWorktreeIssue() {
     10,
     "a grouped tree resolves to the PRIMARY issue (the state file's key)",
   );
-  // Not worktrees: the sweep must not invent a state file for these.
+  // Not driver worktree names: the fixture must not invent a state file for these.
   assertEquals(parseWorktreeIssue("7-default"), undefined, "the issue- prefix is required");
   assertEquals(parseWorktreeIssue("issue-default"), undefined, "no number is no issue");
   assertEquals(parseWorktreeIssue("issue-0-default"), undefined, "issue 0 is not a real issue");
@@ -121,8 +123,8 @@ function testIsLaunchingCycleOwnWorktree() {
   );
 }
 
-async function testStateFileLookupIsNotTheBasename() {
-  console.log("\n3. the state file lives at <N>.json, not <basename>.json");
+async function testUnclaimedTreeCannotBorrowBasenameState() {
+  console.log("\n3. a basename-named JSON file cannot claim a worktree");
   const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-lookup");
   const wt = makeSweepWorktree(repoRoot, baseSha, "issue-7-default");
   // The `.git` file the sweep's exact-string check reads, and what the
@@ -140,9 +142,9 @@ async function testStateFileLookupIsNotTheBasename() {
   );
   assertTrue(resolveSweepTarget(repoRoot, wt.path).ok, "so the candidate resolves");
 
-  // Write the state file where the BROKEN sweep looked. Then assert the real
-  // sweep still reports it unreadable — which is only observable because the
-  // correct file does not exist.
+  // The owner index reads numeric state files and their explicit worktree-path
+  // claims. A basename-named JSON file is neither, so this tree remains
+  // unclaimed and is kept.
   const stateDir = join(repoRoot, ".pi", "work-state");
   writeFileSync(
     join(stateDir, "issue-7-default.json"),
@@ -157,7 +159,7 @@ async function testStateFileLookupIsNotTheBasename() {
     execFn: rec.exec,
   });
   assertEquals(res.checked, 1, "the candidate was checked");
-  assertEquals(res.skipped[0]?.reason, "state-unreadable", "the basename file is not consulted");
+  assertEquals(res.skipped[0]?.reason, "state-unreadable", "the basename file is not an owner claim");
   assertEquals(rec.calls.length, 0, "an unreadable state issues no git call at all");
 }
 
@@ -270,9 +272,20 @@ async function testSweepSkipsUnreadableAndForeignCandidates() {
   // (c) a real worktree whose state file belongs to ANOTHER issue: the file is
   // keyed by issue, so a stale file must not decide this tree's fate.
   const mismatched = makeSweepWorktree(repoRoot, baseSha, "issue-9-default");
+  const mismatchedState = abortedState(4242);
   writeFileSync(
     join(repoRoot, ".pi", "work-state", "9.json"),
-    JSON.stringify({ ...abortedState(4242), issue: 4242 }, null, 2),
+    JSON.stringify(
+      {
+        ...mismatchedState,
+        pipelineState: {
+          ...mismatchedState.pipelineState,
+          worktrees: { default: mismatched.path },
+        },
+      },
+      null,
+      2,
+    ),
     "utf8",
   );
   // (d) a directory under .worktrees that is not our worktree (foreign gitdir).
@@ -301,15 +314,16 @@ async function testSweepSkipsUnreadableAndForeignCandidates() {
   const byPath = skipsByPath(res);
   assertEquals(byPath.get(noState.path), "state-unreadable", "missing state file skips");
   assertEquals(byPath.get(corrupt.path), "state-unreadable", "corrupt state file skips");
-  assertTrue(
-    (byPath.get(mismatched.path) ?? "").startsWith("state-issue-mismatch"),
-    `state file naming another issue skips (got: ${byPath.get(mismatched.path)})`,
+  assertEquals(
+    byPath.get(mismatched.path),
+    "state-unreadable",
+    "a state file whose issue disagrees with its numeric key is not an owner",
   );
   assertEquals(byPath.get(foreign), "not-our-worktree", "a foreign gitdir is not ours to sweep");
   assertEquals(
     byPath.get(anonymous.path),
-    "name-has-no-issue",
-    "an anonymous tree is kept, not guessed at",
+    "state-unreadable",
+    "an anonymous tree without an explicit state-file claim is kept",
   );
   // The directory filter drops a plain file before it is ever a candidate, so
   // it is neither swept NOR reported — and no assertion above can see it. Pin
@@ -341,7 +355,7 @@ async function testSweepSkipsUnreadableAndForeignCandidates() {
 async function runTests() {
   testParseWorktreeIssue();
   testIsLaunchingCycleOwnWorktree();
-  await testStateFileLookupIsNotTheBasename();
+  await testUnclaimedTreeCannotBorrowBasenameState();
   await testSweepPurgesDeadOwnersLeftover();
   await testSweepRemovesWorkOnRemote();
   await testSweepSkipsUnreadableAndForeignCandidates();
