@@ -199,17 +199,11 @@ export async function runPlan(
   // declared them) against the corrective's RAW map.
   const firstPlanRaw = workstreams;
   let redispatched = false;
-  // #849/#1005 — held for the dropped-edge check. Set ONLY when the quality
-  // gate fires on the primary's plan: the kill-triggered corrective is a
-  // recovery path with no parsed first plan to compare against, and a partial
-  // parse of a killed primary is not a legitimate comparison target (the
-  // pre-#1005 defect: it was set at declaration, so the kill path fed the
-  // check a map that was never a real first plan).
-  let firstPlanWorkstreams: typeof workstreams | undefined;
-  // #1005 — the corrective's RAW workstreams (before its own coupling
-  // merge), held aside for the #849 dropped-edge check.
-  let correctiveRawWorkstreams: typeof workstreams | undefined;
-  let droppedEdges: { from: string; to: string }[] | undefined;
+  // #1167 (size split) — the #849/#1005 dropped-edge state (`droppedEdges` and the
+  // corrective's RAW map) moved with the tail into work-driver-plan-quality-pass.ts,
+  // which now owns the one-shot corrective and its edge comparison; it initialises
+  // `correctiveRaw` to undefined and sets it when a corrective runs. `firstPlanRaw`
+  // is still read here because it is the RAW map the tail's edge check compares.
 
   const spec = next.pipelineState.normalisedSpec;
   // #819 round-2 — one read of the knob for every gate site in this step (the
@@ -315,7 +309,8 @@ export async function runPlan(
       planGateEnabled,
       planKill: planKill !== undefined,
       redispatched,
-      correctiveRaw: correctiveRawWorkstreams,
+      // #1167 (size split) — the corrective's RAW map is now owned by the tail
+      // (undefined here = none had run at this point; the tail sets it itself).
       port,
     },
     {
