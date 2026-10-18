@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
 import { groundAlreadyImplemented } from "../src/work-driver-intent-grounding.ts";
+import { parkEvidence } from "../src/work-driver-intent-park-evidence.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import { parseNormalisedSpec } from "../src/work-driver-intent.ts";
 import { inlineExplorePrompt } from "../src/work-driver-prompts-early.ts";
@@ -111,6 +112,14 @@ const run = async (text: string, exec: typeof execp = execp) => {
   assert(
     s.verdict === "park" && s.parkReason === "underspecified",
     `a refuted park with no deliverables parks as underspecified (got ${s.parkReason})`,
+  );
+  // #1561's cap evidence is built from the FINAL spec, so it must describe the refutation.
+  const headline = parkEvidence(s, 127, new Map([[214, "OPEN"]])).split("\n")[0] ?? "";
+  assert(
+    headline.startsWith("intent-park (underspecified):") &&
+      headline.includes(`${prSha}, which is not on origin/main`) &&
+      !headline.includes("awaiting review"),
+    `the park evidence leads with the refutation, not the rejected claim (got ${headline})`,
   );
 }
 

@@ -68,8 +68,11 @@ const state = { pipelineState: {}, eventLog: [] } as unknown as WorkState;
   assert(/lens-review/.test(round), "round-cap names lens-review");
   assert(!/adversarial/i.test(round), "...and not adversarial");
 
-  const wall = explainCap("wall-clock", state);
-  assert(/lens-review/.test(wall) && /wall-clock/.test(wall), "wall-clock names lens-review too");
+  const wall = explainCap("lens-review-timeout", state);
+  assert(
+    /lens-review/.test(wall) && /not the cycle's time limit/.test(wall),
+    "lens-review-timeout names lens-review, and says it is not the cycle's clock (#1384)",
+  );
 
   const incomplete = explainCap("review-incomplete", state);
   assert(

@@ -30,7 +30,7 @@
  *
  * #1398 — the disclosure check reads a FACT, not a cap name, and a `ready` is
  * no longer permanent. `readyHoldReason` used to ask which cap NAME had
- * appeared after the verdict (`round-cap` / `wall-clock` with
+ * appeared after the verdict (`round-cap` / `lens-review-timeout` with
  * `nextStep: "handoff"`) and held only in that one shape, so any other
  * non-round-cap failure following an `ISSUES_FOUND` — `dispatch-failed`,
  * `verify-failed:*`, a kill cause, `ci-retry` — read as "nothing to hold for"

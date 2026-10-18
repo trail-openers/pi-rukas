@@ -25,6 +25,7 @@ import { readMarker } from "./reply-markers.ts";
 import { trace } from "./trace.ts";
 import type { DriverExecFn } from "./work-driver-context.ts";
 import { detectMainline } from "./work-driver-git.ts";
+import { GROUNDING_BASIS } from "./work-driver-intent-park-evidence.ts";
 import { type NormalisedSpec, specIsActionable } from "./work-driver-intent.ts";
 
 /** The commit a resolver cites for an `already-implemented` park, lowercased, or undefined. */
@@ -70,8 +71,7 @@ export async function groundAlreadyImplemented(
   trace(`work-driver: intent — already-implemented refuted: ${sha} is not on ${ref}`);
   const refutation = {
     text: `The explore step parked as already-implemented citing commit ${sha}, which is not on ${ref}. The driver did not accept the park.`,
-    basis:
-      "already-implemented means the mainline has the work; an open PR or an unmerged branch does not",
+    basis: GROUNDING_BASIS,
   };
   const { parkReason: _r, parkReasonSource: _rs, verdictSource: _vs, ...rest } = spec;
   const assumptions = [...spec.assumptions, refutation];
