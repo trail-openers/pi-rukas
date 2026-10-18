@@ -89,6 +89,14 @@ if [ "${PI_ENSEMBLE_SMOKE_HOST_GIT:-}" != "1" ]; then
     : "$_git_iso/gitconfig" 2>/dev/null || true
     mkdir -p "$_git_iso/home" 2>/dev/null || true
     mkdir -p "$_git_iso/home/.config" 2>/dev/null || true
+    # #1606 — vipune fetches a ~128MB embedding model into
+    # $HOME/.cache/huggingface (it ignores HF_HOME), so an isolated HOME meant a
+    # download per run. Share the operator's model cache; git never reads .cache,
+    # and the trap's `rm -rf` removes the link without following it.
+    if [ -n "${HOME:-}" ] && [ -d "$HOME/.cache/huggingface" ]; then
+      mkdir -p "$_git_iso/home/.cache" 2>/dev/null &&
+        ln -s "$HOME/.cache/huggingface" "$_git_iso/home/.cache/huggingface" 2>/dev/null || true
+    fi
     export GIT_CONFIG_GLOBAL="$_git_iso/gitconfig"
     export GIT_CONFIG_NOSYSTEM=1
     export HOME="$_git_iso/home"

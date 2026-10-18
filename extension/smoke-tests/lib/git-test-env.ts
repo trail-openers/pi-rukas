@@ -97,9 +97,53 @@
  * read-only repository probe (`src/headless/build.ts` `GIT_ENV_SCRUB`) — it
  * never sets them, and it is not changed by this.
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
+
+/**
+ * #1606 — every temp dir this module (or a fixture, through `trackedTempDir`)
+ * creates is recorded here and removed when the process ends. The isolation dir
+ * used to have no cleanup site at all and was handed back only as env vars, so
+ * no caller could remove it: 1078 of them (8.6G, most of it a vipune embedding
+ * model fetched into the isolated HOME) filled this host's /tmp tmpfs and the
+ * suite then failed as 300s timeouts. Removal is LIFO (a fixture nested in an
+ * earlier dir goes first) and hooked on `exit`, SIGINT and SIGTERM — the
+ * watchdog's SIGTERM is how a timed-out test ends. A SIGKILL still leaks; the
+ * gate's per-run TMPDIR (lib/verify-loop.sh) is the backstop for that.
+ */
+const tracked: string[] = [];
+let cleanupHooked = false;
+
+/** `mkdtempSync(join(tmpdir(), prefix))`, removed at process end. */
+export function trackedTempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  tracked.push(dir);
+  if (!cleanupHooked) {
+    cleanupHooked = true;
+    process.on("exit", removeTrackedTempDirs);
+    process.once("SIGINT", () => {
+      removeTrackedTempDirs();
+      process.exit(130);
+    });
+    process.once("SIGTERM", () => {
+      removeTrackedTempDirs();
+      process.exit(143);
+    });
+  }
+  return dir;
+}
+
+/** Remove every tracked dir, newest first. Never throws: it runs on exit. */
+export function removeTrackedTempDirs(): void {
+  for (let dir = tracked.pop(); dir !== undefined; dir = tracked.pop()) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Best effort: a dir that cannot be removed must not change the exit code.
+    }
+  }
+}
 
 /** The four variables that isolate a fixture repo from the host's git config. */
 export const GIT_ISOLATION_VARS = [
@@ -172,10 +216,11 @@ function build(): Record<string, string> {
     );
     return {};
   }
-  const dir = mkdtempSync(join(tmpdir(), "pi-ens-gitiso-"));
+  const dir = trackedTempDir("pi-ens-gitiso-");
   const cfg = join(dir, "gitconfig");
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true });
+  linkModelCache(home);
   // Empty, and INSIDE the isolated HOME so the two levers cannot disagree about
   // where the per-user config lives. Git looks for `$XDG_CONFIG_HOME/git/ignore`,
   // so an empty directory has nothing to ignore.
@@ -201,6 +246,26 @@ function build(): Record<string, string> {
     if (existing && k !== "HOME" && k !== "XDG_CONFIG_HOME") iso[k] = existing;
   }
   return iso;
+}
+
+/**
+ * #1606 — vipune, reached through production code under test, fetches its
+ * ~128MB embedding model into `$HOME/.cache/huggingface` (it ignores `HF_HOME`;
+ * measured with the installed binary). With HOME isolated that was one download
+ * per fixture process. Linking the operator's model cache in removes it. Git
+ * never reads `.cache`, so the isolation is unchanged, and the removal above
+ * unlinks the symlink without following it. The real home comes from the
+ * passwd entry because `$HOME` may already be verify-loop's isolated one.
+ */
+function linkModelCache(home: string): void {
+  try {
+    const hostCache = join(userInfo().homedir, ".cache", "huggingface");
+    if (!existsSync(hostCache)) return;
+    mkdirSync(join(home, ".cache"), { recursive: true });
+    symlinkSync(hostCache, join(home, ".cache", "huggingface"));
+  } catch {
+    // No cache to share is the old behaviour (a download), not an error.
+  }
 }
 
 /** Whether the first `build()` chose the isolated shape or the escape hatch.
