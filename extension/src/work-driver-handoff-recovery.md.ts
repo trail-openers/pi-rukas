@@ -17,6 +17,7 @@
 import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { commitPrDirtyRootStep } from "./work-driver-handoff-commitpr.ts";
+import { genericRecoveryLines } from "./work-driver-handoff-recovery-tree.ts";
 import {
   type RecoveryStep,
   consolidatedRestoreClaim,
@@ -235,17 +236,8 @@ export function recoveryCommandsMarkdown(
   } else {
     lines.push(
       ...killDetail(state).map((l) => `# ${l}`),
-      "# 1. Inspect what survived before deciding:",
-      "git status",
-      "git diff --stat",
-      "",
-      "# 2. Discard the cycle and start over (worktree changes are kept):",
-      `rm .pi/work-state/${issue}.json`,
-      "",
-      "# 3. Take over manually — commit + push what's there, open the PR yourself:",
-      "git add -p",
-      "git commit",
-      `git push -u origin ${ps.branchName}`,
+      // #1565 — built from the trees the snapshot found, not repoRoot blindly.
+      ...genericRecoveryLines(state),
     );
   }
   lines.push("```", "");

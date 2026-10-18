@@ -38,6 +38,8 @@ export {
   getChildHandle,
   getJobIssues,
   DRIVER_OWNED_NOTICE,
+  driverOwnedNotice,
+  driverOwnerTag,
   getOrchestratorActiveChild,
   isDriverOwnedJob,
   isOrchestratorJob,

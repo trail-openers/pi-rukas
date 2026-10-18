@@ -5,6 +5,7 @@
  * for the WHY explanation used by every handoff surface.
  */
 
+import { reviewWallClockMs } from "./review-budget.ts";
 import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
@@ -74,8 +75,8 @@ export function explainCap(
       return "adversarial gate ran its 3-round internal loop and could not reach APPROVED — the diff still has issues the adversarial-developer flagged";
     case "round-cap":
       return `lens-review hit its ${MAX_REVIEW_ROUNDS}-round cap with findings still open — the lens reviewers and the developer's fixes did not converge`;
-    case "wall-clock":
-      return "lens-review fix loop exceeded its 90-minute wall-clock cap — total time spent in review/fix iterations is past the budget";
+    case "lens-review-timeout":
+      return `lens-review fix loop exceeded its ${reviewWallClockMs() / 60_000}-minute budget — total time spent in review/fix iterations is past it (PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS). This is the review loop's own budget, not the cycle's time limit`;
     case "review-incomplete":
       return "at least one lens failed every retry, so the six-pass review is incomplete — the diff was not fully reviewed, which is not the same as being rejected";
     case "ci-retry":
@@ -206,9 +207,15 @@ export function explainCap(
     case "cross-group-conflict": {
       const hit = lastCapHit(state, "cross-group-conflict");
       const ev = hit?.evidence ?? "";
-      const siblingMatch = ev.match(/issue #(\d+)/);
+      const siblingMatch = ev.match(/claimant(\d+)/) ?? ev.match(/issue #(\d+)/);
       const siblingIssue = siblingMatch ? siblingMatch[1] : "(see evidence)";
-      return `this cycle's declared paths overlap with issue #${siblingIssue}'s active claim — two cycles cannot edit the same files in parallel. The overlapping paths are in the event log evidence field. Coordinate with the other cycle's owner or re-plan with disjoint file sets.`;
+      // #1454 — the old sentence said "active claim" and told the operator to
+      // "coordinate with the other cycle's owner". In every park we measured
+      // the other cycle had already exited or parked, so the advice was
+      // unreachable and the re-run re-parked. A claim is honoured only while
+      // its owner is alive AND its state file is non-terminal; a stale one is
+      // pruned on the next read.
+      return `this cycle's declared paths overlap with issue #${siblingIssue}'s path claim — two cycles cannot edit the same files in parallel. The overlapping paths are in the event log evidence field. A claim is honoured only while #${siblingIssue}'s cycle is still running: if that pid has exited, or its state file reads merged/handoff/aborted, the claim is stale and the next /work prunes it — check the pid and .pi/work-state/${siblingIssue}.json before anything else. Only when #${siblingIssue} is genuinely still running is this a real conflict; then re-plan with disjoint file sets.`;
     }
     case "existing-pr-detected": {
       const pr = state.pipelineState.existingPr;

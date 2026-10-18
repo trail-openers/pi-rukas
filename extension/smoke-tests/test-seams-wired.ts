@@ -40,6 +40,9 @@
 
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
+// #1454 — the table split for the 500-line gate; concatenated so a module can
+// be registered in either half and the orphan check still sees the whole set.
+import { SEAMS_1454 } from "./lib/seams-registry-1454.ts";
 import { SEAMS } from "./lib/seams-registry.ts";
 
 let exit = 0;
@@ -102,7 +105,7 @@ const allSources = (readdirSync(SRC, { recursive: true }) as string[])
     text: stripComments(readFileSync(path.join(SRC, f), "utf8")),
   }));
 
-for (const seam of SEAMS) {
+for (const seam of [...SEAMS, ...SEAMS_1454]) {
   console.log(`\n── ${seam.file}`);
 
   const source = readFileSync(path.join(SRC, seam.file), "utf8");
@@ -160,6 +163,18 @@ for (const seam of SEAMS) {
     `canary: ${seam.canary.importer} still calls ${seam.canary.symbol}`,
   );
 
+  // #1454 — a symbol only its own module calls (the claims read filter, the
+  // sweep's owner lookup) is reachable in a way the canary cannot see, since
+  // the canary excludes the seam file itself. Assert the internal call site.
+  if (seam.selfCall) {
+    const selfSource = stripComments(source);
+    assert(
+      new RegExp(`\\b${seam.selfCall.symbol}\\s*\\(`).test(selfSource) &&
+        selfSource.includes(`function ${seam.selfCall.by}`),
+      `self-call: ${seam.selfCall.by} still calls ${seam.selfCall.symbol}`,
+    );
+  }
+
   const pendingCount = Object.keys(seam.pending).filter((n) => exported.includes(n)).length;
   if (pendingCount) console.log(`  … ${pendingCount} export(s) still awaiting a caller`);
 }
@@ -170,7 +185,7 @@ for (const seam of SEAMS) {
   // A module whose ONLY importer is a smoke test is the exact shape all three
   // seams above had when they shipped. Report any such module, so the next one
   // is noticed at the gate rather than three releases later.
-  const declared = new Set(SEAMS.map((s) => s.file));
+  const declared = new Set([...SEAMS, ...SEAMS_1454].map((s) => s.file));
   // #609 — forge-detect.ts is S1 of epic #608. Its production caller is
   // forge.ts (S2), not yet shipped. Declared pending so the module-level
   // orphan check does not fail on it until forge.ts lands.

@@ -14,7 +14,7 @@ import type { WorkStep } from "./workflow-state-events.ts";
 export type WorkCapLiteral =
   | "adversarial-loop"
   | "round-cap"
-  | "wall-clock"
+  | "lens-review-timeout"
   // A lens failed every retry, so the six-pass review is incomplete.
   // Distinct from the round cap: nothing capped, the review could not be
   // completed. This used to be reported as "adversarial-loop".

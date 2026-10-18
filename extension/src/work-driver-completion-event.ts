@@ -52,6 +52,13 @@ export function overrideEnvForKillCause(
     // the value that actually killed the child.
     case "tool-inactivity":
       return "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS";
+    // #1567 — the child-supervision kills are driver caps, so the knob that
+    // turns them off is the caps master switch. The piece that emits each
+    // cause adds its own bound knob here when it introduces one.
+    case "child-bound":
+    case "no-progress":
+    case "stuck-tool":
+      return "PI_ENSEMBLE_DISPATCH_CAPS";
   }
 }
 

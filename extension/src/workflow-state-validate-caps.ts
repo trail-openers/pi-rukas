@@ -24,7 +24,7 @@ import type { WorkStep } from "./workflow-state-events.ts";
 export const CAP_HIT_FIXED_LITERALS = [
   "adversarial-loop",
   "round-cap",
-  "wall-clock",
+  "lens-review-timeout",
   "review-incomplete",
   "ci-retry",
   "developer-timeout",

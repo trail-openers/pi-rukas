@@ -137,6 +137,11 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("CHILD_CODEMODE", true),
   ms("CI_WATCH_TIMEOUT_MS", 1_800_000),
   flag("CLAIM_SCAN", true),
+  // #1454 — how long a claim whose claimant state file cannot be read may
+  // still park a sibling. The reader is CLAIM_STALE_MS in
+  // work-driver-path-claims.ts; a non-finite/non-positive value falls back to
+  // the 1 h default there, which is the default recorded here.
+  ms("CLAIM_STALE_MS", 3_600_000, "cycle"),
   flag("COMMENT_RETENTION", true),
   list("COMMENT_RETENTION_PATHS", ",", "extension/src,extension/smoke-tests,agents-base"),
   // #1240 — 0 restores the pre-#1240 shape: the consolidated verify always runs,
@@ -174,6 +179,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // forge: the driver posts the handoff comment and label; host: the result carries it instead.
   input("HANDOFF_CHANNEL", "enum", "forge", "cycle", { values: ["forge", "host"] }),
   flag("HANDOFF_CONSOLIDATE", true),
+  flag("HANDOFF_DRAFT_PR", true),
   flag("HANDOFF_POST_RETRY", true),
   ms("HANDOFF_POST_RETRY_BACKOFF_MS", 1_000),
   ms("HANDOFF_TIMEOUT_MS", 480_000),
@@ -293,6 +299,21 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   str("SUBAGENT_MODEL", null),
   str("SUBAGENT_PROVIDER", null),
   flag("SYMBOL_MERGE_RETRY", true),
+  // #1454 r2 — a TEST-ONLY fault injection: force the path-claims lock
+  // unreachable so `test-work-driver-claims-concurrent-writers.ts` can prove its
+  // own positive assertion can fail. Listed (not exempted) because the gate
+  // sweeps every `PI_ENSEMBLE_*` read in src/ regardless of who sets it: an
+  // operator who exports it gets an UNSERIALISED claim registry, which is
+  // exactly the kind of outcome-changing knob this table exists to surface.
+  flag("TEST_CLAIMS_LOCK_BLOCKED", false, "internal"),
+  // #1454 r2 — a TEST-ONLY knob: widen the read-modify-write window of a claim
+  // writer by this many ms, so the mutation arm of
+  // `test-work-driver-claims-concurrent-writers.ts` loses a claim
+  // DETERMINISTICALLY instead of only when eight children happen to overlap.
+  // Read ONLY while `PI_ENSEMBLE_TEST_CLAIMS_LOCK_BLOCKED=1` is also set —
+  // `resolveClaimsWindowMs` returns 0 without it — so a production cycle never
+  // waits here and the delay cannot reach a real run.
+  ms("TEST_CLAIMS_WINDOW_MS", 0, "internal"),
   int("TEST_DELETE_TOLERANCE", 0),
   // Unset: no budget, except code-review-specialist (8,000,000).
   family(int("TOKEN_BUDGET_<ROLE>", null, "cycle", { unit: "tokens" }), ROLE_MEMBERS),
