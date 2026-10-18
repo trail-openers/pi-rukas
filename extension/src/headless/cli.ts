@@ -5,7 +5,10 @@
  * `pi-rukas run`, which execs it.
  *
  *   pi-rukas-headless work <issue> [more issues] [--restart]
- *                          [--timeout <minutes>] [--json]
+ *                          [--continue-pr] [--timeout <minutes>] [--json]
+ *
+ * `--continue-pr` (#1468) continues the issue's open pull request instead of
+ * stopping on it, so it takes exactly one issue.
  *   pi-rukas-headless plan | research | agents-md | lens-review …   (S6, #1021)
  *
  * The S6 subcommands run their pipelines on a headless DriverHost: their
@@ -76,6 +79,7 @@ export async function runSubcommand(
 export interface ParsedArgs {
   issues: number[];
   restart: boolean;
+  continuePr: boolean;
   timeoutMs?: number;
   json: boolean;
 }
@@ -84,11 +88,13 @@ export interface ParsedArgs {
 export function parseHeadlessArgs(argv: string[]): ParsedArgs | { error: string } {
   const issues: number[] = [];
   let restart = false;
+  let continuePr = false;
   let json = false;
   let timeoutMs: number | undefined;
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i] as string;
     if (tok === "--restart") restart = true;
+    else if (tok === "--continue-pr") continuePr = true;
     else if (tok === "--json") json = true;
     else if (tok === "--timeout") {
       const v = Number(argv[++i]);
@@ -108,7 +114,8 @@ export function parseHeadlessArgs(argv: string[]): ParsedArgs | { error: string 
     }
   }
   if (issues.length === 0) return { error: "work needs at least one issue number" };
-  return { issues, restart, timeoutMs, json };
+  if (continuePr && issues.length > 1) return { error: "--continue-pr takes one issue" };
+  return { issues, restart, continuePr, timeoutMs, json };
 }
 
 /** Set once `work` starts; flushed before the process exits. */
@@ -134,7 +141,7 @@ async function main(argv: string[]): Promise<number> {
   }
   if (verb !== "work") {
     process.stderr.write(
-      `usage: pi-rukas-headless work <issue...> [--restart] [--timeout <min>] [--json] | ${Object.keys(SUBCOMMANDS).join(" | ")} … | --capabilities\n`,
+      `usage: pi-rukas-headless work <issue...> [--restart] [--continue-pr] [--timeout <min>] [--json] | ${Object.keys(SUBCOMMANDS).join(" | ")} … | --capabilities\n`,
     );
     return EXIT.refused;
   }
@@ -151,6 +158,7 @@ async function main(argv: string[]): Promise<number> {
     repoRoot,
     issues: args.issues,
     restart: args.restart,
+    continuePr: args.continuePr,
     timeoutMs: args.timeoutMs,
     write: capture.write,
   });
