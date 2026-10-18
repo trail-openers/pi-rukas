@@ -62,6 +62,7 @@
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { normaliseLedgerWriteReturn } from "../src/adversarial-ledger-capture.ts";
 
 let passed = 0;
@@ -76,12 +77,15 @@ function assert(cond: unknown, msg: string) {
   }
 }
 
-/** Join without pulling in node:path for two call sites. */
-function pathJoin(a: string, b: string): string {
-  return `${a.replace(/\/$/, "")}/${b}`;
-}
+// #1449 round 2 — the hand-rolled two-argument `pathJoin` this file used to
+// carry is gone, in favour of `node:path`. It accepted exactly two segments and
+// the arms path needs THREE (`import.meta.dirname` + "lib" + the filename),
+// which TS2554 caught: a three-argument call was an arity error, and the shape
+// it would have produced anyway — an absolute path with the fixture name
+// missing — is a `bun test` filter that matches nothing, i.e. an arm reporting
+// green while running no child.
 
-const dir = pathJoin(os.tmpdir(), "pi-1449-shapes-");
+const dir = path.join(os.tmpdir(), "pi-1449-shapes-");
 
 /** Values that are not outcomes but would survive a truthiness check — what a
  * stub, or a refactor that stops returning the tagged shape, hands back. */
@@ -119,47 +123,92 @@ try {
   // Probes that keep the nullish arms from passing vacuously: a value that merely
   // LOOKS falsy must still come back, so the arms above returned undefined because
   // of the discriminant check and not because of truthiness.
+  // #1449 round 2 — the check is the BOOLEAN `recorded`, not its presence. The
+  // reporter branches on `outcome.recorded === true`, so a truthy non-boolean is
+  // the shape that turns "nothing to report" into "a row was recorded": a
+  // `{ recorded: "yes" }` from a stub, or `1`/`[]` from a refactor, used to reach
+  // the operator as a claim. Same direction as the guard's own validation of a
+  // foreign ledger row (`validEntries`: `typeof passed === "boolean"`) — a value
+  // a #912 reader acts on is type-checked, not truth-tested. This supersedes the
+  // round-1 arm that asserted "any value under `recorded` is still an outcome":
+  // presence was the wrong bar, and `""`/`"yes"` now read as nothing.
   assert(
     normaliseLedgerWriteReturn({ recorded: false }) !== undefined,
-    "#1449 a falsy-LOOKING outcome is still an outcome (the guard is null/undefined, not truthiness)",
+    "#1449 `{ recorded: false }` is still an outcome (the guard is the boolean's IDENTITY, not truthiness)",
+  );
+  for (const shape of [
+    { recorded: "" },
+    { recorded: "yes", landedAtPath: "/tmp/elsewhere/x.json" },
+    { recorded: 1 },
+    { recorded: [] },
+  ]) {
+    assert(
+      normaliseLedgerWriteReturn(shape) === undefined,
+      `#1449 a discriminant that is not exactly true/false is nothing to report (${JSON.stringify(shape)})`,
+    );
+  }
+  assert(
+    normaliseLedgerWriteReturn({ recorded: true }) !== undefined,
+    "#1449 the boolean guard is not over-tight — a real { recorded: true } still passes",
   );
   assert(
-    normaliseLedgerWriteReturn({ recorded: "" }) !== undefined,
-    "#1449 any value under `recorded` is still an outcome — the check is presence, not validity",
+    normaliseLedgerWriteReturn({ recorded: false, reason: "no branch" }) !== undefined,
+    "#1449 the boolean guard is not over-tight — a real { recorded: false, reason } still passes",
   );
-  // A property that throws on read is a hostile shape, not a crash: the helper
-  // may not touch anything beyond the discriminant's PRESENCE.
+  // A property that throws on read is still a crash the helper may not cause, so
+  // the discriminant is read through a property access wrapped in its own
+  // swallow: a hostile getter yields "not a boolean", which is the same answer
+  // the boolean guard already gives for anything unreadable — nothing to report.
   const hostile: Record<string, unknown> = {};
-  let getterTouched = 0;
+  let hostileThrew = false;
+  let hostileOut: unknown = "NOT SET";
   Object.defineProperty(hostile, "recorded", {
     get: () => {
-      getterTouched++;
       throw new Error("hostile getter");
     },
     enumerable: true,
   });
-  let hostileThrew = false;
-  let hostileOut: unknown = "NOT SET";
   try {
     hostileOut = normaliseLedgerWriteReturn(hostile);
   } catch {
     hostileThrew = true;
   }
   assert(
-    !hostileThrew && hostileOut !== undefined,
-    "#1449 an outcome whose properties throw is still an outcome — the helper reads only the discriminant's presence",
-  );
-  assert(
-    getterTouched === 0,
-    "#1449 the helper never READS `recorded` (a getter-free `in` check), so a hostile property cannot throw it",
+    !hostileThrew && hostileOut === undefined,
+    "#1449 an outcome whose `recorded` throws on read yields nothing to report, not a crash",
   );
 
   // The nullish cases are covered by the arms above, and the reasoning is in the
   // source comment: `typeof null === "object"` and `in` throws on a primitive,
   // so `value === null` is load-bearing (mutation-verified: deleting it turns the
-  // `null` arm red). Deleting the discriminant check turns four arms red. Adding a
+  // null arm red). Deleting the discriminant check turns four arms red. Adding a
   // nullish guard alongside survived mutation on every shape this suite can
   // construct, so it is not written.
+
+  // ---- (1b) the discriminant must be a BOOLEAN, not merely present ---------
+  //
+  // #1449 round 2. The reporter branches on `outcome.recorded === true`, so a
+  // truthy non-boolean is the shape that turns "nothing was reported" into "a
+  // row was recorded". A truthiness check would let all three below through.
+  for (const shape of [
+    { recorded: "yes", landedAtPath: "/tmp/elsewhere/x.json" },
+    { recorded: 1 },
+    { recorded: [] },
+  ]) {
+    assert(
+      normaliseLedgerWriteReturn(shape) === undefined,
+      `#1449 an outcome whose discriminant is not a boolean is nothing to report (${JSON.stringify(shape)})`,
+    );
+  }
+  // …and the two real arms still pass, so the guard above is not over-tight.
+  assert(
+    normaliseLedgerWriteReturn({ recorded: true }) !== undefined,
+    "#1449 a real { recorded: true } outcome still passes the boolean check",
+  );
+  assert(
+    normaliseLedgerWriteReturn({ recorded: false, reason: "no branch" }) !== undefined,
+    "#1449 a real { recorded: false, reason } outcome still passes the boolean check",
+  );
 
   // ---- (2) + (3): the mock arms, each in its own process -----------------
   //
@@ -174,9 +223,15 @@ try {
   // `import.meta.dir` is the ENTRY's directory under `bun test` (here:
   // `extension/`), not this file's — measured. `import.meta.dirname` is the
   // file's own, which is what the fixture path needs.
-  const arms = pathJoin(import.meta.dirname, "lib", "writer-shape-mock-arms.test.ts");
-  const writerMockArm = arms;
-  function runArm(arm: string): { threw: boolean; text: string; probe: string } {
+  const arms = path.join(import.meta.dirname, "lib", "writer-shape-mock-arms.test.ts");
+  function runArm(arm: string): {
+    threw: boolean;
+    text: string;
+    probe: string;
+    reason?: string;
+    rejected?: boolean;
+    delivered?: boolean;
+  } {
     // `arms` is already absolute (built from `import.meta.dirname`); a "./" prefix
     // would make it `.//Users/...`, which `bun test` treats as a filter and
     // matches nothing.
@@ -187,10 +242,24 @@ try {
     const out = r.stdout.toString() + r.stderr.toString();
     const m = out.match(/\{"arm":.*\}/);
     if (!m)
-      return { threw: true, text: `<child produced no verdict: ${out.slice(0, 160)}>`, probe: "?" };
+      return {
+        threw: true,
+        text: `<child produced no verdict: ${out.slice(0, 160)}>`,
+        probe: "?",
+        rejected: true,
+      };
     try {
       const p = JSON.parse(m[0]);
-      return { threw: p.threw === true, text: String(p.text ?? ""), probe: String(p.probe ?? "") };
+      return {
+        threw: p.threw === true,
+        text: String(p.text ?? ""),
+        probe: String(p.probe ?? ""),
+        // Only the rejectNonError arm populates these; every other arm leaves
+        // them undefined, which the assertions below never read.
+        reason: p.reason === undefined || p.reason === null ? undefined : String(p.reason),
+        rejected: p.rejected === true,
+        delivered: p.delivered === true,
+      };
     } catch {
       return { threw: true, text: `<unparseable: ${m[0].slice(0, 160)}>`, probe: "?" };
     }
@@ -268,6 +337,48 @@ try {
     assert(
       !errOutcome.recorded && errOutcome.reason.includes("distinct-message"),
       "#1449 an Error rejection still carries its message into the outcome — the odd-shape arms are not a blanket swallow",
+    );
+  }
+
+  // ---- the writer's own promise rejects with a NON-Error (mock arm) --------
+  //
+  // The loop-level twin of the in-process arms below: the writer module is
+  // `mock.module`d so its promise REJECTS with a bare string, and the loop's
+  // exits must still return byte-identical results with no note and no throw.
+  // #1449 round 2 — the arm existed in the child but no parent ran it, so it
+  // verified nothing, and `rejected` was written by the child and never read
+  // here.
+  //
+  // What it asserts is DELIVERY, not a reason string. The rejection carries a
+  // bare string, so `normaliseLedgerWriteReturn` correctly answers `undefined`
+  // (no `recorded` key) and the reporter's `reason` is legitimately undefined —
+  // asserting a String()-ified reason here would assert a shape the writer never
+  // produces. The String()-ification claim lives in the in-process non-Error
+  // arms below, where the value really does become `recorded: false` + reason.
+  // `delivered` is the load-bearing bit: before the round-2 fix the reporter sat
+  // in a `.then` fulfilment handler, so a REJECTED write skipped it entirely and
+  // the loop silently reported nothing about a ledger that had failed.
+  {
+    const { threw, text, probe, rejected, delivered } = runArm("rejectNonError");
+    assert(
+      probe === "returned:promise",
+      `#1449 the rejecting writer really is installed (else the arm proves nothing) — ${probe}`,
+    );
+    assert(
+      !threw,
+      "#1449 a writer whose promise rejects with a non-Error does not throw out of the loop's exit",
+    );
+    assert(
+      rejected === false,
+      "#1449 the child's own guard saw no escaped rejection — the call site's tolerance held",
+    );
+    assert(
+      delivered === true,
+      "#1449 the reporter IS reached on a REJECTED write — a `.then` fulfilment handler alone skips it, so the loop reported nothing about a failed ledger",
+    );
+    assert(
+      text === "REVIEW DONE",
+      "#1449 a rejecting writer appends no note to the loop's result",
     );
   }
 

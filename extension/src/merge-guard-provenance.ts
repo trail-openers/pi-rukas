@@ -82,28 +82,40 @@ export function misdirectedWriteOf(
   expectedClonePath?: string,
 ): string | undefined {
   try {
+    // #1449 round 2 — `existsSync` here is a pure optimisation (skip the parse
+    // of a file that is not there), NOT a gate on the verdict, and it must stay
+    // that way: this function is a diagnostic whose every arm returns
+    // "nothing to report", and the guard's block decision is made from
+    // `readLedgerAt` + `latestEntry`, never from this return value. A row whose
+    // `writtenTo` names a symlink pointing at nothing, or a clone path whose
+    // directory has been deleted out from under the process, therefore changes
+    // only whether the refusal NAMES a redirect — never whether the guard
+    // blocks. Asserted for exactly those two shapes in
+    // test-merge-guard-provenance-fault.ts.
     if (!existsSync(ledgerPath)) return undefined;
     for (const e of readLedgerFileSafe(ledgerPath).entries) {
-      if (e.branch === branch) {
-        const stamped = sanitiseLedgerProvenancePath(e.writtenTo);
-        // #1449 round 2 — a stamp naming the file this guard is reading is not
-        // evidence of a misdirection, and neither is one naming the clone's OWN
-        // ledger. The second case is what an override points at most of the time
-        // a stale value lingers: a row written before the override existed, or
-        // written by a process without it, sits in the clone's ledger with no
-        // stamp at all — but a row that carries a stamp equal to the clone path
-        // says plainly "this landed where the guard looks", so reporting it as
-        // redirected would tell the operator a review went somewhere it
-        // demonstrably did not.
-        //
-        // The comparison is against the CLONE path (`cloneLedgerPathFor`, the
-        // override-blind answer) and not against `ledgerPath`: inside a
-        // redirecting process `ledgerPath` IS the redirected file, so comparing
-        // against it would compare a stamp to itself and never fire — and a
-        // legitimate redirect's stamp always differs from the clone path, which
-        // is what makes it a redirect.
-        if (stamped && !sameResolvedPath(stamped, expectedClonePath)) return stamped;
-      }
+      if (e.branch !== branch) continue;
+      // #1449 round 2 — COMPARE RAW, RENDER SANITISED. The two used to be one
+      // value: the stamp was sanitised first and then handed to
+      // `sameResolvedPath`, which caps at 240 chars. A clone path past the cap
+      // clamps to a PREFIX of itself, so an ordinary row on a deep path (a long
+      // worktree, a long temp prefix) compared unequal against the clone path it
+      // literally was, and the guard told the operator a review had gone
+      // somewhere it demonstrably had not — the exact false statement this
+      // diagnostic exists to remove, restored by one line of round-1 hardening.
+      //
+      // So: the raw value decides WHETHER to report; the sanitised value is what
+      // gets returned, because the return value is interpolated into the
+      // guard's refusal and is untrusted data by then (control characters
+      // stripped, length capped). A stamp that sanitises to nothing is dropped
+      // entirely — there is no path worth naming, which is the honest text for
+      // "nothing to say", and it is checked after the comparison so it cannot
+      // change the verdict, only the wording.
+      const raw = typeof e.writtenTo === "string" ? e.writtenTo : undefined;
+      if (!raw) continue;
+      if (sameResolvedPath(raw, expectedClonePath)) continue;
+      const renderable = sanitiseLedgerProvenancePath(raw);
+      if (renderable) return renderable;
     }
     return undefined;
   } catch (err: unknown) {

@@ -36,7 +36,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { makeLedgerWrite } from "../src/adversarial-ledger-capture.ts";
@@ -414,6 +414,13 @@ try {
       !/DID run/i.test(stillRefused.reason ?? ""),
       "#1449 the ordinary refusal makes no redirect claim without a stamp",
     );
+
+    // The two hostile-STAMP arms (a `writtenTo` naming a dangling symlink, and an
+    // `expectedClonePath` whose directory is gone) moved to
+    // `test-merge-guard-hostile-stamp.ts` for the 500-line gate. Both ask the
+    // same question of the guard — can a hostile value on the RIGHT-hand side of
+    // the provenance comparison lift the block? — and that file drives the real
+    // hook, so the split kept the assertion that matters and not just the helper.
   }
 
   // ---- (d) the adversarial note has a production caller ------------------

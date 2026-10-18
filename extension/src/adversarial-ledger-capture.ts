@@ -74,6 +74,29 @@ export function normaliseLedgerWriteReturn(value: unknown): AdversarialLedgerOut
   // instead of reporting nothing. Deleting it turns the `null` arm red (verified
   // by mutation); deleting the whole check turns four arms red.
   if (value === null || typeof value !== "object" || !("recorded" in value)) return undefined;
+  // #1449 round 2 — the discriminant must be the BOOLEAN it claims to be, not
+  // merely PRESENT. Both writers produce `recorded: true | false` and the
+  // reporter branches on `outcome.recorded === true`, so a truthy non-boolean is
+  // the shape that turns "nothing was reported" into "a row was recorded": a
+  // `{ recorded: "yes" }` from a stub, or `1`/`[]` from a refactor, reaches the
+  // operator as a claim that a row exists. Same direction as the guard's own
+  // validation of a foreign ledger row (`validEntries`: `typeof passed ===
+  // "boolean"`) — the value a #912 reader acts on is type-checked, not
+  // truth-tested.
+  //
+  // The read is wrapped because the round-1 contract it must not break is "this
+  // helper never crashes on a hostile shape": a getter that throws is such a
+  // shape, and an unreadable discriminant is by definition not `true`/`false`
+  // — so the swallow lands on the same answer the guard already gives. Deleting
+  // the boolean check turns the four non-boolean arms above red; deleting the
+  // swallow turns the hostile-getter arm red.
+  let recorded: unknown;
+  try {
+    recorded = (value as { recorded?: unknown }).recorded;
+  } catch {
+    return undefined;
+  }
+  if (recorded !== true && recorded !== false) return undefined;
   return value as AdversarialLedgerOutcome;
 }
 
@@ -254,9 +277,27 @@ export function makeLedgerWrite(opts: {
     // reporter's contract is one type whatever the writer returned; the note
     // reads only `recorded` / `landedAtPath` / `reason`, so a shape it has never
     // seen yields no note rather than a crash or an invented claim.
-    void Promise.resolve(ledgerWrite)
-      .then((value) => deliver(normaliseLedgerWriteReturn(value)))
-      .catch(() => undefined);
+    // #1449 round 2 — the reporter is reached on BOTH Settlings of the write,
+    // not just fulfilment. `Promise.reject("boom")` skips a `.then` fulfilment
+    // handler entirely and lands in `.catch`, so the arm that used to sit in
+    // `.catch(() => undefined)` threw the one piece of information the whole
+    // mechanism exists to deliver: a writer whose own promise rejects with a
+    // non-Error reported NOTHING at all, while the `recorded: false` outcome it
+    // produced — with its String()-ified reason — went unread. The contract of
+    // the call site is "whatever the writer handed back, the operator hears
+    // about it", and `settled` is the shape that contract has to cover. A
+    // rejection with no value at all still normalises to "nothing to report",
+    // which is the correct answer and the same one every other off-contract
+    // shape gets; a callback that throws is still swallowed, so nothing here can
+    // break the loop.
+    const settled = (value: unknown): void => {
+      try {
+        deliver(normaliseLedgerWriteReturn(value));
+      } catch {
+        // A reporter that throws is a reporting fault, never a review fault.
+      }
+    };
+    void Promise.resolve(ledgerWrite).then(settled, settled);
     return opts.note(live);
   };
 }

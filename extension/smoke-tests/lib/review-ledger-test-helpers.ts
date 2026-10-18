@@ -56,9 +56,6 @@ const LEDGER_ENV = "PI_ENSEMBLE_REVIEW_LEDGER_FILE";
 interface Isolation {
   dir: string;
   file: string;
-  /** The value the importing process had BEFORE this call — restored verbatim
-   * (including "absent"), never reinterpreted. */
-  previous: string | undefined;
   /** Restore the env this call changed and remove its temp dir. Idempotent. */
   release: () => void;
 }
@@ -93,14 +90,12 @@ const baseline = process.env[LEDGER_ENV];
  * return value are unchanged.
  */
 export function isolateLedger(): () => void {
-  const previous = process.env[LEDGER_ENV];
   const dir = mkdtempSync(path.join(os.tmpdir(), "ledger-iso-"));
   const file = path.join(dir, "review-ledger.json");
   process.env[LEDGER_ENV] = file;
   const iso: Isolation = {
     dir,
     file,
-    previous,
     release: () => {
       if (!active.has(iso)) return;
       active.delete(iso);
@@ -109,12 +104,12 @@ export function isolateLedger(): () => void {
       // directory.
       //
       // #1449 round 2 — "restore" means "restore to whatever is still correct",
-      // and when isolations are nested `previous` is not always it. Each call saves
-      // the env as it found it, so an INNER call's `previous` is the OUTER call's
-      // file — a path that is not the caller's to restore and that the outer
-      // release will delete. Restoring it verbatim points the env at a directory
-      // that no longer exists, which is the same class of bug this helper exists to
-      // prevent.
+      // and when isolations are nested a per-call saved `previous` is not always
+      // it. Each call used to save the env as it found it, so an INNER call's
+      // saved value was the OUTER call's file — a path that is not the caller's
+      // to restore and that the outer release will delete. Restoring it verbatim
+      // points the env at a directory that no longer exists, which is the same
+      // class of bug this helper exists to prevent. That field is gone; the
       //
       // So the answer is derived from the set that is still live, never from a
       // value remembered at acquisition time:
@@ -127,10 +122,24 @@ export function isolateLedger(): () => void {
       //     was taken (`baseline`), which is the only value that is neither a
       //     helper-created temp nor somebody else's target.
       // Releasing in either order therefore lands on the same correct answer.
-      const innermostLive = [...active][active.size - 1];
-      if (innermostLive) process.env[LEDGER_ENV] = innermostLive.file;
-      else if (baseline === undefined) delete process.env[LEDGER_ENV];
-      else process.env[LEDGER_ENV] = baseline;
+      //
+      // #1449 round 2 — each step is individually wrapped, because this runs on
+      // the process `exit` handler and an exit handler that throws is the worst
+      // failure this file can have: the remaining isolations in the loop below
+      // never release, so every later suite in the same process inherits a
+      // `PI_ENSEMBLE_REVIEW_LEDGER_FILE` naming a directory that may or may not
+      // exist — the exact leak #1449 was filed for, manufactured by the cleanup
+      // whose job is to prevent it. `process.env` assignment can throw
+      // (ERR_STRING_TOO_LONG on an absurd value, a frozen/locked-down env) and
+      // `rmSync` already had its own guard; now both halves do.
+      try {
+        const innermostLive = [...active][active.size - 1];
+        if (innermostLive) process.env[LEDGER_ENV] = innermostLive.file;
+        else if (baseline === undefined) delete process.env[LEDGER_ENV];
+        else process.env[LEDGER_ENV] = baseline;
+      } catch {
+        // The env could not be restored — nothing else here should follow it.
+      }
       try {
         rmSync(iso.dir, { recursive: true, force: true });
       } catch {
@@ -170,8 +179,21 @@ export function activeIsolations(): string[] {
 // Process-exit cleanup for isolations still held at exit (the common case: a
 // test file isolates at the top and never releases). Restores the env in
 // reverse order of acquisition so the outermost caller's value wins.
+//
+// #1449 round 2 — each release is wrapped in its own try/catch. `release` is
+// already defensive internally, but the loop must not depend on that: one throw
+// here abandons every remaining isolation, and the leak it leaves (an env
+// naming a temp dir this process is about to delete) is the bug this whole
+// helper exists to close. A cleanup loop is not allowed a failure mode worse
+// than the state it is cleaning up.
 process.on("exit", () => {
-  for (const iso of [...active].reverse()) iso.release();
+  for (const iso of [...active].reverse()) {
+    try {
+      iso.release();
+    } catch {
+      // Best-effort: a release that cannot finish must not abandon its siblings.
+    }
+  }
 });
 
 /** Set up a temp repo with a local bare origin + a feature branch.
