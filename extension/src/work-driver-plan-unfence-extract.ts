@@ -44,6 +44,7 @@
  * inside one can name a fence.
  */
 
+import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
 import { stripCodeBlocks } from "./work-driver-plan-unfence-code.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
@@ -55,25 +56,6 @@ import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 const SECTION_HEADING = /^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$/;
 const SECTION_NAMES = [/^decisions$/i, /^resolved\s+decisions$/i, /^acceptance\s+criteria$/i];
 
-/**
- * A sentence refusing an action — its paths are prohibitions, not requirements.
- *
- * Two families. The auxiliary-bearing ones (`do not`, `must not`, `never`,
- * `cannot`, …) catch a refusal stated as a verb phrase. The bare-prohibition
- * ones catch the eight phrasings the adversarial review reproduced, which
- * refuse without any auxiliary at all: "keep X untouched", "leave X alone",
- * "X remains unchanged", "skip X", "off-limits", "leave X as is".
- *
- * The two families are anchored differently on purpose. An auxiliary phrase
- * is unambiguous wherever it appears, so it matches anywhere in the sentence.
- * The bare words are ordinary English in other places (`remain`, `skip a
- * release`), so they match only next to the thing they refuse: `keep` /
- * `leave` / `leave` -ing must govern a path-shaped word ("leave the docs
- * alone" is not a fence), and a predicate adjective (`untouched`,
- * `off-limits`, `unchanged`) must sit either at the end of the sentence or
- * directly against a path. That is the widest net that still reads the
- * issue's own requirements as requirements.
- */
 /**
  * A sentence refusing an action — its paths are prohibitions, not
  * requirements. Assembled from parts, but every part is a REGEX LITERAL
@@ -94,7 +76,38 @@ const SECTION_NAMES = [/^decisions$/i, /^resolved\s+decisions$/i, /^acceptance\s
  * still reads the issue's own requirements as requirements.
  */
 const PATH_TAIL = String.raw`[\w./@-]*[\w./@-]`;
-const SRC_EXT = String.raw`ts|tsx|js|jsx|mjs|cjs|rs|go|py|rb|java|kt|sh|bash|json|md|yml|yaml|toml|css|scss|html|sql`;
+/**
+ * Every source extension the extraction recognises, in ONE list (#1167
+ * round-3 cleanup): `PATH_WORD` below and `PATH_LIKE` further down are built
+ * from it, so a new language cannot be added to one and missed in the other
+ * (the two copies previously differed only by an anchor).
+ */
+const SRC_EXTS = [
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "rs",
+  "go",
+  "py",
+  "rb",
+  "java",
+  "kt",
+  "sh",
+  "bash",
+  "json",
+  "md",
+  "yml",
+  "yaml",
+  "toml",
+  "css",
+  "scss",
+  "html",
+  "sql",
+];
+const SRC_EXT = SRC_EXTS.join("|");
 /** A path-shaped word ending in a known source extension, with nothing after it. */
 const PATH_WORD = new RegExp(
   `(?:${PATH_TAIL}\\.(?:${SRC_EXT})/\\b|(?:${PATH_TAIL}\\.(?:${SRC_EXT}))(?:[\\s.,;:!?)]|$))`,
@@ -125,15 +138,33 @@ const NEGATIONS: RegExp[] = [
   // "keep X up to date" — a maintenance obligation, not a fence.
   /\b(?:keep|keeps|keeping|kept)\s+[\w./@-]*[\w./@-]\s+up(?:\s+to\s+date)?\b/i,
   // A predicate adjective at the end of the sentence, or hard against a path.
+  // `intact` is deliberately NOT in these two lists, where an unanchored
+  // predicate adjective does its damage: "the plan holds the report intact for
+  // the caller" and "the change leaves src/behaviour.ts behaviour intact" are
+  // ordinary English about a RESULT, and a pass that read either as a refusal
+  // would drop a requirement sentence — the #1020 regression, reproduced by the
+  // widening intended to fix its opposite. `intact` is caught by the two
+  // explicit idioms below, which name the verb that means refusal.
   /(?:\s|^)(?:untouched|unchanged|unmodified|unaltered|as\s+is|as-is|off-?limits?|off\s+limits?|frozen|preserved)(?:\s*[.,;:!?)]|$)/i,
   new RegExp(
     `(?:\\s|^)(?:untouched|unchanged|unmodified|unaltered|as\\s+is|as-is|off-?limits?|off\\s+limits?|frozen|preserved)\\s+${PATH_TAIL}`,
     "i",
   ),
-  // "remains / stays" + a predicate adjective — "X remains unchanged".
-  /\b(?:remains|remain|stays|stay)\s+(?:untouched|unchanged|unmodified|unaltered|as\s+is|as-is|the\s+same|same|off-?limits?|frozen|preserved)\b/i,
+  // "remains / stays" + a predicate adjective — "X remains unchanged". The
+  // verb is what makes these refusals, so `intact` is safe here.
+  /\b(?:remains|remain|stays|stay)\s+(?:untouched|unchanged|unmodified|unaltered|as\s+is|as-is|the\s+same|same|off-?limits?|frozen|preserved|intact)\b/i,
   // "is/was left <predicate>" — the passive, which is genuinely a refusal.
-  /\b(?:is|was)\s+left\s+(?:untouched|unchanged|unmodified|unaltered|as\s+is|as-is|the\s+same|same|off-?limits?|frozen|preserved)\b/i,
+  /\b(?:is|was)\s+left\s+(?:untouched|unchanged|unmodified|unaltered|as\s+is|as-is|the\s+same|same|off-?limits?|frozen|preserved|intact)\b/i,
+  // "X is not modified" / "X must stay intact" — the two shapes a spec writes a
+  // constraint in that name no refusal verb, so nothing above catches them.
+  // `not` alone is not enough (a requirement reads "X is not yet wired"), so the
+  // verb is enumerated; and `intact` is admitted only behind a copula plus
+  // stay/remain/leave, never as a bare predicate — the anchored-result reason.
+  /\b(?:is|are|was|were|shall|should|must|will|be)\s+not\s+(?:modified|touched|changed|edited|updated|altered|revised)\b/i,
+  /\b(?:must|shall|should|will|is|are|was|were|be|remains?|stays?)\s+(?:stay|remain|keep|keeps|kept|leave|leaves|left)\s+intact\b/i,
+  // "extension/src/x.ts, intact" — the file named first, the refusal after a
+  // clause boundary. Anchored for the same reason the bare predicate is not.
+  /(?:^|[.!?;:]\s*|[-—]\s*|,\s*)intact\b/i,
   // "X is not part of this change" — bare `not` is NOT enough (a requirement
   // can read "X is not yet wired"), so the whole exclusion idiom is matched.
   /\b(?:not|never)\s+(?:part\s+of|in\s+the\s+scope\s+of|covered\s+by|touched\s+by|affected\s+by|in\s+scope\s+for)\b/i,
@@ -150,8 +181,7 @@ export function isProhibition(sentence: string): boolean {
 }
 
 /** Tokens that look like a repo path: they carry a `/` or a source extension. */
-const PATH_LIKE =
-  /[/]|\.(ts|tsx|js|jsx|mjs|cjs|rs|go|py|rb|java|kt|sh|bash|json|md|yml|yaml|toml|css|scss|html|sql)$/i;
+const PATH_LIKE = new RegExp(`[/]|\\.(?:${SRC_EXT})$`, "i");
 
 /** Globs and patterns are not files — `test-work-driver-plan*` names nothing. */
 const GLOB = /[*?[\]{}]/;
@@ -288,7 +318,24 @@ export function decisionSectionsOf(body: string): string[] {
 
 /** Candidate tokens the issue named — prohibition sentences and globs excluded. */
 export function issueNamedTokens(body: string): string[] {
+  return issueNamedTokensWithRejections(body).tokens;
+}
+
+/**
+ * `issueNamedTokens` plus the path-shaped tokens it REFUSED.
+ *
+ * The distinction is the point (#1167 round-3): an issue that named no path
+ * and an issue whose every path was absolute, traversing or riddled with shell
+ * metacharacters produced the same empty extraction, so the plan looked clean
+ * for the wrong reason and nobody could tell which had happened. The rejected
+ * list is what lets the pass say "we refused these" instead of saying nothing.
+ */
+export function issueNamedTokensWithRejections(body: string): {
+  tokens: string[];
+  rejected: string[];
+} {
   const tokens = new Set<string>();
+  const rejected = new Set<string>();
   for (const section of decisionSectionsOf(body)) {
     for (const sentence of section.split(/(?<=[.!?])\s+|\n+/)) {
       if (isProhibition(sentence)) continue;
@@ -298,13 +345,34 @@ export function issueNamedTokens(body: string): string[] {
       for (const raw of sentence.split(/[\s,;(){}[\]|]+/)) {
         const token = raw.replace(/^["'`*]+|["'`*.,:]+$/g, "").trim();
         if (token.length < 2 || token.length > 200) continue;
-        if (GLOB.test(token)) continue;
+        // #1167 round-3 — a token that CARRIES a glob is a refusal, not a
+        // non-event. The plan routinely fences with a glob (`dispatch-deck*.ts`,
+        // `agents-base/**`), so the pass has to be able to say "the issue
+        // pointed at files and a pattern names none of them" instead of
+        // producing the same empty extraction as an issue that named nothing.
+        // The token is recorded and then dropped, exactly as it always was —
+        // a glob never unfences.
+        if (GLOB.test(token)) {
+          if (token.includes("/")) rejected.add(token);
+          continue;
+        }
         // A path may carry a planner-style annotation (`src/a.ts (new)`) or
         // prose punctuation — normalise before deciding it is a path.
         const path = PATH_LIKE.test(token) ? normaliseDeclaredPath(token) : "";
-        if (path && PATH_LIKE.test(path) && !GLOB.test(path) && looksLikeFilePath(path)) {
-          tokens.add(path);
-          continue;
+        if (path && PATH_LIKE.test(path) && !GLOB.test(path)) {
+          if (looksLikeFilePath(path)) {
+            // #1167 round-3 — `looksLikeFilePath` is the guard that rejects an
+            // absolute, `..`-traversing or metacharacter token, and the
+            // `continue` below meant such a token vanished without a trace:
+            // downstream indistinguishable from an issue that named no path at
+            // all. The pass needs the refusal to be *said*, so it is handed over
+            // here — and never added to the set that can move a fence.
+            if (!isPlainRepoRelativePath(path) || GLOB.test(path)) rejected.add(path);
+            else tokens.add(path);
+            continue;
+          }
+          // Path-LIKE but not a file (`dispatchCore/startJob`, `docs`): the
+          // `/`-separated halves are symbol names, checked below.
         }
         // Not a file: check every `/`-separated half as an identifier, so
         // `dispatchCore/startJob` yields two symbol names rather than one
@@ -315,7 +383,7 @@ export function issueNamedTokens(body: string): string[] {
       }
     }
   }
-  return [...tokens];
+  return { tokens: [...tokens], rejected: [...rejected] };
 }
 
 function isPlainRelative(p: string): boolean {
@@ -333,6 +401,8 @@ function isPlainRelative(p: string): boolean {
  * and is read as two symbol names instead.
  */
 function looksLikeFilePath(p: string): boolean {
+  // #1167 round-3 — the shape refusals are reported by the caller (see
+  // `issueNamedTokensWithRejections`), so this stays a pure predicate.
   if (!isPlainRelative(p)) return false;
   const segments = p.split("/").filter((s) => s.length > 0);
   if (segments.length === 0) return false;

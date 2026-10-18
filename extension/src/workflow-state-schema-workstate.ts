@@ -2,6 +2,12 @@
  * Top-level /work state-file shape (`WorkState`). Split out of
  * `workflow-state-schema.ts` for the 500-line gate (AGENTS.md §12); the
  * schema module re-exports it so existing importers keep their path.
+ *
+ * #1362 — `WORK_STEPS`' home is workflow-state-events.ts, beside the WorkStep
+ * union it mirrors (that module has no value imports, so a runtime reader can
+ * reach the tuple without pulling a value edge through the validator's cap
+ * vocabulary — see the comment on the tuple). It moved out of the schema module
+ * for the same 500-line gate and is re-exported from there.
  */
 
 import type { WorkEvent } from "./workflow-state-events.ts";

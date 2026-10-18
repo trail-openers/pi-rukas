@@ -188,6 +188,62 @@ const OPTS = {
   );
 }
 
+// ---------------------------- each prohibition phrasing, one row (round-3 additions)
+
+{
+  // The pass reads prose, so each phrasing an issue could use has to be pinned
+  // individually — a regex list that catches seven of eight behaves, at plan
+  // time, exactly like one that catches none: the file the issue told everyone
+  // not to touch gets unfenced anyway, and nothing says which phrasing slipped.
+  // `intact` is the round-3 addition, and it is the risky one: "the change
+  // leaves src/behaviour.ts behaviour intact" is a REQUIREMENT about a result,
+  // not a refusal, so the last rows below pin the other direction.
+  const cases: Array<[string, string, boolean]> = [
+    // [prose naming the file, expected refusal?, note] — refusal true = fence stays
+    ["Do not touch src/protected.ts.", true, "do not touch"],
+    ["src/protected.ts remains unchanged.", true, "remains + predicate"],
+    ["src/protected.ts stays untouched.", true, "stays + predicate"],
+    ["src/protected.ts is left as is.", true, "is left + predicate"],
+    ["src/protected.ts remains intact.", true, "remains intact"],
+    ["src/protected.ts stays intact.", true, "stays intact"],
+    ["src/protected.ts is left intact.", true, "is left intact"],
+    ["src/protected.ts is not modified.", true, "is not modified"],
+    ["src/protected.ts are not touched.", true, "are not touched"],
+    ["src/protected.ts is not changed by this change.", true, "is not changed"],
+    ["src/protected.ts is not edited.", true, "is not edited"],
+    ["src/protected.ts is not updated.", true, "is not updated"],
+    ["src/protected.ts must stay intact.", true, "must stay intact"],
+    // Requirements about a RESULT, not refusals — must NOT be treated as
+    // prohibitions, or the issue's own requirement sentences silently drop.
+    ["The change leaves src/behaviour.ts behaviour intact.", false, "leaves X intact = result"],
+    ["The plan holds src/behaviour.ts intact for its callers.", false, "holds X intact = result"],
+    ["src/behaviour.ts keeps its own seam.", false, "keeps its own = ordinary"],
+  ];
+  for (const [sentence, isRefusal, label] of cases) {
+    const body = `## Decisions\n- Reuse src/helper.ts for the new path.\n- ${sentence}`;
+    const r = await unfenceIssueNamedPaths(
+      { default: WS("default", ["src/new.ts"], ["src/helper.ts", "src/protected.ts"]) },
+      body,
+      OPTS,
+    );
+    if (isRefusal) {
+      assert(
+        r.workstreams.default.outOfScope.includes("src/protected.ts"),
+        `prohibition "${label}" keeps the fence`,
+      );
+      assert(
+        !r.notes.some((n) => n.includes("src/protected.ts")),
+        `prohibition "${label}" writes no unfence note`,
+      );
+    } else {
+      assert(
+        !r.workstreams.default.outOfScope.includes("src/helper.ts"),
+        `requirement "${label}" is still read as a requirement (its own path unfences)`,
+      );
+    }
+  }
+}
+
 // ------------------------------------------- sibling ownership keeps the fence
 
 {

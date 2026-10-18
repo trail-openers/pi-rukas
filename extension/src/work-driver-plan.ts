@@ -286,10 +286,14 @@ export async function runPlan(
   // #1167 — the plan-time unfence, after the fold and the coupling merge and
   // before the quality gate below, so the gate judges the plan the driver will
   // actually develop (see runPlanUnfencePass for why the order is load-bearing).
-  workstreams = await runPlanUnfencePass(workstreams, next, {
+  // #1167 round-3 — its summary goes to the quality tail's single
+  // `planQuality` write so the operator can see the pass ran, what it removed
+  // and what it declined to do (notes used to go only to `trace()`).
+  const unfencePass = await runPlanUnfencePass(workstreams, next, {
     repoRoot: ctx.repoRoot,
     execFn: planExecFn,
   });
+  workstreams = unfencePass.workstreams;
   // #290 — deterministic plan-quality gate (arithmetic, not judgment), the
   // #819 plan-to-spec gate, the one-shot corrective, the #849 dropped-edge
   // check, the #571 claims and the single planQuality write. #1167 (size split)
@@ -312,6 +316,10 @@ export async function runPlan(
       // #1167 (size split) — the corrective's RAW map is now owned by the tail
       // (undefined here = none had run at this point; the tail sets it itself).
       port,
+      // #1167 round-3 — the primary plan's unfence record, persisted with the
+      // rest of the plan step's evidence. The corrective's own pass overwrites
+      // it (that is the plan the cycle keeps).
+      unfence: unfencePass.summary,
     },
     {
       dispatch,

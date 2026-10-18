@@ -40,18 +40,44 @@
  * a file or symbol — lives in work-driver-plan-unfence-extract.ts.
  */
 
-import { trace } from "./trace.ts";
-import { issueNamedTokens, resolveDefiningFile } from "./work-driver-plan-unfence-extract.ts";
+import { trace, traceWarn } from "./trace.ts";
+import {
+  issueNamedTokensWithRejections,
+  resolveDefiningFile,
+} from "./work-driver-plan-unfence-extract.ts";
+import { definingFiles, readAtRef } from "./work-driver-plan-unfence-git.ts";
+import { placeUnplacedPath, rankIdentifiers } from "./work-driver-plan-unfence-place.ts";
+
+// The placement/ranking helpers live in work-driver-plan-unfence-place.ts (the
+// 500-line gate) and are re-exported here so this module stays the one import
+// path callers know, as the other fragments of this module are.
+export { placeUnplacedPath } from "./work-driver-plan-unfence-place.ts";
 import {
   fenceCoveringBroader,
   fenceEntryMatching,
+  isUnfenceablePath,
   keptBroaderFenceNote,
   ownerOf,
   unfencedNote,
   unresolvedIdentifierNote,
 } from "./work-driver-plan-unfence-notes.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
-import type { Workstream } from "./workflow-state-schema.ts";
+import type { PlanUnfenceSummary, Workstream } from "./workflow-state-schema.ts";
+
+/**
+ * One warning per refused issue-named token (#1167 round-3). Only path-shaped
+ * rejections are named individually: the identifier half of a split token
+ * (`passwd` out of `/etc/passwd`) is ordinary prose to grep for, and reporting
+ * every English word would bury the warnings that matter.
+ */
+function warnRejected(warnings: string[], token: string): void {
+  if (!token.includes("/")) return;
+  const bare = token.split("/").pop() ?? token;
+  if (!/\.[A-Za-z][A-Za-z0-9]*$/.test(bare) && !token.endsWith("/")) return;
+  const why = /[*?[\]{}]/.test(token) ? "a glob names no file" : "not a plain repo-relative path";
+  const note = `rejected issue-named token ${token}: ${why} — no fence it names is lifted`;
+  if (!warnings.includes(note)) warnings.push(note);
+}
 
 /** The argv-form `git grep` / `git show` seam (issue text is data, never shell). */
 export type UnfenceExecFn = (
@@ -88,109 +114,169 @@ export interface UnfenceResult {
   removed: UnfenceRecord[];
 }
 
-/** One `git show <ref>:<file>`; argv form, so the path is data, never shell. */
-async function readAtRef(
-  file: string,
-  execFn: UnfenceExecFn,
-  repoRoot: string,
-  ref: string,
-): Promise<string> {
-  const { stdout } = await execFn("git", {
-    argv: ["show", `${ref}:${file}`],
-    cwd: repoRoot,
-    timeout: 30_000,
-  });
-  return stdout;
-}
-
-/** One `git grep -l -w` at the base ref; argv form — the name is data, not shell. */
-async function definingFiles(
-  name: string,
-  execFn: UnfenceExecFn,
-  repoRoot: string,
-  ref: string,
-): Promise<string[]> {
-  try {
-    const { stdout } = await execFn("git", {
-      argv: ["grep", "-l", "-w", "-e", name, ref, "--"],
-      cwd: repoRoot,
-      timeout: 30_000,
-    });
-    return stdout
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-  } catch {
-    // `git grep` exits 1 with no output when nothing matches; any other
-    // failure is an infra error and resolves to the same answer — nothing.
-    return [];
-  }
-}
-
-/** The directory prefix two paths share, counted in whole segments. */
-function sharedPrefixDepth(a: string, b: string): number {
-  const as = a.split("/");
-  const bs = b.split("/");
-  let n = 0;
-  while (n < as.length - 1 && n < bs.length - 1 && as[n] === bs[n]) n++;
-  return n;
-}
+/**
+ * #1167 round-3 — the ceiling on identifier resolutions per pass. Each one
+ * costs a `git grep` plus a `git show` per candidate, run serially, and the
+ * issue body is unbounded prose: an acceptance-criteria list naming thirty
+ * symbols used to be thirty-plus subprocess spawns inside the plan step, with
+ * no bound at all. Fifteen covers a real issue's decisions section by a wide
+ * margin; past it the pass stops resolving and RECORDS what it skipped, so an
+ * operator can see the pass declined rather than concluding nothing was named.
+ */
+const MAX_IDENTIFIER_RESOLUTIONS = 15;
 
 /**
- * The best workstream for a path no one declared: the one whose declared
- * paths share the longest directory prefix. Ties go to the earliest workstream
- * in plan order (first best wins, never replaced by an equal score); a path
- * sharing no directory prefix with anything returns `undefined` so the caller
- * can decline to place it — with several workstreams, handing a file to an
- * arbitrary one is a scope decision the driver does not get to make.
+ * Resolve every token the issue named to a repo path (identifiers via `git grep`).
+ *
+ * Two bounds the first implementation did not have (#1167 round-3), both of
+ * them the same failure shape — unbounded work driven by untrusted prose:
+ *
+ *   - **No fences, no I/O.** With nothing fenced there is nothing to remove,
+ *     so the whole resolution step is skipped before the first subprocess.
+ *   - **A cap on what IS resolved** (`MAX_IDENTIFIER_RESOLUTIONS`), spent on
+ *     the de-duplicated set of names, with the remainder recorded as a warning
+ *     rather than dropped silently.
+ *
+ * There is no per-name pre-filter, and `relevantIdentifiers` says why.
+ *
+ * Every path — the ones the issue wrote directly and the ones an identifier
+ * resolved to — passes `isUnfenceablePath` before it is returned, so an
+ * absolute, traversing, glob or metacharacter token from the issue body can
+ * neither unfence a fence nor land in a workstream's `paths`.
  */
-export function placeUnplacedPath(
-  path: string,
-  workstreams: Record<string, Workstream>,
-): string | undefined {
-  let best: string | undefined;
-  let bestScore = 0;
-  for (const id of Object.keys(workstreams)) {
-    const ws = workstreams[id];
-    if (!ws) continue;
-    let score = 0;
-    for (const declared of ws.paths.map((p) => normaliseDeclaredPath(p))) {
-      score = Math.max(score, sharedPrefixDepth(path, declared));
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      best = id;
-    }
-  }
-  return best;
-}
-
-/** Resolve every token the issue named to a repo path (identifiers via `git grep`). */
 async function issueNamedPaths(
   body: string,
   opts: { execFn: UnfenceExecFn; repoRoot: string; ref: string },
+  fences: Set<string>,
   warnings: string[],
 ): Promise<Set<string>> {
   const paths = new Set<string>();
-  for (const token of issueNamedTokens(body)) {
-    if (token.includes("/")) {
-      paths.add(token);
+  const identifiers: string[] = [];
+  const extracted = issueNamedTokensWithRejections(body);
+  for (const token of extracted.tokens) {
+    if (isUnfenceablePath(token)) {
+      if (token.includes("/")) {
+        paths.add(token);
+        continue;
+      }
+      identifiers.push(token);
       continue;
     }
-    const unique = [...new Set(await definingFiles(token, opts.execFn, opts.repoRoot, opts.ref))];
+    // A token the extractor let through and this check did not — the two
+    // grammars are not identical, so this is the belt to that brace, and it is
+    // reported for the same reason.
+    warnRejected(warnings, token);
+  }
+  // #1167 round-3 — the extractor's own refusals. An issue whose paths were all
+  // absolute, traversing or shell-laden used to extract NOTHING and look
+  // exactly like an issue that named no path, so a plan full of untouched
+  // fences read as a clean one. Saying what was refused is what separates the
+  // two.
+  for (const token of extracted.rejected) warnRejected(warnings, token);
+  // Bound #2: an identifier only earns a grep when some fence entry's basename
+  // or extension-less stem relates to it. This is NOT the claim "the file that
+  // defines the symbol is named like the symbol" — it does not have to be, and
+  // `dispatchCore` in `dispatch.ts` is the counter-example. It is the claim
+  // "the fence an unfence could remove is named like a file", which is checkable
+  // from the plan alone: a resolved identifier can only ever equal some fence
+  // entry (nothing else is removed), so its file's basename has to relate to
+  // that entry, and a symbol whose name relates to no fence basename cannot
+  // resolve to a file any fence names.
+  //
+  // The match tolerates `-`/`_` and optional word separators, because the
+  // repo's two conventions differ: the fence `dispatch-core.ts` and the symbol
+  // `dispatchCore` are the same name written two ways. Without that, real
+  // fences silently stop unfencing — the wrong direction of failure.
+  //
+  // The cap then applies to what SURVIVES the filter, never before it. The
+  // first attempt at this bounded the raw token list, and a real issue body
+  // (76 identifiers, ordinary English in front) used the whole budget on
+  // `No`, `module`, `holds`, `an` — so `dispatchCore`, the one symbol whose
+  // fence #1020 actually parked on, was never resolved and the replay regressed.
+  //
+  // A name that fails the filter is also never reported as "unresolved":
+  // nothing was consulted for it, so that warning would describe work the pass
+  // correctly declined, and ordinary English in an acceptance list would bury
+  // the one warning that matters — a symbol whose fence the plan really carries.
+  //
+  // DEDUPLICATED before the budget is spent: the extractor hands back the
+  // token list in issue order, and a criteria list that names one symbol three
+  // times used to burn three of fifteen slots on it, pushing the names behind
+  // it out of the pass while the cap warned about a count nobody recognised.
+  const relevant = rankIdentifiers(identifiers, fences);
+  const resolved = relevant.slice(0, MAX_IDENTIFIER_RESOLUTIONS);
+  if (relevant.length > resolved.length) {
+    const skipped = relevant.slice(MAX_IDENTIFIER_RESOLUTIONS);
+    warnings.push(
+      `identifier cap: ${skipped.length} of ${relevant.length} fence-matching names not resolved (max ${MAX_IDENTIFIER_RESOLUTIONS}): ${skipped
+        .slice(0, 5)
+        .join(", ")}`,
+    );
+  }
+  for (const token of resolved) {
+    let unique: string[];
+    try {
+      unique = [...new Set(await definingFiles(token, opts.execFn, opts.repoRoot, opts.ref))];
+    } catch (err) {
+      // #1167 round-3 — a git failure is NOT "this symbol is defined nowhere".
+      // It used to resolve to the same empty list either way, so a corrupt
+      // repository or a bad ref read as a clean plan. Here it fails CLOSED (no
+      // unfence from this name) and says which of the two it was, and the pass
+      // carries on with the next name rather than throwing the plan step away
+      // over a grep.
+      const why = (err as Error)?.message ?? String(err);
+      warnings.push(
+        `git grep failed for ${token}: not resolved (a git failure is not a no-match) — ${why.slice(0, 120)}`,
+      );
+      continue;
+    }
     // A name is a DEFINITION site when exactly one candidate source file
     // carries a line declaring it; test and prose files that merely mention
     // the symbol never own it. Anything else is ambiguous and never unfences.
-    const sole = await resolveDefiningFile(token, unique, (file) =>
-      readAtRef(file, opts.execFn, opts.repoRoot, opts.ref),
-    );
+    let sole: string | undefined;
+    try {
+      sole = await resolveDefiningFile(token, unique, (file) =>
+        readAtRef(file, opts.execFn, opts.repoRoot, opts.ref),
+      );
+    } catch (err) {
+      warnings.push(
+        `git show failed while resolving ${token}: left fenced — ${(err as Error)?.message?.slice(0, 120) ?? String(err)}`,
+      );
+      continue;
+    }
     if (sole === undefined) {
       warnings.push(unresolvedIdentifierNote(token, unique, opts.ref));
+      continue;
+    }
+    if (!isUnfenceablePath(sole)) {
+      warnings.push(`rejected resolved path ${sole} for ${token}: not a plain repo-relative path`);
       continue;
     }
     paths.add(sole);
   }
   return paths;
+}
+
+/** Every fence entry across the plan, as written by the planner.
+ *
+ * The set is what the pass needs twice over: as the short-circuit condition
+ * (no entries → nothing to remove → no I/O) and as the name filter below.
+ */
+function allFenceEntries(workstreams: Record<string, Workstream>): Set<string> {
+  const out = new Set<string>();
+  for (const id of Object.keys(workstreams)) {
+    for (const entry of workstreams[id]?.outOfScope ?? []) {
+      // #1167 round-3 — trimmed, never stripped of a trailing `/`. A directory
+      // fence means its separator (`docs/` is "that tree"), and the one place
+      // these entries are consulted turns on it: `fenceCoveringBroader` tells a
+      // broader directory fence from an ordinary one by it, and losing it is
+      // how a pass that DECLINED to open a fence became indistinguishable from
+      // one that saw none. Whitespace around a planner's entry is noise; the
+      // separator is the entry's meaning.
+      if (entry.trim().length > 0) out.add(entry.trim());
+    }
+  }
+  return out;
 }
 
 /**
@@ -223,9 +309,52 @@ export async function unfenceIssueNamedPaths(
   const removed: UnfenceRecord[] = [];
   if (ids.length === 0) return { workstreams, notes, warnings, placed, removed };
 
-  const paths = await issueNamedPaths(body, opts, warnings);
+  // #1167 round-3 — the short-circuit lives BEFORE the copy as well as before
+  // the I/O: a plan with nothing fenced has no fence to remove, so the pass
+  // hands back the caller's own map rather than a clone of it it never edited.
+  const fences = allFenceEntries(workstreams);
+  if (fences.size === 0) return { workstreams, notes, warnings, placed, removed };
+
+  // #1167 round-3 — a SHALLOW copy mutates the caller: `{ ...ws }` shares the
+  // very `paths` / `outOfScope` arrays the caller's plan holds, and every edit
+  // below reassigns one of them — so the pass wrote through into its input.
+  // The arrays are cloned here so the input map is never touched, and
+  // `dependsOn` / `introduces` / `consumes` cannot leak the same way if a
+  // later edit begins to write them.
   const next: Record<string, Workstream> = {};
-  for (const id of ids) next[id] = { ...workstreams[id] } as Workstream;
+  for (const id of ids) {
+    const ws = workstreams[id];
+    if (!ws) continue;
+    next[id] = {
+      ...ws,
+      paths: [...ws.paths],
+      outOfScope: [...ws.outOfScope],
+      ...(ws.dependsOn ? { dependsOn: [...ws.dependsOn] } : {}),
+      ...(ws.introduces ? { introduces: [...ws.introduces] } : {}),
+      ...(ws.consumes ? { consumes: [...ws.consumes] } : {}),
+    } as Workstream;
+  }
+
+  const paths = await issueNamedPaths(body, opts, fences, warnings);
+
+  // #1167 round-3 — the fence side of the same check. An issue writing
+  // `/etc/passwd` yields no usable token at all (the extractor splits it into
+  // prose), and a glob is dropped before the token list is built — so neither
+  // can be reported from the extraction side. But the PLAN may still carry
+  // either as a fence entry (`dispatch-deck*.ts`, `agents-base/**` are this
+  // repo's own shapes), and the develop gate and the consolidation checks
+  // compare fence entries as raw strings. A fence whose shape the driver cannot
+  // verify, or which names no file at all, is said out loud here — on the one
+  // pass that reads every fence — instead of failing silently at develop.
+  for (const entry of fences) {
+    const glob = /[*?[\]{}]/.test(entry);
+    if (isUnfenceablePath(entry)) continue;
+    const why = glob
+      ? "a glob names no specific file, so no unfence can reach it"
+      : "not a plain repo-relative path — the scope gate cannot verify it";
+    const note = `fence entry ${entry}: ${why}`;
+    if (!warnings.includes(note)) warnings.push(note);
+  }
 
   for (const path of paths) {
     const owner = ownerOf(next, path);
@@ -250,10 +379,17 @@ export async function unfenceIssueNamedPaths(
       // this very path. It stays (the issue named a file, not the tree), and
       // the plan records that rather than leaving the operator to wonder
       // whether the pass ran at all.
+      //
+      // #1167 round-3 — the ownership filter is deliberately NOT applied here,
+      // unlike the removal loop above. A removal from a non-owner would be a
+      // scope grant, so ownership gates it; a NOTE grants nothing, and the
+      // #572 cross-declaration contract means the directory fence over an
+      // issue-named file is normally on a SIBLING. Applying the filter here
+      // meant the "we saw a wider fence and declined to open it" note almost
+      // never fired, and a pass that declined read as a pass that saw nothing.
       for (const id of ids) {
         const ws = next[id];
         if (!ws) continue;
-        if (owner && id !== owner) continue;
         const broader = fenceCoveringBroader(ws.outOfScope, path);
         if (broader === undefined) continue;
         const note = keptBroaderFenceNote(path, broader);
@@ -291,6 +427,15 @@ export async function unfenceIssueNamedPaths(
     }
     const kept = removals.filter((rec) => rec.restored !== undefined);
     if (kept.length > 0) {
+      // #1167 round-3 — the rollback has to take its own note back with it.
+      // The `unfenced …` note was pushed above on the assumption the removal
+      // stuck; leaving it in place alongside a fence that is back makes the
+      // plan say two opposite things about the same file, and the operator
+      // reading notes cannot tell which is the plan the develop gate sees.
+      const dropped = unfencedNote(path);
+      for (let i = notes.length - 1; i >= 0; i--) {
+        if (notes[i] === dropped) notes.splice(i, 1);
+      }
       const why = `unfenced ${path}: named by the issue, left fenced for placement (no workstream shares a directory)`;
       if (!warnings.includes(why)) warnings.push(why);
     }
@@ -299,5 +444,44 @@ export async function unfenceIssueNamedPaths(
   if (removed.length > 0) {
     trace(`work-driver: plan unfence — removed ${removed.length} issue-contradicting fence(s)`);
   }
+  if (warnings.length > 0) {
+    traceWarn(
+      `work-driver: plan unfence — ${warnings.length} warning(s): ${warnings
+        .slice(0, 3)
+        .join(" | ")}`,
+    );
+  }
   return { workstreams: next, notes, warnings, placed, removed };
+}
+
+/**
+ * #1167 round-3 — the one-line record the plan step persists on
+ * `pipelineState.planQuality` so the operator can see the pass ran, what it
+ * did, and what it declined to do.
+ *
+ * Before this, notes and warnings went only to `trace()` — a stream the
+ * operator does not read during a cycle, so "the unfence found nothing" and
+ * "the unfence could not read the issue / hit its cap / failed at git" looked
+ * identical from the state file. `kept` is the count of broader-directory
+ * fences the pass deliberately did not open. `undefined` fields are absent
+ * rather than zero so a clean pass writes `{ran: true, removed: 0, kept: 0}`
+ * and nothing else.
+ */
+export function unfenceSummary(
+  result: UnfenceResult,
+  issueBodyUnreadable = false,
+): PlanUnfenceSummary {
+  const kept = result.notes.filter((n) => n.startsWith("kept fence ")).length;
+  const rolledBack = result.removed.filter((r) => r.restored !== undefined).length;
+  const unresolved = result.warnings.filter((w) => w.startsWith("unresolved identifier")).length;
+  return {
+    ran: true,
+    removed: result.removed.length - rolledBack,
+    kept,
+    rolledBack,
+    unresolved,
+    ...(issueBodyUnreadable ? { issueBodyUnreadable: true } : {}),
+    ...(result.notes.length > 0 ? { notes: result.notes.slice(0, 10) } : {}),
+    ...(result.warnings.length > 0 ? { warnings: result.warnings.slice(0, 10) } : {}),
+  };
 }

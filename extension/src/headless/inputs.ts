@@ -219,6 +219,9 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   int("PLAN_ISSUE", null),
   flag("PLAN_QUALITY", true),
   ms("PLAN_TIMEOUT_MS", 1_800_000),
+  // #1167 — 0 leaves the planner's out-of-scope fences exactly as written
+  // (the pre-#1167 shape, develop gate included) and traces that it was off.
+  flag("PLAN_UNFENCE", true),
   flag("PM_BASH_GUARD", true, "interactive"),
   dir("PM_PROMPT", null),
   flag("POLICY_JUDGE", true),

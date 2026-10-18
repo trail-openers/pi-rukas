@@ -34,7 +34,7 @@ import type { CycleContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-driver-path-claims.ts";
 import { foldPortPlan } from "./work-driver-plan-contract.ts";
-import { runPlanCouplingPass } from "./work-driver-plan-coupling-pass.ts";
+import { runPlanCouplingPass, runPlanUnfencePass } from "./work-driver-plan-coupling-pass.ts";
 import { findDroppedDependencyEdges } from "./work-driver-plan-deps.ts";
 import { planQualityReason, planSpecMismatchCap } from "./work-driver-plan-helpers.ts";
 import {
@@ -49,7 +49,8 @@ import {
 } from "./work-driver-plan-spec-coverage.ts";
 import { correctivePlanSteer, correctiveTestSubjectSplitSteer } from "./work-driver-plan-steers.ts";
 import { planCorrectiveFailureEvent, planCorrectivePrompt } from "./work-driver-plan-timeout.ts";
-import type { Workstream } from "./workflow-state-schema.ts";
+import type { PlanQualityReason } from "./workflow-state-schema.ts";
+import type { PlanUnfenceSummary, Workstream } from "./workflow-state-schema.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
 
@@ -77,6 +78,12 @@ export type PlanQualityInput = {
   correctiveRaw?: Record<string, Workstream>;
   /** The #1322 port fold, applied to the synthetic default workstream. */
   port?: string;
+  /**
+   * #1167 round-3 — the primary plan's unfence record (see `unfenceSummary`).
+   * The corrective runs its own pass and its record replaces this one, because
+   * the corrective is the plan the cycle develops.
+   */
+  unfence?: PlanUnfenceSummary;
 };
 
 /** Everything the tail needs from outside: dispatch, parsing, event options. */
@@ -123,6 +130,7 @@ export async function runPlanQualityTail(
   let firstPlanWorkstreams: Record<string, Workstream> | undefined;
   let correctiveRaw = input.correctiveRaw;
   let droppedEdges: { from: string; to: string }[] | undefined;
+  let unfence = input.unfence;
 
   const reason = planQualityReason(workstreams, input.findingsCount);
   const specMismatch = input.planGateEnabled
@@ -245,6 +253,20 @@ export async function runPlanQualityTail(
       worktrees: next.pipelineState.worktrees,
       execFn: host.couplingExecFn,
     });
+    // #1167 round-3 — the corrective now gets the SAME normalisation the
+    // primary got. It used to re-run the coupling pass but not the unfence, so
+    // a corrective that re-introduced an issue-contradicting fence (the
+    // planner rewrites the whole `out-of-scope:` line, so this is the normal
+    // case, not a corner) reached develop with a fence the primary plan had
+    // already been protected from — and the develop gate parks on it. Same
+    // body, same ref, same executor, one line after the merge that unions the
+    // fences back together (the order reason from runPlanUnfencePass).
+    const correctiveUnfence = await runPlanUnfencePass(workstreams, next, {
+      repoRoot: ctx.repoRoot,
+      execFn: host.couplingExecFn,
+    });
+    workstreams = correctiveUnfence.workstreams;
+    if (correctiveUnfence.summary) unfence = correctiveUnfence.summary;
     // #819 — the gate runs AGAIN on the corrective: #818's wrong work came
     // from the corrective, not the first plan. A corrective is already the
     // cycle's one-shot budget, so a failure here HALTS.
@@ -331,6 +353,10 @@ export async function runPlanQualityTail(
       redispatched,
       ...(finalReason ? { reason: finalReason } : {}),
       ...(droppedEdges ? { droppedEdges } : {}),
+      // #1167 round-3 — the unfence's own record, so the four silences (no
+      // fences, unreadable issue body, identifier cap, git failure) are
+      // distinguishable in the state file rather than only in `trace()`.
+      ...(unfence ? { unfence } : {}),
     },
   };
 }
