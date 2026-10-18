@@ -137,6 +137,11 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("CHILD_CODEMODE", true),
   ms("CI_WATCH_TIMEOUT_MS", 1_800_000),
   flag("CLAIM_SCAN", true),
+  // #1454 — how long a claim whose claimant state file cannot be read may
+  // still park a sibling. The reader is CLAIM_STALE_MS in
+  // work-driver-path-claims.ts; a non-finite/non-positive value falls back to
+  // the 1 h default there, which is the default recorded here.
+  ms("CLAIM_STALE_MS", 3_600_000, "cycle"),
   flag("COMMENT_RETENTION", true),
   list("COMMENT_RETENTION_PATHS", ",", "extension/src,extension/smoke-tests,agents-base"),
   // #1240 — 0 restores the pre-#1240 shape: the consolidated verify always runs,

@@ -300,20 +300,15 @@ async function writeClaims(file: string, entries: PathClaimEntry[]): Promise<voi
 }
 
 /**
- * Check all declared paths from the given workstreams against claims held by
- * sibling cycles. Returns the sibling claims that overlap with ours.
- */
-export function checkCrossGroupClaims(
-  ourIssue: number,
-  workstreams: Record<string, { paths?: string[]; outOfScope?: string[] }>,
-): PathClaimEntry[] {
-  return checkCrossGroupClaimsSync(ourIssue, workstreams);
-}
-
-/**
- * Synchronous core — accepts pre-loaded claims so callers can batch the disk
- * read. This is what `checkCrossGroupClaims` delegates to after reading the
- * registry from disk.
+ * Check declared paths against claims held by sibling cycles. Pure: it takes
+ * the registry entries the caller already read (`readClaims` is the reader),
+ * so a caller that checks several workstreams batches one disk read.
+ *
+ * #1454 — the pre-#1454 shape was a `checkCrossGroupClaims` async wrapper that
+ * read the file itself and delegated here. It had no caller (the gate reads via
+ * `checkAndRegisterClaims`) and it silently skipped the staleness pass the
+ * reader owns, so keeping it around was a way to get the old always-park
+ * behaviour back by accident. It is gone; the sync core is the one entry.
  */
 export function checkCrossGroupClaimsSync(
   ourIssue: number,

@@ -367,8 +367,9 @@ export async function runWorktreeSweep(opts: {
     // are `<N>.json`, so every multi-workstream tree resolved to
     // "state-unreadable" and was skipped — the sweep could never reap a
     // multi-workstream zombie, whatever its liveness. The authoritative
-    // id→path map is `pipelineState.worktrees`; scanning every state file is
-    // the fallback for trees written before it was populated.
+    // id→path map is `pipelineState.worktrees`. An unclaimed tree is skipped:
+    // there is no owner whose liveness could be judged, and the old code
+    // reached the same skip through a misleading reason.
     const owner = findOwningCycleState(repoRoot, resolved.realPath, launchingCycleIssue);
     if (!owner.state) {
       skipped.push({ path: resolved.realPath, reason: "state-unreadable" });

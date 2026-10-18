@@ -24,8 +24,6 @@ export const SEAMS_1454: Seam[] = [
         "the named age bound; the suite asserts the default and drives the rule at the boundary (the old `_STALE_MS` was declared and read nowhere)",
       readClaims:
         "the liveness-filtered read; the suite asserts prune-on-read reaches the raw file",
-      checkCrossGroupClaims:
-        "the pre-loaded convenience wrapper over the sync core; pinned by the overlap cases",
       checkCrossGroupClaimsSync:
         "the pure overlap core; pinned by the overlap / normalisation / same-issue cases",
       registerClaim: "the atomic writer; pinned by the register / re-register / prune cases",
