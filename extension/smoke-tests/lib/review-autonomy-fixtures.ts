@@ -157,8 +157,22 @@ export async function waitForLensRound(
   // The pre-check and every tick read the file directly rather than through
   // `readLedgerAt`, which swallows a parse error to `[]`: a torn or malformed
   // file must not read as "no such round" here either.
-  const attempt = (): LedgerEntry[] | null =>
-    waitForLedger(ledgerFile, { once: true, until: settled });
+  //
+  // A custom `read` is a caller's fixture (a JSON.parse of a path it chose), and
+  // the row it waits for is written by a fire-and-forget writer — so "the file
+  // is not there yet" is the NORMAL state of a tick, not an error. The shared
+  // poll already counts an unreadable read and keeps going; the caller's reader
+  // is held to the same contract, so an early throw resolves to "no row yet"
+  // and the poll times out into a failed assertion — which is what a missing
+  // round is supposed to produce — rather than escaping as an unhandled error
+  // that kills every later case in the file.
+  const attempt = (): LedgerEntry[] | null => {
+    try {
+      return waitForLedger(ledgerFile, { once: true, until: settled });
+    } catch {
+      return null;
+    }
+  };
   const first = attempt();
   const firstRow = first ? rowOf(first) : undefined;
   if (firstRow?.round === n) return firstRow;

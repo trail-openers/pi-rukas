@@ -169,7 +169,17 @@ export async function waitForRow(repo: string, kind: "adversarial" | "lens"): Pr
  * read from the repo (`origin/HEAD`'s target, the same answer `identityBase`
  * resolves) rather than assumed. */
 export function forgeExec(repo: string, pr: { comments: string[] }, baseBranch = "main") {
-  return async (cmd0: string, o?: { argv?: string[] }): Promise<{ stdout: string }> => {
+  // `o` is typed against `MergeExecFn`'s options (merge-target.ts), not a local
+  // `{ argv? }` shape: the guard calls this through that type, and a parameter
+  // narrower than the one the caller passes is an assignability error (TS2322)
+  // rather than a behaviour difference — the extra fields (`cwd`, `timeout`,
+  // `maxBuffer`, `shell`) are simply not consulted by a stub that runs real git
+  // at `repo`. Widening the parameter is the fix; casting the function away is
+  // not, because the point of the check is that the stub fits the seam.
+  return async (
+    cmd0: string,
+    o?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string; argv?: string[] },
+  ): Promise<{ stdout: string }> => {
     if (cmd0 !== "gh" && !cmd0.startsWith("gh ")) {
       const stdout = o?.argv
         ? execFileSync(cmd0, o.argv, {

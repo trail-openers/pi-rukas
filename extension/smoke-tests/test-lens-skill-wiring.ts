@@ -49,7 +49,18 @@ import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
 
 // #1069 — isolate before any src import: the real runLensReview write must
 // land in a temp file, not the main clone's .git (worktree common dir).
-isolateLedger();
+// #1449 — the value this file finds in the environment is captured BEFORE the
+// helper replaces it, and asserted to be what the file leaves behind (the last
+// case below), so a leak out of this process into a sibling or parent is a
+// failing assertion rather than a green run that silently poisons the tree.
+//
+// The release is CAPTURED and called explicitly at the end of this file, not
+// left to the helper's process-exit handler: the exit handler runs after the
+// last statement, so an assertion that reads the env at the end of the file
+// would still see this file's own isolation and report it as a leak. Calling it
+// makes the assertion measure what the file actually leaves behind.
+const ledgerEnvAtEntry = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+const releaseLedgerIsolation = isolateLedger();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -390,6 +401,13 @@ const CLEAN_SUMMARY =
   const { dir, cleanup } = fixtureSkillsDir(SIX_SKILLS, "f");
   // #1105 — (e)'s finding is still open on this branch in the shared findings
   // store; give (f) its own store so only this reply's review is judged.
+  // #1449 — SAVED AND RESTORED. This case used to overwrite the suite's
+  // isolation target with no undo, so the value outlived the file: every later
+  // case in this process — and, when this file was imported rather than run, a
+  // parent process — wrote its real reviews into this temp path. That is the
+  // leak that made a hand-run `dispatch_lens_review` land its rows in /tmp
+  // while the clone's real ledger sat untouched (#1449).
+  const priorLedgerFile = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
   process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = path.join(
     mkdtempSync(path.join(os.tmpdir(), "skill-wiring-f-")),
     "review-ledger.json",
@@ -412,66 +430,49 @@ const CLEAN_SUMMARY =
     );
   } finally {
     cleanup();
+    // #1449 — the env this case found is the env it leaves. `delete`, never
+    // `= undefined`: assigning undefined stores the string "undefined", which
+    // `ledgerPathFor`'s `?.trim()` truthiness test reads as a real path.
+    // biome-ignore lint/performance/noDelete: delete is the correct "reset to unset"
+    if (priorLedgerFile === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = priorLedgerFile;
   }
 }
 
-/* (g) marker tolerance — bold/case/heading variants, unknown value, musing. */
+/* #1449 — the env this file leaves is the env it found. Case (f) reassigns the
+ * ledger override for its own store, and every earlier case relies on the
+ * import-time `isolateLedger()`; if either leaks, the next test file in this
+ * process — or the parent that imported it, or a real `dispatch_lens_review`
+ * running in this tree — writes its rows to a temp path the merge guard never
+ * reads. That is precisely the #1431/#1449 incident.
+ *
+ * The isolation is released HERE, deliberately, before the assertion: the
+ * helper's own process-exit handler runs after this statement, so asserting
+ * against the env without releasing first would read this file's own legitimate
+ * isolation and call it a leak. Releasing explicitly is what makes the
+ * assertion measure what the file actually leaves behind — and it is idempotent,
+ * so the exit handler re-running it is harmless. */
+releaseLedgerIsolation();
 {
-  eq(
-    readEnumMarker("**Skill Load Status:** FAILED", "Skill Load Status", ["SUCCESS", "FAILED"]),
-    "FAILED",
-    "(g) bold + colon + trailing bold parses FAILED",
+  const left = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+  assert(
+    left === ledgerEnvAtEntry,
+    `the file leaves PI_ENSEMBLE_REVIEW_LEDGER_FILE exactly as it found it (found ${
+      ledgerEnvAtEntry === undefined ? "<unset>" : ledgerEnvAtEntry
+    }, left ${left === undefined ? "<unset>" : left})`,
   );
-  eq(
-    readEnumMarker("skill load status: success", "Skill Load Status", ["SUCCESS", "FAILED"]),
-    "SUCCESS",
-    "(g) lowercase + colon parses SUCCESS",
-  );
-  eq(
-    readEnumMarker("### Skill Load Status\nFAILED", "Skill Load Status", ["SUCCESS", "FAILED"]),
-    "FAILED",
-    "(g) heading form parses FAILED",
-  );
-  eq(
-    readEnumMarker("Skill Load Status: ERROR", "Skill Load Status", ["SUCCESS", "FAILED"]),
-    undefined,
-    "(g) out-of-set value parses as undefined (absent)",
-  );
-  eq(
-    readEnumMarker("I will set Skill Load Status: FAILED if...", "Skill Load Status", [
-      "SUCCESS",
-      "FAILED",
-    ]),
-    "FAILED",
-    "(g) last-match-wins: a musing about FAILED is still FAILED (the prompt says to END with the marker, so the last one is the answer)",
+  // A leak that matters is a leak of a path that exists: the (f) temp dir is
+  // the one this file created last, so a value still naming it is the leak.
+  assert(
+    !/skill-wiring-f-/.test(left ?? ""),
+    "no case-(f) ledger path survives into the process's environment",
   );
 }
 
-/* (h) the rule prose cannot be misread as a declaration. The CRITICAL RULE
- * in the role prompt reads "If Skill Load Status=FAILED, verdict CANNOT be
- * APPROVED" — a child that QUOTES it while ending with a real marker must
- * not be blocked by the quote. The `=` form is NOT an accepted declaration
- * (PM decision #872); the colon-anchored reader must miss it entirely. */
-{
-  eq(
-    readEnumMarker(
-      "If Skill Load Status=FAILED, verdict CANNOT be APPROVED.",
-      "Skill Load Status",
-      ["SUCCESS", "FAILED"],
-    ),
-    undefined,
-    "(h) the rule prose's `Status=FAILED` is not a declaration — parses absent",
-  );
-  eq(
-    readEnumMarker(
-      "Per the rules, if Skill Load Status=FAILED I must block.\n\nSkill Load Status: SUCCESS",
-      "Skill Load Status",
-      ["SUCCESS", "FAILED"],
-    ),
-    "SUCCESS",
-    "(h) a reply quoting the rule and ending with a real SUCCESS marker parses SUCCESS",
-  );
-}
+/* Cases (g) and (h) — the `readEnumMarker` tolerance and rule-prose arms —
+ * moved to test-lens-skill-marker-tolerance.ts for the 500-line gate
+ * (AGENTS.md §12). They exercise one pure function and need none of this
+ * file's mocked-spawn machinery. */
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

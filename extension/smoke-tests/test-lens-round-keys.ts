@@ -241,4 +241,53 @@ assert(
   "a ledger write with no patch id reports not-recorded and traces at warn level",
 );
 
+// -------- 15. #1449 — a round recorded at a redirected path is REPORTED
+//
+// The distinction this pins is the one the incident turned on. A redirect is
+// NOT an unrecorded round (case 14 above covers that): the row genuinely exists,
+// so the budget must not hand the same round to the next run. But silence about
+// it is what made the review invisible at merge time, so the release note names
+// the file it landed in and says the guard will not see it — text an operator
+// reading only the tool reply can act on. The override is then restored to this
+// file's own private ledger, so the redirected write cannot outlive the arm.
+const homeLedger = ledgerFile;
+// Back off the detach case 14 left, on the branch that already exists — a
+// plain checkout, never a `-b` (the branch is this fixture's own).
+git("checkout -q feature/x");
+seed([]);
+const misdirectedTo = path.join(root, "redirected", "review-ledger.json");
+process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = misdirectedTo;
+try {
+  const misRun = await admitLensRound({ cwd: repo, head: undefined });
+  assert(
+    misRun.admitted,
+    "#1449 a run whose ledger path is overridden is still admitted (the redirect is not a budget failure)",
+  );
+  const misNote = await misRun.release(
+    Promise.resolve({ recorded: true, landedAtPath: misdirectedTo }),
+  );
+  assert(
+    /MISDIRECTED/i.test(misNote ?? ""),
+    "#1449 the tool text says the write was misdirected, in words",
+  );
+  assert(
+    (misNote ?? "").includes(misdirectedTo),
+    "#1449 the tool text names the file the row actually landed in",
+  );
+  assert(
+    !/was not recorded/.test(misNote ?? ""),
+    "#1449 a misdirected round is NOT reported as unrecorded — the row exists, the budget already spent it",
+  );
+  assert(
+    /clone ledger|per-clone/i.test(misNote ?? ""),
+    "#1449 the tool text says where the row belongs, so the reader knows what the guard reads",
+  );
+} finally {
+  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = homeLedger;
+}
+assert(
+  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === homeLedger,
+  "#1449 the arm restores this file's own private ledger — no override escapes it",
+);
+
 process.exit(exit);
