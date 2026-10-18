@@ -87,7 +87,9 @@ while (changed) {
   // trusted: "blocked on #N" in prose goes stale; this table says whether #N is clear.
   rows.forEach((r) => {
     if (r[6] !== "ready") return;
-    const deps = (r[4] || "").split(/[,\s]+/).filter(Boolean).map((d) => d.replace(/^#/, ""));
+    // A "-" cell is the blank marker the source tables use for "none", not an issue to look up.
+    const depCell = r[4] || "";
+    const deps = depCell.trim() === "-" ? [] : depCell.split(/[,\s]+/).filter(Boolean).map((d) => d.replace(/^#/, ""));
     // An unknown dependency is a blocker: it was never judged, so it cannot be assumed clear.
     const blockers = deps.filter((d) => { const dep = byIssue.get(d); return !dep || dep[6] !== "ready"; });
     if (blockers.length) {
