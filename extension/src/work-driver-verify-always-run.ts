@@ -27,7 +27,7 @@ const READS_RE = /\b(?:readFileSync|readdirSync|readFile|Bun\.file)\s*\(/;
 // import specifier (`"../src/x.ts"`) is deliberately not one: it loads code,
 // it does not read text.
 const REPO_PATH_RE =
-  /["'`](?:src|smoke-tests\/lib|\.pi|modules|manifests|agents-base|pi-prompts|skill|docs|bin|\.github|\.devcontainer|agents\.json|package\.json|bunfig\.toml|tsconfig[\w.-]*\.json|install\.sh|build\.sh|README\.md|AGENTS\.md|CONTRIBUTING\.md|CHANGELOG\.md)(?:\/[^"'`\n]*)?["'`]/;
+  /["'`](?:src|smoke-tests\/lib|\.pi|modules|manifests|agents-base|pi-prompts|skill|docs|bin|dist|\.github|\.devcontainer|agents\.json|package\.json|bunfig\.toml|tsconfig[\w.-]*\.json|release-please-config\.json|Dockerfile|\.gitignore|install\.sh|build\.sh|README\.md|AGENTS\.md|CONTRIBUTING\.md|CHANGELOG\.md)(?:\/[^"'`\n]*)?["'`]/;
 
 /** Smoke test files (top level, extension-relative) that read repository text. */
 export function textReadingTests(extensionDir: string): string[] {
@@ -229,4 +229,5 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-worktree-provision-765.ts",
   "smoke-tests/test-worktree-provision.ts",
   "smoke-tests/test-worktree-restart-residue.ts",
+  "smoke-tests/test-worktree-symlink-staging.ts",
 ];

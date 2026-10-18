@@ -149,6 +149,24 @@ function withGateRecord(state: WorkState, record: DevelopGateRecord | undefined)
 }
 
 /**
+ * #1647 — the part of `record` the cycle has not already carried. The PR body
+ * already lists what the develop round carried, so the ci tier discloses only
+ * the new names, and a name in both tiers appears once.
+ */
+export function uncarriedNames(
+  state: WorkState,
+  record: SelectedVerifyRecord,
+): SelectedVerifyRecord {
+  const prev = state.pipelineState.verifyAttribution;
+  const flakyPrev = new Set(prev?.flaky ?? []);
+  const redPrev = new Set(prev?.baselineRed ?? []);
+  return {
+    flaky: record.flaky.filter((n) => !flakyPrev.has(n)),
+    baselineRed: record.baselineRed.filter((n) => !redPrev.has(n)),
+  };
+}
+
+/**
  * #1647 — fold one selected run's flaky and baseline-red tests into
  * `pipelineState.verifyAttribution`, keeping each name once across rounds. The
  * commit-pr PR body and the handoff both render what this records.

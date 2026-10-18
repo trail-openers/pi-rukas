@@ -81,9 +81,12 @@ export async function runCiVerifyFull(
     changedTests,
     timeoutMs,
     record,
+    // The tier had a single rerun of any failure before #1647; the attribution
+    // keeps it for a failure that names no test.
+    rerunUnnamed: true,
   });
   try {
-    // The attribution already repeats a failing run once, so the tier does not.
+    // The attribution repeats a failing run once (named or not), so the tier does not.
     const result = await runVerifyFull(cmd, primaryWorktree, timeoutMs, attributed, {
       retry: false,
     });

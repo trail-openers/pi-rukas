@@ -129,16 +129,26 @@ export async function planDevelopVerify(
   // The report channel is made when the gate is about to run the command, not
   // here: a cycle whose gate is skipped must not leave a directory behind.
   let channel: VerifyChannel | undefined;
+  let channelMade = false;
+  // One channel per plan, however many times the gate asks to wrap: a second
+  // channel would orphan the first one's report directory.
+  const channelOnce = (): VerifyChannel | undefined => {
+    if (!channelMade) {
+      channelMade = true;
+      channel = createVerifyChannel();
+    }
+    return channel;
+  };
   return {
     cmd,
     wrap: (execFn) => {
-      channel = createVerifyChannel();
+      const ch = channelOnce();
       const attributed =
-        channel === undefined
+        ch === undefined
           ? execFn
           : withSelectedAttribution(execFn, rawExec, {
               cmd,
-              channel,
+              channel: ch,
               repoRoot,
               baseSha,
               changeRoots: [...Object.values(worktrees), repoRoot],

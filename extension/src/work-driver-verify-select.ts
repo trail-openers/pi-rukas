@@ -69,6 +69,21 @@ interface FileEdges {
   deps: string[];
   /** True when a dynamic import/require names its target through a variable. */
   dynamic: boolean;
+  /**
+   * True when a smoke test spells a bare `"src"` segment (`path.join(ext, "src", "x.ts")`):
+   * it reaches source modules through a path no specifier shows, so it depends on all of them.
+   */
+  touchesSrc: boolean;
+}
+
+// Comments and string literals, in one alternation: a match that starts with `/`
+// is a comment (dropped), anything else is kept as written.
+const COMMENT_OR_STRING_RE =
+  /`(?:[^`\\]|\\.)*`|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+
+/** The text with comments removed, so a comment inside an import list cannot hide the specifier. */
+function stripComments(text: string): string {
+  return text.replace(COMMENT_OR_STRING_RE, (m) => (m.startsWith("/") ? " " : m));
 }
 
 /** Resolve a relative specifier against the importing file. Bare names are not edges. */
@@ -82,7 +97,8 @@ function resolveSpecifier(fromRel: string, spec: string): string | undefined {
 }
 
 /** Edges of one file, from its text. Exported for the selector's own tests. */
-export function edgesOf(fileRel: string, text: string): FileEdges {
+export function edgesOf(fileRel: string, raw: string): FileEdges {
+  const text = stripComments(raw);
   const deps: string[] = [];
   const add = (spec: string) => {
     const target = resolveSpecifier(fileRel, spec);
@@ -91,9 +107,11 @@ export function edgesOf(fileRel: string, text: string): FileEdges {
   for (const m of text.matchAll(STATIC_RE)) add(m[1] ?? "");
   for (const m of text.matchAll(LITERAL_DYNAMIC_RE)) add(m[1] ?? "");
   for (const m of text.matchAll(LITERAL_REQUIRE_RE)) add(m[1] ?? "");
-  if (fileRel.startsWith("smoke-tests/")) {
+  const isSmoke = fileRel.startsWith("smoke-tests/");
+  if (isSmoke) {
     for (const m of text.matchAll(PATH_LITERAL_RE)) deps.push(m[1] ?? "");
   }
+  const touchesSrc = isSmoke && /["'`]src["'`]/.test(text);
   // A call whose argument is not a literal is one the regexes above cannot
   // see. Counting calls against literal calls, on text with strings and
   // comments masked, is the cheapest honest test: a smoke test often generates
@@ -107,6 +125,7 @@ export function edgesOf(fileRel: string, text: string): FileEdges {
   return {
     deps,
     dynamic: dynamicCalls > literalCalls || requireCalls > literalRequires,
+    touchesSrc,
   };
 }
 
@@ -134,6 +153,7 @@ function buildGraph(extensionDir: string): Graph {
   const nodes = new Set<string>();
   const importers = new Map<string, Set<string>>();
   const dynamic = new Set<string>();
+  const srcTouchers: string[] = [];
   const files: string[] = [];
   for (const dir of ["src", "smoke-tests"]) {
     for (const name of readdirSync(path.join(extensionDir, dir))) {
@@ -145,10 +165,20 @@ function buildGraph(extensionDir: string): Graph {
     nodes.add(rel);
     const edges = edgesOf(rel, readFileSync(path.join(extensionDir, rel), "utf8"));
     if (edges.dynamic) dynamic.add(rel);
+    if (edges.touchesSrc) srcTouchers.push(rel);
     for (const dep of edges.deps) {
       const set = importers.get(dep) ?? new Set<string>();
       set.add(rel);
       importers.set(dep, set);
+    }
+  }
+  // A test that builds a src path itself is an importer of every src module.
+  for (const toucher of srcTouchers) {
+    for (const src of files) {
+      if (!src.startsWith("src/")) continue;
+      const set = importers.get(src) ?? new Set<string>();
+      set.add(toucher);
+      importers.set(src, set);
     }
   }
   return { importers, dynamic, nodes };
@@ -196,7 +226,9 @@ export function selectVerifyTests(
         queue.push(importer);
       }
     }
-    const tests = [...reached].filter((n) => TEST_RE.test(n));
+    // A deleted test is not a node, so it is never selected: running a missing file
+    // is not a verdict on the diff. Its importers still are, so a broken import blocks.
+    const tests = [...reached].filter((n) => TEST_RE.test(n) && graph.nodes.has(n));
     if (tests.length === 0) return full(`no-selected-tests:${start}`);
     perChanged.set(start, new Set(tests));
     for (const t of tests) selected.add(t);

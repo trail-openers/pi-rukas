@@ -464,8 +464,7 @@ export async function verifyDevelopOutcome(
         ...(walkProcessTree !== undefined ? { walkProcessTree } : {}),
         ...(hangSink !== undefined ? { hangSink } : {}),
         ...(onGateRecorded !== undefined ? { onGateRecorded } : {}),
-      });
-      plan.finish(options.onSelectedVerify);
+      }).finally(() => plan.finish(options.onSelectedVerify));
       // #1349 — only a base that fails the way the change does excuses it.
       verifyCmdEnd = before === 0 && attributed ? failures.length : undefined;
     }

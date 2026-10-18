@@ -64,6 +64,8 @@ interface Scenario {
   killed?: boolean;
   /** When set, the change run fails without writing a report (a tsc-style failure). */
   noReport?: boolean;
+  /** When set, only the first change run fails without a report; the rerun is green. */
+  noReportFirst?: boolean;
   /** When set, the base probe is killed at its bound: unresolved, so it cannot excuse. */
   probeKilled?: boolean;
 }
@@ -120,7 +122,7 @@ function stubExec(s: Scenario, calls: { change: number; probe: number }) {
           return false;
         });
     const reportFile = opts?.env?.VERIFY_REPORT_FILE;
-    if (!isProbe && s.noReport) {
+    if (!isProbe && (s.noReport || (s.noReportFirst === true && calls.change === 1))) {
       throw Object.assign(new Error("tsc: error TS2304"), {
         stdout: "",
         stderr: "src/a.ts(1,1): error",
@@ -143,6 +145,7 @@ async function attempt(
   name: string,
   s: Scenario,
   changedTests: string[],
+  rerunUnnamed = false,
 ): Promise<{
   ok: boolean;
   record: SelectedVerifyRecord;
@@ -164,6 +167,7 @@ async function attempt(
     changedTests,
     timeoutMs: 60_000,
     record,
+    rerunUnnamed,
   });
   let ok = true;
   let stderr = "";
@@ -233,6 +237,25 @@ const R = "smoke-tests/test-red.ts";
 {
   const r = await attempt("no-report", { change: {}, base: [], noReport: true }, []);
   assert(!r.ok && r.calls.change === 1, "no failing names (tsc or biome) → blocks after one run");
+}
+// Mixed rerun: A fails once and passes the rerun (flaky); B fails twice and is
+// green on base. A is recorded as flaky even though the cycle is blocked by B.
+{
+  const r = await attempt("mixed-rerun", { change: { [T]: 1, [R]: 2 }, base: [] }, []);
+  assert(
+    !r.ok && r.record.flaky.join() === T,
+    "a name that fails once and not on the rerun is recorded flaky, even when the cycle blocks",
+  );
+}
+// ci tier: a run that names no test is rerun once, and a recovered rerun passes.
+{
+  const r = await attempt("ci-unnamed", { change: {}, base: [], noReportFirst: true }, [], true);
+  assert(r.ok && r.calls.change === 2, "ci: a run with no failing names is rerun once and passes");
+}
+// ci tier: an unnamed failure that fails again still blocks.
+{
+  const r = await attempt("ci-unnamed-twice", { change: {}, base: [], noReport: true }, [], true);
+  assert(!r.ok && r.calls.change === 2, "ci: an unnamed failure that fails the rerun blocks");
 }
 // Timed out: blocks, no rerun.
 {

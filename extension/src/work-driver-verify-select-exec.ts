@@ -51,6 +51,12 @@ export interface SelectedVerifyOptions {
   changedTests: readonly string[];
   timeoutMs: number;
   record: SelectedVerifyRecord;
+  /**
+   * The ci tier's single rerun for a failure that names no test (a transient
+   * tsc or loop crash). The develop round leaves it off: an unnamed failure
+   * blocks there, as it always has.
+   */
+  rerunUnnamed?: boolean;
 }
 
 type ExecError = Error & {
@@ -218,6 +224,16 @@ async function judge(
   return { baselineRed: rels };
 }
 
+/** Record the names that failed once and did not fail on the rerun. */
+function recordFlaky(o: SelectedVerifyOptions, names: readonly string[]): void {
+  const flaky = names.map(extensionRelative).filter((r): r is string => r !== undefined);
+  if (flaky.length === 0) return;
+  o.record.flaky.push(...flaky);
+  trace(
+    `work-driver: verify-select \u2014 ${flaky.join(", ")} failed once and passed on the rerun (flaky, not blocking)`,
+  );
+}
+
 function block(err: ExecError, reason: string): ExecError {
   err.stderr = `${err.stderr ?? ""}\n[verify-select] blocking: ${reason}`;
   return err;
@@ -236,22 +252,28 @@ export function withSelectedAttribution(
     if (cmd !== o.cmd) return execFn(cmd, opts);
     const first = await runOnce(o, execFn, opts, "first");
     if (first.ok) return first.out;
-    if (first.timedOut || first.names === undefined || first.names.length === 0) {
+    if (first.timedOut) throw block(first.err, first.reason);
+    const firstNames = first.names ?? [];
+    if (firstNames.length === 0 && o.rerunUnnamed !== true) {
       throw block(first.err, first.reason);
     }
     const second = await runOnce(o, execFn, opts, "rerun");
     if (second.ok) {
-      const flaky = first.names.map(extensionRelative).filter((r): r is string => r !== undefined);
-      o.record.flaky.push(...flaky);
-      trace(
-        `work-driver: verify-select — ${flaky.join(", ")} failed once and passed on the rerun (flaky, not blocking)`,
-      );
+      recordFlaky(o, firstNames);
       return second.out;
     }
     if (second.timedOut || second.names === undefined || second.names.length === 0) {
       throw block(second.err, second.reason);
     }
     if (second.reportFile === undefined) throw block(second.err, second.reason);
+    // Failed on the first run and passed the rerun is flaky. A name that failed
+    // on the first run but not the second is one of those, so it is recorded
+    // before the second run is judged: a blocked cycle still discloses it.
+    const secondSet = new Set(second.names);
+    recordFlaky(
+      o,
+      firstNames.filter((n) => !secondSet.has(n)),
+    );
     const verdict = await judge(o, rawExec, second.names, second.reportFile);
     if ("blocks" in verdict) throw block(second.err, verdict.blocks);
     o.record.baselineRed.push(...verdict.baselineRed);

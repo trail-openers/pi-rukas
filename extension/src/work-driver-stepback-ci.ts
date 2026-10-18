@@ -22,7 +22,7 @@ import {
 } from "./work-driver-merge-authority.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCiPrompt, inlineStepBackPrompt } from "./work-driver-prompts-late.ts";
-import { foldVerifyAttribution } from "./work-driver-verify-events.ts";
+import { foldVerifyAttribution, uncarriedNames } from "./work-driver-verify-events.ts";
 import { verifyCmdFullFor } from "./work-driver-verify-full.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -199,8 +199,9 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
         ctx.verifyExecFn ?? execp,
       );
       const carried = run.outcome === "success" ? run.record : undefined;
-      const disclosed =
-        carried === undefined || (await discloseInPrBody(ctx, next, execp, carried));
+      // Only names the PR body does not already list (the develop round wrote its own).
+      const fresh = carried === undefined ? undefined : uncarriedNames(next, carried);
+      const disclosed = fresh === undefined || (await discloseInPrBody(ctx, next, execp, fresh));
       const result = disclosed
         ? run
         : {
