@@ -21,9 +21,22 @@
  * record instead of overwriting a `tree: "committed"` record with a false
  * dirty-uncommitted), it checks out the KILLED child's worktree (parsed
  * from the dispatch-failed label, not the first worktree), it typechecks
- * before the `--no-verify` commit (`typechecked` on the record), and its
+ * before the `--no-verify` commit (`typechecked` on the record — true/false,
+ * absent when the check reached no verdict, #1414 round 2), and its
  * state write is a MERGE of the on-disk file (a crash leaves either the
  * routed state or the merged state, never a half-state).
+ *
+ * #1414 round 2 — the typecheck RUN itself (its bound, its verify slot, and
+ * the classifier that tells "could not run" from "broken") lives in
+ * `work-driver-cap-checkpoint-typecheck.ts`. This file stays the checkpoint's
+ * git / commit / status-file half.
+ *
+ * #1414 round 3 — the dependency used to run BOTH ways: this file imported
+ * `typecheckWorktree` from the sibling while the sibling value-imported
+ * `CHECKPOINT_TYPECHECK_CMD` back from here. The constant now lives in the
+ * leaf and this file re-exports it (`export { CHECKPOINT_TYPECHECK_CMD } from
+ * …`), so every edge points checkpoint → typecheck and the no-bare-alias gate
+ * keeps reading the literal from the file whose jsdoc explains the spelling.
  */
 
 import fs from "node:fs/promises";
@@ -32,17 +45,43 @@ import { execp as checkpointExecp } from "./exec.ts";
 import { excludeToolListFor } from "./role-tools.ts";
 import { isRoleName } from "./roles.ts";
 import { trace } from "./trace.ts";
-import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import {
+  CHECKPOINT_TYPECHECK_CMD,
+  type TypecheckOutcome,
+  typecheckWorktree,
+} from "./work-driver-cap-checkpoint-typecheck.ts";
+import type { CycleContext } from "./work-driver-context.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
-import {
-  type CapedPartialState,
-  type WorkEvent,
-  type WorkState,
-  type WorkStep,
-  persistCycle,
-  readState,
-} from "./workflow-state.ts";
+import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
+import type { WorkState } from "./workflow-state-schema.ts";
+import { type CapedPartialState, persistCycle, readState } from "./workflow-state.ts";
+
+/**
+ * #1414 — the ONE spelling of the checkpoint's typecheck command, RE-EXPORTED
+ * from its leaf module (it is defined in
+ * `work-driver-cap-checkpoint-typecheck.ts`, beside the call that runs it),
+ * re-exported here so the operator-facing rationale below and the no-bare-alias
+ * gate both keep a stable site. The executed call, the status-file lines below
+ * and the handoff bullet (work-driver-caped-state.ts) all carry this exact
+ * text, so what the driver RUNS and what it TELLS the operator it ran cannot
+ * drift. The gate under `smoke-tests/` pins the exported value, the executed
+ * literal and each prose site to one another.
+ *
+ * `bun x` — not the hyphenless alias the gate refuses — dispatches through
+ * the one bun binary always on PATH (#1118); `--noEmit` is the real tsc
+ * flag — the hyphenated form is not one, so the old literal failed on every
+ * host and the handoff falsely reported committed code as broken.
+ *
+ * #1414 round 3 — re-export, not definition, and the direction is
+ * load-bearing: defining the constant here meant the leaf imported from its
+ * own consumer (a runtime cycle, kept invisible only because a hoisted `const`
+ * read at call time never observes the TDZ). The `export … from` form (not a
+ * local `const` plus a bare re-export) is what the gate under `smoke-tests/`
+ * pins by SOURCE, so an edge that points the wrong way again is a gate failure
+ * rather than a silent cycle.
+ */
+export { CHECKPOINT_TYPECHECK_CMD } from "./work-driver-cap-checkpoint-typecheck.ts";
 
 /** #543 (M5) — structurally write-gated roles: the SAME set role-tools.ts
  * passes `--exclude-tools write,edit,multiedit` to (explore /
@@ -64,32 +103,6 @@ function isWriteGatedRole(role: string): boolean {
 function workstreamIdFromLabel(label: string): string | undefined {
   const m = label.match(/^developer\[(.+)\]$/);
   return m ? m[1] : undefined;
-}
-
-/**
- * #544 (8d) — typecheck the worktree's TypeScript BEFORE the checkpoint
- * commit (recovery, not the full gate — the full suite runs on the
- * integrated branch). Runs `bunx tsc --noEmit` in the worktree's
- * `extension/` directory; `false` when the typecheck fails, `undefined`
- * when the worktree has no `extension/` (nothing to check — the record
- * omits the field). Never throws.
- */
-async function typecheckWorktree(cwd: string): Promise<boolean | undefined> {
-  const ext = path.join(cwd, "extension");
-  try {
-    await fs.access(ext);
-  } catch {
-    return undefined;
-  }
-  try {
-    await checkpointExecp("bunx tsc --no-emit", { cwd: ext, maxBuffer: 256 * 1024 });
-    return true;
-  } catch (err) {
-    trace(
-      `work-driver: checkpoint typecheck failed in ${cwd}: ${(err as Error).message?.slice(0, 120)}`,
-    );
-    return false;
-  }
 }
 
 /**
@@ -177,7 +190,14 @@ export async function checkpointCapedDispatch(
   let commitSha: string | undefined;
   let remainingFiles: string[] = [];
   let sweptForeign = 0;
-  let typechecked: boolean | undefined;
+  // #1414 round 2 — the three-state outcome, not a boolean. `undefined` (the
+  // check never judged anything) keeps the field OFF the record and says why in
+  // the status file; only `false` indicts the code.
+  let typecheck: TypecheckOutcome | undefined;
+  // #1414 round 3 — the attempt is recorded AT THE CALL SITE, never derived from
+  // `typecheck`: the two are different facts, and a path that calls the check
+  // without assigning would otherwise claim no attempt for a compile that ran.
+  let typecheckAttempted = false;
   try {
     if (reportOnly) {
       // (M5) — skip the stage+commit entirely for write-gated roles. The
@@ -200,8 +220,30 @@ export async function checkpointCapedDispatch(
         // #544 (8d) — typecheck BEFORE the --no-verify commit. The hook is
         // skipped so the checkpoint never blocks on the project's full gate,
         // but the commit must not silently claim a tree that does not even
-        // typecheck: the `typechecked` flag lets the handoff say so.
-        typechecked = await typecheckWorktree(cwd);
+        // typecheck: the `typechecked` flag lets the handoff say so — and only
+        // when the check actually RAN (#1414 round 2).
+        // #1414 round 3 — the typecheck has its OWN try/catch, and the attempt is
+        // recorded BEFORE the call so it survives any escape. Pre-fix, a throw
+        // anywhere later in the outer try landed in the outer catch, which resets
+        // only `tree` — so the record lost BOTH facts: that the check ran, and
+        // what it concluded. The handoff then said the tree was never compiled,
+        // and the one verdict the driver had was gone. `typecheckAttempted` and
+        // `typecheck` are assigned together here, never derived from each other.
+        typecheckAttempted = true;
+        try {
+          typecheck = await typecheckWorktree(cwd, ctx.checkpointExecFn ?? checkpointExecp);
+        } catch (err) {
+          // Should not happen — `typecheckWorktree` is documented never to throw —
+          // but an escape is a NO VERDICT with a reason, never a silent loss of the
+          // attempt.
+          typecheck = {
+            verdict: undefined,
+            why: `the typecheck step did not complete (${(err as Error)?.message ?? String(err)})`,
+          };
+          trace(
+            `work-driver: checkpoint typecheck threw in ${cwd}: ${(err as Error)?.message?.slice(0, 200)}`,
+          );
+        }
         // Stage the porcelain paths (skip driver artefacts: .pi/ and tmp/)
         // and commit. The commit message is driver-attributed so the
         // operator can tell the checkpoint from a child's seam commit.
@@ -244,7 +286,11 @@ export async function checkpointCapedDispatch(
           }
         }
         try {
-          await checkpointExecp(
+          // #1414 round 3 — the commit alone is injectable (see
+          // `checkpointCommitFn` in work-driver-context.ts), because the exec
+          // seam above is typecheck-only and this is the one call whose failure
+          // the record has to survive with the typecheck's verdict intact.
+          await (ctx.checkpointCommitFn ?? checkpointExecp)(
             `git commit -q --no-verify -m 'checkpoint(${cap}): driver-owned cap-kill checkpoint'`,
             { cwd, maxBuffer: 64 * 1024 },
           );
@@ -288,53 +334,65 @@ export async function checkpointCapedDispatch(
   // killed child's final text is its `summary`; the driver composes
   // the file so the operator's "what was saved" is driver-authored,
   // not the child's own words.
+  // #1414 round 3 — a throw from anywhere below must still yield a record,
+  // because the record is the only thing the operator gets from this function
+  // (the post-commit status read, the status-file write and the state merge are
+  // each self-guarded; this is the last net under them). The checkpoint is
+  // contractually non-throwing: an escaped checkpoint would leave the cycle
+  // routed to handoff with NO capedPartialState and no status file, which is the
+  // pre-#543 shape. The status-file half is now a function of its own so the
+  // guarantee is structural — there is no code path between the typecheck and the
+  // record that can throw past it.
+  const typecheckLine =
+    typecheck === undefined || typecheck.verdict === undefined
+      ? // #1414 round 2 — the check never judged the code, so the file says
+        // so and says WHY. The pre-fix wording had this whole branch reading
+        // "FAILED ... the committed code is broken as-is".
+        `Typecheck (${CHECKPOINT_TYPECHECK_CMD}) reached NO VERDICT — ${typecheck?.why ?? "the check did not run"}. This says nothing about whether the committed code typechecks; run it yourself before pushing.`
+      : typecheck.verdict === false
+        ? `Typecheck (${CHECKPOINT_TYPECHECK_CMD}) FAILED at the checkpoint — the committed code is broken as-is; fix before pushing. Last output: ${typecheck.detail}`
+        : `Typecheck (${CHECKPOINT_TYPECHECK_CMD}) passed at the checkpoint.`;
+  const done =
+    tree === "committed" ? `checkpoint commit ${commitSha}` : "(none — nothing committed)";
+  const remaining =
+    remainingFiles.length > 0
+      ? remainingFiles.map((f) => `  - ${f}`).join("\n")
+      : "  (none — tree verified clean after checkpoint)";
+  const sweptLine =
+    sweptForeign > 0
+      ? `  (${sweptForeign} untracked path(s) outside the declared workstream scope were NOT committed and remain on disk)`
+      : "";
+  const statusContent = [
+    `# Cap-kill status — ${step} / ${role} (cap: ${cap})`,
+    "",
+    `The driver killed this dispatch at ${new Date().toISOString()} (cap: ${cap}).`,
+    "The driver then inspected the worktree and authored this file. The killed",
+    "child's final report follows; the driver's assessment of what was saved",
+    "is authoritative.",
+    "",
+    "## Done",
+    "",
+    done,
+    typecheckLine,
+    "",
+    "## Remaining (uncommitted after the checkpoint)",
+    "",
+    remaining,
+    sweptLine,
+    "",
+    "## Current state",
+    "",
+    `Tree at kill time: ${tree}.`,
+    `Worktree: \`${cwd}\``,
+    "",
+    "## Killed child's final report (verbatim — NOT the driver's assessment)",
+    "",
+    (capKill.errorTail ?? "").slice(0, 4000) || "(the killed child produced no final text)",
+    "",
+  ].join("\n");
   try {
     await fs.mkdir(scratchAbs, { recursive: true });
-    const done =
-      tree === "committed" ? `checkpoint commit ${commitSha}` : "(none — nothing committed)";
-    const remaining =
-      remainingFiles.length > 0
-        ? remainingFiles.map((f) => `  - ${f}`).join("\n")
-        : "  (none — tree verified clean after checkpoint)";
-    const sweptLine =
-      sweptForeign > 0
-        ? `  (${sweptForeign} untracked path(s) outside the declared workstream scope were NOT committed and remain on disk)`
-        : "";
-    const typecheckLine =
-      typechecked === false
-        ? "Typecheck (bunx tsc --no-emit) FAILED at the checkpoint — the committed code is broken as-is; fix before pushing."
-        : typechecked === true
-          ? "Typecheck (bunx tsc --no-emit) passed at the checkpoint."
-          : "";
-    const content = [
-      `# Cap-kill status — ${step} / ${role} (cap: ${cap})`,
-      "",
-      `The driver killed this dispatch at ${new Date().toISOString()} (cap: ${cap}).`,
-      "The driver then inspected the worktree and authored this file. The killed",
-      "child's final report follows; the driver's assessment of what was saved",
-      "is authoritative.",
-      "",
-      "## Done",
-      "",
-      done,
-      typecheckLine,
-      "",
-      "## Remaining (uncommitted after the checkpoint)",
-      "",
-      remaining,
-      sweptLine,
-      "",
-      "## Current state",
-      "",
-      `Tree at kill time: ${tree}.`,
-      `Worktree: \`${cwd}\``,
-      "",
-      "## Killed child's final report (verbatim — NOT the driver's assessment)",
-      "",
-      (capKill.errorTail ?? "").slice(0, 4000) || "(the killed child produced no final text)",
-      "",
-    ].join("\n");
-    await fs.writeFile(statusFile, content, "utf8");
+    await fs.writeFile(statusFile, statusContent, "utf8");
   } catch (err) {
     trace(
       `work-driver: checkpoint status-file write failed: ${(err as Error).message?.slice(0, 200)}`,
@@ -354,7 +412,21 @@ export async function checkpointCapedDispatch(
     // the handoff renderers, never written. Write-gated children are
     // report-only; that is what the handoff should say.
     ...(reportOnly ? { reportOnly: true } : {}),
-    ...(typechecked !== undefined ? { typechecked } : {}),
+    ...(typecheck?.verdict === true || typecheck?.verdict === false
+      ? { typechecked: typecheck.verdict }
+      : // #1414 round 2 — the field stays OFF the record, but the reason is
+        // recorded: absent alone tells the operator nothing actionable.
+        typecheck
+        ? { typecheckReason: typecheck.why }
+        : {}),
+    // #1414 round 3 — the record distinguishes "attempted, reached no
+    // verdict" from "never attempted". Set at the call site above, so it says
+    // what the driver DID rather than what the check concluded: a report-only
+    // kill and a clean tree never reach the call, and a tree whose commit failed
+    // (or whose stage threw) AFTER the check ran still reports the attempt it
+    // made and the verdict it reached — both fields are read from locals the
+    // outer catch never touches.
+    ...(typecheckAttempted ? { typecheckAttempted: true as const } : {}),
   };
   // #544 (8f) — MERGE the checkpoint into the on-disk state file: read the
   // current file (routeStepOutcome may have written it since this step's
