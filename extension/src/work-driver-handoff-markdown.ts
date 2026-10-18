@@ -133,6 +133,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     ...adversarialOutcomeSection(state),
     ...plumbReportSection(state),
     ...verifyAttributionSection(state),
+    ...writeFenceSection(state),
     ...retryTreeSection(state),
     ...workstreamRefusalSection(state),
     ...consolidationNotesSection(state),
@@ -428,6 +429,22 @@ function workstreamRefusalSection(state: WorkState): string[] {
     "### Workstream calls the planner had refused",
     "",
     ...rows.flatMap((r) => r.refused.map((x) => refusalRowMarkdown(r.label, x, inlineCodeSafe))),
+    "",
+  ];
+}
+
+/**
+ * #1655 — writes the write fence refused. A refusal is the child correcting
+ * itself, so it never parks a cycle; it is shown because a developer that kept
+ * reaching for the repo root is evidence about its instructions.
+ */
+function writeFenceSection(state: WorkState): string[] {
+  const n = state.pipelineState.writeFenceRefusals ?? 0;
+  if (n === 0) return [];
+  return [
+    "### Writes refused by the write fence",
+    "",
+    `- ${n} write${n === 1 ? "" : "s"} outside a developer's worktree ${n === 1 ? "was" : "were"} refused at write time. The refusals are logged as \`write-fence-*.jsonl\` in the cycle's scratch dir.`,
     "",
   ];
 }

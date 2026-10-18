@@ -500,6 +500,18 @@ PR: [#215](https://github.com/trail-openers/pi-rukas/pull/215)
 
 Related: a child of a headless run outside the image denies every `ask`-class tool with `no broker socket — headless deny`. That is the same design one layer down — with no sandbox and no human, fail closed rather than guess — and the mode-independent guards (merge, issue-creation) still run ahead of it.
 
+### A developer's write was refused: outside its worktree (write fence)
+
+**Symptom:** A `/work` developer reports that a write was refused with *"Refused: `<path>` — it is outside your write root (`<worktree>`)"*, or the handoff carries a *"Writes refused by the write fence"* section. Before #1655 the same write landed in the repo root and surfaced only at consolidation as a dirty root (issue #353's cycle parked that way, after the whole develop spend).
+
+**Cause:** The developer child is fenced to its worktree. The driver sets `PI_ENSEMBLE_WRITE_ROOT` (the worktree) and `PI_ENSEMBLE_WRITE_SCRATCH` (the cycle's `tmp/issue-<N>/`) on develop and fix-developer dispatches, and the child-guards companion refuses any write whose resolved path leaves those trees. The target is resolved the way the OS does, so `..` after a symlink climbs from the link's real target. Allowed: the worktree, the scratch dir, the OS temp dirs, and the worktree's own provisioned `node_modules` / `.venv` / `vendor` trees (`worktree-provision.ts`). A symlink other than those is refused.
+
+**Fix:** The refusal is the child correcting itself; it does not park the cycle. If the developer's brief asked for a path outside the worktree, fix the brief or the plan's `paths:`. If the write is genuinely legitimate, the escape hatch is `PI_ENSEMBLE_WRITE_FENCE=0` in the operator's shell (it disables the fence for every child in the session).
+
+**Known gaps (best-effort, by design):** the bash side checks redirects, `cd`, and the operands of `cp`/`mv`/`install`/`ln`/`tee`/`touch`/`mkdir`/`rm`/`rmdir`, `sed -i`, `perl -i` and `git -C`. A body passed to `sh -c` / `bash -c` / `eval`, a `$VAR` other than `$HOME`, and `dd of=` are not checked. The after-the-fact repo-root residue detection stays the backstop for those.
+
+**Where the count lives:** Each refusal is one line in `<scratch>/write-fence-<pid>.jsonl`. The driver recounts them at each step boundary and stores the total as `pipelineState.writeFenceRefusals`. A `--restart` clears the logs.
+
 ## Image acquisition
 
 ### `./install.sh` takes 10+ minutes (cold local build)

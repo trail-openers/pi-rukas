@@ -12,6 +12,7 @@ import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 import { liveCycleIssues, liveCycleOwning } from "./work-driver-registry.ts";
+import type { WriteFence } from "./write-fence-log.ts";
 
 /**
  * #838 — the per-cycle deck option a driver dispatch threads through
@@ -159,6 +160,8 @@ export function dispatchCore(
     signal?: AbortSignal;
     /** Headless S4 (#1024): the child leads its own process group (spawn-kill.ts). */
     processGroup?: boolean;
+    /** #1655 — the write fence for a develop or fix-developer child (SpawnOptions.writeFence). */
+    writeFence?: WriteFence;
   } = {},
 ): Promise<DispatchResult> {
   const stripped = stripModelOverride(spec);
@@ -235,6 +238,7 @@ export function dispatchCore(
         // to the report_plan_item tool via `--no-skills --extension <path>`.
         extraArgs: opts.extraArgs,
         processGroup: opts.processGroup,
+        writeFence: opts.writeFence,
       }),
   });
   return handle.completion;

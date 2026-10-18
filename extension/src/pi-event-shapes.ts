@@ -10,6 +10,7 @@
  */
 
 import type { RunningState } from "./progress.ts";
+import type { WriteFence } from "./write-fence-log.ts";
 
 import type { SteerSource } from "./dispatch-steer.ts";
 
@@ -51,6 +52,12 @@ export interface SpawnOptions {
    * unset: the child stays in the terminal's group and Ctrl-C reaches it.
    */
   processGroup?: boolean;
+  /**
+   * #1655 — the worktree and scratch dir this child is fenced to. Set only by
+   * the driver's develop and fix-developer dispatches; the child's write-fence
+   * refuses writes outside `root` (see write-fence.ts).
+   */
+  writeFence?: WriteFence;
   /**
    * Group children from the same dispatch_parallel call under a shared id so
    * their session files sort together on disk.

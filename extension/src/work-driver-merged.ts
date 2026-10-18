@@ -42,6 +42,7 @@ import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import { type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 import { worktreePrune, worktreeRemove } from "./worktree.ts";
+import type { WriteFence } from "./write-fence-log.ts";
 
 export { buildCompletionEvent, overrideEnvForKillCause } from "./work-driver-completion-event.ts";
 
@@ -87,7 +88,7 @@ export async function runSingleDispatch(
   label: string,
   now: number,
   buildPrompt: () => string,
-  opts?: { timeoutMs?: number; cwd?: string },
+  opts?: { timeoutMs?: number; cwd?: string; writeFence?: WriteFence },
 ): Promise<WorkState> {
   let next = appendEvent(
     { ...state, pipelineState: { ...state.pipelineState, currentStep: step } },
@@ -120,6 +121,7 @@ export async function runSingleDispatch(
       {
         label,
         timeoutMs: opts?.timeoutMs,
+        writeFence: opts?.writeFence,
         // #799 — the slow recorder collects the crossings into the driver's
         // pending buffer (keyed by this cycle's primary issue); the
         // step-boundary drain (routeStepOutcome) persists them — this step
