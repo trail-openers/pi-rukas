@@ -71,7 +71,7 @@ import {
   unmeasurablePathsSectionOf,
 } from "./work-driver-pr-body-definition.ts";
 import { findOpenPrForBranch } from "./work-driver-pr-preflight.ts";
-import { carried, renderLensFindingsSection } from "./work-driver-pr-sections.ts";
+import { carried, eventLogSections } from "./work-driver-pr-sections.ts";
 import { protectedGrantSectionOf } from "./work-driver-protected-grant.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
@@ -424,7 +424,7 @@ export async function mechanizedCommitPr(
       operatorActionsSectionOf(ps.normalisedSpec),
       unmeasurablePathsSectionOf(ps.normalisedSpec),
       preExistingSection,
-      renderLensFindingsSection(state.eventLog),
+      ...eventLogSections(state.eventLog),
     ]
       .filter((l) => l !== "")
       .join("\n\n");

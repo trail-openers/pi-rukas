@@ -33,7 +33,7 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { planDispatchTimeoutMs, runPlan } from "../src/work-driver-plan.ts";
 import { routeStepOutcome } from "../src/work-driver-step-router.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
-import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
+import { type PlanResultShape, planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -49,13 +49,13 @@ process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
 
 const fakePi = { sendUserMessage: () => undefined } as unknown as ExtensionAPI;
 
-function mkResult(text: string, patch: Partial<DispatchResult> = {}): DispatchResult {
+function mkResult(plan: PlanResultShape, patch: Partial<DispatchResult> = {}): DispatchResult {
   return {
     role: "explore",
     ok: true,
-    // #1652 — the plan's workstreams are the report_workstream calls the markdown
-    // block stands for; an empty reply carries none.
-    ...planResultFromMarkdown(text),
+    // #1652 — the plan's workstreams are its report_workstream calls; an empty
+    // reply carries none.
+    ...plan,
     ms: 10,
     exitCode: 0,
     transcriptPath: "/tmp/stub-plan-transcript.json",
@@ -65,17 +65,13 @@ function mkResult(text: string, patch: Partial<DispatchResult> = {}): DispatchRe
 
 /** One workstream, NO paths → `planQualityReason` returns `empty-paths`, which
  * is the trigger that dispatches the quality-gate corrective. */
-const SHAPE_DEFECT_PLAN = [
-  "## Workstreams",
-  "",
-  "### task-a — the fix",
-  "- out-of-scope: docs/",
-  "",
-].join("\n");
+const SHAPE_DEFECT_PLAN = planResultFromCalls([
+  { id: "task-a", scope: "the fix", paths: [], outOfScope: ["docs/"] },
+]);
 
-const WORKSTREAMS = ["## Workstreams", "", "### task-a — the fix", "- paths: src/a.ts", ""].join(
-  "\n",
-);
+const WORKSTREAMS = planResultFromCalls([
+  { id: "task-a", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
+]);
 
 function mkCtx(dir: string, dispatchFn?: DriverContext["dispatchFn"]): DriverContext {
   return { host: fakePi, repoRoot: dir, issue: 754, dispatchFn };
@@ -142,7 +138,7 @@ function mkCtx(dir: string, dispatchFn?: DriverContext["dispatchFn"]): DriverCon
 
 /** The primary plan dispatch timed out at the step's own bound. */
 function primaryKill(): DispatchResult {
-  return mkResult("", {
+  return mkResult(planResultFromCalls([]), {
     ok: false,
     exitCode: 143,
     killCause: "timeout",
@@ -164,7 +160,7 @@ function primaryKill(): DispatchResult {
   const dir = mkdtempSync(path.join(tmpdir(), "plan-corrective-throws-"));
   try {
     const seen: Array<{ label?: string; timeoutMs?: number }> = [];
-    // PRIMARY: an EMPTY reply — no `## Workstreams` block, so the parse is
+    // PRIMARY: an EMPTY reply — no `report_workstream` call, so the parse is
     // empty, no gate fires and there is no plan to compare. The corrective then
     // THROWS (the `.catch()` yields undefined): the pre-round-2 shape left the
     // step with no failure tail at all.
@@ -240,7 +236,7 @@ function primaryKill(): DispatchResult {
     const ctx = mkCtx(dir, async (_pi, _spec, opts) => {
       seen.push(opts);
       if (seen.length === 2) {
-        return mkResult("", {
+        return mkResult(planResultFromCalls([]), {
           ok: false,
           exitCode: 143,
           killCause: "timeout",

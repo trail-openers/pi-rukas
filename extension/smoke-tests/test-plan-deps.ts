@@ -41,7 +41,7 @@ import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runPlan } from "../src/work-driver-plan.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
-import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
+import { type PlanResultShape, planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -58,13 +58,12 @@ process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
 
 const fakePi = { sendUserMessage: () => undefined } as unknown as ExtensionAPI;
 
-function mkResult(text: string): DispatchResult {
+function mkResult(plan: PlanResultShape): DispatchResult {
   return {
     role: "explore",
     ok: true,
-    // #1652 — the plan's workstreams are the report_workstream calls the
-    // markdown block stands for (the helper keeps each fixture's meaning).
-    ...planResultFromMarkdown(text),
+    // #1652 — the plan's workstreams are its report_workstream calls.
+    ...plan,
     ms: 10,
     exitCode: 0,
     transcriptPath: "/tmp/stub-plan-deps-transcript.json",
@@ -93,25 +92,14 @@ function stateWithArtifact(dir: string, body: string): WorkState {
 {
   const dir = mkdtempSync(path.join(tmpdir(), "plan-dropped-deps-"));
   try {
-    const primaryPlan = [
-      "## Workstreams",
-      "",
-      "### task-a — the fix",
-      "",
-      "### task-b — the dependent",
-      "- depends-on: task-a",
-      "",
-    ].join("\n");
-    const correctivePlan = [
-      "## Workstreams",
-      "",
-      "### task-a — the fix",
-      "- paths: src/a.ts",
-      "",
-      "### task-b — the dependent",
-      "- paths: src/b.ts",
-      "",
-    ].join("\n");
+    const primaryPlan = planResultFromCalls([
+      { id: "task-a", scope: "the fix", paths: [], outOfScope: [] },
+      { id: "task-b", scope: "the dependent", paths: [], outOfScope: [], dependsOn: ["task-a"] },
+    ]);
+    const correctivePlan = planResultFromCalls([
+      { id: "task-a", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
+      { id: "task-b", scope: "the dependent", paths: ["src/b.ts"], outOfScope: [] },
+    ]);
     let calls = 0;
     const ctx = mkCtx(dir, async () => {
       calls += 1;
@@ -153,17 +141,16 @@ function stateWithArtifact(dir: string, body: string): WorkState {
 {
   const dir = mkdtempSync(path.join(tmpdir(), "plan-kept-deps-"));
   try {
-    const primaryPlan = [
-      "## Workstreams",
-      "",
-      "### task-a — the fix",
-      "- paths: src/a.ts",
-      "",
-      "### task-b — the dependent",
-      "- paths: src/b.ts",
-      "- depends-on: task-a",
-      "",
-    ].join("\n");
+    const primaryPlan = planResultFromCalls([
+      { id: "task-a", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
+      {
+        id: "task-b",
+        scope: "the dependent",
+        paths: ["src/b.ts"],
+        outOfScope: [],
+        dependsOn: ["task-a"],
+      },
+    ]);
     let calls = 0;
     const ctx = mkCtx(dir, async () => {
       calls += 1;
@@ -203,17 +190,16 @@ function stateWithArtifact(dir: string, body: string): WorkState {
 {
   const dir = mkdtempSync(path.join(tmpdir(), "plan-kill-path-"));
   try {
-    const correctivePlan = [
-      "## Workstreams",
-      "",
-      "### task-a — the fix",
-      "- paths: src/a.ts",
-      "",
-      "### task-b — the dependent",
-      "- paths: src/b.ts",
-      "- depends-on: task-a",
-      "",
-    ].join("\n");
+    const correctivePlan = planResultFromCalls([
+      { id: "task-a", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
+      {
+        id: "task-b",
+        scope: "the dependent",
+        paths: ["src/b.ts"],
+        outOfScope: [],
+        dependsOn: ["task-a"],
+      },
+    ]);
     let calls = 0;
     // The primary is stubbed as a timeout kill (`killCause: "timeout"`) so
     // the kill path runs and leaves `firstPlanWorkstreams` unset.

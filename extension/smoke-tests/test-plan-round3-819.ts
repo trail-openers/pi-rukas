@@ -41,8 +41,12 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { planKillDetailForTest, planSpecMismatchCap } from "../src/work-driver-plan-helpers.ts";
 import { findUncoveredDeliverables } from "../src/work-driver-plan-spec-coverage.ts";
 import { runPlan } from "../src/work-driver-plan.ts";
-import { routeStepOutcome } from "../src/work-driver-step-router.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
+import {
+  type PlanResultShape,
+  planResultFromCalls,
+  planResultFromRawCalls,
+} from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -63,12 +67,12 @@ process.env.PI_ENSEMBLE_PLAN_CONTRACT = "0";
 
 const fakePi = { sendUserMessage: () => undefined } as unknown as ExtensionAPI;
 
-function mkResult(text: string, patch: Partial<DispatchResult> = {}): DispatchResult {
+/** A dispatch result carrying a plan's report_workstream calls (#1652). */
+function mkResult(plan: PlanResultShape, patch: Partial<DispatchResult> = {}): DispatchResult {
   return {
     role: "explore",
     ok: true,
-    text,
-    toolUses: [],
+    ...plan,
     ms: 10,
     exitCode: 0,
     transcriptPath: "/tmp/stub-plan-transcript.json",
@@ -78,21 +82,15 @@ function mkResult(text: string, patch: Partial<DispatchResult> = {}): DispatchRe
 
 /** Two workstreams, the second with NO paths → `planQualityReason` returns
  * `empty-paths`: the trigger that dispatches the quality-gate corrective. */
-const TRIGGER_PLAN = [
-  "## Workstreams",
-  "",
-  "### task-a — the fix",
-  "- paths: src/a.ts",
-  "",
-  "### task-b — the stub",
-  "- out-of-scope: docs/",
-  "",
-].join("\n");
+const TRIGGER_PLAN = planResultFromCalls([
+  { id: "task-a", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
+  { id: "task-b", scope: "the stub", paths: [], outOfScope: ["docs/"] },
+]);
 
 /** One workstream with paths: a clean plan the gates have no reason to reject. */
-const CLEAN_PLAN = ["## Workstreams", "", "### default — the fix", "- paths: src/a.ts", ""].join(
-  "\n",
-);
+const CLEAN_PLAN = planResultFromCalls([
+  { id: "default", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
+]);
 
 /** A spec whose single deliverable neither plan above covers, so the
  * plan-to-spec gate has a real mismatch to act on. */
@@ -131,39 +129,24 @@ function mkCtx(dir: string, dispatchFn?: DriverContext["dispatchFn"]): DriverCon
 
 const KILL_CAUSES = ["timeout", "loop", "token-budget", "abort", "inactivity"] as const;
 
-/**
- * Covers the spec, but the reply carries TWO `## Workstreams` sections: the
- * shape that reaches runPlan's TAIL with the spec gate's verdict set and the
- * corrective's own check silent (item 4d's route to the tail's halt).
- */
-const TWO_BLOCK_PLAN = [
-  "## Workstreams",
-  "",
-  "### task-a — the fix",
-  "- paths: src/required.ts",
-  "",
-  "### task-b — the stub",
-  "- out-of-scope: docs/",
-  "",
-  "## Workstreams",
-  "",
-  "### task-c — the duplicate",
-  "- paths: src/other.ts",
-  "",
-].join("\n");
+/** A primary that misses the spec (src/other.ts) and carries a duplicate-id
+ * refusal; no shape defect, so no corrective is spent on it. */
+const REFUSED_PRIMARY_PLAN = planResultFromRawCalls([
+  {
+    id: "task-a",
+    args: { id: "task-a", scope: "the fix", paths: ["src/other.ts"], outOfScope: [] },
+  },
+  { id: "task-a", args: { id: "task-a", scope: "dup", paths: ["src/other.ts"], outOfScope: [] } },
+]);
 
 /** A corrective that declares the spec's deliverable, so `correctiveMismatch`
  * stays silent and the flow reaches the tail with the PRIMARY's refusal. */
-const COVERING_PLAN = [
-  "## Workstreams",
-  "",
-  "### default — the fix",
-  "- paths: src/required.ts",
-  "",
-].join("\n");
+const COVERING_PLAN = planResultFromCalls([
+  { id: "default", scope: "the fix", paths: ["src/required.ts"], outOfScope: [] },
+]);
 
 function killed(cause: (typeof KILL_CAUSES)[number]): DispatchResult {
-  return mkResult("", {
+  return mkResult(planResultFromCalls([]), {
     ok: false,
     exitCode: 143,
     killCause: cause,
@@ -215,7 +198,10 @@ for (const cause of KILL_CAUSES) {
   // The default branch interpolated `${result.killCause}`, so an uncaused result
   // read "killed after undefinedms undefined". The parameter is now narrowed, so
   // the prose is only reachable with a cause — and must name cause and bound.
-  const caused = mkResult("", { killCause: "inactivity", killBudgetMs: 60_000 });
+  const caused = mkResult(planResultFromCalls([]), {
+    killCause: "inactivity",
+    killBudgetMs: 60_000,
+  });
   const detail = planKillDetailForTest(caused);
   assert(
     detail.includes("inactivity") && detail.includes("60000ms"),
@@ -226,7 +212,10 @@ for (const cause of KILL_CAUSES) {
     "planKillDetail never renders the literal `undefined` (the uncaused shape is unrepresentable)",
   );
   const loop = planKillDetailForTest(
-    mkResult("", { killCause: "loop", loopEvidence: { kind: "repeat", tool: "bash", count: 9 } }),
+    mkResult(planResultFromCalls([]), {
+      killCause: "loop",
+      loopEvidence: { kind: "repeat", tool: "bash", count: 9 },
+    }),
   );
   assert(
     loop.includes("bash") && loop.includes("9"),
@@ -270,7 +259,7 @@ for (const mode of ["killed", "threw"] as const) {
           : "undefined"
       })`,
     );
-      let claims: unknown[] = [];
+    let claims: unknown[] = [];
     try {
       claims = JSON.parse(
         await Bun.file(path.join(dir, ".pi", "work-state", "path-claims.json")).text(),
@@ -317,7 +306,7 @@ for (const mode of ["killed", "threw"] as const) {
       next.eventLog[next.eventLog.length - 1]?.kind === "cap-hit",
       "the cap-hit is the step's tail — nothing ran after the halt",
     );
-      assert(
+    assert(
       next.eventLog.filter((e) => e.kind === "dispatch-failed").length === 0,
       "the halt emits no failure event — a rejected plan is a cap, not a dispatch failure",
     );
@@ -365,15 +354,16 @@ for (const mode of ["killed", "threw"] as const) {
 }
 
 {
-  // The tail's halt: the shape gate fired (corrective ran), the corrective's own
-  // text passed the spec gate, and the PRIMARY's reply still carried a refusal
-  // no earlier site halted on. The tail halts it.
+  // The tail's halt: the primary's accepted calls miss the spec and no corrective
+  // replaced them, and the primary also carried a refused call (a duplicate id).
+  // The refusal is recorded; the tail halts on the spec gate. (Was a
+  // two-`## Workstreams`-block reply; that condition is gone by design.)
   const dir = mkdtempSync(path.join(tmpdir(), "plan-r3-primary-refused-"));
   try {
     const seen: string[] = [];
     const ctx = mkCtx(dir, async (_pi, _spec, opts) => {
       seen.push((opts as { label?: string })?.label ?? "");
-      return seen.length === 1 ? mkResult(TWO_BLOCK_PLAN) : mkResult(COVERING_PLAN);
+      return mkResult(REFUSED_PRIMARY_PLAN);
     });
     const next = await runPlan(ctx, stateWithSpec(initialState(819, 1_000_000)), 1_000_000);
     const hit = next.eventLog
@@ -381,32 +371,16 @@ for (const mode of ["killed", "threw"] as const) {
       .reverse()
       .find((e) => e.kind === "cap-hit");
     assert(
-      seen.length === 2 && seen[1] === "plan:corrective",
-      "the shape gate spent the one-shot corrective on the two-block plan",
+      next.eventLog.some((e) => e.kind === "workstream-calls-refused"),
+      "the primary's duplicate-id call is recorded as refused",
     );
     assert(
       hit?.kind === "cap-hit" && hit.cap === "plan-spec-mismatch",
-      `a refused primary whose corrective covered the spec still halts at the tail (got ${hit?.kind === "cap-hit" ? hit.cap : "none"})`,
+      `a refused primary that misses the spec still halts at the tail (got ${hit?.kind === "cap-hit" ? hit.cap : "none"})`,
     );
     assert(
       next.pipelineState.planQuality?.reason === "plan-spec-mismatch",
       "and the halt persists planQuality.reason from runPlan's tail",
-    );
-    const routed = await routeStepOutcome(
-      mkCtx(dir, undefined),
-      next,
-      "plan",
-      { num: 2, total: 9 },
-      1,
-      Date.now() - 100,
-    );
-    const rCap = routed.state.eventLog
-      .slice()
-      .reverse()
-      .find((e) => e.kind === "cap-hit");
-    assert(
-      rCap?.kind === "cap-hit" && rCap.cap === "plan-spec-mismatch" && routed.retry === false,
-      "the router hands the halt to handoff rather than retrying the plan step",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

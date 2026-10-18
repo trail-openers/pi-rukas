@@ -20,7 +20,7 @@ import { buildCompletionEvent, overrideEnvForKillCause } from "./work-driver-mer
 import {
   PLAN_WORKSTREAM_EXTRA_ARGS,
   type WorkstreamReport,
-  appendWorkstreamRefusals,
+  appendPlanDispatchOutcome,
   workstreamCallsOf,
 } from "./work-driver-plan-calls.ts";
 import { withUsage } from "./workflow-state-events-usage.ts";
@@ -200,7 +200,7 @@ export async function planTimeoutCorrective(
     | ((
         pi: DriverHost,
         spec: { role: string; prompt: string },
-        opts: { label: string; timeoutMs?: number; extraArgs?: string[] },
+        opts: { label: string; timeoutMs?: number; extraArgs?: readonly string[] },
       ) => Promise<DispatchResult>),
   prompt: string,
   planKill: DispatchResult,
@@ -221,7 +221,11 @@ export async function planTimeoutCorrective(
   ok: boolean;
   state: WorkState;
   workstreams: Record<string, Workstream>;
-  /** #1652 — the corrective's tool-call report; undefined when it did not complete. */
+  /**
+   * #1652 — the corrective's tool-call report. Undefined when the dispatch threw
+   * or was killed (a killed child's calls are ignored); present when it ran to a
+   * completion, even a failed one, so its refusals are on record.
+   */
   report?: WorkstreamReport;
 }> {
   let state = workState;
@@ -265,21 +269,20 @@ export async function planTimeoutCorrective(
     });
     return { ok: false, state, workstreams: {} };
   }
-  {
-    // #1652 — refusals before the completion event: the completion is the tail.
-    const report = workstreamCallsOf(retry);
-    state = appendWorkstreamRefusals(state, "plan:corrective", report);
-    state = appendEvent(
-      state,
-      await buildCompletionEvent(ctx, "plan", "explore", "plan:corrective", retry),
-    );
-    return {
-      ok: true,
-      state,
-      workstreams: await normalise(report.workstreams, state),
-      report,
-    };
-  }
+  // #1652 — refusals before the completion event: the completion is the tail.
+  // A corrective that failed without a kill (provider error, non-zero exit) is a
+  // failed dispatch: its completion is the tail, and it is NOT judged for zero
+  // calls — a crash read as "no calls" would park as a planner defect.
+  const report = workstreamCallsOf(retry);
+  const completion = await buildCompletionEvent(ctx, "plan", "explore", "plan:corrective", retry);
+  state = appendPlanDispatchOutcome(state, "plan:corrective", report, completion);
+  if (!retry.ok) return { ok: false, state, workstreams: {}, report };
+  return {
+    ok: true,
+    state,
+    workstreams: await normalise(report.workstreams, state),
+    report,
+  };
 }
 
 /**

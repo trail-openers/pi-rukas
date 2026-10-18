@@ -44,7 +44,7 @@ import { classifyFailureCause, failureCauseReason } from "../src/work-driver-fai
 import { planDispatchTimeoutMs, runPlan } from "../src/work-driver-plan.ts";
 import { routeStepOutcome } from "../src/work-driver-step-router.ts";
 import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
-import { planResultFromMarkdown } from "./lib/plan-workstream-calls.ts";
+import { type PlanResultShape, planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -63,13 +63,12 @@ process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
 
 const fakePi = { sendUserMessage: () => undefined } as unknown as ExtensionAPI;
 
-function mkResult(text: string, patch: Partial<DispatchResult> = {}): DispatchResult {
+function mkResult(plan: PlanResultShape, patch: Partial<DispatchResult> = {}): DispatchResult {
   return {
     role: "explore",
     ok: true,
-    // #1652 — the plan's workstreams are the report_workstream calls the markdown
-    // block stands for.
-    ...planResultFromMarkdown(text),
+    // #1652 — the plan's workstreams are its report_workstream calls.
+    ...plan,
     ms: 10,
     exitCode: 0,
     transcriptPath: "/tmp/stub-plan-transcript.json",
@@ -77,14 +76,14 @@ function mkResult(text: string, patch: Partial<DispatchResult> = {}): DispatchRe
   };
 }
 
-const WORKSTREAMS = ["## Workstreams", "", "### task-a — the fix", "- paths: src/a.ts", ""].join(
-  "\n",
-);
+const WORKSTREAMS = planResultFromCalls([
+  { id: "task-a", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
+]);
 
 /** The primary plan dispatch timed out (killCause "timeout", no text — a
  * killed child returns a report, never structured output). */
 function primaryKill(): DispatchResult {
-  return mkResult("", {
+  return mkResult(planResultFromCalls([]), {
     ok: false,
     exitCode: 143,
     killCause: "timeout",

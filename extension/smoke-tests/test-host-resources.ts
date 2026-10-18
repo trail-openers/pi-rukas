@@ -33,7 +33,7 @@ import {
 import { resourceReport } from "../src/resource-budget.ts";
 import { effectiveParallelGroups, groupIssues } from "../src/work-driver-grouping.ts";
 import { effectiveMaxWorkstreams } from "../src/work-driver-plan-workstreams.ts";
-import { workstreamsFromMarkdown } from "./lib/plan-workstream-calls.ts";
+import { workstreamsOfCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -232,12 +232,13 @@ withEnv({}, () => {
   assert(effectiveParallelGroups() === 1, "2 CPU / 4 GiB: groups lowered to 1");
   assert(verifyConcurrency() === 1, "2 CPU / 4 GiB: verify concurrency 1");
   const ids = Object.keys(
-    workstreamsFromMarkdown(
-      [
-        "## Workstreams",
-        "",
-        ...[0, 1, 2, 3, 4, 5].map((i) => `### w${i} — s\n- paths: src/f${i}.ts\n`),
-      ].join("\n"),
+    workstreamsOfCalls(
+      [0, 1, 2, 3, 4, 5].map((i) => ({
+        id: `w${i}`,
+        scope: "s",
+        paths: [`src/f${i}.ts`],
+        outOfScope: [],
+      })),
     ),
   );
   assert(ids.length === 4, `the plan fold uses the lowered ceiling (${ids.length} workstreams)`);

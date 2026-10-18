@@ -40,9 +40,11 @@ export {
   planTimeoutCorrective,
   planTimeoutKill,
 } from "./work-driver-plan-timeout.ts";
-import type { PlanQualityReason } from "./workflow-state-schema.ts";
-import { type WorkState, appendEvent } from "./workflow-state.ts";
-
+import {
+  type WorkstreamReport,
+  noWorkstreamCallsEvidence,
+  unreadableWorkstreamCallsEvidence,
+} from "./work-driver-plan-calls.ts";
 import {
   type FenceContradiction,
   type PathCollision,
@@ -60,6 +62,8 @@ import type {
 } from "./work-driver-plan-spec-coverage.ts";
 import { planSpecMismatchReason } from "./work-driver-plan-spec-coverage.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
+import type { PlanQualityReason } from "./workflow-state-schema.ts";
+import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
  * #679 — the workstream shape the plan-quality rules inspect.
@@ -122,7 +126,47 @@ export function planSpecMismatchCap(
   mismatch: PlanSpecMismatch,
   whyNotReplanned: string,
 ): WorkState {
-  trace(`work-driver: plan to-spec gate — ${mismatch.kind}, halting before branch`);
+  return parkPlanSpecMismatch(state, mismatch.evidence, whyNotReplanned);
+}
+
+/**
+ * #1652 — the plan dispatch made NO accepted report_workstream call (zero calls,
+ * or every call refused). Its own verdict, not a PlanSpecMismatch: there is no
+ * plan to compare against the spec. It parks on the same cap, because the
+ * operator's contract for zero calls is `plan-spec-mismatch` with that evidence.
+ */
+export function planNoWorkstreamCallsCap(
+  state: WorkState,
+  report: WorkstreamReport,
+  whyNotReplanned: string,
+): WorkState {
+  return parkPlanSpecMismatch(state, noWorkstreamCallsEvidence(report), whyNotReplanned);
+}
+
+/**
+ * #1652 — the plan dispatch made report_workstream calls whose tool results did
+ * not reach the driver. The plan is UNJUDGED, not wrong, so it parks on its own
+ * cap (`workstream-results-unreadable`) instead of a plan-spec verdict or a
+ * corrective. Nothing was written: the cap fires before the branch step.
+ */
+export function planResultsUnreadableCap(state: WorkState, report: WorkstreamReport): WorkState {
+  trace("work-driver: plan's report_workstream results unreadable — halting before branch");
+  return appendEvent(state, {
+    kind: "cap-hit",
+    at: Date.now(),
+    cap: "workstream-results-unreadable",
+    reviewRound: state.pipelineState.reviewRound,
+    nextStep: "handoff",
+    evidence: unreadableWorkstreamCallsEvidence(report).slice(0, 500),
+  });
+}
+
+function parkPlanSpecMismatch(
+  state: WorkState,
+  mismatchEvidence: string,
+  whyNotReplanned: string,
+): WorkState {
+  trace("work-driver: plan to-spec gate — halting before branch");
   // #819 round-3 — the truncation order is the reason this sentence is readable.
   // `${mismatch.evidence} — ${whyNotReplanned}`.slice(0, 500) clipped the
   // CONCATENATION, so on a wide spec (an uncovered-deliverables verdict lists
@@ -134,9 +178,9 @@ export function planSpecMismatchCap(
   const EVIDENCE_CAP = 500;
   const clause = ` — ${whyNotReplanned}`;
   const head =
-    mismatch.evidence.length > EVIDENCE_CAP - clause.length
-      ? `${mismatch.evidence.slice(0, Math.max(0, EVIDENCE_CAP - clause.length - 1))}…`
-      : mismatch.evidence;
+    mismatchEvidence.length > EVIDENCE_CAP - clause.length
+      ? `${mismatchEvidence.slice(0, Math.max(0, EVIDENCE_CAP - clause.length - 1))}…`
+      : mismatchEvidence;
   const evidence = `${head}${clause}`.slice(0, EVIDENCE_CAP);
   const withReason: WorkState = {
     ...state,

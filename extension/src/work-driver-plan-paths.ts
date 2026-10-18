@@ -22,33 +22,13 @@
  * (lantern 664 = 3 workstreams, 673 = 2, 677 = 3).
  */
 
+import { isPlainRepoRelativePath } from "./plan-path-shape.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
-/**
- * #1005 — a declared path is a plain repo-relative path when it has no
- * shell metacharacter, no leading `/`, and no `..` segment. The check is
- * deliberately conservative (rejects what is clearly dangerous; does not
- * try to be a full path grammar): the fence and the consolidation checks
- * compare these strings as-is, so a `..`-traversing or absolute path is
- * not a scope the driver can verify.
- *
- * #819 round-2 — moved here from work-driver-plan-helpers.ts and exported: the
- * plan-to-spec gate (`findUncoveredDeliverables`, which must not turn a prose
- * `paths:` slot into an uncovered row) judges the same slot by the same rule.
- * helpers→paths is an existing dependency, so the predicate lives where both
- * readers can reach it without a cycle and without a second copy.
- */
-export function isPlainRepoRelativePath(p: string): boolean {
-  const trimmed = p.trim();
-  if (trimmed.length === 0) return false;
-  // Shell metacharacters that would execute in a shell-built command.
-  if (/[`$;&|<>(){}\\\"'\s]/.test(trimmed)) return false;
-  // Absolute path (leading /).
-  if (trimmed.startsWith("/")) return false;
-  // .. traversal (as a segment, not inside a filename like "a..b.ts").
-  if (trimmed.split("/").includes("..")) return false;
-  return true;
-}
+// #1005 / #819 — the predicate lives in plan-path-shape.ts (import-free, so the
+// report_workstream companion can use it inside the child). Re-exported here so
+// every existing importer keeps its path and there is still one copy.
+export { isPlainRepoRelativePath };
 
 /** A file two workstreams both claimed. */
 export interface PathCollision {

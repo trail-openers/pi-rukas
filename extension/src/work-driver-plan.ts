@@ -70,9 +70,9 @@ export { planSpecMismatchCap } from "./work-driver-plan-helpers.ts";
 import {
   PLAN_WORKSTREAM_EXTRA_ARGS,
   type WorkstreamReport,
-  appendWorkstreamRefusals,
+  appendPlanDispatchOutcome,
   checkWorkstreamReporter,
-  noWorkstreamCallsEvidence,
+  emptyWorkstreamReport,
   workstreamCallsOf,
 } from "./work-driver-plan-calls.ts";
 import {
@@ -81,9 +81,10 @@ import {
   countFindingsForCycle,
   findDroppedDependencyEdges,
   planDispatchTimeoutMs,
+  planNoWorkstreamCallsCap,
   planQualityEnabled,
   planQualityReason,
-  planSpecMismatchCap,
+  planResultsUnreadableCap,
   planTimeoutCorrective,
   planTimeoutKill,
 } from "./work-driver-plan-helpers.ts";
@@ -224,17 +225,16 @@ export async function runPlan(
   // not a `default` any more: the quality tail's corrective asks for the calls.
   // A killed primary's calls are ignored (its recovery corrective is the plan).
   const primaryReport: WorkstreamReport = planKill
-    ? { workstreams: {}, accepted: 0, refused: [] }
+    ? emptyWorkstreamReport()
     : workstreamCallsOf(result);
   const event = await buildCompletionEvent(ctx, "plan", "explore", "plan", result);
-  next = appendEvent(
-    appendWorkstreamRefusals(clearDispatch(next, begun.jobId), "plan", primaryReport),
-    event,
-  );
+  next = appendPlanDispatchOutcome(clearDispatch(next, begun.jobId), "plan", primaryReport, event);
   // #1652 — a non-kill failure (provider error, non-zero exit) is a failed
   // dispatch, not a silent planner: its completion event is the tail and the
   // step router halts on it. Judging it for zero calls would send a false steer.
   if (!result.ok && !planKill) return next;
+  // #1652 — calls whose results never arrived cannot be judged either way: park.
+  if (primaryReport.unreadable > 0) return planResultsUnreadableCap(next, primaryReport);
   let workstreams = primaryReport.workstreams;
   // #1005 — the first plan's RAW workstreams (before the coupling merge),
   // held aside for the #849 dropped-edge check. The dropped-edge check
@@ -361,15 +361,16 @@ export async function runPlan(
     // tail is the corrective's `dispatch-failed` still advertised a workstream
     // for develop. `recovered.state` already carries that tail.
     if (!recovered.ok) return recovered.state;
+    // #1652 — the recovery corrective's unreadable results park; they are not a zero.
+    if (recovered.report && recovered.report.unreadable > 0) {
+      return planResultsUnreadableCap(next, recovered.report);
+    }
     // #1652 — the recovery corrective is the one-shot budget, so a corrective
     // with no accepted call leaves no plan: park, do not build a `default`.
     if (recovered.report && recovered.report.accepted === 0) {
-      return planSpecMismatchCap(
+      return planNoWorkstreamCallsCap(
         next,
-        {
-          kind: "no-workstream-calls",
-          evidence: noWorkstreamCallsEvidence(recovered.report),
-        },
+        recovered.report,
         "this is the one-shot corrective plan after a killed primary — it was not re-dispatched and develop never ran",
       );
     }

@@ -13,22 +13,23 @@ import { hostBudget } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { foldTwo } from "./workstream-fold.ts";
+import { WORKSTREAM_ID_MAX, type WorkstreamArgs } from "./workstream-reporter.ts";
 
 /**
- * A `report_workstream` call's arguments, as Pi validated them. Optional lines
- * add no keys when absent, so a plan without them has the pre-#1322 shape.
+ * A `report_workstream` call's arguments, already checked against the schema by
+ * the reader (work-driver-plan-calls.ts). Optional lines add no keys when absent,
+ * so a plan without them has the pre-#1322 shape.
  */
-export function workstreamFromArgs(args: Record<string, unknown>): Workstream {
-  const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
-  const dependsOn = list(args.dependsOn);
-  const introduces = list(args.introduces);
-  const consumes = list(args.consumes);
-  const integrationTest = typeof args.integrationTest === "string" ? args.integrationTest : "";
+export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
+  const dependsOn = args.dependsOn ?? [];
+  const introduces = args.introduces ?? [];
+  const consumes = args.consumes ?? [];
+  const integrationTest = args.integrationTest ?? "";
   return {
-    id: String(args.id),
-    scope: String(args.scope),
-    paths: list(args.paths),
-    outOfScope: list(args.outOfScope),
+    id: args.id.slice(0, WORKSTREAM_ID_MAX),
+    scope: args.scope,
+    paths: [...args.paths],
+    outOfScope: [...args.outOfScope],
     ...(dependsOn.length > 0 ? { dependsOn } : {}),
     ...(integrationTest ? { integrationTest } : {}),
     ...(introduces.length > 0 ? { introduces } : {}),

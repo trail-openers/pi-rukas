@@ -62,7 +62,7 @@ export interface SpawnOptions {
    * Extra Pi CLI flags to insert before the positional prompt. Used by
    * specialised dispatchers (e.g. lens review pinning a specific --skill).
    */
-  extraArgs?: string[];
+  extraArgs?: readonly string[];
   /**
    * Optional tag appended to the transcript filename (e.g. "security",
    * "performance"). Distinguishes children sharing the same role within a

@@ -22,7 +22,7 @@ import {
   PLAN_WORKSTREAM_EXTRA_ARGS,
   WORKSTREAM_REPORTER_PATH,
   checkWorkstreamReporter,
-  setWorkstreamReporterStatForTestForTest,
+  setWorkstreamReporterStatForTest,
 } from "../src/work-driver-plan-calls.ts";
 import { runPlan } from "../src/work-driver-plan.ts";
 import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
@@ -145,10 +145,10 @@ async function runWith(
   body = "Make the fix.",
 ): Promise<{
   state: WorkState;
-  dispatches: Array<{ label?: string; extraArgs?: string[] }>;
+  dispatches: Array<{ label?: string; extraArgs?: readonly string[] }>;
 }> {
   const dir = mkdtempSync(path.join(tmpdir(), "plan-workstream-tool-"));
-  const dispatches: Array<{ label?: string; extraArgs?: string[] }> = [];
+  const dispatches: Array<{ label?: string; extraArgs?: readonly string[] }> = [];
   try {
     const ctx: DriverContext = {
       host: fakePi,
@@ -333,7 +333,7 @@ const TWO_BLOCKS_AND_ONE_CALL = {
     (await checkWorkstreamReporter()) === undefined,
     "the companion file exists, so the preflight passes",
   );
-  setWorkstreamReporterStatForTestForTest(async () => {
+  setWorkstreamReporterStatForTest(async () => {
     throw new Error("ENOENT");
   });
   try {
@@ -352,7 +352,7 @@ const TWO_BLOCKS_AND_ONE_CALL = {
       "a missing companion ends the plan step with a dispatch-failed carrying the named error",
     );
   } finally {
-    setWorkstreamReporterStatForTestForTest(undefined);
+    setWorkstreamReporterStatForTest(undefined);
   }
 }
 
@@ -391,6 +391,64 @@ const TWO_BLOCKS_AND_ONE_CALL = {
       md.includes("plan:corrective") &&
       md.includes("schema: id does not match the pattern"),
     "the handoff names the refused calls, their dispatch, and the reason",
+  );
+}
+
+// ------------------------------- results that never arrive park, they do not judge
+
+{
+  // Calls made, but the replay carried no tool results: the step parks as
+  // workstream-results-unreadable, with no corrective and no plan-spec verdict.
+  const made = planResultFromCalls([
+    { id: "task-a", scope: "a", paths: ["src/a.ts"], outOfScope: [] },
+  ]);
+  const { state, dispatches } = await runWith([{ ...replyOf(made), toolResults: undefined }]);
+  assert(dispatches.length === 1, "unreadable results spend no corrective");
+  const cap = state.eventLog.findLast((e) => e.kind === "cap-hit");
+  assert(
+    cap?.kind === "cap-hit" &&
+      cap.cap === "workstream-results-unreadable" &&
+      cap.evidence.includes("could not be judged"),
+    "unreadable results park as workstream-results-unreadable with that evidence",
+  );
+  assert(
+    state.pipelineState.planQuality?.reason !== "plan-spec-mismatch",
+    "…and are not reported as a plan-spec mismatch",
+  );
+}
+{
+  // A corrective that failed without a kill still records what it refused.
+  const refusedOnly = planResultFromRawCalls([
+    {
+      id: "Bad A",
+      args: { id: "Bad A", scope: "x", paths: [], outOfScope: [] },
+      refused: "schema: refused",
+    },
+  ]);
+  const { state, dispatches } = await runWith([
+    replyOf({ text: "no call" }),
+    { ...replyOf({ ok: false, exitCode: 1, text: "" }), ...refusedOnly },
+  ]);
+  assert(dispatches.length === 2, "a failed corrective is still the one corrective");
+  assert(
+    state.eventLog.some(
+      (e) => e.kind === "workstream-calls-refused" && e.label === "plan:corrective",
+    ),
+    "a failed corrective records its refused calls before halting",
+  );
+  assert(state.eventLog.at(-1)?.kind === "dispatch-failed", "…and its failure stays the tail");
+}
+{
+  // The companion refuses a path that is not plain repo-relative, inside the child.
+  let refusal = "";
+  try {
+    await tool?.execute("4", { ...VALID, id: "task-p", paths: ["/etc/passwd"] });
+  } catch (err) {
+    refusal = (err as Error).message;
+  }
+  assert(
+    refusal.includes("/etc/passwd") && refusal.includes("refused"),
+    "an absolute path is refused in the child with a tool error naming it",
   );
 }
 

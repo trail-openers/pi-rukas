@@ -36,13 +36,17 @@ import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-drive
 import {
   PLAN_WORKSTREAM_EXTRA_ARGS,
   type WorkstreamReport,
-  appendWorkstreamRefusals,
-  noWorkstreamCallsEvidence,
+  appendPlanDispatchOutcome,
   workstreamCallsOf,
 } from "./work-driver-plan-calls.ts";
 import { runPlanNormalisationPass } from "./work-driver-plan-coupling-pass.ts";
 import { findDroppedDependencyEdges } from "./work-driver-plan-deps.ts";
-import { planQualityReason, planSpecMismatchCap } from "./work-driver-plan-helpers.ts";
+import {
+  planNoWorkstreamCallsCap,
+  planQualityReason,
+  planResultsUnreadableCap,
+  planSpecMismatchCap,
+} from "./work-driver-plan-helpers.ts";
 import {
   findFenceContradictions,
   findPathCollisions,
@@ -187,26 +191,14 @@ export async function runPlanQualityTail(
     // check. Set here (the quality gate firing on the primary's plan) so the
     // kill-triggered path leaves it undefined (pre-#1005 shape).
     firstPlanWorkstreams = input.firstPlanRaw;
-    trace(
-      noCalls
-        ? "work-driver: plan made no accepted report_workstream call — re-dispatching once"
-        : `work-driver: plan quality — ${reason ?? specMismatch?.kind}, re-dispatching once${
-            reason && specMismatch ? ` (also plan-spec-mismatch: ${specMismatch.kind})` : ""
-          }`,
+    trace(correctiveTraceMessage(noCalls, reason, specMismatch?.kind));
+    const steer = correctiveSteerFor(
+      noCalls,
+      input.report,
+      workstreams,
+      reason,
+      input.findingsCount,
     );
-    const steer = noCalls
-      ? correctiveNoWorkstreamCallsSteer(input.report.refused)
-      : reason === "test-subject-split"
-        ? correctiveTestSubjectSplitSteer(findTestSubjectSplits(workstreams))
-        : correctivePlanSteer(
-            reason ?? "plan-spec-mismatch",
-            input.findingsCount,
-            Object.keys(workstreams).length,
-            findPathCollisions(workstreams),
-            // #1167 — the new reason's details. Cheap and pure, so computed
-            // once here for whichever steer runs.
-            findFenceContradictions(workstreams),
-          );
     // #657 post-mortem — the corrective inherits the original prompt plus any
     // prior-handoff context; a weak model read a stale `cross-group-conflict`
     // as a live unsatisfiable precondition and burned 73.5M cache tokens
@@ -257,19 +249,20 @@ export async function runPlanQualityTail(
     if (retry.killCause) {
       return halt(appendEvent(next, await planCorrectiveFailureEvent(ctx, label, retry)));
     }
+    // #1652 — the corrective's calls REPLACE the first set (no merge). Refusals
+    // are recorded before the completion event, which stays the tail — and that
+    // holds on a failed corrective too, so a provider error after some calls
+    // does not lose what the planner got wrong.
+    const retryReport = workstreamCallsOf(retry);
+    const retryCompletion = await buildCompletionEvent(ctx, "plan", "explore", label, retry);
+    next = appendPlanDispatchOutcome(next, label, retryReport, retryCompletion);
     // A corrective that failed without a kill (provider error, non-zero exit) is
     // a failed dispatch: its completion event is the tail, not a zero-call verdict.
-    if (!retry.ok) {
-      return halt(
-        appendEvent(next, await buildCompletionEvent(ctx, "plan", "explore", label, retry)),
-      );
-    }
-    // #1652 — the corrective's calls REPLACE the first set (no merge). Refusals
-    // are recorded before the completion event, which stays the tail.
-    const retryReport = workstreamCallsOf(retry);
-    next = appendWorkstreamRefusals(next, label, retryReport);
-    next = appendEvent(next, await buildCompletionEvent(ctx, "plan", "explore", label, retry));
+    if (!retry.ok) return halt(next);
     redispatched = true;
+    if (retryReport.unreadable > 0) {
+      return halt(planResultsUnreadableCap(next, retryReport));
+    }
     // #1652 — one corrective per cycle, and a corrective with no accepted call
     // leaves the cycle with no plan. The first set is discarded: it already
     // failed the gate, so proceeding on it would build what the gate refused.
@@ -278,12 +271,9 @@ export async function runPlanQualityTail(
     // plan step that can spin.
     if (retryReport.accepted === 0) {
       return halt(
-        planSpecMismatchCap(
+        planNoWorkstreamCallsCap(
           next,
-          {
-            kind: "no-workstream-calls",
-            evidence: noWorkstreamCallsEvidence(retryReport),
-          },
+          retryReport,
           "this is the one-shot corrective plan — it was not re-dispatched and develop never ran",
         ),
       );
@@ -386,4 +376,39 @@ export async function runPlanQualityTail(
       ...(unfence ? { unfence } : {}),
     },
   };
+}
+
+/** The trace line for the corrective's trigger: zero calls, or a plan-quality reason. */
+function correctiveTraceMessage(
+  noCalls: boolean,
+  reason: PlanQualityReason | undefined,
+  mismatchKind: string | undefined,
+): string {
+  if (noCalls)
+    return "work-driver: plan made no accepted report_workstream call — re-dispatching once";
+  const also = reason && mismatchKind ? ` (also plan-spec-mismatch: ${mismatchKind})` : "";
+  return `work-driver: plan quality — ${reason ?? mismatchKind}, re-dispatching once${also}`;
+}
+
+/** The steer the corrective carries: zero calls, the test-subject split, or the general plan steer. */
+function correctiveSteerFor(
+  noCalls: boolean,
+  report: WorkstreamReport,
+  workstreams: Record<string, Workstream>,
+  reason: PlanQualityReason | undefined,
+  findingsCount: number,
+): string {
+  if (noCalls) return correctiveNoWorkstreamCallsSteer(report.refused);
+  if (reason === "test-subject-split") {
+    return correctiveTestSubjectSplitSteer(findTestSubjectSplits(workstreams));
+  }
+  return correctivePlanSteer(
+    reason ?? "plan-spec-mismatch",
+    findingsCount,
+    Object.keys(workstreams).length,
+    findPathCollisions(workstreams),
+    // #1167 — the new reason's details. Cheap and pure, so computed once here
+    // for whichever steer runs.
+    findFenceContradictions(workstreams),
+  );
 }

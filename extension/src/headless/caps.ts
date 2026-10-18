@@ -114,6 +114,9 @@ export const FIXED_CAPS = [
   "spawn-backstop",
   "step-back-revise-spec",
   "token-budget",
+  // #1652 — the plan child's tool results could not be read, so its
+  // report_workstream calls cannot be judged accepted or refused.
+  "workstream-results-unreadable",
   "worktree-listing-unreadable",
 ] as const satisfies readonly FixedCap[];
 

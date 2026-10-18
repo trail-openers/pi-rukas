@@ -3,7 +3,8 @@
  * Smoke test for the /work driver, split out of test-work-driver.ts
  * (#171, AGENTS.md §12 file-size limit).
  *
- * Covers: sections 9-10: PR3 parseWorkstreams/parseWorktreesBlock + multi-workstream develop fanout.
+ * Covers: sections 9-10: PR3 workstream reading (#1652: from report_workstream
+ * calls) / parseWorktreesBlock + multi-workstream develop fanout.
  *
  * No real Pi spawn happens; all dispatchCore calls are mocked.
  */
@@ -13,6 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseWorktreesBlock } from "../src/work-driver-branch-develop.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkEvent, readState, writeState } from "../src/workflow-state.ts";
 import {
@@ -21,7 +23,7 @@ import {
   makeBaseWorktrees,
   mockDeveloperWork,
 } from "./lib/git-worktree-fixture.ts";
-import { workstreamsFromMarkdown } from "./lib/plan-workstream-calls.ts";
+import { planResultFromRawCalls, workstreamsOfCalls } from "./lib/plan-workstream-calls.ts";
 
 ensureGitIdentity();
 
@@ -92,53 +94,50 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 // input collapses to the empty result and the caller falls back to the
 // synthesised `default` workstream.
 {
-  // Single workstream: just one ### default block.
-  const single = `
-Some prose before the block.
-
-## Workstreams
-
-### default — fix the WikiView error UX
-- paths: frontend/src/components/WikiView.tsx, frontend/src/__tests__/WikiView.test.tsx
-- out-of-scope: backend, docs, build config
-
-Trailing prose.
-`;
-  const singleResult = workstreamsFromMarkdown(single);
+  // Single workstream: one report_workstream call.
+  const singleResult = workstreamsOfCalls([
+    {
+      id: "default",
+      scope: "fix the WikiView error UX",
+      paths: ["frontend/src/components/WikiView.tsx", "frontend/src/__tests__/WikiView.test.tsx"],
+      // "build config" (a phrase with a space) is refused by the reader now —
+      // out-of-scope entries are plain repo-relative paths, so it is a path.
+      outOfScope: ["backend", "docs", "build-config/"],
+    },
+  ]);
   assert(
     Object.keys(singleResult).length === 1 && singleResult.default !== undefined,
     "parseWorkstreams: single default workstream parsed",
   );
   assert(
     singleResult.default?.scope === "fix the WikiView error UX",
-    "parseWorkstreams: scope captured from heading dash",
+    "parseWorkstreams: scope captured from the call's scope field",
   );
   assert(
     singleResult.default?.paths.includes("frontend/src/components/WikiView.tsx"),
-    "parseWorkstreams: paths captured from `- paths:` line",
+    "parseWorkstreams: paths captured from the call's paths array",
   );
   assert(
     singleResult.default?.outOfScope.includes("backend"),
     "parseWorkstreams: out-of-scope captured (LOAD-BEARING for issue #553 scope-contamination prevention)",
   );
 
-  // Multi-workstream: 3 ### entries.
-  const multi = `
-## Workstreams
-
-### task-a — frontend UI cleanup
-- paths: frontend/src/components/Foo.tsx
-- out-of-scope: backend
-
-### task-b — backend API fix
-- paths: src/api/handlers.rs
-- out-of-scope: frontend
-
-### task-c — docs update
-- paths: docs/api.md
-- out-of-scope: code
-`;
-  const multiResult = workstreamsFromMarkdown(multi);
+  // Multi-workstream: 3 calls.
+  const multiResult = workstreamsOfCalls([
+    {
+      id: "task-a",
+      scope: "frontend UI cleanup",
+      paths: ["frontend/src/components/Foo.tsx"],
+      outOfScope: ["backend"],
+    },
+    {
+      id: "task-b",
+      scope: "backend API fix",
+      paths: ["src/api/handlers.rs"],
+      outOfScope: ["frontend"],
+    },
+    { id: "task-c", scope: "docs update", paths: ["docs/api.md"], outOfScope: ["code"] },
+  ]);
   assert(Object.keys(multiResult).length === 3, "parseWorkstreams: 3 workstreams parsed");
   assert(
     multiResult["task-a"]?.scope === "frontend UI cleanup",
@@ -149,18 +148,23 @@ Trailing prose.
     "parseWorkstreams: second multi-workstream paths captured",
   );
 
-  // No block → empty result (caller synthesises default).
-  const noBlock = "Just some prose with no Workstreams heading anywhere.";
+  // No call → empty result (caller synthesises default).
   assert(
-    Object.keys(workstreamsFromMarkdown(noBlock)).length === 0,
-    "parseWorkstreams: missing block returns {} (caller synthesises default)",
+    Object.keys(workstreamsOfCalls([])).length === 0,
+    "parseWorkstreams: no report_workstream call returns {} (caller synthesises default)",
   );
 
-  // Malformed block → empty result (never throws).
-  const malformed = "## Workstreams\n\nnot a ### subheading just prose\n";
+  // A schema-invalid call (no `paths`) is refused by the companion and adds
+  // nothing; the valid call beside it is still read (never throws).
+  const refusedCall = workstreamCallsOf(
+    planResultFromRawCalls([
+      { id: "task-a", args: { id: "task-a", scope: "bad", outOfScope: [] } },
+      { id: "task-b", args: { id: "task-b", scope: "ok", paths: ["src/b.ts"], outOfScope: [] } },
+    ]),
+  ).workstreams;
   assert(
-    Object.keys(workstreamsFromMarkdown(malformed)).length === 0,
-    "parseWorkstreams: malformed block returns {} (no throw)",
+    Object.keys(refusedCall).join(",") === "task-b",
+    "parseWorkstreams: a schema-invalid call is refused and adds nothing (valid sibling kept)",
   );
 
   // parseWorktreesBlock: 2-worktree block.
@@ -191,28 +195,31 @@ branch: feature/issue-553-fix
   );
 }
 
-// 9b. #679 case 2(a) — parseWorkstreams must parse `- depends-on:` and
-// `- integration-test:` lines (tolerant of variants, comma-separated multi-dep).
+// 9b. #679 case 2(a) — a call's `dependsOn` and `integrationTest` reach the map.
 {
-  const depBlock = [
-    "## Workstreams",
-    "",
-    "### task-a — base implementation",
-    "- paths: src/a.ts, src/b.ts",
-    "- out-of-scope: docs/",
-    "",
-    "### task-b — dependent work",
-    "- paths: src/c.ts",
-    "- depends-on: task-a",
-    "- integration-test: src/test-ab.ts",
-    "- out-of-scope: docs/",
-    "",
-    "### task-c — multi-dep with variant spelling",
-    "- paths: src/d.ts",
-    "- depends_on: task-a, task-b",
-    "- out-of-scope: docs/",
-  ].join("\n");
-  const parsed = workstreamsFromMarkdown(depBlock);
+  const parsed = workstreamsOfCalls([
+    {
+      id: "task-a",
+      scope: "base implementation",
+      paths: ["src/a.ts", "src/b.ts"],
+      outOfScope: ["docs/"],
+    },
+    {
+      id: "task-b",
+      scope: "dependent work",
+      paths: ["src/c.ts"],
+      outOfScope: ["docs/"],
+      dependsOn: ["task-a"],
+      integrationTest: "src/test-ab.ts",
+    },
+    {
+      id: "task-c",
+      scope: "multi-dep",
+      paths: ["src/d.ts"],
+      outOfScope: ["docs/"],
+      dependsOn: ["task-a", "task-b"],
+    },
+  ]);
   assert(
     (parsed["task-b"]?.dependsOn ?? []).length === 1 &&
       parsed["task-b"]?.dependsOn?.[0] === "task-a",

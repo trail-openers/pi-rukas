@@ -12,6 +12,24 @@ import type { PiContentBlock, PiJsonEvent, PiMessage } from "./pi-event-shapes.t
 import { addUsage } from "./pi-usage.ts";
 import type { DispatchResult } from "./types.ts";
 
+/** The longest tool-result text kept on a DispatchResult (#1652). */
+const TOOL_RESULT_TEXT_MAX = 300;
+
+/**
+ * The text of a tool result's blocks, accumulated block by block and stopped at
+ * TOOL_RESULT_TEXT_MAX — so a large non-text payload is never joined in full
+ * just to be cut down afterwards.
+ */
+function boundedResultText(blocks: PiContentBlock[]): string {
+  let out = "";
+  for (const block of blocks) {
+    if (typeof block.text !== "string") continue;
+    out += block.text;
+    if (out.length >= TOOL_RESULT_TEXT_MAX) return out.slice(0, TOOL_RESULT_TEXT_MAX);
+  }
+  return out;
+}
+
 export function collapseEvents(
   lastAgentEnd: PiJsonEvent | null,
   lastAssistantMessageEnd: PiJsonEvent | null,
@@ -80,15 +98,15 @@ export function collapseEvents(
   // #1652 — which tool calls Pi accepted. Refusal text is kept (bounded): it is
   // the reason the operator reads when a plan parks on refused calls.
   const toolResults = messages
-    .filter((m) => m.role === "toolResult" && typeof m.toolCallId === "string")
+    .filter(
+      (m): m is PiMessage & { toolCallId: string } =>
+        m.role === "toolResult" && typeof m.toolCallId === "string",
+    )
     .map((m) => ({
-      toolCallId: m.toolCallId as string,
+      toolCallId: m.toolCallId,
       toolName: m.toolName ?? "",
       isError: m.isError === true,
-      text: (m.content ?? [])
-        .map((b) => b.text ?? "")
-        .join("")
-        .slice(0, 300),
+      text: boundedResultText(m.content ?? []),
     }));
 
   // Join with double-newline so distinct text blocks across turns (separated

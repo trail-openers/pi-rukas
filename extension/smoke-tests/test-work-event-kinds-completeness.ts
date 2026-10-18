@@ -88,6 +88,16 @@ const incidentKindEvents: WorkEvent[] = [
   },
 ];
 
+/** #1652 — the plan step's refused report_workstream calls (one fixture, used once below). */
+const workstreamCallsRefused: WorkEvent = {
+  kind: "workstream-calls-refused",
+  step: "plan",
+  label: "plan",
+  at: 1,
+  accepted: 0,
+  refused: [{ id: "x", reason: "schema" }],
+};
+
 const everyKindEvent: WorkEvent[] = [
   { kind: "step-started", step: "explore", at: 1 },
   // #1094 — the one automatic explore re-dispatch after a reply with no `## Spec`.
@@ -236,15 +246,7 @@ const everyKindEvent: WorkEvent[] = [
   },
   { kind: "verify-full-status", at: 1, status: "success", ms: 100 },
   { kind: "verify-flake-recovered", at: 1, step: "develop" },
-  // #1652 — the plan step's refused report_workstream calls.
-  {
-    kind: "workstream-calls-refused",
-    step: "plan",
-    label: "plan",
-    at: 1,
-    accepted: 0,
-    refused: [{ reason: "schema: refused" }],
-  },
+  workstreamCallsRefused,
   // #1240 — the consolidated verify skipped its duplicate run. Its kind must
   // be in the fixture set or KNOWN_EVENT_KINDS reads as carrying a stale entry.
   {
@@ -321,14 +323,6 @@ const everyKindEvent: WorkEvent[] = [
     fileCount: 1,
     ref: "refs/pi-rukas/retry-preserved/issue-1/lens-fix-1",
     patch: "/r/tmp/issue-1/retry-lens-fix-1.patch",
-  },
-  {
-    kind: "workstream-calls-refused",
-    step: "plan",
-    label: "plan",
-    at: 1,
-    accepted: 0,
-    refused: [{ id: "x", reason: "schema" }],
   },
   {
     kind: "dispatch-slow",
