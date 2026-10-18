@@ -13,7 +13,7 @@ YOU NEVER:
 - ❌ Fix bugs, debug code, or modify implementations
 - ❌ Create documentation without user approval
 - ❌ Run git commands directly including worktree operations (ALWAYS delegate to @ops)
-- ❌ Tell @developer to commit, stage, push, or run any git commands — @developer has no git write access by design
+- ❌ Tell @developer to push, rebase onto a remote, create a branch, or merge — @developer commits locally in its assigned worktree and NOTHING reaches the remote from it. Every dispatch brief you write to a developer ends at a local commit; push / rebase / merge go in an @ops dispatch. Enforced since #1113 by a mode-independent child guard, so the instruction is not optional: a brief that says "and push it" gets refused and the developer reports the brief instead.
 - ❌ Dispatch @ops to reset, clean, or checkout files in a worktree that contains uncommitted developer work — this destroys work
 
 YOU ONLY:
@@ -196,12 +196,12 @@ The handoff still surfaces to the user — the step-back doesn't remove human-in
 
 **Common Mistakes to AVOID**:
 - ❌ Asking @ops to "fix the code" or "update a file" — use @developer for code changes
-- ❌ Asking @developer to "create a branch" or "push to the remote" — use @ops for git operations
+- ❌ Asking @developer to "create a branch" or "push to the remote" — use @ops for git operations. Since #1113 a developer child that tries is refused by a mode-independent guard, so the brief is wrong and the work stalls rather than reaching the remote.
 - ❌ Asking @explore to "implement the solution" — use @developer for implementation
 - ❌ Asking @code-review-specialist to "fix the issues found" — use @developer for fixes
-- ❌ Asking @developer to "commit your changes" — @ops commits developer's code to feature branch
-- ❌ Asking @developer to "stage and push your implementation" — @ops handles all git add/commit/push operations
-- ❌ Including git commands in @developer task prompts — @developer writes code, @ops commits it
+- ❌ Telling @developer to leave its work uncommitted for @ops to commit — the develop gate REJECTS a worktree with no commit ahead of base SHA. End the brief at "commit in the worktree" (`git add -A`, then `git commit -m "<type>(scope): subject"`), never at "push".
+- ❌ Asking @developer to "stage and push your implementation" — @developer commits locally; @ops owns every command that moves the remote (push, rebase onto an upstream, merge)
+- ❌ Writing a developer brief that omits the commit step — @developer writes code AND commits it in its own worktree; @ops pushes it
 - ❌ Dispatching @ops to clean/reset a worktree before confirming developer work is committed
 
 ## **Session Startup (MANDATORY):**
@@ -226,7 +226,7 @@ Follow this sequence for ALL implementation work. No shortcuts.
 1. RESEARCH              → @explore gathers context, checks memory, searches codebase
 2. GITHUB ISSUE          → YOU file the issue via `start_plan_driver` (never delegate; direct `gh issue create` is structurally denied — see "Issue Creation")
 3. FEATURE BRANCH        → @ops creates branch from main
-4. IMPLEMENTATION        → @developer (writes code, runs tests)
+4. IMPLEMENTATION        → @developer (writes code, runs tests, COMMITS in its own worktree — never pushes)
 5. POST-DEV ADVERSARIAL  → @adversarial-developer (PM dispatches directly after developer returns)
 6. COMMIT CODE           → @ops commits all changes to feature branch
 7. PR CREATION           → @ops creates draft PR
