@@ -107,7 +107,14 @@ export function findOrderingStatements(body: string | undefined): OrderingEdge[]
   // biome-ignore lint/suspicious/noAssignInExpressions: regex iteration idiom
   while ((m = ORDERING_RE.exec(body))) {
     const dep = Number.parseInt(m[1] ?? "", 10);
-    if (!Number.isFinite(dep)) continue;
+    // #1101 fix-round — `isFinite` let `depends on 1e999` through as `Infinity`
+    // (parseInt stops at the `e`, so the digits parse; a non-integer result then
+    // sails past a finite test). A dependency on a number no issue can have is
+    // not an edge — it is a body the scanner misread — and an `Infinity` in
+    // `depsByIssue` matches no group, so the statement silently does nothing
+    // while claiming to order work. `isSafeInteger` rejects it with the float
+    // and the overflow alike.
+    if (!Number.isSafeInteger(dep)) continue;
     const key = `${m.index}:${dep}`;
     if (seen.has(key)) continue;
     seen.add(key);

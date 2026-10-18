@@ -29,7 +29,11 @@
  *     proceeding (the pre-#1101 behaviour, deliberately reversed).
  *
  * No Pi spawn, no fs: `runWorkQueue` with an injected `runGroup`, following
- * test-work-queue-dlq.ts conventions.
+ * test-work-queue-dlq.ts conventions. The cases that need material the queue
+ * cannot hand-build — the real 900/901 fixture pair, a group stranded behind a
+ * dependency that can never merge, a group two park routes could reach at once
+ * — are in `test-work-queue-ordering-fixtures.ts` (AGENTS.md §12's line cap) and
+ * share this file's harness shape.
  */
 import { planOrderingEdges } from "../src/work-queue-deps.ts";
 import { type IssueGroup, runWorkQueue } from "../src/work-queue.ts";

@@ -99,6 +99,25 @@ function g(id: string, issue: number, paths: string[] = []): IssueGroup {
       `"${notOrdering}" is NOT an ordering statement (no group to wait for)`,
     );
   }
+  // #1101 fix-round — a number no issue can have is not an edge. The scanner
+  // captures `#(\d+)`, so an unbounded digit run reaches `parseInt` intact:
+  // `Depends-on: #99999999999999999999` parses to 1e20, which a
+  // `Number.isFinite` guard lets through. It matches no group, so the statement
+  // silently does nothing while claiming to order work — the expensive
+  // direction, because an operator wrote a schedule and got no ordering.
+  // `isSafeInteger` rejects it. (A float or exponent reference never reaches
+  // the guard at all — `(\d+)` needs the `#` and stops at the dot or the `e` —
+  // so those spellings are simply not statements, and are not asserted here.)
+  const overflow = orderingDependencies("title: x\n\nDepends-on: #99999999999999999999");
+  assert(
+    overflow.length === 0,
+    `an overflowing issue number is not an edge (got: ${overflow.join(", ")})`,
+  );
+  assert(
+    orderingDependencies("title: x\n\nDepends-on: #12").join(",") === "12",
+    "a real reference still produces its edge — the guard does not over-reject",
+  );
+
   assert(orderingDependencies(undefined).length === 0, "an absent body declares nothing");
   assert(
     orderingDependencies("no references at all").length === 0,

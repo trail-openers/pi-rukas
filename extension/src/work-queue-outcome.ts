@@ -23,7 +23,12 @@
 
 import { trace } from "./trace.ts";
 import { notify } from "./work-notify.ts";
-import { type QueueWaitCap, humanActionFor, waitCapFor } from "./work-queue-cap.ts";
+import {
+  type QueueWaitCap,
+  humanActionFor,
+  queueStrandedAction,
+  waitCapFor,
+} from "./work-queue-cap.ts";
 import { parkReason } from "./work-queue-park-reason.ts";
 import type { BlockReason } from "./work-queue-scheduler.ts";
 import type { GroupOutcome, IssueGroup } from "./work-queue-types.ts";
@@ -64,7 +69,6 @@ export function finishGroup(state: WorkerState, id: string): void {
 export function recordCrash(state: WorkerState, gi: number, g: IssueGroup, threw: Error): void {
   // A driver throw is an unknown-shape failure: we cannot tell whether it
   // left the repo in a state the next group depends on.
-  state.outcomeOf.set(g.id, "halted");
   state.halted = true;
   const crashAction = `inspect .pi/work-state/${g.issues[0]}.json (or /work-status ${g.issues[0]}) — the driver threw, so this is a bug worth filing`;
   state.entries.set(gi, {
@@ -107,7 +111,6 @@ export async function classify(
   // live cycle's mid-flight cap as this group's park reason — and the park
   // advice is `--restart`, which would race fresh jobs against live ones.
   if (outcome?.started === false) {
-    state.outcomeOf.set(g.id, "not-started");
     state.entries.set(gi, {
       groupId: g.id,
       issues: g.issues,
@@ -125,7 +128,6 @@ export async function classify(
     // "park" reads both sets, and the merge has to be visible no later than
     // the settle that would otherwise release it.
     state.merged.add(g.id);
-    state.outcomeOf.set(g.id, "merged");
     state.entries.set(gi, { groupId: g.id, issues: g.issues, outcome: "merged" });
     // A merge is the event every ordering waiter has been waiting for.
     finishGroup(state, g.id);
@@ -137,7 +139,6 @@ export async function classify(
   if (systemic.systemic || state.haltOnFailure()) {
     state.halted = true;
     const why = systemic.reason ?? reason;
-    state.outcomeOf.set(g.id, "halted");
     state.entries.set(gi, {
       groupId: g.id,
       issues: g.issues,
@@ -157,7 +158,6 @@ export async function classify(
   }
 
   trace(`work-queue: parking ${g.id} (${reason}) and continuing`);
-  state.outcomeOf.set(g.id, "parked");
   state.entries.set(gi, {
     groupId: g.id,
     issues: g.issues,
@@ -198,16 +198,21 @@ export function capOutWait(
 }
 
 /**
- * The one place a queue-level park is written, so the two shapes that never
+ * The one place a queue-level park is written, so the shapes that never
  * dispatched a cycle (a dependency that did not merge, a wait that outlasted
- * its bound) cannot drift into two different reason formats — the renderers
- * and `humanActionFor` both read that string.
+ * its bound, a group the halt left in the wait list) cannot drift into two
+ * different reason formats — the renderers and `humanActionFor` both read that
+ * string, and `humanActionFor` is the only writer of the action beside it.
+ *
+ * #1101 fix-round — every queue-raised park comes through here, including
+ * `sweepStranded` (which used to build its own entry and its own action text)
+ * and the pre-pass cycle park. One writer, one action source.
  */
 export function recordQueuePark(
   state: WorkerState,
   gi: number,
   g: IssueGroup,
-  cap: QueueWaitCap | "dependency-parked",
+  cap: QueueWaitCap | "dependency-parked" | "dependency-cycle" | "queue-stranded",
   detail: string,
 ): void {
   // The reason string is what `humanActionFor` and the renderers pattern on.
@@ -218,27 +223,33 @@ export function recordQueuePark(
   // that does not exist" while the queue-side text happened to still match a
   // looser test.
   const reason = `cap ${cap}:${detail}`;
+  const primary = g.issues[0] as number;
+  // The action is built by `humanActionFor` rather than an inline copy of its
+  // text, so the two cannot drift — that is the reason the function exists.
+  // The group's WHOLE issue list goes along: a `dependency-cycle` recovery
+  // re-runs every member of the loop, and `queue-stranded` re-runs the group
+  // the queue was holding, not one issue of it.
+  const humanAction =
+    cap === "queue-stranded"
+      ? queueStrandedAction(g.issues, detail)
+      : humanActionFor(reason, primary, g.issues);
   // One entry per group, whatever route reached it. Both the scan and the wake
   // path can reach a park for the same group (a cap racing a settle), and two
   // entries for one group would be counted twice by the summary and printed
-  // twice to the operator.
+  // twice to the operator. The guard is ALL-OR-NOTHING: the two marks and
+  // the entry are written together or not at all. They used to be written
+  // ahead of the guard, so the second route to an already-recorded group
+  // re-stamped "this group has answered" onto a group a revive had just
+  // cleared it from — and `stillWaiting`, `finish()` and `drainDeferred` then
+  // read a running cycle as finished.
   if (state.entries.has(gi)) return;
-  // #1101 fix-round — the duplicate-entry guard must NOT skip the marks. Two
-  // routes can reach a park for the same group (a cap racing a settle, the scan
-  // racing the drain), and when the second one arrives the entry is already
-  // there — but `resolved`/`outcomeOf` are what `stillWaiting`, `finish()` and
-  // `drainDeferred` decide on, and a group that reached this function twice
-  // while only the first pass stamped them was left looking "never answered".
-  // The entry is deduplicated; the answer is not. The action is built by
-  // `humanActionFor` rather than an inline copy of its text, so the two cannot
-  // drift — that is the reason the function exists.
   state.resolved.add(g.id);
-  state.outcomeOf.set(g.id, "parked");
+  state.settled.add(g.id);
   state.entries.set(gi, {
     groupId: g.id,
     issues: g.issues,
     outcome: "parked",
     reason,
-    humanAction: humanActionFor(reason, g.issues[0] as number),
+    humanAction,
   });
 }

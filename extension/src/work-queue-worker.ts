@@ -19,9 +19,13 @@
  * a permanent wait or a free pass, depending on which way the check was
  * written.
  *
- * `outcomeOf` is recorded alongside both, so a dependent that reads a settled
- * group can be told *why* it never merged — that is the difference between
- * `dependency-parked:#N` and a cap-out nobody can explain.
+ * The corollary is that a group's record is cleared as ONE unit. `entries`,
+ * `settled` and `resolved` are the three marks a group carries when it has
+ * answered, and a revive that clears some of them and not the others leaves a
+ * group that looks finished to `stillWaiting`, unreported to `finish()` and
+ * claimable to the drain all at once — which is how a re-parked group can go
+ * missing from the report entirely. `revive()` is the only place any of them
+ * is cleared, so there is no way to clear two.
  *
  * The third invariant is the one a reader cannot infer from the loop and that
  * #1101 had to learn the hard way: **waiting never blocks the scan.** The
@@ -121,8 +125,6 @@ export interface WorkerState {
   resolved: Set<string>;
   /** Group ids that reached `merged` — the only state satisfying an edge. */
   merged: Set<string>;
-  /** What each group ended as, for a dependent's park reason. */
-  outcomeOf: Map<string, QueueEntry["outcome"]>;
   /** When each group began waiting, for the wait cap. */
   deferralStart: Map<string, number>;
   dependencies: Record<string, { blockingGroupIds: string[] }>;
@@ -155,6 +157,16 @@ const MAX_POLL_MS = 1_000;
  * has an outcome or the queue has halted.
  */
 export async function runQueueWorker(state: WorkerState): Promise<void> {
+  try {
+    await scanQueue(state);
+  } finally {
+    // A worker that is leaving — by any route — must not leave a waiter behind.
+    abandonWaiters(state);
+  }
+}
+
+/** The scan, and then the wait. See `runQueueWorker` for the waiter cleanup. */
+async function scanQueue(state: WorkerState): Promise<void> {
   for (;;) {
     if (state.halted) return;
     const gi = state.cursor;
@@ -325,21 +337,7 @@ async function drainDeferred(state: WorkerState): Promise<void> {
           // parked by an earlier pass whose blocker has since cleared.
           // Retrying is what stops a premature park from being permanent, and
           // clearing the marks is what lets `claimDeferred` take it honestly.
-          //
-          // #1101 fix-round — `resolved` and `outcomeOf` are cleared with the
-          // entry. `resolved` is the mark that says "this group has told the
-          // queue what it became, never ask again": leaving it stamped meant a
-          // revived group carried the *park* as its answer while a fresh
-          // `runGroup` was on the stack, so `stillWaiting` read it as finished,
-          // `finish()` read it as started, and a waiter retired beside a cycle
-          // that was running. `outcomeOf` is the same claim in the per-group
-          // map — a dependent reading it would be told a running group had
-          // already parked.
-          state.entries.delete(gi);
-          state.settled.delete(group.id);
-          state.resolved.delete(group.id);
-          state.outcomeOf.delete(group.id);
-          dropDeferred(state, group.id);
+          revive(state, gi, group.id);
         }
         await claimDeferred(state, gi, group);
         if (state.halted) return;
@@ -369,6 +367,28 @@ async function drainDeferred(state: WorkerState): Promise<void> {
     if (!stillWaiting(state)) return;
     await sleep(state);
   }
+}
+
+/**
+ * Take back everything a queue-level park said about a group, so the drain can
+ * run it again.
+ *
+ * #1101 fix-round — this exists so the clear is not written out field by field
+ * at the call site. A revive that cleared `entries` but left `settled` and
+ * `resolved` stamped produced a group that `stillWaiting` reported as finished
+ * (so every waiter retired), `finish()`/the report did not list (no entry), and
+ * the drain considered claimable — a re-parked group that simply vanished from
+ * the operator's index. All three marks, plus the wait-list entry, move
+ * together here and nowhere else.
+ *
+ * `merged` is deliberately untouched: nothing revives a merge, and a group that
+ * merged is never parked.
+ */
+function revive(state: WorkerState, gi: number, id: string): void {
+  state.entries.delete(gi);
+  state.settled.delete(id);
+  state.resolved.delete(id);
+  dropDeferred(state, id);
 }
 
 /** Any group left that a worker still owes an outcome to? */
@@ -434,7 +454,19 @@ async function claimDeferred(state: WorkerState, gi: number, g: IssueGroup): Pro
   await classify(state, gi, g, outcome);
 }
 
-/** Wait for the next event, or at most the poll ceiling. */
+/**
+ * Wait for the next event, or at most the poll ceiling.
+ *
+ * Two hygiene rules the first version missed, both of which kept the process
+ * alive past the work:
+ *
+ *  - the timer is `unref()`'d, so a waiter parked at the poll ceiling never by
+ *    itself holds the event loop open — the queue's own promises decide when the
+ *    process may exit, not a safety-net timer;
+ *  - the waiter is removed from `state.waiters` on the halt / early-return
+ *    paths by `abandonWaiters()`, so a worker the queue released cannot leave a
+ *    closure behind that a later `wake()` fires into a resolved promise.
+ */
 async function sleep(state: WorkerState): Promise<void> {
   await new Promise<void>((resolve) => {
     const done = () => {
@@ -444,6 +476,20 @@ async function sleep(state: WorkerState): Promise<void> {
       resolve();
     };
     const t = setTimeout(done, Math.min(MAX_POLL_MS, Math.max(1, state.deferCapMs)));
+    t.unref?.();
     state.waiters.push(done);
   });
+}
+
+/**
+ * Drop every parked waiter without resolving it.
+ *
+ * Called when the queue halts or a worker returns early: the waiter's own
+ * worker is finished, so its `resolve` is worthless, and leaving it registered
+ * means the next `wake()` calls into a continuation nobody is awaiting. Cheap
+ * and idempotent, so every return path calls it rather than reasoning about
+ * which one could have parked anyone.
+ */
+export function abandonWaiters(state: WorkerState): void {
+  for (const w of state.waiters.splice(0)) void w;
 }
