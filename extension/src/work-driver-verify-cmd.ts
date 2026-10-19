@@ -9,6 +9,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { HEADLESS_INPUTS } from "./headless/inputs.ts";
+import { trace } from "./trace.ts";
 
 // The driver's own knob names: every name the headless inventory lists. That
 // list is kept equal to the names src/ reads (test-headless-inputs.ts), so it
@@ -16,16 +17,36 @@ import { HEADLESS_INPUTS } from "./headless/inputs.ts";
 // because headless/inputs.ts is part of an import cycle with this module's
 // callers.
 let driverKnobs: ReadonlySet<string> | undefined;
-function driverKnobNames(): ReadonlySet<string> {
-  if (driverKnobs === undefined) {
-    const names = new Set<string>();
-    for (const entry of HEADLESS_INPUTS) {
-      const i = entry.name.indexOf("<");
-      if (i < 0) names.add(entry.name);
-      else for (const m of entry.members ?? []) names.add(entry.name.slice(0, i) + m);
+
+/**
+ * Expand the inventory into the concrete names to scrub. A `<…>` family with no
+ * `members` throws: an unexpanded family would scrub nothing, silently, so a
+ * new family must declare its members before the scrub can be trusted.
+ */
+export function buildDriverKnobNames(
+  entries: ReadonlyArray<{ name: string; members?: readonly string[] }>,
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const entry of entries) {
+    const i = entry.name.indexOf("<");
+    if (i < 0) {
+      names.add(entry.name);
+      continue;
     }
-    driverKnobs = names;
+    if (!entry.members || entry.members.length === 0) {
+      throw new Error(
+        `driver knob family ${entry.name} has no members: the scrub cannot expand it`,
+      );
+    }
+    for (const m of entry.members) names.add(entry.name.slice(0, i) + m);
   }
+  return names;
+}
+
+const tracedDrops = new Set<string>();
+
+function driverKnobNames(): ReadonlySet<string> {
+  driverKnobs ??= buildDriverKnobNames(HEADLESS_INPUTS);
   return driverKnobs;
 }
 
@@ -44,8 +65,18 @@ function driverKnobNames(): ReadonlySet<string> {
 export function verifyChildEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const knobs = driverKnobNames();
   const env: NodeJS.ProcessEnv = {};
+  const dropped: string[] = [];
   for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && !knobs.has(key)) env[key] = value;
+    if (value === undefined) continue;
+    if (knobs.has(key)) dropped.push(key);
+    else env[key] = value;
+  }
+  // Names only, never values; each name traced once per process so a verify
+  // failing for a missing knob is diagnosable from the trace.
+  const fresh = dropped.filter((k) => !tracedDrops.has(k));
+  if (fresh.length > 0) {
+    for (const k of fresh) tracedDrops.add(k);
+    trace(`work-driver: verify env drops driver knobs: ${fresh.join(", ")}`);
   }
   return env;
 }
