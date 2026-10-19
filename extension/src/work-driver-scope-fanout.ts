@@ -79,7 +79,7 @@ function scopeGateEnabled(): boolean {
  * INSIDE a real filename ("docs/notes (draft).md") survives — the annotation
  * must be at the END, and content after it (".md") disqualifies it.
  */
-function normaliseScopePath(raw: string): string {
+export function normaliseScopePath(raw: string): string {
   const stripped = raw
     .trim()
     .replace(/\s*\([^()]*\)\s*$/, "") // pass 1: balanced trailing "(…)"
@@ -154,6 +154,10 @@ export function runScopeFanoutGate(
   failures: string[],
   notes: string[],
   fenceViolations?: FenceViolationRecord[],
+  // #1405 — asked only for an ISSUE-FENCED hit (fenced, declared by no sibling).
+  // `true` admits exactly that (workstream, file) pair: no failure, no record.
+  // Supplied by work-develop-scope-fence-seam.ts; absent means the fence stands.
+  liftIssueFence?: (workstreamId: string, file: string) => boolean,
 ): void {
   if (!scopeGateEnabled()) {
     notes.push("PI_ENSEMBLE_SCOPE_GATE=0 — develop scope/fanout gate disabled");
@@ -274,11 +278,13 @@ export function runScopeFanoutGate(
           declaredById: declaringId,
           kind: "sibling-declared",
         });
-      } else {
+      } else if (liftIssueFence?.(id, file) !== true) {
         // ISSUE-FENCED — the file is fenced (the workstream's own
         // `outOfScope`) but no sibling declared it: an issue-level
         // exclusion. Every N=1 fence hit is this. Still blocks; no
-        // `declaredById` to record.
+        // `declaredById` to record. A lift (#1405) admits it instead:
+        // no failure and no violation record, so it is neither a park nor a
+        // fence violation.
         failures.push(
           `workstream ${id} touched out-of-scope path ${file} — declared fence violated (issue-fenced)`,
         );

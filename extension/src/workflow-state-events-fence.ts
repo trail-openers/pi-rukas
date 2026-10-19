@@ -32,3 +32,21 @@ export type FenceRecoveryStartedEvent = {
   /** #1323 — the symbols that coupled the pair (with `cause`). */
   symbols?: string[];
 };
+
+/**
+ * #1405 — the develop gate admitted an issue-fenced path because the PRIMARY
+ * issue's Test surface names it. Recorded so a lifted fence is explainable from
+ * the state file: the admitted path and the bullet that justified it.
+ */
+export type FenceLiftedEvent = {
+  kind: "fence-lifted";
+  at: number;
+  workstreamId: string;
+  file: string;
+  /** The flattened Test-surface bullet that names the path. */
+  line: string;
+  source: "precheck";
+};
+
+/** Every fence event the closed `WorkEvent` union admits, under one name. */
+export type FenceEvent = FenceRecoveryStartedEvent | FenceLiftedEvent;
