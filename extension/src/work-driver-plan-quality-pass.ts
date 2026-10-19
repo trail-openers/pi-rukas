@@ -171,9 +171,14 @@ export async function runPlanQualityTail(
   const grant = ctx.protectedGrant ?? [];
   // A refused or unreadable call is a second defect, so the repair stands down.
   const cleanReport = input.report.refused.length === 0 && input.report.unreadable === 0;
+  // A killed primary is not repaired: the one-shot corrective is already spent.
   const repair =
-    input.planGateEnabled && !noCalls && cleanReport
-      ? repairOmittedDeliverablePaths(workstreams, input.spec, grant)
+    input.planGateEnabled && !noCalls && cleanReport && !input.planKill
+      ? repairOmittedDeliverablePaths(workstreams, input.spec, grant, (refusal) =>
+          trace(
+            `work-driver: plan-to-spec gate declined the single-workstream repair (${refusal}) — the gate runs as before`,
+          ),
+        )
       : undefined;
   if (repair) {
     workstreams = repair.workstreams;
@@ -230,7 +235,8 @@ export async function runPlanQualityTail(
     const steer = correctiveSteerFor(
       noCalls,
       input.report,
-      workstreams,
+      // The ORIGINAL plan: a repaired path was never written by the planner.
+      input.workstreams,
       reason,
       input.findingsCount,
     );
