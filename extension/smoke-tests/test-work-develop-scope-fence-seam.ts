@@ -255,6 +255,26 @@ async function main() {
     "a lift admits only its own file: the second fenced file from the same workstream still fails",
   );
 
+  // Two workstreams both fence the same named file: neither side is admitted
+  // (the #444 collision shape), so both still fail.
+  const shared = fixture(BODY);
+  const sharedFailures: string[] = [];
+  runScopeFanoutGate(
+    {
+      a: { id: "a", scope: "t", paths: ["extension/src/a-own.ts"], outOfScope: [TEXT_FLATTEN] },
+      b: { id: "b", scope: "t", paths: ["extension/src/b-own.ts"], outOfScope: [TEXT_FLATTEN] },
+    },
+    new Map([
+      ["a", new Set([TEXT_FLATTEN])],
+      ["b", new Set([TEXT_FLATTEN])],
+    ]),
+    sharedFailures,
+    [],
+    undefined,
+    shared.lift,
+  );
+  assert(sharedFailures.length === 2, "two workstreams fencing the same named file: both still fail");
+
   console.log(`\nexit ${state.exit}`);
   process.exit(state.exit);
 }
