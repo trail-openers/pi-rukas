@@ -58,7 +58,7 @@
 
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import { changedRanges, rangeLabel, rangesFromDiff } from "./lens-review-changed-ranges.ts";
-import type { Finding } from "./lens-review-types.ts";
+import { type Finding, carriedHeading, isCarried } from "./lens-review-types.ts";
 
 export const ADVISORY_HEADING = "Advisory (outside this PR's changed lines)";
 
@@ -208,15 +208,15 @@ export function advisorySection(advisory: readonly Finding[] | undefined): strin
     neutraliseEvidence(
       `- advisory: [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})`,
     );
-  const fresh = advisory.filter((f) => !f.carried);
-  const carried = advisory.filter((f) => f.carried);
+  const fresh = advisory.filter((f) => !isCarried(f));
+  const carried = advisory.filter(isCarried);
   return [
     "",
     `${ADVISORY_HEADING} (${advisory.length}) — outside the lines this PR changed; they do not block:`,
     ...fresh.map(line),
     ...(carried.length > 0
       ? [
-          `Carried from earlier rounds (${carried.length}) — still open, outside the changed lines:`,
+          carriedHeading(carried.length, "still open, outside the changed lines:"),
           ...carried.map(line),
         ]
       : []),

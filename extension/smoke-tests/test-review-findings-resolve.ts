@@ -288,8 +288,10 @@ try {
   // J — a delta review resolves a row whose cited line it changed (#1677).
   sh("git checkout -q main");
   sh("git checkout -q -b feat/delta");
+  // A non-SECURITY lens: the stub's first lens is SECURITY, and a delta never
+  // resolves a SECURITY row on code-gone (fate rule step 9).
   await runRound("feat/delta", head(), [
-    { severity: "MEDIUM", path: "src/a.ts", line: 3, title: "Unused constant" },
+    { severity: "MEDIUM", path: "src/a.ts", line: 3, title: "Unused constant", lens: "simplicity" },
   ]);
   const deltaBase = head();
   writeFileSync(

@@ -34,10 +34,30 @@ export type FindingSource = LensName | "CLAIM_SCAN";
 export interface Finding extends RawFinding {
   severity: Severity;
   lens: FindingSource;
-  /** True for a row an earlier round recorded and this round did not resolve:
-   * still open, its cited code unchanged. Renderers list these under a
-   * "Carried from earlier rounds" heading, apart from this round's own findings. */
-  carried?: true;
+}
+
+/**
+ * A row an earlier round recorded and this round did not resolve: still open,
+ * its cited code unchanged. It is a distinct type, not a flag on `Finding`, so a
+ * lens's own output can never carry the marker. Only the findings store builds
+ * one (review-findings-round.ts); renderers list these under `carriedHeading`,
+ * apart from this round's own findings.
+ */
+export interface CarriedFinding extends Finding {
+  carried: true;
+}
+
+/** True when `f` is a row carried from an earlier round (see `CarriedFinding`). */
+export function isCarried(f: Finding): f is CarriedFinding {
+  return (f as Partial<CarriedFinding>).carried === true;
+}
+
+/**
+ * The one heading every renderer uses for carried rows (summary, advisory and
+ * residual comment), so the three surfaces name them the same way.
+ */
+export function carriedHeading(count: number, detail: string): string {
+  return `Carried from earlier rounds (${count}) \u2014 ${detail}`;
 }
 
 export interface LensRunResult {
