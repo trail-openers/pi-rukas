@@ -27,10 +27,10 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const IRREVERSIBLE_VERBS = new Set(["delete", "prune"]);
 /** `find` actions that run their argument words as a command, up to a `;` or `+`. */
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
-/** A redirection word, with or without its target: `2>/dev/null`, `>out`, `>`. */
-const REDIRECT = /^\d*[<>]/;
-/** A redirection operator whose target is the next word: `>`, `2>`, `>>`, `>&`. */
-const REDIRECT_OPERATOR_ONLY = /^\d*[<>][>&|]?$/;
+/** A redirection word, with or without its target: `2>/dev/null`, `>out`, `2>&1`, `&>out`. */
+const REDIRECT = /^(?:\d*[<>]|&>)/;
+/** A redirection operator whose target is the next word: `>`, `2>`, `>>`, `>&`, `&>`, `&>>`. */
+const REDIRECT_OPERATOR_ONLY = /^(?:\d*[<>][>&|]?|&>>?)$/;
 /**
  * Process wrappers the predicate sees through. `timeout` also takes one DURATION
  * word before the command.
@@ -87,6 +87,19 @@ const OPTION_ARGS = new Map<string, ReadonlySet<string>>([
 ]);
 /** `env -S STRING`, `-SSTRING`, `--split-string STRING`, `--split-string=STRING`. */
 const ENV_SPLIT = /^(?:-S|--split-string=?)(.*)$/;
+/**
+ * True when the `&` at `src[i]` belongs to a redirection (`2>&1`, `>&2`, `<&0`,
+ * `&>out`, `&>>out`) rather than separating commands. An escaped `\>` is a literal
+ * character, so the `&` after it still separates.
+ */
+function isRedirectAmp(src: string, i: number): boolean {
+  if (src[i + 1] === ">") return true;
+  if (src[i - 1] !== ">" && src[i - 1] !== "<") return false;
+  let backslashes = 0;
+  for (let j = i - 2; j >= 0 && src[j] === "\\"; j--) backslashes++;
+  return backslashes % 2 === 0;
+}
+
 /** Shell-quote one word, so it re-tokenises as the same word. */
 const quoteWord = (w: string): string => `'${w.replace(/'/g, "'\\''")}'`;
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
@@ -167,7 +180,8 @@ export function simpleCommands(src: string): string[][] {
       quote = subst.pop()?.restore ?? null;
       continue;
     }
-    if (ch === "\n" || ch === ";" || ch === "|" || ch === "&" || ch === "(" || ch === ")") {
+    const separatorAmp = ch === "&" && !isRedirectAmp(src, i);
+    if (ch === "\n" || ch === ";" || ch === "|" || separatorAmp || ch === "(" || ch === ")") {
       endCmd();
       continue;
     }

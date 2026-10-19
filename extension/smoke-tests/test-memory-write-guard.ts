@@ -78,6 +78,11 @@ const refused: Array<[string, string]> = [
   ["watch delete", "watch -n 5 vipune delete 1"],
   ["watch single-word body", "watch 'vipune delete 1'"],
   ["script -c delete", 'script -qc "vipune delete 1" /dev/null'],
+  ["fd dup 2>&1 before delete", "2>&1 vipune delete 12"],
+  ["fd dup >&2 before prune", ">&2 vipune prune"],
+  ["&> redirect before delete", "&>out vipune delete 1"],
+  ["background & before delete", "true & vipune delete 1"],
+  ["escaped \\> does not make & a redirect", "echo \\>&vipune delete 1"],
 ];
 for (const [name, cmd] of refused) {
   assert(isDestructiveWrite(cmd), `1: refused: ${name} (${cmd})`);
@@ -105,6 +110,7 @@ const allowed: Array<[string, string]> = [
   ["find without exec", "find . -name '*.ts'"],
   ["find -exec echo", "find . -exec echo {} \\;"],
   ["watch search", "watch -n 5 vipune search 'delete'"],
+  ["search with fd dup 2>&1", "vipune search x 2>&1"],
 ];
 for (const [name, cmd] of allowed) {
   assert(!isDestructiveWrite(cmd), `2: allowed: ${name} (${cmd})`);
