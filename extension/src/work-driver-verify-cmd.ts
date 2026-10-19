@@ -8,23 +8,44 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { HEADLESS_INPUTS } from "./headless/inputs.ts";
+
+// The driver's own knob names: every name the headless inventory lists. That
+// list is kept equal to the names src/ reads (test-headless-inputs.ts), so it
+// covers every knob this build consumes. Built on first use, not at import,
+// because headless/inputs.ts is part of an import cycle with this module's
+// callers.
+let driverKnobs: ReadonlySet<string> | undefined;
+function driverKnobNames(): ReadonlySet<string> {
+  if (driverKnobs === undefined) {
+    const names = new Set<string>();
+    for (const entry of HEADLESS_INPUTS) {
+      const i = entry.name.indexOf("<");
+      if (i < 0) names.add(entry.name);
+      else for (const m of entry.members ?? []) names.add(entry.name.slice(0, i) + m);
+    }
+    driverKnobs = names;
+  }
+  return driverKnobs;
+}
 
 /**
  * The environment every project verify, smoke, verify-full and fast-tier command
- * runs with: `base` (the driver's own `process.env` by default) minus every
- * `PI_ENSEMBLE_*` key. Those knobs configure the DRIVER — a headless runner
- * exports `PI_ENSEMBLE_HANDOFF_CHANNEL`, `PI_ENSEMBLE_PARALLEL_WORK`, and the
- * like — and the project's tests are not the driver's configuration: inherited,
- * they flipped behaviour in unrelated smoke tests and parked a correct change
- * as `change` (#1064, #1557). Everything else (PATH, HOME, GIT_*, locale) is
- * kept, so the command behaves as it does in a plain shell.
+ * runs with: `base` (the driver's own `process.env` by default) minus the
+ * driver's knobs. Those configure the DRIVER — a headless runner exports
+ * `PI_ENSEMBLE_HANDOFF_CHANNEL`, `PI_ENSEMBLE_PARALLEL_WORK`, and the like — and
+ * the project's tests are not the driver's configuration: inherited, they
+ * flipped behaviour in unrelated smoke tests and parked a correct change as
+ * `change` (#1064, #1557). The verify loop's OWN knobs (`PI_ENSEMBLE_VERIFY_TEST_JOBS`,
+ * `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S`, `PI_ENSEMBLE_SMOKE_HOST_GIT`) are not in
+ * the inventory: the shell loop reads them inside the child, so they pass
+ * through. Everything else (PATH, HOME, GIT_*, locale) is kept.
  */
 export function verifyChildEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  // A prefix filter, not a read of any knob. Exempted by name in the headless
-  // input scan (PREFIX_FILTERS in smoke-tests/test-headless-inputs.ts).
+  const knobs = driverKnobNames();
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && !key.startsWith("PI_ENSEMBLE_")) env[key] = value;
+    if (value !== undefined && !knobs.has(key)) env[key] = value;
   }
   return env;
 }
