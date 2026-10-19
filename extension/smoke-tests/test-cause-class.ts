@@ -24,17 +24,15 @@ import { CAP_TEMPLATES, FIXED_CAPS } from "../src/headless/caps.ts";
 import { failureOf } from "../src/headless/failure.ts";
 import { projectIssue } from "../src/headless/result.ts";
 import { causeVerdictOf } from "../src/work-driver-cause-class.ts";
-import {
-  causeForCycle,
-  causeLeadChat,
-  causeLeadMarkdown,
-  causeSafeText,
-  scrubDepsHint,
-} from "../src/work-driver-cause-render.ts";
+import { causeForCycle } from "../src/work-driver-cause-for.ts";
+import { causeLeadChat, causeLeadMarkdown } from "../src/work-driver-cause-render.ts";
+import { causeSafeText, scrubDepsHint } from "../src/work-driver-cause-scrub.ts";
 import {
   CAUSE_CLASSES,
   type CauseClass,
   FIXED_CAP_CAUSE,
+  HOST_ACTION,
+  KIND_CLASS,
   TEMPLATE_CAP_CAUSE,
 } from "../src/work-driver-cause-table.ts";
 import { classifyConsolidatedVerifyFailure } from "../src/work-driver-consolidation-classify.ts";
@@ -115,6 +113,11 @@ for (const fx of fixtures) {
   );
   const md = renderHandoffMarkdown(fx.state);
   const chat = renderHandoffUserMessage(fx.state, REPO, `${REPO}/tmp/issue-${fx.issue}`);
+  // The cause lead sits directly above the chat's "Why" line: the envelope stays first (#580).
+  assert(
+    verdict !== undefined && chat.includes(`${causeLeadChat(verdict).join("\n")}\nWhy: `),
+    `#${fx.issue} chat message carries its cause lead directly above the Why line`,
+  );
   assert(
     !md.includes(HINT) && !chat.includes(HINT),
     `#${fx.issue} renders no "${HINT}" hint on any surface`,
@@ -186,6 +189,7 @@ for (const fx of fixtures) {
 }
 
 // #1064 keeps its change class and the chat lead opens with it.
+// (The lead's text is the table's, so the golden check above is what pins it.)
 {
   const v = causeForCycle(fixtureFor(1064).state);
   assertDefined(v, "#1064 verdict exists");
@@ -204,8 +208,19 @@ assert(
   "hint removed when no extracted line carries a dependency signature",
 );
 assert(
-  scrubDepsHint(hintOnly).includes("FAILED: 1 test(s)"),
-  "the verify output after the hint survives the scrub",
+  scrubDepsHint(hintOnly).includes("✗ a.ts: assertion failed"),
+  "the extracted failing check on the next line survives the scrub",
+);
+// A worktree problem string with `: ` in it: the hint still ends at its line, with no fragment.
+const hintWithColon =
+  "verify command `x` failed in /w — provisioning ran via `.pi/worktree-setup` (hook succeeded) but dependencies are still missing; the hook may not install all needed packages (zod: not found): FAILED: 1 test(s)\n✗ a.ts: assertion failed";
+assert(
+  scrubDepsHint(hintWithColon) === "verify command `x` failed in /w\n✗ a.ts: assertion failed",
+  "a hint whose problem contains `: ` is removed to its line end, with no fragment",
+);
+assert(
+  !scrubDepsHint(hintWithColon).includes("not found"),
+  "no fragment of the problem text survives the scrub",
 );
 const hintSupported =
   "verify command `x` failed in /w — provisioning ran via `.pi/worktree-setup` (hook succeeded) but dependencies are still missing; the hook may not install all needed packages: FAILED: 1 test(s)\n✗ Cannot find module 'zod' from src/a.ts";
@@ -235,6 +250,11 @@ assert(
     "the environment action says to install the dependencies",
   );
 }
+
+// The kind mapping: a process or crashed child is the host's, with the host action.
+assert(KIND_CLASS.process === "environment", "a process failure kind is environment");
+assert(KIND_CLASS.crashed === "environment", "a crashed failure kind is environment");
+assert(KIND_CLASS.driver === "pi-rukas", "a driver failure kind stays pi-rukas");
 
 // A dependency signature that IS the failing check stays the change's (#1673 rule).
 {
@@ -291,6 +311,7 @@ for (const family of Object.keys(CAP_TEMPLATES)) {
     `template ${family} has a class`,
   );
 }
+// step-failed with no structured cause is the host's (process kind), not a driver gap.
 // develop-child-crash: a host that suspended is the host's, not the driver's.
 {
   const rule = FIXED_CAP_CAUSE["develop-child-crash"];
@@ -383,9 +404,14 @@ assert(
 );
 const structuredNone = stateWithDispatch({ exitCode: 1, ms: 1 });
 const noneFailure = failureOf(structuredNone, "step-failed:develop", "develop");
+const noneVerdict = causeVerdictOf(structuredNone, "step-failed:develop", noneFailure);
 assert(
-  causeVerdictOf(structuredNone, "step-failed:develop", noneFailure)?.causeClass === "pi-rukas",
-  "a child that exited with no structured cause is a pi-rukas gap",
+  noneVerdict?.causeClass === "environment",
+  "a child that exited with no structured cause is environment (the host), not a driver gap",
+);
+assert(
+  noneVerdict?.userAction === HOST_ACTION.replaceAll("{issue}", "7"),
+  "that child's action names the host (caffeinate) and the re-run, with the issue filled in",
 );
 
 // ---------------------------------------------------------------------------

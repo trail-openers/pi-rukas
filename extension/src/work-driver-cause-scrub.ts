@@ -31,13 +31,11 @@ export function scrubDepsHint(text: string): string {
   let out = text;
   for (const start of DEPS_HINT_STARTS) {
     for (let i = out.indexOf(start); i >= 0; i = out.indexOf(start)) {
-      // A hint runs to the next `: ` (the separator before the verify output) or
-      // the end of its line; the separator is kept.
-      const colon = out.indexOf(": ", i);
+      // A hint runs to the end of its line. Its own text can carry `: ` (a
+      // worktree problem string does), so the first `: ` is not its end and
+      // cutting there would leave a fragment of the problem behind.
       const newline = out.indexOf("\n", i);
-      const ends = [colon, newline].filter((x) => x >= 0);
-      const end = ends.length > 0 ? Math.min(...ends) : out.length;
-      out = out.slice(0, i) + out.slice(end);
+      out = out.slice(0, i) + (newline < 0 ? "" : out.slice(newline));
     }
   }
   return out;

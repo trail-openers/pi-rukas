@@ -9,10 +9,12 @@
 
 import type { ForgeType } from "./forge-detect.ts";
 import { lastCap } from "./headless/exit-code.ts";
-import { failedStepOf } from "./headless/result.ts";
+import { failedStepOf } from "./headless/failed-step.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { capedPartialStateLines } from "./work-driver-caped-state.ts";
-import { causeForCycle, causeLeadChat, causeSafeText } from "./work-driver-cause-render.ts";
+import { causeForCycle } from "./work-driver-cause-for.ts";
+import { causeLeadChat } from "./work-driver-cause-render.ts";
+import { causeSafeText } from "./work-driver-cause-scrub.ts";
 import { commitPrRootFactLines } from "./work-driver-commit-inspect.ts";
 import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainCap } from "./work-driver-explain.ts";

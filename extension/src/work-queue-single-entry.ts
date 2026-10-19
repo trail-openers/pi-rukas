@@ -7,7 +7,8 @@
  * own file next to the shape it builds.
  */
 
-import { causeForCycle, queueCauseAction } from "./work-driver-cause-render.ts";
+import { causeForCycle } from "./work-driver-cause-for.ts";
+import { queueCauseAction } from "./work-driver-cause-render.ts";
 import { parkReason } from "./work-queue-park-reason.ts";
 import { type QueueEntry, humanActionFor } from "./work-queue.ts";
 import { lastInterruptReason } from "./work-status-interrupted.ts";
