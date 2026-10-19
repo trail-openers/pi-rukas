@@ -89,6 +89,7 @@ import {
   planTimeoutCorrective,
   planTimeoutKill,
 } from "./work-driver-plan-helpers.ts";
+import { planPromptInputsOf } from "./work-driver-plan-inputs.ts";
 import {
   findFenceContradictions,
   findPathCollisions,
@@ -165,8 +166,10 @@ export async function runPlan(
   const { dispatch, section } = await issueImagesFor(ctx, issues, "plan");
   const startedAt = Date.now();
   // #1322 — an issue naming an existing commit/PR to port plans as one workstream.
-  const port = await portReferenceForCycle(next, issues);
-  const prompt = `${inlinePlanPrompt(issues, scratchDir(ctx.repoRoot, ctx.issue))}${section}${portPlanSection(port)}`;
+  const port = await portReferenceForCycle(next, issues, ctx.repoRoot);
+  // #1642 — the child is told where its inputs are. The corrective prompts
+  // inherit this text: planCorrectivePrompt wraps it.
+  const prompt = `${inlinePlanPrompt(issues, scratchDir(ctx.repoRoot, ctx.issue), planPromptInputsOf(next, ctx.repoRoot))}${section}${portPlanSection(port)}`;
   // #573 — derive transcript path BEFORE beginDispatch so crash-resume can
   // locate the surviving session file. Single dispatch: seq=undefined.
   const planRunId = `plan:explore:${process.pid}:${startedAt}`;

@@ -65,7 +65,9 @@ import {
   splitDeliverablePaths,
   toAlternative,
 } from "./work-driver-deliverable-paths.ts";
+import { isProtectedPath } from "./work-driver-doctrine.ts";
 import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
+import { ungrantedProtectedPaths } from "./work-driver-protected-grant.ts";
 
 /** The deliverable shape the gate reads (structural subset of SpecDeliverable). */
 export interface SpecCoverageDeliverable {
@@ -225,9 +227,48 @@ function measurable(d: SpecCoverageDeliverable, paths: string[]): boolean {
  * must read that as "this gate has nothing to say", NOT as a pass it earned
  * and certainly not as a rejection.
  */
+/**
+ * #1642 — a declared slot the plan CANNOT cover because the cycle may not write
+ * it: every alternative is a protected path (`isProtectedPath`) and none is
+ * named by the operator's `--allow-protected` grant. The planner leaves such a
+ * slot out on purpose (develop would park on it), so requiring coverage would
+ * reject every plan for a deliverable the cycle was never allowed to build.
+ * Deferred, not dropped: `protectedDeferralsOf` names it for the trace.
+ */
+function isDeferredProtectedSlot(slot: string, grant?: readonly string[]): boolean {
+  const alternatives = splitDeliverablePaths(slot);
+  return (
+    alternatives.length > 0 &&
+    alternatives.every(
+      (alt) => isProtectedPath(alt) && ungrantedProtectedPaths([alt], grant).length > 0,
+    )
+  );
+}
+
+/**
+ * #1642 — the slots of each measurable deliverable that are deferred as
+ * protected (see `isDeferredProtectedSlot`). Pure; the plan step traces it so
+ * the operator can see what the gate did not require. Empty when nothing was
+ * deferred.
+ */
+export function protectedDeferralsOf(
+  spec: SpecCoverageSpec | undefined,
+  grant?: readonly string[],
+): Array<{ id: string; paths: string[] }> {
+  const out: Array<{ id: string; paths: string[] }> = [];
+  for (const d of spec?.deliverables ?? []) {
+    const paths = declaredSlots(d.paths);
+    if (!measurable(d, paths)) continue;
+    const deferred = paths.filter((p) => isDeferredProtectedSlot(p, grant));
+    if (deferred.length > 0) out.push({ id: d.id, paths: deferred });
+  }
+  return out;
+}
+
 export function findUncoveredDeliverables(
   workstreams: Record<string, SpecCoverageWorkstream>,
   spec: SpecCoverageSpec | undefined,
+  grant?: readonly string[],
 ): { uncovered: UncoveredDeliverable[]; checkedCount: number } {
   const deliverables = spec?.deliverables ?? [];
   // Workstream paths stay a flat list: they are the comparison POOL, and a
@@ -248,9 +289,13 @@ export function findUncoveredDeliverables(
   for (const d of measurableDeliverables) {
     const paths = declaredSlots(d.paths);
     if (!measurable(d, paths)) continue;
+    // #1642 — protected slots the cycle may not write are not the plan's to
+    // cover; the rest (a mixed deliverable's unprotected half) still are.
+    const required = paths.filter((p) => !isDeferredProtectedSlot(p, grant));
+    if (required.length === 0) continue;
     checkedCount += 1;
-    if (paths.every((p) => coveredBy(p, workstreamPaths))) continue;
-    uncovered.push({ id: d.id, paths });
+    if (required.every((p) => coveredBy(p, workstreamPaths))) continue;
+    uncovered.push({ id: d.id, paths: required });
   }
   return { uncovered, checkedCount };
 }
@@ -283,9 +328,10 @@ export interface PlanSpecMismatch {
 export function planSpecMismatchReason(
   workstreams: Record<string, SpecCoverageWorkstream>,
   spec: SpecCoverageSpec | undefined,
+  grant?: readonly string[],
 ): PlanSpecMismatch | undefined {
   if (Object.keys(workstreams).length === 0) return undefined;
-  const { uncovered, checkedCount } = findUncoveredDeliverables(workstreams, spec);
+  const { uncovered, checkedCount } = findUncoveredDeliverables(workstreams, spec, grant);
   if (checkedCount === 0 || uncovered.length === 0) return undefined;
   return {
     kind: "uncovered-deliverables",

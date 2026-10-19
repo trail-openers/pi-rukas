@@ -34,6 +34,7 @@
 import fs from "node:fs/promises";
 import { trace } from "./trace.ts";
 import type { CouplingResult } from "./work-driver-plan-coupling.ts";
+import { execp } from "./work-driver-verify.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { foldTwo } from "./workstream-fold.ts";
@@ -216,6 +217,23 @@ export function detectPortReference(body: string): string | undefined {
   return undefined;
 }
 
+/** A bare commit SHA as written in prose (short or full, hex only). */
+const BARE_SHA = /^[0-9a-f]{7,40}$/i;
+
+/**
+ * #1439 — `git cat-file -e <sha>^{commit}` through the argv executor, so the
+ * ref is data and never shell text. Any failure (no such object, not a
+ * repo) reads as "not a commit here": the port cannot be cherry-picked either way.
+ */
+async function isCommitInRepo(sha: string, repoRoot: string): Promise<boolean> {
+  try {
+    await execp("git", { argv: ["cat-file", "-e", `${sha}^{commit}`], cwd: repoRoot });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The port reference for a single-issue cycle, read from the issue body the
  * explore step cached. A multi-issue cycle is never a port (one commit does
@@ -225,16 +243,28 @@ export function detectPortReference(body: string): string | undefined {
 export async function portReferenceForCycle(
   state: WorkState,
   issues: number[],
+  repoRoot: string,
 ): Promise<string | undefined> {
   const artifact = state.pipelineState.issueBodyArtifact;
   if (!planContractEnabled() || issues.length !== 1 || !artifact) return undefined;
+  let ref: string | undefined;
   try {
-    const ref = detectPortReference(await fs.readFile(artifact, "utf8"));
-    if (ref) trace(`work-driver: plan contract — issue names ${ref} as the change to port`);
-    return ref;
+    ref = detectPortReference(await fs.readFile(artifact, "utf8"));
   } catch {
     return undefined;
   }
+  // #1439 — an issue body quotes example SHAs (a test fixture, a placeholder).
+  // A bare SHA that is not a commit in this repo cannot be cherry-picked, and
+  // the developer finds no such object and stops. Only bare SHAs are checked;
+  // URLs and PR/MR references are left as they are.
+  if (ref && BARE_SHA.test(ref) && !(await isCommitInRepo(ref, repoRoot))) {
+    trace(
+      `work-driver: plan contract \u2014 issue names ${ref}, which is not a commit in this repo; not treating it as a port`,
+    );
+    return undefined;
+  }
+  if (ref) trace(`work-driver: plan contract \u2014 issue names ${ref} as the change to port`);
+  return ref;
 }
 
 /** The plan-prompt section for a port issue; empty when there is none. */

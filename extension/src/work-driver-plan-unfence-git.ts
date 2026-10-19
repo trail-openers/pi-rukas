@@ -85,10 +85,16 @@ export async function definingFiles(
     if (!isGitGrepNoMatch(err)) throw err;
     return [];
   }
+  // #1642 — `git grep <ref>` prints `<ref>:<path>` lines, and the caller hands
+  // each one to `readAtRef`, which adds the ref itself. Left in place the prefix
+  // doubled (`git show HEAD:HEAD:<path>`), every read failed, and every fence the
+  // pass was meant to lift stayed. Strip it here, once, so a path is a path.
+  const prefix = `${ref}:`;
   return stdout
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l.length > 0);
+    .filter((l) => l.length > 0)
+    .map((l) => (l.startsWith(prefix) ? l.slice(prefix.length) : l));
 }
 
 /**
