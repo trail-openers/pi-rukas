@@ -10,7 +10,7 @@ Symptoms → causes → fixes. Most issues here come from running an older sandb
 
 **Cause:** the driver runs the project's verify, smoke and verify-full commands with its own environment. The driver's `PI_ENSEMBLE_*` knobs (for example `PI_ENSEMBLE_HANDOFF_CHANNEL`, `PI_ENSEMBLE_PARALLEL_WORK`) leaked into the project's tests, which behaved as if they were configured. Those knobs configure the driver, not the project's tests.
 
-**Fix:** every verify executor now scrubs `PI_ENSEMBLE_*` from the child environment (`verifyChildEnv` in `extension/src/work-driver-verify-cmd.ts`); `extension/smoke-tests/test-verify-child-env.ts` fails if a site stops routing through it. If a project test genuinely needs a driver knob, have the test set it itself.
+**Fix:** every verify executor scrubs the driver's own knobs (every name in the headless inventory, `extension/src/headless/inputs.ts`) from the child environment (`verifyChildEnv` in `extension/src/work-driver-verify-cmd.ts`). The verify loop's own knobs (`PI_ENSEMBLE_VERIFY_TEST_JOBS`, `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S`, `PI_ENSEMBLE_SMOKE_HOST_GIT`) are not in the inventory and pass through, because the shell loop reads them inside the child. `extension/smoke-tests/test-verify-child-env.ts` fails if a site stops routing through the helper. If a project test genuinely needs a driver knob, have the test set it itself.
 
 ## Platform support
 

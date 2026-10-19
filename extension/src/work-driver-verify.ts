@@ -61,7 +61,7 @@ export async function execp(
   // #1095 — a network call (killGroup set) runs through exec.ts's group-
   // killing executor, so an ssh grandchild cannot outlive the timeout. Every
   // other caller takes the classic path below, unchanged.
-  if (opts?.killGroup) return groupExecp(cmd, opts);
+  if (opts?.killGroup) return groupExecp(cmd, { ...opts, env: verifyChildEnv(opts.env) });
   const { argv, ...rest } = opts ?? {};
   if (argv) {
     // execFile takes no shell — an explicit one cannot be honoured, so say

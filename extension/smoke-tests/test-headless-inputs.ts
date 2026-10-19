@@ -134,16 +134,6 @@ const DYNAMIC_KEYS: Record<string, string> = {
   PI_ENSEMBLE_TOKEN_BUDGET_: "PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>",
 };
 
-/**
- * Explicit exemptions for a PREFIX FILTER: a `startsWith("<prefix>")` that drops
- * driver knobs from a child env and reads none of them. Keyed prefix → the one
- * file allowed to use it; any other file using the prefix is still a dynamic key.
- * work-driver-verify-cmd.ts `verifyChildEnv` is the only such filter (#1064).
- */
-const PREFIX_FILTERS: Record<string, string> = {
-  PI_ENSEMBLE_: "work-driver-verify-cmd.ts",
-};
-
 interface Scan {
   /** Literal names read, → one file reading each. */
   exact: Map<string, string>;
@@ -169,7 +159,6 @@ function scanText(text: string, rel: string, out: Scan): void {
         const name = m[1] as string;
         if (dynamicHere.has(name)) continue;
         // A trailing `_` or a bare prefix is a key built at runtime.
-        if (PREFIX_FILTERS[name] === rel && line.includes(".startsWith(")) continue;
         if (name.endsWith("_") || name in DYNAMIC_KEYS) put(out.dynamic, name);
         else put(out.exact, name);
       }
