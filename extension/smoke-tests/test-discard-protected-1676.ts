@@ -10,6 +10,7 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -22,9 +23,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { ExecFn } from "../src/work-develop-git.ts";
-import type { CycleContext } from "../src/work-driver-context.ts";
-import { discardEdits, runProtectedPathGate } from "../src/work-driver-verify-develop-protected.ts";
-import type { WorkState } from "../src/workflow-state-schema.ts";
+import { discardDeferred } from "../src/work-driver-discard-deferred.ts";
+import { runProtectedPathGate } from "../src/work-driver-verify-develop-protected.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -62,9 +62,9 @@ const realExec = (async (_cmd: string, opts: { argv?: string[]; cwd: string }) =
   return { stdout, stderr };
 }) as unknown as ExecFn;
 
-/** The pre-loop discard pass in the object shape these cases were written in: the
- * deferral and base go in the state, the operator grant in the context. */
-const discardDeferredProtectedEdits = (a: {
+/** The discard pass as the develop step calls it; its results are appended to the
+ * caller's arrays and returned, so each case can read either. */
+async function discardDeferredProtectedEdits(a: {
   execFn: ExecFn;
   worktrees: Record<string, string>;
   baseFor: (id: string) => string | undefined;
@@ -72,18 +72,18 @@ const discardDeferredProtectedEdits = (a: {
   protectedGrant: readonly string[] | undefined;
   failures: string[];
   notes: string[];
-}) =>
-  discardEdits(
-    true,
-    a.execFn,
-    a.worktrees,
-    {
-      pipelineState: { baseSha: a.baseFor("default"), deferredProtected: [...a.deferred] },
-    } as unknown as WorkState,
-    { protectedGrant: a.protectedGrant } as unknown as CycleContext,
-    a.failures,
-    a.notes,
-  );
+}) {
+  const r = await discardDeferred({
+    execFn: a.execFn,
+    worktrees: a.worktrees,
+    baseFor: a.baseFor,
+    deferred: a.deferred,
+    grant: a.protectedGrant,
+  });
+  a.failures.push(...r.failures);
+  a.notes.push(...r.notes);
+  return r;
+}
 
 /** A scratch repo with the gate file and a source file, committed as the base. */
 function repoAtBase(): { dir: string; base: string } {
@@ -359,6 +359,118 @@ function repoAtBase(): { dir: string; base: string } {
   assert(
     existsSync(path.join(dir, ".github/workflows/a.yml")),
     "the files under a refused directory are left untouched",
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// 12. A worktree with no valid base is a named failure, never a silent skip, and its
+// edit is left in place: there is nothing to restore it from.
+{
+  const { dir } = repoAtBase();
+  writeFileSync(path.join(dir, FENCE), "dev-edit\n");
+  const failures: string[] = [];
+  await discardDeferredProtectedEdits({
+    execFn: realExec,
+    worktrees: { default: dir },
+    baseFor: () => undefined,
+    deferred: [FENCE],
+    protectedGrant: [],
+    failures,
+    notes: [],
+  });
+  assert(
+    failures.length === 1 && failures[0]?.includes("no valid base"),
+    "a worktree with no valid base halts with a named failure",
+  );
+  assert(
+    readFileSync(path.join(dir, FENCE), "utf8") === "dev-edit\n",
+    "the edit is left in place when there is no base to restore from",
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// 13. A revert commit that fails (a pre-commit hook) puts the path back to HEAD and
+// fails: the branch keeps the developer's commit, and the worktree is clean.
+{
+  const { dir, base } = repoAtBase();
+  writeFileSync(path.join(dir, FENCE), "dev-edit\n");
+  git(dir, "commit", "-q", "-am", "dev edit to the gate");
+  const hook = path.join(dir, ".git/hooks/pre-commit");
+  writeFileSync(hook, "#!/bin/sh\nexit 1\n");
+  chmodSync(hook, 0o755);
+  const failures: string[] = [];
+  await discardDeferredProtectedEdits({
+    execFn: realExec,
+    worktrees: { default: dir },
+    baseFor: () => base,
+    deferred: [FENCE],
+    protectedGrant: [],
+    failures,
+    notes: [],
+  });
+  assert(
+    failures.length === 1 && failures[0]?.includes("restored to HEAD"),
+    "a failed revert commit is a named failure",
+  );
+  assert(
+    readFileSync(path.join(dir, FENCE), "utf8") === "dev-edit\n" &&
+      git(dir, "status", "--porcelain") === "",
+    "after the failed revert the worktree matches HEAD and is clean",
+  );
+  assert(
+    git(dir, "diff", "--name-only", base, "HEAD") === FENCE,
+    "the developer's commit is still on the branch",
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// 14. A deferred path whose case-variant is in the worktree is refused, and the
+// variant is left alone: git's pathspec matching follows core.ignorecase.
+{
+  const { dir, base } = repoAtBase();
+  mkdirSync(path.join(dir, ".github/workflows"), { recursive: true });
+  writeFileSync(path.join(dir, ".github/workflows/New.yml"), "name: x\n");
+  const failures: string[] = [];
+  await discardDeferredProtectedEdits({
+    execFn: realExec,
+    worktrees: { default: dir },
+    baseFor: () => base,
+    deferred: [NEW],
+    protectedGrant: [],
+    failures,
+    notes: [],
+  });
+  assert(
+    failures.length === 1 && failures[0]?.includes("differs only in case"),
+    "a deferred path with a case-variant in the worktree is refused with a named failure",
+  );
+  assert(
+    existsSync(path.join(dir, ".github/workflows/New.yml")),
+    "the case-variant file is left untouched",
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// 15. An unrelated untracked file does not keep a discarded worktree from counting
+// as emptied: the net-diff judgement is the deferred path and the tracked changes.
+{
+  const { dir, base } = repoAtBase();
+  writeFileSync(path.join(dir, FENCE), "dev-edit\n");
+  git(dir, "commit", "-q", "-am", "dev edit to the gate");
+  writeFileSync(path.join(dir, "scratch.txt"), "unrelated\n");
+  const failures: string[] = [];
+  const result = await discardDeferredProtectedEdits({
+    execFn: realExec,
+    worktrees: { default: dir },
+    baseFor: () => base,
+    deferred: [FENCE],
+    protectedGrant: [],
+    failures,
+    notes: [],
+  });
+  assert(
+    failures.length === 0 && result.emptied.has("default"),
+    "an unrelated untracked file does not stop a discarded worktree counting as emptied",
   );
   rmSync(dir, { recursive: true, force: true });
 }
