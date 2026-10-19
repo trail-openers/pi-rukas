@@ -14,8 +14,12 @@
  *   5. a verify failure with no ✗ / error line gets no round.
  *   6. a corrected cycle records the same post-verify events as an uncorrected
  *      passing one (both reach the one shared verdict path).
- *   7. a crash between the decision and the write-ahead leaves no round on disk,
- *      so a resumed cycle still gets it; the write-ahead is the only write.
+ *   7. a crash before the write-ahead leaves no round on disk (the state
+ *      directory refuses the write during the first verify). A crash AFTER the
+ *      write-ahead leaves the round on disk: resume then re-runs the first pass
+ *      (no repair re-run) and parks safely at verify-failed:develop if it is
+ *      still red, because the round is counted from the log.
+ *   8. a corrective pass's verdict replaces its first-pass verdict (refreshVerdicts).
  * The pure decision (exemptions, attribution, deps rule) is pinned in
  * test-work-driver-corrective-decide.ts.
  */
@@ -28,6 +32,7 @@ import { promisify } from "node:util";
 import type { DispatchResult } from "../src/types.ts";
 import { runDevelopTopological } from "../src/work-develop-topological.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { refreshVerdicts } from "../src/work-driver-corrective-round.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { type WorkState, initialState, readState } from "../src/workflow-state.ts";
 import { realExec } from "./lib/exec-fake.ts";
@@ -331,6 +336,25 @@ if (process.getuid?.() !== 0) {
   );
 } else {
   console.log("skip: crash simulation needs a non-root user (chmod does not bind root)");
+}
+
+// ── 8. a corrective pass's verdict replaces its first-pass verdict ─────────
+{
+  const prior = [
+    { id: "a", ok: false, reason: "first pass: developer did not complete" },
+    { id: "b", ok: true },
+  ];
+  const refreshed = refreshVerdicts(prior, [{ id: "a", ok: true }]);
+  assert(
+    refreshed[0]?.id === "a" && refreshed[0]?.ok === true && refreshed[0]?.reason === undefined,
+    "refresh: a workstream whose first pass failed and whose corrective pass succeeded is recorded ok",
+  );
+  assert(refreshed[1] === prior[1], "refresh: an untouched workstream keeps its first-pass verdict");
+  const stillRed = refreshVerdicts(prior, [{ id: "a", ok: false, reason: "still red" }]);
+  assert(
+    stillRed[0]?.ok === false && stillRed[0]?.reason === "still red",
+    "refresh: a corrective pass that fails is recorded with its own reason",
+  );
 }
 
 rmSync(root, { recursive: true, force: true });

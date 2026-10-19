@@ -16,11 +16,7 @@ import path from "node:path";
 import { reportConsolidatedVerifyOutcome } from "./work-driver-consolidated-verify-report.ts";
 import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
-import {
-  NO_SPECIFIC_ASSERTION,
-  buildPerWorktreeFailuresByWs,
-  extractSpecificAssertion,
-} from "./work-driver-consolidation-classify.ts";
+import { buildPerWorktreeFailuresByWs } from "./work-driver-consolidation-classify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { aggregateVerifyOutcome } from "./work-driver-verify-aggregate.ts";
@@ -39,32 +35,20 @@ import {
   reusableGatePass,
 } from "./work-driver-verify-gate-reuse.ts";
 import { runPerWorktreeVerify } from "./work-driver-verify-per-worktree.ts";
-import type { RanVerifyRecord, VerifyRecordSlot } from "./work-driver-verify-record.ts";
+import {
+  type RanVerifyRecord,
+  type VerifyRecordSlot,
+  gatePerAssertion,
+} from "./work-driver-verify-record.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { WorkstreamGreen } from "./workflow-state-schema-gate-reuse.ts";
 import type { WorkState } from "./workflow-state.ts";
 
-/**
- * #826 — the three-state per-worktree assertion for the flake-retry gate.
- * The RAW extracted assertion (a specific `✗`/error line found in the
- * failure text) or `null` when nothing assertion-shaped could be extracted
- * (honest absence, the NO_SPECIFIC_ASSERTION sentinel is NOT a known
- * assertion). Known-and-mismatching suppresses the re-run (the #821 defect);
- * unknown ALLOWS it (the pre-#826 behaviour for that case): absence on the
- * per-worktree side is not evidence the consolidated failure is an
- * independent defect.
- */
-function gatePerAssertion(failureText: string | undefined): string | null {
-  if (failureText === undefined) return null;
-  const extracted = extractSpecificAssertion(failureText);
-  return extracted === NO_SPECIFIC_ASSERTION ? null : extracted;
-}
-
 // #794 — the per-worktree + consolidated verify gate of the develop step
 // (moved from work-driver-verify-develop.ts to keep that file under the
 // 500-line gate; behaviour is a pure move, no logic change).
-export async function runVerifyCommandGate(opts: {
+export type VerifyCommandGateOpts = {
   execFn: NonNullable<DriverContext["verifyExecFn"]>;
   cmd: string;
   ctx: CycleContext;
@@ -157,7 +141,31 @@ export async function runVerifyCommandGate(opts: {
   onBuildResidueOnly?: () => void;
   /** #1667 — this run's record: what it ran and how each run failed. */
   verifyRecord?: VerifyRecordSlot;
-}): Promise<void> {
+};
+
+/**
+ * #1667 \u2014 the gate's one exit for its run record. `failures` is what the
+ * verify block appended, and it is set here, once, after the body returns:
+ * every return inside the body (the early per-worktree-only path included)
+ * leaves the record to this line, so no path can forget it or set it early.
+ */
+export async function runVerifyCommandGate(opts: VerifyCommandGateOpts): Promise<void> {
+  const record: RanVerifyRecord = {
+    status: "ran",
+    command: opts.cmd,
+    failures: [],
+    perWorktree: [],
+  };
+  if (opts.verifyRecord) opts.verifyRecord.current = record;
+  const failuresAtEntry = opts.failures.length;
+  await runVerifyCommandGateBody(opts, record);
+  record.failures = opts.failures.slice(failuresAtEntry);
+}
+
+async function runVerifyCommandGateBody(
+  opts: VerifyCommandGateOpts,
+  record: RanVerifyRecord,
+): Promise<void> {
   const {
     execFn,
     cmd,
@@ -197,16 +205,7 @@ export async function runVerifyCommandGate(opts: {
   // environment could disagree with each other about which bound fired.
   const suiteTimeoutMs = suiteTierTimeoutMsOpt ?? (await verifyTimeoutMs());
   // #1667 — each failure with the cwd it ran in; the flat failure list is derived from these.
-  const perWorktreeRecords: Array<{ cwd: string; text: string }> = [];
-  // #1667 — this run's record. Its block failures are set where the gate returns.
-  const record: RanVerifyRecord = {
-    status: "ran",
-    command: cmd,
-    failures: [],
-    perWorktree: perWorktreeRecords,
-  };
-  if (opts.verifyRecord) opts.verifyRecord.current = record;
-  const failuresAtEntry = failures.length;
+  const perWorktreeRecords = record.perWorktree;
   // The tier-resolved bound is also part of the reuse identity.
   const passTimeoutMs = suiteTimeoutMs;
   // #1415 — the whole-gate reuse, decided BEFORE a single command runs. When
@@ -299,7 +298,6 @@ export async function runVerifyCommandGate(opts: {
     // (without it the combined tree cannot be built); with no changed
     // worktrees there is nothing to combine, so no note is recorded.
     failures.push(...perWorktreeVerifyFailures);
-    record.failures = failures.slice(failuresAtEntry);
     // No whole-gate verdict without a consolidated run, but a green a worktree
     // just refuted must not survive to license the next round's skip.
     if (greensRecorded.length > 0 || greensRefuted.length > 0) {
@@ -494,5 +492,4 @@ export async function runVerifyCommandGate(opts: {
     notes,
     onBaselineAttributed: () => opts.onBaselineAttributed?.(),
   });
-  record.failures = failures.slice(failuresAtEntry);
 }

@@ -23,12 +23,20 @@ export interface CorrectivePromptInput {
 }
 
 /**
- * One evidence line, made safe to sit inside the fence: control characters and
- * line or paragraph separators become spaces (a line stays one line), and a
+ * Control characters and line or paragraph separators become spaces, so the
+ * text stays on one line. Applied to every developer-facing string the round
+ * builds, and to the evidence the corrective event stores.
+ */
+export function oneLine(text: string): string {
+  return text.replace(/[\p{Cc}\u2028\u2029]/gu, " ");
+}
+
+/**
+ * One evidence line, made safe to sit inside the fence: `oneLine`, and a
  * backtick run cannot close the fence.
  */
 export function evidenceLine(line: string): string {
-  return line.replace(/[\p{Cc}\u2028\u2029]/gu, " ").replace(/`/g, "'");
+  return oneLine(line).replace(/`/g, "'");
 }
 
 /** The corrective developer's prompt for one workstream. */
@@ -39,8 +47,9 @@ export function correctiveDevelopPrompt(input: CorrectivePromptInput): string {
       : `issue(s) #${input.issues.join(", #")}`;
   const fenced = input.lines.map(evidenceLine).join("\n");
   const scope =
-    input.scope !== undefined && input.scope.length > 0 ? [`Scope: ${input.scope}`] : [];
-  const files = input.paths.length > 0 ? [`In-scope files: ${input.paths.join(", ")}`] : [];
+    input.scope !== undefined && input.scope.length > 0 ? [`Scope: ${oneLine(input.scope)}`] : [];
+  const files =
+    input.paths.length > 0 ? [`In-scope files: ${input.paths.map(oneLine).join(", ")}`] : [];
   return [
     `/work ${headline} — corrective develop round (${input.parallel ? `workstream \`${input.workstreamId}\`` : "single workstream"}).`,
     "",

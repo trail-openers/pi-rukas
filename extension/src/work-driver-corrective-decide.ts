@@ -9,16 +9,22 @@
  * The trigger is a plain verify-failed:develop whose failures are all verify
  * command output, with at least one assertion line a developer can act on.
  * Attribution: a workstream whose OWN worktree verify failed gets its own
- * lines; only when no worktree failure exists is the consolidated run's
- * failure given to every workstream. A dependency signature on any evidence
- * line declines the round, and the deps hint stays (decision 1 of #1667).
+ * lines. Only when no worktree failed on its own does the consolidated run's
+ * failure remain, and it is given to the one workstream of an N=1 cycle. With
+ * N>1 no line can be attributed to one workstream, so the round declines. A
+ * dependency signature on any evidence line declines the round, and the deps
+ * hint stays (decision 1 of #1667).
+ *
+ * Eligibility reads the cap through `plainVerifyFailure` (and so `verifyCapFor`),
+ * the one place that decides which failures are verify verdicts.
  */
 
 import { plainVerifyFailure } from "./work-develop-verify-failure.ts";
 import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
-import { type VerifyCommandRecord, assertionLines } from "./work-driver-verify-record.ts";
+import { assertionLines } from "./work-driver-verify-record.ts";
+import type { verifyStepOutcome } from "./work-driver-verify.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
@@ -27,15 +33,14 @@ export const CORRECTIVE_MAX_LINES = 6;
 /** Longest one assertion line is, in characters, before it is cut. */
 export const CORRECTIVE_LINE_MAX = 300;
 
-/** The develop gate fields the decision reads. */
-export interface CorrectiveGateView {
-  ok: boolean;
-  failures: string[];
-  baselineRedOnly?: boolean;
-  buildResidueOnly?: boolean;
-  flakeRecovered?: boolean;
-  verifyRun?: VerifyCommandRecord;
-}
+/** The develop verify gate's result, as the real type declares it. */
+type DevelopGate = Awaited<ReturnType<typeof verifyStepOutcome>>;
+
+/** The develop gate fields the decision reads: a view of the real gate type, never a copy. */
+export type CorrectiveGateView = Pick<
+  DevelopGate,
+  "ok" | "failures" | "baselineRedOnly" | "buildResidueOnly" | "flakeRecovered" | "verifyRun"
+>;
 
 /** One workstream the round dispatches, with the only lines its developer gets. */
 export interface CorrectiveTarget {
@@ -78,8 +83,6 @@ export function decideCorrectiveRound(
   if (gate.flakeRecovered === true) return no("the verify flake recovered on re-run");
   if (input.eventLog.some((e) => e.kind === "corrective-round"))
     return no("the cycle's one corrective round already ran");
-  if (gate.baselineRedOnly === true) return no("the verify command is red at base");
-  if (gate.buildResidueOnly === true) return no("the gate declined on build residue");
   const run = gate.verifyRun;
   if (run === undefined || run.status === "not-run") return no("no verify command ran");
   if (!plainVerifyFailure(gate)) return no("the cap is not verify-failed:develop");
@@ -122,7 +125,11 @@ export function decideCorrectiveRound(
   }
 
   // No worktree failed on its own: the consolidated run's failure is the only
-  // evidence, and every workstream is given it.
+  // evidence. One workstream owns it (N=1); with several, no workstream is
+  // named by it, so the round declines rather than give every developer the
+  // same lines.
+  if (Object.keys(worktrees).length > 1)
+    return no("the consolidated failure cannot be attributed to one of several workstreams");
   const lines = assertionLines(run.consolidatedRaw ?? "");
   if (lines.some(looksLikeMissingDeps))
     return no("an evidence line names a missing dependency; the deps hint stays");
