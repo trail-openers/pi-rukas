@@ -105,7 +105,8 @@ export function collapseEvents(
     .map((m) => ({
       toolCallId: m.toolCallId,
       toolName: m.toolName ?? "",
-      isError: m.isError === true,
+      // Fail closed: only an explicit `false` is a success (#1652 review).
+      isError: m.isError !== false,
       text: boundedResultText(m.content ?? []),
     }));
 
