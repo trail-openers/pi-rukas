@@ -14,8 +14,9 @@
  *     writes them, so the two cannot drift;
  *   - the N=1 "cannot be attributed to a per-workstream defect" wording, which
  *     is replaced with the verify command's own failing line (#1675 criterion 5);
- *   - ANSI control sequences and C0/DEL control characters, which a tool's
- *     output can carry into a comment or a log line.
+ *   - ANSI control sequences, C0/DEL control characters and invisible bidi or
+ *     zero-width characters, which a tool's output can carry into a comment or
+ *     a log line.
  *
  * `escapeMarkdownText` escapes untrusted text where it lands in a heading,
  * where a code span is not available.
@@ -51,8 +52,18 @@ function isCsiFinal(code: number): boolean {
   return code >= 0x40 && code <= 0x7e;
 }
 
+/** Bidi overrides and isolates, zero-width characters, and the BOM: invisible text that can reorder or hide a line. */
+function isInvisible(code: number): boolean {
+  return (
+    (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2066 && code <= 0x2069) ||
+    (code >= 0x200b && code <= 0x200f) ||
+    code === 0xfeff
+  );
+}
+
 /**
- * Strips ANSI CSI sequences and control characters. Tabs and newlines become a
+ * Strips ANSI CSI sequences, control characters and invisible bidi/zero-width characters. Tabs and newlines become a
  * space so a multi-line value stays one line. Written as a char-code scan, not
  * a regex, so no control character appears in a pattern.
  */
@@ -70,7 +81,7 @@ export function stripControls(text: string): string {
       out += " ";
       continue;
     }
-    if (code < 0x20 || code === 0x7f) continue;
+    if (code < 0x20 || code === 0x7f || isInvisible(code)) continue;
     out += text[i];
   }
   return out;
