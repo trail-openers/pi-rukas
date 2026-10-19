@@ -313,6 +313,8 @@ export function makeRunOneWorkstream(
               ws?.fixFindings,
               developNote(s.stateRef.current),
               fastVerifyCmd,
+              // #1676 — the protected paths the plan persisted, annotated beside the fence.
+              { deferredProtected: s.stateRef.current.pipelineState.deferredProtected ?? [] },
             ),
             cwd,
           },

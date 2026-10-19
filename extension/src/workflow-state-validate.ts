@@ -169,6 +169,16 @@ const _eventKindExhaustive: [MissingEventKinds] extends [never] ? true : Missing
 void _eventKindExhaustive;
 
 /**
+ * #1676 — the deferred protected paths develop annotates; a non-string entry
+ * would render into the prompt as a confident wrong path. Absent validates.
+ */
+function deferredProtectedFindings(value: unknown): string[] {
+  if (value === undefined) return [];
+  const ok = Array.isArray(value) && value.every((p: unknown) => typeof p === "string");
+  return ok ? [] : ["pipelineState.deferredProtected is not an array of strings"];
+}
+
+/**
  * Human-readable findings; empty when every discriminant is a known value.
  * Each finding names the field AND the offending value — the driver halts
  * on a non-empty result and the message surfaces verbatim.
@@ -237,6 +247,7 @@ export function validateDiscriminants(state: unknown): string[] {
     // PR is mergeable. Predicate + rationale in workflow-state-schema-pr-draft.ts;
     // absent validates (a cycle that never opened its PR as a draft).
     out.push(...prDraftFindings(ps.prDraft));
+    out.push(...deferredProtectedFindings(ps.deferredProtected));
     // The five consolidation / cap-checkpoint records below (#540/#543/#728/
     // #778/#875/#1153/#1414) are checked in their own module — the same #533
     // "type-check the untyped cast" rule as `prDraft` and
