@@ -110,6 +110,12 @@ const refused: Array<[string, string]> = [
   ["glob verb *", "vipune del* 1"],
   ["glob verb [", "vipune [d]elete 1"],
   ["unknown verb", "vipune frobnicate 1"],
+  // Off the command position, a destructive verb or an unreadable verb word still refuses.
+  ["unbuffer wrapper, prune", "unbuffer vipune prune"],
+  ["busybox wrapper, delete", "busybox vipune delete 1"],
+  ["nice -n wrapper, delete", "nice -n 5 vipune delete 1"],
+  ["unbuffer, brace-expanded verb", "unbuffer vipune {delete,x} 1"],
+  ["argv0 unknown verb", "vipune frobnicate"],
 ];
 for (const [name, cmd] of refused) {
   assert(isDestructiveWrite(cmd), `1: refused: ${name} (${cmd})`);
@@ -147,6 +153,12 @@ const allowed: Array<[string, string]> = [
   ["help flag", "vipune --help"],
   ["version flag", "vipune --version"],
   ["add with delete in quoted text", 'vipune add "text with delete"'],
+  // Off the command position, a literal word is a search term, not an invocation.
+  ["grep for the word vipune in a path", "grep vipune src/x.ts"],
+  ["rg for the word vipune in a directory", "rg -n vipune extension/"],
+  ["git log grep for vipune", "git log --grep vipune"],
+  ["echo of the word vipune", "echo vipune"],
+  ["ls of a vipune home directory", "ls ~/.vipune"],
 ];
 for (const [name, cmd] of allowed) {
   assert(!isDestructiveWrite(cmd), `2: allowed: ${name} (${cmd})`);
