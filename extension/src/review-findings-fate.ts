@@ -224,5 +224,8 @@ function linesFate(
   // ranges are head-line numbers, and only the row's own line says which head
   // line this row was last observed at.
   if (review === "delta" && !insideDelta(row.path, row.line, deltaRanges)) return CARRY;
-  return full ? { kind: "resolve", reason: "code-gone" } : CARRY;
+  // The cited line changed AND this round reviewed it: a full review covers the
+  // whole branch, a delta covers its own changed lines (the check above). Only
+  // an incomplete round carries here, because it reached no verdict to vouch for.
+  return review === "incomplete" ? CARRY : { kind: "resolve", reason: "code-gone" };
 }

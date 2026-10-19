@@ -262,6 +262,7 @@ export function applyFindingRound(opts: {
       resolved.push({ rowId: r.id, title: r.title, reason: fate.reason });
     } else {
       carried.push({
+        carried: true,
         lens: r.lens,
         severity: r.severity,
         path: r.path,

@@ -259,6 +259,10 @@ try {
     !seRendered.includes("undefined"),
     "S-render: no rendered finding line contains the literal text undefined",
   );
+  assert(
+    seRendered.includes("Carried from earlier rounds (1)"),
+    "S-render: the carried line-less row sits under the labelled carried heading",
+  );
 } finally {
   fixture.cleanup();
 }

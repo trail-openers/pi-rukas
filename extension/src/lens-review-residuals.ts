@@ -291,7 +291,10 @@ async function doPost(
   // and is never passed through it.
   const lines = summary.findings.map((f) => {
     const where = neutraliseMarkdownField(`${f.path}:${f.line ?? "?"}`);
-    return `- [${severityLabel(f.severity)}] ${where} — ${neutraliseMarkdownField(f.title)} (${neutraliseMarkdownField(f.lens)})`;
+    // A carried row is still open from an earlier round; the label keeps the
+    // comment from presenting it as this round's own finding.
+    const tag = f.carried ? "carried from an earlier round: " : "";
+    return `- ${tag}[${severityLabel(f.severity)}] ${where} — ${neutraliseMarkdownField(f.title)} (${neutraliseMarkdownField(f.lens)})`;
   });
   const body = [
     "## Six-pass review — residual findings (round disclosure)",
