@@ -11,7 +11,11 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchBashSubcommand } from "../src/bash-command-parser.ts";
-import { isDestructiveWrite, simpleCommands } from "../src/bash-destructive-write.ts";
+import {
+  isDestructiveWrite,
+  memoryWriteVerdictOf,
+  simpleCommands,
+} from "../src/bash-destructive-write.ts";
 import { bashCommandOf, registerMemoryWriteGuard } from "../src/memory-write-guard.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
 
@@ -96,6 +100,16 @@ const refused: Array<[string, string]> = [
   ["variable verb after -p value", 'vipune -p x $V 1'],
   ["command builtin wrapper", "command vipune delete 1"],
   ["builtin wrapper", "builtin vipune prune"],
+  // Fail-closed: the verb must be a literal known subcommand.
+  ["brace-expanded verb", "vipune {delete,search} 1"],
+  ["unknown option then verb", "vipune --unknown x delete 1"],
+  ["nice-wrapped binary", "nice -n 5 vipune delete 1"],
+  ["unbuffer wrapper", "unbuffer vipune prune"],
+  ["busybox wrapper", "busybox vipune delete 1"],
+  ["glob verb ?", "vipune d?lete 1"],
+  ["glob verb *", "vipune del* 1"],
+  ["glob verb [", "vipune [d]elete 1"],
+  ["unknown verb", "vipune frobnicate 1"],
 ];
 for (const [name, cmd] of refused) {
   assert(isDestructiveWrite(cmd), `1: refused: ${name} (${cmd})`);
@@ -127,6 +141,12 @@ const allowed: Array<[string, string]> = [
   ["search with delete as argument after json", "vipune --json search delete"],
   ["search with quoted variable", 'vipune search "$Q"'],
   ["-p expansion value, verb search", 'vipune -p "$P" search x'],
+  ["search whose argument is delete", "vipune search delete"],
+  ["list with json", "vipune list --json"],
+  ["project option then search", "vipune -p proj search x"],
+  ["help flag", "vipune --help"],
+  ["version flag", "vipune --version"],
+  ["add with delete in quoted text", 'vipune add "text with delete"'],
 ];
 for (const [name, cmd] of allowed) {
   assert(!isDestructiveWrite(cmd), `2: allowed: ${name} (${cmd})`);
@@ -211,6 +231,24 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
   const src = readFileSync(new URL("../src/bash-destructive-write.ts", import.meta.url), "utf8");
   assert(!/@earendil-works/.test(src), "7: bash-destructive-write.ts imports no Pi package");
   assert(!/from "\.\/trace\.ts"/.test(src), "7: bash-destructive-write.ts imports no trace module");
+}
+
+// ── 8. The verdict names the reason: a refused verb, or an unresolved verb word.
+{
+  assert(
+    JSON.stringify(memoryWriteVerdictOf("vipune delete 1")) === '{"kind":"verb","verb":"delete"}',
+    "8: delete is a verb verdict",
+  );
+  assert(
+    JSON.stringify(memoryWriteVerdictOf("vipune update 1 -t x")) ===
+      '{"kind":"verb","verb":"update -t"}',
+    "8: update with -t is a verb verdict",
+  );
+  assert(
+    JSON.stringify(memoryWriteVerdictOf("vipune d?lete 1")) === '{"kind":"unresolved"}',
+    "8: a glob verb is unresolved",
+  );
+  assert(memoryWriteVerdictOf("vipune search x") === undefined, "8: a search has no verdict");
 }
 
 console.log(`\nexit ${exit}`);

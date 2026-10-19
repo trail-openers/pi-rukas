@@ -1,18 +1,19 @@
 /**
  * bash-destructive-write — the pure predicate that says whether a bash command
- * rewrites a memory row's text (`vipune update <id> -t "…"`) (#1666).
+ * touches memory in a way the guard refuses: `vipune update <id> -t "…"` rewrites a
+ * row's content, `vipune delete` and `vipune prune` remove or demote rows (#1666).
  *
- * `vipune update` with a text flag replaces a row's content in place, with no
- * lineage and no undo. This module reads a command the way a shell would for the
- * common shapes and answers one question: does any simple command in it reach the
- * vipune binary with a text flag? It has no Pi imports on purpose: the Pi hook
- * that refuses the call lives in memory-write-guard.ts, and the allowlist matcher
- * (bash-command-parser.ts) imports this predicate too, so the one rule has one
- * owner without the matcher pulling in the extension API.
+ * The verb decision is fail-closed. Every `vipune` word in a simple command is read
+ * as an invocation: after the global options, the first remaining word must be a
+ * literal known subcommand, or the verdict is `unresolved`. Globs, braces,
+ * expansions and unknown words are therefore refused rather than guessed at. This
+ * module has no Pi imports on purpose: the Pi hook that refuses the call lives in
+ * memory-write-guard.ts, and the allowlist matcher (bash-command-parser.ts) imports
+ * the boolean wrapper, so the one rule has one owner.
  *
- * Shapes read: quotes, `VAR=value` prefixes, the wrappers in WRAPPERS (with
- * their option arguments), `bash -c` and `eval` bodies, subshells, `$(…)`, and
- * backticks. A guardrail against accidental rewrites, not a security boundary.
+ * Shapes read: quotes, `VAR=value` prefixes, the wrappers in WRAPPERS (with their
+ * option arguments), `bash -c` and `eval` bodies, `find -exec`, subshells, `$(…)`,
+ * and backticks. A guardrail against accidental rewrites, not a security boundary.
  */
 
 import path from "node:path";
@@ -20,11 +21,6 @@ import path from "node:path";
 /** How deep `bash -c` / `eval` bodies are followed before the predicate gives up. */
 const MAX_DEPTH = 4;
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-/**
- * vipune verbs refused whatever their arguments: `delete` removes a row with no
- * undo, `prune` demotes candidates in bulk (an operator action per the vipune doctrine).
- */
-const IRREVERSIBLE_VERBS = new Set(["delete", "prune"]);
 /** `find` actions that run their argument words as a command, up to a `;` or `+`. */
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 /** A redirection word, with or without its target: `2>/dev/null`, `>out`, `2>&1`, `&>out`. */
@@ -248,60 +244,119 @@ function unwrap(argv: readonly string[]): Unwrapped {
   }
 }
 
+/**
+ * The verdict on one vipune invocation. `verb` is a destructive subcommand the
+ * guard refuses; `unresolved` is a verb word that is not a literal known subcommand
+ * (a glob, brace, expansion, or unknown word). No verdict means the call is allowed.
+ */
+export type MemoryWriteVerdict =
+  | { kind: "verb"; verb: "delete" | "prune" | "update -t" }
+  | { kind: "unresolved" };
+
 /** vipune global options that take a separate value word (`-p x`, `--db-path /tmp/x`). */
 const VIPUNE_VALUE_OPTIONS = new Set(["-p", "--project", "--db-path"]);
 
 /**
- * Index of the verb in a `vipune …` argv: the first word after the global options.
- * `--` ends the options; a value option's value word is skipped with it. -1 when
- * no verb word follows.
+ * Every vipune subcommand (`vipune --help`, vipune 0.15.0). The verb must be one of
+ * these literal words. A glob (`d?lete`, `del*`), a brace list, an expansion, or an
+ * unknown word is not a literal member, so it is refused as unresolved.
  */
-function vipuneVerbIndex(argv: readonly string[]): number {
-  let i = 1;
+const KNOWN_VERBS = new Set([
+  "validate",
+  "add",
+  "search",
+  "get",
+  "list",
+  "delete",
+  "update",
+  "doctor",
+  "import",
+  "reindex",
+  "export",
+  "promote",
+  "prune",
+  "backup",
+  "project",
+  "hook",
+  "version",
+  "mcp",
+  "help",
+]);
+
+/**
+ * The verdict for the vipune invocation whose binary word sits at `argv[k]`. Skips
+ * `--`, dash-options and the value of the global value options; the first remaining
+ * word must be a literal known verb. No verb word (a bare `vipune`, `vipune --help`)
+ * is allowed.
+ */
+function vipuneVerdict(argv: readonly string[], k: number): MemoryWriteVerdict | undefined {
+  let i = k + 1;
   while (i < argv.length) {
     const w = argv[i] ?? "";
-    if (w === "--") return i + 1 < argv.length ? i + 1 : -1;
-    if (!w.startsWith("-")) return i;
+    if (w === "--") {
+      i++;
+      break;
+    }
+    if (!w.startsWith("-")) break;
     i += VIPUNE_VALUE_OPTIONS.has(w) ? 2 : 1;
   }
-  return -1;
+  if (i >= argv.length) return undefined;
+  const verb = argv[i] ?? "";
+  if (!KNOWN_VERBS.has(verb)) return { kind: "unresolved" };
+  if (verb === "delete" || verb === "prune") return { kind: "verb", verb };
+  if (verb === "update" && argv.slice(i + 1).some(isTextFlag)) {
+    return { kind: "verb", verb: "update -t" };
+  }
+  return undefined;
 }
 
-/** The label of the destructive vipune verb in one simple command, or undefined. */
-function destructiveArgv(words: readonly string[], depth: number): string | undefined {
-  const { argv, split } = unwrap(words);
-  if (split !== undefined) {
-    // `env -S` re-splits its payload as a command line; words after it are appended to that line.
-    const [payload = "", ...tail] = split;
-    return destructiveWriteVerb([payload, ...tail.map(quoteWord)].join(" "), depth + 1);
-  }
-  // A single word holding a whole command (`watch 'vipune delete 1'`) is re-parsed as one.
-  if (argv.length === 1 && /\s/.test(argv[0] ?? ""))
-    return destructiveWriteVerb(argv[0] ?? "", depth + 1);
-  const head = path.basename(argv[0] ?? "");
-  if (head === "eval") return destructiveWriteVerb(argv.slice(1).join(" "), depth + 1);
+/** The verdict for a `bash -c`, `eval`, `script -c` or `find -exec` body, if the command has one. */
+function nestedVerdict(
+  argv: readonly string[],
+  head: string,
+  depth: number,
+): MemoryWriteVerdict | undefined {
+  if (head === "eval") return memoryWriteVerdictOf(argv.slice(1).join(" "), depth + 1);
   if (SHELLS.has(head) || head === "script") {
     const c = argv.findIndex((w, i) => i > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(w));
     const body = c >= 0 ? argv[c + 1] : undefined;
-    return body === undefined ? undefined : destructiveWriteVerb(body, depth + 1);
+    return body === undefined ? undefined : memoryWriteVerdictOf(body, depth + 1);
   }
   if (head === "find") {
     // `find … -exec CMD … ;` runs CMD once per match, so CMD is judged like any other command.
     for (let i = 0; i < argv.length; i++) {
       if (!FIND_EXEC.has(argv[i] ?? "")) continue;
-      const verb = destructiveArgv(execBody(argv, i + 1), depth + 1);
-      if (verb !== undefined) return verb;
+      const verdict = destructiveArgv(execBody(argv, i + 1), depth + 1);
+      if (verdict !== undefined) return verdict;
     }
-    return undefined;
   }
-  if (head !== "vipune") return undefined;
-  const at = vipuneVerbIndex(argv);
-  if (at < 0) return undefined;
-  const verb = argv[at] ?? "";
-  // An expansion in verb position (`$V`, `${V:-delete}`, `$'delete'`): the guard cannot know the verb.
-  if (/[$`]/.test(verb)) return "unresolved verb";
-  if (IRREVERSIBLE_VERBS.has(verb)) return verb;
-  return verb === "update" && argv.slice(at + 1).some(isTextFlag) ? "update -t" : undefined;
+  return undefined;
+}
+
+/**
+ * The verdict for one simple command. Nested bodies are judged first; then every
+ * word whose basename is `vipune` is read as an invocation, wherever it sits (after
+ * a wrapper the list does not name, after `xargs`, as an argument). The cost is an
+ * accepted false positive: an unquoted `vipune` word followed by a non-verb.
+ */
+function destructiveArgv(words: readonly string[], depth: number): MemoryWriteVerdict | undefined {
+  const { argv, split } = unwrap(words);
+  if (split !== undefined) {
+    // `env -S` re-splits its payload as a command line; words after it are appended to that line.
+    const [payload = "", ...tail] = split;
+    return memoryWriteVerdictOf([payload, ...tail.map(quoteWord)].join(" "), depth + 1);
+  }
+  // A single word holding a whole command (`watch 'vipune delete 1'`) is re-parsed as one.
+  if (argv.length === 1 && /\s/.test(argv[0] ?? ""))
+    return memoryWriteVerdictOf(argv[0] ?? "", depth + 1);
+  const nested = nestedVerdict(argv, path.basename(argv[0] ?? ""), depth);
+  if (nested !== undefined) return nested;
+  for (let k = 0; k < argv.length; k++) {
+    if (path.basename(argv[k] ?? "") !== "vipune") continue;
+    const verdict = vipuneVerdict(argv, k);
+    if (verdict !== undefined) return verdict;
+  }
+  return undefined;
 }
 
 /** The words of a `find -exec` action starting at `start`, up to its `;` or `+` terminator. */
@@ -311,24 +366,23 @@ function execBody(argv: readonly string[], start: number): string[] {
 }
 
 /**
- * The destructive verb a command runs against memory, or undefined. Labels:
- * "update -t", "delete", "prune", or "unresolved verb" when the verb is an
- * expansion the guard cannot read.
+ * The verdict for a bash command: the first simple command that runs a refused vipune
+ * verb or a vipune verb the guard cannot read, or undefined when every vipune
+ * invocation is allowed.
  */
-export function destructiveWriteVerb(command: string, depth = 0): string | undefined {
-  if (depth > MAX_DEPTH) return command.includes("vipune") ? "unresolved verb" : undefined;
+export function memoryWriteVerdictOf(command: string, depth = 0): MemoryWriteVerdict | undefined {
+  if (depth > MAX_DEPTH) return command.includes("vipune") ? { kind: "unresolved" } : undefined;
   for (const words of simpleCommands(command)) {
-    const verb = destructiveArgv(words, depth);
-    if (verb !== undefined) return verb;
+    const verdict = destructiveArgv(words, depth);
+    if (verdict !== undefined) return verdict;
   }
   return undefined;
 }
 
 /**
- * True when a simple command in `command` irreversibly rewrites or removes memory
- * rows (vipune update -t, delete, prune), including when the verb cannot be
- * determined because it is an expansion.
+ * True when the command must be refused as a memory write (see memoryWriteVerdictOf).
+ * The allowlist matcher uses this boolean; the guard uses the verdict for its trace label.
  */
 export function isDestructiveWrite(command: string, depth = 0): boolean {
-  return destructiveWriteVerb(command, depth) !== undefined;
+  return memoryWriteVerdictOf(command, depth) !== undefined;
 }
