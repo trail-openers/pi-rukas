@@ -137,7 +137,10 @@ function commitPrConflictedState(): WorkState {
     totalEntries: 12,
     capturedAt: Date.now(),
   };
-  const capSection = renderHandoffMarkdown(s, REPO).split("###")[1] ?? "";
+  // #1675 — the cause lead is the first ### section; the inline cap blurb is
+  // the "What this cap means" section that follows it.
+  const capSection =
+    renderHandoffMarkdown(s, REPO).split("### What this cap means")[1]?.split("###")[0] ?? "";
   assert(
     !/apply as-is/.test(capSection),
     "markdown (#539): the cap blurb does not claim 'apply as-is'",

@@ -154,7 +154,7 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
 }
 
 /** The develop gate's failure for a round in which no worktree changed anything. */
-const EMPTY_ROUND_FAILURE = /every assessed worktree has an empty diff/;
+export const EMPTY_ROUND_FAILURE = /every assessed worktree has an empty diff/;
 
 /**
  * #1332 — when every worktree came back empty, the developer's

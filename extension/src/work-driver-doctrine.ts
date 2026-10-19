@@ -204,12 +204,19 @@ export async function readDoctrineAtBase(
  * and excluded from the command, and the command and the review caution still
  * cover the paths that CAN be granted.
  */
+/**
+ * #1675 — the phrase every ungranted-protected halt carries. The cause-class
+ * classifier reads it to route the halt to `issue`; the producer below and the
+ * classifier share this constant, so the two cannot drift.
+ */
+export const UNGRANTED_PROTECTED_MARK = "without an operator grant";
+
 export function explainProtectedPaths(
   ungranted: readonly string[],
   allTouched: readonly string[],
   issues: readonly number[],
 ): string {
-  const head = `develop wrote to ${ungranted.length} protected path(s) without an operator grant — ${ungranted.join(", ")}. These define what verification, review and permission mean for this cycle, so a cycle that edits them is grading its own work. Make the change yourself`;
+  const head = `develop wrote to ${ungranted.length} protected path(s) ${UNGRANTED_PROTECTED_MARK} — ${ungranted.join(", ")}. These define what verification, review and permission mean for this cycle, so a cycle that edits them is grading its own work. Make the change yourself`;
   const env = "PI_ENSEMBLE_PROTECTED_PATHS=0 disables the gate for every path instead";
   const paths = [...new Set(allTouched.map(protectedPathKey))].sort();
   // A directory is never a grant (it would admit every file under it), so a
