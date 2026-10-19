@@ -178,8 +178,16 @@ const ctx = (gate: CorrectiveGateView, eventLog: WorkEvent[] = NO_EVENTS) =>
   };
   const d = ctx(gate);
   assert(
-    d.round === true && d.source === "consolidated" && d.targets.length === 2,
-    "consolidated-only: with no worktree failure, every workstream is given the consolidated lines",
+    d.round === false,
+    "consolidated-only N=2: with several workstreams the round declines (no line is attributable)",
+  );
+  const one = decideCorrectiveRound(gate, { eventLog: NO_EVENTS, worktrees: { a: WT_A } });
+  assert(
+    one.round === true &&
+      one.source === "consolidated" &&
+      one.targets.length === 1 &&
+      one.targets[0]?.id === "a",
+    "consolidated-only N=1: the one workstream is given the consolidated lines",
   );
   // A worktree failure that carries no assertion still attributes the failure:
   // the consolidated lines are not given to anyone.

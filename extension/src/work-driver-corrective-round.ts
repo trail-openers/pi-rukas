@@ -33,7 +33,7 @@ import { appendDevelopVerifyFailure } from "./work-develop-verify-failure.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { type CorrectiveDecision, decideCorrectiveRound } from "./work-driver-corrective-decide.ts";
-import { correctiveDevelopPrompt } from "./work-driver-corrective-prompt.ts";
+import { correctiveDevelopPrompt, oneLine } from "./work-driver-corrective-prompt.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import {
   type DevelopGate,
@@ -108,7 +108,7 @@ export async function onDevelopVerifyFailed(
       failures: [...a.gate.failures, round.failure],
     });
   }
-  return reverifyAfterRound({ ...a, state: round.state });
+  return reverifyAfterRound({ ...a, state: round.state, verdicts: round.verdicts });
 }
 
 /**
@@ -120,7 +120,7 @@ export async function onDevelopVerifyFailed(
  */
 async function runCorrectiveRound(
   a: RoundInputs & { decision: RoundDecision; state: WorkState },
-): Promise<{ state: WorkState; failure?: string }> {
+): Promise<{ state: WorkState; verdicts: DevelopVerdict[]; failure?: string }> {
   const { ctx, decision, ids } = a;
   const at = Date.now();
   const rounds: WorkEvent[] = decision.targets.map((t) => ({
@@ -130,7 +130,7 @@ async function runCorrectiveRound(
     workstreamId: t.id,
     attempt: 1,
     command: decision.command,
-    evidenceLines: t.lines,
+    evidenceLines: t.lines.map(oneLine),
   }));
   const withRounds = appendEvent(
     {
@@ -182,21 +182,34 @@ async function runCorrectiveRound(
           writeFence: { root: t.cwd, repo: ctx.repoRoot, scratch: scratchAbs },
         },
       );
-      const completion = await buildCompletionEvent(ctx, "develop", "developer", devLabel, res);
-      const base = ps.workstreamBaseShas?.[t.id] ?? ps.baseSha;
-      const verdict = await classifyDevelopPass({
-        id: t.id,
-        cwd: t.cwd,
-        base,
-        execFn: a.execFn,
-        result: res,
-      });
-      return { t, completion, verdict, ms: Date.now() - startedAt };
+      // Post-processing runs after the developer has run. If it throws, the work
+      // is still in the worktree and the failure is named in the verify evidence;
+      // no completion event is written for a pass that could not be read.
+      try {
+        const completion = await buildCompletionEvent(ctx, "develop", "developer", devLabel, res);
+        const base = ps.workstreamBaseShas?.[t.id] ?? ps.baseSha;
+        const verdict = await classifyDevelopPass({
+          id: t.id,
+          cwd: t.cwd,
+          base,
+          execFn: a.execFn,
+          result: res,
+        });
+        return { kind: "done" as const, t, completion, verdict, ms: Date.now() - startedAt };
+      } catch (err) {
+        const { message, full } = describeRejection(err);
+        trace(
+          `work-driver: corrective developer ${t.id} finished but its result was not read: ${full}`,
+        );
+        return { kind: "unread" as const, id: t.id, message };
+      }
     }),
   );
 
   const events: WorkEvent[] = [];
   const failures: string[] = [];
+  // The corrective passes' verdicts, for the workstreams that completed a pass.
+  const corrected: Array<{ id: string; ok: boolean; reason?: string }> = [];
   for (const [i, s] of settled.entries()) {
     const id = decision.targets[i]?.id ?? "?";
     if (s.status === "rejected") {
@@ -217,7 +230,14 @@ async function runCorrectiveRound(
       });
       continue;
     }
+    if (s.value.kind === "unread") {
+      failures.push(
+        `corrective developer ${s.value.id} finished but its result was not read: ${s.value.message}`,
+      );
+      continue;
+    }
     events.push(s.value.completion);
+    corrected.push({ id, ok: s.value.verdict.ok, reason: s.value.verdict.reason });
     if (s.value.verdict.crashed) {
       events.push(
         crashedBranchCompleted({
@@ -235,8 +255,26 @@ async function runCorrectiveRound(
   }
   next = clearDispatch(appendEvent(next, ...events), begun.jobId);
   a.stateRef.current = next;
-  if (failures.length === 0) return { state: next };
-  return { state: next, failure: boundedRoundFailures(failures) };
+  const verdicts = refreshVerdicts(a.verdicts, corrected);
+  if (failures.length === 0) return { state: next, verdicts };
+  return { state: next, verdicts, failure: boundedRoundFailures(failures) };
+}
+
+/**
+ * The develop verdicts after a corrective round. A workstream the round
+ * dispatched takes its corrective pass's verdict in place of its first-pass one;
+ * the rest keep theirs. Order and ids are the first pass's.
+ */
+export function refreshVerdicts(
+  prior: DevelopVerdict[],
+  corrected: ReadonlyArray<{ id: string; ok: boolean; reason?: string }>,
+): DevelopVerdict[] {
+  const fresh = new Map(corrected.map((c) => [c.id, c]));
+  return prior.map((v) => {
+    const c = fresh.get(v.id);
+    if (c === undefined) return v;
+    return { id: v.id, ok: c.ok, ...(c.reason !== undefined ? { reason: c.reason } : {}) };
+  });
 }
 
 /**

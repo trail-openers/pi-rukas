@@ -74,3 +74,19 @@ export function depsHintApplies(output: string): boolean {
   const lines = assertionLines(output);
   return lines.length === 0 ? looksLikeMissingDeps(output) : lines.some(looksLikeMissingDeps);
 }
+
+/**
+ * #826 — the three-state per-worktree assertion for the flake-retry gate.
+ * The RAW extracted assertion (a specific `✗`/error line found in the
+ * failure text) or `null` when nothing assertion-shaped could be extracted
+ * (honest absence, the NO_SPECIFIC_ASSERTION sentinel is NOT a known
+ * assertion). Known-and-mismatching suppresses the re-run (the #821 defect);
+ * unknown ALLOWS it (the pre-#826 behaviour for that case): absence on the
+ * per-worktree side is not evidence the consolidated failure is an
+ * independent defect.
+ */
+export function gatePerAssertion(failureText: string | undefined): string | null {
+  if (failureText === undefined) return null;
+  const extracted = extractSpecificAssertion(failureText);
+  return extracted === NO_SPECIFIC_ASSERTION ? null : extracted;
+}
