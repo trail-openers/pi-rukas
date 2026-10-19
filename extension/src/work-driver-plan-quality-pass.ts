@@ -56,6 +56,7 @@ import {
   type PlanSpecMismatch,
   type SpecCoverageSpec,
   planSpecMismatchReason,
+  protectedDeferralsOf,
 } from "./work-driver-plan-spec-coverage.ts";
 import {
   correctiveNoWorkstreamCallsSteer,
@@ -157,8 +158,17 @@ export async function runPlanQualityTail(
   // it takes the one corrective instead, and the budget is shared.
   const noCalls = !input.planKill && input.report.accepted === 0;
   const reason = noCalls ? undefined : planQualityReason(workstreams, input.findingsCount);
+  // #1642 — the gate does not require a deliverable whose every path is protected
+  // and ungranted; the trace is the record that it was not required.
+  for (const d of protectedDeferralsOf(input.spec, ctx.protectedGrant)) {
+    trace(
+      `work-driver: plan-to-spec gate deferred deliverable ${d.id} (${d.paths.join(", ")}) — protected path(s) with no --allow-protected grant, so the plan is not required to cover them`,
+    );
+  }
   const specMismatch =
-    input.planGateEnabled && !noCalls ? planSpecMismatchReason(workstreams, input.spec) : undefined;
+    input.planGateEnabled && !noCalls
+      ? planSpecMismatchReason(workstreams, input.spec, ctx.protectedGrant)
+      : undefined;
   // #819 round-3 — a primary refusal is never silently outlived: the tail
   // halts on any unresolved refusal, and "unresolved" means no corrective ran
   // for it (a corrective that was itself refused caps at its own site below).
@@ -301,7 +311,7 @@ export async function runPlanQualityTail(
     // from the corrective, not the first plan. A corrective is already the
     // cycle's one-shot budget, so a failure here HALTS.
     const correctiveMismatch = input.planGateEnabled
-      ? planSpecMismatchReason(workstreams, input.spec)
+      ? planSpecMismatchReason(workstreams, input.spec, ctx.protectedGrant)
       : undefined;
     if (correctiveMismatch) {
       return halt(
