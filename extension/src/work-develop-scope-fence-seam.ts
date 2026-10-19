@@ -6,9 +6,14 @@
  * sometimes fences a file the issue's own Test surface names (#1187, #1378), so
  * the gate parks a cycle the issue asked for. Two things happen here:
  *
- *   - PRECHECK (acts): the normalised path is a standalone token in a bullet of
+ *   - PRECHECK (acts): the path is a TEST file (`isTestPath`, the convention the
+ *     fence's #672 test-file exception uses) and a standalone token in a bullet of
  *     the PRIMARY issue body's `## Test surface` section. The rule admits it and
- *     no model is asked. A protected path is never admitted.
+ *     no model is asked. A protected path is never admitted. Both measured parks
+ *     (#1187, #1378) were test files. A Test-surface bullet that only names a SOURCE
+ *     file to verify it ("covered by the existing tests") is not a request to change
+ *     it, and no word list can tell the two apart, so source files are never lifted
+ *     by the rule; the shadow seam logs whether a model could.
  *   - MODEL (logged only): every other hit asks the `scope-fence` seam through
  *     `shadowDecide`. The answer is recorded and never acted on: a shadow call
  *     cannot change a verdict, whatever `PI_ENSEMBLE_DECISION_MODE_SCOPE_FENCE` says.
@@ -17,10 +22,10 @@
  * written from `gh issue view` by the driver, never by a cycle agent. A missing
  * or empty artifact admits nothing and asks nothing: the fence stands.
  *
- * The precheck may lift any non-protected path: the planner's fence is a scope
- * boundary, not a security boundary, and the issue body is the scope authority
- * the operator chose to run /work on. Protected paths stay unliftable, and lens
- * and adversarial review still run on the change.
+ * Lifting a test file is safe to do on the issue's word: the planner's fence is a
+ * scope boundary, not a security boundary, and the issue body is the scope
+ * authority the operator chose to run /work on. Protected paths stay unliftable,
+ * and lens and adversarial review still run on the change.
  *
  * A grouped cycle is never lifted: the cached body is the primary issue's only,
  * so a lift could not be attributed to a workstream's own issue.
@@ -35,6 +40,7 @@ import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { isProtectedPath } from "./work-driver-doctrine.ts";
 import { sliceMarkdownSection } from "./work-driver-plan-parse.ts";
+import { isTestPath } from "./work-driver-plan-paths.ts";
 import { type WorkState, workStateDir } from "./workflow-state.ts";
 
 /** The three issue-body sections a fence lift may be justified by. */
@@ -180,7 +186,8 @@ export function scopeFenceLift(
       }
       return false;
     }
-    const named = testSurfaceNames(sections.testSurface, file);
+    // Only a test file is liftable by the rule (see the module doc).
+    const named = isTestPath(file) ? testSurfaceNames(sections.testSurface, file) : undefined;
     if (named !== undefined) {
       lifts?.push({ workstreamId, file, line: named });
       trace(`fence lifted by the issue's Test surface: ${workstreamId} may change ${file}`);
