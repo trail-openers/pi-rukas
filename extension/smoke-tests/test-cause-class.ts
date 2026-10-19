@@ -9,20 +9,23 @@
  * carry the "cannot be attributed to a per-workstream defect" wording.
  *
  * Completeness: every published cap (headless/caps.ts) and every template
- * family has a class. The typed Records in work-driver-cause-table.ts make a
- * new cap a compile error; this test is the runtime half, over the published
- * list itself.
+ * family has a class, except the merge hold, which has none by design. The
+ * typed Records in work-driver-cause-table.ts make a new cap a compile error;
+ * this test is the runtime half, over the published list itself.
+ *
+ * The surfaces (JSON, chat, markdown, queue) are checked for identical text in
+ * test-cause-surfaces.ts.
  */
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CAP_TEMPLATES, FIXED_CAPS, type HeadlessCap } from "../src/headless/caps.ts";
+import { CAP_TEMPLATES, FIXED_CAPS } from "../src/headless/caps.ts";
 import { failureOf } from "../src/headless/failure.ts";
 import { projectIssue } from "../src/headless/result.ts";
 import { causeVerdictOf } from "../src/work-driver-cause-class.ts";
 import {
-  causeFor,
+  causeForCycle,
   causeLeadChat,
   causeLeadMarkdown,
   causeSafeText,
@@ -30,6 +33,7 @@ import {
 } from "../src/work-driver-cause-render.ts";
 import {
   CAUSE_CLASSES,
+  type CauseClass,
   FIXED_CAP_CAUSE,
   TEMPLATE_CAP_CAUSE,
 } from "../src/work-driver-cause-table.ts";
@@ -47,14 +51,20 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
+/** Narrows to the value, failing the run (not silently skipping) when it is absent. */
+function assertDefined<T>(v: T | undefined, msg: string): asserts v is T {
+  assert(v !== undefined, msg);
+  if (v === undefined) throw new Error(`missing: ${msg}`);
+}
+
 const HINT = "dependencies are still missing";
 const STALE = "cannot be attributed to a per-workstream defect";
-const REPO = "/Users/x/repo";
+const REPO = "/REPO";
 
 interface Fixture {
   issue: number;
   title: string;
-  expectedClass: string;
+  expectedClass: CauseClass;
   state: WorkState;
 }
 const here = dirname(fileURLToPath(import.meta.url));
@@ -62,13 +72,39 @@ const fixtures = JSON.parse(
   readFileSync(join(here, "fixtures", "cause-class-parks.json"), "utf8"),
 ) as Fixture[];
 
+function fixtureFor(issue: number): Fixture {
+  const fx = fixtures.find((f) => f.issue === issue);
+  assertDefined(fx, `fixture #${issue} is present`);
+  return fx;
+}
+
+/** A handoff state whose last cap is `cap`, with the verify evidence `failures`. */
+function verifyState(failures: string[]): WorkState {
+  return {
+    issue: 9,
+    schemaVersion: 1,
+    resumable: false,
+    createdAt: 1,
+    updatedAt: 3,
+    pipelineState: {
+      status: "handoff",
+      currentStep: "handoff",
+      lastCompletedStep: "develop",
+      reviewRound: 0,
+      ciRetryCount: 0,
+      inFlightJobIds: [],
+      verifyEvidence: { step: "develop", failures, at: 1, origin: "outcome-gate" },
+    },
+    eventLog: [
+      { kind: "cap-hit", at: 2, cap: "verify-failed:develop", reviewRound: 0, nextStep: "handoff" },
+    ],
+  } as unknown as WorkState;
+}
+
 // ---------------------------------------------------------------------------
 // 1. Golden: the five measured parks.
 for (const fx of fixtures) {
-  const cap = fx.state.eventLog
-    .map((e) => (e.kind === "cap-hit" ? e.cap : undefined))
-    .find(Boolean);
-  const verdict = causeFor(fx.state, cap as HeadlessCap);
+  const verdict = causeForCycle(fx.state);
   assert(
     verdict?.causeClass === fx.expectedClass,
     `#${fx.issue} classifies as ${fx.expectedClass} (${fx.title})`,
@@ -93,6 +129,10 @@ for (const fx of fixtures) {
     leadIndex >= 0 && (recoveryIndex < 0 || leadIndex < recoveryIndex),
     `#${fx.issue} leads with the cause, recovery after it`,
   );
+  assert(
+    md.includes(`### Cause: **${fx.expectedClass}**`),
+    `#${fx.issue} markdown carries the cause lead for ${fx.expectedClass}`,
+  );
   assert(md.includes("**What you can do:**"), `#${fx.issue} says what the user can do`);
   const headless = projectIssue(fx.state, "state.json");
   assert(
@@ -109,24 +149,49 @@ for (const fx of fixtures) {
   );
 }
 
-// The #1435 halt names the grant command; the #1557 verdict names no user action.
-const f1435 = fixtures.find((f) => f.issue === 1435);
-if (f1435) {
-  const v = causeFor(f1435.state, "verify-failed:develop");
+// #1435: the protected-path halt names the grant, and the concrete command is in the lead.
+{
+  const f1435 = fixtureFor(1435);
+  const v = causeForCycle(f1435.state);
   assert(
     v?.userAction?.includes("--allow-protected") === true,
     "#1435 action names --allow-protected",
   );
-}
-const f1557 = fixtures.find((f) => f.issue === 1557);
-if (f1557) {
-  const v = causeFor(f1557.state, "verify-failed:develop");
-  assert(v?.userAction === null, "#1557 (a pi-rukas defect) has no user action");
+  const md = renderHandoffMarkdown(f1435.state);
   assert(
-    causeLeadMarkdown(v as NonNullable<typeof v>)
-      .join("\n")
-      .includes("pi-rukas defect"),
-    "#1557 lead says the defect is ours",
+    md.includes("`/work 1435 --restart --allow-protected .pi/verify-cmd`"),
+    "#1435 markdown carries the concrete grant command as written",
+  );
+}
+
+// #1557: the developer stopped on a question, so the operator answers it. Not a pi-rukas defect.
+{
+  const f1557 = fixtureFor(1557);
+  const v = causeForCycle(f1557.state);
+  assert(v?.causeClass === "issue", "#1557 is an issue park: the developer asked a question");
+  assert(
+    v?.userAction ===
+      "answer the question in the issue (or edit the issue), then re-run `/work 1557`",
+    "#1557 action says to answer the question and re-run",
+  );
+  assert(
+    v?.causeEvidence[0]?.startsWith("question:") === true,
+    "#1557 evidence is the plumb question line",
+  );
+  assertDefined(v, "#1557 verdict exists");
+  assert(
+    causeLeadMarkdown(v).join("\n").includes("could not act on the issue as written"),
+    "#1557 lead says the developer could not act on the issue as written",
+  );
+}
+
+// #1064 keeps its change class and the chat lead opens with it.
+{
+  const v = causeForCycle(fixtureFor(1064).state);
+  assertDefined(v, "#1064 verdict exists");
+  assert(
+    causeLeadChat(v).join("\n").startsWith("Cause: change"),
+    "the chat lead opens with the class",
   );
 }
 
@@ -153,30 +218,65 @@ assert(
   "unrelated text passes the scrub unchanged",
 );
 
+// A dependency the worktree lacks, on a line that is not a failing check, is the worktree's.
+{
+  const v = causeVerdictOf(
+    verifyState(["error: Cannot find package 'zod'\n✗ timeout: the run exceeded its bound"]),
+    "verify-failed:develop",
+    undefined,
+  );
+  assert(v?.causeClass === "environment", "a missing package beside a ✗ check is environment");
+  assert(
+    v?.causeEvidence.includes("error: Cannot find package 'zod'") === true,
+    "the zod line is in the evidence",
+  );
+  assert(
+    v?.userAction?.startsWith("install the project dependencies in the worktree") === true,
+    "the environment action says to install the dependencies",
+  );
+}
+
+// A dependency signature that IS the failing check stays the change's (#1673 rule).
+{
+  const v = causeVerdictOf(
+    verifyState(["✗ Cannot find module 'zod' from src/a.ts"]),
+    "verify-failed:develop",
+    undefined,
+  );
+  assert(v?.causeClass === "change", "a dependency line that is the failing check stays change");
+}
+
 // ---------------------------------------------------------------------------
-// 3. N=1 wording: the classifier's own sentence names the failing line.
-const n1Line = classifyConsolidatedVerifyFailure(1, ["default"], "✗ widget renders twice", {});
-assert(
-  n1Line.reason === "the verify command failed: ✗ widget renders twice",
-  "N=1 reason names the extracted failing line",
-);
-const n1None = classifyConsolidatedVerifyFailure(1, ["default"], "something happened", {});
-assert(
-  n1None.reason ===
-    "the verify command failed and no specific failing line could be extracted — see the raw output",
-  "N=1 reason with no extracted line says so",
-);
-assert(
-  !n1Line.reason.includes(STALE) && !n1None.reason.includes(STALE),
-  "N=1 reasons never use the attribution wording",
-);
+// 3. The reason is built from the same redacted, bounded line as the evidence.
+{
+  const token = "ghp_aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d";
+  const v = causeVerdictOf(
+    verifyState([`✗ auth: the token ${token} was rejected`]),
+    "verify-failed:develop",
+    undefined,
+  );
+  assert(
+    !(v?.causeReason ?? "").includes(token),
+    "a token in an assertion never reaches the reason",
+  );
+  assert(
+    !(v?.causeEvidence ?? []).join("\n").includes(token),
+    "a token in an assertion never reaches the evidence",
+  );
+}
 
 // ---------------------------------------------------------------------------
 // 4. Completeness over the published cap list.
 for (const cap of FIXED_CAPS) {
   const rule = FIXED_CAP_CAUSE[cap];
+  if (cap === "awaiting-human-merge") {
+    assert(rule.cls === null, `cap ${cap} is the merge hold: no class by design`);
+    continue;
+  }
   assert(
-    rule !== undefined && (CAUSE_CLASSES as readonly string[]).includes(rule.cls),
+    rule !== undefined &&
+      rule.cls !== null &&
+      (CAUSE_CLASSES as readonly string[]).includes(rule.cls),
     `cap ${cap} has a class`,
   );
   if (rule && rule.cls === "pi-rukas")
@@ -185,8 +285,20 @@ for (const cap of FIXED_CAPS) {
 for (const family of Object.keys(CAP_TEMPLATES)) {
   const rule = TEMPLATE_CAP_CAUSE[family as keyof typeof CAP_TEMPLATES];
   assert(
-    rule !== undefined && (CAUSE_CLASSES as readonly string[]).includes(rule.cls),
+    rule !== undefined &&
+      rule.cls !== null &&
+      (CAUSE_CLASSES as readonly string[]).includes(rule.cls),
     `template ${family} has a class`,
+  );
+}
+// develop-child-crash: a host that suspended is the host's, not the driver's.
+{
+  const rule = FIXED_CAP_CAUSE["develop-child-crash"];
+  assert(rule.cls === "environment", "develop-child-crash is an environment cause");
+  assert(rule.reason.includes("host suspending"), "develop-child-crash names the host suspending");
+  assert(
+    (rule.action ?? "").includes("caffeinate -dimsu"),
+    "develop-child-crash action names caffeinate -dimsu",
   );
 }
 // A verdict is produced for every published cap on a bare state (no failure).
@@ -277,13 +389,20 @@ assert(
 );
 
 // ---------------------------------------------------------------------------
-// 6. The queue summary states the class; the awaiting-merge hold is not a failure.
-const verifyFix = fixtures.find((f) => f.issue === 1064);
-if (verifyFix) {
-  const v = causeFor(verifyFix.state, "verify-failed:develop");
-  const line = causeLeadChat(v as NonNullable<typeof v>).join("\n");
-  assert(line.startsWith("Cause: change"), "the chat lead opens with the class");
+// 6. Lead text, the awaiting-merge hold, and the markdown heading.
+{
+  const head = causeLeadMarkdown({
+    causeClass: "change",
+    causeReason: "see [link](http://x) and <b>!",
+    causeEvidence: [],
+    userAction: null,
+  })[0];
+  assert(
+    head === "### Cause: **change** — see \\[link\\]\\(http://x\\) and \\<b\\>\\!",
+    "untrusted reason text is escaped in the markdown heading",
+  );
 }
+
 const awaiting = {
   ...bare,
   pipelineState: { ...bare.pipelineState, status: "handoff" },
@@ -292,9 +411,31 @@ const awaiting = {
   ],
 } as unknown as WorkState;
 const awaitingVerdict = causeVerdictOf(awaiting, "awaiting-human-merge", undefined);
+assertDefined(awaitingVerdict, "an awaiting-merge verdict exists");
 assert(
-  awaitingVerdict?.causeClass === undefined && awaitingVerdict.causeReason.includes("hold"),
+  awaitingVerdict.causeClass === undefined && awaitingVerdict.causeReason.includes("hold"),
   "awaiting merge has no class and says it is a hold",
+);
+assert(
+  awaitingVerdict.causeReason === FIXED_CAP_CAUSE["awaiting-human-merge"].reason,
+  "awaiting merge reads its text from the table entry",
+);
+
+// The classifier's own N=1 sentences name the failing line, never the attribution wording.
+const n1Line = classifyConsolidatedVerifyFailure(1, ["default"], "✗ widget renders twice", {});
+assert(
+  n1Line.reason === "the verify command failed: ✗ widget renders twice",
+  "N=1 reason names the extracted failing line",
+);
+const n1None = classifyConsolidatedVerifyFailure(1, ["default"], "something happened", {});
+assert(
+  n1None.reason ===
+    "the verify command failed and no specific failing line could be extracted — see the raw output",
+  "N=1 reason with no extracted line says so",
+);
+assert(
+  !n1Line.reason.includes(STALE) && !n1None.reason.includes(STALE),
+  "N=1 reasons never use the attribution wording",
 );
 
 // ---------------------------------------------------------------------------

@@ -11,7 +11,8 @@
 
 import type { ResourceReport } from "../resource-budget.ts";
 import type { DispatchUsage } from "../types.ts";
-import { type CauseVerdict, causeVerdictOf } from "../work-driver-cause-class.ts";
+import type { CauseVerdict } from "../work-driver-cause-class.ts";
+import { causeForCycle } from "../work-driver-cause-for.ts";
 import type { CauseClass } from "../work-driver-cause-table.ts";
 import { handoffMarker, parseHandoffMarker } from "../work-driver-handoff-channel.ts";
 import { resumeEnabled } from "../work-driver-resume.ts";
@@ -19,6 +20,7 @@ import type { WorkStep } from "../workflow-state-events.ts";
 import type { WorkState } from "../workflow-state.ts";
 import { type HeadlessCap, capStep } from "./caps.ts";
 import { EXIT, exitCodeForState, lastCap, lastCapIndex, lastEvent } from "./exit-code.ts";
+import { failedStepOf } from "./failed-step.ts";
 import { type ResultFailure, failureOf } from "./failure.ts";
 import { recordedPrUrl } from "./pr-url.ts";
 
@@ -224,25 +226,7 @@ export function usageOf(state: WorkState): ResultUsage {
   return total;
 }
 
-/**
- * The step a cycle that did not merge stopped in: the step a step-template cap
- * names (`verify-failed:develop`), else the last step started before the last
- * cap hit, else the last step started. The `handoff` step is the driver
- * reporting the stop, never the step that stopped.
- */
-export function failedStepOf(state: WorkState): WorkStep | undefined {
-  if (state.pipelineState.status === "merged") return undefined;
-  const cap = lastCap(state);
-  const named = cap !== undefined ? capStep(cap) : undefined;
-  if (named) return named;
-  const log = state.eventLog;
-  const end = cap !== undefined ? lastCapIndex(state) : log.length;
-  for (let i = end - 1; i >= 0; i--) {
-    const e = log[i];
-    if (e?.kind === "step-started" && e.step !== "handoff") return e.step;
-  }
-  return undefined;
-}
+export { failedStepOf };
 
 /** `- item` bullet lines of a cap's evidence, in order. */
 function bulletsOf(evidence: string | undefined): string[] {
@@ -309,7 +293,7 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
   if (failure) result.failure = failure;
   const terminal = state.pipelineState.status;
   if (cap !== undefined || terminal === "handoff" || terminal === "aborted") {
-    const cause = causeVerdictOf(state, cap, failure);
+    const cause = causeForCycle(state);
     if (cause) applyCause(result, cause);
   }
   if (state.pipelineState.branchName !== undefined) result.branch = state.pipelineState.branchName;
