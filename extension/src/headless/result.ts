@@ -11,12 +11,16 @@
 
 import type { ResourceReport } from "../resource-budget.ts";
 import type { DispatchUsage } from "../types.ts";
+import type { CauseVerdict } from "../work-driver-cause-class.ts";
+import { causeForCycle } from "../work-driver-cause-for.ts";
+import type { CauseClass } from "../work-driver-cause-table.ts";
 import { handoffMarker, parseHandoffMarker } from "../work-driver-handoff-channel.ts";
 import { resumeEnabled } from "../work-driver-resume.ts";
 import type { WorkStep } from "../workflow-state-events.ts";
 import type { WorkState } from "../workflow-state.ts";
 import { type HeadlessCap, capStep } from "./caps.ts";
 import { EXIT, exitCodeForState, lastCap, lastCapIndex, lastEvent } from "./exit-code.ts";
+import { failedStepOf } from "./failed-step.ts";
 import { type ResultFailure, failureOf } from "./failure.ts";
 import { recordedPrUrl } from "./pr-url.ts";
 
@@ -31,7 +35,8 @@ import { recordedPrUrl } from "./pr-url.ts";
  * the 2-h spawn backstop, not a developer bound), and the per-child run bound
  * adds the template `child-timeout:<step>`.
  * Additive, no bump: top-level `resources` (#1325); per issue `failure`
- * (#1367), `usage.byRole` (#1368) and `continuedPr` (#1468).
+ * (#1367), `usage.byRole` (#1368), `continuedPr` (#1468) and the cause fields
+ * `causeClass`, `causeReason`, `causeEvidence`, `userAction` (#1675).
  */
 export const RESULT_SCHEMA_VERSION = 5 as const;
 
@@ -86,6 +91,18 @@ export interface IssueResult {
   failedStep?: WorkStep;
   /** #1367 — why the cycle stopped on `cap`, as stable fields (failure.ts). */
   failure?: ResultFailure;
+  /**
+   * #1675 — who can act on the stop: `issue`, `change`, `environment` or
+   * `pi-rukas` (work-driver-cause-table.ts). Absent for a cycle that is not a
+   * failure (awaiting merge). Independent of `failure.kind`, which is unchanged.
+   */
+  causeClass?: CauseClass;
+  /** #1675 — one plain sentence: why the cycle stopped. */
+  causeReason?: string;
+  /** #1675 — bounded, redacted evidence: the failing checks, the denied command, the provider's words. */
+  causeEvidence?: string[];
+  /** #1675 — what the user can do; null for a pi-rukas defect (it is ours, not the user's). */
+  userAction?: string | null;
   branch?: string;
   prNumber?: number;
   /** The PR's web URL, only when it is unambiguous (pr-url.ts). */
@@ -209,26 +226,6 @@ export function usageOf(state: WorkState): ResultUsage {
   return total;
 }
 
-/**
- * The step a cycle that did not merge stopped in: the step a step-template cap
- * names (`verify-failed:develop`), else the last step started before the last
- * cap hit, else the last step started. The `handoff` step is the driver
- * reporting the stop, never the step that stopped.
- */
-export function failedStepOf(state: WorkState): WorkStep | undefined {
-  if (state.pipelineState.status === "merged") return undefined;
-  const cap = lastCap(state);
-  const named = cap !== undefined ? capStep(cap) : undefined;
-  if (named) return named;
-  const log = state.eventLog;
-  const end = cap !== undefined ? lastCapIndex(state) : log.length;
-  for (let i = end - 1; i >= 0; i--) {
-    const e = log[i];
-    if (e?.kind === "step-started" && e.step !== "handoff") return e.step;
-  }
-  return undefined;
-}
-
 /** `- item` bullet lines of a cap's evidence, in order. */
 function bulletsOf(evidence: string | undefined): string[] {
   if (!evidence) return [];
@@ -242,6 +239,14 @@ function bulletsOf(evidence: string | undefined): string[] {
 export function questionsOf(state: WorkState): string[] {
   const cap = lastEvent(state, "cap-hit");
   return cap ? bulletsOf(cap.evidence).map((q, n) => `q${n + 1}: ${q}`) : [];
+}
+
+/** #1675 — the cause fields, set only when the verdict has them. */
+function applyCause(result: IssueResult, cause: CauseVerdict): void {
+  if (cause.causeClass !== undefined) result.causeClass = cause.causeClass;
+  result.causeReason = cause.causeReason;
+  if (cause.causeEvidence.length > 0) result.causeEvidence = cause.causeEvidence;
+  result.userAction = cause.userAction;
 }
 
 /** Project one state file into the JSON result for its issue. */
@@ -284,6 +289,11 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
   if (failedStep !== undefined) result.failedStep = failedStep;
   const failure = failureOf(state, cap, failedStep);
   if (failure) result.failure = failure;
+  const terminal = state.pipelineState.status;
+  if (cap !== undefined || terminal === "handoff" || terminal === "aborted") {
+    const cause = causeForCycle(state);
+    if (cause) applyCause(result, cause);
+  }
   if (state.pipelineState.branchName !== undefined) result.branch = state.pipelineState.branchName;
   const prNumber = merged
     ? merged.prNumber

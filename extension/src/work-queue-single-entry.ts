@@ -7,6 +7,8 @@
  * own file next to the shape it builds.
  */
 
+import { causeForCycle } from "./work-driver-cause-for.ts";
+import { queueCauseAction } from "./work-driver-cause-render.ts";
 import { parkReason } from "./work-queue-park-reason.ts";
 import { type QueueEntry, humanActionFor } from "./work-queue.ts";
 import { lastInterruptReason } from "./work-status-interrupted.ts";
@@ -100,12 +102,18 @@ export async function singleCycleQueueEntry(
     capHit?.cap.startsWith("step-failed:") === true
       ? capHit.cap.slice("step-failed:".length)
       : undefined;
+  // #1675 "inspect the diff" was the one line every verify park got. A verify
+  // park is judged from its evidence, so its line states the class and reason.
+  const cause =
+    state !== undefined && capHit?.cap.startsWith("verify-failed:") === true
+      ? causeForCycle(state)
+      : undefined;
   return {
     groupId,
     issues,
     outcome: "parked",
     reason,
     failedStep,
-    humanAction: humanActionFor(reason, issue),
+    humanAction: cause ? queueCauseAction(cause) : humanActionFor(reason, issue),
   };
 }
