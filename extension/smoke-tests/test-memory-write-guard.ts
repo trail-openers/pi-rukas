@@ -62,6 +62,14 @@ const refused: Array<[string, string]> = [
   ["delete in bash -c body", `bash -c "vipune delete 12"`],
   ["prune", "vipune prune --count 5 --age-days 30"],
   ["prune in a chain", "true && vipune prune"],
+  ["loop delete", "for id in 1 2; do vipune delete $id; done"],
+  ["brace group prune", "{ vipune prune; }"],
+  ["if-then delete", "if vipune delete 1; then echo ok; fi"],
+  ["negated prune", "! vipune prune"],
+  ["backslash-newline before verb", "vipune \\\n  delete 12"],
+  ["caffeinate wrapper", "caffeinate -dimsu vipune delete 1"],
+  ["gtimeout wrapper", "gtimeout 5 vipune prune"],
+  ["doas wrapper", "doas -u root vipune delete 1"],
 ];
 for (const [name, cmd] of refused) {
   assert(isDestructiveWrite(cmd), `1: refused: ${name} (${cmd})`);
