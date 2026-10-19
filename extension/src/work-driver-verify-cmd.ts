@@ -8,6 +8,78 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { HEADLESS_INPUTS } from "./headless/inputs.ts";
+import { trace } from "./trace.ts";
+
+// The driver's own knob names: every name the headless inventory lists. That
+// list is kept equal to the names src/ reads (test-headless-inputs.ts), so it
+// covers every knob this build consumes. Built on first use, not at import,
+// because headless/inputs.ts is part of an import cycle with this module's
+// callers.
+let driverKnobs: ReadonlySet<string> | undefined;
+
+/**
+ * Expand the inventory into the concrete names to scrub. A `<…>` family with no
+ * `members` throws: an unexpanded family would scrub nothing, silently, so a
+ * new family must declare its members before the scrub can be trusted.
+ */
+export function buildDriverKnobNames(
+  entries: ReadonlyArray<{ name: string; members?: readonly string[] }>,
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const entry of entries) {
+    const i = entry.name.indexOf("<");
+    if (i < 0) {
+      names.add(entry.name);
+      continue;
+    }
+    if (!entry.members || entry.members.length === 0) {
+      throw new Error(
+        `driver knob family ${entry.name} has no members: the scrub cannot expand it`,
+      );
+    }
+    for (const m of entry.members) names.add(entry.name.slice(0, i) + m);
+  }
+  return names;
+}
+
+const tracedDrops = new Set<string>();
+
+function driverKnobNames(): ReadonlySet<string> {
+  driverKnobs ??= buildDriverKnobNames(HEADLESS_INPUTS);
+  return driverKnobs;
+}
+
+/**
+ * The environment every project verify, smoke, verify-full and fast-tier command
+ * runs with: `base` (the driver's own `process.env` by default) minus the
+ * driver's knobs. Those configure the DRIVER — a headless runner exports
+ * `PI_ENSEMBLE_HANDOFF_CHANNEL`, `PI_ENSEMBLE_PARALLEL_WORK`, and the like — and
+ * the project's tests are not the driver's configuration: inherited, they
+ * flipped behaviour in unrelated smoke tests and parked a correct change as
+ * `change` (#1064, #1557). The verify loop's OWN knobs (`PI_ENSEMBLE_VERIFY_TEST_JOBS`,
+ * `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S`, `PI_ENSEMBLE_SMOKE_HOST_GIT`) are not in
+ * the inventory: the shell loop reads them inside the child, so they pass
+ * through. Everything else (PATH, HOME, GIT_*, locale) is kept.
+ */
+export function verifyChildEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const knobs = driverKnobNames();
+  const env: NodeJS.ProcessEnv = {};
+  const dropped: string[] = [];
+  for (const [key, value] of Object.entries(base)) {
+    if (value === undefined) continue;
+    if (knobs.has(key)) dropped.push(key);
+    else env[key] = value;
+  }
+  // Names only, never values; each name traced once per process so a verify
+  // failing for a missing knob is diagnosable from the trace.
+  const fresh = dropped.filter((k) => !tracedDrops.has(k));
+  if (fresh.length > 0) {
+    for (const k of fresh) tracedDrops.add(k);
+    trace(`work-driver: verify env drops driver knobs: ${fresh.join(", ")}`);
+  }
+  return env;
+}
 
 /** Read the first non-empty, non-comment line from a config file. */
 export function readFirstConfigLine(content: string): string | undefined {
