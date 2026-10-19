@@ -43,7 +43,7 @@ import {
   runSkipRatchetGate,
   runSmokeGate,
 } from "./work-driver-verify-develop-gates.ts";
-import { normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
+import { isValidSha, normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
 import { runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
 import { planDevelopVerify } from "./work-driver-verify-select-develop.ts";
@@ -51,13 +51,6 @@ import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
 
 import type { WorkState } from "./workflow-state.ts";
-
-/** PR338 — validate a git SHA before shell interpolation. A type guard, so a
- *  caller that has checked one does not re-cast it to satisfy the diff reader. */
-const VALID_SHA_RE = /^[0-9a-f]{40}$/;
-function isValidSha(s: string | undefined): s is string {
-  return typeof s === "string" && VALID_SHA_RE.test(s);
-}
 
 /**
  * Verify the develop step's outcome by checking executed evidence
@@ -450,6 +443,7 @@ export async function verifyDevelopOutcome(
         failures,
         notes,
         onVerifyFlakeRecovered,
+        verifyRecord: options.verifyRecord,
         // #814 — the fence records the gate just wrote (the scope gate runs
         // before the consolidated verify) — so a conflict the fence already
         // recorded is attributed, not re-diagnosed as an incoherent

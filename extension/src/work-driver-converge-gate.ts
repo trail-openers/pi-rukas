@@ -54,11 +54,17 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
 /**
  * Run the converge gate at end-of-develop, after the existing verify gate
  * has passed. Returns the (possibly mutated) state.
+ *
+ * #1667 — `checkOnly` (set after a corrective develop round, whose one
+ * corrective budget is spent) runs the same completeness check and records
+ * the same evidence, but an incomplete result parks at
+ * `develop-incomplete-deliverables` instead of dispatching a developer.
  */
 export async function runConvergeGateHandler(
   ctx: CycleContext,
   state: WorkState,
   dispatchFn: NonNullable<DriverContext["dispatchFn"]>,
+  options: { checkOnly?: boolean } = {},
 ): Promise<WorkState> {
   let next = state;
 
@@ -85,6 +91,20 @@ export async function runConvergeGateHandler(
   recordConverge(converge);
 
   if (converge.absent.length === 0) return next;
+
+  if (options.checkOnly === true) {
+    trace(
+      `work-driver: develop-incomplete-deliverables (after corrective round) — ${convergeEvidence(converge)}`,
+    );
+    return appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "develop-incomplete-deliverables",
+      reviewRound: next.pipelineState.reviewRound,
+      nextStep: "handoff",
+      evidence: convergeEvidence(converge),
+    });
+  }
 
   // The corrective child edits the worktree that OWNS the missing paths
   // (workstreamsOwningPath attribution — the same resolution the prompt

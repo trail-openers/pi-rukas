@@ -305,6 +305,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     // canaries below, in the shape every other cwd-audited file has.
     "plan-driver-gate.ts": 1, // the gap gate's bounded reviewer dispatch — cwd: args.repoRoot (the plan run has no worktree)
     "research-angle.ts": 1, // one retrieval angle — cwd: ctx.repoRoot, threaded by research-driver.ts
+    "work-driver-corrective-round.ts": 1, // #1667 — the corrective developer, pinned to the failing workstream's own worktree (cwd: t.cwd)
   };
   // The /plan and /research drivers' seams — outside the /work driver's
   // scope for this audit (their own cwd hygiene is a separate concern).

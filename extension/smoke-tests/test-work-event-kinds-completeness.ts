@@ -189,6 +189,16 @@ const everyKindEvent: WorkEvent[] = [
     at: 1,
     workstreamId: "default",
   },
+  // #1667 — the develop step's corrective round record.
+  {
+    kind: "corrective-round",
+    at: 1,
+    step: "develop",
+    workstreamId: "default",
+    attempt: 1,
+    command: "bun test",
+    evidenceLines: ["\u2717 x"],
+  },
   {
     kind: "adversarial-fix-requested",
     at: 1,

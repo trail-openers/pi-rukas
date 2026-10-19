@@ -253,6 +253,9 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // surface: a 3-hour dispatch crossing 20m / 40m / 80m reads as three
       // rows, each one the durable proof that someone was prompted.
       return `  dispatch-slow · ${e.step} · ${e.label} · ${fmtElapsed(e.elapsedMs)} · ${e.turns} turn${e.turns === 1 ? "" : "s"} · ${fmtTokens(e.tokens)} tok`;
+    case "corrective-round":
+      // #1667 — one corrective develop round: which workstream got how many failing lines, from which command.
+      return `  corrective-round · [${e.workstreamId}] · attempt ${e.attempt} · ${e.evidenceLines.length} line(s) from ${e.command.slice(0, 60)}`;
     case "interrupted":
       // S4a (#1162) — the interrupt record; the cycle resumes on re-entry.
       return `  interrupted · ${e.reason.slice(0, 80)}`;

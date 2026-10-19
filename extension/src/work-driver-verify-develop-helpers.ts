@@ -303,6 +303,13 @@ export function normaliseScopePath(raw: string) {
   return raw.trim().replace(/^\.\//, "").replace(/\/+$/, "");
 }
 
+/** PR338 — validate a git SHA before shell interpolation. A type guard, so a
+ *  caller that has checked one does not re-cast it to satisfy the diff reader. */
+const VALID_SHA_RE = /^[0-9a-f]{40}$/;
+export function isValidSha(s: string | undefined): s is string {
+  return typeof s === "string" && VALID_SHA_RE.test(s);
+}
+
 /** #307 — maximum number of net-removed test blocks tolerated in a diff. */
 export function testDeleteTolerance() {
   const env = Number(process.env.PI_ENSEMBLE_TEST_DELETE_TOLERANCE);
