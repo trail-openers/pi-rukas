@@ -22,6 +22,7 @@ import {
   type ExecFn,
   inspectWorktreeForLoss,
   worktreeCreate,
+  worktreeRemove,
 } from "../src/worktree.ts";
 
 const headOf = async (cwd: string) => (await git(cwd, ["rev-parse", "HEAD"])).stdout.trim();
@@ -111,20 +112,27 @@ try {
   const behindFinding = await inspectWorktreeForLoss(realExec, repo, behindWt, newBase);
   assert(behindFinding === undefined, "1170: clean worktree behind the base is no-loss");
 
-  const addWt = async (name: string) => {
+  const addWt = async (name: string, ref = baseSha) => {
     const p = path.join(repo, ".worktrees", name);
-    await git(repo, ["worktree", "add", "-q", "--detach", p, baseSha]);
+    await git(repo, ["worktree", "add", "-q", "--detach", p, ref]);
     return p;
   };
   const inspect = (wt: string, ref = baseSha) => inspectWorktreeForLoss(realExec, repo, wt, ref);
 
   // 5. #1170 r3 — an ignored build/ entry is loss; a name alone exempts nothing.
+  // #1642 narrowed the exemption to what git COLLAPSES to one directory line, so
+  // this fixture keeps `build/` PARTLY tracked: git then enumerates the ignored
+  // file inside it, and the original question (does the NAME `build/` exempt
+  // nothing?) is still what is asked — an enumerated ignored file is loss.
   const bWt = await addWt("issue-9-build");
   mkdirSync(path.join(bWt, "build"), { recursive: true });
+  writeFileSync(path.join(bWt, "build", "keep.txt"), "tracked\n");
+  await git(bWt, ["add", "-f", "build/keep.txt"]);
+  await git(bWt, ["commit", "-q", "-m", "track one file under build/"]);
   writeFileSync(path.join(bWt, "build", "credentials.env"), "TOKEN=1\n");
   const bFinding = await inspect(bWt);
   assert(
-    bFinding !== undefined && bFinding.uncommittedFiles.length > 0,
+    bFinding?.uncommittedFiles.some((f) => f.includes("credentials.env")) === true,
     "1170r3: an ignored build/ credentials file is loss",
   );
 
@@ -147,16 +155,32 @@ try {
     "1170r3: a root node_modules/ directory is no-loss",
   );
 
-  // 8. #1170 r3 — a large ignored target/ tree is one collapsed entry (bounded output).
+  // 8. #1170 r3 — a large ignored tree is ONE entry, not one per file. #1642
+  // exempts a COLLAPSED ignored directory from loss, so the bounded-output
+  // property is now shown where git cannot collapse: a partly tracked target/
+  // makes it enumerate every ignored file, and the guard still sees a bounded,
+  // greppable set rather than the tree's contents being lost.
   const tWt = await addWt("issue-9-target");
   mkdirSync(path.join(tWt, "target"), { recursive: true });
+  writeFileSync(path.join(tWt, "target", "keep.txt"), "tracked\n");
+  await git(tWt, ["add", "-f", "target/keep.txt"]);
+  await git(tWt, ["commit", "-q", "-m", "track one file under target/"]);
   for (let i = 0; i < 2000; i++) writeFileSync(path.join(tWt, "target", `f${i}.o`), "x");
   const tFinding = await inspect(tWt);
   assert(
-    tFinding !== undefined &&
-      tFinding.uncommittedFiles.length === 1 &&
-      (tFinding.uncommittedFiles[0] ?? "").includes("target"),
-    "1170r3: an ignored target/ tree is one collapsed entry, not one per file",
+    tFinding?.uncommittedFiles.length > 0 &&
+      tFinding.uncommittedFiles.every((f) => f.includes("target")),
+    "1170r3: an enumerated ignored target/ tree is loss and every entry names target/",
+  );
+
+  // 8b. #1642 — the collapsed form of that same tree is NOT loss: git declares
+  // the whole directory ignored, so nothing tracked lives inside it.
+  const cWt0 = await addWt("issue-9-target-clean");
+  mkdirSync(path.join(cWt0, "target"), { recursive: true });
+  for (let i = 0; i < 2000; i++) writeFileSync(path.join(cWt0, "target", `f${i}.o`), "x");
+  assert(
+    (await inspect(cWt0)) === undefined,
+    "1642: a wholly ignored target/ tree (one collapsed entry) is no-loss",
   );
 
   // 9. #1170 r3 — add then remove leaves the tree identical, but two commits ahead → loss.
@@ -257,6 +281,104 @@ try {
       calls.every((c) => !c.includes("worktree")),
     "1170r3: a timed-out ref probe is a create error and runs no worktree command",
   );
+
+  // 14. #1642 (interactive #1557) — the ONLY dirt is an ignored build tree
+  // (`!! dist/`, what `bun run build` regenerates). It is not unrecoverable
+  // work: the worktree is reused/removed, not refused. This is the exact state
+  // of `.worktrees/issue-1557-default`, which parked the cycle on
+  // `step-failed:branch` with "1 uncommitted file(s): !! dist/".
+  //
+  // The ignored pattern and its one tracked file are set up on the BASE commit,
+  // not after it: `git worktree add --detach` materialises tracked files only,
+  // so a file tracked after the worktree's base is simply absent from it (and
+  // the whole `dist/` then reads as untracked `??`, which is loss — correctly).
+  writeFileSync(path.join(repo, ".gitignore"), ".env\nnode_modules\ndist/prompts\n");
+  mkdirSync(path.join(repo, "dist"), { recursive: true });
+  writeFileSync(path.join(repo, "dist", "keep.txt"), "tracked\n");
+  await git(repo, ["add", "-f", "dist/keep.txt", ".gitignore"]);
+  await git(repo, ["commit", "-q", "-m", "track one file under dist/, ignore dist/prompts"]);
+  const distBase = await headOf(repo);
+  const distWt = path.join(repo, ".worktrees", "issue-9-dist");
+  await git(repo, ["worktree", "add", "-q", "--detach", distWt, distBase]);
+  mkdirSync(path.join(distWt, "dist", "prompts", "standard"), { recursive: true });
+  writeFileSync(path.join(distWt, "dist", "prompts", "standard", "explore.md"), "# x\n");
+  const distFinding = await inspect(distWt, distBase);
+  assert(
+    distFinding === undefined,
+    "1642: a worktree whose only dirt is an ignored dist/prompts is no-loss (reused, not refused)",
+  );
+  await worktreeRemove(realExec, repo, "issue-9-dist", true).catch(() => undefined);
+  // The sibling scan (#545) inspects EVERY `issue-9-*` worktree, and the
+  // fixtures above deliberately left dirty ones behind. They are the scan's
+  // correct answer — and they would be reported for THIS worktree's create too,
+  // hiding the thing this assertion is about. Remove them so the only candidate
+  // left is the one this case is about.
+  for (
+    const stale of [
+      "issue-9-build",
+      "issue-9-vendor",
+      "issue-9-nm",
+      "issue-9-target",
+      "issue-9-target-clean",
+      "issue-9-multi",
+      "issue-9-one",
+      "issue-9-cycle",
+      "issue-9-env",
+      "issue-9-behind",
+    ]
+  ) {
+    await worktreeRemove(realExec, repo, stale, true).catch(() => undefined);
+  }
+  await git(repo, ["worktree", "prune"]).catch(() => undefined);
+  const distCreate = await worktreeCreate(realExec, {
+    repoRoot: repo,
+    name: "issue-9-dist",
+    fromRef: distBase,
+  }).then(
+    () => true,
+    (err: unknown) => err,
+  );
+  const distCreateMsg = String((distCreate as Error)?.message ?? "").slice(0, 200);
+  assert(
+    distCreate === true,
+    `1642: worktreeCreate pre-removes the ignored-build-output worktree instead of refusing (${distCreateMsg})`,
+  );
+
+  // 15. #1642 — the exemption is for what git COLLAPSES to one directory line.
+  // An enumerated ignored file inside the same partly tracked dist/ is still
+  // loss: a secret never hides behind an exempted directory name.
+  const secretWt = await addWt("issue-9-secret", distBase);
+  mkdirSync(path.join(secretWt, "dist"), { recursive: true });
+  writeFileSync(path.join(secretWt, "dist", "secret.env"), "TOKEN=1\n");
+  const secretFinding = await inspect(secretWt, distBase);
+  assert(
+    secretFinding?.uncommittedFiles.some((f) => f.includes("secret.env")) === true,
+    "1642: an enumerated ignored file inside dist/ is still loss",
+  );
+
+  // 16. #1642 — an untracked non-ignored file, and a tracked modification, are
+  // still loss beside the ignored build output (the salvage path stays).
+  const mixedWt = await addWt("issue-9-mixed", distBase);
+  mkdirSync(path.join(mixedWt, "dist", "prompts"), { recursive: true });
+  writeFileSync(path.join(mixedWt, "dist", "prompts", "bundle.md"), "x\n");
+  writeFileSync(path.join(mixedWt, "work-in-progress.ts"), "export const x = 1;\n");
+  const mixedFinding = await inspect(mixedWt, distBase);
+  assert(
+    mixedFinding?.uncommittedFiles.some((f) => f.includes("work-in-progress.ts")) === true &&
+      !mixedFinding.uncommittedFiles.some((f) => f.includes("dist")),
+    "1642: a real untracked file still refuses, and the ignored dist/ is not reported beside it",
+  );
+  const modWt = await addWt("issue-9-modified", distBase);
+  writeFileSync(path.join(modWt, "a.txt"), "uncommitted edit\n");
+  mkdirSync(path.join(modWt, "dist", "prompts"), { recursive: true });
+  writeFileSync(path.join(modWt, "dist", "prompts", "cov.md"), "x\n");
+  const modFinding = await inspect(modWt, distBase);
+  assert(
+    modFinding?.uncommittedFiles.some((f) => f.includes("a.txt")) === true &&
+      !modFinding.uncommittedFiles.some((f) => f.includes("dist")),
+    "1642: a tracked modification still refuses, whatever ignored trees sit beside it",
+  );
+  writeFileSync(path.join(repo, ".gitignore"), ".env\nnode_modules\n");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
