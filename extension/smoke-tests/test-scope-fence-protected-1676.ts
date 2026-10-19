@@ -154,7 +154,7 @@ assert(
   "with the protected gate off nothing is refused",
 );
 
-// A workstream whose only declared path was fenced out cannot skip the fanout
+// 9. A workstream whose only declared path was fenced out cannot skip the fanout
 // bound when it changed files; with no changes the skip is still fine.
 {
   const fenced = { default: { id: "default", scope: "x", paths: [], outOfScope: [FENCE] } };

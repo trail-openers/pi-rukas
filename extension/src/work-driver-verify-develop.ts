@@ -10,11 +10,11 @@
  */
 
 import type { CommentEvidence } from "./comment-evidence.ts";
-import { COMMENT_RETENTION_PATHS } from "./comment-retention.ts";
 import { DEFAULT_GIT_TIMEOUT_MS } from "./git-range.ts";
 import { scopeFenceLift } from "./work-develop-scope-fence-seam.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { discardDeferred } from "./work-driver-discard-deferred.ts";
 import {
   doctrineProsePathsIn,
   explainProtectedPaths,
@@ -43,9 +43,14 @@ import {
   runSkipRatchetGate,
   runSmokeGate,
 } from "./work-driver-verify-develop-gates.ts";
-import { isValidSha, normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
+import {
+  commentRetentionPathsFromEnv,
+  effectiveBaseForWorkstream,
+  isValidSha,
+  normaliseScopePath,
+} from "./work-driver-verify-develop-helpers.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
-import { discardEdits, runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
+import { runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
 import { planDevelopVerify } from "./work-driver-verify-select-develop.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
@@ -87,13 +92,7 @@ export async function verifyDevelopOutcome(
       : { default: ctx.repoRoot };
   const baseSha = state.pipelineState.baseSha;
   const changedWorktrees: string[] = [];
-  // #948 — comment-retention paths. Overridable via env (tests inject a
-  // scratch layout); defaults to the three trees the PM's check grepped.
-  const commentRetentionPaths = process.env.PI_ENSEMBLE_COMMENT_RETENTION_PATHS
-    ? process.env.PI_ENSEMBLE_COMMENT_RETENTION_PATHS.split(",")
-        .map((p) => p.trim())
-        .filter(Boolean)
-    : COMMENT_RETENTION_PATHS;
+  const commentRetentionPaths = commentRetentionPathsFromEnv();
   // #406 — every path the developers touched, across all worktrees, so the
   // protected-path gate below sees the whole change set rather than one
   // worktree's slice of it.
@@ -133,18 +132,9 @@ export async function verifyDevelopOutcome(
   // failure (uncommitted work is a legitimate non-source deliverable) and
   // from the generic "every worktree empty" message (no commits expected).
   const legitimateNonSourceWorkstreams = new Set<string>();
-  // #679 (task-evidence) — per-workstream base resolution. A dependent
-  // workstream's EFFECTIVE base is its dependency's post-commit SHA (persisted
-  // in `workstreamBaseShas`); every other workstream falls back to the global
-  // `baseSha`. The falsily-green check compares each worktree against THIS ref,
-  // so a dependent whose base ≠ the global base is judged against the right ref.
+  // #679 — per-workstream base resolution (see effectiveBaseForWorkstream).
   const workstreamBaseShas = state.pipelineState.workstreamBaseShas;
-  const effectiveBaseFor = (wsId: string): string | undefined => {
-    const per = workstreamBaseShas?.[wsId];
-    if (isValidSha(per)) return per;
-    if (isValidSha(baseSha)) return baseSha;
-    return undefined;
-  };
+  const effectiveBaseFor = effectiveBaseForWorkstream(workstreamBaseShas, baseSha);
   // #679 (task-evidence) — per-workstream declared-source flag, computed once
   // so BOTH the uncommitted-only suppression and the falsily-green check share
   // the same classification (no repeated classifier calls).
@@ -163,7 +153,16 @@ export async function verifyDevelopOutcome(
   // #1378 — resolved ONCE for the whole run: consulted in three places below, and a
   // harness that flipped the switch mid-loop would gate one worktree and not the next.
   const protectedGateOn = protectedPathsEnabled();
-  const disc = await discardEdits(protectedGateOn, execFn, worktrees, state, ctx, failures, notes);
+  // #1676 — discards before the loop reads any worktree (work-driver-discard-deferred.ts).
+  const disc = await discardDeferred({
+    execFn,
+    deferred: protectedGateOn ? (state.pipelineState.deferredProtected ?? []) : [],
+    grant: ctx.protectedGrant,
+    baseFor: effectiveBaseFor,
+    worktrees,
+  });
+  failures.push(...disc.failures);
+  notes.push(...disc.notes);
   for (const [id, cwd] of Object.entries(worktrees)) {
     let hasCommits = false;
     let hasUncommitted = false;

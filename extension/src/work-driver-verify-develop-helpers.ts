@@ -10,6 +10,7 @@
  * (acyclic).
  */
 
+import { COMMENT_RETENTION_PATHS } from "./comment-retention.ts";
 import { trace } from "./trace.ts";
 import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import {
@@ -27,6 +28,38 @@ import {
   gateHangClause,
 } from "./work-driver-gate-hang.ts";
 import { VERIFY_SUITE_TIMEOUT_ENV, verifyTimeoutMs } from "./work-driver-verify-budget.ts";
+
+/**
+ * The effective base of a workstream (#679). A dependent workstream's EFFECTIVE
+ * base is its dependency's post-commit SHA (persisted in `workstreamBaseShas`);
+ * every other workstream falls back to the global `baseSha`. The falsily-green
+ * check compares each worktree against THIS ref, so a dependent whose base ≠ the
+ * global base is judged against the right ref. Undefined when neither is a SHA.
+ */
+export function effectiveBaseForWorkstream(
+  workstreamBaseShas: Readonly<Record<string, string | undefined>> | undefined,
+  baseSha: string | undefined,
+): (wsId: string) => string | undefined {
+  return (wsId) => {
+    const per = workstreamBaseShas?.[wsId];
+    if (isValidSha(per)) return per;
+    if (isValidSha(baseSha)) return baseSha;
+    return undefined;
+  };
+}
+
+/**
+ * #948 — comment-retention paths. Overridable via `PI_ENSEMBLE_COMMENT_RETENTION_PATHS`
+ * (tests inject a scratch layout); defaults to the three trees the PM's check grepped.
+ */
+export function commentRetentionPathsFromEnv(): string[] {
+  const raw = process.env.PI_ENSEMBLE_COMMENT_RETENTION_PATHS;
+  if (!raw) return COMMENT_RETENTION_PATHS;
+  return raw
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+}
 
 /**
  * PR17 — bounded wall-clock for the verify command.
