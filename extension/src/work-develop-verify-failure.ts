@@ -17,6 +17,34 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
 /** The verify gate's result, as the develop step reads it. */
 type DevelopVerifyGate = Awaited<ReturnType<typeof verifyStepOutcome>>;
 
+/** #669 — the cherry-pick conflict failure: routes to its own cap, never verify-failed. */
+const CONFLICT_FAILURE = /cherry-pick \/ apply conflict|could not combine the workstreams/;
+/** #777 — the consolidation-created failure: a third cap, never verify-failed. */
+const CONSOLIDATION_CREATED_FAILURE = /\[consolidation-created\]/;
+
+/**
+ * #1667 — true when the develop gate's failures land on the plain
+ * `verify-failed:develop` cap. That is the only cap a corrective round may
+ * answer: conflict and consolidation-created are distinct caps, and a run that
+ * reached no verdict (timeout, host, residue, baseline) has its own cap too.
+ */
+export function plainVerifyFailure(gate: {
+  failures: readonly string[];
+  baselineRedOnly?: boolean;
+  buildResidueOnly?: boolean;
+}): boolean {
+  if (gate.failures.some((f) => CONFLICT_FAILURE.test(f) || CONSOLIDATION_CREATED_FAILURE.test(f)))
+    return false;
+  return (
+    verifyCapFor(
+      "develop",
+      gate.failures,
+      gate.baselineRedOnly === true,
+      gate.buildResidueOnly === true,
+    ) === "verify-failed:develop"
+  );
+}
+
 /** Append the develop verify-failure cap-hit (and its verifyEvidence) to `next`. */
 export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerifyGate): WorkState {
   let next = state;
@@ -28,9 +56,7 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
   // explainCap (not this message) distinguishes a stacked cycle from an
   // independent fanout overlap; the stacked distinction belongs there
   // because the cap is the operator-facing explanation seam.
-  const conflictFailure = gate.failures.find((f) =>
-    /cherry-pick \/ apply conflict|could not combine the workstreams/.test(f),
-  );
+  const conflictFailure = gate.failures.find((f) => CONFLICT_FAILURE.test(f));
   // #814 — when the consolidated-verify-conflict cap fires on a
   // sibling-declared fence violation, the cap-hit EVIDENCE carries the
   // shared attribution sentence (describeSiblingFenceViolations — the
@@ -49,7 +75,7 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
   // specific assertion, and both workstream ids — the operator gets a
   // precise handoff instead of "consolidated tree fails verify".
   const consolidationCreatedFailure = gate.failures.find((f) =>
-    /\[consolidation-created\]/.test(f),
+    CONSOLIDATION_CREATED_FAILURE.test(f),
   );
   const cap = conflictFailure
     ? "consolidated-verify-conflict"

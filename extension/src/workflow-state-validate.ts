@@ -152,6 +152,8 @@ export const KNOWN_EVENT_KINDS = [
   "lens-residuals-posted",
   // #1652 — the plan step's refused report_workstream calls.
   "workstream-calls-refused",
+  // #1667 — the develop step's corrective round, one record per dispatched workstream.
+  "corrective-round",
 ] as const;
 
 // #986 — compile-time exhaustiveness. If the `WorkEvent` union gains a kind

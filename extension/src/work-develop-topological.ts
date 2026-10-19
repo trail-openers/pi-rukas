@@ -7,15 +7,8 @@
  * Step-4 handler) delegates to; the per-workstream dispatch closure and the
  * dependent-workstream runner live in work-develop-run.ts.
  */
-import { recordCommentEvidence } from "./comment-evidence.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
 import { parkOnDevelopCrash } from "./work-develop-crash.ts";
-import { runMergeRetryFlow } from "./work-develop-fence-merge-retry.ts";
-import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
-import {
-  applyFenceVerdicts,
-  replaceDevelopConvergedVerdicts,
-} from "./work-develop-fence-verdicts.ts";
 import { isValidBaseSha } from "./work-develop-git.ts";
 import { downgradeReason } from "./work-develop-greens.ts";
 import { refuseMissingWorktrees } from "./work-develop-missing-worktree.ts";
@@ -34,11 +27,10 @@ import {
   makeRunOneWorkstream,
   runDependentWorkstreams,
 } from "./work-develop-run.ts";
-import { runSymbolMergeRetry } from "./work-develop-symbol-merge.ts";
-import { appendDevelopVerifyFailure } from "./work-develop-verify-failure.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
+import { onDevelopVerifyFailed } from "./work-driver-corrective-round.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
+import { recordDevelopVerdict } from "./work-driver-develop-verdict.ts";
 import { clearDispatch } from "./work-driver-resume.ts";
 import {
   applySafetyNet,
@@ -46,7 +38,6 @@ import {
   safetyNetWorktree,
 } from "./work-driver-safety-net.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
-import { recordDevelopGateEvents } from "./work-driver-verify-events.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
@@ -387,106 +378,33 @@ async function runDevelopTopological(
   // failed workstream no longer skips the gate for the whole fanout.
   if (hasDevelopEvidence) {
     const gate = await verifyStepOutcome(ctx, next, "develop");
-    // #1040 — lost-comment evidence persists from the develop note (handoff even with no reviewer).
-    next = recordCommentEvidence(next, gate.commentEvidence);
-    // #1240 — the consolidated verify skipped its run because the probe tree
-    // is the tree the single workstream's own verify just judged. Recorded as
-    // an event so a fast `develop` is explainable from the state file rather
-    // than inferred from the absence of a 20-minute gap. Appended here, where
-    // the caller owns the event log, so the log stays append-only; the helper
-    // is shared with the three gate RE-RUN paths so a skip is never lost.
-    next = recordDevelopGateEvents(next, gate);
-    stateRef.current = next;
-    // #814 — a fence violator must not report a bare "ok" here: replace the
-    // event with the flipped verdicts via replaceDevelopConvergedVerdicts
-    // (invariant named there; see work-develop-fence-verdicts.ts).
-    if (gate.fenceViolations && ids.length > 1) {
-      const flipped = applyFenceVerdicts(
-        verdicts.map((v) => ({ ...v })),
-        gate.fenceViolations,
-      );
-      const changed = flipped.some((v, i) => {
-        const o = verdicts[i];
-        return o === undefined || o.ok !== v.ok || o.reason !== v.reason;
-      });
-      if (changed) {
-        next = replaceDevelopConvergedVerdicts(next, flipped);
-      }
-    }
-    // #1005 — the fence merge-and-retry (replaces the #849 fence recovery,
-    // which re-ran the same split and failed the same way every time): when
-    // the gate recorded a BLOCKING sibling-declared violation (and no
-    // issue-fenced one, which still blocks as today), the driver MERGES the
-    // coupled workstreams (owner keeps its id; violator absorbed), re-dispatches
-    // ONCE on the merged one, and re-runs the fence + verify gates (the full
-    // flow lives in work-develop-fence-merge.ts / work-develop-fence-
-    // merge-retry.ts). A second failure after merging hands off, naming the
-    // merge. `issue-fenced` and `undeclared` records never merge: the
-    // condition is exactly "sibling-declared only". The gate runs on
-    // `stateRef.current` (the flip above wrote the verdicts there), not the
-    // local `next`.
-    const recoverableFence =
-      gate.fenceViolations !== undefined &&
-      siblingDeclaredViolators(gate.fenceViolations).length > 0 &&
-      !gate.fenceViolations.some((f) => f.kind === "issue-fenced");
-    if (gate.ok === false && recoverableFence) {
-      // #849 — the gate's fence records are not yet on `pipelineState`
-      // (the develop step writes them only on a failure path, after the
-      // gate returns). Stash them so `recoverFenceViolations` (which reads
-      // `stateRef.current.pipelineState.verifyEvidence`) sees the first
-      // attempt's records for the cycle check and the discard evidence.
-      next = {
-        ...next,
-        pipelineState: {
-          ...next.pipelineState,
-          verifyEvidence: {
-            step: "develop",
-            failures: gate.failures,
-            at: Date.now(),
-            fenceViolations: gate.fenceViolations ?? [],
-          },
-        },
-      };
-      stateRef.current = next;
-      // #1005 — the merge-and-retry (replaces the #849 fence recovery, which
-      // re-ran the same split and failed the same way every time): merge the
-      // coupled workstreams, re-dispatch ONCE on the merged one, re-run the
-      // gates. A second failure after merging hands off (naming the merge).
-      next = await runMergeRetryFlow(ctx, next, stateRef, ids, verdicts, execFn, dispatch);
-      return endStep(next);
-    }
-    if (gate.ok) {
-      // #782 — the consolidated verify's single re-run passed: the driver
-      // proceeds. Emit the recovery marker BEFORE the converge gate so the
-      // event log carries the audit trail even if the cycle parks later.
-      if (gate.flakeRecovered) {
-        next = appendEvent(next, {
-          kind: "verify-flake-recovered",
-          at: Date.now(),
-          step: "develop",
-        });
-      }
-      // #741 — the verify gate proves the diff BUILDS; the converge gate
-      // proves it is COMPLETE. Runs only after the verify gate passes (the
-      // issue's stated ordering) — a diff that doesn't build never reaches
-      // the completeness check. Skips silently when disabled, when there is
-      // no normalised spec, or when the diff is unreadable.
-      next = await runConvergeGateHandler(ctx, next, dispatch);
-    } else {
-      // #1323 — a failure naming a symbol a sibling's diff adds merges the
-      // pair and retries once (work-develop-symbol-merge.ts); otherwise park.
-      const merged = await runSymbolMergeRetry(
-        ctx,
-        next,
-        stateRef,
-        ids,
-        verdicts,
-        gate,
-        execFn,
-        dispatch,
-      );
-      next = merged ?? appendDevelopVerifyFailure(next, gate);
-    }
+    // #1667 — the verdict is recorded and routed by the one shared function, which the
+    // corrective round's re-verify also calls: a corrected cycle takes the same path.
+    // #1323 — a failure naming a symbol a sibling's diff adds merges the pair and
+    // retries once (work-develop-symbol-merge.ts); otherwise the corrective round
+    // may answer it, and a second failure parks.
+    next = await recordDevelopVerdict({
+      ctx,
+      state: next,
+      stateRef,
+      ids,
+      verdicts,
+      gate,
+      execFn,
+      dispatch,
+      onVerifyFailed: (s, g) =>
+        onDevelopVerifyFailed({
+          ctx,
+          state: s,
+          stateRef,
+          ids,
+          workstreams,
+          verdicts,
+          gate: g,
+          execFn,
+          dispatch,
+        }),
+    });
   }
   return endStep(next);
 }

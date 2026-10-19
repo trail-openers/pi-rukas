@@ -28,10 +28,10 @@ import {
 import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
 import { slugName, writeGateHangLog } from "./work-driver-verify-flake.ts";
 import { greenForWorktree } from "./work-driver-verify-gate-reuse.ts";
+import { depsHintApplies } from "./work-driver-verify-record.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { WorkstreamGreen } from "./workflow-state-schema-gate-reuse.ts";
 import type { WorkState } from "./workflow-state.ts";
-import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
 /** Run the verify command in each of `run`'s worktrees (see the header). */
 export async function runPerWorktreeVerify(opts: {
@@ -50,7 +50,8 @@ export async function runPerWorktreeVerify(opts: {
   hangSink?: GateHangPathSink;
   suiteTimeoutKnob?: string;
   fastTimeoutMs?: number;
-  perWorktreeVerifyFailures: string[];
+  /** #1667 — each failure with the cwd it ran in; the caller derives the flat list. */
+  perWorktreeRecords: Array<{ cwd: string; text: string }>;
   greensRecorded: Array<[string, WorkstreamGreen]>;
   greensRefuted: string[];
 }): Promise<void> {
@@ -65,7 +66,7 @@ export async function runPerWorktreeVerify(opts: {
     hangSink,
     suiteTimeoutKnob,
     fastTimeoutMs,
-    perWorktreeVerifyFailures,
+    perWorktreeRecords,
     greensRecorded,
     greensRefuted,
   } = opts;
@@ -91,7 +92,7 @@ export async function runPerWorktreeVerify(opts: {
   for (const cwd of opts.run) {
     const depsMissing = await missingDepsFailure(execFn, state, ctx.repoRoot, cwd, cmd); // #1146
     if (depsMissing !== undefined) {
-      perWorktreeVerifyFailures.push(depsMissing);
+      perWorktreeRecords.push({ cwd, text: depsMissing });
       // Not run, so any green this worktree held proves nothing now.
       const id = Object.entries(state.pipelineState.worktrees ?? {}).find(
         ([, w]) => w === cwd,
@@ -128,7 +129,8 @@ export async function runPerWorktreeVerify(opts: {
       // A missing `node_modules` looks like a real defect; in a fresh worktree say so.
       // #1005 — per-worktree failures stay failures; the consolidated run adds its own.
       const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
-      const depsHint = looksLikeMissingDeps(output) ? provisionDepsHint(state, cwd) : "";
+      // #1667 — suppressed when assertion lines were extracted (see depsHintApplies).
+      const depsHint = depsHintApplies(output) ? provisionDepsHint(state, cwd) : "";
       const ran = failedVerifyCmd(e, cmd); // #1324 — the fast tier, when it is the one that failed
       const cwdSlug = slugFor(cwd);
       // #1427 — a run the wall clock killed gets a hang report: the test names
@@ -181,30 +183,29 @@ export async function runPerWorktreeVerify(opts: {
           }
         }
       }
-      perWorktreeVerifyFailures.push(
-        formatExecError(
-          e,
-          // #1427 round 3 — `verifyHangFailure` APPENDS the clause after the
-          // whole #1324 sentence, so a wide clause costs the names rather than
-          // the `[verify-timeout]` marker the cap router keys on.
-          verifyHangFailure(
-            ran,
-            `in ${cwd}`,
-            suiteTimeoutMs,
-            hang,
-            // #1509 — name the knob that governs the tier that actually timed
-            // out. `ran` is the fast tier when the fast run is what hung, and
-            // the caller resolved that tier's bound; the knob travels with the
-            // tier rather than being guessed from the command string.
-            e.fastTier === undefined
+      const failureText = formatExecError(
+        e,
+        // #1427 round 3 — `verifyHangFailure` APPENDS the clause after the
+        // whole #1324 sentence, so a wide clause costs the names rather than
+        // the `[verify-timeout]` marker the cap router keys on.
+        verifyHangFailure(
+          ran,
+          `in ${cwd}`,
+          suiteTimeoutMs,
+          hang,
+          // #1509 — name the knob that governs the tier that actually timed
+          // out. `ran` is the fast tier when the fast run is what hung, and
+          // the caller resolved that tier's bound; the knob travels with the
+          // tier rather than being guessed from the command string.
+          e.fastTier === undefined
+            ? (suiteTimeoutKnob ?? TIER_KNOB.suite)
+            : fastTimeoutMs === undefined
               ? (suiteTimeoutKnob ?? TIER_KNOB.suite)
-              : fastTimeoutMs === undefined
-                ? (suiteTimeoutKnob ?? TIER_KNOB.suite)
-                : TIER_KNOB.fast,
-          ),
-          `verify command \`${ran}\` failed in ${cwd}${depsHint}`,
+              : TIER_KNOB.fast,
         ),
+        `verify command \`${ran}\` failed in ${cwd}${depsHint}`,
       );
+      perWorktreeRecords.push({ cwd, text: failureText });
       // A green this workstream held describes the tree it had then. The
       // command just failed — on that tree or the one it holds now — so the
       // record is no evidence of anything and the next pass must run.
