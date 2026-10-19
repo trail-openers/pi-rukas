@@ -127,6 +127,33 @@ const refusal = [
   );
 }
 
+// The path lifted from the refusal text is interpolated into a shell command
+// the OPERATOR runs. A path the conservative shape check rejects (here: one
+// carrying `;` and a backtick) must never reach the command — the handoff
+// degrades to the `<path>` placeholder and points at the quoted evidence.
+{
+  const injected = `${REPO}/.worktrees/issue-1557-x;`;
+  const v = causeVerdictOf(
+    state1557(
+      `refusing to force-remove existing worktree ${injected}\`touch /tmp/pwned\` — it holds unrecoverable work: 1 uncommitted file(s): !! dist/`,
+    ),
+    "step-failed:branch",
+    undefined,
+  );
+  assertDefined(v, "a verdict exists for a refusal naming a malformed path");
+  assert(
+    (v.userAction ?? "") ===
+      "inspect the worktree itself — inspect the worktree named in the evidence, " +
+        "remove the worktree with `git worktree remove --force -- <path>`, then re-run `/work 1557`",
+    "a path outside the safe shape is replaced by <path>, never interpolated into the removal command",
+  );
+  assert(
+    (v.userAction ?? "").includes("inspect the worktree named in the evidence") &&
+      v.causeEvidence.some((l) => l.includes(injected)),
+    "the degraded action points at the evidence, which still quotes the real path",
+  );
+}
+
 // The ordinary mechanized-failure report (no refusal) is not a refusal either —
 // it reaches the ops fallback, and must not be dressed up as one.
 {

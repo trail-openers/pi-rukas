@@ -3,6 +3,15 @@
  *  - a non-worktree directory is refused, never read as clean (its file survives)
  *  - ignored files are loss; ignored symlinks and regenerable dirs are not
  *  - a worktree behind the base (HEAD an ancestor of fromRef) is no-loss
+ *
+ * #1642 narrowing — the collapsed-directory exemption is keyed on the directory
+ * NAME against an explicit set of known build-output names (`dist`, `build`,
+ * `target`, `coverage`, `.next`, `.turbo`, `.pytest_cache`, `__pycache__`,
+ * `.gradle`), matched on the TOP-LEVEL path segment. Git collapses ANY
+ * directory with no tracked entry, so a collapsed entry is not evidence of
+ * regenerability: `!! .secrets/`, `!! data/` and a hand-written `!! myapp/`
+ * collapse exactly like `!! dist/` and stay loss. Only a collapsed directory
+ * NAMED as a build output is exempt (cases 8b-8c, 14-15b).
  */
 import {
   existsSync,
@@ -16,6 +25,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { git, realExec } from "./lib/worktree-fake-fixture.ts";
+import { collapsedFinding, makeCollapsedBase } from "./lib/collapsed-dir-fixtures.ts";
 import { refuseDirtyCycleTrees } from "../src/work-driver-integrate-cycle.ts";
 import {
   DirtyWorktreeError,
@@ -173,8 +183,21 @@ try {
     "1170r3: an enumerated ignored target/ tree is loss and every entry names target/",
   );
 
-  // 8b. #1642 — the collapsed form of that same tree is NOT loss: git declares
-  // the whole directory ignored, so nothing tracked lives inside it.
+  // 8b. #1170 (the pre-#1642 baseline, restored) — a wholly collapsed ignored
+  // directory whose NAME is not a build output is loss: git collapses ANY
+  // directory with no tracked entry, so the collapse alone proves nothing and
+  // the original rule still governs everything outside the build-output names.
+  const xWt = await addWt("issue-9-crates");
+  mkdirSync(path.join(xWt, "crates"), { recursive: true });
+  writeFileSync(path.join(xWt, "crates", "f1.o"), "x");
+  writeFileSync(path.join(xWt, "crates", "f2.o"), "x");
+  const xFinding = await inspect(xWt);
+  assert(
+    xFinding?.uncommittedFiles.some((f) => f.includes("crates")) === true,
+    "1170: a wholly collapsed ignored directory that is not build-named is loss",
+  );
+  // 8c. #1642 (interactive #1557) — the collapsed form of the SAME tree in
+  // case 8, but NAMED `target/`, is exempt: a build tree, regenerable.
   const cWt0 = await addWt("issue-9-target-clean");
   mkdirSync(path.join(cWt0, "target"), { recursive: true });
   for (let i = 0; i < 2000; i++) writeFileSync(path.join(cWt0, "target", `f${i}.o`), "x");
@@ -320,6 +343,7 @@ try {
       "issue-9-nm",
       "issue-9-target",
       "issue-9-target-clean",
+      "issue-9-crates",
       "issue-9-multi",
       "issue-9-one",
       "issue-9-cycle",
@@ -344,9 +368,9 @@ try {
     `1642: worktreeCreate pre-removes the ignored-build-output worktree instead of refusing (${distCreateMsg})`,
   );
 
-  // 15. #1642 — the exemption is for what git COLLAPSES to one directory line.
-  // An enumerated ignored file inside the same partly tracked dist/ is still
-  // loss: a secret never hides behind an exempted directory name.
+  // 15. #1642 — the exemption is keyed on the NAME, not on the collapse. An
+  // enumerated ignored file inside the same partly tracked dist/ is still loss:
+  // a secret never hides behind an exempted directory name.
   const secretWt = await addWt("issue-9-secret", distBase);
   mkdirSync(path.join(secretWt, "dist"), { recursive: true });
   writeFileSync(path.join(secretWt, "dist", "secret.env"), "TOKEN=1\n");
@@ -355,6 +379,86 @@ try {
     secretFinding?.uncommittedFiles.some((f) => f.includes("secret.env")) === true,
     "1642: an enumerated ignored file inside dist/ is still loss",
   );
+
+  // The sibling scan (#545) inspects EVERY `issue-9-*` worktree, so a fixture
+  // that leaves dirt behind gets reported beside the case that runs after it and
+  // hides what that case asserts. The cases below create dirty trees by design
+  // (that IS the assertion), so each removes its own worktree once its finding
+  // has been read.
+  const removeWt = async (name: string) => {
+    await worktreeRemove(realExec, repo, name, true).catch(() => undefined);
+    await git(repo, ["worktree", "prune"]).catch(() => undefined);
+  };
+  // 15b. #1642 review — a WHOLLY collapsed directory is loss unless its
+  // TOP-LEVEL name is a known build output. Git collapses any directory with no
+  // tracked entry, so `!! .secrets/` and `!! data/` arrive in the same porcelain
+  // shape as `!! dist/` and must not be exempted by the shape alone — an
+  // exemption keyed on the collapse alone would skip salvage and let the
+  // pre-remove delete them. The base each case is cut from, and why the two
+  // collapse shapes have to be set up there, are in lib/collapsed-dir-fixtures.
+  const collapsedBase = await makeCollapsedBase(repo, distBase);
+  const probe = (slug: string, dir: string, file: string, contents: string) =>
+    collapsedFinding(repo, `issue-9-${slug}`, collapsedBase, dir, file, contents);
+  const secDirFinding = await probe(
+    "secrets",
+    ".secrets",
+    "id_rsa",
+    "-----BEGIN OPENSSH PRIVATE KEY-----\n",
+  );
+  assert(
+    secDirFinding?.uncommittedFiles.some((f) => f.includes(".secrets")) === true,
+    "1642r: a wholly collapsed !! .secrets/ holding id_rsa is loss, not exempted by its collapse",
+  );
+  const dataFinding = await probe("data", "data", "notes.md", "hand written\n");
+  assert(
+    dataFinding?.uncommittedFiles.some((f) => f.includes("data")) === true,
+    "1642r: a wholly collapsed !! data/ with a hand-written file is loss",
+  );
+  const cratesFinding = await probe("crates", "crates", "f1.o", "x");
+  assert(
+    cratesFinding?.uncommittedFiles.some((f) => f.includes("crates")) === true,
+    "1642r: a collapsed !! crates/ (not a build name) is loss, not exempted by its collapse",
+  );
+  const myappFinding = await probe("myapp", "myapp", "notes.md", "hand written\n");
+  assert(
+    myappFinding?.uncommittedFiles.some((f) => f.includes("myapp")) === true,
+    "1642r: a collapsed !! myapp/ with a hand-written file is loss",
+  );
+  // A collapsed root node_modules/ holding ONLY a hand-made `.env` — no
+  // manifest inside it, nothing that makes it look like a real install. The
+  // dependency-tree rule (b) exempts a ROOT tree by name alone, with no
+  // manifest requirement (only the depth-1 form needs one), so this is what
+  // origin/main does with it and this branch must not narrow it.
+  const nmOnlyFinding = await probe("nmonly", "node_modules", ".env", "SECRET=1\n");
+  assert(
+    nmOnlyFinding === undefined,
+    "1642r: a collapsed root node_modules/ with only a hand-made .env stays no-loss (the origin/main dependency-tree rule, unchanged)",
+  );
+  // The three names the #1557 exemption exists for, under the SAME options as
+  // the loss cases above — so it is the NAME that differs, not the fixture. The
+  // third takes the shape this repo's own build produces and case 14 asserts:
+  // `dist/prompts/` under the partly tracked `dist/`, whose collapsed entry
+  // still reads `dist` as its TOP-LEVEL segment.
+  assert(
+    (await probe("targetnamed", "target", "bundle.js", "x\n")) === undefined,
+    "1557: a wholly collapsed !! target/ is no-loss (a build name)",
+  );
+  assert(
+    (await probe("buildoutput", "build", "bundle.js", "x\n")) === undefined,
+    "1557: a wholly collapsed !! build/ is no-loss (a build name)",
+  );
+  assert(
+    (await probe("distnamed", "dist/prompts/standard", "explore.md", "# x\n")) === undefined,
+    "1557: a wholly collapsed !! dist/ is no-loss (a build name)",
+  );
+  // A build name nested under a partly tracked source directory is NOT exempt:
+  // only a top-level build root is one the driver may assume is regenerable.
+  const nestedFinding = await probe("nesteddist", "myapp/dist", "bundle.js", "x\n");
+  assert(
+    nestedFinding?.uncommittedFiles.some((f) => f.includes("myapp/dist")) === true,
+    "1642r: an ignored myapp/dist/ file is loss — a build name under a source directory is not a build root",
+  );
+  await removeWt("issue-9-secret");
 
   // 16. #1642 — an untracked non-ignored file, and a tracked modification, are
   // still loss beside the ignored build output (the salvage path stays).
@@ -368,6 +472,7 @@ try {
       !mixedFinding.uncommittedFiles.some((f) => f.includes("dist")),
     "1642: a real untracked file still refuses, and the ignored dist/ is not reported beside it",
   );
+  await removeWt("issue-9-mixed");
   const modWt = await addWt("issue-9-modified", distBase);
   writeFileSync(path.join(modWt, "a.txt"), "uncommitted edit\n");
   mkdirSync(path.join(modWt, "dist", "prompts"), { recursive: true });

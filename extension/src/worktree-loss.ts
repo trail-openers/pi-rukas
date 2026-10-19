@@ -14,19 +14,23 @@
  *    entries are loss UNLESS they are (a) a symlink (a provisioned link),
  *    (b) exactly `node_modules/`, `.venv/` or `vendor/` — the collapsed
  *    directory — at the worktree root, or directly inside a depth-1 directory
- *    that holds a package manifest/lockfile, or (c) an ignored DIRECTORY — a
- *    build/regenerable output tree (measured: `!! dist/`, `!! build/`,
- *    `!! coverage/`, `!! .pytest_cache/`). The exemption is for the collapsed
- *    directory as a whole: an ALL-ignored `vendor/` is exempt by design and git
- *    never enumerates its contents, so they are neither inspected nor counted as
- *    loss. A `vendor/` with any tracked file IS enumerated, and its ignored FILES
- *    are loss — a `!! vendor/.env` is a secret, not output (test 6 in
- *    test-worktree-loss-1170.ts). An ignored FILE at any other path is loss too,
- *    and so is anything inside a tracked or partly tracked directory that git
- *    enumerates as a file. Refusing stays safe, because nothing is deleted on a
- *    refusal; exempting the directory form is what stopped a worktree where a
- *    build had simply run blocking the next cycle for that issue (#1642 run 6:
- *    a same-issue leftover whose only dirt was `!! dist/` parked `step-failed:branch`).
+ *    that holds a package manifest/lockfile, or (c) a git-COLLAPSED ignored
+ *    DIRECTORY whose TOP-LEVEL path segment is one of the known build-output
+ *    names in `BUILD_OUTPUT_DIR_NAMES` (`dist`, `build`, `target`, `coverage`,
+ *    `.next`, `.turbo`, `.pytest_cache`, `__pycache__`, `.gradle`). The
+ *    exemption is keyed on the NAME, not on the collapse alone: git collapses
+ *    ANY directory with no tracked entry, so `!! .secrets/`, `!! data/` or a
+ *    hand-written `!! myapp/` collapse exactly like `!! dist/` does and stay
+ *    loss. The FIRST segment is the key (not the last) because a collapsed
+ *    entry can sit mid-path — `!! dist/prompts/`, what this repo's own build
+ *    produces — and `a/dist/` is not a build root the driver may assume. An ignored FILE at any path is loss too, and so is anything inside a
+ *    tracked or partly tracked directory that git enumerates as a file — a
+ *    `!! vendor/.env` is a secret, not output (test 6 in
+ *    test-worktree-loss-1170.ts). Refusing stays safe, because nothing is
+ *    deleted on a refusal; exempting build-NAMED directories is what stopped a
+ *    worktree where a build had simply run blocking the next cycle for that
+ *    issue (#1642 run 6: a same-issue leftover whose only dirt was `!! dist/`
+ *    parked `step-failed:branch`).
  *  - The `--ignored=traditional` collapse keeps the output bounded: an ignored
  *    `target/` tree is one `!! target/` line, not one line per file.
  *  - With no uncommitted work, the worktree is no-loss when HEAD is an ancestor
@@ -148,13 +152,16 @@ export interface InspectOpts {
    */
   ignoredIsLoss?: boolean;
   /**
-   * #1642 — whether a git-COLLAPSED ignored DIRECTORY (`!! dist/`, `!! build/`,
-   * a wholly ignored `target/`) counts as loss. `false` (the default, and the
-   * #1642 fix) for the branch step's same-issue residue pass and the
-   * worktreeCreate pre-remove: there, a worktree whose only dirt was build
-   * output blocked the next cycle for that issue forever, even though the
-   * output is regenerable (`bun run build`) and this repo's own
-   * `.pi/worktree-setup` generates `dist/prompts/` in every tree it provisions.
+   * #1642 — whether a git-COLLAPSED ignored DIRECTORY whose NAME is a known
+   * build output (`!! dist/`, `!! build/`, a wholly ignored `target/`) counts
+   * as loss. `false` (the default, and the #1642 fix) for the branch step's
+   * same-issue residue pass and the worktreeCreate pre-remove: there, a worktree
+   * whose only dirt was build output blocked the next cycle for that issue
+   * forever, even though the output is regenerable (`bun run build`) and this
+   * repo's own `.pi/worktree-setup` generates `dist/prompts/` in every tree it
+   * provisions. A collapsed directory whose name is NOT a build output (`!!
+   * .secrets/`, `!! data/`) is loss under BOTH settings — this option only ever
+   * moves the build-named ones.
    *
    * `true` is passed by the STALE-INTEGRATE-TREE check only: that tree is not
    * one a verify run ever builds in (see `keepOrRefuseStaleIntegrateTree`), so
@@ -176,17 +183,39 @@ const REGENERABLE_DIR_NAMES = new Set(["node_modules", ".venv", "vendor"]);
  * reports for an entire ignored subtree: `!! dist/` and `!! node_modules/`.
  * A porcelain entry is three characters — two status columns and the space —
  * then the path, so a TRAILING SLASH can only mean git collapsed a whole
- * directory: it never prints one for a file it enumerated. That is exactly the
- * shape a regenerable build tree takes (`!! dist/`, `!! build/`,
- * `!! coverage/`), and the shape `isRegenerableIgnored` judges.
+ * directory: it never prints one for a file it enumerated.
  *
- * A tracked file anywhere inside prevents the collapse and makes git enumerate
- * the ignored files individually, so a collapsed entry is never a secret or a
- * source file hiding behind an exempted name — those arrive as file entries and
- * stay loss. Entries without the slash (an ignored file, or anything git
- * enumerated rather than collapsed) are judged the old way.
+ * The collapse alone proves NOTHING about the contents — git collapses any
+ * directory with no tracked entry, secret-laden or not — so the collapsed form
+ * is only evidence for `BUILD_OUTPUT_DIR_NAMES` below. Entries without the
+ * slash (an ignored file, or anything git enumerated rather than collapsed) are
+ * judged the old way.
  */
 const COLLAPSED_DIR_SUFFIX = /\/$/;
+
+/**
+ * #1642 — the ONLY top-level names a git-COLLAPSED ignored directory may carry
+ * to be exempted: regenerable build output, each one produced by a command
+ * rather than written by a person. Matched against the FIRST path segment, so
+ * the repo's own `!! dist/prompts/` is covered and a build-named directory
+ * nested under somebody's source directory (`a/dist/`) is not. Deliberately NOT
+ * in the set: `out`, `data`, `tmp`, `secrets`, `cache` or any other name a
+ * person might hand-write a file into — git collapses those identically to
+ * `dist/`, and the collapse alone cannot tell them apart. Dependency trees
+ * (`node_modules`, `.venv`, `vendor`) have their own rule above and are not
+ * members here.
+ */
+const BUILD_OUTPUT_DIR_NAMES = new Set([
+  "dist",
+  "build",
+  "target",
+  "coverage",
+  ".next",
+  ".turbo",
+  ".pytest_cache",
+  "__pycache__",
+  ".gradle",
+]);
 
 /** A ref name made only of characters that are inert inside double quotes. */
 const SAFE_REF = /^[A-Za-z0-9._\/^{}~@+-]+$/;
@@ -254,15 +283,19 @@ function errorText(err: unknown): string {
  * `collapsedDir` says git reported this entry as a WHOLE ignored directory —
  * `!! dist/` — rather than as one file it enumerated. It is derived from the
  * porcelain line itself (the raw trailing slash), never from the filesystem:
- * the driver may inspect a tree it has since removed, and git's own collapse
- * IS the proof that nothing tracked lives inside.
+ * the driver may inspect a tree it has since removed. The collapse itself
+ * proves only that nothing TRACKED lives inside — which a directory full of
+ * secrets satisfies just as well as a build tree — so it exempts nothing on its
+ * own except together with a build-output NAME.
  *
  * Exempt: (a) any symlink — a provisioned link; (b) a dependency tree
  * (`node_modules`/`.venv`/`vendor`) at the root or inside a depth-1 project
  * directory, whatever shape git reported it in; (c) an ignored directory that
- * git COLLAPSED to one line, i.e. a build/regenerable output tree such as
- * `dist/` (#1642). Not exempt: any ignored FILE git enumerated — `!! .env`,
- * `!! vendor/.env` — which is content, not output.
+ * git COLLAPSED to one line AND whose name is in `BUILD_OUTPUT_DIR_NAMES` — a
+ * regenerable build tree such as `dist/` (#1642). Not exempt: any ignored FILE
+ * git enumerated — `!! .env`, `!! vendor/.env` — which is content, not output;
+ * nor any OTHER collapsed directory, because git collapses `!! .secrets/` and
+ * `!! data/` exactly as it collapses `!! dist/`.
  */
 async function isRegenerableIgnored(
   worktreeAbs: string,
@@ -274,10 +307,7 @@ async function isRegenerableIgnored(
   try {
     st = await fs.lstat(full);
   } catch {
-    // #1642 — git just listed it, so it exists; the tree may have been removed
-    // since. When git itself collapsed the entry to a whole directory, that
-    // answer stands on its own and the stat is not needed to trust it.
-    return collapsedDir === true;
+    return false; // unstattable: cannot prove it is a link or a regenerable tree
   }
   if (st.isSymbolicLink()) return true;
   const segs = entry.split("/");
@@ -292,16 +322,21 @@ async function isRegenerableIgnored(
     }
     return false;
   }
-  // An ignored FILE is never regenerable; only a git-COLLAPSED directory is.
+  // Anything else is regenerable ONLY as a git-COLLAPSED directory whose
+  // TOP-LEVEL name is a known build output. The name is the whole test — the
+  // collapse tells us nothing a secret directory does not also satisfy — and
+  // the first segment is the name, because a collapsed entry may sit mid-path
+  // (`!! dist/prompts/`) rather than at the worktree root.
   if (!st.isDirectory() || !collapsedDir) return false;
-  return true;
+  return BUILD_OUTPUT_DIR_NAMES.has(segs[0] ?? "");
 }
 
 /**
  * Which porcelain entries are uncommitted work. Tracked and untracked changes
  * always are. Ignored entries are work unless `isRegenerableIgnored` exempts
- * them — and not at all when `ignoredIsLoss` is false. A collapsed DIRECTORY is
- * exempted unless `collapsedDirIsLoss` is explicitly true (#1642).
+ * them — and not at all when `ignoredIsLoss` is false. A collapsed directory
+ * NAMED as a build output is exempted unless `collapsedDirIsLoss` is explicitly
+ * true (#1642); any other collapsed directory is exempted by nothing.
  */
 async function uncommittedEntries(
   worktreeAbs: string,

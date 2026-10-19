@@ -67,6 +67,28 @@ function refusalPath(body: string): string | undefined {
   return raw === undefined || raw.length === 0 ? undefined : raw;
 }
 
+/**
+ * A worktree path safe to put into the removal command the handoff prints.
+ *
+ * `refusalPath` reads untrusted text — the plumb body is built from the
+ * worktree path, which ultimately derives from the repo root, and a future
+ * producer may write the whole message through a model. The extracted token is
+ * interpolated into `git worktree remove --force -- <path>` in the operator's
+ * own shell, so it is admitted only in the exact shape a driver worktree path
+ * takes: absolute, and made solely of characters inert inside a shell word
+ * (`;`, backtick, `$`, quote, space, `&`, `|`, `<`, `>` all fail). Anything
+ * else is dropped in favour of the `<path>` placeholder the no-path branch
+ * already emits — the operator then reads the path off the quoted evidence
+ * rather than pasting one the driver could not vouch for.
+ */
+const SAFE_WORKTREE_PATH = /^\/[A-Za-z0-9._/@+-]+$/;
+
+function removalTarget(path: string | undefined): string {
+  if (path === undefined) return "<path>";
+  if (!SAFE_WORKTREE_PATH.test(path) || !path.includes("/.worktrees/")) return "<path>";
+  return path;
+}
+
 /** The salvage line's own wording, exported so the classifier reads it as a shared constant. */
 export const SALVAGE_NOTE_MARK = "Salvaged dirty worktree";
 
@@ -120,10 +142,9 @@ export function branchRefusalVerdictFor(
     salvageDir === undefined
       ? "inspect the worktree itself"
       : `inspect the salvage at ${salvageDir}`;
-  const userAction =
-    where === undefined
-      ? `${inspect}, remove the worktree with \`git worktree remove --force -- <path>\`, then re-run \`/work ${issue}\``
-      : `${inspect}, remove the worktree with \`git worktree remove --force -- ${where}\`, then re-run \`/work ${issue}\``;
+  const target = removalTarget(where);
+  const inspectExtra = target === "<path>" ? " — inspect the worktree named in the evidence" : "";
+  const userAction = `${inspect}${inspectExtra}, remove the worktree with \`git worktree remove --force -- ${target}\`, then re-run \`/work ${issue}\``;
   return {
     causeClass: "environment",
     causeReason: "a stale worktree left by an earlier cycle for this issue blocked the branch step",
