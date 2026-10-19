@@ -195,6 +195,32 @@ async function tail(
   );
 }
 
+// ------------------------- 4b. N=1 directory fence covering the path: refused
+
+{
+  const ws = { "task-1": WS("task-1", ["src/a.ts"], ["extension/smoke-tests"]) };
+  assert(
+    repairOmittedDeliverablePaths(ws, SPEC, []) === undefined,
+    "directory-fenced missing path: the repair refuses, as the gate's prefix fence does",
+  );
+}
+
+// ------------------------------ 4c. N=1 template slot: never written literally
+
+{
+  const SPEC_T: NormalisedSpec = {
+    ...SPEC,
+    deliverables: [
+      { id: "d5", description: "tmpl", paths: ["extension/src/work-driver-<name>.ts"] },
+    ],
+  };
+  const ws = { "task-1": WS("task-1", ["src/a.ts"]) };
+  assert(
+    repairOmittedDeliverablePaths(ws, SPEC_T, []) === undefined,
+    "template missing slot: the repair refuses rather than appending the literal template",
+  );
+}
+
 // ------------------------------------------------------------ 5. N=2: unchanged
 
 {
