@@ -12,12 +12,16 @@
  *      exactly one corrective dispatch.
  *   4. a corrective developer that fails parks with NO re-verify.
  *   5. a verify failure with no ✗ / error line gets no round.
+ *   6. a corrected cycle records the same post-verify events as an uncorrected
+ *      passing one (both reach the one shared verdict path).
+ *   7. a crash between the decision and the write-ahead leaves no round on disk,
+ *      so a resumed cycle still gets it; the write-ahead is the only write.
  * The pure decision (exemptions, attribution, deps rule) is pinned in
  * test-work-driver-corrective-decide.ts.
  */
 
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -49,23 +53,34 @@ const gitOut = async (cwd: string, args: string[]): Promise<string> =>
  * The verify stand-in. It passes at base (no work.txt) and fails once the first
  * developer's work.txt exists without fixed.txt. The failure prints the marker
  * FIRST and the ✗ line after it — the golden #1579 shape, since the attributed
- * tail starts at the last FAILED: marker.
+ * tail starts at the last FAILED: marker. `lockDir`, when given, is made
+ * read-only by the failing run: the next state write then fails, as a crash
+ * between the decision and the write-ahead would.
  */
-function checkScript(runsLog: string, plain: boolean): string {
+function checkScript(runsLog: string, plain: boolean, lockDir?: string): string {
   const body = plain
     ? 'echo "FAILED: b.ts"; echo "something went wrong"'
     : 'echo "FAILED: b.ts"; echo "\u2717 b.ts: expected fixed.txt to exist"';
-  return `#!/bin/sh\necho run >> ${runsLog}\n[ -f work.txt ] || exit 0\n[ -f fixed.txt ] && exit 0\n${body}\nexit 1\n`;
+  const lock = lockDir === undefined ? "" : `chmod 555 ${lockDir}\n`;
+  return `#!/bin/sh\necho run >> ${runsLog}\n[ -f work.txt ] || exit 0\n[ -f fixed.txt ] && exit 0\n${lock}${body}\nexit 1\n`;
 }
 
-async function fixture(
-  name: string,
-  plain = false,
-): Promise<{ repo: string; baseSha: string; runsLog: string }> {
+interface RunOpts {
+  plain?: boolean;
+  /** The first developer also writes the fix, so the first verify passes. */
+  firstFixes?: boolean;
+  /** Lock the state directory on the failing verify (the crash simulation). */
+  lockStateOnFail?: boolean;
+  /** Receives every developer dispatch, so a run that throws still reports them. */
+  sink?: Call[];
+}
+
+async function fixture(name: string, opts: RunOpts): Promise<{ repo: string; baseSha: string; runsLog: string }> {
   const repo = path.join(root, name);
   mkdirSync(path.join(repo, ".pi"), { recursive: true });
   const runsLog = path.join(root, `${name}-runs.log`);
-  writeFileSync(path.join(repo, "check.sh"), checkScript(runsLog, plain));
+  const lockDir = opts.lockStateOnFail === true ? path.join(repo, ".pi", "work-state") : undefined;
+  writeFileSync(path.join(repo, "check.sh"), checkScript(runsLog, opts.plain === true, lockDir));
   writeFileSync(path.join(repo, ".pi", "verify-cmd"), "sh check.sh\n");
   await git(repo, ["init", "-q", "--initial-branch=main"]);
   await git(repo, ["config", "user.email", "t@example.com"]);
@@ -92,11 +107,11 @@ interface Call {
 }
 
 /** One N=1 develop run: the first developer writes work.txt; the corrective one behaves per `mode`. */
-async function run(name: string, mode: Mode, plain = false) {
-  const { repo, baseSha, runsLog } = await fixture(name, plain);
+async function run(name: string, mode: Mode, opts: RunOpts = {}) {
+  const { repo, baseSha, runsLog } = await fixture(name, opts);
   const wt = path.join(repo, ".worktrees", `issue-${ISSUE}-a`);
   await git(repo, ["worktree", "add", "-q", "--detach", wt, baseSha]);
-  const calls: Call[] = [];
+  const calls: Call[] = opts.sink ?? [];
   const dispatchFn = async (_pi: unknown, spec: { cwd?: string; prompt?: string }) => {
     const corrective = (spec.prompt ?? "").includes("corrective develop round");
     const call: Call = {
@@ -114,6 +129,7 @@ async function run(name: string, mode: Mode, plain = false) {
     calls.push(call);
     if (!corrective) {
       writeFileSync(path.join(wt, "work.txt"), "first pass\n");
+      if (opts.firstFixes === true) writeFileSync(path.join(wt, "fixed.txt"), "fixed\n");
     } else if (mode === "fix") {
       writeFileSync(path.join(wt, "fixed.txt"), "fixed\n");
     } else if (mode === "noop") {
@@ -130,10 +146,8 @@ async function run(name: string, mode: Mode, plain = false) {
         transcriptPath: "/tmp/x.json",
       } satisfies DispatchResult;
     }
-    if (mode !== "fail" || !corrective) {
-      await git(wt, ["add", "-A"]);
-      await git(wt, ["commit", "-q", "-m", corrective ? "fix" : "first"]);
-    }
+    await git(wt, ["add", "-A"]);
+    await git(wt, ["commit", "-q", "-m", corrective ? "fix" : "first"]);
     return {
       role: "developer",
       ok: true,
@@ -179,7 +193,7 @@ async function run(name: string, mode: Mode, plain = false) {
     Date.now(),
     `job-1667-${name}`,
   );
-  return { after, calls, runsLog };
+  return { after, calls, runsLog, repo };
 }
 
 const rounds = (s: WorkState) => s.eventLog.filter((e) => e.kind === "corrective-round");
@@ -188,6 +202,18 @@ const correctiveCalls = (calls: Call[]) =>
 const lastCap = (s: WorkState) => {
   const last = s.eventLog[s.eventLog.length - 1];
   return last?.kind === "cap-hit" ? last.cap : undefined;
+};
+/** The event kinds after the last developer completion: the verdict path's own events. */
+const verdictTail = (s: WorkState): string[] => {
+  const log = s.eventLog;
+  let from = -1;
+  for (let i = log.length - 1; i >= 0; i--) {
+    if (log[i]?.kind === "dispatch-completed") {
+      from = i;
+      break;
+    }
+  }
+  return log.slice(from + 1).map((e) => e.kind);
 };
 
 // ── 1. one round, the fix passes the second verify ───────────────────────
@@ -252,7 +278,7 @@ const lastCap = (s: WorkState) => {
 
 // ── 5. no assertion line: no round ───────────────────────────────────────
 {
-  const { after, calls } = await run("plain", "fix", true);
+  const { after, calls } = await run("plain", "fix", { plain: true });
   assert(
     correctiveCalls(calls).length === 0,
     "no-assertion: no corrective developer is dispatched",
@@ -262,6 +288,49 @@ const lastCap = (s: WorkState) => {
     lastCap(after) === "verify-failed:develop",
     "no-assertion: parks at verify-failed:develop as before",
   );
+}
+
+// ── 6. a corrected cycle reaches the same verdict events as an uncorrected one ──
+{
+  const corrected = await run("eq-corrected", "fix");
+  const uncorrected = await run("eq-uncorrected", "noop", { firstFixes: true });
+  assert(
+    rounds(uncorrected.after).length === 0 && correctiveCalls(uncorrected.calls).length === 0,
+    "equivalence: the uncorrected cycle passed its first verify (no round)",
+  );
+  assert(
+    lastCap(corrected.after) === undefined && lastCap(uncorrected.after) === undefined,
+    "equivalence: both cycles end with no cap-hit",
+  );
+  const a = verdictTail(corrected.after);
+  const b = verdictTail(uncorrected.after);
+  assert(
+    a.length > 0 && JSON.stringify(a) === JSON.stringify(b),
+    `equivalence: the post-verify events match (corrected ${a.join(",")} | uncorrected ${b.join(",")})`,
+  );
+}
+
+// ── 7. a crash between the decision and the write-ahead: no round on disk ──
+if (process.getuid?.() !== 0) {
+  const crashCalls: Call[] = [];
+  const crashed = await run("crash", "fix", { lockStateOnFail: true, sink: crashCalls }).then(
+    () => "completed",
+    () => "threw",
+  );
+  assert(crashed === "threw", "crash: the state write refused, so the develop step did not complete");
+  const stateDir = path.join(root, "crash", ".pi", "work-state");
+  chmodSync(stateDir, 0o755);
+  const onDisk = await readState(path.join(root, "crash"), ISSUE);
+  assert(
+    (onDisk?.eventLog ?? []).every((e) => e.kind !== "corrective-round"),
+    "crash: no corrective-round record reached disk before the crash",
+  );
+  assert(
+    correctiveCalls(crashCalls).length === 0,
+    "crash: no corrective developer was started",
+  );
+} else {
+  console.log("skip: crash simulation needs a non-root user (chmod does not bind root)");
 }
 
 rmSync(root, { recursive: true, force: true });

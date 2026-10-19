@@ -22,7 +22,6 @@ import {
   extractSpecificAssertion,
 } from "./work-driver-consolidation-classify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import type { VerifyCommandRecord } from "./work-driver-corrective-decide.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { aggregateVerifyOutcome } from "./work-driver-verify-aggregate.ts";
 import {
@@ -40,6 +39,7 @@ import {
   reusableGatePass,
 } from "./work-driver-verify-gate-reuse.ts";
 import { runPerWorktreeVerify } from "./work-driver-verify-per-worktree.ts";
+import type { RanVerifyRecord, VerifyRecordSlot } from "./work-driver-verify-record.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { WorkstreamGreen } from "./workflow-state-schema-gate-reuse.ts";
@@ -155,8 +155,8 @@ export async function runVerifyCommandGate(opts: {
    * `buildResidueOnly`, which is what `verifyCapFor` routes on.
    */
   onBuildResidueOnly?: () => void;
-  /** #1667 \u2014 filled with this run's per-worktree failures and consolidated raw failure. */
-  verifyRecord?: VerifyCommandRecord;
+  /** #1667 — this run's record: what it ran and how each run failed. */
+  verifyRecord?: VerifyRecordSlot;
 }): Promise<void> {
   const {
     execFn,
@@ -196,9 +196,17 @@ export async function runVerifyCommandGate(opts: {
   // the one the run was bounded by, and N per-worktree runs each re-reading the
   // environment could disagree with each other about which bound fired.
   const suiteTimeoutMs = suiteTierTimeoutMsOpt ?? (await verifyTimeoutMs());
-  const perWorktreeVerifyFailures: string[] = [];
-  // #1667 \u2014 the same failures keyed by the cwd they ran in (the corrective round's attribution).
+  // #1667 — each failure with the cwd it ran in; the flat failure list is derived from these.
   const perWorktreeRecords: Array<{ cwd: string; text: string }> = [];
+  // #1667 — this run's record. Its block failures are set where the gate returns.
+  const record: RanVerifyRecord = {
+    status: "ran",
+    command: cmd,
+    failures: [],
+    perWorktree: perWorktreeRecords,
+  };
+  if (opts.verifyRecord) opts.verifyRecord.current = record;
+  const failuresAtEntry = failures.length;
   // The tier-resolved bound is also part of the reuse identity.
   const passTimeoutMs = suiteTimeoutMs;
   // #1415 — the whole-gate reuse, decided BEFORE a single command runs. When
@@ -255,12 +263,11 @@ export async function runVerifyCommandGate(opts: {
     hangSink,
     suiteTimeoutKnob,
     fastTimeoutMs,
-    perWorktreeVerifyFailures,
     perWorktreeRecords,
     greensRecorded,
     greensRefuted,
   });
-  if (opts.verifyRecord) opts.verifyRecord.perWorktree = perWorktreeRecords;
+  const perWorktreeVerifyFailures = perWorktreeRecords.map((r) => r.text);
   // #1005 — per-worktree failures are the verdict when the consolidated run
   // cannot run (no valid baseSha or nothing to combine); otherwise the
   // CONSOLIDATED tree is the verdict AND the per-worktree failures are kept
@@ -292,6 +299,7 @@ export async function runVerifyCommandGate(opts: {
     // (without it the combined tree cannot be built); with no changed
     // worktrees there is nothing to combine, so no note is recorded.
     failures.push(...perWorktreeVerifyFailures);
+    record.failures = failures.slice(failuresAtEntry);
     // No whole-gate verdict without a consolidated run, but a green a worktree
     // just refuted must not survive to license the next round's skip.
     if (greensRecorded.length > 0 || greensRefuted.length > 0) {
@@ -393,8 +401,7 @@ export async function runVerifyCommandGate(opts: {
           }),
         }),
       );
-  if (opts.verifyRecord && cons.status === "failed")
-    opts.verifyRecord.consolidatedRaw = cons.rawFailure;
+  if (cons.status === "failed") record.consolidatedRaw = cons.rawFailure;
   // The consolidated run's wall-clock: measured, not estimated, because it is
   // the number the next round's reuse decision is screened against — and a
   // reused pass has no duration, because it ran nothing.
@@ -487,4 +494,5 @@ export async function runVerifyCommandGate(opts: {
     notes,
     onBaselineAttributed: () => opts.onBaselineAttributed?.(),
   });
+  record.failures = failures.slice(failuresAtEntry);
 }

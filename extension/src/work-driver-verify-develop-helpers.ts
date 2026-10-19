@@ -11,7 +11,6 @@
  */
 
 import { trace } from "./trace.ts";
-import type { VerifyCommandRecord } from "./work-driver-corrective-decide.ts";
 import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import {
   extractAttributedTail,
@@ -309,20 +308,6 @@ export function normaliseScopePath(raw: string) {
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;
 export function isValidSha(s: string | undefined): s is string {
   return typeof s === "string" && VALID_SHA_RE.test(s);
-}
-
-/**
- * #1667 — the verify command block's own failures and command, recorded for the
- * corrective-round decision. A caller that does not route on it passes nothing.
- */
-export function recordVerifyBlock(
-  record: VerifyCommandRecord | undefined,
-  command: string,
-  blockFailures: readonly string[],
-): void {
-  if (record === undefined) return;
-  record.command = command;
-  record.failures = [...blockFailures];
 }
 
 /** #307 — maximum number of net-removed test blocks tolerated in a diff. */
