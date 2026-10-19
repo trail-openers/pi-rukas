@@ -22,6 +22,7 @@ import {
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
+import { deferredForCycle } from "./work-driver-plan-fence.ts";
 import { ungrantedProtectedPaths } from "./work-driver-protected-grant.ts";
 import {
   changedPaths,
@@ -163,6 +164,10 @@ export async function verifyDevelopOutcome(
   // #1378 — resolved ONCE for the whole run: consulted in three places below, and a
   // harness that flipped the switch mid-loop would gate one worktree and not the next.
   const protectedGateOn = protectedPathsEnabled();
+  // #1676 — the deferred set the scope gate bounds an emptied workstream against.
+  // `deferredForCycle` applies the escape hatch, so the fence and the bound cannot
+  // disagree about whether the mechanism is on.
+  const deferredProtected = deferredForCycle(state.pipelineState.deferredProtected);
   for (const [id, cwd] of Object.entries(worktrees)) {
     let hasCommits = false;
     let hasUncommitted = false;
@@ -353,7 +358,7 @@ export async function verifyDevelopOutcome(
     notes,
     fenceViolations,
     scopeFenceLift(ctx, state, options.fenceLifts),
-    { protectedRefused },
+    { protectedRefused, protectedDeferred: deferredProtected },
   );
   if (changedWorktrees.length === 0) {
     // #679 (task-evidence) — if every assessed worktree is a legitimate
