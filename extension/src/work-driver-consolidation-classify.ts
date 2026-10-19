@@ -230,13 +230,20 @@ export function classifyConsolidatedVerifyFailure(
   if (workstreamCount <= 1) {
     const perFailure = Object.values(perWorktreeFailuresByWs)[0] ?? "";
     const perAssertion = extractSpecificAssertion(perFailure);
+    // #1675 — the N=1 sentence names the verify command's own failing line. A
+    // single-workstream cycle has no combination to blame, so no attribution
+    // wording is offered for it.
+    const failedLine =
+      assertion === NO_SPECIFIC_ASSERTION
+        ? "the verify command failed and no specific failing line could be extracted — see the raw output"
+        : `the verify command failed: ${assertion}`;
     if (perFailure && perAssertion && sharesAssertion(consolidatedFailure, perAssertion)) {
       return {
         classification: "per-workstream-defect",
         assertion,
         workstreamIds: workstreamIds.slice(0, 1),
         trivialFix: false,
-        reason: `single-workstream cycle: the consolidated failure matches the per-worktree failure (${perAssertion}) — this is a genuine per-workstream defect, not a combination artifact; re-run that workstream's verify`,
+        reason: `${failedLine}; it matches that workstream's own per-worktree failure, so re-run that workstream's verify`,
       };
     }
     return {
@@ -244,8 +251,7 @@ export function classifyConsolidatedVerifyFailure(
       assertion,
       workstreamIds: workstreamIds.slice(0, 1),
       trivialFix: false,
-      reason:
-        "single-workstream cycle: the consolidated failure cannot be attributed to a per-workstream defect — park as needs-human with the specific assertion",
+      reason: failedLine,
     };
   }
 
