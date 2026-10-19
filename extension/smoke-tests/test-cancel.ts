@@ -70,7 +70,7 @@
 
 // Must stay first: sets PI_ENSEMBLE_PROMPTS_DIR before src/roles.ts loads (#1579).
 import "./lib/cancel-prompts.ts";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { ROLES } from "../src/roles.ts";
@@ -288,10 +288,10 @@ assert(
   process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS === "0",
   "env invariant: PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS === '0' for the abort tests",
 );
-assert(
-  ROLES.explore.promptFile.startsWith(CANCEL_PROMPTS_DIR + sep),
-  "env invariant: explore prompt is read from the test-owned prompts dir",
-);
+for (const [role, { promptFile: p }] of Object.entries(ROLES)) {
+  const ok = p.startsWith(CANCEL_PROMPTS_DIR + sep) && existsSync(p);
+  assert(ok, `env invariant: ${role} prompt is under the test-owned dir and exists`);
+}
 
 try {
   // Test 1 — AbortSignal kills the child mid-flight (deterministic fake child).

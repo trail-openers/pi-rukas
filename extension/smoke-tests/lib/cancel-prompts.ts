@@ -18,27 +18,28 @@
  * override below and the override would be too late.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// Type-only: erased at compile time, so roles.ts is NOT evaluated here and the
+// env override below still lands first. The annotation ties this list to the
+// source of truth's role names; the values are hard-coded on purpose.
+import type { RoleName } from "../../src/roles.ts";
 
-// Mirrors ROLE_NAMES in src/roles.ts. Hard-coded on purpose: importing that
-// module here would evaluate it before the env override below.
-const ROLE_FILES = [
+const ROLE_FILES: readonly RoleName[] = [
   "project-manager",
   "developer",
   "ops",
   "explore",
   "adversarial-developer",
   "code-review-specialist",
-] as const;
+];
 
 /** The directory this process's role prompts are read from. Owned by this run. */
 export const CANCEL_PROMPTS_DIR: string = mkdtempSync(
   join(tmpdir(), "pi-ensemble-cancel-prompts-"),
 );
 
-mkdirSync(CANCEL_PROMPTS_DIR, { recursive: true });
 for (const role of ROLE_FILES) {
   writeFileSync(
     join(CANCEL_PROMPTS_DIR, `${role}.md`),
