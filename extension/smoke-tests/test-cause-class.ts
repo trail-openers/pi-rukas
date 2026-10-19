@@ -26,7 +26,7 @@ import { projectIssue } from "../src/headless/result.ts";
 import { causeVerdictOf } from "../src/work-driver-cause-class.ts";
 import { causeForCycle } from "../src/work-driver-cause-for.ts";
 import { causeLeadChat, causeLeadMarkdown } from "../src/work-driver-cause-render.ts";
-import { causeSafeText, scrubDepsHint } from "../src/work-driver-cause-scrub.ts";
+import { causeSafeText, scrubDepsHint, stripControls } from "../src/work-driver-cause-scrub.ts";
 import {
   CAUSE_CLASSES,
   type CauseClass,
@@ -264,6 +264,34 @@ assert(KIND_CLASS.driver === "pi-rukas", "a driver failure kind stays pi-rukas")
     undefined,
   );
   assert(v?.causeClass === "change", "a dependency line that is the failing check stays change");
+}
+
+// A missing RELATIVE or ABSOLUTE module is the change's own import, never the worktree's.
+{
+  const beside = causeVerdictOf(
+    verifyState(["Cannot find module './missing.ts' from src/a.ts\n✗ a.ts: assertion failed"]),
+    "verify-failed:develop",
+    undefined,
+  );
+  assert(beside?.causeClass === "change", "a relative-import miss beside a ✗ check is change");
+  const absolute = causeVerdictOf(
+    verifyState(["Cannot find module '/x/y.ts'"]),
+    "verify-failed:develop",
+    undefined,
+  );
+  assert(absolute?.causeClass === "change", "an absolute-path miss alone is change");
+  const bare = causeVerdictOf(
+    verifyState(["Cannot find module 'zod'\n✗ a.ts: assertion failed"]),
+    "verify-failed:develop",
+    undefined,
+  );
+  assert(bare?.causeClass === "environment", "a bare package miss beside a ✗ check is environment");
+}
+
+// Bidi overrides, isolates and zero-width characters are stripped from every cause surface.
+{
+  const hidden = "a\u202Eb\u2066c\u2069d\u200Be\u200Ff\uFEFFg\u202Ah";
+  assert(stripControls(hidden) === "abcdefgh", "bidi and zero-width characters are stripped");
 }
 
 // ---------------------------------------------------------------------------

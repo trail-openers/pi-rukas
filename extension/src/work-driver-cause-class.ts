@@ -201,13 +201,16 @@ function assertionLinesOf(failures: readonly string[]): string[] {
   return out;
 }
 
-/** The first verify line that carries a dependency signature, if the output has one. */
+/** A missing-module message whose specifier is a relative or absolute path: the change's own import, not a package. */
+const RELATIVE_MISS = /(?:Cannot find module|Could not resolve)[:\s]+['"`]?[./]/i;
+
+/** The first verify line that carries a package dependency signature, if the output has one. */
 function firstDependencyLine(failures: readonly string[]): string | undefined {
   if (!looksLikeMissingDeps(failures.join("\n"))) return undefined;
   for (const f of failures) {
     for (const raw of f.split("\n")) {
       const line = raw.trim();
-      if (line.length > 0 && looksLikeMissingDeps(line)) return line;
+      if (line.length > 0 && looksLikeMissingDeps(line) && !RELATIVE_MISS.test(line)) return line;
     }
   }
   return undefined;
@@ -217,7 +220,11 @@ function firstDependencyLine(failures: readonly string[]): string | undefined {
 interface QuotedReply {
   id?: string;
   text: string;
+  /** The workstream recorded no reply; `text` is NO_REPLY, never another workstream's words. */
+  missing?: boolean;
 }
+
+const NO_REPLY = "(no reply recorded)";
 
 /**
  * The develop replies the verdict quotes. Under a fan-out these are the reply(s)
@@ -247,7 +254,7 @@ function quotedReplies(state: WorkState): QuotedReply[] {
     const text =
       replies.get(`developer[${id}]`) ??
       (chosen.length === 1 ? replies.get("developer") : undefined);
-    if (text !== undefined) picked.push({ id, text });
+    picked.push(text === undefined ? { id, text: NO_REPLY, missing: true } : { id, text });
   }
   if (picked.length > 0) return picked;
   return last === undefined ? [] : [{ text: last }];
@@ -257,7 +264,9 @@ function quotedReplies(state: WorkState): QuotedReply[] {
 function tagged(replies: readonly QuotedReply[], lines: (r: QuotedReply) => string[]): string[] {
   const named = replies.length > 1;
   return replies.flatMap((r) =>
-    lines(r).map((l) => (named && r.id !== undefined ? `workstream ${r.id}: ${l}` : l)),
+    lines(r).map((l) =>
+      r.id !== undefined && (named || r.missing === true) ? `workstream ${r.id}: ${l}` : l,
+    ),
   );
 }
 

@@ -86,5 +86,23 @@ assert(
   "several quoted replies each name their workstream",
 );
 
+// A downgraded workstream with no recorded reply is named, never given another workstream's reply.
+{
+  const state = fanoutNoChange(["a", "b"]);
+  state.eventLog = state.eventLog.filter(
+    (e) => !(e.kind === "dispatch-completed" && (e as { label?: string }).label === "developer[b]"),
+  );
+  const v = causeForCycle(state);
+  const lines = v?.causeEvidence ?? [];
+  assert(
+    lines.includes("workstream b: (no reply recorded)"),
+    "a no-change workstream with no reply is named as having no reply",
+  );
+  assert(
+    !lines.some((l) => l.includes("I made no change to a") && l.startsWith("workstream b")),
+    "no other workstream's reply is attributed to the missing one",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
