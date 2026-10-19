@@ -24,6 +24,7 @@ import {
   appendWriteFenceRefusal,
   clearWriteFenceLogs,
   countWriteFenceRefusals,
+  unscratchedDir,
 } from "../src/write-fence-log.ts";
 import { buildFenceFixture } from "./lib/write-fence-fixture.ts";
 
@@ -194,6 +195,38 @@ assert(
   assert(
     afterClean.count === 0 && afterClean.unreadable === 0,
     "E: a restart that removes every log starts the count at a known zero",
+  );
+}
+
+// ============================================================
+// F. A refusal the cycle scratch dir cannot take is counted unknown, never 0 (#1655 review r4).
+// ============================================================
+{
+  const repoNoScratch = path.join(fx.base, "repo-no-scratch");
+  mkdirSync(repoNoScratch, { recursive: true });
+  // An unset scratch dir, and a relative one: neither names a place the driver reads.
+  appendWriteFenceRefusal(undefined, { tool: "bash", path: "/x", reason: "r", at: 1 }, repoNoScratch);
+  appendWriteFenceRefusal("tmp/relative", { tool: "bash", path: "/y", reason: "r", at: 2 }, repoNoScratch);
+  const fallback = await countWriteFenceRefusals(unscratchedDir(repoNoScratch));
+  assert(
+    fallback.unreadable >= 1,
+    "F: a refusal with an unset or relative scratch dir leaves an unaccounted marker in the repo's fallback dir",
+  );
+  const folded = await foldWriteFenceCount(
+    { repoRoot: repoNoScratch, issue: ISSUE } as unknown as CycleContext,
+    initialState(ISSUE),
+  );
+  assert(
+    (folded.pipelineState.writeFenceUnreadable ?? 0) >= 1,
+    "F: the driver's fold reads the fallback marker, so the handoff reports the count unknown",
+  );
+  // A usable scratch dir takes the refusal as before, with no fallback marker.
+  const usable = path.join(fx.base, "usable-scratch");
+  mkdirSync(usable, { recursive: true });
+  appendWriteFenceRefusal(usable, { tool: "bash", path: "/z", reason: "r", at: 3 }, repoNoScratch);
+  assert(
+    (await countWriteFenceRefusals(usable)).count === 1,
+    "F: a usable scratch dir still logs the refusal to the child's own log",
   );
 }
 

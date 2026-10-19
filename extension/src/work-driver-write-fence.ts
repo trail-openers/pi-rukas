@@ -16,6 +16,7 @@ import {
   clearWriteFenceLogs,
   countWriteFenceRefusals,
   markCountUnknown,
+  unscratchedDir,
 } from "./write-fence-log.ts";
 
 /**
@@ -27,12 +28,18 @@ export async function resetWriteFenceLogs(scratch: string): Promise<void> {
   if (stuck > 0) markCountUnknown(scratch, stuck);
 }
 
-/** `state` with the cycle's refusal total brought up to date from the scratch dir. */
+/**
+ * `state` with the cycle's refusal total brought up to date from the scratch dir, and
+ * the repo's fallback dir (a refusal from a child whose scratch dir was unusable).
+ */
 export async function foldWriteFenceCount(
   ctx: { repoRoot: string; issue: number },
   state: WorkState,
 ): Promise<WorkState> {
-  const { count, unreadable } = await countWriteFenceRefusals(scratchDir(ctx.repoRoot, ctx.issue));
+  const logged = await countWriteFenceRefusals(scratchDir(ctx.repoRoot, ctx.issue));
+  const fallback = await countWriteFenceRefusals(unscratchedDir(ctx.repoRoot));
+  const count = logged.count + fallback.count;
+  const unreadable = logged.unreadable + fallback.unreadable;
   const pipeline = state.pipelineState;
   if (
     count === (pipeline.writeFenceRefusals ?? 0) &&

@@ -17,7 +17,12 @@
  * guess its shape.
  */
 
-import { type Heredoc, heredocDelimiter, skipHeredocBodies } from "./write-fence-bash-heredoc.ts";
+import {
+  type Heredoc,
+  heredocDelimiter,
+  heredocSubstitutions,
+  skipHeredocBodies,
+} from "./write-fence-bash-heredoc.ts";
 import {
   decodeAnsiC,
   dollarExpansion,
@@ -36,6 +41,11 @@ export interface Word {
   text: string;
   dyn: boolean;
   glob?: boolean;
+  /**
+   * Set on a synthetic word the fence refuses outright, with the reason. Used for a
+   * write whose path the command does not name (`git config` writes the shared config).
+   */
+  refusal?: string;
 }
 
 /** Unquoted characters the shell expands as a pathname pattern. */
@@ -221,7 +231,14 @@ export function lex(src: string): Lexed | undefined {
     }
     if (ch === "\n") {
       op(s, "\n");
-      i = skipHeredocBodies(src, i + 1, heredocs);
+      const unquoted: string[] = [];
+      i = skipHeredocBodies(src, i + 1, heredocs, unquoted);
+      // An unquoted body is data, but bash runs the `$(…)` and backticks in it: judge those as commands.
+      for (const body of unquoted) {
+        const subs = heredocSubstitutions(body);
+        if (subs === undefined) return undefined;
+        s.subs.push(...subs);
+      }
       continue;
     }
     if (ch === "#" && s.word === undefined) {
@@ -267,7 +284,7 @@ export function lex(src: string): Lexed | undefined {
       } else if (next === "<") {
         const heredoc = heredocDelimiter(src, i);
         if (heredoc === -1) return undefined;
-        heredocs.push({ delim: heredoc.delim, strip: heredoc.strip });
+        heredocs.push({ delim: heredoc.delim, strip: heredoc.strip, quoted: heredoc.quoted });
         op(s, "<<");
         i = heredoc.end;
       } else {
