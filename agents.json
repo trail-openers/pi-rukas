@@ -735,7 +735,8 @@
         "todowrite": "allow",
         "codemode": "allow",
         "webfetch": "allow",
-        "task": "deny"
+        "task": "deny",
+        "report_finding": "allow"
       }
     },
     "explore": {
@@ -864,7 +865,12 @@
         "todowrite": "allow",
         "codemode": "allow",
         "webfetch": "allow",
-        "task": "deny"
+        "task": "deny",
+        "report_workstream": "allow",
+        "report_policy": "allow",
+        "report_plan_item": "allow",
+        "report_research_claim": "allow",
+        "report_facts": "allow"
       }
     },
     "adversarial-developer": {
