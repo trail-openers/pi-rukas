@@ -52,8 +52,8 @@ function recorder(definitions: Record<string, string[]> = {}, calls: string[][] 
     const argv = opts?.argv ?? [];
     calls.push(argv);
     if (argv[0] === "grep") {
-      const name = argv[4] ?? "";
-      return { stdout: (definitions[name] ?? []).map((f) => `${f}\n`).join("") };
+      const name = argv[5] ?? "";
+      return { stdout: (definitions[name] ?? []).map((f) => `${f}\0`).join("") };
     }
     if (argv[0] === "show") {
       const file = (argv[1] ?? "").split(":")[1] ?? "";
@@ -130,7 +130,7 @@ function recorder(definitions: Record<string, string[]> = {}, calls: string[][] 
     "the rejected token is reported, not dropped in silence",
   );
   assert(
-    calls.filter((a) => a[0] === "grep").every((a) => !/[*;$`\\]|^\/|\.\./.test(a[4] ?? "")),
+    calls.filter((a) => a[0] === "grep").every((a) => !/[*;$`\\]|^\/|\.\./.test(a[5] ?? "")),
     "no rejected path token is ever handed to git grep as a search term",
   );
 }
@@ -193,7 +193,7 @@ function recorder(definitions: Record<string, string[]> = {}, calls: string[][] 
     body,
     { execFn, repoRoot: "/repo", ref: "origin/main", defaultToSingle: true },
   );
-  const grepped = calls.filter((a) => a[0] === "grep").map((a) => a[4] ?? "");
+  const grepped = calls.filter((a) => a[0] === "grep").map((a) => a[5] ?? "");
   assert(
     names.every((n) => grepped.includes(n)),
     `prose names ARE grepped rather than silently skipped (${grepped.length}/${names.length})`,

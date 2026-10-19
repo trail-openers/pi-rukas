@@ -34,6 +34,7 @@
 import fs from "node:fs/promises";
 import { trace } from "./trace.ts";
 import type { CouplingResult } from "./work-driver-plan-coupling.ts";
+import { execp } from "./work-driver-verify.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { foldTwo } from "./workstream-fold.ts";
@@ -182,12 +183,20 @@ const PORT_RES = [
     String.raw`\b(?:port|cherry[- ]?pick|backport)(?:s|ed|ing)?\s+(?:(?:the|this|that)\s+)?(?:(?:fix|change|commit|patch|pr|pull request|mr)s?\s+)?(?:(?:from|in|of|at)\s+)?(?:(?:the\s+)?(?:fork|upstream)\s+)?\(?(${ANY})`,
     "i",
   ),
-  // "(already) fixed in <ref>", "landed upstream as <ref>"
+  // "(already) fixed in <cross-repo ref>", "landed upstream as <URL>". A bare
+  // SHA is context here, not a port: #1439 and #1557 quoted "fixed in <sha>"
+  // in passing and were sent into cherry-picks the issue never asked for.
   new RegExp(
-    String.raw`\b(?:fixed|implemented|landed|merged|solved|resolved)\s+(?:(?:already|upstream)\s+)?(?:in|by|as|at)\s+(?:(?:the\s+)?(?:fork|upstream)\s+(?:as\s+|in\s+)?)?(?:(?:commit|PR|pull request|MR)\s+)?\(?(${STRONG})`,
+    String.raw`\b(?:fixed|implemented|landed|merged|solved|resolved)\s+(?:(?:already|upstream)\s+)?(?:in|by|as|at)\s+(?:(?:the\s+)?(?:fork|upstream)\s+(?:(?:as|in|at)\s+)?)?(?:(?:commit|PR|pull request|MR)\s+)?\(?(${URL}|${XREF})`,
     "i",
   ),
 ];
+// The context-only form: "fixed in <bare sha>". PORT_RES does not match it, so
+// it is traced rather than returned.
+const FIXED_IN_BARE_SHA = new RegExp(
+  String.raw`\b(?:fixed|implemented|landed|merged|solved|resolved)\s+(?:(?:already|upstream)\s+)?(?:in|by|as|at)\s+(?:(?:commit|PR|pull request|MR)\s+)?\(?(${SHA})`,
+  "i",
+);
 // A negation within the two words before the port verb.
 const NEGATED = /(?:\b(?:not|never|without|avoid|no)|n't)\s+(?:[\w-]+\s+){0,2}$/i;
 
@@ -198,6 +207,13 @@ const NEGATED = /(?:\b(?:not|never|without|avoid|no)|n't)\s+(?:[\w-]+\s+){0,2}$/
  * and a same-repo `#N` only after a port verb — a "Related: #1005" line is
  * context, not a port. A negated verb and a sentence about a regression are
  * never a port.
+ *
+ * A "fixed / landed in" phrase counts only with a cross-repo reference (a URL,
+ * or `owner/repo#N` / `owner/repo@sha`). A bare SHA after "fixed in" is
+ * context: issue bodies use the phrase in passing (a test fixture, a sibling
+ * test's fix), and treating those as ports sent cycles into cherry-picks the
+ * issue never asked for. The fork case (#1322) is a URL or xref, so it stays.
+ * Explicit port verbs ("port", "cherry-pick", "backport") still take a bare SHA.
  */
 export function detectPortReference(body: string): string | undefined {
   for (const sentence of body.split(/(?<=[.!?])\s+|\n+/)) {
@@ -212,8 +228,47 @@ export function detectPortReference(body: string): string | undefined {
       if (NEGATED.test(sentence.slice(0, m.index))) continue;
       return m[1].replace(/^commit\s+/i, "").trim();
     }
+    // A bare SHA after "fixed in" matched nothing above. Say so, so the
+    // operator can see the phrase was read as context, not a port.
+    const bare = FIXED_IN_BARE_SHA.exec(sentence);
+    if (bare?.[1]) {
+      trace(
+        `work-driver: plan contract \u2014 "fixed in ${bare[1]}" read as context, not a port (only a URL or cross-repo reference after "fixed in" is a port)`,
+      );
+    }
   }
   return undefined;
+}
+
+/** A bare commit SHA as written in prose (short or full, hex only). */
+const BARE_SHA = /^[0-9a-f]{7,40}$/i;
+
+/**
+ * #1439 — `git cat-file -e <sha>^{commit}` through the argv executor, so the
+ * ref is data and never shell text. Any failure (no such object, not a
+ * repo) reads as "not a commit here": the port cannot be cherry-picked either way.
+ */
+export async function isCommitInRepo(
+  sha: string,
+  repoRoot: string,
+  exec: typeof execp = execp,
+): Promise<boolean> {
+  try {
+    await exec("git", { argv: ["cat-file", "-e", `${sha}^{commit}`], cwd: repoRoot });
+    return true;
+  } catch (err) {
+    // Only git's own exit status is an answer: 1 (object absent) or 128 (not a
+    // valid object name / not a repo). A spawn failure (ENOENT, EAGAIN) or a
+    // signal kill carries no numeric exit code. That is not evidence the commit
+    // is absent, and reading it as absent would turn a real port into a fresh
+    // implementation, so the port is kept and the check is traced as unknown.
+    const code = (err as { code?: unknown } | null)?.code;
+    if (code === 1 || code === 128) return false;
+    trace(
+      `work-driver: plan contract \u2014 could not check whether ${sha} is a commit here (${String(code ?? "no exit code")}); keeping it as the port`,
+    );
+    return true;
+  }
 }
 
 /**
@@ -225,16 +280,28 @@ export function detectPortReference(body: string): string | undefined {
 export async function portReferenceForCycle(
   state: WorkState,
   issues: number[],
+  repoRoot: string,
 ): Promise<string | undefined> {
   const artifact = state.pipelineState.issueBodyArtifact;
   if (!planContractEnabled() || issues.length !== 1 || !artifact) return undefined;
+  let ref: string | undefined;
   try {
-    const ref = detectPortReference(await fs.readFile(artifact, "utf8"));
-    if (ref) trace(`work-driver: plan contract — issue names ${ref} as the change to port`);
-    return ref;
+    ref = detectPortReference(await fs.readFile(artifact, "utf8"));
   } catch {
     return undefined;
   }
+  // #1439 — an issue body quotes example SHAs (a test fixture, a placeholder).
+  // A bare SHA that is not a commit in this repo cannot be cherry-picked, and
+  // the developer finds no such object and stops. Only bare SHAs are checked;
+  // URLs and PR/MR references are left as they are.
+  if (ref && BARE_SHA.test(ref) && !(await isCommitInRepo(ref, repoRoot))) {
+    trace(
+      `work-driver: plan contract \u2014 issue names ${ref}, which is not a commit in this repo; not treating it as a port`,
+    );
+    return undefined;
+  }
+  if (ref) trace(`work-driver: plan contract \u2014 issue names ${ref} as the change to port`);
+  return ref;
 }
 
 /** The plan-prompt section for a port issue; empty when there is none. */
