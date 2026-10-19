@@ -22,7 +22,6 @@ import { type LoopAction, decideLoopAction } from "./adversarial-verdict.ts";
 import { MAX_ROUNDS } from "./adversarial.ts";
 import { neutraliseEvidence, roundComments } from "./comment-evidence.ts";
 import { commentRetentionEnabled } from "./comment-retention.ts";
-import { dispatchCore } from "./dispatch.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { runDevelopTopological } from "./work-develop-topological.ts";
@@ -44,6 +43,7 @@ import {
 } from "./work-driver-adversarial-plumb.ts";
 import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { cycleDispatch } from "./work-driver-cycle-entry.ts";
 import { beginDispatch } from "./work-driver-resume.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { execp as argvExecp } from "./work-driver-verify.ts";
@@ -366,7 +366,7 @@ export async function runAdversarialFixPass(
     ids,
     passWorkstreams,
     activeIssuesOf(state),
-    ctx.dispatchFn ?? dispatchCore,
+    cycleDispatch(ctx),
     // Develop's git checks pass argv: the shell-string executor drops it.
     ctx.verifyExecFn ?? argvExecp,
     now,

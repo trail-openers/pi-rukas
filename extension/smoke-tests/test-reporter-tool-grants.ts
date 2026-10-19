@@ -14,11 +14,20 @@
  * DISPATCH_ROLE must change with the dispatch site: a reporter moved to another
  * role needs its grant moved too. Its keys must equal the registered set, so a
  * reporter added (or removed) without updating this map fails here.
+ *
+ * Mode-aware (#1666): a headless /work cycle's children run under the trust
+ * marker and never consult agents.json, so for them the grant is not what lets
+ * a reporter through. The grants below are still load-bearing for strict
+ * children (PI_ENSEMBLE_STRICT_PERMISSIONS=1) and for non-/work headless
+ * dispatches, which is why the verdict table stays. The last section proves the
+ * trust path separately: the child-guards companion, which is all a trust child
+ * loads, does not block a reporter.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import registerChildGuards from "../src/child-guards.ts";
 import { resolveToolPermission } from "../src/permission-guard.ts";
 
 let exitCode = 0;
@@ -78,5 +87,32 @@ assert(
   resolveToolPermission("report_not_a_real_tool", "explore", {}, {}, agents) === "ask",
   "control: an ungranted tool resolves to ask, so a missing grant is caught",
 );
+
+// #1666 — the trust path: a /work child (marker set, no subagent guard) reaches
+// every reporter without consulting agents.json. The companion is the only guard
+// set a trust child loads, so this is the registration that decides.
+{
+  const KEYS = ["PI_ENSEMBLE_TRUST_MODE", "PI_ENSEMBLE_SUBAGENT_MODE", "PI_ENSEMBLE_ROLE"];
+  const saved = KEYS.map((k) => [k, process.env[k]] as const);
+  process.env.PI_ENSEMBLE_TRUST_MODE = "1";
+  delete process.env.PI_ENSEMBLE_SUBAGENT_MODE;
+  process.env.PI_ENSEMBLE_ROLE = "explore";
+  const handlers: Array<(event: unknown, ctx: unknown) => unknown> = [];
+  const fakePi = { on: (_name: string, fn: (event: unknown, ctx: unknown) => unknown) => handlers.push(fn) };
+  registerChildGuards(fakePi as unknown as Parameters<typeof registerChildGuards>[0]);
+  for (const tool of declared) {
+    const toolName = tool;
+    let blocked = false;
+    for (const h of handlers) {
+      const r = (await h({ toolName, input: {} }, {})) as { block?: boolean } | undefined;
+      if (r?.block) blocked = true;
+    }
+    assert(!blocked, `${tool} is not blocked for a trust child (the companion never consults agents.json)`);
+  }
+  for (const [k, v] of saved) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+}
 
 process.exit(exitCode);

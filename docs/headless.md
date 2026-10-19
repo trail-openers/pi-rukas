@@ -344,17 +344,78 @@ evidence is gathered only when authority granted — a denied cycle does not get
 to ask `gh` whether it may merge. That short-circuit is what "a green PR is not
 permission" (#380) means on this surface.
 
-### Children fail closed outside the sandbox
+### Children of a /work cycle run with interactive trust (#1666)
 
-A specialist child spawned by the runner inherits the runner's environment. If
-neither `PI_ENSEMBLE_SANDBOX_MODE` nor `PI_ENSEMBLE_TRUST_MODE` is set, the
-child's permission guard has no broker socket to escalate to and denies every
-`ask`-class tool outright (`Tool '<name>' denied (subagent ask → no broker
-socket — headless deny)`) rather than waiting for a verdict nobody can give.
-Inside the image, the baked variable passes through untouched and the guard
-short-circuits as it does for any sandboxed session. Mode-independent guards —
-the merge guard, the issue-creation guard — run **before** that short-circuit
-either way, so the container default does not disarm them.
+A headless `/work` cycle runs its children with the same permission behaviour
+as an interactive trust-mode cycle: no `agents.json` verdict lookup, no `ask`
+escalation, and no `no broker socket — headless deny` for ordinary commands. The
+boundary is the mode-independent guards and the write fence, not the command
+allowlist. The cycle stamps each child (`workCycleTrust`, from `cycleChildOpts(ctx)` in
+`extension/src/work-cycle-trust.ts`, which reads the cycle's `DriverContext.headless`),
+and the child gets `PI_ENSEMBLE_TRUST_MODE=1` and no broker socket. The runner
+process's own env never carries the marker, and co-resident non-/work dispatches
+are unaffected.
+
+One path, one source. Every dispatch a cycle makes goes through `cycleDispatch(ctx)`
+(`extension/src/work-driver-cycle-entry.ts`), which stamps after the caller's options
+so a caller cannot opt a child out. The few sites that call `spawnSpecialist`
+directly (the adversarial loop's inner child, the lens child, the policy judge) take
+the stamp from `cycleChildOpts(ctx)` at the cycle's call site. `spawn-permission.ts`
+is the one predicate that reads the stamp, and `--capabilities` reads the same
+`strictOptIn()`. `test-work-cycle-dispatch-path.ts` audits the driver's import
+closure: it fails if a `dispatchCore` or `spawnSpecialist` site is not in its
+registry with the stamp it carries, or if any site hand-computes the stamp from
+`ctx.headless`.
+
+Every dispatch a cycle makes goes through `cycleDispatch(ctx)` or `cycleChildOpts(ctx)`,
+and `extension/smoke-tests/test-work-cycle-dispatch-path.ts` holds the audited list of
+every site that spawns a child, with the stamp it carries. A new site fails that gate
+until it is registered. The PM's `dispatch_specialist` and `dispatch_parallel` tools are
+not cycle children and carry no stamp, by design.
+
+What each child may do, with the write, edit and multiedit tools, with bash, and in
+which permission shape:
+
+| Child | write / edit / multiedit | Bash | Permission shape |
+|---|---|---|---|
+| developer (develop, fan-out) | available, fenced to its worktree (`PI_ENSEMBLE_WRITE_ROOT`) | fenced to its worktree | trust |
+| lens-fix developer | available, fenced to its worktree | fenced to its worktree | trust |
+| explore (includes the policy judge), adversarial-developer, code-review-specialist (lens) | structurally excluded | unfenced, as in an interactive cycle: a reviewer can still write files through bash | trust |
+| ops (handoff, merge-ops) | available | unfenced, as interactively | trust |
+
+The write fence applies to develop and lens-fix children only. The reviewers'
+boundary is the tool exclusion, not a fence: they cannot call the write, edit or
+multiedit tools, but their bash is not write-fenced.
+
+For every child, in every shape, the boundary is the set of mode-independent guards
+the child-guards companion registers: the destructive-git guard, the issue-creation
+guard, the merge guard, the developer push guard, the destructive vipune write guard,
+and the write fence (which itself applies only where `PI_ENSEMBLE_WRITE_ROOT` is set).
+The protected-path halt, the merge authority and the review ledger run in the driver.
+
+The destructive vipune write guard (`extension/src/memory-write-guard.ts`, with its
+predicate in the Pi-free `extension/src/bash-destructive-write.ts`) is a
+guardrail against accidental rewrites, not a security boundary. It reads a bash
+command the way a shell would for the common shapes: quotes, `VAR=value`
+prefixes, `env` / `command` / `exec` wrappers, `bash -c` and `eval` bodies,
+subshells, `$(…)`, backticks, and attached values (`-t"x"`, `-tx`, `--text=x`),
+checking every simple command in a chain. A command that reaches the vipune binary
+in a shape it does not model (a script the child writes and then runs, or an
+indirect executable path) is not refused. A status-only `vipune update` and a
+`vipune add --supersedes` are allowed.
+
+Wrappers it reads through: `env` (including `-S` and `-S"…"`, whose payload is re-split as a command line), `command`, `exec`, `nohup`, `sudo`, `timeout DURATION`, `xargs`, `nice`, `stdbuf`, `time` and `setsid`, each with its option arguments (`nice -n N`, `stdbuf -o MODE`, `time -f FORMAT`). The same predicate answers the allowlist matcher (`matchBashSubcommand`), so a wrapped `vipune update … -t` is refused there too. Out of scope for this guardrail, because the shell features that build command text are not modelled: ANSI-C quoting (`$'…'`), brace expansion (`{vipune,update}`), variables and parameter expansion (`$V update …`), globs that name the binary (`vipu?e`), aliases and functions, here-documents, process substitution, and a script the child writes and then runs.
+
+Outside a /work cycle nothing changes. A bare `pi -p` child (no driver) has no
+cycle stamp, so it keeps the strict path: `agents.json` resolution, and
+`ask` escalates over the broker or hard-denies (`no broker socket — headless
+deny`).
+
+`PI_ENSEMBLE_STRICT_PERMISSIONS=1` in the runner's env is the operator opt-in
+back to the allowlist: it suppresses the cycle stamp, so /work children run the
+strict path. `pi-rukas-headless --capabilities` reports the mode a run uses in
+`permissions.workCycles` (`trust` or `strict`), read when the answer is built.
+It is not a CLI flag; `--merge` and `--sandboxed` are still refused (#1025).
 
 ## Handoff channel
 

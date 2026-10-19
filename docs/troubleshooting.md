@@ -498,7 +498,7 @@ PR: [#215](https://github.com/trail-openers/pi-rukas/pull/215)
 
 **Fix:** nothing to pass. Merge authority comes from the project's `AGENTS.md` read at the cycle's base commit and needs `gh` merge evidence alongside it, so a cycle with neither parks as `awaiting-human-merge` (exit 10) with the PR open — which is the outcome, not a failure to work around. For sandbox behaviour, run the binary inside the image. See [headless.md](headless.md#what-the-runner-refuses-to-accept).
 
-Related: a child of a headless run outside the image denies every `ask`-class tool with `no broker socket — headless deny`. That is the same design one layer down — with no sandbox and no human, fail closed rather than guess — and the mode-independent guards (merge, issue-creation) still run ahead of it.
+Related (#1666): a child of a headless `/work` cycle no longer denies `ask`-class tools. It runs with interactive trust, so its boundary is the mode-independent guards (destructive git, merge with the review ledger, issue creation, developer push, destructive vipune writes) and the write fence, not `agents.json`. A child of a bare `pi -p` run with no driver still denies `ask`-class tools with `no broker socket — headless deny`, because no cycle stamp is set and there is no human to consent. If a /work child reports that deny, the runner env has `PI_ENSEMBLE_STRICT_PERMISSIONS=1`; unset it to get trust back. `pi-rukas-headless --capabilities` shows the mode in `permissions.workCycles`.
 
 ### A developer's write was refused: outside its worktree (write fence)
 

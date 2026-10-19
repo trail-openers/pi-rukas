@@ -38,6 +38,8 @@ import { buildCapabilities } from "../src/headless/capabilities.ts";
 import { EXIT } from "../src/headless/exit-code.ts";
 import { RESULT_SCHEMA_VERSION, projectIssue } from "../src/headless/result.ts";
 import { runHeadless } from "../src/headless/run.ts";
+import { planChildPermissions } from "../src/spawn-permission.ts";
+import { enterCycle } from "../src/work-driver-cycle-entry.ts";
 import { appendEvent, initialState, type WorkState } from "../src/workflow-state.ts";
 import { MERGE_GRANT, capHitEvent, headlessRepo, okResult } from "./lib/headless-s5-fixture.ts";
 import { initEnv, noSignals, restoreEnv, type DriverSeams } from "./lib/headless-s5-harness.ts";
@@ -193,8 +195,26 @@ initEnv();
   assert(outside.length > 0, "the cycle reached a dispatch (so the env check is not vacuous)");
   assert(
     outside.every((s) => s.sandbox === undefined && s.trust === undefined),
-    "outside the sandbox image the runner sets neither PI_ENSEMBLE_SANDBOX_MODE nor PI_ENSEMBLE_TRUST_MODE — children fail closed",
+    "#1666 — the runner never writes PI_ENSEMBLE_TRUST_MODE into its OWN env: the /work marker is per child (carrier checks below)",
   );
+  // #1666 — a headless /work cycle's children are stamped with the trust scope on every dispatch by the cycle's carrier; a non-/work headless child is not stamped and stays strict.
+  const stamped: Array<{ workCycleTrust?: boolean }> = [];
+  const recordCore = (async (_h: unknown, _spec: unknown, opts: unknown) => {
+    stamped.push(opts as { workCycleTrust?: boolean });
+    return { role: "developer", ok: true, text: "", toolUses: [], ms: 0 };
+  }) as never;
+  const headlessCycle = enterCycle(
+    { issue: 9010, repoRoot: "/nonexistent", host: { emit: () => undefined }, headless: true } as never,
+    recordCore,
+  );
+  await headlessCycle.dispatchFn({} as never, { role: "developer", prompt: "x" }, undefined);
+  assert(stamped[0]?.workCycleTrust === true, "#1666 — a headless /work child is dispatched with workCycleTrust");
+  const plainChild = planChildPermissions({ runId: "g3", role: "developer" });
+  assert(
+    plainChild.trustChild === false && plainChild.subagentGuardEnabled === true,
+    "#1666 — non-/work headless (no stamp, no UI) keeps the strict broker path",
+  );
+  if (plainChild.broker) plainChild.broker.stop();
   process.env.PI_ENSEMBLE_SANDBOX_MODE = "1";
   const inside: Array<Record<string, string | undefined>> = [];
   await probe(9008, inside);

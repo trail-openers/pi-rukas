@@ -143,8 +143,8 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers["tool_call"]?.length ?? 0;
   assert(
-    n === 5,
-    `registers exactly 5 tool_call hooks (the mode-independent guards incl. #1105 review-accept and #1113 developer-push, oo-rewrite excluded; got ${n})`,
+    n === 6,
+    `registers exactly 6 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push and #1666 vipune-write, oo-rewrite excluded; got ${n})`,
   );
   assert(fake.registeredTools.length === 0, "registers no tools (hook-only companion)");
   assert(fake.registeredCommands.length === 0, "registers no commands");
@@ -322,6 +322,8 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
     // same reason the other three do — trust and sandbox children get nothing
     // but this block — and its role clause keeps every other role inert.
     "registerDeveloperPushGuard",
+    // #1666 — the destructive vipune write refusal, which trust children never got from agents.json.
+    "registerMemoryWriteGuard",
   ];
   // The companion delegates to the shared block — the single list.
   assert(
@@ -454,11 +456,13 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   // block by BRACE MATCHING from its opener (lastIndexOf comparisons misplace
   // the boundary once the branch body contains nested braces) and assert the
   // assignment lies within that block's span.
-  const assignIdx = spawnSrc.indexOf('childEnv.PI_ENSEMBLE_SUBAGENT_MODE = "1"');
-  assert(assignIdx > 0, "canary: spawn.ts assigns PI_ENSEMBLE_SUBAGENT_MODE = \"1\" in the childEnv");
-  const openerIdx = spawnSrc.lastIndexOf("if (subagentGuardEnabled) {");
-  assert(openerIdx > 0, "canary: spawn.ts contains the `if (subagentGuardEnabled) {` branch opener");
-  const blockEnd = braceMatchEnd(spawnSrc, openerIdx + "if (subagentGuardEnabled) {".length - 1);
+  // #1666 — the assignment moved to spawn-permission.ts (applyChildPermissionEnv).
+  const permSrc = readFileSync(path.resolve(import.meta.dirname, "..", "src", "spawn-permission.ts"), "utf8");
+  const assignIdx = permSrc.indexOf('childEnv.PI_ENSEMBLE_SUBAGENT_MODE = "1"');
+  assert(assignIdx > 0, "canary: spawn-permission.ts assigns PI_ENSEMBLE_SUBAGENT_MODE = \"1\" in the childEnv");
+  const openerIdx = permSrc.lastIndexOf("if (plan.subagentGuardEnabled) {");
+  assert(openerIdx > 0, "canary: spawn-permission.ts contains the `if (plan.subagentGuardEnabled) {` branch opener");
+  const blockEnd = braceMatchEnd(permSrc, openerIdx + "if (plan.subagentGuardEnabled) {".length - 1);
   assert(blockEnd > assignIdx, "canary: a brace-matched span exists for the subagentGuardEnabled branch");
   assert(
     openerIdx < assignIdx && assignIdx < blockEnd,

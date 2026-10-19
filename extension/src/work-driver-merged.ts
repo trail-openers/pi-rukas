@@ -7,13 +7,14 @@
  * `parseMergeCommit` + `runMerged` are the Step 9 pair.
  */
 
-import { dispatchCore } from "./dispatch.ts";
 import { execp } from "./exec.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult, WriteFenceOpt } from "./types.ts";
+import { cycleChildOpts } from "./work-cycle-trust.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { cycleDispatch } from "./work-driver-cycle-entry.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { markDraftPrReady } from "./work-driver-draft-pr.ts";
@@ -93,7 +94,7 @@ export async function runSingleDispatch(
     { ...state, pipelineState: { ...state.pipelineState, currentStep: step } },
     { kind: "step-started", step, at: now },
   );
-  const dispatch = ctx.dispatchFn ?? dispatchCore;
+  const dispatch = cycleDispatch(ctx);
   const startedAt = Date.now();
   // #382 — WRITE-AHEAD. A dispatch can run for thirty minutes; before this,
   // nothing hit disk until it returned, so a crash inside that window left
@@ -248,7 +249,11 @@ export async function runMerged(
       // runner forwards `policyJudgeFn` to the driver, so without that gate a
       // caller of `runHeadless` could speak for the merge-authority judge.
       mergeAuthorityJudge(ctx, () =>
-        judgePolicy(ctx.repoRoot, { processGroup: ctx.processGroup === true, signal: ctx.signal }),
+        judgePolicy(ctx.repoRoot, {
+          processGroup: ctx.processGroup === true,
+          signal: ctx.signal,
+          ...cycleChildOpts(ctx), // #1666
+        } satisfies NonNullable<Parameters<typeof judgePolicy>[1]>),
       ),
       docs,
       ctx.mergeGrant,
