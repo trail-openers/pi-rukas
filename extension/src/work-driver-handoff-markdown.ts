@@ -11,6 +11,7 @@ import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { capedPartialStateLines } from "./work-driver-caped-state.ts";
+import { causeFor, causeLeadMarkdown, causeSafeText } from "./work-driver-cause-render.ts";
 import { inlineCodeSafe } from "./work-driver-conflict-evidence.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { draftPrHandoffLines } from "./work-driver-draft-pr-handoff.ts";
@@ -102,9 +103,12 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
   // PR10 — multi-issue header + per-issue verdict block.
   const allIssues = state.issues ?? [issue];
   const issuesHeader = allIssues.length === 1 ? `\`#${issue}\`` : `\`#${allIssues.join("`, `#")}\``;
+  // #1675 "what happened" first: class, reason, evidence and action lead the body.
+  const verdict = causeFor(state, capForExplain);
   const lines: string[] = [
     "## ⏸ Cap hit — needs human attention",
     "",
+    ...(verdict ? causeLeadMarkdown(verdict) : []),
     `**Cap**: ${capDescription}`,
     // #534 — cycle cost so far, same shared helper as the terminal
     // scrollback line and /work-status so all three surfaces agree.
@@ -125,7 +129,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     "",
     "### What this cap means",
     "",
-    explain,
+    causeSafeText(explain),
     "",
     ...draftPrHandoffLines(ps, forge),
     ...commitPrRootFacts(state, capForExplain),
@@ -288,7 +292,20 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
   // there" / "longer cap" set. The cap → commands mapping lives in
   // work-driver-handoff-recovery.md.ts (split for module-size hygiene).
   lines.push(...openPointsMarkdown(ps.normalisedSpec, state.issue));
-  lines.push(...recoveryCommandsMarkdown(state, forge));
+  // #1675 "host-local" commands come after the cause, collapsed: they name
+  // paths on the machine that ran the cycle, which a GitHub reader cannot use.
+  const recovery = recoveryCommandsMarkdown(state, forge);
+  if (recovery.length > 0) {
+    lines.push(
+      "<details>",
+      "<summary>Host-local recovery commands (for the machine that ran the cycle)</summary>",
+      "",
+      ...recovery,
+      "",
+      "</details>",
+      "",
+    );
+  }
 
   if (transcripts.length > 0) {
     lines.push("### Transcripts (last 5)", ...transcripts, "");
