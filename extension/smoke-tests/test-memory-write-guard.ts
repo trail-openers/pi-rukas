@@ -269,5 +269,77 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
   assert(memoryWriteVerdictOf("vipune search x") === undefined, "8: a search has no verdict");
 }
 
+// ── 9. `find -exec` is bounded: deep nesting terminates, and the refusal still lands.
+//
+// Each inner `find` word is both the head of the body it opens and a scan position
+// inside it, so N nested `find`s branch 2^N frames. Before the depth gate in
+// nestedVerdict a benign deeply nested command never returned; the harness reads the
+// command before the child runs it, so that is a hung dispatch, not a slow one.
+{
+  const nest = (inner: string, n: number): string => {
+    let x = inner;
+    for (let i = 0; i < n; i++) x = `find . -exec ${x} {} ;`;
+    return x;
+  };
+  // Past MAX_DEPTH, so the innermost verb is never reached and the verdict is absence.
+  const deep = nest("echo hello", 12);
+  const t0 = Date.now();
+  assert(
+    memoryWriteVerdictOf(deep) === undefined,
+    "9: a deeply nested benign find -exec is allowed",
+  );
+  assert(Date.now() - t0 < 5_000, "9: deep benign find -exec terminates promptly");
+  // Nesting past the cap must not become a way through: a verb inside the bound still
+  // refuses however deep the wrapper, and does so promptly.
+  for (const n of [1, 3, 4, 12, 400]) {
+    const armed = nest("vipune delete 1", n);
+    const t1 = Date.now();
+    assert(isDestructiveWrite(armed), `9: refused at nesting depth ${n}`);
+    assert(Date.now() - t1 < 5_000, `9: nesting depth ${n} terminates promptly`);
+  }
+}
+
+// ── 10. The refusal is recorded unconditionally, with the label only.
+{
+  const handlers: Handler[] = [];
+  const fake = {
+    on: (name: string, fn: Handler) => {
+      if (name === "tool_call") handlers.push(fn);
+    },
+  } as unknown as ExtensionAPI;
+  registerMemoryWriteGuard(fake);
+  const capture = async (command: string): Promise<string> => {
+    const real = process.stderr.write.bind(process.stderr);
+    const lines: string[] = [];
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      for (const h of handlers) await h({ toolName: "bash", input: { command } }, {});
+    } finally {
+      process.stderr.write = real;
+    }
+    return lines.join("");
+  };
+  // traceWarn, not the debug-gated trace: PI_ENSEMBLE_DEBUG is unset here, and an
+  // operator chasing a blocked command has no reason to know to turn it on.
+  const logged = await capture('vipune update 12 -t "secret row text"');
+  assert(
+    logged.includes("memory-write-guard: BLOCKED") && logged.includes("update -t"),
+    "10: the refusal traces its verb label without PI_ENSEMBLE_DEBUG",
+  );
+  assert(
+    !logged.includes("secret row text"),
+    "10: the trace line carries the label, never the command text",
+  );
+  assert(
+    logged.includes("WARN"),
+    "10: the refusal goes through the ungated warn channel",
+  );
+  const allowed = await capture("vipune search 'topic'");
+  assert(allowed === "", "10: an allowed command traces nothing");
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
