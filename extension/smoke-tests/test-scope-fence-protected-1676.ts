@@ -154,5 +154,80 @@ assert(
   "with the protected gate off nothing is refused",
 );
 
+// 9. A workstream whose only declared path was fenced out cannot skip the fanout
+// bound when it changed files; with no changes the skip is still fine.
+{
+  const fenced = { default: { id: "default", scope: "x", paths: [], outOfScope: [FENCE] } };
+  const failures: string[] = [];
+  runScopeFanoutGate(
+    fenced,
+    new Map([["default", new Set(["extension/src/z.ts"])]]),
+    failures,
+    [],
+    undefined,
+    undefined,
+    { protectedDeferred: [FENCE] },
+  );
+  assert(
+    failures.some((f) => f.includes("cannot be bounded")),
+    "an emptied workstream that changed files fails the fanout gate instead of skipping it",
+  );
+  const quiet: string[] = [];
+  runScopeFanoutGate(
+    fenced,
+    new Map([["default", new Set<string>()]]),
+    quiet,
+    [],
+    undefined,
+    undefined,
+    { protectedDeferred: [FENCE] },
+  );
+  assert(quiet.length === 0, "an emptied workstream that changed nothing is not failed");
+}
+
+// 9b. #1676 round 4 — the deferred set is normalised with the normaliser that
+// PRODUCED it (`deferredProtectedPaths` → `normaliseDeclaredPath`, which strips
+// backticks and a trailing annotation), not the git-path normaliser. A deferred
+// entry spelled `\`docs/a.md\`` or `docs/a.md (new)` is the same fence entry the
+// plan wrote, and must still fail the unbounded fan-out.
+{
+  for (const spelling of ["`docs/a.md`", "docs/a.md (new)", "./docs/a.md"]) {
+    const fenced = { default: { id: "default", scope: "x", paths: [], outOfScope: ["docs/a.md"] } };
+    const failures: string[] = [];
+    runScopeFanoutGate(
+      fenced,
+      new Map([["default", new Set(["extension/src/z.ts"])]]),
+      failures,
+      [],
+      undefined,
+      undefined,
+      { protectedDeferred: [spelling] },
+    );
+    assert(
+      failures.some((f) => f.includes("cannot be bounded")),
+      `a deferred protected path spelled ${JSON.stringify(spelling)} still fails the unbounded fan-out`,
+    );
+  }
+  // A deferred path that is NOT the fence entry does not exempt anything: the
+  // emptied workstream still fails, but on its own missing denominator, and the
+  // normaliser is not silently widening the match to every path.
+  const unrelated = { default: { id: "default", scope: "x", paths: [], outOfScope: ["docs/a.md"] } };
+  const quiet: string[] = [];
+  const notes: string[] = [];
+  runScopeFanoutGate(
+    unrelated,
+    new Map([["default", new Set<string>()]]),
+    quiet,
+    notes,
+    undefined,
+    undefined,
+    { protectedDeferred: ["docs/other.md"] },
+  );
+  assert(
+    quiet.length === 0 && notes.some((n) => n.includes("skipped")),
+    "a deferred path that is not the fence entry leaves the no-declared-paths skip alone",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

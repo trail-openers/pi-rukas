@@ -7,17 +7,21 @@
  * still edits it, because nothing told the developer the path is off-limits;
  * the protected-path halt then parks the cycle after the whole develop spend.
  *
- * So each deferred path is appended to the `outOfScope` of every workstream
- * that does not declare it in its own `paths`, as the bare normalised path: the
- * scope gate then matches it exactly, and the develop prompt names it. A
- * workstream that declares the path itself is not fenced for it — a self-declared
- * fence is the contradiction the plan-time check rejects — and the protected-path
- * halt is the backstop for that shape. The "protected, no --allow-protected
- * grant" annotation is NOT part of the entry; the prompts render it from the
- * deferral list next to the fence (`fenceLines`).
+ * So each deferred path is appended to the `outOfScope` of every workstream as
+ * the bare normalised path: the scope gate then matches it exactly, and the
+ * develop prompt names it. Fence wins over the plan's own listing: a deferred
+ * path a workstream still lists in `paths` is removed from there, so the
+ * developer is never told both to edit and not to touch the same file. The
+ * "protected, no --allow-protected grant" annotation is NOT part of the entry;
+ * the prompts render it from the deferral list next to the fence (`fenceLines`).
+ * The protected-path gate is the backstop for an edit made anyway: it halts the
+ * cycle with the `--allow-protected` command, as it does for any protected path.
  *
  * The deferred list is persisted on pipelineState (`deferredProtected`) by the
- * plan tail; develop and the corrective round read it from there.
+ * plan tail; develop and the corrective round read it from there. The develop
+ * step reads it through `deferredForCycle`, the one place that knows the escape
+ * hatch (`PI_ENSEMBLE_PROTECTED_PATHS=0`) disables the whole mechanism, so the
+ * fence and the scope gate's fanout bound cannot disagree about whether it is on.
  *
  * Idempotent: an entry already present (after `normaliseDeclaredPath`) is not
  * appended again, so a re-run of the plan tail adds nothing.
@@ -25,6 +29,7 @@
 
 import { neutraliseFenceEntry, quotedOutOfScope } from "./plan-workstream-schema.ts";
 import { splitDeliverablePaths } from "./work-driver-deliverable-paths.ts";
+import { protectedPathsEnabled } from "./work-driver-doctrine.ts";
 import { type SpecCoverageSpec, protectedDeferralsOf } from "./work-driver-plan-spec-coverage.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
@@ -51,10 +56,10 @@ export function deferredProtectedPaths(
 }
 
 /**
- * The workstreams map with each deferred path appended to the `outOfScope` of
- * every workstream that neither declares it in `paths` nor already fences it.
+ * The workstreams map with each deferred path removed from every workstream's
+ * `paths` and appended to its `outOfScope` (unless already fenced there).
  * `deferred` is the list the plan tail computed once (`deferredProtectedPaths`)
- * and persists. Returns the input object itself when nothing is appended, so a
+ * and persists. Returns the input object itself when nothing changes, so a
  * caller can tell the no-op apart.
  */
 export function withDeferredProtectedFence(
@@ -65,17 +70,31 @@ export function withDeferredProtectedFence(
   let changed = false;
   const out: Record<string, Workstream> = {};
   for (const [id, ws] of Object.entries(workstreams)) {
-    const declared = new Set(ws.paths.map((e) => normaliseDeclaredPath(e)));
+    const paths = ws.paths.filter((e) => !deferred.includes(normaliseDeclaredPath(e)));
     const fenced = new Set(ws.outOfScope.map((e) => normaliseDeclaredPath(e)));
-    const missing = deferred.filter((p) => !declared.has(p) && !fenced.has(p));
-    if (missing.length === 0) {
+    const missing = deferred.filter((p) => !fenced.has(p));
+    if (paths.length === ws.paths.length && missing.length === 0) {
       out[id] = ws;
       continue;
     }
     changed = true;
-    out[id] = { ...ws, outOfScope: [...ws.outOfScope, ...missing] };
+    out[id] = { ...ws, paths, outOfScope: [...ws.outOfScope, ...missing] };
   }
   return changed ? out : workstreams;
+}
+
+/**
+ * The deferred set a develop cycle acts on: the plan tail's persisted list, or
+ * nothing when the protected-path escape hatch is off. It lives here rather than
+ * at the call site because both readers of the deferred list — the fence note and
+ * the scope gate's emptied-workstream bound (`work-driver-scope-fanout.ts`) — must
+ * see one value. Reading the hatch in one of them only left the other halting a
+ * cycle the first had been told to ignore.
+ */
+export function deferredForCycle(
+  deferredProtected: readonly string[] | undefined,
+): readonly string[] {
+  return protectedPathsEnabled() ? (deferredProtected ?? []) : [];
 }
 
 /**
