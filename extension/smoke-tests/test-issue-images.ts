@@ -32,6 +32,7 @@ import { runPlan } from "../src/work-driver-plan.ts";
 import { inlineExplorePrompt, inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
 import { scratchDir } from "../src/work-driver-workspace.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
+import { type PlanResultShape, planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -253,14 +254,15 @@ const GOOD_REPLY = [
   "",
 ].join("\n");
 const NO_SPEC_REPLY = "INTENT-VERDICT: proceed\n\n## Workstreams\n- one\n";
-const PLAN_REPLY = [
-  "## Workstreams",
-  "",
-  "### default",
-  "- paths: src/meter.ts",
-  "- description: move the meter to the right end of the panel titled FACTORY",
-  "",
-].join("\n");
+// #1652 — the plan's one workstream, as its report_workstream call.
+const PLAN_REPLY = planResultFromCalls([
+  {
+    id: "default",
+    scope: "move the meter to the right end of the panel titled FACTORY",
+    paths: ["src/meter.ts"],
+    outOfScope: [],
+  },
+]);
 
 function result(text: string): DispatchResult {
   return {
@@ -274,8 +276,13 @@ function result(text: string): DispatchResult {
   };
 }
 type Seen = { prompt: string; images?: DispatchImage[]; label?: string };
+/** A reply is explore prose, or a plan's tool-call transcript. */
+type Reply = string | PlanResultShape;
+function replyResult(reply: Reply): DispatchResult {
+  return typeof reply === "string" ? result(reply) : { ...result(""), ...reply };
+}
 async function cycle(
-  replies: string[],
+  replies: Reply[],
 ): Promise<{ ctx: DriverContext; seen: Seen[]; repoRoot: string }> {
   const repoRoot = path.join(tmp, `repo-${++n}`);
   await mkdir(repoRoot, { recursive: true });
@@ -286,7 +293,7 @@ async function cycle(
     repoRoot,
     dispatchFn: async (_host, spec, opts) => {
       seen.push({ prompt: spec.prompt, images: spec.images, label: opts?.label });
-      return result(replies[Math.min(seen.length - 1, replies.length - 1)] ?? "");
+      return replyResult(replies[Math.min(seen.length - 1, replies.length - 1)] ?? "");
     },
     issueBodyFetcherFn: async () => ({ stdout: `Move the meter. ![shot](${LINK})` }),
   };
@@ -327,8 +334,12 @@ try {
   {
     const { ctx, seen } = await cycle([PLAN_REPLY]);
     const state: WorkState = initialState(ISSUE);
-    await runPlan(ctx, state, Date.now());
+    const planned = await runPlan(ctx, state, Date.now());
     assert(seen.length >= 1 && seen[0]?.label === "plan", "plan dispatches");
+    assert(
+      planned.pipelineState.workstreams?.default?.paths.includes("src/meter.ts") === true,
+      "the plan reply's report_workstream call is read (not vacuous)",
+    );
     assert(
       seen.every((s) => s.images?.length === 1),
       "every plan dispatch carries the image",

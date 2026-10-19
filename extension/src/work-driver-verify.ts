@@ -477,13 +477,14 @@ export async function verifyConsolidation(
  * failure is one-directional — a false alarm at commit-pr, never a false pass —
  * which is why it went unnoticed.
  *
- * A trailing parenthetical is stripped; one INSIDE a name ("notes (draft).md")
- * is not, because that is a real filename.
+ * A trailing parenthetical is stripped (`a.ts (new)`, `ci.yml(new)`); one
+ * INSIDE a name ("notes (draft).md") is not, and neither is one that is a whole
+ * path segment (`app/(group)`, #1652), because those are real names.
  */
 export function normaliseDeclaredPath(raw: string): string {
   return raw
     .trim()
-    .replace(/\s*\([^()]*\)\s*$/, "")
+    .replace(/(?<=[^/])\s*\([^()]*\)\s*$/, "")
     .replace(/^[`*\s]+|[`*\s]+$/g, "")
     .replace(/^\.\//, "")
     .replace(/\/+$/, "")

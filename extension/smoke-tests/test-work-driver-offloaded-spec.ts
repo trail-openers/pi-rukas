@@ -30,6 +30,7 @@ import { parseNormalisedSpec, reconcileVerdict } from "../src/work-driver-intent
 import { readMarker } from "../src/reply-markers.ts";
 import { scratchDir } from "../src/work-driver-workspace.ts";
 import { readState } from "../src/workflow-state.ts";
+import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const REPLY_FIXTURE = path.join(__dirname, "fixtures", "explore-replies", "674.txt");
@@ -321,6 +322,18 @@ async function runDriverCase(
           return mkResult({ role: "explore", text: reply });
         }
         if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+        // #1652 — one workstream claiming every path the reply names (the gate's concern).
+        if (opts?.label?.startsWith("plan")) {
+          // Stop at markdown punctuation (a captured trailing backtick is a malformed path).
+          // The spec may be offloaded to a report file, so scan it as well as the reply.
+          const text = [reply, ...Object.values(files).filter((v) => typeof v === "string")].join("\n");
+          const found = [...text.matchAll(/extension\/[^\s,\]`'"()]+/g)].map((m) => m[0].replace(/\.$/, ""));
+          const paths = [...new Set(found)];
+          return {
+            ...mkResult({ role: specArg.role, text: "stub" }),
+            ...planResultFromCalls([{ id: "default", scope: "the fix", paths, outOfScope: [] }]),
+          };
+        }
         return mkResult({ role: specArg.role, text: "stub" });
       },
     };
@@ -352,7 +365,7 @@ async function runDriverCase(
     replyText,
   );
   assert(r.exploreDispatches === 1, `driver-674: explore dispatch ran once (got ${r.exploreDispatches})`);
-  assert(r.cap === undefined, "driver-674: NO cap-hit — false explore-needs-clarification park is gone");
+  assert(r.cap === undefined, `driver-674: NO cap-hit, a valid offloaded spec does not park (got ${r.cap})`);
   assert(r.spec !== undefined, "driver-674: normalisedSpec recorded on state");
   if (r.spec) {
     assert(r.spec.deliverables.length === 6, `driver-674: 6 deliverables (got ${r.spec.deliverables.length})`);

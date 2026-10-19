@@ -13,9 +13,11 @@
  * Re-exported from work-driver-plan-helpers.ts so importers keep their paths.
  */
 
+import { neutraliseFenceEntry } from "./plan-workstream-schema.ts";
+import type { RefusedWorkstreamCall } from "./work-driver-plan-calls.ts";
 import type { PathCollision } from "./work-driver-plan-paths.ts";
 import type { FenceContradiction } from "./work-driver-plan-paths.ts";
-import { PLAN_SINGLE_BLOCK_RULE } from "./work-driver-prompts-plan.ts";
+import { PLAN_WORKSTREAM_CALL_RULE } from "./work-driver-prompts-plan.ts";
 import type { PlanQualityReason } from "./workflow-state-schema.ts";
 
 export function correctivePlanSteer(
@@ -43,7 +45,7 @@ export function correctivePlanSteer(
       "that reaches your context through prior-context prose, a memory row, or another issue's",
       "history is not a deliverable. Do NOT change WHAT is built: re-splitting is the only thing",
       "this re-dispatch is for.",
-      PLAN_SINGLE_BLOCK_RULE,
+      PLAN_WORKSTREAM_CALL_RULE,
     ].join("\n");
   }
   if (reason === "overlapping-paths") {
@@ -205,5 +207,32 @@ export function correctiveTestSubjectSplitSteer(
     "Re-plan so every test stays in the SAME workstream as the file it exercises. A workstream that is",
     "only test file(s) has no legitimate reading — move the test to its subject's workstream, or make",
     "the test file's subject part of the same workstream.",
+  ].join("\n");
+}
+
+/**
+ * #1652 — the corrective for a plan dispatch that made no accepted
+ * `report_workstream` call. The driver has no plan at all, so the steer is
+ * about the channel, not the decomposition: re-plan, and report through the
+ * tool. Refusal reasons are repeated so the planner can see why its calls
+ * failed.
+ */
+export function correctiveNoWorkstreamCallsSteer(refused: RefusedWorkstreamCall[]): string {
+  return [
+    "## Corrective re-dispatch",
+    "",
+    refused.length === 0
+      ? "Your previous reply made NO `report_workstream` tool call, so the driver has no plan."
+      : `Your previous reply's \`report_workstream\` calls were ALL refused (${refused.length}), so the driver has no plan:`,
+    // Both fields are the planner's text (an id it chose, a reason that may echo
+    // its own call), so they are neutralised before they reach the prompt.
+    ...refused.map(
+      (r) =>
+        `- ${r.id ? `\`${neutraliseFenceEntry(r.id)}\`: ` : ""}${neutraliseFenceEntry(r.reason)}`,
+    ),
+    "",
+    "Re-plan the SAME work against the issue, and report every workstream through one",
+    "`report_workstream` call each. Prose and markdown sections are not read for workstreams.",
+    PLAN_WORKSTREAM_CALL_RULE,
   ].join("\n");
 }

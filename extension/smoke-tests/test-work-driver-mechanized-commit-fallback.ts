@@ -17,7 +17,6 @@
  *      paths AND carries fallbackCause="dirty-repoRoot" (#539).
  */
 
-import { commandOf } from "./lib/argv-shell.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -25,6 +24,8 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 import { readState } from "../src/workflow-state.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { type WorkstreamArgs, planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -67,20 +68,11 @@ process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_VERIFY = "0";
 
-const PLAN_REPLY = `## Workstreams
-
-### task-a — fix module a
-- paths: src/a.rs
-- out-of-scope: docs
-
-### task-b — fix module b
-- paths: src/b.rs
-- out-of-scope: docs
-
-### task-c — fix module c
-- paths: src/c.rs
-- out-of-scope: docs
-`;
+const PLAN_CALLS: WorkstreamArgs[] = [
+  { id: "task-a", scope: "fix module a", paths: ["src/a.rs"], outOfScope: ["docs"] },
+  { id: "task-b", scope: "fix module b", paths: ["src/b.rs"], outOfScope: ["docs"] },
+  { id: "task-c", scope: "fix module c", paths: ["src/c.rs"], outOfScope: ["docs"] },
+];
 
 const branchReplyFor = (dir: string, issue: number) =>
   [
@@ -102,7 +94,7 @@ const mkDispatchFn =
   ): Promise<DispatchResult> => {
     const label = dOpts?.label ?? spec.role;
     if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
-    if (label === "plan") return mkResult({ text: PLAN_REPLY });
+    if (label === "plan") return { ...mkResult(), ...planResultFromCalls(PLAN_CALLS) };
     if (label === "ops") return mkResult({ role: "ops", text: branchReplyFor(dir, issue) });
     if (label.startsWith("developer"))
       return mkResult({ role: "developer", text: "done — implemented" });
@@ -288,7 +280,7 @@ const mkDispatchFn =
           dispatchFn: async (_pi, spec, dOpts) => {
             const label = dOpts?.label ?? spec.role;
             if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
-            if (label === "plan") return mkResult({ text: PLAN_REPLY });
+            if (label === "plan") return { ...mkResult(), ...planResultFromCalls(PLAN_CALLS) };
             if (label === "ops") return mkResult({ role: "ops", text: branchReplyFor(dir, 998) });
             if (label.startsWith("developer"))
               return mkResult({ role: "developer", text: "done — implemented" });

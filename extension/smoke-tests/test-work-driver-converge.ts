@@ -16,6 +16,7 @@ import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkState, initialState, readState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
+import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -83,12 +84,9 @@ const EXPLORE_SPEC = [
 
 // Two workstreams so both files are declared. ### subheading shape.
 const PLAN_TWO_WORKSTREAMS = [
-  "## Workstreams",
-  "### task-a — implement alpha",
-  "- paths: extension/src/alpha.ts",
-  "### task-b — implement beta",
-  "- paths: extension/src/beta.ts",
-].join("\n");
+  { id: "task-a", scope: "implement alpha", paths: ["extension/src/alpha.ts"], outOfScope: [] },
+  { id: "task-b", scope: "implement beta", paths: ["extension/src/beta.ts"], outOfScope: [] },
+];
 
 // #297-style zero backoff so nothing sleeps.
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
@@ -131,8 +129,7 @@ function makeConvergeExec(
     // gate's fail-closed branch (an unreadable read halts rather than passes) does
     // not fire on a fixture that never scripted them. They share the `diffRead`
     // counter because the gate's read sequence spans both spellings.
-    if (isNulStatusRead(cmd))
-      return { stdout: nulStatus(...filesForDiff().map((f) => `M  ${f}`)) };
+    if (isNulStatusRead(cmd)) return { stdout: nulStatus(...filesForDiff().map((f) => `M  ${f}`)) };
     if (isNulDiffRead(cmd)) {
       diffRead += 1;
       return { stdout: nulNameStatus(...filesForDiff()) };
@@ -184,7 +181,8 @@ async function runConvergeCycle(
       dispatchFn: async (_pi, spec, dOpts) => {
         const label = dOpts?.label ?? spec.role;
         if (label === "explore") return mkResult({ text: EXPLORE_SPEC });
-        if (label === "plan") return mkResult({ text: PLAN_TWO_WORKSTREAMS });
+        // #1652 — the plan's workstreams are its report_workstream calls.
+        if (label === "plan") return mkResult(planResultFromCalls(PLAN_TWO_WORKSTREAMS));
         if (label === "ops")
           return mkResult({
             role: "ops",

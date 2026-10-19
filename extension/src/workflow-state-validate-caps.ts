@@ -164,6 +164,9 @@ export const CAP_HIT_FIXED_LITERALS = [
   // the validator must know the literal or a re-entry of a live parked cycle
   // would halt on "unrecognised value".
   "plan-spec-mismatch",
+  // #1652 — the plan's report_workstream calls had no tool results (a channel
+  // failure, not a planner defect): the validator must know the literal.
+  "workstream-results-unreadable",
   // #280 §B — the same finding shape across ≥3 files routes to step-back.
   "repeat-finding-seam",
   // #1349 — the adversarial fix pass parked on its own checks.

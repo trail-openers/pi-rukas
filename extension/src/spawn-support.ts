@@ -298,7 +298,7 @@ export function buildChildArgs(
   transcriptPath: string,
   modelChoice: ResolvedModelChoice,
   subagentGuardEnabled: boolean,
-  extraArgs?: string[],
+  extraArgs?: readonly string[],
 ): string[] {
   const args: string[] = childArgsBase();
   // `--mode rpc` keeps stdin open for JSON command injection

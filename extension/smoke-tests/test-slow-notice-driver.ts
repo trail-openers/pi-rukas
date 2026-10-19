@@ -22,6 +22,7 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { runSingleDispatch } from "../src/work-driver-merged.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
+import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 
@@ -121,7 +122,15 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
       tokens: 3,
       at: Date.now(),
     });
-    return { role: "explore", ok: true, text: "done", toolUses: [], ms: 5, exitCode: 0 };
+    // #1652 — the plan reports its one workstream through a report_workstream call.
+    return {
+      role: "explore",
+      ok: true,
+      text: "done",
+      ms: 5,
+      exitCode: 0,
+      ...planResultFromCalls([{ id: "default", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] }]),
+    };
   };
   const ctx: any = {
     host: { sendUserMessage: () => {} },

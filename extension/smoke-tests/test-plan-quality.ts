@@ -13,16 +13,13 @@ import { effectiveMaxWorkstreams } from "../src/work-driver-plan-workstreams.ts"
 // #679 — import from the canonical module (work-driver-plan.ts re-exports
 // the helpers; the stale duplicate copy was deleted — one function, one module).
 import { correctivePlanSteer, planQualityReason } from "../src/work-driver-plan.ts";
-import {
-  countEnumeratedFindings,
-  parseWorkstreams,
-  planCorrectivePrompt,
-} from "../src/work-driver-plan.ts";
+import { countEnumeratedFindings, planCorrectivePrompt } from "../src/work-driver-plan.ts";
 import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
 import {
   PLAN_DELIVERABLE_PATH_RULE,
-  PLAN_SINGLE_BLOCK_RULE,
+  PLAN_WORKSTREAM_CALL_RULE,
 } from "../src/work-driver-prompts-plan.ts";
+import { workstreamsOfCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -238,14 +235,13 @@ assert(
 // ------------------------------------------------------- MAX_WORKSTREAMS
 
 {
-  const block = [
-    "## Workstreams",
-    "",
-    ...Array.from({ length: 9 }, (_, i) =>
-      [`### t${i} — scope ${i}`, `- paths: src/f${i}.ts`, "- out-of-scope: docs/", ""].join("\n"),
-    ),
-  ].join("\n");
-  const parsed = parseWorkstreams(block);
+  const calls = Array.from({ length: 9 }, (_, i) => ({
+    id: `t${i}`,
+    scope: `scope ${i}`,
+    paths: [`src/f${i}.ts`],
+    outOfScope: ["docs/"],
+  }));
+  const parsed = workstreamsOfCalls(calls);
   const ids = Object.keys(parsed);
   assert(
     // #1325 — the fold uses the ceiling lowered to the host budget.
@@ -270,20 +266,13 @@ assert(
   const prev = process.env.PI_ENSEMBLE_MAX_WORKSTREAMS;
   process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = "2";
   try {
-    const block = [
-      "## Workstreams",
-      "",
-      "### a — one",
-      "- paths: src/a.ts",
-      "",
-      "### b — two",
-      "- paths: src/b.ts",
-      "",
-      "### c — three",
-      "- paths: src/c.ts",
-    ].join("\n");
+    const calls = [
+      { id: "a", scope: "one", paths: ["src/a.ts"], outOfScope: [] },
+      { id: "b", scope: "two", paths: ["src/b.ts"], outOfScope: [] },
+      { id: "c", scope: "three", paths: ["src/c.ts"], outOfScope: [] },
+    ];
     assert(
-      Object.keys(parseWorkstreams(block)).length === 2,
+      Object.keys(workstreamsOfCalls(calls)).length === 2,
       "PI_ENSEMBLE_MAX_WORKSTREAMS tunes the ceiling",
     );
   } finally {
@@ -294,8 +283,9 @@ assert(
 }
 {
   // Regression guard: normal plans must be untouched by the ceiling.
-  const block = ["## Workstreams", "", "### default — everything", "- paths: src/a.ts"].join("\n");
-  const parsed = parseWorkstreams(block);
+  const parsed = workstreamsOfCalls([
+    { id: "default", scope: "everything", paths: ["src/a.ts"], outOfScope: [] },
+  ]);
   assert(
     Object.keys(parsed).length === 1 && parsed.default?.scope === "everything",
     "a single-workstream plan is unaffected — no fold annotation, scope intact",
@@ -311,8 +301,8 @@ assert(
   // never told "one `## Workstreams` heading" and "every deliverable with
   // paths must be claimed" cannot fix a rejection it was never warned about.
   assert(
-    p.includes(PLAN_SINGLE_BLOCK_RULE),
-    "#819 round-2: the planner prompt states the single-`## Workstreams`-block rule (the shared constant)",
+    p.includes(PLAN_WORKSTREAM_CALL_RULE),
+    "#1652: the planner prompt states the one-call-per-workstream rule (the shared constant)",
   );
   assert(
     p.includes(PLAN_DELIVERABLE_PATH_RULE),
@@ -400,8 +390,8 @@ assert(
     // #819 round-2 — the rule is one exported constant quoted verbatim by the
     // planner prompt, the steer and the gate's evidence, so the assertion
     // targets the constant rather than a paraphrase of it.
-    s.includes(PLAN_SINGLE_BLOCK_RULE),
-    "#819: the steer states the one-`## Workstreams`-block rule (the shared constant)",
+    s.includes(PLAN_WORKSTREAM_CALL_RULE),
+    "#1652: the steer states the one-call-per-workstream rule (the shared constant)",
   );
 }
 

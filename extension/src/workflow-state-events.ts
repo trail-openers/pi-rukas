@@ -8,7 +8,7 @@ import type { DispatchUsage } from "./types.ts";
 import type { DevelopCrashFragment } from "./work-develop-crash.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
 import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
-import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
+import type { PlanVerdict, WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
 import type { FenceRecoveryStartedEvent } from "./workflow-state-events-fence.ts";
@@ -42,6 +42,7 @@ import type {
 // run concluded); these record that a run happened and what it cost.
 import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
+import type { WorkstreamCallsRefusedEvent } from "./workflow-state-events-workstream.ts";
 // #539 — single definition in the sibling fragment module.
 export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 // #775 prep — handoff event members re-exported from the sibling fragment.
@@ -277,11 +278,9 @@ export type WorkEvent =
        */
       lensWorktreePath?: string;
       /**
-       * #797 — the ref the cycle's integration started from at repoRoot
-       * (recorded before the checkout). Present on `lens-fix-not-integrated`
-       * caps: the post-condition for the handoff's recovery steps is that
-       * repoRoot is on this ref again. Absent on pre-#797 state files and
-       * on caps whose recovery does not depend on the checkout.
+       * #797 — the ref repoRoot started from before the checkout. Present on
+       * `lens-fix-not-integrated`: the recovery's post-condition is that
+       * repoRoot is on this ref again.
        */
       restoredToRef?: string;
       /**
@@ -312,6 +311,8 @@ export type WorkEvent =
       cap: WorkCapLiteral;
       /** #543 — which role's child was cap-killed (loop/token-budget caps). */
       role?: RoleName;
+      /** #1652 — the plan verdict behind a `plan-spec-mismatch` park. */
+      planVerdict?: PlanVerdict;
       reviewRound: number;
       /**
        * #492 — the git evidence that establishes WHICH failure mode
@@ -478,6 +479,7 @@ export type WorkEvent =
   | WorktreeProvisionedEvent
   | SafetyNetCommitEvent
   | RetryTreeCleanEvent
+  | WorkstreamCallsRefusedEvent
   | BranchResetEvent
   | WorktreeLeftoverHandledEvent
   | DispatchSlowEvent

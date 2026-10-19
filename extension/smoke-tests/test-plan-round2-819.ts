@@ -34,10 +34,11 @@ import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { recoveryStepsForCap } from "../src/work-driver-handoff-recovery.ts";
 import { planSpecMismatchCap } from "../src/work-driver-plan-helpers.ts";
+import type { PlanSpecMismatch } from "../src/work-driver-plan-spec-coverage.ts";
 import { runPlan } from "../src/work-driver-plan.ts";
 import { routeStepOutcome } from "../src/work-driver-step-router.ts";
-import type { PlanSpecMismatch } from "../src/work-driver-plan-spec-coverage.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
+import { type PlanResultShape, planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -53,12 +54,12 @@ process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
 
 const fakePi = { sendUserMessage: () => undefined } as unknown as ExtensionAPI;
 
-function mkResult(text: string, patch: Partial<DispatchResult> = {}): DispatchResult {
+/** A dispatch result carrying a plan's report_workstream calls (#1652). */
+function mkResult(plan: PlanResultShape, patch: Partial<DispatchResult> = {}): DispatchResult {
   return {
     role: "explore",
     ok: true,
-    text,
-    toolUses: [],
+    ...plan,
     ms: 10,
     exitCode: 0,
     transcriptPath: "/tmp/stub-plan-transcript.json",
@@ -66,9 +67,9 @@ function mkResult(text: string, patch: Partial<DispatchResult> = {}): DispatchRe
   };
 }
 
-const WORKSTREAMS = ["## Workstreams", "", "### default — the fix", "- paths: src/a.ts", ""].join(
-  "\n",
-);
+const WORKSTREAMS = planResultFromCalls([
+  { id: "default", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
+]);
 
 /**
  * A 2-workstream plan with disjoint file sets and no `depends-on`, where
@@ -79,16 +80,10 @@ const WORKSTREAMS = ["## Workstreams", "", "### default — the fix", "- paths: 
  * round-1 code capped on the corrective's text; the round-2 code must not when
  * the corrective was killed.
  */
-const TRIGGER_PLAN = [
-  "## Workstreams",
-  "",
-  "### task-a — the fix",
-  "- paths: src/a.ts",
-  "",
-  "### task-b — the stub",
-  "- out-of-scope: docs/",
-  "",
-].join("\n");
+const TRIGGER_PLAN = planResultFromCalls([
+  { id: "task-a", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
+  { id: "task-b", scope: "the stub", paths: [], outOfScope: ["docs/"] },
+]);
 
 function mkCtx(dir: string, dispatchFn: DriverContext["dispatchFn"]): DriverContext {
   return {
@@ -99,7 +94,10 @@ function mkCtx(dir: string, dispatchFn: DriverContext["dispatchFn"]): DriverCont
     // The coupling merge's rule-3 grep runs through this seam; an empty
     // stdout means "no shared symbols", so the merge is a no-op and the
     // fixture's shape — not the repo's — decides what the gate sees.
-    verifyExecFn: (async () => ({ stdout: "", code: 0 })) as unknown as DriverContext["verifyExecFn"],
+    verifyExecFn: (async () => ({
+      stdout: "",
+      code: 0,
+    })) as unknown as DriverContext["verifyExecFn"],
   };
 }
 
@@ -136,7 +134,7 @@ for (const cause of ["timeout", "loop", "token-budget", "abort"] as const) {
       // Primary: a plan with a shape defect, so the quality gate fires and the
       // corrective is dispatched. Corrective: KILLED.
       if (seen.length === 1) return mkResult(TRIGGER_PLAN);
-      return mkResult("", {
+      return mkResult(planResultFromCalls([]), {
         ok: false,
         exitCode: 143,
         killCause: cause,
@@ -168,7 +166,10 @@ for (const cause of ["timeout", "loop", "token-budget", "abort"] as const) {
       1,
       Date.now() - 100,
     );
-    const capHit = routed.state.eventLog.slice().reverse().find((e) => e.kind === "cap-hit");
+    const capHit = routed.state.eventLog
+      .slice()
+      .reverse()
+      .find((e) => e.kind === "cap-hit");
     assert(
       capHit?.kind === "cap-hit" &&
         capHit.cap !== "plan-spec-mismatch" &&
@@ -192,7 +193,10 @@ for (const cause of ["timeout", "loop", "token-budget", "abort"] as const) {
         : mkResult(TRIGGER_PLAN),
     );
     const next = await runPlan(ctx, stateWithSpec(initialState(819, 1_000_000)), 1_000_000);
-    const capHit = next.eventLog.slice().reverse().find((e) => e.kind === "cap-hit");
+    const capHit = next.eventLog
+      .slice()
+      .reverse()
+      .find((e) => e.kind === "cap-hit");
     assert(
       capHit?.kind === "cap-hit" && capHit.cap === "plan-spec-mismatch",
       "invariant: a completed corrective that misses the spec still caps as plan-spec-mismatch",
@@ -280,10 +284,8 @@ for (const cause of ["timeout", "loop", "token-budget", "abort"] as const) {
       },
     ],
   };
-  const gh = recoveryStepsForCap(state, "github")
-    .steps.flatMap((s) => s.lines);
-  const gl = recoveryStepsForCap(state, "gitlab")
-    .steps.flatMap((s) => s.lines);
+  const gh = recoveryStepsForCap(state, "github").steps.flatMap((s) => s.lines);
+  const gl = recoveryStepsForCap(state, "gitlab").steps.flatMap((s) => s.lines);
 
   assert(
     !gl.some((l) => l.includes("glab issue edit")),

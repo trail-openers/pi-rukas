@@ -204,6 +204,10 @@ for (const seam of [...SEAMS, ...SEAMS_1454]) {
     // caller is the /agents-md pre-pass dispatch (pi-prompts/agents-md.md),
     // which loads it via FACTS_EXTRA_ARGS — not a static import.
     "facts-reporter.ts",
+    // #1652 — companion extension loaded via --extension (PLAN_WORKSTREAM_EXTRA_ARGS
+    // in work-driver-plan-calls.ts), not via a static import. The smoke test imports
+    // its default export to exercise the real tool; production never does.
+    "workstream-reporter.ts",
   ]);
   const orphans: string[] = [];
   for (const f of allFiles) {

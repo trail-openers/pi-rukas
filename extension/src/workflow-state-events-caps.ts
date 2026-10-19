@@ -190,6 +190,11 @@ export type WorkCapLiteral =
   // written: the #818 shape — a corrective plan about a different problem,
   // four developers and 45 minutes spent building it — is what this stops.
   | "plan-spec-mismatch"
+  // #1652 — the plan dispatch made report_workstream calls whose tool results
+  // the replay did not carry, so they cannot be told from refusals. A DELIBERATE
+  // park before the branch step (the plan is unjudged, not wrong): the operator
+  // reads the channel failure, not a plan-spec verdict.
+  | "workstream-results-unreadable"
   // #280 §B — round-1 repeat-finding seam detection. Same finding
   // shape across ≥3 files → step-back (SDD spec-gap analysis).
   | "repeat-finding-seam"
@@ -292,3 +297,17 @@ export type WorkCapLiteral =
   // parks with the git error as evidence rather than removing nothing and
   // reporting a clean pass.
   | "worktree-listing-unreadable";
+
+/**
+ * #1652 — the plan step's verdict behind a `plan-spec-mismatch` park, carried as
+ * data on the cap-hit so the explainer and the recovery branch on it, never on
+ * the evidence text.
+ */
+export type PlanVerdict = "no-calls" | "all-refused" | "uncovered-deliverables";
+
+/** The runtime list of {@link PlanVerdict}, for validating a persisted value. */
+export const PLAN_VERDICTS: readonly PlanVerdict[] = [
+  "no-calls",
+  "all-refused",
+  "uncovered-deliverables",
+];

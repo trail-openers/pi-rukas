@@ -41,6 +41,7 @@ import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runPlan } from "../src/work-driver-plan.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
+import { type PlanResultShape, planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -57,12 +58,12 @@ process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
 
 const fakePi = { sendUserMessage: () => undefined } as unknown as ExtensionAPI;
 
-function mkResult(text: string): DispatchResult {
+function mkResult(plan: PlanResultShape): DispatchResult {
   return {
     role: "explore",
     ok: true,
-    text,
-    toolUses: [],
+    // #1652 — the plan's workstreams are its report_workstream calls.
+    ...plan,
     ms: 10,
     exitCode: 0,
     transcriptPath: "/tmp/stub-plan-deps-transcript.json",
@@ -91,32 +92,24 @@ function stateWithArtifact(dir: string, body: string): WorkState {
 {
   const dir = mkdtempSync(path.join(tmpdir(), "plan-dropped-deps-"));
   try {
-    const primaryPlan = [
-      "## Workstreams",
-      "",
-      "### task-a — the fix",
-      "",
-      "### task-b — the dependent",
-      "- depends-on: task-a",
-      "",
-    ].join("\n");
-    const correctivePlan = [
-      "## Workstreams",
-      "",
-      "### task-a — the fix",
-      "- paths: src/a.ts",
-      "",
-      "### task-b — the dependent",
-      "- paths: src/b.ts",
-      "",
-    ].join("\n");
+    const primaryPlan = planResultFromCalls([
+      { id: "task-a", scope: "the fix", paths: [], outOfScope: [] },
+      { id: "task-b", scope: "the dependent", paths: [], outOfScope: [], dependsOn: ["task-a"] },
+    ]);
+    const correctivePlan = planResultFromCalls([
+      { id: "task-a", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
+      { id: "task-b", scope: "the dependent", paths: ["src/b.ts"], outOfScope: [] },
+    ]);
     let calls = 0;
     const ctx = mkCtx(dir, async () => {
       calls += 1;
       return mkResult(calls === 1 ? primaryPlan : correctivePlan);
     });
     const next = await runPlan(ctx, stateWithArtifact(dir, "1. a\n2. b\n"), 1_000_000);
-    assert(calls === 2, "the first plan's quality issue (empty-paths on the post-merge plan) triggers exactly one corrective");
+    assert(
+      calls === 2,
+      "the first plan's quality issue (empty-paths on the post-merge plan) triggers exactly one corrective",
+    );
     assert(
       next.pipelineState.planQuality?.reason === "dropped-dependencies",
       "corrective dropped the edge → the final state says dropped-dependencies (not the stale empty-paths reason)",
@@ -148,24 +141,26 @@ function stateWithArtifact(dir: string, body: string): WorkState {
 {
   const dir = mkdtempSync(path.join(tmpdir(), "plan-kept-deps-"));
   try {
-    const primaryPlan = [
-      "## Workstreams",
-      "",
-      "### task-a — the fix",
-      "- paths: src/a.ts",
-      "",
-      "### task-b — the dependent",
-      "- paths: src/b.ts",
-      "- depends-on: task-a",
-      "",
-    ].join("\n");
+    const primaryPlan = planResultFromCalls([
+      { id: "task-a", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
+      {
+        id: "task-b",
+        scope: "the dependent",
+        paths: ["src/b.ts"],
+        outOfScope: [],
+        dependsOn: ["task-a"],
+      },
+    ]);
     let calls = 0;
     const ctx = mkCtx(dir, async () => {
       calls += 1;
       return mkResult(primaryPlan);
     });
     const next = await runPlan(ctx, stateWithArtifact(dir, "1. a\n2. b\n"), 1_000_000);
-    assert(calls === 1, "(no-drop): the coupling merge merges task-b into task-a → no corrective is triggered (the post-merge plan has no quality issue)");
+    assert(
+      calls === 1,
+      "(no-drop): the coupling merge merges task-b into task-a → no corrective is triggered (the post-merge plan has no quality issue)",
+    );
     assert(
       next.pipelineState.workstreams && Object.keys(next.pipelineState.workstreams).length === 1,
       "(no-drop): one workstream after the coupling merge",
@@ -195,17 +190,16 @@ function stateWithArtifact(dir: string, body: string): WorkState {
 {
   const dir = mkdtempSync(path.join(tmpdir(), "plan-kill-path-"));
   try {
-    const correctivePlan = [
-      "## Workstreams",
-      "",
-      "### task-a — the fix",
-      "- paths: src/a.ts",
-      "",
-      "### task-b — the dependent",
-      "- paths: src/b.ts",
-      "- depends-on: task-a",
-      "",
-    ].join("\n");
+    const correctivePlan = planResultFromCalls([
+      { id: "task-a", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
+      {
+        id: "task-b",
+        scope: "the dependent",
+        paths: ["src/b.ts"],
+        outOfScope: [],
+        dependsOn: ["task-a"],
+      },
+    ]);
     let calls = 0;
     // The primary is stubbed as a timeout kill (`killCause: "timeout"`) so
     // the kill path runs and leaves `firstPlanWorkstreams` unset.

@@ -12,6 +12,24 @@ import type { PiContentBlock, PiJsonEvent, PiMessage } from "./pi-event-shapes.t
 import { addUsage } from "./pi-usage.ts";
 import type { DispatchResult } from "./types.ts";
 
+/** The longest tool-result text kept on a DispatchResult (#1652). */
+const TOOL_RESULT_TEXT_MAX = 300;
+
+/**
+ * The text of a tool result's blocks, accumulated block by block and stopped at
+ * TOOL_RESULT_TEXT_MAX — so a large non-text payload is never joined in full
+ * just to be cut down afterwards.
+ */
+function boundedResultText(blocks: PiContentBlock[]): string {
+  let out = "";
+  for (const block of blocks) {
+    if (typeof block.text !== "string") continue;
+    out += block.text;
+    if (out.length >= TOOL_RESULT_TEXT_MAX) return out.slice(0, TOOL_RESULT_TEXT_MAX);
+  }
+  return out;
+}
+
 export function collapseEvents(
   lastAgentEnd: PiJsonEvent | null,
   lastAssistantMessageEnd: PiJsonEvent | null,
@@ -77,6 +95,21 @@ export function collapseEvents(
     }
   }
 
+  // #1652 — which tool calls Pi accepted. Refusal text is kept (bounded): it is
+  // the reason the operator reads when a plan parks on refused calls.
+  const toolResults = messages
+    .filter(
+      (m): m is PiMessage & { toolCallId: string } =>
+        m.role === "toolResult" && typeof m.toolCallId === "string",
+    )
+    .map((m) => ({
+      toolCallId: m.toolCallId,
+      toolName: m.toolName ?? "",
+      // Fail closed: only an explicit `false` is a success (#1652 review).
+      isError: m.isError !== false,
+      text: boundedResultText(m.content ?? []),
+    }));
+
   // Join with double-newline so distinct text blocks across turns (separated
   // by tool calls in between) stay visually delimited instead of concatenated.
   const text = textParts.filter((t) => t.trim()).join("\n\n");
@@ -111,6 +144,7 @@ export function collapseEvents(
     ok: exitCode === 0 && !errorStop,
     text: resolvedText,
     toolUses,
+    ...(toolResults.length > 0 ? { toolResults } : {}),
     ms,
     exitCode,
     usage: { ...usage, turns },

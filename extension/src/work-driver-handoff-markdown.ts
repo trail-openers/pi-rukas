@@ -32,6 +32,10 @@ import { describeBranchState } from "./work-driver-handoff-view.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import { dispatchDurations } from "./work-status-dispatch-durations.ts";
 import { fmtElapsed } from "./work-status-events.ts";
+import {
+  type WorkstreamCallsRefusedEvent,
+  refusalRowMarkdown,
+} from "./workflow-state-events-workstream.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /**
@@ -130,6 +134,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     ...plumbReportSection(state),
     ...verifyAttributionSection(state),
     ...retryTreeSection(state),
+    ...workstreamRefusalSection(state),
     ...consolidationNotesSection(state),
     "### What was attempted",
     ...dispatchRows,
@@ -405,6 +410,24 @@ function verifyAttributionSection(state: WorkState): string[] {
     "",
     ...a.flaky.map((n) => `- \`${inlineCodeSafe(n)}\` — flaky (failed once, passed on the rerun)`),
     ...a.baselineRed.map((n) => `- \`${inlineCodeSafe(n)}\` — red on the base commit too`),
+    "",
+  ];
+}
+
+/**
+ * #1652 — `report_workstream` calls the planner made and Pi refused. The
+ * cycle may still have proceeded on the accepted set, so the refusals are the
+ * only record of what the planner got wrong.
+ */
+function workstreamRefusalSection(state: WorkState): string[] {
+  const rows = state.eventLog.filter(
+    (e): e is WorkstreamCallsRefusedEvent => e.kind === "workstream-calls-refused",
+  );
+  if (rows.length === 0) return [];
+  return [
+    "### Workstream calls the planner had refused",
+    "",
+    ...rows.flatMap((r) => r.refused.map((x) => refusalRowMarkdown(r.label, x, inlineCodeSafe))),
     "",
   ];
 }

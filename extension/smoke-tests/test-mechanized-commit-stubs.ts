@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DispatchResult, DriverContext } from "../src/work-driver-context.ts";
+import { type WorkstreamArgs, planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 // Minimal ExtensionAPI stub — only the methods runWorkDriver actually calls.
 export function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
@@ -47,20 +48,11 @@ process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 
 // Shared fixture bits for the 3-workstream shape.
-export const PLAN_REPLY = `## Workstreams
-
-### task-a — fix module a
-- paths: src/a.rs
-- out-of-scope: docs
-
-### task-b — fix module b
-- paths: src/b.rs
-- out-of-scope: docs
-
-### task-c — fix module c
-- paths: src/c.rs
-- out-of-scope: docs
-`;
+export const PLAN_CALLS: WorkstreamArgs[] = [
+  { id: "task-a", scope: "fix module a", paths: ["src/a.rs"], outOfScope: ["docs"] },
+  { id: "task-b", scope: "fix module b", paths: ["src/b.rs"], outOfScope: ["docs"] },
+  { id: "task-c", scope: "fix module c", paths: ["src/c.rs"], outOfScope: ["docs"] },
+];
 
 export const branchReplyFor = (dir: string, issue: number) =>
   [
@@ -82,7 +74,7 @@ export const mkDispatchFn =
   ): Promise<DispatchResult> => {
     const label = dOpts?.label ?? spec.role;
     if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
-    if (label === "plan") return mkResult({ text: PLAN_REPLY });
+    if (label === "plan") return { ...mkResult(), ...planResultFromCalls(PLAN_CALLS) };
     if (label === "ops") return mkResult({ role: "ops", text: branchReplyFor(dir, issue) });
     if (label.startsWith("developer"))
       return mkResult({ role: "developer", text: "done — implemented" });

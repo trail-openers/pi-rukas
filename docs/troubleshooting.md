@@ -1121,6 +1121,7 @@ Every cap id the driver can record has exactly one row in this table (`extension
 | `verify-env:<step>` | The system refused to start a process, so the gate never ran. See "What `verify-failed:<step>` means, and the caps that split from it". | Free the host's resources, then re-run. |
 | `verify-failed:<step>` | The verify gate ran and judged the change red. See "Outcome-verification gates — `verify-failed:<step>` cap-hits". | Read the per-check evidence in the handoff and fix the code. |
 | `verify-timeout:<step>` | The verify command hit its time bound and reached no verdict. See "`verify-timeout:<step>`: the gate did not finish". | As that section says. |
+| `workstream-results-unreadable` | The plan child made `report_workstream` calls but their tool results could not be read from its event stream, so the driver cannot tell which calls Pi accepted. This is a Pi event-shape problem, not a bad plan, so no corrective is spent and no plan-spec verdict is given (#1652). | Check the Pi version against `docs/pi-compatibility.md`, run `test-pi-shape-live.ts`, then re-run. |
 | `worktree-listing-unreadable` | The branch step could not read `git worktree list` (bounded; git hung or failed), so it could not tell whether a same-issue worktree holds work. | Clear what blocks git (a stale `.git/worktrees` lock), then re-run. |
 
 The handoff comment quotes 4 concrete recovery shell commands keyed to the cap shape — paste-and-run-ready. The `/work-status` command renders the same postmortem layout from the state file if you'd rather inspect locally.

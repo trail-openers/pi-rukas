@@ -1,14 +1,21 @@
 #!/usr/bin/env bun
 /**
- * #679 — CASE 2a: `parseWorkstreams` must parse `- depends-on: <id>` lines
- * (tolerant of `depends_on:` / `Depends on:` variants, comma-separated multi-dep)
- * into `dependsOn?: string[]`, and `- integration-test: <path>` into
- * `integrationTest?: string`.
+ * #679 — CASE 2a: a `report_workstream` call's `dependsOn` and `integrationTest`
+ * fields reach the workstream map intact.
  *
- * Mirrors the test-workstream-path-normalise.ts canary pattern with variant fixtures.
+ * #1652 — the markdown spelling variants (`depends_on:`, `Depends on:`,
+ * `integration_test:`) are gone with the markdown block: a call has one key per
+ * field, and the schema refuses anything else. The variant tests are therefore
+ * superseded by the schema refusal asserted at the end of this file.
  */
 
-import { parseWorkstreams } from "../src/work-driver-plan.ts";
+import { workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
+import {
+  type WorkstreamArgs,
+  planResultFromCalls,
+  planResultFromRawCalls,
+  workstreamsOfCalls,
+} from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -19,159 +26,100 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-// --------------------------------------------------- depends-on parsing
+const BASE: WorkstreamArgs = {
+  id: "task-a",
+  scope: "base work",
+  paths: ["src/a.ts"],
+  outOfScope: [],
+};
+
+// --------------------------------------------------- depends-on
 
 {
-  const block = [
-    "## Workstreams",
-    "",
-    "### task-a — base work",
-    "- paths: src/a.ts",
-    "",
-    "### task-b — depends on a",
-    "- paths: src/b.ts",
-    "- depends-on: task-a",
-  ].join("\n");
-  const parsed = parseWorkstreams(block);
+  const parsed = workstreamsOfCalls([
+    BASE,
+    {
+      id: "task-b",
+      scope: "depends on a",
+      paths: ["src/b.ts"],
+      outOfScope: [],
+      dependsOn: ["task-a"],
+    },
+  ]);
   assert(
     parsed["task-b"]?.dependsOn?.length === 1 && parsed["task-b"]?.dependsOn?.[0] === "task-a",
-    "depends-on: single dep parsed into dependsOn array",
+    "dependsOn: a single dep is kept as a one-element array",
   );
   assert(
     parsed["task-a"]?.dependsOn === undefined,
-    "workstream without depends-on line has dependsOn undefined",
+    "workstream without dependsOn has dependsOn undefined",
   );
 }
 
 {
-  // Comma-separated multi-dep
-  const block = [
-    "## Workstreams",
-    "",
-    "### task-a — base 1",
-    "- paths: src/a.ts",
-    "",
-    "### task-b — base 2",
-    "- paths: src/b.ts",
-    "",
-    "### task-c — depends on both",
-    "- paths: src/c.ts",
-    "- depends-on: task-a, task-b",
-  ].join("\n");
-  const parsed = parseWorkstreams(block);
+  // Multi-dep: each id is its own array element (no comma splitting).
+  const parsed = workstreamsOfCalls([
+    BASE,
+    { id: "task-b", scope: "base 2", paths: ["src/b.ts"], outOfScope: [] },
+    {
+      id: "task-c",
+      scope: "depends on both",
+      paths: ["src/c.ts"],
+      outOfScope: [],
+      dependsOn: ["task-a", "task-b"],
+    },
+  ]);
   assert(
-    parsed["task-c"]?.dependsOn?.length === 2,
-    "depends-on: comma-separated multi-dep parsed into 2-element array",
-  );
-  assert(
-    parsed["task-c"]?.dependsOn?.includes("task-a") && parsed["task-c"]?.dependsOn?.includes("task-b"),
-    "depends-on: both deps present in the array",
+    parsed["task-c"]?.dependsOn?.length === 2 &&
+      parsed["task-c"]?.dependsOn?.includes("task-a") &&
+      parsed["task-c"]?.dependsOn?.includes("task-b"),
+    "dependsOn: both deps are present in the array",
   );
 }
 
-{
-  // Alternative key spelling: depends_on (underscore)
-  const block = [
-    "## Workstreams",
-    "",
-    "### task-a — base",
-    "- paths: src/a.ts",
-    "",
-    "### task-b — depends_on variant",
-    "- paths: src/b.ts",
-    "- depends_on: task-a",
-  ].join("\n");
-  const parsed = parseWorkstreams(block);
-  assert(
-    parsed["task-b"]?.dependsOn?.[0] === "task-a",
-    "depends_on: underscore variant parsed correctly",
-  );
-}
+// --------------------------------------------------- integration-test
 
 {
-  // Alternative key spelling: "Depends on:" (prose variant with space)
-  const block = [
-    "## Workstreams",
-    "",
-    "### task-a — base",
-    "- paths: src/a.ts",
-    "",
-    "### task-b — prose variant",
-    "- paths: src/b.ts",
-    "- Depends on: task-a",
-  ].join("\n");
-  const parsed = parseWorkstreams(block);
-  assert(
-    parsed["task-b"]?.dependsOn?.[0] === "task-a",
-    "Depends on: prose variant (space) parsed correctly",
-  );
-}
-
-// --------------------------------------------------- integration-test parsing
-
-{
-  const block = [
-    "## Workstreams",
-    "",
-    "### task-a — base",
-    "- paths: src/a.ts",
-    "",
-    "### task-b — has integration test",
-    "- paths: src/b.ts",
-    "- depends-on: task-a",
-    "- integration-test: smoke-tests/test-integration.ts",
-  ].join("\n");
-  const parsed = parseWorkstreams(block);
+  const parsed = workstreamsOfCalls([
+    BASE,
+    {
+      id: "task-b",
+      scope: "has integration test",
+      paths: ["src/b.ts"],
+      outOfScope: [],
+      dependsOn: ["task-a"],
+      integrationTest: "smoke-tests/test-integration.ts",
+    },
+  ]);
   assert(
     parsed["task-b"]?.integrationTest === "smoke-tests/test-integration.ts",
-    "integration-test: single path parsed into integrationTest field",
+    "integrationTest: the path is kept in the integrationTest field",
   );
 }
 
 {
-  // Alternative key spelling: integration_test
-  const block = [
-    "## Workstreams",
-    "",
-    "### task-a — base",
-    "- paths: src/a.ts",
-    "",
-    "### task-b — underscore variant",
-    "- paths: src/b.ts",
-    "- depends-on: task-a",
-    "- integration_test: smoke-tests/test-int.ts",
-  ].join("\n");
-  const parsed = parseWorkstreams(block);
-  assert(
-    parsed["task-b"]?.integrationTest === "smoke-tests/test-int.ts",
-    "integration_test: underscore variant parsed correctly",
-  );
-}
-
-{
-  // No integration-test line → undefined
-  const block = [
-    "## Workstreams",
-    "",
-    "### task-a — base",
-    "- paths: src/a.ts",
-    "",
-    "### task-b — no integration test",
-    "- paths: src/b.ts",
-    "- depends-on: task-a",
-  ].join("\n");
-  const parsed = parseWorkstreams(block);
+  const parsed = workstreamsOfCalls([
+    BASE,
+    {
+      id: "task-b",
+      scope: "no integration test",
+      paths: ["src/b.ts"],
+      outOfScope: [],
+      dependsOn: ["task-a"],
+    },
+  ]);
   assert(
     parsed["task-b"]?.integrationTest === undefined,
-    "integration-test: absent line → undefined",
+    "integrationTest: absent field → undefined",
   );
 }
 
 // --------------------------------------------------- N=1 default path unaffected
 
 {
-  const block = ["## Workstreams", "", "### default — everything", "- paths: src/a.ts"].join("\n");
-  const parsed = parseWorkstreams(block);
+  const parsed = workstreamsOfCalls([
+    { id: "default", scope: "everything", paths: ["src/a.ts"], outOfScope: [] },
+  ]);
   assert(
     Object.keys(parsed).length === 1 && parsed.default?.dependsOn === undefined,
     "N=1 default workstream: no dependsOn field (byte-identical path)",
@@ -186,25 +134,19 @@ function assert(cond: boolean, msg: string) {
   const prev = process.env.PI_ENSEMBLE_MAX_WORKSTREAMS;
   process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = "2";
   try {
-    const block = [
-      "## Workstreams",
-      "",
-      "### a — one",
-      "- paths: src/a.ts",
-      "",
-      "### b — two",
-      "- paths: src/b.ts",
-      "",
-      "### c — three (folded)",
-      "- paths: src/c.ts",
-      "- depends-on: a",
-    ].join("\n");
-    const parsed = parseWorkstreams(block);
+    const parsed = workstreamsOfCalls([
+      { id: "a", scope: "one", paths: ["src/a.ts"], outOfScope: [] },
+      { id: "b", scope: "two", paths: ["src/b.ts"], outOfScope: [] },
+      {
+        id: "c",
+        scope: "three (folded)",
+        paths: ["src/c.ts"],
+        outOfScope: [],
+        dependsOn: ["a"],
+      },
+    ]);
     const ids = Object.keys(parsed);
-    assert(
-      ids.length === 2,
-      "fold: 3 workstreams folded to ceiling of 2",
-    );
+    assert(ids.length === 2, "fold: 3 workstreams folded to ceiling of 2");
     // The folded workstream's depends-on IS preserved by the shared fold
     // (workstream-fold.ts: union of dependsOn minus the two merged ids).
     // c depends on a; c is folded into b; the merged workstream (b) keeps
@@ -218,6 +160,36 @@ function assert(cond: boolean, msg: string) {
     if (prev === undefined) delete process.env.PI_ENSEMBLE_MAX_WORKSTREAMS;
     else process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = prev;
   }
+}
+
+// --------------------------------------------------- schema refusal (replaces the spelling variants)
+
+{
+  // A bare string where the schema wants an array is refused by the companion,
+  // so the call adds nothing and the workstream is absent from the map.
+  const transcript = planResultFromRawCalls([
+    { id: "task-a", args: { ...BASE } },
+    {
+      id: "task-b",
+      args: {
+        id: "task-b",
+        scope: "bad dep",
+        paths: ["src/b.ts"],
+        outOfScope: [],
+        dependsOn: "task-a",
+      },
+    },
+  ]);
+  const refusal = transcript.toolResults[1];
+  assert(refusal?.isError === true, "schema: a string dependsOn is refused by the companion");
+  assert(
+    Object.keys(workstreamCallsOf(transcript).workstreams).join(",") === "task-a",
+    "schema: the refused call adds nothing to the workstream map",
+  );
+  assert(
+    Object.keys(workstreamCallsOf(planResultFromCalls([BASE])).workstreams).join(",") === "task-a",
+    "schema: a valid call on its own is read",
+  );
 }
 
 console.log(`\nexit ${exit}`);

@@ -14,7 +14,6 @@ import { extractListField, sliceMarkdownSection } from "./work-driver-plan-parse
 
 // Re-exported: several modules read plan/spec markdown through this module.
 export {
-  countMarkdownSections,
   sliceMarkdownSection,
   splitOutsideParens,
 } from "./work-driver-plan-parse.ts";
@@ -33,6 +32,7 @@ import { runPlanNormalisationPass } from "./work-driver-plan-coupling-pass.ts";
 import { runPlanQualityTail } from "./work-driver-plan-quality-pass.ts";
 import { planSpecMismatchReason } from "./work-driver-plan-spec-coverage.ts";
 import { execp } from "./work-driver-verify.ts";
+import type { Workstream } from "./workflow-state-schema-workstreams.ts";
 // #679 — the CANONICAL planQualityReason / correctivePlanSteer / steer builders
 // live in work-driver-plan-helpers.ts; this module re-exports them so existing
 // importers (smoke tests, cross-module consumers) keep their paths. The stale
@@ -47,7 +47,7 @@ export {
   planDispatchTimeoutMs,
   planTimeoutCorrective,
 } from "./work-driver-plan-helpers.ts";
-export { maxWorkstreams, parseWorkstreams } from "./work-driver-plan-workstreams.ts";
+export { maxWorkstreams } from "./work-driver-plan-workstreams.ts";
 export {
   type ExploreVerdict,
   parseExploreVerdict,
@@ -60,20 +60,32 @@ export {
 // #1167 (size split) — the corrective steers moved to work-driver-plan-steers.ts
 // so this step handler stays inside the §12 cap; the re-export keeps every
 // existing importer's path working, which is the whole reason they live here.
-export { correctivePlanSteer, correctiveTestSubjectSplitSteer } from "./work-driver-plan-steers.ts";
+export {
+  correctivePlanSteer,
+  correctiveTestSubjectSplitSteer,
+} from "./work-driver-plan-steers.ts";
 // #819 round-3 — the gate's HALT is now reachable from `runPlan`'s own tail (the
 // backstop under the `primaryGateRefused` assertion), so a caller that reads the
 // gate's verdict must be able to read the halt it produces from the same module.
 export { planSpecMismatchCap } from "./work-driver-plan-helpers.ts";
+import {
+  PLAN_WORKSTREAM_EXTRA_ARGS,
+  type WorkstreamReport,
+  appendPlanDispatchOutcome,
+  checkWorkstreamReporter,
+  emptyWorkstreamReport,
+  workstreamCallsOf,
+} from "./work-driver-plan-calls.ts";
 import {
   correctivePlanSteer,
   correctiveTestSubjectSplitSteer,
   countFindingsForCycle,
   findDroppedDependencyEdges,
   planDispatchTimeoutMs,
+  planNoWorkstreamCallsCap,
   planQualityEnabled,
   planQualityReason,
-  planSpecMismatchCap,
+  planResultsUnreadableCap,
   planTimeoutCorrective,
   planTimeoutKill,
 } from "./work-driver-plan-helpers.ts";
@@ -85,7 +97,6 @@ import {
 // #819 — the cap helper below is typed on the gate's verdict shape.
 import type { PlanSpecMismatch } from "./work-driver-plan-spec-coverage.ts";
 import { planCorrectiveFailureEvent, planCorrectivePrompt } from "./work-driver-plan-timeout.ts";
-import { parseWorkstreams } from "./work-driver-plan-workstreams.ts";
 import { planFindingsCount } from "./work-driver-pr-body-definition.ts";
 import { inlinePlanPrompt } from "./work-driver-prompts-early.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
@@ -106,15 +117,15 @@ export function setPlanThrowForTestForTest(fn: (() => void) | undefined): void {
  *
  * Parallelism is the default: up to 10 slots for multi-workstream issues.
  * The subagent reads the cached issue body + explore report, decides whether
- * the issue is 1, 2, or N+ independent workstreams, and returns a fenced
- * `## Workstreams` block. N=1 is the same path (a `default` workstream is
- * always written so downstream iterates `Object.keys(workstreams)` uniformly).
+ * the issue is 1, 2, or N+ independent workstreams, and reports each one with a
+ * `report_workstream` tool call (#1652). N=1 is the same path (one `default`
+ * call, so downstream iterates `Object.keys(workstreams)` uniformly).
  *
- * Failure modes: 0 workstreams → synthetic `default`; dispatch fails → halt
- * (`dispatch-failed`). Both corrective paths (#754's kill recovery and #290's
- * quality re-dispatch) END the step on their own failure event, and a plan the
- * #819 spec gate refuses ends on a `cap-hit` — neither reaches the tail that
- * writes `workstreams`.
+ * Failure modes: dispatch fails → halt (`dispatch-failed`); no accepted call →
+ * one corrective, then park (`plan-spec-mismatch`). The corrective paths (#754's
+ * kill recovery and the quality re-dispatch) END the step on their own failure
+ * event, and a plan the #819 spec gate refuses ends on a `cap-hit` — neither
+ * reaches the tail that writes `workstreams`.
  */
 export async function runPlan(
   ctx: CycleContext,
@@ -127,10 +138,30 @@ export async function runPlan(
   // is exercised. Production never sets it; closures, not env vars.
   planThrowForTest?.();
   let next = appendEvent(
-    { ...state, pipelineState: { ...state.pipelineState, currentStep: "plan" } },
+    {
+      ...state,
+      pipelineState: { ...state.pipelineState, currentStep: "plan" },
+    },
     { kind: "step-started", step: "plan", at: now },
   );
   const issues = activeIssuesOf(state);
+  // #1652 — the plan's workstreams arrive as tool calls, so the companion must
+  // be on disk before the child is spawned without it. A missing file is a
+  // named failure here, not a plan that quietly reports nothing.
+  const reporterMissing = await checkWorkstreamReporter();
+  if (reporterMissing) {
+    return appendEvent(next, {
+      kind: "dispatch-failed",
+      step: "plan",
+      role: "explore",
+      jobId: "unknown",
+      label: "plan",
+      ms: 0,
+      at: Date.now(),
+      exitCode: null,
+      errorTail: reporterMissing,
+    });
+  }
   const { dispatch, section } = await issueImagesFor(ctx, issues, "plan");
   const startedAt = Date.now();
   // #1322 — an issue naming an existing commit/PR to port plans as one workstream.
@@ -164,6 +195,8 @@ export async function runPlan(
     onSlow: slowRecorder(ctx.issue, "plan"),
     // #838 — the plan dispatch's deck row (via the shared deck option).
     deck: { ...driverDeckOpts(ctx.issue, "plan", "plan"), label: "plan" },
+    // #1652 — the report_workstream companion (see work-driver-plan-calls.ts).
+    extraArgs: PLAN_WORKSTREAM_EXTRA_ARGS,
   };
   try {
     result = await dispatch(ctx.host, { role: "explore", prompt }, primaryOpts);
@@ -181,7 +214,7 @@ export async function runPlan(
   }
   // #754 — a primary dispatch killed at the plan bound is routed to the
   // corrective re-dispatch below: a killed child has no structured output,
-  // parseWorkstreams would return nothing. The cause is rewritten at the
+  // the reply would report no workstream calls. The cause is rewritten at the
   // call site (not resolveKillCause) so downstream sees it, not a timeout.
   let planKill: DispatchResult | undefined;
   const primary = planTimeoutKill(result, primaryOpts);
@@ -189,16 +222,35 @@ export async function runPlan(
     result = primary;
     planKill = result;
   }
+  // #1652 — the workstreams are the ACCEPTED report_workstream calls. Zero is
+  // not a `default` any more: the quality tail's corrective asks for the calls.
+  // A killed primary's calls are ignored (its recovery corrective is the plan).
+  // A killed primary keeps its REFUSALS (what the planner got wrong is still
+  // evidence) and drops its accepted calls.
+  const readout = workstreamCallsOf(result);
+  const primaryReport: WorkstreamReport = planKill
+    ? { ...emptyWorkstreamReport(), refused: readout.refused }
+    : readout;
   const event = await buildCompletionEvent(ctx, "plan", "explore", "plan", result);
-  next = appendEvent(clearDispatch(next, begun.jobId), event);
-  // Parse workstreams out of the reply. Failure or N=0 collapses to
-  // `default` — never blocks the cycle.
-  let workstreams = parseWorkstreams(result.text ?? "");
+  next = appendPlanDispatchOutcome(clearDispatch(next, begun.jobId), "plan", primaryReport, event);
+  // #1652 — a non-kill failure (provider error, non-zero exit) is a failed
+  // dispatch, not a silent planner: its completion event is the tail and the
+  // step router halts on it. Judging it for zero calls would send a false steer.
+  if (!result.ok && !planKill) return next;
+  // #1652 — calls whose results never arrived cannot be judged either way: park.
+  if (primaryReport.unreadable > 0) return planResultsUnreadableCap(next, primaryReport);
+  // The plan this step judges. Two views of it, and only these two: `judged` is
+  // the raw report (the primary's, or the recovery corrective's when a kill was
+  // recovered); `workstreams` is that report's map AFTER normalisation, which is
+  // assigned below from `judged` in one place per branch.
+  let judged: WorkstreamReport = primaryReport;
+  let workstreams: Record<string, Workstream> = judged.workstreams;
   // #1005 — the first plan's RAW workstreams (before the coupling merge),
   // held aside for the #849 dropped-edge check. The dropped-edge check
   // compares the first plan's RAW map (the depends-on edges as the planner
-  // declared them) against the corrective's RAW map.
-  const firstPlanRaw = workstreams;
+  // declared them) against the corrective's RAW map. A killed primary has no
+  // raw map (its calls were dropped), so this is `{}` there, as before.
+  const firstPlanRaw = primaryReport.workstreams;
   let redispatched = false;
   // #1167 (size split) — the #849/#1005 dropped-edge state (`droppedEdges` and the
   // corrective's RAW map) moved with the tail into work-driver-plan-quality-pass.ts,
@@ -247,7 +299,10 @@ export async function runPlan(
   const runNormalisation = async (
     raw: typeof workstreams,
     state: WorkState,
-  ): Promise<{ workstreams: typeof workstreams; summary?: PlanUnfenceSummary }> =>
+  ): Promise<{
+    workstreams: typeof workstreams;
+    summary?: PlanUnfenceSummary;
+  }> =>
     runPlanNormalisationPass(raw, state, {
       port,
       repoRoot: ctx.repoRoot,
@@ -279,7 +334,6 @@ export async function runPlan(
       prompt,
       planKill,
       next,
-      parseWorkstreams,
       planCorrectivePrompt,
       // #1167 round-4 — the recovered plan is normalised exactly like the
       // primary's and the quality corrective's: fold, coupling merge, unfence.
@@ -307,6 +361,7 @@ export async function runPlan(
     next = recovered.state;
     workstreams = recovered.workstreams;
     redispatched = true;
+    if (recovered.report) judged = recovered.report;
     // #819 round-3 — a corrective that was KILLED or whose dispatch THREW ends
     // the step HERE. Falling through was the defect: the gates below read
     // `result.text` (the KILLED PRIMARY's text), the claims check registered a
@@ -315,6 +370,19 @@ export async function runPlan(
     // tail is the corrective's `dispatch-failed` still advertised a workstream
     // for develop. `recovered.state` already carries that tail.
     if (!recovered.ok) return recovered.state;
+    // #1652 — the recovery corrective's unreadable results park; they are not a zero.
+    if (recovered.report && recovered.report.unreadable > 0) {
+      return planResultsUnreadableCap(next, recovered.report);
+    }
+    // #1652 — the recovery corrective is the one-shot budget, so a corrective
+    // with no accepted call leaves no plan: park, do not build a `default`.
+    if (recovered.report && recovered.report.accepted === 0) {
+      return planNoWorkstreamCallsCap(
+        next,
+        recovered.report,
+        "this is the one-shot corrective plan after a killed primary — it was not re-dispatched and develop never ran",
+      );
+    }
   }
   // #1167 — the plan-time unfence runs AFTER the fold and the coupling merge
   // and before the quality gate below, so the gate judges the plan the driver
@@ -326,7 +394,7 @@ export async function runPlan(
   // `normalisedOnce`).
   let normalisedSummary: PlanUnfenceSummary | undefined;
   if (!normalisedOnce) {
-    const normalised = await runPlanNormalisationPass(workstreams, next, {
+    const normalised = await runPlanNormalisationPass(judged.workstreams, next, {
       port,
       repoRoot: ctx.repoRoot,
       worktrees: next.pipelineState.worktrees,
@@ -342,14 +410,14 @@ export async function runPlan(
   // #819 plan-to-spec gate, the one-shot corrective, the #849 dropped-edge
   // check, the #571 claims and the single planQuality write. #1167 (size split)
   // moved that tail to work-driver-plan-quality-pass.ts for the AGENTS.md §12
-  // cap; behaviour is unchanged, and `dispatch`, `parseWorkstreams` and the
+  // cap; behaviour is unchanged, and `dispatch`, `workstreamCallsOf` and the
   // deck/slow-recorder options are threaded in so the pass is the only place
   // the corrective is built.
   const tail = await runPlanQualityTail(
     ctx,
     {
       next,
-      text: result.text ?? "",
+      report: judged,
       workstreams,
       firstPlanRaw,
       findingsCount,
@@ -357,9 +425,6 @@ export async function runPlan(
       planGateEnabled,
       planKill: planKill !== undefined,
       redispatched,
-      // #1167 (size split) — the corrective's RAW map is now owned by the tail
-      // (undefined here = none had run at this point; the tail sets it itself).
-      port,
       // #1167 round-3 — the primary plan's unfence record, persisted with the
       // rest of the plan step's evidence. The corrective's own pass overwrites
       // it (that is the plan the cycle keeps).
@@ -368,7 +433,6 @@ export async function runPlan(
     {
       dispatch,
       prompt,
-      parseWorkstreams,
       couplingExecFn: planExecFn,
       slow: (issue: number, step: "plan") => slowRecorder(issue, step),
       deck: (issue: number, step: "plan", label: string) => ({

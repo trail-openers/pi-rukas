@@ -27,6 +27,7 @@ import {
   writeState,
 } from "../src/workflow-state.ts";
 import { realExec } from "./lib/exec-fake.ts";
+import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -113,8 +114,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 // 3. runWorkDriver — happy path (single-workstream) with mock dispatch.
 //
 // PR3 sequence: explore → plan (decomposes) → branch (ops) → develop
-// (developer). Plan returns no `## Workstreams` block, so the driver
-// synthesises the `default` workstream and the cycle stays single-task.
+// (developer). Plan reports one `default` workstream through a
+// report_workstream call (#1652), so the cycle stays single-task.
 // Steps 5/7 (adversarial / lens-review) call orchestrator functions
 // directly (NOT through dispatchFn); we throw on dispatch #5 to halt
 // cleanly before those live paths fire.
@@ -140,12 +141,19 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             "smoke: halting before adversarial step (would call live runAdversarialLoop)",
           );
         }
+        // #1652 — the plan's single-workstream answer is one `default` call (the
+        // corrective, if one runs, answers the same way).
+        if (spec.role === "explore" && (opts?.label ?? "").startsWith("plan")) {
+          return {
+            ...mkResult({ role: spec.role, text: "mock plan output for issue #600" }),
+            ...planResultFromCalls([
+              { id: "default", scope: "single task", paths: ["src/a.ts"], outOfScope: [] },
+            ]),
+          };
+        }
         return mkResult({
           role: spec.role,
-          text:
-            spec.role === "explore" && (opts?.label ?? spec.role) !== "plan"
-              ? EXPLORE_REPLY
-              : `mock ${spec.role} output for issue #600`,
+          text: spec.role === "explore" ? EXPLORE_REPLY : `mock ${spec.role} output for issue #600`,
         });
       },
     };
@@ -162,10 +170,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     assert(rolesDispatched[3] === "developer", "Step 4: dispatches @developer for implementation");
     const after = await readState(dir, 600);
     assert(after !== undefined, "state file persists after the loop halts");
-    // Plan-step output had no `## Workstreams` block → driver synthesises default.
+    // Plan-step reported one `default` call → the workstream is kept as reported.
     assert(
       after?.pipelineState.workstreams?.default !== undefined,
-      "single-workstream cycle synthesises pipelineState.workstreams.default",
+      "single-workstream cycle keeps the reported pipelineState.workstreams.default",
     );
     // Step 3 (branch) populates worktrees with default → repoRoot.
     assert(
