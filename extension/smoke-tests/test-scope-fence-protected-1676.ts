@@ -11,7 +11,15 @@
  */
 
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -339,6 +347,133 @@ const NEW = ".github/workflows/new.yml";
     "a restore that cannot run halts with a named failure, never a silent pass",
   );
   rmSync(notRepo, { recursive: true, force: true });
+}
+
+// 5. A committed rename OUT of a deferred path is refused: discarding only the
+// deferred side would leave its content under the unprotected name.
+{
+  const { dir, base } = repoAtBase();
+  git(dir, "mv", FENCE, "extension/src/moved.sh");
+  git(dir, "commit", "-q", "-m", "move the gate aside");
+  const failures: string[] = [];
+  await discardDeferredProtectedEdits({
+    execFn: realExec,
+    worktrees: { default: dir },
+    baseFor: () => base,
+    deferred: [FENCE],
+    protectedGrant: [],
+    failures,
+    notes: [],
+  });
+  assert(
+    failures.length === 1 && failures[0]?.includes("rename pairs"),
+    "a committed rename out of a deferred path halts instead of discarding one side",
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// 6. A committed rename INTO a deferred path is refused: discarding the destination
+// alone would leave the source deleted on the branch.
+{
+  const { dir, base } = repoAtBase();
+  mkdirSync(path.join(dir, ".github/workflows"), { recursive: true });
+  git(dir, "mv", SOURCE, NEW);
+  git(dir, "commit", "-q", "-m", "move a source into a workflow");
+  const failures: string[] = [];
+  await discardDeferredProtectedEdits({
+    execFn: realExec,
+    worktrees: { default: dir },
+    baseFor: () => base,
+    deferred: [NEW],
+    protectedGrant: [],
+    failures,
+    notes: [],
+  });
+  assert(
+    failures.length === 1 && failures[0]?.includes("rename pairs"),
+    "a committed rename into a deferred path halts instead of deleting the source",
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// 7. A staged rename out of a deferred path is refused too (index-side rename).
+{
+  const { dir, base } = repoAtBase();
+  git(dir, "mv", FENCE, "extension/src/staged.sh");
+  const failures: string[] = [];
+  await discardDeferredProtectedEdits({
+    execFn: realExec,
+    worktrees: { default: dir },
+    baseFor: () => base,
+    deferred: [FENCE],
+    protectedGrant: [],
+    failures,
+    notes: [],
+  });
+  assert(
+    failures.length === 1 && failures[0]?.includes("rename pairs"),
+    "a staged rename out of a deferred path halts",
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// 8. A deferred path under a symlinked directory is refused before any removal.
+{
+  const { dir, base } = repoAtBase();
+  const outside = mkdtempSync(path.join(tmpdir(), "protected-discard-1676-outside-"));
+  writeFileSync(path.join(outside, "victim.yml"), "keep\n");
+  symlinkSync(outside, path.join(dir, "linkdir"));
+  const failures: string[] = [];
+  await discardDeferredProtectedEdits({
+    execFn: realExec,
+    worktrees: { default: dir },
+    baseFor: () => base,
+    deferred: ["linkdir/victim.yml"],
+    protectedGrant: [],
+    failures,
+    notes: [],
+  });
+  assert(
+    failures.length === 1 && failures[0]?.includes("is a symlink"),
+    "a deferred path under a symlinked directory is refused, not removed through the link",
+  );
+  assert(
+    readFileSync(path.join(outside, "victim.yml"), "utf8") === "keep\n",
+    "the file behind the symlink is untouched",
+  );
+  rmSync(dir, { recursive: true, force: true });
+  rmSync(outside, { recursive: true, force: true });
+}
+
+// 9. A workstream whose only declared path was fenced out cannot skip the fanout
+// bound when it changed files; with no changes the skip is still fine.
+{
+  const fenced = { default: { id: "default", scope: "x", paths: [], outOfScope: [FENCE] } };
+  const failures: string[] = [];
+  runScopeFanoutGate(
+    fenced,
+    new Map([["default", new Set(["extension/src/z.ts"])]]),
+    failures,
+    [],
+    undefined,
+    undefined,
+    { protectedDeferred: [FENCE] },
+  );
+  assert(
+    failures.some((f) => f.includes("cannot be bounded")),
+    "an emptied workstream that changed files fails the fanout gate instead of skipping it",
+  );
+  const quiet: string[] = [];
+  runScopeFanoutGate(
+    fenced,
+    new Map([["default", new Set<string>()]]),
+    quiet,
+    [],
+    undefined,
+    undefined,
+    { protectedDeferred: [FENCE] },
+  );
+  assert(quiet.length === 0, "an emptied workstream that changed nothing is not failed");
 }
 
 console.log(`\nexit ${exit}`);

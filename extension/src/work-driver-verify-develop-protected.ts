@@ -25,7 +25,7 @@
  * edge). This file does NOT import work-driver-verify-develop.ts.
  */
 
-import { rm } from "node:fs/promises";
+import { lstat, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { type ExecFn, errText, isValidBaseSha, runGit } from "./work-develop-git.ts";
 import type { CycleContext } from "./work-driver-context.ts";
@@ -93,6 +93,76 @@ function baseForWorkstream(ps: PipelineState, id: string): string | undefined {
   return isValidBaseSha(ps.baseSha) ? ps.baseSha : undefined;
 }
 
+/**
+ * Pairs `(from, to)` of every rename or copy in git output. `nameStatus` selects
+ * `diff --name-status -z` (status, from, to) over `status --porcelain -z`
+ * (XY to, from), the two shapes the discard pass reads.
+ */
+function renamePairsOf(out: string, nameStatus: boolean): Array<[string, string]> {
+  const f = out.split("\0");
+  const pairs: Array<[string, string]> = [];
+  for (let i = 0; i < f.length; i++) {
+    const tok = f[i] ?? "";
+    if (nameStatus) {
+      if (tok[0] === "R" || tok[0] === "C") {
+        pairs.push([f[i + 1] ?? "", f[i + 2] ?? ""]);
+        i += 2;
+      } else {
+        i += 1;
+      }
+    } else if (tok.length >= 4 && (tok[0] === "R" || tok[0] === "C")) {
+      pairs.push([f[i + 1] ?? "", tok.slice(3)]);
+      i += 1;
+    }
+  }
+  return pairs;
+}
+
+/**
+ * The other side of a committed or staged rename that involves `p`, if any. A
+ * rename cannot be discarded one side at a time: reverting only the deferred side
+ * would leave its content under the unprotected name (or delete the source), so
+ * the caller fails the discard instead.
+ */
+async function renamePartnerOf(
+  git: ReturnType<typeof runGit>,
+  cwd: string,
+  base: string,
+  p: string,
+): Promise<string | undefined> {
+  const committed = (await git(["diff", "--name-status", "-M", "-z", base, "HEAD"], { cwd }))
+    .stdout;
+  const staged = (await git(["status", "--porcelain", "-z", "--untracked-files=all"], { cwd }))
+    .stdout;
+  const pairs = [...renamePairsOf(committed, true), ...renamePairsOf(staged, false)];
+  for (const [from, to] of pairs) {
+    if (from === p) return to;
+    if (to === p) return from;
+  }
+  return undefined;
+}
+
+/**
+ * `rm` follows a symlinked leading directory, so a deferred path under a symlink
+ * could delete outside the worktree. Refused before anything is touched.
+ */
+async function refuseSymlinkedParent(cwd: string, p: string): Promise<void> {
+  const parts = p.split("/");
+  for (let i = 1; i < parts.length; i++) {
+    const dir = join(cwd, ...parts.slice(0, i));
+    try {
+      if ((await lstat(dir)).isSymbolicLink()) {
+        throw new Error(
+          `refusing to discard "${p}": its parent "${parts.slice(0, i).join("/")}" is a symlink`,
+        );
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+  }
+}
+
 /** Revert one deferred path in one worktree. Returns true when it was edited. */
 async function discardOne(
   git: ReturnType<typeof runGit>,
@@ -102,6 +172,13 @@ async function discardOne(
 ): Promise<boolean> {
   if (isAbsolute(p) || p.split("/").includes("..")) {
     throw new Error(`refusing to restore an unsafe path "${p}"`);
+  }
+  await refuseSymlinkedParent(cwd, p);
+  const partner = await renamePartnerOf(git, cwd, base, p);
+  if (partner !== undefined) {
+    throw new Error(
+      `a rename pairs deferred protected path "${p}" with "${partner}" — it cannot be discarded one side at a time; drop the rename or grant the path`,
+    );
   }
   const committed =
     (
