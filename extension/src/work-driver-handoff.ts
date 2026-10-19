@@ -34,6 +34,7 @@ import { readParkMemory, recordPark } from "./work-driver-park-memory.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
+import { foldWriteFenceCount } from "./work-driver-write-fence.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -68,9 +69,12 @@ export function handoffDispatchTimeoutMs(): number {
 /** Step 7g — Emit cap-hit handoff artifact. Dispatches @ops to: - render the handoff body (referencing the work-state file) - post `gh pr comment` (or `gh issue comment` if no PR yet) - apply `needs-human-attention` label After the dispatch, set status=handoff to terminate the loop. The in-process fallback (`!commentUrl || !labelApplied`) now routes its gh calls through the forge adapter — the ops child's prompt still names raw `gh` (it is a prose contract with the agent, not an exec seam), but the driver's own mechanical calls are forge-aware. */
 export async function runHandoff(
   ctx: CycleContext,
-  state: WorkState,
+  stateIn: WorkState,
   now: number,
 ): Promise<WorkState> {
+  // #1655 — the handoff body reports the refusal total. This step is not routed
+  // through routeStepOutcome, so the total is folded here, before the body is rendered.
+  const state = await foldWriteFenceCount(ctx, stateIn);
   let next: WorkState = {
     ...state,
     pipelineState: { ...state.pipelineState, currentStep: "handoff" },

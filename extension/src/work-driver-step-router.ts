@@ -42,6 +42,7 @@ import { lostAttemptLine } from "./work-driver-retry-context.ts";
 import { cleanTreeBeforeRetry } from "./work-driver-step-clean.ts";
 import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
 import { routeFanoutHalt } from "./work-driver-step-router-fanout.ts";
+import { foldWriteFenceCount } from "./work-driver-write-fence.ts";
 import type { CapEvidence } from "./workflow-state-cap.ts";
 import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
@@ -117,6 +118,8 @@ export async function routeStepOutcome(
     slowEvents.length > 0
       ? { ...stateIn, eventLog: foldSlowEvents(stateIn.eventLog, slowEvents, step) }
       : stateIn;
+  // #1655 — the write fence's refusal total, recounted from the scratch-dir logs.
+  state = await foldWriteFenceCount(ctx, state);
   {
     const lastEvent = failureEventOf(state.eventLog);
     const elapsed = Date.now() - stepStartedAt;

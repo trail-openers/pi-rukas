@@ -249,7 +249,8 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   // because the seam can express one.
   const merged = read("work-driver-merged.ts");
   assert(
-    /opts\?:\s*\{[^}]*cwd\?:\s*string/.test(merged),
+    // #1655: the opts type may be an intersection (`WriteFenceOpt & {...}`).
+    /opts\?:\s*(?:\w+\s*&\s*)?\{[^}]*cwd\?:\s*string/.test(merged),
     "canary: runSingleDispatch still accepts a cwd option — the seam the lens-fix fix relies on",
   );
   assert(

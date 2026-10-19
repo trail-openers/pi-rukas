@@ -386,6 +386,14 @@ export interface PipelineState extends IssueClosedState {
   cycleDeadlineMs?: number;
   /** Surfaced plumb-reports since the cycle began (for handoff body). */
   plumbReports: Array<{ step: WorkStep; role: string; body: string; at: number }>;
+  /**
+   * #1655 — writes the write fence refused across this cycle's fenced children,
+   * summed from the scratch-dir logs at each step boundary. A count, not an
+   * event: appending would change the tail nextStep() routes on. Absent = none.
+   */
+  writeFenceRefusals?: number;
+  /** #1655 — refusal logs the driver could not read. Non-zero means the total is a lower bound. Absent = none. */
+  writeFenceUnreadable?: number;
   /** PR number once Step 6 opens one. */
   prNumber?: number;
   /**

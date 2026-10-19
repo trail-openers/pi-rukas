@@ -23,19 +23,19 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { geteuid } from "node:process";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { geteuid } from "node:process";
 import { promisify } from "node:util";
 import { missingDepsFailure } from "../src/work-driver-deps-gate.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import type { WorkState } from "../src/workflow-state.ts";
+import { runHookProvisioning } from "../src/worktree-provision-hook.ts";
 import { provisionWorktree } from "../src/worktree-provision.ts";
 import { WORKTREE_SETUP_HOOK } from "../src/worktree-provision.ts";
-import { runHookProvisioning } from "../src/worktree-provision-hook.ts";
+import { ignoredStatus } from "../src/worktree-provision.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { realExec } from "./lib/exec-fake.ts";
-import { ignoredStatus } from "../src/worktree-provision.ts";
 
 const pexec = promisify(execFile);
 const REAL_HOOK = path.resolve(import.meta.dirname, "..", "..", ".pi", "worktree-setup");
@@ -252,8 +252,8 @@ if (existsSync("/bin/dash")) {
   const { root, wt } = await repoShapedFixture(undefined);
   try {
     rmSync(path.join(root, "extension", "node_modules"), { recursive: true });
-    const failing = (code: number | undefined) =>
-      async (cmd: string, opts: Parameters<typeof realExec>[1]) => {
+    const failing =
+      (code: number | undefined) => async (cmd: string, opts: Parameters<typeof realExec>[1]) => {
         // argv form only — the gate's probe is `execFn("git", { argv })`, and a
         // fake that also swallowed the shell-form calls would fail this
         // assertion for the wrong reason.

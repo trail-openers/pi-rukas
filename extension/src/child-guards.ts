@@ -46,6 +46,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { enableChildCodemode } from "./child-codemode.ts";
 import { registerModeIndependentGuards } from "./subagent-guard-guards.ts";
 import { trace } from "./trace.ts";
+import { registerWriteFence } from "./write-fence.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -98,6 +99,11 @@ export function preflightChildGuards(): void {
  * exec chain twice per merge attempt.
  */
 export default function registerChildGuards(pi: ExtensionAPI): void {
+  // #1655 — the write fence is registered BEFORE the subagent-mode no-op. The
+  // full pi-rukas extension never carries it, so under PI_ENSEMBLE_SUBAGENT_MODE=1
+  // this companion is the only place it can run. It self-gates on
+  // PI_ENSEMBLE_WRITE_ROOT, so a child the driver did not fence is untouched.
+  registerWriteFence(failClosedPi(pi));
   if (process.env.PI_ENSEMBLE_SUBAGENT_MODE === "1") {
     trace(
       "child-guards: PI_ENSEMBLE_SUBAGENT_MODE=1 — full pi-rukas extension registers the guards; no-op",

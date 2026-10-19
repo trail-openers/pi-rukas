@@ -11,7 +11,7 @@ import { dispatchCore } from "./dispatch.ts";
 import { execp } from "./exec.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { trace, traceWarn } from "./trace.ts";
-import type { DispatchResult } from "./types.ts";
+import type { DispatchResult, WriteFenceOpt } from "./types.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
@@ -87,7 +87,7 @@ export async function runSingleDispatch(
   label: string,
   now: number,
   buildPrompt: () => string,
-  opts?: { timeoutMs?: number; cwd?: string },
+  opts?: WriteFenceOpt & { timeoutMs?: number; cwd?: string },
 ): Promise<WorkState> {
   let next = appendEvent(
     { ...state, pipelineState: { ...state.pipelineState, currentStep: step } },
@@ -120,6 +120,7 @@ export async function runSingleDispatch(
       {
         label,
         timeoutMs: opts?.timeoutMs,
+        writeFence: opts?.writeFence,
         // #799 — the slow recorder collects the crossings into the driver's
         // pending buffer (keyed by this cycle's primary issue); the
         // step-boundary drain (routeStepOutcome) persists them — this step

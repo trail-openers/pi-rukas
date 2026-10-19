@@ -63,6 +63,7 @@ import {
 } from "./work-driver-transition-safety.ts";
 import { scratchDir, setupWorkspaceTmp, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import { runWorktreeSweep } from "./work-driver-worktree-sweep.ts";
+import { foldWriteFenceCount, resetWriteFenceLogs } from "./work-driver-write-fence.ts";
 import * as workWidget from "./work-widget.ts";
 import { type WorkEvent, appendEvent } from "./workflow-state.ts";
 import {
@@ -154,6 +155,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
   let state = reenterInterrupted(disk ?? initialState(ctx.issue));
   if (ctx.restart === true) {
     trace(`work-driver: --restart wiped state for issue #${ctx.issue} (fresh cycle)`);
+    await resetWriteFenceLogs(scratchDir(ctx.repoRoot, ctx.issue)); // #1655 — the new cycle's count starts at zero
   }
   // PR10 — persist multi-issue list on first run; honour existing on resume
   // (don't widen scope silently). --restart yields issues===undefined → flows through.
@@ -343,7 +345,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       // file is the record; the handoff body was already attempted).
       if (step === "handoff") {
         // #1327 — on the host channel the handoff must still reach the result.
-        state = recordHostHandoffOnCrash(state, err);
+        state = recordHostHandoffOnCrash(await foldWriteFenceCount(ctx, state), err);
         state = { ...state, pipelineState: { ...state.pipelineState, status: "aborted" } };
         await persistCycle(ctx, state);
         emitStepFailed(

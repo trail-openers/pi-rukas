@@ -47,6 +47,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
+import { NESTED_DEP, SHAREABLE_DEPS } from "./worktree-dep-contract.ts";
 import { depsExpectedAt, packageDirsAt, runHookProvisioning } from "./worktree-provision-hook.ts";
 import { resolvedNonEmptyDirectory } from "./worktree-provision-verify.ts";
 
@@ -68,14 +69,6 @@ export type ExecFn = (
 
 /** Where a project describes provisioning we cannot infer. */
 export const WORKTREE_SETUP_HOOK = ".pi/worktree-setup";
-
-/**
- * Dependency directories safe to share between worktrees.
- *
- * Read-mostly caches only. Build output is excluded on purpose — see the module
- * docstring.
- */
-export const SHAREABLE_DEPS = ["node_modules", ".venv", "vendor"] as const;
 
 /** Never linked, however tempting: concurrent writers would serialise. */
 export const NEVER_SHARED = ["target", "build", "dist", ".next", "out"] as const;
@@ -231,7 +224,7 @@ function errnoDetail(err: unknown): string {
  * `.venv`/`vendor` have no such convention, so only the root is checked.
  */
 function candidatesForDir(dirRel: string): string[] {
-  return dirRel === "" ? [...SHAREABLE_DEPS] : SHAREABLE_DEPS.filter((d) => d === "node_modules");
+  return dirRel === "" ? [...SHAREABLE_DEPS] : SHAREABLE_DEPS.filter((d) => d === NESTED_DEP);
 }
 
 /**
