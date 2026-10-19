@@ -48,6 +48,8 @@ export async function runLensChild(opts: {
     signal?: AbortSignal;
     /** #1024 — headless only: the child leads its own process group. */
     processGroup?: boolean;
+    /** #1666 — a headless /work cycle's lens children run under trust. */
+    workCycleTrust?: boolean;
     childBoundMs?: number; // #1242 — the round's lens bound (default: lensChildBoundMs)
     evidence?: string;
     /** #1105 — the branch's prior-findings DATA block (lens-residuals.ts). */
@@ -202,6 +204,7 @@ export async function runLensChild(opts: {
             childBoundMs: boundMs,
             signal: kill.signal,
             processGroup: runOpts.processGroup,
+            workCycleTrust: runOpts.workCycleTrust,
             onProgress: (state) => {
               dispatchDeck.updateEntry(deckKey, state);
               feedSlowProgress(deckKey, state);

@@ -267,6 +267,7 @@ export async function runAdversarialLoop(
     ...(params.onSlow ? { onSlow: params.onSlow } : {}),
     ...(params.pi ? { pi: params.pi } : {}),
     processGroup: params.processGroup,
+    workCycleTrust: params.workCycleTrust,
   });
   // Re-read before every review. `fetchDiff` used to run once, before the loop,
   // so rounds 2 and 3 were prompted with pre-fix material and the reviewer had to

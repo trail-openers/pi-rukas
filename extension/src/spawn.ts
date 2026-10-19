@@ -27,8 +27,6 @@ import { clampToCycleDeadline } from "./cycle-deadline-clock.ts";
 import { scrubGitLocation } from "./git-env.ts";
 import { withHostSpawnSlot } from "./host-spawn-slots.ts";
 import { type ResolvedModelChoice, resolveModel } from "./models.ts";
-import { type BrokerHandle, startBroker } from "./permission-broker.ts";
-import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
 import { getPiInvocation } from "./pi-binary-resolve.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { kickPiResolutionProbe } from "./pi-version-probe.ts";
@@ -52,6 +50,7 @@ import {
   isStdinEcho,
 } from "./spawn-inflight.ts";
 import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
+import { applyChildPermissionEnv, planChildPermissions } from "./spawn-permission.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
 import {
   STDERR_TAIL_BYTES,
@@ -123,38 +122,15 @@ async function spawnSpecialistInner(
   // Resolve which model this child should run on (spec > lens env > role > global env > Pi default).
   const modelChoice = resolveModel(spec.role, spec.model, spec.lens);
 
-  // Subagent-permission plumbing: per-spawn Unix socket + broker. The
-  // subagent's pi-rukas (forwarded below via --extension and gated by
-  // PI_ENSEMBLE_SUBAGENT_MODE=1) escalates `ask` verdicts over this socket.
-  // The parent broker prompts the user via ctx.ui.select, caches via the
-  // existing decisions.json plumbing, and replies on the socket. Both the
-  // forward and the broker are opt-out via PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1.
-  // Subagent guard wiring depends on parent's trust state:
-  //   - Sandbox or interactive host (trust mode): subagent gets PI_ENSEMBLE_TRUST_MODE=1,
-  //     no broker socket, no pi-rukas extension forward — subagent's permission-guard
-  //     short-circuits the same way the parent does.
-  //   - Headless / strict-opt-in: full broker socket + pi-rukas extension forward so
-  //     subagent escalates `ask` verdicts to the parent (or hard-denies if no UI).
-  //   - PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1: forces guard off (debugging escape hatch).
-  const parentTrustMode = isParentInTrustMode();
-  const subagentGuardEnabled =
-    process.env.PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD !== "1" && !parentTrustMode;
-  let permSocketPath: string | undefined;
-  let broker: BrokerHandle | undefined;
-  if (subagentGuardEnabled) {
-    permSocketPath = path.join(os.tmpdir(), `pi-rukas-perm-${runId}-${spec.role}.sock`);
-    const deps = makeBrokerDeps();
-    if (deps) {
-      broker = startBroker(permSocketPath, deps);
-    } else {
-      trace(
-        `spawn[${spec.role}]: parent guard not ready — subagent permissions will headless-deny on ask`,
-      );
-      // Don't pass the socket env var if we couldn't start a broker; the
-      // subagent guard will fall through to headless-deny cleanly.
-      permSocketPath = undefined;
-    }
-  }
+  // Subagent-permission wiring (spawn-permission.ts, #1666): strict children get
+  // a broker, trust children (interactive parent, or a headless /work cycle via
+  // opts.workCycleTrust) get the trust marker and no socket.
+  const permissions = planChildPermissions({
+    runId,
+    role: spec.role,
+    workCycleTrust: opts.workCycleTrust,
+  });
+  const { subagentGuardEnabled, broker } = permissions;
 
   // #926 — the argv names CHILD_GUARDS_PATH, so verify it BEFORE building the
   // args: a missing companion must be a named dispatch failure, never a child
@@ -187,18 +163,7 @@ async function spawnSpecialistInner(
   childEnv.GIT_SEQUENCE_EDITOR = "true";
   childEnv.GIT_TERMINAL_PROMPT = "0";
   childEnv.GIT_PAGER = "cat";
-  if (subagentGuardEnabled) {
-    childEnv.PI_ENSEMBLE_SUBAGENT_MODE = "1";
-    if (permSocketPath) {
-      childEnv.PI_ENSEMBLE_PERM_SOCKET = permSocketPath;
-    }
-  } else if (parentTrustMode) {
-    // Propagate trust mode so any future subagent-side pi-rukas load (e.g.
-    // if --extension forwarding is re-enabled) short-circuits the same way the
-    // parent does. Sandbox already sets PI_ENSEMBLE_SANDBOX_MODE on every child
-    // via the wrapper env; this covers the interactive-host case.
-    childEnv.PI_ENSEMBLE_TRUST_MODE = "1";
-  }
+  applyChildPermissionEnv(childEnv, permissions);
 
   const leadsGroup = leadsProcessGroup(opts.processGroup);
   const child = spawn(invocation.command, invocation.args, {

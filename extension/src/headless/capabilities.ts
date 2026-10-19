@@ -108,6 +108,19 @@ export interface Capabilities {
   features: typeof HEADLESS_FEATURES;
   /** #1325 — read from this host when the answer is built. */
   resources: ResourceReport;
+  /** #1666 — the permission mode this run's /work cycles run their children under. */
+  permissions: PermissionsReport;
+}
+
+/** #1666 — the mode a headless /work cycle's children run under. */
+export interface PermissionsReport {
+  /** `trust` (interactive-equivalent, the default) or `strict` (PI_ENSEMBLE_STRICT_PERMISSIONS=1). */
+  workCycles: "trust" | "strict";
+}
+
+/** Read at answer time, so a run reports the mode it actually uses. */
+export function permissionsReport(): PermissionsReport {
+  return { workCycles: process.env.PI_ENSEMBLE_STRICT_PERMISSIONS === "1" ? "strict" : "trust" };
 }
 
 /**
@@ -143,5 +156,6 @@ export function buildCapabilities(installRoot: string = INSTALL_ROOT): Capabilit
     files: HEADLESS_FILES,
     features: HEADLESS_FEATURES,
     resources: resourceReport(),
+    permissions: permissionsReport(),
   };
 }

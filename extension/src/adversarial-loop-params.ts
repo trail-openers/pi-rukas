@@ -70,6 +70,8 @@ export type AdversarialLoopParams = ReportPolicy & {
   onSlow?: OnSlowCallback;
   pi?: ExtensionAPI;
   processGroup?: boolean;
+  /** #1666 — a headless /work cycle's review and fix children run under trust. */
+  workCycleTrust?: boolean;
   /** #912 — caller-supplied branch for the review-ledger write (the driver
    * worktrees are detached, so `git rev-parse --abbrev-ref HEAD` cannot
    * recover it). When absent the writer recovers the branch from `HEAD`

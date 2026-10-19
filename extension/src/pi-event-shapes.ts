@@ -53,6 +53,14 @@ export interface SpawnOptions extends WriteFenceOpt {
    */
   processGroup?: boolean;
   /**
+   * #1666 — true for a child of a headless /work cycle (set by the cycle's
+   * dispatch wrapper from DriverContext.headless). The child runs under the
+   * trust marker, exactly as an interactive /work child does, and gets no
+   * broker socket. Never set outside a driver cycle; PI_ENSEMBLE_STRICT_PERMISSIONS=1
+   * overrides it (spawn-permission.ts).
+   */
+  workCycleTrust?: boolean;
+  /**
    * Group children from the same dispatch_parallel call under a shared id so
    * their session files sort together on disk.
    */
