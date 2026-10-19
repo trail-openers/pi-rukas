@@ -208,26 +208,6 @@ function measurable(d: SpecCoverageDeliverable, paths: string[]): boolean {
 }
 
 /**
- * Which deliverables does this plan not cover, and which deliverables were
- * even checkable?
- *
- * EVERY-path semantics (the gap gate's stated policy, mirroring #540's
- * full-set rule in `verifyConsolidation`): a deliverable with two declared
- * paths is uncovered when the plan covers one of them. A partial sibling
- * cannot stand in for the missing half.
- *
- * #1155 — "two declared paths" now counts ALTERNATIVES, so
- * `[paths: src/a.ts or src/b.ts]` is ONE unit that either workstream half can
- * cover, not two units that both must. That is the converge gate's ANY-
- * alternative rule; keeping EVERY-over-alternatives here would make the
- * coverage gate reject a plan the develop gate would pass, which is the drift
- * this module exists to prevent.
- *
- * Returns `checkedCount: 0` when no deliverable carries a path — the caller
- * must read that as "this gate has nothing to say", NOT as a pass it earned
- * and certainly not as a rejection.
- */
-/**
  * #1642 — a declared slot the plan CANNOT cover because the cycle may not write
  * it: every alternative is a protected path (`isProtectedPath`) and none is
  * named by the operator's `--allow-protected` grant. The planner leaves such a
@@ -265,6 +245,26 @@ export function protectedDeferralsOf(
   return out;
 }
 
+/**
+ * Which deliverables does this plan not cover, and which deliverables were
+ * even checkable?
+ *
+ * EVERY-path semantics (the gap gate's stated policy, mirroring #540's
+ * full-set rule in `verifyConsolidation`): a deliverable with two declared
+ * paths is uncovered when the plan covers one of them. A partial sibling
+ * cannot stand in for the missing half.
+ *
+ * #1155 — "two declared paths" now counts ALTERNATIVES, so
+ * `[paths: src/a.ts or src/b.ts]` is ONE unit that either workstream half can
+ * cover, not two units that both must. That is the converge gate's ANY-
+ * alternative rule; keeping EVERY-over-alternatives here would make the
+ * coverage gate reject a plan the develop gate would pass, which is the drift
+ * this module exists to prevent.
+ *
+ * Returns `checkedCount: 0` when no deliverable carries a path — the caller
+ * must read that as "this gate has nothing to say", NOT as a pass it earned
+ * and certainly not as a rejection.
+ */
 export function findUncoveredDeliverables(
   workstreams: Record<string, SpecCoverageWorkstream>,
   spec: SpecCoverageSpec | undefined,
@@ -320,7 +320,9 @@ export interface PlanSpecMismatch {
  * The plan-to-spec gate, one pure synchronous call over (workstreams, spec).
  *
  * `undefined` means the gate is satisfied OR has nothing to judge (no spec,
- * no deliverables, no measurable deliverable, no workstreams). Silence from
+ * no deliverables, no measurable deliverable, no workstreams). A plan whose
+ * every measurable deliverable is a protected path the grant does not admit is
+ * a mismatch, not silence (#1642). Silence from
  * this function is never evidence a plan is right; it is evidence it could not
  * be judged. A plan with NO accepted workstream calls is not judged here at
  * all: the plan step's zero-call corrective owns that case (#1652).
@@ -332,7 +334,21 @@ export function planSpecMismatchReason(
 ): PlanSpecMismatch | undefined {
   if (Object.keys(workstreams).length === 0) return undefined;
   const { uncovered, checkedCount } = findUncoveredDeliverables(workstreams, spec, grant);
-  if (checkedCount === 0 || uncovered.length === 0) return undefined;
+  if (checkedCount === 0) {
+    // #1642 — every measurable deliverable is deferred as a protected path the
+    // grant does not admit, so nothing was judged. That must not pass silently:
+    // the operator has to grant the paths, or the cycle builds nothing.
+    const deferred = protectedDeferralsOf(spec, grant);
+    if (deferred.length === 0) return undefined;
+    return {
+      kind: "uncovered-deliverables",
+      uncovered: deferred,
+      evidence: `every deliverable the spec requires is a protected path this cycle may not write, so the plan covers none of them: ${deferred
+        .map((d) => `${d.id} (${d.paths.join(", ")})`)
+        .join("; ")}. Re-run with --allow-protected <path> for each path this issue must change.`,
+    };
+  }
+  if (uncovered.length === 0) return undefined;
   return {
     kind: "uncovered-deliverables",
     uncovered,

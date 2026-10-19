@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import {
 	detectPortReference,
+	isCommitInRepo,
 	portReferenceForCycle,
 } from "../src/work-driver-plan-contract.ts";
 import { initialState } from "../src/workflow-state-update.ts";
@@ -133,6 +134,43 @@ try {
 	assert(
 		detectPortReference("Port abc1234 from the fork.") === "abc1234",
 		'explicit verb: "port <bare sha>" is still a port reference',
+	);
+	// 6. Only git's exit status answers "not a commit here". A spawn failure or
+	// a signal kill carries no such status: the port is kept, never dropped.
+	const failing = (err: unknown) => async () => {
+		throw err;
+	};
+	const withCode = (code: unknown) =>
+		Object.assign(new Error("git failed"), { code });
+	assert(
+		(await isCommitInRepo(NONEXISTENT, repo, failing(withCode(1)))) === false,
+		"existence: cat-file exit 1 means not a commit here",
+	);
+	assert(
+		(await isCommitInRepo(NONEXISTENT, repo, failing(withCode(128)))) === false,
+		"existence: cat-file exit 128 means not a commit here",
+	);
+	assert(
+		(await isCommitInRepo(NONEXISTENT, repo, failing(withCode("ENOENT")))) ===
+			true,
+		"existence: a spawn failure (ENOENT) keeps the port",
+	);
+	assert(
+		(await isCommitInRepo(NONEXISTENT, repo, failing(new Error("spawn")))) ===
+			true,
+		"existence: a failure with no exit code keeps the port",
+	);
+	assert(
+		(await isCommitInRepo(
+			NONEXISTENT,
+			repo,
+			failing(Object.assign(new Error("killed"), { signal: "SIGTERM" })),
+		)) === true,
+		"existence: a signal kill (no exit code) keeps the port",
+	);
+	assert(
+		(await isCommitInRepo(real, repo, async () => ({ stdout: "" }))) === true,
+		"existence: a clean cat-file means the commit exists",
 	);
 } finally {
 	rmSync(dir, { recursive: true, force: true });

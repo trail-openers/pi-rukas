@@ -373,4 +373,45 @@ const TAIL = "## Verification\n- run the suite\n";
   );
 }
 
+// #1642 — every measurable deliverable deferred as a protected path the grant
+// does not admit: nothing was judged, so the gate must not pass silently.
+{
+  const PROTECTED_SPEC = {
+    deliverables: [{ id: "d1", paths: [".github/workflows/ci.yml"] }],
+  };
+  const m = planSpecMismatchReason(ws({ a: ["src/a.ts"] }), PROTECTED_SPEC);
+  assert(
+    m?.kind === "uncovered-deliverables",
+    "all deferred: the gate returns a mismatch, not silence",
+  );
+  assert(
+    (m?.evidence ?? "").includes(".github/workflows/ci.yml") &&
+      (m?.evidence ?? "").includes("--allow-protected"),
+    "all deferred: the evidence names the deferred path and the --allow-protected re-run",
+  );
+  assert(
+    m?.uncovered?.[0]?.id === "d1",
+    "all deferred: the deferred deliverable is carried in the uncovered list",
+  );
+  assert(
+    planSpecMismatchReason(
+      ws({ a: [".github/workflows/ci.yml"] }),
+      PROTECTED_SPEC,
+      [".github/workflows/ci.yml"],
+    ) === undefined,
+    "all deferred, but granted and covered: the gate passes",
+  );
+  // Partial deferral: d2 is checkable and covered, so the gate still passes.
+  const PARTIAL_SPEC = {
+    deliverables: [
+      { id: "d1", paths: [".github/workflows/ci.yml"] },
+      { id: "d2", paths: ["src/a.ts"] },
+    ],
+  };
+  assert(
+    planSpecMismatchReason(ws({ a: ["src/a.ts"] }), PARTIAL_SPEC) === undefined,
+    "partial deferral: a checked and covered deliverable still passes the gate",
+  );
+}
+
 process.exit(exit);
