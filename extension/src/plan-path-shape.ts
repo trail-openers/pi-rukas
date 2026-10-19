@@ -53,6 +53,16 @@ export function isPlannedRepoRelativePath(p: string): boolean {
  * by git), a leading `:` or a glob/magic character (git pathspec magic) and a
  * NUL byte are refused on top of the shape check.
  */
+/**
+ * Planned paths as they appear in a prompt a model may turn into shell
+ * commands: each one double-quoted, so `app/(group)/page.tsx`, `app/[id]/x.ts`
+ * and `docs/my file.md` survive being pasted into `git add`. JSON quoting is
+ * shell-safe here because the grammar already refuses `$`, backtick and `\`.
+ */
+export function quotedPaths(paths: readonly string[]): string {
+  return paths.map((p) => JSON.stringify(p)).join(", ");
+}
+
 export function plannedPathProblem(raw: string): string | undefined {
   const p = raw
     .trim()
