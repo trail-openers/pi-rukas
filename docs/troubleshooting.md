@@ -2426,6 +2426,8 @@ A `/work` cycle stops at `plan` — no branch, no worktree, no PR — and the ha
 
 `planSpecMismatchReason` (work-driver-plan-spec-coverage.ts) is a pure function of the plan reply's raw text, the parsed workstreams, and the resolved spec. It rejects two shapes: a reply carrying more than one `## Workstreams` section (the driver reads the first, and #818 shipped three blocks of which the first was fabricated), and a plan that declares none of the paths of at least one *measurable* spec deliverable. A deliverable whose `paths:` slot is empty, prose, or a filler word (`n/a`, `tbd`, `none`) is not measurable and rejects nothing — the gate has nothing to say about a spec that names no files.
 
+A single-workstream plan that only omitted spec deliverable paths is repaired, not parked: the driver appends each omitted plain path to the sole workstream's `paths` (never a protected, fenced or either/or path; N>1 is never repaired) and records `driver added spec deliverable paths the plan omitted: …` as a spec assumption in the PR body.
+
 ### Fix
 
 Read the cap's `evidence` in the handoff first: it names the uncovered deliverables (or the block count). Then either revise the issue body when the spec's deliverable paths are stale (files renamed, or the work already landed on main — a spec pointing at files that no longer exist rejects every honest plan), or re-run `/work <issue> --restart` and let the gate re-judge a fresh plan. Nothing was written, so a restart costs only the one planning dispatch it already spent.
