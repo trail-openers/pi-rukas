@@ -191,6 +191,12 @@ const PORT_RES = [
     "i",
   ),
 ];
+// The context-only form: "fixed in <bare sha>". PORT_RES does not match it, so
+// it is traced rather than returned.
+const FIXED_IN_BARE_SHA = new RegExp(
+  String.raw`\b(?:fixed|implemented|landed|merged|solved|resolved)\s+(?:(?:already|upstream)\s+)?(?:in|by|as|at)\s+(?:(?:commit|PR|pull request|MR)\s+)?\(?(${SHA})`,
+  "i",
+);
 // A negation within the two words before the port verb.
 const NEGATED = /(?:\b(?:not|never|without|avoid|no)|n't)\s+(?:[\w-]+\s+){0,2}$/i;
 
@@ -221,6 +227,14 @@ export function detectPortReference(body: string): string | undefined {
       // negated verb is the issue saying NOT to port.
       if (NEGATED.test(sentence.slice(0, m.index))) continue;
       return m[1].replace(/^commit\s+/i, "").trim();
+    }
+    // A bare SHA after "fixed in" matched nothing above. Say so, so the
+    // operator can see the phrase was read as context, not a port.
+    const bare = FIXED_IN_BARE_SHA.exec(sentence);
+    if (bare?.[1]) {
+      trace(
+        `work-driver: plan contract \u2014 "fixed in ${bare[1]}" read as context, not a port (only a URL or cross-repo reference after "fixed in" is a port)`,
+      );
     }
   }
   return undefined;
