@@ -45,7 +45,7 @@ import {
 } from "./work-driver-verify-develop-gates.ts";
 import { isValidSha, normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
-import { discardDeferred, runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
+import { discardEdits, runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
 import { planDevelopVerify } from "./work-driver-verify-select-develop.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
@@ -163,9 +163,7 @@ export async function verifyDevelopOutcome(
   // #1378 — resolved ONCE for the whole run: consulted in three places below, and a
   // harness that flipped the switch mid-loop would gate one worktree and not the next.
   const protectedGateOn = protectedPathsEnabled();
-  // #1676 — revert edits to deferred protected paths before the loop reads status and
-  // diff (work-driver-verify-develop-protected.ts). Gate off: nothing happens.
-  await discardDeferred(protectedGateOn, execFn, worktrees, state, ctx, failures, notes);
+  const disc = await discardEdits(protectedGateOn, execFn, worktrees, state, ctx, failures, notes);
   for (const [id, cwd] of Object.entries(worktrees)) {
     let hasCommits = false;
     let hasUncommitted = false;
@@ -224,7 +222,8 @@ export async function verifyDevelopOutcome(
           maxBuffer: 64 * 1024,
           timeout: DEFAULT_GIT_TIMEOUT_MS,
         });
-        if (Number.parseInt(stdout.trim(), 10) > 0) hasCommits = true;
+        // #1676 — a worktree whose only commits were the discard's revert is not a change.
+        if (Number.parseInt(stdout.trim(), 10) > 0 && !disc.emptied.has(id)) hasCommits = true;
         assessed = true;
       } catch (err) {
         // #1378 — the old `effBase !== baseSha` guard made this note conditional,
@@ -358,7 +357,9 @@ export async function verifyDevelopOutcome(
     scopeFenceLift(ctx, state, options.fenceLifts),
     { protectedRefused, protectedDeferred: state.pipelineState.deferredProtected ?? [] },
   );
-  if (changedWorktrees.length === 0) {
+  if (changedWorktrees.length === 0 && disc.discarded > 0) {
+    failures.push(disc.onlyFailure);
+  } else if (changedWorktrees.length === 0) {
     // #679 (task-evidence) — if every assessed worktree is a legitimate
     // docs-only stream (declared non-source), the absence of commits is not a
     // hollow-diff failure: the work is a docs deliverable, and the safety net
