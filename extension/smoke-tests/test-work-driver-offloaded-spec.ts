@@ -325,7 +325,9 @@ async function runDriverCase(
         // #1652 — one workstream claiming every path the reply names (the gate's concern).
         if (opts?.label?.startsWith("plan")) {
           // Stop at markdown punctuation (a captured trailing backtick is a malformed path).
-          const found = [...reply.matchAll(/extension\/[^\s,\]`'"()]+/g)].map((m) => m[0].replace(/\.$/, ""));
+          // The spec may be offloaded to a report file, so scan it as well as the reply.
+          const text = [reply, ...Object.values(files).filter((v) => typeof v === "string")].join("\n");
+          const found = [...text.matchAll(/extension\/[^\s,\]`'"()]+/g)].map((m) => m[0].replace(/\.$/, ""));
           const paths = [...new Set(found)];
           return {
             ...mkResult({ role: specArg.role, text: "stub" }),
@@ -363,11 +365,7 @@ async function runDriverCase(
     replyText,
   );
   assert(r.exploreDispatches === 1, `driver-674: explore dispatch ran once (got ${r.exploreDispatches})`);
-  // #1652 — guards the EXPLORE park only; a later plan-to-spec refusal is not this test's concern.
-  assert(
-    !/explore|intent/.test(r.cap ?? ""),
-    "driver-674: NO explore park — false explore-needs-clarification park is gone",
-  );
+  assert(r.cap === undefined, `driver-674: NO cap-hit, a valid offloaded spec does not park (got ${r.cap})`);
   assert(r.spec !== undefined, "driver-674: normalisedSpec recorded on state");
   if (r.spec) {
     assert(r.spec.deliverables.length === 6, `driver-674: 6 deliverables (got ${r.spec.deliverables.length})`);
