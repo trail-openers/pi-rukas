@@ -42,6 +42,7 @@ import {
 import { runPlanNormalisationPass } from "./work-driver-plan-coupling-pass.ts";
 import { withProtectedDeferralAssumptions } from "./work-driver-plan-deferral-notice.ts";
 import { findDroppedDependencyEdges } from "./work-driver-plan-deps.ts";
+import { withDeferredProtectedFence } from "./work-driver-plan-fence.ts";
 import {
   planNoWorkstreamCallsCap,
   planQualityReason,
@@ -343,6 +344,13 @@ export async function runPlanQualityTail(
     }
   }
 
+  // #1676 — a protected path the gate deferred is fenced in every workstream's
+  // outOfScope, so develop names it and the scope gate enforces it. Only when the
+  // gate ran: nothing is deferred otherwise. Returned in `workstreams`, which the
+  // caller writes to pipelineState, so resume and the corrective round see it.
+  if (input.planGateEnabled) {
+    workstreams = withDeferredProtectedFence(workstreams, input.spec, grant);
+  }
   // #571 — cross-group claim check: detect sibling overlaps BEFORE registering.
   // Parking early costs one plan dispatch, not a full develop-to-commit burn.
   if (crossGroupConflictsEnabled()) {

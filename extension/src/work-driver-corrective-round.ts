@@ -41,6 +41,7 @@ import {
   type DevelopVerdict,
   recordDevelopVerdict,
 } from "./work-driver-develop-verdict.ts";
+import { deferredProtectedPaths } from "./work-driver-plan-fence.ts";
 import { beginDispatch, clearDispatch, resumeEnabled } from "./work-driver-resume.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
@@ -169,6 +170,8 @@ async function runCorrectiveRound(
   const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
   const issues = activeIssuesOf(a.state);
   const ps = a.state.pipelineState;
+  // #1676 — the same protected-path deferrals the first develop prompt was built from.
+  const deferred = deferredProtectedPaths(ps.normalisedSpec, ctx.protectedGrant ?? []);
   const settled: RoundSettled[] = await Promise.all(
     decision.targets.map(async (t): Promise<RoundSettled> => {
       const devLabel = ids.length > 1 ? `developer[${t.id}]` : "developer";
@@ -189,6 +192,8 @@ async function runCorrectiveRound(
               paths: ws?.paths ?? [],
               command,
               lines: t.lines,
+              outOfScope: ws?.outOfScope ?? [],
+              deferredProtected: deferred,
             }),
             cwd: t.cwd,
           },
