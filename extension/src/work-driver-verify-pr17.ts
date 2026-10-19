@@ -13,6 +13,7 @@ import { execp as lensExecp } from "./exec.ts";
 import { aheadOfBase } from "./git-range.ts";
 import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import type { VerifyCommandRecord } from "./work-driver-corrective-decide.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { GateHangPathSink } from "./work-driver-gate-hang.ts";
 import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
@@ -208,6 +209,8 @@ export async function verifyStepOutcome(
   gateRecord?: DevelopGateRecord;
   /** #1647 — the selected develop run's flaky and baseline-red tests, folded into `pipelineState.verifyAttribution`. */
   selectedVerify?: SelectedVerifyRecord;
+  /** #1667 \u2014 what the verify command gate ran, for the corrective-round decision (absent when no command ran). */
+  verifyRun?: VerifyCommandRecord;
 }> {
   const failures: string[] = [];
   const notes: string[] = [];
@@ -253,6 +256,8 @@ export async function verifyStepOutcome(
     // it and the return below reads it, and a closure-assigned `let` reads as
     // always undefined to the type checker.
     const selectedOut: { record?: SelectedVerifyRecord } = {};
+    // #1667 \u2014 the verify command gate fills this in place (see VerifyCommandRecord).
+    const verifyRecord: VerifyCommandRecord = { failures: [], perWorktree: [] };
     const verifyStarted = await beginVerifyRun(ctx, state);
     await verifyDevelopOutcome(ctx, state, execFn, failures, notes, {
       // #782 — the flake callback is wired at this layer: on recovery it
@@ -289,6 +294,7 @@ export async function verifyStepOutcome(
       ...(ctx.walkProcessTree !== undefined ? { walkProcessTree: ctx.walkProcessTree } : {}),
       // #1427 round 3 — this call's sink, threaded to every writer below.
       hangSink,
+      verifyRecord,
       // #1415 — captured and returned: the caller owns the state it lands on.
       onGateRecorded: (pass, greens, refuted) => {
         gateRecord = { pass, greens: [...greens], refuted: [...refuted] };
@@ -313,6 +319,7 @@ export async function verifyStepOutcome(
       ...(buildResidueOnly ? { buildResidueOnly: true } : {}),
       ...(gateRecord !== undefined ? { gateRecord } : {}),
       ...(selectedOut.record !== undefined ? { selectedVerify: selectedOut.record } : {}),
+      ...(verifyRecord.command !== undefined ? { verifyRun: verifyRecord } : {}),
       // #1427 round 3 — read the sink THIS call created, not the cycle context:
       // the list is exactly the reports this gate run wrote, which is what the
       // cap emit site needs. (It used to read `ctx.gateHangLogPaths`, which

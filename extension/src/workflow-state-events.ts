@@ -10,6 +10,8 @@ import type { AdversarialEventFragment } from "./workflow-state-events-adversari
 import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
 import type { PlanVerdict, WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
+// #1667 — the develop step's corrective round record (one per dispatched workstream).
+import type { CorrectiveRoundEvent } from "./workflow-state-events-corrective.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
 import type { FenceEvent } from "./workflow-state-events-fence.ts";
 import type {
@@ -21,6 +23,7 @@ import type {
   CycleInterruptedEvent,
   InterruptReason,
 } from "./workflow-state-events-interrupted.ts";
+import type { InterruptedEvent } from "./workflow-state-events-interrupted.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
@@ -487,14 +490,8 @@ export type WorkEvent =
   | CycleInterruptedEvent
   | LensResidualsPostFailedEvent
   | LensResidualsPostedEvent
-  /**
-   * S4a (#1162) — the cycle was interrupted (SIGTERM / SIGINT, via
-   * `markInterrupted`). `reason` is the operator-facing why; renderers read
-   * the most recent `interrupted` event for it. #1371 — `step` is the step the
-   * interrupt cut off, set only when the signal fired while that step ran
-   * (absent at a step boundary): its own cap-hits are the abort's doing.
-   */
-  | { kind: "interrupted"; at: number; reason: InterruptReason; step?: WorkStep };
+  | InterruptedEvent
+  | CorrectiveRoundEvent;
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

@@ -45,7 +45,14 @@ export function stepTotals(events: WorkEvent[]): Record<string, { ms: number; to
     const slot = out[e.step];
     if (slot) slot.ms += e.ms;
     const usage = (
-      e as { usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } }
+      e as {
+        usage?: {
+          input?: number;
+          output?: number;
+          cacheRead?: number;
+          cacheWrite?: number;
+        };
+      }
     ).usage;
     const t = usage
       ? (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
@@ -253,6 +260,9 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // surface: a 3-hour dispatch crossing 20m / 40m / 80m reads as three
       // rows, each one the durable proof that someone was prompted.
       return `  dispatch-slow · ${e.step} · ${e.label} · ${fmtElapsed(e.elapsedMs)} · ${e.turns} turn${e.turns === 1 ? "" : "s"} · ${fmtTokens(e.tokens)} tok`;
+    case "corrective-round":
+      // #1667 \u2014 one corrective develop round: which workstream got how many failing lines, from which command.
+      return `  corrective-round \u00b7 [${e.workstreamId}] \u00b7 attempt ${e.attempt} \u00b7 ${e.evidenceLines.length} line(s) from ${e.command.slice(0, 60)}`;
     case "interrupted":
       // S4a (#1162) — the interrupt record; the cycle resumes on re-entry.
       return `  interrupted · ${e.reason.slice(0, 80)}`;

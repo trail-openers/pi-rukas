@@ -22,6 +22,7 @@ import {
   extractSpecificAssertion,
 } from "./work-driver-consolidation-classify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import type { VerifyCommandRecord } from "./work-driver-corrective-decide.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { aggregateVerifyOutcome } from "./work-driver-verify-aggregate.ts";
 import {
@@ -154,6 +155,8 @@ export async function runVerifyCommandGate(opts: {
    * `buildResidueOnly`, which is what `verifyCapFor` routes on.
    */
   onBuildResidueOnly?: () => void;
+  /** #1667 \u2014 filled with this run's per-worktree failures and consolidated raw failure. */
+  verifyRecord?: VerifyCommandRecord;
 }): Promise<void> {
   const {
     execFn,
@@ -194,6 +197,8 @@ export async function runVerifyCommandGate(opts: {
   // environment could disagree with each other about which bound fired.
   const suiteTimeoutMs = suiteTierTimeoutMsOpt ?? (await verifyTimeoutMs());
   const perWorktreeVerifyFailures: string[] = [];
+  // #1667 \u2014 the same failures keyed by the cwd they ran in (the corrective round's attribution).
+  const perWorktreeRecords: Array<{ cwd: string; text: string }> = [];
   // The tier-resolved bound is also part of the reuse identity.
   const passTimeoutMs = suiteTimeoutMs;
   // #1415 — the whole-gate reuse, decided BEFORE a single command runs. When
@@ -251,9 +256,11 @@ export async function runVerifyCommandGate(opts: {
     suiteTimeoutKnob,
     fastTimeoutMs,
     perWorktreeVerifyFailures,
+    perWorktreeRecords,
     greensRecorded,
     greensRefuted,
   });
+  if (opts.verifyRecord) opts.verifyRecord.perWorktree = perWorktreeRecords;
   // #1005 — per-worktree failures are the verdict when the consolidated run
   // cannot run (no valid baseSha or nothing to combine); otherwise the
   // CONSOLIDATED tree is the verdict AND the per-worktree failures are kept
@@ -386,6 +393,8 @@ export async function runVerifyCommandGate(opts: {
           }),
         }),
       );
+  if (opts.verifyRecord && cons.status === "failed")
+    opts.verifyRecord.consolidatedRaw = cons.rawFailure;
   // The consolidated run's wall-clock: measured, not estimated, because it is
   // the number the next round's reuse decision is screened against — and a
   // reused pass has no duration, because it ran nothing.

@@ -92,8 +92,9 @@ assert(
     .filter((f) => f.endsWith(".ts") && constructs.test(readFileSync(path.join(SRC, f), "utf8")))
     .sort();
   assert(
-    JSON.stringify(fenced) === JSON.stringify(["work-develop-run.ts", "work-driver-lens-fix.ts"]),
-    `B: only the develop and lens-fix developer dispatches build a fence (got ${fenced.join(", ")})`,
+    JSON.stringify(fenced) ===
+      JSON.stringify(["work-develop-run.ts", "work-driver-corrective-round.ts", "work-driver-lens-fix.ts"]),
+    `B: only the develop, corrective-round and lens-fix developer dispatches build a fence (got ${fenced.join(", ")})`,
   );
   const develop = readFileSync(path.join(SRC, "work-develop-run.ts"), "utf8");
   assert(
