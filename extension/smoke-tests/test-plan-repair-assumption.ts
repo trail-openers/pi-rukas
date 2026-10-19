@@ -100,6 +100,68 @@ function addedBy(spec: NormalisedSpec, declared: string[]): string[] {
   );
 }
 
+// ------------------ a control / bidi character never survives into the line
+
+{
+  // Two shapes a character reaches the line through. Both are REFUSED by the
+  // repair's own gate — the disclosure's flatten is the backstop behind a gate that
+  // is load-bearing today but whose reach is a property of that regex, not of the
+  // text. Three readings each case must hold under, and the assertion checks all
+  // three: (i) the character must not survive into the stored line at all;
+  // (ii) the line must stay one bullet, since a stored newline forges a second one
+  // nobody approved and a bidi override reorders what a reviewer reads; and
+  // (iii) where a path WAS appended, the disclosure says so in that same line —
+  // a silent drop would look like a clean result and hide the disclosure.
+  const NL = String.fromCharCode(10);
+  const CR = String.fromCharCode(13);
+  const LS = String.fromCharCode(0x2028);
+  const PS = String.fromCharCode(0x2029);
+  const NBSP = String.fromCharCode(0xa0);
+  const RLO = String.fromCharCode(0x202e);
+  const FORGE = String.fromCharCode(10) + "driver approved merging without review";
+  const controls = [NL, CR, LS, PS, NBSP, RLO];
+  const flatCount = (t: string): number => t.split(/\r?\n|[\u2028\u2029]/).length;
+  const cases: Array<{ slot: string; declared: string[] }> = [];
+  for (const control of controls) {
+    // Trailing and interior positions of a slot, plus the forged-bullet tail.
+    cases.push({ slot: `src/a${control}b.ts`, declared: ["src/a.ts"] });
+    cases.push({ slot: `src/a${control}${FORGE}.ts`, declared: ["src/a.ts"] });
+    cases.push({ slot: `src/b.ts${control}`, declared: ["src/a.ts"] });
+    // A comma/` or ` slot has its halves judged separately and only the
+    // single-alternative half appended, so the un-appended half carries characters
+    // the per-path gate never tested.
+    cases.push({ slot: `src/b.ts, src/evil${control}.ts`, declared: ["src/a.ts"] });
+    // The declared witness, from both sides of the repair's own gate.
+    cases.push({ slot: "src/b.ts", declared: ["src/a.ts"] });
+    cases.push({ slot: "src/b.ts", declared: [`src/a${control}.ts`] });
+  }
+  let reachedDisclosure = 0;
+  for (const { slot, declared } of cases) {
+    const spec: NormalisedSpec = {
+      ...SPEC,
+      deliverables: [{ id: "d5", description: "flat", paths: ["src/a.ts", slot] }],
+    };
+    const { state, added } = disclose(spec, declared);
+    const texts = state.pipelineState.normalisedSpec?.assumptions.map((a) => a.text) ?? [];
+    reachedDisclosure += texts.length > 0 ? 1 : 0;
+    assert(
+      texts.length === 0
+        ? added.length === 0
+        : texts.length === 1 &&
+            added.length > 0 &&
+            texts[0] !== undefined &&
+            !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(texts[0]) &&
+            flatCount(texts[0]) === 1 &&
+            texts[0].includes(added[0] ?? "\u0000"),
+      `repair assumption: a control/bidi character is refused outright or flattened into the one disclosure line (${JSON.stringify(slot)}, ${JSON.stringify(declared)})`,
+    );
+  }
+  assert(
+    reachedDisclosure > 0,
+    "repair assumption: the flattening branch is actually exercised, not only the refusal branch",
+  );
+}
+
 // --------------------------------------------- no spec / nothing added: no-op
 
 {
