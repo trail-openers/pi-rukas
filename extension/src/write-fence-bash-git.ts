@@ -141,6 +141,14 @@ export function gitTargets(args: Word[]): Word[] {
       k += 2;
       continue;
     }
+    if (a.text.startsWith("-C") && a.text.length > 2) {
+      // `-C<dir>`: the directory attached to the option.
+      const dir = { text: a.text.slice(2), dyn: a.dyn };
+      trees.push(dir);
+      dirs.push(dir);
+      k++;
+      continue;
+    }
     if (a.text.startsWith("--git-dir=") || a.text.startsWith("--work-tree=")) {
       trees.push({ text: a.text.slice(a.text.indexOf("=") + 1), dyn: a.dyn });
       k++;

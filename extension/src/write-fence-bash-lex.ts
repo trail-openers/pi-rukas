@@ -256,7 +256,8 @@ export function lex(src: string): Lexed | undefined {
       op(s, "|");
       i += next === "&" ? 2 : 1;
     } else if (ch === ";" || ch === "(" || ch === ")") {
-      op(s, ";");
+      // A parenthesis keeps its own token: a subshell's `cd` ends with the subshell.
+      op(s, ch);
       i++;
     } else if (ch === "&" && next === ">") {
       // `&>file` and `&>>file` write the file.

@@ -125,7 +125,16 @@ export function optionValues(args: Word[], names: readonly string[]): Word[] {
       continue;
     }
     const eq = names.find((n) => n.startsWith("--") && a.text.startsWith(`${n}=`));
-    if (eq !== undefined) out.push({ text: a.text.slice(eq.length + 1), dyn: a.dyn });
+    if (eq !== undefined) {
+      out.push({ text: a.text.slice(eq.length + 1), dyn: a.dyn });
+      continue;
+    }
+    // A two-character short option takes its value attached: `-o/abs/x`, `-C/abs`.
+    const short = names.find(
+      (n) =>
+        n.length === 2 && n[0] === "-" && n[1] !== "-" && a.text.length > 2 && a.text.startsWith(n),
+    );
+    if (short !== undefined) out.push({ text: a.text.slice(2), dyn: a.dyn });
   }
   return out;
 }
@@ -180,9 +189,12 @@ export function stripPrefix(words: Word[]): Prefixed {
   return { words: w, chdir };
 }
 
+/** One step of a command line: a simple command, or the separator (`&&`, `|`, `(`, `)`, …) after one. */
+export type Step = { kind: "command"; simple: Simple } | { kind: "sep"; text: string };
+
 /** Split the token stream at separators, collecting each command's redirect targets. */
-export function simpleCommands(toks: Tok[]): Simple[] {
-  const out: Simple[] = [];
+export function simpleCommands(toks: Tok[]): Step[] {
+  const out: Step[] = [];
   let cur: Simple = { words: [], redirects: [] };
   for (let k = 0; k < toks.length; k++) {
     const t = toks[k];
@@ -201,9 +213,9 @@ export function simpleCommands(toks: Tok[]): Simple[] {
       continue;
     }
     if (t.text === "<<") continue;
-    out.push(cur);
+    out.push({ kind: "command", simple: cur }, { kind: "sep", text: t.text });
     cur = { words: [], redirects: [] };
   }
-  out.push(cur);
+  out.push({ kind: "command", simple: cur });
   return out;
 }

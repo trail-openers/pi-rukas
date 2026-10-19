@@ -38,15 +38,8 @@ export function embeddedBody(name: string, args: Word[]): Word | undefined {
 /** Options of `cp`/`mv`/`install`/`ln` that take the destination directory as their value. */
 const TARGET_DIR_OPTIONS = ["-t", "--target-directory"];
 
-/** Commands that can create a link (symbolic or hard), or copy one unchanged. */
-const LINK_TOOLS = new Set(["ln", "link", "tar", "bsdtar", "rsync", "unzip", "ditto", "pax"]);
-const LINK_LONG = new Set([
-  "--recursive",
-  "--archive",
-  "--link",
-  "--symbolic-link",
-  "--no-dereference",
-]);
+/** `cp` options that copy a symbolic link as a link (recursive, archive, no-dereference). */
+const COPY_LINKS_LONG = new Set(["--recursive", "--archive", "--no-dereference"]);
 
 /** The destination directory of `-t DIR` / `--target-directory=DIR`, when present. */
 function targetDirectory(args: Word[]): Word | undefined {
@@ -105,15 +98,34 @@ export function symlinkNames(name: string, args: Word[]): Word[] {
 }
 
 /**
- * True when the command can create a link of a name not given in its arguments
- * (an archive that carries links, a recursive copy). Such a command makes a
- * path's resolution differ from its lexical reading, so a path that does not
- * exist yet cannot be judged in advance.
+ * The directories a command may create symbolic links in under names its
+ * arguments do not give: an extraction or sync INTO a path (tar -x, unzip, pax
+ * -r, rsync), or a copy that keeps links (cp -R/-a/-P, ditto). A path under one
+ * of them that does not exist yet cannot be judged before the command runs.
+ * Empty for a command that creates no such link: an archive written, a link named.
  */
-export function makesLinks(name: string, args: Word[]): boolean {
-  if (LINK_TOOLS.has(name)) return true;
-  if (name !== "cp") return false;
-  return args.some((a) => /^-[^-]*[rRadPsl]/.test(a.text) || LINK_LONG.has(a.text));
+export function linkRootWords(name: string, args: Word[]): Word[] {
+  switch (name) {
+    case "tar":
+    case "bsdtar":
+      return tarTargets(args);
+    case "unzip":
+      return unzipTargets(args);
+    case "pax":
+      return args.some((a) => /^-[^-]*r/.test(a.text)) ? [DOT] : [];
+    case "rsync":
+    case "ditto": {
+      const ops = operands(args);
+      const dest = ops[ops.length - 1];
+      return ops.length >= 2 && dest !== undefined ? [dest] : [];
+    }
+    case "cp":
+      return args.some((a) => /^-[^-]*[rRadP]/.test(a.text) || COPY_LINKS_LONG.has(a.text))
+        ? copyLikeTargets(name, args)
+        : [];
+    default:
+      return [];
+  }
 }
 
 /** `sed -i` / `perl -i`: the files are the operands after the script (or all of them under -e/-f). */
