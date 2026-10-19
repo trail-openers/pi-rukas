@@ -58,6 +58,7 @@
 import { trace } from "./trace.ts";
 import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+import { normaliseScopePath as normaliseGitPath } from "./work-driver-verify-develop-helpers.ts";
 
 /**
  * #1405 — ask the issue-fenced lift, failing closed: a throw from the lift (it
@@ -104,6 +105,15 @@ function normaliseScopePath(raw: string): string {
     .replace(/ \((?:[^()]*)$/, "") // pass 2: unterminated " (…" to end
     .trim();
   return stripped.replace(/^\.\//, "").replace(/\/+$/, "");
+}
+
+/**
+ * #1676 round 3 — git-reported paths are compared verbatim: only a leading
+ * `./` and a trailing `/` are removed. A real file named `docs/notes (draft)`
+ * is not a planner annotation, so the annotation strip above must not touch it.
+ */
+function gitPathsOf(paths: Iterable<string>): string[] {
+  return [...new Set([...paths].map(normaliseGitPath))].filter((p) => p.length > 0).sort();
 }
 
 /** #285 — check whether a file path matches a declared scope path. */
@@ -176,11 +186,16 @@ export function runScopeFanoutGate(
   // `true` admits exactly that (workstream, file) pair: no failure, no record.
   // Supplied by work-develop-scope-fence-seam.ts; absent means the fence stands.
   liftIssueFence?: (workstreamId: string, file: string) => boolean,
+  // #1676 — `protectedRefused`: the paths the protected-path gate already refused
+  // (no grant). A fence hit on one of them is not a second failure: that gate's
+  // halt, with its --allow-protected instruction, is the single explanation.
+  options: { protectedRefused?: readonly string[] } = {},
 ): void {
   if (!scopeGateEnabled()) {
     notes.push("PI_ENSEMBLE_SCOPE_GATE=0 — develop scope/fanout gate disabled");
     return;
   }
+  const refused = new Set((options.protectedRefused ?? []).map(normaliseGitPath));
   const planDeclaredPaths = new Set<string>();
   for (const ws of Object.values(workstreams)) {
     for (const p of ws?.paths ?? []) {
@@ -226,7 +241,9 @@ export function runScopeFanoutGate(
   // per-workstream, so it must not admit either side.
   const changedBy = new Map<string, number>();
   for (const changedPaths of changedPathsByWorkstream.values()) {
-    for (const file of changedPaths) changedBy.set(file, (changedBy.get(file) ?? 0) + 1);
+    for (const file of gitPathsOf(changedPaths)) {
+      changedBy.set(file, (changedBy.get(file) ?? 0) + 1);
+    }
   }
   for (const [id, changedPaths] of changedPathsByWorkstream) {
     const workstream = workstreams[id];
@@ -236,7 +253,9 @@ export function runScopeFanoutGate(
     const outOfScope = (workstream?.outOfScope ?? [])
       .map(normaliseScopePath)
       .filter((p) => p.length > 0);
-    const changedFiles = [...changedPaths].sort();
+    // Git paths use gitPathsOf, the same normaliser as the refused set and
+    // changedBy: "./.pi/verify-cmd" and ".pi/verify-cmd" are one path.
+    const changedFiles = gitPathsOf(changedPaths);
     // #725 — a hit is exempt when the fenced path is declared in `paths` by
     // a workstream in this one's `dependsOn` list (the cross-declaration
     // carve-out documented in the module header). The gate depends on
@@ -278,6 +297,12 @@ export function runScopeFanoutGate(
         // the #792 incident lacked.
         notes.push(
           `fence hit demoted to warning: ${file} is declared in this workstream's own paths (self-fence)`,
+        );
+        continue;
+      }
+      if (refused.has(file)) {
+        notes.push(
+          `fence hit on ${file} not repeated: the protected-path gate already refused it (no --allow-protected grant)`,
         );
         continue;
       }

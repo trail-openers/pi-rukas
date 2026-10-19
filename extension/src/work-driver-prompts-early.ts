@@ -5,7 +5,7 @@
  * Split out of work-driver.ts per AGENTS.md §12 module-size hygiene (#171).
  */
 import { quotedPaths } from "./plan-path-shape.ts";
-import { quotedOutOfScope } from "./plan-workstream-schema.ts";
+import { fenceLines } from "./work-driver-plan-fence.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 import { developTestScopeLine, developVerifyLine } from "./work-driver-verify-fast.ts";
 
@@ -223,6 +223,12 @@ function intentResolutionBlock(issues: number[]): string {
   ].join("\n");
 }
 
+/** Optional develop-prompt inputs; every field is optional, so a call that omits it is unchanged. */
+export interface InlineDevelopOptions {
+  /** #1676 — the protected paths the plan deferred (no --allow-protected grant). */
+  deferredProtected?: readonly string[];
+}
+
 export function inlineDevelopPrompt(
   issues: number[],
   scratchDirAbs: string,
@@ -291,6 +297,11 @@ export function inlineDevelopPrompt(
   interruptedNote?: string,
   /** #1324 — `.pi/verify-cmd-fast`: the developer runs this, the driver runs both tiers. */
   fastVerifyCmd?: string,
+  /**
+   * #1676 — options read by the develop prompt. A new input goes here, not in a
+   * new positional parameter.
+   */
+  options: InlineDevelopOptions = {},
 ): string {
   // PR11 — multi-issue cycles must show the developer the ACTIVE issues
   // (NEEDS_WORK subset after explore), not the primary cycle issue. The
@@ -322,9 +333,9 @@ export function inlineDevelopPrompt(
       // Prior memory sits directly under the file list because it is ABOUT
       // those files; separating them invites the reader to skip it.
       memoryBrief ?? "",
-      workstream.outOfScope.length > 0
-        ? `**OUT OF SCOPE — do NOT touch**: ${quotedOutOfScope(workstream.outOfScope)}`
-        : "Stay tightly focused on the scope; other workstreams handle the rest.",
+      ...(workstream.outOfScope.length > 0
+        ? fenceLines(workstream.outOfScope, options.deferredProtected ?? [])
+        : ["Stay tightly focused on the scope; other workstreams handle the rest."]),
       "",
     );
     // #679 case 1 — sibling-injection: informational ONLY. The developer is

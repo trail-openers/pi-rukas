@@ -169,10 +169,18 @@ async function runCorrectiveRound(
   const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
   const issues = activeIssuesOf(a.state);
   const ps = a.state.pipelineState;
+  // #1676 — the same protected-path deferrals the first develop prompt was built from,
+  // read from the state the plan tail persisted (not recomputed).
+  const deferred = ps.deferredProtected ?? [];
   const settled: RoundSettled[] = await Promise.all(
     decision.targets.map(async (t): Promise<RoundSettled> => {
       const devLabel = ids.length > 1 ? `developer[${t.id}]` : "developer";
       const ws: Workstreams[string] | undefined = a.workstreams[t.id];
+      if (ws === undefined) {
+        trace(
+          `work-driver: corrective developer ${t.id} has no workstream in pipelineState — its prompt carries no scope and no OUT OF SCOPE fence`,
+        );
+      }
       const startedAt = Date.now();
       let res: Awaited<ReturnType<Dispatch>>;
       try {
@@ -189,6 +197,8 @@ async function runCorrectiveRound(
               paths: ws?.paths ?? [],
               command,
               lines: t.lines,
+              outOfScope: ws?.outOfScope ?? [],
+              deferredProtected: deferred,
             }),
             cwd: t.cwd,
           },
