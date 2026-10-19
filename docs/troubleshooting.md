@@ -1997,7 +1997,7 @@ Escape: nothing to disable here — if vipune is missing, slow or broken, the br
 ### An agent tried to edit a memory and was refused
 
 `vipune update <id> --text "…"` is denied to every role, and the refusal is enforced in
-`bash-command-parser.ts` ahead of the permission allowlist so it holds even if the allowlist changes. `vipune delete` and `vipune prune` are refused the same way, and the mode-independent `memory-write-guard` refuses all three in every mode, including trust-mode children.
+`bash-command-parser.ts` ahead of the permission allowlist so it holds even if the allowlist changes. The verb is read past global options (`-p`, `--db-path`, `--`), and an expansion in verb position (`$V`, `${V:-delete}`, `$'delete'`) is refused as an unresolved verb. The memory-write guard refuses `vipune update -t`, `delete` and `prune` in every mode, for every role, including trust-mode children.
 
 The reason is that `update --text` **replaces content in place**: one row before, one row after, no
 new row, no `superseded_by` lineage, no undo. The id survives, so any prior citation of that memory

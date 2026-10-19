@@ -19,7 +19,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isDestructiveWrite } from "./bash-destructive-write.ts";
+import { destructiveWriteVerb } from "./bash-destructive-write.ts";
 import { trace } from "./trace.ts";
 
 /** The command string of a bash tool call; anything that is not a string reads as empty. */
@@ -32,8 +32,9 @@ export function bashCommandOf(input: unknown): string {
 export function registerMemoryWriteGuard(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, _ctx) => {
     if (event.toolName !== "bash") return;
-    if (!isDestructiveWrite(bashCommandOf(event.input))) return;
-    trace("memory-write-guard: BLOCKED destructive vipune write (update -t, delete or prune)");
+    const verb = destructiveWriteVerb(bashCommandOf(event.input));
+    if (verb === undefined) return;
+    trace(`memory-write-guard: BLOCKED destructive vipune write (${verb})`);
     return {
       block: true,
       reason:

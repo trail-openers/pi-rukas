@@ -83,6 +83,19 @@ const refused: Array<[string, string]> = [
   ["&> redirect before delete", "&>out vipune delete 1"],
   ["background & before delete", "true & vipune delete 1"],
   ["escaped \\> does not make & a redirect", "echo \\>&vipune delete 1"],
+  ["json global option before delete", "vipune --json delete 1"],
+  ["-p value before delete", "vipune -p x delete 1"],
+  ["--project=value before prune", "vipune --project=x prune"],
+  ["--db-path value before delete", "vipune --db-path /tmp/x.db delete 1"],
+  ["attached -pX before delete", "vipune -pX delete 1"],
+  ["-- before delete", "vipune -- delete 1"],
+  ["variable verb", "V=delete; vipune $V 1"],
+  ["braced default verb", "vipune ${V:-delete} 1"],
+  ["ANSI-C verb", "vipune $'delete' 1"],
+  ["quoted variable verb", 'vipune "$V" 1'],
+  ["variable verb after -p value", 'vipune -p x $V 1'],
+  ["command builtin wrapper", "command vipune delete 1"],
+  ["builtin wrapper", "builtin vipune prune"],
 ];
 for (const [name, cmd] of refused) {
   assert(isDestructiveWrite(cmd), `1: refused: ${name} (${cmd})`);
@@ -111,6 +124,9 @@ const allowed: Array<[string, string]> = [
   ["find -exec echo", "find . -exec echo {} \\;"],
   ["watch search", "watch -n 5 vipune search 'delete'"],
   ["search with fd dup 2>&1", "vipune search x 2>&1"],
+  ["search with delete as argument after json", "vipune --json search delete"],
+  ["search with quoted variable", 'vipune search "$Q"'],
+  ["-p expansion value, verb search", 'vipune -p "$P" search x'],
 ];
 for (const [name, cmd] of allowed) {
   assert(!isDestructiveWrite(cmd), `2: allowed: ${name} (${cmd})`);
