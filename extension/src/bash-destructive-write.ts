@@ -38,6 +38,7 @@ const REDIRECT_OPERATOR_ONLY = /^(?:\d*[<>][>&|]?|&>>?)$/;
 const WRAPPERS = new Set([
   "env",
   "command",
+  "builtin",
   "exec",
   "nohup",
   "sudo",
@@ -247,32 +248,60 @@ function unwrap(argv: readonly string[]): Unwrapped {
   }
 }
 
-function isDestructiveArgv(words: readonly string[], depth: number): boolean {
+/** vipune global options that take a separate value word (`-p x`, `--db-path /tmp/x`). */
+const VIPUNE_VALUE_OPTIONS = new Set(["-p", "--project", "--db-path"]);
+
+/**
+ * Index of the verb in a `vipune …` argv: the first word after the global options.
+ * `--` ends the options; a value option's value word is skipped with it. -1 when
+ * no verb word follows.
+ */
+function vipuneVerbIndex(argv: readonly string[]): number {
+  let i = 1;
+  while (i < argv.length) {
+    const w = argv[i] ?? "";
+    if (w === "--") return i + 1 < argv.length ? i + 1 : -1;
+    if (!w.startsWith("-")) return i;
+    i += VIPUNE_VALUE_OPTIONS.has(w) ? 2 : 1;
+  }
+  return -1;
+}
+
+/** The label of the destructive vipune verb in one simple command, or undefined. */
+function destructiveArgv(words: readonly string[], depth: number): string | undefined {
   const { argv, split } = unwrap(words);
   if (split !== undefined) {
     // `env -S` re-splits its payload as a command line; words after it are appended to that line.
     const [payload = "", ...tail] = split;
-    return isDestructiveWrite([payload, ...tail.map(quoteWord)].join(" "), depth + 1);
+    return destructiveWriteVerb([payload, ...tail.map(quoteWord)].join(" "), depth + 1);
   }
   // A single word holding a whole command (`watch 'vipune delete 1'`) is re-parsed as one.
   if (argv.length === 1 && /\s/.test(argv[0] ?? ""))
-    return isDestructiveWrite(argv[0] ?? "", depth + 1);
+    return destructiveWriteVerb(argv[0] ?? "", depth + 1);
   const head = path.basename(argv[0] ?? "");
-  if (head === "eval") return isDestructiveWrite(argv.slice(1).join(" "), depth + 1);
+  if (head === "eval") return destructiveWriteVerb(argv.slice(1).join(" "), depth + 1);
   if (SHELLS.has(head) || head === "script") {
     const c = argv.findIndex((w, i) => i > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(w));
     const body = c >= 0 ? argv[c + 1] : undefined;
-    return body !== undefined && isDestructiveWrite(body, depth + 1);
+    return body === undefined ? undefined : destructiveWriteVerb(body, depth + 1);
   }
   if (head === "find") {
     // `find … -exec CMD … ;` runs CMD once per match, so CMD is judged like any other command.
-    return argv.some(
-      (w, i) => FIND_EXEC.has(w) && isDestructiveArgv(execBody(argv, i + 1), depth + 1),
-    );
+    for (let i = 0; i < argv.length; i++) {
+      if (!FIND_EXEC.has(argv[i] ?? "")) continue;
+      const verb = destructiveArgv(execBody(argv, i + 1), depth + 1);
+      if (verb !== undefined) return verb;
+    }
+    return undefined;
   }
-  if (head !== "vipune") return false;
-  if (IRREVERSIBLE_VERBS.has(argv[1] ?? "")) return true;
-  return argv[1] === "update" && argv.slice(2).some(isTextFlag);
+  if (head !== "vipune") return undefined;
+  const at = vipuneVerbIndex(argv);
+  if (at < 0) return undefined;
+  const verb = argv[at] ?? "";
+  // An expansion in verb position (`$V`, `${V:-delete}`, `$'delete'`): the guard cannot know the verb.
+  if (/[$`]/.test(verb)) return "unresolved verb";
+  if (IRREVERSIBLE_VERBS.has(verb)) return verb;
+  return verb === "update" && argv.slice(at + 1).some(isTextFlag) ? "update -t" : undefined;
 }
 
 /** The words of a `find -exec` action starting at `start`, up to its `;` or `+` terminator. */
@@ -281,8 +310,25 @@ function execBody(argv: readonly string[], start: number): string[] {
   return argv.slice(start, end < 0 ? undefined : end);
 }
 
-/** True when a simple command in `command` rewrites a memory row's text. */
+/**
+ * The destructive verb a command runs against memory, or undefined. Labels:
+ * "update -t", "delete", "prune", or "unresolved verb" when the verb is an
+ * expansion the guard cannot read.
+ */
+export function destructiveWriteVerb(command: string, depth = 0): string | undefined {
+  if (depth > MAX_DEPTH) return command.includes("vipune") ? "unresolved verb" : undefined;
+  for (const words of simpleCommands(command)) {
+    const verb = destructiveArgv(words, depth);
+    if (verb !== undefined) return verb;
+  }
+  return undefined;
+}
+
+/**
+ * True when a simple command in `command` irreversibly rewrites or removes memory
+ * rows (vipune update -t, delete, prune), including when the verb cannot be
+ * determined because it is an expansion.
+ */
 export function isDestructiveWrite(command: string, depth = 0): boolean {
-  if (depth > MAX_DEPTH) return command.includes("vipune");
-  return simpleCommands(command).some((words) => isDestructiveArgv(words, depth));
+  return destructiveWriteVerb(command, depth) !== undefined;
 }
