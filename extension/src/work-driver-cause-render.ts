@@ -6,16 +6,12 @@
  * the headless result (projectIssue) and the queue line all read the verdict
  * from causeForCycle (work-driver-cause-for.ts), which scrubs it at the source.
  *
- * The scrub lives in work-driver-cause-scrub.ts and is re-exported here. The
- * renderers still call causeSafeText, which is idempotent, as the fallback for a
- * state file written before the producer scrubbed.
+ * The renderers still call causeSafeText (work-driver-cause-scrub.ts), which is
+ * idempotent, as the fallback for a state file written before the producer scrubbed.
  */
 
 import type { CauseVerdict } from "./work-driver-cause-class.ts";
 import { causeSafeText, escapeMarkdownText } from "./work-driver-cause-scrub.ts";
-
-export { causeSafeText, scrubDepsHint } from "./work-driver-cause-scrub.ts";
-export { causeForCycle } from "./work-driver-cause-for.ts";
 
 /** Untrusted text as a code span whose fence is longer than any run inside it. */
 function codeSpan(s: string): string {

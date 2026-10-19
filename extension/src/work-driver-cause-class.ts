@@ -36,7 +36,7 @@
 
 import { redactClip } from "./decision-log.ts";
 import type { CAP_TEMPLATES, FixedCap } from "./headless/caps.ts";
-import type { ResultFailure } from "./headless/failure.ts";
+import type { FailureKind, ResultFailure } from "./headless/failure.ts";
 import { EMPTY_ROUND_FAILURE } from "./work-develop-verify-failure.ts";
 import { PLUMB_REPLY_MARKER } from "./work-driver-adversarial-plumb.ts";
 import {
@@ -44,6 +44,7 @@ import {
   type CapCause,
   type CauseClass,
   FIXED_CAP_CAUSE,
+  KIND_ACTION,
   KIND_CLASS,
   TEMPLATE_CAP_CAUSE,
 } from "./work-driver-cause-table.ts";
@@ -115,6 +116,24 @@ function tailLines(tail: string | undefined): string[] {
 function actionOf(cls: CauseClass, rule: CapCause | undefined, issue: number): string | null {
   const raw = rule && rule.cls === cls ? rule.action : ACTION_FOR_CLASS[cls];
   return raw === null ? null : raw.replaceAll("{issue}", String(issue));
+}
+
+/**
+ * The action for a cap whose class came from its failure kind. A kind that
+ * moved the cap out of its own entry's class takes the kind's action (a host
+ * exit names the host); otherwise the entry's own class action applies.
+ */
+function actionForKind(
+  kind: FailureKind | undefined,
+  cls: CauseClass,
+  rule: CapCause,
+  issue: number,
+): string | null {
+  const kindAction = kind === undefined ? undefined : KIND_ACTION[kind];
+  if (kindAction !== undefined && rule.cls !== cls) {
+    return kindAction.replaceAll("{issue}", String(issue));
+  }
+  return actionOf(cls, rule, issue);
 }
 
 /** A failure read from a dispatch carries structured fields; a cap-derived one does not. */
@@ -194,20 +213,52 @@ function firstDependencyLine(failures: readonly string[]): string | undefined {
   return undefined;
 }
 
-/** The last develop reply from the developer, if it wrote one. */
-function developerReply(state: WorkState): string | undefined {
-  for (let i = state.eventLog.length - 1; i >= 0; i--) {
-    const e = state.eventLog[i];
-    if (
-      e?.kind === "dispatch-completed" &&
-      e.step === "develop" &&
-      e.role === "developer" &&
-      e.summary?.trim()
-    ) {
-      return e.summary;
+/** A developer reply the verdict quotes; `id` names the workstream under a fan-out. */
+interface QuotedReply {
+  id?: string;
+  text: string;
+}
+
+/**
+ * The develop replies the verdict quotes. Under a fan-out these are the reply(s)
+ * of the workstream(s) that produced no change (a no-change green is downgraded
+ * to failing, so the downgraded workstreams are that set), else of every failing
+ * workstream. With no failing workstream, the developer's last reply.
+ */
+function quotedReplies(state: WorkState): QuotedReply[] {
+  const replies = new Map<string, string>();
+  const verdicts = new Map<string, { ok: boolean; downgraded: boolean }>();
+  let last: string | undefined;
+  for (const e of state.eventLog) {
+    if (e.kind === "dispatch-completed" && e.step === "develop" && e.role === "developer") {
+      if (e.summary?.trim()) {
+        replies.set(e.label, e.summary);
+        last = e.summary;
+      }
+    } else if (e.kind === "branch-completed" && e.step === "develop") {
+      verdicts.set(e.workstreamId, { ok: e.ok, downgraded: e.downgrade === true });
     }
   }
-  return undefined;
+  const failing = [...verdicts].filter(([, v]) => !v.ok);
+  const noChange = failing.filter(([, v]) => v.downgraded);
+  const chosen = (noChange.length > 0 ? noChange : failing).map(([id]) => id);
+  const picked: QuotedReply[] = [];
+  for (const id of chosen) {
+    const text =
+      replies.get(`developer[${id}]`) ??
+      (chosen.length === 1 ? replies.get("developer") : undefined);
+    if (text !== undefined) picked.push({ id, text });
+  }
+  if (picked.length > 0) return picked;
+  return last === undefined ? [] : [{ text: last }];
+}
+
+/** Evidence lines from the quoted replies: named by workstream only when several are quoted. */
+function tagged(replies: readonly QuotedReply[], lines: (r: QuotedReply) => string[]): string[] {
+  const named = replies.length > 1;
+  return replies.flatMap((r) =>
+    lines(r).map((l) => (named && r.id !== undefined ? `workstream ${r.id}: ${l}` : l)),
+  );
 }
 
 /**
@@ -236,13 +287,16 @@ function emptyDiffVerdict(
   failures: readonly string[],
   issue: number,
 ): CauseVerdict {
-  const reply = developerReply(state);
-  const question = reply === undefined ? undefined : plumbQuestion(reply);
-  if (question !== undefined) {
+  const replies = quotedReplies(state);
+  const questions = replies.flatMap((r) => {
+    const q = plumbQuestion(r.text);
+    return q === undefined ? [] : [{ ...r, text: q }];
+  });
+  if (questions.length > 0) {
     return {
       causeClass: "issue",
       causeReason: "the developer could not act on the issue as written and asked a question",
-      causeEvidence: evidenceLines([question]),
+      causeEvidence: evidenceLines(tagged(questions, (r) => [r.text])),
       userAction: `answer the question in the issue (or edit the issue), then re-run \`/work ${issue}\``,
     };
   }
@@ -250,7 +304,9 @@ function emptyDiffVerdict(
     causeClass: "change",
     causeReason: "the developer made no change",
     causeEvidence:
-      reply === undefined ? evidenceLines(failures) : evidenceLines([reply.trim().split("\n")[0]]),
+      replies.length === 0
+        ? evidenceLines(failures)
+        : evidenceLines(tagged(replies, (r) => [r.text.trim().split("\n")[0] ?? ""])),
     userAction: `read the developer's reply in the handoff; edit the issue or re-run \`/work ${issue} --restart\``,
   };
 }
@@ -416,15 +472,15 @@ export function causeVerdictOf(
       };
     }
   }
-  const kindClass =
-    rule.kindDriven && failure !== undefined && dispatchDerived(failure)
-      ? KIND_CLASS[failure.kind]
-      : undefined;
+  // A kind-driven cap takes its class from the failure kind, whether or not a
+  // dispatch explains it: a child that exited with no structured cause is `process`.
+  const kind = rule.kindDriven && failure !== undefined ? failure.kind : undefined;
+  const kindClass = kind === undefined ? undefined : KIND_CLASS[kind];
   const cls: CauseClass = kindClass ?? rule.cls;
   return {
     causeClass: cls,
     causeReason: rule.reason,
     causeEvidence: capEvidence(state, cap, failure),
-    userAction: actionOf(cls, rule, issue),
+    userAction: actionForKind(kind, cls, rule, issue),
   };
 }

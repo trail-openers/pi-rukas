@@ -32,31 +32,39 @@ export type CauseClass = (typeof CAUSE_CLASSES)[number];
 
 /**
  * One cap's entry. `reason` is one plain sentence. `action` is what the user
- * can do (`{issue}` is replaced with the issue number at render time) and is
- * null only for `pi-rukas`. `kindDriven` means: when a failed dispatch explains
- * the cap, the dispatch's failure kind decides the class (KIND_CLASS), so a
- * provider outage behind a step failure is `environment` and a child that died
- * with no structured cause is `pi-rukas`. `cls: null` is the one entry that is
- * not a failure at all (the merge hold): it has a reason and an action, no class.
+ * can do (`{issue}` is replaced with the issue number at render time). A
+ * `pi-rukas` entry has no action; the merge hold has no class. `kindDriven`
+ * means: the cap's failure kind decides the class (KIND_CLASS), so a provider
+ * outage behind a step failure is `environment`, and a child that exited with
+ * no structured cause is `environment` too (the host, not the driver, is the
+ * usual culprit). `cls: null` is the one entry that is not a failure at all.
  */
-export interface CapCause {
-  cls: CauseClass | null;
-  reason: string;
-  action: string | null;
-  kindDriven?: boolean;
-}
+export type CapCause =
+  | { cls: "pi-rukas"; reason: string; action: null; kindDriven?: boolean }
+  | { cls: Exclude<CauseClass, "pi-rukas">; reason: string; action: string; kindDriven?: boolean }
+  | { cls: null; reason: string; action: string; kindDriven?: boolean };
 
-/** How a failure kind maps to a class when a dispatch explains the cap (`cap` defers to the entry). */
+/** How a failure kind maps to a class when the cap's failure kind decides it. */
 export const KIND_CLASS: Record<FailureKind, CauseClass | undefined> = {
   provider: "environment",
   timeout: "environment",
   environment: "environment",
   guard: "environment",
-  process: "pi-rukas",
-  crashed: "pi-rukas",
+  process: "environment",
+  crashed: "environment",
   driver: "pi-rukas",
   verify: "change",
   cap: undefined,
+};
+
+/** The action for a kind whose cause is the host, not the change or the driver (`{issue}` filled at render). */
+export const HOST_ACTION =
+  "check that the host ran undisturbed (sleep/suspend, memory pressure — e.g. run `caffeinate -dimsu` alongside long cycles on macOS), then re-run `/work {issue}`";
+
+/** Kind-specific actions, used when a kind moves a cap into a class other than its own entry's. */
+export const KIND_ACTION: Partial<Record<FailureKind, string>> = {
+  process: HOST_ACTION,
+  crashed: HOST_ACTION,
 };
 
 /** The generic action for a class, used when a kind-driven cap lands in a class other than its default. */

@@ -226,8 +226,6 @@ export function usageOf(state: WorkState): ResultUsage {
   return total;
 }
 
-export { failedStepOf };
-
 /** `- item` bullet lines of a cap's evidence, in order. */
 function bulletsOf(evidence: string | undefined): string[] {
   if (!evidence) return [];
