@@ -7,14 +7,15 @@
  * still edits it, because nothing told the developer the path is off-limits;
  * the protected-path halt then parks the cycle after the whole develop spend.
  *
- * So each deferred path is appended to the `outOfScope` of every workstream
- * that does not declare it in its own `paths`, as the bare normalised path: the
- * scope gate then matches it exactly, and the develop prompt names it. A
- * workstream that declares the path itself is not fenced for it — a self-declared
- * fence is the contradiction the plan-time check rejects — and the protected-path
- * halt is the backstop for that shape. The "protected, no --allow-protected
- * grant" annotation is NOT part of the entry; the prompts render it from the
- * deferral list next to the fence (`fenceLines`).
+ * So each deferred path is appended to the `outOfScope` of every workstream as
+ * the bare normalised path: the scope gate then matches it exactly, and the
+ * develop prompt names it. Fence wins over the plan's own listing: a deferred
+ * path a workstream still lists in `paths` is removed from there, so the
+ * developer is never told both to edit and not to touch the same file. The
+ * "protected, no --allow-protected grant" annotation is NOT part of the entry;
+ * the prompts render it from the deferral list next to the fence (`fenceLines`).
+ * The protected-path gate's discard pass (`work-driver-verify-develop-protected`)
+ * is the backstop for an edit made anyway.
  *
  * The deferred list is persisted on pipelineState (`deferredProtected`) by the
  * plan tail; develop and the corrective round read it from there.
@@ -51,10 +52,10 @@ export function deferredProtectedPaths(
 }
 
 /**
- * The workstreams map with each deferred path appended to the `outOfScope` of
- * every workstream that neither declares it in `paths` nor already fences it.
+ * The workstreams map with each deferred path removed from every workstream's
+ * `paths` and appended to its `outOfScope` (unless already fenced there).
  * `deferred` is the list the plan tail computed once (`deferredProtectedPaths`)
- * and persists. Returns the input object itself when nothing is appended, so a
+ * and persists. Returns the input object itself when nothing changes, so a
  * caller can tell the no-op apart.
  */
 export function withDeferredProtectedFence(
@@ -65,15 +66,15 @@ export function withDeferredProtectedFence(
   let changed = false;
   const out: Record<string, Workstream> = {};
   for (const [id, ws] of Object.entries(workstreams)) {
-    const declared = new Set(ws.paths.map((e) => normaliseDeclaredPath(e)));
+    const paths = ws.paths.filter((e) => !deferred.includes(normaliseDeclaredPath(e)));
     const fenced = new Set(ws.outOfScope.map((e) => normaliseDeclaredPath(e)));
-    const missing = deferred.filter((p) => !declared.has(p) && !fenced.has(p));
-    if (missing.length === 0) {
+    const missing = deferred.filter((p) => !fenced.has(p));
+    if (paths.length === ws.paths.length && missing.length === 0) {
       out[id] = ws;
       continue;
     }
     changed = true;
-    out[id] = { ...ws, outOfScope: [...ws.outOfScope, ...missing] };
+    out[id] = { ...ws, paths, outOfScope: [...ws.outOfScope, ...missing] };
   }
   return changed ? out : workstreams;
 }

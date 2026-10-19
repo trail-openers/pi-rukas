@@ -10,9 +10,20 @@
  * gate already refused. Other fence hits still block.
  */
 
+import { execFile, execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import type { ExecFn } from "../src/work-develop-git.ts";
+import type { CycleContext } from "../src/work-driver-context.ts";
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "../src/work-driver-scope-fence.ts";
-import { runProtectedPathGate } from "../src/work-driver-verify-develop-protected.ts";
+import {
+  discardDeferred,
+  runProtectedPathGate,
+} from "../src/work-driver-verify-develop-protected.ts";
+import type { WorkState } from "../src/workflow-state-schema.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -153,6 +164,182 @@ assert(
   offRefused.length === 0 && offFailures.length === 0,
   "with the protected gate off nothing is refused",
 );
+
+// ------------------------------------------ #1676 backstop: discard a deferred edit
+
+// Real git in a scratch repo: the discard pass is git work, so a fake exec would
+// test nothing. Commit identity and signing are pinned so the host config cannot
+// make the revert commit fail.
+const gitEnv = {
+  ...process.env,
+  GIT_AUTHOR_NAME: "t",
+  GIT_AUTHOR_EMAIL: "t@t",
+  GIT_COMMITTER_NAME: "t",
+  GIT_COMMITTER_EMAIL: "t@t",
+  GIT_CONFIG_COUNT: "1",
+  GIT_CONFIG_KEY_0: "commit.gpgsign",
+  GIT_CONFIG_VALUE_0: "false",
+};
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync("git", args, { cwd, encoding: "utf8", env: gitEnv }).trim();
+const execAsync = promisify(execFile);
+const realExec = (async (_cmd: string, opts: { argv?: string[]; cwd: string }) => {
+  const { stdout, stderr } = await execAsync("git", opts.argv ?? [], {
+    cwd: opts.cwd,
+    env: gitEnv,
+  });
+  return { stdout, stderr };
+}) as unknown as ExecFn;
+
+/** The pre-loop discard pass in the object shape these cases were written in: the
+ * deferral and base go in the state, the operator grant in the context. */
+const discardDeferredProtectedEdits = (a: {
+  execFn: ExecFn;
+  worktrees: Record<string, string>;
+  baseFor: (id: string) => string | undefined;
+  deferred: readonly string[];
+  protectedGrant: readonly string[] | undefined;
+  failures: string[];
+  notes: string[];
+}) =>
+  discardDeferred(
+    true,
+    a.execFn,
+    a.worktrees,
+    {
+      pipelineState: { baseSha: a.baseFor("default"), deferredProtected: [...a.deferred] },
+    } as unknown as WorkState,
+    { protectedGrant: a.protectedGrant } as unknown as CycleContext,
+    a.failures,
+    a.notes,
+  );
+
+/** A scratch repo with the gate file and a source file, committed as the base. */
+function repoAtBase(): { dir: string; base: string } {
+  const dir = mkdtempSync(path.join(tmpdir(), "protected-discard-1676-"));
+  git(dir, "init", "-q");
+  mkdirSync(path.join(dir, ".pi"), { recursive: true });
+  mkdirSync(path.join(dir, "extension/src"), { recursive: true });
+  writeFileSync(path.join(dir, FENCE), "base-gate\n");
+  writeFileSync(path.join(dir, SOURCE), "base-src\n");
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", "base");
+  return { dir, base: git(dir, "rev-parse", "HEAD") };
+}
+
+const NEW = ".github/workflows/new.yml";
+
+// 1. A COMMITTED edit to the deferred path is reverted by a revert commit: no
+// failure, the file is back at base, and the branch's net diff no longer has it.
+{
+  const { dir, base } = repoAtBase();
+  writeFileSync(path.join(dir, FENCE), "dev-edit\n");
+  git(dir, "commit", "-q", "-am", "dev edit to the gate");
+  const failures: string[] = [];
+  const notes: string[] = [];
+  await discardDeferredProtectedEdits({
+    execFn: realExec,
+    worktrees: { default: dir },
+    baseFor: () => base,
+    deferred: [FENCE],
+    protectedGrant: [],
+    failures,
+    notes,
+  });
+  assert(failures.length === 0, "a committed deferred edit is discarded without a failure");
+  assert(
+    readFileSync(path.join(dir, FENCE), "utf8") === "base-gate\n",
+    "the committed deferred edit is restored to base content",
+  );
+  assert(
+    git(dir, "diff", "--name-only", base, "HEAD") === "",
+    "after the revert commit the branch's net diff against base is empty",
+  );
+  assert(
+    notes.some((n) => n.includes(FENCE) && n.includes("operator grant")),
+    "a note names the discarded deferred path and the operator grant it needs",
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// 2. An UNCOMMITTED, untracked deferred file that is absent at base is removed.
+{
+  const { dir, base } = repoAtBase();
+  mkdirSync(path.join(dir, ".github/workflows"), { recursive: true });
+  writeFileSync(path.join(dir, NEW), "name: x\n");
+  const failures: string[] = [];
+  await discardDeferredProtectedEdits({
+    execFn: realExec,
+    worktrees: { default: dir },
+    baseFor: () => base,
+    deferred: [NEW],
+    protectedGrant: [],
+    failures,
+    notes: [],
+  });
+  assert(failures.length === 0, "an untracked deferred file is discarded without a failure");
+  assert(!existsSync(path.join(dir, NEW)), "an untracked deferred file absent at base is removed");
+  assert(git(dir, "status", "--porcelain") === "", "the worktree is clean after the discard");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// 3. A committed edit to a path that is NOT deferred is left alone, and the
+// protected-path gate still halts on it.
+{
+  const { dir, base } = repoAtBase();
+  writeFileSync(path.join(dir, FENCE), "dev-edit\n");
+  git(dir, "commit", "-q", "-am", "edit an ungranted, non-deferred path");
+  const failures: string[] = [];
+  await discardDeferredProtectedEdits({
+    execFn: realExec,
+    worktrees: { default: dir },
+    baseFor: () => base,
+    deferred: [NEW],
+    protectedGrant: [],
+    failures,
+    notes: [],
+  });
+  assert(
+    readFileSync(path.join(dir, FENCE), "utf8") === "dev-edit\n",
+    "an edit to a non-deferred path is not reverted by the discard pass",
+  );
+  const touched = git(dir, "diff", "--name-only", base, "HEAD").split("\n");
+  const halts: string[] = [];
+  const refused = runProtectedPathGate({
+    protectedGateOn: true,
+    touchedPaths: touched,
+    protectedOnlyPaths: [],
+    protectedGrant: [],
+    issues: [1676],
+    failures: halts,
+    notes: [],
+  });
+  assert(
+    refused.join() === FENCE && halts.length === 1,
+    "a non-deferred ungranted protected edit still halts the protected-path gate",
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// 4. A restore that cannot run (the worktree is not a repository) is a failure.
+{
+  const notRepo = mkdtempSync(path.join(tmpdir(), "protected-discard-1676-norepo-"));
+  const failures: string[] = [];
+  await discardDeferredProtectedEdits({
+    execFn: realExec,
+    worktrees: { default: notRepo },
+    baseFor: () => "0123456789abcdef0123456789abcdef01234567",
+    deferred: [FENCE],
+    protectedGrant: [],
+    failures,
+    notes: [],
+  });
+  assert(
+    failures.length === 1 && failures[0]?.includes("could not discard"),
+    "a restore that cannot run halts with a named failure, never a silent pass",
+  );
+  rmSync(notRepo, { recursive: true, force: true });
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

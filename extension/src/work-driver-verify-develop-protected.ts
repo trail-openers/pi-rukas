@@ -25,12 +25,123 @@
  * edge). This file does NOT import work-driver-verify-develop.ts.
  */
 
+import { rm } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
+import { type ExecFn, errText, isValidBaseSha, runGit } from "./work-develop-git.ts";
+import type { CycleContext } from "./work-driver-context.ts";
 import {
   doctrineProsePathsIn,
   explainProtectedPaths,
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
 import { ungrantedProtectedPaths } from "./work-driver-protected-grant.ts";
+import type { PipelineState, WorkState } from "./workflow-state-schema.ts";
+
+/**
+ * #1676 backstop — discard an edit a developer made to a DEFERRED protected path.
+ *
+ * The plan fences a deferred path out of every workstream (`withDeferredProtectedFence`),
+ * so an edit is a developer ignoring the fence. Rather than halting the cycle
+ * after the whole develop spend, each worktree's edit to such a path is reverted
+ * to base content (or removed when absent at base), and a revert commit is made
+ * when the edit had been committed. Runs BEFORE the develop loop reads status and
+ * diff, so the reverted path never reaches the uncommitted-only, scope or
+ * protected-path checks. Any other ungranted protected path still halts in
+ * `runProtectedPathGate`. A failed revert is a failure, never a silent pass.
+ *
+ * Only ungranted deferred paths are touched; the operator grant is honoured as
+ * everywhere else. A worktree with no usable base is skipped, and the gate then
+ * halts on any edit it still contains.
+ */
+export async function discardDeferred(
+  protectedGateOn: boolean,
+  execFn: ExecFn,
+  worktrees: Record<string, string>,
+  state: WorkState,
+  ctx: CycleContext,
+  failures: string[],
+  notes: string[],
+): Promise<void> {
+  if (!protectedGateOn) return;
+  const ps = state.pipelineState;
+  const ungranted = ungrantedProtectedPaths(ps.deferredProtected ?? [], ctx.protectedGrant);
+  if (ungranted.length === 0) return;
+  const git = runGit(execFn);
+  for (const [id, cwd] of Object.entries(worktrees)) {
+    const base = baseForWorkstream(ps, id);
+    if (!isValidBaseSha(base)) continue;
+    for (const p of ungranted) {
+      try {
+        if (await discardOne(git, cwd, base, p)) {
+          notes.push(
+            `discarded an edit to deferred protected path "${p}" in workstream "${id}" — the plan fenced it out and it needs an operator grant (--allow-protected) to ship`,
+          );
+        }
+      } catch (err) {
+        failures.push(
+          `could not discard the edit to deferred protected path "${p}" in worktree "${id}" (${cwd}): ${errText(err)}`,
+        );
+      }
+    }
+  }
+}
+
+/** The workstream's effective base, as the develop loop resolves it (#679). */
+function baseForWorkstream(ps: PipelineState, id: string): string | undefined {
+  const per = ps.workstreamBaseShas?.[id];
+  if (isValidBaseSha(per)) return per;
+  return isValidBaseSha(ps.baseSha) ? ps.baseSha : undefined;
+}
+
+/** Revert one deferred path in one worktree. Returns true when it was edited. */
+async function discardOne(
+  git: ReturnType<typeof runGit>,
+  cwd: string,
+  base: string,
+  p: string,
+): Promise<boolean> {
+  if (isAbsolute(p) || p.split("/").includes("..")) {
+    throw new Error(`refusing to restore an unsafe path "${p}"`);
+  }
+  const committed =
+    (
+      await git(["--literal-pathspecs", "diff", "--name-only", base, "HEAD", "--", p], {
+        cwd,
+      })
+    ).stdout.trim().length > 0;
+  const dirty =
+    (
+      await git(
+        ["--literal-pathspecs", "status", "--porcelain", "--untracked-files=all", "--", p],
+        { cwd },
+      )
+    ).stdout.trim().length > 0;
+  if (!committed && !dirty) return false;
+  const atBase =
+    (await git(["ls-tree", "--name-only", base, "--", p], { cwd })).stdout.trim().length > 0;
+  if (atBase) {
+    await git(["--literal-pathspecs", "checkout", base, "--", p], { cwd });
+  } else {
+    await git(["--literal-pathspecs", "rm", "-r", "-f", "--ignore-unmatch", "-q", "--", p], {
+      cwd,
+    });
+    await rm(join(cwd, p), { force: true, recursive: true });
+  }
+  if (committed) {
+    await git(
+      [
+        "--literal-pathspecs",
+        "commit",
+        "-m",
+        `fix(work): discard edit to deferred protected path ${p}`,
+        "--",
+        p,
+      ],
+      { cwd },
+    );
+  }
+  return true;
+}
 
 /**
  * Run the protected-path gate over the develop step's changed paths.

@@ -15,10 +15,9 @@
  *      persisted on pipelineState;
  *   2. a path the --allow-protected grant covers is never appended;
  *   3. a re-run of the tail does not duplicate the entry;
- *   4. a workstream that declares the path in its own `paths` is not fenced for
- *      it (a self-declared fence is the contradiction the plan check rejects);
- *      its prompt carries no OUT OF SCOPE line naming the path, and the other
- *      workstreams are still fenced;
+ *   4. fence wins: a workstream that lists the path in its own `paths` has it
+ *      removed there and fenced in outOfScope, so its prompt names the path on
+ *      an OUT OF SCOPE line; the other workstreams are fenced too;
  *   5. every other workstream gets it, and the corrective-round prompt shows the
  *      same fence as the first develop prompt;
  *   6. with the plan gate off nothing is deferred, so nothing is appended or
@@ -220,7 +219,7 @@ assert(
   "a fence the planner already wrote is not appended a second time",
 );
 
-// ------------------------------------------ 4. a self-declared path is not fenced for it
+// ------------------------------------------ 4. fence wins over a self-declared path
 
 const selfDeclared = await tail(
   {
@@ -230,8 +229,10 @@ const selfDeclared = await tail(
   [],
 );
 assert(
-  !selfDeclared.halted && selfDeclared.workstreams.default?.outOfScope.includes(FENCE) === false,
-  "a workstream that declares the deferred path in its own paths is not fenced for it",
+  !selfDeclared.halted &&
+    selfDeclared.workstreams.default?.outOfScope.includes(FENCE) === true &&
+    selfDeclared.workstreams.default?.paths.includes(FENCE) === false,
+  "a workstream that lists the deferred path in its own paths has it removed and fenced",
 );
 assert(
   selfDeclared.workstreams.other?.outOfScope.includes(FENCE) === true,
@@ -242,8 +243,8 @@ const selfPrompt = devPrompt(
   selfDeclared.state.pipelineState.deferredProtected ?? [],
 );
 assert(
-  fenceLinesOf(selfPrompt).length === 0,
-  "the self-declared workstream's prompt has no OUT OF SCOPE line naming the path",
+  fenceLinesOf(selfPrompt).some((l) => l.includes(`"${FENCE}"`)),
+  "the self-declared workstream's prompt names the path on its OUT OF SCOPE line",
 );
 assert(
   fenceLinesOf(

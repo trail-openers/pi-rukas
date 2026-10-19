@@ -45,7 +45,7 @@ import {
 } from "./work-driver-verify-develop-gates.ts";
 import { isValidSha, normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
-import { runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
+import { discardDeferred, runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
 import { planDevelopVerify } from "./work-driver-verify-select-develop.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
@@ -163,6 +163,9 @@ export async function verifyDevelopOutcome(
   // #1378 — resolved ONCE for the whole run: consulted in three places below, and a
   // harness that flipped the switch mid-loop would gate one worktree and not the next.
   const protectedGateOn = protectedPathsEnabled();
+  // #1676 — revert edits to deferred protected paths before the loop reads status and
+  // diff (work-driver-verify-develop-protected.ts). Gate off: nothing happens.
+  await discardDeferred(protectedGateOn, execFn, worktrees, state, ctx, failures, notes);
   for (const [id, cwd] of Object.entries(worktrees)) {
     let hasCommits = false;
     let hasUncommitted = false;
