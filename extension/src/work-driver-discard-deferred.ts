@@ -14,24 +14,50 @@
  *
  * Refusals (each named as a failure, before any mutation of that path):
  *  - no valid base for a worktree (the cycle halts; nothing is skipped silently);
- *  - a path under a symlinked directory, a directory-shaped path, or a rename
- *    pairing the path with another (committed or staged);
+ *  - a path that is itself a symlink, sits under a symlinked directory, is
+ *    directory-shaped, or is paired with another path by a rename (committed or
+ *    staged);
  *  - a name that differs only in case from the path in the same worktree. Git's
  *    pathspec matching follows core.ignorecase, so every removal and restore is
- *    gated on an EXACT-case match in base, the index or the status entries.
+ *    gated on an EXACT-case match in base, the index or the status entries;
+ *  - an unreadable change set. Every read is fail-closed and named: the
+ *    committed rename side is `readCommittedProtectedPaths` and the uncommitted
+ *    side `worktreeStatus` / `parseStatus` (work-develop-git.ts). A malformed or
+ *    failed stream is a failure — never "there was no edit", which is the silent
+ *    pass this pass exists to remove.
  *
- * A failed revert commit puts the path back to HEAD in the index and worktree
- * before the failure is reported, so the branch is left as the developer had it.
+ * Recovery: `discardOne` captures the path's presence at HEAD BEFORE its first
+ * mutation, because asking after a failed `rm` cannot answer it. From that point
+ * any failure — a write that throws, a revert commit that does not land —
+ * restores the path to HEAD (or removes it when HEAD has no such path) before the
+ * failure is reported, so the branch is left as the developer had it.
+ * `hooksPath=/dev/null` (work-driver-discard-argv.ts) means a worktree-written
+ * hook is not the failure this recovery is for; identity, a read-only object
+ * store and a corrupt index are.
  *
  * Import chain: work-driver-verify-develop.ts → this file → work-develop-git.ts +
- * work-driver-protected-grant.ts (acyclic). Only the operator's grant is
- * honoured (`grant`), never the state file (#1090).
+ * work-driver-discard-argv.ts + work-driver-protected-grant.ts (acyclic). Only the
+ * operator's grant is honoured (`grant`), never the state file (#1090).
  */
 
 import { lstat, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { type ExecFn, errText, isValidBaseSha, runGit } from "./work-develop-git.ts";
+import { DEFAULT_GIT_TIMEOUT_MS } from "./git-range.ts";
+import {
+  type ExecFn,
+  type StatusEntry,
+  errText,
+  isValidBaseSha,
+  runGit,
+  worktreeStatus,
+} from "./work-develop-git.ts";
+import {
+  DISCARD_GIT_ARGV,
+  DISCARD_NAME_MAX_BUFFER,
+  DISCARD_WRITE_MAX_BUFFER,
+} from "./work-driver-discard-argv.ts";
 import { ungrantedProtectedPaths } from "./work-driver-protected-grant.ts";
+import { readCommittedProtectedPaths } from "./work-driver-protected-paths-read.ts";
 
 export interface DiscardDeferredOptions {
   execFn: ExecFn;
@@ -83,7 +109,7 @@ export async function discardDeferred(o: DiscardDeferredOptions): Promise<Discar
     let touched = 0;
     for (const p of ungranted) {
       try {
-        if (await discardOne(git, cwd, base, p)) {
+        if (await discardOne(git, o.execFn, cwd, base, p)) {
           touched++;
           out.discardedPaths.push(p);
           out.notes.push(
@@ -126,9 +152,19 @@ async function netDiffEmpty(
   failures: string[],
 ): Promise<boolean> {
   try {
-    const diff = (await git(["diff", "--name-only", base, "HEAD"], { cwd })).stdout.trim();
+    const diff = (
+      await git(["diff", "--name-only", base, "HEAD"], {
+        cwd,
+        maxBuffer: DISCARD_NAME_MAX_BUFFER,
+        timeout: DEFAULT_GIT_TIMEOUT_MS,
+      })
+    ).stdout.trim();
     const tracked = (
-      await git(["status", "--porcelain", "--untracked-files=no"], { cwd })
+      await git([...DISCARD_GIT_ARGV, "status", "--porcelain", "--untracked-files=no"], {
+        cwd,
+        maxBuffer: DISCARD_NAME_MAX_BUFFER,
+        timeout: DEFAULT_GIT_TIMEOUT_MS,
+      })
     ).stdout.trim();
     return diff.length === 0 && tracked.length === 0;
   } catch (err) {
@@ -144,45 +180,13 @@ function nul(out: string): string[] {
   return out.split("\0").filter((s) => s.length > 0);
 }
 
-/**
- * Pairs `(from, to)` of every rename or copy in git output. `nameStatus` selects
- * `diff --name-status -z` (status, from, to) over `status --porcelain -z`
- * (XY to, from), the two shapes the discard pass reads.
- */
-function renamePairsOf(out: string, nameStatus: boolean): Array<[string, string]> {
-  const f = out.split("\0");
-  const pairs: Array<[string, string]> = [];
-  for (let i = 0; i < f.length; i++) {
-    const tok = f[i] ?? "";
-    if (nameStatus) {
-      if (tok[0] === "R" || tok[0] === "C") {
-        pairs.push([f[i + 1] ?? "", f[i + 2] ?? ""]);
-        i += 2;
-      } else {
-        i += 1;
-      }
-    } else if (tok.length >= 4 && (tok[0] === "R" || tok[0] === "C")) {
-      pairs.push([f[i + 1] ?? "", tok.slice(3)]);
-      i += 1;
-    }
+/** The worktree's uncommitted entries via the shared `-z` reader, or a named failure. */
+async function statusEntries(git: Git, cwd: string): Promise<StatusEntry[]> {
+  const status = await worktreeStatus(git, cwd);
+  if (!Array.isArray(status)) {
+    throw new Error(`status read failed: ${status.unreadable}`);
   }
-  return pairs;
-}
-
-/** Every path a `status --porcelain -z` output names: each entry, and a rename's source. */
-function statusNames(out: string): string[] {
-  const f = out.split("\0");
-  const names: string[] = [];
-  for (let i = 0; i < f.length; i++) {
-    const tok = f[i] ?? "";
-    if (tok.length < 4) continue;
-    names.push(tok.slice(3));
-    if (tok[0] === "R" || tok[0] === "C") {
-      names.push(f[i + 1] ?? "");
-      i += 1;
-    }
-  }
-  return names;
+  return status;
 }
 
 /**
@@ -190,41 +194,58 @@ function statusNames(out: string): string[] {
  * rename cannot be discarded one side at a time: reverting only the deferred side
  * would leave its content under the unprotected name (or delete the source), so
  * the caller fails the discard instead.
+ *
+ * Both sides come from the readers the protected gate already trusts, so a
+ * malformed stream is a named failure rather than "no rename" — the committed side
+ * is `readCommittedProtectedPaths` (`diff -z --name-status -M -C`, whose typed
+ * `NameStatus` records carry `from`/`to`), and the staged side is `parseStatus`
+ * over `status --porcelain -z`, whose rename entries carry `pairedWith`. The two
+ * layouts put the two sides in OPPOSITE order, which is exactly what a single
+ * hand-rolled parser got wrong; there is no hand-rolled parser here.
  */
 async function renamePartnerOf(
   git: Git,
+  execFn: ExecFn,
   cwd: string,
   base: string,
   p: string,
 ): Promise<string | undefined> {
-  const committed = (await git(["diff", "--name-status", "-M", "-z", base, "HEAD"], { cwd }))
-    .stdout;
-  const staged = (await git(["status", "--porcelain", "-z", "--untracked-files=all"], { cwd }))
-    .stdout;
-  const pairs = [...renamePairsOf(committed, true), ...renamePairsOf(staged, false)];
-  for (const [from, to] of pairs) {
-    if (from === p) return to;
-    if (to === p) return from;
+  const committed = await readCommittedProtectedPaths(execFn, cwd, base);
+  if (!committed.ok) {
+    throw new Error(`committed rename read failed: ${committed.unreadable}`);
+  }
+  for (const r of committed.targets) {
+    if (r.kind !== "R" && r.kind !== "C") continue;
+    if (r.from === p) return r.to;
+    if (r.to === p) return r.from;
+  }
+  for (const e of await statusEntries(git, cwd)) {
+    if (e.pairedWith === undefined) continue;
+    if (e.path === p) return e.pairedWith;
+    if (e.pairedWith === p) return e.path;
   }
   return undefined;
 }
 
 /**
  * `rm` follows a symlinked leading directory, so a deferred path under a symlink
- * could delete outside the worktree. Refused before anything is touched.
+ * could delete outside the worktree; and `git checkout <base> -- p` writes
+ * THROUGH a symlinked leaf, replacing the file behind it. Refused before anything
+ * is touched — the leaf and each ancestor.
  */
-async function refuseSymlinkedParent(cwd: string, p: string): Promise<void> {
+async function refuseSymlink(cwd: string, p: string): Promise<void> {
   const parts = p.split("/");
-  for (let i = 1; i < parts.length; i++) {
-    const dir = join(cwd, ...parts.slice(0, i));
+  for (let i = 1; i <= parts.length; i++) {
+    const rel = parts.slice(0, i);
     try {
-      if ((await lstat(dir)).isSymbolicLink()) {
+      if ((await lstat(join(cwd, ...rel))).isSymbolicLink()) {
         throw new Error(
-          `refusing to discard "${p}": its parent "${parts.slice(0, i).join("/")}" is a symlink`,
+          `refusing to discard "${p}": ${i === parts.length ? "itself" : "its parent"} "${rel.join("/")}" is a symlink`,
         );
       }
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      // A missing link is no link; anything else (EACCES, ELOOP) is a refusal.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw err;
     }
   }
@@ -236,7 +257,13 @@ async function refuseSymlinkedParent(cwd: string, p: string): Promise<void> {
  * in part, leaving the rest behind, so it is refused before anything moves.
  */
 async function refuseDirectory(git: Git, cwd: string, base: string, p: string): Promise<void> {
-  const baseEntry = (await git(["ls-tree", base, "--", p], { cwd })).stdout;
+  const baseEntry = (
+    await git([...DISCARD_GIT_ARGV, "ls-tree", base, "--", p], {
+      cwd,
+      maxBuffer: DISCARD_NAME_MAX_BUFFER,
+      timeout: DEFAULT_GIT_TIMEOUT_MS,
+    })
+  ).stdout;
   let isDir = baseEntry.startsWith("040000 ");
   try {
     isDir = isDir || (await lstat(join(cwd, p))).isDirectory();
@@ -251,13 +278,71 @@ async function refuseDirectory(git: Git, cwd: string, base: string, p: string): 
 }
 
 /**
- * Put the deferred path back to HEAD after a revert commit that did not land, so
- * the index and worktree match the branch as the developer left it, then fail.
+ * Whether HEAD carries `p`. Read with `cat-file -e`, git's own existence probe —
+ * an exit code, so no content is read and no blob is materialised.
  */
-async function revertCommit(git: Git, cwd: string, p: string): Promise<void> {
+async function existsAtHead(git: Git, cwd: string, p: string): Promise<boolean> {
+  try {
+    await git([...DISCARD_GIT_ARGV, "cat-file", "-e", `HEAD:${p}`], {
+      cwd,
+      maxBuffer: DISCARD_WRITE_MAX_BUFFER,
+      timeout: DEFAULT_GIT_TIMEOUT_MS,
+    });
+    return true;
+  } catch (err) {
+    // `cat-file -e` exits 1 for "not here" (git's `InStream` miss) — the
+    // documented, expected answer for a file HEAD does not have. Anything else
+    // (a broken object store, a bad ref) is an error we must not read as absent:
+    // "absent" would make the rollback delete the developer's file.
+    if (/fatal:|not a valid object|not a git repository/i.test(errText(err))) {
+      throw new Error(`could not determine whether "${p}" exists at HEAD: ${errText(err)}`);
+    }
+    return false;
+  }
+}
+
+/**
+ * Put the deferred path back to HEAD: content when HEAD has it, removal when it
+ * does not. Used by the rollback after ANY failed mutation, so a reported failure
+ * never leaves the worktree holding a half-applied discard.
+ */
+async function restoreToHead(git: Git, cwd: string, p: string, atHead: boolean): Promise<void> {
+  if (atHead) {
+    await git([...DISCARD_GIT_ARGV, "--literal-pathspecs", "checkout", "HEAD", "--", p], {
+      cwd,
+      maxBuffer: DISCARD_WRITE_MAX_BUFFER,
+      timeout: DEFAULT_GIT_TIMEOUT_MS,
+    });
+    return;
+  }
+  await git(
+    [
+      ...DISCARD_GIT_ARGV,
+      "--literal-pathspecs",
+      "rm",
+      "-r",
+      "-f",
+      "--ignore-unmatch",
+      "-q",
+      "--",
+      p,
+    ],
+    { cwd, maxBuffer: DISCARD_WRITE_MAX_BUFFER, timeout: DEFAULT_GIT_TIMEOUT_MS },
+  );
+  await rm(join(cwd, p), { force: true, recursive: true });
+}
+
+/**
+ * Commit the revert of `p`. A commit that does not land is restored to HEAD
+ * before the failure surfaces, so the index and worktree match the branch as the
+ * developer left it. `hooksPath=/dev/null` means a child-written hook is not the
+ * expected failure; identity, a read-only object store and a corrupt index are.
+ */
+async function revertCommit(git: Git, cwd: string, p: string, atHead: boolean): Promise<void> {
   try {
     await git(
       [
+        ...DISCARD_GIT_ARGV,
         "--literal-pathspecs",
         "commit",
         "-m",
@@ -265,11 +350,11 @@ async function revertCommit(git: Git, cwd: string, p: string): Promise<void> {
         "--",
         p,
       ],
-      { cwd },
+      { cwd, maxBuffer: DISCARD_WRITE_MAX_BUFFER, timeout: DEFAULT_GIT_TIMEOUT_MS },
     );
   } catch (err) {
     try {
-      await git(["--literal-pathspecs", "checkout", "HEAD", "--", p], { cwd });
+      await restoreToHead(git, cwd, p, atHead);
     } catch (restoreErr) {
       throw new Error(
         `the revert commit for "${p}" failed (${errText(err)}) and restoring it to HEAD also failed (${errText(restoreErr)})`,
@@ -282,13 +367,19 @@ async function revertCommit(git: Git, cwd: string, p: string): Promise<void> {
 }
 
 /** Revert one deferred path in one worktree. Returns true when it was edited. */
-async function discardOne(git: Git, cwd: string, base: string, p: string): Promise<boolean> {
+async function discardOne(
+  git: Git,
+  execFn: ExecFn,
+  cwd: string,
+  base: string,
+  p: string,
+): Promise<boolean> {
   if (isAbsolute(p) || p.split("/").includes("..")) {
     throw new Error(`refusing to restore an unsafe path "${p}"`);
   }
-  await refuseSymlinkedParent(cwd, p);
+  await refuseSymlink(cwd, p);
   await refuseDirectory(git, cwd, base, p);
-  const partner = await renamePartnerOf(git, cwd, base, p);
+  const partner = await renamePartnerOf(git, execFn, cwd, base, p);
   if (partner !== undefined) {
     throw new Error(
       `a rename pairs deferred protected path "${p}" with "${partner}" — it cannot be discarded one side at a time; drop the rename or grant the path`,
@@ -296,10 +387,16 @@ async function discardOne(git: Git, cwd: string, base: string, p: string): Promi
   }
   // Exact-case presence: git's pathspec matching follows core.ignorecase, so a
   // same-letters-different-case entry would otherwise be acted on by this name.
-  const committed = nul((await git(["diff", "--name-only", "-z", base, "HEAD"], { cwd })).stdout);
-  const dirty = statusNames(
-    (await git(["status", "--porcelain", "-z", "--untracked-files=all"], { cwd })).stdout,
+  const committed = nul(
+    (
+      await git([...DISCARD_GIT_ARGV, "diff", "--name-only", "-z", base, "HEAD"], {
+        cwd,
+        maxBuffer: DISCARD_NAME_MAX_BUFFER,
+        timeout: DEFAULT_GIT_TIMEOUT_MS,
+      })
+    ).stdout,
   );
+  const dirty = (await statusEntries(git, cwd)).map((e) => e.path);
   const twin = [...committed, ...dirty].find((n) => n !== p && n.toLowerCase() === p.toLowerCase());
   if (twin !== undefined) {
     throw new Error(
@@ -310,17 +407,56 @@ async function discardOne(git: Git, cwd: string, base: string, p: string): Promi
   const inStatus = dirty.includes(p);
   if (!inCommit && !inStatus) return false;
   const atBase = nul(
-    (await git(["--literal-pathspecs", "ls-tree", "-z", "--name-only", base, "--", p], { cwd }))
-      .stdout,
+    (
+      await git(
+        [...DISCARD_GIT_ARGV, "--literal-pathspecs", "ls-tree", "-z", "--name-only", base, "--", p],
+        { cwd, maxBuffer: DISCARD_NAME_MAX_BUFFER, timeout: DEFAULT_GIT_TIMEOUT_MS },
+      )
+    ).stdout,
   ).includes(p);
-  if (atBase) {
-    await git(["--literal-pathspecs", "checkout", base, "--", p], { cwd });
-  } else {
-    await git(["--literal-pathspecs", "rm", "-r", "-f", "--ignore-unmatch", "-q", "--", p], {
-      cwd,
-    });
-    await rm(join(cwd, p), { force: true, recursive: true });
+  // Captured BEFORE the first mutation: the rollback needs to know whether HEAD
+  // has this path, and asking after a failed `rm` cannot answer that.
+  const atHead = await existsAtHead(git, cwd, p);
+  try {
+    if (atBase) {
+      await git([...DISCARD_GIT_ARGV, "--literal-pathspecs", "checkout", base, "--", p], {
+        cwd,
+        maxBuffer: DISCARD_WRITE_MAX_BUFFER,
+        timeout: DEFAULT_GIT_TIMEOUT_MS,
+      });
+    } else {
+      await git(
+        [
+          ...DISCARD_GIT_ARGV,
+          "--literal-pathspecs",
+          "rm",
+          "-r",
+          "-f",
+          "--ignore-unmatch",
+          "-q",
+          "--",
+          p,
+        ],
+        { cwd, maxBuffer: DISCARD_WRITE_MAX_BUFFER, timeout: DEFAULT_GIT_TIMEOUT_MS },
+      );
+      await rm(join(cwd, p), { force: true, recursive: true });
+    }
+    if (inCommit) await revertCommit(git, cwd, p, atHead);
+  } catch (err) {
+    // `revertCommit` has already restored and re-thrown its own case; anything
+    // else that broke after the first mutation is rolled back here rather than
+    // reported against a half-applied tree.
+    if (errText(err).includes("restored to HEAD")) throw err;
+    try {
+      await restoreToHead(git, cwd, p, atHead);
+    } catch (restoreErr) {
+      throw new Error(
+        `discarding "${p}" failed (${errText(err)}) and restoring it to HEAD also failed (${errText(restoreErr)})`,
+      );
+    }
+    throw new Error(
+      `discarding "${p}" failed, and the path was restored to HEAD (${errText(err)})`,
+    );
   }
-  if (inCommit) await revertCommit(git, cwd, p);
   return true;
 }

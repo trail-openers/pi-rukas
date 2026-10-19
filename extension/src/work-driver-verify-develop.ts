@@ -5,8 +5,8 @@
  * Checks diff evidence, verify command, skip-ratchet, and product smoke gates.
  * Import chain: work-driver-verify.ts → this file → work-driver-verify-cmd.ts
  * (acyclic). The #679 falsily-green check lives in work-driver-falsily-green.ts.
- * Exec-error formatting and verify-cmd gate helpers (timeout, path
- * normaliser, tolerance) live in work-driver-verify-develop-helpers.ts.
+ * Exec-error formatting and verify-cmd gate helpers (timeout, path normaliser,
+ * tolerance) live in work-driver-verify-develop-helpers.ts.
  */
 
 import type { CommentEvidence } from "./comment-evidence.ts";
@@ -22,6 +22,7 @@ import {
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
+import { deferredForCycle } from "./work-driver-plan-fence.ts";
 import { ungrantedProtectedPaths } from "./work-driver-protected-grant.ts";
 import {
   changedPaths,
@@ -117,15 +118,14 @@ export async function verifyDevelopOutcome(
   const changedPathsByWorkstream = new Map<string, Set<string>>(
     Object.keys(worktrees).map((id) => [id, new Set<string>()]),
   );
-  // #453 — count worktrees with uncommitted-only changes (no commits ahead
-  // of baseSha); when > 0 and changedWorktrees is empty, the per-worktree
-  // failures already explain the issue — skip the empty-diff message.
+  // #453 — worktrees with uncommitted-only changes (no commits ahead of baseSha):
+  // when > 0 and changedWorktrees is empty, the per-worktree failures already
+  // explain the issue, so the empty-diff message is skipped.
   let uncommittedOnlyCount = 0;
-  // #1012 — set to true when any per-worktree git read (status or diff) threw.
-  // The frontend-only skip must not fire on a partial union: a CSS-only union
-  // from the surviving worktree(s) is not evidence when one worktree's diff
-  // is missing. The flag is passed to shouldSkipVerifyForFrontendOnly which
-  // forces skip:false and records a note naming the incomplete union.
+  // #1012 — true when any per-worktree git read (status or diff) threw: the
+  // frontend-only skip must not fire on a partial union, because a CSS-only union
+  // from the survivors is not evidence when one worktree's diff is missing. Passed
+  // to shouldSkipVerifyForFrontendOnly, which forces skip:false and names the gap.
   let gitReadFailedAnyWorktree = false;
   // #679 (task-evidence) — workstream ids whose declared paths are entirely
   // non-source (docs-only), EXEMPT from the "uncommitted but no commit"
@@ -135,9 +135,9 @@ export async function verifyDevelopOutcome(
   // #679 — per-workstream base resolution (see effectiveBaseForWorkstream).
   const workstreamBaseShas = state.pipelineState.workstreamBaseShas;
   const effectiveBaseFor = effectiveBaseForWorkstream(workstreamBaseShas, baseSha);
-  // #679 (task-evidence) — per-workstream declared-source flag, computed once
-  // so BOTH the uncommitted-only suppression and the falsily-green check share
-  // the same classification (no repeated classifier calls).
+  // #679 — per-workstream declared-source flag, computed once so BOTH the
+  // uncommitted-only suppression and the falsily-green check share one
+  // classification (no repeated classifier calls).
   const declaredSourceByWorkstream = new Map<string, boolean>();
   const workstreamsMap = state.pipelineState.workstreams ?? {};
   for (const [wsId, ws] of Object.entries(workstreamsMap)) {
@@ -150,13 +150,15 @@ export async function verifyDevelopOutcome(
       declaredSourceByWorkstream.set(wsId, true); // uncertain → treat as source
     }
   }
-  // #1378 — resolved ONCE for the whole run: consulted in three places below, and a
-  // harness that flipped the switch mid-loop would gate one worktree and not the next.
   const protectedGateOn = protectedPathsEnabled();
+  // #1676 round 4 — ONE value for both consumers (the discard, and the scope gate's
+  // emptied-workstream bound): `deferredForCycle` applies the escape hatch, so the
+  // hatch cannot leave one failing a cycle the other was told to ignore.
+  const deferredProtected = deferredForCycle(state.pipelineState.deferredProtected);
   // #1676 — discards before the loop reads any worktree (work-driver-discard-deferred.ts).
   const disc = await discardDeferred({
     execFn,
-    deferred: protectedGateOn ? (state.pipelineState.deferredProtected ?? []) : [],
+    deferred: deferredProtected,
     grant: ctx.protectedGrant,
     baseFor: effectiveBaseFor,
     worktrees,
@@ -354,7 +356,7 @@ export async function verifyDevelopOutcome(
     notes,
     fenceViolations,
     scopeFenceLift(ctx, state, options.fenceLifts),
-    { protectedRefused, protectedDeferred: state.pipelineState.deferredProtected ?? [] },
+    { protectedRefused, protectedDeferred: deferredProtected },
   );
   if (changedWorktrees.length === 0 && disc.discarded > 0) {
     failures.push(disc.onlyFailure);

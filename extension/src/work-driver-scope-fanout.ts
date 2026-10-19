@@ -59,6 +59,7 @@ import { trace } from "./trace.ts";
 import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { normaliseScopePath as normaliseGitPath } from "./work-driver-verify-develop-helpers.ts";
+import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
 /**
  * #1405 — ask the issue-fenced lift, failing closed: a throw from the lift (it
@@ -196,6 +197,16 @@ export function runScopeFanoutGate(
     return;
   }
   const refused = new Set((options.protectedRefused ?? []).map(normaliseGitPath));
+  // #1676 round 4 — the deferred set is normalised with the SAME normaliser that
+  // produced it (`deferredProtectedPaths` → `normaliseDeclaredPath`), not with the
+  // git-path normaliser. The two differ exactly where it matters: `normaliseScopePath`
+  // strips a leading `./` but keeps a parenthetical, `normaliseDeclaredPath` strips
+  // a trailing annotation and backticks/markdown. A deferred entry that is only
+  // reachable through its own normaliser — a quoted `\`docs/a.md\`` or a `docs/a.md
+  // (new)` — would fail to match the fence entry `withDeferredProtectedFence`
+  // wrote, and the emptied workstream would skip the fanout bound it exists to fail.
+  // Hoisted out of the per-workstream loop: one Set per run, like `refused`.
+  const deferred = new Set((options.protectedDeferred ?? []).map(normaliseDeclaredPath));
   const planDeclaredPaths = new Set<string>();
   for (const ws of Object.values(workstreams)) {
     for (const p of ws?.paths ?? []) {
@@ -364,8 +375,10 @@ export function runScopeFanoutGate(
       // #1676 — the fence moved a deferred protected path out of `paths`. When that
       // leaves nothing declared, the fanout bound has no denominator: a workstream
       // that changed files would be unbounded, so it fails closed instead of skipping.
-      const deferred = new Set((options.protectedDeferred ?? []).map(normaliseGitPath));
-      if (changedFiles.length > 0 && outOfScope.some((f) => deferred.has(normaliseGitPath(f)))) {
+      // The fence entry is the DEFERRED path as `withDeferredProtectedFence` wrote it
+      // (the bare `normaliseDeclaredPath` form), and the deferred set is normalised
+      // the same way above, so the two are comparable verbatim.
+      if (changedFiles.length > 0 && outOfScope.some((f) => deferred.has(f))) {
         failures.push(
           `scope fanout cannot be bounded for ${id}: its only declared path is a deferred protected path, and ${changedFiles.length} file(s) changed — re-plan the workstream with a deliverable`,
         );

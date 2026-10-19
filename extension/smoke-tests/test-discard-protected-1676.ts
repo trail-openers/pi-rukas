@@ -1,16 +1,17 @@
 #!/usr/bin/env bun
 /**
- * #1676 backstop — the discard pass for an edit to a DEFERRED protected path.
+ * #1676 backstop (part 1 of 2) — the discard pass's revert/remove/refuse decisions.
  *
  * Real git in scratch repos: the discard is git work, so a fake exec would test
- * nothing. Covers the committed, uncommitted, rename, symlink and directory shapes
- * the pass must refuse or revert, and the empty-net-diff result the develop loop
- * reads. Split from test-scope-fence-protected-1676.ts to keep both under the cap.
+ * nothing. Covers the committed, uncommitted, rename, symlink, directory and
+ * case-variant shapes the pass must refuse or revert, and the empty-net-diff result
+ * the develop loop reads.
+ *
+ * Part 2 (the hardened argv and the rollback after a failed mutation):
+ * test-discard-hardening-1676.ts. Shared fixtures: lib/discard-1676-fixtures.ts.
  */
 
-import { execFile, execFileSync } from "node:child_process";
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -21,82 +22,22 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
-import type { ExecFn } from "../src/work-develop-git.ts";
-import { discardDeferred } from "../src/work-driver-discard-deferred.ts";
+import {
+  FENCE,
+  NEW,
+  SOURCE,
+  discardDeferredProtectedEdits,
+  git,
+  makeAssert,
+  realExec,
+  repoAtBase,
+} from "./lib/discard-1676-fixtures.ts";
 import { runProtectedPathGate } from "../src/work-driver-verify-develop-protected.ts";
 
 let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
-
-const FENCE = ".pi/verify-cmd";
-const SOURCE = "extension/src/b.ts";
-const NEW = ".github/workflows/new.yml";
-
-// Commit identity and signing are pinned so the host config cannot make the
-// revert commit fail.
-const gitEnv = {
-  ...process.env,
-  GIT_AUTHOR_NAME: "t",
-  GIT_AUTHOR_EMAIL: "t@t",
-  GIT_COMMITTER_NAME: "t",
-  GIT_COMMITTER_EMAIL: "t@t",
-  GIT_CONFIG_COUNT: "1",
-  GIT_CONFIG_KEY_0: "commit.gpgsign",
-  GIT_CONFIG_VALUE_0: "false",
-};
-const git = (cwd: string, ...args: string[]) =>
-  execFileSync("git", args, { cwd, encoding: "utf8", env: gitEnv }).trim();
-const execAsync = promisify(execFile);
-const realExec = (async (_cmd: string, opts: { argv?: string[]; cwd: string }) => {
-  const { stdout, stderr } = await execAsync("git", opts.argv ?? [], {
-    cwd: opts.cwd,
-    env: gitEnv,
-  });
-  return { stdout, stderr };
-}) as unknown as ExecFn;
-
-/** The discard pass as the develop step calls it; its results are appended to the
- * caller's arrays and returned, so each case can read either. */
-async function discardDeferredProtectedEdits(a: {
-  execFn: ExecFn;
-  worktrees: Record<string, string>;
-  baseFor: (id: string) => string | undefined;
-  deferred: readonly string[];
-  protectedGrant: readonly string[] | undefined;
-  failures: string[];
-  notes: string[];
-}) {
-  const r = await discardDeferred({
-    execFn: a.execFn,
-    worktrees: a.worktrees,
-    baseFor: a.baseFor,
-    deferred: a.deferred,
-    grant: a.protectedGrant,
-  });
-  a.failures.push(...r.failures);
-  a.notes.push(...r.notes);
-  return r;
-}
-
-/** A scratch repo with the gate file and a source file, committed as the base. */
-function repoAtBase(): { dir: string; base: string } {
-  const dir = mkdtempSync(path.join(tmpdir(), "protected-discard-1676-"));
-  git(dir, "init", "-q");
-  mkdirSync(path.join(dir, ".pi"), { recursive: true });
-  mkdirSync(path.join(dir, "extension/src"), { recursive: true });
-  writeFileSync(path.join(dir, FENCE), "base-gate\n");
-  writeFileSync(path.join(dir, SOURCE), "base-src\n");
-  git(dir, "add", "-A");
-  git(dir, "commit", "-q", "-m", "base");
-  return { dir, base: git(dir, "rev-parse", "HEAD") };
-}
+const assert = makeAssert(() => {
+  exit = 1;
+});
 
 // 1. A COMMITTED edit to the deferred path is reverted by a revert commit: no
 // failure, the file is back at base, and the branch's net diff no longer has it.
@@ -389,40 +330,6 @@ function repoAtBase(): { dir: string; base: string } {
   rmSync(dir, { recursive: true, force: true });
 }
 
-// 13. A revert commit that fails (a pre-commit hook) puts the path back to HEAD and
-// fails: the branch keeps the developer's commit, and the worktree is clean.
-{
-  const { dir, base } = repoAtBase();
-  writeFileSync(path.join(dir, FENCE), "dev-edit\n");
-  git(dir, "commit", "-q", "-am", "dev edit to the gate");
-  const hook = path.join(dir, ".git/hooks/pre-commit");
-  writeFileSync(hook, "#!/bin/sh\nexit 1\n");
-  chmodSync(hook, 0o755);
-  const failures: string[] = [];
-  await discardDeferredProtectedEdits({
-    execFn: realExec,
-    worktrees: { default: dir },
-    baseFor: () => base,
-    deferred: [FENCE],
-    protectedGrant: [],
-    failures,
-    notes: [],
-  });
-  assert(
-    failures.length === 1 && failures[0]?.includes("restored to HEAD"),
-    "a failed revert commit is a named failure",
-  );
-  assert(
-    readFileSync(path.join(dir, FENCE), "utf8") === "dev-edit\n" &&
-      git(dir, "status", "--porcelain") === "",
-    "after the failed revert the worktree matches HEAD and is clean",
-  );
-  assert(
-    git(dir, "diff", "--name-only", base, "HEAD") === FENCE,
-    "the developer's commit is still on the branch",
-  );
-  rmSync(dir, { recursive: true, force: true });
-}
 
 // 14. A deferred path whose case-variant is in the worktree is refused, and the
 // variant is left alone: git's pathspec matching follows core.ignorecase.
