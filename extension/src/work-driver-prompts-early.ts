@@ -4,6 +4,7 @@
  * for Steps 1-4: explore, plan, branch, develop, speculative-explore.
  * Split out of work-driver.ts per AGENTS.md §12 module-size hygiene (#171).
  */
+import { quotedPaths } from "./plan-path-shape.ts";
 import { quotedOutOfScope } from "./plan-workstream-schema.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 import { developTestScopeLine, developVerifyLine } from "./work-driver-verify-fast.ts";
@@ -316,7 +317,7 @@ export function inlineDevelopPrompt(
         : "**Scope for this dispatch** — stay inside it.",
       `Scope: ${workstream.scope}`,
       workstream.paths.length > 0
-        ? `In-scope files: ${workstream.paths.join(", ")}`
+        ? `In-scope files: ${quotedPaths(workstream.paths)}`
         : "In-scope files: derive from the scope description above.",
       // Prior memory sits directly under the file list because it is ABOUT
       // those files; separating them invites the reader to skip it.
@@ -338,7 +339,7 @@ export function inlineDevelopPrompt(
         "**Parallel workstreams (informational — your scope above is unchanged):**",
         ...siblingWorkstreams.map(
           (s) =>
-            `  - \`${s.id}\` — ${s.scope} — in-scope files: ${s.paths.join(", ") || "(derive from scope)"}`,
+            `  - \`${s.id}\` — ${s.scope} — in-scope files: ${quotedPaths(s.paths) || "(derive from scope)"}`,
         ),
         "These other developers are working in their OWN worktrees in parallel. Do NOT implement their scope — each workstream's scope is exclusive. This list exists so you know what the SIBLING work is, not so you take it on.",
         "",
@@ -446,7 +447,7 @@ export function inlineSpeculativeExplorePrompt(
 ): string {
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issue(s) #${issues.join(", #")}`;
   const scopeBlurb = workstream
-    ? `Workstream \`${workstream.id}\` scope: ${workstream.scope}. In-scope files: ${workstream.paths.join(", ") || "(derive from scope)"}.`
+    ? `Workstream \`${workstream.id}\` scope: ${workstream.scope}. In-scope files: ${quotedPaths(workstream.paths) || "(derive from scope)"}.`
     : `${headline}.`;
   return [
     `/work ${headline} — Step 4 speculative context.`,
