@@ -17,12 +17,12 @@
  * own work passes. Policy prose (AGENTS.md, CLAUDE.md) is deliberately NOT
  * halted here — it is neutralised instead, by reading doctrine at baseSha in
  * the merge gate — so that this repo's own "docs ship with the PR" rule keeps
- * working. The #1676 discard of an edit to a deferred path is its own step:
- * `work-driver-discard-deferred.ts`, called before the develop verify loop.
+ * working.
  *
- * Import chain: work-driver-verify-develop.ts → this file → work-driver-doctrine.ts
- * + work-driver-protected-grant.ts (acyclic). This file does NOT import
- * work-driver-verify-develop.ts.
+ * Import chain: work-driver-verify-develop.ts → this file →
+ * work-driver-doctrine.ts + work-driver-protected-grant.ts (acyclic; the same
+ * two modules the caller already imports, so extraction moves no dependency
+ * edge). This file does NOT import work-driver-verify-develop.ts.
  */
 
 import {

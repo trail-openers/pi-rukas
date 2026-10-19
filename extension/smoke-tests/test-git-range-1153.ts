@@ -58,11 +58,6 @@ const LISTED = [
   // "-e", treeish]`) and this module's own timeout. Its test fakes assert on
   // `argv`, not on a command string.
   "lens-evidence.ts",
-  // #1676 round 4 — every git call in the deferred-discard pass names
-  // `DEFAULT_GIT_TIMEOUT_MS` explicitly, including the WRITE calls (`commit`,
-  // `checkout`, `rm`). A revert that wedges on a locked index must not hang the
-  // develop step, and the rollback path is only useful if it is bounded too.
-  "work-driver-discard-deferred.ts",
 ];
 
 /** A git command string handed to an exec call: a `(` then a literal beginning `git `. */

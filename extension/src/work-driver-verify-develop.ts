@@ -5,16 +5,16 @@
  * Checks diff evidence, verify command, skip-ratchet, and product smoke gates.
  * Import chain: work-driver-verify.ts → this file → work-driver-verify-cmd.ts
  * (acyclic). The #679 falsily-green check lives in work-driver-falsily-green.ts.
- * Exec-error formatting and verify-cmd gate helpers (timeout, path normaliser,
- * tolerance) live in work-driver-verify-develop-helpers.ts.
+ * Exec-error formatting and verify-cmd gate helpers (timeout, path
+ * normaliser, tolerance) live in work-driver-verify-develop-helpers.ts.
  */
 
 import type { CommentEvidence } from "./comment-evidence.ts";
+import { COMMENT_RETENTION_PATHS } from "./comment-retention.ts";
 import { DEFAULT_GIT_TIMEOUT_MS } from "./git-range.ts";
 import { scopeFenceLift } from "./work-develop-scope-fence-seam.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { discardDeferred } from "./work-driver-discard-deferred.ts";
 import {
   doctrineProsePathsIn,
   explainProtectedPaths,
@@ -44,12 +44,7 @@ import {
   runSkipRatchetGate,
   runSmokeGate,
 } from "./work-driver-verify-develop-gates.ts";
-import {
-  commentRetentionPathsFromEnv,
-  effectiveBaseForWorkstream,
-  isValidSha,
-  normaliseScopePath,
-} from "./work-driver-verify-develop-helpers.ts";
+import { isValidSha, normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
 import { runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
 import { planDevelopVerify } from "./work-driver-verify-select-develop.ts";
@@ -93,7 +88,13 @@ export async function verifyDevelopOutcome(
       : { default: ctx.repoRoot };
   const baseSha = state.pipelineState.baseSha;
   const changedWorktrees: string[] = [];
-  const commentRetentionPaths = commentRetentionPathsFromEnv();
+  // #948 — comment-retention paths. Overridable via env (tests inject a
+  // scratch layout); defaults to the three trees the PM's check grepped.
+  const commentRetentionPaths = process.env.PI_ENSEMBLE_COMMENT_RETENTION_PATHS
+    ? process.env.PI_ENSEMBLE_COMMENT_RETENTION_PATHS.split(",")
+        .map((p) => p.trim())
+        .filter(Boolean)
+    : COMMENT_RETENTION_PATHS;
   // #406 — every path the developers touched, across all worktrees, so the
   // protected-path gate below sees the whole change set rather than one
   // worktree's slice of it.
@@ -118,26 +119,36 @@ export async function verifyDevelopOutcome(
   const changedPathsByWorkstream = new Map<string, Set<string>>(
     Object.keys(worktrees).map((id) => [id, new Set<string>()]),
   );
-  // #453 — worktrees with uncommitted-only changes (no commits ahead of baseSha):
-  // when > 0 and changedWorktrees is empty, the per-worktree failures already
-  // explain the issue, so the empty-diff message is skipped.
+  // #453 — count worktrees with uncommitted-only changes (no commits ahead
+  // of baseSha); when > 0 and changedWorktrees is empty, the per-worktree
+  // failures already explain the issue — skip the empty-diff message.
   let uncommittedOnlyCount = 0;
-  // #1012 — true when any per-worktree git read (status or diff) threw: the
-  // frontend-only skip must not fire on a partial union, because a CSS-only union
-  // from the survivors is not evidence when one worktree's diff is missing. Passed
-  // to shouldSkipVerifyForFrontendOnly, which forces skip:false and names the gap.
+  // #1012 — set to true when any per-worktree git read (status or diff) threw.
+  // The frontend-only skip must not fire on a partial union: a CSS-only union
+  // from the surviving worktree(s) is not evidence when one worktree's diff
+  // is missing. The flag is passed to shouldSkipVerifyForFrontendOnly which
+  // forces skip:false and records a note naming the incomplete union.
   let gitReadFailedAnyWorktree = false;
   // #679 (task-evidence) — workstream ids whose declared paths are entirely
   // non-source (docs-only), EXEMPT from the "uncommitted but no commit"
   // failure (uncommitted work is a legitimate non-source deliverable) and
   // from the generic "every worktree empty" message (no commits expected).
   const legitimateNonSourceWorkstreams = new Set<string>();
-  // #679 — per-workstream base resolution (see effectiveBaseForWorkstream).
+  // #679 (task-evidence) — per-workstream base resolution. A dependent
+  // workstream's EFFECTIVE base is its dependency's post-commit SHA (persisted
+  // in `workstreamBaseShas`); every other workstream falls back to the global
+  // `baseSha`. The falsily-green check compares each worktree against THIS ref,
+  // so a dependent whose base ≠ the global base is judged against the right ref.
   const workstreamBaseShas = state.pipelineState.workstreamBaseShas;
-  const effectiveBaseFor = effectiveBaseForWorkstream(workstreamBaseShas, baseSha);
-  // #679 — per-workstream declared-source flag, computed once so BOTH the
-  // uncommitted-only suppression and the falsily-green check share one
-  // classification (no repeated classifier calls).
+  const effectiveBaseFor = (wsId: string): string | undefined => {
+    const per = workstreamBaseShas?.[wsId];
+    if (isValidSha(per)) return per;
+    if (isValidSha(baseSha)) return baseSha;
+    return undefined;
+  };
+  // #679 (task-evidence) — per-workstream declared-source flag, computed once
+  // so BOTH the uncommitted-only suppression and the falsily-green check share
+  // the same classification (no repeated classifier calls).
   const declaredSourceByWorkstream = new Map<string, boolean>();
   const workstreamsMap = state.pipelineState.workstreams ?? {};
   for (const [wsId, ws] of Object.entries(workstreamsMap)) {
@@ -150,21 +161,13 @@ export async function verifyDevelopOutcome(
       declaredSourceByWorkstream.set(wsId, true); // uncertain → treat as source
     }
   }
+  // #1378 — resolved ONCE for the whole run: consulted in three places below, and a
+  // harness that flipped the switch mid-loop would gate one worktree and not the next.
   const protectedGateOn = protectedPathsEnabled();
-  // #1676 round 4 — ONE value for both consumers (the discard, and the scope gate's
-  // emptied-workstream bound): `deferredForCycle` applies the escape hatch, so the
-  // hatch cannot leave one failing a cycle the other was told to ignore.
+  // #1676 — the deferred set the scope gate bounds an emptied workstream against.
+  // `deferredForCycle` applies the escape hatch, so the fence and the bound cannot
+  // disagree about whether the mechanism is on.
   const deferredProtected = deferredForCycle(state.pipelineState.deferredProtected);
-  // #1676 — discards before the loop reads any worktree (work-driver-discard-deferred.ts).
-  const disc = await discardDeferred({
-    execFn,
-    deferred: deferredProtected,
-    grant: ctx.protectedGrant,
-    baseFor: effectiveBaseFor,
-    worktrees,
-  });
-  failures.push(...disc.failures);
-  notes.push(...disc.notes);
   for (const [id, cwd] of Object.entries(worktrees)) {
     let hasCommits = false;
     let hasUncommitted = false;
@@ -223,8 +226,7 @@ export async function verifyDevelopOutcome(
           maxBuffer: 64 * 1024,
           timeout: DEFAULT_GIT_TIMEOUT_MS,
         });
-        // #1676 — a worktree whose only commits were the discard's revert is not a change.
-        if (Number.parseInt(stdout.trim(), 10) > 0 && !disc.emptied.has(id)) hasCommits = true;
+        if (Number.parseInt(stdout.trim(), 10) > 0) hasCommits = true;
         assessed = true;
       } catch (err) {
         // #1378 — the old `effBase !== baseSha` guard made this note conditional,
@@ -358,9 +360,7 @@ export async function verifyDevelopOutcome(
     scopeFenceLift(ctx, state, options.fenceLifts),
     { protectedRefused, protectedDeferred: deferredProtected },
   );
-  if (changedWorktrees.length === 0 && disc.discarded > 0) {
-    failures.push(disc.onlyFailure);
-  } else if (changedWorktrees.length === 0) {
+  if (changedWorktrees.length === 0) {
     // #679 (task-evidence) — if every assessed worktree is a legitimate
     // docs-only stream (declared non-source), the absence of commits is not a
     // hollow-diff failure: the work is a docs deliverable, and the safety net

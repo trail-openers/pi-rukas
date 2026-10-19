@@ -14,15 +14,14 @@
  * developer is never told both to edit and not to touch the same file. The
  * "protected, no --allow-protected grant" annotation is NOT part of the entry;
  * the prompts render it from the deferral list next to the fence (`fenceLines`).
- * The protected-path gate's discard pass (`work-driver-discard-deferred.ts`,
- * called by the develop step before it reads any worktree) is the backstop for an
- * edit made anyway.
+ * The protected-path gate is the backstop for an edit made anyway: it halts the
+ * cycle with the `--allow-protected` command, as it does for any protected path.
  *
  * The deferred list is persisted on pipelineState (`deferredProtected`) by the
  * plan tail; develop and the corrective round read it from there. The develop
  * step reads it through `deferredForCycle`, the one place that knows the escape
- * hatch (`PI_ENSEMBLE_PROTECTED_PATHS=0`) disables the whole mechanism — both
- * consumers (the discard and the scope gate's fanout bound) take that one value.
+ * hatch (`PI_ENSEMBLE_PROTECTED_PATHS=0`) disables the whole mechanism, so the
+ * fence and the scope gate's fanout bound cannot disagree about whether it is on.
  *
  * Idempotent: an entry already present (after `normaliseDeclaredPath`) is not
  * appended again, so a re-run of the plan tail adds nothing.
@@ -87,10 +86,10 @@ export function withDeferredProtectedFence(
 /**
  * The deferred set a develop cycle acts on: the plan tail's persisted list, or
  * nothing when the protected-path escape hatch is off. It lives here rather than
- * at the call site because BOTH consumers must see one value — the discard
- * (`work-driver-discard-deferred.ts`) and the scope gate's emptied-workstream
- * bound (`work-driver-scope-fanout.ts`). Reading the hatch in one of them only
- * left the other failing a cycle nothing was discarding for.
+ * at the call site because both readers of the deferred list — the fence note and
+ * the scope gate's emptied-workstream bound (`work-driver-scope-fanout.ts`) — must
+ * see one value. Reading the hatch in one of them only left the other halting a
+ * cycle the first had been told to ignore.
  */
 export function deferredForCycle(
   deferredProtected: readonly string[] | undefined,

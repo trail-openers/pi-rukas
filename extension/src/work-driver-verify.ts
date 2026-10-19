@@ -15,13 +15,14 @@
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
-import { execTree } from "./exec-tree.ts";
 import { execp as groupExecp } from "./exec.ts";
 import { errorText, execGit, prRange, refResolves } from "./git-range.ts";
 import { trace } from "./trace.ts";
 import { consolidationNote } from "./work-driver-consolidation-note.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { resolveMainline } from "./work-driver-git.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
+import { shellExecp } from "./work-driver-verify-shell.ts";
 import type { ConsolidationVerdict } from "./workflow-state-consolidation.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -60,7 +61,7 @@ export async function execp(
   // #1095 — a network call (killGroup set) runs through exec.ts's group-
   // killing executor, so an ssh grandchild cannot outlive the timeout. Every
   // other caller takes the classic path below, unchanged.
-  if (opts?.killGroup) return groupExecp(cmd, opts);
+  if (opts?.killGroup) return groupExecp(cmd, { ...opts, env: verifyChildEnv(opts.env) });
   const { argv, ...rest } = opts ?? {};
   if (argv) {
     // execFile takes no shell — an explicit one cannot be honoured, so say
@@ -85,15 +86,13 @@ export async function execp(
       stderr: rest.encoding === "buffer" ? undefined : ((r.stderr as string) ?? undefined),
     };
   }
-  // Tree-killing (exec-tree.ts): this is what runs the project's verify
-  // command, and a gate killed at its timeout must not leave its children.
-  const { stdout, stderr } = await execTree(cmd, {
+  // Tree-killing, driver-knob-scrubbed: the project's verify command runs here.
+  return shellExecp(cmd, {
     cwd: rest.cwd,
     timeout: rest.timeout,
     maxBuffer: rest.maxBuffer,
     env: rest.env,
   });
-  return { stdout, stderr };
 }
 
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;

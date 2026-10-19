@@ -21,13 +21,10 @@ import type { DriverContext } from "./work-driver-context.ts";
 
 export type ExecFn = NonNullable<DriverContext["verifyExecFn"]>;
 
-/** The develop path's git transport: argv only. `args` is the git argv (no `git`).
- *  `timeout` and `maxBuffer` are forwarded to the executor unchanged — a caller
- *  that names a bound gets it, and one that omits `timeout` gets the executor's
- *  own default (none). Every call in the #1676 discard pass names both. */
+/** The develop path's git transport: argv only. `args` is the git argv (no `git`). */
 export type GitExec = (
   args: string[],
-  opts: { cwd: string; maxBuffer?: number; timeout?: number },
+  opts: { cwd: string; maxBuffer?: number },
 ) => Promise<{ stdout: string }>;
 
 /** The one adapter from the argv-honouring executor to `GitExec`. */
