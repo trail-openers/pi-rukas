@@ -374,8 +374,18 @@ function assert(cond: boolean, msg: string) {
 
 {
   // #1652 — real repo paths the old markdown parser accepted must stay accepted.
-  const accepted = ["app/[id]/page.tsx", "app/(group)/page.tsx", "docs/my file.md"];
+  const accepted = [
+    "app/[id]/page.tsx",
+    "app/(group)/page.tsx",
+    "docs/my file.md",
+    "src/a.ts (new)",
+    ".github/workflows/ci.yml(new)",
+  ];
   const refused = [
+    // The annotation is stored and rendered raw, so it is checked raw too.
+    "src/a.ts (`id`)",
+    "src/a.ts ($HOME)",
+    "src/a.ts (edits; rm -rf x)",
     "/etc/passwd",
     "a/../b",
     "-rf",
