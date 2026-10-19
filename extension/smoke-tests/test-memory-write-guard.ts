@@ -9,6 +9,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { matchBashSubcommand } from "../src/bash-command-parser.ts";
 import {
   bashCommandOf,
   isDestructiveWrite,
@@ -41,6 +42,15 @@ const refused: Array<[string, string]> = [
   ["chained ;", "echo hi; vipune update 12 -t x"],
   ["write after a closed substitution in quotes", 'echo "$(true)" && vipune update 12 -t x'],
   ["path-qualified binary", "/usr/local/bin/vipune update 12 -t x"],
+  ["env -S payload", "env -S 'vipune update 12 -t x'"],
+  ["env -S attached", 'env -S"vipune update 12 -t x"'],
+  ["env --split-string", "env --split-string='vipune update 12 -t x'"],
+  ["timeout duration", "timeout 5 vipune update 12 -t x"],
+  ["timeout -s option", "timeout -s KILL 5 vipune update 12 -t x"],
+  ["nohup wrapper", "nohup vipune update 12 -t x"],
+  ["sudo -u wrapper", "sudo -u root vipune update 12 -t x"],
+  ["xargs wrapper", "xargs vipune update 12 -t x"],
+  ["xargs -I option", "xargs -I {} vipune update {} -t x"],
 ];
 for (const [name, cmd] of refused) {
   assert(isDestructiveWrite(cmd), `1: refused: ${name} (${cmd})`);
@@ -54,6 +64,8 @@ const allowed: Array<[string, string]> = [
   ["echo of the command text", 'echo "vipune update 12 -t x"'],
   ["single-quoted literal", "echo '$(vipune update 12 -t x)'"],
   ["unrelated command", "npm run typecheck"],
+  ["env -S status-only", "env -S 'vipune update 12 --status active'"],
+  ["timeout search", "timeout 5 vipune search 'topic'"],
   ["empty", ""],
 ];
 for (const [name, cmd] of allowed) {
@@ -113,6 +125,22 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
   assert(
     (await run("read", { command: "vipune update 12 -t x" })) === undefined,
     "5: only bash tool calls are inspected",
+  );
+}
+
+// ── 6. One owner: the allowlist matcher refuses through the same predicate.
+{
+  const allow = { "vipune *": "allow" };
+  for (const cmd of [
+    "env -S 'vipune update 12 -t x'",
+    "timeout 5 vipune update 12 -t x",
+    "nohup vipune update 12 -t x",
+  ]) {
+    assert(matchBashSubcommand(cmd, allow) === "deny", `6: the allowlist denies ${cmd}`);
+  }
+  assert(
+    matchBashSubcommand("vipune update 12 --status active", allow) === "allow",
+    "6: a status-only update still follows the allowlist",
   );
 }
 

@@ -6,11 +6,8 @@
  * string/token parsing with no Pi API and no filesystem I/O.
  */
 
-import {
-  hasMidWildcard,
-  isDestructiveMemoryWrite,
-  midWildcardPattern,
-} from "./bash-pattern-wildcard.ts";
+import { hasMidWildcard, midWildcardPattern } from "./bash-pattern-wildcard.ts";
+import { isDestructiveWrite } from "./memory-write-guard.ts";
 import { trace } from "./trace.js";
 
 // Chars that indicate command injection / chaining in a bash *command*. If a
@@ -334,7 +331,7 @@ export function matchBashSubcommand(
   // user can never approve `git X && rm -rf /` as a side-effect of having
   // ever approved `git status && git diff`.
   if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return null;
-  if (isDestructiveMemoryWrite(command)) return "deny";
+  if (isDestructiveWrite(command)) return "deny";
   // Sort patterns by length descending so the more specific entry wins.
   const patterns = Object.entries(allowlist)
     .filter(([k]) => k !== "*")
@@ -370,7 +367,7 @@ export function matchBashSubcommand(
  * Nothing anywhere stopped it. Gating is bypassed in trust mode (the default
  * on an interactive host), bypassed in sandbox mode, and explicitly allowed
  * even under strict opt-in by the `oo git *` catch-all in agents.json. So this
- * refusal cannot live in the allowlist — like `isDestructiveMemoryWrite`, it
+ * refusal cannot live in the allowlist — like the vipune write guard, it
  * sits ahead of it and holds regardless.
  * Deliberately conservative: a false positive makes an agent pick another
  * route, while a false negative destroys work the harness has already paid a

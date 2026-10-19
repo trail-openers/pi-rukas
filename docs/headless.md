@@ -405,6 +405,8 @@ in a shape it does not model (a script the child writes and then runs, or an
 indirect executable path) is not refused. A status-only `vipune update` and a
 `vipune add --supersedes` are allowed.
 
+Wrappers it reads through: `env` (including `-S` and `-S"…"`, whose payload is re-split as a command line), `command`, `exec`, `nohup`, `sudo`, `timeout DURATION`, and `xargs`. The same predicate answers the allowlist matcher (`matchBashSubcommand`), so a wrapped `vipune update … -t` is refused there too. Out of scope for this guardrail, because the shell features that build command text are not modelled: ANSI-C quoting (`$'…'`), brace expansion (`{vipune,update}`), variables and parameter expansion (`$V update …`), globs that name the binary (`vipu?e`), aliases and functions, here-documents, process substitution, and a script the child writes and then runs.
+
 Outside a /work cycle nothing changes. A bare `pi -p` child (no driver) has no
 cycle stamp, so it keeps the strict path: `agents.json` resolution, and
 `ask` escalates over the broker or hard-denies (`no broker socket — headless

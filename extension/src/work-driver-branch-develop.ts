@@ -74,10 +74,7 @@ export async function stampCycleStartRef(ctx: CycleContext, state: WorkState): P
   if (ctx.invocationStartRef !== undefined) {
     const stamped = {
       ...state,
-      pipelineState: {
-        ...state.pipelineState,
-        startRef: ctx.invocationStartRef,
-      },
+      pipelineState: { ...state.pipelineState, startRef: ctx.invocationStartRef },
     };
     await persistCycle(ctx, stamped);
     return stamped;

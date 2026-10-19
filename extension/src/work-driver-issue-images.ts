@@ -131,11 +131,7 @@ export async function loadIssueImages(
 }
 
 export function toDispatchImages(images: IssueImage[]): DispatchImage[] {
-  return images.map((i) => ({
-    type: "image",
-    data: i.data,
-    mimeType: i.mimeType,
-  }));
+  return images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType }));
 }
 
 const STEP_ASK = {

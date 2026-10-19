@@ -53,10 +53,7 @@ import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 export { namedPaths } from "./work-driver-adversarial-fix-scope.ts";
-export {
-  plumbQuestion,
-  withParsedSiblings,
-} from "./work-driver-adversarial-plumb.ts";
+export { plumbQuestion, withParsedSiblings } from "./work-driver-adversarial-plumb.ts";
 
 export { FIX_FINDINGS_MAX };
 
@@ -379,10 +376,7 @@ export async function runAdversarialFixPass(
   // events) before any gate reads the state. The develop step's workstreams
   // overlay is undone before anything persists.
   const restored = withDeveloperPlumbReplies(
-    {
-      ...develop,
-      pipelineState: { ...develop.pipelineState, workstreams: ps.workstreams },
-    },
+    { ...develop, pipelineState: { ...develop.pipelineState, workstreams: ps.workstreams } },
     startLen,
     priorPlumbBodies,
   );

@@ -44,10 +44,7 @@ import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-
 import { type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 import { worktreePrune, worktreeRemove } from "./worktree.ts";
 
-export {
-  buildCompletionEvent,
-  overrideEnvForKillCause,
-} from "./work-driver-completion-event.ts";
+export { buildCompletionEvent, overrideEnvForKillCause } from "./work-driver-completion-event.ts";
 
 /**
  * Step 6 — Parse `pr: <N>` from an ops commit-pr reply. Lenient — accepts
@@ -206,10 +203,7 @@ export async function runMerged(
           ? failed
           : "PR is still a draft: not marked ready";
     return appendEvent(
-      {
-        ...state,
-        pipelineState: { ...state.pipelineState, currentStep: "merged" },
-      },
+      { ...state, pipelineState: { ...state.pipelineState, currentStep: "merged" } },
       {
         kind: "cap-hit",
         at: Date.now(),
@@ -259,7 +253,7 @@ export async function runMerged(
           processGroup: ctx.processGroup === true,
           signal: ctx.signal,
           ...cycleChildOpts(ctx), // #1666
-        }),
+        } satisfies NonNullable<Parameters<typeof judgePolicy>[1]>),
       ),
       docs,
       ctx.mergeGrant,
@@ -312,10 +306,7 @@ export async function runMerged(
     // handoff with teardown skipped. `work-driver-commit.ts` builds its
     // mechanized event directly for the same reason.
     next = appendEvent(
-      {
-        ...state,
-        pipelineState: { ...state.pipelineState, currentStep: "merged" },
-      },
+      { ...state, pipelineState: { ...state.pipelineState, currentStep: "merged" } },
       { kind: "step-started", step: "merged", at: now },
     );
     next = appendEvent(
@@ -478,11 +469,7 @@ export async function runMerged(
   }
   return {
     ...next,
-    pipelineState: {
-      ...next.pipelineState,
-      currentStep: "merged",
-      status: "merged",
-    },
+    pipelineState: { ...next.pipelineState, currentStep: "merged", status: "merged" },
     eventLog: [...next.eventLog, { kind: "merged", at: Date.now(), prNumber, mergeCommit }],
   };
 }

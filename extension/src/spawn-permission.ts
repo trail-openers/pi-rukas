@@ -93,6 +93,7 @@ export function applyChildPermissionEnv(
     // Propagate trust mode so the child's own pi-rukas load (if any) short-circuits
     // the same way the parent does. An inherited socket must not survive into a
     // trust child: the broker it names is not this child's.
+    // Sandbox sessions already set PI_ENSEMBLE_SANDBOX_MODE on every child via the wrapper env, so this covers the host case.
     childEnv.PI_ENSEMBLE_TRUST_MODE = "1";
     Reflect.deleteProperty(childEnv, "PI_ENSEMBLE_PERM_SOCKET");
   }
