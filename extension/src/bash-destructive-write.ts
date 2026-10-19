@@ -20,7 +20,13 @@
 
 import path from "node:path";
 
-/** How deep `bash -c` / `eval` bodies are followed before the predicate gives up. */
+/**
+ * How deep `bash -c` / `eval` / `find -exec` bodies are followed before the
+ * predicate gives up. Every nested body costs a frame that re-reads its words, so
+ * this bound is also the exponential bound: `find -exec` nests, and each inner
+ * `find` word can open another body (see nestedVerdict), so without it a deeply
+ * nested command costs 2^depth frames and never returns.
+ */
 const MAX_DEPTH = 4;
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /** `find` actions that run their argument words as a command, up to a `;` or `+`. */
@@ -330,12 +336,20 @@ function vipuneVerdict(argv: readonly string[], k: number): MemoryWriteVerdict |
   return KNOWN_VERBS.has(argv[i] ?? "") ? undefined : { kind: "unresolved" };
 }
 
-/** The verdict for a `bash -c`, `eval`, `script -c` or `find -exec` body, if the command has one. */
+/**
+ * The verdict for a `bash -c`, `eval`, `script -c` or `find -exec` body, if the command
+ * has one. `depth` is the caller's depth; every body below is judged at `depth + 1`, so
+ * the `depth >= MAX_DEPTH` gate here is what stops a nested body from being opened at
+ * all. The gate cannot sit in the callee instead: `find -exec` scans every word of its
+ * argument list, so a body already at the cap still re-scans its whole (nested) word
+ * list for each `-exec` it holds, and only the caller can decline to descend.
+ */
 function nestedVerdict(
   argv: readonly string[],
   head: string,
   depth: number,
 ): MemoryWriteVerdict | undefined {
+  if (depth >= MAX_DEPTH) return undefined;
   if (head === "eval") return memoryWriteVerdictOf(argv.slice(1).join(" "), depth + 1);
   if (SHELLS.has(head) || head === "script") {
     const c = argv.findIndex((w, i) => i > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(w));
@@ -343,7 +357,9 @@ function nestedVerdict(
     return body === undefined ? undefined : memoryWriteVerdictOf(body, depth + 1);
   }
   if (head === "find") {
-    // `find … -exec CMD … ;` runs CMD once per match, so CMD is judged like any other command.
+    // `find … -exec CMD … ;` runs CMD once per match, so CMD is judged like any other
+    // command. An inner `find` word is both the head of that body and a scan position
+    // in it, so N nested `find`s branch 2^N frames unless this loop stops at the cap.
     for (let i = 0; i < argv.length; i++) {
       if (!FIND_EXEC.has(argv[i] ?? "")) continue;
       const verdict = destructiveArgv(execBody(argv, i + 1), depth + 1);

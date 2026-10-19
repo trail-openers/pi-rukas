@@ -394,17 +394,28 @@ and the write fence (which itself applies only where `PI_ENSEMBLE_WRITE_ROOT` is
 The protected-path halt, the merge authority and the review ledger run in the driver.
 
 The destructive vipune write guard (`extension/src/memory-write-guard.ts`, with its
-predicate in the Pi-free `extension/src/bash-destructive-write.ts`) is a
-guardrail against accidental rewrites, not a security boundary. It reads a bash
-command the way a shell would for the common shapes: quotes, `VAR=value`
-prefixes, `env` / `command` / `exec` wrappers, `bash -c` and `eval` bodies,
+predicate in the Pi-free `extension/src/bash-destructive-write.ts`) refuses
+`vipune delete`, `vipune prune` and `vipune update … -t` are denied in every child
+mode — trust, strict and headless alike — and the guard refuses all three; it is a
+guardrail against accidental rewrites, not a security boundary. It reads a bash command the way a shell would for the
+common shapes: quotes, `VAR=value` prefixes, `env` / `command` / `exec` wrappers,
+`bash -c` and `eval` bodies, `find -exec` bodies (followed to a bounded depth),
 subshells, `$(…)`, backticks, and attached values (`-t"x"`, `-tx`, `--text=x`),
-checking every simple command in a chain. A command that reaches the vipune binary
-in a shape it does not model (a script the child writes and then runs, or an
-indirect executable path) is not refused. A status-only `vipune update` and a
-`vipune add --supersedes` are allowed.
-
-Wrappers it reads through: `env` (including `-S` and `-S"…"`, whose payload is re-split as a command line), `command`, `exec`, `nohup`, `sudo`, `timeout DURATION`, `xargs`, `nice`, `stdbuf`, `time` and `setsid`, each with its option arguments (`nice -n N`, `stdbuf -o MODE`, `time -f FORMAT`). The same predicate answers the allowlist matcher (`matchBashSubcommand`), so a wrapped `vipune update … -t` is refused there too. Out of scope for this guardrail, because the shell features that build command text are not modelled: ANSI-C quoting (`$'…'`), brace expansion (`{vipune,update}`), variables and parameter expansion (`$V update …`), globs that name the binary (`vipu?e`), aliases and functions, here-documents, process substitution, and a script the child writes and then runs.
+checking every simple command in a chain. Where the verdict is fail-closed is
+decided by position: when vipune *is* the command being run, the verb is the first
+word after the global options and anything that is not a literal known subcommand —
+an expansion (`$V`, `$'delete'`, `${V:-delete}`), a glob (`d?lete`, `del*`), a brace
+list (`{delete,search}`) or an unknown word — is refused as an unreadable verb rather
+than guessed at; anywhere else in the line (a `grep` pattern, an `xargs` argument,
+a path) only a literal `delete` / `prune` / `update -t` sitting immediately after the
+word `vipune` refuses, so a search for the word itself stays allowed. The same
+predicate answers the allowlist matcher (`matchBashSubcommand`), so a wrapped
+`vipune update … -t` is refused there too. Still not refused: a command that reaches
+the vipune binary in a shape it does not model (a script the child writes and then
+runs, or an indirect executable path), aliases and functions, here-documents and
+process substitution. The guard denies a `vipune update` that rewrites the row's
+text; a status-only update and a `vipune add --supersedes` are allowed. The guard registers in the child-guards companion only: a trust-mode
+**parent** session has no code refusal here, and the boundary for it is doctrine.
 
 Outside a /work cycle nothing changes. A bare `pi -p` child (no driver) has no
 cycle stamp, so it keeps the strict path: `agents.json` resolution, and
