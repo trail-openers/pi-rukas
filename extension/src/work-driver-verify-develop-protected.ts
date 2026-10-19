@@ -53,7 +53,18 @@ import type { PipelineState, WorkState } from "./workflow-state-schema.ts";
  * everywhere else. A worktree with no usable base is skipped, and the gate then
  * halts on any edit it still contains.
  */
-export async function discardDeferred(
+/** What the #1676 discard pass did: how many deferred paths it reverted, which
+ * paths those were, and the worktrees whose net diff against base is now empty
+ * (a revert commit leaves HEAD ahead of base with no net change). */
+export interface DiscardResult {
+  discarded: number;
+  discardedPaths: string[];
+  emptied: Set<string>;
+  /** The failure to report when the discard left nothing to ship. */
+  onlyFailure: string;
+}
+
+export async function discardEdits(
   protectedGateOn: boolean,
   execFn: ExecFn,
   worktrees: Record<string, string>,
@@ -61,18 +72,27 @@ export async function discardDeferred(
   ctx: CycleContext,
   failures: string[],
   notes: string[],
-): Promise<void> {
-  if (!protectedGateOn) return;
+): Promise<DiscardResult> {
+  const result: DiscardResult = {
+    discarded: 0,
+    discardedPaths: [],
+    emptied: new Set(),
+    onlyFailure: "",
+  };
+  if (!protectedGateOn) return result;
   const ps = state.pipelineState;
   const ungranted = ungrantedProtectedPaths(ps.deferredProtected ?? [], ctx.protectedGrant);
-  if (ungranted.length === 0) return;
+  if (ungranted.length === 0) return result;
   const git = runGit(execFn);
   for (const [id, cwd] of Object.entries(worktrees)) {
     const base = baseForWorkstream(ps, id);
     if (!isValidBaseSha(base)) continue;
+    let touched = 0;
     for (const p of ungranted) {
       try {
         if (await discardOne(git, cwd, base, p)) {
+          touched++;
+          result.discardedPaths.push(p);
           notes.push(
             `discarded an edit to deferred protected path "${p}" in workstream "${id}" — the plan fenced it out and it needs an operator grant (--allow-protected) to ship`,
           );
@@ -83,6 +103,40 @@ export async function discardDeferred(
         );
       }
     }
+    result.discarded += touched;
+    if (touched > 0 && (await netDiffEmpty(git, cwd, base, id, failures))) {
+      result.emptied.add(id);
+    }
+  }
+  result.discardedPaths = [...new Set(result.discardedPaths)];
+  result.onlyFailure = onlyDiscardedFailure(result.discardedPaths);
+  return result;
+}
+
+/** The failure for a cycle whose only edits were discarded: nothing left to ship. */
+function onlyDiscardedFailure(paths: string[]): string {
+  const named = paths.map((p) => `"${p}"`).join(", ");
+  return `the only edits were to deferred protected path(s) ${named}, which the plan fenced out and were discarded \u2014 nothing else changed. Re-run with --allow-protected <path> to land them`;
+}
+
+/** True when HEAD matches base and nothing is uncommitted. A failed read is a
+ * failure, never an empty diff. */
+async function netDiffEmpty(
+  git: ReturnType<typeof runGit>,
+  cwd: string,
+  base: string,
+  id: string,
+  failures: string[],
+): Promise<boolean> {
+  try {
+    const diff = (await git(["diff", "--name-only", base, "HEAD"], { cwd })).stdout.trim();
+    const status = (await git(["status", "--porcelain"], { cwd })).stdout.trim();
+    return diff.length === 0 && status.length === 0;
+  } catch (err) {
+    failures.push(
+      `could not read the net diff of worktree "${id}" after the discard: ${errText(err)}`,
+    );
+    return false;
   }
 }
 
@@ -163,6 +217,31 @@ async function refuseSymlinkedParent(cwd: string, p: string): Promise<void> {
   }
 }
 
+/**
+ * A deferred path is a file. A directory on either side (a tree at base, or a
+ * directory in the worktree holding new files) would be restored or removed only
+ * in part, leaving the rest behind, so it is refused before anything moves.
+ */
+async function refuseDirectory(
+  git: ReturnType<typeof runGit>,
+  cwd: string,
+  base: string,
+  p: string,
+): Promise<void> {
+  const baseEntry = (await git(["ls-tree", base, "--", p], { cwd })).stdout;
+  let isDir = baseEntry.startsWith("040000 ");
+  try {
+    isDir = isDir || (await lstat(join(cwd, p))).isDirectory();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  if (isDir) {
+    throw new Error(
+      `refusing to discard "${p}": it is a directory, and only file paths can be discarded`,
+    );
+  }
+}
+
 /** Revert one deferred path in one worktree. Returns true when it was edited. */
 async function discardOne(
   git: ReturnType<typeof runGit>,
@@ -174,6 +253,7 @@ async function discardOne(
     throw new Error(`refusing to restore an unsafe path "${p}"`);
   }
   await refuseSymlinkedParent(cwd, p);
+  await refuseDirectory(git, cwd, base, p);
   const partner = await renamePartnerOf(git, cwd, base, p);
   if (partner !== undefined) {
     throw new Error(
