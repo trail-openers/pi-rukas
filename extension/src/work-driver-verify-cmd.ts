@@ -9,6 +9,26 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+/**
+ * The environment every project verify, smoke, verify-full and fast-tier command
+ * runs with: `base` (the driver's own `process.env` by default) minus every
+ * `PI_ENSEMBLE_*` key. Those knobs configure the DRIVER — a headless runner
+ * exports `PI_ENSEMBLE_HANDOFF_CHANNEL`, `PI_ENSEMBLE_PARALLEL_WORK`, and the
+ * like — and the project's tests are not the driver's configuration: inherited,
+ * they flipped behaviour in unrelated smoke tests and parked a correct change
+ * as `change` (#1064, #1557). Everything else (PATH, HOME, GIT_*, locale) is
+ * kept, so the command behaves as it does in a plain shell.
+ */
+export function verifyChildEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  // A prefix filter, not a read of any knob. Exempted by name in the headless
+  // input scan (PREFIX_FILTERS in smoke-tests/test-headless-inputs.ts).
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined && !key.startsWith("PI_ENSEMBLE_")) env[key] = value;
+  }
+  return env;
+}
+
 /** Read the first non-empty, non-comment line from a config file. */
 export function readFirstConfigLine(content: string): string | undefined {
   return content

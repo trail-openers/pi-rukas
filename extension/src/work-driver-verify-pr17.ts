@@ -17,7 +17,7 @@ import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { GateHangPathSink } from "./work-driver-gate-hang.ts";
 import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
+import { verifyChildEnv, verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import { beginVerifyRun, finishVerifyRun } from "./work-driver-verify-events.ts";
 import type { DevelopGateRecord } from "./work-driver-verify-gate-reuse.ts";
@@ -32,8 +32,9 @@ import type { WorkState } from "./workflow-state.ts";
 // production (no verifyExecFn is injected there) and every commit-pr read as
 // unverifiable. The argv form keeps exec.ts's executor; the shell form —
 // the project's verify and smoke commands — is tree-killing (exec-tree.ts).
+// The shell form runs the project's commands, so it gets the scrubbed env.
 const execp: VerifyExecFn = (cmd, opts) =>
-  opts?.argv ? lensExecp(cmd, opts) : execTree(cmd, opts);
+  opts?.argv ? lensExecp(cmd, opts) : execTree(cmd, { ...opts, env: verifyChildEnv(opts?.env) });
 
 /**
  * PR17 — Driver-side outcome verification gate.
