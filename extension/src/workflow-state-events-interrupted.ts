@@ -58,6 +58,21 @@ export function isProviderPark(state: WorkState): boolean {
 }
 
 /**
+ * S4a (#1162) — the cycle was interrupted (SIGTERM / SIGINT, via
+ * `markInterrupted`). `reason` is the operator-facing why; renderers read
+ * the most recent `interrupted` event for it. #1371 — `step` is the step the
+ * interrupt cut off, set only when the signal fired while that step ran
+ * (absent at a step boundary): its own cap-hits are the abort's doing.
+ * Moved here from workflow-state-events.ts for the 500-line gate (#1667).
+ */
+export type InterruptedEvent = {
+  kind: "interrupted";
+  at: number;
+  reason: InterruptReason;
+  step?: WorkStep;
+};
+
+/**
  * The session was shut down under a running cycle (Pi's `session_shutdown`).
  * NOT a failure and never followed by a cap-hit: status stays `running`, and
  * the next `/work <N>` re-enters `step`.

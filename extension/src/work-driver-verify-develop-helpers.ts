@@ -11,6 +11,7 @@
  */
 
 import { trace } from "./trace.ts";
+import type { VerifyCommandRecord } from "./work-driver-corrective-decide.ts";
 import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import {
   extractAttributedTail,
@@ -301,6 +302,27 @@ export function formatExecError(
 /** #285 — normalise a scope path like git would spell it. */
 export function normaliseScopePath(raw: string) {
   return raw.trim().replace(/^\.\//, "").replace(/\/+$/, "");
+}
+
+/** PR338 — validate a git SHA before shell interpolation. A type guard, so a
+ *  caller that has checked one does not re-cast it to satisfy the diff reader. */
+const VALID_SHA_RE = /^[0-9a-f]{40}$/;
+export function isValidSha(s: string | undefined): s is string {
+  return typeof s === "string" && VALID_SHA_RE.test(s);
+}
+
+/**
+ * #1667 — the verify command block's own failures and command, recorded for the
+ * corrective-round decision. A caller that does not route on it passes nothing.
+ */
+export function recordVerifyBlock(
+  record: VerifyCommandRecord | undefined,
+  command: string,
+  blockFailures: readonly string[],
+): void {
+  if (record === undefined) return;
+  record.command = command;
+  record.failures = [...blockFailures];
 }
 
 /** #307 — maximum number of net-removed test blocks tolerated in a diff. */

@@ -189,6 +189,16 @@ const everyKindEvent: WorkEvent[] = [
     at: 1,
     workstreamId: "default",
   },
+  // #1667 \u2014 the develop step's corrective round record.
+  {
+    kind: "corrective-round",
+    at: 1,
+    step: "develop",
+    workstreamId: "default",
+    attempt: 1,
+    command: "bun test",
+    evidenceLines: ["\u2717 x"],
+  },
   {
     kind: "adversarial-fix-requested",
     at: 1,
@@ -336,7 +346,14 @@ const everyKindEvent: WorkEvent[] = [
     tokens: 10,
   },
   { kind: "fence-recovery-started", at: 1, workstreamId: "a", owners: ["b"] },
-  { kind: "fence-lifted", at: 1, workstreamId: "a", file: "f.ts", line: "- f.ts", source: "precheck" },
+  {
+    kind: "fence-lifted",
+    at: 1,
+    workstreamId: "a",
+    file: "f.ts",
+    line: "- f.ts",
+    source: "precheck",
+  },
   // S4a (#1162) — the interrupt record.
   { kind: "interrupted", at: 1, reason: "signal" },
   {
