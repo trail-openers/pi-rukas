@@ -9,7 +9,7 @@
  */
 
 import { advisorySection } from "../src/lens-review-advisory.ts";
-import type { Finding } from "../src/lens-review-types.ts";
+import type { CarriedFinding, Finding } from "../src/lens-review-types.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -30,7 +30,7 @@ const finding = (title: string, line: number): Finding => ({
 });
 
 const freshAdvisory = finding("Fresh advisory", 4);
-const oldAdvisory: Finding = { ...finding("Old advisory", 2), carried: true };
+const oldAdvisory: CarriedFinding = { ...finding("Old advisory", 2), carried: true };
 const text = advisorySection([oldAdvisory, freshAdvisory]).join("\n");
 const carriedAt = text.indexOf("Carried from earlier rounds (1)");
 

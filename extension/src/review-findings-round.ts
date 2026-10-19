@@ -16,7 +16,7 @@
  * not read a second resolve/carry rule into this file.
  */
 
-import type { Finding } from "./lens-review-types.ts";
+import type { CarriedFinding, Finding } from "./lens-review-types.ts";
 import type { ChangedRanges } from "./review-diff.ts";
 import { type ReviewKind, outsideDelta, rowFate } from "./review-findings-fate.ts";
 import type {
@@ -37,7 +37,7 @@ export interface RoundOutcome {
   /** One decision per input finding, in the findings' order. */
   decisions: Decision[];
   /** Open rows this round neither matched nor resolved: they still stand. */
-  carried: Finding[];
+  carried: CarriedFinding[];
   /** Open rows this round resolved, with the reason `rowFate` gave. */
   resolved: ResolvedNotice[];
   /** Rows this round set aside: a lapsed acceptance, or a malformed row. */
@@ -213,7 +213,7 @@ export function applyFindingRound(opts: {
     }
     decisions.push({ action: "matched", rowId: row.id });
   });
-  const carried: Finding[] = [];
+  const carried: CarriedFinding[] = [];
   const resolved: ResolvedNotice[] = [];
   mine.forEach((r, i) => {
     if (r.status === "accepted") {

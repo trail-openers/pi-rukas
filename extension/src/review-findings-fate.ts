@@ -24,7 +24,9 @@
  *      line ranges → `carry`. The round saw neither the code nor a re-report of
  *      it, so it has no evidence either way (#1125 decision 5).
  *   9. The cited line itself is gone from the head file → `resolve("code-gone")`
- *      on a complete full review, else `carry`.
+ *      when the round reviewed that line: a complete full review, or a delta
+ *      round whose changed ranges hold the stored line (a SECURITY row never
+ *      resolves on a delta). Otherwise `carry`.
  *
  * The only resolving rule for a changed line is step 9: a row resolves when its
  * CITED LINE changed, never on a window edit alone. A trivial edit to a
@@ -67,6 +69,18 @@ export type RowFate = { kind: "resolve"; reason: ResolveReason } | { kind: "carr
 export type ReviewKind = "full" | "delta" | "incomplete";
 
 const CARRY: RowFate = { kind: "carry" };
+
+/**
+ * The lens whose rows a DELTA round may not resolve by code-gone (step 9). A
+ * security row's cited line is evidence of a risk, not of a fix: a delta sees
+ * only its own changed lines, so its silence about the code is not enough to
+ * retire the row. Such a row carries until a full review, as before.
+ */
+const SECURITY_LENS = "SECURITY";
+
+function isSecurityLens(lens: string): boolean {
+  return lens.toUpperCase() === SECURITY_LENS;
+}
 
 /** The resolve reason a line-less row takes when a complete review no longer reports it (#1469). */
 const NOT_REPORTED: RowFate = { kind: "resolve", reason: "not-reported" };
@@ -218,14 +232,16 @@ function linesFate(
   if (row.lineHash !== undefined && index.lineHashes.has(row.lineHash)) return CARRY;
   if (row.line > lines.length) return full ? { kind: "resolve", reason: "line-past-eof" } : CARRY;
   if (row.severity === "CRITICAL" || row.lineHash === undefined) return CARRY;
-  // A delta round saw only the lines the delta changed; outside them it has no
-  // evidence, so the row carries exactly as it did before rule 4 covered it.
-  // NOTE: the check is on the STORED line, not the finding's — the caller's
-  // ranges are head-line numbers, and only the row's own line says which head
-  // line this row was last observed at.
-  if (review === "delta" && !insideDelta(row.path, row.line, deltaRanges)) return CARRY;
-  // The cited line changed AND this round reviewed it: a full review covers the
-  // whole branch, a delta covers its own changed lines (the check above). Only
-  // an incomplete round carries here, because it reached no verdict to vouch for.
-  return review === "incomplete" ? CARRY : { kind: "resolve", reason: "code-gone" };
+  // Did this round review the stored line? A full review covers the whole
+  // branch. A delta covers only its changed ranges, and the check is on the
+  // STORED line: the caller's ranges are head-line numbers, and only the row's
+  // own line says which head line it was last observed at. A security row is
+  // never covered by a delta. An incomplete round is covered by neither branch,
+  // so it carries: it reached no verdict to vouch for.
+  const reviewed =
+    full ||
+    (review === "delta" &&
+      !isSecurityLens(row.lens) &&
+      insideDelta(row.path, row.line, deltaRanges));
+  return reviewed ? { kind: "resolve", reason: "code-gone" } : CARRY;
 }

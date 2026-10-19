@@ -91,12 +91,12 @@ try {
   const headerDelta = deltaDiff("@@ -1,1 +1,1 @@\n-// header\n+// header two");
 
   /** One branch with `n` open rows created at `sha`, each citing its own line. */
-  async function seed(branch: string, sha: string, lines: number[]): Promise<void> {
+  async function seed(branch: string, sha: string, lines: number[], over: Partial<Finding> = {}) {
     const r = await recordFindingRunOutcome({
       cwd: repo,
       branch,
       headSha: sha,
-      findings: lines.map((n, i) => finding(`Finding ${i + 1} at line ${n}`, n)),
+      findings: lines.map((n, i) => finding(`Finding ${i + 1} at line ${n}`, n, over)),
       review: "full",
     });
     assert(r.ok === true, `seed: ${branch} records its rows`);
@@ -197,7 +197,9 @@ try {
   // code changed since the row was seeded. The delta reviewed the line, so the
   // row resolves (code-gone) and is not carried into the verdict.
   const pre4 = headOf();
-  await seed("feat-delta-fixed", pre4, [3]);
+  // A SECURITY row is never resolved by a delta (fate rule step 9), so this
+  // non-security row is the one that exercises the delta resolve.
+  await seed("feat-delta-fixed", pre4, [3], { lens: "simplicity" });
   const lineThree = (text: string) => `${SRC.map((l, i) => (i === 2 ? text : l)).join("\n")}\n`;
   writeFileSync(path.join(repo, "src", "a.ts"), lineThree("  const c = x + 3;"));
   sh("git add -A");

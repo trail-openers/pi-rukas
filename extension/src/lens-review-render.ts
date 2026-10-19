@@ -24,7 +24,12 @@ import { resolvedSection, setAsideSection, suppressedSection } from "./lens-resi
 import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText } from "./lens-review-delta-disclose.ts";
 import { type LensReviewSummary, type Severity, findingDescription } from "./lens-review-format.ts";
-import type { Finding, LensRunResult } from "./lens-review-types.ts";
+import {
+  type Finding,
+  type LensRunResult,
+  carriedHeading,
+  isCarried,
+} from "./lens-review-types.ts";
 
 /**
  * #878 — the suffix that names WHY a blocked lens was stopped, read from
@@ -106,11 +111,11 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
   // rendering that read like a broken citation rather than a file-level one
   // (#1469).
   const findingLine = (f: Finding) =>
-    `  [${f.severity}] ${f.lens.padEnd(14)} ${f.path}:${f.line ?? "?"} — ${f.title}\n    ${neutraliseEvidence(findingDescription(f))}\n    suggest: ${neutraliseEvidence(f.suggestion ?? "(none)")}`;
-  const roundFindings = s.findings.filter((f) => !f.carried);
+    `  [${f.severity}] ${f.lens.padEnd(14)} ${f.path}:${f.line ?? "?"} — ${neutraliseEvidence(f.title)}\n    ${neutraliseEvidence(findingDescription(f))}\n    suggest: ${neutraliseEvidence(f.suggestion ?? "(none)")}`;
+  const roundFindings = s.findings.filter((f) => !isCarried(f));
   // A row an earlier round recorded and this one did not resolve: still open,
   // listed apart so an operator never reads it as this round's own finding.
-  const carriedFindings = s.findings.filter((f) => f.carried);
+  const carriedFindings = s.findings.filter(isCarried);
   const sevSummary = (Object.keys(s.bySeverity) as Severity[])
     .filter((k) => s.bySeverity[k] > 0)
     .map((k) => `${k}=${s.bySeverity[k]}`)
@@ -188,7 +193,7 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
     ...(carriedFindings.length > 0
       ? [
           "",
-          `Carried from earlier rounds (${carriedFindings.length}) — still open; this round did not resolve them:`,
+          carriedHeading(carriedFindings.length, "still open; this round did not resolve them:"),
           ...carriedFindings.map(findingLine),
         ]
       : []),
