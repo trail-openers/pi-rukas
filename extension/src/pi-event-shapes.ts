@@ -10,10 +10,11 @@
  */
 
 import type { RunningState } from "./progress.ts";
+import type { WriteFenceOpt } from "./types.ts";
 
 import type { SteerSource } from "./dispatch-steer.ts";
 
-export interface SpawnOptions {
+export interface SpawnOptions extends WriteFenceOpt {
   /**
    * Hard cap on child wall-clock. Defaults to the runaway backstop
    * (`SPAWN_BACKSTOP_MS`, 2 h) — deliberately far above any legitimate

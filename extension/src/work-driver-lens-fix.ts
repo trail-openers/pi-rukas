@@ -241,6 +241,12 @@ export async function runLensFix(
     // consolidated work, so there is no N>1 partition to make here.
     {
       cwd: lensWorktree(ctx, state),
+      // #1655 — the fix developer is fenced to the tree it edits.
+      writeFence: {
+        root: lensWorktree(ctx, state),
+        repo: ctx.repoRoot,
+        scratch: scratchDir(ctx.repoRoot, ctx.issue),
+      },
       ...(dispatchBoundMs !== undefined ? { timeoutMs: dispatchBoundMs } : {}),
     },
   );

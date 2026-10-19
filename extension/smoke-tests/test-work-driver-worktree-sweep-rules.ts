@@ -36,8 +36,8 @@ import {
   runWorktreeSweep,
 } from "../src/work-driver-worktree-sweep.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
+import { SHAREABLE_DEPS } from "../src/worktree-dep-contract.ts";
 import { DEPENDENCY_MARKERS } from "../src/worktree-provision-hook.ts";
-import { SHAREABLE_DEPS } from "../src/worktree-provision.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import {
   PAST,

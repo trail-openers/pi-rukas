@@ -249,4 +249,6 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-worktree-restart-residue.ts",
   "smoke-tests/test-worktree-stale-restart.ts",
   "smoke-tests/test-worktree-symlink-staging.ts",
+  "smoke-tests/test-write-fence-driver.ts",
+  "smoke-tests/test-write-fence-hook.ts",
 ];

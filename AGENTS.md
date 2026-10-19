@@ -44,7 +44,7 @@ The fix loop is bounded, and what happens at the bound depends on severity. A `C
 
 **The round-cap merge path (#973)** lets the guard allow a capped, merge-worthy PR (ISSUES_FOUND at the round cap, approving adversarial gate, residuals posted to the PR). Its conditions and escape hatch are documented in `extension/src/merge-guard-round-cap.ts`.
 
-**Child guards.** `buildChildArgs` appends the child-guards companion (`extension/src/child-guards.ts`) to every child in every mode, independent of `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD` and `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD`. The companion no-ops under `PI_ENSEMBLE_SUBAGENT_MODE=1`, and a missing companion file fails the spawn with a named error rather than producing an unguarded child.
+**Child guards.** `buildChildArgs` appends the child-guards companion (`extension/src/child-guards.ts`) to every child in every mode, independent of `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD` and `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD`. The companion no-ops under `PI_ENSEMBLE_SUBAGENT_MODE=1`, and a missing companion file fails the spawn with a named error rather than producing an unguarded child. The write fence (#1655, `write-fence.ts`) is registered from the companion BEFORE that no-op, so it runs in strict children too: it refuses a developer's `write`/`edit`/`multiedit`/`bash` write that resolves outside its worktree, and self-gates on `PI_ENSEMBLE_WRITE_ROOT`, which the driver sets only on develop and fix-developer dispatches. Escape hatch `PI_ENSEMBLE_WRITE_FENCE=0`.
 
 ---
 

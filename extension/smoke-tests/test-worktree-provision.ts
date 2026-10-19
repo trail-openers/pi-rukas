@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
 /**
- * Tests `worktree-provision.ts`: symlink loops that link gitignored dep trees
- * into detached worktrees. #481: the original only linked `node_modules`
- * at repoRoot (empty), missing nested trees. #536: provisions tracking.
+ * Tests `worktree-provision.ts`: symlink loops that link gitignored dep trees into detached worktrees.
+ * #481: the original only linked `node_modules` at repoRoot (empty), missing nested trees. #536: provisions tracking.
  */
 
 import { exec } from "node:child_process";
@@ -12,7 +11,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
-import { NEVER_SHARED, SHAREABLE_DEPS, looksLikeMissingDeps, provisionWorktree } from "../src/worktree-provision.ts";
+import { SHAREABLE_DEPS } from "../src/worktree-dep-contract.ts";
+import { NEVER_SHARED, looksLikeMissingDeps, provisionWorktree } from "../src/worktree-provision.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { realExec } from "./lib/exec-fake.ts";

@@ -133,6 +133,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     ...adversarialOutcomeSection(state),
     ...plumbReportSection(state),
     ...verifyAttributionSection(state),
+    ...writeFenceSection(state),
     ...retryTreeSection(state),
     ...workstreamRefusalSection(state),
     ...consolidationNotesSection(state),
@@ -430,6 +431,23 @@ function workstreamRefusalSection(state: WorkState): string[] {
     ...rows.flatMap((r) => r.refused.map((x) => refusalRowMarkdown(r.label, x, inlineCodeSafe))),
     "",
   ];
+}
+
+/**
+ * #1655 — writes the write fence refused. A refusal is the child correcting
+ * itself, so it never parks a cycle; it is shown because a developer that kept
+ * reaching for the repo root is evidence about its instructions.
+ */
+function writeFenceSection(state: WorkState): string[] {
+  const n = state.pipelineState.writeFenceRefusals ?? 0;
+  const unreadable = state.pipelineState.writeFenceUnreadable ?? 0;
+  if (n === 0 && unreadable === 0) return [];
+  const logs = `logged as \`write-fence-*.jsonl\` in the cycle's scratch dir`;
+  const lines =
+    unreadable === 0
+      ? `- ${n} write${n === 1 ? "" : "s"} outside a developer's worktree ${n === 1 ? "was" : "were"} refused at write time. The refusals are ${logs}.`
+      : `- Count unknown (${unreadable} refusal source${unreadable === 1 ? "" : "s"} unreadable or unlogged); ${n} refusal${n === 1 ? "" : "s"} counted from the readable logs. The refusals are ${logs}.`;
+  return ["### Writes refused by the write fence", "", lines, ""];
 }
 
 /**

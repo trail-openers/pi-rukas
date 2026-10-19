@@ -500,6 +500,29 @@ PR: [#215](https://github.com/trail-openers/pi-rukas/pull/215)
 
 Related: a child of a headless run outside the image denies every `ask`-class tool with `no broker socket — headless deny`. That is the same design one layer down — with no sandbox and no human, fail closed rather than guess — and the mode-independent guards (merge, issue-creation) still run ahead of it.
 
+### A developer's write was refused: outside its worktree (write fence)
+
+**Symptom:** A `/work` developer reports that a write was refused with *"Refused: `<path>` — it is outside your write root (`<worktree>`)"*, or the handoff carries a *"Writes refused by the write fence"* section. Before #1655 the same write landed in the repo root and surfaced only at consolidation as a dirty root (issue #353's cycle parked that way, after the whole develop spend).
+
+**Cause:** The developer child is fenced to its worktree. The driver sets `PI_ENSEMBLE_WRITE_ROOT` (the worktree), `PI_ENSEMBLE_WRITE_REPO` (the main checkout) and `PI_ENSEMBLE_WRITE_SCRATCH` (the cycle's `tmp/issue-<N>/`) on develop and fix-developer dispatches, and the child-guards companion refuses any write whose resolved path leaves those trees. The target is resolved the way the OS does, so `..` after a symlink climbs from the link's real target. Allowed: the worktree, the scratch dir, the OS temp dirs, and the worktree's own provisioned `node_modules` / `.venv` / `vendor` links (`worktree-provision.ts`), but only where each points at the main checkout's own tree at the same location. A symlink other than those is refused, and so is a look-alike `node_modules` that points at a sibling's tree.
+
+**Fix:** The refusal is the child correcting itself; it does not park the cycle. If the developer's brief asked for a path outside the worktree, fix the brief or the plan's `paths:`. If the write is genuinely legitimate, the escape hatch is `PI_ENSEMBLE_WRITE_FENCE=0` in the operator's shell (it disables the fence for every child in the session).
+
+**The rule, for the bash side:** the fence judges what it can resolve statically, and refuses what it cannot resolve at a write position. A word with an unresolvable expansion (`$VAR` other than `$HOME`, `~user`, `~-`, a substitution inside the path), a glob (`*`, `?`, `[`), or a brace list (`{../..,src}/x`) is refused where it is written, with the reason. A command that does not lex (an unterminated quote, `$'…'`, or heredoc) is refused whole. A body the shell runs as its own command (`eval`, `sh -c`, `bash -c`, `zsh -c`, `dash -c`) is read as a command when its text is literal, and refused when it is built at run time. Everything else is best-effort, and the repo-root residue detection is the backstop. The fence judges the write tools' paths as Pi resolves them (a leading `@`, `~`), and it follows symlinks as the OS does.
+
+**Not checked (categories, not a list to extend):**
+- non-shell interpreter one-liners: `python -c`, `node -e`, `perl -e`, `ruby -e`;
+- tools other than `write`, `edit`, `multiedit` and `bash` (MCP filesystem servers, custom tools);
+- processes a command spawns (a build tool writing its own outputs, a test runner's temp files);
+- the time between the judge and the write (a race with another process that swaps a path);
+- parallel tool calls in one turn, each judged on its own.
+
+Also outside the rule: a command name that is itself an expansion, `cd -`, `GIT_DIR` / `GIT_WORK_TREE` set in the environment, and symlinks that `git` checks out from tracked content. The residue detection covers what the fence misses.
+
+**Tools and dependency links:** Dependency links are shared by design: a write through `<worktree>/node_modules` lands in `<repo>/node_modules`, so a `bun install` in the worktree changes the main checkout's dependencies. A temp dir (`TMPDIR`, `/tmp`, `/private/tmp`) is writable through the fence only when it neither holds the repo nor sits inside it or the worktree; `TMPDIR=$HOME` falls back to `/tmp`. Codemode is covered: a script's `tools.write` is a nested call, and Pi runs nested calls through the same `tool_call` hook.
+
+**Where the count lives:** Each refusal is one line in `<scratch>/write-fence-<pid>.jsonl`. The driver recounts them at each step boundary and at the terminal line, and stores the total as `pipelineState.writeFenceRefusals`. Anything the count cannot account for is kept apart: a log the driver cannot read, a refusal the child could not log (it leaves a `write-fence-unaccounted-*` marker), and a log a `--restart` could not remove. The handoff then says *"Count unknown"* and gives the number (`pipelineState.writeFenceUnreadable`); it is never a silent zero. The count is advisory, not a gate: the scratch dir is child-writable, so a child can delete its own log. A write the hook itself cannot judge (an internal fault, or a path or command that is not text) is refused as *"could not be judged"* and counted like any refusal. A `--restart` clears the logs.
+
 ## Image acquisition
 
 ### `./install.sh` takes 10+ minutes (cold local build)

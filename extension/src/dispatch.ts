@@ -10,7 +10,7 @@ import type { OnSlowCallback } from "./slow-notice.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
-import type { DispatchResult, DispatchSpec } from "./types.ts";
+import type { DispatchResult, DispatchSpec, WriteFenceOpt } from "./types.ts";
 import { liveCycleIssues, liveCycleOwning } from "./work-driver-registry.ts";
 
 /**
@@ -137,7 +137,7 @@ export function assertWithinCycleIssues(
 export function dispatchCore(
   pi: DispatchHost,
   spec: DispatchSpec,
-  opts: {
+  opts: WriteFenceOpt & {
     label?: string;
     skipDeck?: boolean;
     /** #838 — the driver's per-cycle deck option (batch key + row label;
@@ -235,6 +235,7 @@ export function dispatchCore(
         // to the report_plan_item tool via `--no-skills --extension <path>`.
         extraArgs: opts.extraArgs,
         processGroup: opts.processGroup,
+        writeFence: opts.writeFence,
       }),
   });
   return handle.completion;
