@@ -256,6 +256,21 @@ const isolatedDirs: string[] = [];
   );
 }
 
+// ── 8. #1666 — the strict opt-in keeps the deny for a non-/work child. A runner with
+// PI_ENSEMBLE_STRICT_PERMISSIONS=1 never stamps the /work marker (spawn-permission.ts),
+// so its children run this strict guard: an ask-class call with no broker is denied.
+{
+  resetChildEnv("developer");
+  process.env.PI_ENSEMBLE_STRICT_PERMISSIONS = "1";
+  const mock = mockPi();
+  registerSubagentGuard(mock.pi);
+  const blocked = await mock.callToolCall("websearch", { query: "s5 probe" });
+  assert(
+    blocked?.block === true && (blocked.reason ?? "").includes("no broker socket — headless deny"),
+    `#1666: under PI_ENSEMBLE_STRICT_PERMISSIONS=1 the strict headless deny still applies (got: ${blocked?.reason})`,
+  );
+}
+
 for (const [k, v] of Object.entries(saved)) {
   if (v === undefined) delete process.env[k];
   else process.env[k] = v;

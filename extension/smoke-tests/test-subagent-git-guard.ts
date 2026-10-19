@@ -17,7 +17,7 @@
  *
  * So the refusal cannot live in the allowlist, and it cannot live after the
  * bypasses either — placed there it would, in practice, never run. It sits
- * ahead of both, like `isDestructiveMemoryWrite`.
+ * ahead of both, like the vipune write guard (memory-write-guard.ts).
  *
  * The distinction that justifies overriding trust: the permission layers
  * answer "may this role run git?" — yes. This answers "may anything destroy

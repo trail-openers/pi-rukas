@@ -25,10 +25,10 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { dispatchCore } from "./dispatch.ts";
 import { trace } from "./trace.ts";
 import type { DispatchImage } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { cycleDispatch } from "./work-driver-cycle-entry.ts";
 
 export interface IssueImage {
   file: string;
@@ -205,7 +205,7 @@ export async function issueImagesFor(
 ): Promise<{ dispatch: DispatchFn; section: string }> {
   const images = await loadIssueImages(issues);
   return {
-    dispatch: withIssueImages(ctx.dispatchFn ?? dispatchCore, images),
+    dispatch: withIssueImages(cycleDispatch(ctx), images),
     section: issueImagesSection(images, step),
   };
 }

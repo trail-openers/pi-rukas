@@ -73,7 +73,7 @@ assert(
 );
 assert(
   matchBashSubcommand("vipune update abc -t 'it'\\''s new'", { "vipune *": "allow" }) === "deny",
-  "isDestructiveMemoryWrite still refuses an escaped content rewrite",
+  "the vipune write guard still refuses an escaped content rewrite",
 );
 
 console.log(`\nexit ${exit}`);

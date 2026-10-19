@@ -461,6 +461,10 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
       isInTrustMode(false) === true,
       "L9: explicit TRUST_MODE env (set by spawn.ts on subagents) → trust mode ON even without UI",
     );
+    // #1666 — a headless /work child carries this marker (spawn-permission.ts).
+    reset();
+    process.env.PI_ENSEMBLE_TRUST_MODE = "1";
+    assert(isInTrustMode(false) === true, "L9: headless /work child (cycle-set marker, no UI) → trust ON");
 
     reset();
     process.env.PI_ENSEMBLE_STRICT_PERMISSIONS = "1";

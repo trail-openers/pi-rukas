@@ -117,6 +117,8 @@ export async function runLensReview(opts: {
   head?: string;
   signal?: AbortSignal;
   processGroup?: boolean;
+  /** #1666 — a headless /work cycle's lens children run under trust. */
+  workCycleTrust?: boolean;
   /** #1242 — each lens child's run bound (default: lensChildBoundMs). */
   childBoundMs?: number;
   /** #973 — the delta base (see resolveReviewDiff for the full contract). */

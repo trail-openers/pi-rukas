@@ -165,6 +165,8 @@ assert(caps.features.resultFromMemory === true, "features.resultFromMemory is tr
 assert(caps.features.cycleDeadline === true, "features.cycleDeadline is true");
 assert(caps.features.continuePr === true, "features.continuePr is true");
 assert(CAPABILITIES_VERSION === 2, "--continue-pr is additive: CAPABILITIES_VERSION stays 2");
+// #1666 — `permissions` is additive (CAPABILITIES_VERSION stays 2) and reports the mode read at answer time.
+assert(caps.permissions.workCycles === "trust" || caps.permissions.workCycles === "strict", "permissions.workCycles is trust or strict");
 assert(
   caps.features.cycleDeadlineHandoffAllowance === true,
   "features.cycleDeadlineHandoffAllowance is true (#1593)",
@@ -182,6 +184,7 @@ assert(
     "files",
     "features",
     "resources",
+    "permissions",
   ]);
   const actualKeys = new Set(Object.keys(caps));
   const missing = [...expectedKeys].filter((k) => !actualKeys.has(k));

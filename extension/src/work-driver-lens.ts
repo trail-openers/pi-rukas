@@ -17,6 +17,7 @@ import { DRIVER_MEMORY_TYPE, writeFindings } from "./memory-write.ts";
 import { resolveReviewThreshold } from "./review-threshold.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
+import { cycleChildOpts } from "./work-cycle-trust.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
@@ -176,7 +177,11 @@ export async function runLens(
     if (read.text !== undefined) docs.push({ file, text: read.text });
   }
   const thresholdDecision = await resolveReviewThreshold(
-    judgePolicy(ctx.repoRoot, { processGroup: ctx.processGroup === true, signal: ctx.signal }),
+    judgePolicy(ctx.repoRoot, {
+      processGroup: ctx.processGroup === true,
+      signal: ctx.signal,
+      ...cycleChildOpts(ctx),
+    } satisfies NonNullable<Parameters<typeof judgePolicy>[1]>),
     docs,
     undefined,
     { repoRoot: ctx.repoRoot, issues: ctx.issues ?? [ctx.issue] },
@@ -204,9 +209,10 @@ export async function runLens(
       // #1024 — the cycle's signal and group policy reach every lens child.
       signal: ctx.signal,
       processGroup: ctx.processGroup,
+      ...cycleChildOpts(ctx), // #1666
       childBoundMs: lensRoundChildBoundMs(next, Date.now()), // #1242 / #1564
       pr: ps.prNumber, // the disclosure goes to this cycle's PR, merged or not
-    });
+    } satisfies Parameters<typeof runLensReview>[0]);
     next = await recordResidualsPost(ctx, next, summary, round);
     // #1398 — the POSITIVE disclosure fact. `recordResidualsPost` only emits
     // when the PR post FAILED; nothing recorded a success, so the draft gate had

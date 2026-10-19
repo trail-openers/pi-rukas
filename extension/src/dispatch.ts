@@ -159,6 +159,8 @@ export function dispatchCore(
     signal?: AbortSignal;
     /** Headless S4 (#1024): the child leads its own process group (spawn-kill.ts). */
     processGroup?: boolean;
+    /** #1666 — whether this child belongs to a headless /work cycle (see SpawnOptions). */
+    workCycleTrust?: boolean;
   } = {},
 ): Promise<DispatchResult> {
   const stripped = stripModelOverride(spec);
@@ -235,6 +237,7 @@ export function dispatchCore(
         // to the report_plan_item tool via `--no-skills --extension <path>`.
         extraArgs: opts.extraArgs,
         processGroup: opts.processGroup,
+        workCycleTrust: opts.workCycleTrust,
         writeFence: opts.writeFence,
       }),
   });
