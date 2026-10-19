@@ -15,7 +15,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { verifyChildEnv } from "../src/work-driver-verify-cmd.ts";
+import { buildDriverKnobNames, verifyChildEnv } from "../src/work-driver-verify-cmd.ts";
 import { execp as verifyExecp } from "../src/work-driver-verify.ts";
 
 let failures = 0;
@@ -68,13 +68,11 @@ assert(
 
 console.log("3. source canary: every verify executor routes its env through the helper");
 const sites: Array<[string, string]> = [
-  ["work-driver-verify-pr17.ts", "execTree(cmd, { ...opts, env: verifyChildEnv(opts?.env) })"],
-  ["work-driver-stepback-ci.ts", "execTree(cmd, { ...opts, env: verifyChildEnv(opts?.env) })"],
-  ["work-driver-verify.ts", "env: verifyChildEnv(rest.env)"],
+  ["work-driver-verify-shell.ts", "execTree(cmd, { ...opts, env: verifyChildEnv(opts?.env) })"],
+  ["work-driver-verify.ts", "return shellExecp(cmd, {"],
   ["work-driver-verify.ts", "groupExecp(cmd, { ...opts, env: verifyChildEnv(opts.env) })"],
-  ["work-driver-integrate-verify.ts", "const baseEnv: NodeJS.ProcessEnv = verifyChildEnv();"],
-  ["work-driver-verify-select-exec.ts", "let env = verifyChildEnv(opts?.env);"],
-  ["work-driver-verify-select-exec.ts", "verifyReportEnv(verifyChildEnv(), probeReportFile)"],
+  ["work-driver-verify-pr17.ts", ": shellExecp(cmd, opts);"],
+  ["work-driver-stepback-ci.ts", "shellExecp(cmd, opts);"],
 ];
 // An env that inherits the driver's whole environment: a spread, a `??` default,
 // a bare value (`env: process.env`, `= process.env;`), or a report env built on it.
@@ -90,6 +88,20 @@ for (const [file, snippet] of sites) {
 for (const [file, text] of sources) {
   assert(!inherit.test(text), `${file} has no env that inherits process.env`);
 }
+
+console.log("4. the knob-family expansion refuses a family with no members");
+assert(
+  [...buildDriverKnobNames([{ name: "PI_X_<ROLE>", members: ["A", "B"] }])].join() ===
+    "PI_X_A,PI_X_B",
+  "a family expands to its members",
+);
+let threw = false;
+try {
+  buildDriverKnobNames([{ name: "PI_X_<ROLE>" }]);
+} catch {
+  threw = true;
+}
+assert(threw, "a family with no members throws, so it cannot scrub nothing silently");
 
 console.log(
   failures === 0

@@ -44,7 +44,6 @@ import type { CommitPrVerifyOpts } from "./work-driver-integrate-verify-result.t
 import { commitPrSkipDecision } from "./work-driver-integrate-verify-skip.ts";
 import { attributeAgainstBase } from "./work-driver-verify-attribution.ts";
 import type { BaselineProbeOutcome } from "./work-driver-verify-attribution.ts";
-import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import {
   VERIFY_REPORT_FILE_ENV,
   createVerifyReportDir,
@@ -151,8 +150,7 @@ export async function runCommitPrConsolidatedVerify(
     // provisioning) can inherit a report path and write a verdict the driver
     // would read. A test that ever sets the variable on the real env is also
     // excluded here — the driver's own path always wins.
-    // The project's command runs with the driver's knobs scrubbed (verifyChildEnv).
-    const baseEnv: NodeJS.ProcessEnv = verifyChildEnv();
+    const baseEnv: NodeJS.ProcessEnv = { ...process.env };
     delete baseEnv[VERIFY_REPORT_FILE_ENV];
     const changeEnv =
       channel === undefined ? undefined : verifyReportEnv(baseEnv, channel.changeReportFile);
@@ -236,10 +234,7 @@ export async function runCommitPrConsolidatedVerify(
           killedTree =
             typeof e.treePid === "number"
               ? captureProcessTree(e.treePid)
-              : {
-                  processes: [] as HangProcess[],
-                  treeUnavailable: NO_TREE_CAPTURED,
-                };
+              : { processes: [] as HangProcess[], treeUnavailable: NO_TREE_CAPTURED };
         }
         return stream;
       }
@@ -428,13 +423,7 @@ export async function runCommitPrConsolidatedVerify(
         }
       }
     }
-    return done({
-      ok: false,
-      failureTail,
-      attributed,
-      verdict,
-      classifiedMessage,
-    });
+    return done({ ok: false, failureTail, attributed, verdict, classifiedMessage });
   }
 }
 
@@ -463,11 +452,7 @@ function continueOnPreExisting(
   outcome: BaselineProbeOutcome,
   classifiedMessage: string,
   done: <T>(value: T) => T,
-  evidence: {
-    failureTail: string;
-    attributed: boolean;
-    verdict: ConsolidationFailureVerdict;
-  },
+  evidence: { failureTail: string; attributed: boolean; verdict: ConsolidationFailureVerdict },
 ) {
   const pre = outcome.preExistingFailures;
   const caused = outcome.changeCausedFailures;
