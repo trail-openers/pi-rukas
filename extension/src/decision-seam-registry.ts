@@ -157,8 +157,9 @@ export const SEAMS = {
   },
   // #1405 — may this workstream change a path the planner fenced out, given the
   // issue body? The rule (deny) is the fence. Shadow only: the model is logged,
-  // never obeyed, whatever the env says — the one path that lifts a fence today
-  // is the deterministic Test-surface precheck in work-develop-scope-fence-seam.ts.
+  // never obeyed, whatever the env says. The acted-on Test-surface precheck lives
+  // in work-develop-scope-fence-seam.ts; this seam is logged-only (shadow) until a
+  // follow-up enforces it.
   "scope-fence": {
     id: "scope-fence",
     kind: "bool",

@@ -10,13 +10,22 @@
  *   - under enforce, the evidence check refuses a fabricated quote and a quote
  *     from a section the seam does not admit (Context);
  *   - a lift admits exactly its own (workstream, file) pair: a second fenced file
- *     from the same workstream still fails.
+ *     from the same workstream still fails;
+ *   - a grouped cycle lifts nothing and asks nothing; a body artifact outside
+ *     `.pi/work-state/` is refused; model asks are capped at five per gate.
  *
  * Canary (run by hand, recorded in the PR): making `testSurfaceNames` return
  * undefined turns the #1187 assertion red.
  */
 
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { CycleContext } from "../src/work-driver-context.ts";
@@ -71,17 +80,33 @@ extension/smoke-tests/test-text-flatten.ts pins the flattener, and this sentence
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
 
-function fixture(body: string | undefined) {
+/** Every temp repo a fixture creates; removed once the run ends. */
+const roots: string[] = [];
+
+/**
+ * A fixture repo whose cached body is written under `.pi/work-state/` (where the
+ * driver writes it), or directly under the repo root when `where` says so, which
+ * the lift must refuse. `issues` makes a grouped cycle when it has two entries.
+ */
+function fixture(
+  body: string | undefined,
+  opts: { issues?: number[]; where?: "state" | "root" } = {},
+) {
   const root = mkdtempSync(path.join(os.tmpdir(), "scope-fence-seam-"));
+  roots.push(root);
   let artifact: string | undefined;
   if (body !== undefined) {
-    artifact = path.join(root, "issue-body.md");
+    artifact =
+      opts.where === "root"
+        ? path.join(root, "issue-body.md")
+        : path.join(root, ".pi", "work-state", String(ISSUE), "issue-body.txt");
+    mkdirSync(path.dirname(artifact), { recursive: true });
     writeFileSync(artifact, body);
   }
   const ctx = { repoRoot: root } as unknown as CycleContext;
   const cycle = {
     issue: ISSUE,
-    issues: [ISSUE],
+    issues: opts.issues ?? [ISSUE],
     pipelineState: { issueBodyArtifact: artifact },
   } as unknown as WorkState;
   const lifts: FenceLift[] = [];
@@ -213,6 +238,45 @@ async function main() {
   const empty = fixture("   \n");
   assert(gate([TEXT_FLATTEN], empty.lift).length === 1, "an empty cached body: the fence stands");
 
+  // An artifact outside .pi/work-state/ is refused: the body is the lift's authority.
+  const outside = fixture(BODY, { where: "root" });
+  assert(
+    gate([TEXT_FLATTEN], outside.lift).length === 1 && outside.lifts.length === 0,
+    "a body artifact outside .pi/work-state/ is refused, so the fence stands",
+  );
+
+  // An empty or blank path names nothing: the empty pattern would match every line.
+  assert(
+    testSurfaceNames(issueSections(BODY).testSurface, "") === undefined &&
+      testSurfaceNames(issueSections(BODY).testSurface, "   ") === undefined,
+    "an empty or whitespace-only path names no Test-surface line",
+  );
+
+  // --- Grouped cycle: the precheck is skipped, nothing is asked ---------------
+  const grouped = fixture(BODY, { issues: [ISSUE, 1188] });
+  assert(
+    gate([TEXT_FLATTEN], grouped.lift).length === 1 && grouped.lifts.length === 0,
+    "a grouped cycle is never lifted by the precheck: the fence stands",
+  );
+  await settle();
+  assert(!existsSync(decisionsFile(grouped.root)), "a grouped cycle asks no model");
+
+  // --- Shadow asks are capped per develop gate -------------------------------
+  const capped = fixture(BODY);
+  gate(
+    ["extension/src/c1.ts", "extension/src/c2.ts", "extension/src/c3.ts", "extension/src/c4.ts", "extension/src/c5.ts", "extension/src/c6.ts"],
+    capped.lift,
+  );
+  assert(
+    await logHolds(capped.root, '"seam":"scope-fence"'),
+    "the first model asks are logged",
+  );
+  await settle();
+  const asked = readFileSync(decisionsFile(capped.root), "utf8")
+    .split("\n")
+    .filter((line) => line.includes('"seam":"scope-fence"')).length;
+  assert(asked === 5, `at most 5 model asks per develop gate (saw ${asked})`);
+
   // --- Shadow never lifts ---------------------------------------------------
   const prior = process.env[ENV];
   process.env[ENV] = "enforce";
@@ -285,8 +349,12 @@ async function main() {
   );
   assert(sharedFailures.length === 2, "two workstreams fencing the same named file: both still fail");
 
-  console.log(`\nexit ${state.exit}`);
-  process.exit(state.exit);
 }
 
-await main();
+try {
+  await main();
+} finally {
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
+}
+console.log(`\nexit ${state.exit}`);
+process.exit(state.exit);

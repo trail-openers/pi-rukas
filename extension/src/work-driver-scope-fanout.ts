@@ -79,7 +79,7 @@ function scopeGateEnabled(): boolean {
  * INSIDE a real filename ("docs/notes (draft).md") survives — the annotation
  * must be at the END, and content after it (".md") disqualifies it.
  */
-export function normaliseScopePath(raw: string): string {
+function normaliseScopePath(raw: string): string {
   const stripped = raw
     .trim()
     .replace(/\s*\([^()]*\)\s*$/, "") // pass 1: balanced trailing "(…)"
