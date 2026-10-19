@@ -65,6 +65,11 @@ export function buildFenceFixture(tag: string): FenceFixture {
   ]) {
     mkdirSync(dir, { recursive: true });
   }
+  // HOME outside every OS temp dir. verify-loop isolates HOME under $TMPDIR, which on
+  // CI is /tmp (always writable under the rule), so `~` refusals would pass there.
+  const home = path.join(base, "home");
+  mkdirSync(home, { recursive: true });
+  process.env.HOME = home;
   writeFileSync(path.join(repo, "bin", "keep"), "keep\n");
   writeFileSync(path.join(repo, "node_modules", "pkg", "x.js"), "x\n");
   symlinkSync(path.join(repo, "node_modules"), path.join(wt, "node_modules"), "dir");

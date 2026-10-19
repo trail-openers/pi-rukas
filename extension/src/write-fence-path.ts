@@ -70,9 +70,13 @@ export function expandHome(p: string): string {
   return p === "~" || p.startsWith("~/") ? homeDir() + p.slice(1) : p;
 }
 
-/** The home directory every `~` and `$HOME` expansion resolves to (one normalisation for the fence). */
+/**
+ * The home directory every `~` and `$HOME` expansion resolves to. Read from the live
+ * environment first, as the shell does: Bun's os.homedir() snapshots HOME at startup.
+ */
 export function homeDir(): string {
-  return os.homedir();
+  const home = process.env.HOME;
+  return home !== undefined && path.isAbsolute(home) ? home : os.homedir();
 }
 
 /**
