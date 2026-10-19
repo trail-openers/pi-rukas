@@ -183,9 +183,11 @@ const PORT_RES = [
     String.raw`\b(?:port|cherry[- ]?pick|backport)(?:s|ed|ing)?\s+(?:(?:the|this|that)\s+)?(?:(?:fix|change|commit|patch|pr|pull request|mr)s?\s+)?(?:(?:from|in|of|at)\s+)?(?:(?:the\s+)?(?:fork|upstream)\s+)?\(?(${ANY})`,
     "i",
   ),
-  // "(already) fixed in <ref>", "landed upstream as <ref>"
+  // "(already) fixed in <cross-repo ref>", "landed upstream as <URL>". A bare
+  // SHA is context here, not a port: #1439 and #1557 quoted "fixed in <sha>"
+  // in passing and were sent into cherry-picks the issue never asked for.
   new RegExp(
-    String.raw`\b(?:fixed|implemented|landed|merged|solved|resolved)\s+(?:(?:already|upstream)\s+)?(?:in|by|as|at)\s+(?:(?:the\s+)?(?:fork|upstream)\s+(?:as\s+|in\s+)?)?(?:(?:commit|PR|pull request|MR)\s+)?\(?(${STRONG})`,
+    String.raw`\b(?:fixed|implemented|landed|merged|solved|resolved)\s+(?:(?:already|upstream)\s+)?(?:in|by|as|at)\s+(?:(?:the\s+)?(?:fork|upstream)\s+(?:(?:as|in|at)\s+)?)?(?:(?:commit|PR|pull request|MR)\s+)?\(?(${URL}|${XREF})`,
     "i",
   ),
 ];
@@ -199,6 +201,13 @@ const NEGATED = /(?:\b(?:not|never|without|avoid|no)|n't)\s+(?:[\w-]+\s+){0,2}$/
  * and a same-repo `#N` only after a port verb — a "Related: #1005" line is
  * context, not a port. A negated verb and a sentence about a regression are
  * never a port.
+ *
+ * A "fixed / landed in" phrase counts only with a cross-repo reference (a URL,
+ * or `owner/repo#N` / `owner/repo@sha`). A bare SHA after "fixed in" is
+ * context: issue bodies use the phrase in passing (a test fixture, a sibling
+ * test's fix), and treating those as ports sent cycles into cherry-picks the
+ * issue never asked for. The fork case (#1322) is a URL or xref, so it stays.
+ * Explicit port verbs ("port", "cherry-pick", "backport") still take a bare SHA.
  */
 export function detectPortReference(body: string): string | undefined {
   for (const sentence of body.split(/(?<=[.!?])\s+|\n+/)) {

@@ -263,7 +263,10 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
     ["Port the fix from PR #81.", "PR #81"],
     ["Backport #412 to the release line.", "#412"],
     ["It regressed last week. Port janit/pi-rukas#81 to fix it.", "janit/pi-rukas#81"],
-    ["This was already fixed upstream in commit 0f9e8d7c6b.", "0f9e8d7c6b"],
+    [
+      "This was already fixed upstream in commit janit/pi-rukas@0f9e8d7c6b.",
+      "janit/pi-rukas@0f9e8d7c6b",
+    ],
     ["Landed as https://github.com/o/r/pull/12 in the fork.", "https://github.com/o/r/pull/12"],
   ];
   for (const [body, ref] of yes) {
