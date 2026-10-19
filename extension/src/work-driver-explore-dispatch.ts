@@ -1,3 +1,9 @@
+import { readMarker } from "./reply-markers.ts";
+import { slowRecorder } from "./slow-events.ts";
+import { exploreChildBoundMs } from "./spawn-child-bound.ts";
+import { transcriptPathFor } from "./spawn-support.ts";
+import type { DispatchResult } from "./types.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 /**
  * work-driver-explore-dispatch — one explore dispatch attempt, plus the #1094
  * "no readable `## Spec`" resolver, retry predicate and retry preface.
@@ -9,13 +15,7 @@
  * A FAILED dispatch returns no reply: the router owns it and the retry must
  * never fire on one (dispatch-failed tail, #686/#693).
  */
-import { dispatchCore } from "./dispatch.ts";
-import { readMarker } from "./reply-markers.ts";
-import { slowRecorder } from "./slow-events.ts";
-import { exploreChildBoundMs } from "./spawn-child-bound.ts";
-import { transcriptPathFor } from "./spawn-support.ts";
-import type { DispatchResult } from "./types.ts";
-import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { cycleDispatch } from "./work-driver-cycle-entry.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { readSpecArtifact, resolveIntentVerdict } from "./work-driver-intent-artifact.ts";
 import { recoverOffloadedSpec } from "./work-driver-intent-offload.ts";
@@ -105,7 +105,7 @@ export async function dispatchExploreAttempt(
   state: WorkState,
   prompt: string,
 ): Promise<ExploreAttempt> {
-  const dispatch = ctx.dispatchFn ?? dispatchCore;
+  const dispatch = cycleDispatch(ctx);
   const startedAt = Date.now();
   // #573 — derive transcript path BEFORE beginDispatch so crash-resume can
   // locate the surviving session file. Single dispatch: seq=undefined.
@@ -135,7 +135,10 @@ export async function dispatchExploreAttempt(
         onSlow: slowRecorder(ctx.issue, "explore"),
         // #1560 — the per-child run bound (policy: explore 30 min).
         childBoundMs: exploreChildBoundMs(),
-        deck: { ...driverDeckOpts(ctx.issue, "explore", "explore"), label: "explore" },
+        deck: {
+          ...driverDeckOpts(ctx.issue, "explore", "explore"),
+          label: "explore",
+        },
       },
     );
   } catch (err) {
