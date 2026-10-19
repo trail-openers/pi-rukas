@@ -155,6 +155,36 @@ export const SEAMS = {
     timeoutMs: 30_000,
     tokenBudget: 4_000,
   },
+  // #1405 — may this workstream change a path the planner fenced out, given the
+  // issue body? The rule (deny) is the fence. Shadow only: the model is logged,
+  // never obeyed, whatever the env says. The acted-on Test-surface precheck lives
+  // in work-develop-scope-fence-seam.ts; this seam is logged-only (shadow) until a
+  // follow-up enforces it.
+  "scope-fence": {
+    id: "scope-fence",
+    kind: "bool",
+    instructions:
+      "A develop gate blocked a workstream from changing a path the plan fenced out. Does the issue body explicitly name that path as work this change is expected to touch?",
+    labels: {
+      true: "the issue body names the path as in scope for this change, and the quote says so",
+      false: "the issue body does not name the path as in scope; the fence stands",
+    },
+    ruleDefault: "false",
+    passing: ["true"],
+    composition: "replace",
+    defaultMode: "shadow",
+    evidence: "quote",
+    owner: "work-develop-scope-fence-seam.ts",
+    // The issue body's three admissible sections: each is bounded and redacted
+    // by the seam, so the caller hands over raw section text.
+    fields: {
+      testSurface: { max: 4000 },
+      references: { max: 4000 },
+      acceptanceCriteria: { max: 4000 },
+    },
+    timeoutMs: 30_000,
+    tokenBudget: 4_000,
+  },
 } as const satisfies Record<string, SeamSpec>;
 
 export type SeamId = keyof typeof SEAMS;

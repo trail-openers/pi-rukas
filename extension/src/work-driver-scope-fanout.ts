@@ -55,8 +55,26 @@
  * untouched.
  */
 
+import { trace } from "./trace.ts";
 import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+
+/**
+ * #1405 — ask the issue-fenced lift, failing closed: a throw from the lift (it
+ * reads and parses the issue body) leaves the fence standing, never the gate.
+ */
+function liftAdmits(
+  lift: ((workstreamId: string, file: string) => boolean) | undefined,
+  id: string,
+  file: string,
+): boolean {
+  try {
+    return lift?.(id, file) === true;
+  } catch (err) {
+    trace(`scope-fence: lift for ${id} ${file} threw; the fence stands: ${String(err)}`);
+    return false;
+  }
+}
 
 /** #285 — escape hatch for the deterministic develop scope/fanout gate. */
 function scopeGateEnabled(): boolean {
@@ -154,6 +172,10 @@ export function runScopeFanoutGate(
   failures: string[],
   notes: string[],
   fenceViolations?: FenceViolationRecord[],
+  // #1405 — asked only for an ISSUE-FENCED hit (fenced, declared by no sibling).
+  // `true` admits exactly that (workstream, file) pair: no failure, no record.
+  // Supplied by work-develop-scope-fence-seam.ts; absent means the fence stands.
+  liftIssueFence?: (workstreamId: string, file: string) => boolean,
 ): void {
   if (!scopeGateEnabled()) {
     notes.push("PI_ENSEMBLE_SCOPE_GATE=0 — develop scope/fanout gate disabled");
@@ -197,6 +219,14 @@ export function runScopeFanoutGate(
       }
     }
     dependencyOwnedBy.set(id, owned);
+  }
+  // #1405 — how many workstreams changed each file. A fence lift is admitted
+  // only for a file ONE workstream touched: two workstreams fencing the same
+  // file is a consolidation collision (#444), and the precheck is per-body, not
+  // per-workstream, so it must not admit either side.
+  const changedBy = new Map<string, number>();
+  for (const changedPaths of changedPathsByWorkstream.values()) {
+    for (const file of changedPaths) changedBy.set(file, (changedBy.get(file) ?? 0) + 1);
   }
   for (const [id, changedPaths] of changedPathsByWorkstream) {
     const workstream = workstreams[id];
@@ -274,11 +304,13 @@ export function runScopeFanoutGate(
           declaredById: declaringId,
           kind: "sibling-declared",
         });
-      } else {
+      } else if (!((changedBy.get(file) ?? 0) === 1 && liftAdmits(liftIssueFence, id, file))) {
         // ISSUE-FENCED — the file is fenced (the workstream's own
         // `outOfScope`) but no sibling declared it: an issue-level
         // exclusion. Every N=1 fence hit is this. Still blocks; no
-        // `declaredById` to record.
+        // `declaredById` to record. A lift (#1405) admits it instead:
+        // no failure and no violation record, so it is neither a park nor a
+        // fence violation.
         failures.push(
           `workstream ${id} touched out-of-scope path ${file} — declared fence violated (issue-fenced)`,
         );

@@ -12,6 +12,7 @@
 import type { CommentEvidence } from "./comment-evidence.ts";
 import { COMMENT_RETENTION_PATHS } from "./comment-retention.ts";
 import { DEFAULT_GIT_TIMEOUT_MS } from "./git-range.ts";
+import { scopeFenceLift } from "./work-develop-scope-fence-seam.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
@@ -358,6 +359,7 @@ export async function verifyDevelopOutcome(
     failures,
     notes,
     fenceViolations,
+    scopeFenceLift(ctx, state, options.fenceLifts),
   );
   if (changedWorktrees.length === 0) {
     // #679 (task-evidence) — if every assessed worktree is a legitimate

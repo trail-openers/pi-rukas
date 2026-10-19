@@ -127,6 +127,8 @@ export const KNOWN_EVENT_KINDS = [
   "worktree-leftover-handled",
   // #849 — the develop fence recovery marker (discarded SHA + owners).
   "fence-recovery-started",
+  // #1405 — the develop gate admitted an issue-fenced path from the issue's Test surface.
+  "fence-lifted",
   // #844 — the branch step's stale-local-branch reset record (old + new tip).
   // Absent from the tuple, EVERY restarted cycle that resets a stale branch
   // halts on its own re-entry (the fix manufactures the corruption it
