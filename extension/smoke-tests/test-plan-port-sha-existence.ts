@@ -64,7 +64,7 @@ try {
 	};
 
 	// 1. a SHA that is not in the repo is not a port
-	const fake = `Behaviour is wrong. Fixed in ${NONEXISTENT} on main, see the test.`;
+	const fake = `Behaviour is wrong. Cherry-pick ${NONEXISTENT} onto main, see the test.`;
 	assert(
 		detectPortReference(fake) === NONEXISTENT,
 		"canary: the detector still matches the fake SHA (the check is what rejects it)",
@@ -75,14 +75,14 @@ try {
 	);
 
 	// 2. a SHA that exists in this repo is still a port
-	const present = `Fixed in ${real} on main.`;
+	const present = `Cherry-pick ${real} onto main.`;
 	assert(
 		(await portReferenceForCycle(stateFor(present), [1439], repo)) === real,
 		"a SHA that exists in the repo still yields the port reference",
 	);
 	assert(
 		(await portReferenceForCycle(
-			stateFor(`Fixed in ${real.slice(0, 10)} on main.`),
+			stateFor(`Cherry-pick ${real.slice(0, 10)} onto main.`),
 			[1439],
 			repo,
 		)) === real.slice(0, 10),
@@ -96,6 +96,43 @@ try {
 		(await portReferenceForCycle(stateFor(url), [1439], repo)) ===
 			detectPortReference(url),
 		"a URL reference is returned exactly as the detector finds it (not checked for existence)",
+	);
+	// 4. #1439 / #1557 — a bare SHA after "fixed in" is context, not a port,
+	// whether or not the commit exists here. The existence check never runs.
+	const context = [
+		"Its sibling test was fixed in 8641f52d for a different reason.",
+		`Behaviour is wrong. Fixed in ${NONEXISTENT} on main, see the test.`,
+		`The fixture says fixed in ${real} on main.`,
+		`It was fixed in commit ${real}.`,
+	];
+	for (const body of context) {
+		assert(
+			detectPortReference(body) === undefined,
+			`context: "${body}" names no port`,
+		);
+		assert(
+			(await portReferenceForCycle(stateFor(body), [1557], repo)) === undefined,
+			`context: "${body}" yields no port reference for the cycle`,
+		);
+	}
+
+	// 5. #1322 — the fork case is a URL or a cross-repo xref after "fixed in";
+	// an explicit port verb still takes a bare SHA.
+	const fork =
+		"Behaviour is fine upstream; it was fixed in the fork at https://github.com/o/r/commit/abc1234.";
+	assert(
+		detectPortReference(fork) === "https://github.com/o/r/commit/abc1234",
+		'fork: "fixed in the fork at <url>" is a port reference',
+	);
+	assert(
+		detectPortReference(
+			"Already fixed in example-owner/pi-rukas@8641f52d; port it.",
+		) === "example-owner/pi-rukas@8641f52d",
+		'xref: "fixed in owner/repo@sha" is a port reference',
+	);
+	assert(
+		detectPortReference("Port abc1234 from the fork.") === "abc1234",
+		'explicit verb: "port <bare sha>" is still a port reference',
 	);
 } finally {
 	rmSync(dir, { recursive: true, force: true });
