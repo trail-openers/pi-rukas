@@ -87,7 +87,7 @@ function usageOf(
 }
 
 /** `PI_ENSEMBLE_DECISION_MODEL=provider/id` → the parts, or undefined. */
-function decisionModelRef(): { provider: string; id: string } | undefined {
+export function decisionModelRef(): { provider: string; id: string } | undefined {
   const raw = process.env.PI_ENSEMBLE_DECISION_MODEL?.trim();
   const slash = raw ? raw.indexOf("/") : -1;
   if (!raw || slash <= 0 || slash === raw.length - 1) return undefined;

@@ -158,6 +158,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // where step work ends: a host sets it to its kill minus HANDOFF_TIMEOUT_MS.
   int("CYCLE_DEADLINE", null, "cycle", { unit: "epoch-ms" }),
   flag("DEBUG", false),
+  str("DECISION_API_KEY", null),
+  str("DECISION_BASE_URL", null),
   family(int("DECISION_BUDGET_<SEAM>", null, "cycle", { unit: "tokens" }), SEAM_MEMBERS),
   input("DECISION_MODE_<SEAM>", "enum", "shadow", "cycle", {
     values: ["off", "shadow", "enforce"],
