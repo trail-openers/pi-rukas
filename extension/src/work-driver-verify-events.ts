@@ -14,6 +14,7 @@
  * mutation lives here, where importing `workflow-state.ts` is ordinary.
  */
 import { trace } from "./trace.ts";
+import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { type DevelopGateRecord, gatePassKey } from "./work-driver-verify-gate-reuse.ts";
@@ -102,11 +103,20 @@ export function recordDevelopGateEvents(
     verifyEvents?: VerifyRunEventFragment[];
     gateRecord?: DevelopGateRecord;
     selectedVerify?: SelectedVerifyRecord;
+    fenceLifts?: FenceLift[];
   },
 ): WorkState {
   const [started, completed] = gate.verifyEvents ?? [];
   const events = [
     ...(started ? [started] : []),
+    // #1405 — one event per admitted issue-fenced path, so a lifted fence is
+    // explainable from the state file (no `step`, like fence-recovery-started).
+    ...(gate.fenceLifts ?? []).map((l) => ({
+      kind: "fence-lifted" as const,
+      at: Date.now(),
+      source: "precheck" as const,
+      ...l,
+    })),
     ...(gate.consolidatedVerifySkipped !== undefined
       ? [
           makeConsolidatedVerifySkippedEvent(

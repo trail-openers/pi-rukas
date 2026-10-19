@@ -11,7 +11,7 @@ import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
 import type { PlanVerdict, WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
-import type { FenceRecoveryStartedEvent } from "./workflow-state-events-fence.ts";
+import type { FenceEvent } from "./workflow-state-events-fence.ts";
 import type {
   HandoffConsolidatedEvent,
   HandoffEmittedEvent,
@@ -483,7 +483,7 @@ export type WorkEvent =
   | BranchResetEvent
   | WorktreeLeftoverHandledEvent
   | DispatchSlowEvent
-  | FenceRecoveryStartedEvent
+  | FenceEvent
   | CycleInterruptedEvent
   | LensResidualsPostFailedEvent
   | LensResidualsPostedEvent
