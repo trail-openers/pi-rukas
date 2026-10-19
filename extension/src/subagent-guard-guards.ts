@@ -10,6 +10,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerDeveloperPushGuard } from "./developer-push-guard.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
+import { registerMemoryWriteGuard } from "./memory-write-guard.ts";
 import { registerMergeGuard } from "./merge-guard.ts";
 import { registerDestructiveGitGuard } from "./permission-subagent-guard.ts";
 
@@ -47,4 +48,8 @@ export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   // reached the remote on 2026-10-11. Same placement reasoning as above: after
   // the bypasses it would never run.
   registerDeveloperPushGuard(pi);
+  // #1666 — a destructive vipune write (`vipune update -t`) is refused here too.
+  // Before this block it was refused only through the agents.json verdict, which
+  // trust-mode children never consult, so a /work child could rewrite a memory row.
+  registerMemoryWriteGuard(pi);
 }

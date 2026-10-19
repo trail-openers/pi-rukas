@@ -176,7 +176,11 @@ export async function runLens(
     if (read.text !== undefined) docs.push({ file, text: read.text });
   }
   const thresholdDecision = await resolveReviewThreshold(
-    judgePolicy(ctx.repoRoot, { processGroup: ctx.processGroup === true, signal: ctx.signal }),
+    judgePolicy(ctx.repoRoot, {
+      processGroup: ctx.processGroup === true,
+      signal: ctx.signal,
+      workCycleTrust: ctx.headless === true,
+    }),
     docs,
     undefined,
     { repoRoot: ctx.repoRoot, issues: ctx.issues ?? [ctx.issue] },
@@ -204,6 +208,7 @@ export async function runLens(
       // #1024 — the cycle's signal and group policy reach every lens child.
       signal: ctx.signal,
       processGroup: ctx.processGroup,
+      workCycleTrust: ctx.headless === true, // #1666
       childBoundMs: lensRoundChildBoundMs(next, Date.now()), // #1242 / #1564
       pr: ps.prNumber, // the disclosure goes to this cycle's PR, merged or not
     });

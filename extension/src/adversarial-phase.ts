@@ -36,12 +36,14 @@ export function makeRunPhase(opts: {
   orchestratorJobId: string;
   /** #1024 — headless only: each inner child leads its own process group. */
   processGroup?: boolean;
+  /** #1666 — a headless /work cycle's inner children run under trust. */
+  workCycleTrust?: boolean;
   /** #799 — the slow-run recorder for this loop's inner children. */
   onSlow?: OnSlowCallback;
   /** The parent pi for the slow-run watch (the PM notice half). */
   pi?: ExtensionAPI;
 }): RunPhase {
-  const { runId, signal, orchestratorJobId, processGroup } = opts;
+  const { runId, signal, orchestratorJobId, processGroup, workCycleTrust } = opts;
   return async (role, tag, prompt, cwd) => {
     const deckKey = `${runId}/${tag}`;
     const label = `${role}[${tag}]`;
@@ -72,6 +74,7 @@ export function makeRunPhase(opts: {
         {
           signal: kill.signal,
           processGroup,
+          workCycleTrust,
           runId,
           tag,
           onProgress: (state) => {

@@ -344,17 +344,40 @@ evidence is gathered only when authority granted — a denied cycle does not get
 to ask `gh` whether it may merge. That short-circuit is what "a green PR is not
 permission" (#380) means on this surface.
 
-### Children fail closed outside the sandbox
+### Children of a /work cycle run with interactive trust (#1666)
 
-A specialist child spawned by the runner inherits the runner's environment. If
-neither `PI_ENSEMBLE_SANDBOX_MODE` nor `PI_ENSEMBLE_TRUST_MODE` is set, the
-child's permission guard has no broker socket to escalate to and denies every
-`ask`-class tool outright (`Tool '<name>' denied (subagent ask → no broker
-socket — headless deny)`) rather than waiting for a verdict nobody can give.
-Inside the image, the baked variable passes through untouched and the guard
-short-circuits as it does for any sandboxed session. Mode-independent guards —
-the merge guard, the issue-creation guard — run **before** that short-circuit
-either way, so the container default does not disarm them.
+A headless `/work` cycle runs its children with the same permission behaviour
+as an interactive trust-mode cycle: no `agents.json` verdict lookup, no `ask`
+escalation, and no `no broker socket — headless deny` for ordinary commands. The
+boundary is the mode-independent guards and the write fence, not the command
+allowlist. The driver stamps each child of the cycle (`workCycleTrust`, from the
+cycle's `DriverContext.headless`), and the child gets `PI_ENSEMBLE_TRUST_MODE=1`
+and no broker socket. The runner process's own env never carries the marker, and
+co-resident non-/work dispatches are unaffected.
+
+| Child | Write boundary | Permission shape |
+|---|---|---|
+| developer (develop, fan-out) | write-fenced to its worktree (`PI_ENSEMBLE_WRITE_ROOT`) | trust |
+| lens-fix developer | write-fenced to its worktree | trust |
+| explore, adversarial-developer, code-review-specialist (lens), policy judge | write/edit/multiedit structurally excluded | trust |
+| ops (handoff, merge-ops) | unfenced, as interactively | trust |
+
+Every child, in every shape, still loads the child-guards companion. That
+registers the destructive-git guard, the issue-creation guard, the merge guard,
+the developer push guard, the destructive vipune write guard, and the write
+fence. The protected-path halt, the merge authority and the review ledger run in
+the driver.
+
+Outside a /work cycle nothing changes. A bare `pi -p` child (no driver) has no
+cycle stamp, so it keeps the strict path: `agents.json` resolution, and
+`ask` escalates over the broker or hard-denies (`no broker socket — headless
+deny`).
+
+`PI_ENSEMBLE_STRICT_PERMISSIONS=1` in the runner's env is the operator opt-in
+back to the allowlist: it suppresses the cycle stamp, so /work children run the
+strict path. `pi-rukas-headless --capabilities` reports the mode a run uses in
+`permissions.workCycles` (`trust` or `strict`), read when the answer is built.
+It is not a CLI flag; `--merge` and `--sandboxed` are still refused (#1025).
 
 ## Handoff channel
 

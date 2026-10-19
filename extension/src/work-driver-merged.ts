@@ -248,7 +248,11 @@ export async function runMerged(
       // runner forwards `policyJudgeFn` to the driver, so without that gate a
       // caller of `runHeadless` could speak for the merge-authority judge.
       mergeAuthorityJudge(ctx, () =>
-        judgePolicy(ctx.repoRoot, { processGroup: ctx.processGroup === true, signal: ctx.signal }),
+        judgePolicy(ctx.repoRoot, {
+          processGroup: ctx.processGroup === true,
+          signal: ctx.signal,
+          workCycleTrust: ctx.headless === true, // #1666
+        }),
       ),
       docs,
       ctx.mergeGrant,

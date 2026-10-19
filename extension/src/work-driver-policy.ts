@@ -353,9 +353,15 @@ export type PolicyStatFn = (p: string) => Promise<unknown>;
  */
 export function judgePolicy(
   repoRoot: string,
-  opts: { statFn?: PolicyStatFn; processGroup?: boolean; signal?: AbortSignal } = {},
+  opts: {
+    statFn?: PolicyStatFn;
+    processGroup?: boolean;
+    signal?: AbortSignal;
+    /** #1666 — the judge child of a headless /work cycle runs under trust. */
+    workCycleTrust?: boolean;
+  } = {},
 ): PolicyJudgeFn {
-  const { statFn, processGroup = false, signal } = opts;
+  const { statFn, processGroup = false, signal, workCycleTrust } = opts;
   const extraArgs = ["--no-skills", "--extension", POLICY_REPORTER_PATH];
   const reporterPath = reporterPathFromArgs(extraArgs);
   return async (prompt: string, callSignal?: AbortSignal) => {
@@ -375,6 +381,7 @@ export function judgePolicy(
         timeoutMs: POLICY_JUDGE_TIMEOUT_MS,
         processGroup,
         signal: killSignal,
+        workCycleTrust,
       },
     );
     return result.ok ? { toolUses: result.toolUses ?? [] } : undefined;

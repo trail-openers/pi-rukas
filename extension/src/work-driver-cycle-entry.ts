@@ -19,7 +19,14 @@ import { dropSlowEvents } from "./slow-events.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { createEmitSink } from "./work-state-emit.ts";
 
-export function enterCycle(ctx: DriverContext): CycleContext {
+/**
+ * `core` is the real dispatch (dispatchCore by default); the parameter exists so
+ * a test can observe the options a cycle's children are dispatched with (#1666).
+ */
+export function enterCycle(
+  ctx: DriverContext,
+  core: typeof dispatchCore = dispatchCore,
+): CycleContext {
   traceResourceBudget(ctx.issue); // #1325 — the host budget and the limits this cycle runs with
   // #799 — clear any stale slow-event buffer entry for EVERY issue in the
   // group before the cycle begins: a previous parked cycle of the same
@@ -33,15 +40,20 @@ export function enterCycle(ctx: DriverContext): CycleContext {
   const emitSink = ctx.emitSink ?? createEmitSink((e, index) => host.emit(e, index));
   const cycleSignal = ctx.signal;
   const cycleProcessGroup = ctx.processGroup;
+  // #1666 — a headless cycle's children run under the trust marker, the same as an
+  // interactive /work cycle's. Set here, once, for every child of the cycle; no
+  // caller can opt a child out, and the flag never reaches a non-cycle dispatch.
+  const cycleTrust = ctx.headless === true;
   // Production dispatch is the real dispatchCore, bound to this cycle's signal.
   // A test-injected dispatchFn is used as given.
   const dispatchFn: NonNullable<DriverContext["dispatchFn"]> =
     ctx.dispatchFn ??
     ((h, spec, opts) =>
-      dispatchCore(h, spec, {
+      core(h, spec, {
         ...opts,
         signal: opts?.signal ?? cycleSignal,
         processGroup: opts?.processGroup ?? cycleProcessGroup,
+        workCycleTrust: cycleTrust,
       }));
   return { ...ctx, emitSink, dispatchFn };
 }
