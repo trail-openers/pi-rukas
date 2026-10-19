@@ -10,8 +10,10 @@
  * With exactly one workstream there is no judgement left to make about WHICH
  * workstream owns a missing path: the only owner is the one workstream. So,
  * deterministically and before the one-shot corrective is spent, the driver
- * appends the omitted paths to that workstream's `paths` — and only when every
- * missing path is safe to add:
+ * appends the omitted paths to that workstream's `paths` — and only when the
+ * workstream already owns at least one measurable deliverable path (a plan that
+ * covers nothing of the spec is a wrong plan, not an omitted one, and is left
+ * to the gate) and every missing path is safe to add:
  *
  *   - a single plain path, not an either/or (`a.ts or b.ts` is a choice the
  *     planner must make, so it keeps today's behaviour);
@@ -46,32 +48,53 @@ import type { Workstream } from "./workflow-state-schema.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /** A repair: the workstreams with the paths appended, and what was appended. */
-export type OmittedPathRepair = {
+type OmittedPathRepair = {
   workstreams: Record<string, Workstream>;
   added: string[];
 };
 
 /** The basis every repair assumption carries; rendered beside its text. */
-export const OMITTED_PATH_BASIS =
+const OMITTED_PATH_BASIS =
   "plan-to-spec gate (single-workstream repair): spec deliverable path the plan omitted";
 
 /**
  * Appends the omitted deliverable paths to the sole workstream, or returns
- * `undefined` when there is nothing to repair or any missing path is not safe
- * to add (the caller then runs the gate unchanged).
+ * `undefined` when there is nothing to repair, or when a repair is declined —
+ * the caller then runs the gate unchanged. `onRefuse` receives the reason for
+ * a decline, so the caller can trace it.
  */
 export function repairOmittedDeliverablePaths(
   workstreams: Record<string, Workstream>,
   spec: SpecCoverageSpec | undefined,
   grant: readonly string[],
+  onRefuse: (reason: string) => void = () => undefined,
 ): OmittedPathRepair | undefined {
+  const refuse = (reason: string): undefined => {
+    onRefuse(reason);
+    return undefined;
+  };
   const ids = Object.keys(workstreams);
   const [id] = ids;
   if (ids.length !== 1 || id === undefined) return undefined;
   const ws = workstreams[id];
-  if (!ws) return undefined;
+  // Fail closed: without a normalised spec there is no deliverable to repair to.
+  if (!ws || !spec) return undefined;
   const { uncovered } = findUncoveredDeliverables(workstreams, spec, grant);
   if (uncovered.length === 0) return undefined;
+  // Evidence the plan targets THIS spec: at least one measurable deliverable slot
+  // is already covered by the workstream. Without it the plan is wholly wrong,
+  // and extending it would hide that rather than repair an omission.
+  const targetsSpec = (spec.deliverables ?? []).some((d) =>
+    d.paths.some(
+      (slot) =>
+        declaredPathsCoveredBy(slot, ws.paths) &&
+        splitDeliverablePaths(slot).map(toAlternative).some(measurableAlternative),
+    ),
+  );
+  if (!targetsSpec)
+    return refuse(
+      "the sole workstream covers no spec deliverable path, so it is the wrong plan, not an omitted one",
+    );
 
   const deferred = new Set(deferredProtectedPaths(spec, grant));
   // A fence covers the path and everything under it, as the gate's
@@ -90,10 +113,15 @@ export function repairOmittedDeliverablePaths(
       // writing it literally is the #1155 failure the grammar exists to prevent.
       const alternatives = splitDeliverablePaths(slot).map(toAlternative);
       const [alt] = alternatives;
-      if (alternatives.length !== 1 || alt === undefined) return undefined;
-      if (alt.isGlob || !measurableAlternative(alt)) return undefined;
-      const path = alt.raw;
-      if (isProtectedPath(path) || fenced(path) || deferred.has(path)) return undefined;
+      if (alternatives.length !== 1 || alt === undefined)
+        return refuse(`${slot}: an either/or slot is the planner's choice`);
+      if (alt.isGlob || !measurableAlternative(alt))
+        return refuse(`${slot}: not a single measurable file path`);
+      const path = normaliseDeclaredPath(alt.raw);
+      if (path.length === 0) return refuse(`${slot}: empty after normalisation`);
+      if (isProtectedRepairPath(path)) return refuse(`${path}: protected path`);
+      if (fenced(path)) return refuse(`${path}: fenced in the workstream's outOfScope`);
+      if (deferred.has(path)) return refuse(`${path}: deferred protected path`);
       if (!added.includes(path)) added.push(path);
     }
   }
@@ -104,8 +132,19 @@ export function repairOmittedDeliverablePaths(
   };
 }
 
+/**
+ * A repair never adds a protected path, however it is spelled: `.GitHub/…`,
+ * `.PI/verify-cmd` and a bare `.pi` are the same capabilities on a
+ * case-insensitive checkout.
+ */
+function isProtectedRepairPath(path: string): boolean {
+  const folded = path.replace(/\\/g, "/").toLowerCase();
+  if (folded.split("/").some((s) => s === ".github" || s === ".pi")) return true;
+  return isProtectedPath(path) || isProtectedPath(folded);
+}
+
 /** The one line a reviewer reads for the repair. */
-export function omittedPathAssumptionText(added: readonly string[]): string {
+function omittedPathAssumptionText(added: readonly string[]): string {
   return `driver added spec deliverable paths the plan omitted: ${added.join(", ")}`;
 }
 

@@ -33,6 +33,8 @@ import { initialState } from "../src/workflow-state-update.ts";
 
 // The tail's cross-group claim check writes a registry under repoRoot; this
 // test is about the repair, so that side effect is switched off for the run.
+// Set after the static imports above on purpose: the flag is read at CALL time
+// (inside runPlanQualityTail), not at import time, so this ordering is safe.
 process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
 
 let exit = 0;
@@ -198,7 +200,9 @@ async function tail(
 // ------------------------- 4b. N=1 directory fence covering the path: refused
 
 {
-  const ws = { "task-1": WS("task-1", ["src/a.ts"], ["extension/smoke-tests"]) };
+  const ws = {
+    "task-1": WS("task-1", ["src/a.ts"], ["extension/smoke-tests"]),
+  };
   assert(
     repairOmittedDeliverablePaths(ws, SPEC, []) === undefined,
     "directory-fenced missing path: the repair refuses, as the gate's prefix fence does",
@@ -211,13 +215,113 @@ async function tail(
   const SPEC_T: NormalisedSpec = {
     ...SPEC,
     deliverables: [
-      { id: "d5", description: "tmpl", paths: ["extension/src/work-driver-<name>.ts"] },
+      {
+        id: "d5",
+        description: "tmpl",
+        paths: ["extension/src/work-driver-<name>.ts"],
+      },
     ],
   };
   const ws = { "task-1": WS("task-1", ["src/a.ts"]) };
   assert(
     repairOmittedDeliverablePaths(ws, SPEC_T, []) === undefined,
     "template missing slot: the repair refuses rather than appending the literal template",
+  );
+}
+
+// ----------------------- 4d. N=1 plan wholly unrelated to the spec: not repaired
+
+{
+  const ws = { "task-1": WS("task-1", ["src/unrelated.ts"]) };
+  assert(
+    repairOmittedDeliverablePaths(ws, SPEC, []) === undefined,
+    "unrelated N=1 plan: nothing covered, so the repair refuses (a wrong plan is not an omitted one)",
+  );
+}
+
+// ------------------------- 4e. wrong target / no spec / unsafe spellings: refused, traced
+
+{
+  const reasons: string[] = [];
+  const refuse = (r: string) => reasons.push(r);
+  const ws = { "task-1": WS("task-1", ["src/unrelated.ts"]) };
+  repairOmittedDeliverablePaths(ws, SPEC, [], refuse);
+  assert(
+    reasons.length === 1 && reasons[0]?.includes("wrong plan"),
+    "wrong-target decline: the refusal reason is handed to the caller",
+  );
+  const none = repairOmittedDeliverablePaths(
+    { "task-1": WS("task-1", ["src/a.ts"]) },
+    undefined,
+    [],
+  );
+  assert(none === undefined, "no normalised spec: the repair does not run (fail closed)");
+  for (const unsafe of [".GitHub/workflows/ci.yml", ".PI/verify-cmd", ".pi"]) {
+    const SPEC_U: NormalisedSpec = {
+      ...SPEC,
+      deliverables: [{ id: "d5", description: "unsafe", paths: ["src/a.ts", unsafe] }],
+    };
+    const seen: string[] = [];
+    const pure = repairOmittedDeliverablePaths(
+      { "task-1": WS("task-1", ["src/a.ts"]) },
+      SPEC_U,
+      [unsafe],
+      (r) => seen.push(r),
+    );
+    assert(
+      pure === undefined && seen.some((r) => r.includes("protected path")),
+      `unsafe spelling ${unsafe}: the repair refuses it as a protected path`,
+    );
+  }
+  const SPEC_N: NormalisedSpec = {
+    ...SPEC,
+    deliverables: [
+      {
+        id: "d5",
+        description: "norm",
+        paths: ["src/a.ts", "src/new.ts (new)"],
+      },
+    ],
+  };
+  const normalised = repairOmittedDeliverablePaths(
+    { "task-1": WS("task-1", ["src/a.ts"]) },
+    SPEC_N,
+    [],
+  );
+  assert(
+    JSON.stringify(normalised?.added) === JSON.stringify(["src/new.ts"]),
+    "normalise once: the appended entry is the normalised path, not the annotated one",
+  );
+}
+
+// ----------------------- 4f. planKill: the killed primary is not repaired, halts as before
+
+{
+  const ws = { "task-1": WS("task-1", ["src/a.ts"]) };
+  const base = initialState(1439, 1);
+  const r = await runPlanQualityTail(
+    {
+      issue: 1439,
+      repoRoot: "/repo",
+      protectedGrant: [],
+    } as unknown as CycleContext,
+    {
+      next: base,
+      report: { ...emptyWorkstreamReport(), accepted: 1, workstreams: ws },
+      workstreams: ws,
+      firstPlanRaw: ws,
+      findingsCount: 1,
+      spec: SPEC,
+      planGateEnabled: true,
+      planKill: true,
+      redispatched: false,
+    },
+    HOST,
+  );
+  assert(r.halted, "planKill with an omitted spec path: the step halts as before");
+  assert(
+    JSON.stringify(r.workstreams["task-1"]?.paths) === JSON.stringify(["src/a.ts"]),
+    "planKill: the killed primary's paths are not repaired",
   );
 }
 
@@ -251,7 +355,11 @@ async function tail(
     workstreams: ws,
     refused: [{ id: "task-1", reason: "duplicate id" }],
   };
-  const ctx = { issue: 1439, repoRoot: "/repo", protectedGrant: [] } as unknown as CycleContext;
+  const ctx = {
+    issue: 1439,
+    repoRoot: "/repo",
+    protectedGrant: [],
+  } as unknown as CycleContext;
   const r = await runPlanQualityTail(
     ctx,
     {
