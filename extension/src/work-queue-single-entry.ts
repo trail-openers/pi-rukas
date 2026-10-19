@@ -7,7 +7,7 @@
  * own file next to the shape it builds.
  */
 
-import { causeFor, queueCauseAction } from "./work-driver-cause-render.ts";
+import { causeForCycle, queueCauseAction } from "./work-driver-cause-render.ts";
 import { parkReason } from "./work-queue-park-reason.ts";
 import { type QueueEntry, humanActionFor } from "./work-queue.ts";
 import { lastInterruptReason } from "./work-status-interrupted.ts";
@@ -105,7 +105,7 @@ export async function singleCycleQueueEntry(
   // park is judged from its evidence, so its line states the class and reason.
   const cause =
     state !== undefined && capHit?.cap.startsWith("verify-failed:") === true
-      ? causeFor(state, capHit.cap)
+      ? causeForCycle(state)
       : undefined;
   return {
     groupId,

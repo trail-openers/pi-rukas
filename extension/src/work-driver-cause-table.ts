@@ -36,10 +36,11 @@ export type CauseClass = (typeof CAUSE_CLASSES)[number];
  * null only for `pi-rukas`. `kindDriven` means: when a failed dispatch explains
  * the cap, the dispatch's failure kind decides the class (KIND_CLASS), so a
  * provider outage behind a step failure is `environment` and a child that died
- * with no structured cause is `pi-rukas`.
+ * with no structured cause is `pi-rukas`. `cls: null` is the one entry that is
+ * not a failure at all (the merge hold): it has a reason and an action, no class.
  */
 export interface CapCause {
-  cls: CauseClass;
+  cls: CauseClass | null;
   reason: string;
   action: string | null;
   kindDriven?: boolean;
@@ -89,11 +90,13 @@ export const FIXED_CAP_CAUSE: Record<FixedCap, CapCause> = {
     reason: "the adversarial gate still found issues in the diff after its internal rounds",
     action: CHANGE_FIX,
   },
-  // Not a failure: the work is done and pushed. Handled before the table.
+  // Not a failure: the work is done and pushed, so it carries no class.
   "awaiting-human-merge": {
-    cls: "issue",
-    reason: "all the work is done and pushed, and only the merge is held",
-    action: "merge the PR, or grant merge authority and re-run `/work {issue}`",
+    cls: null,
+    reason:
+      "all the work is done and pushed, and only the merge is held — this is a hold, not a failure",
+    action:
+      "merge the PR, or grant merge authority (AGENTS.md section 9, or --merge) and re-run `/work {issue}`",
   },
   "ci-retry": {
     cls: "change",
@@ -204,9 +207,10 @@ export const FIXED_CAP_CAUSE: Record<FixedCap, CapCause> = {
       "get the dependency settled, or drop it from the issue body, then re-run `/work {issue} --restart`",
   },
   "develop-child-crash": {
-    cls: "pi-rukas",
-    reason: "the develop child's engine died mid-pass (a driver-side failure to contain it)",
-    action: null,
+    cls: "environment",
+    reason: "the develop child died mid-pass, most often the host suspending",
+    action:
+      "keep the host awake for the cycle (`caffeinate -dimsu` on macOS), then re-run `/work {issue} --restart`",
   },
   "develop-incomplete-deliverables": {
     cls: "change",

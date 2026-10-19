@@ -11,7 +11,7 @@ import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { capedPartialStateLines } from "./work-driver-caped-state.ts";
-import { causeFor, causeLeadMarkdown, causeSafeText } from "./work-driver-cause-render.ts";
+import { causeForCycle, causeLeadMarkdown, causeSafeText } from "./work-driver-cause-render.ts";
 import { inlineCodeSafe } from "./work-driver-conflict-evidence.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { draftPrHandoffLines } from "./work-driver-draft-pr-handoff.ts";
@@ -104,7 +104,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
   const allIssues = state.issues ?? [issue];
   const issuesHeader = allIssues.length === 1 ? `\`#${issue}\`` : `\`#${allIssues.join("`, `#")}\``;
   // #1675 "what happened" first: class, reason, evidence and action lead the body.
-  const verdict = causeFor(state, capForExplain);
+  const verdict = causeForCycle(state);
   const lines: string[] = [
     "## ⏸ Cap hit — needs human attention",
     "",

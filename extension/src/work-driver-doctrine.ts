@@ -193,6 +193,13 @@ export async function readDoctrineAtBase(
 }
 
 /**
+ * #1675 — the phrase every ungranted-protected halt carries. The cause-class
+ * classifier reads it to route the halt to `issue`; the producer below and the
+ * classifier share this constant, so the two cannot drift.
+ */
+export const UNGRANTED_PROTECTED_MARK = "without an operator grant";
+
+/**
  * The develop gate's failure message for a self-modifying patch.
  *
  * Names the paths, because "a protected file changed" without saying which one
@@ -204,13 +211,6 @@ export async function readDoctrineAtBase(
  * and excluded from the command, and the command and the review caution still
  * cover the paths that CAN be granted.
  */
-/**
- * #1675 — the phrase every ungranted-protected halt carries. The cause-class
- * classifier reads it to route the halt to `issue`; the producer below and the
- * classifier share this constant, so the two cannot drift.
- */
-export const UNGRANTED_PROTECTED_MARK = "without an operator grant";
-
 export function explainProtectedPaths(
   ungranted: readonly string[],
   allTouched: readonly string[],

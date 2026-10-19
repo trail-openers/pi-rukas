@@ -1,15 +1,28 @@
 /**
  * work-driver-cause-class — #1675: the cause class, reason, evidence and user
  * action of one park or failure, derived from the cap, the failure kind and
- * structured evidence. Pure: reads a WorkState, never writes, never reads
- * prose to decide a class.
+ * the cycle's recorded evidence. Pure: reads a WorkState, never writes.
+ *
+ * What each decision reads. The difference matters when a marker drifts.
+ *   - STRUCTURED, read by a typed field: the cap name, the failure kind
+ *     (KIND_CLASS), the verify evidence origin (`pr-not-open`, `fix-pass`),
+ *     and the awaiting-merge hold.
+ *   - SHARED CONSTANT, a phrase the producer writes and this module matches
+ *     exactly: the ungranted-protected halt (UNGRANTED_PROTECTED_MARK), the
+ *     empty-round failure (EMPTY_ROUND_FAILURE), the baseline-red prefix
+ *     (BASELINE_RED_MARKER).
+ *   - PROSE, read from text a child or a tool wrote, so it is tolerant rather
+ *     than exact: the developer's `[ensemble:plumb]` block and its `question:`
+ *     line, the dependency signature (looksLikeMissingDeps) on the raw verify
+ *     output, and the assertion lines extractSpecificAssertion accepts. A prose
+ *     read that finds nothing falls through to the next rule, never to a guess.
  *
  * Order of derivation (first match wins):
  *   1. no cap recorded          → pi-rukas (the driver lost its own record)
  *   2. awaiting-human-merge     → no class: the work is done, it is not a failure
  *   3. verify-failed:<step>     → verifyVerdict: the route is read from the
- *                                 structured origin, the protected-path and
- *                                 empty-diff markers, and extracted check lines
+ *                                 structured origin, the markers above, and the
+ *                                 extracted check lines
  *   4. every other cap          → its FIXED_CAP_CAUSE / TEMPLATE_CAP_CAUSE entry;
  *                                 a kind-driven entry takes its class from the
  *                                 failed dispatch's failure kind (KIND_CLASS)
@@ -17,12 +30,15 @@
  * The `causeEvidence` lines are bounded (six lines, 300 characters each) and
  * redacted. Extracted check lines are used as evidence, never the raw tail,
  * so a dependency hint cannot ride in on a line the classifier did not accept.
+ * Producers that print the verdict go through causeForCycle (work-driver-cause-for.ts),
+ * which also scrubs it, so every surface carries identical text.
  */
 
 import { redactClip } from "./decision-log.ts";
 import type { CAP_TEMPLATES, FixedCap } from "./headless/caps.ts";
 import type { ResultFailure } from "./headless/failure.ts";
 import { EMPTY_ROUND_FAILURE } from "./work-develop-verify-failure.ts";
+import { PLUMB_REPLY_MARKER } from "./work-driver-adversarial-plumb.ts";
 import {
   ACTION_FOR_CLASS,
   type CapCause,
@@ -41,6 +57,7 @@ import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
 import { INTEGRATE_CREATE_FAILED_PREFIX, lastCapHit } from "./workflow-state-cap.ts";
 import type { WorkState } from "./workflow-state.ts";
+import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
 /** What a park or failure carries for the headless result and every renderer. */
 export interface CauseVerdict {
@@ -56,18 +73,42 @@ export interface CauseVerdict {
 
 export const EVIDENCE_MAX_LINES = 6;
 const LINE_MAX = 300;
+/** How many trailing lines of an error tail are considered. */
+const TAIL_LINES = 3;
+/** The words that mark an error tail line as the one that names the failure. */
+const ERROR_MARK = /error|fail|✗|cannot|exception|not found|refused/i;
+/** The mark a verify command puts before a check it names. */
+const CHECK_MARK = "\u2717";
+/** The `question:` line of a plumb block, bold or plain. */
+const PLUMB_QUESTION = /^[*_]*question[*_]*\s*:/i;
 
-/** Trimmed, de-duplicated, bounded, redacted lines of `text`. */
+/** Trimmed, de-duplicated, bounded, redacted lines of the texts, in order. Stops at the bound. */
 function evidenceLines(texts: readonly (string | undefined)[]): string[] {
+  const seen = new Set<string>();
   const out: string[] = [];
   for (const text of texts) {
     for (const raw of (text ?? "").split("\n")) {
+      if (out.length >= EVIDENCE_MAX_LINES) return out;
       const line = raw.trim();
-      if (line.length === 0 || out.includes(redactClip(line, LINE_MAX))) continue;
-      if (out.length < EVIDENCE_MAX_LINES) out.push(redactClip(line, LINE_MAX));
+      if (line.length === 0) continue;
+      const clipped = redactClip(line, LINE_MAX);
+      if (seen.has(clipped)) continue;
+      seen.add(clipped);
+      out.push(clipped);
     }
   }
   return out;
+}
+
+/** The last few non-empty lines of an error tail; the ones that name an error when any do. */
+function tailLines(tail: string | undefined): string[] {
+  const last = (tail ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .slice(-TAIL_LINES);
+  const marked = last.filter((l) => ERROR_MARK.test(l));
+  return marked.length > 0 ? marked : last.slice(-1);
 }
 
 /** The action for a class, with `{issue}` filled in; null when there is none. */
@@ -104,41 +145,57 @@ export function capRuleOf(cap: string): CapCause | undefined {
 function capEvidence(state: WorkState, cap: string, failure: ResultFailure | undefined): string[] {
   const hit = lastCapHit(state, cap)?.evidence;
   if (failure !== undefined && dispatchDerived(failure)) {
-    const tail = failure.errorTail
-      ?.split("\n")
-      .filter((l) => l.trim().length > 0)
-      .pop();
-    return evidenceLines([failure.providerMessage, failure.message, tail, failure.evidence]);
+    return evidenceLines([
+      failure.providerMessage,
+      failure.message,
+      ...tailLines(failure.errorTail),
+      failure.evidence,
+    ]);
   }
   return evidenceLines([hit, failure?.message]);
 }
 
-/** The awaiting-merge verdict: not a failure, so no class. */
+/** The awaiting-merge verdict: not a failure, so no class. The text is the table's. */
 function awaitingVerdict(issue: number): CauseVerdict {
+  const rule = FIXED_CAP_CAUSE["awaiting-human-merge"];
   return {
-    causeReason:
-      "all the work is done and pushed, and only the merge is held — this is a hold, not a failure",
+    causeReason: rule.reason,
     causeEvidence: [],
-    userAction: `merge the PR, or grant merge authority (AGENTS.md section 9, or --merge) and re-run \`/work ${issue}\``,
+    userAction: rule.action?.replaceAll("{issue}", String(issue)) ?? null,
   };
 }
 
-/** The text of every assertion line the verify failures carry, in order. */
+/** The assertion lines the verify failures carry, in order, bounded. */
 function assertionLinesOf(failures: readonly string[]): string[] {
+  const seen = new Set<string>();
   const out: string[] = [];
   for (const f of failures) {
     for (const raw of f.split("\n")) {
+      if (out.length >= EVIDENCE_MAX_LINES) return out;
       const line = raw.trim();
-      if (line.length === 0 || out.includes(line)) continue;
+      if (line.length === 0 || seen.has(line)) continue;
       if (extractSpecificAssertion(line) === NO_SPECIFIC_ASSERTION) continue;
+      seen.add(line);
       out.push(line);
     }
   }
   return out;
 }
 
-/** The last developer report from the develop step, if the developer wrote one. */
-function developerReport(state: WorkState): string | undefined {
+/** The first verify line that carries a dependency signature, if the output has one. */
+function firstDependencyLine(failures: readonly string[]): string | undefined {
+  if (!looksLikeMissingDeps(failures.join("\n"))) return undefined;
+  for (const f of failures) {
+    for (const raw of f.split("\n")) {
+      const line = raw.trim();
+      if (line.length > 0 && looksLikeMissingDeps(line)) return line;
+    }
+  }
+  return undefined;
+}
+
+/** The last develop reply from the developer, if it wrote one. */
+function developerReply(state: WorkState): string | undefined {
   for (let i = state.eventLog.length - 1; i >= 0; i--) {
     const e = state.eventLog[i];
     if (
@@ -153,9 +210,53 @@ function developerReport(state: WorkState): string | undefined {
   return undefined;
 }
 
+/**
+ * The question a developer's reply asks the operator: the `question:` line of
+ * its `[ensemble:plumb]` block, or the block's first line. Undefined when the
+ * reply has no plumb block.
+ */
+function plumbQuestion(reply: string): string | undefined {
+  const at = reply.indexOf(PLUMB_REPLY_MARKER);
+  if (at < 0) return undefined;
+  const lines = reply
+    .slice(at + PLUMB_REPLY_MARKER.length)
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  return lines.find((l) => PLUMB_QUESTION.test(l)) ?? lines[0] ?? PLUMB_REPLY_MARKER;
+}
+
+/**
+ * The develop round changed nothing. A developer that stopped on a question for
+ * the operator needs the operator; one that changed nothing for another reason
+ * is the change's to revisit, with its own reply as the evidence.
+ */
+function emptyDiffVerdict(
+  state: WorkState,
+  failures: readonly string[],
+  issue: number,
+): CauseVerdict {
+  const reply = developerReply(state);
+  const question = reply === undefined ? undefined : plumbQuestion(reply);
+  if (question !== undefined) {
+    return {
+      causeClass: "issue",
+      causeReason: "the developer could not act on the issue as written and asked a question",
+      causeEvidence: evidenceLines([question]),
+      userAction: `answer the question in the issue (or edit the issue), then re-run \`/work ${issue}\``,
+    };
+  }
+  return {
+    causeClass: "change",
+    causeReason: "the developer made no change",
+    causeEvidence:
+      reply === undefined ? evidenceLines(failures) : evidenceLines([reply.trim().split("\n")[0]]),
+    userAction: `read the developer's reply in the handoff; edit the issue or re-run \`/work ${issue} --restart\``,
+  };
+}
+
 /** `verify-failed:<step>` — routed on the structured origin and the failure markers. */
 function verifyVerdict(state: WorkState, cap: string, issue: number): CauseVerdict {
-  const step = cap.slice("verify-failed:".length);
   const ev = state.pipelineState.verifyEvidence;
   const failures = ev?.failures ?? [];
   const hit = lastCapHit(state, cap)?.evidence;
@@ -202,24 +303,9 @@ function verifyVerdict(state: WorkState, cap: string, issue: number): CauseVerdi
       changeRule,
     );
   }
-  // The developer changed nothing. Its own report is the one thing that says why.
+  // The developer changed nothing: a question for the operator, or a dead end.
   if (failures.some((f) => EMPTY_ROUND_FAILURE.test(f))) {
-    const report = developerReport(state);
-    if (report !== undefined) {
-      return {
-        causeClass: "pi-rukas",
-        causeReason:
-          "the develop step's developer changed nothing and reported why it could not act, so the driver routed that dead end into a verify park (a driver defect, not the issue)",
-        causeEvidence: evidenceLines([`developer's report: ${report.trim().split("\n")[0] ?? ""}`]),
-        userAction: null,
-      };
-    }
-    return verdict(
-      "change",
-      "the develop step finished with no code change and the developer gave no reason for it",
-      evidenceLines(failures),
-      changeRule,
-    );
+    return emptyDiffVerdict(state, failures, issue);
   }
   // The host, the base or the repo root judged the environment, not the change.
   if (failures.some(isHostExhaustionFailure)) {
@@ -246,12 +332,25 @@ function verifyVerdict(state: WorkState, cap: string, issue: number): CauseVerdi
       TEMPLATE_CAP_CAUSE["verify-baseline-red"],
     );
   }
-  // The verify command ran and named the failing checks: the cycle's own code.
+  // A dependency the worktree lacks, on a line with no ✗ check marker: the worktree's
+  // problem, not the change's. A ✗ line is a check the verify command named, so a
+  // dependency line that carries the marker stays the change's diagnosis.
   const assertions = assertionLinesOf(failures);
+  const depLine = firstDependencyLine(failures);
+  if (depLine !== undefined && (assertions.length === 0 || !depLine.startsWith(CHECK_MARK))) {
+    return {
+      causeClass: "environment",
+      causeReason:
+        "the verify command stopped on a missing dependency in the worktree, not on the change",
+      causeEvidence: evidenceLines([depLine, ...failures]),
+      userAction: `install the project dependencies in the worktree (or fix \`.pi/worktree-setup\`) and re-run \`/work ${issue}\``,
+    };
+  }
+  // The verify command ran and named the failing checks: the cycle's own code.
   if (assertions.length > 0) {
     return verdict(
       "change",
-      `the verify command failed: ${assertions[0]}`,
+      `the verify command failed: ${redactClip(assertions[0] ?? "", LINE_MAX)}`,
       evidenceLines(assertions),
       changeRule,
     );
@@ -274,7 +373,10 @@ function verifyVerdict(state: WorkState, cap: string, issue: number): CauseVerdi
   };
 }
 
-/** The verdict for one park or failure. Undefined only when the cycle merged. */
+/**
+ * The verdict for one park or failure. Undefined only when the cycle merged.
+ * `cap` is the cap name as the cycle recorded it; an unknown name is a pi-rukas gap.
+ */
 export function causeVerdictOf(
   state: WorkState,
   cap: string | undefined,
@@ -294,7 +396,7 @@ export function causeVerdictOf(
   if (cap === "awaiting-human-merge") return awaitingVerdict(issue);
   if (cap.startsWith("verify-failed:")) return verifyVerdict(state, cap, issue);
   const rule = capRuleOf(cap);
-  if (rule === undefined) {
+  if (rule === undefined || rule.cls === null) {
     return {
       causeClass: "pi-rukas",
       causeReason: `the driver recorded the cap ${cap}, which this build does not classify (a driver defect)`,
