@@ -158,6 +158,9 @@ export async function runPlanQualityTail(
   let correctiveRaw: Record<string, Workstream> | undefined;
   let droppedEdges: { from: string; to: string }[] | undefined;
   let unfence = input.unfence;
+  // The paths the repair appended to the primary plan. Disclosed at the end only
+  // when that plan is the one that reaches develop: a corrective replaces it.
+  let repairedAdded: readonly string[] | undefined;
 
   // #1652 — a plan dispatch with no accepted call has no plan at all. Its
   // workstreams are empty, so the shape reasons below say nothing about it;
@@ -174,7 +177,7 @@ export async function runPlanQualityTail(
       : undefined;
   if (repair) {
     workstreams = repair.workstreams;
-    next = withOmittedPathAssumption(next, repair.added);
+    repairedAdded = repair.added;
     trace(
       `work-driver: plan-to-spec gate added spec deliverable path(s) the single-workstream plan omitted: ${repair.added.join(", ")}`,
     );
@@ -292,6 +295,7 @@ export async function runPlanQualityTail(
     // a failed dispatch: its completion event is the tail, not a zero-call verdict.
     if (!retry.ok) return halt(next);
     redispatched = true;
+    repairedAdded = undefined;
     if (retryReport.unreadable > 0) {
       return halt(planResultsUnreadableCap(next, retryReport));
     }
@@ -411,9 +415,11 @@ export async function runPlanQualityTail(
     droppedEdges && droppedEdges.length > 0 ? "dropped-dependencies" : (reason ?? haltReason);
   // #1642 review — a deferred protected path is disclosed on the spec (the PR
   // body), not only traced. Only when the gate ran: nothing was deferred otherwise.
+  const repaired =
+    repairedAdded !== undefined ? withOmittedPathAssumption(next, repairedAdded) : next;
   const disclosed = input.planGateEnabled
-    ? withProtectedDeferralAssumptions(next, input.spec, grant)
-    : next;
+    ? withProtectedDeferralAssumptions(repaired, input.spec, grant)
+    : repaired;
   return {
     state:
       deferredProtected === undefined

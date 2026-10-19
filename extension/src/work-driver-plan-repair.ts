@@ -28,7 +28,12 @@
  * differing from the model's output.
  */
 
-import { declaredPathsCoveredBy, splitDeliverablePaths } from "./work-driver-deliverable-paths.ts";
+import {
+  declaredPathsCoveredBy,
+  measurableAlternative,
+  splitDeliverablePaths,
+  toAlternative,
+} from "./work-driver-deliverable-paths.ts";
 import { isProtectedPath } from "./work-driver-doctrine.ts";
 import type { SpecAssumption } from "./work-driver-intent.ts";
 import { deferredProtectedPaths } from "./work-driver-plan-fence.ts";
@@ -69,17 +74,26 @@ export function repairOmittedDeliverablePaths(
   if (uncovered.length === 0) return undefined;
 
   const deferred = new Set(deferredProtectedPaths(spec, grant));
-  const fenced = new Set(ws.outOfScope.map((e) => normaliseDeclaredPath(e)));
+  // A fence covers the path and everything under it, as the gate's
+  // `findFenceContradictions` reads it.
+  const fences = ws.outOfScope
+    .map((e) => normaliseDeclaredPath(e).replace(/\/+$/, ""))
+    .filter((n) => n.length > 0);
+  const fenced = (path: string) => fences.some((n) => path === n || path.startsWith(`${n}/`));
   const added: string[] = [];
   for (const row of uncovered) {
     for (const slot of row.paths) {
       // Already covered by the workstream: only the missing slots are added.
       if (declaredPathsCoveredBy(slot, ws.paths)) continue;
-      // An either/or slot is the planner's choice between alternatives.
-      const alternatives = splitDeliverablePaths(slot);
-      const [path] = alternatives;
-      if (alternatives.length !== 1 || path === undefined) return undefined;
-      if (isProtectedPath(path) || fenced.has(path) || deferred.has(path)) return undefined;
+      // An either/or slot is the planner's choice between alternatives, and a
+      // template (`<name>`, `work-driver-<name>.ts`) is a pattern, not a file:
+      // writing it literally is the #1155 failure the grammar exists to prevent.
+      const alternatives = splitDeliverablePaths(slot).map(toAlternative);
+      const [alt] = alternatives;
+      if (alternatives.length !== 1 || alt === undefined) return undefined;
+      if (alt.isGlob || !measurableAlternative(alt)) return undefined;
+      const path = alt.raw;
+      if (isProtectedPath(path) || fenced(path) || deferred.has(path)) return undefined;
       if (!added.includes(path)) added.push(path);
     }
   }
