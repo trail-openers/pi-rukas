@@ -51,6 +51,7 @@
  * it never resolves as `path-gone`; only a path absent from a readable commit does.
  */
 
+import type { FindingSource } from "./lens-review-types.ts";
 import type { ChangedRanges } from "./review-diff.ts";
 import type { ResolveReason, StoredFinding } from "./review-findings-file.ts";
 import type { HeadState } from "./review-findings-head.ts";
@@ -76,11 +77,7 @@ const CARRY: RowFate = { kind: "carry" };
  * only its own changed lines, so its silence about the code is not enough to
  * retire the row. Such a row carries until a full review, as before.
  */
-const SECURITY_LENS = "SECURITY";
-
-function isSecurityLens(lens: string): boolean {
-  return lens.toUpperCase() === SECURITY_LENS;
-}
+const SECURITY_LENS: FindingSource = "SECURITY";
 
 /** The resolve reason a line-less row takes when a complete review no longer reports it (#1469). */
 const NOT_REPORTED: RowFate = { kind: "resolve", reason: "not-reported" };
@@ -241,7 +238,7 @@ function linesFate(
   const reviewed =
     full ||
     (review === "delta" &&
-      !isSecurityLens(row.lens) &&
+      row.lens.trim().toUpperCase() !== SECURITY_LENS &&
       insideDelta(row.path, row.line, deltaRanges));
   return reviewed ? { kind: "resolve", reason: "code-gone" } : CARRY;
 }

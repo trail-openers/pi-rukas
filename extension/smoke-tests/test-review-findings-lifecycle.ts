@@ -244,13 +244,14 @@ try {
   sh("git add -A");
   sh("git commit -qm line-three-changed-critical");
   const d6 = headOf();
-  await recordFindingRunOutcome({
+  const seedA6 = await recordFindingRunOutcome({
     cwd: repo,
     branch: "feat-critical-delta",
     headSha: d5,
     findings: [{ ...finding("Critical at line 3", 3), severity: "CRITICAL" }],
     review: "full",
   });
+  assert(seedA6.ok === true, "A6: the CRITICAL row records its seed round");
   const roundA6 = await recordFindingRunOutcome({
     cwd: repo,
     branch: "feat-critical-delta",
