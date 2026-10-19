@@ -7,21 +7,28 @@
  * still edits it, because nothing told the developer the path is off-limits;
  * the protected-path halt then parks the cycle after the whole develop spend.
  *
- * So each deferred path is appended to EVERY workstream's `outOfScope`, as the
- * bare normalised path: the scope gate then matches it exactly, and the develop
- * prompt names it. The "protected, no --allow-protected grant" annotation is
- * NOT part of the entry; the prompts render it from the deferral list next to
- * the fence (`protectedFenceNote`). A workstream that declares the path in its
- * own `paths` still gets the fence; the protected-path halt is the backstop.
+ * So each deferred path is appended to the `outOfScope` of every workstream
+ * that does not declare it in its own `paths`, as the bare normalised path: the
+ * scope gate then matches it exactly, and the develop prompt names it. A
+ * workstream that declares the path itself is not fenced for it — a self-declared
+ * fence is the contradiction the plan-time check rejects — and the protected-path
+ * halt is the backstop for that shape. The "protected, no --allow-protected
+ * grant" annotation is NOT part of the entry; the prompts render it from the
+ * deferral list next to the fence (`fenceLines`).
+ *
+ * The deferred list is persisted on pipelineState (`deferredProtected`) by the
+ * plan tail; develop and the corrective round read it from there.
  *
  * Idempotent: an entry already present (after `normaliseDeclaredPath`) is not
  * appended again, so a re-run of the plan tail adds nothing.
  */
 
-import { neutraliseFenceEntry } from "./plan-workstream-schema.ts";
+import { neutraliseFenceEntry, quotedOutOfScope } from "./plan-workstream-schema.ts";
 import { splitDeliverablePaths } from "./work-driver-deliverable-paths.ts";
 import { type SpecCoverageSpec, protectedDeferralsOf } from "./work-driver-plan-spec-coverage.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
+import type { Workstream } from "./workflow-state-schema.ts";
+import type { WorkState } from "./workflow-state.ts";
 
 /**
  * The bare normalised paths the plan deferred: every protected, ungranted
@@ -45,24 +52,24 @@ export function deferredProtectedPaths(
 }
 
 /**
- * The workstreams map with each deferred path appended to every workstream's
- * `outOfScope` that does not already carry it. Returns the input object itself
- * when nothing is appended, so a caller can tell the no-op apart.
+ * The workstreams map with each deferred path appended to the `outOfScope` of
+ * every workstream that neither declares it in `paths` nor already fences it.
+ * Returns the input object itself when nothing is appended, so a caller can
+ * tell the no-op apart.
  */
-export function withDeferredProtectedFence<
-  W extends { outOfScope: string[] } = { outOfScope: string[] },
->(
-  workstreams: Record<string, W>,
+export function withDeferredProtectedFence(
+  workstreams: Record<string, Workstream>,
   spec: SpecCoverageSpec | undefined,
   grant: readonly string[],
-): Record<string, W> {
+): Record<string, Workstream> {
   const deferred = deferredProtectedPaths(spec, grant);
   if (deferred.length === 0) return workstreams;
   let changed = false;
-  const out: Record<string, W> = {};
+  const out: Record<string, Workstream> = {};
   for (const [id, ws] of Object.entries(workstreams)) {
-    const present = new Set(ws.outOfScope.map((e) => normaliseDeclaredPath(e)));
-    const missing = deferred.filter((p) => !present.has(p));
+    const declared = new Set(ws.paths.map((e) => normaliseDeclaredPath(e)));
+    const fenced = new Set(ws.outOfScope.map((e) => normaliseDeclaredPath(e)));
+    const missing = deferred.filter((p) => !declared.has(p) && !fenced.has(p));
     if (missing.length === 0) {
       out[id] = ws;
       continue;
@@ -71,6 +78,14 @@ export function withDeferredProtectedFence<
     out[id] = { ...ws, outOfScope: [...ws.outOfScope, ...missing] };
   }
   return changed ? out : workstreams;
+}
+
+/** The state with its persisted deferred set replaced by `deferred`. */
+export function withPersistedDeferrals(state: WorkState, deferred: readonly string[]): WorkState {
+  return {
+    ...state,
+    pipelineState: { ...state.pipelineState, deferredProtected: [...deferred] },
+  };
 }
 
 /**
@@ -87,8 +102,8 @@ export function protectedFenceEntries(
 }
 
 /**
- * The one line a develop prompt renders beside the fence: which fenced entries
- * are protected with no grant. Empty when none of the fence is deferred.
+ * The one line a prompt renders beside the fence: which fenced entries are
+ * protected with no grant. Empty when none of the fence is deferred.
  */
 export function protectedFenceNote(
   outOfScope: readonly string[],
@@ -96,9 +111,21 @@ export function protectedFenceNote(
 ): string {
   const entries = protectedFenceEntries(outOfScope, deferred);
   if (entries.length === 0) return "";
-  return `**Protected, no --allow-protected grant** — ${entries
-    .map((e) => JSON.stringify(neutraliseFenceEntry(e)))
-    .join(
-      "; ",
-    )} ${entries.length === 1 ? "is a protected path" : "are protected paths"} this cycle may not change; an edit to ${entries.length === 1 ? "it" : "one of them"} parks the cycle.`;
+  const shown = entries.map((e) => JSON.stringify(neutraliseFenceEntry(e))).join("; ");
+  const one = entries.length === 1;
+  return `**Protected, no --allow-protected grant** — ${shown} ${one ? "is a protected path" : "are protected paths"} this cycle may not change; an edit to ${one ? "it" : "one of them"} parks the cycle.`;
+}
+
+/**
+ * The OUT OF SCOPE block a develop prompt (first or corrective) renders: the
+ * fence line, then the protected note beside it when a fenced entry is deferred.
+ * Empty when the workstream has no fence.
+ */
+export function fenceLines(outOfScope: readonly string[], deferred: readonly string[]): string[] {
+  if (outOfScope.length === 0) return [];
+  const note = protectedFenceNote(outOfScope, deferred);
+  return [
+    `**OUT OF SCOPE — do NOT touch**: ${quotedOutOfScope(outOfScope)}`,
+    ...(note.length > 0 ? [note] : []),
+  ];
 }

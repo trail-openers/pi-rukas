@@ -318,7 +318,7 @@ export async function verifyDevelopOutcome(
   // (AGENTS.md, CLAUDE.md) is deliberately NOT halted here — it is neutralised
   // instead, by reading doctrine at baseSha in the merge gate — so that this
   // repo's own "docs ship with the PR" rule keeps working.
-  runProtectedPathGate({
+  const protectedRefused = runProtectedPathGate({
     protectedGateOn,
     touchedPaths,
     protectedOnlyPaths,
@@ -353,6 +353,7 @@ export async function verifyDevelopOutcome(
     notes,
     fenceViolations,
     scopeFenceLift(ctx, state, options.fenceLifts),
+    protectedRefused,
   );
   if (changedWorktrees.length === 0) {
     // #679 (task-evidence) — if every assessed worktree is a legitimate

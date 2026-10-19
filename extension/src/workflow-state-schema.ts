@@ -203,6 +203,12 @@ export interface PipelineState extends IssueClosedState {
    */
   normalisedSpec?: NormalisedSpec;
   /**
+   * #1676 — the protected paths the plan deferred (no --allow-protected grant),
+   * persisted with the fence the plan tail appended. Develop and the corrective
+   * round read this list; absent = none deferred (or a pre-#1676 state file).
+   */
+  deferredProtected?: string[];
+  /**
    * #380 — why the cycle stopped at the merge step: merge authority
    * (citation-verified grant) and executed `gh` evidence, both defaulting
    * to "no". Absent unless the merge was held. `mergeHold` below carries
