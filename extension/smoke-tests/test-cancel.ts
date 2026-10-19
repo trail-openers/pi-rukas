@@ -68,15 +68,19 @@
  * applies to itself.
  */
 
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+// Must stay first: sets PI_ENSEMBLE_PROMPTS_DIR before src/roles.ts loads (#1579).
+import "./lib/cancel-prompts.ts";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import { ROLES } from "../src/roles.ts";
 import { KILL_GRACE_MS } from "../src/spawn-kill.ts";
 import { spawnSpecialist } from "../src/spawn.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { assertSigtermEscalationKillsGroup } from "./lib/cancel-escalation.ts";
 import { writeFakePi } from "./lib/cancel-fixture.ts";
 import { fixturePidFiles, readRecordedPid, readRecordedPids } from "./lib/cancel-pids.ts";
+import { CANCEL_PROMPTS_DIR } from "./lib/cancel-prompts.ts";
 import { diedToSigkill, killedByInactivityBudget } from "./lib/kill-outcome.ts";
 import { pidAlive } from "./lib/poll-until-killed.ts";
 import {
@@ -284,6 +288,10 @@ assert(
   process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS === "0",
   "env invariant: PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS === '0' for the abort tests",
 );
+for (const [role, { promptFile: p }] of Object.entries(ROLES)) {
+  const ok = p.startsWith(CANCEL_PROMPTS_DIR + sep) && existsSync(p);
+  assert(ok, `env invariant: ${role} prompt is under the test-owned dir and exists`);
+}
 
 try {
   // Test 1 — AbortSignal kills the child mid-flight (deterministic fake child).
