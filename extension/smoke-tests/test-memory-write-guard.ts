@@ -70,6 +70,14 @@ const refused: Array<[string, string]> = [
   ["caffeinate wrapper", "caffeinate -dimsu vipune delete 1"],
   ["gtimeout wrapper", "gtimeout 5 vipune prune"],
   ["doas wrapper", "doas -u root vipune delete 1"],
+  ["stderr redirect before delete", "2>/dev/null vipune delete 12"],
+  ["stdout redirect before prune", "> out vipune prune"],
+  ["redirect with separate target", "< in vipune delete 1"],
+  ["find -exec delete", "find . -exec vipune delete {} \\;"],
+  ["find -exec behind timeout", "find . -name x -exec timeout 5 vipune prune {} +"],
+  ["watch delete", "watch -n 5 vipune delete 1"],
+  ["watch single-word body", "watch 'vipune delete 1'"],
+  ["script -c delete", 'script -qc "vipune delete 1" /dev/null'],
 ];
 for (const [name, cmd] of refused) {
   assert(isDestructiveWrite(cmd), `1: refused: ${name} (${cmd})`);
@@ -93,6 +101,10 @@ const allowed: Array<[string, string]> = [
   ["list", "vipune list --json"],
   ["search for the word delete", "vipune search 'delete old rows' --json"],
   ["echo of a delete", 'echo "vipune delete 12"'],
+  ["stderr redirect on search", "vipune search 'x' 2>/dev/null"],
+  ["find without exec", "find . -name '*.ts'"],
+  ["find -exec echo", "find . -exec echo {} \\;"],
+  ["watch search", "watch -n 5 vipune search 'delete'"],
 ];
 for (const [name, cmd] of allowed) {
   assert(!isDestructiveWrite(cmd), `2: allowed: ${name} (${cmd})`);

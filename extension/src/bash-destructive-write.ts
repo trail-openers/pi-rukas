@@ -25,6 +25,12 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
  * undo, `prune` demotes candidates in bulk (an operator action per the vipune doctrine).
  */
 const IRREVERSIBLE_VERBS = new Set(["delete", "prune"]);
+/** `find` actions that run their argument words as a command, up to a `;` or `+`. */
+const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+/** A redirection word, with or without its target: `2>/dev/null`, `>out`, `>`. */
+const REDIRECT = /^\d*[<>]/;
+/** A redirection operator whose target is the next word: `>`, `2>`, `>>`, `>&`. */
+const REDIRECT_OPERATOR_ONLY = /^\d*[<>][>&|]?$/;
 /**
  * Process wrappers the predicate sees through. `timeout` also takes one DURATION
  * word before the command.
@@ -45,6 +51,7 @@ const WRAPPERS = new Set([
   "stdbuf",
   "time",
   "setsid",
+  "watch",
 ]);
 /** Shell reserved words that prefix a simple command (`do vipune …`, `{ vipune …; }`, `! vipune …`). */
 const SHELL_KEYWORDS = new Set([
@@ -75,6 +82,7 @@ const OPTION_ARGS = new Map<string, ReadonlySet<string>>([
   ["xargs", new Set(["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s"])],
   ["nice", new Set(["-n"])],
   ["stdbuf", new Set(["-i", "-o", "-e"])],
+  ["watch", new Set(["-n"])],
   ["time", new Set(["-f", "-o"])],
 ]);
 /** `env -S STRING`, `-SSTRING`, `--split-string STRING`, `--split-string=STRING`. */
@@ -186,17 +194,27 @@ interface Unwrapped {
   split?: string[];
 }
 
+/** Drop leading redirections (and their targets), which may sit before the command name. */
+function skipRedirects(words: string[]): string[] {
+  let rest = words;
+  while (rest.length > 0 && REDIRECT.test(rest[0] ?? "")) {
+    rest = rest.slice(REDIRECT_OPERATOR_ONLY.test(rest[0] ?? "") ? 2 : 1);
+  }
+  return rest;
+}
+
 /** Strip `VAR=value` prefixes and the WRAPPERS, with their options. */
 function unwrap(argv: readonly string[]): Unwrapped {
   let rest = [...argv];
   for (;;) {
+    rest = skipRedirects(rest);
     if (rest.length > 0 && (ASSIGNMENT.test(rest[0] ?? "") || SHELL_KEYWORDS.has(rest[0] ?? ""))) {
       rest = rest.slice(1);
       continue;
     }
     const wrapper = path.basename(rest[0] ?? "");
     if (rest.length === 0 || !WRAPPERS.has(wrapper)) return { argv: rest };
-    rest = rest.slice(1);
+    rest = skipRedirects(rest.slice(1));
     const argOptions = OPTION_ARGS.get(wrapper) ?? new Set<string>();
     while (rest.length > 0 && (rest[0]?.startsWith("-") || ASSIGNMENT.test(rest[0] ?? ""))) {
       const opt = rest[0] ?? "";
@@ -208,10 +226,10 @@ function unwrap(argv: readonly string[]): Unwrapped {
         const value = takesNext ? (rest[1] ?? "") : inline;
         return { argv: [], split: [value, ...rest.slice(takesNext ? 2 : 1)] };
       }
-      rest = rest.slice(argOptions.has(opt) ? 2 : 1);
+      rest = skipRedirects(rest.slice(argOptions.has(opt) ? 2 : 1));
     }
     // `timeout DURATION COMMAND`: one positional word precedes the command.
-    if (wrapper === "timeout" || wrapper === "gtimeout") rest = rest.slice(1);
+    if (wrapper === "timeout" || wrapper === "gtimeout") rest = skipRedirects(rest).slice(1);
   }
 }
 
@@ -222,16 +240,31 @@ function isDestructiveArgv(words: readonly string[], depth: number): boolean {
     const [payload = "", ...tail] = split;
     return isDestructiveWrite([payload, ...tail.map(quoteWord)].join(" "), depth + 1);
   }
+  // A single word holding a whole command (`watch 'vipune delete 1'`) is re-parsed as one.
+  if (argv.length === 1 && /\s/.test(argv[0] ?? ""))
+    return isDestructiveWrite(argv[0] ?? "", depth + 1);
   const head = path.basename(argv[0] ?? "");
   if (head === "eval") return isDestructiveWrite(argv.slice(1).join(" "), depth + 1);
-  if (SHELLS.has(head)) {
+  if (SHELLS.has(head) || head === "script") {
     const c = argv.findIndex((w, i) => i > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(w));
     const body = c >= 0 ? argv[c + 1] : undefined;
     return body !== undefined && isDestructiveWrite(body, depth + 1);
   }
+  if (head === "find") {
+    // `find … -exec CMD … ;` runs CMD once per match, so CMD is judged like any other command.
+    return argv.some(
+      (w, i) => FIND_EXEC.has(w) && isDestructiveArgv(execBody(argv, i + 1), depth + 1),
+    );
+  }
   if (head !== "vipune") return false;
   if (IRREVERSIBLE_VERBS.has(argv[1] ?? "")) return true;
   return argv[1] === "update" && argv.slice(2).some(isTextFlag);
+}
+
+/** The words of a `find -exec` action starting at `start`, up to its `;` or `+` terminator. */
+function execBody(argv: readonly string[], start: number): string[] {
+  const end = argv.findIndex((w, i) => i >= start && (w === ";" || w === "+"));
+  return argv.slice(start, end < 0 ? undefined : end);
 }
 
 /** True when a simple command in `command` rewrites a memory row's text. */
