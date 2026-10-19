@@ -11,6 +11,7 @@
  */
 
 import type { CommentEvidence } from "./comment-evidence.ts";
+import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
@@ -28,6 +29,9 @@ export interface VerifyDevelopOutcomeOptions {
   // scope/fanout gate call in work-driver-verify-develop.ts). Mutated in
   // place by runScopeFanoutGate.
   fenceViolations?: FenceViolationRecord[];
+  // #1405 — out-parameter for the issue-fenced paths the Test surface admitted
+  // (see scopeFenceLift). The caller records each as a `fence-lifted` event.
+  fenceLifts?: FenceLift[];
   // #841 — out-parameter for the consolidated verify's persisted raw-output
   // log path (the gate records it when a log was written, so the caller can
   // put it on the cap-hit event structurally instead of regexing prose).

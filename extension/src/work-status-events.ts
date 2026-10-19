@@ -193,6 +193,9 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // discarded SHA (the operator can `git show <sha>` without reading the
       // state file).
       return `  fence-recovery-started · [${e.workstreamId}] → ${e.owners.join(", ")} · discarded ${e.discardedSha ? e.discardedSha.slice(0, 8) : "(no commit ahead of base)"}${e.cause === "sibling-symbol" ? ` · sibling symbol ${(e.symbols ?? []).join(", ")}` : ""}`;
+    case "fence-lifted":
+      // #1405 — the admitted path and the Test-surface line that named it.
+      return `  fence-lifted · [${e.workstreamId}] may change ${e.file} · precheck: ${e.line.slice(0, 80)}`;
     case "adversarial-skipped-empty-diff":
       return `  adversarial-skipped-empty-diff · workstream ${e.workstreamId}`;
     case "verify-full-status":

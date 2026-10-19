@@ -11,6 +11,7 @@ import type { CommentEvidence } from "./comment-evidence.ts";
 import { execTree } from "./exec-tree.ts";
 import { execp as lensExecp } from "./exec.ts";
 import { aheadOfBase } from "./git-range.ts";
+import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { GateHangPathSink } from "./work-driver-gate-hang.ts";
@@ -157,6 +158,8 @@ export async function verifyStepOutcome(
    * fence instead of asserting an incoherent decomposition.
    */
   fenceViolations?: FenceViolationRecord[];
+  /** #1405 — the issue-fenced paths the primary's Test surface admitted this run. */
+  fenceLifts?: FenceLift[];
   /**
    * #841 — the consolidated verify's persisted raw-output log path (run2
    * when a flake re-run fired, run1 otherwise), carried STRUCTURALLY so the
@@ -223,6 +226,7 @@ export async function verifyStepOutcome(
     let flakeEvidenceTail: string | undefined;
     let consolidatedLogPath: string | undefined;
     const fenceViolations: FenceViolationRecord[] = [];
+    const fenceLifts: FenceLift[] = [];
     const commentEvidence: CommentEvidence[] = [];
     let baselineRedOnly = false;
     // #1240 — the identity that justified skipping the consolidated run.
@@ -257,6 +261,7 @@ export async function verifyStepOutcome(
         flakeEvidenceTail = evidenceTail;
       },
       fenceViolations,
+      fenceLifts,
       onConsolidatedLogPath: (logPath) => {
         consolidatedLogPath = logPath;
       },
@@ -299,6 +304,7 @@ export async function verifyStepOutcome(
       failures,
       notes,
       ...(fenceViolations.length > 0 ? { fenceViolations } : {}),
+      ...(fenceLifts.length > 0 ? { fenceLifts } : {}),
       ...(flakeRecovered ? { flakeRecovered: true } : {}),
       ...(consolidatedLogPath !== undefined ? { logPath: consolidatedLogPath } : {}),
       ...(baselineRedOnly ? { baselineRedOnly: true } : {}),

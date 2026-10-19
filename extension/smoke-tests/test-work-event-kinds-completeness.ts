@@ -336,6 +336,7 @@ const everyKindEvent: WorkEvent[] = [
     tokens: 10,
   },
   { kind: "fence-recovery-started", at: 1, workstreamId: "a", owners: ["b"] },
+  { kind: "fence-lifted", at: 1, workstreamId: "a", file: "f.ts", line: "- f.ts", source: "precheck" },
   // S4a (#1162) — the interrupt record.
   { kind: "interrupted", at: 1, reason: "signal" },
   {
