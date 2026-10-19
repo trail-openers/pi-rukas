@@ -35,7 +35,10 @@ if (!cfg) throw new Error("fixture config did not load");
 /** The first target the command writes that the rule refuses, or undefined when all pass. */
 function refusedTarget(command: string, cwd: string = fx.wt): string | undefined {
   for (const t of bashWriteTargets(command, cwd)) {
-    const judged = judgeWrite(t.path, t.cwd, cfg, { linkedCommand: t.linkedCommand });
+    const judged = judgeWrite(t.path, t.cwd, cfg, {
+      linkedCommand: t.linkedCommand,
+      throughLinks: t.throughLinks,
+    });
     if (t.opaque || !judged.ok) return t.path;
   }
   return undefined;
@@ -279,10 +282,10 @@ assert(refusedTarget("") === undefined, "an empty command has no targets");
     "tracking: a command that creates no link is never flagged linked",
   );
   const sub = bashWriteTargets("(cd src); echo x > out.txt", fx.wt);
+  const outs = sub.filter((t) => t.path === "out.txt");
   assert(
-    sub.some((t) => t.path === "out.txt" && t.cwd === fx.wt) &&
-      sub.some((t) => t.path === "out.txt" && t.cwd === path.join(fx.wt, "src")),
-    "tracking: after a subshell cd the redirect is judged from both the start and src",
+    outs.length === 1 && outs[0]?.cwd === fx.wt,
+    "tracking: a subshell's cd ends with the subshell, so the redirect after it is judged from the start",
   );
 }
 
@@ -344,6 +347,43 @@ for (const [command, why] of [
   ["cat <<EOF\n\\$(echo x > ../../bin/keep)\nEOF", "an escaped dollar in an unquoted heredoc is literal text"],
 ] as const) {
   assert(refusedTarget(command) === undefined, `allow: ${why}`);
+}
+
+// ------------------------------------------------ #1655 — a target is judged from the directory it was written in
+for (const [command, why] of [
+  ["cd .. && touch x", "a cd out of the worktree, then a relative touch"],
+  ["(cd extension) && touch ../x", "a subshell's cd is undone, so ../x is judged from the worktree and climbs out"],
+  ["cd extension && touch ../../x", "a relative touch after a cd climbs out of the worktree"],
+  ["tar -xf a.tgz && echo y > src/new", "a write under a directory this command's extraction fills"],
+] as const) {
+  assert(refusedTarget(command) !== undefined, `refuse: ${why} — \`${command}\``);
+}
+for (const [command, why] of [
+  ["cd extension && bun test > ../tmp/issue-1655/test.log", "a redirect judged from the directory cd entered, not the start"],
+  ["(cd extension) && touch x", "a subshell's cd does not leak: x is inside the worktree"],
+  ["tar -czf out.tgz src && node build.js > build.log", "an archive written creates no link, so build.log is judged normally"],
+  ["tar -xf a.tgz -C src && echo y > other.txt", "an extraction into src does not make a name outside it unjudgeable"],
+  ["curl -o./out.txt https://example.com/x", "curl -o with an attached value inside the worktree"],
+  ["cp -tsrc a", "cp -t with an attached value naming a directory inside the worktree"],
+] as const) {
+  assert(refusedTarget(command) === undefined, `allow: ${why} — \`${command}\``);
+}
+{
+  const cdTarget = bashWriteTargets("cd extension && touch x", fx.wt).find((t) => t.path === "x");
+  assert(cdTarget?.cwd === path.join(fx.wt, "extension"), "a cd is applied to the targets after it: x is judged from extension");
+  const subTarget = bashWriteTargets("(cd extension) && touch x", fx.wt).find((t) => t.path === "x");
+  assert(subTarget?.cwd === fx.wt, "a subshell's cd ends at its ')': x is judged from the worktree");
+}
+
+// ------------------------------------------------ #1655 — tools that create links in a named directory
+for (const [command, why] of [
+  [`tar -xf a.tgz -C ${REPO_BIN}`, "tar -C into the repo root is still refused (existing rule)"],
+  [`curl -o${REPO_BIN}/keep https://example.com/x`, "curl with an attached -o value into the repo root"],
+  [`cp -t${REPO_BIN} a`, "cp with an attached -t value into the repo root"],
+  [`tar -xf a.tgz -C${REPO_BIN}`, "tar with an attached -C value into the repo root"],
+  [`git -C${fx.repo} commit -m x`, "git with an attached -C value at the repo root"],
+] as const) {
+  assert(refusedTarget(command) !== undefined, `refuse: ${why} — \`${command}\``);
 }
 
 rmSync(fx.base, { recursive: true, force: true });
