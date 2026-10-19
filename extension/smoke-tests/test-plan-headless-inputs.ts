@@ -202,9 +202,14 @@ function stateWith(
 		!ungranted.uncovered.some((u) => u.id === "d5"),
 		"protected deliverable, no grant: d5 (.pi/verify-cmd only) is NOT an uncovered deliverable",
 	);
+	// #1642 review — when EVERY measurable deliverable is deferred, nothing was
+	// judged: the gate must not pass silently. It names the path and the grant.
+	const allDeferred = planSpecMismatchReason(ws, { deliverables: [D5] });
 	assert(
-		planSpecMismatchReason(ws, { deliverables: [D5] }) === undefined,
-		"protected deliverable, no grant: the plan-to-spec gate does not reject the plan for it",
+		allDeferred?.kind === "uncovered-deliverables" &&
+			(allDeferred.evidence ?? "").includes(".pi/verify-cmd") &&
+			(allDeferred.evidence ?? "").includes("--allow-protected"),
+		"protected deliverable, no grant, nothing else checkable: a mismatch that names the path and --allow-protected",
 	);
 	assert(
 		protectedDeferralsOf(spec).some(
@@ -275,9 +280,9 @@ function stateWith(
 		const argv = opts?.argv ?? [];
 		calls.push({ argv });
 		if (argv[0] === "grep") {
-			const ref = argv[5] ?? "";
+			const ref = argv[6] ?? "";
 			return {
-				stdout: `${ref}:extension/smoke-tests/lib/arms/loop-behaviour.ts\n${ref}:extension/src/x.ts\n`,
+				stdout: `${ref}:extension/smoke-tests/lib/arms/loop-behaviour.ts\0${ref}:extension/src/x.ts\0`,
 			};
 		}
 		return { stdout: "" };
@@ -310,6 +315,22 @@ function stateWith(
 		shaFiles.join() ===
 			"extension/smoke-tests/lib/arms/loop-behaviour.ts,extension/src/x.ts",
 		"a sha ref is stripped the same way",
+	);
+
+	// #1642 item 4 \u2014 `-z` output: NUL-terminated, so names with spaces or a
+	// newline come back whole, and a leading space is part of the name (no trim).
+	const nul = await definingFiles(
+		"x",
+		async () => ({
+			stdout: "HEAD:docs/my file.md\0HEAD: lead.ts\0HEAD:a\nb.ts\0",
+		}),
+		"/repo",
+		"HEAD",
+	);
+	assert(
+		JSON.stringify(nul) ===
+			JSON.stringify(["docs/my file.md", " lead.ts", "a\nb.ts"]),
+		"definingFiles: NUL-split names keep spaces, leading spaces and newlines",
 	);
 }
 

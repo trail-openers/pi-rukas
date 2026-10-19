@@ -234,12 +234,26 @@ const BARE_SHA = /^[0-9a-f]{7,40}$/i;
  * ref is data and never shell text. Any failure (no such object, not a
  * repo) reads as "not a commit here": the port cannot be cherry-picked either way.
  */
-async function isCommitInRepo(sha: string, repoRoot: string): Promise<boolean> {
+export async function isCommitInRepo(
+  sha: string,
+  repoRoot: string,
+  exec: typeof execp = execp,
+): Promise<boolean> {
   try {
-    await execp("git", { argv: ["cat-file", "-e", `${sha}^{commit}`], cwd: repoRoot });
+    await exec("git", { argv: ["cat-file", "-e", `${sha}^{commit}`], cwd: repoRoot });
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    // Only git's own exit status is an answer: 1 (object absent) or 128 (not a
+    // valid object name / not a repo). A spawn failure (ENOENT, EAGAIN) or a
+    // signal kill carries no numeric exit code. That is not evidence the commit
+    // is absent, and reading it as absent would turn a real port into a fresh
+    // implementation, so the port is kept and the check is traced as unknown.
+    const code = (err as { code?: unknown } | null)?.code;
+    if (code === 1 || code === 128) return false;
+    trace(
+      `work-driver: plan contract \u2014 could not check whether ${sha} is a commit here (${String(code ?? "no exit code")}); keeping it as the port`,
+    );
+    return true;
   }
 }
 

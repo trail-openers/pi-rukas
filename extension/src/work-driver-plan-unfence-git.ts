@@ -62,7 +62,7 @@ export async function definingFiles(
   let stdout = "";
   try {
     const r = await execFn("git", {
-      argv: ["grep", "-l", "-w", "-e", name, ref, "--"],
+      argv: ["grep", "-l", "-z", "-w", "-e", name, ref, "--"],
       cwd: repoRoot,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: GIT_MAX_BUFFER,
@@ -89,10 +89,12 @@ export async function definingFiles(
   // each one to `readAtRef`, which adds the ref itself. Left in place the prefix
   // doubled (`git show HEAD:HEAD:<path>`), every read failed, and every fence the
   // pass was meant to lift stayed. Strip it here, once, so a path is a path.
+  // `-z` ends each name with NUL, so a name with a space or a newline is data,
+  // not a separator, and git does not quote it. No trim: a name may begin or
+  // end with a space.
   const prefix = `${ref}:`;
   return stdout
-    .split("\n")
-    .map((l) => l.trim())
+    .split("\0")
     .filter((l) => l.length > 0)
     .map((l) => (l.startsWith(prefix) ? l.slice(prefix.length) : l));
 }
