@@ -55,8 +55,26 @@
  * untouched.
  */
 
+import { trace } from "./trace.ts";
 import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+
+/**
+ * #1405 — ask the issue-fenced lift, failing closed: a throw from the lift (it
+ * reads and parses the issue body) leaves the fence standing, never the gate.
+ */
+function liftAdmits(
+  lift: ((workstreamId: string, file: string) => boolean) | undefined,
+  id: string,
+  file: string,
+): boolean {
+  try {
+    return lift?.(id, file) === true;
+  } catch (err) {
+    trace(`scope-fence: lift for ${id} ${file} threw; the fence stands: ${String(err)}`);
+    return false;
+  }
+}
 
 /** #285 — escape hatch for the deterministic develop scope/fanout gate. */
 function scopeGateEnabled(): boolean {
@@ -286,7 +304,7 @@ export function runScopeFanoutGate(
           declaredById: declaringId,
           kind: "sibling-declared",
         });
-      } else if (!((changedBy.get(file) ?? 0) === 1 && liftIssueFence?.(id, file) === true)) {
+      } else if (!((changedBy.get(file) ?? 0) === 1 && liftAdmits(liftIssueFence, id, file))) {
         // ISSUE-FENCED — the file is fenced (the workstream's own
         // `outOfScope`) but no sibling declared it: an issue-level
         // exclusion. Every N=1 fence hit is this. Still blocks; no

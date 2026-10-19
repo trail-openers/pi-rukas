@@ -184,6 +184,22 @@ async function main() {
     testSurfaceNames(issueSections(negated).testSurface, TEXT_FLATTEN) === undefined,
     "a verification-only Test-surface bullet (must still pass) does not admit the path",
   );
+  // A SOURCE file the Test surface names to verify it is not a request to change it:
+  // only test files are liftable by the rule (round 3).
+  const verifyOnly = fixture(
+    `## Test surface\n\n- \`${SCOPE_FANOUT}\` \u2014 covered by the existing fence-gate tests, run them\n`,
+  );
+  assert(
+    gate([SCOPE_FANOUT], verifyOnly.lift).length === 1 && verifyOnly.lifts.length === 0,
+    "a source file named in a Test-surface bullet is never lifted by the rule",
+  );
+  // A lift that throws leaves the fence standing, never the gate.
+  assert(
+    gate([TEXT_FLATTEN], () => {
+      throw new Error("boom");
+    }).length === 1,
+    "a throwing lift fails closed: the issue-fenced failure stands",
+  );
   assert(
     gate([TEXT_FLATTEN]).length === 1 && /issue-fenced/.test(gate([TEXT_FLATTEN])[0] ?? ""),
     "baseline: the same hit without the lift is an issue-fenced failure",
