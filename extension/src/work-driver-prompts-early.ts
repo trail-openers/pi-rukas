@@ -6,6 +6,7 @@
  */
 import { quotedPaths } from "./plan-path-shape.ts";
 import { quotedOutOfScope } from "./plan-workstream-schema.ts";
+import { protectedFenceNote } from "./work-driver-plan-fence.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 import { developTestScopeLine, developVerifyLine } from "./work-driver-verify-fast.ts";
 
@@ -223,6 +224,12 @@ function intentResolutionBlock(issues: number[]): string {
   ].join("\n");
 }
 
+/** #1676 — the protected-fence note on its own line under the fence, or nothing. */
+function protectedNoteLine(outOfScope: readonly string[], deferred?: readonly string[]): string {
+  const note = protectedFenceNote(outOfScope, deferred ?? []);
+  return note.length > 0 ? `\n${note}` : "";
+}
+
 export function inlineDevelopPrompt(
   issues: number[],
   scratchDirAbs: string,
@@ -291,6 +298,11 @@ export function inlineDevelopPrompt(
   interruptedNote?: string,
   /** #1324 — `.pi/verify-cmd-fast`: the developer runs this, the driver runs both tiers. */
   fastVerifyCmd?: string,
+  /**
+   * #1676 — the protected paths the plan deferred (no --allow-protected grant).
+   * A fenced entry that is one of them is annotated beside the fence.
+   */
+  deferredProtected?: readonly string[],
 ): string {
   // PR11 — multi-issue cycles must show the developer the ACTIVE issues
   // (NEEDS_WORK subset after explore), not the primary cycle issue. The
@@ -323,7 +335,7 @@ export function inlineDevelopPrompt(
       // those files; separating them invites the reader to skip it.
       memoryBrief ?? "",
       workstream.outOfScope.length > 0
-        ? `**OUT OF SCOPE — do NOT touch**: ${quotedOutOfScope(workstream.outOfScope)}`
+        ? `**OUT OF SCOPE — do NOT touch**: ${quotedOutOfScope(workstream.outOfScope)}${protectedNoteLine(workstream.outOfScope, deferredProtected)}`
         : "Stay tightly focused on the scope; other workstreams handle the rest.",
       "",
     );

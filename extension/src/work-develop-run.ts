@@ -33,6 +33,7 @@ import { continuePrNote } from "./work-driver-continue-pr-guard.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { reviewFixDispatchBoundMs, reviewLoopActive } from "./work-driver-lens-fix-budget.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
+import { deferredProtectedPaths } from "./work-driver-plan-fence.ts";
 import {
   inlineDevelopPrompt,
   inlineSpeculativeExplorePrompt,
@@ -313,6 +314,11 @@ export function makeRunOneWorkstream(
               ws?.fixFindings,
               developNote(s.stateRef.current),
               fastVerifyCmd,
+              // #1676 — the protected paths the plan deferred, annotated beside the fence.
+              deferredProtectedPaths(
+                s.stateRef.current.pipelineState.normalisedSpec,
+                ctx.protectedGrant ?? [],
+              ),
             ),
             cwd,
           },
