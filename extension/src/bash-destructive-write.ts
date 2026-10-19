@@ -21,6 +21,11 @@ import path from "node:path";
 const MAX_DEPTH = 4;
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /**
+ * vipune verbs refused whatever their arguments: `delete` removes a row with no
+ * undo, `prune` demotes candidates in bulk (an operator action per the vipune doctrine).
+ */
+const IRREVERSIBLE_VERBS = new Set(["delete", "prune"]);
+/**
  * Process wrappers the predicate sees through. `timeout` also takes one DURATION
  * word before the command.
  */
@@ -197,8 +202,9 @@ function isDestructiveArgv(words: readonly string[], depth: number): boolean {
     const body = c >= 0 ? argv[c + 1] : undefined;
     return body !== undefined && isDestructiveWrite(body, depth + 1);
   }
-  if (head !== "vipune" || argv[1] !== "update") return false;
-  return argv.slice(2).some(isTextFlag);
+  if (head !== "vipune") return false;
+  if (IRREVERSIBLE_VERBS.has(argv[1] ?? "")) return true;
+  return argv[1] === "update" && argv.slice(2).some(isTextFlag);
 }
 
 /** True when a simple command in `command` rewrites a memory row's text. */

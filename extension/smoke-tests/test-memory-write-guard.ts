@@ -56,6 +56,12 @@ const refused: Array<[string, string]> = [
   ["time -o option", "time -o /tmp/t vipune update 12 -t x"],
   ["setsid wrapper", "setsid -w vipune update 12 -t x"],
   ["nice wrapping env wrapping vipune", "nice -n 5 env -i vipune update 12 --text=x"],
+  ["delete", "vipune delete 12"],
+  ["delete with env prefix", "FOO=1 vipune delete 12"],
+  ["delete behind timeout", "timeout 5 vipune delete 12"],
+  ["delete in bash -c body", `bash -c "vipune delete 12"`],
+  ["prune", "vipune prune --count 5 --age-days 30"],
+  ["prune in a chain", "true && vipune prune"],
 ];
 for (const [name, cmd] of refused) {
   assert(isDestructiveWrite(cmd), `1: refused: ${name} (${cmd})`);
@@ -75,6 +81,10 @@ const allowed: Array<[string, string]> = [
   ["time search", "time -p vipune search 'topic'"],
   ["stdbuf search", "stdbuf -oL vipune search 'topic'"],
   ["empty", ""],
+  ["get", "vipune get 12 --json"],
+  ["list", "vipune list --json"],
+  ["search for the word delete", "vipune search 'delete old rows' --json"],
+  ["echo of a delete", 'echo "vipune delete 12"'],
 ];
 for (const [name, cmd] of allowed) {
   assert(!isDestructiveWrite(cmd), `2: allowed: ${name} (${cmd})`);
@@ -143,6 +153,8 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
     "env -S 'vipune update 12 -t x'",
     "timeout 5 vipune update 12 -t x",
     "nohup vipune update 12 -t x",
+    "vipune delete 12",
+    "vipune prune --count 5",
   ]) {
     assert(matchBashSubcommand(cmd, allow) === "deny", `6: the allowlist denies ${cmd}`);
   }
