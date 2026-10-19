@@ -403,21 +403,21 @@ for (const mode of ["killed", "threw"] as const) {
       { id: "d1", paths: ["src/a.ts"] },
       { id: "d2", paths: [], noDiff: true, noDiffEvidence: "settings toggle" },
     ],
-  });
+  }, []);
   assert(
     honoured.checkedCount === 1 && honoured.uncovered.length === 0,
     "an honoured no-diff deliverable stays excluded (clause 1 covers it — the deleted clause was dead)",
   );
   const contradictory = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/z.ts"], noDiff: true, noDiffEvidence: "because" }],
-  });
+  }, []);
   assert(
     contradictory.checkedCount === 1 && contradictory.uncovered.length === 1,
     "noDiff + real paths + real evidence is still MEASURABLE — the paths win (what the dead clause pretended to do)",
   );
   const emptyEvidence = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/z.ts"], noDiff: true, noDiffEvidence: "   " }],
-  });
+  }, []);
   assert(
     emptyEvidence.checkedCount === 1 && emptyEvidence.uncovered.length === 1,
     "a marker with no evidence judges by paths too",

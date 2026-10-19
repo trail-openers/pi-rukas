@@ -855,7 +855,8 @@
           "tr *": "allow",
           "tree*": "allow",
           "xargs*": "allow",
-          "ls*": "allow"
+          "ls": "allow",
+          "ls *": "allow"
         },
         "read": "allow",
         "edit": "deny",

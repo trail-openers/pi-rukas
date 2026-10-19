@@ -116,7 +116,7 @@ const ws = (paths: Record<string, string[]>) =>
   // the plan gate must not halt the cycle for work develop would pass.
   const r = findUncoveredDeliverables(ws({ a: ["src/b.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/a.ts or src/b.ts"] }],
-  });
+  }, []);
   assert(
     r.checkedCount === 1 && r.uncovered.length === 0,
     "#819 agreement: a workstream declaring one alternative covers an either/or deliverable",
@@ -138,7 +138,7 @@ const ws = (paths: Record<string, string[]>) =>
   // names the template's own shape does (the next case).
   const r = findUncoveredDeliverables(ws({ a: ["src/dir/new.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/dir/<x>.ts"] }],
-  });
+  }, []);
   assert(
     r.checkedCount === 1 && r.uncovered.length === 1,
     "#819: a concrete declaration outside a template's directory does not cover it",
@@ -147,14 +147,14 @@ const ws = (paths: Record<string, string[]>) =>
   // deliverable naming the concrete file it produced.
   const rTplPool = findUncoveredDeliverables(ws({ a: ["src/handler-<name>.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/handler-coverage.ts"] }],
-  });
+  }, []);
   assert(
     rTplPool.checkedCount === 1 && rTplPool.uncovered.length === 0,
     "#819 agreement: a workstream's <template> covers a deliverable naming a file that fits it",
   );
   const rBad = findUncoveredDeliverables(ws({ a: ["other/new.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/dir/<x>.ts"] }],
-  });
+  }, []);
   assert(
     rBad.uncovered.length === 1,
     "#819: a template in another directory is still UNCOVERED (segment anchoring holds at plan time too)",
@@ -164,7 +164,7 @@ const ws = (paths: Record<string, string[]>) =>
   // ownership relation was asked in both directions and a path matched itself.
   const unrelated = findUncoveredDeliverables(ws({ a: ["extension/bun.lock"] }), {
     deliverables: [{ id: "d1", paths: ["src/gone.ts"] }],
-  });
+  }, []);
   assert(
     unrelated.checkedCount === 1 && unrelated.uncovered.length === 1,
     "#819: an unrelated workstream declaration does NOT cover a deliverable (no self-match shortcut)",
@@ -180,7 +180,7 @@ const ws = (paths: Record<string, string[]>) =>
       { id: "d1", paths: ["n/a — repo settings"] },
       { id: "d2", paths: ["will land somewhere sensible"] },
     ],
-  });
+  }, []);
   assert(
     r.checkedCount === 0 && r.uncovered.length === 0,
     "#819: an unparseable prose deliverable is not judged and cannot reject the plan",
@@ -199,7 +199,7 @@ const ws = (paths: Record<string, string[]>) =>
   // WITHIN a unit; it does not turn an unclaimed unit into a claimed one.
   const mixedSlot = findUncoveredDeliverables(ws({ a: ["src/gone.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/gone.ts", "n/a"] }],
-  });
+  }, []);
   assert(
     mixedSlot.checkedCount === 0 && mixedSlot.uncovered.length === 0,
     "#819 round-2: a literal placeholder unit keeps the whole deliverable out of judgement (units, not slots, are the unit of judgement)",
@@ -212,14 +212,14 @@ const ws = (paths: Record<string, string[]>) =>
   // fails to deliver it.
   const allUncovered = findUncoveredDeliverables(ws({ a: ["src/gone.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/gone.ts or src/missing-<x>.ts"] }],
-  });
+  }, []);
   assert(
     allUncovered.checkedCount === 1 && allUncovered.uncovered.length === 0,
     "#819: an either/or nobody declared is judged but not rejected — the diff decides, not the plan",
   );
   const proseHalf = findUncoveredDeliverables(ws({ a: ["src/gone.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/gone.ts or src/other-<x>.ts"] }],
-  });
+  }, []);
   assert(
     proseHalf.checkedCount === 1 && proseHalf.uncovered.length === 0,
     "#819: a prose half does not sink a deliverable whose concrete alternative IS declared — it is covered",

@@ -215,7 +215,7 @@ function measurable(d: SpecCoverageDeliverable, paths: string[]): boolean {
  * reject every plan for a deliverable the cycle was never allowed to build.
  * Deferred, not dropped: `protectedDeferralsOf` names it for the trace.
  */
-function isDeferredProtectedSlot(slot: string, grant?: readonly string[]): boolean {
+function isDeferredProtectedSlot(slot: string, grant: readonly string[]): boolean {
   const alternatives = splitDeliverablePaths(slot);
   return (
     alternatives.length > 0 &&
@@ -233,7 +233,7 @@ function isDeferredProtectedSlot(slot: string, grant?: readonly string[]): boole
  */
 export function protectedDeferralsOf(
   spec: SpecCoverageSpec | undefined,
-  grant?: readonly string[],
+  grant: readonly string[],
 ): Array<{ id: string; paths: string[] }> {
   const out: Array<{ id: string; paths: string[] }> = [];
   for (const d of spec?.deliverables ?? []) {
@@ -268,7 +268,7 @@ export function protectedDeferralsOf(
 export function findUncoveredDeliverables(
   workstreams: Record<string, SpecCoverageWorkstream>,
   spec: SpecCoverageSpec | undefined,
-  grant?: readonly string[],
+  grant: readonly string[],
 ): { uncovered: UncoveredDeliverable[]; checkedCount: number } {
   const deliverables = spec?.deliverables ?? [];
   // Workstream paths stay a flat list: they are the comparison POOL, and a
@@ -330,7 +330,7 @@ export interface PlanSpecMismatch {
 export function planSpecMismatchReason(
   workstreams: Record<string, SpecCoverageWorkstream>,
   spec: SpecCoverageSpec | undefined,
-  grant?: readonly string[],
+  grant: readonly string[],
 ): PlanSpecMismatch | undefined {
   if (Object.keys(workstreams).length === 0) return undefined;
   const { uncovered, checkedCount } = findUncoveredDeliverables(workstreams, spec, grant);

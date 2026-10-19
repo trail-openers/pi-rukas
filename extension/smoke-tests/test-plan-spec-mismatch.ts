@@ -61,7 +61,7 @@ const FABRICATED = ws({
 // ------------------------------------------- the #818 incident as a fixture
 
 {
-  const r = findUncoveredDeliverables(FABRICATED, SPEC_818);
+  const r = findUncoveredDeliverables(FABRICATED, SPEC_818, []);
   assert(
     r.uncovered.length === 5 && r.checkedCount === 5,
     "#818 fixture: the fabricated supply-chain plan covers NONE of d1–d5 (all 5 measured, all 5 uncovered)",
@@ -70,7 +70,7 @@ const FABRICATED = ws({
     r.uncovered.every((u) => u.paths.length > 0),
     "#818 fixture: every uncovered row carries the paths a human needs to see",
   );
-  const m = planSpecMismatchReason(FABRICATED, SPEC_818);
+  const m = planSpecMismatchReason(FABRICATED, SPEC_818, []);
   assert(
     m?.kind === "uncovered-deliverables",
     "#818 fixture: the gate rejects the fabricated plan before branch/develop",
@@ -94,7 +94,7 @@ const FABRICATED = ws({
     ],
   });
   assert(
-    planSpecMismatchReason(correct, SPEC_818) === undefined,
+    planSpecMismatchReason(correct, SPEC_818, []) === undefined,
     "a plan declaring every deliverable path passes the gate",
   );
   const split = ws({
@@ -106,7 +106,7 @@ const FABRICATED = ws({
     "task-c": ["extension/smoke-tests/"],
   });
   assert(
-    planSpecMismatchReason(split, SPEC_818) === undefined,
+    planSpecMismatchReason(split, SPEC_818, []) === undefined,
     "coverage is measured over the UNION of workstream paths, not per workstream (a correct N=3 plan passes)",
   );
 }
@@ -118,31 +118,31 @@ const FABRICATED = ws({
   assert(
     findUncoveredDeliverables(ws({ a: ["extension/src"] }), {
       deliverables: [{ id: "d1", paths: ["extension/src/work-driver-integrate.ts"] }],
-    }).uncovered.length === 0,
+    }, []).uncovered.length === 0,
     "a workstream declaring the directory covers a deliverable file beneath it (startsWith(p + '/'))",
   );
   assert(
     findUncoveredDeliverables(ws({ a: ["extension/src/work-driver-integrate.ts"] }), {
       deliverables: [{ id: "d1", paths: ["extension/src"] }],
-    }).uncovered.length === 0,
+    }, []).uncovered.length === 0,
     "containment goes both ways: a deliverable declaring the directory is covered by a workstream naming the file in it",
   );
   assert(
     findUncoveredDeliverables(ws({ a: ["extension/src"] }), {
       deliverables: [{ id: "d1", paths: ["extension/srcother/foo.ts"] }],
-    }).uncovered.length === 1,
+    }, []).uncovered.length === 1,
     "the separator is load-bearing: extension/src does not cover extension/srcother/foo.ts",
   );
   assert(
     findUncoveredDeliverables(ws({ a: ["extension/src/work-driver-verify.ts (new)"] }), {
       deliverables: [{ id: "d1", paths: ["extension/src/work-driver-verify.ts"] }],
-    }).uncovered.length === 0,
+    }, []).uncovered.length === 0,
     "prose-annotated declared paths (`… (new)`) normalise before comparison — no false mismatch (the #810 shape)",
   );
   assert(
     findUncoveredDeliverables(ws({ a: ["`extension/src/foo.ts`", "extension/src/bar.ts "] }), {
       deliverables: [{ id: "d1", paths: ["extension/src/foo.ts", "extension/src/bar.ts"] }],
-    }).uncovered.length === 0,
+    }, []).uncovered.length === 0,
     "backticks and stray whitespace in a planner's list do not fabricate a mismatch",
   );
 }
@@ -153,7 +153,7 @@ const FABRICATED = ws({
   // Partial coverage is NOT coverage: d1 declares two paths, the plan covers one.
   const partial = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/a.ts", "src/b.ts"] }],
-  });
+  }, []);
   assert(
     partial.uncovered.length === 1 && partial.uncovered[0]?.paths.length === 2,
     "partial coverage does not cover: EVERY declared path must be in the workstream union (stated policy)",
@@ -164,13 +164,13 @@ const FABRICATED = ws({
       { id: "d1", paths: [] },
       { id: "d2", paths: ["  "] },
     ],
-  });
+  }, []);
   assert(
     pathless.uncovered.length === 0 && pathless.checkedCount === 0,
     "a spec whose deliverables declare NO paths is not checkable: 0 measured, 0 uncovered — never a false mismatch",
   );
   assert(
-    planSpecMismatchReason(ws({ a: [] }), { deliverables: [{ id: "d1", paths: [] }] }) ===
+    planSpecMismatchReason(ws({ a: [] }), { deliverables: [{ id: "d1", paths: [] }] }, []) ===
       undefined,
     "an empty plan against an all-pathless spec is not rejected (nothing to cover)",
   );
@@ -180,7 +180,7 @@ const FABRICATED = ws({
       { id: "d1", paths: ["src/a.ts"] },
       { id: "d2", paths: [], noDiff: true, noDiffEvidence: "settings toggle in .pi/verify-cmd" },
     ],
-  });
+  }, []);
   assert(
     noDiff.uncovered.length === 0 && noDiff.checkedCount === 1,
     "an honoured [no-diff: evidence] deliverable is excluded from the comparison (matches classifyDeliverables)",
@@ -188,7 +188,7 @@ const FABRICATED = ws({
   // A no-diff marker WITH paths is contradictory: the paths win (same rule).
   const contradictory = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/z.ts"], noDiff: true, noDiffEvidence: "n/a" }],
-  });
+  }, []);
   assert(
     contradictory.uncovered.length === 1,
     "a contradictory marker (noDiff + real paths) is judged by its paths, exactly as the converge gate does",
@@ -196,7 +196,7 @@ const FABRICATED = ws({
   // A bare marker with no evidence is NOT honoured.
   const unevidenced = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/z.ts"], noDiff: true, noDiffEvidence: "  " }],
-  });
+  }, []);
   assert(
     unevidenced.uncovered.length === 1,
     "an un-evidenced no-diff marker does not exempt a deliverable that declares paths",
@@ -220,7 +220,7 @@ const FABRICATED = ws({
       { id: "d2", paths: ["the developer will decide where this lands"] },
     ],
   };
-  const prose = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), PROSE_SPEC);
+  const prose = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), PROSE_SPEC, []);
   assert(
     prose.checkedCount === 0,
     "#819 round-2: a deliverable whose paths slot is prose is NOT measurable — checkedCount stays 0",
@@ -230,14 +230,14 @@ const FABRICATED = ws({
     "#819 round-2: prose in the paths slot produces no uncovered row (the planner cannot act on it)",
   );
   assert(
-    planSpecMismatchReason(ws({ a: ["src/a.ts"] }), PROSE_SPEC) === undefined,
+    planSpecMismatchReason(ws({ a: ["src/a.ts"] }), PROSE_SPEC, []) === undefined,
     "#819 round-2: a spec whose only paths are prose never rejects the plan (the gate has nothing to judge)",
   );
   // Absolute / traversing slots are non-paths too (same predicate).
   for (const bad of ["/etc/passwd", "src/../secrets.ts", "src/fo o.ts"]) {
     const r = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), {
       deliverables: [{ id: "d1", paths: [bad] }],
-    });
+    }, []);
     assert(
       r.checkedCount === 0 && r.uncovered.length === 0,
       `#819 round-2: a non-path slot (${JSON.stringify(bad)}) is not measurable, not a rejection`,
@@ -248,7 +248,7 @@ const FABRICATED = ws({
   // judging the measurable half would only produce a rejection nobody can fix.
   const mixed = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/a.ts", "n/a"] }],
-  });
+  }, []);
   assert(
     mixed.checkedCount === 0 && mixed.uncovered.length === 0,
     "#819 round-2: one non-path slot disqualifies the whole deliverable (no partial judgement, no false rejection)",
@@ -260,11 +260,11 @@ const FABRICATED = ws({
 // biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
 {
   assert(
-    planSpecMismatchReason(FABRICATED, undefined) === undefined,
+    planSpecMismatchReason(FABRICATED, undefined, []) === undefined,
     "no spec → the gate has nothing to say (it does not reject; it also does not claim a pass)",
   );
   assert(
-    planSpecMismatchReason(FABRICATED, { deliverables: [] }) === undefined,
+    planSpecMismatchReason(FABRICATED, { deliverables: [] }, []) === undefined,
     "a spec with zero deliverables → the gate does not fire",
   );
 }
@@ -314,7 +314,7 @@ const TAIL = "## Verification\n- run the suite\n";
     "#1652: three markdown blocks in the prose and one valid call → the plan is the one call",
   );
   assert(
-    planSpecMismatchReason(report.workstreams, SPEC_818) === undefined,
+    planSpecMismatchReason(report.workstreams, SPEC_818, []) === undefined,
     "#1652: the covering call passes the gate — the prose's blocks do not reject it",
   );
 }
@@ -323,13 +323,13 @@ const TAIL = "## Verification\n- run the suite\n";
   // Zero calls is not judged by the coverage gate: there is no plan to judge,
   // and the plan step's one corrective owns that case (no `default` fallback).
   assert(
-    planSpecMismatchReason({}, SPEC_818) === undefined,
+    planSpecMismatchReason({}, SPEC_818, []) === undefined,
     "#1652: a plan with no accepted call is silent here — the plan step's corrective owns it",
   );
   const onlyD1 = {
     "task-d1": { paths: ["extension/src/work-driver-integrate.ts"] },
   };
-  const m = planSpecMismatchReason(onlyD1, SPEC_818);
+  const m = planSpecMismatchReason(onlyD1, SPEC_818, []);
   assert(
     m?.kind === "uncovered-deliverables" && (m.uncovered?.length ?? 0) === 4,
     "#1652: the coverage verdict still names every deliverable the calls leave uncovered",
@@ -362,7 +362,7 @@ const TAIL = "## Verification\n- run the suite\n";
   let threw = false;
   for (const [w, s] of junk) {
     try {
-      planSpecMismatchReason(w, s);
+      planSpecMismatchReason(w, s, []);
     } catch {
       threw = true;
     }
@@ -379,7 +379,7 @@ const TAIL = "## Verification\n- run the suite\n";
   const PROTECTED_SPEC = {
     deliverables: [{ id: "d1", paths: [".github/workflows/ci.yml"] }],
   };
-  const m = planSpecMismatchReason(ws({ a: ["src/a.ts"] }), PROTECTED_SPEC);
+  const m = planSpecMismatchReason(ws({ a: ["src/a.ts"] }), PROTECTED_SPEC, []);
   assert(
     m?.kind === "uncovered-deliverables",
     "all deferred: the gate returns a mismatch, not silence",
@@ -409,7 +409,7 @@ const TAIL = "## Verification\n- run the suite\n";
     ],
   };
   assert(
-    planSpecMismatchReason(ws({ a: ["src/a.ts"] }), PARTIAL_SPEC) === undefined,
+    planSpecMismatchReason(ws({ a: ["src/a.ts"] }), PARTIAL_SPEC, []) === undefined,
     "partial deferral: a checked and covered deliverable still passes the gate",
   );
 }

@@ -17,13 +17,14 @@
 
 import { readFileSync } from "node:fs";
 import { resolveToolPermission } from "../src/permission-guard.ts";
-import type { NormalisedSpec } from "../src/work-driver-intent.ts";
+import { type NormalisedSpec, renderAssumptions } from "../src/work-driver-intent.ts";
 import { planPromptInputsOf } from "../src/work-driver-plan-inputs.ts";
 import {
 	findUncoveredDeliverables,
 	planSpecMismatchReason,
 	protectedDeferralsOf,
 } from "../src/work-driver-plan-spec-coverage.ts";
+import { withProtectedDeferralAssumptions } from "../src/work-driver-plan-deferral-notice.ts";
 import { planCorrectivePrompt } from "../src/work-driver-plan-timeout.ts";
 import {
 	definingFiles,
@@ -197,14 +198,14 @@ function stateWith(
 	const spec = { deliverables: [D5, D6] };
 	const ws = { default: { paths: ["extension/src/a.ts"] } };
 
-	const ungranted = findUncoveredDeliverables(ws, spec);
+	const ungranted = findUncoveredDeliverables(ws, spec, []);
 	assert(
 		!ungranted.uncovered.some((u) => u.id === "d5"),
 		"protected deliverable, no grant: d5 (.pi/verify-cmd only) is NOT an uncovered deliverable",
 	);
 	// #1642 review — when EVERY measurable deliverable is deferred, nothing was
 	// judged: the gate must not pass silently. It names the path and the grant.
-	const allDeferred = planSpecMismatchReason(ws, { deliverables: [D5] });
+	const allDeferred = planSpecMismatchReason(ws, { deliverables: [D5] }, []);
 	assert(
 		allDeferred?.kind === "uncovered-deliverables" &&
 			(allDeferred.evidence ?? "").includes(".pi/verify-cmd") &&
@@ -212,7 +213,7 @@ function stateWith(
 		"protected deliverable, no grant, nothing else checkable: a mismatch that names the path and --allow-protected",
 	);
 	assert(
-		protectedDeferralsOf(spec).some(
+		protectedDeferralsOf(spec, []).some(
 			(d) => d.id === "d5" && d.paths.includes(".pi/verify-cmd"),
 		),
 		"protected deliverable, no grant: it is recorded as deferred (protectedDeferralsOf)",
@@ -260,6 +261,14 @@ function stateWith(
 	assert(
 		verdict("ls tmp/issue-1557") === "allow",
 		"explore: `ls tmp/issue-1557` resolves to allow",
+	);
+	assert(
+		verdict("ls") === "allow",
+		"explore: bare `ls` resolves to allow",
+	);
+	assert(
+		verdict("lsof -i :8080") !== "allow",
+		"explore: `lsof` is NOT allowed (the key is the exact binary, not a prefix)",
 	);
 	assert(
 		verdict("cat tmp/issue-1557/x.txt") === "allow",
@@ -331,6 +340,57 @@ function stateWith(
 		JSON.stringify(nul) ===
 			JSON.stringify(["docs/my file.md", " lead.ts", "a\nb.ts"]),
 		"definingFiles: NUL-split names keep spaces, leading spaces and newlines",
+	);
+}
+
+// ----------- 5. a deferred protected half is disclosed on the spec (PR body)
+
+{
+	const MIXED: NormalisedSpec = {
+		...SPEC,
+		deliverables: [
+			{
+				id: "d6",
+				description: "gate config and the source file",
+				paths: [".pi/verify-cmd", "extension/src/b.ts"],
+			},
+		],
+	};
+	const planned = { default: { paths: ["extension/src/b.ts"] } };
+	assert(
+		planSpecMismatchReason(planned, MIXED, []) === undefined,
+		"mixed deliverable: the plan covering its unprotected half passes the gate",
+	);
+	const TEXT =
+		"Deferred d6 path .pi/verify-cmd: protected; this cycle has no --allow-protected grant for it, so it was not changed. Re-run with --allow-protected .pi/verify-cmd to include it.";
+	const state = stateWith({ normalisedSpec: MIXED }, []);
+	const disclosed = withProtectedDeferralAssumptions(state, MIXED, []);
+	const once = disclosed.pipelineState.normalisedSpec;
+	assert(
+		once?.assumptions.some((a) => a.text === TEXT) === true,
+		"ungranted protected half: one assumption per deferred path lands in the state",
+	);
+	assert(
+		once?.verdict === "proceed-with-assumptions",
+		"ungranted protected half: a plain proceed is promoted, as the intent step does",
+	);
+	assert(
+		renderAssumptions(once as NormalisedSpec).includes(TEXT),
+		"ungranted protected half: the PR-body renderer prints the deferral",
+	);
+	const again = withProtectedDeferralAssumptions(disclosed, MIXED, []);
+	assert(
+		again.pipelineState.normalisedSpec?.assumptions.length === once?.assumptions.length,
+		"re-running the pass does not duplicate the deferral assumption",
+	);
+	assert(
+		withProtectedDeferralAssumptions(state, MIXED, [".pi/verify-cmd"]) === state,
+		"a grant naming the protected path: nothing is deferred, the state is untouched",
+	);
+	const bare = stateWith({}, []);
+	assert(
+		withProtectedDeferralAssumptions(bare, MIXED, []) === bare,
+		"no normalised spec in state: nowhere to write, the trace stays the only record",
 	);
 }
 

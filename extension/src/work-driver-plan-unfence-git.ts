@@ -13,6 +13,7 @@
  * shell text.
  */
 
+import { trace } from "./trace.ts";
 import type { UnfenceExecFn } from "./work-driver-plan-unfence.ts";
 
 /**
@@ -96,7 +97,15 @@ export async function definingFiles(
   return stdout
     .split("\0")
     .filter((l) => l.length > 0)
-    .map((l) => (l.startsWith(prefix) ? l.slice(prefix.length) : l));
+    .map((l) => {
+      if (l.startsWith(prefix)) return l.slice(prefix.length);
+      // Not a shape `git grep <ref>` prints. Kept as-is (the read will fail and
+      // be recorded there), but traced so the operator can see the shape changed.
+      trace(
+        `work-driver: plan unfence — git grep entry without the ${prefix} prefix kept as-is: ${l}`,
+      );
+      return l;
+    });
 }
 
 /**
