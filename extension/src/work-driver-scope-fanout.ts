@@ -189,7 +189,7 @@ export function runScopeFanoutGate(
   // #1676 — `protectedRefused`: the paths the protected-path gate already refused
   // (no grant). A fence hit on one of them is not a second failure: that gate's
   // halt, with its --allow-protected instruction, is the single explanation.
-  options: { protectedRefused?: readonly string[] } = {},
+  options: { protectedRefused?: readonly string[]; protectedDeferred?: readonly string[] } = {},
 ): void {
   if (!scopeGateEnabled()) {
     notes.push("PI_ENSEMBLE_SCOPE_GATE=0 — develop scope/fanout gate disabled");
@@ -361,6 +361,16 @@ export function runScopeFanoutGate(
       fenceViolations?.push({ workstreamId: id, file, kind: "undeclared" });
     }
     if (declaredPaths.length === 0) {
+      // #1676 — the fence moved a deferred protected path out of `paths`. When that
+      // leaves nothing declared, the fanout bound has no denominator: a workstream
+      // that changed files would be unbounded, so it fails closed instead of skipping.
+      const deferred = new Set((options.protectedDeferred ?? []).map(normaliseGitPath));
+      if (changedFiles.length > 0 && outOfScope.some((f) => deferred.has(normaliseGitPath(f)))) {
+        failures.push(
+          `scope fanout cannot be bounded for ${id}: its only declared path is a deferred protected path, and ${changedFiles.length} file(s) changed — re-plan the workstream with a deliverable`,
+        );
+        continue;
+      }
       notes.push(`scope fanout check skipped for ${id} — workstream has no declared paths`);
       continue;
     }
