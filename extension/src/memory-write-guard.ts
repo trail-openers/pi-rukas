@@ -33,11 +33,11 @@ export function registerMemoryWriteGuard(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, _ctx) => {
     if (event.toolName !== "bash") return;
     if (!isDestructiveWrite(bashCommandOf(event.input))) return;
-    trace("memory-write-guard: BLOCKED destructive vipune update (replaces a memory row's text)");
+    trace("memory-write-guard: BLOCKED destructive vipune write (update -t, delete or prune)");
     return {
       block: true,
       reason:
-        "Refused: `vipune update … -t` replaces an existing memory row's text in place, with no lineage and no undo, so anything that cited that memory now cites different text. To correct a memory, store the corrected statement with `vipune add '<statement>' --supersedes <id>`, which keeps the original row.",
+        "Refused: `vipune update … -t` replaces a memory row's text in place, `vipune delete` removes a row, and `vipune prune` demotes candidates in bulk; none has a confirmation or an undo, and anything that cited the row now cites different text or nothing. To correct a memory, store the corrected statement with `vipune add '<statement>' --supersedes <id>`, which keeps the original row.",
     };
   });
 }

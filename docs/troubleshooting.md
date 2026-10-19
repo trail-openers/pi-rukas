@@ -1997,7 +1997,7 @@ Escape: nothing to disable here — if vipune is missing, slow or broken, the br
 ### An agent tried to edit a memory and was refused
 
 `vipune update <id> --text "…"` is denied to every role, and the refusal is enforced in
-`bash-command-parser.ts` ahead of the permission allowlist so it holds even if the allowlist changes.
+`bash-command-parser.ts` ahead of the permission allowlist so it holds even if the allowlist changes. `vipune delete` and `vipune prune` are refused the same way, and the mode-independent `memory-write-guard` refuses all three in every mode, including trust-mode children.
 
 The reason is that `update --text` **replaces content in place**: one row before, one row after, no
 new row, no `superseded_by` lineage, no undo. The id survives, so any prior citation of that memory
