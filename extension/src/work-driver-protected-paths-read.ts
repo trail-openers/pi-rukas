@@ -145,12 +145,8 @@ export type ProtectedPathExec = NonNullable<DriverContext["verifyExecFn"]>;
  * conventional driver name), plus the honest statement that a child which can
  * write the worktree can arrange a named filter the argv cannot anticipate. The
  * read is fail-closed on its output, not trusted on its environment.
- *
- * **Exported because the boundary is not this module's reads.** The #1676
- * discard pass runs `git commit`/`checkout`/`rm` in the same child-writable
- * worktree and carries this exact list (`work-driver-discard-argv.ts`).
  */
-export const SAFE_CONFIG = [
+const SAFE_CONFIG = [
   "-c",
   "core.quotePath=off",
   "-c",

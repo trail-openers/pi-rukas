@@ -223,15 +223,6 @@ const protectedFailure = (f: string[]) => f.find((x) => /protected path/.test(x)
   );
   // Every other module that reads a change set is a DIFFERENT consumer, and the
   // protected gate must not have quietly started consulting one of them.
-  //
-  // One sanctioned exception, named rather than matched loosely: the #1676 discard
-  // pass consults `readCommittedProtectedPaths` for its rename check. It does so
-  // precisely BECAUSE the typed `NameStatus` records are the fail-closed reader —
-  // a hand-rolled `-z` split of the two rename layouts (status puts the new name
-  // first, `diff --name-status` puts the code first) is the bug that let a rename
-  // read as "no edit". Reusing the trusted reader is the fix, so the importer list
-  // carries it as a declared consumer instead of pretending only one exists. A
-  // THIRD importer is still the drift this canary catches.
   const importers = readdirSync(srcPath).filter(
     (f) =>
       f.endsWith(".ts") &&
@@ -239,44 +230,14 @@ const protectedFailure = (f: string[]) => f.find((x) => /protected path/.test(x)
       // The module that DEFINES the readers names them in its own declarations —
       // that is not a consumer.
       !f.startsWith("work-driver-protected-paths-read") &&
-      // The discard pass: a declared consumer of the committed read only.
-      f !== "work-driver-discard-deferred.ts" &&
       /readProtectedStatusPaths|readCommittedProtectedPaths/.test(
         readFileSync(path.join(srcPath, f), "utf8"),
       ),
   );
   assert(
     importers.length === 0,
-    `canary: only work-driver-verify-develop.ts and the discard pass consult the protected reads (${importers.join(", ") || "none"})`,
+    `canary: only work-driver-verify-develop.ts consults the protected reads (${importers.join(", ") || "none"})`,
   );
-  // The exception above is scoped: the discard may read the COMMITTED side, and
-  // must not reach the uncommitted one — that side is `worktreeStatus`'s job here,
-  // and a second uncommitted reader would give a scripted fake a read nobody asked
-  // for (the vacuous-fake class #1283).
-  {
-    const discard = read("work-driver-discard-deferred.ts");
-    const lines = discard
-      .split("\n")
-      .map((l, i) => [i + 1, l] as const)
-      .filter(([_, l]) => !/^\s*(\/\/|\*|\/\*)/.test(l));
-    assert(
-      !lines.some(([_, l]) => /readProtectedStatusPaths\s*\(/.test(l)),
-      "canary: the discard pass does not consult the uncommitted protected read — it uses worktreeStatus for that side",
-    );
-    assert(
-      lines.some(([_, l]) => /readCommittedProtectedPaths\s*\(/.test(l)) &&
-        lines.some(([_, l]) => /worktreeStatus\s*\(/.test(l)),
-      "canary: the discard pass reads renames through the trusted readers, not a hand-rolled -z split",
-    );
-    // #1 hardening: every git call the discard makes carries the same hardened
-    // `-c` prefix the #406 reads use, so the revert commit cannot run a
-    // worktree-written hook as the driver.
-    assert(
-      lines.some(([_, l]) => /DISCARD_GIT_ARGV/.test(l)) &&
-        !read("work-driver-discard-argv.ts").includes("SAFE_CONFIG.filter"),
-      "canary: the discard pass sends SAFE_CONFIG on every git call — its argv is the gate's list, not a filtered copy",
-    );
-  }
 }
 
 // ============================ rename sources reach ONLY the protected check

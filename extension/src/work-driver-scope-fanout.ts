@@ -197,14 +197,15 @@ export function runScopeFanoutGate(
     return;
   }
   const refused = new Set((options.protectedRefused ?? []).map(normaliseGitPath));
-  // #1676 round 4 — the deferred set is normalised with the SAME normaliser that
-  // produced it (`deferredProtectedPaths` → `normaliseDeclaredPath`), not with the
-  // git-path normaliser. The two differ exactly where it matters: `normaliseScopePath`
-  // strips a leading `./` but keeps a parenthetical, `normaliseDeclaredPath` strips
-  // a trailing annotation and backticks/markdown. A deferred entry that is only
-  // reachable through its own normaliser — a quoted `\`docs/a.md\`` or a `docs/a.md
-  // (new)` — would fail to match the fence entry `withDeferredProtectedFence`
-  // wrote, and the emptied workstream would skip the fanout bound it exists to fail.
+  // #1676 — the deferred set is normalised with the SAME normaliser that produced
+  // it (`deferredProtectedPaths` → `normaliseDeclaredPath`), not with the git-path
+  // normaliser, because the entry below is the fence entry exactly as
+  // `withDeferredProtectedFence` wrote it. The two normalisers differ where it
+  // matters: `normaliseScopePath` strips a leading `./` but keeps a parenthetical,
+  // `normaliseDeclaredPath` strips a trailing annotation and backticks/markdown.
+  // A deferred entry only reachable through its own normaliser — a quoted
+  // `\`docs/a.md\`` or a `docs/a.md (new)` — would fail to match that fence entry,
+  // and the emptied workstream would skip the fanout bound it exists to fail.
   // Hoisted out of the per-workstream loop: one Set per run, like `refused`.
   const deferred = new Set((options.protectedDeferred ?? []).map(normaliseDeclaredPath));
   const planDeclaredPaths = new Set<string>();
@@ -372,12 +373,13 @@ export function runScopeFanoutGate(
       fenceViolations?.push({ workstreamId: id, file, kind: "undeclared" });
     }
     if (declaredPaths.length === 0) {
-      // #1676 — the fence moved a deferred protected path out of `paths`. When that
-      // leaves nothing declared, the fanout bound has no denominator: a workstream
-      // that changed files would be unbounded, so it fails closed instead of skipping.
-      // The fence entry is the DEFERRED path as `withDeferredProtectedFence` wrote it
-      // (the bare `normaliseDeclaredPath` form), and the deferred set is normalised
-      // the same way above, so the two are comparable verbatim.
+      // #1676 — the fence (`withDeferredProtectedFence`) removes a deferred protected
+      // path from `paths`, so a workstream whose only deliverable WAS that path ends
+      // with nothing declared. When it still changed files, the fanout bound has no
+      // denominator: an unbounded number of files would pass the very check that
+      // exists to bound them, so it fails closed instead of skipping. Without the
+      // deferred check the branch would be a plain pass for any empty `paths`, which
+      // is the pre-existing (documented) behaviour for an under-specified plan.
       if (changedFiles.length > 0 && outOfScope.some((f) => deferred.has(f))) {
         failures.push(
           `scope fanout cannot be bounded for ${id}: its only declared path is a deferred protected path, and ${changedFiles.length} file(s) changed — re-plan the workstream with a deliverable`,
