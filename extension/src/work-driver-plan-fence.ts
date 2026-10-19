@@ -28,7 +28,6 @@ import { splitDeliverablePaths } from "./work-driver-deliverable-paths.ts";
 import { type SpecCoverageSpec, protectedDeferralsOf } from "./work-driver-plan-spec-coverage.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
-import type { WorkState } from "./workflow-state.ts";
 
 /**
  * The bare normalised paths the plan deferred: every protected, ungranted
@@ -80,27 +79,17 @@ export function withDeferredProtectedFence(
 }
 
 /**
- * The fence entries that are deferred protected paths, so a prompt can annotate
- * exactly those. Matched on the normalised form, as the fence was written.
- */
-export function protectedFenceEntries(
-  outOfScope: readonly string[],
-  deferred: readonly string[],
-): string[] {
-  if (deferred.length === 0) return [];
-  const set = new Set(deferred);
-  return outOfScope.filter((e) => set.has(normaliseDeclaredPath(e)));
-}
-
-/**
  * The one line a prompt renders beside the fence: which fenced entries are
- * protected with no grant. Empty when none of the fence is deferred.
+ * protected with no grant. Empty when none of the fence is deferred. Entries
+ * are matched on the normalised form, as the fence was written.
  */
 export function protectedFenceNote(
   outOfScope: readonly string[],
   deferred: readonly string[],
 ): string {
-  const entries = protectedFenceEntries(outOfScope, deferred);
+  if (deferred.length === 0) return "";
+  const set = new Set(deferred);
+  const entries = outOfScope.filter((e) => set.has(normaliseDeclaredPath(e)));
   if (entries.length === 0) return "";
   const shown = entries.map((e) => JSON.stringify(neutraliseFenceEntry(e))).join("; ");
   const one = entries.length === 1;

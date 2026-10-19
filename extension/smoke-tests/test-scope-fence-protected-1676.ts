@@ -91,6 +91,43 @@ assert(
   "a ./-spelled changed path matches its refused entry: no failure, one note",
 );
 
+// #1676 round 3 — git paths are verbatim. A real file named with a parenthetical
+// is not an annotation, so refusing it must not exempt the plain path beside it.
+const verbatimWs = {
+  default: { id: "default", scope: "b", paths: [SOURCE], outOfScope: ["docs/notes"] },
+};
+const verbatimFailures: string[] = [];
+runScopeFanoutGate(
+  verbatimWs,
+  new Map([["default", new Set(["docs/notes (draft)", "docs/notes"])]]),
+  verbatimFailures,
+  [],
+  undefined,
+  undefined,
+  { protectedRefused: ["docs/notes (draft)"] },
+);
+assert(
+  verbatimFailures.some((f) => f.includes("out-of-scope path docs/notes \u2014")),
+  "(a) an ungranted protected 'docs/notes (draft)' does not exempt a fenced 'docs/notes'",
+);
+
+// A changed 'docs/notes (draft)' is a different file from the fenced 'docs/notes':
+// no fence hit, so no failure and no sibling or issue-fenced record for it.
+const parenFailures: string[] = [];
+const parenRecords: FenceViolationRecord[] = [];
+runScopeFanoutGate(
+  verbatimWs,
+  new Map([["default", new Set(["docs/notes (draft)", SOURCE])]]),
+  parenFailures,
+  [],
+  parenRecords,
+);
+assert(
+  parenFailures.length === 0 &&
+    parenRecords.every((r) => r.kind === "undeclared" || r.file !== "docs/notes (draft)"),
+  "(b) a changed 'docs/notes (draft)' with a fence entry 'docs/notes' is not a false fence violation",
+);
+
 // A refusal for a different path does not hide this one.
 const otherFailures: string[] = [];
 runScopeFanoutGate(workstreams, changed(), otherFailures, [], undefined, undefined, {
