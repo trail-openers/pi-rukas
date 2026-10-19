@@ -204,13 +204,21 @@ export async function splitAdvisory({
 /** The disclosure section listing advisory rows (empty when none). */
 export function advisorySection(advisory: readonly Finding[] | undefined): string[] {
   if (!advisory || advisory.length === 0) return [];
+  const line = (f: Finding) =>
+    neutraliseEvidence(
+      `- advisory: [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})`,
+    );
+  const fresh = advisory.filter((f) => !f.carried);
+  const carried = advisory.filter((f) => f.carried);
   return [
     "",
     `${ADVISORY_HEADING} (${advisory.length}) — outside the lines this PR changed; they do not block:`,
-    ...advisory.map((f) =>
-      neutraliseEvidence(
-        `- advisory: [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})`,
-      ),
-    ),
+    ...fresh.map(line),
+    ...(carried.length > 0
+      ? [
+          `Carried from earlier rounds (${carried.length}) — still open, outside the changed lines:`,
+          ...carried.map(line),
+        ]
+      : []),
   ];
 }

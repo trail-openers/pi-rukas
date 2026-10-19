@@ -34,6 +34,10 @@ export type FindingSource = LensName | "CLAIM_SCAN";
 export interface Finding extends RawFinding {
   severity: Severity;
   lens: FindingSource;
+  /** True for a row an earlier round recorded and this round did not resolve:
+   * still open, its cited code unchanged. Renderers list these under a
+   * "Carried from earlier rounds" heading, apart from this round's own findings. */
+  carried?: true;
 }
 
 export interface LensRunResult {

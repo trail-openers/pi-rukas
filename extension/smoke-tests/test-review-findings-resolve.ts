@@ -28,12 +28,12 @@
  *   G. unchanged cited code, no re-report → stays open, carried with its title;
  *   H. an insertion above the cited code → stays open (the window moved);
  *   I. an edit outside the cited window → stays open;
- *   J. a delta review never resolves; K. an incomplete review never resolves.
+ *   J. a delta resolves a changed cited line (#1677); K. incomplete never resolves.
  *   L. a CRITICAL row whose window is edited (no re-report, complete full review)
  *      is carried — a trivial edit cannot clear a CRITICAL;
  *   M. the cited line is past EOF but its code moved up the file: carried, not
  *      resolved ("found anywhere → carried" wins over "line past EOF");
- *   N. a past-EOF row on a delta review: carried (a delta never resolves);
+ *   N. a past-EOF row on a delta review: carried (line-past-eof is full-only);
  *   O. a HIGH row whose window gets a comment, cited line unchanged: carried;
  *   P. a legacy row without lineHash whose window is edited: carried.
  * Every resolution records its reason on the row and in the summary (#1125).
@@ -239,6 +239,11 @@ try {
     g2.verdict === "ISSUES_FOUND" && g2.findings.some((f) => f.title === "Unused constant"),
     `G round 2: the carried finding blocks with its stored title (${g2.verdict})`,
   );
+  assert(
+    renderSummary(g2, 1).includes("Carried from earlier rounds (1)") &&
+      !renderSummary(g2, 1).includes("undefined"),
+    "G round 2: the carried finding is listed under the labelled carried heading",
+  );
 
   // H — an insertion above the cited code moves the line; the window is still
   // at head, so the row is carried, not resolved.
@@ -280,7 +285,7 @@ try {
     "I round 2: an edit outside the cited window keeps the row carried",
   );
 
-  // J — a delta review never resolves, even when the cited code changed.
+  // J — a delta review resolves a row whose cited line it changed (#1677).
   sh("git checkout -q main");
   sh("git checkout -q -b feat/delta");
   await runRound("feat/delta", head(), [
@@ -292,17 +297,31 @@ try {
     "// header\nexport const a = 1;\nexport const b = 3;\n",
   );
   sh("git commit -qam edit-cited-line");
+  // No `diff`: a pasted diff wins over `since`, so the delta is git's since..head.
+  reportNow = [];
   const j2 = await runLensReview({
     cwd: repo,
     branch: "feat/delta",
-    diff: "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+export const b = 3;",
     head: head(),
     since: deltaBase,
     lensChildFn: fixture.stubLens,
   });
   assert(
-    (await readBranchRows(repo, "feat/delta"))[0]?.status === "open",
-    `J round 2: a delta review does not resolve a changed-code row (verdict ${j2.verdict})`,
+    j2.deltaReview !== undefined,
+    "J round 2: the round is a delta review (since..head), not a full one",
+  );
+  const jRow = (await readBranchRows(repo, "feat/delta"))[0];
+  assert(
+    jRow?.status === "resolved" && jRow.resolvedReason === "code-gone",
+    `J round 2: a delta round that changed the cited line resolves it, code-gone (${jRow?.status}/${jRow?.resolvedReason})`,
+  );
+  assert(
+    j2.verdict === "APPROVED" && !j2.findings.some((f) => f.title === "Unused constant"),
+    `J round 2: the resolved row is absent from the reported list (verdict ${j2.verdict})`,
+  );
+  assert(
+    renderSummary(j2, 1).includes("Resolved since last round"),
+    "J round 2: the delta's resolution is disclosed in the rendered summary",
   );
 
   // K — an incomplete review (a blocked lens) never resolves a row.
