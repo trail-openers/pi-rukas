@@ -6,7 +6,9 @@
  * The verb decision is fail-closed. Every `vipune` word in a simple command is read
  * as an invocation: after the global options, the first remaining word must be a
  * literal known subcommand, or the verdict is `unresolved`. Globs, braces,
- * expansions and unknown words are therefore refused rather than guessed at. This
+ * expansions and unknown words are therefore refused rather than guessed at. Off the
+ * command position only a literal `delete` / `prune` / `update -t` directly after the
+ * word refuses (see vipuneVerdict). This
  * module has no Pi imports on purpose: the Pi hook that refuses the call lives in
  * memory-write-guard.ts, and the allowlist matcher (bash-command-parser.ts) imports
  * the boolean wrapper, so the one rule has one owner.
@@ -283,21 +285,35 @@ const KNOWN_VERBS = new Set([
   "help",
 ]);
 
-/** A verb word the guard cannot read as a literal: an expansion, a glob, or a brace list. */
-const UNREADABLE_VERB = /[$`*?[{]/;
+/**
+ * The destructive verb, if any, at `argv[i]`: `delete`, `prune`, or `update` carrying a
+ * text flag. Anything else, including a glob or brace word, is not destructive here.
+ */
+function refusedVerb(argv: readonly string[], i: number): MemoryWriteVerdict | undefined {
+  const verb = argv[i] ?? "";
+  if (verb === "delete" || verb === "prune") return { kind: "verb", verb };
+  if (verb === "update" && argv.slice(i + 1).some(isTextFlag)) {
+    return { kind: "verb", verb: "update -t" };
+  }
+  return undefined;
+}
 
 /**
- * The verdict for the vipune invocation whose binary word sits at `argv[k]`. Skips
- * `--`, dash-options and the value of the global value options; the first remaining
- * word is the verb. No verb word (a bare `vipune`, `vipune --help`) is allowed.
+ * The verdict for the vipune invocation whose binary word sits at `argv[k]`.
  *
- * Position decides how strict the verb is. When vipune IS the command (`k === 0`),
- * the verb must be a literal known subcommand, so anything else is unresolved. When
- * the word sits elsewhere (`grep vipune src/x.ts`, `busybox vipune delete 1`), only
- * a destructive verb or an unreadable verb shape is refused; an ordinary literal
- * word such as a path or a search pattern is a search, not an invocation.
+ * Position decides how strict the read is. When vipune IS the command (`k === 0`),
+ * it skips `--`, dash-options and the value of the global value options; the first
+ * remaining word is the verb, which must be a literal known subcommand, so anything
+ * else is unresolved. No verb word (a bare `vipune`, `vipune --help`) is allowed.
+ *
+ * Off the command position (`grep vipune -e delete .`, `busybox vipune delete 1`) only
+ * the word immediately after vipune is read, with no option skipping, and only a
+ * literal destructive verb refuses. Any other word there is a search term or a path,
+ * not an invocation, so it is allowed; that is why `unbuffer vipune {delete,x} 1`
+ * passes (the brace list is not read at that position).
  */
 function vipuneVerdict(argv: readonly string[], k: number): MemoryWriteVerdict | undefined {
+  if (k > 0) return refusedVerb(argv, k + 1);
   let i = k + 1;
   while (i < argv.length) {
     const w = argv[i] ?? "";
@@ -309,13 +325,9 @@ function vipuneVerdict(argv: readonly string[], k: number): MemoryWriteVerdict |
     i += VIPUNE_VALUE_OPTIONS.has(w) ? 2 : 1;
   }
   if (i >= argv.length) return undefined;
-  const verb = argv[i] ?? "";
-  if (verb === "delete" || verb === "prune") return { kind: "verb", verb };
-  if (verb === "update" && argv.slice(i + 1).some(isTextFlag)) {
-    return { kind: "verb", verb: "update -t" };
-  }
-  if (k === 0) return KNOWN_VERBS.has(verb) ? undefined : { kind: "unresolved" };
-  return UNREADABLE_VERB.test(verb) ? { kind: "unresolved" } : undefined;
+  const refused = refusedVerb(argv, i);
+  if (refused !== undefined) return refused;
+  return KNOWN_VERBS.has(argv[i] ?? "") ? undefined : { kind: "unresolved" };
 }
 
 /** The verdict for a `bash -c`, `eval`, `script -c` or `find -exec` body, if the command has one. */
@@ -345,7 +357,8 @@ function nestedVerdict(
  * The verdict for one simple command. Nested bodies are judged first; then every
  * word whose basename is `vipune` is read as an invocation, wherever it sits (after
  * a wrapper the list does not name, after `xargs`, as an argument). Only the
- * command word is read strictly; see vipuneVerdict for the other positions.
+ * command word is read strictly; off that position only the next word is read
+ * (see vipuneVerdict).
  */
 function destructiveArgv(words: readonly string[], depth: number): MemoryWriteVerdict | undefined {
   const { argv, split } = unwrap(words);
