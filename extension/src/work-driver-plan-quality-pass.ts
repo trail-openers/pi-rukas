@@ -55,6 +55,10 @@ import {
   findTestSubjectSplits,
 } from "./work-driver-plan-paths.ts";
 import {
+  repairOmittedDeliverablePaths,
+  withOmittedPathAssumption,
+} from "./work-driver-plan-repair.ts";
+import {
   type PlanSpecMismatch,
   type SpecCoverageSpec,
   planSpecMismatchReason,
@@ -154,15 +158,38 @@ export async function runPlanQualityTail(
   let correctiveRaw: Record<string, Workstream> | undefined;
   let droppedEdges: { from: string; to: string }[] | undefined;
   let unfence = input.unfence;
+  // The paths the repair appended to the primary plan. Disclosed at the end only
+  // when that plan is the one that reaches develop: a corrective replaces it.
+  let repairedAdded: readonly string[] | undefined;
 
   // #1652 — a plan dispatch with no accepted call has no plan at all. Its
   // workstreams are empty, so the shape reasons below say nothing about it;
   // it takes the one corrective instead, and the budget is shared.
   const noCalls = !input.planKill && input.report.accepted === 0;
+  // The single-workstream repair runs before the shape reason and the gate, so
+  // a plan that only omitted spec paths is repaired rather than re-dispatched.
+  const grant = ctx.protectedGrant ?? [];
+  // A refused or unreadable call is a second defect, so the repair stands down.
+  const cleanReport = input.report.refused.length === 0 && input.report.unreadable === 0;
+  // A killed primary is not repaired: the one-shot corrective is already spent.
+  const repair =
+    input.planGateEnabled && !noCalls && cleanReport && !input.planKill
+      ? repairOmittedDeliverablePaths(workstreams, input.spec, grant, (refusal) =>
+          trace(
+            `work-driver: plan-to-spec gate declined the single-workstream repair (${refusal}) — the gate runs as before`,
+          ),
+        )
+      : undefined;
+  if (repair) {
+    workstreams = repair.workstreams;
+    repairedAdded = repair.added;
+    trace(
+      `work-driver: plan-to-spec gate added spec deliverable path(s) the single-workstream plan omitted: ${repair.added.join(", ")}`,
+    );
+  }
   const reason = noCalls ? undefined : planQualityReason(workstreams, input.findingsCount);
   // #1642 — the gate does not require a deliverable whose every path is protected
   // and ungranted; the trace is the record that it was not required.
-  const grant = ctx.protectedGrant ?? [];
   for (const d of protectedDeferralsOf(input.spec, grant)) {
     trace(
       `work-driver: plan-to-spec gate deferred deliverable ${d.id} (${d.paths.join(", ")}) — protected path(s) with no --allow-protected grant, so the plan is not required to cover them`,
@@ -208,7 +235,8 @@ export async function runPlanQualityTail(
     const steer = correctiveSteerFor(
       noCalls,
       input.report,
-      workstreams,
+      // The ORIGINAL plan: a repaired path was never written by the planner.
+      input.workstreams,
       reason,
       input.findingsCount,
     );
@@ -273,6 +301,7 @@ export async function runPlanQualityTail(
     // a failed dispatch: its completion event is the tail, not a zero-call verdict.
     if (!retry.ok) return halt(next);
     redispatched = true;
+    repairedAdded = undefined;
     if (retryReport.unreadable > 0) {
       return halt(planResultsUnreadableCap(next, retryReport));
     }
@@ -392,14 +421,19 @@ export async function runPlanQualityTail(
     droppedEdges && droppedEdges.length > 0 ? "dropped-dependencies" : (reason ?? haltReason);
   // #1642 review — a deferred protected path is disclosed on the spec (the PR
   // body), not only traced. Only when the gate ran: nothing was deferred otherwise.
+  const repaired =
+    repairedAdded !== undefined ? withOmittedPathAssumption(next, repairedAdded) : next;
   const disclosed = input.planGateEnabled
-    ? withProtectedDeferralAssumptions(next, input.spec, grant)
-    : next;
+    ? withProtectedDeferralAssumptions(repaired, input.spec, grant)
+    : repaired;
   return {
     state:
       deferredProtected === undefined
         ? disclosed
-        : { ...disclosed, pipelineState: { ...disclosed.pipelineState, deferredProtected } },
+        : {
+            ...disclosed,
+            pipelineState: { ...disclosed.pipelineState, deferredProtected },
+          },
     workstreams,
     halted: false,
     planQuality: {
