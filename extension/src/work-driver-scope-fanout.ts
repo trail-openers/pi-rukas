@@ -176,11 +176,16 @@ export function runScopeFanoutGate(
   // `true` admits exactly that (workstream, file) pair: no failure, no record.
   // Supplied by work-develop-scope-fence-seam.ts; absent means the fence stands.
   liftIssueFence?: (workstreamId: string, file: string) => boolean,
+  // #1676 — the paths the protected-path gate already refused (no grant). A fence
+  // hit on one of them is not a second failure: that gate's halt, with its
+  // --allow-protected instruction, is the single explanation.
+  protectedRefused: readonly string[] = [],
 ): void {
   if (!scopeGateEnabled()) {
     notes.push("PI_ENSEMBLE_SCOPE_GATE=0 — develop scope/fanout gate disabled");
     return;
   }
+  const refused = new Set(protectedRefused.map(normaliseScopePath));
   const planDeclaredPaths = new Set<string>();
   for (const ws of Object.values(workstreams)) {
     for (const p of ws?.paths ?? []) {
@@ -278,6 +283,12 @@ export function runScopeFanoutGate(
         // the #792 incident lacked.
         notes.push(
           `fence hit demoted to warning: ${file} is declared in this workstream's own paths (self-fence)`,
+        );
+        continue;
+      }
+      if (refused.has(file)) {
+        notes.push(
+          `fence hit on ${file} not repeated: the protected-path gate already refused it (no --allow-protected grant)`,
         );
         continue;
       }

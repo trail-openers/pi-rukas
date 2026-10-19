@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 /**
- * #1676 — a protected path the plan deferred is fenced in every workstream.
+ * #1676 — a protected path the plan deferred is fenced in every workstream
+ * that does not declare it itself.
  *
  * The plan-to-spec gate (#1642) does not require a deliverable's protected,
  * ungranted path, so the plan can leave it out of every workstream. Without a
@@ -9,15 +10,19 @@
  *
  *   1. the #1435 shape (deliverable [.pi/verify-cmd, extension/src/b.ts], one
  *      workstream with b.ts, no grant): .pi/verify-cmd is appended to that
- *      workstream's outOfScope as the BARE path, and the develop prompt names it
- *      with the protected annotation beside the fence;
+ *      workstream's outOfScope as the BARE path, the develop prompt names it
+ *      with the protected annotation beside the fence, and the deferred set is
+ *      persisted on pipelineState;
  *   2. a path the --allow-protected grant covers is never appended;
  *   3. a re-run of the tail does not duplicate the entry;
- *   4. a workstream that declares the path in its own `paths` still gets the
- *      fence (the protected-path halt is the backstop, not an exemption);
- *   5. every workstream gets it, and the corrective-round prompt shows the same
- *      fence as the first develop prompt;
- *   6. with the plan gate off nothing is deferred, so nothing is appended.
+ *   4. a workstream that declares the path in its own `paths` is not fenced for
+ *      it (a self-declared fence is the contradiction the plan check rejects);
+ *      its prompt carries no OUT OF SCOPE line naming the path, and the other
+ *      workstreams are still fenced;
+ *   5. every other workstream gets it, and the corrective-round prompt shows the
+ *      same fence as the first develop prompt;
+ *   6. with the plan gate off nothing is deferred, so nothing is appended or
+ *      persisted.
  */
 
 import type { CycleContext } from "../src/work-driver-context.ts";
@@ -51,6 +56,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 const FENCE = ".pi/verify-cmd";
+const SCRATCH = "/tmp/pi-rukas-dev/scratch";
 
 /** The #1435 spec: one mixed deliverable — a protected gate file and a source file. */
 const SPEC: NormalisedSpec = {
@@ -119,6 +125,33 @@ async function tail(
   return runPlanQualityTail(ctxWith(grant), input, HOST);
 }
 
+/**
+ * The develop prompt for one workstream. The deferred set is the one the plan
+ * tail persisted, passed through the options object (the 13th parameter).
+ */
+function devPrompt(ws: Workstream | undefined, deferred: readonly string[]): string {
+  return inlineDevelopPrompt(
+    [1676],
+    SCRATCH,
+    ws,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { deferredProtected: deferred },
+  );
+}
+
+/** The prompt lines that name the fence on an OUT OF SCOPE line. */
+function fenceLinesOf(prompt: string): string[] {
+  return prompt.split("\n").filter((l) => l.includes("OUT OF SCOPE"));
+}
+
 // ------------------------------------------ 1. the #1435 shape, end to end
 
 const deferred = deferredProtectedPaths(SPEC, []);
@@ -142,30 +175,20 @@ assert(
   fenced?.paths.join() === "extension/src/b.ts",
   "the workstream's own paths are untouched by the fence",
 );
+assert(
+  JSON.stringify(first.state.pipelineState.deferredProtected) === JSON.stringify([FENCE]),
+  "the deferred set is persisted on pipelineState by the plan tail",
+);
 
 // The develop prompt names the path as off-limits and annotates it beside the fence.
-const devPrompt = inlineDevelopPrompt(
-  [1676],
-  "/tmp/pi-rukas-dev/scratch",
-  fenced,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  deferredProtectedPaths(SPEC, []),
-);
+const fencedPrompt = devPrompt(fenced, first.state.pipelineState.deferredProtected ?? []);
 assert(
-  devPrompt.includes("OUT OF SCOPE — do NOT touch") && devPrompt.includes(`"${FENCE}"`),
+  fencedPrompt.includes("OUT OF SCOPE — do NOT touch") && fencedPrompt.includes(`"${FENCE}"`),
   "the develop prompt names .pi/verify-cmd in its OUT OF SCOPE fence",
 );
 assert(
-  devPrompt.includes("**Protected, no --allow-protected grant**") &&
-    devPrompt.includes(`"${FENCE}" is a protected path`),
+  fencedPrompt.includes("**Protected, no --allow-protected grant**") &&
+    fencedPrompt.includes(`"${FENCE}" is a protected path`),
   "the develop prompt annotates the fenced entry as protected with no grant, beside the fence",
 );
 
@@ -177,21 +200,7 @@ assert(
   !granted.halted && granted.workstreams.default?.outOfScope.includes(FENCE) === false,
   "a path the --allow-protected grant covers is not appended to outOfScope",
 );
-const grantedPrompt = inlineDevelopPrompt(
-  [1676],
-  "/tmp/pi-rukas-dev/scratch",
-  granted.workstreams.default,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  deferredProtectedPaths(SPEC, [FENCE]),
-);
+const grantedPrompt = devPrompt(granted.workstreams.default, deferredProtectedPaths(SPEC, [FENCE]));
 assert(
   !grantedPrompt.includes("Protected, no --allow-protected grant"),
   "a granted path gets no protected annotation in the develop prompt",
@@ -211,15 +220,42 @@ assert(
   "a fence the planner already wrote is not appended a second time",
 );
 
-// ------------------------------------------ 4. a self-declared path is still fenced
+// ------------------------------------------ 4. a self-declared path is not fenced for it
 
-const selfDeclared = await tail({ default: WS("default", ["extension/src/b.ts", FENCE]) }, []);
+const selfDeclared = await tail(
+  {
+    default: WS("default", ["extension/src/b.ts", FENCE]),
+    other: WS("other", ["extension/src/c.ts"]),
+  },
+  [],
+);
 assert(
-  selfDeclared.workstreams.default?.outOfScope.includes(FENCE) === true,
-  "a workstream that declares the deferred path in its own paths still gets the fence",
+  !selfDeclared.halted && selfDeclared.workstreams.default?.outOfScope.includes(FENCE) === false,
+  "a workstream that declares the deferred path in its own paths is not fenced for it",
+);
+assert(
+  selfDeclared.workstreams.other?.outOfScope.includes(FENCE) === true,
+  "the other workstream of the same plan is still fenced for the deferred path",
+);
+const selfPrompt = devPrompt(
+  selfDeclared.workstreams.default,
+  selfDeclared.state.pipelineState.deferredProtected ?? [],
+);
+assert(
+  fenceLinesOf(selfPrompt).length === 0,
+  "the self-declared workstream's prompt has no OUT OF SCOPE line naming the path",
+);
+assert(
+  fenceLinesOf(
+    devPrompt(
+      selfDeclared.workstreams.other,
+      selfDeclared.state.pipelineState.deferredProtected ?? [],
+    ),
+  ).some((l) => l.includes(`"${FENCE}"`)),
+  "the other workstream's prompt names the path in its OUT OF SCOPE line",
 );
 
-// ------------------------------------------ 5. every workstream, and the corrective
+// ------------------------------------------ 5. every other workstream, and the corrective
 
 const two = await tail(
   {
@@ -236,7 +272,7 @@ assert(
 );
 const correctivePrompt = correctiveDevelopPrompt({
   issues: [1676],
-  scratchDirAbs: "/tmp/pi-rukas-dev/scratch",
+  scratchDirAbs: SCRATCH,
   workstreamId: "default",
   parallel: false,
   scope: "scope",
@@ -244,7 +280,7 @@ const correctivePrompt = correctiveDevelopPrompt({
   command: "bun run test",
   lines: ["not ok 1 - b"],
   outOfScope: first.workstreams.default?.outOfScope ?? [],
-  deferredProtected: deferredProtectedPaths(SPEC, []),
+  deferredProtected: first.state.pipelineState.deferredProtected ?? [],
 });
 assert(
   correctivePrompt.includes("OUT OF SCOPE — do NOT touch") &&
@@ -259,6 +295,10 @@ const off = await tail({ default: WS("default", ["extension/src/b.ts"]) }, [], f
 assert(
   off.workstreams.default?.outOfScope.length === 0,
   "with the plan gate off nothing is appended",
+);
+assert(
+  off.state.pipelineState.deferredProtected === undefined,
+  "with the plan gate off nothing is persisted",
 );
 
 console.log(`\nexit ${exit}`);

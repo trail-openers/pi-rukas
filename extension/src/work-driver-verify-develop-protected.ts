@@ -44,6 +44,8 @@ import { ungrantedProtectedPaths } from "./work-driver-protected-grant.ts";
  *   Read from the invocation context only, NEVER the state file (#1090): a
  *   cycle that could write its own grant would grant itself.
  * @param issues Every issue in the group, so the explanation names all of them.
+ * @returns The ungranted protected paths the gate failed on: the scope gate
+ *   must not repeat a failure for any of them (#1676). Empty when none, or off.
  */
 export function runProtectedPathGate(args: {
   protectedGateOn: boolean;
@@ -53,7 +55,7 @@ export function runProtectedPathGate(args: {
   issues: number[];
   failures: string[];
   notes: string[];
-}): void {
+}): string[] {
   const {
     protectedGateOn,
     touchedPaths,
@@ -65,7 +67,7 @@ export function runProtectedPathGate(args: {
   } = args;
   if (!protectedGateOn) {
     notes.push("PI_ENSEMBLE_PROTECTED_PATHS=0 — protected-path gate disabled");
-    return;
+    return [];
   }
   // #1378 — the union carries the rename sources; the #285/#1012/#679 gates in
   // the caller consumed `touchedPaths` alone and are byte-identical to before
@@ -86,4 +88,5 @@ export function runProtectedPathGate(args: {
       `develop changed policy prose (${prose.join(", ")}) — allowed, and inert for this cycle: merge authority is read at the base commit, so a grant added here cannot take effect until an operator merges it`,
     );
   }
+  return ungranted;
 }

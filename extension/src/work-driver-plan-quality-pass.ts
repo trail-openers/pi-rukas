@@ -42,7 +42,11 @@ import {
 import { runPlanNormalisationPass } from "./work-driver-plan-coupling-pass.ts";
 import { withProtectedDeferralAssumptions } from "./work-driver-plan-deferral-notice.ts";
 import { findDroppedDependencyEdges } from "./work-driver-plan-deps.ts";
-import { withDeferredProtectedFence } from "./work-driver-plan-fence.ts";
+import {
+  deferredProtectedPaths,
+  withDeferredProtectedFence,
+  withPersistedDeferrals,
+} from "./work-driver-plan-fence.ts";
 import {
   planNoWorkstreamCallsCap,
   planQualityReason,
@@ -348,7 +352,16 @@ export async function runPlanQualityTail(
   // outOfScope, so develop names it and the scope gate enforces it. Only when the
   // gate ran: nothing is deferred otherwise. Returned in `workstreams`, which the
   // caller writes to pipelineState, so resume and the corrective round see it.
+  // The deferred set is persisted with the fence (see the return below).
+  const deferredProtected = input.planGateEnabled
+    ? deferredProtectedPaths(input.spec, grant)
+    : undefined;
   if (input.planGateEnabled) {
+    if (input.spec === undefined) {
+      trace(
+        "work-driver: plan tail has no normalised spec — no protected deferral can be computed, so no protected-path fence is appended",
+      );
+    }
     workstreams = withDeferredProtectedFence(workstreams, input.spec, grant);
   }
   // #571 — cross-group claim check: detect sibling overlaps BEFORE registering.
@@ -384,7 +397,12 @@ export async function runPlanQualityTail(
   return {
     // #1642 review — a deferred protected path is disclosed on the spec (the PR
     // body), not only traced. Only when the gate ran: nothing was deferred otherwise.
-    state: input.planGateEnabled ? withProtectedDeferralAssumptions(next, input.spec, grant) : next,
+    state: input.planGateEnabled
+      ? withPersistedDeferrals(
+          withProtectedDeferralAssumptions(next, input.spec, grant),
+          deferredProtected ?? [],
+        )
+      : next,
     workstreams,
     halted: false,
     planQuality: {
