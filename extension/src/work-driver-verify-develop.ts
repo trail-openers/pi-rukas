@@ -353,7 +353,7 @@ export async function verifyDevelopOutcome(
     notes,
     fenceViolations,
     scopeFenceLift(ctx, state, options.fenceLifts),
-    protectedRefused,
+    { protectedRefused },
   );
   if (changedWorktrees.length === 0) {
     // #679 (task-evidence) — if every assessed worktree is a legitimate

@@ -176,16 +176,16 @@ export function runScopeFanoutGate(
   // `true` admits exactly that (workstream, file) pair: no failure, no record.
   // Supplied by work-develop-scope-fence-seam.ts; absent means the fence stands.
   liftIssueFence?: (workstreamId: string, file: string) => boolean,
-  // #1676 — the paths the protected-path gate already refused (no grant). A fence
-  // hit on one of them is not a second failure: that gate's halt, with its
-  // --allow-protected instruction, is the single explanation.
-  protectedRefused: readonly string[] = [],
+  // #1676 — `protectedRefused`: the paths the protected-path gate already refused
+  // (no grant). A fence hit on one of them is not a second failure: that gate's
+  // halt, with its --allow-protected instruction, is the single explanation.
+  options: { protectedRefused?: readonly string[] } = {},
 ): void {
   if (!scopeGateEnabled()) {
     notes.push("PI_ENSEMBLE_SCOPE_GATE=0 — develop scope/fanout gate disabled");
     return;
   }
-  const refused = new Set(protectedRefused.map(normaliseScopePath));
+  const refused = new Set((options.protectedRefused ?? []).map(normaliseScopePath));
   const planDeclaredPaths = new Set<string>();
   for (const ws of Object.values(workstreams)) {
     for (const p of ws?.paths ?? []) {
@@ -241,7 +241,11 @@ export function runScopeFanoutGate(
     const outOfScope = (workstream?.outOfScope ?? [])
       .map(normaliseScopePath)
       .filter((p) => p.length > 0);
-    const changedFiles = [...changedPaths].sort();
+    // One normaliser for every path the gate compares: a changed path spelled
+    // "./.pi/verify-cmd" is the same path as the refused set's ".pi/verify-cmd".
+    const changedFiles = [...new Set([...changedPaths].map(normaliseScopePath))]
+      .filter((p) => p.length > 0)
+      .sort();
     // #725 — a hit is exempt when the fenced path is declared in `paths` by
     // a workstream in this one's `dependsOn` list (the cross-declaration
     // carve-out documented in the module header). The gate depends on

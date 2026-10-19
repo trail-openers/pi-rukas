@@ -58,15 +58,9 @@ assert(
 const scopeFailures: string[] = [];
 const scopeNotes: string[] = [];
 const fenceRecords: FenceViolationRecord[] = [];
-runScopeFanoutGate(
-  workstreams,
-  changed(),
-  scopeFailures,
-  scopeNotes,
-  fenceRecords,
-  undefined,
-  refused,
-);
+runScopeFanoutGate(workstreams, changed(), scopeFailures, scopeNotes, fenceRecords, undefined, {
+  protectedRefused: refused,
+});
 assert(scopeFailures.length === 0, "the scope gate adds no failure for a refused protected path");
 assert(
   scopeNotes.some((n) => n.includes(FENCE) && n.includes("protected-path gate")),
@@ -79,11 +73,29 @@ assert(
 const explanations = [...protectedFailures, ...scopeFailures].filter((f) => f.includes(FENCE));
 assert(explanations.length === 1, "the develop step carries exactly one explanation for the edit");
 
+// A non-canonical spelling is the same path: "./.pi/verify-cmd" in the changed set
+// is refused once, by the same normaliser that built the refused set.
+const spelledFailures: string[] = [];
+const spelledNotes: string[] = [];
+runScopeFanoutGate(
+  workstreams,
+  new Map([["default", new Set([`./${FENCE}`, SOURCE])]]),
+  spelledFailures,
+  spelledNotes,
+  undefined,
+  undefined,
+  { protectedRefused: [`./${FENCE}`] },
+);
+assert(
+  spelledFailures.length === 0 && spelledNotes.some((n) => n.includes(FENCE)),
+  "a ./-spelled changed path matches its refused entry: no failure, one note",
+);
+
 // A refusal for a different path does not hide this one.
 const otherFailures: string[] = [];
-runScopeFanoutGate(workstreams, changed(), otherFailures, [], undefined, undefined, [
-  "docs/other.md",
-]);
+runScopeFanoutGate(workstreams, changed(), otherFailures, [], undefined, undefined, {
+  protectedRefused: ["docs/other.md"],
+});
 assert(
   otherFailures.some((f) => f.includes(FENCE) && f.includes("declared fence violated")),
   "a refusal for another path leaves the fence hit blocking",

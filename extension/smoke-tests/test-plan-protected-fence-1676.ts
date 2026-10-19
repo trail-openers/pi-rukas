@@ -214,7 +214,7 @@ assert(
   "re-running the tail over its own output does not duplicate the fence entry",
 );
 const pre = WS("default", ["extension/src/b.ts"], [FENCE]);
-const preRun = withDeferredProtectedFence({ default: pre }, SPEC, []);
+const preRun = withDeferredProtectedFence({ default: pre }, deferredProtectedPaths(SPEC, []));
 assert(
   preRun.default?.outOfScope.length === 1,
   "a fence the planner already wrote is not appended a second time",
