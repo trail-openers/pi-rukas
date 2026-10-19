@@ -43,13 +43,12 @@ const DISPATCH_ROLE: Record<string, string> = {
   report_facts: "explore",
 };
 
-// Every reporter registered under src/ (`name: "report_..."` in a registerTool call).
+// Every reporter registered anywhere under src/ (`name: "report_..."`, any quote style).
 const registered = new Set<string>();
-for (const file of readdirSync(src)) {
+for (const file of readdirSync(src, { recursive: true }) as string[]) {
   if (!file.endsWith(".ts")) continue;
-  for (const m of readFileSync(path.join(src, file), "utf8").matchAll(
-    /name: "(report_[a-z_]+)"/g,
-  )) {
+  const text = readFileSync(path.join(src, file), "utf8");
+  for (const m of text.matchAll(/name:\s*["'`](report_[a-z_]+)["'`]/g)) {
     if (m[1]) registered.add(m[1]);
   }
 }
