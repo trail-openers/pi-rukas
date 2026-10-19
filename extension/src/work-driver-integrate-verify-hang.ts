@@ -13,6 +13,11 @@
  * reads a structured tree at this seam, and there is no scratch dir to persist a
  * full report to, so the clause composed into `classifiedMessage` is what the
  * caller puts on the cap and what the handoff renders.
+ *
+ * #1064 — the tree half of that clause arrives from the caller as `where`
+ * rather than being composed here: this seam has no workstream count, and the
+ * single rule for CONSOLIDATED-vs-own-tree wording lives with the count that
+ * decides it (`consolidatedRunWhere`, called by the caller).
  */
 
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
@@ -35,6 +40,12 @@ export function commitPrHangResult(opts: {
   ranCmd: string;
   repoRoot: string;
   bound: number;
+  /**
+   * The tree clause — `on the CONSOLIDATED tree at <repoRoot>` for N>1, `in
+   * <tree>` for a single workstream (#1064). Composed by the caller via
+   * `consolidatedRunWhere`, which owns the workstream count.
+   */
+  where: string;
   /** The killed run's combined stream, as captured at the kill. */
   output: string;
   /** The tree captured at the kill; absent when the executor said no pid. */
@@ -45,7 +56,12 @@ export function commitPrHangResult(opts: {
 }): CommitPrConsolidatedVerifyResult {
   const classifiedMessage = verifyHangFailure(
     opts.ranCmd,
-    `on the CONSOLIDATED tree at ${opts.repoRoot}`,
+    // #1064 — the tree clause arrives from the caller, which owns the
+    // workstream count (this seam has none): N>1 gets
+    // `on the CONSOLIDATED tree at <repoRoot>`, N=1 gets `in <that
+    // workstream's tree>` in the per-worktree wording. Marker and sentence
+    // unchanged either way.
+    opts.where,
     opts.bound,
     {
       output: opts.output,

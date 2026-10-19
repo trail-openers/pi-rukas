@@ -225,8 +225,15 @@ await pinDefaultVerifyTimeout(async () => {
     "timeout: no failure claims an assertion about the code",
   );
   assert(
-    r.failures.some((f) => f.includes(`${BOUND} timeout on the CONSOLIDATED tree`)),
-    "timeout: the consolidated run is reported as exceeding its bound",
+    // #1064 — one workstream: the probe cherry-picked THAT workstream's own
+    // commits onto its own base, so the tree it verified is its worktree and
+    // the CONSOLIDATED label described a combination that never happened. The
+    // clause is now the per-worktree one (`… failed in <tree>`), read with the
+    // timeout label so the entry still says no verdict was reached.
+    r.failures.some(
+      (f) => f.includes(`${BOUND} timeout in`) && f.includes(".worktrees/issue-9-default"),
+    ),
+    "timeout: the consolidated run names the one workstream's own tree",
   );
   assert(
     (r.failures[0] ?? "").startsWith(BASELINE_RED_MARKER) &&

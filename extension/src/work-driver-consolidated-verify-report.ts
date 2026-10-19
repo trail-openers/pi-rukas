@@ -24,6 +24,7 @@ import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify
 import {
   classifyConsolidatedVerifyFailure,
   consolidatedFailureMessage,
+  consolidatedRunWhere,
 } from "./work-driver-consolidation-classify.ts";
 import {
   extractAttributedTail,
@@ -264,6 +265,24 @@ export function reportConsolidatedVerifyOutcome(
     // #841 — the shared rawOutputClause helper (single home for the
     // sentence so both verify seams render identically).
     const logClause = rawOutputClause(cons.logPath);
+    // #1064 — with ONE workstream the consolidated probe is not a combination:
+    // it cherry-picks that workstream's own commits onto its own base, so the
+    // tree it verified IS that workstream's worktree, and "the CONSOLIDATED
+    // tree" describes a combination that never happened. The tree is then named
+    // exactly the way the per-worktree run names a tree (`… failed in <cwd>`).
+    //
+    // Only the genuinely unresolvable shapes keep the CONSOLIDATED wording: N>1
+    // (a real combination) and a map with no worktree for the one workstream —
+    // where there is no path to name and a workstream ID would be a lie (`failed
+    // in default` is not a location). The probe runs under `repoRoot` in both,
+    // so the N>1 clause keeps naming it, as before.
+    //
+    // The decision is made ONCE here and read by the three sites below (this
+    // message, the timeout clause, the host-exhaustion clause), so the
+    // `failures[]` entry and the handoff that renders it cannot name different
+    // trees for one failure.
+    const ownTree = wsIds.length === 1 ? worktrees[wsIds[0] ?? ""] : undefined;
+    const treeClause = consolidatedRunWhere(wsIds.length, ownTree, ctx.repoRoot).phrase;
     // A run KILLED at the bound never reached a verdict: its stream stops
     // wherever the kill landed, and classifying that reported a timeout as
     // "specific assertion: (no specific assertion could be extracted)" — a
@@ -283,17 +302,21 @@ export function reportConsolidatedVerifyOutcome(
           // the cap event and the handoff).
           `${verifyTimeoutFailure(
             cmd,
-            `on the CONSOLIDATED tree at ${ctx.repoRoot}`,
+            // #1064 — same clause; at N=1 the repoRoot suffix is dropped because
+            // the probe's scratch checkout is not the workstream's tree.
+            ownTree === undefined ? `on the CONSOLIDATED tree at ${ctx.repoRoot}` : treeClause,
             timeoutMs,
             timeoutKnob ?? TIER_KNOB.suite,
           )}.`
         : isHostForkExhaustion(classifierInput)
-          ? hostExhaustionFailure(
-              `verify command \`${cmd}\` on the CONSOLIDATED tree`,
+          ? // #1064 — the same clause, so the three sites cannot name different
+            // trees for one failure.
+            hostExhaustionFailure(
+              `verify command \`${cmd}\` ${treeClause}`,
               classifierInput,
               pidLimitSnapshot(),
             )
-          : consolidatedFailureMessage(verdict, cmd)) + logClause,
+          : consolidatedFailureMessage(verdict, cmd, ownTree, ctx.repoRoot)) + logClause,
     );
     // #841 — thread the ACTUAL written log path back (the write's own
     // return — undefined when the write failed, in which case there is

@@ -34,6 +34,7 @@ import { trace } from "./trace.ts";
 import {
   classifyConsolidatedVerifyFailure,
   consolidatedFailureMessage,
+  consolidatedRunWhere,
 } from "./work-driver-consolidation-classify.ts";
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
@@ -314,6 +315,19 @@ export async function runCommitPrConsolidatedVerify(
       failureTail + (attributed ? "" : " (unattributed — best-effort tail)"),
       opts.perWorktreeFailuresByWs ?? {},
     );
+    // #1064 — the single rule for the tree clause, read from its one home so the
+    // two seams cannot drift. At THIS seam the tree the probe verified really is
+    // `repoRoot` (the integration checkout `integrate()` put on the branch) for
+    // N=1 as much as for N>1, and no workstream worktree is on
+    // `CommitPrVerifyOpts` — so there is no own tree to name here and the
+    // wording is the consolidated one either way. Naming the workstream ID
+    // instead (`failed in default`) would call an identifier a tree. The develop
+    // seam is where a single workstream's own tree is known, and that is where
+    // the wording changes. Passing the count (rather than keeping the old
+    // literal) is what keeps the two seams reading one definition. Label text
+    // only: the command, the classification and the ok/notes outcome untouched.
+    const ownTree = undefined as string | undefined;
+    const treeClause = consolidatedRunWhere(opts.workstreamCount, ownTree, opts.repoRoot).phrase;
     // #1324 — a killed run's stream stops wherever the kill landed: report
     // the bound, never a classification of the code.
     if (timedOut) {
@@ -322,6 +336,9 @@ export async function runCommitPrConsolidatedVerify(
           ranCmd,
           repoRoot: opts.repoRoot,
           bound: opts.timeoutMs ?? 30 * 60_000,
+          // #1064 — the clause now arrives from the caller (this seam owns the
+          // workstream count, the hang module does not).
+          where: treeClause,
           output: killedOutput,
           ...(killedTree === undefined ? {} : { tree: killedTree }),
           failureTail,
@@ -330,7 +347,7 @@ export async function runCommitPrConsolidatedVerify(
         }),
       );
     }
-    const classifiedMessage = consolidatedFailureMessage(verdict, ranCmd);
+    const classifiedMessage = consolidatedFailureMessage(verdict, ranCmd, ownTree, opts.repoRoot);
 
     // #1404 — before this parks, ask the question the commit-pr seam never
     // asked: does the SAME command fail WITHOUT the change? The probe runs

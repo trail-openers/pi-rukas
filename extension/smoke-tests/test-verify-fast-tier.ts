@@ -26,10 +26,7 @@ import {
   verifyCapFor,
 } from "../src/work-driver-verify-develop-helpers.ts";
 import { FAST_TIER_LABEL, fastVerifyCmdFor, withFastTier } from "../src/work-driver-verify-fast.ts";
-import {
-  VERIFY_SUITE_TIMEOUT_ENV,
-  suiteTierTimeoutMs,
-} from "../src/work-driver-verify-budget.ts";
+import { VERIFY_SUITE_TIMEOUT_ENV, suiteTierTimeoutMs } from "../src/work-driver-verify-budget.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
@@ -245,8 +242,22 @@ async function developGate(
     "fast red: a code failure stays verify-failed",
   );
   assert(
-    r.failures.some((f) => f.includes(`verify command \`${FAST}\` failed in`)) &&
-      !r.failures.some((f) => f.includes(`verify command \`${FULL}\` failed in`)),
+    // #1064 — with ONE workstream the consolidated probe now names the same tree
+    // the per-worktree entry names, so the tree clause no longer says which run
+    // produced an entry. What still does is the fast-tier tail: only the
+    // per-worktree loop short-circuits the full command and says so, and the
+    // probe never sees the tier. What still separates them is the COMMAND: the
+    // per-worktree loop ran the FAST tier (and carries the tier note); the probe
+    // ran the project's full command and must never claim the tier note. So the
+    // pair stays distinguishable after #1064 made the tree clause identical, and
+    // either entry naming the wrong command still fails here.
+    r.failures.some(
+      (f) => f.includes(`verify command \`${FAST}\` failed in`) && f.includes(FAST_TIER_LABEL),
+    ) &&
+      !r.failures.some(
+        (f) => !f.includes(`verify command \`${FAST}\` failed in`) && f.includes(FAST_TIER_LABEL),
+      ) &&
+      r.failures.some((f) => f.includes("failed in") && f.includes(`\`${FULL}\``)),
     "fast red: the per-worktree headline names the fast command, not the full one",
   );
 }

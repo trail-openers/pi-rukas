@@ -69,6 +69,11 @@ export function runPipeline(files: string[]): {
     attributed,
     assertion,
     verdict,
-    message: consolidatedFailureMessage(verdict, "bun run check"),
+    // #1064 — the builder now composes the tree clause from a workstream
+    // count, so it takes the tree the caller verified and the repo root. This
+    // harness builds an N=2 verdict (count 2 → CONSOLIDATED), so `ownTree` is
+    // undefined and `repoRoot` is only the placeholder the phrase never reads
+    // at N>1: the CONSOLIDATED label is unchanged.
+    message: consolidatedFailureMessage(verdict, "bun run check", undefined, __dirname),
   };
 }

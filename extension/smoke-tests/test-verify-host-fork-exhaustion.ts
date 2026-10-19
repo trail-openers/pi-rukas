@@ -169,8 +169,13 @@ try {
       `verify cannot fork: no classifier verdict about the change (got: ${all.slice(0, 300)})`,
     );
     assert(
-      gate.failures.some((x) => x.includes(LABEL) && x.includes("CONSOLIDATED tree")),
-      "verify cannot fork: the consolidated run is labelled a host failure",
+      // #1064 — this fixture is ONE workstream, so the run that died on the fork
+      // error verified that workstream's own tree: the label must stay a host
+      // failure and the clause must name the tree rather than a CONSOLIDATED one
+      // that never combined anything (the skip is pinned OFF above, so the probe
+      // really ran).
+      gate.failures.some((x) => x.includes(LABEL) && x.includes("in") && x.includes("wt-default")),
+      "verify cannot fork: the one-workstream run is labelled a host failure on its own tree",
     );
     assert(
       gate.failures.some((x) => x.includes(LABEL) && x.includes("smoke:")),
