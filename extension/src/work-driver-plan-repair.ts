@@ -23,7 +23,8 @@
  *   - not a protected path (`isProtectedPath`), granted or not;
  *   - not fenced in the workstream's `outOfScope`, in either containment
  *     direction (the path under the fence, or the fence under the path);
- *   - not a deferred protected path (#1642).
+ *   - not a deferred protected path (#1642);
+ *   - not carrying an invisible or control character (see {@link INVISIBLE_PATH}).
  *
  * The evidence that the plan targets THIS spec is also narrow: at least one of
  * the workstream's OWN declared paths must be a concrete plain file that a spec
@@ -42,7 +43,7 @@
 
 import { OPEN_POINT_CHAR_CAP } from "./open-points-reader.ts";
 import { plannedPathProblem } from "./plan-path-shape.ts";
-import { redactThenBound } from "./text-flatten.ts";
+import { flattenIssueText, redactThenBound } from "./text-flatten.ts";
 import {
   declaredPathsCoveredBy,
   isPlaceholderPath,
@@ -71,6 +72,27 @@ type OmittedPathRepair = {
 /** The basis every repair assumption carries; rendered beside its text. */
 const OMITTED_PATH_BASIS =
   "plan-to-spec gate (single-workstream repair): spec deliverable path the plan omitted";
+
+/**
+ * Format and control characters a spec slot can carry invisibly: Unicode `Cf`
+ * (bidi overrides/isolates, zero-width characters, BOM, word joiner), every
+ * `Cc` control character, and the line/paragraph separators U+2028/U+2029.
+ *
+ * The deliverable-path grammar is a whitelist over visible characters, so
+ * nothing in it speaks for these: `\u200D` sits inside a segment, `\u200B` before
+ * a dot, and the string still reads as an ordinary path to every reader and every
+ * shape gate — `isPlainRepoRelativePath`'s `\s` and `plannedPathProblem`'s
+ * `\t\r\n\v\f\0` are named ASCII classes, not general categories.
+ * What an unlisted character then is, is whatever the reader is not looking at —
+ * `.\u200Bgithub/workflows/ci.yml` reads as an ordinary file and is the protected
+ * directory, and a RLO reorders what a reviewer sees. Refusing the character is
+ * cheaper than teaching every downstream reader to see it (#1688).
+ *
+ * The tests build their probes with `String.fromCharCode`, never a literal: a
+ * source file carrying a real bidi control is a review hazard of its own, and
+ * `\p{Cc}`/`\p{Cf}` name them without one.
+ */
+const INVISIBLE_PATH = /[\p{Cf}\p{Cc}\u2028\u2029]/u;
 
 /**
  * Appends the omitted deliverable paths to the sole workstream, or returns
@@ -104,6 +126,20 @@ export function repairOmittedDeliverablePaths(
   // anything the glob matches — neither is evidence the planner meant this spec.
   // Without a concrete shared file the plan is wholly wrong, and extending it
   // would hide that rather than repair an omission.
+  //
+  // The WITNESS is the one path this function trusts without looking at it: the
+  // comparison below is equality against the spec's own copy of the string, so the
+  // character travels in both and no shape gate sees it. Judged on the raw declared
+  // form (what is stored and what `quotedPaths` renders to a model-run shell),
+  // because `normaliseDeclaredPath` strips only ASCII backticks/whitespace and an
+  // annotation — a zero-width survives it. Runs BEFORE the test itself, so a plan
+  // whose only witness is poisoned never reads as the right plan.
+  for (const witness of ws.paths) {
+    if (INVISIBLE_PATH.test(witness))
+      return refuse(
+        `${JSON.stringify(witness)}: an invisible or control character in a declared path cannot witness a repair`,
+      );
+  }
   const targetsSpec = (spec.deliverables ?? []).some((d) =>
     d.paths.some((slot) =>
       splitDeliverablePaths(slot)
@@ -149,6 +185,15 @@ export function repairOmittedDeliverablePaths(
         return refuse(`${slot}: not a single measurable file path`);
       const path = normaliseDeclaredPath(alt.raw);
       if (path.length === 0) return refuse(`${slot}: empty after normalisation`);
+      // Runs BEFORE the shape gate and before the protected-path check: both
+      // compare visible text, so `isProtectedPath(".\u200Bgithub/…")` is false and
+      // `plannedPathProblem` has no clause for a character its grammar never
+      // mentions. The RAW slot is judged as well as the normalised path, since the
+      // normaliser strips only ASCII backticks/whitespace and an annotation.
+      if (INVISIBLE_PATH.test(slot))
+        return refuse(`${JSON.stringify(slot)}: invisible or control character in the slot`);
+      if (INVISIBLE_PATH.test(path))
+        return refuse(`${JSON.stringify(path)}: invisible or control character in the path`);
       // The planner's own path-shape gate, run on the normalised path before it
       // is appended: whatever the plan-quality pass would refuse as an
       // `invalid-path`, the driver must not write into the plan itself.
@@ -206,10 +251,16 @@ export function withOmittedPathAssumption(state: WorkState, added: readonly stri
   const ns = state.pipelineState.normalisedSpec;
   if (!ns || added.length === 0) return state;
   const text = omittedPathAssumptionText(added);
-  // The same redact-then-bound the #1187 open-point finalise applies to every
-  // assumption the spec carries: this one is appended AFTER that pass ran, so
-  // it bounds itself rather than relying on a pass that already finished.
-  const bound = redactThenBound(text, OPEN_POINT_CHAR_CAP).text;
+  // The same normalisation `boundEntry` in open-points-reader.ts applies to every
+  // stored open-point line, in the same order: redact, bound, then flatten. This
+  // assumption is appended AFTER the #1187 finalise pass ran, so it normalises
+  // itself rather than relying on a pass that already finished. The flatten is what
+  // keeps the PR body one bullet: a path with a newline would forge a second line
+  // and a bidi override reorders what the reviewer reads. A path carrying one of
+  // those is refused by the gate above — this is the backstop for the rest of the
+  // line, whose visible half can still carry a character this gate's class accepts
+  // as whitespace.
+  const bound = flattenIssueText(redactThenBound(text, OPEN_POINT_CHAR_CAP).text);
   if (ns.assumptions.some((a) => a.text === bound)) return state;
   const assumption: SpecAssumption = { text: bound, basis: OMITTED_PATH_BASIS };
   const verdict = ns.verdict === "proceed" ? "proceed-with-assumptions" : ns.verdict;

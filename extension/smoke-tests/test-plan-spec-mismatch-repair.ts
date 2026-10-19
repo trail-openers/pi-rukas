@@ -18,8 +18,9 @@
  *   6. N=1 with a refused call → nothing repaired (a second defect);
  *   7. the gate off → nothing repaired.
  *
- * The disclosure half (`withOmittedPathAssumption` redacting and bounding the
- * line it appends) is judged in `test-plan-repair-assumption.ts`.
+ * The disclosure half (`withOmittedPathAssumption` redacting, bounding and
+ * flattening the line it appends) is judged in `test-plan-repair-assumption.ts`, and
+ * the invisible-character refusal in `test-plan-repair-invisible-path.ts`.
  */
 
 import type { CycleContext } from "../src/work-driver-context.ts";
