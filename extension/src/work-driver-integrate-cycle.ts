@@ -85,7 +85,14 @@ export async function keepOrRefuseStaleIntegrateTree(
   branchName: string,
   issue: number,
 ): Promise<IntegrateBackup | undefined> {
-  const finding = await inspectWorktreeForLoss(execFn, repoRoot, abs, ref);
+  const finding = await inspectWorktreeForLoss(execFn, repoRoot, abs, ref, {
+    // #1642 — this tree is not one a verify run builds in (verify runs at
+    // repoRoot), so a collapsed `!! target/` here is an operator's or the ops
+    // fallback's artefact in a driver-owned tree, not driver-produced residue.
+    // Keep refusing, unlike the branch step's same-issue residue pass, whose
+    // trees the driver DOES build in — see InspectOpts.collapsedDirIsLoss.
+    collapsedDirIsLoss: true,
+  });
   if (finding === undefined) return undefined; // provably clean: nothing uncommitted, no unique commits
   // Every other loss channel is judged HERE, before the commits-only path.
   const onlyCommits =

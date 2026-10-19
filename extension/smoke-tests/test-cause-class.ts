@@ -492,6 +492,9 @@ assert(
   "N=1 reasons never use the attribution wording",
 );
 
+// The #1642 branch-refusal golden lives in test-cause-class-branch-refusal-1642.ts
+// (this file sits at the AGENTS.md §12 500-line cap).
+
 // ---------------------------------------------------------------------------
 console.log(`\nexit ${exit}`);
 process.exit(exit);
