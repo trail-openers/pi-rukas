@@ -1,0 +1,120 @@
+#!/usr/bin/env bun
+/**
+ * memory-write-guard (#1666) — every shape that must refuse a destructive
+ * `vipune update … -t`, and the shapes that must stay allowed.
+ *
+ * Offline: drives the pure matcher and the registered tool_call hook with a fake
+ * ExtensionAPI. The guard is a guardrail against accidental rewrites, not a
+ * security boundary (docs/headless.md), so this file pins the shapes it claims.
+ */
+
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  bashCommandOf,
+  isDestructiveWrite,
+  registerMemoryWriteGuard,
+  simpleCommands,
+} from "../src/memory-write-guard.ts";
+import { assert, exit } from "./merge-guard-helpers.ts";
+
+// ── 1. Refused: the destructive forms, each one a shape the guard must see through.
+const refused: Array<[string, string]> = [
+  ["bare -t", `vipune update 12 -t "rewritten"`],
+  ["bare --text", "vipune update 12 --text x"],
+  ["--text=value", "vipune update 12 --text=x"],
+  ["env prefix assignment", "FOO=1 vipune update 12 -t x"],
+  ["two env prefix assignments", "A=1 B=2 vipune update 12 -t x"],
+  ["env wrapper", "env -i vipune update 12 --text=x"],
+  ["env -u wrapper", "env -u HOME vipune update 12 -t x"],
+  ["command wrapper", "command vipune update 12 -t x"],
+  ["exec wrapper", "exec vipune update 12 -t x"],
+  ["subshell", "(vipune update 12 -t x)"],
+  ["command substitution", "echo $(vipune update 12 -t x)"],
+  ["backticks", "echo `vipune update 12 -t x`"],
+  ["command substitution inside double quotes", 'echo "$(vipune update 12 -t x)"'],
+  ['attached value -t"x"', 'vipune update 12 -t"x"'],
+  ["attached value -tx", "vipune update 12 -txyz"],
+  ["bash -c body", `bash -c "vipune update 12 -t x"`],
+  ["sh -lc body", `sh -lc 'vipune update 12 --text x'`],
+  ["eval body", `eval "vipune update 12 -t x"`],
+  ["chained &&", "true && vipune update 12 --text x"],
+  ["chained ;", "echo hi; vipune update 12 -t x"],
+  ["write after a closed substitution in quotes", 'echo "$(true)" && vipune update 12 -t x'],
+  ["path-qualified binary", "/usr/local/bin/vipune update 12 -t x"],
+];
+for (const [name, cmd] of refused) {
+  assert(isDestructiveWrite(cmd), `1: refused: ${name} (${cmd})`);
+}
+
+// ── 2. Allowed: status-only updates, adds, and text that is only quoted data.
+const allowed: Array<[string, string]> = [
+  ["status-only update", "vipune update 12 --status active"],
+  ["add with supersedes", "vipune add 'corrected statement' --supersedes 12"],
+  ["search", "vipune search 'topic' --json"],
+  ["echo of the command text", 'echo "vipune update 12 -t x"'],
+  ["single-quoted literal", "echo '$(vipune update 12 -t x)'"],
+  ["unrelated command", "npm run typecheck"],
+  ["empty", ""],
+];
+for (const [name, cmd] of allowed) {
+  assert(!isDestructiveWrite(cmd), `2: allowed: ${name} (${cmd})`);
+}
+
+// ── 3. The argument splitter: quotes are words, separators end commands.
+{
+  const cmds = simpleCommands(`a "b;c" 'd e' | f && g $(h i) \`j k\``);
+  const flat = cmds.map((c) => c.join(" "));
+  assert(flat.includes("a b;c d e"), "3: a quoted ; stays inside its word");
+  assert(
+    flat.includes("f") && flat.includes("g") && flat.includes("h i") && flat.includes("j k"),
+    "3: pipes, &&, $( ) and backticks each start a command",
+  );
+}
+
+// ── 4. A non-string command reads as empty and never throws.
+assert(bashCommandOf({ command: 5 }) === "", "4: a numeric command reads as empty");
+assert(bashCommandOf({ command: ["vipune"] }) === "", "4: an array command reads as empty");
+assert(bashCommandOf(undefined) === "", "4: a missing input reads as empty");
+assert(bashCommandOf({ command: "ls" }) === "ls", "4: a string command is read as-is");
+
+// ── 5. The registered hook: refuses a destructive write, allows a status change.
+type Handler = (event: unknown, ctx: unknown) => unknown;
+{
+  const handlers: Handler[] = [];
+  const fake = {
+    on: (name: string, fn: Handler) => {
+      if (name === "tool_call") handlers.push(fn);
+    },
+  } as unknown as ExtensionAPI;
+  registerMemoryWriteGuard(fake);
+  const run = async (toolName: string, input: unknown): Promise<unknown> => {
+    for (const h of handlers) {
+      const r = (await h({ toolName, input }, {})) as { block?: boolean } | undefined;
+      if (r?.block) return r;
+    }
+    return undefined;
+  };
+  const blocked = (await run("bash", { command: "vipune update 12 -t x" })) as
+    | { block?: boolean; reason?: string }
+    | undefined;
+  assert(blocked?.block === true, "5: the hook blocks a destructive vipune write");
+  assert(
+    typeof blocked?.reason === "string" && blocked.reason.includes("--supersedes"),
+    "5: the refusal names the supersedes correction path",
+  );
+  assert(
+    (await run("bash", { command: "vipune update 12 --status active" })) === undefined,
+    "5: the hook allows a status-only update",
+  );
+  assert(
+    (await run("bash", { command: 5 })) === undefined,
+    "5: a non-string command is not blocked",
+  );
+  assert(
+    (await run("read", { command: "vipune update 12 -t x" })) === undefined,
+    "5: only bash tool calls are inspected",
+  );
+}
+
+console.log(`\nexit ${exit}`);
+process.exit(exit);

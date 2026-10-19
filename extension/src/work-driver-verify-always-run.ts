@@ -209,6 +209,7 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-verify-select-hardening.ts",
   "smoke-tests/test-verify-typecheck-uses-project-tsc.ts",
   "smoke-tests/test-vipune-argv.ts",
+  "smoke-tests/test-work-cycle-dispatch-path.ts",
   "smoke-tests/test-work-develop-scope-fence-seam.ts",
   "smoke-tests/test-work-driver-1093-abort-untracked-start-ref.ts",
   "smoke-tests/test-work-driver-1093-untracked-claim.ts",

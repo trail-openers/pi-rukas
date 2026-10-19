@@ -5,7 +5,6 @@
  * + verify gate (re-gated per-worktree by #679 task-evidence).
  */
 import path from "node:path";
-import { dispatchCore } from "./dispatch.ts";
 import { execp as argvExecp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { BranchAheadError, mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
@@ -18,6 +17,7 @@ import {
   recordDirtyRootExemptBaseline,
   runBranchResiduePass,
 } from "./work-driver-branch-residue.ts";
+import { cycleDispatch } from "./work-driver-cycle-entry.ts";
 // #1093 — cycle-start-ref stamping runs under the single integration lock.
 import { hasCaptureFailure, recordCycleStartRef } from "./work-driver-git.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
@@ -74,7 +74,10 @@ export async function stampCycleStartRef(ctx: CycleContext, state: WorkState): P
   if (ctx.invocationStartRef !== undefined) {
     const stamped = {
       ...state,
-      pipelineState: { ...state.pipelineState, startRef: ctx.invocationStartRef },
+      pipelineState: {
+        ...state.pipelineState,
+        startRef: ctx.invocationStartRef,
+      },
     };
     await persistCycle(ctx, stamped);
     return stamped;
@@ -427,7 +430,7 @@ export async function runDevelop(
     });
   }
 
-  const dispatch = ctx.dispatchFn ?? dispatchCore;
+  const dispatch = cycleDispatch(ctx);
   const execFn = ctx.verifyExecFn ?? execp;
   // #382 — write-ahead. `develop` is the longest-running step and the
   // biggest crash window. One marker for the whole step: resume

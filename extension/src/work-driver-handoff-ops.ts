@@ -11,11 +11,11 @@
  */
 
 import { clampToCycleDeadline } from "./cycle-deadline-clock.ts";
-import { dispatchCore } from "./dispatch.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { cycleDispatch } from "./work-driver-cycle-entry.ts";
 import { handoffDispatchTimeoutMs } from "./work-driver-handoff.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { inlineHandoffOpsPrompt } from "./work-driver-prompts-late.ts";
@@ -36,7 +36,7 @@ export async function runHandoffOpsDispatch(
   state: WorkState,
   handoffBodyPath: string,
 ): Promise<{ next: WorkState; opsReplyText: string }> {
-  const dispatch = ctx.dispatchFn ?? dispatchCore;
+  const dispatch = cycleDispatch(ctx);
   // #1593 — the handoff ends inside the caller's allowance, never at its kill.
   const boundMs = clampToCycleDeadline(handoffDispatchTimeoutMs(), Date.now()).timeoutMs;
   const startedAt = Date.now();

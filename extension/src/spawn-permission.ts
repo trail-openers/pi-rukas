@@ -30,6 +30,7 @@ import path from "node:path";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
 import { trace } from "./trace.ts";
+import { strictOptIn, workCycleTrustEnabled } from "./work-cycle-trust.ts";
 
 export interface ChildPermissionPlan {
   /** Strict shape: the broker is wired and the pi-rukas extension is forwarded. */
@@ -38,15 +39,6 @@ export interface ChildPermissionPlan {
   trustChild: boolean;
   permSocketPath?: string;
   broker?: BrokerHandle;
-}
-
-/**
- * Whether a dispatch's `workCycleTrust` request is honoured. The runner's own
- * strict opt-in wins over the cycle's request, so an operator who sets
- * PI_ENSEMBLE_STRICT_PERMISSIONS=1 gets today's allowlist behaviour back.
- */
-export function workCycleTrustEnabled(workCycleTrust: boolean | undefined): boolean {
-  return workCycleTrust === true && process.env.PI_ENSEMBLE_STRICT_PERMISSIONS !== "1";
 }
 
 /**
@@ -60,6 +52,13 @@ export function planChildPermissions(opts: {
   workCycleTrust?: boolean;
 }): ChildPermissionPlan {
   const trustChild = isParentInTrustMode() || workCycleTrustEnabled(opts.workCycleTrust);
+  // The operator's strict opt-in suppressed a /work cycle's trust request. Traced so
+  // the strict child is explained in the log rather than looking like a regression.
+  if (opts.workCycleTrust === true && strictOptIn()) {
+    trace(
+      `spawn[${opts.role}]: PI_ENSEMBLE_STRICT_PERMISSIONS=1 — /work trust suppressed, strict child`,
+    );
+  }
   // PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1 forces the guard off (debugging escape hatch).
   const subagentGuardEnabled =
     process.env.PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD !== "1" && !trustChild;
@@ -95,6 +94,6 @@ export function applyChildPermissionEnv(
     // the same way the parent does. An inherited socket must not survive into a
     // trust child: the broker it names is not this child's.
     childEnv.PI_ENSEMBLE_TRUST_MODE = "1";
-    childEnv.PI_ENSEMBLE_PERM_SOCKET = undefined;
+    Reflect.deleteProperty(childEnv, "PI_ENSEMBLE_PERM_SOCKET");
   }
 }

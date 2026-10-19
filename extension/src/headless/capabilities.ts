@@ -29,6 +29,7 @@
 
 import path from "node:path";
 import { type ResourceReport, resourceReport } from "../resource-budget.ts";
+import { strictOptIn } from "../work-cycle-trust.ts";
 import { AGENTS_MD_FLAGS } from "./agents-md.ts";
 import { INSTALL_ROOT, readBuildCommit, readBuildVersion } from "./build.ts";
 import { capVocabulary } from "./caps.ts";
@@ -118,9 +119,9 @@ export interface PermissionsReport {
   workCycles: "trust" | "strict";
 }
 
-/** Read at answer time, so a run reports the mode it actually uses. */
+/** Read at answer time, so a run reports the mode it actually uses (the spawn path's predicate). */
 export function permissionsReport(): PermissionsReport {
-  return { workCycles: process.env.PI_ENSEMBLE_STRICT_PERMISSIONS === "1" ? "strict" : "trust" };
+  return { workCycles: strictOptIn() ? "strict" : "trust" };
 }
 
 /**

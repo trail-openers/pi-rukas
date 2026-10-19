@@ -350,10 +350,37 @@ A headless `/work` cycle runs its children with the same permission behaviour
 as an interactive trust-mode cycle: no `agents.json` verdict lookup, no `ask`
 escalation, and no `no broker socket — headless deny` for ordinary commands. The
 boundary is the mode-independent guards and the write fence, not the command
-allowlist. The driver stamps each child of the cycle (`workCycleTrust`, from the
-cycle's `DriverContext.headless`), and the child gets `PI_ENSEMBLE_TRUST_MODE=1`
-and no broker socket. The runner process's own env never carries the marker, and
-co-resident non-/work dispatches are unaffected.
+allowlist. The cycle stamps each child (`workCycleTrust`, from `cycleChildOpts(ctx)` in
+`extension/src/work-cycle-trust.ts`, which reads the cycle's `DriverContext.headless`),
+and the child gets `PI_ENSEMBLE_TRUST_MODE=1` and no broker socket. The runner
+process's own env never carries the marker, and co-resident non-/work dispatches
+are unaffected.
+
+One path, one source. Every dispatch a cycle makes goes through `cycleDispatch(ctx)`
+(`extension/src/work-driver-cycle-entry.ts`), which stamps after the caller's options
+so a caller cannot opt a child out. The few sites that call `spawnSpecialist`
+directly (the adversarial loop's inner child, the lens child, the policy judge) take
+the stamp from `cycleChildOpts(ctx)` at the cycle's call site. `spawn-permission.ts`
+is the one predicate that reads the stamp, and `--capabilities` reads the same
+`strictOptIn()`. `test-work-cycle-dispatch-path.ts` audits the driver's import
+closure: it fails if a `dispatchCore` or `spawnSpecialist` site is not in its
+registry with the stamp it carries, or if any site hand-computes the stamp from
+`ctx.headless`.
+
+| Site | Call path | Stamp |
+|---|---|---|
+| explore, plan, plan corrective and timeout re-dispatch | `issueImagesFor` / `runExplore` → `cycleDispatch` | cycle dispatch |
+| develop fan-out, speculative explore, develop fence/symbol/converge retries | `runDevelop*` takes the cycle dispatch from `branch-develop` | cycle dispatch |
+| adversarial fix (develop) | `work-driver-adversarial-fix` → `cycleDispatch` | cycle dispatch |
+| adversarial review and fix (inner child) | `cycleChildOpts` → `runAdversarialLoop` → `makeRunPhase` → `spawnSpecialist` | `workCycleTrust` (`adversarial-phase.ts`) |
+| lens children (six) | `cycleChildOpts` → `runLensReview` → `runLensChild` → `spawnSpecialist` | `workCycleTrust` (`lens-review-child.ts`) |
+| policy judge (merge authority, review threshold) | `cycleChildOpts` → `judgePolicy` → `spawnSpecialist` | `workCycleTrust` (`work-driver-policy.ts`) |
+| lens-fix, branch ops, CI, step-back, merge ops, commit-pr fallback | `runSingleDispatch` → `cycleDispatch` | cycle dispatch |
+| handoff ops | `work-driver-handoff-ops` → `cycleDispatch` | cycle dispatch |
+| PM tools `dispatch_specialist`, `dispatch_parallel` | not a cycle child | none, by design |
+
+The PM tools are the only spawns in `dispatch.ts` without the stamp. They are not
+reachable from a cycle, and the audit counts them so a new one fails the gate.
 
 | Child | Write boundary | Permission shape |
 |---|---|---|
@@ -367,6 +394,16 @@ registers the destructive-git guard, the issue-creation guard, the merge guard,
 the developer push guard, the destructive vipune write guard, and the write
 fence. The protected-path halt, the merge authority and the review ledger run in
 the driver.
+
+The destructive vipune write guard (`extension/src/memory-write-guard.ts`) is a
+guardrail against accidental rewrites, not a security boundary. It reads a bash
+command the way a shell would for the common shapes: quotes, `VAR=value`
+prefixes, `env` / `command` / `exec` wrappers, `bash -c` and `eval` bodies,
+subshells, `$(…)`, backticks, and attached values (`-t"x"`, `-tx`, `--text=x`),
+checking every simple command in a chain. A command that reaches the vipune binary
+in a shape it does not model (a script the child writes and then runs, or an
+indirect executable path) is not refused. A status-only `vipune update` and a
+`vipune add --supersedes` are allowed.
 
 Outside a /work cycle nothing changes. A bare `pi -p` child (no driver) has no
 cycle stamp, so it keeps the strict path: `agents.json` resolution, and

@@ -16,6 +16,7 @@ import { slowRecorder } from "./slow-events.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
+import { cycleChildOpts } from "./work-cycle-trust.ts";
 import {
   capKillOutcomeFields,
   retryLadderKillCause,
@@ -215,7 +216,7 @@ export async function fanOutAdversarial(
           // each one leads its own process group.
           processGroup: ctx.processGroup,
           // #1666 — a headless cycle's inner children run under trust, as interactive ones do.
-          workCycleTrust: ctx.headless === true,
+          ...cycleChildOpts(ctx),
         },
         // Interactive runs have no cycle signal; spawn-level timeouts in
         // spawn.ts (per-role) bound the work there.

@@ -7,13 +7,14 @@
  * `parseMergeCommit` + `runMerged` are the Step 9 pair.
  */
 
-import { dispatchCore } from "./dispatch.ts";
 import { execp } from "./exec.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult, WriteFenceOpt } from "./types.ts";
+import { cycleChildOpts } from "./work-cycle-trust.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { cycleDispatch } from "./work-driver-cycle-entry.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { markDraftPrReady } from "./work-driver-draft-pr.ts";
@@ -43,7 +44,10 @@ import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-
 import { type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 import { worktreePrune, worktreeRemove } from "./worktree.ts";
 
-export { buildCompletionEvent, overrideEnvForKillCause } from "./work-driver-completion-event.ts";
+export {
+  buildCompletionEvent,
+  overrideEnvForKillCause,
+} from "./work-driver-completion-event.ts";
 
 /**
  * Step 6 — Parse `pr: <N>` from an ops commit-pr reply. Lenient — accepts
@@ -93,7 +97,7 @@ export async function runSingleDispatch(
     { ...state, pipelineState: { ...state.pipelineState, currentStep: step } },
     { kind: "step-started", step, at: now },
   );
-  const dispatch = ctx.dispatchFn ?? dispatchCore;
+  const dispatch = cycleDispatch(ctx);
   const startedAt = Date.now();
   // #382 — WRITE-AHEAD. A dispatch can run for thirty minutes; before this,
   // nothing hit disk until it returned, so a crash inside that window left
@@ -202,7 +206,10 @@ export async function runMerged(
           ? failed
           : "PR is still a draft: not marked ready";
     return appendEvent(
-      { ...state, pipelineState: { ...state.pipelineState, currentStep: "merged" } },
+      {
+        ...state,
+        pipelineState: { ...state.pipelineState, currentStep: "merged" },
+      },
       {
         kind: "cap-hit",
         at: Date.now(),
@@ -251,7 +258,7 @@ export async function runMerged(
         judgePolicy(ctx.repoRoot, {
           processGroup: ctx.processGroup === true,
           signal: ctx.signal,
-          workCycleTrust: ctx.headless === true, // #1666
+          ...cycleChildOpts(ctx), // #1666
         }),
       ),
       docs,
@@ -305,7 +312,10 @@ export async function runMerged(
     // handoff with teardown skipped. `work-driver-commit.ts` builds its
     // mechanized event directly for the same reason.
     next = appendEvent(
-      { ...state, pipelineState: { ...state.pipelineState, currentStep: "merged" } },
+      {
+        ...state,
+        pipelineState: { ...state.pipelineState, currentStep: "merged" },
+      },
       { kind: "step-started", step: "merged", at: now },
     );
     next = appendEvent(
@@ -468,7 +478,11 @@ export async function runMerged(
   }
   return {
     ...next,
-    pipelineState: { ...next.pipelineState, currentStep: "merged", status: "merged" },
+    pipelineState: {
+      ...next.pipelineState,
+      currentStep: "merged",
+      status: "merged",
+    },
     eventLog: [...next.eventLog, { kind: "merged", at: Date.now(), prNumber, mergeCommit }],
   };
 }
