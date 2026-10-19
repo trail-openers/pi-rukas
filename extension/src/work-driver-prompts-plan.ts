@@ -37,16 +37,108 @@ export const PLAN_DELIVERABLE_PATH_RULE =
   "EVERY deliverable that declares `[paths: …]` in the spec must appear in at least one workstream's `paths:` line — a deliverable no workstream claims is a plan-to-spec rejection.";
 
 /**
+ * #1642 — what the driver hands the plan child as inputs, read from state by
+ * `planPromptInputsOf` (work-driver-plan-inputs.ts). Every field is optional:
+ * an absent field is rendered as UNAVAILABLE, never as a guessed path.
+ */
+export interface PlanPromptInputs {
+  /** Absolute path of the cached issue body (`pipelineState.issueBodyArtifact`). */
+  issueBodyPath?: string;
+  /** Absolute path of Step 1's explore report (its `dispatch-completed.artifactPath`). */
+  explorePath?: string;
+  /**
+   * The explore report's text, when it was short enough to stay inline in the
+   * state (no artifact file exists then). Used only when `explorePath` is absent.
+   */
+  exploreSummary?: string;
+  /** The resolved spec's deliverables (`pipelineState.normalisedSpec`). */
+  deliverables?: Array<{ id: string; description: string; paths: string[] }>;
+}
+
+const ONE_LINE_MAX = 240;
+
+/** One deliverable's text as a single prompt line, clipped. */
+function oneLine(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > ONE_LINE_MAX ? `${flat.slice(0, ONE_LINE_MAX - 1)}…` : flat;
+}
+
+/**
+ * #1642 — the input block the plan child reads first. The child had no path to
+ * the cached issue body and the explore report, so it guessed (on #1557 it
+ * planned from a commit and covered none of the spec's deliverables). The
+ * deliverables are listed inline too, so coverage does not depend on a file
+ * read succeeding. An input the driver does not have is said to be unavailable.
+ */
+export function planInputsLines(
+  inputs: PlanPromptInputs | undefined,
+  issueCount: number,
+): string[] {
+  const lines: string[] = ["Your inputs:", ""];
+  const bodyLabel = issueCount === 1 ? "Issue body" : "Issue bodies";
+  if (inputs?.issueBodyPath) {
+    lines.push(
+      `- ${bodyLabel} (cached by the driver in Step 1): \`${inputs.issueBodyPath}\` — read it with the read tool.`,
+    );
+  } else {
+    lines.push(
+      `- ${bodyLabel}: UNAVAILABLE — the driver has no cached copy path for it in this cycle's state. Say so in your reply; do not assume a file exists.`,
+    );
+  }
+  if (inputs?.explorePath) {
+    lines.push(
+      `- Explore report (Step 1): \`${inputs.explorePath}\` — read it with the read tool.`,
+    );
+  } else if (inputs?.exploreSummary !== undefined) {
+    lines.push(
+      "- Explore report (Step 1): not written to a file (it was short enough to stay in the driver's state), so it is reproduced here:",
+      "",
+      "--- explore report begins ---",
+      inputs.exploreSummary,
+      "--- explore report ends ---",
+    );
+  } else {
+    lines.push(
+      "- Explore report (Step 1): UNAVAILABLE — the driver has no copy of it in this cycle's state. Say so in your reply; do not assume a file exists.",
+    );
+  }
+  if (inputs?.deliverables) {
+    lines.push(
+      "- Spec deliverables (the driver's resolved spec; the plan-to-spec gate checks coverage against these):",
+    );
+    if (inputs.deliverables.length === 0) {
+      lines.push("  (the resolved spec declares no deliverables)");
+    }
+    for (const d of inputs.deliverables) {
+      const paths = d.paths.length > 0 ? ` [paths: ${d.paths.join(", ")}]` : "";
+      lines.push(`  - ${d.id}: ${oneLine(d.description)}${paths}`);
+    }
+  } else {
+    lines.push(
+      "- Spec deliverables: UNAVAILABLE — the resolved spec is not in this cycle's state, so the plan cannot be checked against it by name. Say so in your reply.",
+    );
+  }
+  lines.push("");
+  return lines;
+}
+
+/**
  * Step 2 (plan) prompt. PR3 (#1652: workstreams are `report_workstream` tool
  * calls, not a markdown block); single-workstream
  * issues return one `### default` entry (or zero, which the driver synthesises).
+ * #1642 — `inputs` names the artifact paths and the spec; see `planInputsLines`.
  */
-export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): string {
+export function inlinePlanPrompt(
+  issues: number[],
+  scratchDirAbs: string,
+  inputs?: PlanPromptInputs,
+): string {
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
   return [
     `/work ${headline} — Step 2 (Decomposition).`,
     "",
-    `The driver has already cached ${issues.length === 1 ? "the issue body" : "each issue body"} and Step 1's explore report. Read ${issues.length === 1 ? "both" : "all of them"}, then work in this order:`,
+    ...planInputsLines(inputs, issues.length),
+    "Read every input above that is a path, then work in this order:",
     "",
     "  1. ENUMERATE the discrete findings first. Numbered items and checkboxes in the issue body are the default enumeration — one finding per item. Write the list out before you decide anything about workstreams.",
     "  2. ONE workstream is the default. Split only where you can show the work is genuinely independent, and for every extra workstream write one line saying why it is independent (`Split reason: <id> — <why it compiles and passes the gates without its siblings>`). No two workstreams may share a file, and NO workstream may have a compile or runtime dependency on another (a type change and every place that uses it is ONE workstream, not two — the consumer does not compile without the producer's commit). Shared files, shared symbols, or one half that cannot build without the other means ONE workstream. A single-file two-line fix is one workstream; that is fine.",

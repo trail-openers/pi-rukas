@@ -47,8 +47,8 @@ const OPTS = {
     execFn: async (_c: string, o?: { argv?: string[] }) => {
       const argv = o?.argv ?? [];
       if (argv[0] === "grep") {
-        if (argv[4] === "mysterySymbol") {
-          return { stdout: "src/ambiguous.ts\nsrc/also.ts\n" };
+        if (argv[5] === "mysterySymbol") {
+          return { stdout: "src/ambiguous.ts\0src/also.ts\0" };
         }
         return { stdout: "" };
       }

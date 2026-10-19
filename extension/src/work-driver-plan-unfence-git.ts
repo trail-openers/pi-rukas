@@ -13,6 +13,7 @@
  * shell text.
  */
 
+import { trace } from "./trace.ts";
 import type { UnfenceExecFn } from "./work-driver-plan-unfence.ts";
 
 /**
@@ -62,7 +63,7 @@ export async function definingFiles(
   let stdout = "";
   try {
     const r = await execFn("git", {
-      argv: ["grep", "-l", "-w", "-e", name, ref, "--"],
+      argv: ["grep", "-l", "-z", "-w", "-e", name, ref, "--"],
       cwd: repoRoot,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: GIT_MAX_BUFFER,
@@ -85,10 +86,26 @@ export async function definingFiles(
     if (!isGitGrepNoMatch(err)) throw err;
     return [];
   }
+  // #1642 — `git grep <ref>` prints `<ref>:<path>` lines, and the caller hands
+  // each one to `readAtRef`, which adds the ref itself. Left in place the prefix
+  // doubled (`git show HEAD:HEAD:<path>`), every read failed, and every fence the
+  // pass was meant to lift stayed. Strip it here, once, so a path is a path.
+  // `-z` ends each name with NUL, so a name with a space or a newline is data,
+  // not a separator, and git does not quote it. No trim: a name may begin or
+  // end with a space.
+  const prefix = `${ref}:`;
   return stdout
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
+    .split("\0")
+    .filter((l) => l.length > 0)
+    .map((l) => {
+      if (l.startsWith(prefix)) return l.slice(prefix.length);
+      // Not a shape `git grep <ref>` prints. Kept as-is (the read will fail and
+      // be recorded there), but traced so the operator can see the shape changed.
+      trace(
+        `work-driver: plan unfence — git grep entry without the ${prefix} prefix kept as-is: ${l}`,
+      );
+      return l;
+    });
 }
 
 /**
