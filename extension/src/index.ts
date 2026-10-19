@@ -6,6 +6,7 @@ import { registerAgentsMdTools } from "./agents-md-tool.ts";
 import { setParentExtensionApi } from "./async-jobs-registry.ts";
 import { registerAsyncJobsLifecycle } from "./async-jobs.ts";
 import { registerCommands, stripPmTools } from "./commands.ts";
+import { registerDecisionClassifier } from "./decision-openai-classify.ts";
 import * as decisionShadow from "./decision-shadow.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { registerDispatchPeekTool } from "./dispatch-peek.ts";
@@ -66,6 +67,13 @@ export default async function (pi: ExtensionAPI) {
   // #1260 — a child that leads its own process group is outside the
   // terminal's reach, so reap every live group when this process exits.
   armGroupReaper();
+  // A decision classifier behind an OpenAI-only gateway needs this API
+  // registered on its provider (decision-openai-classify.ts).
+  try {
+    registerDecisionClassifier(pi);
+  } catch (err) {
+    trace(`decision classifier registration failed: ${(err as Error).message}`);
+  }
   // Load persisted model overrides BEFORE any spawn can ask for a model.
   await loadOverrides();
   // The whole retry story assumes a provider's `retry-after` is honoured. That
