@@ -58,7 +58,7 @@
 
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import { changedRanges, rangeLabel, rangesFromDiff } from "./lens-review-changed-ranges.ts";
-import type { Finding } from "./lens-review-types.ts";
+import { type Finding, carriedHeading, isCarried } from "./lens-review-types.ts";
 
 export const ADVISORY_HEADING = "Advisory (outside this PR's changed lines)";
 
@@ -204,13 +204,21 @@ export async function splitAdvisory({
 /** The disclosure section listing advisory rows (empty when none). */
 export function advisorySection(advisory: readonly Finding[] | undefined): string[] {
   if (!advisory || advisory.length === 0) return [];
+  const line = (f: Finding) =>
+    neutraliseEvidence(
+      `- advisory: [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})`,
+    );
+  const fresh = advisory.filter((f) => !isCarried(f));
+  const carried = advisory.filter(isCarried);
   return [
     "",
     `${ADVISORY_HEADING} (${advisory.length}) — outside the lines this PR changed; they do not block:`,
-    ...advisory.map((f) =>
-      neutraliseEvidence(
-        `- advisory: [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})`,
-      ),
-    ),
+    ...fresh.map(line),
+    ...(carried.length > 0
+      ? [
+          carriedHeading(carried.length, "still open, outside the changed lines:"),
+          ...carried.map(line),
+        ]
+      : []),
   ];
 }

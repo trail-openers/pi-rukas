@@ -48,6 +48,7 @@ import { resolvedSection, setAsideSection, suppressedSection } from "./lens-resi
 import { severityLabel } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText } from "./lens-review-delta-disclose.ts";
+import { type Finding, carriedHeading, isCarried } from "./lens-review-types.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import { mergeIdentity } from "./merge-guard-reads.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
@@ -289,10 +290,24 @@ async function doPost(
   // keeps the line's shape (this is a bullet list, not a prompt block) while
   // removing what a POST renders; the marker below is the renderer's own line
   // and is never passed through it.
-  const lines = summary.findings.map((f) => {
+  const residualLine = (f: Finding) => {
     const where = neutraliseMarkdownField(`${f.path}:${f.line ?? "?"}`);
     return `- [${severityLabel(f.severity)}] ${where} — ${neutraliseMarkdownField(f.title)} (${neutraliseMarkdownField(f.lens)})`;
-  });
+  };
+  // A carried row is still open from an earlier round: it sits under its own
+  // heading, apart from this round's findings, so the comment never presents it
+  // as this round's own finding.
+  const carriedRows = summary.findings.filter(isCarried);
+  const lines = [
+    ...summary.findings.filter((f) => !isCarried(f)).map(residualLine),
+    ...(carriedRows.length > 0
+      ? [
+          "",
+          carriedHeading(carriedRows.length, "still open; this round did not resolve them:"),
+          ...carriedRows.map(residualLine),
+        ]
+      : []),
+  ];
   const body = [
     "## Six-pass review — residual findings (round disclosure)",
     "",
