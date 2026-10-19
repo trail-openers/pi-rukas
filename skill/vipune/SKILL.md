@@ -312,10 +312,10 @@ gate, so behave as if the whole rule is live:
 
 | Verb | Enforcement |
 |---|---|
-| `update` with `-t`/`--text` | Refused by code — `isDestructiveMemoryWrite` in `extension/src/bash-pattern-wildcard.ts`, reached from `matchBashSubcommand`. The refusal applies to the parent in strict/headless mode, and to the PM parent's mode-independent bash guard. Subagent children in trust/sandbox mode get no refusal at all. |
-| `delete`, `prune`, `promote`, `mcp`, and `update` with any other flag | **No code refusal in trust mode** (the default on an interactive host and in the sandbox). Doctrine is the only gate there. |
+| `update` with `-t`/`--text`, `delete`, `prune` | Refused in every child, trust or strict, by the memory-write guard (`extension/src/memory-write-guard.ts`). A strict or headless parent also refuses them through the allowlist matcher (`matchBashSubcommand`). A trust-mode parent has no code refusal. |
+| A vipune verb the guard cannot read (glob, brace, expansion, unknown word) | Refused the same way, fail-closed. |
+| `promote`, `mcp`, and `update` with any other flag | **No code refusal in trust mode** (the default on an interactive host and in the sandbox). Doctrine is the only gate there. |
 | All of these verbs | Granted to no role in `agents.json`. In trust mode that grant is doctrine, not a runtime gate. |
-| `mcp` | Launches an MCP server exposing the write verbs; granted to no role; no code refusal in trust mode. |
 
 `update --text` replaces content in place — same id, no lineage, no undo — so
 anything that cited that memory would silently point at new text. That is why it

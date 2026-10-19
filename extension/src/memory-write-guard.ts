@@ -19,8 +19,8 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isDestructiveWrite } from "./bash-destructive-write.ts";
-import { trace } from "./trace.ts";
+import { memoryWriteVerdictOf } from "./bash-destructive-write.ts";
+import { traceWarn } from "./trace.ts";
 
 /** The command string of a bash tool call; anything that is not a string reads as empty. */
 export function bashCommandOf(input: unknown): string {
@@ -32,12 +32,17 @@ export function bashCommandOf(input: unknown): string {
 export function registerMemoryWriteGuard(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, _ctx) => {
     if (event.toolName !== "bash") return;
-    if (!isDestructiveWrite(bashCommandOf(event.input))) return;
-    trace("memory-write-guard: BLOCKED destructive vipune update (replaces a memory row's text)");
+    const verdict = memoryWriteVerdictOf(bashCommandOf(event.input));
+    if (verdict === undefined) return;
+    const label = verdict.kind === "verb" ? verdict.verb : "unresolved verb";
+    // traceWarn, not trace: a refusal changes what the child runs, and an operator
+    // debugging a blocked command has no reason to know to enable PI_ENSEMBLE_DEBUG.
+    // The label only — never the command text, which is untrusted and may hold secrets.
+    traceWarn(`memory-write-guard: BLOCKED destructive vipune write (${label})`);
     return {
       block: true,
       reason:
-        "Refused: `vipune update … -t` replaces an existing memory row's text in place, with no lineage and no undo, so anything that cited that memory now cites different text. To correct a memory, store the corrected statement with `vipune add '<statement>' --supersedes <id>`, which keeps the original row.",
+        "Refused: `vipune update … -t` replaces a memory row's text in place, `vipune delete` removes a row, and `vipune prune` demotes candidates in bulk; none has a confirmation or an undo, and anything that cited the row now cites different text or nothing. A vipune verb the guard cannot read (a glob, brace or expansion) is refused too. To correct a memory, store the corrected statement with `vipune add '<statement>' --supersedes <id>`, which keeps the original row.",
     };
   });
 }
