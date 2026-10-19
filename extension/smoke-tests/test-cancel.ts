@@ -68,15 +68,19 @@
  * applies to itself.
  */
 
+// Must stay first: sets PI_ENSEMBLE_PROMPTS_DIR before src/roles.ts loads (#1579).
+import "./lib/cancel-prompts.ts";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import { ROLES } from "../src/roles.ts";
 import { KILL_GRACE_MS } from "../src/spawn-kill.ts";
 import { spawnSpecialist } from "../src/spawn.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { assertSigtermEscalationKillsGroup } from "./lib/cancel-escalation.ts";
 import { writeFakePi } from "./lib/cancel-fixture.ts";
 import { fixturePidFiles, readRecordedPid, readRecordedPids } from "./lib/cancel-pids.ts";
+import { CANCEL_PROMPTS_DIR } from "./lib/cancel-prompts.ts";
 import { diedToSigkill, killedByInactivityBudget } from "./lib/kill-outcome.ts";
 import { pidAlive } from "./lib/poll-until-killed.ts";
 import {
@@ -283,6 +287,10 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "0"; // abort tests: pure abort 
 assert(
   process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS === "0",
   "env invariant: PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS === '0' for the abort tests",
+);
+assert(
+  ROLES.explore.promptFile.startsWith(CANCEL_PROMPTS_DIR + sep),
+  "env invariant: explore prompt is read from the test-owned prompts dir",
 );
 
 try {
