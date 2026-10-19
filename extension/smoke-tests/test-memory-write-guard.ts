@@ -11,7 +11,11 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchBashSubcommand } from "../src/bash-command-parser.ts";
-import { isDestructiveWrite, simpleCommands } from "../src/bash-destructive-write.ts";
+import {
+  isDestructiveWrite,
+  memoryWriteVerdictOf,
+  simpleCommands,
+} from "../src/bash-destructive-write.ts";
 import { bashCommandOf, registerMemoryWriteGuard } from "../src/memory-write-guard.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
 
@@ -56,6 +60,63 @@ const refused: Array<[string, string]> = [
   ["time -o option", "time -o /tmp/t vipune update 12 -t x"],
   ["setsid wrapper", "setsid -w vipune update 12 -t x"],
   ["nice wrapping env wrapping vipune", "nice -n 5 env -i vipune update 12 --text=x"],
+  ["delete", "vipune delete 12"],
+  ["delete with env prefix", "FOO=1 vipune delete 12"],
+  ["delete behind timeout", "timeout 5 vipune delete 12"],
+  ["delete in bash -c body", `bash -c "vipune delete 12"`],
+  ["prune", "vipune prune --count 5 --age-days 30"],
+  ["prune in a chain", "true && vipune prune"],
+  ["loop delete", "for id in 1 2; do vipune delete $id; done"],
+  ["brace group prune", "{ vipune prune; }"],
+  ["if-then delete", "if vipune delete 1; then echo ok; fi"],
+  ["negated prune", "! vipune prune"],
+  ["backslash-newline before verb", "vipune \\\n  delete 12"],
+  ["caffeinate wrapper", "caffeinate -dimsu vipune delete 1"],
+  ["gtimeout wrapper", "gtimeout 5 vipune prune"],
+  ["doas wrapper", "doas -u root vipune delete 1"],
+  ["stderr redirect before delete", "2>/dev/null vipune delete 12"],
+  ["stdout redirect before prune", "> out vipune prune"],
+  ["redirect with separate target", "< in vipune delete 1"],
+  ["find -exec delete", "find . -exec vipune delete {} \\;"],
+  ["find -exec behind timeout", "find . -name x -exec timeout 5 vipune prune {} +"],
+  ["watch delete", "watch -n 5 vipune delete 1"],
+  ["watch single-word body", "watch 'vipune delete 1'"],
+  ["script -c delete", 'script -qc "vipune delete 1" /dev/null'],
+  ["fd dup 2>&1 before delete", "2>&1 vipune delete 12"],
+  ["fd dup >&2 before prune", ">&2 vipune prune"],
+  ["&> redirect before delete", "&>out vipune delete 1"],
+  ["background & before delete", "true & vipune delete 1"],
+  ["escaped \\> does not make & a redirect", "echo \\>&vipune delete 1"],
+  ["json global option before delete", "vipune --json delete 1"],
+  ["-p value before delete", "vipune -p x delete 1"],
+  ["--project=value before prune", "vipune --project=x prune"],
+  ["--db-path value before delete", "vipune --db-path /tmp/x.db delete 1"],
+  ["attached -pX before delete", "vipune -pX delete 1"],
+  ["-- before delete", "vipune -- delete 1"],
+  ["variable verb", "V=delete; vipune $V 1"],
+  ["braced default verb", "vipune ${V:-delete} 1"],
+  ["ANSI-C verb", "vipune $'delete' 1"],
+  ["quoted variable verb", 'vipune "$V" 1'],
+  ["variable verb after -p value", 'vipune -p x $V 1'],
+  ["command builtin wrapper", "command vipune delete 1"],
+  ["builtin wrapper", "builtin vipune prune"],
+  // Fail-closed: the verb must be a literal known subcommand.
+  ["brace-expanded verb", "vipune {delete,search} 1"],
+  ["unknown option then verb", "vipune --unknown x delete 1"],
+  ["nice-wrapped binary", "nice -n 5 vipune delete 1"],
+  ["unbuffer wrapper", "unbuffer vipune prune"],
+  ["busybox wrapper", "busybox vipune delete 1"],
+  ["glob verb ?", "vipune d?lete 1"],
+  ["glob verb *", "vipune del* 1"],
+  ["glob verb [", "vipune [d]elete 1"],
+  ["unknown verb", "vipune frobnicate 1"],
+  // Off the command position, a destructive verb or an unreadable verb word still refuses.
+  ["unbuffer wrapper, prune", "unbuffer vipune prune"],
+  ["busybox wrapper, delete", "busybox vipune delete 1"],
+  ["nice -n wrapper, delete", "nice -n 5 vipune delete 1"],
+  ["unbuffer, literal delete", "unbuffer vipune delete 1"],
+  ["busybox, update with -t", "busybox vipune update 1 -t x"],
+  ["argv0 unknown verb", "vipune frobnicate"],
 ];
 for (const [name, cmd] of refused) {
   assert(isDestructiveWrite(cmd), `1: refused: ${name} (${cmd})`);
@@ -75,6 +136,35 @@ const allowed: Array<[string, string]> = [
   ["time search", "time -p vipune search 'topic'"],
   ["stdbuf search", "stdbuf -oL vipune search 'topic'"],
   ["empty", ""],
+  ["get", "vipune get 12 --json"],
+  ["list", "vipune list --json"],
+  ["search for the word delete", "vipune search 'delete old rows' --json"],
+  ["echo of a delete", 'echo "vipune delete 12"'],
+  ["stderr redirect on search", "vipune search 'x' 2>/dev/null"],
+  ["find without exec", "find . -name '*.ts'"],
+  ["find -exec echo", "find . -exec echo {} \\;"],
+  ["watch search", "watch -n 5 vipune search 'delete'"],
+  ["search with fd dup 2>&1", "vipune search x 2>&1"],
+  ["search with delete as argument after json", "vipune --json search delete"],
+  ["search with quoted variable", 'vipune search "$Q"'],
+  ["-p expansion value, verb search", 'vipune -p "$P" search x'],
+  ["search whose argument is delete", "vipune search delete"],
+  ["list with json", "vipune list --json"],
+  ["project option then search", "vipune -p proj search x"],
+  ["help flag", "vipune --help"],
+  ["version flag", "vipune --version"],
+  ["add with delete in quoted text", 'vipune add "text with delete"'],
+  // Off the command position, a literal word is a search term, not an invocation.
+  ["grep for the word vipune in a path", "grep vipune src/x.ts"],
+  ["rg for the word vipune in a directory", "rg -n vipune extension/"],
+  ["git log grep for vipune", "git log --grep vipune"],
+  ["echo of the word vipune", "echo vipune"],
+  ["ls of a vipune home directory", "ls ~/.vipune"],
+  ["glob after vipune", "grep vipune *.ts"],
+  ["quoted variable after vipune", 'grep vipune "$X"'],
+  ["option then delete, not the next word", "grep -rn vipune -e delete ."],
+  ["rg with glob option", "rg vipune -g '*.md'"],
+  ["brace list after vipune off-position", "unbuffer vipune {delete,x} 1"],
 ];
 for (const [name, cmd] of allowed) {
   assert(!isDestructiveWrite(cmd), `2: allowed: ${name} (${cmd})`);
@@ -143,6 +233,8 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
     "env -S 'vipune update 12 -t x'",
     "timeout 5 vipune update 12 -t x",
     "nohup vipune update 12 -t x",
+    "vipune delete 12",
+    "vipune prune --count 5",
   ]) {
     assert(matchBashSubcommand(cmd, allow) === "deny", `6: the allowlist denies ${cmd}`);
   }
@@ -157,6 +249,96 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
   const src = readFileSync(new URL("../src/bash-destructive-write.ts", import.meta.url), "utf8");
   assert(!/@earendil-works/.test(src), "7: bash-destructive-write.ts imports no Pi package");
   assert(!/from "\.\/trace\.ts"/.test(src), "7: bash-destructive-write.ts imports no trace module");
+}
+
+// ── 8. The verdict names the reason: a refused verb, or an unresolved verb word.
+{
+  assert(
+    JSON.stringify(memoryWriteVerdictOf("vipune delete 1")) === '{"kind":"verb","verb":"delete"}',
+    "8: delete is a verb verdict",
+  );
+  assert(
+    JSON.stringify(memoryWriteVerdictOf("vipune update 1 -t x")) ===
+      '{"kind":"verb","verb":"update -t"}',
+    "8: update with -t is a verb verdict",
+  );
+  assert(
+    JSON.stringify(memoryWriteVerdictOf("vipune d?lete 1")) === '{"kind":"unresolved"}',
+    "8: a glob verb is unresolved",
+  );
+  assert(memoryWriteVerdictOf("vipune search x") === undefined, "8: a search has no verdict");
+}
+
+// ── 9. `find -exec` is bounded: deep nesting terminates, and the refusal still lands.
+//
+// Each inner `find` word is both the head of the body it opens and a scan position
+// inside it, so N nested `find`s branch 2^N frames. Before the depth gate in
+// nestedVerdict a benign deeply nested command never returned; the harness reads the
+// command before the child runs it, so that is a hung dispatch, not a slow one.
+{
+  const nest = (inner: string, n: number): string => {
+    let x = inner;
+    for (let i = 0; i < n; i++) x = `find . -exec ${x} {} ;`;
+    return x;
+  };
+  // Past MAX_DEPTH, so the innermost verb is never reached and the verdict is absence.
+  const deep = nest("echo hello", 12);
+  const t0 = Date.now();
+  assert(
+    memoryWriteVerdictOf(deep) === undefined,
+    "9: a deeply nested benign find -exec is allowed",
+  );
+  assert(Date.now() - t0 < 5_000, "9: deep benign find -exec terminates promptly");
+  // Nesting past the cap must not become a way through: a verb inside the bound still
+  // refuses however deep the wrapper, and does so promptly.
+  for (const n of [1, 3, 4, 12, 400]) {
+    const armed = nest("vipune delete 1", n);
+    const t1 = Date.now();
+    assert(isDestructiveWrite(armed), `9: refused at nesting depth ${n}`);
+    assert(Date.now() - t1 < 5_000, `9: nesting depth ${n} terminates promptly`);
+  }
+}
+
+// ── 10. The refusal is recorded unconditionally, with the label only.
+{
+  const handlers: Handler[] = [];
+  const fake = {
+    on: (name: string, fn: Handler) => {
+      if (name === "tool_call") handlers.push(fn);
+    },
+  } as unknown as ExtensionAPI;
+  registerMemoryWriteGuard(fake);
+  const capture = async (command: string): Promise<string> => {
+    const real = process.stderr.write.bind(process.stderr);
+    const lines: string[] = [];
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      for (const h of handlers) await h({ toolName: "bash", input: { command } }, {});
+    } finally {
+      process.stderr.write = real;
+    }
+    return lines.join("");
+  };
+  // traceWarn, not the debug-gated trace: PI_ENSEMBLE_DEBUG is unset here, and an
+  // operator chasing a blocked command has no reason to know to turn it on.
+  const logged = await capture('vipune update 12 -t "secret row text"');
+  assert(
+    logged.includes("memory-write-guard: BLOCKED") && logged.includes("update -t"),
+    "10: the refusal traces its verb label without PI_ENSEMBLE_DEBUG",
+  );
+  assert(
+    !logged.includes("secret row text"),
+    "10: the trace line carries the label, never the command text",
+  );
+  assert(
+    logged.includes("WARN"),
+    "10: the refusal goes through the ungated warn channel",
+  );
+  const allowed = await capture("vipune search 'topic'");
+  assert(allowed === "", "10: an allowed command traces nothing");
 }
 
 console.log(`\nexit ${exit}`);
