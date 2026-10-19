@@ -13,9 +13,9 @@ import {
   CORRECTIVE_MAX_LINES,
   type CorrectiveGateView,
   decideCorrectiveRound,
-  depsHintApplies,
 } from "../src/work-driver-corrective-decide.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
+import { depsHintApplies } from "../src/work-driver-verify-record.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -45,7 +45,7 @@ function perWorktreeGate(
   return {
     ok: false,
     failures: [text],
-    verifyRun: { command: CMD, failures: [text], perWorktree: [{ cwd, text }] },
+    verifyRun: { status: "ran", command: CMD, failures: [text], perWorktree: [{ cwd, text }] },
     ...extra,
   };
 }
@@ -151,6 +151,7 @@ const ctx = (gate: CorrectiveGateView, eventLog: WorkEvent[] = NO_EVENTS) =>
     ok: false,
     failures: [CANCEL_TEXT],
     verifyRun: {
+      status: "ran",
       command: CMD,
       failures: [CANCEL_TEXT],
       perWorktree: [{ cwd: WT_B, text: CANCEL_TEXT }],
@@ -168,6 +169,7 @@ const ctx = (gate: CorrectiveGateView, eventLog: WorkEvent[] = NO_EVENTS) =>
     ok: false,
     failures: ["consolidated failure"],
     verifyRun: {
+      status: "ran",
       command: CMD,
       failures: ["consolidated failure"],
       perWorktree: [],
@@ -185,6 +187,7 @@ const ctx = (gate: CorrectiveGateView, eventLog: WorkEvent[] = NO_EVENTS) =>
     ok: false,
     failures: [PLAIN_TEXT, "consolidated failure"],
     verifyRun: {
+      status: "ran",
       command: CMD,
       failures: [PLAIN_TEXT, "consolidated failure"],
       perWorktree: [{ cwd: WT_A, text: PLAIN_TEXT }],
@@ -211,6 +214,47 @@ const ctx = (gate: CorrectiveGateView, eventLog: WorkEvent[] = NO_EVENTS) =>
   assert(
     lines.every((l) => l.length <= CORRECTIVE_LINE_MAX + 1),
     "bounds: each line is cut to the line limit",
+  );
+}
+
+// ── the record: "not-run" is not "ran and nothing failed" ──
+{
+  const notRun: CorrectiveGateView = {
+    ok: false,
+    failures: [CANCEL_TEXT],
+    verifyRun: { status: "not-run" },
+  };
+  assert(ctx(notRun).round === false, "not-run: a gate whose verify command never ran gets no round");
+  assert(
+    ctx(perWorktreeGate(WT_A, CANCEL_TEXT)).round === true,
+    "not-run control: the same failure from a run that did happen earns the round",
+  );
+}
+
+// ── a failing worktree with no assertion line is reported as skipped, not dropped ──
+{
+  const plainB = `verify command \`${CMD}\` failed in ${WT_B}: something went wrong`;
+  const gate: CorrectiveGateView = {
+    ok: false,
+    failures: [CANCEL_TEXT, plainB],
+    verifyRun: {
+      status: "ran",
+      command: CMD,
+      failures: [CANCEL_TEXT, plainB],
+      perWorktree: [
+        { cwd: WT_A, text: CANCEL_TEXT },
+        { cwd: WT_B, text: plainB },
+      ],
+    },
+  };
+  const d = ctx(gate);
+  assert(
+    d.round === true && d.targets.length === 1 && d.skipped.length === 1,
+    "skipped: the worktree without an assertion line is not targeted, and is reported",
+  );
+  assert(
+    d.round === true && (d.skipped[0] ?? "").includes(WT_B),
+    "skipped: the report names the worktree that was skipped",
   );
 }
 

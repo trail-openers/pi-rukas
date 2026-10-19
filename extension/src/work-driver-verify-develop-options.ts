@@ -12,8 +12,8 @@
 
 import type { CommentEvidence } from "./comment-evidence.ts";
 import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
-import type { VerifyCommandRecord } from "./work-driver-corrective-decide.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+import type { VerifyRecordSlot } from "./work-driver-verify-record.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
 /**
@@ -25,11 +25,11 @@ import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
  */
 export interface VerifyDevelopOutcomeOptions {
   /**
-   * #1667 \u2014 out-parameter: what the verify command gate ran and how each
-   * run failed (per-worktree and consolidated), for the corrective-round decision.
-   * Filled in place; absent = this caller does not route on it.
+   * #1667 — out-parameter: what the verify command gate ran and how each run failed
+   * (per-worktree and consolidated), for the corrective-round decision. Filled
+   * in place; absent = this caller does not route on it.
    */
-  verifyRecord?: VerifyCommandRecord;
+  verifyRecord?: VerifyRecordSlot;
   // #782 — fires when the consolidated-verify flake re-run passed.
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void;
   // #814 — out-parameter for structured fence-violation records (see the

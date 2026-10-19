@@ -43,11 +43,7 @@ import {
   runSkipRatchetGate,
   runSmokeGate,
 } from "./work-driver-verify-develop-gates.ts";
-import {
-  isValidSha,
-  normaliseScopePath,
-  recordVerifyBlock,
-} from "./work-driver-verify-develop-helpers.ts";
+import { isValidSha, normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
 import { runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
 import { planDevelopVerify } from "./work-driver-verify-select-develop.ts";
@@ -466,7 +462,6 @@ export async function verifyDevelopOutcome(
         ...(onGateRecorded !== undefined ? { onGateRecorded } : {}),
       }).finally(() => plan.finish(options.onSelectedVerify));
       // #1349 — only a base that fails the way the change does excuses it.
-      recordVerifyBlock(options.verifyRecord, cmd, failures.slice(before));
       verifyCmdEnd = before === 0 && attributed ? failures.length : undefined;
     }
   }

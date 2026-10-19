@@ -11,7 +11,6 @@
 import path from "node:path";
 import { withVerifySlot } from "./host-resources.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { depsHintApplies } from "./work-driver-corrective-decide.ts";
 import { missingDepsFailure } from "./work-driver-deps-gate.ts";
 import { provisionDepsHint } from "./work-driver-deps-hint.ts";
 import {
@@ -29,6 +28,7 @@ import {
 import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
 import { slugName, writeGateHangLog } from "./work-driver-verify-flake.ts";
 import { greenForWorktree } from "./work-driver-verify-gate-reuse.ts";
+import { depsHintApplies } from "./work-driver-verify-record.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { WorkstreamGreen } from "./workflow-state-schema-gate-reuse.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -50,8 +50,7 @@ export async function runPerWorktreeVerify(opts: {
   hangSink?: GateHangPathSink;
   suiteTimeoutKnob?: string;
   fastTimeoutMs?: number;
-  perWorktreeVerifyFailures: string[];
-  /** #1667 \u2014 the same failures, each with the cwd it ran in. */
+  /** #1667 — each failure with the cwd it ran in; the caller derives the flat list. */
   perWorktreeRecords: Array<{ cwd: string; text: string }>;
   greensRecorded: Array<[string, WorkstreamGreen]>;
   greensRefuted: string[];
@@ -67,7 +66,6 @@ export async function runPerWorktreeVerify(opts: {
     hangSink,
     suiteTimeoutKnob,
     fastTimeoutMs,
-    perWorktreeVerifyFailures,
     perWorktreeRecords,
     greensRecorded,
     greensRefuted,
@@ -94,7 +92,6 @@ export async function runPerWorktreeVerify(opts: {
   for (const cwd of opts.run) {
     const depsMissing = await missingDepsFailure(execFn, state, ctx.repoRoot, cwd, cmd); // #1146
     if (depsMissing !== undefined) {
-      perWorktreeVerifyFailures.push(depsMissing);
       perWorktreeRecords.push({ cwd, text: depsMissing });
       // Not run, so any green this worktree held proves nothing now.
       const id = Object.entries(state.pipelineState.worktrees ?? {}).find(
@@ -105,11 +102,7 @@ export async function runPerWorktreeVerify(opts: {
     }
     try {
       await withVerifySlot(() =>
-        execFn(cmd, {
-          cwd,
-          timeout: suiteTimeoutMs,
-          maxBuffer: 4 * 1024 * 1024,
-        }),
+        execFn(cmd, { cwd, timeout: suiteTimeoutMs, maxBuffer: 4 * 1024 * 1024 }),
       );
       // The command passed: record the green for the tree it just read. Read
       // NOW, at the moment of the pass — a later read could describe content
@@ -136,7 +129,7 @@ export async function runPerWorktreeVerify(opts: {
       // A missing `node_modules` looks like a real defect; in a fresh worktree say so.
       // #1005 — per-worktree failures stay failures; the consolidated run adds its own.
       const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
-      // #1667 \u2014 suppressed when assertion lines were extracted (see depsHintApplies).
+      // #1667 — suppressed when assertion lines were extracted (see depsHintApplies).
       const depsHint = depsHintApplies(output) ? provisionDepsHint(state, cwd) : "";
       const ran = failedVerifyCmd(e, cmd); // #1324 — the fast tier, when it is the one that failed
       const cwdSlug = slugFor(cwd);
@@ -172,10 +165,7 @@ export async function runPerWorktreeVerify(opts: {
             timeoutMs: hang.timeoutMs,
             ...(typeof e.treePid === "number" ? { leaderPid: e.treePid } : {}),
             ...(killedTree !== undefined
-              ? {
-                  processes: killedTree.processes,
-                  treeUnavailable: killedTree.treeUnavailable,
-                }
+              ? { processes: killedTree.processes, treeUnavailable: killedTree.treeUnavailable }
               : {}),
           },
           // The name says WHICH run this report belongs to: a fan-out kills one
@@ -215,7 +205,6 @@ export async function runPerWorktreeVerify(opts: {
         ),
         `verify command \`${ran}\` failed in ${cwd}${depsHint}`,
       );
-      perWorktreeVerifyFailures.push(failureText);
       perWorktreeRecords.push({ cwd, text: failureText });
       // A green this workstream held describes the tree it had then. The
       // command just failed — on that tree or the one it holds now — so the

@@ -13,7 +13,6 @@ import { execp as lensExecp } from "./exec.ts";
 import { aheadOfBase } from "./git-range.ts";
 import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import type { VerifyCommandRecord } from "./work-driver-corrective-decide.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { GateHangPathSink } from "./work-driver-gate-hang.ts";
 import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
@@ -22,6 +21,7 @@ import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import { beginVerifyRun, finishVerifyRun } from "./work-driver-verify-events.ts";
 import type { DevelopGateRecord } from "./work-driver-verify-gate-reuse.ts";
+import { type VerifyCommandRecord, newVerifyRecordSlot } from "./work-driver-verify-record.ts";
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
@@ -209,7 +209,7 @@ export async function verifyStepOutcome(
   gateRecord?: DevelopGateRecord;
   /** #1647 — the selected develop run's flaky and baseline-red tests, folded into `pipelineState.verifyAttribution`. */
   selectedVerify?: SelectedVerifyRecord;
-  /** #1667 \u2014 what the verify command gate ran, for the corrective-round decision (absent when no command ran). */
+  /** #1667 — what the verify command gate ran, for the corrective-round decision ("not-run" when no command ran). */
   verifyRun?: VerifyCommandRecord;
 }> {
   const failures: string[] = [];
@@ -256,8 +256,8 @@ export async function verifyStepOutcome(
     // it and the return below reads it, and a closure-assigned `let` reads as
     // always undefined to the type checker.
     const selectedOut: { record?: SelectedVerifyRecord } = {};
-    // #1667 \u2014 the verify command gate fills this in place (see VerifyCommandRecord).
-    const verifyRecord: VerifyCommandRecord = { failures: [], perWorktree: [] };
+    // #1667 — the verify command gate fills this in place (see VerifyRecordSlot).
+    const verifyRecord = newVerifyRecordSlot();
     const verifyStarted = await beginVerifyRun(ctx, state);
     await verifyDevelopOutcome(ctx, state, execFn, failures, notes, {
       // #782 — the flake callback is wired at this layer: on recovery it
@@ -319,7 +319,7 @@ export async function verifyStepOutcome(
       ...(buildResidueOnly ? { buildResidueOnly: true } : {}),
       ...(gateRecord !== undefined ? { gateRecord } : {}),
       ...(selectedOut.record !== undefined ? { selectedVerify: selectedOut.record } : {}),
-      ...(verifyRecord.command !== undefined ? { verifyRun: verifyRecord } : {}),
+      verifyRun: verifyRecord.current,
       // #1427 round 3 — read the sink THIS call created, not the cycle context:
       // the list is exactly the reports this gate run wrote, which is what the
       // cap emit site needs. (It used to read `ctx.gateHangLogPaths`, which

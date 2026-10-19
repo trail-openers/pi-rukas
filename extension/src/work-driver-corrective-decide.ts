@@ -15,13 +15,10 @@
  */
 
 import { plainVerifyFailure } from "./work-develop-verify-failure.ts";
-import {
-  NO_SPECIFIC_ASSERTION,
-  extractSpecificAssertion,
-} from "./work-driver-consolidation-classify.ts";
 import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
+import { type VerifyCommandRecord, assertionLines } from "./work-driver-verify-record.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
@@ -29,23 +26,6 @@ import { looksLikeMissingDeps } from "./worktree-provision.ts";
 export const CORRECTIVE_MAX_LINES = 6;
 /** Longest one assertion line is, in characters, before it is cut. */
 export const CORRECTIVE_LINE_MAX = 300;
-
-/**
- * What the verify command gate recorded about its own run, so the decision can
- * tell verify output from every other gate's failure. Filled by the verify
- * command block (work-driver-verify-develop-command.ts) and returned on the
- * gate result.
- */
-export interface VerifyCommandRecord {
-  /** The verify command the gate ran (absent when no command ran). */
-  command?: string;
-  /** Every failure the verify command gate itself appended, in order. */
-  failures: string[];
-  /** One entry per worktree whose own verify run failed: its cwd and failure text. */
-  perWorktree: Array<{ cwd: string; text: string }>;
-  /** The consolidated run's raw failure stream, when that run failed. */
-  consolidatedRaw?: string;
-}
 
 /** The develop gate fields the decision reads. */
 export interface CorrectiveGateView {
@@ -71,45 +51,15 @@ export type CorrectiveDecision =
       command: string;
       source: "per-workstream" | "consolidated";
       targets: CorrectiveTarget[];
+      /** Failing worktrees the round could not target, each with why. The caller traces them. */
+      skipped: string[];
     };
-
-/**
- * Every line of `text` a developer can act on: the lines the extractor accepts
- * as an assertion (a `✗` line, a compiler or linter error). Uncapped — the
- * dependency check must read every line, not the bounded subset given out.
- */
-export function assertionLines(text: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (line.length === 0 || seen.has(line)) continue;
-    if (extractSpecificAssertion(line) === NO_SPECIFIC_ASSERTION) continue;
-    seen.add(line);
-    out.push(line);
-  }
-  // A `✗` line is the assertion the operator named; when there is one, the
-  // generic error lines around it are noise, not a second diagnosis.
-  const marked = out.filter((l) => l.startsWith("\u2717"));
-  return marked.length > 0 ? marked : out;
-}
 
 /** The lines a developer is given for one workstream: bounded, each cut. */
 function boundedLines(lines: readonly string[]): string[] {
   return lines
     .slice(0, CORRECTIVE_MAX_LINES)
     .map((l) => (l.length > CORRECTIVE_LINE_MAX ? `${l.slice(0, CORRECTIVE_LINE_MAX)}…` : l));
-}
-
-/**
- * #1667 — the deps hint the per-worktree verify appends. Suppressed whenever
- * assertion lines were extracted: the hint then names a cause the output does
- * not support. The exception is a dependency signature ON an extracted line —
- * that line is the diagnosis, and the hint stays with it.
- */
-export function depsHintApplies(output: string): boolean {
-  const lines = assertionLines(output);
-  return lines.length === 0 ? looksLikeMissingDeps(output) : lines.some(looksLikeMissingDeps);
 }
 
 /**
@@ -131,7 +81,7 @@ export function decideCorrectiveRound(
   if (gate.baselineRedOnly === true) return no("the verify command is red at base");
   if (gate.buildResidueOnly === true) return no("the gate declined on build residue");
   const run = gate.verifyRun;
-  if (run?.command === undefined) return no("no verify command ran");
+  if (run === undefined || run.status === "not-run") return no("no verify command ran");
   if (!plainVerifyFailure(gate)) return no("the cap is not verify-failed:develop");
   // Every failure must be verify command output: a scope, protected-path or
   // ratchet failure is not something this developer's lines can repair.
@@ -153,19 +103,22 @@ export function decideCorrectiveRound(
     if (all.some(looksLikeMissingDeps))
       return no("an evidence line names a missing dependency; the deps hint stays");
     const targets: CorrectiveTarget[] = [];
+    const skipped: string[] = [];
     for (const r of records) {
       const id = Object.keys(worktrees).find((k) => worktrees[k] === r.cwd);
+      if (id === undefined) {
+        skipped.push(`${r.cwd}: no workstream owns this worktree`);
+        continue;
+      }
       const lines = assertionLines(r.text);
-      if (id === undefined || lines.length === 0) continue;
+      if (lines.length === 0) {
+        skipped.push(`${id} (${r.cwd}): its failure carries no assertion line`);
+        continue;
+      }
       targets.push({ id, cwd: r.cwd, lines: boundedLines(lines) });
     }
     if (targets.length === 0) return no("the per-worktree failures carry no specific failing line");
-    return {
-      round: true,
-      command: run.command,
-      source: "per-workstream",
-      targets,
-    };
+    return { round: true, command: run.command, source: "per-workstream", targets, skipped };
   }
 
   // No worktree failed on its own: the consolidated run's failure is the only
@@ -180,5 +133,5 @@ export function decideCorrectiveRound(
     cwd,
     lines: bounded,
   }));
-  return { round: true, command: run.command, source: "consolidated", targets };
+  return { round: true, command: run.command, source: "consolidated", targets, skipped: [] };
 }
