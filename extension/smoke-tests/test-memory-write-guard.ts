@@ -114,7 +114,8 @@ const refused: Array<[string, string]> = [
   ["unbuffer wrapper, prune", "unbuffer vipune prune"],
   ["busybox wrapper, delete", "busybox vipune delete 1"],
   ["nice -n wrapper, delete", "nice -n 5 vipune delete 1"],
-  ["unbuffer, brace-expanded verb", "unbuffer vipune {delete,x} 1"],
+  ["unbuffer, literal delete", "unbuffer vipune delete 1"],
+  ["busybox, update with -t", "busybox vipune update 1 -t x"],
   ["argv0 unknown verb", "vipune frobnicate"],
 ];
 for (const [name, cmd] of refused) {
@@ -159,6 +160,11 @@ const allowed: Array<[string, string]> = [
   ["git log grep for vipune", "git log --grep vipune"],
   ["echo of the word vipune", "echo vipune"],
   ["ls of a vipune home directory", "ls ~/.vipune"],
+  ["glob after vipune", "grep vipune *.ts"],
+  ["quoted variable after vipune", 'grep vipune "$X"'],
+  ["option then delete, not the next word", "grep -rn vipune -e delete ."],
+  ["rg with glob option", "rg vipune -g '*.md'"],
+  ["brace list after vipune off-position", "unbuffer vipune {delete,x} 1"],
 ];
 for (const [name, cmd] of allowed) {
   assert(!isDestructiveWrite(cmd), `2: allowed: ${name} (${cmd})`);
