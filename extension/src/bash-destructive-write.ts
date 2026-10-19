@@ -283,11 +283,19 @@ const KNOWN_VERBS = new Set([
   "help",
 ]);
 
+/** A verb word the guard cannot read as a literal: an expansion, a glob, or a brace list. */
+const UNREADABLE_VERB = /[$`*?[{]/;
+
 /**
  * The verdict for the vipune invocation whose binary word sits at `argv[k]`. Skips
  * `--`, dash-options and the value of the global value options; the first remaining
- * word must be a literal known verb. No verb word (a bare `vipune`, `vipune --help`)
- * is allowed.
+ * word is the verb. No verb word (a bare `vipune`, `vipune --help`) is allowed.
+ *
+ * Position decides how strict the verb is. When vipune IS the command (`k === 0`),
+ * the verb must be a literal known subcommand, so anything else is unresolved. When
+ * the word sits elsewhere (`grep vipune src/x.ts`, `busybox vipune delete 1`), only
+ * a destructive verb or an unreadable verb shape is refused; an ordinary literal
+ * word such as a path or a search pattern is a search, not an invocation.
  */
 function vipuneVerdict(argv: readonly string[], k: number): MemoryWriteVerdict | undefined {
   let i = k + 1;
@@ -302,12 +310,12 @@ function vipuneVerdict(argv: readonly string[], k: number): MemoryWriteVerdict |
   }
   if (i >= argv.length) return undefined;
   const verb = argv[i] ?? "";
-  if (!KNOWN_VERBS.has(verb)) return { kind: "unresolved" };
   if (verb === "delete" || verb === "prune") return { kind: "verb", verb };
   if (verb === "update" && argv.slice(i + 1).some(isTextFlag)) {
     return { kind: "verb", verb: "update -t" };
   }
-  return undefined;
+  if (k === 0) return KNOWN_VERBS.has(verb) ? undefined : { kind: "unresolved" };
+  return UNREADABLE_VERB.test(verb) ? { kind: "unresolved" } : undefined;
 }
 
 /** The verdict for a `bash -c`, `eval`, `script -c` or `find -exec` body, if the command has one. */
@@ -336,8 +344,8 @@ function nestedVerdict(
 /**
  * The verdict for one simple command. Nested bodies are judged first; then every
  * word whose basename is `vipune` is read as an invocation, wherever it sits (after
- * a wrapper the list does not name, after `xargs`, as an argument). The cost is an
- * accepted false positive: an unquoted `vipune` word followed by a non-verb.
+ * a wrapper the list does not name, after `xargs`, as an argument). Only the
+ * command word is read strictly; see vipuneVerdict for the other positions.
  */
 function destructiveArgv(words: readonly string[], depth: number): MemoryWriteVerdict | undefined {
   const { argv, split } = unwrap(words);
