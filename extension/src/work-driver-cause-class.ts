@@ -39,6 +39,7 @@ import type { CAP_TEMPLATES, FixedCap } from "./headless/caps.ts";
 import type { FailureKind, ResultFailure } from "./headless/failure.ts";
 import { EMPTY_ROUND_FAILURE } from "./work-develop-verify-failure.ts";
 import { PLUMB_REPLY_MARKER } from "./work-driver-adversarial-plumb.ts";
+import { branchRefusalVerdictFor } from "./work-driver-branch-cause.ts";
 import {
   ACTION_FOR_CLASS,
   type CapCause,
@@ -460,6 +461,10 @@ export function causeVerdictOf(
   }
   if (cap === "awaiting-human-merge") return awaitingVerdict(issue);
   if (cap.startsWith("verify-failed:")) return verifyVerdict(state, cap, issue);
+  // #1642 — a branch step that refused a stale worktree recorded WHY; a generic
+  // template entry was calling the operator's own leftover a host suspend.
+  const refusal = branchRefusalVerdictFor(state, cap, issue, evidenceLines);
+  if (refusal !== undefined) return refusal;
   const rule = capRuleOf(cap);
   if (rule === undefined || rule.cls === null) {
     return {
