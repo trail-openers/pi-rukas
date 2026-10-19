@@ -8,14 +8,11 @@
  * security boundary (docs/headless.md), so this file pins the shapes it claims.
  */
 
+import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchBashSubcommand } from "../src/bash-command-parser.ts";
-import {
-  bashCommandOf,
-  isDestructiveWrite,
-  registerMemoryWriteGuard,
-  simpleCommands,
-} from "../src/memory-write-guard.ts";
+import { isDestructiveWrite, simpleCommands } from "../src/bash-destructive-write.ts";
+import { bashCommandOf, registerMemoryWriteGuard } from "../src/memory-write-guard.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
 
 // ── 1. Refused: the destructive forms, each one a shape the guard must see through.
@@ -51,6 +48,14 @@ const refused: Array<[string, string]> = [
   ["sudo -u wrapper", "sudo -u root vipune update 12 -t x"],
   ["xargs wrapper", "xargs vipune update 12 -t x"],
   ["xargs -I option", "xargs -I {} vipune update {} -t x"],
+  ["nice -n option", "nice -n 10 vipune update 12 -t x"],
+  ["nice legacy -N option", "nice -5 vipune update 12 -t x"],
+  ["stdbuf -o option", "stdbuf -o L vipune update 12 -t x"],
+  ["stdbuf attached option", "stdbuf -oL vipune update 12 -t x"],
+  ["time -f option", "time -f '%e' vipune update 12 -t x"],
+  ["time -o option", "time -o /tmp/t vipune update 12 -t x"],
+  ["setsid wrapper", "setsid -w vipune update 12 -t x"],
+  ["nice wrapping env wrapping vipune", "nice -n 5 env -i vipune update 12 --text=x"],
 ];
 for (const [name, cmd] of refused) {
   assert(isDestructiveWrite(cmd), `1: refused: ${name} (${cmd})`);
@@ -66,6 +71,9 @@ const allowed: Array<[string, string]> = [
   ["unrelated command", "npm run typecheck"],
   ["env -S status-only", "env -S 'vipune update 12 --status active'"],
   ["timeout search", "timeout 5 vipune search 'topic'"],
+  ["nice status-only", "nice -n 10 vipune update 12 --status active"],
+  ["time search", "time -p vipune search 'topic'"],
+  ["stdbuf search", "stdbuf -oL vipune search 'topic'"],
   ["empty", ""],
 ];
 for (const [name, cmd] of allowed) {
@@ -142,6 +150,13 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
     matchBashSubcommand("vipune update 12 --status active", allow) === "allow",
     "6: a status-only update still follows the allowlist",
   );
+}
+
+// ── 7. Layering: the predicate module stays Pi-free, so the allowlist matcher can import it.
+{
+  const src = readFileSync(new URL("../src/bash-destructive-write.ts", import.meta.url), "utf8");
+  assert(!/@earendil-works/.test(src), "7: bash-destructive-write.ts imports no Pi package");
+  assert(!/from "\.\/trace\.ts"/.test(src), "7: bash-destructive-write.ts imports no trace module");
 }
 
 console.log(`\nexit ${exit}`);

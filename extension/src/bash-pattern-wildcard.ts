@@ -7,7 +7,7 @@
  * argument via a `\S+` regex. Trailing `*` and `pattern *` keep their
  * existing semantics. These helpers are imported by bash-command-parser.ts
  * so that module stays under the 500-line file-size limit (AGENTS.md §12).
- * The vipune update refusal is memory-write-guard.ts's isDestructiveWrite: one rule.
+ * The vipune update refusal is bash-destructive-write.ts's isDestructiveWrite: one rule.
  */
 
 // Escape a single pattern token for use inside a RegExp literal.
