@@ -58,6 +58,15 @@ export interface ConsolidatedVerifyReporting {
   ctx: { repoRoot: string };
   worktrees: Record<string, string>;
   /**
+   * #1064 — OPTIONAL, and only trusted when present: the exact map the
+   * consolidated probe was built from (`stateWorktrees` on the gate's call).
+   * The N=1 clause turns a map VALUE into an operator-facing location, so it
+   * must come from the map that produced the checkout the probe verified — not
+   * from a caller's copy that may have been filtered or rebuilt. Absent → the
+   * `worktrees` argument is the source, as before.
+   */
+  probeWorktrees?: Record<string, string>;
+  /**
    * #813 — the plan's workstreams, read for their declared `paths` only: the
    * no-fence conflict text says "likely coupled" when the failure names a
    * file a sibling declared. Absent → the neutral observed sentence.
@@ -111,6 +120,7 @@ export function reportConsolidatedVerifyOutcome(
     timeoutKnob,
     ctx,
     worktrees,
+    probeWorktrees,
     workstreams,
     perWorktreeFailuresByWs,
     singlePerWs,
@@ -265,24 +275,20 @@ export function reportConsolidatedVerifyOutcome(
     // #841 — the shared rawOutputClause helper (single home for the
     // sentence so both verify seams render identically).
     const logClause = rawOutputClause(cons.logPath);
-    // #1064 — with ONE workstream the consolidated probe is not a combination:
-    // it cherry-picks that workstream's own commits onto its own base, so the
-    // tree it verified IS that workstream's worktree, and "the CONSOLIDATED
-    // tree" describes a combination that never happened. The tree is then named
-    // exactly the way the per-worktree run names a tree (`… failed in <cwd>`).
-    //
-    // Only the genuinely unresolvable shapes keep the CONSOLIDATED wording: N>1
-    // (a real combination) and a map with no worktree for the one workstream —
-    // where there is no path to name and a workstream ID would be a lie (`failed
-    // in default` is not a location). The probe runs under `repoRoot` in both,
-    // so the N>1 clause keeps naming it, as before.
-    //
-    // The decision is made ONCE here and read by the three sites below (this
-    // message, the timeout clause, the host-exhaustion clause), so the
-    // `failures[]` entry and the handoff that renders it cannot name different
-    // trees for one failure.
-    const ownTree = wsIds.length === 1 ? worktrees[wsIds[0] ?? ""] : undefined;
-    const treeClause = consolidatedRunWhere(wsIds.length, ownTree, ctx.repoRoot).phrase;
+    // #1064 — the tree clause comes from `consolidatedRunWhere` (see its docstring
+    // for the N=1 reasoning). The decision is made ONCE here and read by the
+    // three sites below (this message, the timeout clause, the host-exhaustion
+    // clause), so the `failures[]` entry and the handoff that renders it cannot
+    // name different trees for one failure. The map is the one the probe was
+    // actually built from (`probeWorktrees`), because the N=1 clause prints a map
+    // VALUE as the location the operator should go look at. `Object.values`
+    // rather than an indexed read: the value and the length come from one
+    // traversal, so the `undefined` the rule receives means only "this seam has
+    // no own tree to name".
+    const ownTreeSource = probeWorktrees ?? worktrees;
+    const [ownTree] = wsIds.length === 1 ? Object.values(ownTreeSource) : [];
+    const where = consolidatedRunWhere(wsIds.length, ownTree, ctx.repoRoot);
+    const treeClause = where.phrase;
     // A run KILLED at the bound never reached a verdict: its stream stops
     // wherever the kill landed, and classifying that reported a timeout as
     // "specific assertion: (no specific assertion could be extracted)" — a
@@ -302,9 +308,9 @@ export function reportConsolidatedVerifyOutcome(
           // the cap event and the handoff).
           `${verifyTimeoutFailure(
             cmd,
-            // #1064 — same clause; at N=1 the repoRoot suffix is dropped because
-            // the probe's scratch checkout is not the workstream's tree.
-            ownTree === undefined ? `on the CONSOLIDATED tree at ${ctx.repoRoot}` : treeClause,
+            // #1064 — the same clause, plus the `at <repoRoot>` suffix only where
+            // the rule says the probe ran there (the CONSOLIDATED branch).
+            where.atRepoRoot ? `${treeClause} at ${ctx.repoRoot}` : treeClause,
             timeoutMs,
             timeoutKnob ?? TIER_KNOB.suite,
           )}.`
@@ -316,7 +322,8 @@ export function reportConsolidatedVerifyOutcome(
               classifierInput,
               pidLimitSnapshot(),
             )
-          : consolidatedFailureMessage(verdict, cmd, ownTree, ctx.repoRoot)) + logClause,
+          : consolidatedFailureMessage(verdict, cmd, ownTree, ctx.repoRoot, wsIds.length)) +
+        logClause,
     );
     // #841 — thread the ACTUAL written log path back (the write's own
     // return — undefined when the write failed, in which case there is

@@ -14,10 +14,14 @@
  * full report to, so the clause composed into `classifiedMessage` is what the
  * caller puts on the cap and what the handoff renders.
  *
- * #1064 — the tree half of that clause arrives from the caller as `where`
- * rather than being composed here: this seam has no workstream count, and the
- * single rule for CONSOLIDATED-vs-own-tree wording lives with the count that
- * decides it (`consolidatedRunWhere`, called by the caller).
+ * #1064 — the tree half of that clause arrives from the caller as the rule's
+ * structured result (`consolidatedRunWhere`) rather than being composed here:
+ * this seam has no workstream count, and the single rule for the
+ * CONSOLIDATED-vs-own-tree wording lives with the count that decides it. The
+ * seam's own probe always runs in the integration checkout, so in practice the
+ * clause it receives is the CONSOLIDATED one at every N — the type stays
+ * structured (not a free string) so a site cannot invent a clause the rule
+ * would never have produced.
  */
 
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
@@ -41,11 +45,11 @@ export function commitPrHangResult(opts: {
   repoRoot: string;
   bound: number;
   /**
-   * The tree clause — `on the CONSOLIDATED tree at <repoRoot>` for N>1, `in
-   * <tree>` for a single workstream (#1064). Composed by the caller via
-   * `consolidatedRunWhere`, which owns the workstream count.
+   * The tree clause, as the single rule decided it — not a hand-written string.
+   * Composed by the caller via `consolidatedRunWhere`, which owns the workstream
+   * count; `atRepoRoot` says whether the CONSOLIDATED location is `repoRoot`.
    */
-  where: string;
+  where: { phrase: string; atRepoRoot: boolean };
   /** The killed run's combined stream, as captured at the kill. */
   output: string;
   /** The tree captured at the kill; absent when the executor said no pid. */
@@ -56,12 +60,10 @@ export function commitPrHangResult(opts: {
 }): CommitPrConsolidatedVerifyResult {
   const classifiedMessage = verifyHangFailure(
     opts.ranCmd,
-    // #1064 — the tree clause arrives from the caller, which owns the
-    // workstream count (this seam has none): N>1 gets
-    // `on the CONSOLIDATED tree at <repoRoot>`, N=1 gets `in <that
-    // workstream's tree>` in the per-worktree wording. Marker and sentence
-    // unchanged either way.
-    opts.where,
+    // #1064 — the clause is the rule's, with the `at <repoRoot>` suffix only
+    // where the rule says the probe ran there. Marker and sentence unchanged
+    // either way.
+    opts.where.atRepoRoot ? `${opts.where.phrase} at ${opts.repoRoot}` : opts.where.phrase,
     opts.bound,
     {
       output: opts.output,

@@ -146,6 +146,8 @@ try {
   {
     const verifyCmd = "test -f feature.sh";
     const { f, s, ctx } = await singleWorkstream("verify-cmd", verifyCmd);
+    // The one workstream's worktree, as the fixture built it (`wt-<id>`).
+    const wt = f.worktrees.default as string;
     writeFileSync(path.join(f.repo, ".pi", "smoke-cmd"), "sh ./feature.sh\n");
     // The #1240 duplicate-run skip must be OFF for this case: the fixture is
     // N=1 with a green per-worktree verify, so the consolidated probe is
@@ -171,10 +173,14 @@ try {
     assert(
       // #1064 — this fixture is ONE workstream, so the run that died on the fork
       // error verified that workstream's own tree: the label must stay a host
-      // failure and the clause must name the tree rather than a CONSOLIDATED one
-      // that never combined anything (the skip is pinned OFF above, so the probe
-      // really ran).
-      gate.failures.some((x) => x.includes(LABEL) && x.includes("in") && x.includes("wt-default")),
+      // failure and the CLAUSE must name the tree, in its composed form. A bare
+      // `includes("in")` would be satisfied by the host boilerplate itself, and
+      // a bare path check by the evidence tail — both pass with the clause gone.
+      // (The skip is pinned OFF above, so the probe really ran.)
+      gate.failures.some(
+        (x) =>
+          x.includes(LABEL) && x.includes(`verify command \`${verifyCmd}\` in ${wt} could not run`),
+      ),
       "verify cannot fork: the one-workstream run is labelled a host failure on its own tree",
     );
     assert(

@@ -20,13 +20,13 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { runCommitPrConsolidatedVerify } from "../src/work-driver-integrate-verify.ts";
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
+import { VERIFY_SUITE_TIMEOUT_ENV, suiteTierTimeoutMs } from "../src/work-driver-verify-budget.ts";
 import {
   VERIFY_TIMEOUT_LABEL,
   boundText,
   verifyCapFor,
 } from "../src/work-driver-verify-develop-helpers.ts";
 import { FAST_TIER_LABEL, fastVerifyCmdFor, withFastTier } from "../src/work-driver-verify-fast.ts";
-import { VERIFY_SUITE_TIMEOUT_ENV, suiteTierTimeoutMs } from "../src/work-driver-verify-budget.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
@@ -241,24 +241,21 @@ async function developGate(
     verifyCapFor("develop", r.failures) === "verify-failed:develop",
     "fast red: a code failure stays verify-failed",
   );
+  // #1064 — with ONE workstream the consolidated probe now names the same tree
+  // the per-worktree entry names, so the tree clause no longer says which run
+  // produced an entry. What still separates them is the COMMAND: the per-worktree
+  // loop ran the FAST tier (and carries the tier note); the probe ran the
+  // project's full command and must never claim the tier note. The partition is
+  // computed once so a failure names the entry that broke it.
+  const tiered = r.failures.filter((f) => f.includes(FAST_TIER_LABEL));
+  const [onlyTier] = tiered;
   assert(
-    // #1064 — with ONE workstream the consolidated probe now names the same tree
-    // the per-worktree entry names, so the tree clause no longer says which run
-    // produced an entry. What still does is the fast-tier tail: only the
-    // per-worktree loop short-circuits the full command and says so, and the
-    // probe never sees the tier. What still separates them is the COMMAND: the
-    // per-worktree loop ran the FAST tier (and carries the tier note); the probe
-    // ran the project's full command and must never claim the tier note. So the
-    // pair stays distinguishable after #1064 made the tree clause identical, and
-    // either entry naming the wrong command still fails here.
-    r.failures.some(
-      (f) => f.includes(`verify command \`${FAST}\` failed in`) && f.includes(FAST_TIER_LABEL),
-    ) &&
-      !r.failures.some(
-        (f) => !f.includes(`verify command \`${FAST}\` failed in`) && f.includes(FAST_TIER_LABEL),
-      ) &&
-      r.failures.some((f) => f.includes("failed in") && f.includes(`\`${FULL}\``)),
-    "fast red: the per-worktree headline names the fast command, not the full one",
+    tiered.length === 1 &&
+      (onlyTier ?? "").includes(`verify command \`${FAST}\` failed in`) &&
+      r.failures.some(
+        (f) => !f.includes(FAST_TIER_LABEL) && f.includes("failed in") && f.includes(`\`${FULL}\``),
+      ),
+    `fast red: exactly one entry claims the fast tier and it names the fast command; the full-command entry never does (tiered: ${tiered.join(" | ").slice(0, 200)})`,
   );
 }
 
@@ -367,6 +364,16 @@ await pinDefaultVerifyTimeout(async () => {
       killed.classifiedMessage.includes(INTEGRATION_BOUND) &&
       killed.classifiedMessage.includes("PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS"),
     "commit-pr timeout: flagged, with the bound and the integration knob",
+  );
+  // #1064 — the tree half of that clause. This seam's probe always verifies the
+  // integration checkout at repoRoot, so even at N=1 (the case the develop seam
+  // renames) the commit-pr timeout stays CONSOLIDATED: naming a workstream
+  // worktree here would send the operator to a tree that never held the change.
+  assert(
+    killed.ok === false &&
+      killed.classifiedMessage.includes("on the CONSOLIDATED tree") &&
+      !killed.classifiedMessage.includes(".worktrees/issue-9-default"),
+    `commit-pr timeout: names the integration checkout, not a workstream worktree (got: ${killed.ok === false ? killed.classifiedMessage.slice(0, 200) : ""})`,
   );
   const fastKilled = await runCommitPrConsolidatedVerify(
     stubExec([], (c) => (c === FAST ? { ok: false, stdout: "", killed: true } : { ok: true })),

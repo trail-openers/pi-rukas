@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { BASELINE_RED_MARKER } from "../src/work-driver-verify-baseline.ts";
+import { VERIFY_TIMEOUT_LABEL } from "../src/work-driver-verify-develop-helpers.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
@@ -113,7 +114,17 @@ async function run(name: string, outcomeFor: (where: "base" | "change") => Outco
     notes,
   });
   const listed = (await git(repo, ["worktree", "list"])).stdout;
-  return { failures, notes, verifyRuns, baselineHadChange, baseSha, state, listed, baselineDir };
+  return {
+    failures,
+    notes,
+    verifyRuns,
+    baselineHadChange,
+    baseSha,
+    state,
+    listed,
+    baselineDir,
+    wt,
+  };
 }
 
 const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin console`\n";
@@ -228,11 +239,12 @@ await pinDefaultVerifyTimeout(async () => {
     // #1064 — one workstream: the probe cherry-picked THAT workstream's own
     // commits onto its own base, so the tree it verified is its worktree and
     // the CONSOLIDATED label described a combination that never happened. The
-    // clause is now the per-worktree one (`… failed in <tree>`), read with the
-    // timeout label so the entry still says no verdict was reached.
-    r.failures.some(
-      (f) => f.includes(`${BOUND} timeout in`) && f.includes(".worktrees/issue-9-default"),
-    ),
+    // clause is the per-worktree one, read with the timeout label so the entry
+    // still says no verdict was reached. Composed as one clause (not a pair of
+    // loose substrings) so a reword that drops the tree from the timeout
+    // sentence fails here. The timeout label is read from the production
+    // constant rather than re-spelled as prose.
+    r.failures.some((f) => f.includes(VERIFY_TIMEOUT_LABEL) && f.includes(` in ${r.wt}`)),
     "timeout: the consolidated run names the one workstream's own tree",
   );
   assert(

@@ -43,6 +43,8 @@
  * on `trivialFix`.
  */
 
+import { isAbsolute } from "node:path";
+
 /** The three-way classification a consolidated-tree verify failure maps to. */
 export type ConsolidationClassification =
   | "consolidation-created"
@@ -331,8 +333,10 @@ export function buildPerWorktreeFailuresByWs(
  * content, per #1240's own wording: "byte-identical to the tree the per-worktree
  * verify just judged"). N>1 is the only case that produces a tree no workstream
  * ever held. The degenerate N=1 whose workstream IS `repoRoot` is the caller's
- * to recognise (the develop gate's N=1 runs in the operator's checkout, where
- * `repoRoot` is the honest location, not a workstream's).
+ * to recognise — the develop gate's N=1 runs in the operator's checkout, where
+ * `repoRoot` is the honest location, not a workstream's — and the commit-pr
+ * seam's probe runs in the integration checkout, so it names no workstream tree
+ * at any N.
  *
  * So the CONSOLIDATED wording is used only when there is more than one
  * workstream; with one, the failure names that workstream's own tree in the
@@ -342,34 +346,40 @@ export function buildPerWorktreeFailuresByWs(
  * command each ran (the loop runs the fast tier and says so; the probe runs the
  * project's full command), not the tree clause.
  *
- * This is the ONE home of the rule. Every label site composes its `where` /
- * `what` from here — this module's `consolidatedFailureMessage`, the two
- * sibling clauses of the develop failure
- * (`work-driver-consolidated-verify-report.ts`: the timeout clause and the
- * host-exhaustion clause), and the commit-pr timeout clause
- * (`work-driver-integrate-verify-hang.ts`, whose clause the caller passes in)
- * — so the `failures[]` entry and the rendered handoff for one cycle cannot
+ * This is the ONE home of the rule, and of the words "on the CONSOLIDATED
+ * tree": `consolidatedFailureMessage` below, and the develop / commit-pr
+ * report seams (`work-driver-consolidated-verify-report.ts`,
+ * `work-driver-integrate-verify-hang.ts`) all compose their clause from here,
+ * so the `failures[]` entry and the rendered handoff for one cycle cannot
  * disagree about which tree failed.
  *
- * `tree` is that workstream's worktree when the caller knows it; when it does
- * not, the rule keeps the CONSOLIDATED wording — `repoRoot` at N=1 is the
- * operator's checkout, not the workstream's tree, and a workstream id is not a
- * tree at all. Absence is the honest answer there.
+ * `tree` is that workstream's worktree when the caller has one to name. A
+ * caller whose probe ran in the integration checkout has none — that is a
+ * CONSOLIDATED run whatever N is — and passes `undefined`, which is also what
+ * an unusable value (relative, empty, not a string) degrades to: printing a
+ * location that points at nothing is worse than the old wording.
  *
- * Label text only: which checks run, the consolidated command, the
- * classification, the `[classification]` / `[verify-timeout]` /
- * `[host-resource-exhaustion]` prefixes, cap selection and the ok/notes
- * outcome are all untouched by this function.
+ * `atRepoRoot` is the structured half of the same decision: the CONSOLIDATED
+ * branch is the only one that may point an operator at `repoRoot` (that is
+ * where the probe checked the combination out), so the one site that wants the
+ * `at <repoRoot>` suffix reads this flag instead of re-spelling the words.
+ *
+ * Label text only: the command, the classification, the `[classification]` /
+ * `[verify-timeout]` / `[host-resource-exhaustion]` prefixes, cap selection
+ * and the ok/notes outcome are untouched by this function.
  */
 export function consolidatedRunWhere(
   workstreamCount: number,
   tree: string | undefined,
   repoRoot: string,
-): { phrase: string; treeName: string } {
-  if (workstreamCount > 1 || tree === undefined)
-    return { phrase: "on the CONSOLIDATED tree", treeName: repoRoot };
-  return { phrase: `in ${tree}`, treeName: tree };
+): { phrase: string; atRepoRoot: boolean } {
+  const usable = typeof tree === "string" && isAbsolute(tree);
+  if (workstreamCount > 1 || !usable) return { phrase: CONSOLIDATED_WHERE, atRepoRoot: true };
+  return { phrase: `in ${tree}`, atRepoRoot: false };
 }
+
+/** The one place the CONSOLIDATED location is spelled. */
+const CONSOLIDATED_WHERE = "on the CONSOLIDATED tree";
 
 /**
  * The failure message for the handoff. Names (a) the SPECIFIC failing
@@ -377,19 +387,18 @@ export function consolidatedRunWhere(
  * (c) the classification label. This replaces the generic "consolidated
  * tree fails verify" / "each workstream passed alone" text.
  *
- * #1064 — the tree clause comes from `consolidatedRunWhere`, so a
- * single-workstream cycle names the tree it actually verified instead of a
- * consolidated tree it never combined. The caller passes the tree it has
- * (`ownTree`: that workstream's worktree at N=1, anything at N>1) and the
- * clause is composed here, in the one place the rule lives — a caller that
- * hand-wrote its own wording could disagree with the timeout and
- * host-exhaustion clauses of the same failure.
+ * #1064 — the tree clause comes from `consolidatedRunWhere`. `workstreamCount`
+ * is the caller's N (the reporter and the commit-pr seam both already have it),
+ * NOT `verdict.workstreamIds.length`: the classifier slices that list per
+ * classification, so reading the decision variable from the verdict instead
+ * would let the three label sites of one failure decide from two sources.
  */
 export function consolidatedFailureMessage(
   verdict: ConsolidationFailureVerdict,
   cmd: string,
   ownTree: string | undefined,
   repoRoot: string,
+  workstreamCount = verdict.workstreamIds.length,
 ): string {
   const ids = verdict.workstreamIds.join(" + ");
   const which =
@@ -398,7 +407,7 @@ export function consolidatedFailureMessage(
       : `workstream combination ${ids}`;
   // #1064 — the tree clause comes from the one rule, so this message and the
   // sibling clauses of the same failure cannot name different trees.
-  const { phrase } = consolidatedRunWhere(verdict.workstreamIds.length, ownTree, repoRoot);
+  const { phrase } = consolidatedRunWhere(workstreamCount, ownTree, repoRoot);
   return (
     `[${verdict.classification}] verify command \`${cmd}\` failed ${phrase} — ` +
     `specific assertion: ${verdict.assertion || "(no assertion parsed)"} — ` +

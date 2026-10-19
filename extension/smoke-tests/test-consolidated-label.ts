@@ -1,6 +1,4 @@
 #!/usr/bin/env bun
-import { reportConsolidatedVerifyOutcome } from "../src/work-driver-consolidated-verify-report.ts";
-import type { ConsolidatedVerifyResult } from "../src/work-driver-consolidated-verify.ts";
 /**
  * #1064 — the tree a consolidated verify failure names.
  *
@@ -12,20 +10,20 @@ import type { ConsolidatedVerifyResult } from "../src/work-driver-consolidated-v
  * tree it actually verified, in the same words the per-worktree run already uses
  * for a tree; more than one keeps the CONSOLIDATED wording.
  *
- * Three things this pins that a source read cannot show:
- *   - the wording changes at N=1 and ONLY at N=1;
- *   - an unresolvable tree keeps the old wording rather than inventing one (a
- *     workstream id is not a path, `failed in default` is not a location);
- *   - all three label sites of ONE failure agree — the message, the timeout
- *     clause and the host-exhaustion clause are produced by the caller from a
- *     single decision, so a partial rename is the regression this catches.
+ * The rule and the N=1 reasoning live in `consolidatedRunWhere`
+ * (`work-driver-consolidation-classify.ts`) — this file only pins that the
+ * sites agree on what the rule says: the failure entry, the timeout clause and
+ * the host-exhaustion clause of ONE failure are three strings, and a rename
+ * that reaches some but not all of them is the regression caught here.
  */
+import { reportConsolidatedVerifyOutcome } from "../src/work-driver-consolidated-verify-report.ts";
+import type { ConsolidatedVerifyResult } from "../src/work-driver-consolidated-verify.ts";
 import {
   type ConsolidationFailureVerdict,
   consolidatedFailureMessage,
   consolidatedRunWhere,
 } from "../src/work-driver-consolidation-classify.ts";
-import { verifyTimeoutFailure } from "../src/work-driver-verify-develop-helpers.ts";
+import { VERIFY_TIMEOUT_LABEL } from "../src/work-driver-verify-develop-helpers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -39,35 +37,74 @@ function assert(cond: boolean, msg: string) {
 const REPO = "/repo";
 const WT = "/repo/.worktrees/issue-7-default";
 const CMD = "bash scripts/verify.sh";
+const TIMEOUT_MS = 600_000;
 
 const verdict = (
   classification: ConsolidationFailureVerdict["classification"],
   ids: string[],
-  reason = "the verify command failed",
-) =>
-  ({
-    classification,
-    assertion: "src/a.ts(3,1): error TS2304",
-    workstreamIds: ids,
-    trivial: false,
-    reason,
-  }) as ConsolidationFailureVerdict;
+): ConsolidationFailureVerdict => ({
+  classification,
+  assertion: "src/a.ts(3,1): error TS2304",
+  workstreamIds: ids,
+  trivialFix: false,
+  reason: "the verify command failed",
+});
+
+/** A failed consolidated run, checked against the `failed` arm it claims to be. */
+const failedRun = {
+  status: "failed",
+  detail: "exit 1",
+  rawFailure: "src/a.ts(3,1): error TS2304: Cannot find name 'nope'.\n",
+} satisfies Extract<ConsolidatedVerifyResult, { status: "failed" }>;
+
+/** The same run killed at its bound. */
+const killedRun = {
+  ...failedRun,
+  timedOut: true,
+} satisfies Extract<ConsolidatedVerifyResult, { status: "failed" }>;
+
+/** A run whose stream says the host could not fork — the third label site. */
+const forkRun = {
+  status: "failed",
+  detail: "exit 1",
+  rawFailure: "/bin/sh: 1: Cannot fork\n",
+} satisfies Extract<ConsolidatedVerifyResult, { status: "failed" }>;
+
+/** The gate's own reporter, with everything but the shape under test fixed. */
+function reported(
+  cons: ConsolidatedVerifyResult,
+  worktrees: Record<string, string | undefined>,
+): string[] {
+  const failures: string[] = [];
+  reportConsolidatedVerifyOutcome(cons, {
+    cmd: CMD,
+    failures,
+    notes: [],
+    timeoutMs: TIMEOUT_MS,
+    ctx: { repoRoot: REPO },
+    worktrees,
+    perWorktreeFailuresByWs: {},
+    singlePerWs: undefined,
+    singlePerAssertion: undefined,
+  });
+  return failures;
+}
 
 // ---------------------------------------------------------------- the rule
 {
-  // N>1: a genuine combination — the CONSOLIDATED wording, and repoRoot as the
-  // tree (where the probe checked the combination out). Exactly as before #1064.
+  // N>1: a genuine combination — the CONSOLIDATED wording, and the rule says
+  // the probe ran at repoRoot (where it checked the combination out).
   const many = consolidatedRunWhere(2, WT, REPO);
   assert(
-    many.phrase === "on the CONSOLIDATED tree" && many.treeName === REPO,
-    "N>1 keeps the CONSOLIDATED wording and names repoRoot",
+    many.phrase === "on the CONSOLIDATED tree" && many.atRepoRoot === true,
+    "N>1 keeps the CONSOLIDATED wording and places the run at repoRoot",
   );
 
   // N=1 with a resolvable tree: the workstream's own worktree, in the
   // per-worktree wording (`in <tree>`) — same tree, same wording.
   const one = consolidatedRunWhere(1, WT, REPO);
   assert(
-    one.phrase === `in ${WT}` && one.treeName === WT,
+    one.phrase === `in ${WT}` && one.atRepoRoot === false,
     "N=1 names the one workstream's own tree, in the per-worktree wording",
   );
 
@@ -88,6 +125,20 @@ const verdict = (
     consolidatedRunWhere(1, WT, REPO).phrase !== consolidatedRunWhere(2, WT, REPO).phrase,
     "the wording differs between N=1 and N>1 for the same tree",
   );
+
+  // A value that is not a usable location — a relative path, an empty string,
+  // or anything a hand-written / stale state file puts in the map — degrades to
+  // the honest old wording rather than printing a location that points nowhere.
+  for (const unusable of ["relative/wt", "", ".", "~wt"]) {
+    assert(
+      consolidatedRunWhere(1, unusable, REPO).phrase === "on the CONSOLIDATED tree",
+      `an unusable tree (${JSON.stringify(unusable)}) keeps the CONSOLIDATED wording`,
+    );
+  }
+  assert(
+    consolidatedRunWhere(1, 42 as unknown as string, REPO).phrase === "on the CONSOLIDATED tree",
+    "a non-string map value never reaches the clause",
+  );
 }
 
 // ------------------------------------------------------- the message, per N
@@ -97,6 +148,7 @@ const verdict = (
     CMD,
     WT,
     REPO,
+    1,
   );
   assert(
     oneMsg.includes(`failed in ${WT}`),
@@ -109,6 +161,7 @@ const verdict = (
     CMD,
     undefined,
     REPO,
+    2,
   );
   assert(
     manyMsg.includes("failed on the CONSOLIDATED tree"),
@@ -123,94 +176,67 @@ const verdict = (
     CMD,
     undefined,
     REPO,
+    1,
   );
   assert(
     unknownMsg.startsWith("[needs-human-decision]") &&
       unknownMsg.includes("failed on the CONSOLIDATED tree"),
     "N=1 with no tree keeps the pre-#1064 message shape and its label",
   );
-}
 
-// ------------------------------------------- one failure, three label sites
-// The regression this file exists for: the message, the timeout clause and the
-// host-exhaustion clause are three separate strings for ONE failure. A rename
-// that reaches some but not all of them makes the handoff contradict itself.
-{
-  const runWhere = consolidatedRunWhere(1, WT, REPO);
-  const clause = runWhere.phrase;
-  const message = consolidatedFailureMessage(
-    verdict("per-workstream-defect", ["default"]),
-    CMD,
-    WT,
-    REPO,
-  );
-  const timeout = verifyTimeoutFailure(CMD, clause, 600_000);
-  const host = `verify command \`${CMD}\` ${clause} could not run`;
-
-  for (const [name, site] of [
-    ["message", message],
-    ["timeout", timeout],
-    ["host-exhaustion", host],
-  ] as const) {
-    assert(
-      site.includes(WT) && !site.includes("CONSOLIDATED"),
-      `N=1: the ${name} clause names the one workstream's tree`,
-    );
-  }
-
-  // And at N>1 the same three sites stay on the CONSOLIDATED tree.
-  const manyWhere = consolidatedRunWhere(2, undefined, REPO);
-  const manyClause = manyWhere.phrase;
-  const sites = [
-    consolidatedFailureMessage(verdict("consolidation-created", ["a", "b"]), CMD, undefined, REPO),
-    verifyTimeoutFailure(CMD, manyClause, 600_000),
-    `verify command \`${CMD}\` ${manyClause} could not run`,
-  ];
+  // The count is the CALLER's N, not the verdict's id list: the classifier
+  // slices `workstreamIds` per classification, so a message composed from the
+  // id list alone could name a different tree than the sibling clauses of the
+  // same failure (which read the map).
+  const sliced = verdict("per-workstream-defect", ["default"]);
   assert(
-    sites.every((s) => s.includes("on the CONSOLIDATED tree")),
-    "N>1: all three label sites keep the CONSOLIDATED wording",
+    consolidatedFailureMessage(sliced, CMD, WT, REPO, 2).includes("on the CONSOLIDATED tree"),
+    "a per-workstream verdict at N>1 does not claim a single workstream's tree",
+  );
+  assert(
+    consolidatedFailureMessage(sliced, CMD, WT, REPO).includes(`failed in ${WT}`),
+    "omitting the count falls back to the verdict's id list",
   );
 }
 
-// ------------------------------------------------- through the real reporter
+// ------------------------------------- one failure, three label sites, via the reporter
 // The rule above is unit-level; this drives the function that actually builds
 // `failures[]`, because that is where the three sites are composed and where a
-// partial rename would live.
-function reported(cons: ConsolidatedVerifyResult, worktrees: Record<string, string>): string[] {
-  const failures: string[] = [];
-  reportConsolidatedVerifyOutcome(cons, {
-    cmd: CMD,
-    failures,
-    notes: [],
-    timeoutMs: 600_000,
-    ctx: { repoRoot: REPO },
-    worktrees,
-    perWorktreeFailuresByWs: {},
-    singlePerWs: undefined,
-    singlePerAssertion: undefined,
-  });
-  return failures;
-}
-
-const failedRun = {
-  status: "failed",
-  detail: "exit 1",
-  rawFailure: "src/a.ts(3,1): error TS2304: Cannot find name 'nope'.\n",
-} as ConsolidatedVerifyResult;
-
-const killedRun = {
-  ...failedRun,
-  timedOut: true,
-} as ConsolidatedVerifyResult;
-
+// partial rename would live: the failure entry, its timeout clause and its
+// host-exhaustion clause are three strings for ONE failure.
 {
-  // N=1: the reporter's failure entry names the one workstream's worktree.
   const [entry] = reported(failedRun, { default: WT });
   assert(
-    entry.includes(`failed in ${WT}`) && !entry.includes("CONSOLIDATED"),
-    `reporter N=1: the failure names the workstream's own tree (got: ${(entry ?? "").slice(0, 150)})`,
+    (entry ?? "").includes(`failed in ${WT}`) && !(entry ?? "").includes("CONSOLIDATED"),
+    `N=1: the failure entry names the one workstream's tree (got: ${(entry ?? "").slice(0, 150)})`,
   );
 
+  // Same shape, no worktree in the map: the old wording, and emphatically not
+  // the workstream id standing in for a path.
+  const [orphan] = reported(failedRun, { default: undefined });
+  assert(
+    (orphan ?? "").includes("on the CONSOLIDATED tree") && !(orphan ?? "").includes("failed in "),
+    `N=1 with no tree: keeps CONSOLIDATED rather than naming an id (got: ${(orphan ?? "").slice(0, 150)})`,
+  );
+
+  const [timeoutEntry] = reported(killedRun, { default: WT });
+  assert(
+    (timeoutEntry ?? "").startsWith(VERIFY_TIMEOUT_LABEL) &&
+      (timeoutEntry ?? "").includes(`timeout in ${WT}`) &&
+      !(timeoutEntry ?? "").includes("CONSOLIDATED"),
+    `N=1: the timeout clause of the same failure names the same tree (got: ${(timeoutEntry ?? "").slice(0, 150)})`,
+  );
+
+  const [hostEntry] = reported(forkRun, { default: WT });
+  assert(
+    (hostEntry ?? "").includes(`verify command \`${CMD}\` in ${WT} could not run`) &&
+      !(hostEntry ?? "").includes("CONSOLIDATED"),
+    `N=1: the host-exhaustion clause of the same failure names the same tree (got: ${(hostEntry ?? "").slice(0, 150)})`,
+  );
+}
+
+// ------------------------------------------------- N>1 keeps the old wording
+{
   // N>1: unchanged — the CONSOLIDATED tree, with both ids.
   const many = reported(failedRun, {
     a: "/repo/.worktrees/issue-7-a",
@@ -221,25 +247,20 @@ const killedRun = {
     `reporter N>1: the failure keeps the CONSOLIDATED wording (got: ${many.join(" | ").slice(0, 150)})`,
   );
 
-  // N=1 whose worktree cannot be resolved (no map entry): the old wording, and
-  // emphatically not the workstream id standing in for a path.
-  const [orphan] = reported(failedRun, { default: undefined as unknown as string });
-  assert(
-    orphan.includes("on the CONSOLIDATED tree") && !orphan.includes("failed in default"),
-    `reporter N=1, no tree: keeps CONSOLIDATED rather than naming an id (got: ${(orphan ?? "").slice(0, 150)})`,
-  );
-
-  // The timeout site of the SAME shape renames with the message — the pair is
-  // the regression this file exists for.
-  const [killed] = reported(killedRun, { default: WT });
-  assert(
-    killed.includes(`timeout in ${WT}`) && !killed.includes("CONSOLIDATED"),
-    `reporter N=1: the timeout clause names the tree too (got: ${(killed ?? "").slice(0, 150)})`,
-  );
+  // N=1 whose worktree cannot be resolved (no map entry) is pinned above, with
+  // the failure entry it shares.
   const [killedMany] = reported(killedRun, { a: "/w/a", b: "/w/b" });
   assert(
-    killedMany.includes(`timeout on the CONSOLIDATED tree at ${REPO}`),
+    (killedMany ?? "").includes(`timeout on the CONSOLIDATED tree at ${REPO}`),
     "reporter N>1: the timeout clause keeps CONSOLIDATED and repoRoot",
+  );
+
+  // And the host-exhaustion clause of the same N=1 shape names the tree, in the
+  // composed form — not merely "somewhere in the string".
+  const [hostMany] = reported(forkRun, { a: "/w/a", b: "/w/b" });
+  assert(
+    (hostMany ?? "").includes(`verify command \`${CMD}\` on the CONSOLIDATED tree could not run`),
+    "reporter N>1: the host-exhaustion sentence keeps the CONSOLIDATED wording",
   );
 }
 
