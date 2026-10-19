@@ -12,7 +12,6 @@
  */
 
 import { recordCommentEvidence } from "./comment-evidence.ts";
-import { trace } from "./trace.ts";
 import { runMergeRetryFlow } from "./work-develop-fence-merge-retry.ts";
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import {
@@ -135,12 +134,11 @@ export async function recordDevelopVerdict(a: DevelopVerdictInput): Promise<Work
     // issue's stated ordering) — a diff that doesn't build never reaches
     // the completeness check. Skips silently when disabled, when there is
     // no normalised spec, or when the diff is unreadable.
-    if (a.afterCorrectiveRound === true) {
-      // #1667 — the converge corrective re-dispatch is a second developer round.
-      trace("work-driver: converge gate not re-run after the corrective develop round");
-      return next;
-    }
-    return runConvergeGateHandler(ctx, next, dispatch);
+    // #1667 — after a corrective round the check still runs; only its
+    // corrective re-dispatch is suppressed (the cycle parks instead).
+    return runConvergeGateHandler(ctx, next, dispatch, {
+      checkOnly: a.afterCorrectiveRound === true,
+    });
   }
   return a.onVerifyFailed(next, gate);
 }
