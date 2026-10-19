@@ -218,74 +218,80 @@ async function childCalls(): Promise<
 
 const fx = buildFenceFixture("headless-work");
 {
-  clearEnv();
-  process.env.PI_ENSEMBLE_TRUST_MODE = "1";
-  process.env.PI_ENSEMBLE_ROLE = "developer";
-  process.env.PI_ENSEMBLE_WRITE_ROOT = fx.wt;
-  process.env.PI_ENSEMBLE_WRITE_REPO = fx.repo;
-  process.env.PI_ENSEMBLE_WRITE_SCRATCH = fx.scratch;
-  // Relative write paths resolve against the child's cwd, the worktree.
+  // Restore the cwd and the env even when an assertion throws, so a failure here
+  // cannot leak a worktree cwd or a trust marker into the sections after it.
   const savedCwd = process.cwd();
-  process.chdir(fx.wt);
-  const call = await childCalls();
+  try {
+    clearEnv();
+    process.env.PI_ENSEMBLE_TRUST_MODE = "1";
+    process.env.PI_ENSEMBLE_ROLE = "developer";
+    process.env.PI_ENSEMBLE_WRITE_ROOT = fx.wt;
+    process.env.PI_ENSEMBLE_WRITE_REPO = fx.repo;
+    process.env.PI_ENSEMBLE_WRITE_SCRATCH = fx.scratch;
+    // Relative write paths resolve against the child's cwd, the worktree.
+    process.chdir(fx.wt);
+    const call = await childCalls();
 
-  const ask = await call("websearch", { query: "probe" });
-  assert(ask === undefined, "4: an ask-class tool call is not blocked in a /work child");
-  assert(
-    (await call("bash", { command: "npm run typecheck" })) === undefined,
-    "4: an ordinary command (the project verify) is not blocked",
-  );
-  assert(
-    (await call("bash", { command: "ls -la" })) === undefined,
-    "4: a read command is not blocked by a headless deny",
-  );
-  const noBroker = [
-    await call("websearch", {}),
-    await call("bash", { command: "npm run typecheck" }),
-  ].some((r) => r?.includes("no broker socket"));
-  assert(!noBroker, "4: no ask-class reason ever names 'no broker socket' in a /work child");
+    const ask = await call("websearch", { query: "probe" });
+    assert(ask === undefined, "4: an ask-class tool call is not blocked in a /work child");
+    assert(
+      (await call("bash", { command: "npm run typecheck" })) === undefined,
+      "4: an ordinary command (the project verify) is not blocked",
+    );
+    assert(
+      (await call("bash", { command: "ls -la" })) === undefined,
+      "4: a read command is not blocked by a headless deny",
+    );
+    const noBroker = [
+      await call("websearch", {}),
+      await call("bash", { command: "npm run typecheck" }),
+    ].some((r) => r?.includes("no broker socket"));
+    assert(!noBroker, "4: no ask-class reason ever names 'no broker socket' in a /work child");
 
-  const outside = await call("write", { path: "../../bin/keep", content: "x" });
-  assert(
-    outside !== undefined,
-    `4: a developer write outside its worktree is refused (got: ${outside ?? "allowed"})`,
-  );
-  assert(
-    (await call("write", { path: "inside.ts", content: "x" })) === undefined,
-    "4: a write inside its own worktree is allowed",
-  );
-  process.chdir(savedCwd);
+    const outside = await call("write", { path: "../../bin/keep", content: "x" });
+    assert(
+      outside !== undefined,
+      `4: a developer write outside its worktree is refused (got: ${outside ?? "allowed"})`,
+    );
+    assert(
+      (await call("write", { path: "inside.ts", content: "x" })) === undefined,
+      "4: a write inside its own worktree is allowed",
+    );
+    process.chdir(savedCwd);
 
-  const reset = await call("bash", { command: "git reset --hard HEAD" });
-  assert(
-    reset !== undefined && !reset.includes("no broker socket"),
-    `4: destructive git (git reset --hard) is refused in a /work child (got: ${reset ?? "allowed"})`,
-  );
+    const reset = await call("bash", { command: "git reset --hard HEAD" });
+    assert(
+      reset !== undefined && !reset.includes("no broker socket"),
+      `4: destructive git (git reset --hard) is refused in a /work child (got: ${reset ?? "allowed"})`,
+    );
 
-  const push = await call("bash", { command: "git push origin feature/x" });
-  assert(push !== undefined, "4: a developer's git push is refused in a /work child");
+    const push = await call("bash", { command: "git push origin feature/x" });
+    assert(push !== undefined, "4: a developer's git push is refused in a /work child");
 
-  const issue = await call("bash", {
-    command: "gh issue create --title t --body b",
-  });
-  assert(issue !== undefined, "4: gh issue create is refused in a /work child");
+    const issue = await call("bash", {
+      command: "gh issue create --title t --body b",
+    });
+    assert(issue !== undefined, "4: gh issue create is refused in a /work child");
 
-  const vipuneUpdate = await call("bash", {
-    command: 'vipune update 12 -t "rewritten"',
-  });
-  assert(
-    vipuneUpdate?.includes("supersedes"),
-    "4: a destructive vipune write (vipune update -t) is refused in a /work child",
-  );
-  assert(
-    (await call("bash", { command: 'true && vipune update 12 --text "x"' })) !== undefined,
-    "4: a chained destructive vipune write is refused too",
-  );
-  assert(
-    (await call("bash", { command: "vipune update 12 --status active" })) === undefined,
-    "4: a vipune status change (no new content) is not refused",
-  );
-  clearEnv();
+    const vipuneUpdate = await call("bash", {
+      command: 'vipune update 12 -t "rewritten"',
+    });
+    assert(
+      vipuneUpdate?.includes("supersedes"),
+      "4: a destructive vipune write (vipune update -t) is refused in a /work child",
+    );
+    assert(
+      (await call("bash", { command: 'true && vipune update 12 --text "x"' })) !== undefined,
+      "4: a chained destructive vipune write is refused too",
+    );
+    assert(
+      (await call("bash", { command: "vipune update 12 --status active" })) === undefined,
+      "4: a vipune status change (no new content) is not refused",
+    );
+  } finally {
+    process.chdir(savedCwd);
+    clearEnv();
+  }
 }
 
 // ── 5. The merge guard refuses a merge with no passing review ledger.

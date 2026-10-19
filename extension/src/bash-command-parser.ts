@@ -6,8 +6,8 @@
  * string/token parsing with no Pi API and no filesystem I/O.
  */
 
+import { isDestructiveWrite } from "./bash-destructive-write.ts";
 import { hasMidWildcard, midWildcardPattern } from "./bash-pattern-wildcard.ts";
-import { isDestructiveWrite } from "./memory-write-guard.ts";
 import { trace } from "./trace.js";
 
 // Chars that indicate command injection / chaining in a bash *command*. If a

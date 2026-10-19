@@ -28,12 +28,12 @@ import { assert, exit } from "./merge-guard-helpers.ts";
 const SRC_DIR = new URL("../src/", import.meta.url).pathname;
 
 /**
- * Every spawnSpecialist call in the cycle's closure, with the stamp it carries.
- * dispatch.ts holds three: the dispatchCore path (stamped) and the two PM-only
- * tools dispatch_specialist / dispatch_parallel, which are not cycle children.
+ * Every spawnSpecialist call in the cycle's closure, with the stamp it carries,
+ * matched against its code lines (never comments). dispatch.ts holds three: the
+ * dispatchCore path (stamped) and the two PM-only tools dispatch_specialist /
+ * dispatch_parallel, which are not cycle children.
  */
-/** The stamp each registered site carries, matched against its code lines (never comments). */
-export const REGISTRY: Record<string, { spawnCalls: number; stamp: RegExp }> = {
+const REGISTRY: Record<string, { spawnCalls: number; stamp: RegExp }> = {
   "dispatch.ts": { spawnCalls: 3, stamp: /^\s*workCycleTrust: opts\.workCycleTrust,$/m },
   "adversarial-phase.ts": { spawnCalls: 1, stamp: /^\s*workCycleTrust,$/m },
   "lens-review-child.ts": {
@@ -62,14 +62,14 @@ function codeLines(text: string): string[] {
  * dispatch_parallel tools, which are not cycle children) carries the cycle stamp. A
  * missing anchor counts as stamped: the audit fails closed rather than passing blind.
  */
-export function pmToolsStamped(lines: readonly string[]): boolean {
+function pmToolsStamped(lines: readonly string[]): boolean {
   const at = lines.findIndex((l) => /\bfunction registerDispatchTools\(/.test(l));
   if (at < 0) return true;
   return lines.slice(at).some((l) => /\bworkCycleTrust\b/.test(l));
 }
 
 /** Static and dynamic relative imports of a module, as normalised `.ts` paths. */
-export function importsOf(rel: string, text: string): string[] {
+function importsOf(rel: string, text: string): string[] {
   const specs = [
     ...text.matchAll(/\bfrom\s+"(\.{1,2}\/[^"]+\.ts)"/g),
     ...text.matchAll(/\bimport\(\s*"(\.{1,2}\/[^"]+\.ts)"\s*\)/g),
@@ -78,7 +78,7 @@ export function importsOf(rel: string, text: string): string[] {
 }
 
 /** The modules reachable from `root` through relative imports, with their text. */
-export function closureOf(root: string, readFn: (rel: string) => string): Map<string, string> {
+function closureOf(root: string, readFn: (rel: string) => string): Map<string, string> {
   const seen = new Map<string, string>();
   const queue = [root];
   while (queue.length > 0) {
@@ -95,7 +95,7 @@ export function closureOf(root: string, readFn: (rel: string) => string): Map<st
  * Audit the closure. Returns one line per violation; an empty list passes.
  * `files` is keyed by the file's basename (the registry's keys).
  */
-export function auditDispatchSites(
+function auditDispatchSites(
   files: ReadonlyMap<string, string>,
   registry: typeof REGISTRY,
 ): string[] {

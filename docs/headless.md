@@ -367,35 +367,34 @@ closure: it fails if a `dispatchCore` or `spawnSpecialist` site is not in its
 registry with the stamp it carries, or if any site hand-computes the stamp from
 `ctx.headless`.
 
-| Site | Call path | Stamp |
-|---|---|---|
-| explore, plan, plan corrective and timeout re-dispatch | `issueImagesFor` / `runExplore` → `cycleDispatch` | cycle dispatch |
-| develop fan-out, speculative explore, develop fence/symbol/converge retries | `runDevelop*` takes the cycle dispatch from `branch-develop` | cycle dispatch |
-| adversarial fix (develop) | `work-driver-adversarial-fix` → `cycleDispatch` | cycle dispatch |
-| adversarial review and fix (inner child) | `cycleChildOpts` → `runAdversarialLoop` → `makeRunPhase` → `spawnSpecialist` | `workCycleTrust` (`adversarial-phase.ts`) |
-| lens children (six) | `cycleChildOpts` → `runLensReview` → `runLensChild` → `spawnSpecialist` | `workCycleTrust` (`lens-review-child.ts`) |
-| policy judge (merge authority, review threshold) | `cycleChildOpts` → `judgePolicy` → `spawnSpecialist` | `workCycleTrust` (`work-driver-policy.ts`) |
-| lens-fix, branch ops, CI, step-back, merge ops, commit-pr fallback | `runSingleDispatch` → `cycleDispatch` | cycle dispatch |
-| handoff ops | `work-driver-handoff-ops` → `cycleDispatch` | cycle dispatch |
-| PM tools `dispatch_specialist`, `dispatch_parallel` | not a cycle child | none, by design |
+Every dispatch a cycle makes goes through `cycleDispatch(ctx)` or `cycleChildOpts(ctx)`,
+and `extension/smoke-tests/test-work-cycle-dispatch-path.ts` holds the audited list of
+every site that spawns a child, with the stamp it carries. A new site fails that gate
+until it is registered. The PM's `dispatch_specialist` and `dispatch_parallel` tools are
+not cycle children and carry no stamp, by design.
 
-The PM tools are the only spawns in `dispatch.ts` without the stamp. They are not
-reachable from a cycle, and the audit counts them so a new one fails the gate.
+What each child may do, with the write, edit and multiedit tools, with bash, and in
+which permission shape:
 
-| Child | Write boundary | Permission shape |
-|---|---|---|
-| developer (develop, fan-out) | write-fenced to its worktree (`PI_ENSEMBLE_WRITE_ROOT`) | trust |
-| lens-fix developer | write-fenced to its worktree | trust |
-| explore, adversarial-developer, code-review-specialist (lens), policy judge | write/edit/multiedit structurally excluded | trust |
-| ops (handoff, merge-ops) | unfenced, as interactively | trust |
+| Child | write / edit / multiedit | Bash | Permission shape |
+|---|---|---|---|
+| developer (develop, fan-out) | available, fenced to its worktree (`PI_ENSEMBLE_WRITE_ROOT`) | fenced to its worktree | trust |
+| lens-fix developer | available, fenced to its worktree | fenced to its worktree | trust |
+| explore (includes the policy judge), adversarial-developer, code-review-specialist (lens) | structurally excluded | unfenced, as in an interactive cycle: a reviewer can still write files through bash | trust |
+| ops (handoff, merge-ops) | available | unfenced, as interactively | trust |
 
-Every child, in every shape, still loads the child-guards companion. That
-registers the destructive-git guard, the issue-creation guard, the merge guard,
-the developer push guard, the destructive vipune write guard, and the write
-fence. The protected-path halt, the merge authority and the review ledger run in
-the driver.
+The write fence applies to develop and lens-fix children only. The reviewers'
+boundary is the tool exclusion, not a fence: they cannot call the write, edit or
+multiedit tools, but their bash is not write-fenced.
 
-The destructive vipune write guard (`extension/src/memory-write-guard.ts`) is a
+For every child, in every shape, the boundary is the set of mode-independent guards
+the child-guards companion registers: the destructive-git guard, the issue-creation
+guard, the merge guard, the developer push guard, the destructive vipune write guard,
+and the write fence (which itself applies only where `PI_ENSEMBLE_WRITE_ROOT` is set).
+The protected-path halt, the merge authority and the review ledger run in the driver.
+
+The destructive vipune write guard (`extension/src/memory-write-guard.ts`, with its
+predicate in the Pi-free `extension/src/bash-destructive-write.ts`) is a
 guardrail against accidental rewrites, not a security boundary. It reads a bash
 command the way a shell would for the common shapes: quotes, `VAR=value`
 prefixes, `env` / `command` / `exec` wrappers, `bash -c` and `eval` bodies,
@@ -405,7 +404,7 @@ in a shape it does not model (a script the child writes and then runs, or an
 indirect executable path) is not refused. A status-only `vipune update` and a
 `vipune add --supersedes` are allowed.
 
-Wrappers it reads through: `env` (including `-S` and `-S"…"`, whose payload is re-split as a command line), `command`, `exec`, `nohup`, `sudo`, `timeout DURATION`, and `xargs`. The same predicate answers the allowlist matcher (`matchBashSubcommand`), so a wrapped `vipune update … -t` is refused there too. Out of scope for this guardrail, because the shell features that build command text are not modelled: ANSI-C quoting (`$'…'`), brace expansion (`{vipune,update}`), variables and parameter expansion (`$V update …`), globs that name the binary (`vipu?e`), aliases and functions, here-documents, process substitution, and a script the child writes and then runs.
+Wrappers it reads through: `env` (including `-S` and `-S"…"`, whose payload is re-split as a command line), `command`, `exec`, `nohup`, `sudo`, `timeout DURATION`, `xargs`, `nice`, `stdbuf`, `time` and `setsid`, each with its option arguments (`nice -n N`, `stdbuf -o MODE`, `time -f FORMAT`). The same predicate answers the allowlist matcher (`matchBashSubcommand`), so a wrapped `vipune update … -t` is refused there too. Out of scope for this guardrail, because the shell features that build command text are not modelled: ANSI-C quoting (`$'…'`), brace expansion (`{vipune,update}`), variables and parameter expansion (`$V update …`), globs that name the binary (`vipu?e`), aliases and functions, here-documents, process substitution, and a script the child writes and then runs.
 
 Outside a /work cycle nothing changes. A bare `pi -p` child (no driver) has no
 cycle stamp, so it keeps the strict path: `agents.json` resolution, and
