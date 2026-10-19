@@ -2,6 +2,16 @@
 
 Symptoms → causes → fixes. Most issues here come from running an older sandbox image; the first move on anything weird is usually `./install.sh` from the pi-rukas repo to rebuild + refresh.
 
+## Verify commands and the driver's environment
+
+### Handoff or grouping smoke tests fail only inside `/work` cycles
+
+**Symptom:** under `/work` (or a headless runner), a cycle parks as `change` with the verify output naming 10–20 unrelated smoke tests (`test-handoff-*`, `test-work-driver-grouping`, `test-spawn-semaphore`, ...). The same tests pass when you run them by hand on the same commit.
+
+**Cause:** the driver runs the project's verify, smoke and verify-full commands with its own environment. The driver's `PI_ENSEMBLE_*` knobs (for example `PI_ENSEMBLE_HANDOFF_CHANNEL`, `PI_ENSEMBLE_PARALLEL_WORK`) leaked into the project's tests, which behaved as if they were configured. Those knobs configure the driver, not the project's tests.
+
+**Fix:** the shell-form executor scrubs the driver's own knobs (every name in the headless inventory, `extension/src/headless/inputs.ts`) from the child environment (`shellExecp` in `extension/src/work-driver-verify-shell.ts`, over `verifyChildEnv` in `extension/src/work-driver-verify-cmd.ts`). Each dropped name is traced once per process (names only, never values). The verify loop's own knobs (`PI_ENSEMBLE_VERIFY_TEST_JOBS`, `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S`, `PI_ENSEMBLE_SMOKE_HOST_GIT`) are not in the inventory and pass through, because the shell loop reads them inside the child. `extension/smoke-tests/test-verify-child-env.ts` fails if a site stops routing through the helper. If a project test genuinely needs a driver knob, have the test set it itself.
+
 ## Platform support
 
 ### `./install.sh` fails on Windows — bash parse errors, or a half-finished install

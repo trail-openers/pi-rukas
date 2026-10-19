@@ -8,7 +8,6 @@
  */
 
 import type { CommentEvidence } from "./comment-evidence.ts";
-import { execTree } from "./exec-tree.ts";
 import { execp as lensExecp } from "./exec.ts";
 import { aheadOfBase } from "./git-range.ts";
 import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
@@ -23,6 +22,7 @@ import { beginVerifyRun, finishVerifyRun } from "./work-driver-verify-events.ts"
 import type { DevelopGateRecord } from "./work-driver-verify-gate-reuse.ts";
 import { type VerifyCommandRecord, newVerifyRecordSlot } from "./work-driver-verify-record.ts";
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
+import { shellExecp } from "./work-driver-verify-shell.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -32,8 +32,9 @@ import type { WorkState } from "./workflow-state.ts";
 // production (no verifyExecFn is injected there) and every commit-pr read as
 // unverifiable. The argv form keeps exec.ts's executor; the shell form —
 // the project's verify and smoke commands — is tree-killing (exec-tree.ts).
+// The shell form runs the project's commands through the scrubbing executor.
 const execp: VerifyExecFn = (cmd, opts) =>
-  opts?.argv ? lensExecp(cmd, opts) : execTree(cmd, opts);
+  opts?.argv ? lensExecp(cmd, opts) : shellExecp(cmd, opts);
 
 /**
  * PR17 — Driver-side outcome verification gate.
