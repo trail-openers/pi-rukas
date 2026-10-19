@@ -33,10 +33,7 @@ import { withUsage } from "./workflow-state-events-usage.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 // Re-export: moved into work-driver-lens-fix-commit.ts for the 500-line gate
 // (AGENTS.md §12) — importers (work-driver-adversarial.ts) keep their path.
-export {
-  commitLensFixChanges,
-  countLensFixEmptyResends,
-} from "./work-driver-lens-fix-commit.ts";
+export { commitLensFixChanges, countLensFixEmptyResends } from "./work-driver-lens-fix-commit.ts";
 import { lensWorktree } from "./work-driver-lens-fix.ts";
 
 export async function runLens(
@@ -58,11 +55,7 @@ export async function runLens(
       reviewCapStartedAt: ps.reviewCapStartedAt ?? now,
     },
   };
-  next = appendEvent(next, {
-    kind: "step-started",
-    step: "lens-review",
-    at: now,
-  });
+  next = appendEvent(next, { kind: "step-started", step: "lens-review", at: now });
   // #1398 — a review that runs again after the PR was marked ready runs on a
   // DRAFT. The CI loop (`ci → develop → adversarial → commit-pr → lens-review`)`
   // and the lens-fix loop both reach this point with `prDraft.status ===
@@ -83,13 +76,7 @@ export async function runLens(
   const diffResult = await readAllMergedDiffs(ps.worktrees ?? {}, ctx.repoRoot, ps.branchName);
   if (!diffResult.ok) {
     trace(`work-driver: lens-review — diff unreadable: ${diffResult.reason}`);
-    next = {
-      ...next,
-      pipelineState: {
-        ...next.pipelineState,
-        lensDiffError: diffResult.reason,
-      },
-    };
+    next = { ...next, pipelineState: { ...next.pipelineState, lensDiffError: diffResult.reason } };
     return appendEvent(next, {
       kind: "cap-hit",
       at: Date.now(),
@@ -194,7 +181,7 @@ export async function runLens(
       processGroup: ctx.processGroup === true,
       signal: ctx.signal,
       ...cycleChildOpts(ctx),
-    }),
+    } satisfies NonNullable<Parameters<typeof judgePolicy>[1]>),
     docs,
     undefined,
     { repoRoot: ctx.repoRoot, issues: ctx.issues ?? [ctx.issue] },
@@ -225,7 +212,7 @@ export async function runLens(
       ...cycleChildOpts(ctx), // #1666
       childBoundMs: lensRoundChildBoundMs(next, Date.now()), // #1242 / #1564
       pr: ps.prNumber, // the disclosure goes to this cycle's PR, merged or not
-    });
+    } satisfies Parameters<typeof runLensReview>[0]);
     next = await recordResidualsPost(ctx, next, summary, round);
     // #1398 — the POSITIVE disclosure fact. `recordResidualsPost` only emits
     // when the PR post FAILED; nothing recorded a success, so the draft gate had
@@ -261,10 +248,7 @@ export async function runLens(
 
   // The head this round read, for the next round's delta (not on an incomplete review).
   if (fixDelta.head && summary.verdict !== "REVIEW_INCOMPLETE") {
-    next = {
-      ...next,
-      pipelineState: { ...next.pipelineState, lensReviewedHead: fixDelta.head },
-    };
+    next = { ...next, pipelineState: { ...next.pipelineState, lensReviewedHead: fixDelta.head } };
   }
 
   // #543 F5 — persist what the review actually observed. The lens
@@ -287,11 +271,7 @@ export async function runLens(
       ...next,
       pipelineState: {
         ...next.pipelineState,
-        lensReviewSummary: {
-          round,
-          verdict: summary.verdict,
-          lenses: lensVerdicts,
-        },
+        lensReviewSummary: { round, verdict: summary.verdict, lenses: lensVerdicts },
       },
     };
   }
@@ -321,17 +301,8 @@ export async function runLens(
   // code work is already done.
   if (summary.findings.length > 0) {
     const written = await writeFindings(
-      summary.findings.map((f) => ({
-        path: f.path,
-        title: f.title,
-        severity: f.severity,
-      })),
-      {
-        src: "pi-rukas",
-        issue: ctx.issue,
-        kind: "lens-finding",
-        cycle: String(round),
-      },
+      summary.findings.map((f) => ({ path: f.path, title: f.title, severity: f.severity })),
+      { src: "pi-rukas", issue: ctx.issue, kind: "lens-finding", cycle: String(round) },
       { cwd: ctx.repoRoot, timeoutMs: 8000 },
     );
     for (const w of written) {

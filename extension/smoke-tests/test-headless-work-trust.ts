@@ -28,6 +28,7 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DispatchHost } from "../src/async-jobs-lifecycle.ts";
 import registerChildGuards from "../src/child-guards.ts";
+import type { dispatchCore } from "../src/dispatch.ts";
 import { buildCapabilities, permissionsReport } from "../src/headless/capabilities.ts";
 import { applyChildPermissionEnv, planChildPermissions } from "../src/spawn-permission.ts";
 import type { DispatchResult } from "../src/types.ts";
@@ -134,9 +135,13 @@ function restoreEnv(): void {
 }
 
 // ── 2. The carrier: the cycle's dispatch wrapper stamps every child.
-async function recordedOpts(headless: boolean | undefined, callerOpts?: object): Promise<unknown> {
+type DispatchOpts = Parameters<typeof dispatchCore>[2];
+async function recordedOpts(
+  headless: boolean | undefined,
+  callerOpts: Partial<DispatchOpts> = {},
+): Promise<unknown> {
   const seen: unknown[] = [];
-  const core = (async (_h: unknown, _spec: unknown, opts: unknown) => {
+  const core: typeof dispatchCore = async (_h, _spec, opts) => {
     seen.push(opts);
     return {
       role: "developer",
@@ -145,7 +150,7 @@ async function recordedOpts(headless: boolean | undefined, callerOpts?: object):
       toolUses: [],
       ms: 0,
     } as DispatchResult;
-  }) as never;
+  };
   const ctx = {
     issue: 1666,
     repoRoot: "/nonexistent",
@@ -153,11 +158,7 @@ async function recordedOpts(headless: boolean | undefined, callerOpts?: object):
     headless,
   } as unknown as DriverContext;
   const cycle = enterCycle(ctx, core);
-  await cycle.dispatchFn(
-    {} as DispatchHost,
-    { role: "developer", prompt: "x" },
-    callerOpts as never,
-  );
+  await cycle.dispatchFn({} as DispatchHost, { role: "developer", prompt: "x" }, { ...callerOpts });
   return seen[0];
 }
 {

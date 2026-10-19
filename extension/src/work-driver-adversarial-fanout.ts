@@ -217,7 +217,7 @@ export async function fanOutAdversarial(
           processGroup: ctx.processGroup,
           // #1666 — a headless cycle's inner children run under trust, as interactive ones do.
           ...cycleChildOpts(ctx),
-        },
+        } satisfies Parameters<typeof runAdversarialLoop>[0],
         // Interactive runs have no cycle signal; spawn-level timeouts in
         // spawn.ts (per-role) bound the work there.
         ctx.signal ?? new AbortController().signal,

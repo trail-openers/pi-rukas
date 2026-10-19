@@ -32,14 +32,15 @@ const SRC_DIR = new URL("../src/", import.meta.url).pathname;
  * dispatch.ts holds three: the dispatchCore path (stamped) and the two PM-only
  * tools dispatch_specialist / dispatch_parallel, which are not cycle children.
  */
-export const REGISTRY: Record<string, { spawnCalls: number; stamp: string }> = {
-  "dispatch.ts": {
-    spawnCalls: 3,
-    stamp: "workCycleTrust: opts.workCycleTrust",
+/** The stamp each registered site carries, matched against its code lines (never comments). */
+export const REGISTRY: Record<string, { spawnCalls: number; stamp: RegExp }> = {
+  "dispatch.ts": { spawnCalls: 3, stamp: /^\s*workCycleTrust: opts\.workCycleTrust,$/m },
+  "adversarial-phase.ts": { spawnCalls: 1, stamp: /^\s*workCycleTrust,$/m },
+  "lens-review-child.ts": {
+    spawnCalls: 1,
+    stamp: /^\s*workCycleTrust: runOpts\.workCycleTrust,$/m,
   },
-  "adversarial-phase.ts": { spawnCalls: 1, stamp: "workCycleTrust" },
-  "lens-review-child.ts": { spawnCalls: 1, stamp: "workCycleTrust" },
-  "work-driver-policy.ts": { spawnCalls: 1, stamp: "workCycleTrust" },
+  "work-driver-policy.ts": { spawnCalls: 1, stamp: /^\s*workCycleTrust,$/m },
 };
 
 /** Files allowed to name dispatchCore: its definition and the one cycle entry. */
@@ -54,6 +55,17 @@ function codeLines(text: string): string[] {
       return !(t.startsWith("*") || t.startsWith("//") || t.startsWith("/*"));
     })
     .map((line) => line.replace(/\s\/\/.*$/, ""));
+}
+
+/**
+ * True when a code line from `registerDispatchTools` on (the PM's dispatch_specialist /
+ * dispatch_parallel tools, which are not cycle children) carries the cycle stamp. A
+ * missing anchor counts as stamped: the audit fails closed rather than passing blind.
+ */
+export function pmToolsStamped(lines: readonly string[]): boolean {
+  const at = lines.findIndex((l) => /\bfunction registerDispatchTools\(/.test(l));
+  if (at < 0) return true;
+  return lines.slice(at).some((l) => /\bworkCycleTrust\b/.test(l));
 }
 
 /** Static and dynamic relative imports of a module, as normalised `.ts` paths. */
@@ -104,8 +116,13 @@ export function auditDispatchSites(
       violations.push(
         `${file}: ${spawnCalls} spawnSpecialist call(s), the registry says ${entry.spawnCalls}`,
       );
-    } else if (entry !== undefined && !text.includes(entry.stamp)) {
-      violations.push(`${file}: carries no stamp (expected "${entry.stamp}")`);
+    } else if (entry !== undefined && !entry.stamp.test(lines.join("\n"))) {
+      violations.push(`${file}: carries no stamp (expected ${entry.stamp})`);
+    }
+    if (file === "dispatch.ts" && pmToolsStamped(lines)) {
+      violations.push(
+        `${file}: the PM tools (dispatch_specialist, dispatch_parallel) carry the stamp`,
+      );
     }
     if (
       file !== "work-cycle-trust.ts" &&
@@ -196,6 +213,10 @@ const readSrc = (rel: string): string => readFileSync(path.join(SRC_DIR, rel), "
   ]) {
     assert(closure.has(must), `2: ${must} is reachable from work-driver.ts (the audit covers it)`);
   }
+  assert(
+    !pmToolsStamped(codeLines(closure.get("dispatch.ts") ?? "")),
+    "2: the PM dispatch tools (dispatch_specialist, dispatch_parallel) are not stamped",
+  );
   const violations = auditDispatchSites(closure, REGISTRY);
   assert(
     violations.length === 0,
@@ -216,8 +237,16 @@ const readSrc = (rel: string): string => readFileSync(path.join(SRC_DIR, rel), "
     ],
     ["work-driver-hand.ts", "const o = {\n  workCycleTrust: ctx.headless === true,\n};\n"],
     ["lens-review-child.ts", 'await spawnSpecialist({ role: "x" }, {}); // workCycleTrust\n'],
+    [
+      "dispatch.ts",
+      "export function registerDispatchTools(pi) {\n  spawnSpecialist(spec, {\n    workCycleTrust: opts.workCycleTrust,\n  });\n}\n",
+    ],
   ]);
   const violations = auditDispatchSites(bad, REGISTRY);
+  assert(
+    violations.some((v) => v.startsWith("dispatch.ts") && v.includes("PM tools")),
+    "3: a cycle stamp on a PM dispatch tool is caught",
+  );
   assert(
     violations.some((v) => v.startsWith("work-driver-new.ts")),
     "3: an unregistered spawn is caught",

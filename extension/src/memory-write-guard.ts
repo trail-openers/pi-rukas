@@ -2,8 +2,8 @@
  * memory-write-guard — the mode-independent `tool_call` hook that refuses a
  * destructive vipune write inside a spawned child (#1666).
  *
- * `vipune update <id> -t "…"` replaces a row's content in place (see
- * bash-pattern-wildcard.ts for the measurement). The allowlist cannot express
+ * `vipune update <id> -t "…"` replaces a row's content in place, with no lineage and no undo (the
+ * id survives, so anything that cited the row now cites different text). The allowlist cannot express
  * "status yes, content no", and the verdict layer is not consulted by trust-mode
  * children, so before this hook a trust-mode /work child could rewrite a memory
  * row that the harness judges it against. The refusal therefore lives in the
@@ -13,7 +13,7 @@
  * This is a guardrail against accidental rewrites, not a security boundary: a
  * determined command can still reach the vipune binary some other way. It reads
  * the command as a shell would for the common shapes — quotes, env prefixes,
- * `env`/`command`/`exec` wrappers, `bash -c` / `eval` bodies, subshells, `$(…)`,
+ * `env` (incl. `-S`), `command`, `exec`, `nohup`, `sudo`, `timeout`, `xargs` wrappers, `bash -c` / `eval` bodies, subshells, `$(…)`,
  * backticks, and attached values (`-t"x"`, `-tx`, `--text=x`) — and checks every
  * simple command it finds, so a chained or nested `vipune update … -t` is refused
  * the same as a bare one.
@@ -26,9 +26,20 @@ import { trace } from "./trace.ts";
 /** How deep `bash -c` / `eval` bodies are followed before the guard gives up. */
 const MAX_DEPTH = 4;
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-const WRAPPERS = new Set(["env", "command", "exec"]);
-/** Wrapper options that consume the following word (`env -u NAME`, `exec -a NAME`). */
-const WRAPPER_ARG_OPTIONS = new Set(["-u", "-C", "-S", "-a"]);
+/** Process wrappers the guard sees through. `timeout` also takes one DURATION word. */
+const WRAPPERS = new Set(["env", "command", "exec", "nohup", "sudo", "timeout", "xargs"]);
+/** Wrapper options that consume the following word, per wrapper (`env -u NAME`, `sudo -u USER`). */
+const OPTION_ARGS = new Map<string, ReadonlySet<string>>([
+  ["env", new Set(["-u", "-C"])],
+  ["exec", new Set(["-a"])],
+  ["sudo", new Set(["-u", "-g", "-C", "-D", "-p", "-r", "-t", "-U"])],
+  ["timeout", new Set(["-s", "-k"])],
+  ["xargs", new Set(["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s"])],
+]);
+/** `env -S STRING`, `-SSTRING`, `--split-string STRING`, `--split-string=STRING`. */
+const ENV_SPLIT = /^(?:-S|--split-string=?)(.*)$/;
+/** Shell-quote one word, so it re-tokenises as the same word. */
+const quoteWord = (w: string): string => `'${w.replace(/'/g, "'\\''")}'`;
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 
 /**
@@ -122,24 +133,48 @@ function isTextFlag(w: string): boolean {
   return w.startsWith("-t") && !w.startsWith("--");
 }
 
-/** Strip `VAR=value` prefixes and `env`/`command`/`exec` wrappers, with their options. */
-function unwrap(argv: readonly string[]): string[] {
+/** What `unwrap` found: the command's words, or (for `env -S`) the payload and the words after it. */
+interface Unwrapped {
+  argv: string[];
+  split?: string[];
+}
+
+/** Strip `VAR=value` prefixes and the WRAPPERS, with their options. */
+function unwrap(argv: readonly string[]): Unwrapped {
   let rest = [...argv];
   for (;;) {
     if (rest.length > 0 && ASSIGNMENT.test(rest[0] ?? "")) {
       rest = rest.slice(1);
       continue;
     }
-    if (rest.length === 0 || !WRAPPERS.has(path.basename(rest[0] ?? ""))) return rest;
+    const wrapper = path.basename(rest[0] ?? "");
+    if (rest.length === 0 || !WRAPPERS.has(wrapper)) return { argv: rest };
     rest = rest.slice(1);
+    const argOptions = OPTION_ARGS.get(wrapper) ?? new Set<string>();
     while (rest.length > 0 && (rest[0]?.startsWith("-") || ASSIGNMENT.test(rest[0] ?? ""))) {
-      rest = rest.slice(WRAPPER_ARG_OPTIONS.has(rest[0] ?? "") ? 2 : 1);
+      const opt = rest[0] ?? "";
+      const split = wrapper === "env" ? ENV_SPLIT.exec(opt) : null;
+      if (split) {
+        // `-S STRING` takes the next word; `-SSTRING` carries its value inline.
+        const inline = split[1] ?? "";
+        const takesNext = inline === "";
+        const value = takesNext ? (rest[1] ?? "") : inline;
+        return { argv: [], split: [value, ...rest.slice(takesNext ? 2 : 1)] };
+      }
+      rest = rest.slice(argOptions.has(opt) ? 2 : 1);
     }
+    // `timeout DURATION COMMAND`: one positional word precedes the command.
+    if (wrapper === "timeout") rest = rest.slice(1);
   }
 }
 
 function isDestructiveArgv(words: readonly string[], depth: number): boolean {
-  const argv = unwrap(words);
+  const { argv, split } = unwrap(words);
+  if (split !== undefined) {
+    // `env -S` re-splits its payload as a command line; words after it are appended to that line.
+    const [payload = "", ...tail] = split;
+    return isDestructiveWrite([payload, ...tail.map(quoteWord)].join(" "), depth + 1);
+  }
   const head = path.basename(argv[0] ?? "");
   if (head === "eval") return isDestructiveWrite(argv.slice(1).join(" "), depth + 1);
   if (SHELLS.has(head)) {
