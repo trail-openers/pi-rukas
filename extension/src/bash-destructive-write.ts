@@ -35,12 +35,29 @@ const WRAPPERS = new Set([
   "exec",
   "nohup",
   "sudo",
+  "doas",
   "timeout",
+  "gtimeout",
+  "caffeinate",
+  "ionice",
   "xargs",
   "nice",
   "stdbuf",
   "time",
   "setsid",
+]);
+/** Shell reserved words that prefix a simple command (`do vipune …`, `{ vipune …; }`, `! vipune …`). */
+const SHELL_KEYWORDS = new Set([
+  "!",
+  "{",
+  "}",
+  "do",
+  "then",
+  "else",
+  "elif",
+  "if",
+  "while",
+  "until",
 ]);
 /**
  * Wrapper options that consume the following word, per wrapper (`env -u NAME`,
@@ -50,7 +67,11 @@ const OPTION_ARGS = new Map<string, ReadonlySet<string>>([
   ["env", new Set(["-u", "-C"])],
   ["exec", new Set(["-a"])],
   ["sudo", new Set(["-u", "-g", "-C", "-D", "-p", "-r", "-t", "-U"])],
+  ["doas", new Set(["-u", "-C"])],
   ["timeout", new Set(["-s", "-k"])],
+  ["gtimeout", new Set(["-s", "-k"])],
+  ["caffeinate", new Set(["-t", "-w"])],
+  ["ionice", new Set(["-c", "-n", "-p", "-P", "-u"])],
   ["xargs", new Set(["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s"])],
   ["nice", new Set(["-n"])],
   ["stdbuf", new Set(["-i", "-o", "-e"])],
@@ -113,6 +134,7 @@ export function simpleCommands(src: string): string[][] {
     }
     if (quote === '"') {
       if (ch === '"') quote = null;
+      else if (ch === "\\" && src[i + 1] === "\n") i++;
       else if (ch === "\\" && i + 1 < src.length) word += src[++i] ?? "";
       else word += ch;
       continue;
@@ -120,6 +142,11 @@ export function simpleCommands(src: string): string[][] {
     if (ch === "'" || ch === '"') {
       quote = ch;
       inWord = true;
+      continue;
+    }
+    // A backslash-newline is a line continuation: the shell removes both characters.
+    if (ch === "\\" && src[i + 1] === "\n") {
+      i++;
       continue;
     }
     if (ch === "\\" && i + 1 < src.length) {
@@ -163,7 +190,7 @@ interface Unwrapped {
 function unwrap(argv: readonly string[]): Unwrapped {
   let rest = [...argv];
   for (;;) {
-    if (rest.length > 0 && ASSIGNMENT.test(rest[0] ?? "")) {
+    if (rest.length > 0 && (ASSIGNMENT.test(rest[0] ?? "") || SHELL_KEYWORDS.has(rest[0] ?? ""))) {
       rest = rest.slice(1);
       continue;
     }
@@ -184,7 +211,7 @@ function unwrap(argv: readonly string[]): Unwrapped {
       rest = rest.slice(argOptions.has(opt) ? 2 : 1);
     }
     // `timeout DURATION COMMAND`: one positional word precedes the command.
-    if (wrapper === "timeout") rest = rest.slice(1);
+    if (wrapper === "timeout" || wrapper === "gtimeout") rest = rest.slice(1);
   }
 }
 
