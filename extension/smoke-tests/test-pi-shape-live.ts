@@ -59,6 +59,7 @@ import { readFileSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkToolResultShape } from "./lib/pi-toolresult-shape.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -78,7 +79,7 @@ type AnyEvent = Record<string, unknown>;
 // MUST stay in sync with the `name:` at each `pi.registerTool` site in
 // extension/src (index.ts registers the parent-session tools; the companion
 // extensions under extension/src — report_finding, report_policy,
-// report_facts, report_plan_item, report_research_claim — are separate
+// report_facts, report_plan_item, report_research_claim, report_workstream — separate
 // entrypoints loaded into child processes, not this parent child). The
 // canary at the end of this test fails if src registrations diverge from
 // this list.
@@ -339,7 +340,7 @@ assert(
     Object.keys(toolCallArgs as object).length > 0,
   "toolCall block has non-empty `arguments` object",
 );
-
+checkToolResultShape(assert, agentEnd, messageEnds, toolCallBlock?.id);
 // 3b. text block across all turns.
 const anyTextBlock = messageEnds
   .map(
@@ -457,7 +458,7 @@ const COMPANION_TOOLS = new Set([
   "report_policy",
   "report_facts",
   "report_plan_item",
-  "report_research_claim",
+  "report_research_claim", "report_workstream",
 ]);
 const expectedSet = new Set<string>([...EXPECTED_ROSTER, ...COMPANION_TOOLS]);
 const registeredSet = new Set(registered);

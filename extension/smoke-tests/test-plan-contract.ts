@@ -20,7 +20,6 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { runPlan } from "../src/work-driver-plan.ts";
 import {
   deriveContractEdges,
   detectPortReference,
@@ -29,11 +28,17 @@ import {
   symbolKey,
 } from "../src/work-driver-plan-contract.ts";
 import { mergeCoupledWorkstreams } from "../src/work-driver-plan-coupling.ts";
-import { parseWorkstreams } from "../src/work-driver-plan-workstreams.ts";
+import { runPlan } from "../src/work-driver-plan.ts";
 import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import { foldTwo } from "../src/workstream-fold.ts";
+import {
+  type PlanResultShape,
+  type WorkstreamArgs,
+  planResultFromCalls,
+  workstreamsOfCalls,
+} from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -49,42 +54,53 @@ process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
 delete process.env.PI_ENSEMBLE_PLAN_CONTRACT;
 
 // The #1297 plan, as the planner should have declared it.
-const PLAN_1297 = [
-  "## Workstreams",
-  "",
-  "### ws-1 — errorStop shape",
-  "- paths: extension/src/types.ts",
-  "- out-of-scope: extension/src/work-driver-failure-taxonomy.ts",
-  "- introduces: `errorStop.providerRepeats`",
-  "",
-  "### ws-2 — failure taxonomy",
-  "- paths: extension/src/work-driver-failure-taxonomy.ts",
-  "- introduces: isFinalProviderFault()",
-  "",
-  "### ws-3 — consumers",
-  "- paths: extension/src/work-driver-adversarial-reentry.ts, extension/src/work-driver-step-router.ts",
-  "- consumes: providerRepeats, isFinalProviderFault",
-  "",
-  "### ws-4 — producers",
-  "- paths: extension/src/adversarial-retry.ts, extension/src/adversarial-classify.ts",
-  "- consumes: errorStop.providerRepeats",
-  "",
-].join("\n");
+const PLAN_1297: WorkstreamArgs[] = [
+  {
+    id: "ws-1",
+    scope: "errorStop shape",
+    paths: ["extension/src/types.ts"],
+    outOfScope: ["extension/src/work-driver-failure-taxonomy.ts"],
+    introduces: ["`errorStop.providerRepeats`"],
+  },
+  {
+    id: "ws-2",
+    scope: "failure taxonomy",
+    paths: ["extension/src/work-driver-failure-taxonomy.ts"],
+    outOfScope: [],
+    introduces: ["isFinalProviderFault()"],
+  },
+  {
+    id: "ws-3",
+    scope: "consumers",
+    paths: [
+      "extension/src/work-driver-adversarial-reentry.ts",
+      "extension/src/work-driver-step-router.ts",
+    ],
+    outOfScope: [],
+    consumes: ["providerRepeats", "isFinalProviderFault"],
+  },
+  {
+    id: "ws-4",
+    scope: "producers",
+    paths: ["extension/src/adversarial-retry.ts", "extension/src/adversarial-classify.ts"],
+    outOfScope: [],
+    consumes: ["errorStop.providerRepeats"],
+  },
+];
 
-const DISJOINT = [
-  "## Workstreams",
-  "",
-  "### task-a — docs",
-  "- paths: docs/a.md",
-  "",
-  "### task-b — script",
-  "- paths: scripts/b.sh",
-  "",
-].join("\n");
+const DISJOINT: WorkstreamArgs[] = [
+  { id: "task-a", scope: "docs", paths: ["docs/a.md"], outOfScope: [] },
+  { id: "task-b", scope: "script", paths: ["scripts/b.sh"], outOfScope: [] },
+];
+
+/** The same plan with its contract lines removed (the pre-#1322 shape). */
+function withoutContract(calls: WorkstreamArgs[]): WorkstreamArgs[] {
+  return calls.map(({ introduces: _i, consumes: _c, ...rest }) => rest);
+}
 
 // ── parsing ─────────────────────────────────────────────────────────────
 {
-  const ws = parseWorkstreams(PLAN_1297);
+  const ws = workstreamsOfCalls(PLAN_1297);
   assert(
     JSON.stringify(ws["ws-1"]?.introduces) === JSON.stringify(["`errorStop.providerRepeats`"]),
     "parse: `introduces:` is read",
@@ -94,7 +110,7 @@ const DISJOINT = [
       JSON.stringify(["providerRepeats", "isFinalProviderFault"]),
     "parse: `consumes:` is read as a comma list",
   );
-  const plain = parseWorkstreams(DISJOINT);
+  const plain = workstreamsOfCalls(DISJOINT);
   assert(
     !("introduces" in (plain["task-a"] ?? {})) && !("consumes" in (plain["task-a"] ?? {})),
     "parse: a plan without contract lines carries no contract keys (pre-#1322 shape)",
@@ -130,7 +146,7 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
 
 // ── derived edges ───────────────────────────────────────────────────────
 {
-  const { workstreams, edges } = deriveContractEdges(parseWorkstreams(PLAN_1297));
+  const { workstreams, edges } = deriveContractEdges(workstreamsOfCalls(PLAN_1297));
   assert(edges.length === 3, `edges: 3 derived (got ${edges.length})`);
   assert(
     JSON.stringify([...(workstreams["ws-3"]?.dependsOn ?? [])].sort()) ===
@@ -141,26 +157,39 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
     JSON.stringify(workstreams["ws-4"]?.dependsOn) === JSON.stringify(["ws-1"]),
     "edges: the producer of the new field depends on the type change",
   );
-  const plain = parseWorkstreams(DISJOINT);
+  const plain = workstreamsOfCalls(DISJOINT);
   const none = deriveContractEdges(plain);
   assert(
     none.edges.length === 0 && JSON.stringify(none.workstreams) === JSON.stringify(plain),
     "edges: a plan with no contract is unchanged",
   );
   const self = deriveContractEdges({
-    a: { id: "a", scope: "a", paths: ["x"], outOfScope: [], introduces: ["s"], consumes: ["s"] },
+    a: {
+      id: "a",
+      scope: "a",
+      paths: ["x"],
+      outOfScope: [],
+      introduces: ["s"],
+      consumes: ["s"],
+    },
   });
   assert(self.edges.length === 0, "edges: a symbol a workstream introduces itself is no edge");
   const base = deriveContractEdges({
     a: { id: "a", scope: "a", paths: ["x"], outOfScope: [], introduces: ["s"] },
-    b: { id: "b", scope: "b", paths: ["y"], outOfScope: [], consumes: ["existingAtBase"] },
+    b: {
+      id: "b",
+      scope: "b",
+      paths: ["y"],
+      outOfScope: [],
+      consumes: ["existingAtBase"],
+    },
   });
   assert(base.edges.length === 0, "edges: a consumed symbol no sibling introduces is no edge");
 }
 
 // ── the #1297 shape through the coupling merge ──────────────────────────
 {
-  const merged = await mergeWithContract(parseWorkstreams(PLAN_1297), (w) =>
+  const merged = await mergeWithContract(workstreamsOfCalls(PLAN_1297), (w) =>
     mergeCoupledWorkstreams(w),
   );
   const ids = Object.keys(merged.workstreams);
@@ -174,16 +203,15 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
   );
   // Without the contract the same plan stays four parallel siblings — the
   // pre-#1322 failure, still what an undeclared plan gets.
-  const raw = await mergeWithContract(
-    parseWorkstreams(PLAN_1297.replace(/^- (introduces|consumes):.*$/gm, "")),
-    (w) => mergeCoupledWorkstreams(w),
+  const raw = await mergeWithContract(workstreamsOfCalls(withoutContract(PLAN_1297)), (w) =>
+    mergeCoupledWorkstreams(w),
   );
   assert(
     Object.keys(raw.workstreams).length === 4 && !raw.changed,
     "no contract: today's single pass, four workstreams",
   );
   process.env.PI_ENSEMBLE_PLAN_CONTRACT = "0";
-  const off = await mergeWithContract(parseWorkstreams(PLAN_1297), (w) =>
+  const off = await mergeWithContract(workstreamsOfCalls(PLAN_1297), (w) =>
     mergeCoupledWorkstreams(w),
   );
   assert(
@@ -195,20 +223,13 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
 
 // ── the #1297 shape written with type annotations still merges ─────────
 {
-  const typed = PLAN_1297.replace(
-    "- introduces: `errorStop.providerRepeats`",
-    "- introduces: `errorStop.providerRepeats?: number`",
-  )
-    .replace(
-      "- introduces: isFinalProviderFault()",
-      "- introduces: export function isFinalProviderFault",
-    )
-    .replace(
-      "- consumes: providerRepeats, isFinalProviderFault",
-      "- consumes: `providerRepeats`: number, isFinalProviderFault",
-    )
-    .replace("- consumes: errorStop.providerRepeats", "- consumes: providerRepeats: number");
-  const merged = await mergeWithContract(parseWorkstreams(typed), (w) =>
+  const typed: WorkstreamArgs[] = [
+    { ...PLAN_1297[0], introduces: ["`errorStop.providerRepeats?: number`"] },
+    { ...PLAN_1297[1], introduces: ["export function isFinalProviderFault"] },
+    { ...PLAN_1297[2], consumes: ["`providerRepeats`: number", "isFinalProviderFault"] },
+    { ...PLAN_1297[3], consumes: ["providerRepeats: number"] },
+  ];
+  const merged = await mergeWithContract(workstreamsOfCalls(typed), (w) =>
     mergeCoupledWorkstreams(w),
   );
   assert(
@@ -267,7 +288,7 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
       `port: no reference in "${body.slice(0, 50)}…"`,
     );
   }
-  const folded = foldPortPlan(parseWorkstreams(DISJOINT), "o/r#9");
+  const folded = foldPortPlan(workstreamsOfCalls(DISJOINT), "o/r#9");
   const ids = Object.keys(folded);
   assert(ids.length === 1 && ids[0] === "task-a", "port fold: one workstream (the first id)");
   assert(
@@ -275,7 +296,7 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
       true && folded["task-a"]?.paths.length === 2,
     "port fold: the scope is applying the change; every path kept",
   );
-  const same = parseWorkstreams(DISJOINT);
+  const same = workstreamsOfCalls(DISJOINT);
   assert(foldPortPlan(same, undefined) === same, "port fold: no reference → unchanged");
 }
 
@@ -285,19 +306,18 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
   assert(/ONE workstream is the default/.test(p), "prompt: one workstream is the default");
   assert(/Split reason:/.test(p), "prompt: each split needs a stated reason");
   assert(/PARTITION BY CONTRACT, NOT BY FILE/.test(p), "prompt: partition by contract");
-  assert(/`introduces: <identifiers>`/.test(p), "prompt: documents the introduces line");
-  assert(/`consumes: <identifiers>`/.test(p), "prompt: documents the consumes line");
+  assert(/`introduces`/.test(p), "prompt: documents the introduces field");
+  assert(/`consumes`/.test(p), "prompt: documents the consumes field");
   assert(/cherry-pick it/.test(p), "prompt: a known commit is planned as a port");
 }
 
 // ── runPlan end to end ──────────────────────────────────────────────────
 const fakePi = { sendUserMessage: () => undefined } as unknown as ExtensionAPI;
-function mkResult(text: string): DispatchResult {
+function mkResult(plan: PlanResultShape): DispatchResult {
   return {
     role: "explore",
     ok: true,
-    text,
-    toolUses: [],
+    ...plan,
     ms: 10,
     exitCode: 0,
     transcriptPath: "/tmp/stub-plan-contract-transcript.json",
@@ -307,12 +327,19 @@ function stateWithBody(dir: string, body: string): WorkState {
   const artifact = path.join(dir, "issue-body.txt");
   writeFileSync(artifact, body);
   const s0 = initialState(1322, 1_000_000);
-  return { ...s0, pipelineState: { ...s0.pipelineState, issueBodyArtifact: artifact } };
+  return {
+    ...s0,
+    pipelineState: { ...s0.pipelineState, issueBodyArtifact: artifact },
+  };
 }
 async function plan(
   body: string,
-  reply: string,
-): Promise<{ ws: Record<string, Workstream>; prompts: string[] }> {
+  reply: WorkstreamArgs[],
+): Promise<{
+  ws: Record<string, Workstream>;
+  prompts: string[];
+  reason?: string;
+}> {
   const dir = mkdtempSync(path.join(tmpdir(), "plan-contract-"));
   const prompts: string[] = [];
   try {
@@ -322,11 +349,15 @@ async function plan(
       issue: 1322,
       dispatchFn: async (_pi, spec) => {
         prompts.push(spec.prompt);
-        return mkResult(reply);
+        return mkResult(planResultFromCalls(reply));
       },
     };
     const next = await runPlan(ctx, stateWithBody(dir, body), 1_000_000);
-    return { ws: next.pipelineState.workstreams ?? {}, prompts };
+    return {
+      ws: next.pipelineState.workstreams ?? {},
+      prompts,
+      reason: next.pipelineState.planQuality?.reason,
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -355,13 +386,15 @@ async function plan(
   );
 }
 {
-  const r = await plan("Already fixed in janit/pi-rukas#81; port it upstream.", "No workstreams.");
-  const only = Object.values(r.ws);
+  // #1652 — a plan with no report_workstream call is no plan: one corrective,
+  // and an empty corrective parks. There is no synthetic `default` to fall back
+  // to, so the port scope the old fallback carried has nothing to attach to.
+  const r = await plan("Already fixed in janit/pi-rukas#81; port it upstream.", []);
+  assert(r.prompts.length === 2, "runPlan: a plan with no call gets exactly one corrective");
+  assert(Object.keys(r.ws).length === 0, "runPlan: an empty corrective parks with no workstreams");
   assert(
-    only.length === 1 &&
-      only[0]?.id === "default" &&
-      /^Port janit\/pi-rukas#81: /.test(only[0]?.scope ?? ""),
-    "runPlan: an empty plan on a port issue still gets the Port scope on the synthetic default",
+    r.reason === "plan-spec-mismatch",
+    "runPlan: the empty corrective parks as plan-spec-mismatch",
   );
 }
 

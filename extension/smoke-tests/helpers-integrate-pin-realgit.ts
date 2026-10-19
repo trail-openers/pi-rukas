@@ -14,6 +14,7 @@ import { appendEvent, initialState } from "../src/workflow-state.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { realExec } from "./lib/exec-fake.ts";
+import { type WorkstreamArgs, planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 /** The audit's state input: a completed ops:commit-pr dispatch + the branch fields. */
 export function auditStateFor(
@@ -91,12 +92,9 @@ export const mkResult = (o: Partial<DispatchResult> = {}): DispatchResult => ({
   ...o,
 });
 
-const PLAN_REPLY = `## Workstreams
-
-### task-a — edit the shared file
-- paths: shared.txt
-- out-of-scope: docs
-`;
+const PLAN_CALLS: WorkstreamArgs[] = [
+  { id: "task-a", scope: "edit the shared file", paths: ["shared.txt"], outOfScope: ["docs"] },
+];
 
 export function makeCtx(opts: {
   repo: string;
@@ -116,7 +114,7 @@ export function makeCtx(opts: {
   const dispatchFn: NonNullable<DriverContext["dispatchFn"]> = async (_pi, spec, dOpts) => {
     const label = dOpts?.label ?? spec.role;
     if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
-    if (label === "plan") return mkResult({ text: PLAN_REPLY });
+    if (label === "plan") return { ...mkResult(), ...planResultFromCalls(PLAN_CALLS) };
     if (label === "ops") {
       return mkResult({
         role: "ops",

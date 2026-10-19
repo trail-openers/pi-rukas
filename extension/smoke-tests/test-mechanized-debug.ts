@@ -1,6 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { DispatchResult } from "../src/types.ts";
+import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 async function main() {
   const dir = mkdtempSync(path.join(tmpdir(), "mech-debug-"));
@@ -30,7 +32,8 @@ async function main() {
       if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-994\n" };
       if (cmd === "git rev-parse HEAD" && o?.cwd && o.cwd.endsWith("-task-a"))
         return { stdout: "aaa111aaa111aaa111aaa111aaa111aaa111aa\n" };
-      if (cmd.startsWith("git rev-parse ")) return { stdout: "1111111111111111111111111111111111111111\n" };
+      if (cmd.startsWith("git rev-parse "))
+        return { stdout: "1111111111111111111111111111111111111111\n" };
       if (cmd.startsWith("git fetch origin")) return { stdout: "" };
       if (cmd.startsWith("git worktree add")) return { stdout: "" };
       if (cmd.startsWith("git worktree remove")) return { stdout: "" };
@@ -41,7 +44,8 @@ async function main() {
         if (cwd.endsWith("-task-a")) return { stdout: " M src/a.rs\n" };
         return { stdout: "" };
       }
-      if (cmd.startsWith("git rev-list --count 1111111111111111111111111111111111111111")) return { stdout: "1\n" };
+      if (cmd.startsWith("git rev-list --count 1111111111111111111111111111111111111111"))
+        return { stdout: "1\n" };
       if (cmd.startsWith("git cherry-pick")) return { stdout: "" };
       if (cmd.startsWith("git cat-file -p"))
         return { stdout: "tree head1deadbeefdeadbeefdeadbeefdeadbeef\nauthor T\n" };
@@ -65,7 +69,12 @@ async function main() {
       const label = dOpts?.label ?? spec.role;
       if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
       if (label === "plan")
-        return mkResult({ text: "## Workstreams\n### task-a\n- paths: src/a.rs" });
+        return {
+          ...mkResult(),
+          ...planResultFromCalls([
+            { id: "task-a", scope: "task-a", paths: ["src/a.rs"], outOfScope: [] },
+          ]),
+        };
       if (label === "ops")
         return mkResult({ text: `branch: feature/issue-994\n## Worktrees:\ntask-a: ${dir}/wta` });
       if (label.startsWith("developer")) return mkResult({ text: "done" });
@@ -92,6 +101,11 @@ async function main() {
     console.log("\n=== EVENTS ===");
     after?.eventLog.forEach((e) => console.log(`${e.kind}: ${e.step} (${e.role || "N/A"})`));
     console.log("\nprNumber:", after?.pipelineState.prNumber);
+    // #1652 — the plan's report_workstream call must reach the state, or this
+    // debug run is not exercising the mechanized path it is meant to.
+    if (!after?.pipelineState.workstreams?.["task-a"]) {
+      throw new Error("plan produced no task-a workstream from its report_workstream call");
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

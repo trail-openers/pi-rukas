@@ -79,7 +79,8 @@ export async function declaredPathsHaveSource(
   declaredPaths: string[],
   repoRoot: string,
 ): Promise<boolean> {
-  const TRAILING_PAREN = /\s*\([^()]*\)\s*$/;
+  // An annotation unless the parenthetical is a whole segment (`app/(group)`).
+  const TRAILING_PAREN = /(?<=[^/])\s*\([^()]*\)\s*$/;
   const normalised = declaredPaths
     .map((p) => p.trim().replace(TRAILING_PAREN, ""))
     .filter((p) => p.length > 0);

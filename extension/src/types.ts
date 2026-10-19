@@ -59,6 +59,14 @@ export interface DispatchResult {
   text: string;
   toolUses: unknown[];
   /**
+   * #1652 — the tool RESULTS the child's session recorded, keyed by
+   * `toolCallId`. `toolUses` is what the model asked for; this is what Pi
+   * accepted. A schema-refused or thrown call is an `isError` result, and a
+   * reader that counts calls without this counts refusals too. Absent when
+   * the replay carried no tool-result messages.
+   */
+  toolResults?: Array<{ toolCallId: string; toolName: string; isError: boolean; text: string }>;
+  /**
    * Tool calls counted live from the event stream, when the replay carried
    * none. A child killed mid-flight reports `toolUses: []` because
    * `agent_end.messages` holds only the last retry segment — but it may well

@@ -35,16 +35,11 @@
  *    `unmeasurable` and `no-diff` for the same reason), so a spec whose
  *    deliverables all lack paths is not checkable and is not rejected.
  *
- * 2. The multi-block branch of `planSpecMismatchReason` — which reads its
- *    `## Workstreams` count through `countMarkdownSections` (work-driver-plan-parse.ts,
- *    the ONE definition of that counter; an earlier draft of this module grew
- *    a second copy and the two drifted silently) — rejects a reply carrying
- *    more than one `##
- *    Workstreams` heading is REJECTED. Last-wins was considered and refused:
- *    the #818 reply's three blocks were emitted in no semantic order, so the
- *    "last" block is as likely to be fabricated as the first, and either
- *    pick is a guess the driver cannot defend. Silence is not permission
- *    (#378) and neither is a coin flip.
+ * 2. (#1652) The multi-block branch that read a markdown `## Workstreams`
+ *    count is gone: workstreams arrive as tool calls, so a reply can no longer
+ *    carry an ambiguous block. What the gate still refuses is a plan with no
+ *    accepted calls at all, which the plan step's corrective handles before
+ *    this gate runs.
  *
  * `normaliseDeclaredPath` runs on BOTH sides. Declared paths are prose from
  * a planner, not `git` output — `"src/a.ts (new)"`, `` "`src/a.ts`" ``,
@@ -70,9 +65,7 @@ import {
   splitDeliverablePaths,
   toAlternative,
 } from "./work-driver-deliverable-paths.ts";
-import { countMarkdownSections } from "./work-driver-plan-parse.ts";
 import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
-import { PLAN_SINGLE_BLOCK_RULE } from "./work-driver-prompts-plan.ts";
 
 /** The deliverable shape the gate reads (structural subset of SpecDeliverable). */
 export interface SpecCoverageDeliverable {
@@ -262,51 +255,36 @@ export function findUncoveredDeliverables(
   return { uncovered, checkedCount };
 }
 
-/** The two ways a plan reply can fail the plan-to-spec gate. */
-export type PlanSpecMismatchKind = "multiple-workstream-blocks" | "uncovered-deliverables";
+/**
+ * The ways a plan can fail the plan-to-spec gate. Zero report_workstream calls
+ * is NOT one of them (#1652): with no plan there is nothing to compare against
+ * the spec, so that outcome has its own verdict (`planNoWorkstreamCallsCap`).
+ */
+export type PlanSpecMismatchKind = "uncovered-deliverables";
 
 /** The verdict of the plan-to-spec gate. */
 export interface PlanSpecMismatch {
   kind: PlanSpecMismatchKind;
   /** Operator-facing detail: what was found, and what is missing. */
   evidence: string;
-  /** `multiple-workstream-blocks` only. */
-  blockCount?: number;
   /** `uncovered-deliverables` only. */
   uncovered?: UncoveredDeliverable[];
 }
 
 /**
- * The plan-to-spec gate, one pure synchronous call over (text, workstreams,
- * spec). Order is load-bearing: an ambiguous reply's workstreams are the
- * FIRST block's parsed result, so coverage over them says nothing — the
- * ambiguity is the actionable finding and it is reported first.
+ * The plan-to-spec gate, one pure synchronous call over (workstreams, spec).
  *
  * `undefined` means the gate is satisfied OR has nothing to judge (no spec,
- * no deliverables, no measurable deliverable). Silence from this function is
- * never evidence a plan is right; it is evidence it could not be judged, and
- * only the ambiguity branch and the uncovered branch assert anything.
+ * no deliverables, no measurable deliverable, no workstreams). Silence from
+ * this function is never evidence a plan is right; it is evidence it could not
+ * be judged. A plan with NO accepted workstream calls is not judged here at
+ * all: the plan step's zero-call corrective owns that case (#1652).
  */
 export function planSpecMismatchReason(
-  text: string,
   workstreams: Record<string, SpecCoverageWorkstream>,
   spec: SpecCoverageSpec | undefined,
 ): PlanSpecMismatch | undefined {
-  const blocks = countMarkdownSections(text, "Workstreams");
-  if (blocks > 1) {
-    return {
-      kind: "multiple-workstream-blocks",
-      blockCount: blocks,
-      evidence: `the plan reply contains ${blocks} '## Workstreams' sections; the driver read the first and would have built only that one. ${PLAN_SINGLE_BLOCK_RULE}`,
-    };
-  }
-  // A reply with NO `## Workstreams` section at all is not a plan the gate can
-  // judge: `runPlan` synthesises the single `default` workstream downstream and
-  // the cycle proceeds as a single-task build (long-standing, tested behaviour
-  // — test-work-driver-skeleton.ts). Rejecting it here would turn every
-  // no-block plan into a halt, and it would do so on evidence the planner never
-  // gave: an absent block is silence, and silence is not a wrong plan.
-  if (blocks === 0) return undefined;
+  if (Object.keys(workstreams).length === 0) return undefined;
   const { uncovered, checkedCount } = findUncoveredDeliverables(workstreams, spec);
   if (checkedCount === 0 || uncovered.length === 0) return undefined;
   return {

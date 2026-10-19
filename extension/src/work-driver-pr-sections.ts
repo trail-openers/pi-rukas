@@ -15,9 +15,11 @@
  * state file.
  */
 
+import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { verifyAttributionSectionOf } from "./work-driver-verify-select-render.ts";
 import type { VerifyAttributionRecord } from "./work-driver-verify-shared.ts";
+import { refusalRowMarkdown } from "./workflow-state-events-workstream.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 
 /**
@@ -30,6 +32,33 @@ export function carried(
   ps: { verifyAttribution?: VerifyAttributionRecord },
 ): string {
   return section + verifyAttributionSectionOf(ps.verifyAttribution);
+}
+
+/**
+ * #1652 — the planner's refused `report_workstream` calls, for the PR body. A
+ * refused call contributed nothing to the plan, and the plan went ahead on the
+ * calls it kept: a reviewer must be able to see what was dropped without
+ * opening the state file. Empty when no call was refused, so a clean plan's
+ * PR body is unchanged.
+ */
+export function planRefusalsSection(eventLog: readonly WorkEvent[]): string {
+  const events = eventLog.filter(
+    (e): e is Extract<WorkEvent, { kind: "workstream-calls-refused" }> =>
+      e.kind === "workstream-calls-refused",
+  );
+  if (events.length === 0) return "";
+  const lines = events.flatMap((e) =>
+    e.refused.map((r) => refusalRowMarkdown(e.label, r, neutraliseMarkdownField)),
+  );
+  const omitted = events.reduce((n, e) => n + (e.omitted ?? 0), 0);
+  if (omitted > 0) lines.push(`- ${omitted} more refused call(s) not listed`);
+  return [
+    "## Planner refused some workstream calls",
+    "",
+    "The plan went ahead on the workstream calls it accepted. These `report_workstream` calls were refused and contributed nothing to it:",
+    "",
+    ...lines,
+  ].join("\n");
 }
 
 /**
@@ -54,6 +83,11 @@ export function renderLensFindingsSection(eventLog: readonly WorkEvent[]): strin
     }
   }
   return "";
+}
+
+/** The PR-body sections derived from the event log, in body order (lens findings, then refusals). */
+export function eventLogSections(eventLog: readonly WorkEvent[]): string[] {
+  return [renderLensFindingsSection(eventLog), planRefusalsSection(eventLog)];
 }
 
 function buildSection(blob: string, verdict: string, blocked: boolean): string {

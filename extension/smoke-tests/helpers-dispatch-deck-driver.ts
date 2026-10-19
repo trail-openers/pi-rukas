@@ -1,5 +1,6 @@
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 // The branch-step exec stub: answers the git probes the mechanized branch
 // setup + merge gate need, in the shapes those call sites expect.
@@ -38,7 +39,7 @@ export function mkDispatchResult(
   opts?: { label?: string },
 ): DispatchResult {
   const label = opts?.label ?? spec.role;
-  return {
+  const base: DispatchResult = {
     role: spec.role,
     ok: true,
     text: spec.role === "explore" && label !== "plan" ? EXPLORE_REPLY : `mock ${spec.role} output`,
@@ -47,6 +48,14 @@ export function mkDispatchResult(
     exitCode: 0,
     transcriptPath: "/tmp/stub.json",
   };
+  // #1652 — the plan reports its one workstream through a report_workstream call.
+  if (label === "plan") {
+    return {
+      ...base,
+      ...planResultFromCalls([{ id: "default", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] }]),
+    };
+  }
+  return base;
 }
 
 export function mkCycleCtx(

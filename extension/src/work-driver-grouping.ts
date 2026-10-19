@@ -55,7 +55,7 @@ import { orderingDependencies } from "./work-queue-deps.ts";
  *     mode for the remainder (matches worktree cherry-pick ceiling from
  *     vipune `55fca4bf`).
  *
- * Output shape matches `parseWorkstreams`: `Record<groupId, {id, scope,
+ * Output shape matches the plan's workstream map: `Record<groupId, {id, scope,
  * paths, outOfScope, issues}>`. Each entry becomes one workstream
  * downstream — the rest of the driver iterates
  * `Object.keys(workstreams)` unchanged.

@@ -17,6 +17,12 @@ import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import { buildCompletionEvent, overrideEnvForKillCause } from "./work-driver-merged.ts";
+import {
+  PLAN_WORKSTREAM_EXTRA_ARGS,
+  type WorkstreamReport,
+  appendPlanDispatchOutcome,
+  workstreamCallsOf,
+} from "./work-driver-plan-calls.ts";
 import { withUsage } from "./workflow-state-events-usage.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
@@ -177,7 +183,7 @@ function planKillFailureEvent(
 /**
  * #754 — the one-shot corrective re-dispatch after a PRIMARY plan dispatch
  * killed at the step's own bound. A killed child has no structured output
- * (parseWorkstreams would return nothing), so the corrective is the recovery
+ * (its tool calls would be the killed child's, so none are read), so the corrective is the recovery
  * path. It carries the timeout steer — NOT correctivePlanSteer: a timeout
  * says nothing about decomposition, and steering a killed planner toward
  * MORE workstreams is the forced-split pressure that produced the wrong-work
@@ -194,12 +200,11 @@ export async function planTimeoutCorrective(
     | ((
         pi: DriverHost,
         spec: { role: string; prompt: string },
-        opts: { label: string; timeoutMs?: number },
+        opts: { label: string; timeoutMs?: number; extraArgs?: readonly string[] },
       ) => Promise<DispatchResult>),
   prompt: string,
   planKill: DispatchResult,
   workState: WorkState,
-  parseWorkstreams: (text: string) => Record<string, Workstream>,
   planCorrectivePrompt: (prompt: string, steer: string) => string,
   // #1167 round-4 — the same fold + coupling merge + unfence the primary plan
   // and the quality corrective run, supplied by the caller so this module does
@@ -212,7 +217,17 @@ export async function planTimeoutCorrective(
     raw: Record<string, Workstream>,
     state: WorkState,
   ) => Promise<Record<string, Workstream>>,
-): Promise<{ ok: boolean; state: WorkState; workstreams: Record<string, Workstream> }> {
+): Promise<{
+  ok: boolean;
+  state: WorkState;
+  workstreams: Record<string, Workstream>;
+  /**
+   * #1652 — the corrective's tool-call report. Undefined when the dispatch threw
+   * or was killed (a killed child's calls are ignored); present when it ran to a
+   * completion, even a failed one, so its refusals are on record.
+   */
+  report?: WorkstreamReport;
+}> {
   let state = workState;
   trace(
     `work-driver: plan dispatch killed (${planKill.killCause ?? "unknown cause"}, bound ${planKill.killBudgetMs}ms) — corrective re-dispatch (timeout steer)`,
@@ -222,7 +237,7 @@ export async function planTimeoutCorrective(
   const retry = await dispatch(
     pi,
     { role: "explore", prompt: correctivePrompt },
-    { label: "plan:corrective" },
+    { label: "plan:corrective", extraArgs: PLAN_WORKSTREAM_EXTRA_ARGS },
   ).catch(() => undefined);
   // #819 round-2 — a corrective that was KILLED (any structured cause) or
   // whose dispatch THREW must route like the PRIMARY's kill, not be judged as
@@ -254,15 +269,20 @@ export async function planTimeoutCorrective(
     });
     return { ok: false, state, workstreams: {} };
   }
-  {
-    state = appendEvent(
-      state,
-      await buildCompletionEvent(ctx, "plan", "explore", "plan:corrective", retry),
-    );
-    const reparsed = parseWorkstreams(retry.text ?? "");
-    const parsed = Object.keys(reparsed).length > 0 ? reparsed : ({} as typeof reparsed);
-    return { ok: true, state, workstreams: await normalise(parsed, state) };
-  }
+  // #1652 — refusals before the completion event: the completion is the tail.
+  // A corrective that failed without a kill (provider error, non-zero exit) is a
+  // failed dispatch: its completion is the tail, and it is NOT judged for zero
+  // calls — a crash read as "no calls" would park as a planner defect.
+  const report = workstreamCallsOf(retry);
+  const completion = await buildCompletionEvent(ctx, "plan", "explore", "plan:corrective", retry);
+  state = appendPlanDispatchOutcome(state, "plan:corrective", report, completion);
+  if (!retry.ok) return { ok: false, state, workstreams: {}, report };
+  return {
+    ok: true,
+    state,
+    workstreams: await normalise(report.workstreams, state),
+    report,
+  };
 }
 
 /**

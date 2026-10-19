@@ -20,6 +20,7 @@
 import { runPlan } from "../src/work-driver-plan.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -75,14 +76,14 @@ try {
   ].join("\n");
   // `paths` are declared so the quality gate stays quiet — the ONLY corrective
   // on this fixture is the kill-triggered one, which is the path under test.
-  const plan = [
-    "## Workstreams",
-    "",
-    "### default — the fix",
-    "- paths: extension/src/dispatch-core.ts",
-    "- out-of-scope: extension/src/dispatch.ts, docs/",
-    "",
-  ].join("\n");
+  const plan = planResultFromCalls([
+    {
+      id: "default",
+      scope: "the fix",
+      paths: ["extension/src/dispatch-core.ts"],
+      outOfScope: ["extension/src/dispatch.ts", "docs/"],
+    },
+  ]);
 
   const tmp = `${process.env.TMPDIR ?? "/tmp"}/plan-unfence-kill-${process.pid}.md`;
   await Bun.write(tmp, body);
@@ -111,8 +112,7 @@ try {
       return {
         role: "explore" as const,
         ok: true,
-        text: plan,
-        toolUses: [],
+        ...plan,
         ms: 1,
         exitCode: 0,
       };

@@ -40,26 +40,27 @@ export {
   planTimeoutCorrective,
   planTimeoutKill,
 } from "./work-driver-plan-timeout.ts";
-import type { PlanQualityReason } from "./workflow-state-schema.ts";
-import { type WorkState, appendEvent } from "./workflow-state.ts";
-
+import {
+  type WorkstreamReport,
+  noWorkstreamCallsEvidence,
+  unreadableWorkstreamCallsEvidence,
+  zeroAcceptedVerdictOf,
+} from "./work-driver-plan-calls.ts";
 import {
   type FenceContradiction,
   type PathCollision,
   findFenceContradictions,
   findPathCollisions,
   findTestSubjectSplits,
-  isPlainRepoRelativePath,
+  isPlannedRepoRelativePath,
 } from "./work-driver-plan-paths.ts";
 // #819 — the plan-to-spec gate (an adjacent pure function, NOT a new branch
 // in planQualityReason, which never sees the spec).
-import type {
-  PlanSpecMismatch,
-  SpecCoverageSpec,
-  SpecCoverageWorkstream,
-} from "./work-driver-plan-spec-coverage.ts";
-import { planSpecMismatchReason } from "./work-driver-plan-spec-coverage.ts";
+import type { PlanSpecMismatch } from "./work-driver-plan-spec-coverage.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
+import type { PlanVerdict } from "./workflow-state-events-caps.ts";
+import type { PlanQualityReason } from "./workflow-state-schema.ts";
+import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
  * #679 — the workstream shape the plan-quality rules inspect.
@@ -77,24 +78,6 @@ export function planQualityEnabled(): boolean {
   return v !== "0" && v !== "false";
 }
 
-/**
- * #819 — the plan-to-spec gate's verdict, shaped for `planQuality.reason`.
- *
- * Deliberately NOT a branch inside `planQualityReason`: that function is
- * called positionally as `(workstreams, findingsCount)` from four smoke
- * suites and never receives the spec, so threading a spec argument through it
- * would break every caller for no benefit — and it would let the new reason
- * reorder the existing eight, whose precedence is deliberate (a collision is a
- * fixable split; wrong work is not). This is the "adjacent pure function" the
- * issue names: pure over (reply text, workstreams, spec), no dispatch, no I/O.
- */
-export function planSpecMismatchPlanQualityReason(
-  text: string,
-  workstreams: Record<string, SpecCoverageWorkstream>,
-  spec: SpecCoverageSpec | undefined,
-): PlanSpecMismatch | undefined {
-  return planSpecMismatchReason(text, workstreams, spec);
-}
 /**
  * #819 — the halts both gate sites emit, factored out of `runPlan` so the
  * step handler stays inside its own budget. Same decision from two places: the
@@ -123,7 +106,61 @@ export function planSpecMismatchCap(
   mismatch: PlanSpecMismatch,
   whyNotReplanned: string,
 ): WorkState {
-  trace(`work-driver: plan to-spec gate — ${mismatch.kind}, halting before branch`);
+  return parkPlanSpecMismatch(
+    state,
+    mismatch.evidence,
+    whyNotReplanned,
+    mismatch.kind,
+    mismatch.kind,
+  );
+}
+
+/**
+ * #1652 — the plan dispatch made NO accepted report_workstream call (zero calls,
+ * or every call refused). Its own verdict, not a PlanSpecMismatch: there is no
+ * plan to compare against the spec. It parks on the same cap, because the
+ * operator's contract for zero calls is `plan-spec-mismatch` with that evidence.
+ */
+export function planNoWorkstreamCallsCap(
+  state: WorkState,
+  report: WorkstreamReport,
+  whyNotReplanned: string,
+): WorkState {
+  return parkPlanSpecMismatch(
+    state,
+    noWorkstreamCallsEvidence(report),
+    whyNotReplanned,
+    "no-workstream-calls",
+    zeroAcceptedVerdictOf(report),
+  );
+}
+
+/**
+ * #1652 — the plan dispatch made report_workstream calls whose tool results did
+ * not reach the driver. The plan is UNJUDGED, not wrong, so it parks on its own
+ * cap (`workstream-results-unreadable`) instead of a plan-spec verdict or a
+ * corrective. Nothing was written: the cap fires before the branch step.
+ */
+export function planResultsUnreadableCap(state: WorkState, report: WorkstreamReport): WorkState {
+  trace("work-driver: plan's report_workstream results unreadable — halting before branch");
+  return appendEvent(state, {
+    kind: "cap-hit",
+    at: Date.now(),
+    cap: "workstream-results-unreadable",
+    reviewRound: state.pipelineState.reviewRound,
+    nextStep: "handoff",
+    evidence: unreadableWorkstreamCallsEvidence(report).slice(0, 500),
+  });
+}
+
+function parkPlanSpecMismatch(
+  state: WorkState,
+  mismatchEvidence: string,
+  whyNotReplanned: string,
+  gate: string,
+  planVerdict: PlanVerdict,
+): WorkState {
+  trace(`work-driver: plan ${gate} gate — halting before branch`);
   // #819 round-3 — the truncation order is the reason this sentence is readable.
   // `${mismatch.evidence} — ${whyNotReplanned}`.slice(0, 500) clipped the
   // CONCATENATION, so on a wide spec (an uncovered-deliverables verdict lists
@@ -135,9 +172,9 @@ export function planSpecMismatchCap(
   const EVIDENCE_CAP = 500;
   const clause = ` — ${whyNotReplanned}`;
   const head =
-    mismatch.evidence.length > EVIDENCE_CAP - clause.length
-      ? `${mismatch.evidence.slice(0, Math.max(0, EVIDENCE_CAP - clause.length - 1))}…`
-      : mismatch.evidence;
+    mismatchEvidence.length > EVIDENCE_CAP - clause.length
+      ? `${mismatchEvidence.slice(0, Math.max(0, EVIDENCE_CAP - clause.length - 1))}…`
+      : mismatchEvidence;
   const evidence = `${head}${clause}`.slice(0, EVIDENCE_CAP);
   const withReason: WorkState = {
     ...state,
@@ -157,6 +194,7 @@ export function planSpecMismatchCap(
     kind: "cap-hit",
     at: Date.now(),
     cap: "plan-spec-mismatch",
+    planVerdict,
     reviewRound: state.pipelineState.reviewRound,
     nextStep: "handoff",
     evidence,
@@ -201,7 +239,7 @@ export function planQualityReason(
   if (
     ids.some((id) =>
       (workstreams[id]?.paths ?? []).some(
-        (p) => !isPlainRepoRelativePath(normaliseDeclaredPath(p) ?? p),
+        (p) => !isPlannedRepoRelativePath(normaliseDeclaredPath(p) ?? p),
       ),
     )
   )
