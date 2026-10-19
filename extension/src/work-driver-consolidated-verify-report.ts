@@ -56,16 +56,17 @@ export interface ConsolidatedVerifyReporting {
   timeoutKnob?: string;
   /** Only `repoRoot` is read. */
   ctx: { repoRoot: string };
-  worktrees: Record<string, string>;
   /**
-   * #1064 — OPTIONAL, and only trusted when present: the exact map the
-   * consolidated probe was built from (`stateWorktrees` on the gate's call).
-   * The N=1 clause turns a map VALUE into an operator-facing location, so it
-   * must come from the map that produced the checkout the probe verified — not
-   * from a caller's copy that may have been filtered or rebuilt. Absent → the
-   * `worktrees` argument is the source, as before.
+   * The one worktree map this reporter reads, for BOTH halves of the tree
+   * decision: the key set (which is the N the classifier is given and the N in
+   * the message) and the value the N=1 clause prints as the operator-facing
+   * location. One map, one traversal, one N — a caller cannot supply the ids
+   * from one object and the printed path from another, which is the
+   * disagreement #1064 exists to make impossible. The production caller passes
+   * `state.pipelineState.worktrees ?? {}`, the map the consolidated probe was
+   * itself built from (`buildConsolidatedVerifyOpts`'s `stateWorktrees`).
    */
-  probeWorktrees?: Record<string, string>;
+  worktrees: Record<string, string>;
   /**
    * #813 — the plan's workstreams, read for their declared `paths` only: the
    * no-fence conflict text says "likely coupled" when the failure names a
@@ -120,7 +121,6 @@ export function reportConsolidatedVerifyOutcome(
     timeoutKnob,
     ctx,
     worktrees,
-    probeWorktrees,
     workstreams,
     perWorktreeFailuresByWs,
     singlePerWs,
@@ -279,15 +279,14 @@ export function reportConsolidatedVerifyOutcome(
     // for the N=1 reasoning). The decision is made ONCE here and read by the
     // three sites below (this message, the timeout clause, the host-exhaustion
     // clause), so the `failures[]` entry and the handoff that renders it cannot
-    // name different trees for one failure. The map is the one the probe was
-    // actually built from (`probeWorktrees`), because the N=1 clause prints a map
-    // VALUE as the location the operator should go look at. `Object.values`
-    // rather than an indexed read: the value and the length come from one
-    // traversal, so the `undefined` the rule receives means only "this seam has
-    // no own tree to name".
-    const ownTreeSource = probeWorktrees ?? worktrees;
-    const [ownTree] = wsIds.length === 1 ? Object.values(ownTreeSource) : [];
-    const where = consolidatedRunWhere(wsIds.length, ownTree, ctx.repoRoot);
+    // name different trees for one failure — and the count and the printed path
+    // both come from the ONE map the probe was built from, so neither can be
+    // read from a map the other did not see. The value is read by KEY (the one
+    // id the classifier is given), not positionally: `worktrees[wsIds[0]]`
+    // names the same workstream `wsIds.length` was counted from, where
+    // `Object.values(…)[0]` would name whichever entry the map iterated first.
+    const ownTree = wsIds.length === 1 ? worktrees[wsIds[0] ?? ""] : undefined;
+    const where = consolidatedRunWhere(wsIds.length, ownTree);
     const treeClause = where.phrase;
     // A run KILLED at the bound never reached a verdict: its stream stops
     // wherever the kill landed, and classifying that reported a timeout as
@@ -322,7 +321,7 @@ export function reportConsolidatedVerifyOutcome(
               classifierInput,
               pidLimitSnapshot(),
             )
-          : consolidatedFailureMessage(verdict, cmd, ownTree, ctx.repoRoot, wsIds.length)) +
+          : consolidatedFailureMessage(verdict, cmd, ownTree, ctx.repoRoot, wsIds.length, where)) +
         logClause,
     );
     // #841 — thread the ACTUAL written log path back (the write's own

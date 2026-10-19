@@ -63,7 +63,11 @@ function starvedExec(starved: (cmd: string, cwd: string | undefined) => boolean)
 
 const root = mkdtempSync(path.join(tmpdir(), "pi-ens-fork-"));
 
-/** A single-workstream cycle (`default`) with one committed change. */
+/**
+ * A single-workstream cycle (`default`) with one committed change. Returns the
+ * worktree path resolved: it is the fixture's own map value, so neither caller
+ * re-derives it with a cast of its own.
+ */
 async function singleWorkstream(name: string, verifyCmd: string) {
   const f = await fixture(root, name, ["default"], { "lib.sh": "echo lib\n" });
   const wt = f.worktrees.default as string;
@@ -86,7 +90,7 @@ async function singleWorkstream(name: string, verifyCmd: string) {
     issue: 6,
     verifyExecFn: exec,
   });
-  return { f, s, ctx };
+  return { f, s, ctx, wt };
 }
 
 /** The cap the develop step records for a failed gate, and its renderings. */
@@ -145,9 +149,9 @@ try {
   // the smoke command die on the fork error on the consolidated tree.
   {
     const verifyCmd = "test -f feature.sh";
-    const { f, s, ctx } = await singleWorkstream("verify-cmd", verifyCmd);
-    // The one workstream's worktree, as the fixture built it (`wt-<id>`).
-    const wt = f.worktrees.default as string;
+    const { f, s, ctx, wt } = await singleWorkstream("verify-cmd", verifyCmd);
+    // `wt` is the one workstream's worktree, as the fixture built it (`wt-<id>`)
+    // — returned by the fixture helper so neither case casts `f.worktrees`.
     writeFileSync(path.join(f.repo, ".pi", "smoke-cmd"), "sh ./feature.sh\n");
     // The #1240 duplicate-run skip must be OFF for this case: the fixture is
     // N=1 with a green per-worktree verify, so the consolidated probe is

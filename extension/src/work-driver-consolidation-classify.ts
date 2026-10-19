@@ -43,7 +43,7 @@
  * on `trivialFix`.
  */
 
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 
 /** The three-way classification a consolidated-tree verify failure maps to. */
 export type ConsolidationClassification =
@@ -120,6 +120,25 @@ const IS_ASSERTION_LINE =
  */
 const LOOKS_LIKE_SECRET =
   /(api[_-]?key|access[_-]?token|bearer\s|password|passwd|secret[_-]?key)\s*[=:]\s*\S{8,}/i;
+
+/**
+ * The one place the CONSOLIDATED location is spelled. Read by
+ * `consolidatedRunWhere` below and by the tests that pin the wording, so the
+ * phrase has a single home rather than a literal at each site.
+ */
+export const CONSOLIDATED_WHERE = "on the CONSOLIDATED tree";
+
+/**
+ * A character that must not appear in a path the rule is willing to print. The
+ * clause reaches the operator through the handoff, whose recovery block puts
+ * recorded worktree paths into a ```bash fence unescaped
+ * (`work-driver-handoff-recovery-tree.ts`), and the map it comes from can be
+ * written by the ops-fallback parser (`parseWorktreesBlock`, whose only filter
+ * is `[^\s`]+` on an LLM reply plus a `path.resolve`). A path carrying a shell
+ * metacharacter or whitespace is not a location — it degrades to the CONSOLIDATED
+ * wording, the same way a relative or empty value already does.
+ */
+const UNSAFE_IN_PATH = /[\s"'`;$&|\\]/;
 
 /** #807 — a line that is neither an assertion nor usable evidence. */
 function isNonAssertionLine(line: string): boolean {
@@ -362,24 +381,65 @@ export function buildPerWorktreeFailuresByWs(
  * `atRepoRoot` is the structured half of the same decision: the CONSOLIDATED
  * branch is the only one that may point an operator at `repoRoot` (that is
  * where the probe checked the combination out), so the one site that wants the
- * `at <repoRoot>` suffix reads this flag instead of re-spelling the words.
+ * `at <repoRoot>` suffix reads this flag instead of re-spelling the words. The
+ * rule itself takes no path — it says only whether the suffix applies, and the
+ * caller composes `at ${repoRoot}` from the root it already holds.
+ *
+ * `ConsolidatedRunWhere` is the rule's return type, named so a consumer that
+ * forwards the decision (the commit-pr hang seam) types against the rule
+ * rather than hand-duplicating its shape.
  *
  * Label text only: the command, the classification, the `[classification]` /
  * `[verify-timeout]` / `[host-resource-exhaustion]` prefixes, cap selection
  * and the ok/notes outcome are untouched by this function.
  */
+export interface ConsolidatedRunWhere {
+  phrase: string;
+  atRepoRoot: boolean;
+}
+
 export function consolidatedRunWhere(
   workstreamCount: number,
   tree: string | undefined,
-  repoRoot: string,
-): { phrase: string; atRepoRoot: boolean } {
-  const usable = typeof tree === "string" && isAbsolute(tree);
+): ConsolidatedRunWhere {
+  // `tree` is declared `string | undefined`, but its callers read it out of
+  // `pipelineState.worktrees` — JSON from an operator-editable state file that
+  // `readState` casts without a shape check on this map (`claimWorktreePaths`
+  // in `work-driver-worktree-sweep-owners.ts` reads the same field as `unknown`
+  // for the same reason). The `typeof` half is therefore a real check against
+  // untrusted data, not a defence against a value the type already forbids.
+  //
+  // A bare repository root is not a workstream's tree either: the develop gate
+  // seeds `{ default: ctx.repoRoot }` when the state map is empty (a cycle that
+  // never created a worktree), and naming the operator's own checkout as "the
+  // tree that failed" is the mis-diagnosis #1064 exists to remove. A root — a
+  // drive root or the parent of one, the shape `path.dirname` reveals for `/`
+  // and `/Users/me/app` — degrades to the CONSOLIDATED wording, the honest
+  // claim for a probe that ran in no workstream tree. A worktree always sits
+  // one level deeper, so it never matches.
+  const usable =
+    typeof tree === "string" &&
+    tree.length > 0 &&
+    isAbsolute(tree) &&
+    !atOrAboveCheckoutRoot(tree) &&
+    !UNSAFE_IN_PATH.test(tree);
   if (workstreamCount > 1 || !usable) return { phrase: CONSOLIDATED_WHERE, atRepoRoot: true };
   return { phrase: `in ${tree}`, atRepoRoot: false };
 }
 
-/** The one place the CONSOLIDATED location is spelled. */
-const CONSOLIDATED_WHERE = "on the CONSOLIDATED tree";
+/**
+ * True when `tree` is a filesystem root or the parent of one — the shape of a
+ * repository checkout rather than a worktree under it. Keeps the rule from
+ * naming the operator's own checkout as a failed workstream tree without taking
+ * `repoRoot` as a parameter (the rule decides whether the suffix applies; the
+ * caller owns the root it composes).
+ */
+function atOrAboveCheckoutRoot(tree: string): boolean {
+  const dir = dirname(tree);
+  // `[^/]` rather than a character class with an escaped backslash: a Windows
+  // drive root (`C:\`) is a parent of one, and the class stays readable.
+  return dir === tree || dir === "/" || /^[A-Za-z]:[^/]{0,2}$/.test(dir);
+}
 
 /**
  * The failure message for the handoff. Names (a) the SPECIFIC failing
@@ -388,17 +448,23 @@ const CONSOLIDATED_WHERE = "on the CONSOLIDATED tree";
  * tree fails verify" / "each workstream passed alone" text.
  *
  * #1064 — the tree clause comes from `consolidatedRunWhere`. `workstreamCount`
- * is the caller's N (the reporter and the commit-pr seam both already have it),
- * NOT `verdict.workstreamIds.length`: the classifier slices that list per
- * classification, so reading the decision variable from the verdict instead
- * would let the three label sites of one failure decide from two sources.
+ * is REQUIRED and is the caller's N (the reporter and the commit-pr seam both
+ * already have it), NOT `verdict.workstreamIds.length`: the classifier slices
+ * that list per classification, so a default reading the count off the verdict
+ * would let the three label sites of one failure decide from two sources. An
+ * omitted count is a compile error rather than a silent re-splice.
+ *
+ * `where` is the caller's already-decided clause (the reporter computes it once
+ * and reads it for all three sites of one failure); absent, the message composes
+ * it from the rule with the same count.
  */
 export function consolidatedFailureMessage(
   verdict: ConsolidationFailureVerdict,
   cmd: string,
   ownTree: string | undefined,
   repoRoot: string,
-  workstreamCount = verdict.workstreamIds.length,
+  workstreamCount: number,
+  where?: ConsolidatedRunWhere,
 ): string {
   const ids = verdict.workstreamIds.join(" + ");
   const which =
@@ -407,7 +473,7 @@ export function consolidatedFailureMessage(
       : `workstream combination ${ids}`;
   // #1064 — the tree clause comes from the one rule, so this message and the
   // sibling clauses of the same failure cannot name different trees.
-  const { phrase } = consolidatedRunWhere(workstreamCount, ownTree, repoRoot);
+  const { phrase } = where ?? consolidatedRunWhere(workstreamCount, ownTree);
   return (
     `[${verdict.classification}] verify command \`${cmd}\` failed ${phrase} — ` +
     `specific assertion: ${verdict.assertion || "(no assertion parsed)"} — ` +

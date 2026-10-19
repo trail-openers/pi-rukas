@@ -320,7 +320,7 @@ export async function runCommitPrConsolidatedVerify(
     // a single workstream exactly as for several. Passing `undefined` (rather
     // than a count-dependent tree) is therefore the seam's answer, not a
     // placeholder, and the rule still owns the wording.
-    const treeClause = consolidatedRunWhere(opts.workstreamCount, undefined, opts.repoRoot);
+    const treeClause = consolidatedRunWhere(opts.workstreamCount, undefined);
     // #1324 — a killed run's stream stops wherever the kill landed: report
     // the bound, never a classification of the code.
     if (timedOut) {

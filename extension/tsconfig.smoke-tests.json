@@ -34,6 +34,12 @@
     "smoke-tests/test-ledger-writer-stamp-raw.ts",
     "smoke-tests/test-merge-guard-hostile-stamp.ts",
     "smoke-tests/test-auto-delta-carry-provenance.ts",
-    "smoke-tests/test-work-driver-worktree-sweep-rules.ts"
+    "smoke-tests/test-work-driver-worktree-sweep-rules.ts",
+    // #1064 — the file that pins the consolidated tree-label rule, plus the
+    // harness whose call site the rule's signature changed. Both are pure
+    // (no Bun globals beyond console/process), so they land clean and the
+    // `satisfies` fixtures / cast discipline actually judge something.
+    "smoke-tests/test-consolidated-label.ts",
+    "smoke-tests/verify-loop-lib.ts"
   ]
 }

@@ -19,12 +19,16 @@
  * this seam has no workstream count, and the single rule for the
  * CONSOLIDATED-vs-own-tree wording lives with the count that decides it. The
  * seam's own probe always runs in the integration checkout, so in practice the
- * clause it receives is the CONSOLIDATED one at every N — the type stays
- * structured (not a free string) so a site cannot invent a clause the rule
- * would never have produced.
+ * clause it receives is the CONSOLIDATED one at every N — the type is the rule's
+ * own return type (not a hand-duplicated pair, not a free string) so a site
+ * cannot invent a clause, or an inconsistent pair, the rule would never have
+ * produced.
  */
 
-import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
+import type {
+  ConsolidatedRunWhere,
+  ConsolidationFailureVerdict,
+} from "./work-driver-consolidation-classify.ts";
 import type { HangProcess } from "./work-driver-gate-hang.ts";
 import type { CommitPrConsolidatedVerifyResult } from "./work-driver-integrate-verify-result.ts";
 import { verifyHangFailure } from "./work-driver-verify-develop-helpers.ts";
@@ -49,7 +53,7 @@ export function commitPrHangResult(opts: {
    * Composed by the caller via `consolidatedRunWhere`, which owns the workstream
    * count; `atRepoRoot` says whether the CONSOLIDATED location is `repoRoot`.
    */
-  where: { phrase: string; atRepoRoot: boolean };
+  where: ConsolidatedRunWhere;
   /** The killed run's combined stream, as captured at the kill. */
   output: string;
   /** The tree captured at the kill; absent when the executor said no pid. */

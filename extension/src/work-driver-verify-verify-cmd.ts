@@ -446,12 +446,12 @@ async function runVerifyCommandGateBody(
     timeoutMs: suiteTimeoutMs,
     timeoutKnob: suiteTimeoutKnob,
     ctx,
-    worktrees,
     // #1064 — the map the probe actually checked out (the same one
-    // `buildConsolidatedVerifyOpts` got). The N=1 clause prints a value from
-    // this map as the failure's location, so it is read from here rather than
-    // from `worktrees`, which a caller may filter or rebuild.
-    probeWorktrees: state.pipelineState.worktrees ?? {},
+    // `buildConsolidatedVerifyOpts` got as `stateWorktrees`). The reporter reads
+    // BOTH its key set and the value its N=1 clause prints as the failure's
+    // location, so both come from the tree the probe verified rather than from a
+    // caller's copy that may have been filtered or rebuilt.
+    worktrees: state.pipelineState.worktrees ?? {},
     // #813 — declared paths let the conflict text say "likely coupled".
     workstreams: state.pipelineState.workstreams,
     perWorktreeFailuresByWs,
