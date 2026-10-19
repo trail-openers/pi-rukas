@@ -14,11 +14,15 @@
  * developer is never told both to edit and not to touch the same file. The
  * "protected, no --allow-protected grant" annotation is NOT part of the entry;
  * the prompts render it from the deferral list next to the fence (`fenceLines`).
- * The protected-path gate's discard pass (`work-driver-verify-develop-protected`)
- * is the backstop for an edit made anyway.
+ * The protected-path gate's discard pass (`work-driver-discard-deferred.ts`,
+ * called by the develop step before it reads any worktree) is the backstop for an
+ * edit made anyway.
  *
  * The deferred list is persisted on pipelineState (`deferredProtected`) by the
- * plan tail; develop and the corrective round read it from there.
+ * plan tail; develop and the corrective round read it from there. The develop
+ * step reads it through `deferredForCycle`, the one place that knows the escape
+ * hatch (`PI_ENSEMBLE_PROTECTED_PATHS=0`) disables the whole mechanism — both
+ * consumers (the discard and the scope gate's fanout bound) take that one value.
  *
  * Idempotent: an entry already present (after `normaliseDeclaredPath`) is not
  * appended again, so a re-run of the plan tail adds nothing.
@@ -26,6 +30,7 @@
 
 import { neutraliseFenceEntry, quotedOutOfScope } from "./plan-workstream-schema.ts";
 import { splitDeliverablePaths } from "./work-driver-deliverable-paths.ts";
+import { protectedPathsEnabled } from "./work-driver-doctrine.ts";
 import { type SpecCoverageSpec, protectedDeferralsOf } from "./work-driver-plan-spec-coverage.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
@@ -77,6 +82,20 @@ export function withDeferredProtectedFence(
     out[id] = { ...ws, paths, outOfScope: [...ws.outOfScope, ...missing] };
   }
   return changed ? out : workstreams;
+}
+
+/**
+ * The deferred set a develop cycle acts on: the plan tail's persisted list, or
+ * nothing when the protected-path escape hatch is off. It lives here rather than
+ * at the call site because BOTH consumers must see one value — the discard
+ * (`work-driver-discard-deferred.ts`) and the scope gate's emptied-workstream
+ * bound (`work-driver-scope-fanout.ts`). Reading the hatch in one of them only
+ * left the other failing a cycle nothing was discarding for.
+ */
+export function deferredForCycle(
+  deferredProtected: readonly string[] | undefined,
+): readonly string[] {
+  return protectedPathsEnabled() ? (deferredProtected ?? []) : [];
 }
 
 /**

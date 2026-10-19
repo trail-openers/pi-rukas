@@ -60,6 +60,7 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-developer-commit-doctrine.ts",
   "smoke-tests/test-developer-doc-test-scope.ts",
   "smoke-tests/test-developer-push-guard.ts",
+  "smoke-tests/test-discard-hardening-1676.ts",
   "smoke-tests/test-discard-protected-1676.ts",
   "smoke-tests/test-dispatch-cwd-audit.ts",
   "smoke-tests/test-dispatch-deck-list-quiet.ts",
