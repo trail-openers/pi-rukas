@@ -144,7 +144,7 @@ export type VerifyCommandGateOpts = {
 };
 
 /**
- * #1667 \u2014 the gate's one exit for its run record. `failures` is what the
+ * #1667 — the gate's one exit for its run record. `failures` is what the
  * verify block appended, and it is set here, once, after the body returns:
  * every return inside the body (the early per-worktree-only path included)
  * leaves the record to this line, so no path can forget it or set it early.

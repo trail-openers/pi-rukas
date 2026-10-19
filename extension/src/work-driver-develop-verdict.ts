@@ -12,6 +12,7 @@
  */
 
 import { recordCommentEvidence } from "./comment-evidence.ts";
+import { trace } from "./trace.ts";
 import { runMergeRetryFlow } from "./work-develop-fence-merge-retry.ts";
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import {
@@ -43,6 +44,13 @@ export interface DevelopVerdictInput {
   dispatch: Dispatch;
   /** The failure branch: the caller decides what a failed verify does next. */
   onVerifyFailed: (state: WorkState, gate: DevelopGate) => Promise<WorkState>;
+  /**
+   * #1667 — set by the corrective round's re-verify. The cycle's one corrective
+   * round is already spent, so the recovery paths that re-dispatch a developer
+   * (the fence merge-and-retry, the converge corrective re-dispatch) are skipped:
+   * a failing re-verify goes to `onVerifyFailed`, and a passing one is recorded.
+   */
+  afterCorrectiveRound?: true;
 }
 
 /** Record a develop verify verdict and route it (see the header). */
@@ -90,7 +98,7 @@ export async function recordDevelopVerdict(a: DevelopVerdictInput): Promise<Work
     gate.fenceViolations !== undefined &&
     siblingDeclaredViolators(gate.fenceViolations).length > 0 &&
     !gate.fenceViolations.some((f) => f.kind === "issue-fenced");
-  if (gate.ok === false && recoverableFence) {
+  if (gate.ok === false && recoverableFence && a.afterCorrectiveRound !== true) {
     // #849 — the gate's fence records are not yet on `pipelineState`
     // (the develop step writes them only on a failure path, after the
     // gate returns). Stash them so `recoverFenceViolations` (which reads
@@ -127,6 +135,11 @@ export async function recordDevelopVerdict(a: DevelopVerdictInput): Promise<Work
     // issue's stated ordering) — a diff that doesn't build never reaches
     // the completeness check. Skips silently when disabled, when there is
     // no normalised spec, or when the diff is unreadable.
+    if (a.afterCorrectiveRound === true) {
+      // #1667 — the converge corrective re-dispatch is a second developer round.
+      trace("work-driver: converge gate not re-run after the corrective develop round");
+      return next;
+    }
     return runConvergeGateHandler(ctx, next, dispatch);
   }
   return a.onVerifyFailed(next, gate);

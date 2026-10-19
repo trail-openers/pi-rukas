@@ -31,8 +31,11 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { DispatchResult } from "../src/types.ts";
 import { runDevelopTopological } from "../src/work-develop-topological.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
+import { appendDevelopVerifyFailure } from "../src/work-develop-verify-failure.ts";
+import type { CycleContext, DriverContext } from "../src/work-driver-context.ts";
 import { refreshVerdicts } from "../src/work-driver-corrective-round.ts";
+import type { DevelopGate } from "../src/work-driver-develop-verdict.ts";
+import { recordDevelopVerdict } from "../src/work-driver-develop-verdict.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { type WorkState, initialState, readState } from "../src/workflow-state.ts";
 import { realExec } from "./lib/exec-fake.ts";
@@ -354,6 +357,47 @@ if (process.getuid?.() !== 0) {
   assert(
     stillRed[0]?.ok === false && stillRed[0]?.reason === "still red",
     "refresh: a corrective pass that fails is recorded with its own reason",
+  );
+  const claimedPrior = [{ id: "a", ok: false, reason: "first pass", claimed: true as const }];
+  const kept = refreshVerdicts(claimedPrior, [{ id: "a", ok: true }]);
+  assert(
+    kept[0]?.claimed === true && kept[0]?.ok === true && kept[0]?.reason === undefined,
+    "refresh: the claimed field survives a corrective refresh and the prior reason is dropped",
+  );
+}
+
+// ── 9. a fence failure after the corrective round parks, no developer dispatch ──
+{
+  const state = initialState(ISSUE);
+  let dispatches = 0;
+  const dispatch = (async () => {
+    dispatches += 1;
+    throw new Error("no developer dispatch expected after the corrective round");
+  }) as unknown as NonNullable<DriverContext["dispatchFn"]>;
+  // A sibling-declared fence violation: the first-pass recovery would merge and re-dispatch.
+  const gate = {
+    ok: false,
+    failures: ["fence: workstream a touched shared.ts, declared by workstream b"],
+    fenceViolations: [
+      { kind: "sibling-declared", workstreamId: "a", declaredById: "b", file: "shared.ts" },
+    ],
+  } as unknown as DevelopGate;
+  const after = await recordDevelopVerdict({
+    ctx: {} as unknown as CycleContext,
+    state,
+    stateRef: { current: state },
+    ids: ["a"],
+    verdicts: [{ id: "a", ok: true }],
+    gate,
+    execFn: realExec,
+    dispatch,
+    afterCorrectiveRound: true,
+    onVerifyFailed: (s, g) => appendDevelopVerifyFailure(s, g),
+  });
+  assert(dispatches === 0, `after round: no developer is dispatched (got ${dispatches})`);
+  assert(
+    lastCap(after) === "verify-failed:develop",
+    `after round: a fence failure parks at verify-failed:develop (got ${lastCap(after)})`,
   );
 }
 

@@ -17,7 +17,8 @@
  *     counts it from the log (no second round);
  *   - every corrective developer runs to completion; one failure, rejection or
  *     timeout parks at verify-failed:develop with no re-verify;
- *   - a second failing verify parks exactly as a first one does today.
+ *   - a second failing verify parks exactly as a first one does today, and it
+ *     dispatches no developer of its own (the round is the cycle's only one).
  *
  * Reuses the fix-pass shape (work-driver-adversarial-fix.ts): same worktrees,
  * same dispatch bound, same gates, findings in the prompt. It does NOT go
@@ -66,6 +67,22 @@ interface RoundInputs {
   execFn: ExecFn;
   dispatch: Dispatch;
 }
+
+/**
+ * One corrective developer's settled result. Every variant carries the
+ * workstream id, so the fan-in never has to recover it from the position of
+ * the result in the list.
+ */
+type RoundSettled =
+  | {
+      kind: "done";
+      id: string;
+      completion: Awaited<ReturnType<typeof buildCompletionEvent>>;
+      verdict: Awaited<ReturnType<typeof classifyDevelopPass>>;
+      ms: number;
+    }
+  | { kind: "unread"; id: string; message: string }
+  | { kind: "threw"; id: string; label: string; message: string };
 
 /**
  * What a failed develop verify does, in order: the #1323 sibling-symbol merge
@@ -123,13 +140,14 @@ async function runCorrectiveRound(
 ): Promise<{ state: WorkState; verdicts: DevelopVerdict[]; failure?: string }> {
   const { ctx, decision, ids } = a;
   const at = Date.now();
+  const command = oneLine(decision.command);
   const rounds: WorkEvent[] = decision.targets.map((t) => ({
     kind: "corrective-round",
     at,
     step: "develop",
     workstreamId: t.id,
     attempt: 1,
-    command: decision.command,
+    command,
     evidenceLines: t.lines.map(oneLine),
   }));
   const withRounds = appendEvent(
@@ -151,37 +169,45 @@ async function runCorrectiveRound(
   const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
   const issues = activeIssuesOf(a.state);
   const ps = a.state.pipelineState;
-  const settled = await Promise.allSettled(
-    decision.targets.map(async (t) => {
+  const settled: RoundSettled[] = await Promise.all(
+    decision.targets.map(async (t): Promise<RoundSettled> => {
       const devLabel = ids.length > 1 ? `developer[${t.id}]` : "developer";
       const ws: Workstreams[string] | undefined = a.workstreams[t.id];
       const startedAt = Date.now();
-      const res = await a.dispatch(
-        ctx.host,
-        {
-          role: "developer",
-          prompt: correctiveDevelopPrompt({
-            issues,
-            scratchDirAbs: scratchAbs,
-            workstreamId: t.id,
-            parallel: ids.length > 1 && t.id !== "default",
-            scope: ws?.scope,
-            paths: ws?.paths ?? [],
-            command: decision.command,
-            lines: t.lines,
-          }),
-          cwd: t.cwd,
-        },
-        {
-          label: devLabel,
-          childBoundMs: developChildBoundMs(),
-          deck: {
-            ...driverDeckOpts(ctx.issue, "develop", ids.length > 1 ? t.id : "default"),
-            label: devLabel,
+      let res: Awaited<ReturnType<Dispatch>>;
+      try {
+        res = await a.dispatch(
+          ctx.host,
+          {
+            role: "developer",
+            prompt: correctiveDevelopPrompt({
+              issues,
+              scratchDirAbs: scratchAbs,
+              workstreamId: t.id,
+              parallel: ids.length > 1 && t.id !== "default",
+              scope: ws?.scope,
+              paths: ws?.paths ?? [],
+              command,
+              lines: t.lines,
+            }),
+            cwd: t.cwd,
           },
-          writeFence: { root: t.cwd, repo: ctx.repoRoot, scratch: scratchAbs },
-        },
-      );
+          {
+            label: devLabel,
+            childBoundMs: developChildBoundMs(),
+            deck: {
+              ...driverDeckOpts(ctx.issue, "develop", ids.length > 1 ? t.id : "default"),
+              label: devLabel,
+            },
+            writeFence: { root: t.cwd, repo: ctx.repoRoot, scratch: scratchAbs },
+          },
+        );
+      } catch (err) {
+        // The full error goes to the trace; the event and the verify evidence carry its message.
+        const { message, full } = describeRejection(err);
+        trace(`work-driver: corrective developer ${t.id} threw: ${full}`);
+        return { kind: "threw", id: t.id, label: devLabel, message };
+      }
       // Post-processing runs after the developer has run. If it throws, the work
       // is still in the worktree and the failure is named in the verify evidence;
       // no completion event is written for a pass that could not be read.
@@ -195,13 +221,13 @@ async function runCorrectiveRound(
           execFn: a.execFn,
           result: res,
         });
-        return { kind: "done" as const, t, completion, verdict, ms: Date.now() - startedAt };
+        return { kind: "done", id: t.id, completion, verdict, ms: Date.now() - startedAt };
       } catch (err) {
         const { message, full } = describeRejection(err);
         trace(
           `work-driver: corrective developer ${t.id} finished but its result was not read: ${full}`,
         );
-        return { kind: "unread" as const, id: t.id, message };
+        return { kind: "unread", id: t.id, message };
       }
     }),
   );
@@ -210,46 +236,42 @@ async function runCorrectiveRound(
   const failures: string[] = [];
   // The corrective passes' verdicts, for the workstreams that completed a pass.
   const corrected: Array<{ id: string; ok: boolean; reason?: string }> = [];
-  for (const [i, s] of settled.entries()) {
-    const id = decision.targets[i]?.id ?? "?";
-    if (s.status === "rejected") {
-      // The full error goes to the trace; the event and the verify evidence carry its message.
-      const { message, full } = describeRejection(s.reason);
-      trace(`work-driver: corrective developer ${id} threw: ${full}`);
-      failures.push(`corrective developer ${id} threw: ${message}`);
+  for (const s of settled) {
+    if (s.kind === "threw") {
+      failures.push(`corrective developer ${s.id} threw: ${s.message}`);
       events.push({
         kind: "dispatch-failed",
         step: "develop",
         role: "developer",
         jobId: begun.jobId,
-        label: ids.length > 1 ? `developer[${id}]` : "developer",
+        label: s.label,
         ms: Date.now() - at,
         at: Date.now(),
         exitCode: null,
-        errorTail: `corrective developer ${id} threw: ${message}`.slice(0, 200),
+        errorTail: `corrective developer ${s.id} threw: ${s.message}`.slice(0, 200),
       });
       continue;
     }
-    if (s.value.kind === "unread") {
+    if (s.kind === "unread") {
       failures.push(
-        `corrective developer ${s.value.id} finished but its result was not read: ${s.value.message}`,
+        `corrective developer ${s.id} finished but its result was not read: ${s.message}`,
       );
       continue;
     }
-    events.push(s.value.completion);
-    corrected.push({ id, ok: s.value.verdict.ok, reason: s.value.verdict.reason });
-    if (s.value.verdict.crashed) {
+    events.push(s.completion);
+    corrected.push({ id: s.id, ok: s.verdict.ok, reason: s.verdict.reason });
+    if (s.verdict.crashed) {
       events.push(
         crashedBranchCompleted({
-          id,
-          ms: s.value.ms,
-          verdict: s.value.verdict,
+          id: s.id,
+          ms: s.ms,
+          verdict: s.verdict,
         }),
       );
     }
-    if (!s.value.verdict.ok) {
+    if (!s.verdict.ok) {
       failures.push(
-        `corrective developer ${id} did not complete: ${s.value.verdict.reason ?? "developer did not complete ok"}`,
+        `corrective developer ${s.id} did not complete: ${s.verdict.reason ?? "developer did not complete ok"}`,
       );
     }
   }
@@ -263,7 +285,9 @@ async function runCorrectiveRound(
 /**
  * The develop verdicts after a corrective round. A workstream the round
  * dispatched takes its corrective pass's verdict in place of its first-pass one;
- * the rest keep theirs. Order and ids are the first pass's.
+ * the rest keep theirs. Order and ids are the first pass's. Every field the
+ * corrective pass does not decide (`claimed`, ...) survives the refresh; the
+ * prior `reason` is dropped unless the corrective pass gives one.
  */
 export function refreshVerdicts(
   prior: DevelopVerdict[],
@@ -273,7 +297,8 @@ export function refreshVerdicts(
   return prior.map((v) => {
     const c = fresh.get(v.id);
     if (c === undefined) return v;
-    return { id: v.id, ok: c.ok, ...(c.reason !== undefined ? { reason: c.reason } : {}) };
+    const { reason: _priorReason, ...kept } = v;
+    return { ...kept, ok: c.ok, ...(c.reason !== undefined ? { reason: c.reason } : {}) };
   });
 }
 
@@ -299,7 +324,8 @@ function describeRejection(reason: unknown): { message: string; full: string } {
 
 /**
  * The develop verdict after the round: the full outcome gate again, then the
- * same recording as a first pass (recordDevelopVerdict). A failure here is the
+ * same recording as a first pass (recordDevelopVerdict) with `afterCorrectiveRound`
+ * set, so no recovery path re-dispatches a developer. A failure here is the
  * second and final verdict, and it parks as the first failure did.
  */
 async function reverifyAfterRound(a: RoundInputs & { state: WorkState }): Promise<WorkState> {
@@ -313,6 +339,7 @@ async function reverifyAfterRound(a: RoundInputs & { state: WorkState }): Promis
     gate,
     execFn: a.execFn,
     dispatch: a.dispatch,
+    afterCorrectiveRound: true,
     onVerifyFailed: async (s, g) => appendDevelopVerifyFailure(s, g),
   });
 }
