@@ -54,15 +54,14 @@ export function deferredProtectedPaths(
 /**
  * The workstreams map with each deferred path appended to the `outOfScope` of
  * every workstream that neither declares it in `paths` nor already fences it.
- * Returns the input object itself when nothing is appended, so a caller can
- * tell the no-op apart.
+ * `deferred` is the list the plan tail computed once (`deferredProtectedPaths`)
+ * and persists. Returns the input object itself when nothing is appended, so a
+ * caller can tell the no-op apart.
  */
 export function withDeferredProtectedFence(
   workstreams: Record<string, Workstream>,
-  spec: SpecCoverageSpec | undefined,
-  grant: readonly string[],
+  deferred: readonly string[],
 ): Record<string, Workstream> {
-  const deferred = deferredProtectedPaths(spec, grant);
   if (deferred.length === 0) return workstreams;
   let changed = false;
   const out: Record<string, Workstream> = {};
@@ -78,14 +77,6 @@ export function withDeferredProtectedFence(
     out[id] = { ...ws, outOfScope: [...ws.outOfScope, ...missing] };
   }
   return changed ? out : workstreams;
-}
-
-/** The state with its persisted deferred set replaced by `deferred`. */
-export function withPersistedDeferrals(state: WorkState, deferred: readonly string[]): WorkState {
-  return {
-    ...state,
-    pipelineState: { ...state.pipelineState, deferredProtected: [...deferred] },
-  };
 }
 
 /**
