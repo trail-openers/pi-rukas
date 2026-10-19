@@ -103,7 +103,8 @@ export type FenceLift = { workstreamId: string; file: string; line: string };
 /**
  * The develop gate's lift for an issue-fenced hit: `(workstreamId, file) → admitted`.
  * Each pair is judged on its own, so a second fenced file from the same workstream
- * still fails, and so does the same file on a sibling workstream. An admitted
+ * still fails. The caller admits only a file that exactly one workstream changed,
+ * so the same file fenced on a sibling workstream still fails. An admitted
  * precheck is pushed to `lifts` (the caller records it as a `fence-lifted` event).
  */
 export function scopeFenceLift(
@@ -132,15 +133,19 @@ export function scopeFenceLift(
       void shadowDecide("scope-fence", scopeFenceRequest(sections, file), {
         repoRoot,
         issues,
-      }).then((d) => {
-        if (!d?.model) return;
-        // The record carries the verbatim check; the path condition is not in it,
-        // so the trace states whether the quote names the path too.
-        const namesPath = (d.model.quote ?? "").includes(file);
-        trace(
-          `scope-fence (shadow, not acted on): ${workstreamId} ${file} — model ${d.model.answer}; quote ${namesPath ? "names" : "does not name"} the path; evidence ${d.evidence?.passed ? "verified" : "not verified"}`,
-        );
-      });
+      })
+        .then((d) => {
+          if (!d?.model) return;
+          // The record carries the verbatim check; the path condition is not in it,
+          // so the trace states whether the quote names the path too.
+          const namesPath = (d.model.quote ?? "").includes(file);
+          trace(
+            `scope-fence (shadow, not acted on): ${workstreamId} ${file} — model ${d.model.answer}; quote ${namesPath ? "names" : "does not name"} the path; evidence ${d.evidence?.passed ? "verified" : "not verified"}`,
+          );
+        })
+        .catch((err: unknown) => {
+          trace(`scope-fence (shadow) failed for ${workstreamId} ${file}: ${String(err)}`);
+        });
     }
     return false;
   };

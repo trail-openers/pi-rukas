@@ -202,6 +202,14 @@ export function runScopeFanoutGate(
     }
     dependencyOwnedBy.set(id, owned);
   }
+  // #1405 — how many workstreams changed each file. A fence lift is admitted
+  // only for a file ONE workstream touched: two workstreams fencing the same
+  // file is a consolidation collision (#444), and the precheck is per-body, not
+  // per-workstream, so it must not admit either side.
+  const changedBy = new Map<string, number>();
+  for (const changedPaths of changedPathsByWorkstream.values()) {
+    for (const file of changedPaths) changedBy.set(file, (changedBy.get(file) ?? 0) + 1);
+  }
   for (const [id, changedPaths] of changedPathsByWorkstream) {
     const workstream = workstreams[id];
     const declaredPaths = (workstream?.paths ?? [])
@@ -278,7 +286,7 @@ export function runScopeFanoutGate(
           declaredById: declaringId,
           kind: "sibling-declared",
         });
-      } else if (liftIssueFence?.(id, file) !== true) {
+      } else if (!((changedBy.get(file) ?? 0) === 1 && liftIssueFence?.(id, file) === true)) {
         // ISSUE-FENCED — the file is fenced (the workstream's own
         // `outOfScope`) but no sibling declared it: an issue-level
         // exclusion. Every N=1 fence hit is this. Still blocks; no
