@@ -31,70 +31,92 @@ import type { WorkState } from "./workflow-state.ts";
 
 /** The three issue-body sections a fence lift may be justified by. */
 export interface IssueSections {
-  testSurface: string;
-  references: string;
-  acceptanceCriteria: string;
+	testSurface: string;
+	references: string;
+	acceptanceCriteria: string;
 }
 
 export function issueSections(body: string): IssueSections {
-  return {
-    testSurface: sliceMarkdownSection(body, "Test surface") ?? "",
-    references: sliceMarkdownSection(body, "References") ?? "",
-    acceptanceCriteria: sliceMarkdownSection(body, "Acceptance criteria") ?? "",
-  };
+	return {
+		testSurface: sliceMarkdownSection(body, "Test surface") ?? "",
+		references: sliceMarkdownSection(body, "References") ?? "",
+		acceptanceCriteria: sliceMarkdownSection(body, "Acceptance criteria") ?? "",
+	};
 }
 
 function escapeRegExp(literal: string): string {
-  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+/**
+ * A bullet that forbids, or only asks to verify, the path it names. The test
+ * surface describes what to verify, so a path in such a bullet is not a request
+ * to change it (heuristic; the rule admits only bullets that read as a change).
+ */
+const NON_CHANGE =
+	/\b(must not|must still|should not|shall not|do not|don't|does not|not change|no change|unchanged|remain|still pass|must pass|existing behaviou?r)\b/i;
 
 /**
  * The flattened Test-surface bullet that names `file`, or undefined. The path is
  * a standalone token: `extension/x/test-a.ts` does not name `test-a.ts`, so the
  * characters around the match may not be path characters. A `./` spelling names
- * the same file and is stripped before the match.
+ * the same file and is stripped before the match. A bullet matching NON_CHANGE
+ * is skipped: naming a file to pin it is not asking for a change to it.
  */
-export function testSurfaceNames(testSurface: string, file: string): string | undefined {
-  const token = new RegExp(`(?<![\\w./-])${escapeRegExp(file)}(?![\\w./-])`);
-  for (const raw of testSurface.split("\n")) {
-    if (!/^\s*[-*]\s/.test(raw)) continue;
-    const line = flattenIssueText(raw).replace(/(^|[\s`(])\.\//g, "$1");
-    if (token.test(line)) return line.replace(/^[-*]\s+/, "");
-  }
-  return undefined;
+export function testSurfaceNames(
+	testSurface: string,
+	file: string,
+): string | undefined {
+	const token = new RegExp(`(?<![\\w./-])${escapeRegExp(file)}(?![\\w./-])`);
+	for (const raw of testSurface.split("\n")) {
+		if (!/^\s*[-*]\s/.test(raw)) continue;
+		const line = flattenIssueText(raw).replace(/(^|[\s`(])\.\//g, "$1");
+		if (token.test(line) && !NON_CHANGE.test(line))
+			return line.replace(/^[-*]\s+/, "");
+	}
+	return undefined;
 }
 
 /** The seam's question and state for one fenced path. Evidence is the three sections only. */
-export function scopeFenceRequest(sections: IssueSections, file: string): DecideRequest {
-  return {
-    question: `May this workstream change ${file}, given the issue body?`,
-    state: {
-      path: file,
-      fence: "issue-fenced",
-      testSurface: sections.testSurface,
-      references: sections.references,
-      acceptanceCriteria: sections.acceptanceCriteria,
-    },
-    rule: "false",
-    evidence: {
-      texts: [
-        { name: "Test surface", text: flattenIssueText(sections.testSurface) },
-        { name: "References", text: flattenIssueText(sections.references) },
-        { name: "Acceptance criteria", text: flattenIssueText(sections.acceptanceCriteria) },
-      ],
-    },
-  };
+export function scopeFenceRequest(
+	sections: IssueSections,
+	file: string,
+): DecideRequest {
+	return {
+		question: `May this workstream change ${file}, given the issue body?`,
+		state: {
+			path: file,
+			fence: "issue-fenced",
+			testSurface: sections.testSurface,
+			references: sections.references,
+			acceptanceCriteria: sections.acceptanceCriteria,
+		},
+		rule: "false",
+		evidence: {
+			texts: [
+				{ name: "Test surface", text: flattenIssueText(sections.testSurface) },
+				{ name: "References", text: flattenIssueText(sections.references) },
+				{
+					name: "Acceptance criteria",
+					text: flattenIssueText(sections.acceptanceCriteria),
+				},
+			],
+		},
+	};
 }
 
 /** The cached body, or undefined when there is none, or it is empty. */
-function readCachedBody(repoRoot: string, artifactPath: string | undefined): string | undefined {
-  if (!artifactPath) return undefined;
-  try {
-    const body = readFileSync(path.resolve(repoRoot, artifactPath), "utf8");
-    return body.trim() ? body : undefined;
-  } catch {
-    return undefined;
-  }
+function readCachedBody(
+	repoRoot: string,
+	artifactPath: string | undefined,
+): string | undefined {
+	if (!artifactPath) return undefined;
+	try {
+		const body = readFileSync(path.resolve(repoRoot, artifactPath), "utf8");
+		return body.trim() ? body : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** One admitted lift: the pair, and the Test-surface line that justified it. */
@@ -108,45 +130,49 @@ export type FenceLift = { workstreamId: string; file: string; line: string };
  * precheck is pushed to `lifts` (the caller records it as a `fence-lifted` event).
  */
 export function scopeFenceLift(
-  ctx: CycleContext,
-  state: WorkState,
-  lifts?: FenceLift[],
+	ctx: CycleContext,
+	state: WorkState,
+	lifts?: FenceLift[],
 ): (workstreamId: string, file: string) => boolean {
-  const repoRoot = ctx.repoRoot;
-  const issues = state.issues ?? [state.issue];
-  const body = readCachedBody(repoRoot, state.pipelineState.issueBodyArtifact);
-  const asked = new Set<string>();
-  return (workstreamId, file) => {
-    // A protected path is never lifted, by the rule or the model.
-    if (isProtectedPath(file)) return false;
-    if (body === undefined) return false;
-    const sections = issueSections(body);
-    const named = testSurfaceNames(sections.testSurface, file);
-    if (named !== undefined) {
-      lifts?.push({ workstreamId, file, line: named });
-      trace(`fence lifted by the issue's Test surface: ${workstreamId} may change ${file}`);
-      return true;
-    }
-    const key = `${workstreamId}\0${file}`;
-    if (!asked.has(key)) {
-      asked.add(key);
-      void shadowDecide("scope-fence", scopeFenceRequest(sections, file), {
-        repoRoot,
-        issues,
-      })
-        .then((d) => {
-          if (!d?.model) return;
-          // The record carries the verbatim check; the path condition is not in it,
-          // so the trace states whether the quote names the path too.
-          const namesPath = (d.model.quote ?? "").includes(file);
-          trace(
-            `scope-fence (shadow, not acted on): ${workstreamId} ${file} — model ${d.model.answer}; quote ${namesPath ? "names" : "does not name"} the path; evidence ${d.evidence?.passed ? "verified" : "not verified"}`,
-          );
-        })
-        .catch((err: unknown) => {
-          trace(`scope-fence (shadow) failed for ${workstreamId} ${file}: ${String(err)}`);
-        });
-    }
-    return false;
-  };
+	const repoRoot = ctx.repoRoot;
+	const issues = state.issues ?? [state.issue];
+	const body = readCachedBody(repoRoot, state.pipelineState.issueBodyArtifact);
+	const asked = new Set<string>();
+	return (workstreamId, file) => {
+		// A protected path is never lifted, by the rule or the model.
+		if (isProtectedPath(file)) return false;
+		if (body === undefined) return false;
+		const sections = issueSections(body);
+		const named = testSurfaceNames(sections.testSurface, file);
+		if (named !== undefined) {
+			lifts?.push({ workstreamId, file, line: named });
+			trace(
+				`fence lifted by the issue's Test surface: ${workstreamId} may change ${file}`,
+			);
+			return true;
+		}
+		const key = `${workstreamId}\0${file}`;
+		if (!asked.has(key)) {
+			asked.add(key);
+			void shadowDecide("scope-fence", scopeFenceRequest(sections, file), {
+				repoRoot,
+				issues,
+			})
+				.then((d) => {
+					if (!d?.model) return;
+					// The record carries the verbatim check; the path condition is not in it,
+					// so the trace states whether the quote names the path too.
+					const namesPath = (d.model.quote ?? "").includes(file);
+					trace(
+						`scope-fence (shadow, not acted on): ${workstreamId} ${file} — model ${d.model.answer}; quote ${namesPath ? "names" : "does not name"} the path; evidence ${d.evidence?.passed ? "verified" : "not verified"}`,
+					);
+				})
+				.catch((err: unknown) => {
+					trace(
+						`scope-fence (shadow) failed for ${workstreamId} ${file}: ${String(err)}`,
+					);
+				});
+		}
+		return false;
+	};
 }

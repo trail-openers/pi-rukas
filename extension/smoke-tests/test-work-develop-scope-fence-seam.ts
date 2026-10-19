@@ -149,6 +149,16 @@ async function main() {
     gate([TEXT_FLATTEN], a.lift).length === 0,
     "#1187 shape: the precheck admits the issue-fenced path",
   );
+  // A bullet that forbids or only pins the path does not admit it (round 2).
+  const negated = `## Test surface\n\n- \`${SCOPE_FANOUT}\` — must not change; pinned by the tests\n- \`${TEXT_FLATTEN}\` — existing behaviour must still pass\n`;
+  assert(
+    testSurfaceNames(issueSections(negated).testSurface, SCOPE_FANOUT) === undefined,
+    "a negated Test-surface bullet (must not change) does not admit the path",
+  );
+  assert(
+    testSurfaceNames(issueSections(negated).testSurface, TEXT_FLATTEN) === undefined,
+    "a verification-only Test-surface bullet (must still pass) does not admit the path",
+  );
   assert(
     gate([TEXT_FLATTEN]).length === 1 && /issue-fenced/.test(gate([TEXT_FLATTEN])[0] ?? ""),
     "baseline: the same hit without the lift is an issue-fenced failure",
