@@ -324,7 +324,9 @@ async function runDriverCase(
         if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
         // #1652 — one workstream claiming every path the reply names (the gate's concern).
         if (opts?.label?.startsWith("plan")) {
-          const paths = [...new Set([...reply.matchAll(/extension\/[^\s,\]]+/g)].map((m) => m[0]))];
+          // Stop at markdown punctuation (a captured trailing backtick is a malformed path).
+          const found = [...reply.matchAll(/extension\/[^\s,\]`'"()]+/g)].map((m) => m[0].replace(/\.$/, ""));
+          const paths = [...new Set(found)];
           return {
             ...mkResult({ role: specArg.role, text: "stub" }),
             ...planResultFromCalls([{ id: "default", scope: "the fix", paths, outOfScope: [] }]),
