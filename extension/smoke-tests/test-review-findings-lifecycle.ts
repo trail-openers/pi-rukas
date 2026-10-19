@@ -91,12 +91,12 @@ try {
   const headerDelta = deltaDiff("@@ -1,1 +1,1 @@\n-// header\n+// header two");
 
   /** One branch with `n` open rows created at `sha`, each citing its own line. */
-  async function seed(branch: string, sha: string, lines: number[]): Promise<void> {
+  async function seed(branch: string, sha: string, lines: number[], over: Partial<Finding> = {}) {
     const r = await recordFindingRunOutcome({
       cwd: repo,
       branch,
       headSha: sha,
-      findings: lines.map((n, i) => finding(`Finding ${i + 1} at line ${n}`, n)),
+      findings: lines.map((n, i) => finding(`Finding ${i + 1} at line ${n}`, n, over)),
       review: "full",
     });
     assert(r.ok === true, `seed: ${branch} records its rows`);
@@ -191,6 +191,78 @@ try {
       roundAfterRefusal.resolved.length === 0 &&
       roundAfterRefusal.carried.length === 1,
     `A3: the refused round left the store untouched — the row still stands (${JSON.stringify(roundAfterRefusal.ok ? { resolved: roundAfterRefusal.resolved.length, carried: roundAfterRefusal.carried.length } : roundAfterRefusal)})`,
+  );
+
+  // A4 — #1677: the delta's changed ranges cover the cited line, and that line's
+  // code changed since the row was seeded. The delta reviewed the line, so the
+  // row resolves (code-gone) and is not carried into the verdict.
+  const pre4 = headOf();
+  // A SECURITY row is never resolved by a delta (fate rule step 9), so this
+  // non-security row is the one that exercises the delta resolve.
+  await seed("feat-delta-fixed", pre4, [3], { lens: "simplicity" });
+  const lineThree = (text: string) => `${SRC.map((l, i) => (i === 2 ? text : l)).join("\n")}\n`;
+  writeFileSync(path.join(repo, "src", "a.ts"), lineThree("  const c = x + 3;"));
+  sh("git add -A");
+  sh("git commit -qm line-three-changed-again");
+  const d4 = headOf();
+  const roundA4 = await recordFindingRunOutcome({
+    cwd: repo,
+    branch: "feat-delta-fixed",
+    headSha: d4,
+    findings: [],
+    review: "delta",
+    deltaDiff: deltaDiff("@@ -3 +3 @@\n-  const ok = Math.max(1, x);\n+  const c = x + 3;"),
+  });
+  assert(
+    roundA4.ok === true &&
+      roundA4.resolved.length === 1 &&
+      roundA4.resolved[0]?.reason === "code-gone" &&
+      roundA4.carried.length === 0,
+    `A4: a delta that changed the cited line resolves it (code-gone) and does not carry it (${JSON.stringify(roundA4.ok ? { resolved: roundA4.resolved, carried: roundA4.carried.length } : roundA4)})`,
+  );
+
+  // A5 — the delta covers the cited line but its code still matches (the line was
+  // touched without a content change): the row is carried and still stands.
+  sh("git commit -q --allow-empty -m touched-without-change");
+  const d5 = headOf();
+  await seed("feat-still-matching", d4, [3]);
+  const roundA5 = await recordFindingRunOutcome({
+    cwd: repo,
+    branch: "feat-still-matching",
+    headSha: d5,
+    findings: [],
+    review: "delta",
+    deltaDiff: deltaDiff("@@ -3 +3 @@\n-  const c = x + 3;\n+  const c = x + 3;"),
+  });
+  assert(
+    roundA5.ok === true && roundA5.resolved.length === 0 && roundA5.carried.length === 1,
+    "A5: a still-matching row on a delta-covered line is carried, not resolved",
+  );
+
+  // A6 — CRITICAL is never resolved by a code change, delta or not (#1677 keeps it).
+  writeFileSync(path.join(repo, "src", "a.ts"), lineThree("  const e = x + 5;"));
+  sh("git add -A");
+  sh("git commit -qm line-three-changed-critical");
+  const d6 = headOf();
+  const seedA6 = await recordFindingRunOutcome({
+    cwd: repo,
+    branch: "feat-critical-delta",
+    headSha: d5,
+    findings: [{ ...finding("Critical at line 3", 3), severity: "CRITICAL" }],
+    review: "full",
+  });
+  assert(seedA6.ok === true, "A6: the CRITICAL row records its seed round");
+  const roundA6 = await recordFindingRunOutcome({
+    cwd: repo,
+    branch: "feat-critical-delta",
+    headSha: d6,
+    findings: [],
+    review: "delta",
+    deltaDiff: deltaDiff("@@ -3 +3 @@\n-  const c = x + 3;\n+  const e = x + 5;"),
+  });
+  assert(
+    roundA6.ok === true && roundA6.resolved.length === 0 && roundA6.carried.length === 1,
+    "A6: a CRITICAL row whose cited line changed on a delta is carried, not resolved",
   );
 
   // ── B. accepted-row eviction on a gone path ────────────────────────────────
@@ -418,6 +490,7 @@ try {
     carried?.suggestion === "await the call, or void it explicitly to say so",
     "D: the stored suggestion rides along too",
   );
+  assert(carried?.carried === true, "D: a carried row is marked carried in the round's report");
 } finally {
   fixture.cleanup();
 }
