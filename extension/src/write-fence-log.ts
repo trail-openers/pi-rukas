@@ -12,12 +12,18 @@
  * child could not log (it leaves an `unaccounted` marker), a log a restart could
  * not remove. The handoff then says the count is unknown, never a silent zero.
  *
+ * A child whose scratch dir is unset or relative cannot name the cycle's dir, so
+ * its marker goes to the repo's fallback dir (`unscratchedDir`), which the driver
+ * counts alongside the cycle's own. That dir is shared by every cycle in the repo
+ * and a restart does not clear it, so a marker there reads as unknown until it is
+ * removed by hand. That is the honest direction: the count is unknown, not zero.
+ *
  * The scratch dir is child-writable, so the count is advisory: a child can
  * delete its own log. It is evidence about the developer's instructions, not a
  * gate.
  */
 
-import { promises as fs, appendFileSync, writeFileSync } from "node:fs";
+import { promises as fs, appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { trace } from "./trace.ts";
 
@@ -37,28 +43,57 @@ export interface WriteFenceCount {
 
 const LOG_NAME = /^write-fence-\d+\.jsonl$/;
 const UNACCOUNTED_NAME = /^write-fence-unaccounted-[\w-]+$/;
+/** The fallback dir's name under the repo's `tmp/`, beside the cycle scratch dirs. */
+const UNSCRATCHED_DIR = "write-fence-unscratched";
 
-/** Mark the scratch dir as holding a refusal the count cannot see. Never throws. */
-function markUnaccounted(scratch: string, tag: string | number): void {
+/** The repo-level dir a refusal the cycle scratch dir cannot take is marked in (see the module doc). */
+export function unscratchedDir(repoRoot: string): string {
+  return path.join(repoRoot, "tmp", UNSCRATCHED_DIR);
+}
+
+/** Mark `dir` as holding a refusal the count cannot see. Returns false when the marker could not be written. Never throws. */
+function markUnaccounted(dir: string, tag: string | number): boolean {
   try {
     writeFileSync(
-      path.join(scratch, `write-fence-unaccounted-${tag}`),
+      path.join(dir, `write-fence-unaccounted-${tag}`),
       `${new Date().toISOString()}\n`,
     );
+    return true;
   } catch (err) {
-    trace(`write-fence: could not mark ${scratch} as unaccounted: ${(err as Error).message}`);
+    trace(`write-fence: could not mark ${dir} as unaccounted: ${(err as Error).message}`);
+    return false;
   }
 }
 
-/** Append one refusal to this child's log. Never throws: the refusal stands either way. */
+/** Mark a refusal the cycle scratch dir cannot take in the repo's fallback dir. Never throws. */
+function markUnscratched(repo: string | undefined): void {
+  if (!repo || !path.isAbsolute(repo)) {
+    trace("write-fence: no absolute repo dir either; the refusal is traced and not counted");
+    return;
+  }
+  const dir = unscratchedDir(repo);
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch (err) {
+    trace(`write-fence: could not create ${dir}: ${(err as Error).message}`);
+    return;
+  }
+  markUnaccounted(dir, process.pid);
+}
+
+/**
+ * Append one refusal to this child's log. Never throws: the refusal stands either way.
+ * A refusal the scratch dir cannot take is marked unaccounted in the repo's fallback
+ * dir, so the driver reports the count unknown rather than 0.
+ */
 export function appendWriteFenceRefusal(
   scratch: string | undefined,
   entry: WriteFenceRefusal,
+  repo?: string,
 ): void {
   if (!scratch || !path.isAbsolute(scratch)) {
-    trace(
-      `write-fence: no absolute scratch dir (${scratch ?? "unset"}); refusal traced, not logged`,
-    );
+    trace(`write-fence: no absolute scratch dir (${scratch ?? "unset"}); refusal traced`);
+    markUnscratched(repo);
     return;
   }
   try {
@@ -68,7 +103,7 @@ export function appendWriteFenceRefusal(
     );
   } catch (err) {
     trace(`write-fence: could not record refusal in ${scratch}: ${(err as Error).message}`);
-    markUnaccounted(scratch, process.pid);
+    if (!markUnaccounted(scratch, process.pid)) markUnscratched(repo);
   }
 }
 

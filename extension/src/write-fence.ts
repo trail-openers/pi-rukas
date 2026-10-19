@@ -92,6 +92,7 @@ export function registerWriteFence(pi: ExtensionAPI): void {
   const cfg = loadFenceConfig(process.env);
   if (!cfg) return;
   const scratch = process.env.PI_ENSEMBLE_WRITE_SCRATCH;
+  const repo = process.env.PI_ENSEMBLE_WRITE_REPO;
   pi.on("tool_call", async (event) => {
     let refusal: Refusal | undefined;
     try {
@@ -100,22 +101,20 @@ export function registerWriteFence(pi: ExtensionAPI): void {
       // An internal fault is a refusal too: the call is not judged, so it does not run.
       const reason = `write fence could not judge this call: ${(err as Error).message}`;
       trace(`write-fence: ${reason}`);
-      appendWriteFenceRefusal(scratch, {
-        tool: event.toolName,
-        path: "(not judged)",
-        reason,
-        at: Date.now(),
-      });
+      appendWriteFenceRefusal(
+        scratch,
+        { tool: event.toolName, path: "(not judged)", reason, at: Date.now() },
+        repo,
+      );
       return { block: true, reason };
     }
     if (!refusal) return;
     trace(`write-fence: refused ${refusal.tool} to ${refusal.path}`);
-    appendWriteFenceRefusal(scratch, {
-      tool: refusal.tool,
-      path: refusal.path,
-      reason: refusal.message,
-      at: Date.now(),
-    });
+    appendWriteFenceRefusal(
+      scratch,
+      { tool: refusal.tool, path: refusal.path, reason: refusal.message, at: Date.now() },
+      repo,
+    );
     return { block: true, reason: refusal.message };
   });
 }

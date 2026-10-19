@@ -286,6 +286,66 @@ assert(refusedTarget("") === undefined, "an empty command has no targets");
   );
 }
 
+// ------------------------------------------------ #1655 r4 — git config writes the shared config
+const configRefused: Array<[string, string]> = [
+  ["git config core.hooksPath x", "git config key and value, no --file: the shared config"],
+  ["git -C . config core.fsmonitor x", "git config behind -C, still the shared config"],
+  ["git config --add core.x y", "git config --add"],
+  ["git config --unset-all core.x", "git config --unset-all"],
+  ["git config --replace-all core.x y", "git config --replace-all"],
+  ["git config --remove-section core", "git config --remove-section"],
+  ["git config --edit", "git config --edit opens the shared config"],
+];
+for (const [command, why] of configRefused) {
+  assert(refusedTarget(command) !== undefined, `refuse: ${why} — \`${command}\``);
+}
+for (const [command, why] of [
+  ["git config --global core.x y", "git config --global is outside the repo, not this fence's concern"],
+  ["git config --get core.x", "git config --get only reads"],
+  ["git config --list", "git config --list only reads"],
+  ["git config core.x", "git config with a key alone only reads"],
+  ["git config --file out.cfg user.name x", "git config --file names a file inside the worktree"],
+] as const) {
+  assert(refusedTarget(command) === undefined, `allow: ${why} — \`${command}\``);
+}
+
+// ------------------------------------------------ #1655 r4 — pushd and popd move the directory
+for (const [command, why] of [
+  ["pushd ../../bin >/dev/null && touch keep", "pushd climbing out of the root, then a relative touch"],
+  ["pushd && touch keep", "a bare pushd swaps directories, which is not known, so a relative touch is refused"],
+  ["pushd +1 && touch keep", "pushd +N rotates the stack, which is not known"],
+  ["popd && touch keep", "popd moves to a directory the fence does not track"],
+  ["pushd src && popd && touch keep", "a popd after a known pushd leaves the directory unknown"],
+] as const) {
+  assert(refusedTarget(command) !== undefined, `refuse: ${why} — \`${command}\``);
+}
+for (const [command, why] of [
+  ["pushd sub && touch keep", "pushd into the worktree, then a relative touch"],
+  ["pushd src && echo x > out.txt", "a redirect after a pushd into the worktree"],
+  ["popd", "popd alone writes nothing"],
+] as const) {
+  assert(refusedTarget(command) === undefined, `allow: ${why} — \`${command}\``);
+}
+
+// ------------------------------------------------ #1655 r4 — unquoted heredoc bodies run substitutions
+const heredocRefused: Array<[string, string]> = [
+  ["cat <<EOF\n$(echo x > ../../bin/keep)\nEOF", "a substitution in an unquoted heredoc body climbs out of the root"],
+  [`cat <<EOF\n$(echo x > ${REPO_BIN}/keep)\nEOF`, "a substitution in an unquoted heredoc body names the repo root"],
+  ["cat <<EOF\n`echo x > ../../bin/keep`\nEOF", "a backtick in an unquoted heredoc body climbs out of the root"],
+  ["cat <<-EOF\n\t$(rm ../../bin/keep)\n\tEOF", "a stripped unquoted heredoc body runs its substitution"],
+];
+for (const [command, why] of heredocRefused) {
+  assert(refusedTarget(command) !== undefined, `refuse: ${why}`);
+}
+for (const [command, why] of [
+  ["cat <<'EOF'\n$(echo x > ../../bin/keep)\nEOF", "a quoted single-quote heredoc body is data"],
+  ['cat <<"EOF"\n$(echo x > ../../bin/keep)\nEOF', "a quoted double-quote heredoc body is data"],
+  ["cat <<EOF\n$(echo x > out.txt)\nEOF", "an unquoted heredoc substitution whose target is inside the worktree"],
+  ["cat <<EOF\n\\$(echo x > ../../bin/keep)\nEOF", "an escaped dollar in an unquoted heredoc is literal text"],
+] as const) {
+  assert(refusedTarget(command) === undefined, `allow: ${why}`);
+}
+
 rmSync(fx.base, { recursive: true, force: true });
 if (exit === 0) console.log("✓ all write-fence bash assertions passed");
 process.exit(exit);
