@@ -53,6 +53,9 @@ export type VerifyExecFn = (
     // group kill: the checkpoint's typecheck needs one, because `bun x tsc`
     // spawns a `tsc` grandchild that a plain timeout leaves compiling.
     killGroup?: boolean;
+    // The child's environment. The shell form of the verify executor scrubs
+    // driver knobs from it (verifyChildEnv); absent, the ambient env.
+    env?: NodeJS.ProcessEnv;
   },
 ) => Promise<{ stdout: string; stderr?: string }>;
 

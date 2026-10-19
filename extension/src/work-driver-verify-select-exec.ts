@@ -36,6 +36,7 @@
 import { trace } from "./trace.ts";
 import type { VerifyChannel } from "./work-driver-integrate-verify-flake.ts";
 import { attributeAgainstBase } from "./work-driver-verify-attribution.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
 import { readVerifyReport } from "./work-driver-verify-report-file.ts";
 import { createVerifyReportFile, verifyReportEnv } from "./work-driver-verify-report-path.ts";
@@ -119,7 +120,7 @@ async function runOnce(
   timeoutMs: number,
 ): Promise<RunResult> {
   let reportFile: string | undefined;
-  let env = opts?.env ?? process.env;
+  let env = verifyChildEnv(opts?.env);
   try {
     reportFile = createVerifyReportFile(o.channel.reportDir, label);
     // The path reaches the verify command, and the loop passes it to no test:
@@ -175,7 +176,14 @@ async function runOnce(
         reason: "the run failed while naming no failing test",
       };
     }
-    return { ok: false, err: e, timedOut, reportFile, names: report.names, reason: "" };
+    return {
+      ok: false,
+      err: e,
+      timedOut,
+      reportFile,
+      names: report.names,
+      reason: "",
+    };
   }
 }
 
@@ -203,9 +211,11 @@ async function probeOnce(
   try {
     probeReportFile = createVerifyReportFile(o.channel.reportDir, label);
   } catch {
-    return { blocks: "the base probe's report could not be created, so it cannot run" };
+    return {
+      blocks: "the base probe's report could not be created, so it cannot run",
+    };
   }
-  const probeEnv = verifyReportEnv(process.env, probeReportFile);
+  const probeEnv = verifyReportEnv(verifyChildEnv(), probeReportFile);
   const prior = probeChains.get(o.repoRoot) ?? Promise.resolve();
   const settled = prior.then(() =>
     attributeAgainstBase(rawExec, {
@@ -258,7 +268,9 @@ async function judge(
   const rels = placeable(names);
   if (rels === undefined) {
     const bad = names.find((n) => extensionRelative(n) === undefined);
-    return { blocks: `the failing test "${bad}" is not a smoke test this gate can place` };
+    return {
+      blocks: `the failing test "${bad}" is not a smoke test this gate can place`,
+    };
   }
   const changed = rels.filter((r) => o.changedTests.includes(r));
   if (changed.length > 0) {

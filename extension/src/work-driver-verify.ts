@@ -22,6 +22,7 @@ import { trace } from "./trace.ts";
 import { consolidationNote } from "./work-driver-consolidation-note.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { resolveMainline } from "./work-driver-git.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import type { ConsolidationVerdict } from "./workflow-state-consolidation.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -91,7 +92,7 @@ export async function execp(
     cwd: rest.cwd,
     timeout: rest.timeout,
     maxBuffer: rest.maxBuffer,
-    env: rest.env,
+    env: verifyChildEnv(rest.env),
   });
   return { stdout, stderr };
 }

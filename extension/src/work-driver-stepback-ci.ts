@@ -10,7 +10,7 @@
  * dispatch.
  */
 
-import { execTree } from "./exec-tree.ts";
+import { type ExecTreeOpts, execTree } from "./exec-tree.ts";
 import { readMarker } from "./reply-markers.ts";
 import { trace } from "./trace.ts";
 import { discloseInPrBody, runCiVerifyFull } from "./work-driver-ci-verify.ts";
@@ -22,13 +22,16 @@ import {
 } from "./work-driver-merge-authority.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCiPrompt, inlineStepBackPrompt } from "./work-driver-prompts-late.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { foldVerifyAttribution } from "./work-driver-verify-events.ts";
 import { verifyCmdFullFor } from "./work-driver-verify-full.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
-// Tree-killing: the ci step runs `.pi/verify-cmd-full`, the longest gate.
-const execp = execTree;
+// Tree-killing: the ci step runs `.pi/verify-cmd-full`, the longest gate. Its
+// env is scrubbed of driver knobs (see verifyChildEnv).
+const execp = (cmd: string, opts?: ExecTreeOpts) =>
+  execTree(cmd, { ...opts, env: verifyChildEnv(opts?.env) });
 
 /**
  * Step-back when findings cluster around a theme. Dispatches @explore with
