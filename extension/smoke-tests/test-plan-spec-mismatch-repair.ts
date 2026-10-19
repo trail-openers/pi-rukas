@@ -17,19 +17,19 @@
  *   5. N=2, a missing path → nothing repaired (which workstream owns it is a judgement);
  *   6. N=1 with a refused call → nothing repaired (a second defect);
  *   7. the gate off → nothing repaired.
+ *
+ * The disclosure half (`withOmittedPathAssumption` redacting and bounding the
+ * line it appends) is judged in `test-plan-repair-assumption.ts`.
  */
 
 import type { CycleContext } from "../src/work-driver-context.ts";
 import type { NormalisedSpec } from "../src/work-driver-intent.ts";
 import { emptyWorkstreamReport } from "../src/work-driver-plan-calls.ts";
-import {
-  type PlanQualityHost,
-  type PlanQualityInput,
-  runPlanQualityTail,
-} from "../src/work-driver-plan-quality-pass.ts";
+import { type PlanQualityInput, runPlanQualityTail } from "../src/work-driver-plan-quality-pass.ts";
 import { repairOmittedDeliverablePaths } from "../src/work-driver-plan-repair.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state-update.ts";
+import { HOST, SPEC, T1, T2, WS } from "./lib/plan-repair-fixtures.ts";
 
 // The tail's cross-group claim check writes a registry under repoRoot; this
 // test is about the repair, so that side effect is switched off for the run.
@@ -46,52 +46,22 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const T1 = "extension/smoke-tests/test-vipune.ts";
-const T2 = "extension/smoke-tests/test-secret-patterns.ts";
-
-/** The #1439 shape: one deliverable naming a source file and two tests. */
-const SPEC: NormalisedSpec = {
-  intent: "vipune and secret-pattern coverage",
-  deliverables: [{ id: "d5", description: "tests", paths: ["src/a.ts", T1, T2] }],
-  acceptanceCriteria: [],
-  outOfScope: [],
-  assumptions: [],
-  openQuestions: [],
-  evidence: [],
-  verdict: "proceed",
-  rationale: "",
-};
-
-const WS = (id: string, paths: string[], outOfScope: string[] = []): Workstream => ({
-  id,
-  scope: id,
-  paths,
-  outOfScope,
-});
-
-/** A plan host whose corrective must never resolve: a repaired plan never reaches it. */
-const HOST: PlanQualityHost = {
-  dispatch: async () => {
-    throw new Error("corrective dispatch — expected only where the repair refuses");
-  },
-  prompt: "primary plan prompt",
-  slow: () => undefined,
-  deck: () => ({}),
-};
-
 /** Run the tail over one plan; the gate is on unless told otherwise. */
 async function tail(
   workstreams: Record<string, Workstream>,
   spec: NormalisedSpec | undefined,
   grant: string[],
-  planGateEnabled = true,
-  withSpec = false,
+  options: { planGateEnabled?: boolean; withNormalisedSpec?: NormalisedSpec } = {},
 ) {
   const base = initialState(1439, 1);
-  const next = withSpec
+  // `next` is built from the SAME spec argument the gate reads, so a case cannot
+  // quietly judge a plan against one spec while the state carries another. The
+  // explicit override is for the one case that wants them to differ.
+  const normalised = options.withNormalisedSpec ?? spec;
+  const next = normalised
     ? {
         ...base,
-        pipelineState: { ...base.pipelineState, normalisedSpec: SPEC },
+        pipelineState: { ...base.pipelineState, normalisedSpec: normalised },
       }
     : base;
   const input: PlanQualityInput = {
@@ -105,7 +75,7 @@ async function tail(
     firstPlanRaw: workstreams,
     findingsCount: 1,
     spec,
-    planGateEnabled,
+    planGateEnabled: options.planGateEnabled ?? true,
     planKill: false,
     redispatched: false,
   };
@@ -121,7 +91,7 @@ async function tail(
 
 {
   const ws = { "task-1": WS("task-1", ["src/a.ts"]) };
-  const r = await tail(ws, SPEC, [], true, true);
+  const r = await tail(ws, SPEC, [], { withNormalisedSpec: SPEC });
   assert(!r.halted, "N=1 omitted spec paths: the tail does not halt (no park)");
   assert(
     JSON.stringify(r.workstreams["task-1"]?.paths) === JSON.stringify(["src/a.ts", T1, T2]),
@@ -298,15 +268,14 @@ async function tail(
 
 {
   const ws = { "task-1": WS("task-1", ["src/a.ts"]) };
-  const base = initialState(1439, 1);
-  const r = await runPlanQualityTail(
+  const killed = await runPlanQualityTail(
     {
       issue: 1439,
       repoRoot: "/repo",
       protectedGrant: [],
     } as unknown as CycleContext,
     {
-      next: base,
+      next: initialState(1439, 1),
       report: { ...emptyWorkstreamReport(), accepted: 1, workstreams: ws },
       workstreams: ws,
       firstPlanRaw: ws,
@@ -318,10 +287,99 @@ async function tail(
     },
     HOST,
   );
-  assert(r.halted, "planKill with an omitted spec path: the step halts as before");
+  assert(killed.halted, "planKill with an omitted spec path: the step halts as before");
   assert(
-    JSON.stringify(r.workstreams["task-1"]?.paths) === JSON.stringify(["src/a.ts"]),
+    JSON.stringify(killed.workstreams["task-1"]?.paths) === JSON.stringify(["src/a.ts"]),
     "planKill: the killed primary's paths are not repaired",
+  );
+}
+
+// ------------- 4g. the only overlap is a directory the workstream declared: not repaired
+
+{
+  // `extension/smoke-tests` covers T1/T2 by prefix, so the OLD witness fired on
+  // it. A directory is not a file the planner wrote, so it is not evidence the
+  // plan targets this spec — the repair declines and the gate runs as before.
+  const ws = { "task-1": WS("task-1", ["extension/smoke-tests"]) };
+  const seen: string[] = [];
+  const pure = repairOmittedDeliverablePaths(ws, SPEC, [], (r) => seen.push(r));
+  assert(
+    pure === undefined && seen.some((r) => r.includes("wrong plan")),
+    "directory-only overlap: no witness file, so the repair declines (a directory is not the right plan)",
+  );
+}
+
+// ------------------- 4h. the only overlap is a glob/template: not repaired
+
+{
+  // The template covers T1/T2 by segment glob. Same reasoning as 4g: a pattern
+  // the planner left is not a file it wrote, so it cannot witness the plan.
+  const ws = { "task-1": WS("task-1", ["extension/smoke-tests/test-*.ts"]) };
+  const seen: string[] = [];
+  const pure = repairOmittedDeliverablePaths(ws, SPEC, [], (r) => seen.push(r));
+  assert(
+    pure === undefined && seen.some((r) => r.includes("wrong plan")),
+    "glob-only overlap: no witness file, so the repair declines (a template is not the right plan)",
+  );
+  const wsT = { "task-1": WS("task-1", ["extension/smoke-tests/test-<name>.ts"]) };
+  const seenT: string[] = [];
+  assert(
+    repairOmittedDeliverablePaths(wsT, SPEC, [], (r) => seenT.push(r)) === undefined &&
+      seenT.some((r) => r.includes("wrong plan")),
+    "template-only overlap: the repair declines as it does for a glob",
+  );
+}
+
+// ---------------- 4i. the path-shape gate runs on the normalised path before appending
+
+{
+  // A slot that survives normalisation and the `measurableAlternative` gate but
+  // the planner's own grammar refuses is refused with that reason, never appended
+  // into the plan. `measurableAlternative` is a dangerous-character gate (it lets
+  // a leading `-`/`:` through, and so does the coverage gate's slot matcher), and
+  // `planQualityReason`'s `invalid-path` check is the PLANNED grammar — so without
+  // this check the driver would write a path into the plan that the plan-quality
+  // pass then refuses as `invalid-path`.
+  for (const bad of ["-dash.ts", ":magic.ts"]) {
+    const SPEC_S: NormalisedSpec = {
+      ...SPEC,
+      deliverables: [{ id: "d5", description: "shape", paths: ["src/a.ts", bad] }],
+    };
+    const ws = { "task-1": WS("task-1", ["src/a.ts"]) };
+    const seen: string[] = [];
+    const pure = repairOmittedDeliverablePaths(ws, SPEC_S, [], (r) => seen.push(r));
+    assert(
+      pure === undefined &&
+        seen.length === 1 &&
+        seen[0] !== undefined &&
+        seen[0].includes(bad) &&
+        !seen[0].includes("wrong plan"),
+      `path-shape gate refuses '${bad}' with its own reason rather than appending it`,
+    );
+  }
+}
+
+// ------- 4j. a fence BELOW the path (the fence is inside it) also blocks the repair
+
+{
+  // The workstream declares only the concrete witness, the missing slot is
+  // `src/a.ts`, and its own fence names `src/a.ts/notes.md` — containment runs
+  // the other way than case 4b, and is the reading `findFenceContradictions`
+  // already applies. The witness file is what makes this a REACHED refusal
+  // rather than an early "not this spec" decline.
+  const SPEC_D: NormalisedSpec = {
+    ...SPEC,
+    deliverables: [
+      { id: "w", description: "witness", paths: ["src/a.ts"] },
+      { id: "d5", description: "deep", paths: ["extension/src/deep.ts"] },
+    ],
+  };
+  const ws = { "task-1": WS("task-1", ["src/a.ts"], ["extension/src/deep.ts/notes.md"]) };
+  const seen: string[] = [];
+  const pure = repairOmittedDeliverablePaths(ws, SPEC_D, [], (r) => seen.push(r));
+  assert(
+    pure === undefined && seen.some((r) => r.includes("fenced")),
+    "fence under the path: the repair refuses with the bidirectional containment check",
   );
 }
 
@@ -348,7 +406,6 @@ async function tail(
 
 {
   const ws = { "task-1": WS("task-1", ["src/a.ts"]) };
-  const next = initialState(1439, 1);
   const report = {
     ...emptyWorkstreamReport(),
     accepted: 1,
@@ -360,10 +417,10 @@ async function tail(
     repoRoot: "/repo",
     protectedGrant: [],
   } as unknown as CycleContext;
-  const r = await runPlanQualityTail(
+  const refused = await runPlanQualityTail(
     ctx,
     {
-      next,
+      next: initialState(1439, 1),
       report,
       workstreams: ws,
       firstPlanRaw: ws,
@@ -376,7 +433,7 @@ async function tail(
     HOST,
   );
   assert(
-    JSON.stringify(r.workstreams["task-1"]?.paths) === JSON.stringify(["src/a.ts"]),
+    JSON.stringify(refused.workstreams["task-1"]?.paths) === JSON.stringify(["src/a.ts"]),
     "N=1 with a refused call: the repair does not run (the refusal is the other defect)",
   );
 }
@@ -385,7 +442,7 @@ async function tail(
 
 {
   const ws = { "task-1": WS("task-1", ["src/a.ts"]) };
-  const r = await tail(ws, SPEC, [], false);
+  const r = await tail(ws, SPEC, [], { planGateEnabled: false });
   assert(
     JSON.stringify(r.workstreams["task-1"]?.paths) === JSON.stringify(["src/a.ts"]),
     "plan gate off: the repair does not run and the paths are untouched",

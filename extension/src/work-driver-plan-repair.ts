@@ -17,9 +17,19 @@
  *
  *   - a single plain path, not an either/or (`a.ts or b.ts` is a choice the
  *     planner must make, so it keeps today's behaviour);
+ *   - acceptable to the planner's own path-shape gate (`plannedPathProblem`),
+ *     so the driver never writes a path the plan-quality pass would itself
+ *     refuse — the repair is held to the same bar the planner is;
  *   - not a protected path (`isProtectedPath`), granted or not;
- *   - not fenced in the workstream's `outOfScope`;
+ *   - not fenced in the workstream's `outOfScope`, in either containment
+ *     direction (the path under the fence, or the fence under the path);
  *   - not a deferred protected path (#1642).
+ *
+ * The evidence that the plan targets THIS spec is also narrow: at least one of
+ * the workstream's OWN declared paths must be a concrete plain file that a spec
+ * deliverable names. A plan whose only overlap with the spec is a directory it
+ * declared, or a glob/template, is not evidence of the right plan — the concrete
+ * file is what says the planner meant this spec.
  *
  * One missing path that fails any of these and nothing is repaired: the gate
  * then runs exactly as before. N>1 workstreams are never repaired — which
@@ -30,8 +40,12 @@
  * differing from the model's output.
  */
 
+import { OPEN_POINT_CHAR_CAP } from "./open-points-reader.ts";
+import { plannedPathProblem } from "./plan-path-shape.ts";
+import { redactThenBound } from "./text-flatten.ts";
 import {
   declaredPathsCoveredBy,
+  isPlaceholderPath,
   measurableAlternative,
   splitDeliverablePaths,
   toAlternative,
@@ -39,6 +53,7 @@ import {
 import { isProtectedPath } from "./work-driver-doctrine.ts";
 import type { SpecAssumption } from "./work-driver-intent.ts";
 import { deferredProtectedPaths } from "./work-driver-plan-fence.ts";
+import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
 import {
   type SpecCoverageSpec,
   findUncoveredDeliverables,
@@ -81,14 +96,26 @@ export function repairOmittedDeliverablePaths(
   if (!ws || !spec) return undefined;
   const { uncovered } = findUncoveredDeliverables(workstreams, spec, grant);
   if (uncovered.length === 0) return undefined;
-  // Evidence the plan targets THIS spec: at least one measurable deliverable slot
-  // is already covered by the workstream. Without it the plan is wholly wrong,
-  // and extending it would hide that rather than repair an omission.
+  // Evidence the plan targets THIS spec: one of the workstream's OWN declared
+  // paths is a concrete plain file that a spec deliverable also names. The
+  // three clauses each rule out a way a plan can "overlap" without having read
+  // the spec: a workstream that declared only a directory covers deliverables
+  // beneath it by prefix alone, and one that declared only a template covers
+  // anything the glob matches — neither is evidence the planner meant this spec.
+  // Without a concrete shared file the plan is wholly wrong, and extending it
+  // would hide that rather than repair an omission.
   const targetsSpec = (spec.deliverables ?? []).some((d) =>
-    d.paths.some(
-      (slot) =>
-        declaredPathsCoveredBy(slot, ws.paths) &&
-        splitDeliverablePaths(slot).map(toAlternative).some(measurableAlternative),
+    d.paths.some((slot) =>
+      splitDeliverablePaths(slot)
+        .map(toAlternative)
+        .some(
+          (alt) =>
+            !alt.isGlob &&
+            measurableAlternative(alt) &&
+            ws.paths
+              .map((p) => normaliseDeclaredPath(p))
+              .some((declared) => declared === alt.raw && isConcreteRepairPath(declared)),
+        ),
     ),
   );
   if (!targetsSpec)
@@ -97,12 +124,15 @@ export function repairOmittedDeliverablePaths(
     );
 
   const deferred = new Set(deferredProtectedPaths(spec, grant));
-  // A fence covers the path and everything under it, as the gate's
-  // `findFenceContradictions` reads it.
+  // Containment runs BOTH ways, the same reading `findFenceContradictions` uses:
+  // a fence under the path (the path is inside a fenced directory) and a fence
+  // over it (the planner fenced `src/a.ts` and declared only `src/a.ts/notes.md`)
+  // both say "do not touch this".
   const fences = ws.outOfScope
     .map((e) => normaliseDeclaredPath(e).replace(/\/+$/, ""))
     .filter((n) => n.length > 0);
-  const fenced = (path: string) => fences.some((n) => path === n || path.startsWith(`${n}/`));
+  const fenced = (path: string) =>
+    fences.some((n) => path === n || path.startsWith(`${n}/`) || n.startsWith(`${path}/`));
   const added: string[] = [];
   for (const row of uncovered) {
     for (const slot of row.paths) {
@@ -119,6 +149,11 @@ export function repairOmittedDeliverablePaths(
         return refuse(`${slot}: not a single measurable file path`);
       const path = normaliseDeclaredPath(alt.raw);
       if (path.length === 0) return refuse(`${slot}: empty after normalisation`);
+      // The planner's own path-shape gate, run on the normalised path before it
+      // is appended: whatever the plan-quality pass would refuse as an
+      // `invalid-path`, the driver must not write into the plan itself.
+      const shapeProblem = plannedPathProblem(path);
+      if (shapeProblem !== undefined) return refuse(`${slot}: ${shapeProblem}`);
       if (isProtectedRepairPath(path)) return refuse(`${path}: protected path`);
       if (fenced(path)) return refuse(`${path}: fenced in the workstream's outOfScope`);
       if (deferred.has(path)) return refuse(`${path}: deferred protected path`);
@@ -143,6 +178,19 @@ function isProtectedRepairPath(path: string): boolean {
   return isProtectedPath(path) || isProtectedPath(folded);
 }
 
+/**
+ * A declared workstream path that is a concrete plain file, not a directory,
+ * glob or template. `isPlainRepoRelativePath` is the shared shape gate (it
+ * refuses `..`, absolute paths and shell metacharacters); `*` and `?` pass it
+ * only because the deliverable grammar needs them, so the glob forms are
+ * refused here on top. The `targetsSpec` witness must be a file a developer
+ * actually wrote.
+ */
+function isConcreteRepairPath(declared: string): boolean {
+  if (declared.includes("*") || declared.includes("?")) return false;
+  return isPlainRepoRelativePath(declared) && !isPlaceholderPath(declared);
+}
+
 /** The one line a reviewer reads for the repair. */
 function omittedPathAssumptionText(added: readonly string[]): string {
   return `driver added spec deliverable paths the plan omitted: ${added.join(", ")}`;
@@ -158,8 +206,12 @@ export function withOmittedPathAssumption(state: WorkState, added: readonly stri
   const ns = state.pipelineState.normalisedSpec;
   if (!ns || added.length === 0) return state;
   const text = omittedPathAssumptionText(added);
-  if (ns.assumptions.some((a) => a.text === text)) return state;
-  const assumption: SpecAssumption = { text, basis: OMITTED_PATH_BASIS };
+  // The same redact-then-bound the #1187 open-point finalise applies to every
+  // assumption the spec carries: this one is appended AFTER that pass ran, so
+  // it bounds itself rather than relying on a pass that already finished.
+  const bound = redactThenBound(text, OPEN_POINT_CHAR_CAP).text;
+  if (ns.assumptions.some((a) => a.text === bound)) return state;
+  const assumption: SpecAssumption = { text: bound, basis: OMITTED_PATH_BASIS };
   const verdict = ns.verdict === "proceed" ? "proceed-with-assumptions" : ns.verdict;
   return {
     ...state,
