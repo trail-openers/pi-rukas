@@ -28,6 +28,7 @@
 
 import { trace } from "./trace.ts";
 import { type HangProcess, NO_TREE_CAPTURED } from "./work-driver-gate-hang.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { FAST_TIER_LABEL } from "./work-driver-verify-fast.ts";
 import { rerunConsolidatedVerifyOnce } from "./work-driver-verify-flake.ts";
 import { createVerifyReportDir, createVerifyReportFile } from "./work-driver-verify-report-path.ts";
@@ -115,7 +116,11 @@ export async function runFlakeRetry(
     opts.timeoutMs,
     undefined,
     undefined,
-    opts.changeEnv,
+    // The driver's knobs never reach the project's gate. With no report
+    // channel there is no env at all, which is the shape the executor reads
+    // as "inherit everything" — so the scrub is built here rather than left
+    // to the seam below, which honours an injected executor's own default.
+    opts.changeEnv ?? verifyChildEnv(),
   );
   if (secondRun === undefined) {
     return { ...settled, recovered: true };

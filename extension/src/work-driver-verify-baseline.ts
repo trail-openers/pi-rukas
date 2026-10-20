@@ -31,6 +31,7 @@ import {
 } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { TIER_KNOB, TIER_TIMEOUT_FILE, VERIFY_TIMEOUT_ENV } from "./work-driver-verify-budget.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { VERIFY_TIMEOUT_LABEL, boundText } from "./work-driver-verify-develop-helpers.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 import { summaryCount } from "./work-driver-verify-names.ts";
@@ -136,9 +137,22 @@ export async function probeBaselineVerify(
      * at all (the offline suite's and CI's shape).
      */
     env?: NodeJS.ProcessEnv;
+    /**
+     * The env the probe's OWN `git worktree` calls run with. They are the
+     * driver's calls, not the project's, so they keep the knobs that decide
+     * where the driver reports (see `verifyChildEnv`'s `keep`). Absent → the
+     * scrubbed parent minus every driver knob.
+     */
+    hostEnv?: NodeJS.ProcessEnv;
   },
 ): Promise<BaselineVerdict> {
   const { repoRoot, baseSha, cmd, timeoutMs } = opts;
+  // The probe's OWN git calls (`git worktree remove/add`) run before and after
+  // the project command. They are the driver's calls, not the project's, so
+  // they keep the knobs that decide where the driver reports: scrubbing them
+  // would move a host-channel cycle's handoff into the forge for the length of
+  // one probe. The project command below is scrubbed on its own `env`.
+  const hostEnv = opts.hostEnv ?? verifyChildEnv(process.env, ["PI_ENSEMBLE_HANDOFF_CHANNEL"]);
   // Deliberately NOT `issue-<N>-…`: the same-issue leftover scan reads that
   // prefix as a workstream's worktree, and a probe tree leaked by a killed
   // process must never park the next cycle as "dirty leftover work".
@@ -147,6 +161,7 @@ export async function probeBaselineVerify(
     execFn(`git worktree remove --force ${JSON.stringify(abs)}`, {
       cwd: repoRoot,
       maxBuffer: 256 * 1024,
+      env: hostEnv,
     }).catch(() => undefined);
   // A leaked probe tree holds nothing but a checkout of some base commit.
   await remove();
@@ -154,6 +169,7 @@ export async function probeBaselineVerify(
     await execFn(`git worktree add --detach ${JSON.stringify(abs)} ${JSON.stringify(baseSha)}`, {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
+      env: hostEnv,
     });
   } catch (err) {
     return {
@@ -283,6 +299,8 @@ export async function compareWithBaseline(
     issue: number;
     cmd: string;
     timeoutMs: number;
+    /** #1642 — the scrubbed env the project's base run executes with. */
+    env?: NodeJS.ProcessEnv;
     changeFailures: readonly ChangeFailure[];
     failures: string[];
     notes: string[];
