@@ -38,8 +38,14 @@ import { redactClip } from "./decision-log.ts";
 import type { CAP_TEMPLATES, FixedCap } from "./headless/caps.ts";
 import type { FailureKind, ResultFailure } from "./headless/failure.ts";
 import { EMPTY_ROUND_FAILURE } from "./work-develop-verify-failure.ts";
-import { PLUMB_REPLY_MARKER } from "./work-driver-adversarial-plumb.ts";
 import { branchRefusalVerdictFor } from "./work-driver-branch-cause.ts";
+import { pushRefusalVerdict } from "./work-driver-cause-class-push-refusal.ts";
+import {
+  type QuotedReply,
+  plumbQuestion,
+  quotedReplies,
+  tagged,
+} from "./work-driver-cause-class-replies.ts";
 import {
   ACTION_FOR_CLASS,
   type CapCause,
@@ -217,76 +223,6 @@ function firstDependencyLine(failures: readonly string[]): string | undefined {
   return undefined;
 }
 
-/** A developer reply the verdict quotes; `id` names the workstream under a fan-out. */
-interface QuotedReply {
-  id?: string;
-  text: string;
-  /** The workstream recorded no reply; `text` is NO_REPLY, never another workstream's words. */
-  missing?: boolean;
-}
-
-const NO_REPLY = "(no reply recorded)";
-
-/**
- * The develop replies the verdict quotes. Under a fan-out these are the reply(s)
- * of the workstream(s) that produced no change (a no-change green is downgraded
- * to failing, so the downgraded workstreams are that set), else of every failing
- * workstream. With no failing workstream, the developer's last reply.
- */
-function quotedReplies(state: WorkState): QuotedReply[] {
-  const replies = new Map<string, string>();
-  const verdicts = new Map<string, { ok: boolean; downgraded: boolean }>();
-  let last: string | undefined;
-  for (const e of state.eventLog) {
-    if (e.kind === "dispatch-completed" && e.step === "develop" && e.role === "developer") {
-      if (e.summary?.trim()) {
-        replies.set(e.label, e.summary);
-        last = e.summary;
-      }
-    } else if (e.kind === "branch-completed" && e.step === "develop") {
-      verdicts.set(e.workstreamId, { ok: e.ok, downgraded: e.downgrade === true });
-    }
-  }
-  const failing = [...verdicts].filter(([, v]) => !v.ok);
-  const noChange = failing.filter(([, v]) => v.downgraded);
-  const chosen = (noChange.length > 0 ? noChange : failing).map(([id]) => id);
-  const picked: QuotedReply[] = [];
-  for (const id of chosen) {
-    const text =
-      replies.get(`developer[${id}]`) ??
-      (chosen.length === 1 ? replies.get("developer") : undefined);
-    picked.push(text === undefined ? { id, text: NO_REPLY, missing: true } : { id, text });
-  }
-  if (picked.length > 0) return picked;
-  return last === undefined ? [] : [{ text: last }];
-}
-
-/** Evidence lines from the quoted replies: named by workstream only when several are quoted. */
-function tagged(replies: readonly QuotedReply[], lines: (r: QuotedReply) => string[]): string[] {
-  const named = replies.length > 1;
-  return replies.flatMap((r) =>
-    lines(r).map((l) =>
-      r.id !== undefined && (named || r.missing === true) ? `workstream ${r.id}: ${l}` : l,
-    ),
-  );
-}
-
-/**
- * The question a developer's reply asks the operator: the `question:` line of
- * its `[ensemble:plumb]` block, or the block's first line. Undefined when the
- * reply has no plumb block.
- */
-function plumbQuestion(reply: string): string | undefined {
-  const at = reply.indexOf(PLUMB_REPLY_MARKER);
-  if (at < 0) return undefined;
-  const lines = reply
-    .slice(at + PLUMB_REPLY_MARKER.length)
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-  return lines.find((l) => PLUMB_QUESTION.test(l)) ?? lines[0] ?? PLUMB_REPLY_MARKER;
-}
-
 /**
  * The develop round changed nothing. A developer that stopped on a question for
  * the operator needs the operator; one that changed nothing for another reason
@@ -340,6 +276,15 @@ function verifyVerdict(state: WorkState, cap: string, issue: number): CauseVerdi
   const changeRule = TEMPLATE_CAP_CAUSE["verify-failed"];
   const envRule = TEMPLATE_CAP_CAUSE["verify-env"];
 
+  // #1439 — the FORGE refused the push. The verify command never judged this content:
+  // GitHub declined to accept it. That is neither "the change is broken" nor an
+  // environment fault — the issue asked for content the forge will not host (secret-
+  // shaped fixtures are the measured case), and only an operator can allow it or the
+  // issue can change. Read from the structured origin; the mark is the back-stop for a
+  // state file whose origin field predates the cap.
+  if (ev?.origin === "push-refused" || /^push-refused:/.test(cap)) {
+    return pushRefusalVerdict(failures, hit, issue, evidenceLines);
+  }
   // The PR was closed under the cycle: a person decides where the new work goes.
   if (ev?.origin === "pr-not-open") {
     return verdict(

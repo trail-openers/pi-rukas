@@ -30,7 +30,7 @@ import {
   makeConsolidatedVerifySkippedEvent,
 } from "./workflow-state-events-verify-flake.ts";
 import type { ConsolidationVerdict } from "./workflow-state.ts";
-import type { WorkState } from "./workflow-state.ts";
+import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
 
 /** The successful, non-empty IntegrateResult — the only shape this function handles. */
@@ -38,6 +38,25 @@ type NonEmptyIntegrateResult = Extract<IntegrateResult, { ok: true; empty: false
 
 /** How many consolidation notes the state file keeps (#1153 round 3; newest win). */
 const MAX_PERSISTED_NOTES = 20;
+
+/**
+ * The cap a terminal mechanized failure records. Three shapes, three names, because
+ * they need three different operator actions:
+ *   - the forge refused the push (#1439) — a content decision, not a code one;
+ *   - the run was killed at its bound (#1324) — no verdict on the code at all;
+ *   - the consolidated tree failed the gate (#1064) — a verdict about the code.
+ *
+ * Typed as the cap union rather than `string`: a fourth shape added here must name a
+ * cap the validator, the cause table, and `explainCap` all know, and the compiler is
+ * what enforces that today.
+ */
+export function pushTerminalCap(mech: {
+  fallbackCause?: string;
+  timedOut?: boolean;
+}): Extract<WorkEvent, { kind: "cap-hit" }>["cap"] {
+  if (mech.fallbackCause === "push-refused") return "push-refused:commit-pr";
+  return mech.timedOut ? "verify-timeout:commit-pr" : "integration-verify-failed";
+}
 
 /**
  * The prior notes as a usable string list: a well-formed array, or `undefined`

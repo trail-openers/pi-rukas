@@ -49,6 +49,14 @@ export type WorkCapLiteral =
   | "commit-pr-incomplete-consolidation"
   | "lens-fix-not-integrated"
   | "integration-verify-failed"
+  // #1439 — the forge refused the push (GitHub push protection / GH013 / repository
+  // rules / a non-fast-forward). The consolidated commit is local and intact; nothing
+  // an ops child does locally can lift a refusal the REMOTE issued, so this parks
+  // instead of falling back. A `<step>` template because the refusal is a per-step
+  // fact (commit-pr today; a lens-fix push goes through the same classifier), and the
+  // cause classifier reads `verifyEvidence.origin === "push-refused"` rather than
+  // re-matching the prose.
+  | `push-refused:${WorkStep}`
   | "integration-worktree-violation"
   // #669 — develop-time consolidation hit a real file-level conflict:
   // two workstreams edited the same lines. Distinct from

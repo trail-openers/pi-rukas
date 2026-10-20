@@ -85,7 +85,16 @@ export interface IntegrationVerifyOutcome {
    * set ONLY when they are every failure the run produced. `integrate()`
    * pushes on it and records the names for the PR body and the handoff.
    */
+  /** The restore claim was NOT mixed into `failureTail`: see the module docstring. */
   preExistingFailures?: string[];
+  /**
+   * #1064 — the verify's own failure strings, handed to the caller verbatim so the
+   * terminal cap can carry the test names and `✗` lines instead of the cap name alone.
+   * `reason` is the classified message; these are the raw lines behind it.
+   */
+  failures?: string[];
+  /** #1064 / #841 — persisted raw-output logs, carried structurally to the cap event. */
+  logPaths?: string[];
   /** The identity that justified skipping the run, when the run was skipped. */
   skipped?: AlreadyVerifiedTree;
 }
@@ -152,6 +161,14 @@ export async function verifyIntegration(
         failure: "verify",
         reason: `${vr.classifiedMessage} — it was not pushed. ${opts.claimFor(restore)}.`,
         ...(vr.timedOut ? { timedOut: true } : {}),
+        // #1064 — the gate's own extraction, threaded to the terminal cap. The
+        // classified message leads (it is the sentence the handoff opens with); the
+        // raw failure stream follows, so the `FAILED:` test names and the `✗`
+        // assertions survive for the recovery in
+        // `work-driver-commit-verify-evidence.ts` even when the classifier's 800-char
+        // window elided them.
+        failures: [vr.classifiedMessage, ...(vr.failures ?? [])],
+        ...(vr.logPath !== undefined ? { logPaths: [vr.logPath] } : {}),
       },
     };
   }

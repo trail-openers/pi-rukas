@@ -16,7 +16,7 @@ import { trace } from "./trace.ts";
 import { type CherryPickConflict, conflictedFileFrom } from "./work-driver-cherry-pick-conflict.ts";
 import type { CherryPickEntry, WorkStreamPickScope } from "./work-driver-cherry-pick.ts";
 import { pickScopeBase } from "./work-driver-cherry-pick.ts";
-import { isCommitOnBranch } from "./work-driver-integrate.ts";
+import { isCommitOnBranch } from "./work-driver-integrate-commit.ts";
 
 /**
  * Cherry-pick each workstream's FULL committed range (parent→child) onto

@@ -313,6 +313,10 @@ export async function runCommitPrConsolidatedVerify(
       opts.workstreamIds,
       failureTail + (attributed ? "" : " (unattributed — best-effort tail)"),
       opts.perWorktreeFailuresByWs ?? {},
+      // #1064 — the unclipped stream, so the test names the 800-char window elided are
+      // recovered into `namedFailures` instead of the message printing the sentinel over
+      // a run that had named every failing test.
+      failure,
     );
     // #1324 — a killed run's stream stops wherever the kill landed: report
     // the bound, never a classification of the code.
@@ -417,13 +421,27 @@ export async function runCommitPrConsolidatedVerify(
             attributed,
             verdict,
             classifiedMessage: message,
+            // #1064 — same raw stream as the plain park below; the probe's own
+            // attribution is in `message`, not a substitute for the test output.
+            failures: [failure],
             ...(pre.length > 0 ? { preExistingFailures: pre } : {}),
             ...(caused.length > 0 ? { changeCausedFailures: caused } : {}),
           });
         }
       }
     }
-    return done({ ok: false, failureTail, attributed, verdict, classifiedMessage });
+    return done({
+      ok: false,
+      failureTail,
+      attributed,
+      verdict,
+      classifiedMessage,
+      // #1064 — the raw stream the classifier saw, on the result so the terminal cap
+      // can name the failing tests. It is bounded at the cap site
+      // (`boundJoinFailures`), never here: bounding it at this height is what made the
+      // `FAILED:` summary fall outside the window in the first place.
+      failures: [failure],
+    });
   }
 }
 
