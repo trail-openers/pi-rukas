@@ -16,7 +16,6 @@ import { childGuardsArgs } from "./child-guards.ts";
 import type { ResolvedModelChoice } from "./models.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { excludeToolsFor } from "./role-tools.ts";
-import { CODE_REVIEW_SPECIALIST_ROLE } from "./roles.ts";
 import {
   applyUserExtension,
   discoverInstalledExtensions,

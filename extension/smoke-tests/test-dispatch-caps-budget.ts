@@ -64,7 +64,8 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   }
 };
 
-// 1. tokenBudgetFor: default-OFF (0) for every role at ship.
+// 1. tokenBudgetFor: default-OFF (0) for EVERY role — #1642 removed the one
+// role (#952) that shipped a non-zero default, so no built-in budget exists.
 // biome-ignore lint/complexity/noUselessLoneBlockStatements: fixture scope (shared `exit`/`assert` across the file)
 {
   assert(
