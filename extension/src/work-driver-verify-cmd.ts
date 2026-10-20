@@ -51,9 +51,33 @@ function driverKnobNames(): ReadonlySet<string> {
 }
 
 /**
+ * The ONE driver knob a host-side call keeps: it decides WHERE the driver
+ * reports a handoff, so a call the DRIVER makes — its `git worktree` bookkeeping
+ * around a project run — must keep it while the project's own command never
+ * sees it. Named here rather than spelled at a call site so the scrub and the
+ * one exception cannot drift apart.
+ */
+export const VERIFY_HOST_ENV_KEEP = "PI_ENSEMBLE_HANDOFF_CHANNEL";
+
+/**
+ * The environment a host-side `git`/`gh` call made by a verify seam runs with:
+ * `base` (the driver's own `process.env` by default) minus the driver's knobs,
+ * EXCEPT `VERIFY_HOST_ENV_KEEP`. Those calls are the driver's own, not the
+ * project's, so scrubbing the channel knob would move a host-channel cycle's
+ * handoff into the forge for the length of one call. A project command never
+ * gets this env — it gets `verifyChildEnv`.
+ */
+export function verifyHostEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = verifyChildEnv(base);
+  const kept = base[VERIFY_HOST_ENV_KEEP];
+  if (kept !== undefined) env[VERIFY_HOST_ENV_KEEP] = kept;
+  return env;
+}
+
+/**
  * The environment every project verify, smoke, verify-full and fast-tier command
- * runs with: `base` (the driver's own `process.env` by default) minus the
- * driver's knobs. Those configure the DRIVER — a headless runner exports
+ * runs with: `base` (the driver's own `process.env` by default) minus every
+ * driver knob. Those configure the DRIVER — a headless runner exports
  * `PI_ENSEMBLE_HANDOFF_CHANNEL`, `PI_ENSEMBLE_PARALLEL_WORK`, and the like — and
  * the project's tests are not the driver's configuration: inherited, they
  * flipped behaviour in unrelated smoke tests and parked a correct change as
@@ -62,24 +86,18 @@ function driverKnobNames(): ReadonlySet<string> {
  * the inventory: the shell loop reads them inside the child, so they pass
  * through. Everything else (PATH, HOME, GIT_*, locale) is kept.
  *
- * `keep` names knobs that this particular child DOES need. It exists for the
- * host-side `git`/`gh` calls that a verify seam makes around a project run —
- * a worktree add or a `gh pr edit` — which must keep the knobs that decide
- * where the driver reports (an `env`/`execArgv` cannot express "the parent's
- * env minus everything except these"). A caller passes a knob name it reads
- * itself, never a project's.
+ * No exception list, and no `keep` parameter: the ONE knob a host-side call
+ * keeps has its own named helper, `verifyHostEnv`. A free-form `keep` array let
+ * any seam admit any driver knob into a project run, which is the leak this
+ * scrub exists to close.
  */
-export function verifyChildEnv(
-  base: NodeJS.ProcessEnv = process.env,
-  keep?: readonly string[],
-): NodeJS.ProcessEnv {
-  const kept = keep === undefined ? undefined : new Set(keep);
+export function verifyChildEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const knobs = driverKnobNames();
   const env: NodeJS.ProcessEnv = {};
   const dropped: string[] = [];
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined) continue;
-    if (knobs.has(key) && kept?.has(key) !== true) dropped.push(key);
+    if (knobs.has(key)) dropped.push(key);
     else env[key] = value;
   }
   // Names only, never values; each name traced once per process so a verify
