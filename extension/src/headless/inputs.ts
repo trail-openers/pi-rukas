@@ -334,7 +334,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // waits here and the delay cannot reach a real run.
   ms("TEST_CLAIMS_WINDOW_MS", 0, "internal"),
   int("TEST_DELETE_TOLERANCE", 0),
-  // Unset: no budget, except code-review-specialist (8,000,000).
+  // Unset: no budget for any role (#1642); an explicit value arms a ceiling.
   family(int("TOKEN_BUDGET_<ROLE>", null, "cycle", { unit: "tokens" }), ROLE_MEMBERS),
   ms("TOOL_INACTIVITY_TIMEOUT_MS", 3_600_000),
   input("TRANSCRIPT_RETENTION_DAYS", "number", 5, "cycle", { unit: "days" }),

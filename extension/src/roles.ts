@@ -27,8 +27,11 @@ export const SUBAGENT_ROLE_NAMES = ROLE_NAMES.filter(
 
 /**
  * The literal role string for the lens-review child, shared by every site
- * that must match it by name (token budget default in spawn-support.ts,
- * slow-notice's stop-clause branch) so a rename can't strand a comparison.
+ * that must match it by name — today that is slow-notice's stop-clause branch
+ * (a lens child that has already written its closing summary is told to stop)
+ * — so a rename can't strand a comparison. No cap matches a role by name any
+ * more: the token-budget cap is the env key it builds from the role, never a
+ * literal to keep in sync.
  */
 export const CODE_REVIEW_SPECIALIST_ROLE = "code-review-specialist";
 

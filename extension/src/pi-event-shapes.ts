@@ -105,7 +105,13 @@ export interface SpawnOptions extends WriteFenceOpt {
    *
    * `dispatchCore` wires this to the job's `jobId` so the steer reaches the
    * right child in the scrollback; direct callers (lens/adversarial) omit it
-   * and the steer is skipped (budget default-OFF makes it a no-op for them).
+   * and the steer is skipped. Nothing arms a budget by default any more
+   * (#1642 removed the last built-in), so for those callers it is a no-op.
+   * The absence is not merely the loss of the courtesy steer: the budget
+   * tracker is built only when `onSteer` is present (see `CapSessionOpts` in
+   * `spawn-caps.ts`), so even an operator-armed
+   * `PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>` does nothing for a caller that omits
+   * this — no steer *and* no kill.
    */
   onSteer?: (message: string, source: SteerSource) => void;
   /**
