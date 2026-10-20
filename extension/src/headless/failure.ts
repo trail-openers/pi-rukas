@@ -125,6 +125,14 @@ function capKind(cap: string): FailureKind {
       return "timeout";
     case "verify-env":
       return "environment";
+    // #1439 — the push was refused. Not `verify` (the verify gate never judged this
+    // content — the remote rejected it before it was published), and not `cap` (which
+    // means "no failure, a rule stopped the cycle"): something did fail, and it was
+    // the forge. `environment` is the closest existing kind — the fault is outside the
+    // change, in the system the cycle pushes to — and `causeVerdictOf` overrides the
+    // class to `issue` anyway, so the kind is what a host switches on, not the verdict.
+    case "push-refused":
+      return "environment";
     // #1243 — the endpoint, not the work. This is the field a headless caller
     // switches on to re-queue a cycle by itself once the provider answers.
     case "provider-unavailable":

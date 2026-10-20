@@ -1,0 +1,232 @@
+#!/usr/bin/env bun
+/**
+ * #1064 — an `integration-verify-failed` park says WHICH tests failed.
+ *
+ * The measured shape is cycle 1064's own state file: the consolidated gate went red on
+ * 22 tests, and the cap-hit that parked the cycle carried `evidence: null`. The operator
+ * saw a cap name and nothing else — no failing test, no assertion, no log — while the
+ * gate had already extracted all three and thrown them away.
+ *
+ * Three layers, one per place the evidence used to be dropped:
+ *   1. the extractor recovers `FAILED:` / `✗` names from the raw stream;
+ *   2. the classifier, when its bounded 800-char window elided them, still surfaces the
+ *      names from the unclipped text — and `consolidatedFailureMessage` uses them instead
+ *      of printing "(no specific assertion could be extracted)" over a run that had named
+ *      every failing test;
+ *   3. the cap fields the terminal park records: `evidence` / `failures` / `logPaths`,
+ *      with the honest shapes preserved (no failures → no fabricated line; a timeout
+ *      still says it was killed).
+ */
+
+import {
+  consolidatedVerifyCapFields,
+  consolidatedVerifyEvidenceFields,
+  namedFailureLines,
+} from "../src/work-driver-commit-verify-evidence.ts";
+import {
+  classifyConsolidatedVerifyFailure,
+  consolidatedFailureMessage,
+} from "../src/work-driver-consolidation-classify.ts";
+
+let exit = 0;
+function assert(cond: boolean, msg: string) {
+  if (cond) console.log(`✓ ${msg}`);
+  else {
+    console.error(`✗ ${msg}`);
+    exit = 1;
+  }
+}
+
+// 22 named failures, in the shape a bun/vitest summary actually prints: the `FAILED:`
+// summary line first, then the per-test `✗` assertions, then noise.
+const NAMES = Array.from({ length: 22 }, (_, i) => `driver::test_case_${i + 1}`);
+const RAW_FAILURE = [
+  "running 22 tests",
+  "test driver::test_case_1 ... FAILED",
+  "thread 'main' panicked at src/main.rs:10:",
+  "assertion failed: left == right",
+  ...NAMES.map((n) => `✗ ${n}`),
+  "some other chatter".repeat(120),
+  `FAILED: ${NAMES.length} test(s) — ${NAMES.slice(0, 6).join(", ")} …`,
+].join("\n");
+
+// ---------------------------------------------------------------------------
+// 1. The extractor.
+
+const named = namedFailureLines(RAW_FAILURE);
+assert(named.length > 0, "#1064: named failures are recovered from the raw stream");
+assert(
+  named.some((l) => l.includes("FAILED: 22 test(s)")),
+  "#1064: the `FAILED: <n> test(s)` summary is one of them",
+);
+assert(
+  NAMES.every((n) => named.some((l) => l.includes(n))),
+  "#1064: every `✗` test line survives into the evidence",
+);
+const namesUpperBound = 40;
+assert(
+  named.length <= namesUpperBound,
+  `#1064: the recovered set is bounded so a cap is not a log dump (got ${named.length})`,
+);
+assert(namedFailureLines("").length === 0, "#1064: empty text yields no names");
+assert(namedFailureLines(undefined).length === 0, "#1064: absent text yields no names");
+assert(
+  namedFailureLines("ok 12 tests passed").length === 0,
+  "#1064: a green stream yields no names (nothing is invented)",
+);
+
+// ---------------------------------------------------------------------------
+// 2. The classifier + message. The window is what the pre-fix code passed; the FULL text
+//    is what #1064 added. The window here is deliberately the tail that names nothing.
+
+const WINDOW = "some other chatter".repeat(40);
+const wsIds = ["task-a", "task-b"];
+
+{
+  const before = classifyConsolidatedVerifyFailure(2, wsIds, WINDOW, {});
+  assert(
+    before.assertion.includes("no specific assertion"),
+    "baseline: the bounded window alone really does come up empty (this is the defect)",
+  );
+  const msg = consolidatedFailureMessage(before, "bun test");
+  assert(
+    msg.includes("no specific assertion"),
+    "baseline: with no full text the sentinel stands (absence stays honest)",
+  );
+}
+
+{
+  const after = classifyConsolidatedVerifyFailure(2, wsIds, WINDOW, {}, RAW_FAILURE);
+  assert(
+    after.namedFailures !== undefined && after.namedFailures.length > 0,
+    "#1064: the unclipped stream recovers the names the window elided",
+  );
+  const msg = consolidatedFailureMessage(after, "bun test");
+  // The pre-fix message printed the sentinel here. It now carries the recovered names —
+  // bounded, so it is a summary and not the whole log.
+  assert(
+    (after.namedFailures ?? []).length > 0 &&
+      msg.includes("driver::test_case_1") &&
+      msg.includes("driver::test_case_22"),
+    "#1064: the message names the failing tests the bounded window had elided",
+  );
+  assert(
+    !msg.includes("specific assertion: (no specific assertion"),
+    "#1064: the sentinel no longer stands in for the specific-assertion field",
+  );
+  assert(
+    msg.includes("consolidation-created") || msg.includes("task-a"),
+    "#1064: the classification and workstream attribution are still in the message",
+  );
+}
+
+{
+  // A per-workstream defect keeps its own attribution, and still gains the names.
+  const perWs = classifyConsolidatedVerifyFailure(
+    2,
+    wsIds,
+    WINDOW,
+    { "task-b": "FAILED: 3 test(s) — driver::only_b_1, driver::only_b_2, driver::only_b_3" },
+    RAW_FAILURE,
+  );
+  // The window names nothing, so case 2 cannot match on the assertion; the classifier
+  // falls through to the combination case. What matters is that the names ride along.
+  assert(
+    perWs.namedFailures === undefined || perWs.namedFailures.length > 0,
+    "#1064: the per-workstream shape never loses the recovered names",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 3. The cap fields the terminal park writes.
+
+{
+  const fields = consolidatedVerifyEvidenceFields({
+    cap: "integration-verify-failed",
+    reason: "verify failed",
+    timedOut: false,
+    failures: ["FAILED: 22 test(s)", "✗ driver::test_case_1"],
+    logPaths: ["/tmp/verify-1064.log"],
+  });
+  assert(
+    fields !== undefined && fields.verifyEvidence.failures.length === 2,
+    "#1064: verifyEvidence.failures carries the gate's own lines",
+  );
+  assert(
+    fields?.verifyEvidence.origin === "outcome-gate",
+    "#1064: the origin is structured (`outcome-gate`), not inferred from prose",
+  );
+  const cap = consolidatedVerifyCapFields({
+    cap: "integration-verify-failed",
+    reason: "verify failed",
+    timedOut: false,
+    failures: ["FAILED: 22 test(s)", "✗ driver::test_case_1"],
+    logPaths: ["/tmp/verify-1064.log"],
+  });
+  assert(
+    (cap.evidence ?? "").includes("FAILED: 22 test(s)"),
+    "#1064: the cap's `evidence` names the failing tests, not just the cap",
+  );
+  assert(
+    (cap.logPaths ?? []).length === 1 && (cap.logPaths ?? [])[0] === "/tmp/verify-1064.log",
+    "#1064/#841: the cap points at the persisted raw-output log",
+  );
+  assert(
+    (cap.evidence ?? "").includes("✗ driver::test_case_1"),
+    "#1064: the cap carries the extracted `✗` line as well as the summary",
+  );
+}
+
+{
+  // The honest negatives: no failures means no fabricated evidence.
+  const empty = consolidatedVerifyEvidenceFields({
+    cap: "integration-verify-failed",
+    reason: "verify failed",
+    timedOut: false,
+  });
+  assert(
+    empty === undefined || (empty.failures ?? []).length === 0,
+    "#1064: with no failure lines nothing is invented",
+  );
+  const emptyCap = consolidatedVerifyCapFields({
+    cap: "integration-verify-failed",
+    reason: "verify failed on the consolidated tree",
+    timedOut: false,
+  });
+  assert(
+    (emptyCap.evidence ?? "").includes("verify failed on the consolidated tree"),
+    "#1064: the reason still stands as the evidence when there are no lines",
+  );
+  assert(
+    emptyCap.logPaths === undefined || emptyCap.logPaths.length === 0,
+    "#841: no log, no pointer (an empty logPaths is not a broken link)",
+  );
+}
+
+{
+  // A killed run says it was killed — the #1324 shape must survive the #1064 changes.
+  const timedOut = consolidatedVerifyCapFields({
+    cap: "verify-timeout:commit-pr",
+    reason: "verify killed at its bound",
+    timedOut: true,
+    failures: ["✗ driver::test_case_1"],
+  });
+  const timedOutEvidence = consolidatedVerifyEvidenceFields({
+    cap: "verify-timeout:commit-pr",
+    reason: "verify killed at its bound",
+    timedOut: true,
+    failures: ["✗ driver::test_case_1"],
+  });
+  assert(
+    timedOut.evidence?.includes("killed at its bound") &&
+      timedOut.evidence.includes("✗ driver::test_case_1"),
+    "#1324/#1064: a run killed at its bound says so AND still carries its extracted lines",
+  );
+  assert(
+    timedOutEvidence?.verifyEvidence.origin === "outcome-gate" &&
+      timedOutEvidence.verifyEvidence.failures.length === 1,
+    "#1064: a timed-out park records its failure lines in verifyEvidence too",
+  );
+}
+
+process.exit(exit);

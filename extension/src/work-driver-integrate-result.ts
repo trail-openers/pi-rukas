@@ -61,8 +61,16 @@ export type IntegrateResult =
       conflictPatch?: string;
       /** #492 — worktrees that produced no diff (for handoff context). */
       noDiff?: NoDiff;
-      /** #539 — structured failure discriminator. Cause readers MUST read this, never re-parse `reason`. */
-      failure?: "dirty-repoRoot" | "apply" | "verify";
+      /**
+       * #539 — structured failure discriminator. Cause readers MUST read this, never re-parse `reason`.
+       *
+       * `push-refused` (#1439) is the forge's server-side refusal of the push itself — GitHub push
+       * protection (`GH013`), repository rules, or a non-fast-forward the driver must not overwrite.
+       * It is named structurally because it is TERMINAL by nature: nothing an ops child does locally
+       * can lift a refusal the remote issued, so the fallback dispatch is 40 minutes of rediscovery
+       * and the cause classifier must not call the change healthy.
+       */
+      failure?: "dirty-repoRoot" | "apply" | "verify" | "push-refused";
       /** #1324 — the `verify` failure was a run killed at its bound. */
       timedOut?: boolean;
       /**
@@ -85,4 +93,16 @@ export type IntegrateResult =
       preExistingFailures?: string[];
       /** #654 task-c — dirty-preflight porcelain lines (the caller parks with these). */
       porcelain?: string[];
+      /**
+       * #1064 — the consolidated verify's OWN failure lines (the classified message,
+       * the `FAILED: N test(s)` names, the `✗` assertions). Set on a `verify` failure so
+       * the terminal cap can carry them: pre-fix the cap carried the cap NAME, the
+       * handoff named no test, and everything the gate had extracted was discarded.
+       */
+      failures?: string[];
+      /**
+       * #1064 — the persisted raw-output logs behind this failure, on the same
+       * structural channel #841 uses for the develop caps. Never parsed out of prose.
+       */
+      logPaths?: string[];
     };

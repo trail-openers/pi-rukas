@@ -118,6 +118,18 @@ export type CommitPrConsolidatedVerifyResult =
       verdict: ConsolidationFailureVerdict;
       /** Handoff-ready message naming classification + assertion + workstreams. */
       classifiedMessage: string;
+      /**
+       * #1064 — the raw failure strings the classifier saw, alongside the composed
+       * message. The cap site needs the `FAILED: <n> test(s)` names and the `✗` lines
+       * that `classifiedMessage` may have lost to the 800-char tail window.
+       */
+      failures?: string[];
+      /**
+       * #1064 / #841 — the persisted raw-output log behind this run, carried on the
+       * cap event structurally. Absent when nothing was written (this seam writes no
+       * log on the single-run path; the hang report writes one).
+       */
+      logPath?: string;
       /** #1324 — the run was killed at its bound: no verdict, so no classification. */
       timedOut?: boolean;
       /**

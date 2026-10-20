@@ -37,7 +37,16 @@ export type VerifyFailedRoute = "fix-pass" | "pr-not-open" | "gate" | "unrecorde
 /** The recorded origin, or `undefined` when absent or unknown to this build (treated as absent). */
 function originOf(state: WorkState): VerifyEvidenceOrigin | undefined {
   const raw: string | undefined = state.pipelineState.verifyEvidence?.origin;
-  return raw === "outcome-gate" || raw === "fix-pass" || raw === "pr-not-open" ? raw : undefined;
+  return raw === "outcome-gate" ||
+    raw === "fix-pass" ||
+    raw === "pr-not-open" ||
+    // #1439 — the push refusal. It raises its own cap, so it never reaches the
+    // `verify-failed:` router's prose branches; naming it here is what keeps the
+    // `assertNeverOrigin` switch honest instead of quietly folding a new origin into
+    // the outcome-gate route.
+    raw === "push-refused"
+    ? raw
+    : undefined;
 }
 
 /**
@@ -69,6 +78,13 @@ export function routeVerifyFailed(cap: Cap, state: WorkState): VerifyFailedRoute
         : "unrecorded";
     case "pr-not-open":
       return failures.length > 0 ? "pr-not-open" : "unrecorded";
+    // #1439 — a push refusal is its own cap (`push-refused:<step>`), not a
+    // `verify-failed:` one, so this route is unreachable by construction. It has to
+    // exist for the switch to stay exhaustive over `VerifyEvidenceOrigin`; had the two
+    // ever shared the cap, the refusal would be explained as a verify failure, which is
+    // exactly the #1439 misdiagnosis.
+    case "push-refused":
+      return "unrecorded";
     case "outcome-gate":
     case undefined:
       return failures.length > 0 ? "gate" : "unrecorded";
@@ -113,7 +129,9 @@ function commitPrGateText(state: WorkState): string {
  * event, never parsed out of prose. Absent on pre-#841 state files.
  */
 function rawLogLine(step: string, capHit: CapHitEvent | undefined): string {
-  const logPaths = step === "develop" ? capHit?.logPaths : undefined;
+  // #1439 — the commit-pr push-refusal park carries the same structural log paths the
+  // develop caps do (see `runCommitPrLocked`), so the pointer must render there too.
+  const logPaths = step === "develop" || step === "commit-pr" ? capHit?.logPaths : undefined;
   if (!logPaths || logPaths.length === 0) return "";
   // #1427 — a hang report is a different artefact from a raw verify log: it
   // names the hung test and the processes the kill left behind, and it is the

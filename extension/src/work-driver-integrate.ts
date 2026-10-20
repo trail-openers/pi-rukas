@@ -5,11 +5,13 @@ import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
+import { isCommitOnBranch } from "./work-driver-integrate-commit.ts";
 import { integrationEmptiness } from "./work-driver-integrate-emptiness.ts";
 import { fastForwardOnto, rewindFastForward } from "./work-driver-integrate-ff.ts";
 import { sweepBeforeFollowupCheckout } from "./work-driver-integrate-sweep.ts";
 import { verifyIntegration } from "./work-driver-integrate-verify-step.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
+import { pushRefusalFromError } from "./work-driver-push-refusal.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
@@ -115,55 +117,6 @@ export interface IntegrateOpts {
 
 /** #492 — worktrees that produced no diff, keyed by id → worktree path. */
 export type NoDiff = Record<string, string>;
-
-/**
- * Check if a commit is already on the integration branch: either it is in
- * the branch's history, or its tree is the branch head's tree (the commit
- * is effectively already applied even if the SHA differs, e.g. from a
- * resume). The tree test alone only ever recognises the commit AT the tip:
- * a second lens-fix round starts on the integrated tip, so its
- * `baseSha..HEAD` range holds every commit already on the branch, and
- * re-picking the ones behind the tip conflicts with the fixes made since.
- * Returns `false` on any read error (optimistic: cherry-pick if we can't
- * verify).
- */
-export async function isCommitOnBranch(
-  execFn: (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => Promise<{ stdout: string }>,
-  repoRoot: string,
-  branchName: string,
-  sha: string,
-): Promise<boolean> {
-  try {
-    // `0` commits of `sha`'s history missing from HEAD = `sha` is in it. A
-    // count, not `merge-base --is-ancestor`'s exit status, so an executor
-    // that answers nothing is never read as "already there".
-    const { stdout: missing } = await execFn(`git rev-list --count HEAD..${sha}`, {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    if (missing.trim() === "0") return true;
-  } catch {
-    // Unreadable — fall through to the tree test.
-  }
-  try {
-    const { stdout: commitTree } = await execFn(`git cat-file -p ${sha}`, {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    const m = commitTree.match(/^tree ([0-9a-f]{40})$/m);
-    if (!m) return false;
-    const commitTreeHash = m[1];
-    const { stdout: headTree } = await execFn("git cat-file -p HEAD", {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    const headMatch = headTree.match(/^tree ([0-9a-f]{40})$/m);
-    if (!headMatch) return false;
-    return commitTreeHash === headMatch[1];
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Consolidate every worktree onto the feature branch at repoRoot.
@@ -433,10 +386,33 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     // 5. Push.
     const pushRefProblem = netRefProblem(branchName);
     if (pushRefProblem !== undefined) throw new Error(`push refused: ${pushRefProblem}`);
-    await runNetGit(execFn, "git", {
-      cwd: repoRoot,
-      argv: ["push", "-u", "origin", branchName],
-    });
+    try {
+      await runNetGit(execFn, "git", {
+        cwd: repoRoot,
+        argv: ["push", "-u", "origin", branchName],
+      });
+    } catch (err) {
+      // #1439 — a push the FORGE refused is not environment variance. GitHub push
+      // protection (GH013) / repository rules refuse the ref because of its CONTENT,
+      // and a non-fast-forward asks for a force-push the driver will not make; in
+      // neither case can an ops child fix it locally. Named structurally so the
+      // caller parks terminally instead of dispatching a fallback that only
+      // rediscovers the refusal, and so the cause classifier blames the content the
+      // forge objected to rather than "the verify command failed". The refusal text
+      // is preserved verbatim — its `remote:` lines carry the allow-the-secret URLs
+      // that ARE the operator's action. Anything else (a transport failure) rethrows
+      // and stays the ops fallback's problem.
+      const refusal = pushRefusalFromError(err);
+      if (refusal !== undefined) {
+        const restore = await restoreRoot();
+        return {
+          ok: false,
+          failure: "push-refused",
+          reason: `push refused by the remote for ${branchName}: ${refusal} ${claimFor(restore)}`,
+        };
+      }
+      throw err;
+    }
 
     // Advance each cherry-picked worktree to the new HEAD — without this the
     // worktree keeps the developer's commit and the NEXT integration would

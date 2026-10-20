@@ -314,10 +314,18 @@ async function redGateCycle(
     readFileSync(path.join(SRC, f), "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, " ")
       .replace(/^\s*\/\/.*$/gm, " ");
-  const combined = `${read("work-driver-commit.ts")} ${read("work-driver-commit-lock.ts")}`;
+  // #1439 — the terminal return shape moved into `terminalCommitPrFailure` (the verify
+  // and push-refusal branches now share one builder, so it lives with its siblings in
+  // the commit helpers). Read all three: the canary asks about the whole path.
+  const combined = `${read("work-driver-commit.ts")} ${read("work-driver-commit-lock.ts")} ${read("work-driver-commit-helpers.ts")}`;
 
   assert(
-    /res\.failure === "verify"[\s\S]{0,400}?terminal: true/.test(combined),
+    // #1439 — the terminal literal now comes from the ONE builder both terminal branches
+    // call, so the canary checks the two halves of the invariant separately: the verify
+    // branch routes through the builder, and the builder is what stamps `terminal: true`.
+    // An `if` that drops either half still fails here.
+    /res\.failure === "verify"[\s\S]{0,300}?terminalCommitPrFailure\(/.test(combined) &&
+      /function terminalCommitPrFailure\([\s\S]{0,600}?terminal: true/.test(combined),
     "canary: a verify failure is marked terminal — every other failure still falls back",
   );
   const mechIdx = combined.indexOf("const mech = await mechanizedCommitPr");
@@ -328,7 +336,10 @@ async function redGateCycle(
     "canary: the terminal branch is checked before the ops fallback is reached",
   );
   assert(
-    /cap: (?:mech\.timedOut \? "verify-timeout:commit-pr" : )?"integration-verify-failed"/.test(
+    // #1439 — the cap selection moved into `pushTerminalCap`, so the literal now lives
+    // in that helper rather than inline at the call site. Both spellings still have to
+    // name a cap: the canary's point is that a terminal halt is never evidence-less.
+    /cap: (?:mech\.timedOut \? "verify-timeout:commit-pr" : )?"integration-verify-failed"|return mech\.timedOut \? "verify-timeout:commit-pr" : "integration-verify-failed"|pushTerminalCap\(/.test(
       combined,
     ),
     "canary: it halts with a named cap rather than failing silently",

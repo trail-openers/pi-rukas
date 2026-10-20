@@ -35,6 +35,11 @@ export const CAP_HIT_FIXED_LITERALS = [
   "commit-pr-incomplete-consolidation",
   "lens-fix-not-integrated",
   "integration-verify-failed",
+  // #1439 — the forge refused the push. A template family (`push-refused:commit-pr`),
+  // so it is NOT a fixed literal and belongs to CAP_TEMPLATES, not this list; named
+  // here only to record that the validator knows it by its family. Leaving it out of
+  // the family map is what would make a live parked cycle halt on "unrecognised value"
+  // and tell the operator to rm the record this cap exists to create.
   // #861 — the commit-pr fallback's post-dispatch branch-holder audit
   // (the #841 shape); the offending holder path rides in the cap's evidence.
   "integration-worktree-violation",

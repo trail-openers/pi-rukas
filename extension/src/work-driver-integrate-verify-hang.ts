@@ -63,5 +63,9 @@ export function commitPrHangResult(opts: {
     verdict: opts.verdict,
     classifiedMessage,
     timedOut: true,
+    // #1064 — the killed run's stream is the only record of what it reached before the
+    // kill, and the test names it printed are the evidence the operator needs. The
+    // hang clause above already names the bound; this names the work.
+    failures: [opts.output],
   };
 }
