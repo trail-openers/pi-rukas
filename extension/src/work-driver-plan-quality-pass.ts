@@ -63,6 +63,7 @@ import {
   type SpecCoverageSpec,
   planSpecMismatchReason,
   protectedDeferralsOf,
+  undeclarableSlotsOf,
 } from "./work-driver-plan-spec-coverage.ts";
 import {
   correctiveNoWorkstreamCallsSteer,
@@ -194,6 +195,20 @@ export async function runPlanQualityTail(
     trace(
       `work-driver: plan-to-spec gate deferred deliverable ${d.id} (${d.paths.join(", ")}) — protected path(s) with no --allow-protected grant, so the plan is not required to cover them`,
     );
+  }
+  // #1707 — the mirror trace for the OTHER exemption: a slot the planner may
+  // not declare (a glob or `<name>` template) is exempted from the coverage
+  // requirement, and without this line a deliverable whose slots were all
+  // exempted leaves the gate judging nothing with nothing to show for it.
+  // Gated on the SAME condition the gate runs under — with the gate off (or no
+  // accepted call, which the zero-call corrective owns) nothing was exempted,
+  // and a trace for a gate that never ran is indistinguishable from a real one.
+  if (input.planGateEnabled && !noCalls) {
+    for (const d of undeclarableSlotsOf(input.spec)) {
+      trace(
+        `work-driver: plan-to-spec gate exempted deliverable ${d.id} slot(s) no plan may declare (${d.paths.join(", ")}) — patterns stay measured at converge, where a real diff can answer them`,
+      );
+    }
   }
   const specMismatch =
     input.planGateEnabled && !noCalls

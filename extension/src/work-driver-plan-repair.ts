@@ -44,6 +44,7 @@
 import { OPEN_POINT_CHAR_CAP } from "./open-points-reader.ts";
 import { plannedPathProblem } from "./plan-path-shape.ts";
 import { flattenIssueText, redactThenBound } from "./text-flatten.ts";
+import { fenceDirPrefix } from "./work-driver-declared-path.ts";
 import {
   declaredPathsCoveredBy,
   isPlaceholderPath,
@@ -163,10 +164,12 @@ export function repairOmittedDeliverablePaths(
   // Containment runs BOTH ways, the same reading `findFenceContradictions` uses:
   // a fence under the path (the path is inside a fenced directory) and a fence
   // over it (the planner fenced `src/a.ts` and declared only `src/a.ts/notes.md`)
-  // both say "do not touch this".
-  const fences = ws.outOfScope
-    .map((e) => normaliseDeclaredPath(e).replace(/\/+$/, ""))
-    .filter((n) => n.length > 0);
+  // both say "do not touch this". The FENCE side is read by `fenceDirPrefix`, so
+  // the directory spelling `extension/src/**` fences `extension/src/foo.ts` —
+  // #1707 round 4: with the wildcard merely surviving `normaliseDeclaredPath`
+  // this predicate matched nothing, and the repair appended a path the plan had
+  // deliberately fenced out.
+  const fences = ws.outOfScope.map(fenceDirPrefix).filter((n) => n.length > 0);
   const fenced = (path: string) =>
     fences.some((n) => path === n || path.startsWith(`${n}/`) || n.startsWith(`${path}/`));
   const added: string[] = [];

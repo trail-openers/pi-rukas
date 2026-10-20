@@ -13,7 +13,10 @@
  */
 
 import { classifyDeliverables } from "../src/work-driver-converge.ts";
-import { splitDeliverablePaths } from "../src/work-driver-deliverable-paths.ts";
+import {
+  declaredPathsCoveredBy,
+  splitDeliverablePaths,
+} from "../src/work-driver-deliverable-paths.ts";
 import { parseNormalisedSpec } from "../src/work-driver-intent.ts";
 import { findUncoveredDeliverables } from "../src/work-driver-plan-spec-coverage.ts";
 
@@ -136,12 +139,39 @@ const ws = (paths: Record<string, string[]>) =>
   // it: `src/dir/<x>.ts` is a template, so no pool entry — not even one that
   // happens to sit under it — may be covered by it. Only a pool entry that
   // names the template's own shape does (the next case).
+  //
+  // #1557 moved this guard ONE LAYER DOWN rather than deleting it. At the
+  // gate level it could only ever assert "uncovered", and a template is a slot
+  // NO plan may declare (`plannedPathProblem` refuses `* ? !` in a
+  // `report_workstream` paths entry) — so the assertion pinned an unreachable
+  // requirement and the #1557 cycle parked twice on exactly it. What the
+  // matcher still owes is the coverage relation itself, asserted here directly.
+  assert(
+    declaredPathsCoveredBy("src/dir/<x>.ts", ["src/dir/new.ts"]) === false,
+    "#819: a concrete declaration outside a template's directory does not cover it (matcher-level: the reverse direction stays CONCRETE-only)",
+  );
+  assert(
+    declaredPathsCoveredBy("src/dir/<x>.ts", ["other/new.ts"]) === false,
+    "#819: a template in another directory is still not covered (segment anchoring holds at plan time too)",
+  );
   const r = findUncoveredDeliverables(ws({ a: ["src/dir/new.ts"] }), {
     deliverables: [{ id: "d1", paths: ["src/dir/<x>.ts"] }],
   }, []);
   assert(
-    r.checkedCount === 1 && r.uncovered.length === 1,
-    "#819: a concrete declaration outside a template's directory does not cover it",
+    r.checkedCount === 0 && r.uncovered.length === 0,
+    "#1557: but a deliverable whose EVERY slot is a template is not REQUIRED of the plan — no plan may name it, so it cannot be judged uncovered",
+  );
+  // The mixed form keeps its bite: exempting the template must not exempt the
+  // concrete half beside it (this is the case that would pass if the exemption
+  // were the sloppy "any one path covers it" reading).
+  const rMixed = findUncoveredDeliverables(ws({ a: ["src/unrelated.ts"] }), {
+    deliverables: [{ id: "d1", paths: ["src/dir/gone.ts", "src/dir/<x>.ts"] }],
+  }, []);
+  assert(
+    rMixed.checkedCount === 1 &&
+      rMixed.uncovered.length === 1 &&
+      rMixed.uncovered[0]?.paths.join(",") === "src/dir/gone.ts",
+    "#1557: the exempt template drops out of the row and the undeclared concrete half is still refused",
   );
   // And the other direction: a workstream that declared the TEMPLATE covers a
   // deliverable naming the concrete file it produced.
@@ -153,11 +183,11 @@ const ws = (paths: Record<string, string[]>) =>
     "#819 agreement: a workstream's <template> covers a deliverable naming a file that fits it",
   );
   const rBad = findUncoveredDeliverables(ws({ a: ["other/new.ts"] }), {
-    deliverables: [{ id: "d1", paths: ["src/dir/<x>.ts"] }],
+    deliverables: [{ id: "d1", paths: ["src/dir/gone.ts", "src/dir/<x>.ts"] }],
   }, []);
   assert(
     rBad.uncovered.length === 1,
-    "#819: a template in another directory is still UNCOVERED (segment anchoring holds at plan time too)",
+    "#819: an unrelated pool still leaves the deliverable UNCOVERED (the exemption is not a shortcut)",
   );
   // The self-match guard: a non-empty workstream pool must not cover every
   // deliverable by construction — the bug an earlier draft shipped when the
