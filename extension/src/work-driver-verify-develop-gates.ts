@@ -21,7 +21,7 @@ import {
   countSkipMarkersInDiffLine,
 } from "./work-driver-skip-ratchet.ts";
 import { TIER_KNOB, smokeTierTimeoutMs, verifyTimeoutMs } from "./work-driver-verify-budget.ts";
-import { readFirstConfigLine } from "./work-driver-verify-cmd.ts";
+import { readFirstConfigLine, verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import {
   boundText,
   formatExecError,
@@ -182,6 +182,8 @@ export async function runSmokeGate(
           cwd: smokeCwd,
           timeout: smokeTimeoutMs,
           maxBuffer: 4 * 1024 * 1024,
+          // The project's gate never runs with the driver's knobs (#1642).
+          env: verifyChildEnv(),
         }),
       );
     } catch (err) {

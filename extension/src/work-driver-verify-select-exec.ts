@@ -36,6 +36,7 @@
 import { trace } from "./trace.ts";
 import type { VerifyChannel } from "./work-driver-integrate-verify-flake.ts";
 import { attributeAgainstBase } from "./work-driver-verify-attribution.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
 import { readVerifyReport } from "./work-driver-verify-report-file.ts";
 import { createVerifyReportFile, verifyReportEnv } from "./work-driver-verify-report-path.ts";
@@ -119,7 +120,11 @@ async function runOnce(
   timeoutMs: number,
 ): Promise<RunResult> {
   let reportFile: string | undefined;
-  let env = opts?.env ?? process.env;
+  // A caller that named no env gets the driver's environment MINUS the driver's
+  // knobs. The bare `process.env` here was the widest leak: this is the run of
+  // the project's whole suite, and a headless runner's knobs inherited into it
+  // flipped behaviour in unrelated tests (#1064, #1642).
+  let env = opts?.env ?? verifyChildEnv();
   try {
     reportFile = createVerifyReportFile(o.channel.reportDir, label);
     // The path reaches the verify command, and the loop passes it to no test:
@@ -205,7 +210,9 @@ async function probeOnce(
   } catch {
     return { blocks: "the base probe's report could not be created, so it cannot run" };
   }
-  const probeEnv = verifyReportEnv(process.env, probeReportFile);
+  // The probe runs the project's own command in a throwaway worktree: same
+  // scrub as every other project run, plus the report path.
+  const probeEnv = verifyReportEnv(verifyChildEnv(), probeReportFile);
   const prior = probeChains.get(o.repoRoot) ?? Promise.resolve();
   const settled = prior.then(() =>
     attributeAgainstBase(rawExec, {

@@ -23,6 +23,7 @@ import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { BASELINE_RED_MARKER, compareWithBaseline } from "./work-driver-verify-baseline.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
 
 /**
@@ -91,6 +92,9 @@ export async function aggregateVerifyOutcome(args: {
       issue: ctx.issue,
       cmd,
       timeoutMs: suiteTimeoutMs,
+      // The base probe runs the project's own command, so it gets the same
+      // scrubbed env the change run got (#1642).
+      env: verifyChildEnv(),
       changeFailures: [
         ...(cons.status === "failed"
           ? [{ text: cons.rawFailure ?? "", timedOut: cons.timedOut === true }]

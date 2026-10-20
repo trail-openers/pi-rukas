@@ -48,6 +48,7 @@ import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import type { DriverExecFn } from "./work-driver-context.ts";
 import { isHostForkExhaustion } from "./work-driver-exec-error.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import {
   boundText,
   isTimedOutKill,
@@ -385,6 +386,8 @@ export async function typecheckWorktree(cwd: string, run: DriverExecFn): Promise
         timeout: timeoutMs,
         maxBuffer: TYPECHECK_MAX_BUFFER,
         killGroup: true,
+        // The project's typecheck never runs with the driver's knobs (#1642).
+        env: verifyChildEnv(),
       }),
     );
     return { verdict: true };
