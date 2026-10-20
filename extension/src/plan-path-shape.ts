@@ -55,6 +55,25 @@ export function quotedPaths(paths: readonly string[]): string {
 }
 
 /**
+ * True when `p` contains a glob/pathspec character (`* ? !`) — the ONE clause
+ * the planner's grammar uses to refuse a pattern. `plannedPathProblem` refuses
+ * any declared `report_workstream` path containing one, and
+ * `planDeclarableSlot` (work-driver-plan-spec-coverage.ts) exempts a spec
+ * slot carrying one from the coverage requirement — a slot the planner may
+ * not name is not a slot the plan may be demanded to cover. Both call THIS
+ * predicate, so the refusal and the exemption cannot drift; the assertion
+ * that every exempted slot literal is refused here lives in
+ * `test-plan-spec-glob-coverage.ts`.
+ *
+ * Judged on RAW text: `normaliseDeclaredPath` strips a trailing `*` as
+ * markdown markup, so a slot written `src/foo/*` reads as a concrete
+ * directory once normalised and would slip past the exemption.
+ */
+export function hasPathspecChar(p: string): boolean {
+  return /[*?!]/.test(p);
+}
+
+/**
  * The reason a declared path is refused, or undefined when it is acceptable.
  *
  * Shell-meaningful characters are refused in the RAW string, annotation
@@ -79,7 +98,7 @@ export function plannedPathProblem(raw: string): string | undefined {
     .trim();
   if (p.startsWith("-")) return `'${raw}' starts with '-' (it would be read as a flag)`;
   if (p.startsWith(":")) return `'${raw}' starts with ':' (git reads it as pathspec magic)`;
-  if (/[*?!]/.test(p)) return `'${raw}' contains a glob or pathspec character (* ? !)`;
+  if (hasPathspecChar(p)) return `'${raw}' contains a glob or pathspec character (* ? !)`;
   if (p.includes("\0")) return `'${raw}' contains a NUL byte`;
   if (!isPlannedRepoRelativePath(p)) {
     return `'${raw}' is not a plain repo-relative path (no absolute paths, '..' segments, tabs or shell metacharacters)`;

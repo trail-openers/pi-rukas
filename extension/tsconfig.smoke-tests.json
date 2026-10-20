@@ -34,6 +34,7 @@
     "smoke-tests/test-ledger-writer-stamp-raw.ts",
     "smoke-tests/test-merge-guard-hostile-stamp.ts",
     "smoke-tests/test-auto-delta-carry-provenance.ts",
-    "smoke-tests/test-work-driver-worktree-sweep-rules.ts"
+    "smoke-tests/test-work-driver-worktree-sweep-rules.ts",
+    "smoke-tests/test-plan-spec-glob-coverage.ts"
   ]
 }
