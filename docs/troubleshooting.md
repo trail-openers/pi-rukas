@@ -1149,7 +1149,7 @@ Every cap id the driver can record has exactly one row in this table (`extension
 | `repeat-finding-seam` | Round 1 of the lens review found the same finding shape across several files: a missing seam, so the driver ran a step-back analysis. | Read the analysis, revise the issue, then `/work N --restart`. |
 | `repo-root-residue` | The branch step found uncommitted work at the repo root before any develop dispatch. Nothing was deleted. | `git status` at the root; commit, move or ignore the paths, then re-run. |
 | `review-incomplete` | At least one lens gave no verdict, so the six-pass review is incomplete: the diff was not fully reviewed, which is not a rejection. The cap's evidence names each such lane and why — failed its retries, stopped by a cap, returned silence, or `not reviewed` because it gave no verdict within its run bound (`PI_ENSEMBLE_LENS_BOUND_MS`, 30 min, shortened so a round never runs past the review-loop budget, then ended `PI_ENSEMBLE_CHILD_BOUND_GRACE_MS` later and not retried, [#1564](https://github.com/trail-openers/pi-rukas/issues/1564)). The cycle hands off: a draft PR is not marked ready, and nothing is merged. | Re-run `/work N`; read the lane's lens dispatch via `/runs` if it recurs. |
-| `token-budget` | A subagent crossed its cumulative token budget (`PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>`). A cost cap, not a provider fault. | Raise the budget only if the work needs the context, or re-dispatch with a tighter prompt. |
+| `token-budget` | A subagent crossed the cumulative token budget the operator armed for its role (`PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>`). A cost cap, not a provider fault. **No role has a built-in budget** — since [#1642](https://github.com/trail-openers/pi-rukas/issues/1642) every role ships default-off because the sum is dominated by cache reads and scales with model and repo size, and a killed lens forces a full re-review that costs more than it saved. A lane of the six-pass review killed this way is why a cycle reports `review-incomplete`. See "Lens lanes report findings then get killed after a few minutes". | Usually: unset the variable (that is the default, and the right answer for most models). Raise it only if the work genuinely needs the context, or re-dispatch with a tighter prompt so it fits. |
 | `verify-baseline-red:<step>` | The verify command already fails at the cycle's base commit, in the same way. See "`verify-baseline-red:<step>`: the gate was already red at the base commit". | Fix the base first. |
 | `verify-env:<step>` | The system refused to start a process, so the gate never ran. See "What `verify-failed:<step>` means, and the caps that split from it". | Free the host's resources, then re-run. |
 | `verify-failed:<step>` | The verify gate ran and judged the change red. See "Outcome-verification gates — `verify-failed:<step>` cap-hits". | Read the per-check evidence in the handoff and fix the code. |
@@ -1434,7 +1434,25 @@ Two mechanisms, and only one of them is meant to fire in normal operation.
 
 This replaced a table of six per-role wall-clock caps. Those were raised twice — [#296](https://github.com/trail-openers/pi-rukas/issues/296) and [#553](https://github.com/trail-openers/pi-rukas/issues/553) — and both times the finding was the same: the number was too small for a *healthy* child. Provider speed varies by an order of magnitude, so a wall-clock number never means the same thing on two models, and the per-role table had already drifted out of sync with this documentation.
 
+There is no fourth row: **no role has a built-in token budget** (`PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>` is the opt-in only — see "Lens lanes report findings then get killed after a few minutes"). A non-zero budget is a ceiling the operator chooses per role, never a default.
+
 **If a child hits the backstop**, treat it as a decomposition problem, not a budget one: two hours of continuous output without finishing means the workstream is too large or the child is looping. Split the issue, or take over manually.
+
+### Lens lanes report findings then get killed after a few minutes
+
+**Symptom.** A six-pass review reports `review-incomplete` naming one or more lanes, and those lanes' replies contain substantive findings — the lane was doing its job. The lane's dispatch report says `killed: token-budget`, usually a few minutes in.
+
+**Cause** ([#952](https://github.com/trail-openers/pi-rukas/issues/952), fixed under [#1642](https://github.com/trail-openers/pi-rukas/issues/1642)). Before this fix `code-review-specialist` shipped a built-in cumulative budget of 8 000 000 tokens — a single measured number from one repo on one model lineup. That sum counts `cacheRead` on every turn, so it is dominated by re-reading context rather than by work: qwen lens children measured 20–40 M tokens and a large codebase moves the whole distribution up. The healthy children on those models were the ones being killed, and because a killed lens leaves the review incomplete the cycle re-runs it — the capped spend paid twice.
+
+**Fixed.** The default is now OFF for every role (`tokenBudgetFor` in `extension/src/spawn-token-budget.ts` returns 0 when the env is unset). The loop detector and the inactivity watchdog are unchanged — a *stuck* reviewer is still bounded; a merely expensive one is not.
+
+**To opt in to a ceiling** — export it for one role only, sized to that model and repo:
+
+```bash
+export PI_ENSEMBLE_TOKEN_BUDGET_CODE_REVIEW_SPECIALIST=40000000
+```
+
+Crossing an armed budget steers the child to wrap up, then kills it after `PI_ENSEMBLE_CAP_KILL_GRACE_MS` (5 min) with `killCause: token-budget`. `0` or unset means no ceiling (the default). The other roles take the same form: `PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER`, `PI_ENSEMBLE_TOKEN_BUDGET_EXPLORE`, and so on — hyphens in a role name become underscores in the key.
 
 ### `ci` step timeout — CI runs > 10 min (PR15)
 

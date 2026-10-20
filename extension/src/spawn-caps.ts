@@ -193,9 +193,12 @@ export interface CapSession {
 export interface CapSessionOpts {
   role: string;
   child: ChildProcess;
-  /** Steering seam (F2); undefined for callers without a job (lens /
-   * adversarial children bypass the registry — budget default-OFF makes the
-   * absence a no-op for them). */
+  /**
+   * #543 H1 — steering seam (F2); undefined for callers without a job (lens /
+   * adversarial children bypass the registry — no role has a built-in token
+   * budget since #1642, so the absence is a no-op for them unless the operator
+   * explicitly arms `PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>`).
+   */
   onSteer?: (message: string, source: SteerSource) => void;
   totalTokens: () => number;
   timedOut: () => boolean;

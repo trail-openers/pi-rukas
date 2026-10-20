@@ -30,7 +30,7 @@ function assert(cond: boolean, msg: string) {
   const child = { killed: killedSigs, kill: (sig: string) => killedSigs.push(sig) } as never;
   const steers: Array<{ msg: string; src: string }> = [];
   process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = "2000";
-  process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER = "0"; // explicit 0 = off (developer has no default; #952 added one only for code-review-specialist)
+  process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER = "0"; // explicit 0 = off (no role has a default since #1642)
   let session: ReturnType<typeof createCapSession>;
   try {
     session = createCapSession({
