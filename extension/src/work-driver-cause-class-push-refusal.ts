@@ -20,7 +20,7 @@
  */
 
 import type { CauseVerdict } from "./work-driver-cause-class.ts";
-import { PUSH_REFUSAL_MARK, pushRefusalEvidence } from "./work-driver-push-refusal.ts";
+import { isPushRefusal, pushRefusalEvidence } from "./work-driver-push-refusal.ts";
 
 /** The caller's own evidence-bounding helper, injected so both sites share one binder. */
 export type EvidenceLines = (texts: readonly (string | undefined)[]) => string[];
@@ -32,9 +32,10 @@ export function pushRefusalVerdict(
   evidenceLines: EvidenceLines,
 ): CauseVerdict {
   // The refusal text is preserved on three surfaces; take the first that actually
-  // carries a marker, so a truncated copy never wins over the full one.
+  // carries a forge-authored refusal LINE (the same anchored matcher the producer used,
+  // so a truncated or prose-only copy cannot win over the full one).
   const sources = [hit, ...failures];
-  const refusal = sources.find((s) => s !== undefined && PUSH_REFUSAL_MARK.test(s));
+  const refusal = sources.find((s) => isPushRefusal(s));
   const evidence =
     refusal === undefined
       ? evidenceLines(sources)

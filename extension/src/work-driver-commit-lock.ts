@@ -12,6 +12,7 @@
  * the merged teardown).
  */
 import { execp } from "./exec.ts";
+import { redactThenBound } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
 import { dispatchCommitPrFallback } from "./work-driver-commit-fallback.ts";
 import { conflictArtifactFromPlumb } from "./work-driver-commit-helpers.ts";
@@ -27,9 +28,19 @@ import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { continueCommitPrHalt } from "./work-driver-continue-pr-commit.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { appendEvent } from "./workflow-state.ts";
-import type { WorkEvent, WorkState } from "./workflow-state.ts";
+import type { WorkState } from "./workflow-state.ts";
 
 export { runCommitPr };
+
+/**
+ * Bound for the plumb-report body that carries a mechanized failure's raw reason. The
+ * reason is the gate's own text — for a `push-refused` halt it is the forge's `remote:`
+ * lines verbatim, and those quote the content push protection flagged. The body persists
+ * in the state file and the handoff prints it, so it is redacted before it is bounded
+ * (redact-then-clip, never the reverse: a clip can cut a token into a fragment no pattern
+ * recognises).
+ */
+const PLUMB_BODY_MAX = 2000;
 
 /**
  * Step 6 — Commit + PR. ops commits the diff, pushes, opens a PR with
@@ -117,7 +128,7 @@ async function runCommitPrLocked(
             at: Date.now(),
             step: "commit-pr",
             role: "driver",
-            body: mech.reason,
+            body: redactThenBound(mech.reason, PLUMB_BODY_MAX).text,
             ...(mech.fallbackCause === "push-refused" ? { fallbackCause: mech.fallbackCause } : {}),
           },
           {

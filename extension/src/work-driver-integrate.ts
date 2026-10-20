@@ -144,6 +144,10 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
   // at the cycle's base commit. The push below proceeds on it; the names ride
   // on the success result so the caller can make them visible.
   let verifyPreExisting: string[] | undefined;
+  // #1702 — the consolidated verify's own run log, captured from the seam's sink so the
+  // terminal `integration-verify-failed` cap names a file the operator can open. Absent
+  // when no scratch dir was passed or the write failed — the cap then carries no pointer.
+  let consolidatedLogPath: string | undefined;
   // #750 — the restore is verified, not assumed (see work-driver-restore.ts).
   // #1468 — the branch tip before a fast-forward; every unpushed exit rewinds to it.
   let ffFrom: string | undefined;
@@ -369,6 +373,12 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       // failing-test names may live under (see IntegrationVerifyOpts).
       changeRoots: Object.values(worktrees),
       verifyRetry: opts.verifyRetry,
+      // #1702 — the cycle's scratch dir (the same one the conflict-patch artifact uses)
+      // and the sink that carries the written log path back to the terminal cap.
+      ...(opts.scratchDir !== undefined ? { scratchDir: opts.scratchDir } : {}),
+      onConsolidatedLogPath: (logPath) => {
+        consolidatedLogPath = logPath;
+      },
       restoreRoot,
       claimFor,
     });

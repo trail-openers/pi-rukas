@@ -21,7 +21,10 @@
 import {
   consolidatedVerifyCapFields,
   consolidatedVerifyEvidenceFields,
+  EVIDENCE_TOTAL_MAX,
+  FAILURE_LINE_MAX,
   namedFailureLines,
+  REASON_MAX,
 } from "../src/work-driver-commit-verify-evidence.ts";
 import {
   classifyConsolidatedVerifyFailure,
@@ -130,9 +133,13 @@ const wsIds = ["task-a", "task-b"];
     RAW_FAILURE,
   );
   // The window names nothing, so case 2 cannot match on the assertion; the classifier
-  // falls through to the combination case. What matters is that the names ride along.
+  // falls through to the combination case. The assertion is POSITIVE here, not the
+  // tautology it used to be (`namedFailures === undefined || length > 0` passed whether or
+  // not the field existed at all): the full stream names 22 tests, so the field MUST be
+  // present and non-empty on this shape too — the per-workstream path that used to lose it
+  // is the regression this pins.
   assert(
-    perWs.namedFailures === undefined || perWs.namedFailures.length > 0,
+    perWs.namedFailures !== undefined && perWs.namedFailures.length > 0,
     "#1064: the per-workstream shape never loses the recovered names",
   );
 }
@@ -184,9 +191,11 @@ const wsIds = ["task-a", "task-b"];
     reason: "verify failed",
     timedOut: false,
   });
+  // The absence is asserted, not excused: `empty === undefined || …` passed when the field
+  // WAS present and populated, which is the shape this test exists to forbid.
   assert(
-    empty === undefined || (empty.failures ?? []).length === 0,
-    "#1064: with no failure lines nothing is invented",
+    empty === undefined,
+    "#1064: with no failure lines there is no verifyEvidence at all — nothing is invented",
   );
   const emptyCap = consolidatedVerifyCapFields({
     cap: "integration-verify-failed",
@@ -198,7 +207,7 @@ const wsIds = ["task-a", "task-b"];
     "#1064: the reason still stands as the evidence when there are no lines",
   );
   assert(
-    emptyCap.logPaths === undefined || emptyCap.logPaths.length === 0,
+    emptyCap.logPaths === undefined,
     "#841: no log, no pointer (an empty logPaths is not a broken link)",
   );
 }
@@ -226,6 +235,122 @@ const wsIds = ["task-a", "task-b"];
     timedOutEvidence?.verifyEvidence.origin === "outcome-gate" &&
       timedOutEvidence.verifyEvidence.failures.length === 1,
     "#1064: a timed-out park records its failure lines in verifyEvidence too",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 4. #1702 — every string these helpers write goes through the redactor BEFORE the
+//    bound. Both surfaces persist (the state file, the handoff comment, the PR body) and
+//    both carry text neither the driver nor the operator wrote: the project's verify
+//    output, and the forge's refusal, which quotes the content push protection flagged.
+//
+// The token is assembled from fragments at runtime so this file itself carries no
+// credential-shaped literal (the same rule the fixtures follow, and the reason GitHub
+// push protection is what refuses these commits in the first place).
+
+const TOKEN = ["gh", "p_", "aB3dE5fG7hJ9kL1mN2pQ4rS6tU8v"].join("");
+const REDACTED = "[REDACTED]";
+
+{
+  // A GH013 refusal that ALSO carries an extra `remote:` line with a token in it — the
+  // shape that made this a HIGH: the refusal text is stored and rendered verbatim, and a
+  // remote line quoting the flagged secret shipped it into the handoff.
+  const gh013WithToken = [
+    "remote: error: GH013: Repository rule violations found for refs/heads/feature/x.",
+    `remote:   flagged: ${TOKEN} in src/fixtures.ts`,
+    "remote:     * Push the commit again to allow the secret: https://github.com/o/r/security/secret_scanning/unblock-secret/3Kvj3Vlk",
+  ].join("\n");
+
+  const cap = consolidatedVerifyCapFields({
+    cap: "push-refused:commit-pr",
+    reason: gh013WithToken,
+    pushRefused: true,
+  });
+  const ev = consolidatedVerifyEvidenceFields({
+    cap: "push-refused:commit-pr",
+    reason: gh013WithToken,
+    pushRefused: true,
+  });
+  assert(
+    !(cap.evidence ?? "").includes(TOKEN) && (cap.evidence ?? "").includes(REDACTED),
+    "#1702: the cap's evidence redacts a token on a `remote:` line instead of storing it",
+  );
+  assert(
+    (cap.evidence ?? "").includes("unblock-secret/3Kvj3Vlk"),
+    "#1702: the allow-the-secret URL survives the redaction — it IS the operator's action",
+  );
+  assert(
+    (ev?.verifyEvidence.failures ?? []).every((l) => !l.includes(TOKEN)) &&
+      (ev?.verifyEvidence.failures ?? []).some((l) => l.includes(REDACTED)),
+    "#1702: pipelineState.verifyEvidence.failures carries the redacted line, not the token",
+  );
+}
+
+{
+  // A verify failure line carrying a `api_key=` shape — the project's own output, which an
+  // assertion echoes. Both the recovered-lines path and the raw `failures[]` path redact.
+  const leaky = [
+    "FAILED: 1 test(s) — driver::leaks",
+    `✗ expected api_key=${TOKEN} to match config`,
+    `  at assertKey (src/config.ts:12) secret=${"s".repeat(6)}${"K".repeat(24)}`,
+  ].join("\n");
+  const cap = consolidatedVerifyCapFields({
+    cap: "integration-verify-failed",
+    reason: `verify failed on the consolidated tree\n${leaky}`,
+    timedOut: false,
+    failures: leaky.split("\n"),
+    logPaths: ["/tmp/verify-1702.log"],
+  });
+  const ev = consolidatedVerifyEvidenceFields({
+    cap: "integration-verify-failed",
+    reason: "verify failed on the consolidated tree",
+    timedOut: false,
+    failures: leaky.split("\n"),
+    logPaths: ["/tmp/verify-1702.log"],
+  });
+  assert(
+    !(cap.evidence ?? "").includes(TOKEN),
+    "#1702: the cap's evidence never carries a credential the verify command printed",
+  );
+  assert(
+    (cap.evidence ?? "").includes("✗ driver::test_case_1".replace("driver::test_case_1", "")) ||
+      (cap.evidence ?? "").includes("FAILED: 1 test(s)"),
+    "#1702: redaction does not swallow the test names — the evidence still names the failure",
+  );
+  assert(
+    (ev?.verifyEvidence.failures ?? []).every((l) => !l.includes(TOKEN)),
+    "#1702: every stored failure line is redacted, not just the first",
+  );
+}
+
+{
+  // The bounds above are STORE-side ceilings, not display caps: the renderers clip again
+  // (`evidenceLines`'s 300-char `LINE_MAX` in work-driver-cause-class.ts, `EVIDENCE_MAX`
+  // in headless/failure.ts). If a store bound ever dropped BELOW a render bound it would
+  // silently truncate evidence the operator was entitled to see, so the store stays the
+  // looser of the two. Pinned rather than commented because a tightened constant is exactly
+  // the change nobody notices.
+  const RENDER_LINE_MAX = 300;
+  const RENDER_EVIDENCE_MAX = 2000;
+  assert(
+    FAILURE_LINE_MAX > RENDER_LINE_MAX && REASON_MAX > RENDER_LINE_MAX,
+    "#1702: store-side line bounds stay looser than the renderer's 300-char line clip",
+  );
+  assert(
+    EVIDENCE_TOTAL_MAX >= RENDER_EVIDENCE_MAX,
+    "#1702: the store-side evidence bound never truncates below what the headless host is owed",
+  );
+}
+
+{
+  // The named-lines extractor itself: the de-dup runs on the REDACTED line, so two
+  // spellings of one assertion that differ only in the credential collapse to one entry.
+  const a = `✗ expected token ${TOKEN} to equal`;
+  const b = `✗ expected token ${["gh", "p_", "xY9zA1bC2dE3fG4hI5jK6lM"].join("")} to equal`;
+  const lines = namedFailureLines([a, b].join("\n"));
+  assert(
+    lines.every((l) => !l.includes(TOKEN) && !l.includes("xY9zA1bC")),
+    "#1702: namedFailureLines redacts the assertion line it recovers",
   );
 }
 
