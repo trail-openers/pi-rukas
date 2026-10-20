@@ -8,6 +8,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { withVerifySlot } from "./host-resources.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 
 /** Read the first non-empty, non-comment line from a config file. */
 function readFirstConfigLine(content: string): string | undefined {
@@ -53,13 +54,29 @@ interface VerifyRun {
   output: string;
 }
 
+/**
+ * #1642 — the output bound every project gate run carries: the same 8 MiB the
+ * develop / consolidated / per-worktree tiers use.
+ *
+ * The ci tier used to pass `1024 * 1024` — one MiB per stream, described in
+ * the code as "a cap for the evidence tail". That number never bounded the
+ * tail (the caller slices the last 500 chars itself); it bounded the RUN, so a
+ * full offline suite whose combined output crossed 1 MiB was SIGKILLed at the
+ * overflow and reported to the operator as
+ * `stdout maxBuffer length exceeded` — a red gate that said nothing about the
+ * code, and one that could not be fixed from the project side. A chatty gate
+ * now runs to completion and the tail is still bounded where it is actually
+ * read (`evidenceTail`, and `extractAttributedTail` in the classifier).
+ */
+export const VERIFY_FULL_MAX_BUFFER = 8 * 1024 * 1024;
+
 async function execVerifyOnce(
   cmd: string,
   cwd: string,
   timeoutMs: number,
   execFn: (
     cmd: string,
-    opts?: { cwd?: string; timeout?: number; maxBuffer?: number },
+    opts?: { cwd?: string; timeout?: number; maxBuffer?: number; env?: NodeJS.ProcessEnv },
   ) => Promise<{ stdout: string; stderr?: string }>,
 ): Promise<VerifyRun> {
   const startedAt = Date.now();
@@ -68,7 +85,11 @@ async function execVerifyOnce(
       execFn(cmd, {
         cwd,
         timeout: timeoutMs,
-        maxBuffer: 1024 * 1024, // 1 MiB cap for evidence tail
+        maxBuffer: VERIFY_FULL_MAX_BUFFER,
+        // #1642 — the tier hands the scrubbed env itself, so an executor that
+        // ignores `env` and inherits the parent (the ci step's shape before
+        // this) cannot leak the driver's knobs into the project's suite.
+        env: verifyChildEnv(),
       }),
     );
     const ms = Date.now() - startedAt;
@@ -101,7 +122,7 @@ export async function runVerifyFull(
   timeoutMs: number,
   execFn: (
     cmd: string,
-    opts?: { cwd?: string; timeout?: number; maxBuffer?: number },
+    opts?: { cwd?: string; timeout?: number; maxBuffer?: number; env?: NodeJS.ProcessEnv },
   ) => Promise<{ stdout: string; stderr?: string }>,
   opts?: { retry?: boolean },
 ): Promise<{
