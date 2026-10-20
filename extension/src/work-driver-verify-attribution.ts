@@ -43,6 +43,7 @@
 
 import { trace } from "./trace.ts";
 import { baselineProbeWorktreePath, probeBaselineVerify } from "./work-driver-verify-baseline.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import {
   type NameRoots,
   compareNames,
@@ -321,7 +322,10 @@ export async function attributeAgainstBase(
     issue: probeLabel,
     cmd: opts.verifyCmd,
     timeoutMs: bound,
-    ...(opts.probeEnv !== undefined ? { env: opts.probeEnv } : {}),
+    // The base run is the SAME project command as the change run, so it gets
+    // the same scrubbed env; a caller that built a report env keeps its own
+    // (`probeEnv`), which was itself built from a scrubbed base (#1642).
+    env: opts.probeEnv ?? verifyChildEnv(),
   });
   if (verdict.status === "green" || verdict.status === "unknown") {
     trace(

@@ -44,6 +44,7 @@ import type { CommitPrVerifyOpts } from "./work-driver-integrate-verify-result.t
 import { commitPrSkipDecision } from "./work-driver-integrate-verify-skip.ts";
 import { attributeAgainstBase } from "./work-driver-verify-attribution.ts";
 import type { BaselineProbeOutcome } from "./work-driver-verify-attribution.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import {
   VERIFY_REPORT_FILE_ENV,
   createVerifyReportDir,
@@ -154,9 +155,13 @@ export async function runCommitPrConsolidatedVerify(
     const baseEnv: NodeJS.ProcessEnv = { ...process.env };
     delete baseEnv[VERIFY_REPORT_FILE_ENV];
     const changeEnv =
-      channel === undefined ? undefined : verifyReportEnv(baseEnv, channel.changeReportFile);
+      channel === undefined
+        ? undefined
+        : verifyReportEnv(verifyChildEnv(baseEnv), channel.changeReportFile);
     const probeEnv =
-      channel === undefined ? undefined : verifyReportEnv(baseEnv, channel.probeReportFile);
+      channel === undefined
+        ? undefined
+        : verifyReportEnv(verifyChildEnv(baseEnv), channel.probeReportFile);
     // `done` is the per-exit cleanup point; the `finally` is the guarantee.
     const done = <T>(value: T): T => {
       if (channel !== undefined) removeVerifyReportDir(channel.reportDir);

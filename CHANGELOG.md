@@ -8,6 +8,52 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.0](https://github.com/trail-openers/pi-rukas/compare/v0.13.0...v0.14.0) (2026-10-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **spawn:** the headless result cap developer-timeout is now spawn-backstop, and RESULT_SCHEMA_VERSION is 5.
+
+### Features
+
+* **headless:** run /work children with interactive trust ([#1674](https://github.com/trail-openers/pi-rukas/issues/1674)) ([0e0ee0e](https://github.com/trail-openers/pi-rukas/commit/0e0ee0e04e88e61c0bf6af372d8bb516f02fb25e))
+* **spawn:** bound each develop and explore child, rename the backstop cap ([#1620](https://github.com/trail-openers/pi-rukas/issues/1620)) ([5f24e08](https://github.com/trail-openers/pi-rukas/commit/5f24e089160b10d00e6d5801a2d4e4c128ab012d))
+* **work:** classify every park by cause with evidence first ([#1679](https://github.com/trail-openers/pi-rukas/issues/1679)) ([9e1b09a](https://github.com/trail-openers/pi-rukas/commit/9e1b09a70f72d6a7510ad139eb62e2b5a9761f29))
+* **work:** lift an issue-fenced path the issue's Test surface names ([#1659](https://github.com/trail-openers/pi-rukas/issues/1659)) ([aa31a3e](https://github.com/trail-openers/pi-rukas/commit/aa31a3e28f1dce503a7f5c39595c06ceb04e5040))
+* **work:** make develop verification fast and attributable ([#1654](https://github.com/trail-openers/pi-rukas/issues/1654)) ([edf65a1](https://github.com/trail-openers/pi-rukas/commit/edf65a128c716839b7fa6ff629625f0e93a0959d))
+* **work:** one corrective develop round on an attributed verify failure ([#1673](https://github.com/trail-openers/pi-rukas/issues/1673)) ([428cc76](https://github.com/trail-openers/pi-rukas/commit/428cc76d88453119795512fbd1917dca57888841))
+* **work:** refuse a developer child's writes outside its worktree ([#1657](https://github.com/trail-openers/pi-rukas/issues/1657)) ([abbbe4d](https://github.com/trail-openers/pi-rukas/commit/abbbe4d8207936e91e6b99d9d95d1d6b034b041a))
+* **work:** report plan workstreams through a schema-validated tool call ([#1656](https://github.com/trail-openers/pi-rukas/issues/1656)) ([e404d7f](https://github.com/trail-openers/pi-rukas/commit/e404d7fefa5bee58f63020d769b15c79ef0a0a5d))
+
+
+### Bug Fixes
+
+* **handoff:** name git's error when the integrate worktree cannot be created ([#1631](https://github.com/trail-openers/pi-rukas/issues/1631)) ([ec04acd](https://github.com/trail-openers/pi-rukas/commit/ec04acd811027896a5e271774aa2d75c98be3076))
+* **handoff:** name the cap and stop step instead of 'not a cap-hit' ([#1615](https://github.com/trail-openers/pi-rukas/issues/1615)) ([197375d](https://github.com/trail-openers/pi-rukas/commit/197375df241f5be0c10fe35eb88a277c7529b5a7))
+* **merge-guard:** hold a merge-adjacent read for getopt body forms and verb-contains-create shapes ([#1618](https://github.com/trail-openers/pi-rukas/issues/1618)) ([07c4b42](https://github.com/trail-openers/pi-rukas/commit/07c4b42648afd44affae58d59b5b87ef18711368))
+* **permissions:** grant reporter tools to the roles that dispatch them ([#1662](https://github.com/trail-openers/pi-rukas/issues/1662)) ([310c5c0](https://github.com/trail-openers/pi-rukas/commit/310c5c01f45021c18343dc9924cf8de87d140e56))
+* **permissions:** let the PM guard run a chain of allowlisted reads ([#1617](https://github.com/trail-openers/pi-rukas/issues/1617)) ([91dfcdb](https://github.com/trail-openers/pi-rukas/commit/91dfcdba63c38e34635ae57f43b1d0239d1c51ce))
+* **permissions:** refuse destructive vipune verbs in every mode ([#1686](https://github.com/trail-openers/pi-rukas/issues/1686)) ([9c2c5be](https://github.com/trail-openers/pi-rukas/commit/9c2c5bed06b7958b5c42d2fed85a5402ee1ac1bb))
+* **review:** bound each lens child and record a silent lane as not reviewed ([#1638](https://github.com/trail-openers/pi-rukas/issues/1638)) ([ce200fd](https://github.com/trail-openers/pi-rukas/commit/ce200fd83f36532bbc1fea4056ab5f80041d83db))
+* **review:** resolve findings a delta round fixed ([#1680](https://github.com/trail-openers/pi-rukas/issues/1680)) ([8ac9787](https://github.com/trail-openers/pi-rukas/commit/8ac9787045115e19f7078fb94f3fae5222ac502b))
+* **smoke:** stop test fixtures leaking temp dirs into /tmp ([#1623](https://github.com/trail-openers/pi-rukas/issues/1623)) ([07a6dd0](https://github.com/trail-openers/pi-rukas/commit/07a6dd0b4f1ea9d73a32a8c48d4d1846a3ff5f3f))
+* **spawn:** a child that crossed its token budget is never ok ([#1624](https://github.com/trail-openers/pi-rukas/issues/1624)) ([dac433d](https://github.com/trail-openers/pi-rukas/commit/dac433d1bbdcacba2447845d64e5ac5a88f8bc29))
+* **spawn:** bound concurrent children host-wide, not only per process ([#1632](https://github.com/trail-openers/pi-rukas/issues/1632)) ([fa42fcf](https://github.com/trail-openers/pi-rukas/commit/fa42fcf7412ee5ddb5df42076fe3814d289c8a95))
+* **spawn:** end a settled child as done at the backstop, and reap it ([#1633](https://github.com/trail-openers/pi-rukas/issues/1633)) ([d958857](https://github.com/trail-openers/pi-rukas/commit/d9588578d02a1a1cf8394c95d072e4ba006652e0))
+* **spawn:** keep an inherited GIT_DIR away from children and driver git ([#1622](https://github.com/trail-openers/pi-rukas/issues/1622)) ([641b4b8](https://github.com/trail-openers/pi-rukas/commit/641b4b8dd396d3dacbdffe94189903a20fff3080))
+* **spawn:** lead a process group without a TTY; honour a job's abort ([#1628](https://github.com/trail-openers/pi-rukas/issues/1628)) ([56249b7](https://github.com/trail-openers/pi-rukas/commit/56249b79294ca7fd04291ff6edc343f6b2432476))
+* **test:** make the test-cancel abort probe independent of dist/ ([#1671](https://github.com/trail-openers/pi-rukas/issues/1671)) ([35b1018](https://github.com/trail-openers/pi-rukas/commit/35b1018235c47799053d8d841de0dc2def7044b5))
+* **work:** add omitted spec deliverable paths to a single-workstream plan ([#1688](https://github.com/trail-openers/pi-rukas/issues/1688)) ([deae4aa](https://github.com/trail-openers/pi-rukas/commit/deae4aa11869c1a12de2e30785b5e82320025e33))
+* **work:** an empty develop round parks on the developer's question ([#1619](https://github.com/trail-openers/pi-rukas/issues/1619)) ([2069143](https://github.com/trail-openers/pi-rukas/commit/20691436b09f8ddc369c40f0377ca0ad9b1eace9))
+* **work:** fence deferred protected paths from the developer ([#1678](https://github.com/trail-openers/pi-rukas/issues/1678)) ([f255915](https://github.com/trail-openers/pi-rukas/commit/f255915381e025042b2dadc51220e970377f7c04))
+* **work:** fence deferred protected paths out of the developer's scope ([#1689](https://github.com/trail-openers/pi-rukas/issues/1689)) ([c827476](https://github.com/trail-openers/pi-rukas/commit/c827476c1a52cefac2620955680a5f3498805639))
+* **work:** ignored build output in a stale worktree is not unrecoverable work ([#1692](https://github.com/trail-openers/pi-rukas/issues/1692)) ([2d544d3](https://github.com/trail-openers/pi-rukas/commit/2d544d3ea3bcee0499fcb0365269c264bd560e37))
+* **work:** make the /work plan step work headless ([#1663](https://github.com/trail-openers/pi-rukas/issues/1663)) ([4f6bf30](https://github.com/trail-openers/pi-rukas/commit/4f6bf3083b31809ecfa92e98b3ca1ad2c3cd6328))
+* **work:** refuse a step the deadline or review budget cannot fit ([#1639](https://github.com/trail-openers/pi-rukas/issues/1639)) ([4e14dea](https://github.com/trail-openers/pi-rukas/commit/4e14dea83b915af94c98ade0e53e86c44beebe55))
+* **work:** run the project verify command without driver env knobs ([#1687](https://github.com/trail-openers/pi-rukas/issues/1687)) ([c4f3fcf](https://github.com/trail-openers/pi-rukas/commit/c4f3fcffb811cbe764173cfbe217a74739d17f10))
+* **work:** sign the deadline cap's remaining time and name the refused step ([#1629](https://github.com/trail-openers/pi-rukas/issues/1629)) ([03de413](https://github.com/trail-openers/pi-rukas/commit/03de413d60b0fe2492fd42381d42642e56f0cf23))
+
 ## [0.13.0](https://github.com/trail-openers/pi-rukas/compare/v0.12.80...v0.13.0) (2026-10-18)
 
 
