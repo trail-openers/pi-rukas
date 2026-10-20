@@ -8,7 +8,6 @@
 
 import type { SteerSource } from "./dispatch-steer.ts";
 import { budgetSteerText } from "./progress.ts";
-import { CODE_REVIEW_SPECIALIST_ROLE } from "./roles.ts";
 
 /**
  * #543 F6 — per-role cumulative token budget, read per-call so tests can
@@ -17,22 +16,36 @@ import { CODE_REVIEW_SPECIALIST_ROLE } from "./roles.ts";
  * count (input + output + cacheRead + cacheWrite, accumulated per `message_end`
  * — the same sum `progress.ts` tracks). `0` / unset / non-numeric = OFF.
  *
- * #952 — code-review-specialist ships with a measured default of 8 000 000
- * tokens. Measurement: 1 073 lens children (≤150 turns) from
- * ~/.pi/agent/ensemble-runs transcripts dated 2026-09-27…2026-10-01,
- * p95 = 4 104 877 tokens; 2× p95 rounded to 0.5 M = 8 000 000.
- * The env override wins; `PI_ENSEMBLE_TOKEN_BUDGET_CODE_REVIEW_SPECIALIST=0`
- * disables it.
+ * EVERY ROLE SHIPS DEFAULT-OFF. #952 gave code-review-specialist a measured
+ * default of 8 000 000 tokens (p95 = 4 104 877 over 1 073 lens children,
+ * transcripts 2026-09-27…2026-10-01, 2× p95 rounded to 0.5 M). The operator
+ * decision of 2026-10-20 (epic #1642) removed it, and it stays off for every
+ * role. Three reasons, all measured:
  *
- * All other roles ship DEFAULT-OFF (all 0 at ship). The budget is a secondary
- * cost bound: the loop-detector (F1) is the primary time/money stop. When the
- * cumulative total crosses the budget, spawn steers the child to wrap up, then
- * kills after the grace window (see capKillGraceMs) with killCause
+ * 1. **The sum is dominated by cache reads**, which a model re-bills on every
+ *    turn of a long context. A lens that reads the same files forty times
+ *    accrues tens of millions of tokens without doing anything wrong, so the
+ *    number bounds the model's caching behaviour far more than its work.
+ * 2. **The right number depends on the model AND the repository size** — qwen
+ *    lens children measured 20–40 M tokens, mostly cache reads, and a large
+ *    codebase moves the whole distribution up. A single constant is wrong for
+ *    one of those combinations, and the measured p95 was one repo on one lineup.
+ * 3. **A kill does not save the tokens it bounds.** A killed lens makes the
+ *    six-pass review incomplete, which the driver reports as `review-incomplete`
+ *    and the cycle re-runs: the capped spend is paid twice, plus the wall clock.
+ *    The cap cost more than the thing it was meant to limit.
+ *
+ * A non-zero budget therefore remains an EXPLICIT opt-in ceiling — set
+ * `PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>=<n>` to arm one, `0` / unset for none. The
+ * budget is a secondary cost bound either way: the loop-detector (F1) is the
+ * primary time/money stop, and it plus the inactivity watchdog stay untouched
+ * because a STUCK reviewer is bounded regardless of what the ceiling is. When
+ * the cumulative total does cross an armed budget, spawn steers the child to
+ * wrap up, then kills after the grace window (see capKillGraceMs) with killCause
  * "token-budget". A child that exits cleanly inside the window is attributed
  * "token-budget" too (#1569, capKillAttribution): it stopped on the steer, not
  * because its assignment was done.
  */
-const CODE_REVIEW_SPECIALIST_DEFAULT_BUDGET = 8_000_000;
 
 /**
  * #952 — the env key for a role's token budget override, shared by
@@ -46,17 +59,12 @@ export function tokenBudgetEnvKey(role: string): string {
 }
 
 export function tokenBudgetFor(role: string): number {
-  const envKey = tokenBudgetEnvKey(role);
-  const env = process.env[envKey];
-  // Set explicitly (including "0" = off, which must beat the default) or
-  // non-numeric (off, never NaN): the env value wins.
-  if (env !== undefined) {
-    const n = Number(env);
-    if (env.trim() === "" || !Number.isFinite(n) || n <= 0) return 0;
-    return n;
-  }
-  if (role === CODE_REVIEW_SPECIALIST_ROLE) return CODE_REVIEW_SPECIALIST_DEFAULT_BUDGET;
-  return 0;
+  const env = process.env[tokenBudgetEnvKey(role)];
+  if (env === undefined) return 0;
+  // Explicit value: "0" = off, and a non-numeric value is off rather than NaN.
+  const n = Number(env);
+  if (env.trim() === "" || !Number.isFinite(n) || n <= 0) return 0;
+  return n;
 }
 
 /**
