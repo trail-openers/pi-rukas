@@ -26,6 +26,7 @@ import { NO_TREE_CAPTURED, captureProcessTree } from "./work-driver-gate-hang.ts
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
 import {
   combinedExecFailureStream,
@@ -233,7 +234,13 @@ export async function runConsolidatedVerifyUnlocked(
     if (skip === undefined) {
       try {
         await withVerifySlot(() =>
-          execFn(verifyCmd, { cwd: repoRoot, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }),
+          execFn(verifyCmd, {
+            cwd: repoRoot,
+            timeout: timeoutMs,
+            maxBuffer: 8 * 1024 * 1024,
+            // The driver's knobs never reach the project's gate.
+            env: verifyChildEnv(),
+          }),
         );
       } catch (err) {
         const e = err as Error & {
