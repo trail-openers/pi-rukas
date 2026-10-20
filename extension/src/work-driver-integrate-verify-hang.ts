@@ -42,6 +42,8 @@ export function commitPrHangResult(opts: {
   failureTail: string;
   attributed: boolean;
   verdict: ConsolidationFailureVerdict;
+  /** #1702 — the raw-output log this seam already wrote for the killed run, if any. */
+  logPath?: string;
 }): CommitPrConsolidatedVerifyResult {
   const classifiedMessage = verifyHangFailure(
     opts.ranCmd,
@@ -63,5 +65,10 @@ export function commitPrHangResult(opts: {
     verdict: opts.verdict,
     classifiedMessage,
     timedOut: true,
+    // #1064 — the killed run's stream is the only record of what it reached before the
+    // kill, and the test names it printed are the evidence the operator needs. The
+    // hang clause above already names the bound; this names the work.
+    failures: [opts.output],
+    ...(opts.logPath !== undefined ? { logPath: opts.logPath } : {}),
   };
 }

@@ -5,6 +5,7 @@
  * the verbatim former case body of work-driver-explain.ts.
  */
 
+import { explainPushRefusal } from "./work-driver-explain-push-refusal.ts";
 import { isMemoryClaim } from "./work-driver-intent-criticality.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
@@ -17,6 +18,12 @@ type Cap = Extract<WorkEvent, { kind: "cap-hit" }>["cap"];
  */
 export function explainPrSteps(cap: Cap, state: WorkState): string {
   switch (cap) {
+    // #1439 — the forge refused the push. The consolidated commit is local and intact;
+    // what is missing is the remote's permission. Naming the refusal (and the allow-
+    // the-secret URLs inside it) is the whole deliverable here — the pre-fix handoff
+    // called it a verify failure and sent the operator to fix code.
+    case "push-refused:commit-pr":
+      return explainPushRefusal(state);
     case "intent-park": {
       const spec = state.pipelineState.normalisedSpec;
       const reason = (spec?.parkReason ?? "underspecified") as ParkReason;

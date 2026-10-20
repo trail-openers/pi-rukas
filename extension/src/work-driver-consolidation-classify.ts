@@ -41,7 +41,20 @@
  * fixes, does NOT touch the file system. The caller (work-driver-verify-
  * develop.ts) decides whether to apply the trivial fix and re-verify, based
  * on `trivialFix`.
+ *
+ * #1702 — the classifier has NO recovery reader of its own. It used to carry a
+ * second `namedFailureLinesFrom`, which swept the whole unclipped stream for
+ * `FAILED:` / `✗` lines with no redaction and no bound, and whose output
+ * `consolidatedFailureMessage` joined into the failure string the develop/ci gate
+ * then wrote verbatim into the state file and the handoff comment posted to the
+ * forge. A failing assertion routinely ECHOES the value it compared, so a token
+ * printed by a test shipped to the remote unredacted. There is now ONE reader —
+ * `namedFailureLines`, the redacting, per-line-bounded, count-capped one the
+ * commit-pr caps already use — so the two paths cannot disagree about what an
+ * evidence line looks like, and neither can carry an unredacted line.
  */
+
+import { namedFailureLines } from "./work-driver-commit-verify-evidence.ts";
 
 /** The three-way classification a consolidated-tree verify failure maps to. */
 export type ConsolidationClassification =
@@ -79,6 +92,15 @@ export interface ConsolidationFailureVerdict {
    * directly with the assertion + workstream ids.
    */
   trivialFix: boolean;
+  /**
+   * #1064 — the named-failure lines recovered from the FULL failure text (the
+   * `FAILED: <n> test(s) — …` summary carrying the test names, and every `✗`
+   * assertion), when the 800-char window the classifier reads elided them and left
+   * `assertion` as the sentinel. `consolidatedFailureMessage` prefers these over
+   * printing the sentinel. Absent when the caller passed no full text, or it names
+   * nothing — absence stays honest.
+   */
+  namedFailures?: string[];
   /**
    * The one-line reason for the classification, for the handoff.
    * Human-readable, not machine-parsed.
@@ -214,14 +236,28 @@ function isSizeCapUnionShape(failureTail: string): boolean {
  *   keyed by workstream id. When a per-worktree failure's specific
  *   assertion also appears in the consolidated failure, the classification
  *   is `per-workstream-defect` (case 2), not `consolidation-created`.
+ * @param fullFailure — OPTIONAL #1064 recovery source: the UNBOUNDED failure text that
+ *   the bounded `consolidatedFailure` window was cut from. When that window elided the
+ *   `FAILED: <n> test(s) — …` summary and the `✗` lines, their names are recovered from
+ *   here into `namedFailures`. Omit it (or pass the same clipped text) and behaviour is
+ *   exactly as before — the sentinel stands where nothing is named.
  */
 export function classifyConsolidatedVerifyFailure(
   workstreamCount: number,
   workstreamIds: string[],
   consolidatedFailure: string,
   perWorktreeFailuresByWs: Record<string, string>,
+  fullFailure?: string,
 ): ConsolidationFailureVerdict {
   const assertion = extractSpecificAssertion(consolidatedFailure);
+  // #1064 — recovered only when the window came up empty, and only from text wider than
+  // the window. Re-reading the clipped tail here would be a second reader of the same
+  // 800 chars and would recover nothing.
+  const named =
+    assertion === NO_SPECIFIC_ASSERTION && fullFailure !== undefined
+      ? namedFailureLines(fullFailure, isNamedFailureLine)
+      : [];
+  const namedFailures = named.length > 0 ? named : undefined;
 
   // N=1 invariant: a single workstream is a no-op consolidation. The
   // failure is by definition a per-workstream defect (the workstream's own
@@ -243,6 +279,7 @@ export function classifyConsolidatedVerifyFailure(
         assertion,
         workstreamIds: workstreamIds.slice(0, 1),
         trivialFix: false,
+        ...(namedFailures === undefined ? {} : { namedFailures }),
         reason: `${failedLine}; it matches that workstream's own per-worktree failure, so re-run that workstream's verify`,
       };
     }
@@ -251,6 +288,7 @@ export function classifyConsolidatedVerifyFailure(
       assertion,
       workstreamIds: workstreamIds.slice(0, 1),
       trivialFix: false,
+      ...(namedFailures === undefined ? {} : { namedFailures }),
       reason: failedLine,
     };
   }
@@ -268,6 +306,7 @@ export function classifyConsolidatedVerifyFailure(
         assertion,
         workstreamIds: [wsId],
         trivialFix: false,
+        ...(namedFailures === undefined ? {} : { namedFailures }),
         reason: `workstream '${wsId}' was recorded as passed but its per-worktree assertion (${perAssertion}) also appears in the consolidated failure — a genuine per-workstream defect the develop gate missed; re-run that workstream's verify before treating this as a combination defect`,
       };
     }
@@ -283,10 +322,43 @@ export function classifyConsolidatedVerifyFailure(
     assertion,
     workstreamIds,
     trivialFix: isTrivial,
+    ...(namedFailures === undefined ? {} : { namedFailures }),
     reason: isTrivial
       ? `the combination of workstreams ${workstreamIds.join(" + ")} created a trivial defect (${assertion}) that neither workstream tripped alone — the mechanical fix applies and re-verify will confirm it`
       : `the combination of workstreams ${workstreamIds.join(" + ")} created a defect (${assertion}) that neither workstream tripped alone — this is a consolidation-created failure that needs a human design decision; park with the specific assertion and both workstream ids named`,
   };
+}
+
+/**
+ * The classifier's view of the shared named-failure reader: which of the lines
+ * `namedFailureLines` matches count as evidence HERE.
+ *
+ * The shared reader accepts every `FAILED:` / `✗` line, because at the cap site a
+ * per-file marker still tells the operator which file went red. The classifier is
+ * stricter — `consolidatedFailureMessage` joins what it recovers into the field
+ * labelled "specific assertion", and a bare `FAILED: smoke-tests/test-x.ts` names a
+ * FILE, not an assertion. That is the #798 defect (an operator sent to a filename)
+ * and `extractSpecificAssertion` refuses such lines, so the recovery must not put
+ * them back through the side door. A `✗` line, or the `FAILED: <n> test(s) — a, b`
+ * summary that carries the names, is what counts.
+ *
+ * #1702 — the #807 secret guard the deleted `namedFailureLinesFrom` carried is composed
+ * in here, so merging the two readers did not quietly drop it. The shared reader REDACTS
+ * what it keeps, and that is not enough for this caller: `consolidatedFailureMessage`
+ * joins the recovered lines into the field labelled "specific assertion", and a line
+ * whose whole payload is credential material is not an assertion — an `[REDACTED]`
+ * standing in that field is still credential-shaped content the classifier presented as
+ * the cause. So a line `isNonAssertionLine` rejects (marker, echoed command,
+ * `LOOKS_LIKE_SECRET`) is DROPPED here, not masked.
+ *
+ * The count summary is the one marker-shaped line this predicate must still keep —
+ * `IS_MARKER_LINE` rejects every `FAILED:` line, which is why the deleted reader matched
+ * the summary explicitly. It is matched explicitly here too, and carries the same secret
+ * guard.
+ */
+function isNamedFailureLine(line: string): boolean {
+  if (/^FAILED:\s*\d+\s+test\(s\)/.test(line)) return !LOOKS_LIKE_SECRET.test(line);
+  return !isNonAssertionLine(line) && /^✗\s/.test(line);
 }
 
 /**
@@ -329,9 +401,18 @@ export function consolidatedFailureMessage(
     verdict.classification === "per-workstream-defect"
       ? `workstream(s) ${ids}`
       : `workstream combination ${ids}`;
+  // #1064 — the sentinel is honest about the WINDOW, not about the run. When the ✗
+  // lines and the `FAILED: <n> test(s) — …` summary fell in the elided head of a long
+  // FAILED summary, the message printed "(no specific assertion could be extracted)"
+  // over a stream that had named 22 failing tests. Prefer what the failures already
+  // name; keep the sentinel when nothing does.
+  const assertion =
+    verdict.assertion && verdict.assertion !== NO_SPECIFIC_ASSERTION
+      ? verdict.assertion
+      : (verdict.namedFailures ?? []).join(" | ") || NO_SPECIFIC_ASSERTION;
   return (
     `[${verdict.classification}] verify command \`${cmd}\` failed on the CONSOLIDATED tree — ` +
-    `specific assertion: ${verdict.assertion || "(no assertion parsed)"} — ` +
+    `specific assertion: ${assertion || "(no assertion parsed)"} — ` +
     `${which}. ${verdict.reason}`
   );
 }

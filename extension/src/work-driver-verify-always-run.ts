@@ -227,6 +227,7 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-work-driver-continue-pr-merge-skips-realgit.ts",
   "smoke-tests/test-work-driver-corrective-round.ts",
   "smoke-tests/test-work-driver-diff-head-canary.ts",
+  "smoke-tests/test-work-driver-integrate-verify-skip.ts",
   "smoke-tests/test-work-driver-issue-818.ts",
   "smoke-tests/test-work-driver-issue-closed-wiring.ts",
   "smoke-tests/test-work-driver-merge-hold.ts",

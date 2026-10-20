@@ -28,22 +28,19 @@
  * the one the verify command emitted, not the restore post-condition.
  */
 
-import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import {
   classifyConsolidatedVerifyFailure,
   consolidatedFailureMessage,
 } from "./work-driver-consolidation-classify.ts";
-import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { type HangProcess, NO_TREE_CAPTURED, captureProcessTree } from "./work-driver-gate-hang.ts";
 import { createVerifyChannel, runFlakeRetry } from "./work-driver-integrate-verify-flake.ts";
+import { commitPrBaselineProbe } from "./work-driver-integrate-verify-probe.ts";
 import type { CommitPrConsolidatedVerifyResult } from "./work-driver-integrate-verify-result.ts";
 import type { CommitPrVerifyOpts } from "./work-driver-integrate-verify-result.ts";
 import { commitPrSkipDecision } from "./work-driver-integrate-verify-skip.ts";
-import { attributeAgainstBase } from "./work-driver-verify-attribution.ts";
-import type { BaselineProbeOutcome } from "./work-driver-verify-attribution.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import {
   VERIFY_REPORT_FILE_ENV,
@@ -63,6 +60,7 @@ export function baselineProbeEnabled(): boolean {
   return process.env.PI_ENSEMBLE_INTEGRATION_VERIFY_BASELINE_PROBE !== "0";
 }
 import { commitPrHangResult } from "./work-driver-integrate-verify-hang.ts";
+import { createCommitPrVerifyLogSink } from "./work-driver-integrate-verify-log.ts";
 import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
 import { failedVerifyCmd, fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
@@ -198,6 +196,9 @@ export async function runCommitPrConsolidatedVerify(
     // about the processes the report exists to name.
     let killedOutput = "";
     let killedTree: { processes: HangProcess[]; treeUnavailable?: string } | undefined;
+    // #1702 — the run-log sink (its module owns the contract: one timestamp per pair, and
+    // only the write's own return reaches `logPath`).
+    const logs = createCommitPrVerifyLogSink(opts.scratchDir, opts.onConsolidatedLogPath);
     const runOnce = async (): Promise<string | undefined> => {
       try {
         await withVerifySlot(() =>
@@ -252,6 +253,9 @@ export async function runCommitPrConsolidatedVerify(
     );
     let firstFailure = await runOnce();
     if (firstFailure === undefined) return done({ ok: true });
+    // #1702 — run1's log, written before the flake retry may replace the stream the
+    // operator would otherwise reconstruct. Same name and 0600 mode as the develop side.
+    logs.persist(1, firstFailure);
 
     // #782 — on the first run, with every per-worktree verify passed and N>1,
     // re-run the SAME command ONCE in the SAME still-checked-out integration
@@ -300,6 +304,9 @@ export async function runCommitPrConsolidatedVerify(
     timedOut = settled.timedOut;
     killedOutput = settled.killedOutput;
     killedTree = settled.killedTree;
+    // The re-run failed and its tail is what is classified below, so its own stream is the
+    // one the operator needs (run1's log keeps the transient case recoverable too).
+    logs.persist(2, firstFailure);
 
     const failure = firstFailure;
 
@@ -318,6 +325,10 @@ export async function runCommitPrConsolidatedVerify(
       opts.workstreamIds,
       failureTail + (attributed ? "" : " (unattributed — best-effort tail)"),
       opts.perWorktreeFailuresByWs ?? {},
+      // #1064 — the unclipped stream, so the test names the 800-char window elided are
+      // recovered into `namedFailures` instead of the message printing the sentinel over
+      // a run that had named every failing test.
+      failure,
     );
     // #1324 — a killed run's stream stops wherever the kill landed: report
     // the bound, never a classification of the code.
@@ -332,6 +343,7 @@ export async function runCommitPrConsolidatedVerify(
           failureTail,
           attributed,
           verdict,
+          ...(logs.written !== undefined ? { logPath: logs.written } : {}),
         }),
       );
     }
@@ -367,110 +379,40 @@ export async function runCommitPrConsolidatedVerify(
           "work-driver: commit-pr verify — no out-of-band report channel exists for this run, so failing-test names cannot be attributed and the baseline probe is skipped; the consolidated failure parks as before",
         );
       } else {
-        const outcome = await attributeAgainstBase(execFn, {
-          repoRoot: opts.repoRoot,
-          verifyCmd: ranCmd,
-          timeoutMs: opts.timeoutMs,
-          baseSha: opts.baseSha,
-          // The change run ran in the integration checkout; the probe ran in
-          // its own worktree. Names are compared by path RELATIVE to the tree
-          // each run executed in, so a name outside every known tree can never
-          // excuse anything. The workstream worktrees are included because a
-          // gate that resolves its own script path prints names under the tree
-          // the script lives in, not the cwd it was run from.
-          ...(opts.changeRoots !== undefined ? { changeRoots: opts.changeRoots } : {}),
-          // #1404 — the out-of-band names. The change run wrote its report to
-          // `changeReportFile`; the base run is given `probeEnv` so the loop
-          // writes ITS report to `probeReportFile`. All three paths live in the
-          // driver's private 0700 dir, and `attributeAgainstBase` refuses any
-          // path that does not resolve inside it. The `channel === undefined`
-          // branch above already returned for a missing channel, so the three
-          // paths are always present here.
-          reportDir: channel.reportDir,
-          changeReportFile: channel.changeReportFile,
-          probeReportFile: channel.probeReportFile,
-          ...(probeEnv === undefined ? {} : { probeEnv }),
+        // The probe itself (its `attributeAgainstBase` call, the continue gate,
+        // and the two parks it can produce) lives in
+        // `work-driver-integrate-verify-probe.ts` — the §12 cap, and the same
+        // per-concern seam as `-flake.ts` / `-hang.ts` / `-log.ts` / `-skip.ts`.
+        // `undefined` means it excused nothing and this parks below.
+        const excused = await commitPrBaselineProbe({
+          execFn,
+          opts,
+          ranCmd,
+          channel,
+          probeEnv,
+          classifiedMessage,
+          failureTail,
+          attributed,
+          verdict,
+          failure,
+          ...(logs.written === undefined ? {} : { logPath: logs.written }),
+          done,
         });
-        // #1404 — the out-of-band names, all three paths inside the driver's
-        // private 0700 dir, which `attributeAgainstBase` refuses to leave. The
-        // `channel === undefined` branch above already returned, so the paths are
-        // present here.
-        if (outcome) {
-          const continued = continueOnPreExisting(outcome, classifiedMessage, done, {
-            failureTail,
-            attributed,
-            verdict,
-          });
-          if (continued !== undefined) return continued;
-          // The park reason names ONLY what the change caused. A cycle where three
-          // tests are red and two were red at base is a defect in one test, and an
-          // operator told to "fix the consolidated tree" for all three would waste
-          // two of those inspections on gate rot the base commit already owns.
-          // Names are run through `neutraliseMarkdownField` — they are printed
-          // into the cap evidence, the handoff and the PR body, and a test name is
-          // data a fixture (or an upstream test) controls.
-          const pre = outcome.preExistingFailures;
-          const caused = outcome.changeCausedFailures;
-          const shown = (names: readonly string[]) => names.map(neutraliseMarkdownField).join(", ");
-          const message =
-            caused.length > 0
-              ? `${classifiedMessage} — ${pre.length + caused.length} test(s) fail; ${pre.length} also fail at the cycle's base commit (${shown(pre)}) and are pre-existing; the failures this change CAUSED are: ${shown(caused)}`
-              : classifiedMessage;
-          return done({
-            ok: false,
-            failureTail,
-            attributed,
-            verdict,
-            classifiedMessage: message,
-            ...(pre.length > 0 ? { preExistingFailures: pre } : {}),
-            ...(caused.length > 0 ? { changeCausedFailures: caused } : {}),
-          });
-        }
+        if (excused !== undefined) return excused;
       }
     }
-    return done({ ok: false, failureTail, attributed, verdict, classifiedMessage });
+    return done({
+      ok: false,
+      failureTail,
+      attributed,
+      verdict,
+      classifiedMessage,
+      // #1064 — the raw stream the classifier saw, on the result so the terminal cap
+      // can name the failing tests. It is bounded at the cap site
+      // (`boundJoinFailures`), never here: bounding it at this height is what made the
+      // `FAILED:` summary fall outside the window in the first place.
+      failures: [failure],
+      ...(logs.written !== undefined ? { logPath: logs.written } : {}),
+    });
   }
-}
-
-/**
- * The continue gate, extracted for the §12 cap — and because it is the one
- * branch in this seam that lets a cycle PUSH with a red gate, it deserves to
- * read as a unit rather than as twenty lines inside a probe block.
- *
- * Three conditions, and every one of them has to hold:
- *
- *   - `changeRunNames.length > 0` — the change run FAILED, so a report that
- *     names nothing does not describe this failure (a `FAILED-TESTS: 0` trailer
- *     written by an all-pass half, a loop that counted its names differently
- *     from the run that exited non-zero). "No names" and "no failures" are
- *     different facts and only the second is evidence of anything, so an empty
- *     change report is UNATTRIBUTABLE — never an absence of failures.
- *   - `preExisting.length === changeRunNames.length` — every name the change run
- *     printed is accounted for at base, with no slack for a duplicate spelling.
- *   - `changeCaused.length === 0` — nothing is left over as the change's own.
- *
- * Returns the `preExistingOnly` result when all three hold, else `undefined`
- * (the caller parks). It still reports `ok: false` — the probe has no authority
- * to turn the gate's verdict into a pass.
- */
-function continueOnPreExisting(
-  outcome: BaselineProbeOutcome,
-  classifiedMessage: string,
-  done: <T>(value: T) => T,
-  evidence: { failureTail: string; attributed: boolean; verdict: ConsolidationFailureVerdict },
-) {
-  const pre = outcome.preExistingFailures;
-  const caused = outcome.changeCausedFailures;
-  const changeNames = outcome.changeRunNames;
-  if (!(changeNames.length > 0 && pre.length === changeNames.length && caused.length === 0)) {
-    return undefined;
-  }
-  const shown = pre.map(neutraliseMarkdownField).join(", ");
-  return done({
-    ok: false as const,
-    ...evidence,
-    classifiedMessage: `${classifiedMessage} — ${pre.length} test(s) fail; all ${pre.length} also fail at the cycle's base commit (${shown}) and are pre-existing`,
-    preExistingOnly: true,
-    preExistingFailures: pre,
-  });
 }

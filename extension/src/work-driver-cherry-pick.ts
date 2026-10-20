@@ -18,7 +18,8 @@ import { trace } from "./trace.ts";
 import type { CherryPickConflict } from "./work-driver-cherry-pick-conflict.ts";
 import { measureConsolidationCompleteness } from "./work-driver-completeness.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
-import { type NoDiff, isCommitOnBranch } from "./work-driver-integrate.ts";
+import { isCommitOnBranch } from "./work-driver-integrate-commit.ts";
+import type { NoDiff } from "./work-driver-integrate.ts";
 import { rebaseStagedPatchOntoHead } from "./work-driver-rebase-patch.ts";
 import { stagePorcelainPaths } from "./work-driver-stage.ts";
 // #654 (task-b) — re-exported so existing importers keep their path.

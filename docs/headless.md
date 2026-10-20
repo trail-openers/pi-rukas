@@ -210,6 +210,7 @@ A failed dispatch is read only for the caps a failed dispatch causes (`step-fail
 | `process` | The child process failed with no structured cause (a dispatch cap with no failed dispatch recorded is `process` too). |
 | `verify` | The verify gate ran and judged the code red: `verify-failed:<step>`, `verify-baseline-red:<step>`, `integration-verify-failed`, `consolidated-verify-consolidation-created`. |
 | `environment` | `verify-env:<step>`: the system refused to start a process, so the gate never ran. |
+| `forge-refused` | `push-refused:<step>` (#1439, #1702): the FORGE refused the push — GitHub push protection (GH013) or a repository rule rejected the ref's content. The verify gate never judged it, and nothing published. Not re-queueable: the same ref earns the same refusal, so a host must treat this as the `cap` case (a person acts) even though something did fail. `evidence` carries the refusal text with the allow-the-secret URLs. |
 | `driver` | `driver-crash:<step>`: a driver step handler threw. |
 | `cap` | Nothing failed: the cap's own rule stopped the cycle (a round cap, an intent park, awaiting merge, a fence violation, …). `evidence` says why. |
 

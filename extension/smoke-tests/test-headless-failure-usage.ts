@@ -293,4 +293,45 @@ const capHit = (cap: string, at: number, extra: Record<string, unknown> = {}): W
   );
 }
 
+// ── #1702 — a forge refusal is its own kind, NOT a re-queueable one.
+//
+// The pre-fix reading mapped `push-refused:<step>` to `environment`, the kind a host is
+// told it may retry on its own once the environment recovers. A GH013 refusal is not
+// transient — the same ref earns the same refusal — so that mapping made an automated host
+// re-queue a cycle whose outcome is a person's content decision. `cap` was wrong too: that
+// kind means "nothing failed, a rule stopped the cycle", and here the forge did refuse.
+{
+  assert(
+    (FAILURE_KINDS as readonly string[]).includes("forge-refused"),
+    "#1702: `forge-refused` is a published failure kind (additive — a host treats an unknown kind like `cap`)",
+  );
+  const s = build(
+    [
+      { kind: "step-started", step: "commit-pr", at: 1 },
+      capHit("push-refused:commit-pr", 2, {
+        evidence: "remote: error: GH013: Repository rule violations found",
+      }),
+      { kind: "step-started", step: "handoff", at: 3 },
+    ],
+    "handoff",
+  );
+  const f = projectIssue(s, "f").failure;
+  assert(f?.kind === "forge-refused", `push-refused maps to forge-refused (${f?.kind})`);
+  assert(
+    f?.kind !== "environment" && f?.kind !== "verify" && f?.kind !== "cap",
+    "#1702: not `environment` (a host must not re-queue it), not `verify` (the gate never judged it), not `cap` (something did fail)",
+  );
+  assert(
+    (f?.evidence ?? "").includes("GH013"),
+    "#1702: the refusal text still reaches the host as the failure evidence",
+  );
+  // The transient kinds a host re-queues on its own, pinned so a future remap of a refusal
+  // into one of them fails here rather than silently.
+  const REQUEUEABLE: readonly string[] = ["provider", "environment", "timeout"];
+  assert(
+    !REQUEUEABLE.includes(f?.kind ?? ""),
+    "#1702: a push refusal is never classified as a re-queueable kind",
+  );
+}
+
 process.exit(exit);

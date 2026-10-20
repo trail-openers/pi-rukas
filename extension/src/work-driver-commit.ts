@@ -17,8 +17,10 @@ import { execTree } from "./exec-tree.ts";
 import { trace } from "./trace.ts";
 import { raiseConsolidationIncompleteCap } from "./work-driver-commit-completeness.ts";
 import {
+  type MechanizedCommitPrResult,
   causeFromIntegrateFailure,
   conflictArtifactFromPlumb,
+  terminalCommitPrFailure,
   withPatchNote,
 } from "./work-driver-commit-helpers.ts";
 
@@ -112,32 +114,7 @@ export async function mechanizedCommitPr(
   ctx: CycleContext,
   state: WorkState,
   now: number,
-): Promise<
-  | { ok: true; state: WorkState }
-  | {
-      ok: false;
-      reason: string;
-      terminal?: boolean;
-      /** #1324 — the terminal verify failure was a run killed at its bound. */
-      timedOut?: boolean;
-      fallbackCause?: CommitPrFallbackCause;
-      /**
-       * #861 — the structured conflict-patch path preserved by integrate()
-       * (the "where possible" of the ops-fallback conflict seam). Set when
-       * integrate() preserved a patch on a non-terminal failure; the caller
-       * (runCommitPrLocked) threads it as the STRUCTURAL argument of
-       * `conflictArtifactFromPlumb`, so the ops prompt reads the field
-       * rather than re-parsing the plumb's body.
-       */
-      conflictPatch?: string;
-      /**
-       * #861 — set when a TERMINAL mechanized failure already appended the
-       * plumb + cap events (the creation-failure halt): the caller returns
-       * this state instead of appending a second cap of its own.
-       */
-      haltedAfter?: WorkState;
-    }
-> {
+): Promise<MechanizedCommitPrResult> {
   const execFn = ctx.verifyExecFn ?? execp;
   const ps = state.pipelineState;
   const branchName = ps.branchName;
@@ -293,13 +270,19 @@ export async function mechanizedCommitPr(
         // The consolidated tree does not build: a terminal verdict, not
         // environment variance — the ops fallback would commit and push the
         // same broken tree, making the verify gate one that cannot fail.
-        return {
-          ok: false,
-          reason: res.reason,
-          terminal: true,
-          fallbackCause,
-          ...(res.timedOut ? { timedOut: true } : {}),
-        };
+        return terminalCommitPrFailure(res, fallbackCause);
+      }
+      // #1439 — the forge refused the push (GitHub push protection / GH013 /
+      // repository rules / a non-fast-forward). TERMINAL, and deliberately routed
+      // the same way a red consolidated verify is: the ops fallback exists to absorb
+      // environment variance, and a refusal the REMOTE issued is neither — dispatching
+      // ops only buys 40 minutes of rediscovering the same GH013 text (measured: cycle
+      // 1439's ops child re-derived the refusal, wrote a plumb-report, and the cycle
+      // still parked, with a cause verdict that blamed the change). The commit is
+      // consolidated and local, so nothing is lost by parking now; the refusal text
+      // rides into the handoff as the cap evidence and names the allow-the-secret URLs.
+      if (res.failure === "push-refused") {
+        return terminalCommitPrFailure(res, fallbackCause);
       }
       // #861 — on a non-terminal failure the ops fallback takes over, so
       // the driver creates the worktree the fallback is pinned to, HERE:

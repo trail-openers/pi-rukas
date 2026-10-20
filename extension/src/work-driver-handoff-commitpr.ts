@@ -18,6 +18,10 @@ const COMMIT_PR_CAPS = [
   "verify-failed:commit-pr",
   "integration-verify-failed",
   "verify-timeout:commit-pr",
+  // #1439 — a push the forge refused. No ops fallback ran for this cap, but the
+  // plumb-report is the only place the GH013 refusal text lives outside the cap
+  // evidence, and the operator needs the allow-the-secret URLs it carries.
+  "push-refused:commit-pr",
 ] as const;
 
 function isCommitPrCap(cap: string | undefined): boolean {

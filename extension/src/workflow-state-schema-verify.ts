@@ -51,4 +51,16 @@ export type FenceViolation =
  * absent on state files from before it existed, which render as the outcome
  * gate did.
  */
-export type VerifyEvidenceOrigin = "outcome-gate" | "fix-pass" | "pr-not-open";
+export type VerifyEvidenceOrigin =
+  | "outcome-gate"
+  | "fix-pass"
+  | "pr-not-open"
+  /**
+   * #1439 — the FORGE refused the push (GitHub push protection / GH013 / repository
+   * rules / a non-fast-forward). The consolidated commit is intact locally and the
+   * project's verify command never ran on the refused content, so the park is not a
+   * verdict about the code building or not building: it is the remote objecting to what
+   * the change CONTAINS. The cause classifier routes on this field, never on a re-match
+   * of the refusal prose.
+   */
+  | "push-refused";

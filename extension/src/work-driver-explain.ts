@@ -126,6 +126,8 @@ export function explainCap(
     case "develop-incomplete-deliverables":
       return explainConvergeIncomplete(state);
     case "intent-park":
+    // #1439 — the forge refused the push: routed to the same per-step module.
+    case "push-refused:commit-pr":
       return explainPrSteps(cap, state);
     case "lens-diff-unreadable":
       return explainLens(cap, state);
