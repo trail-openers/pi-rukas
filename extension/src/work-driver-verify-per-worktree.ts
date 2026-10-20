@@ -19,6 +19,7 @@ import {
   captureProcessTree,
 } from "./work-driver-gate-hang.ts";
 import { TIER_KNOB } from "./work-driver-verify-budget.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import {
   type KilledGateRun,
   formatExecError,
@@ -102,7 +103,13 @@ export async function runPerWorktreeVerify(opts: {
     }
     try {
       await withVerifySlot(() =>
-        execFn(cmd, { cwd, timeout: suiteTimeoutMs, maxBuffer: 4 * 1024 * 1024 }),
+        execFn(cmd, {
+          cwd,
+          timeout: suiteTimeoutMs,
+          maxBuffer: 4 * 1024 * 1024,
+          // The project's gate never runs with the driver's knobs (#1642).
+          env: verifyChildEnv(),
+        }),
       );
       // The command passed: record the green for the tree it just read. Read
       // NOW, at the moment of the pass — a later read could describe content

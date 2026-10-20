@@ -61,14 +61,25 @@ function driverKnobNames(): ReadonlySet<string> {
  * `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S`, `PI_ENSEMBLE_SMOKE_HOST_GIT`) are not in
  * the inventory: the shell loop reads them inside the child, so they pass
  * through. Everything else (PATH, HOME, GIT_*, locale) is kept.
+ *
+ * `keep` names knobs that this particular child DOES need. It exists for the
+ * host-side `git`/`gh` calls that a verify seam makes around a project run —
+ * a worktree add or a `gh pr edit` — which must keep the knobs that decide
+ * where the driver reports (an `env`/`execArgv` cannot express "the parent's
+ * env minus everything except these"). A caller passes a knob name it reads
+ * itself, never a project's.
  */
-export function verifyChildEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function verifyChildEnv(
+  base: NodeJS.ProcessEnv = process.env,
+  keep?: readonly string[],
+): NodeJS.ProcessEnv {
+  const kept = keep === undefined ? undefined : new Set(keep);
   const knobs = driverKnobNames();
   const env: NodeJS.ProcessEnv = {};
   const dropped: string[] = [];
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined) continue;
-    if (knobs.has(key)) dropped.push(key);
+    if (knobs.has(key) && kept?.has(key) !== true) dropped.push(key);
     else env[key] = value;
   }
   // Names only, never values; each name traced once per process so a verify
