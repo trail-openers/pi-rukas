@@ -21,6 +21,7 @@
  * nobody declares is the only one that can be placed.
  */
 
+import { fenceDirPrefix } from "./work-driver-declared-path.ts";
 import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
 import type { UnfenceResult } from "./work-driver-plan-unfence.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
@@ -94,18 +95,26 @@ export function ownerOf(workstreams: Record<string, Workstream>, path: string): 
  */
 export function fenceCoveringBroader(entries: string[], path: string): string | undefined {
   return entries.find((entry) => {
-    // #1167 round-3 / round-4 — the entry is compared AS WRITTEN except for
-    // the two spellings of "directory", which mean the same thing and are both
-    // normalised away: `extension/src/` and `extension/src/**` are one fence
-    // written two ways, and the round-3 fix for the trailing separator left
-    // the glob form matching nothing. `normaliseDeclaredPath` strips BOTH
-    // (a trailing `/` and a trailing `/**`, plus a planner annotation), so it
-    // now runs on the ENTRY as well as the PATH — and the directory judgement
-    // no longer reads the separator, because the comparison below requires a
-    // `/` boundary anyway: `extension/src` only ever covers a path *inside*
-    // `extension/src/`, never a sibling named `extension/srcfoo`.
+    // #1167 round-3 / round-4 — the entry is compared AS WRITTEN except for the
+    // spellings of "directory", which mean the same thing and are all
+    // stripped here: `extension/src/`, `extension/src/*` and `extension/src/**`
+    // are one fence written three ways, and the round-3 fix for the trailing
+    // separator left the glob form matching nothing.
+    //
+    // #1707 moved the glob half of that strip OUT of `normaliseDeclaredPath`
+    // (it now strips only paired markup, so a wildcard survives — the plan-to-
+    // spec gate depends on that) and INTO this line, where it was this caller's
+    // private regex. #1707 round 4 moves it to `fenceDirPrefix` — the SAME rule
+    // the repair's `fenced()` and `findFenceContradictions` match fences with,
+    // because a fence whose directory spelling only ONE caller understands is a
+    // fence the other callers read as matching nothing. `normaliseDeclaredPath`
+    // still handles the trailing `/` and a planner annotation, and the directory
+    // judgement no longer reads the separator, because the comparison below
+    // requires a `/` boundary anyway:
+    // `extension/src` only ever covers a path *inside* `extension/src/`, never
+    // a sibling named `extension/srcfoo`.
     if (entry === path) return false;
-    const dir = normaliseDeclaredPath(entry);
+    const dir = fenceDirPrefix(entry);
     if (dir.length === 0) return false;
     return path.startsWith(`${dir}/`);
   });
