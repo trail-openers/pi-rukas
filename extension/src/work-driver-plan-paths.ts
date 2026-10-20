@@ -23,6 +23,7 @@
  */
 
 import { isPlainRepoRelativePath, isPlannedRepoRelativePath } from "./plan-path-shape.ts";
+import { fenceDirPrefix } from "./work-driver-declared-path.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
 // #1005 / #819 — the predicates live in plan-path-shape.ts (import-free, so the
@@ -113,10 +114,15 @@ export interface FenceContradiction {
  *
  * The comparison reuses `findPathCollisions`' containment semantics
  * (exact match, or containment either way on a `/` boundary) and normalises
- * BOTH sides with `normaliseDeclaredPath` first. The normalisation is the
+ * BOTH sides first — the declared path with `normaliseDeclaredPath`, the fence
+ * entry with `fenceDirPrefix`. The normalisation is the
  * whole game: a fence entry carrying an annotation — `src/x.ts (new)` — is
  * the same file as `src/x.ts`, and comparing un-normalised strings lets the
- * contradiction pass silently (the issue's own named pitfall).
+ * contradiction pass silently (the issue's own named pitfall). The fence side
+ * also reads the two directory spellings as one fence, so `extension/src/**`
+ * contradicts a workstream that declares `extension/src/foo.ts` (#1707 round 4
+ * — with the wildcard surviving the normaliser, this check matched nothing and
+ * the self-contradictory fence escaped the plan-quality pass).
  *
  * Prose fence entries that name no path (`"sibling owns all tests"`, `"docs/"`
  * when no path declares it) are NOT flagged: there is nothing to compare, and
@@ -131,7 +137,7 @@ export function findFenceContradictions(
     const own = [...new Set((ws.paths ?? []).map((p) => normaliseDeclaredPath(p)).filter(Boolean))];
     if (own.length === 0) continue;
     for (const entry of ws.outOfScope ?? []) {
-      const n = normaliseDeclaredPath(entry);
+      const n = fenceDirPrefix(entry);
       if (!n) continue;
       const path = own.find((p) => p === n || p.startsWith(`${n}/`) || n.startsWith(`${p}/`));
       if (path !== undefined) out.push({ workstream: id, entry, path });

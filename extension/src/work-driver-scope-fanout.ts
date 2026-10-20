@@ -56,6 +56,7 @@
  */
 
 import { trace } from "./trace.ts";
+import { stripFenceGlob } from "./work-driver-declared-path.ts";
 import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { normaliseScopePath as normaliseGitPath } from "./work-driver-verify-develop-helpers.ts";
@@ -206,8 +207,13 @@ export function runScopeFanoutGate(
   // A deferred entry only reachable through its own normaliser — a quoted
   // `\`docs/a.md\`` or a `docs/a.md (new)` — would fail to match that fence entry,
   // and the emptied workstream would skip the fanout bound it exists to fail.
+  // The fence side below now reads `dir/**` as its directory, so `stripFenceGlob`
+  // is applied HERE too: comparing a glob-stripped fence entry against a
+  // glob-carrying deferred entry would silently un-fire this fail-closed branch.
   // Hoisted out of the per-workstream loop: one Set per run, like `refused`.
-  const deferred = new Set((options.protectedDeferred ?? []).map(normaliseDeclaredPath));
+  const deferred = new Set(
+    (options.protectedDeferred ?? []).map((p) => stripFenceGlob(normaliseDeclaredPath(p))),
+  );
   const planDeclaredPaths = new Set<string>();
   for (const ws of Object.values(workstreams)) {
     for (const p of ws?.paths ?? []) {
@@ -262,8 +268,14 @@ export function runScopeFanoutGate(
     const declaredPaths = (workstream?.paths ?? [])
       .map(normaliseScopePath)
       .filter((p) => p.length > 0);
+    // The FENCE side reads `dir/**` / `dir/*` as the directory (#1707 round 4) —
+    // `fenceDirPrefix`, the one fence grammar the repair, `findFenceContradictions`
+    // and the unfence pass already use. This is the backstop: a plan-time check
+    // that missed a glob-spelled fence still has to stop the developer who
+    // ignored it. The annotation strip stays this module's own (#784's
+    // unterminated-parenthetical rule), so only the glob half is composed here.
     const outOfScope = (workstream?.outOfScope ?? [])
-      .map(normaliseScopePath)
+      .map((entry) => stripFenceGlob(normaliseScopePath(entry)))
       .filter((p) => p.length > 0);
     // Git paths use gitPathsOf, the same normaliser as the refused set and
     // changedBy: "./.pi/verify-cmd" and ".pi/verify-cmd" are one path.
