@@ -382,8 +382,8 @@ export const FIXED_CAP_CAUSE: Record<FixedCap, CapCause> = {
   },
   "token-budget": {
     cls: "environment",
-    reason: "the cycle exceeded its token budget and pi-rukas stopped it",
-    action: "raise the token budget or split the issue, then re-run `/work {issue} --restart`",
+    reason: "a token budget you set (PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>) stopped this child",
+    action: "unset it or raise it, or split the issue, then re-run `/work {issue} --restart`",
     kindDriven: true,
   },
   // The planner's report_workstream results never reached the driver.

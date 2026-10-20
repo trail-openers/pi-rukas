@@ -61,7 +61,7 @@ export function explainDetectCaps(cap: Cap, state: WorkState): string {
         ? ` ${Math.round(budgetEv.budgetTokens).toLocaleString()} tokens`
         : "";
       const used = budgetEv ? ` (spent ${Math.round(budgetEv.usedTokens).toLocaleString()})` : "";
-      return `a subagent crossed its cumulative token budget${budget}${used} — a cost cap, not a provider fault (override: PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>). The budget bounds context-driven spend; raise it only if the work genuinely needs the context, or re-dispatch with a tighter prompt so it fits`;
+      return `a subagent crossed a token budget you set (PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>)${budget}${used} — a cost cap, not a provider fault: unset it or raise it, or re-dispatch with a tighter prompt so it fits`;
     }
     default:
       return `unhandled detect-cap: ${cap}`;

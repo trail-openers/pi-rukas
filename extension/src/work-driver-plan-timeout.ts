@@ -122,10 +122,10 @@ function planKillDetail(
     }
     case "token-budget": {
       const tb = result.tokenBudget;
-      const budgetClause = tb
-        ? `${Math.round(tb.used).toLocaleString()} of ${Math.round(tb.budget).toLocaleString()} tokens`
-        : "its cumulative token budget";
-      return `[pi-rukas] killed on token-budget — ${budgetClause} (override: ${knob})`;
+      const spend = tb
+        ? ` (${Math.round(tb.used).toLocaleString()} of ${Math.round(tb.budget).toLocaleString()} tokens)`
+        : "";
+      return `[pi-rukas] killed on token-budget — a token budget you set stopped this child${spend}; unset it or raise it (override: ${knob})`;
     }
     case "abort":
       return "[pi-rukas] cancelled (abort signal)";
