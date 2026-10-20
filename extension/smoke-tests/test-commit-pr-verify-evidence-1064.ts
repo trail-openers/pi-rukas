@@ -414,4 +414,40 @@ const REDACTED = "[REDACTED]";
   );
 }
 
+{
+  // #1702 — the classifier's own predicate must carry the #807 secret guard the deleted
+  // `namedFailureLinesFrom` had, NOT just the shared reader's redaction. `namedFailures`
+  // is joined into the field labelled "specific assertion", so a line whose payload is
+  // credential material has to be DROPPED, not masked: an `[REDACTED]` the classifier
+  // presents as the cause is still credential-shaped content in the handoff. Built from
+  // fragments so this file carries no credential-shaped literal.
+  const SECRET_SHAPE = ["api", "_key", "=", "zX9cVbNm0pQwErTy"].join("");
+  const leaky = [
+    `✗ driver::prints_config — got ${SECRET_SHAPE}`,
+    "✗ driver::honest_failure — expected 1, got 2",
+    "FAILED: 2 test(s) — driver::prints_config, driver::honest_failure",
+  ].join("\n");
+  const verdict = classifyConsolidatedVerifyFailure(
+    1,
+    ["default"],
+    "chatter".repeat(200),
+    {},
+    leaky,
+  );
+  const recovered = verdict.namedFailures ?? [];
+  assert(
+    recovered.every((l) => !l.includes(SECRET_SHAPE)) &&
+      !recovered.some((l) => l.startsWith("✗") && l.includes("driver::prints_config")),
+    "#1702: a `✗` line matching LOOKS_LIKE_SECRET is dropped from namedFailures, not redacted into it",
+  );
+  assert(
+    recovered.some((l) => l.includes("driver::honest_failure")),
+    "#1702: the guard drops only the secret-shaped line — the ordinary failure is still recovered",
+  );
+  assert(
+    recovered.some((l) => l.startsWith("FAILED: 2 test(s)")),
+    "#807/#1064: the count summary survives the guard (isNonAssertionLine rejects every `FAILED:` line, so it is kept explicitly)",
+  );
+}
+
 process.exit(exit);
