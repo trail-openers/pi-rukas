@@ -92,7 +92,14 @@ export interface SpecCoverageSpec {
 /** One deliverable the plan covers none of. */
 export interface UncoveredDeliverable {
   id: string;
-  /** The deliverable's normalised declared paths (what the plan should cover). */
+  /**
+   * The deliverable's normalised declared paths THAT A PLAN MAY BE ASKED FOR —
+   * what the plan should cover: the slots left after the two exclusions
+   * (`isDeferredProtectedSlot`, `planDeclarableSlot`). A glob or `<name>`
+   * template never appears here, because naming one in a `paths` entry is
+   * refused by `plannedPathProblem` and the operator would be told to declare
+   * something the plan schema rejects.
+   */
   paths: string[];
 }
 
@@ -208,6 +215,62 @@ function measurable(d: SpecCoverageDeliverable, paths: string[]): boolean {
 }
 
 /**
+ * The characters `plannedPathProblem` refuses as "a glob or pathspec
+ * character". The exemption below is exactly that one clause, and `isGlob`
+ * alone is not it: `isGlob` tests `*` and would miss the `?` / `!` forms the
+ * planner's own grammar rejects. The agreement between the two is pinned by
+ * `test-plan-spec-glob-coverage.ts`, not by this comment.
+ */
+const PATHSPEC_CHARS = /[*?!]/;
+
+/**
+ * Could a PLAN declare this slot at all? #1642 run 6b, measured on #1557.
+ *
+ * `measurableAlternative` answers the CONVERGE gate's question — could a diff
+ * ever answer this slot — and a pattern answers it yes, because develop
+ * creates real files a template matches. The plan-time question is different,
+ * and the answer for a pattern is no: a `report_workstream` `paths` entry must
+ * pass `plannedPathProblem`, whose glob clause refuses `* ? !` outright, so no
+ * honest plan can ever name the slot. Requiring coverage of such a slot
+ * rejects every plan for that deliverable, including the correct one: #1557's
+ * d1 declared four concrete files plus `extension/src/review-ledger-*.ts`
+ * (the split the 500-line ratchet forces), BOTH plan replies declared all four
+ * concrete files, and the gate parked the cycle on d1 anyway — twice, because
+ * the one-shot corrective hit the same wall and the single-workstream repair
+ * declined it too (`work-driver-plan-repair.ts`: "not a single measurable
+ * file path").
+ *
+ * The exemption is EXACTLY that clause, and nothing wider. `-dash.ts`,
+ * `:magic.ts`, a NUL or a zero-width are refused by OTHER clauses of
+ * `plannedPathProblem`; those slots STAY required — they are defects in the
+ * spec's own slot that the repair and the operator must still be told about
+ * (pinned by `test-plan-spec-mismatch-repair.ts` and
+ * `test-plan-repair-invisible-path.ts`), and exempting them would silence a
+ * guard written on purpose. A pattern is different in kind: it is a shape the
+ * planner is never offered. And a slot with a concrete alternative among
+ * several (`a.ts or new-b-*.ts`) stays required, because declaring `a.ts`
+ * covers it.
+ *
+ * It lives here, beside its only reader, rather than in
+ * `work-driver-deliverable-paths.ts`: that module owns what a slot MEANS, and
+ * this asks what a PLAN MAY BE ASKED FOR — a fact about the planner's schema,
+ * not the path grammar, with one caller.
+ *
+ * What this does NOT do: it is not "the deliverable is covered". It removes a
+ * requirement no plan can satisfy. The concrete half of a mixed deliverable is
+ * still demanded slot by slot, and a workstream that declared only files
+ * matching the pattern still covers nothing of it — the pattern stays measured
+ * at converge, where a real diff CAN answer it.
+ */
+export function planDeclarableSlot(slot: string): boolean {
+  const alternatives = splitDeliverablePaths(slot).map(toAlternative);
+  return (
+    alternatives.length > 0 &&
+    alternatives.some((alt) => !alt.isGlob && !PATHSPEC_CHARS.test(alt.raw))
+  );
+}
+
+/**
  * #1642 — a declared slot the plan CANNOT cover because the cycle may not write
  * it: every alternative is a protected path (`isProtectedPath`) and none is
  * named by the operator's `--allow-protected` grant. The planner leaves such a
@@ -264,6 +327,19 @@ export function protectedDeferralsOf(
  * Returns `checkedCount: 0` when no deliverable carries a path — the caller
  * must read that as "this gate has nothing to say", NOT as a pass it earned
  * and certainly not as a rejection.
+ *
+ * #1642 run 6b (#1557) — a SECOND class of slot is not the plan's to cover:
+ * one no plan can NAME. `isDeferredProtectedSlot` exempts what the cycle may
+ * not write; `planDeclarableSlot` exempts what the planner may not declare —
+ * a glob or `<name>` template, which `plannedPathProblem` refuses in a
+ * `report_workstream` `paths` entry. Measured on #1557: a deliverable of four
+ * concrete files plus one glob, both replies declaring all four concrete
+ * files, parked the cycle twice on "no workstream declares any path" of a
+ * slot nobody is allowed to write. The exemption removes the impossible
+ * demand only — every concrete slot of the same deliverable is still demanded
+ * and the gate still bites (see the mixed-deliverable cases in
+ * `test-plan-spec-glob-coverage.ts`), and the glob itself stays measured at
+ * converge, where a real diff CAN answer it.
  */
 export function findUncoveredDeliverables(
   workstreams: Record<string, SpecCoverageWorkstream>,
@@ -290,8 +366,12 @@ export function findUncoveredDeliverables(
     const paths = declaredSlots(d.paths);
     if (!measurable(d, paths)) continue;
     // #1642 — protected slots the cycle may not write are not the plan's to
-    // cover; the rest (a mixed deliverable's unprotected half) still are.
-    const required = paths.filter((p) => !isDeferredProtectedSlot(p, grant));
+    // cover, and a template slot is not the plan's to DECLARE (see
+    // `planDeclarableSlot`); the rest (a mixed deliverable's concrete half)
+    // still are.
+    const required = paths.filter(
+      (p) => !isDeferredProtectedSlot(p, grant) && planDeclarableSlot(p),
+    );
     if (required.length === 0) continue;
     checkedCount += 1;
     if (required.every((p) => coveredBy(p, workstreamPaths))) continue;
