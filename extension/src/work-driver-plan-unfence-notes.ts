@@ -94,18 +94,24 @@ export function ownerOf(workstreams: Record<string, Workstream>, path: string): 
  */
 export function fenceCoveringBroader(entries: string[], path: string): string | undefined {
   return entries.find((entry) => {
-    // #1167 round-3 / round-4 — the entry is compared AS WRITTEN except for
-    // the two spellings of "directory", which mean the same thing and are both
-    // normalised away: `extension/src/` and `extension/src/**` are one fence
-    // written two ways, and the round-3 fix for the trailing separator left
-    // the glob form matching nothing. `normaliseDeclaredPath` strips BOTH
-    // (a trailing `/` and a trailing `/**`, plus a planner annotation), so it
-    // now runs on the ENTRY as well as the PATH — and the directory judgement
-    // no longer reads the separator, because the comparison below requires a
-    // `/` boundary anyway: `extension/src` only ever covers a path *inside*
-    // `extension/src/`, never a sibling named `extension/srcfoo`.
+    // #1167 round-3 / round-4 — the entry is compared AS WRITTEN except for the
+    // two spellings of "directory", which mean the same thing and are both
+    // stripped here: `extension/src/` and `extension/src/**` are one fence
+    // written two ways, and the round-3 fix for the trailing separator left the
+    // glob form matching nothing.
+    //
+    // #1707 moved the glob half of that strip OUT of `normaliseDeclaredPath`
+    // (it now strips only paired markup, so a wildcard survives — the plan-to-
+    // spec gate depends on that) and INTO this line: `/**` is a fence's way of
+    // spelling "this directory", not a pattern the fence matches, so the rule
+    // is this caller's and lives where the two spellings are described.
+    // `normaliseDeclaredPath` still handles the trailing `/` and a planner
+    // annotation, and the directory judgement no longer reads the separator,
+    // because the comparison below requires a `/` boundary anyway:
+    // `extension/src` only ever covers a path *inside* `extension/src/`, never
+    // a sibling named `extension/srcfoo`.
     if (entry === path) return false;
-    const dir = normaliseDeclaredPath(entry);
+    const dir = normaliseDeclaredPath(entry).replace(/\/\*\*$/, "");
     if (dir.length === 0) return false;
     return path.startsWith(`${dir}/`);
   });

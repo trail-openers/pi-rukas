@@ -20,6 +20,7 @@ import { errorText, execGit, prRange, refResolves } from "./git-range.ts";
 import { trace } from "./trace.ts";
 import { consolidationNote } from "./work-driver-consolidation-note.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { normaliseDeclaredPath } from "./work-driver-declared-path.ts";
 import { resolveMainline } from "./work-driver-git.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { shellExecp } from "./work-driver-verify-shell.ts";
@@ -28,6 +29,11 @@ import type { WorkState } from "./workflow-state.ts";
 
 // Re-export for existing consumers (smoke tests) so import paths stay valid.
 export { verifyCmdFor } from "./work-driver-verify-cmd.ts";
+// `normaliseDeclaredPath` lives in its own leaf module (#1707 — the paired-
+// markup rule outgrew this file, and a path normaliser is not a verify
+// concern). Re-exported so the ~25 importers, and the tests that name this
+// path, keep working.
+export { normaliseDeclaredPath } from "./work-driver-declared-path.ts";
 // Re-export for existing consumers (smoke tests).
 export {
   judgePrIdentity,
@@ -459,33 +465,4 @@ export async function verifyConsolidation(
     }
   }
   return { missing, filesPresent, verdicts, notes: [] };
-}
-
-/**
- * A declared path as `git` would spell it.
- *
- * `paths` is prose from the plan step, not `git` output, and — measured across
- * the real state files on this host — it carries annotations the planner added
- * for a human reader:
- *
- *     "extension/src/work-driver-verify-cmd.ts (new)"
- *     "extension/src/role-tools.ts (no changes)"
- *
- * Compared by exact equality against `git diff --name-only`, neither ever
- * matches, so the workstream reads as MISSING even when its files changed. The
- * failure is one-directional — a false alarm at commit-pr, never a false pass —
- * which is why it went unnoticed.
- *
- * A trailing parenthetical is stripped (`a.ts (new)`, `ci.yml(new)`); one
- * INSIDE a name ("notes (draft).md") is not, and neither is one that is a whole
- * path segment (`app/(group)`, #1652), because those are real names.
- */
-export function normaliseDeclaredPath(raw: string): string {
-  return raw
-    .trim()
-    .replace(/(?<=[^/])\s*\([^()]*\)\s*$/, "")
-    .replace(/^[`*\s]+|[`*\s]+$/g, "")
-    .replace(/^\.\//, "")
-    .replace(/\/+$/, "")
-    .trim();
 }
