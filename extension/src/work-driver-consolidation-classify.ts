@@ -341,9 +341,24 @@ export function classifyConsolidatedVerifyFailure(
  * and `extractSpecificAssertion` refuses such lines, so the recovery must not put
  * them back through the side door. A `✗` line, or the `FAILED: <n> test(s) — a, b`
  * summary that carries the names, is what counts.
+ *
+ * #1702 — the #807 secret guard the deleted `namedFailureLinesFrom` carried is composed
+ * in here, so merging the two readers did not quietly drop it. The shared reader REDACTS
+ * what it keeps, and that is not enough for this caller: `consolidatedFailureMessage`
+ * joins the recovered lines into the field labelled "specific assertion", and a line
+ * whose whole payload is credential material is not an assertion — an `[REDACTED]`
+ * standing in that field is still credential-shaped content the classifier presented as
+ * the cause. So a line `isNonAssertionLine` rejects (marker, echoed command,
+ * `LOOKS_LIKE_SECRET`) is DROPPED here, not masked.
+ *
+ * The count summary is the one marker-shaped line this predicate must still keep —
+ * `IS_MARKER_LINE` rejects every `FAILED:` line, which is why the deleted reader matched
+ * the summary explicitly. It is matched explicitly here too, and carries the same secret
+ * guard.
  */
 function isNamedFailureLine(line: string): boolean {
-  return /^✗\s/.test(line) || /^FAILED:\s*\d+\s+test\(s\)/.test(line);
+  if (/^FAILED:\s*\d+\s+test\(s\)/.test(line)) return !LOOKS_LIKE_SECRET.test(line);
+  return !isNonAssertionLine(line) && /^✗\s/.test(line);
 }
 
 /**
