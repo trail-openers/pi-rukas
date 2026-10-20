@@ -28,7 +28,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -296,6 +296,52 @@ try {
     assert(
       r5.ok && ranAtRoot(runs5, m.repo),
       `case k4: at N>1 the commit-pr verify runs even when a worktree is named (ok: ${r5.ok}, runs: ${JSON.stringify(runs5)})`,
+    );
+  }
+
+  // #1702 — `logPaths` on the terminal commit-pr cap was a field NO production path ever
+  // filled. The develop gate writes its consolidated run log and reports the path through
+  // `onConsolidatedLogPath` (#841); the commit-pr seam documented the same contract while
+  // writing nothing, so every `integration-verify-failed` park carried an absent pointer.
+  // This drives the real `integrate()` with a red verify command and a scratch dir, and
+  // asserts the park now names a log that exists on disk.
+  {
+    const g = await fixture("commit-pr-run-log", ["default"]);
+    const cmd = `sh -c 'echo "FAILED: 1 test(s) — driver::red"; exit 1'`;
+    const wt = path.join(g.dir, "wt-log");
+    await git(g.repo, ["worktree", "add", "-q", "--detach", wt, g.baseSha]);
+    await git(wt, ["config", "user.email", "t@example.com"]);
+    await git(wt, ["config", "user.name", "T"]);
+    writeFileSync(path.join(wt, "feature.rs"), "fn a() {}\n");
+    await git(wt, ["add", "."]);
+    await git(wt, ["commit", "-q", "-m", "task: feature"]);
+    const scratch = path.join(g.dir, "scratch-log");
+    const runsLog: Runs = [];
+    const res = await integrate(makeExec({ runs: runsLog, repoRoot: g.repo }), {
+      repoRoot: g.repo,
+      branchName: "feature/commit-pr-log",
+      baseSha: g.baseSha,
+      worktrees: { default: wt },
+      scratchDir: scratch,
+      commitTitle: "feat: logged",
+      commitBody: "b",
+      mode: "create",
+      requireAllNonEmpty: true,
+      verifyCmd: cmd,
+    });
+    assert(res.ok === false, "#1702: a red consolidated verify fails the integration");
+    const logs = (res as { logPaths?: string[] }).logPaths ?? [];
+    assert(
+      logs.length === 1 && logs[0] !== undefined && existsSync(logs[0]),
+      `#1702: the failure carries a logPath that EXISTS on disk (got ${JSON.stringify(logs)})`,
+    );
+    assert(
+      logs[0] !== undefined && logs[0].startsWith(scratch),
+      `#1702: the log lands in the cycle's scratch dir, not somewhere ad hoc (${logs[0]})`,
+    );
+    assert(
+      logs[0] !== undefined && readFileSync(logs[0], "utf8").includes("driver::red"),
+      "#1702: the persisted log holds the raw stream, so the operator can read what failed",
     );
   }
 } finally {

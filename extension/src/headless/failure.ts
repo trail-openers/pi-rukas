@@ -38,6 +38,13 @@ export const FAILURE_KINDS = [
   "verify",
   /** The system refused to start a process, so the gate never ran. */
   "environment",
+  /**
+   * #1702 — the FORGE refused the push (`push-refused:<step>`): GitHub push protection
+   * or a repository rule rejected the ref's CONTENT. Not re-queueable — the same ref
+   * earns the same refusal — and not `cap` either, because something did fail; only a
+   * person can allow the flagged content or change the fixtures.
+   */
+  "forge-refused",
   /** A driver step handler threw. */
   "driver",
   /** No failure: the cap's own rule stopped the cycle (a round cap, a park, awaiting merge). */
@@ -125,6 +132,17 @@ function capKind(cap: string): FailureKind {
       return "timeout";
     case "verify-env":
       return "environment";
+    // #1439 — the push was refused. Not `verify` (the verify gate never judged this
+    // content — the remote rejected it before it was published), and not `environment`
+    // either: #1702 review round found the original `environment` reading let a host
+    // RE-QUEUE a cycle whose outcome is a person's content decision — the retry ladder
+    // treats environment faults as transient, and the same GH013 refuses the same ref
+    // again. It is neither `cap` (something DID fail) nor re-queueable at all, so it
+    // earns its own kind rather than borrowing a transient one. `causeVerdictOf` still
+    // overrides the class to `issue`, so the kind is what a host switches on, not the
+    // verdict.
+    case "push-refused":
+      return "forge-refused";
     // #1243 — the endpoint, not the work. This is the field a headless caller
     // switches on to re-queue a cycle by itself once the provider answers.
     case "provider-unavailable":

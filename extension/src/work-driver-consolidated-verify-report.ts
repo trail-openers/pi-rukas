@@ -253,6 +253,9 @@ export function reportConsolidatedVerifyOutcome(
       wsIds,
       classifierInput,
       perWorktreeFailuresByWs,
+      // #1064 — the unclipped stream, so a long FAILED summary whose head was elided
+      // still yields its test names to `consolidatedFailureMessage`.
+      rawFailure,
     );
     // #841 — the log path must land in `failures[]` (which the gate pushes
     // into `verifyEvidence.failures` and the handoff renders) — not only in

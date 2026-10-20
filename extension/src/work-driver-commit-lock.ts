@@ -12,10 +12,17 @@
  * the merged teardown).
  */
 import { execp } from "./exec.ts";
+import { redactThenBound } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
 import { dispatchCommitPrFallback } from "./work-driver-commit-fallback.ts";
 import { conflictArtifactFromPlumb } from "./work-driver-commit-helpers.ts";
 import { auditCommitPrFallback } from "./work-driver-commit-pr-audit.ts";
+import { pushTerminalCap } from "./work-driver-commit-pr-events.ts";
+import {
+  type ConsolidatedVerifyEvidence,
+  consolidatedVerifyCapFields,
+  consolidatedVerifyEvidenceFields,
+} from "./work-driver-commit-verify-evidence.ts";
 import { mechanizedCommitPr } from "./work-driver-commit.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { continueCommitPrHalt } from "./work-driver-continue-pr-commit.ts";
@@ -24,6 +31,16 @@ import { appendEvent } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 export { runCommitPr };
+
+/**
+ * Bound for the plumb-report body that carries a mechanized failure's raw reason. The
+ * reason is the gate's own text — for a `push-refused` halt it is the forge's `remote:`
+ * lines verbatim, and those quote the content push protection flagged. The body persists
+ * in the state file and the handoff prints it, so it is redacted before it is bounded
+ * (redact-then-clip, never the reverse: a clip can cut a token into a fragment no pattern
+ * recognises).
+ */
+const PLUMB_BODY_MAX = 2000;
 
 /**
  * Step 6 — Commit + PR. ops commits the diff, pushes, opens a PR with
@@ -67,28 +84,63 @@ async function runCommitPrLocked(
       // dispatch — the #841 defect class, which the strict audit would halt
       // anyway). The prepared state carries the plumb + cap already appended.
       trace(`work-driver: commit-pr halted (terminal mechanized failure): ${mech.reason}`);
-      return (
+      // #1439 — a push the forge refused gets its OWN cap, its own evidence origin,
+      // and its own cause verdict (`issue`, not `change`). Pre-fix it shared the
+      // consolidated-verify cap and its `change` verdict, so the operator of cycle
+      // 1439 was told "the verify command failed … fix the change" for a GitHub
+      // push-protection refusal that no amount of fixing satisfies until someone
+      // allows the flagged content or the fixtures stop carrying it.
+      //
+      // #1064 — EVERY terminal cap now carries evidence. The pre-fix spread attached
+      // it only for a timed-out run, so a terminal `integration-verify-failed` parked
+      // with nothing but the cap name: `causeEvidence` was the cap, the operator saw
+      // no failing test, and the bounded failure lines the gate had already extracted
+      // were thrown away. Both cases now ride through one helper (see
+      // `work-driver-commit-verify-evidence.ts`) so the two caps cannot drift apart
+      // the way the develop step's evidence did before #841.
+      const evidence: ConsolidatedVerifyEvidence = {
+        cap: pushTerminalCap(mech),
+        reason: mech.reason,
+        timedOut: mech.timedOut === true,
+        pushRefused: mech.fallbackCause === "push-refused",
+        // #1064 — the gate's own failure lines, threaded up from the consolidated
+        // verify through integrate() and mechanizedCommitPr. The helpers below
+        // tolerate their absence (an old state file, a failure that never reached the
+        // gate) rather than inventing a line.
+        ...(mech.failures !== undefined ? { failures: mech.failures } : {}),
+        ...(mech.logPaths !== undefined ? { logPaths: mech.logPaths } : {}),
+      };
+      const verifyFields = consolidatedVerifyEvidenceFields(evidence);
+      // The terminal path must LEAVE `next` set. `next === undefined` is what the
+      // dispatcher below reads as "the mechanized path failed in a recoverable way — run
+      // the ops fallback", and a `return` here used to skip both that assignment and the
+      // guard's intent: a `terminal: true` failure still paid for the very dispatch it
+      // was marked terminal to avoid (#1439's 40-minute ops child on a GH013 refusal).
+      // Returning the cap'd state is what makes `terminal` mean something.
+      next =
         mech.haltedAfter ??
         appendEvent(
-          state,
+          verifyFields === undefined
+            ? state
+            : { ...state, pipelineState: { ...state.pipelineState, ...verifyFields } },
           {
             kind: "plumb-report",
             at: Date.now(),
             step: "commit-pr",
             role: "driver",
-            body: mech.reason,
+            body: redactThenBound(mech.reason, PLUMB_BODY_MAX).text,
+            ...(mech.fallbackCause === "push-refused" ? { fallbackCause: mech.fallbackCause } : {}),
           },
           {
             kind: "cap-hit",
             at: Date.now(),
             // #1324 — a run killed at its bound reached no verdict about the code.
-            cap: mech.timedOut ? "verify-timeout:commit-pr" : "integration-verify-failed",
+            cap: evidence.cap,
             reviewRound: state.pipelineState.reviewRound,
             nextStep: "handoff",
-            ...(mech.timedOut ? { evidence: mech.reason } : {}),
+            ...consolidatedVerifyCapFields(evidence),
           },
-        )
-      );
+        );
     } else if (state.pipelineState.continuedPr) {
       // #1468 — the fallback's prompt opens a PR; a continued PR gets none.
       return continueCommitPrHalt(ctx, state, mech.reason, execFn);
@@ -109,6 +161,17 @@ async function runCommitPrLocked(
         body: `Mechanized commit-pr fell back to the ops dispatch: ${mech.reason}`,
         // #539 — the writer's own structured observation; the renderer
         // prefers this over re-deriving the cause from the recorded state.
+        // #1439 — the ops fallback is pinned to the driver-owned integrate worktree
+        // (created by mechanizedCommitPr under the integration lock); the prompt names
+        // that path as the ONLY permitted working tree (worktree-commit-fallback.ts owns
+        // the dispatch shape + the prompt threading).
+        //
+        // A push refusal is the exception: the fallback is NOT dispatched (the branch is
+        // already consolidated and committed locally, and the remote's refusal is not
+        // something a child can lift), so the plumb-report records a cause the fallback
+        // can never itself carry. The handoff still renders it, and the cause classifier
+        // reads the same `fallbackCause` to keep the terminal halt's plumb and its cap
+        // describing one event.
         fallbackCause: mech.fallbackCause,
       });
       // #861 round 2 — the structured conflict-artifact value threads from

@@ -16,5 +16,12 @@
  * adversarial verdict vocabulary did. `apply-conflict` remains for
  * pre-#539 state; the writer now labels apply failures `other` because
  * integrate()'s structured `failure` names only dirty-repoRoot.
+ *
+ * #1439 — `push-refused` names the forge's server-side refusal of the push (GitHub
+ * push protection / repository rules / a non-fast-forward). It is in this vocabulary
+ * as well as in `IntegrateResult.failure` because a push refusal never reaches the ops
+ * fallback (the caller parks terminally); the label is what the plumb-report and the
+ * handoff render for it, and what distinguishes it from an ordinary `other` fallback
+ * in an old state file.
  */
-export type CommitPrFallbackCause = "dirty-repoRoot" | "apply-conflict" | "other";
+export type CommitPrFallbackCause = "dirty-repoRoot" | "apply-conflict" | "push-refused" | "other";

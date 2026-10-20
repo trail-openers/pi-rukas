@@ -1130,6 +1130,7 @@ Every cap id the driver can record has exactly one row in this table (`extension
 | `develop-child-crash` | A develop child's engine died mid-pass and left uncommitted work in its worktree. | `git -C <worktree> status` before re-running: the dead pass's work is uncommitted and the driver never commits it for you. |
 | `develop-incomplete-deliverables` | The converge gate found plan deliverables absent from the end-of-develop diff, even after the corrective re-dispatch. The code builds. | Implement the missing deliverables on the branch, or re-run `/work N` for a fresh corrective budget. |
 | `draft-rearm-failed` | The review had to run again after the PR was marked ready, and the driver could not make the PR a draft again. | Make the PR a draft (`gh pr ready <N> --undo`) and re-run, or merge it deliberately. |
+| `push-refused:<step>` | #1439 — the FORGE refused the push: GitHub push protection / repository rules (`GH013`, `GITHUB PUSH PROTECTION`) or a non-fast-forward. The commit is consolidated and committed locally; the remote rejected it on **content**, so no ops dispatch was made (before #1439 this fell back to ops, which spent ~40 min re-deriving the same refusal, then parked as `verify-failed:commit-pr` blaming the change). `evidence` quotes the remote's own `remote:` lines, including the allow-the-secret URLs. Classified `issue`, never `change`. | Two real paths, both named in the handoff: open each `unblock-secret/…` URL the remote printed and push again (when the flagged strings are not secrets — a fixture, a documented token shape); or rewrite the fixture so the content clears the rules (assemble flagged strings from fragments at runtime) and re-run `/work N --restart`. A non-fast-forward: rebase the branch on the current mainline and re-run. A transport failure (`could not read from remote repository`) is NOT this cap and still falls back to ops. |
 | `driver-crash:<step>` | A driver step handler threw: the driver crashed, not a subagent. The message and stack are the last event in the state file. | Fix the underlying error, then re-run `/work N`. |
 | `existing-pr-detected` | An open PR already closes this issue. The driver halted at the branch step before any dispatch. | Resume, close or retarget that PR; `--restart` does not clear it. A headless host can pass `--continue-pr` to continue the PR instead (see [headless.md](headless.md#--continue-pr-for-hosts)). |
 | `fence-violation:develop` | The develop scope fence's recovery round did not converge (a second violation, a violator↔owner cycle, or a git failure). | Split the plan so each file is declared by one workstream, then re-run. |
@@ -2422,6 +2423,27 @@ If you see repeated fallbacks in the plumb-reports, the reason string says why; 
 ### Escape hatch
 
 There is no way to force the LLM ops dispatch. #393 deleted `PI_ENSEMBLE_MECHANIZE_OPS=0`, because every worst-class incident in this harness's history — #245/#253 silent merges, v0.12.13 shipping 1 of 3 workstreams — was LLM ops improvising exactly the operations mechanization now executes. The LLM path still runs as a **fallback when mechanization fails**, which is recovery from environment variance rather than an opt-out; a plumb-report records every such fallback so you can see it happened.
+
+### A push the forge refused parks instead of falling back (#1439)
+
+**Symptom.** A cycle parks at `commit-pr`, the state file shows cap `push-refused:commit-pr`, and the cap's `evidence` quotes GitHub — `GH013: Repository rule violations`, `GITHUB PUSH PROTECTION`, and `Push the commit again to allow the secret: https://github.com/...` URLs. Before #1439 this shape recorded `verify-failed:commit-pr`, dispatched the LLM ops fallback, and the ops child spent 40 minutes re-deriving the same refusal text before the cycle parked anyway — with a cause verdict blaming the change ("the verify command failed … fix the change"), which is not what happened.
+
+**Why it is not a code failure.** The remote rejected the ref because of its **content**. The commit is consolidated and committed locally; nothing is lost by parking. No ops child can lift a refusal the server issued, so dispatching one only re-reads the same error.
+
+**What to do.** Two real paths, and the handoff names both:
+
+1. **Allow the flagged content** — open each `unblock-secret/…` URL the remote printed and push the commit again. Use this when the flagged strings are genuinely not secrets (a test fixture, a documented token shape).
+2. **Rewrite the fixture** so the content no longer trips the rules — e.g. assemble the flagged strings from fragments at runtime — then re-run `/work <issue> --restart`.
+
+A non-fast-forward is classified the same way (the remote would need a force-push, which the driver will not perform on a shared branch): rebase the branch on the current mainline and re-run.
+
+**Not a refusal.** An SSH/transport failure (`could not read from remote repository`, `connect to host … timed out`) is environment variance and still falls back to ops, exactly as before. The recogniser is `PUSH_REFUSAL_MARK` in `work-driver-push-refusal.ts`; a push failure that is not one of those markers keeps its old behaviour.
+
+### An `integration-verify-failed` park now names the failing tests (#1064)
+
+**Symptom (pre-fix).** The consolidated gate went red on many tests and the park carried `evidence: null` — the operator saw a cap name with no failing test, no assertion, no log path, while the gate had already extracted all three and dropped them.
+
+**Fix.** Every terminal commit-pr cap now carries the gate's own failure lines (`FAILED: <n> test(s) …`, `✗ <test>`) and the persisted log paths, and `consolidatedFailureMessage` prefers those names over the `(no specific assertion could be extracted)` sentinel when the bounded 800-char window elided the summary. Absence stays honest: with no lines extracted, nothing is invented and the reason text stands as the evidence.
 
 ## Invariant-removal guard memories (#280 C)
 

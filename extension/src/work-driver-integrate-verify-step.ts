@@ -61,6 +61,12 @@ export interface IntegrationVerifyOpts {
    */
   baselineBaseSha?: string;
   verifyRetry?: IntegrateOpts["verifyRetry"];
+  /**
+   * #1702 — the cycle's scratch dir, passed straight to the verify seam so it can persist
+   * the raw stream of each consolidated run (the develop side already does this). Absent →
+   * the seam runs the same gate and simply writes no log.
+   */
+  scratchDir?: string;
   /** Restores repoRoot to the ref `integrate()` recorded; see its docstring. */
   restoreRoot: () => Promise<VerifiedRestoreResult>;
   /** The verified restore post-condition, phrased once (`integrate()`'s). */
@@ -85,7 +91,18 @@ export interface IntegrationVerifyOutcome {
    * set ONLY when they are every failure the run produced. `integrate()`
    * pushes on it and records the names for the PR body and the handoff.
    */
+  /** The restore claim was NOT mixed into `failureTail`: see the module docstring. */
   preExistingFailures?: string[];
+  /**
+   * #1064 — the verify's own failure strings, handed to the caller verbatim so the
+   * terminal cap can carry the test names and `✗` lines instead of the cap name alone.
+   * `reason` is the classified message; these are the raw lines behind it.
+   */
+  failures?: string[];
+  /** #1064 / #841 — persisted raw-output logs, carried structurally to the cap event.
+   * #1702 — set in production: the seam writes the run log itself and reports the path it
+   * wrote, so a terminal commit-pr park now points at a real file. */
+  logPaths?: string[];
   /** The identity that justified skipping the run, when the run was skipped. */
   skipped?: AlreadyVerifiedTree;
 }
@@ -96,6 +113,13 @@ export async function verifyIntegration(
 ): Promise<IntegrationVerifyOutcome> {
   if (opts.verifyCmd === undefined) return {};
   const verifyExec = opts.verifyExecFn ?? execFn;
+  // #1702 — the path the seam actually wrote, read off its result shape (`vr.logPath`).
+  // The develop gate's #841 sink callback exists for callers that thread it through
+  // (verify-develop, verify-pr17); this seam's only caller never did — its parallel
+  // local was write-only — so the structural channel is the single honest one here.
+  // A fabricated path is worse than no pointer, so nothing falls back to a computed
+  // file name.
+  const logPathOf = (): string | undefined => (vr.ok === false ? vr.logPath : undefined);
   // #1240 — a named worktree is a claim; `commitPrVerifiedTree` adds the proof
   // (one workstream, create mode, a cherry-picked commit, no no-diff entry).
   // Every other shape yields no identity, so the verify runs.
@@ -121,6 +145,9 @@ export async function verifyIntegration(
     // (the cycle's ciRetryCount unset).
     isCiRetry: (opts.verifyRetry?.ciRetryCount ?? 0) > 0,
     onRecover: opts.verifyRetry?.onRecover,
+    // #1702 — the scratch dir, so this seam writes its own run log and reports the path
+    // back on `vr.logPath` rather than leaving `logPaths` a field nothing produced.
+    ...(opts.scratchDir !== undefined ? { scratchDir: opts.scratchDir } : {}),
     ...(alreadyVerifiedTree !== undefined ? { alreadyVerifiedTree } : {}),
   });
   if (vr.ok === false) {
@@ -152,6 +179,14 @@ export async function verifyIntegration(
         failure: "verify",
         reason: `${vr.classifiedMessage} — it was not pushed. ${opts.claimFor(restore)}.`,
         ...(vr.timedOut ? { timedOut: true } : {}),
+        // #1064 — the gate's own extraction, threaded to the terminal cap. The
+        // classified message leads (it is the sentence the handoff opens with); the
+        // raw failure stream follows, so the `FAILED:` test names and the `✗`
+        // assertions survive for the recovery in
+        // `work-driver-commit-verify-evidence.ts` even when the classifier's 800-char
+        // window elided them.
+        failures: [vr.classifiedMessage, ...(vr.failures ?? [])],
+        ...(logPathOf() !== undefined ? { logPaths: [logPathOf() as string] } : {}),
       },
     };
   }

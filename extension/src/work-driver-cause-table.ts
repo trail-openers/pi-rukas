@@ -54,6 +54,11 @@ export const KIND_CLASS: Record<FailureKind, CauseClass | undefined> = {
   crashed: "environment",
   driver: "pi-rukas",
   verify: "change",
+  // #1702 — a forge refusal is a decision about the CONTENT the issue asked for, never a
+  // host fault to wait out. Only consulted for a `kindDriven` cap; the `push-refused` entry
+  // in CAP_CAUSE pins `issue` directly and is not kind-driven, so this row is the total-map
+  // back-stop that keeps a future kind-driven refusal from falling through to `undefined`.
+  "forge-refused": "issue",
   cap: undefined,
 };
 
@@ -425,6 +430,18 @@ export const TEMPLATE_CAP_CAUSE: Record<keyof typeof CAP_TEMPLATES, CapCause> = 
     cls: "issue",
     reason: "the cycle's PR was no longer open when the step started",
     action: "decide whether the new work belongs in a new PR",
+  },
+  // #1439 — the template family for `push-refused:<step>`. `issue` because the remote
+  // refused the CONTENT the issue asked for; the action is the operator's, not the
+  // cycle's. `causeReason`/`userAction` are overridden per-refusal in
+  // `pushRefusalVerdict` (work-driver-cause-class.ts), which quotes the refusal; this
+  // entry is what the cap carries when it is read outside that route.
+  "push-refused": {
+    cls: "issue",
+    reason:
+      "the forge refused the push, so nothing was published and the verify command never judged this content",
+    action:
+      "the forge refused the push (push protection / repository rules): either allow the flagged content via the URLs in the evidence, or change the issue/fixtures so the content is not committed (e.g. build test secrets from fragments at runtime), then re-run `/work {issue} --restart`",
   },
   "issue-closed": {
     cls: "issue",
