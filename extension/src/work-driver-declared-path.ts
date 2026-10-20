@@ -85,9 +85,10 @@ function stripMarkup(raw: string): string {
  * AFTER it (so `a.ts **(new)**` loses both). Nothing here strips a `*`: a slot
  * the planner wrote as a glob keeps its wildcard through this function, which
  * is what lets the #819 exemption judge the slot it was actually given
- * (#1707). A caller that must treat a trailing `/**` as "this directory" —
- * `fenceCoveringBroader` — strips it itself, because that reading belongs to
- * the fence grammar, not to the normaliser.
+ * (#1707). The fence grammar's opposite reading — a trailing `/**` means "this
+ * directory" — lives in {@link fenceDirPrefix}, which every fence-matching
+ * caller uses, because that reading belongs to the fence, not to the
+ * normaliser.
  */
 export function normaliseDeclaredPath(raw: string): string {
   // The annotation strip tolerates markup AFTER the closing paren
@@ -98,4 +99,50 @@ export function normaliseDeclaredPath(raw: string): string {
   // parenthetical that is a whole path segment (`app/(group)`, #1652).
   const deannotated = stripMarkup(raw).replace(/(?<=[^/])\s*\([^()]*\)[`*\s]*$/, "");
   return stripMarkup(deannotated).replace(/^\.\//, "").replace(/\/+$/, "").trim();
+}
+
+/**
+ * The FENCE grammar's own half of a fence entry: a trailing `/**` or `/*` is
+ * how a planner spells "this directory", not a pattern the fence matches, so
+ * both forms reduce to the directory itself. Takes a value an earlier
+ * normaliser already produced — see {@link fenceDirPrefix} for the whole rule.
+ *
+ * A lone `*` with no separator (`*`, `**.ts`) is deliberately LEFT ALONE: it
+ * names no directory, and turning it into `""` would convert a fence that
+ * matches nothing into a fence over the whole tree.
+ */
+export function stripFenceGlob(normalised: string): string {
+  const noGlob = normalised.replace(/\/\*\*$/, "").replace(/\/\*$/, "");
+  // A leading `**` is stripped only when a trailing directory glob was also
+  // present, which is what makes it noise rather than markup: `**extension/src/**`
+  // (a bolded directory) and `**/src/**` (a globstar prefix) both survive
+  // `normaliseDeclaredPath` — its PAIRED-wrapper rule refuses a star at both
+  // ends — and a fence that reads literally matches nothing, which is exactly
+  // the fail-open this round closes. A value with no trailing glob is left
+  // alone: there `**` is a real wildcard the caller must keep (`**/*.ts`).
+  const noStar = noGlob === normalised ? normalised : noGlob.replace(/^\*\*\/?/, "");
+  return noStar.replace(/\/+$/, "");
+}
+
+/**
+ * A fence entry read as a FENCE: markup, annotation and `./` gone via
+ * {@link normaliseDeclaredPath}, then the directory spellings collapsed —
+ * `extension/src/**`, `extension/src/*` and `extension/src/` are one fence on
+ * the directory `extension/src`.
+ *
+ * #1707 round 4 — the directory reading used to live in one caller's private
+ * regex, so the two OTHER places that match a fence (`fenced()` in
+ * `work-driver-plan-repair.ts`, `findFenceContradictions` in
+ * `work-driver-plan-paths.ts`) went blind to `dir/**` the moment a wildcard
+ * survived `normaliseDeclaredPath`: a path under that fence read as unfenced,
+ * the repair appended it to `ws.paths`, and a self-contradictory fence escaped
+ * the plan-quality check. Matching a fence is one question, so it has one
+ * answer, here.
+ *
+ * The result is a DIRECTORY PREFIX and every caller compares on a `/` boundary
+ * (`path.startsWith(dir + "/")`), so `extension/src` fences only what lives
+ * inside it — never a sibling named `extension/srcfoo`.
+ */
+export function fenceDirPrefix(entry: string): string {
+  return stripFenceGlob(normaliseDeclaredPath(entry));
 }
