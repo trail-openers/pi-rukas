@@ -67,11 +67,6 @@ export interface IntegrationVerifyOpts {
    * the seam runs the same gate and simply writes no log.
    */
   scratchDir?: string;
-  /**
-   * #1702 — the log path the seam actually wrote, threaded out structurally so the terminal
-   * cap names a file on disk. The develop gate's #841 contract, on the commit-pr side.
-   */
-  onConsolidatedLogPath?: (logPath: string) => void;
   /** Restores repoRoot to the ref `integrate()` recorded; see its docstring. */
   restoreRoot: () => Promise<VerifiedRestoreResult>;
   /** The verified restore post-condition, phrased once (`integrate()`'s). */
@@ -118,10 +113,12 @@ export async function verifyIntegration(
 ): Promise<IntegrationVerifyOutcome> {
   if (opts.verifyCmd === undefined) return {};
   const verifyExec = opts.verifyExecFn ?? execFn;
-  // #1702 — the path the seam actually wrote. The seam reports it on the result shape
-  // (`vr.logPath`) and through the sink callback `integrate()` owns; either is honest and
-  // neither may be lost here. A fabricated path is worse than no pointer, so nothing falls
-  // back to a computed file name.
+  // #1702 — the path the seam actually wrote, read off its result shape (`vr.logPath`).
+  // The develop gate's #841 sink callback exists for callers that thread it through
+  // (verify-develop, verify-pr17); this seam's only caller never did — its parallel
+  // local was write-only — so the structural channel is the single honest one here.
+  // A fabricated path is worse than no pointer, so nothing falls back to a computed
+  // file name.
   const logPathOf = (): string | undefined => (vr.ok === false ? vr.logPath : undefined);
   // #1240 — a named worktree is a claim; `commitPrVerifiedTree` adds the proof
   // (one workstream, create mode, a cherry-picked commit, no no-diff entry).
@@ -148,12 +145,9 @@ export async function verifyIntegration(
     // (the cycle's ciRetryCount unset).
     isCiRetry: (opts.verifyRetry?.ciRetryCount ?? 0) > 0,
     onRecover: opts.verifyRetry?.onRecover,
-    // #1702 — the scratch dir and the log sink, so this seam writes its own run log and
-    // reports the path back rather than leaving `logPaths` a field nothing produced.
+    // #1702 — the scratch dir, so this seam writes its own run log and reports the path
+    // back on `vr.logPath` rather than leaving `logPaths` a field nothing produced.
     ...(opts.scratchDir !== undefined ? { scratchDir: opts.scratchDir } : {}),
-    ...(opts.onConsolidatedLogPath !== undefined
-      ? { onConsolidatedLogPath: opts.onConsolidatedLogPath }
-      : {}),
     ...(alreadyVerifiedTree !== undefined ? { alreadyVerifiedTree } : {}),
   });
   if (vr.ok === false) {

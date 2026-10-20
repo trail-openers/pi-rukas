@@ -58,6 +58,16 @@ const NAMED_FAILURE_LINE = /^\s*(FAILED:|✗)/;
 export const NAMED_FAILURE_LINE_MAX = 400;
 
 /**
+ * How many named-failure lines one recovery returns. A verify run can print hundreds of
+ * `✗` lines; the evidence field is a summary and the log pointer (`logPaths`) is where
+ * the whole stream lives, so the scan STOPS at the cap rather than collecting and
+ * clipping later. EXPORTED because it is the contract the classifier path and the
+ * cap site both read — `test-commit-pr-verify-evidence-1064.ts` pins that a 200-failure
+ * stream never yields more than this.
+ */
+export const NAMED_FAILURE_LINES_MAX = 40;
+
+/**
  * Bounds for the two composed surfaces. They mirror the develop caps' evidence bound
  * (`CAP_EVIDENCE_TOTAL_MAX` in work-develop-cap-evidence.ts) so the two parks the operator
  * reads side by side are bounded alike; `boundJoinFailures` still bounds the joined
@@ -81,14 +91,23 @@ export const EVIDENCE_TOTAL_MAX = 4200;
  * Returns `[]` when the stream names nothing (a bare tsc/biome tail, an echoed
  * command): the caller then keeps whatever the classifier extracted rather than
  * replacing an honest absence with an invented line.
+ *
+ * @param accept OPTIONAL per-line predicate, applied to the TRIMMED line before it is
+ *   redacted. A caller with a narrower notion of "names a failure" than this module's
+ *   passes one — the consolidation classifier uses it to drop the bare per-file
+ *   `FAILED: <file>` markers, which name a file rather than an assertion (#798).
  */
-export function namedFailureLines(text: string | undefined): string[] {
+export function namedFailureLines(
+  text: string | undefined,
+  accept?: (line: string) => boolean,
+): string[] {
   if (text === undefined) return [];
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (line.length === 0 || !NAMED_FAILURE_LINE.test(line)) continue;
+    if (accept !== undefined && !accept(line)) continue;
     // #1702 — a `FAILED:` / `✗` line is a line of the project's own output, and a
     // failing assertion commonly ECHOES the value it compared: a test that asserts on
     // a token, a connection string or a config dump prints it here. This is the
@@ -99,6 +118,7 @@ export function namedFailureLines(text: string | undefined): string[] {
     if (redacted.length === 0 || seen.has(redacted)) continue;
     seen.add(redacted);
     out.push(redacted);
+    if (out.length >= NAMED_FAILURE_LINES_MAX) break;
   }
   return out;
 }
