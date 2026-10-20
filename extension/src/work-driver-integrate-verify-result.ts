@@ -74,6 +74,20 @@ export interface CommitPrVerifyOpts {
    */
   changeRoots?: readonly string[];
   /**
+   * #1404 fix round — where the raw stream of each consolidated run is persisted. The
+   * caller passes the cycle's scratch dir (the same one `integrate()` already uses for its
+   * conflict-patch artifact) and the seam writes
+   * `consolidated-verify-<timestamp>-run<1|2>.log` there, 0600, mirroring the develop-side
+   * consolidated verify. Absent → no log, and `logPath` stays undefined.
+   */
+  scratchDir?: string;
+  /**
+   * #1702 — the write's OWN return, threaded back structurally so a cap names a file that
+   * exists rather than a path someone computed. `undefined` when the write failed (the
+   * helper never throws), which the caller reports as "no log" rather than inventing one.
+   */
+  onConsolidatedLogPath?: (logPath: string) => void;
+  /**
    * #1427 round 3 — no `walkProcessTree` here, deliberately. It was declared
    * as a test seam and had no caller: neither `verifyIntegration` (its only
    * production caller) nor any smoke test passes one, so every commit-pr hang
@@ -126,8 +140,13 @@ export type CommitPrConsolidatedVerifyResult =
       failures?: string[];
       /**
        * #1064 / #841 — the persisted raw-output log behind this run, carried on the
-       * cap event structurally. Absent when nothing was written (this seam writes no
-       * log on the single-run path; the hang report writes one).
+       * cap event structurally. Absent when nothing was written.
+       *
+       * #1702 — the commit-pr seam WRITES this log. The single consolidated run and the
+       * #782 flake re-run both persist their raw stream to the cycle's scratch dir (see
+       * `onConsolidatedLogPath` on `CommitPrVerifyOpts`), so a terminal commit-pr park
+       * names the file the operator can actually open rather than carrying a field no
+       * production path ever filled.
        */
       logPath?: string;
       /** #1324 — the run was killed at its bound: no verdict, so no classification. */

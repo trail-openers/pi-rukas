@@ -54,6 +54,11 @@ export const KIND_CLASS: Record<FailureKind, CauseClass | undefined> = {
   crashed: "environment",
   driver: "pi-rukas",
   verify: "change",
+  // #1702 — a forge refusal is a decision about the CONTENT the issue asked for, never a
+  // host fault to wait out. Only consulted for a `kindDriven` cap; the `push-refused` entry
+  // in CAP_CAUSE pins `issue` directly and is not kind-driven, so this row is the total-map
+  // back-stop that keeps a future kind-driven refusal from falling through to `undefined`.
+  "forge-refused": "issue",
   cap: undefined,
 };
 

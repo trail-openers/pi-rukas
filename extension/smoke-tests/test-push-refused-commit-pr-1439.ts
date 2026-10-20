@@ -70,11 +70,28 @@ assert(
 );
 assert(isPushRefusal("! [rejected] main -> main (non-fast-forward)"), "non-fast-forward is one");
 assert(
+  isPushRefusal("remote: ! [remote rejected] feature/x -> feature/x (non-fast-forward)"),
+  "the `! [remote rejected]` shape is one",
+);
+assert(
+  isPushRefusal(
+    [
+      "To https://github.com/o/r.git",
+      " ! [rejected]        feature/x -> feature/x (non-fast-forward)",
+      "error: failed to push some refs to 'https://github.com/o/r.git'",
+    ].join("\n"),
+  ),
+  "git's own `! [rejected] … (non-fast-forward)` + `error: failed to push` shape is one",
+);
+assert(
   !isPushRefusal("fatal: could not read from remote repository"),
   "an SSH transport failure is NOT a refusal (that one IS the fallback's job)",
 );
 assert(!isPushRefusal(""), "empty text is not a refusal");
 assert(!isPushRefusal(undefined), "undefined is not a refusal");
+// #1702 — the matcher is anchored to the lines the FORGE wrote; the negative cases (and the
+// redaction of the evidence the matcher produces) are pinned in
+// `test-push-refusal-anchor-1702.ts`, which exists so this file stays under the §12 cap.
 
 const refusalEvidence = pushRefusalEvidence(GH013);
 assert(
@@ -85,6 +102,15 @@ assert(
   !refusalEvidence.includes("hint: Updates were rejected"),
   "the evidence drops the non-`remote:` noise that carries no verdict",
 );
+
+// #1702 — the token is assembled from fragments at runtime, never a literal in this file:
+// the fixtures rule this repo follows, and the very reason push protection is what refuses
+// these commits. Its recognition-side and redaction-side cases live in
+// `test-push-refusal-anchor-1702.ts`; this file keeps the STEP-level proof that every
+// surface the driver writes is redacted.
+const LEAKY_TOKEN = ["gh", "p_", "aB3dE5fG7hJ9kL1mN2pQ4rS6tU8v"].join("");
+const GH013_WITH_TOKEN = `${GH013}\nremote:   flagged: ${LEAKY_TOKEN} in src/fixtures/stripe.ts`;
+
 
 // ---------------------------------------------------------------------------
 // The exec double for the push seam. Two behaviours, both real:
@@ -111,7 +137,10 @@ function mkExec(pushCalls: string[][]) {
       const err = new Error("Command failed: git push -u origin feature/issue-1439-x") as Error & {
         stderr?: string;
       };
-      err.stderr = GH013;
+      // #1702 — the fixture carries an extra `remote:` line with a token built from
+      // fragments at runtime (never a literal in this file): it is the case the redaction
+      // exists for, and the assertion below is what notices if the write site forgets it.
+      err.stderr = GH013_WITH_TOKEN;
       throw err;
     }
     // Make the consolidation REAL, so integrate() reaches its push instead of reporting
@@ -283,6 +312,26 @@ function commitPrState(dir: string): WorkState {
     assert(
       capHits.every((e) => e.nextStep === "handoff"),
       "#1439: the cap routes to handoff (park), not back to develop",
+    );
+
+    // (3c) #1702 — the three surfaces that persist the refusal text all redact it. The plumb
+    // body is the one that used to carry `mech.reason` raw: it lands in `plumbReports` and
+    // the handoff prints it, so an un-redacted copy is a secret published twice over.
+    const plumb = after.eventLog.find(
+      (e) => e.kind === "plumb-report" && e.fallbackCause === "push-refused",
+    ) as Extract<(typeof after.eventLog)[number], { kind: "plumb-report" }> | undefined;
+    assert(plumb !== undefined, "#1702: the terminal halt writes its plumb-report");
+    assert(
+      !(plumb?.body ?? "").includes(LEAKY_TOKEN) && (plumb?.body ?? "").includes("[REDACTED]"),
+      "#1702: the plumb-report body redacts a token the forge quoted, rather than storing it",
+    );
+    assert(
+      (plumb?.body ?? "").includes("unblock-secret/3Kvj3Vlk"),
+      "#1702: the plumb body still names the operator's URL after redaction",
+    );
+    assert(
+      (cap?.evidence ?? "").includes("[REDACTED]") && !(cap?.evidence ?? "").includes(LEAKY_TOKEN),
+      "#1702: the cap's evidence is redacted too",
     );
 
     // (4) the cause verdict the operator actually reads — for the push refusal, which

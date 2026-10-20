@@ -62,6 +62,7 @@ export function baselineProbeEnabled(): boolean {
   return process.env.PI_ENSEMBLE_INTEGRATION_VERIFY_BASELINE_PROBE !== "0";
 }
 import { commitPrHangResult } from "./work-driver-integrate-verify-hang.ts";
+import { createCommitPrVerifyLogSink } from "./work-driver-integrate-verify-log.ts";
 import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
 import { failedVerifyCmd, fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
@@ -193,6 +194,9 @@ export async function runCommitPrConsolidatedVerify(
     // about the processes the report exists to name.
     let killedOutput = "";
     let killedTree: { processes: HangProcess[]; treeUnavailable?: string } | undefined;
+    // #1702 — the run-log sink (its module owns the contract: one timestamp per pair, and
+    // only the write's own return reaches `logPath`).
+    const logs = createCommitPrVerifyLogSink(opts.scratchDir, opts.onConsolidatedLogPath);
     const runOnce = async (): Promise<string | undefined> => {
       try {
         await withVerifySlot(() =>
@@ -247,6 +251,9 @@ export async function runCommitPrConsolidatedVerify(
     );
     let firstFailure = await runOnce();
     if (firstFailure === undefined) return done({ ok: true });
+    // #1702 — run1's log, written before the flake retry may replace the stream the
+    // operator would otherwise reconstruct. Same name and 0600 mode as the develop side.
+    logs.persist(1, firstFailure);
 
     // #782 — on the first run, with every per-worktree verify passed and N>1,
     // re-run the SAME command ONCE in the SAME still-checked-out integration
@@ -295,6 +302,9 @@ export async function runCommitPrConsolidatedVerify(
     timedOut = settled.timedOut;
     killedOutput = settled.killedOutput;
     killedTree = settled.killedTree;
+    // The re-run failed and its tail is what is classified below, so its own stream is the
+    // one the operator needs (run1's log keeps the transient case recoverable too).
+    logs.persist(2, firstFailure);
 
     const failure = firstFailure;
 
@@ -331,6 +341,7 @@ export async function runCommitPrConsolidatedVerify(
           failureTail,
           attributed,
           verdict,
+          ...(logs.written !== undefined ? { logPath: logs.written } : {}),
         }),
       );
     }
@@ -379,21 +390,16 @@ export async function runCommitPrConsolidatedVerify(
           // the script lives in, not the cwd it was run from.
           ...(opts.changeRoots !== undefined ? { changeRoots: opts.changeRoots } : {}),
           // #1404 — the out-of-band names. The change run wrote its report to
-          // `changeReportFile`; the base run is given `probeEnv` so the loop
-          // writes ITS report to `probeReportFile`. All three paths live in the
-          // driver's private 0700 dir, and `attributeAgainstBase` refuses any
-          // path that does not resolve inside it. The `channel === undefined`
-          // branch above already returned for a missing channel, so the three
-          // paths are always present here.
+          // `changeReportFile`; the base run is given `probeEnv` so the loop writes ITS
+          // report to `probeReportFile`. All three paths live in the driver's private 0700
+          // dir, and `attributeAgainstBase` refuses any path that does not resolve inside
+          // it. The `channel === undefined` branch above already returned for a missing
+          // channel, so the three paths are always present here.
           reportDir: channel.reportDir,
           changeReportFile: channel.changeReportFile,
           probeReportFile: channel.probeReportFile,
           ...(probeEnv === undefined ? {} : { probeEnv }),
         });
-        // #1404 — the out-of-band names, all three paths inside the driver's
-        // private 0700 dir, which `attributeAgainstBase` refuses to leave. The
-        // `channel === undefined` branch above already returned, so the paths are
-        // present here.
         if (outcome) {
           const continued = continueOnPreExisting(outcome, classifiedMessage, done, {
             failureTail,
@@ -424,6 +430,7 @@ export async function runCommitPrConsolidatedVerify(
             // #1064 — same raw stream as the plain park below; the probe's own
             // attribution is in `message`, not a substitute for the test output.
             failures: [failure],
+            ...(logs.written !== undefined ? { logPath: logs.written } : {}),
             ...(pre.length > 0 ? { preExistingFailures: pre } : {}),
             ...(caused.length > 0 ? { changeCausedFailures: caused } : {}),
           });
@@ -441,6 +448,7 @@ export async function runCommitPrConsolidatedVerify(
       // (`boundJoinFailures`), never here: bounding it at this height is what made the
       // `FAILED:` summary fall outside the window in the first place.
       failures: [failure],
+      ...(logs.written !== undefined ? { logPath: logs.written } : {}),
     });
   }
 }

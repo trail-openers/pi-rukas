@@ -61,6 +61,17 @@ export interface IntegrationVerifyOpts {
    */
   baselineBaseSha?: string;
   verifyRetry?: IntegrateOpts["verifyRetry"];
+  /**
+   * #1702 — the cycle's scratch dir, passed straight to the verify seam so it can persist
+   * the raw stream of each consolidated run (the develop side already does this). Absent →
+   * the seam runs the same gate and simply writes no log.
+   */
+  scratchDir?: string;
+  /**
+   * #1702 — the log path the seam actually wrote, threaded out structurally so the terminal
+   * cap names a file on disk. The develop gate's #841 contract, on the commit-pr side.
+   */
+  onConsolidatedLogPath?: (logPath: string) => void;
   /** Restores repoRoot to the ref `integrate()` recorded; see its docstring. */
   restoreRoot: () => Promise<VerifiedRestoreResult>;
   /** The verified restore post-condition, phrased once (`integrate()`'s). */
@@ -93,7 +104,9 @@ export interface IntegrationVerifyOutcome {
    * `reason` is the classified message; these are the raw lines behind it.
    */
   failures?: string[];
-  /** #1064 / #841 — persisted raw-output logs, carried structurally to the cap event. */
+  /** #1064 / #841 — persisted raw-output logs, carried structurally to the cap event.
+   * #1702 — set in production: the seam writes the run log itself and reports the path it
+   * wrote, so a terminal commit-pr park now points at a real file. */
   logPaths?: string[];
   /** The identity that justified skipping the run, when the run was skipped. */
   skipped?: AlreadyVerifiedTree;
@@ -105,6 +118,11 @@ export async function verifyIntegration(
 ): Promise<IntegrationVerifyOutcome> {
   if (opts.verifyCmd === undefined) return {};
   const verifyExec = opts.verifyExecFn ?? execFn;
+  // #1702 — the path the seam actually wrote. The seam reports it on the result shape
+  // (`vr.logPath`) and through the sink callback `integrate()` owns; either is honest and
+  // neither may be lost here. A fabricated path is worse than no pointer, so nothing falls
+  // back to a computed file name.
+  const logPathOf = (): string | undefined => (vr.ok === false ? vr.logPath : undefined);
   // #1240 — a named worktree is a claim; `commitPrVerifiedTree` adds the proof
   // (one workstream, create mode, a cherry-picked commit, no no-diff entry).
   // Every other shape yields no identity, so the verify runs.
@@ -130,6 +148,12 @@ export async function verifyIntegration(
     // (the cycle's ciRetryCount unset).
     isCiRetry: (opts.verifyRetry?.ciRetryCount ?? 0) > 0,
     onRecover: opts.verifyRetry?.onRecover,
+    // #1702 — the scratch dir and the log sink, so this seam writes its own run log and
+    // reports the path back rather than leaving `logPaths` a field nothing produced.
+    ...(opts.scratchDir !== undefined ? { scratchDir: opts.scratchDir } : {}),
+    ...(opts.onConsolidatedLogPath !== undefined
+      ? { onConsolidatedLogPath: opts.onConsolidatedLogPath }
+      : {}),
     ...(alreadyVerifiedTree !== undefined ? { alreadyVerifiedTree } : {}),
   });
   if (vr.ok === false) {
@@ -168,7 +192,7 @@ export async function verifyIntegration(
         // `work-driver-commit-verify-evidence.ts` even when the classifier's 800-char
         // window elided them.
         failures: [vr.classifiedMessage, ...(vr.failures ?? [])],
-        ...(vr.logPath !== undefined ? { logPaths: [vr.logPath] } : {}),
+        ...(logPathOf() !== undefined ? { logPaths: [logPathOf() as string] } : {}),
       },
     };
   }

@@ -11,7 +11,6 @@
  * failed … fix the change" for a GitHub push-protection refusal.
  */
 
-import { lastCapHit } from "./workflow-state-cap.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /**
@@ -30,13 +29,4 @@ export function explainPushRefusal(state: WorkState): string {
   const branch = state.pipelineState.branchName ?? "(branch not captured)";
   const refusal = hit?.evidence ?? "(the refusal text was not recorded on the cap)";
   return `the forge refused the push of \`${branch}\`, so nothing was published and no PR was opened. This is not the project's verify command and not a defect in the change: the commit is consolidated and committed locally, and the gate passed before the push was attempted. The remote refused the CONTENT — GitHub push protection (GH013) or repository rules usually flag secret-shaped strings, and a fixture that carries a realistic-looking key trips it even when the key is a published documentation example. The driver deliberately did NOT fall back to an ops dispatch (a child cannot lift a refusal the remote issued) and did NOT force-push. Two ways forward, both upstream of the code: allow the flagged content at the URLs in the evidence below, or change the issue/fixtures so the content is never committed (assemble test secrets from fragments at runtime), then re-run. Refusal as recorded:\n${refusal}`;
-}
-
-/** The cap's evidence for a renderer that wants the raw refusal without the sentence. */
-export function pushRefusalCapEvidence(state: WorkState): string | undefined {
-  for (const cap of ["push-refused:commit-pr", "push-refused:lens-fix"] as const) {
-    const ev = lastCapHit(state, cap)?.evidence;
-    if (ev !== undefined) return ev;
-  }
-  return undefined;
 }
