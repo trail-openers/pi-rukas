@@ -1458,7 +1458,7 @@ export PI_ENSEMBLE_TOKEN_BUDGET_CODE_REVIEW_SPECIALIST=200000000
 
 The value is read **per dispatch**, when the tracker is built, so changing it needs no restart and only affects children dispatched afterwards. A child inherits the environment of the session that exports it — export it before launching `pi` for every child of that session, or set it in the driver's environment for the cycles it runs.
 
-Crossing an armed budget steers the child to wrap up, then kills it after `PI_ENSEMBLE_CAP_KILL_GRACE_MS` (5 min) with `killCause: token-budget`. `0` or unset means no ceiling (the default). The other roles take the same form: `PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER`, `PI_ENSEMBLE_TOKEN_BUDGET_EXPLORE`, and so on — hyphens in a role name become underscores in the key.
+Crossing an armed budget steers the child to wrap up, then kills it after `PI_ENSEMBLE_CAP_KILL_GRACE_MS` (5 min) with `killCause: token-budget`. `0` or unset means no ceiling (the default). Note what the ceiling does *not* cover and what it actually costs: an armed budget never applies to `ops` children, nor to anything under `PI_ENSEMBLE_DISPATCH_CAPS=0`, and because the kill lands only after the grace period a killed child spends a little **more** than the armed figure. The other roles take the same form: `PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER`, `PI_ENSEMBLE_TOKEN_BUDGET_EXPLORE`, and so on — hyphens in a role name become underscores in the key.
 
 ### `ci` step timeout — CI runs > 10 min (PR15)
 

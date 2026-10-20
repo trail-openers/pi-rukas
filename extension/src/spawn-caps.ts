@@ -196,8 +196,10 @@ export interface CapSessionOpts {
   /**
    * #543 H1 — steering seam (F2); undefined for callers without a job (lens /
    * adversarial children bypass the registry — no role has a built-in token
-   * budget since #1642, so the absence is a no-op for them unless the operator
-   * explicitly arms `PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>`).
+   * budget since #1642, so the absence is a no-op for them). Not only the
+   * steer is lost: the `TokenBudgetTracker` below is built under
+   * `capsOn && opts.onSteer`, so a caller without this seam gets neither the
+   * steer nor the kill, even with `PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>` armed.
    */
   onSteer?: (message: string, source: SteerSource) => void;
   totalTokens: () => number;
