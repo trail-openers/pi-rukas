@@ -42,8 +42,12 @@ export function overrideEnvForKillCause(
     case "plan-timeout":
       return "PI_ENSEMBLE_PLAN_TIMEOUT_MS";
     case "loop":
-    case "token-budget":
       return "PI_ENSEMBLE_DISPATCH_CAPS + PI_ENSEMBLE_CAP_KILL_GRACE_MS";
+    // #1642 — nothing arms a token budget by default, so the knob this names
+    // is the one the OPERATOR set: the budget that stopped the child, plus
+    // the grace window that turned crossing it into the kill.
+    case "token-budget":
+      return "PI_ENSEMBLE_TOKEN_BUDGET_<ROLE> + PI_ENSEMBLE_CAP_KILL_GRACE_MS";
     case "inactivity":
     case "abort":
       return "PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS";
@@ -104,12 +108,10 @@ export async function buildCompletionEvent(
         ` (override: ${overrideEnvForKillCause(result.killCause)})`;
     } else if (result.killCause === "token-budget") {
       const tb = result.tokenBudget;
-      const budgetClause = tb
-        ? `${Math.round(tb.used).toLocaleString()} of ${Math.round(tb.budget).toLocaleString()} tokens`
-        : "its cumulative token budget";
-      detail =
-        `[pi-rukas] killed on token-budget — ${budgetClause}` +
-        ` (override: ${overrideEnvForKillCause(result.killCause)})`;
+      const spend = tb
+        ? ` (${Math.round(tb.used).toLocaleString()} of ${Math.round(tb.budget).toLocaleString()} tokens)`
+        : "";
+      detail = `[pi-rukas] killed on token-budget — a token budget you set stopped this child${spend}; unset it or raise it (override: ${overrideEnvForKillCause(result.killCause)})`;
     } else if (result.killCause === "plan-timeout") {
       // #754 — the plan step's own 30-minute bound expired (not the 2 h
       // global backstop). The operator-facing text names the bound so the
