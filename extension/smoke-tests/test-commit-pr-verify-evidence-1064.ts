@@ -24,6 +24,7 @@ import {
   EVIDENCE_TOTAL_MAX,
   FAILURE_LINE_MAX,
   namedFailureLines,
+  NAMED_FAILURE_LINES_MAX,
   REASON_MAX,
 } from "../src/work-driver-commit-verify-evidence.ts";
 import {
@@ -351,6 +352,65 @@ const REDACTED = "[REDACTED]";
   assert(
     lines.every((l) => !l.includes(TOKEN) && !l.includes("xY9zA1bC")),
     "#1702: namedFailureLines redacts the assertion line it recovers",
+  );
+}
+
+{
+  // #1702 — the DEVELOP path, the one the classifier originally read unredacted.
+  // `namedFailureLinesFrom` swept the WHOLE unclipped stream with no redaction and the
+  // result was joined into `consolidatedFailureMessage`, which the develop/ci gate wrote
+  // into the state file and the handoff comment posted to the forge. A failing assertion
+  // ECHOES the value it compared, so a token printed by a test shipped to the remote.
+  // The token is assembled from fragments at runtime (no credential-shaped literal in
+  // this file); it sits OUTSIDE the 800-char window, so only the recovery path can see
+  // it — which is exactly the path that used to have no redactor on it.
+  const ECHO_TOKEN = ["gh", "p_", "A".repeat(36)].join("");
+  const filler = "noise".repeat(400);
+  const longStream = [
+    `✗ assertion failed: expected config to equal ${ECHO_TOKEN}`,
+    filler,
+    filler,
+    `FAILED: 2 test(s) — driver::echo_a, driver::echo_b`,
+  ].join("\n");
+  // The window is what the gate's 800-char tail clip would hand the classifier: the
+  // END of the stream, which names nothing but the summary.
+  const window = longStream.slice(-800);
+  assert(
+    !window.includes(ECHO_TOKEN),
+    "#1702 baseline: the echoed token really is outside the bounded window",
+  );
+  const verdict = classifyConsolidatedVerifyFailure(1, ["default"], window, {}, longStream);
+  const msg = consolidatedFailureMessage(verdict, "bun test");
+  assert(
+    !msg.includes(ECHO_TOKEN) && msg.includes("[REDACTED]"),
+    "#1702: a token echoed outside the window is REDACTED in the message, not shipped",
+  );
+  assert(
+    (verdict.namedFailures ?? []).every((l) => !l.includes(ECHO_TOKEN)),
+    "#1702: the structured namedFailures field carries no unredacted echo either",
+  );
+}
+
+{
+  // #1702 — the count cap: 200 `✗` lines must recover AT MOST the cap, and the scan
+  // must STOP there (a stream read whole into a `String[]` before clipping was the
+  // pre-fix shape; the cap is a stop, not a slice). If importing through the classifier
+  // ever bypasses the cap, this is the assertion that catches it.
+  const many = Array.from({ length: 200 }, (_, i) => `✗ driver::flood_${i}`).join("\n");
+  const recovered = namedFailureLines(many);
+  assert(
+    recovered.length === NAMED_FAILURE_LINES_MAX && recovered.length <= 40,
+    `#1702: a 200-failure stream recovers at most the exported cap (got ${recovered.length})`,
+  );
+  assert(
+    !recovered.some((l) => l.includes("flood_199")),
+    "#1702: the scan STOPS at the cap — the tail of the flood is never collected",
+  );
+  const silentWindow = "chatter".repeat(200);
+  const verdict = classifyConsolidatedVerifyFailure(1, ["default"], silentWindow, {}, many);
+  assert(
+    (verdict.namedFailures ?? []).length === NAMED_FAILURE_LINES_MAX,
+    "#1702: the classifier recovery respects the same cap (window names nothing, full stream floods)",
   );
 }
 

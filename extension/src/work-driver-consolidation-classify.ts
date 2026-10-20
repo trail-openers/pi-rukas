@@ -41,7 +41,20 @@
  * fixes, does NOT touch the file system. The caller (work-driver-verify-
  * develop.ts) decides whether to apply the trivial fix and re-verify, based
  * on `trivialFix`.
+ *
+ * #1702 — the classifier has NO recovery reader of its own. It used to carry a
+ * second `namedFailureLinesFrom`, which swept the whole unclipped stream for
+ * `FAILED:` / `✗` lines with no redaction and no bound, and whose output
+ * `consolidatedFailureMessage` joined into the failure string the develop/ci gate
+ * then wrote verbatim into the state file and the handoff comment posted to the
+ * forge. A failing assertion routinely ECHOES the value it compared, so a token
+ * printed by a test shipped to the remote unredacted. There is now ONE reader —
+ * `namedFailureLines`, the redacting, per-line-bounded, count-capped one the
+ * commit-pr caps already use — so the two paths cannot disagree about what an
+ * evidence line looks like, and neither can carry an unredacted line.
  */
+
+import { namedFailureLines } from "./work-driver-commit-verify-evidence.ts";
 
 /** The three-way classification a consolidated-tree verify failure maps to. */
 export type ConsolidationClassification =
@@ -242,7 +255,7 @@ export function classifyConsolidatedVerifyFailure(
   // 800 chars and would recover nothing.
   const named =
     assertion === NO_SPECIFIC_ASSERTION && fullFailure !== undefined
-      ? namedFailureLinesFrom(fullFailure)
+      ? namedFailureLines(fullFailure, isNamedFailureLine)
       : [];
   const namedFailures = named.length > 0 ? named : undefined;
 
@@ -317,38 +330,20 @@ export function classifyConsolidatedVerifyFailure(
 }
 
 /**
- * Recover the named-failure lines a bounded tail elided.
+ * The classifier's view of the shared named-failure reader: which of the lines
+ * `namedFailureLines` matches count as evidence HERE.
  *
- * The defect (#1064). `extractAttributedTail` anchors on the LAST `FAILED:` marker and,
- * when the verbose re-run after it is long, keeps the marker line plus the END of the
- * anchored region — so with many failures the summary line that carries the test NAMES
- * (and the `✗` assertion lines printed between them) falls in the elided head. The
- * classifier then reported `(no specific assertion could be extracted)` over a stream
- * that had named every failing test, and the handoff told the operator to go look.
- *
- * So the classifier asks for the named lines of the FULL text, not just the window it
- * was handed: `FAILED:` markers (which include the `FAILED: <n> test(s) — a, b` summary
- * carrying the names) and `✗` assertion lines, in stream order, de-duplicated. When the
- * caller passes only the clipped tail (the common call shape) this recovers nothing new
- * and returns `[]` — the sentinel path is untouched.
+ * The shared reader accepts every `FAILED:` / `✗` line, because at the cap site a
+ * per-file marker still tells the operator which file went red. The classifier is
+ * stricter — `consolidatedFailureMessage` joins what it recovers into the field
+ * labelled "specific assertion", and a bare `FAILED: smoke-tests/test-x.ts` names a
+ * FILE, not an assertion. That is the #798 defect (an operator sent to a filename)
+ * and `extractSpecificAssertion` refuses such lines, so the recovery must not put
+ * them back through the side door. A `✗` line, or the `FAILED: <n> test(s) — a, b`
+ * summary that carries the names, is what counts.
  */
-export function namedFailureLinesFrom(text: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (line.length === 0 || isNonAssertionLine(line)) continue;
-    // `FAILED:` is excluded by `isNonAssertionLine` — the MARKER lines that name only a
-    // file are not assertions. The summary form (`FAILED: 22 test(s) — a.ts, b.ts`)
-    // carries the names, so it is matched here and only here: it is evidence about
-    // WHICH tests failed, never "the specific assertion".
-    if (/^FAILED:\s*\d+\s+test\(s\)/.test(line) || /^✗\s/.test(line)) {
-      if (seen.has(line)) continue;
-      seen.add(line);
-      out.push(line);
-    }
-  }
-  return out;
+function isNamedFailureLine(line: string): boolean {
+  return /^✗\s/.test(line) || /^FAILED:\s*\d+\s+test\(s\)/.test(line);
 }
 
 /**
