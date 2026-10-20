@@ -44,12 +44,20 @@
  *    `d.paths` is what tells the plan prompt, the corrective prompt and the
  *    PR body that the planner left a template, and
  *    `isPlainRepoRelativePath` — the shape gate the coverage gate runs —
- *    rejects `<`/`>`/`*` as shell metacharacters, so a parse-time rewrite
+ *    rejects `<`/`>` as shell metacharacters, so a parse-time rewrite
  *    would turn "the planner wrote a template" into a silent shape violation.
  *    The glob is therefore a MATCHING concept, applied here at the moment a
- *    declared path meets a diff path. `normaliseDeclaredPath` (verify.ts) is
- *    untouched: it is shared with `verifyConsolidation`'s exact-path coverage
- *    semantics, which #1155 puts explicitly out of scope.
+ *    declared path meets a diff path.
+ *
+ *    #1707 narrowed the second half of that. `normaliseDeclaredPath` used to
+ *    strip a trailing `*` as markdown markup, so a star the planner wrote
+ *    literally never reached the matcher at all — and, worse, anything asking
+ *    "is this slot a pattern?" was handed the star-stripped text and read a
+ *    glob as a concrete directory. It now strips only PAIRED wrappers, so a
+ *    written `*` survives normalisation and `toAlternative` sees the wildcard.
+ *    What stays a matching-time concept is the `<…>` → `*` REWRITE, for the
+ *    reason above: `d.paths` keeps the planner's own text for the prompts and
+ *    the PR body that read it.
  *
  * Blast radius, stated so a reviewer can check it: of the `normaliseDeclaredPath`
  * call sites, exactly ONE changes behaviour — `classifyDeliverables`'
@@ -79,8 +87,25 @@ export interface DeclaredPathAlternative {
 /** The two alternatives separators the operator decided on: ` or `, ` OR `, `|`. */
 const ALTERNATIVE_SPLIT = /\s+or\s+|\s+OR\s+|\|/;
 
-/** Placeholder form of a `<name>` template segment, per the decided rule. */
-const ANGLE_PLACEHOLDER = /<[^<>]*>/g;
+/** Placeholder form of a `<name>` template segment, per the decided rule.
+ *
+ * One grammar source, two RegExp objects built from it: `/g` for the rewrite
+ * (`<name>` → `*`) and a stateless one for `containsAnglePlaceholder`, because
+ * `.test` on a `/g` regex advances `lastIndex` and would make the predicate
+ * answer differently on the second call. Every consumer of the placeholder form
+ * asks through here, so there is exactly one definition of what a template is
+ * (#1707 — `isPatternAlternative` used to carry its own copy). */
+const ANGLE_PLACEHOLDER_SOURCE = "<[^<>]*>";
+const ANGLE_PLACEHOLDER = new RegExp(ANGLE_PLACEHOLDER_SOURCE, "g");
+
+/**
+ * Does this text carry a `<name>` template placeholder? The ONE predicate for
+ * that question — `isPatternAlternative` in the plan-to-spec gate asks it here
+ * rather than keeping a third copy of the grammar.
+ */
+export function containsAnglePlaceholder(text: string): boolean {
+  return new RegExp(ANGLE_PLACEHOLDER_SOURCE).test(text);
+}
 
 /** Placeholder words a `[paths:]` slot carries when the author had no file. */
 const PLACEHOLDER_PATHS = new Set([
@@ -106,15 +131,13 @@ const PLACEHOLDER_PATHS = new Set([
  * The alternative's LITERAL form — what `raw` holds and what exact/directory
  * matching compares.
  *
- * `normaliseDeclaredPath` is the project's declared-path normaliser, but it
- * cannot be the last word for a template: its markup strip (`[/`*\s]+`) eats
- * `*`, so a path the planner wrote with a literal `*` would arrive here with
- * the wildcard removed and never match anything. A segment the planner wrote
- * as a bare placeholder (`<name>`) is therefore restored to `*` here, so a
- * whole-segment placeholder reads as a wildcard rather than as the mangled
- * text the normaliser left behind. A template with literal text around the
- * placeholder keeps that text verbatim; the wildcard expansion happens in
- * `toGlobForm`.
+ * `normaliseDeclaredPath` is the project's declared-path normaliser. Since
+ * #1707 it strips only PAIRED markup, so a `*` the planner wrote literally
+ * survives it and reads as the wildcard it is; what this function adds is the
+ * OTHER placeholder spelling — a segment the planner wrote as a bare `<name>`
+ * — restored to `*` so a whole-segment placeholder reads as a wildcard.
+ * A template with literal text around the placeholder keeps that text verbatim;
+ * the wildcard expansion happens in `toGlobForm`.
  */
 function toRawForm(raw: string): string {
   return normaliseDeclaredPath(raw).replace(/^<[^<>]*>$/, "*");
@@ -122,8 +145,7 @@ function toRawForm(raw: string): string {
 
 /**
  * The GLOB form: every `<…>` placeholder collapsed to `*` (`<name>` → `*`,
- * `work-driver-<name>.ts` → `work-driver-*.ts`). Runs on the already-stripped
- * text so the placeholder survives `normaliseDeclaredPath`'s markup strip.
+ * `work-driver-<name>.ts` → `work-driver-*.ts`).
  */
 function toGlobForm(raw: string): string {
   return normaliseDeclaredPath(raw).replace(ANGLE_PLACEHOLDER, "*");
@@ -154,6 +176,13 @@ export function isPlaceholderPath(p: string): boolean {
  * `splitDeliverablePaths("extension/src/a.ts, new work-driver-<name>.ts")`
  * yields the comma-separated slots AND the `or`-split pieces. Dedup happens at
  * the callers (they keep their own ordering), so this stays a pure splitter.
+ *
+ * One splitter, not two: this is also what a caller that must judge a slot's
+ * PATTERN calls. Since #1707 `normaliseDeclaredPath` strips only paired markup,
+ * so the piece it hands back still carries the `*` a glob was written with —
+ * the second, un-normalised splitter that used to sit beside this one existed
+ * only to work around a wildcard the normaliser ate, and the normaliser no
+ * longer eats it.
  */
 export function splitDeliverablePaths(raw: string | undefined): string[] {
   if (!raw) return [];
@@ -165,30 +194,14 @@ export function splitDeliverablePaths(raw: string | undefined): string[] {
 }
 
 /**
- * Split one slot into its alternatives WITHOUT normalisation.
- *
- * `splitDeliverablePaths` runs each piece through `normaliseDeclaredPath`,
- * which strips a trailing `*` as markdown markup — fine for matching, fatal
- * for asking "is this a pattern?", because `src/foo/*` arrives as `src/foo`
- * and reads as a concrete directory. A caller that must judge the slot's
- * pattern needs the text as written, trimmed only of surrounding whitespace.
- * The split grammar is shared with `splitDeliverablePaths` deliberately: the
- * comma-list and the ` or `/`|` alternatives are one grammar, not two.
- */
-export function splitRawAlternatives(rawSlot: string | undefined): string[] {
-  if (!rawSlot) return [];
-  return rawSlot
-    .split(",")
-    .flatMap((piece) => piece.split(ALTERNATIVE_SPLIT))
-    .map((seg) => seg.trim())
-    .filter((seg) => seg.length > 0);
-}
-
-/**
  * The declared SLOTS of a `[paths:]` list — annotation-stripped, blanks
  * dropped, deduped, and NOT split into alternatives. Exposed so both gates
  * agree on what one slot is (the unit that must be covered / delivered) while
  * `splitDeliverablePaths` stays the unit that matches.
+ *
+ * #1707 — normalisation keeps a literal `*`, so the unit both gates compare is
+ * ONE representation: a glob slot is a glob here, at the plan gate and at
+ * converge. There is no raw/normalised pair to keep straight.
  */
 export function splitDeclaredSlots(paths: readonly string[] | undefined): string[] {
   return (paths ?? []).map((p) => normaliseDeclaredPath(p)).filter((p) => p.length > 0);

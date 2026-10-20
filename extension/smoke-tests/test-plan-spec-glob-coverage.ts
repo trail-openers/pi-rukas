@@ -35,6 +35,7 @@
  * Offline: pure functions over (workstreams, spec). No dispatch, no git, no fs.
  */
 
+import { parseNormalisedSpec } from "../src/work-driver-intent.ts";
 import { repairOmittedDeliverablePaths } from "../src/work-driver-plan-repair.ts";
 import {
   findUncoveredDeliverables,
@@ -42,7 +43,7 @@ import {
   planSpecMismatchReason,
   undeclarableSlotsOf,
 } from "../src/work-driver-plan-spec-coverage.ts";
-import { plannedPathProblem } from "../src/plan-path-shape.ts";
+import { hasPathspecChar, plannedPathProblem } from "../src/plan-path-shape.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -70,14 +71,59 @@ const D3 = [
   D2,
 ];
 
-/** The spec exactly as `pipelineState.normalisedSpec.deliverables` stored it. */
-const SPEC_1557 = {
-  deliverables: [
-    { id: "d1", description: "identity threading", paths: [...D1_CONCRETE, D1_GLOB] },
-    { id: "d2", description: "identity-based row selection", paths: [D2] },
-    { id: "d3", description: "pinning the identification strategy", paths: D3 },
-  ],
+/**
+ * The spec text as the resolver actually wrote it on #1557 (the artifact and
+ * both preserved plan replies agree on these slots), and the spec the driver
+ * held. Built THROUGH `parseNormalisedSpec`, not hand-written: a hand-built
+ * spec is a shape the parser cannot produce, and the #1707 round-2 finding was
+ * exactly that — the previous round's tests fed the judge raw slots with a
+ * trailing `*` that `parseDeliverables` had already normalised, so they pinned
+ * a code path production never reaches.
+ */
+const SPEC_1557_TEXT = [
+  "INTENT-VERDICT: proceed",
+  "",
+  "## Spec",
+  "",
+  "### Intent",
+  "thread the row identity through the ledger",
+  "",
+  "### Deliverables",
+  `- d1: identity threading [paths: ${[...D1_CONCRETE, D1_GLOB].join(", ")}]`,
+  `- d2: identity-based row selection [paths: ${D2}]`,
+  `- d3: pinning the identification strategy [paths: ${D3.join(", ")}]`,
+  "",
+  "### Acceptance criteria",
+  "- the ledger identifies a row by its own identity",
+  "",
+  "### Evidence",
+  "- review-ledger holds the rows — extension/src/review-ledger.ts — confirmed",
+].join("\n");
+
+const SPEC_1557 = parseNormalisedSpec(SPEC_1557_TEXT) ?? {
+  intent: "",
+  deliverables: [],
+  acceptanceCriteria: [],
+  outOfScope: [],
+  assumptions: [],
+  openQuestions: [],
+  evidence: [],
+  verdict: "park" as const,
+  rationale: "",
 };
+
+// The fixture is only a fixture if it parses — and the slot that caused the
+// park must survive the parser with its wildcard INTACT, which is what the
+// round-2 fix is about: `normaliseDeclaredPath` used to eat the trailing `*`
+// and hand the judge `extension/src/review-ledger-`, a concrete-looking path.
+assert(
+  SPEC_1557.deliverables.length === 3,
+  "fixture: the #1557 spec parses through parseNormalisedSpec (3 deliverables)",
+);
+assert(
+  SPEC_1557.deliverables[0]?.paths.includes(D1_GLOB) === true,
+  `fixture: the trailing-star slot survives normalisation intact (got ${JSON.stringify(SPEC_1557.deliverables[0]?.paths)})`,
+);
 
 /** The plan both replies reported: the strict union of the concrete files. */
 const PLAN_1557 = ws({ default: [...D1_CONCRETE, D2, ...D3] });
@@ -127,7 +173,10 @@ const EXEMPT_SLOT_LITERALS = [
       problem !== undefined,
       `drift pin: plannedPathProblem refuses the exempt slot ${JSON.stringify(slot)} too — an exemption wider than the planner's grammar would demand a path a plan MAY name`,
     );
-    if (/[*?!]/.test(slot)) {
+    // One predicate on both sides, not a regex copy in the test either: the
+    // assertion below is only a drift pin if it asks the same question the
+    // exemption asks.
+    if (hasPathspecChar(slot)) {
       assert(
         (problem ?? "").includes("glob or pathspec"),
         `drift pin: the refusal of ${JSON.stringify(slot)} is the GLOB clause specifically (one hasPathspecChar, both sides)`,
@@ -137,12 +186,34 @@ const EXEMPT_SLOT_LITERALS = [
 }
 
 {
-  // #1707 — the trailing-star shapes: `normaliseDeclaredPath` strips a
-  // trailing `*` as markdown markup, so a slot written `src/review-ledger-*`
-  // or `src/foo/*` used to reach the judge star-stripped (`src/review-ledger-`,
-  // `src/foo`), read as a concrete path, get DEMANDED of the plan, and be
-  // appended verbatim by the single-workstream repair. The judge now reads
-  // the RAW slot, so the wildcard is visible.
+  // #1707 — the trailing-star shapes, driven THROUGH THE PARSER. The old strip
+  // (`[/`*\s]+` at each end) turned `src/review-ledger-*` into
+  // `src/review-ledger-` and `src/foo/*` into `src/foo`, so the judge read a
+  // concrete path, DEMANDED it of the plan, and the single-workstream repair
+  // appended the mangled name verbatim.
+  const spec = parseNormalisedSpec(
+    [
+      "INTENT-VERDICT: proceed",
+      "",
+      "## Spec",
+      "",
+      "### Intent",
+      "x",
+      "",
+      "### Deliverables",
+      "- d1: mixed [paths: src/real.ts, src/foo/*, src/review-ledger-*]",
+      "",
+      "### Acceptance criteria",
+      "- x",
+      "",
+      "### Evidence",
+      "- c — src/real.ts — confirmed",
+    ].join("\n"),
+  );
+  assert(
+    spec?.deliverables[0]?.paths.join(",") === "src/real.ts,src/foo/*,src/review-ledger-*",
+    `parser: all three slots keep their text, wildcards included (got ${JSON.stringify(spec?.deliverables[0]?.paths)})`,
+  );
   assert(
     planDeclarableSlot("src/review-ledger-*") === false,
     "#1707: a slot whose only wildcard is TRAILING is exempted (pre-fix the star-strip hid it)",
@@ -151,9 +222,6 @@ const EXEMPT_SLOT_LITERALS = [
     planDeclarableSlot("src/foo/*") === false,
     "#1707: a directory-splat slot is exempted for the same reason",
   );
-  const spec = {
-    deliverables: [{ id: "d1", paths: ["src/real.ts", "src/foo/*", "src/review-ledger-*"] }],
-  };
   const r = findUncoveredDeliverables(ws({ a: ["src/other.ts"] }), spec, []);
   const row = r.uncovered.find((u) => u.id === "d1")?.paths ?? [];
   assert(
@@ -170,14 +238,25 @@ const EXEMPT_SLOT_LITERALS = [
         outOfScope: [],
       },
     },
-    {
-      deliverables: [
-        {
-          id: "d1",
-          paths: ["src/witness.ts", "src/missing.ts", "src/foo/*", "src/review-ledger-*"],
-        },
-      ],
-    },
+    parseNormalisedSpec(
+      [
+        "INTENT-VERDICT: proceed",
+        "",
+        "## Spec",
+        "",
+        "### Intent",
+        "x",
+        "",
+        "### Deliverables",
+        "- d1: mixed [paths: src/witness.ts, src/missing.ts, src/foo/*, src/review-ledger-*]",
+        "",
+        "### Acceptance criteria",
+        "- x",
+        "",
+        "### Evidence",
+        "- c — src/witness.ts — confirmed",
+      ].join("\n"),
+    ),
     [],
   );
   assert(
@@ -185,6 +264,14 @@ const EXEMPT_SLOT_LITERALS = [
     `#1707: the repair appends only the genuinely missing file — never a star-stripped src/foo or src/review-ledger- (got ${JSON.stringify(repaired?.added)})`,
   );
 }
+
+// #1707 round-2 — the FAIL-OPEN that round closed (judging the exemption on
+// raw text, so `**extension/src/x.ts**` read as a glob and a concrete required
+// slot exempted itself) is pinned in `test-plan-spec-markup-slots.ts`: markdown
+// emphasis, inline code, and an annotated parenthetical carrying a pathspec
+// character must all stay REQUIRED, and the spec-ARTIFACT restore path — where
+// `validateSpec` bounds `d.paths` but never normalises them — must be judged
+// after the gate normalises for itself.
 
 {
   // #1707 — a slot exempted as undeclarable is TRACED, mirroring
@@ -218,9 +305,14 @@ const EXEMPT_SLOT_LITERALS = [
   );
   // A placeholder-only deliverable is not measurable, so it is not traced
   // either — the measurable() gate owns that case, not this one.
+  // #1707 round-3 — a bare `*` slot used to normalise to the empty string (the
+  // markup strip ate it), which made the deliverable unmeasurable and dropped
+  // it from `checkedCount` with nothing said. A `*` that survives normalisation
+  // is honest about what it is: a pattern, measurable at converge, exempt from
+  // the plan requirement, and TRACED.
   assert(
-    undeclarableSlotsOf({ deliverables: [{ id: "d1", paths: ["*"] }] }).length === 0,
-    "a `*` slot normalises to nothing: unmeasurable, judged by measurable(), not traced as an exemption",
+    undeclarableSlotsOf({ deliverables: [{ id: "d1", paths: ["*"] }] }).length === 1,
+    "a `*` slot is now traced as an exemption rather than silently normalising away",
   );
 }
 

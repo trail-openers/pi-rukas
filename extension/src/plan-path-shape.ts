@@ -65,9 +65,13 @@ export function quotedPaths(paths: readonly string[]): string {
  * that every exempted slot literal is refused here lives in
  * `test-plan-spec-glob-coverage.ts`.
  *
- * Judged on RAW text: `normaliseDeclaredPath` strips a trailing `*` as
- * markdown markup, so a slot written `src/foo/*` reads as a concrete
- * directory once normalised and would slip past the exemption.
+ * Judged on the NORMALISED text, which since #1707 is the form that still
+ * carries the wildcard: `normaliseDeclaredPath` strips only PAIRED markup, so
+ * `src/foo/*` arrives here as `src/foo/*` (a pattern, exempt) and
+ * `**src/foo.ts**` arrives as `src/foo.ts` (concrete, required). Judging the
+ * raw text instead read markdown emphasis as a glob and exempted a concrete
+ * required path — a silent hole in the #819 gate, which is what that round
+ * closed.
  */
 export function hasPathspecChar(p: string): boolean {
   return /[*?!]/.test(p);
