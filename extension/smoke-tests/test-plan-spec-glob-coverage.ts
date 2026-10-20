@@ -40,7 +40,9 @@ import {
   findUncoveredDeliverables,
   planDeclarableSlot,
   planSpecMismatchReason,
+  undeclarableSlotsOf,
 } from "../src/work-driver-plan-spec-coverage.ts";
+import { plannedPathProblem } from "../src/plan-path-shape.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -99,6 +101,128 @@ const PLAN_1557 = ws({ default: [...D1_CONCRETE, D2, ...D3] });
 }
 
 // ------------------------------------- what is declarable, and what is not
+
+// The slot literals this file exempts. The drift pin below reads this list:
+// every slot `planDeclarableSlot` exempts must be a slot `plannedPathProblem`
+// refuses — the exemption is only sound while it is a subset of the planner's
+// own refusals. The two share `hasPathspecChar`, so the refusal mechanism
+// cannot drift; this asserts the SET cannot either.
+const EXEMPT_SLOT_LITERALS = [
+  D1_GLOB,
+  "extension/src/work-driver-<name>.ts",
+  "src/review-ledger-*",
+  "src/foo/*",
+  "src/dir/?one.ts",
+  "src/a!b.ts",
+];
+
+{
+  for (const slot of EXEMPT_SLOT_LITERALS) {
+    assert(
+      planDeclarableSlot(slot) === false,
+      `exempt slot ${JSON.stringify(slot)}: planDeclarableSlot says no plan may declare it`,
+    );
+    const problem = plannedPathProblem(slot);
+    assert(
+      problem !== undefined,
+      `drift pin: plannedPathProblem refuses the exempt slot ${JSON.stringify(slot)} too — an exemption wider than the planner's grammar would demand a path a plan MAY name`,
+    );
+    if (/[*?!]/.test(slot)) {
+      assert(
+        (problem ?? "").includes("glob or pathspec"),
+        `drift pin: the refusal of ${JSON.stringify(slot)} is the GLOB clause specifically (one hasPathspecChar, both sides)`,
+      );
+    }
+  }
+}
+
+{
+  // #1707 — the trailing-star shapes: `normaliseDeclaredPath` strips a
+  // trailing `*` as markdown markup, so a slot written `src/review-ledger-*`
+  // or `src/foo/*` used to reach the judge star-stripped (`src/review-ledger-`,
+  // `src/foo`), read as a concrete path, get DEMANDED of the plan, and be
+  // appended verbatim by the single-workstream repair. The judge now reads
+  // the RAW slot, so the wildcard is visible.
+  assert(
+    planDeclarableSlot("src/review-ledger-*") === false,
+    "#1707: a slot whose only wildcard is TRAILING is exempted (pre-fix the star-strip hid it)",
+  );
+  assert(
+    planDeclarableSlot("src/foo/*") === false,
+    "#1707: a directory-splat slot is exempted for the same reason",
+  );
+  const spec = {
+    deliverables: [{ id: "d1", paths: ["src/real.ts", "src/foo/*", "src/review-ledger-*"] }],
+  };
+  const r = findUncoveredDeliverables(ws({ a: ["src/other.ts"] }), spec, []);
+  const row = r.uncovered.find((u) => u.id === "d1")?.paths ?? [];
+  assert(
+    row.length === 1 && row[0] === "src/real.ts",
+    `#1707: the uncovered row names only the concrete slot — never the star-stripped src/foo or src/review-ledger- (got ${JSON.stringify(row)})`,
+  );
+  // The repair must never append a star-stripped path either.
+  const repaired = repairOmittedDeliverablePaths(
+    {
+      default: {
+        id: "default",
+        scope: "trailing-star spec",
+        paths: ["src/witness.ts", "src/other.ts"],
+        outOfScope: [],
+      },
+    },
+    {
+      deliverables: [
+        {
+          id: "d1",
+          paths: ["src/witness.ts", "src/missing.ts", "src/foo/*", "src/review-ledger-*"],
+        },
+      ],
+    },
+    [],
+  );
+  assert(
+    repaired?.added.join(",") === "src/missing.ts",
+    `#1707: the repair appends only the genuinely missing file — never a star-stripped src/foo or src/review-ledger- (got ${JSON.stringify(repaired?.added)})`,
+  );
+}
+
+{
+  // #1707 — a slot exempted as undeclarable is TRACED, mirroring
+  // protectedDeferralsOf, so a gate that judged nothing is visible.
+  const r = undeclarableSlotsOf({
+    deliverables: [
+      { id: "d1", paths: ["src/real.ts", D1_GLOB] },
+      { id: "d2", paths: ["src/only-a-template-<name>.ts"] },
+      { id: "d3", paths: ["src/concrete.ts"] },
+    ],
+  });
+  assert(
+    r.length === 2,
+    `#1707: the exempted-slot trace covers exactly the deliverables that carry an exempt slot (got ${JSON.stringify(r)})`,
+  );
+  assert(
+    r.find((d) => d.id === "d1")?.paths.join(",") === D1_GLOB,
+    "the trace names the deliverable and the exempt slot itself, not the whole paths list",
+  );
+  assert(
+    r.find((d) => d.id === "d2")?.paths.length === 1,
+    "an all-template deliverable is traceable — this is the case where the gate judged NOTHING and the checkedCount silently dropped it",
+  );
+  assert(
+    !r.some((d) => d.id === "d3"),
+    "a fully concrete deliverable is not traced",
+  );
+  assert(
+    undeclarableSlotsOf(undefined).length === 0,
+    "no spec, no trace lines",
+  );
+  // A placeholder-only deliverable is not measurable, so it is not traced
+  // either — the measurable() gate owns that case, not this one.
+  assert(
+    undeclarableSlotsOf({ deliverables: [{ id: "d1", paths: ["*"] }] }).length === 0,
+    "a `*` slot normalises to nothing: unmeasurable, judged by measurable(), not traced as an exemption",
+  );
+}
 
 {
   assert(

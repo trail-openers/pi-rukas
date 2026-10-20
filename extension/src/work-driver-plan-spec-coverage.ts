@@ -56,6 +56,7 @@
  * re-exports the one definition.
  */
 
+import { hasPathspecChar } from "./plan-path-shape.ts";
 import {
   declaredPathMatches,
   declaredPathsCoveredBy,
@@ -63,11 +64,13 @@ import {
   measurableAlternative,
   splitDeclaredSlots,
   splitDeliverablePaths,
+  splitRawAlternatives,
   toAlternative,
 } from "./work-driver-deliverable-paths.ts";
 import { isProtectedPath } from "./work-driver-doctrine.ts";
 import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
 import { ungrantedProtectedPaths } from "./work-driver-protected-grant.ts";
+import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
 /** The deliverable shape the gate reads (structural subset of SpecDeliverable). */
 export interface SpecCoverageDeliverable {
@@ -117,6 +120,17 @@ export interface UncoveredDeliverable {
  */
 function declaredSlots(paths: string[] | undefined): string[] {
   return [...new Set(splitDeclaredSlots(paths))];
+}
+
+/**
+ * The deliverable's declared slots AS WRITTEN, deduped by raw text — the
+ * form `planDeclarableSlot` must judge, because `normaliseDeclaredPath`
+ * strips a trailing `*` as markup and a pattern would survive its own
+ * exemption by arriving star-stripped (#1707). Coverage comparisons still
+ * run on the normalised form — only the exemption looks at the raw text.
+ */
+function declaredRawSlots(paths: string[] | undefined): string[] {
+  return [...new Set((paths ?? []).map((p) => p.trim()).filter((p) => p.length > 0))];
 }
 
 /**
@@ -215,13 +229,24 @@ function measurable(d: SpecCoverageDeliverable, paths: string[]): boolean {
 }
 
 /**
- * The characters `plannedPathProblem` refuses as "a glob or pathspec
- * character". The exemption below is exactly that one clause, and `isGlob`
- * alone is not it: `isGlob` tests `*` and would miss the `?` / `!` forms the
- * planner's own grammar rejects. The agreement between the two is pinned by
- * `test-plan-spec-glob-coverage.ts`, not by this comment.
+ * A slot alternative the planner may not name: a glob/pathspec character
+ * (`* ? !` — `hasPathspecChar`, the ONE clause `plannedPathProblem` refuses,
+ * shared so the refusal and the exemption cannot drift) or a `<name>`
+ * template (the grammar's placeholder form).
+ *
+ * Judged on the RAW alternative text, before `normaliseDeclaredPath` — its
+ * markup strip (`[/`*\s]+`) eats a trailing `*`, so `src/foo/*` and
+ * `src/review-ledger-*` would arrive at the judge as `src/foo` and
+ * `src/review-ledger-` and read as concrete paths (a slot-stripped name then
+ * demanded of the plan, and appended verbatim by the single-workstream
+ * repair, #1707 review). A markdown-bold slot (`**src/a.ts**`) is judged as
+ * the pattern it textually is — the exemption errs toward silence (the gate
+ * says nothing, the converge gate still measures the slot against the real
+ * diff), never toward a refusal nobody can act on.
  */
-const PATHSPEC_CHARS = /[*?!]/;
+function isPatternAlternative(rawAlt: string): boolean {
+  return hasPathspecChar(rawAlt) || /<[^<>]*>/.test(rawAlt);
+}
 
 /**
  * Could a PLAN declare this slot at all? #1642 run 6b, measured on #1557.
@@ -256,18 +281,22 @@ const PATHSPEC_CHARS = /[*?!]/;
  * this asks what a PLAN MAY BE ASKED FOR — a fact about the planner's schema,
  * not the path grammar, with one caller.
  *
+ * The caller passes the slot AS WRITTEN (`raw`), not normalised: the pattern
+ * must be seen before `normaliseDeclaredPath`'s markup strip can eat a
+ * trailing `*` (#1707). The agreement with `plannedPathProblem` is structural
+ * — both call `hasPathspecChar` — and `test-plan-spec-glob-coverage.ts`
+ * additionally asserts that every slot this exempts is a slot
+ * `plannedPathProblem` actually refuses.
+ *
  * What this does NOT do: it is not "the deliverable is covered". It removes a
  * requirement no plan can satisfy. The concrete half of a mixed deliverable is
  * still demanded slot by slot, and a workstream that declared only files
  * matching the pattern still covers nothing of it — the pattern stays measured
  * at converge, where a real diff CAN answer it.
  */
-export function planDeclarableSlot(slot: string): boolean {
-  const alternatives = splitDeliverablePaths(slot).map(toAlternative);
-  return (
-    alternatives.length > 0 &&
-    alternatives.some((alt) => !alt.isGlob && !PATHSPEC_CHARS.test(alt.raw))
-  );
+export function planDeclarableSlot(rawSlot: string): boolean {
+  const alternatives = splitRawAlternatives(rawSlot);
+  return alternatives.length > 0 && alternatives.some((alt) => !isPatternAlternative(alt));
 }
 
 /**
@@ -304,6 +333,29 @@ export function protectedDeferralsOf(
     if (!measurable(d, paths)) continue;
     const deferred = paths.filter((p) => isDeferredProtectedSlot(p, grant));
     if (deferred.length > 0) out.push({ id: d.id, paths: deferred });
+  }
+  return out;
+}
+
+/**
+ * #1707 — the slots of each measurable deliverable that are exempted as
+ * UNDECLARABLE (a glob/pathspec character or a `<name>` template, judged on
+ * the RAW slot — see `planDeclarableSlot`). The plan step traces these so the
+ * operator can see that the gate dropped a slot rather than judging it;
+ * without the trace, a deliverable whose every slot is exempted vanishes from
+ * `checkedCount` and a gate that judged nothing is indistinguishable from one
+ * that judged everything and found no fault. Mirrors `protectedDeferralsOf`.
+ * Empty when nothing was exempted.
+ */
+export function undeclarableSlotsOf(
+  spec: SpecCoverageSpec | undefined,
+): Array<{ id: string; paths: string[] }> {
+  const out: Array<{ id: string; paths: string[] }> = [];
+  for (const d of spec?.deliverables ?? []) {
+    const paths = declaredSlots(d.paths);
+    if (!measurable(d, paths)) continue;
+    const exempt = declaredRawSlots(d.paths).filter((raw) => !planDeclarableSlot(raw));
+    if (exempt.length > 0) out.push({ id: d.id, paths: exempt });
   }
   return out;
 }
@@ -368,10 +420,18 @@ export function findUncoveredDeliverables(
     // #1642 — protected slots the cycle may not write are not the plan's to
     // cover, and a template slot is not the plan's to DECLARE (see
     // `planDeclarableSlot`); the rest (a mixed deliverable's concrete half)
-    // still are.
-    const required = paths.filter(
-      (p) => !isDeferredProtectedSlot(p, grant) && planDeclarableSlot(p),
-    );
+    // still are. The exemption is judged on the RAW slot text (#1707) — the
+    // normaliser's markup strip would otherwise hand the judge a star-stripped
+    // `src/foo` for a slot written `src/foo/*`, demanding (and repairing) a
+    // path the planner may not name.
+    const required = [
+      ...new Set(
+        declaredRawSlots(d.paths)
+          .filter((raw) => !isDeferredProtectedSlot(raw, grant) && planDeclarableSlot(raw))
+          .map((raw) => normaliseDeclaredPath(raw))
+          .filter((p) => p.length > 0),
+      ),
+    ];
     if (required.length === 0) continue;
     checkedCount += 1;
     if (required.every((p) => coveredBy(p, workstreamPaths))) continue;

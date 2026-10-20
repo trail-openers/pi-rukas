@@ -165,6 +165,26 @@ export function splitDeliverablePaths(raw: string | undefined): string[] {
 }
 
 /**
+ * Split one slot into its alternatives WITHOUT normalisation.
+ *
+ * `splitDeliverablePaths` runs each piece through `normaliseDeclaredPath`,
+ * which strips a trailing `*` as markdown markup — fine for matching, fatal
+ * for asking "is this a pattern?", because `src/foo/*` arrives as `src/foo`
+ * and reads as a concrete directory. A caller that must judge the slot's
+ * pattern needs the text as written, trimmed only of surrounding whitespace.
+ * The split grammar is shared with `splitDeliverablePaths` deliberately: the
+ * comma-list and the ` or `/`|` alternatives are one grammar, not two.
+ */
+export function splitRawAlternatives(rawSlot: string | undefined): string[] {
+  if (!rawSlot) return [];
+  return rawSlot
+    .split(",")
+    .flatMap((piece) => piece.split(ALTERNATIVE_SPLIT))
+    .map((seg) => seg.trim())
+    .filter((seg) => seg.length > 0);
+}
+
+/**
  * The declared SLOTS of a `[paths:]` list — annotation-stripped, blanks
  * dropped, deduped, and NOT split into alternatives. Exposed so both gates
  * agree on what one slot is (the unit that must be covered / delivered) while
