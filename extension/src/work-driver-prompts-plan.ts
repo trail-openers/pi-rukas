@@ -1,4 +1,3 @@
-import { WORKSTREAM_FENCE_MAX, WORKSTREAM_LIST_MAX } from "./plan-workstream-schema.ts";
 /**
  * work-driver-prompts-plan — the Step 2 (plan) prompt builder.
  *
@@ -17,6 +16,7 @@ import { WORKSTREAM_FENCE_MAX, WORKSTREAM_LIST_MAX } from "./plan-workstream-sch
  * `depends-on` edge it would otherwise have had to guess
  * (work-driver-plan-contract.ts).
  */
+import { WORKSTREAM_FENCE_MAX, WORKSTREAM_LIST_MAX } from "./plan-workstream-schema.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 
 /**

@@ -32,11 +32,12 @@
 
 import {
   capFenceList,
-  clippedField,
-  neutraliseFenceEntry,
+  fenceBoundNotice,
+  fenceWasBounded,
   quotedOutOfScope,
 } from "./plan-fence-bound.ts";
-import { WORKSTREAM_LIST_MAX } from "./plan-workstream-schema.ts";
+import { clippedField } from "./plan-fence-record.ts";
+import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 import { traceWarn } from "./trace.ts";
 import { splitDeliverablePaths } from "./work-driver-deliverable-paths.ts";
 import { protectedPathsEnabled } from "./work-driver-doctrine.ts";
@@ -89,18 +90,35 @@ export function withDeferredProtectedFence(
       continue;
     }
     changed = true;
-    // #1744 — the third writer of a fence list goes through the same cap, so a
-    // workstream already at the ceiling keeps the fence it had and the deferred
-    // paths it could not add are RECORDED, not silently lost: an entry dropped
-    // here is a protected path the developer was never told to stay out of.
-    const appended = [...ws.outOfScope, ...missing];
-    const fence = capFenceList(appended, ws.outOfScopeClipped ?? []);
-    if (fence.entries.length < appended.length) {
-      traceWarn(
-        `work-driver: plan workstream '${id}' deferred protected fence — ${fence.entries.length} of ${appended.length} entries fit the ${WORKSTREAM_LIST_MAX}-entry cap; the rest are recorded on outOfScopeClipped`,
-      );
+    // #1744 — the third writer of a fence list goes through the same bound as
+    // the other two. The deferred paths are PREPENDED, for two reasons: the cap
+    // is exactly where the two kinds of entry compete and a protected path the
+    // developer was never told about is the worse loss; and it makes this call
+    // IDEMPOTENT under a plan-tail re-run. Appending would let a deferred path
+    // that missed the cut stay `missing`, so every re-run would re-add it, drop
+    // it again, and add a fresh `cap` record for the same loss. Prepended, a
+    // deferred path always lands, the next run finds nothing missing, and the
+    // early `continue` above hands the caller the same object back — no second
+    // record, no second warning. They go through the same CLIP as every other
+    // entry, so no unbounded length reaches the state file, and what genuinely
+    // did not fit is RECORDED and said out loud, never silently lost.
+    const fence = capFenceList([...missing, ...ws.outOfScope], ws.outOfScopeClipped ?? []);
+    // `capFenceList` reports the count; the CALLER owns the record (the doctrine
+    // every fence writer follows). Here it can only be the workstream's OWN
+    // tail that fell off — a deferred path is never the loser, because it is
+    // prepended.
+    if (fence.thisPass.cap > 0) {
+      fence.clipped.push({ kind: "dropped", reason: "cap", count: fence.thisPass.cap });
     }
-    out[id] = { ...ws, paths, outOfScope: fence.entries, ...clippedField(fence.clipped) };
+    if (fenceWasBounded(fence)) {
+      traceWarn(fenceBoundNotice(`plan workstream '${id}' deferred protected fence`, fence));
+    }
+    out[id] = {
+      ...ws,
+      paths,
+      outOfScope: fence.entries,
+      ...clippedField(fence.clipped),
+    };
   }
   return changed ? out : workstreams;
 }

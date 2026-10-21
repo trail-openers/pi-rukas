@@ -21,8 +21,14 @@
  *   - `clipped` — one entry cut short, keyed by the ENTRY TEXT it kept. Keying
  *     by text (not by position) is what lets the fold and the unfence pass keep
  *     "the records whose entry still exists" with no re-keying to get wrong.
+ *     `widened: true` says the RETAINED text is itself a declared-path-shaped
+ *     fence, so the cut made the fence WIDER than the planner wrote — a claim a
+ *     person has to be able to see without re-deriving it from the text.
  *   - `dropped` — N entries that never landed, one aggregated record per
- *     reason: `cap` past `WORKSTREAM_LIST_MAX` entries, `empty` for a blank one.
+ *     reason: `cap` past `WORKSTREAM_LIST_MAX` entries, `empty` for a blank one,
+ *     `duplicate` for a split or clipped part that collapsed onto an entry the
+ *     list already held (a whole-entry duplicate is not a loss and is never
+ *     recorded).
  *
  * The STORED entry carries no marker — the develop gate and the fix fence match
  * on the entry text through the one `fenceMatches` predicate, and a marker
@@ -30,11 +36,20 @@
  * prompt FROM this record, and the record is what makes the bound said out loud.
  *
  * Declared here, beside `Workstream`, so the field and its record shape cannot
- * drift; `plan-workstream-schema.ts` imports it as a type only.
+ * drift. Its importers are `plan-fence-bound.ts` (which writes it),
+ * `workstream-fold.ts` and `work-driver-plan-fence.ts` (which carry it across
+ * the two passes that rebuild a fence list); `plan-workstream-schema.ts` — the
+ * companion the plan child loads — imports neither this module nor the record.
  */
 export type OutOfScopeClip =
-  | { kind: "clipped"; entry: string; originalLength: number; keptLength: number }
-  | { kind: "dropped"; reason: "cap" | "empty"; count: number };
+  | {
+      kind: "clipped";
+      entry: string;
+      originalLength: number;
+      keptLength: number;
+      widened?: true;
+    }
+  | { kind: "dropped"; reason: "cap" | "empty" | "duplicate"; count: number };
 
 /**
  * #679 — the workstream value type. Extends the pre-#679 shape

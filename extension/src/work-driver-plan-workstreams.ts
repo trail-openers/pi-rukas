@@ -10,7 +10,8 @@
  */
 
 import { hostBudget } from "./host-resources.ts";
-import { boundOutOfScope, clippedField, fenceBoundNotice } from "./plan-fence-bound.ts";
+import { boundOutOfScope, fenceBoundNotice, fenceWasBounded } from "./plan-fence-bound.ts";
+import { clippedField } from "./plan-fence-record.ts";
 import { WORKSTREAM_ID_MAX, type WorkstreamArgs } from "./plan-workstream-schema.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
@@ -37,7 +38,7 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
   const consumes = args.consumes ?? [];
   const integrationTest = args.integrationTest ?? "";
   const fence = boundOutOfScope(args.outOfScope);
-  if (fence.clipped.length > 0) {
+  if (fenceWasBounded(fence)) {
     traceWarn(fenceBoundNotice(`plan workstream '${args.id}'`, fence));
   }
   return {

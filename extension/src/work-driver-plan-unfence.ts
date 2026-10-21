@@ -40,7 +40,7 @@
  * a file or symbol — lives in work-driver-plan-unfence-extract.ts.
  */
 
-import { keepClippedRecords } from "./plan-fence-bound.ts";
+import { keepClippedRecords } from "./plan-fence-record.ts";
 import { trace, traceWarn } from "./trace.ts";
 import { resolveDefiningFile } from "./work-driver-plan-unfence-defines.ts";
 import {

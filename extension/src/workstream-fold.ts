@@ -33,7 +33,8 @@
  * Pure: returns a NEW map; the input is never mutated.
  */
 
-import { capFenceList, clippedField, fenceBoundNotice } from "./plan-fence-bound.ts";
+import { capFenceList, fenceBoundNotice, fenceWasBounded } from "./plan-fence-bound.ts";
+import { clippedField } from "./plan-fence-record.ts";
 import { traceWarn } from "./trace.ts";
 import type { OutOfScopeClip } from "./workflow-state-schema-workstreams.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
@@ -96,12 +97,17 @@ export function foldTwo(a: Workstream, b: Workstream): Workstream {
     ...(b.outOfScopeClipped ?? []),
   ];
   // Two halves at the cap union to twice the cap: re-apply it here so the fold
-  // cannot smuggle past the bound a single call was held to, recording the drop.
+  // cannot smuggle past the bound a single call was held to. The re-cap is the
+  // same event as the tool boundary's bound, so it says the same words on the
+  // same channel (#1744 review) — an operator greps one line and finds the
+  // fence the fold dropped, whichever pass bounded it — and the line reports
+  // ONLY what this fold dropped, because the carried records describe drops
+  // the halves' own calls already said out loud.
   const fence = capFenceList(mergedList, carried);
-  // The re-cap is the same event as the tool boundary's bound, so it says the
-  // same words on the same channel (#1744 review) — an operator greps one line
-  // and finds the fence the fold dropped, whichever pass bounded it.
-  if (fence.entries.length < mergedList.length) {
+  if (fence.thisPass.cap > 0) {
+    fence.clipped.push({ kind: "dropped", reason: "cap", count: fence.thisPass.cap });
+  }
+  if (fenceWasBounded(fence)) {
     traceWarn(fenceBoundNotice(`plan fold '${a.id}' + '${b.id}'`, fence));
   }
   // #1005 — symmetric: drop BOTH merged ids from BOTH halves' dependsOn
