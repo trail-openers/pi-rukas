@@ -3,7 +3,8 @@
  * (#1125): one tokeniser, one protected-name matcher, one normaliser and the shell
  * segment / word splitters. NO command scanner lives here: the adjudication rule of
  * #1125 (a) permits exactly one allowlist, and it is in review-accept-guard.ts. This
- * file only turns a command string into views another module can match arms against.
+ * file only turns a command string into views another module can match arms against; the
+ * git VERB position is one such view and lives in `review-accept-verb.ts`.
  */
 
 /** The names whose stem marks a protected path, whatever suffix follows. */
@@ -314,21 +315,35 @@ export function shellVisible(command: string): string {
   return out;
 }
 
-export function normalise(command: string): string | "PARSE_FAIL" {
+/** Why the one normalisation pass could not read a command. REPORTED, never guessed at: what
+ * an unreadable command MEANS is the guard's scope predicate's call, not this parser's, and a
+ * separate re-derivation of the cause in the guard is a second copy that can only drift. */
+export type ParseCause =
+  | "unbalanced single quote"
+  | "unbalanced double quote"
+  | "heredoc body never terminates"
+  | "unparseable";
+/** The pass either produced the folded text, or says which shape of its own it tripped on. */
+export type NormaliseResult =
+  | { readonly ok: true; readonly text: string }
+  | { readonly ok: false; readonly cause: ParseCause };
+
+export function normalise(command: string): NormaliseResult {
+  const fail = (cause: ParseCause): NormaliseResult => ({ ok: false, cause });
   let out = "";
   let i = 0;
   while (i < command.length) {
     const ch = command[i] as string;
     if (ch === "'" || ch === '"') {
       const end = command.indexOf(ch, i + 1);
-      if (end < 0) return "PARSE_FAIL";
+      if (end < 0) return fail(ch === "'" ? "unbalanced single quote" : "unbalanced double quote");
       out += " ";
       i = end + 1;
       continue;
     }
     if (command.startsWith("<<", i)) {
       const past = skipHeredoc(command, i);
-      if (past === "PARSE_FAIL") return "PARSE_FAIL";
+      if (past === "PARSE_FAIL") return fail("heredoc body never terminates");
       out += " << ";
       i = past;
       continue;
@@ -337,11 +352,10 @@ export function normalise(command: string): string | "PARSE_FAIL" {
     i++;
   }
   for (const quote of ["'", '"'])
-    if ((out.match(new RegExp(quote, "g")) ?? []).length % 2 !== 0) return "PARSE_FAIL";
-  return squeeze(out.toLowerCase());
+    if ((out.match(new RegExp(quote, "g")) ?? []).length % 2 !== 0)
+      return fail(quote === "'" ? "unbalanced single quote" : "unbalanced double quote");
+  return { ok: true, text: squeeze(out.toLowerCase()) };
 }
-
-/** The operator characters that end a shell segment (see armsOf for the real walk). */
 
 /**
  * Split a command into shell segments. An operator inside a quoted span is LITERAL —

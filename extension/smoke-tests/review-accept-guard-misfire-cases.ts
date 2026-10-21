@@ -108,6 +108,29 @@ export const MEASURED_MISFIRES_ALLOWED: Case[] = [
     c: `awk ${Q}BEGIN{system("echo ${D}{HOME}")}${Q}`,
     why: "awk running a shell at no store path",
   },
+  // A LEADING `~` is HOME, which is nobody's findings store (#1738: refusing it re-created
+  // #1643's misfire on the worktree form). `~user` and a `~` anywhere else in the target stay
+  // refused — see STORE_REACHING_REFUSALS.
+  { c: "git -C ~/work/wt status", why: "the sanctioned worktree form, home-relative" },
+  {
+    c: "git -C ~/orchard/work/orchard log --oneline -5 origin/main",
+    why: "a home-relative worktree log",
+  },
+  // The git WRITE VERB is a POSITION — the bare word after the segment's leading `git` — so
+  // prose that merely mentions one is not a program putting bytes on disk. Each row below is
+  // a command the word-anywhere test used to refuse.
+  {
+    c: `git commit -m ${Q}apply${Q} <<EOF${NL}the message is one word`,
+    why: "the word apply as a whole commit message beside an unterminated heredoc",
+  },
+  {
+    c: `git status --porcelain <<EOF${NL}rm the old notes`,
+    why: "the word rm inside an unterminated heredoc body beside a read verb",
+  },
+  {
+    c: `cat > /tmp/notes.md <<EOF${NL}run git rm build before deploying${NL}EOF`,
+    why: "a heredoc body whose prose mentions git rm mid-sentence",
+  },
 ];
 
 /**
@@ -252,5 +275,35 @@ export const STORE_REACHING_REFUSALS: Case[] = [
   {
     c: `git -C ${TREE} status && git -c core.fsmonitor=/tmp/probe log`,
     why: "ACCEPTANCE: a second segment carrying an uncleared selector",
+  },
+  // A SPACED selector whose next word is ANOTHER option took that word as its value and
+  // consumed it, hiding the selector behind it (#1738). It is unresolved and unconsumed now.
+  {
+    c: "git -C -c core.pager=cat log",
+    why: "ACCEPTANCE: a spaced selector whose value is another option, hiding a config",
+  },
+  // The selector and write-flag tests are also asked of the BACKSLASH-ERASED word: the shell
+  // removes the escape before the program reads it, so `-\c` is `-c` by then (#1738).
+  {
+    c: "git -C /tmp/wt -\\c core.pager=x log",
+    why: "ACCEPTANCE: an escaped config selector behind a spaced worktree selector",
+  },
+  {
+    c: `git show HEAD:blob -\\o ${DATA}`,
+    why: "an escaped output flag beside the data file",
+  },
+  // A `~` is only an ordinary path at the HEAD of the target, where it is HOME. `~user`
+  // expands outside this user's home and a `~` elsewhere is a path the guard cannot resolve.
+  { c: "git -C ~boss/orchard status", why: "ACCEPTANCE: a `~user` selector" },
+  { c: "git -C orchard/~boss status", why: "a `~` away from the head of the target" },
+  // The write verb is a POSITION asked of the words as the shell hands them over, so a quoted
+  // verb counts, and one `hash-object` decoy cannot answer for a write verb beside it (#1738).
+  {
+    c: `git ${Q}apply${Q} <<EOF${NL}--- a/x${NL}+++ b/x${NL}EOF`,
+    why: "ACCEPTANCE: a QUOTED git write verb — the shell hands git `apply` as its verb",
+  },
+  {
+    c: `git hash-object --stdin && git apply <<EOF${NL}--- a/x${NL}EOF`,
+    why: "ACCEPTANCE: a hash-object decoy beside a git write verb",
   },
 ];

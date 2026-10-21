@@ -12,13 +12,16 @@
 
 import {
   UNREADABLE,
+  armsOf,
   baseName,
+  eraseBackslashes,
   isAcceptScriptToken,
   isProtectedToken,
   shellWords,
   tokensOf,
   unquote,
 } from "./review-accept-command.ts";
+import { gitVerbOfSegment } from "./review-accept-verb.ts";
 /** A JS runtime: its invocation executes a program, so it is never a read tool.
  * Exported because the guard's pre-checks ask the same question of the whole command. */
 export const RUNTIME = /^(?:bun|bunx|node|npx|tsx|ts-node|deno)$/;
@@ -81,9 +84,27 @@ export function namesInterpreter(text: string): boolean {
  * `hash-object` writes only with `-w`, so it is asked for that flag too. */
 const GIT_WRITE_VERBS = ["apply", "am", "update-index", "mv", "rm", "checkout-index"];
 export function namesGitWriteVerb(text: string): boolean {
-  const words = shellWords(text).map((w) => baseName(unquote(w)));
-  if (words.includes("hash-object")) return words.includes("-w");
-  return words.some((w) => GIT_WRITE_VERBS.includes(w));
+  // A word is git's verb only when a git runs it, so the whole test is gated on git.
+  if (!namesGit(text)) return false;
+  // Asked of the words as written AND of the backslash-erased view: the shell removes the
+  // escape and the quotes before git reads the word, so `git "apply" <<EOF` and
+  // `git ap\ply <<EOF` are both a patch handed to `apply` (#1738).
+  return [text, eraseBackslashes(text)].some((view) =>
+    // PER SEGMENT, and only where the unreadable operand stands in the SAME segment: a
+    // heredoc body line that merely mentions `git rm` in prose is nobody's write route, and
+    // the verb counts only beside the `<<` body or the stdin `-` the guard cannot read.
+    armsOf(view).some((segment) => {
+      const words = shellWords(segment);
+      const verb = gitVerbOfSegment(words);
+      if (verb === undefined) return false;
+      if (!GIT_WRITE_VERBS.includes(verb) && verb !== "hash-object") return false;
+      if (!segment.includes("<<") && !hasStdinDash(words)) return false;
+      // A DISJUNCTION, never an early return: `hash-object` writes only what `-w` tells it
+      // to, and a decoy beside a real write verb (`git hash-object --stdin && git apply
+      // <<EOF`) must not answer for the whole command.
+      return verb === "hash-object" ? words.some((w) => unquote(w) === "-w") : true;
+    }),
+  );
 }
 /** Does the command run one of the READ TOOLS the arms admit (`cat`, `grep`, `rg`,
  * `head`, `wc`, …)? Together with `namesVcsOrRuntime` this is the set of programs through
@@ -129,26 +150,32 @@ const CONFIG_VALUE = /=/;
  * this guard cares about but IS a substitution the other test already refuses. */
 const GLOBISH = /[*?[]/;
 /** Does a `-C` target reach the findings store's repo location? The store's data file and
- * its siblings live IN the git common dir, so a target that IS or CONTAINS `.git`, or that
- * carries a protected / accept-script segment, is the store's location and stays refused.
- * An empty or expansion-bearing target is refused too — a path the guard cannot resolve is
- * a path it cannot clear. So is a glob, a `~` or a `..` segment: this selector is MATCHED,
- * not resolved (a symlink or a glob onto `.git` is not caught), so anything that makes the
- * text stand for a different path than the one being read keeps the selector refused. */
-function targetReachesStore(target: string | undefined): boolean {
-  if (target === undefined) return true;
+ * its siblings live IN the git common dir, so a target that IS or CONTAINS `.git`, carries
+ * a `..`, a glob, or names a protected / accept-script segment, is the store's location and
+ * stays refused. An empty or expansion-bearing target is refused too — a path the guard
+ * cannot resolve is a path it cannot clear. Each of those shapes is asked PER SEGMENT, the
+ * unit the pair is read at; the expansion test is asked of the WHOLE value because splitting
+ * on a separator deletes a backslash rather than leaving it in a segment.
+ *
+ * A LEADING `~` is the exception (#1738): `~/…` expands to HOME, which is nobody's findings
+ * store, and refusing it re-created #1643's misfire on the common `git -C ~/work/wt status`.
+ * `~user` expands to somebody else's home and a `~` anywhere else in the path is a form the
+ * guard cannot resolve, so both stay refused. So is this selector MATCHED, not resolved: a
+ * symlink or a glob onto `.git` is not caught, which is why anything that makes the text
+ * stand for a different path than the one being read keeps the selector refused. */
+function targetReachesStore(target: string): boolean {
   const value = unquote(target).replace(/^['"]+|['"]+$/g, "");
-  if (value === "" || UNREADABLE.test(value) || GLOBISH.test(value) || value.includes("~"))
-    return true;
-  return value
-    .split(/[\\/]/)
-    .some(
-      (segment) =>
-        segment === ".git" ||
-        segment === ".." ||
-        isProtectedToken(segment) ||
-        isAcceptScriptToken(segment),
-    );
+  if (value === "" || UNREADABLE.test(value)) return true;
+  const segments = value.split(/[\\/]/);
+  if ((segments[0] ?? "") !== "~" && segments.some((s) => s.includes("~"))) return true;
+  return segments.some(
+    (segment) =>
+      segment === ".." ||
+      segment === ".git" ||
+      GLOBISH.test(segment) ||
+      isProtectedToken(segment) ||
+      isAcceptScriptToken(segment),
+  );
 }
 
 /**
@@ -160,45 +187,57 @@ function targetReachesStore(target: string | undefined): boolean {
  *  - `-c key=value` (or `-C` spelling a `key=value`): a config the program then runs — a
  *    pager, a hook path, an alias — so no target test clears it (clause (b)'s accepted
  *    cost, and the position the case tables already record);
- *  - `-C <path>` whose path IS or CONTAINS the git common dir (`.git`), names a protected
- *    file, walks (`..`), globs (`*?[`), roots at a home directory (`~`), or cannot be
- *    resolved at all (empty, or carrying an expansion): refused;
+ *  - `-C <path>` whose path IS or CONTAINS the git common dir (`.git`), walks (`..`),
+ *    globs (`*?[`), names a protected file, or cannot be resolved at all (empty, or
+ *    carrying an expansion): refused. A leading `~/` is HOME and clears;
  *  - `git -C <worktree>` — the form AGENTS.md mandates — clears, and its VALUE is the
  *    only word the loop steps over: an ATTACHED selector (`-C/tmp/x`, `-C=/tmp/x`) carries
  *    its own value, so the following word is an ordinary argument and still gets asked.
  *    Stepping over it unexamined was the fail-open this closes (#1738 lens review:
  *    `git -C/tmp/x -c core.fsmonitor=/tmp/p log` never read its own `-c`).
  *
- * A selector at the END of the segment (no value at all) is unresolved: the value the
- * program would take is unknown.
+ * Each word is asked TWICE, as written and with its backslashes gone — the shell removes an
+ * escape before the program reads the word, so `-\c key=value` IS a selector by the time git
+ * sees it (#1738). A selector at the END of the segment (no value at all) is unresolved, and
+ * so is a SPACED one whose next word is another option (`git -C -c core.pager=cat log`):
+ * that word is no value, so nothing is consumed and the loop still reads it as the selector
+ * it is.
  */
-export function resolveRepoSelectors(words: string[]): boolean {
+export function hasUnresolvedRepoSelector(words: string[]): boolean {
   let unresolved = false;
   for (let i = 0; i < words.length; i++) {
     const a = unquote(words[i] ?? "");
-    if (NEVER_CLEARED_SELECTOR.test(a)) {
+    const views = a.includes("\\") ? [a, eraseBackslashes(a)] : [a];
+    if (views.some((v) => NEVER_CLEARED_SELECTOR.test(v))) {
       unresolved = true;
       continue;
     }
-    const value = VALUE_SELECTOR.exec(a);
-    if (value !== null) {
-      let target = value[1] ?? "";
-      if (target.startsWith("=")) target = target.slice(1);
-      // A selector that spelled NO value takes its target from the NEXT word, and that
-      // word is then consumed. An attached one consumed nothing, so the next word stays
-      // where the loop will reach it.
-      const spaced = target === "";
-      if (spaced) target = unquote(words[i + 1] ?? "");
-      if (CONFIG_VALUE.test(target) || targetReachesStore(target)) unresolved = true;
-      else if (spaced) i++;
+    let attached: string | null = null;
+    for (const v of views) {
+      const value = VALUE_SELECTOR.exec(v);
+      if (value !== null) {
+        attached = value[1] ?? "";
+        break;
+      }
     }
+    if (attached === null) continue;
+    let target = attached.startsWith("=") ? attached.slice(1) : attached;
+    // A selector that spelled NO value takes its target from the NEXT word, and that word
+    // is then consumed. An attached one consumed nothing, so the next word stays where the
+    // loop will reach it.
+    const spaced = target === "";
+    if (spaced) {
+      const next = unquote(words[i + 1] ?? "");
+      if (next.startsWith("-")) {
+        unresolved = true;
+        continue;
+      }
+      target = next;
+    }
+    if (CONFIG_VALUE.test(target) || targetReachesStore(target)) unresolved = true;
+    else if (spaced) i++;
   }
   return unresolved;
-}
-
-/** Does the segment carry a repo-location / config selector that cannot be cleared? */
-export function hasUnresolvedRepoSelector(words: string[]): boolean {
-  return resolveRepoSelectors(words);
 }
 /** Flags that hand the tool a PROGRAM to run on each input. `rg --pre=CMD` pipes every
  * matched file through CMD, GNU `find -exec` runs a command per hit, and a
@@ -235,16 +274,19 @@ export const READ_TOOLS = new Set([
   "true",
 ]);
 
-/** Does any word carry one of `flags`, whole, `=`-attached, or ATTACHED to the flag? */
+/** Does any word carry one of `flags`, whole, `=`-attached, or ATTACHED to the flag? Each
+ * word is asked as written and with its backslashes gone — `git -\o out.txt` is `-o` by the
+ * time the program reads the word (#1738). */
 export function hasFlag(words: string[], ...flags: string[]): boolean {
   return words.some((w) => {
     const a = unquote(w);
-    return (
-      flags.includes(a) ||
-      flags.some((f) => a.startsWith(`${f}=`)) ||
-      // `-odata`, `-creview-findings.json`: the value glued to the flag letter. An
-      // option of this shape has no arm anyway, so it must never read as a pure read.
-      flags.some((f) => a.startsWith(f) && a !== f)
+    return [a, eraseBackslashes(a)].some(
+      (x) =>
+        flags.includes(x) ||
+        flags.some((f) => x.startsWith(`${f}=`)) ||
+        // `-odata`, `-creview-findings.json`: the value glued to the flag letter. An
+        // option of this shape has no arm anyway, so it must never read as a pure read.
+        flags.some((f) => x.startsWith(f) && x !== f),
     );
   });
 }

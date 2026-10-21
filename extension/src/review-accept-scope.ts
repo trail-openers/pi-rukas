@@ -83,8 +83,13 @@ const ATTACHED_WRITE = /(?:^|\s)(?:--output=\S|-o\S|--ext-diff=\S|-c\S)/;
  *      them: a runtime (the body is text the guard cannot read and the interpreter will
  *      run), or a git verb that puts bytes on disk from an operand it was handed
  *      (`apply`, `am`, `update-index`, `mv`, `rm`, `checkout-index`, `hash-object -w`).
- *      A `git commit -F- <<EOF` is neither — its heredoc is a message, read as text and
- *      written nowhere, which is why it stays allowed (#1643);
+ *      The verb is a POSITION — the bare word after the segment's leading `git`, in the
+ *      segment that carries the unreadable operand — so prose that merely MENTIONS `git rm`
+ *      is not a write route, and one `hash-object` decoy cannot answer for a write verb
+ *      beside it (#1738). Asked of the RAW words, so a quoted `"apply"` — which the shell
+ *      hands git as its verb — is not hidden by the quote fold. A `git commit -F- <<EOF`
+ *      is neither — its heredoc is a message, read as text and written nowhere, which is
+ *      why it stays allowed (#1643);
  *  (5) an UNREADABLE WORD carried by a command that can READ THE STORE — a runtime,
  *      git / a forge CLI, or one of the read tools the arms enumerate. A word with `$`
  *      or a backtick has no determinable final text, so on one of those programs the arms
@@ -119,7 +124,7 @@ export function inScope(raw: string, norm: string, words: string[]): boolean {
       (segment) => namesGit(segment) && hasUnresolvedRepoSelector(shellWords(segment)),
     ) ||
     ((norm.includes("<<") || hasStdinDash(words)) &&
-      (namesInterpreter(norm) || namesGitWriteVerb(norm))) ||
+      (namesInterpreter(norm) || namesGitWriteVerb(raw))) ||
     ((namesVcsOrRuntime(norm) || namesReadTool(norm)) && EXPANSION_WORD.test(raw)) ||
     (namesVcsOrRuntime(norm) &&
       (ATTACHED_WRITE.test(`${shellVisible(raw)} `) || hasFlag(words, ...OUTPUT_FLAGS)))
