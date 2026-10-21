@@ -38,6 +38,8 @@
     "smoke-tests/test-plan-spec-glob-coverage.ts",
     "smoke-tests/test-plan-spec-markup-slots.ts",
     "smoke-tests/test-plan-fence-dir-glob.ts",
-    "smoke-tests/test-spec-slot-fence-admission.ts"
+    "smoke-tests/test-spec-slot-fence-admission.ts",
+    "smoke-tests/review-accept-guard-misfire-cases.ts",
+    "smoke-tests/test-review-accept-guard-misfire-1665.ts"
   ]
 }

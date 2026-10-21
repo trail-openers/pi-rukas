@@ -31,8 +31,9 @@
  *   (c) EVOLUTION. A newly discovered bypass spelling is closed by REMOVING AN
  *       ALLOWANCE or ADDING A REFUSAL — never by adding a command scanner. This file
  *       has exactly one parser (`normalise`), one matcher (`namesStore`) and one
- *       dispatch (`scanCommand`); the parsing helpers themselves live in
- *       review-accept-command.ts and this module composes them with the arms.
+ *       dispatch (`scanCommand`); the parsing helpers live in review-accept-command.ts,
+ *       the arms and the "which program runs this command" predicates live in
+ *       review-accept-arms.ts, and this module composes them.
  *
  * ── THE DECISION, in order ──────────────────────────────────────────────────────
  *
@@ -59,7 +60,10 @@
  *      substitute, so a protected name can be ASSEMBLED rather than spelled) or a
  *      redirection (`<` / `>` — bytes move to or from a path no arm ever saw).
  *        A1  git (--no-pager)? status|log|diff|show|blame — no -o, -c, --ext-diff,
- *            --output…, no `alias`, and no operand naming the store by position
+ *            no repo-location / config selector the target test cannot CLEAR (`-c
+ *            key=value`, `--git-dir`, `--work-tree`, `--exec-path`, or a `-C` at the
+ *            store's directory — but NOT `git -C <worktree>`, which is sanctioned,
+ *            #1643), no `alias`, and no operand naming the store by position
  *        A2  gh pr view|diff|list|checks | gh repo view | gh issue view|list
  *        A3  glab mr view|diff. `gh api` is NOT an arm: it carries an arbitrary method
  *            and body, so no flag ban can make it a read.
@@ -81,8 +85,8 @@
 import { posix } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-  READ_TOOLS,
-  RUNTIME,
+  OUTPUT_FLAGS,
+  VCS,
   WRITE_FLAGS,
   armBuild,
   armCommit,
@@ -92,6 +96,12 @@ import {
   armTest,
   armVerifyLoop,
   hasFlag,
+  hasStdinDash,
+  hasUnresolvedRepoSelector,
+  namesGit,
+  namesInterpreter,
+  namesReadTool,
+  namesVcsOrRuntime,
 } from "./review-accept-arms.ts";
 import {
   armsOf,
@@ -109,33 +119,6 @@ import {
   unquote,
 } from "./review-accept-command.ts";
 import { trace, traceWarn } from "./trace.ts";
-/** The forge CLIs, whose read arms are exact. */
-const VCS = /^(?:git|gh|glab)$/;
-/** Does the command run GIT? A repo-location selector only matters for git — the same
- * `-c` on `python3` is its inline-code flag and moves no repository. */
-const namesGit = (text: string): boolean =>
-  shellWords(text).some((w) => baseName(unquote(w)) === "git");
-/** Does the command run git, a forge CLI, or a JS runtime? The write-flag scope test
- * asks this: `-o` / `--output` / `-c` are flags those programs honour as routes to
- * writing a file, while a test runner's `--reporter junit` is nobody's write route. */
-const namesVcsOrRuntime = (text: string): boolean =>
-  shellWords(text).some((w) => {
-    const t = baseName(unquote(w));
-    return RUNTIME.test(t) || VCS.test(t);
-  });
-/** Does the command run one of the READ TOOLS the arms admit (`cat`, `grep`, `rg`,
- * `head`, `wc`, …)? Together with `namesVcsOrRuntime` this is the set of programs through
- * which a store name can reach the guarded bytes at all: the scope test asks the
- * unreadable-word question of them, and of nobody else — `awk 'BEGIN{system("id")}'` runs
- * no store-capable program the guard recognises, and clause (a) leaves it alone. */
-const namesReadTool = (text: string): boolean =>
-  shellWords(text).some((w) => READ_TOOLS.has(baseName(unquote(w))));
-/** Does some word of the ORIGINAL command (quotes intact) read as `-`? A runtime with a
- * bare `-` takes its PROGRAM from stdin, and a program the guard cannot read is the
- * store's worst unreadable half — which is why `cat payload.js | bun -` is in scope
- however ordinary each half looks on its own. Asked of the raw words so a quoted "-"
- still counts: the shell hands that word to the runtime as `-` all the same. */
-const hasStdinDash = (rawWords: string[]): boolean => rawWords.some((w) => unquote(w) === "-");
 /** The one source of truth for the CLI the refusal tells the operator to use. */
 const ACCEPT_CLI = "extension/scripts/review-accept.ts";
 /** Shell expansion characters. A word carrying one is text whose final form the guard
@@ -145,20 +128,23 @@ const ACCEPT_CLI = "extension/scripts/review-accept.ts";
  * `rev{iew-findings}.json` becomes a protected name the text never spells. Asked of the
  * RAW word, quotes included. */
 const EXPANSION = /[$`\\{}]/;
-/** A word carrying a substitution or an escape — `$`, a backtick or a backslash. Braces
- * are DELIBERATELY absent: they are ordinary punctuation in prose and in `awk '{print
- * 1}'`, and a store name assembled from braces is caught by the brace-erased view of
- * `namesStore`. Asked of the RAW text, so the `$` inside a quoted message still counts. */
-const EXPANSION_WORD = /[$`\\]/;
-/** A git repo-location selector (`-C`, `-c`, `--git-dir`, `--work-tree`, `--exec-path`,
- * attached or spaced, either case). The arms refuse one outright — it moves the
- * repository a "plain read" runs against — so a command carrying one is IN SCOPE
- * whatever else it spells: the arms must get the chance to refuse it. `--exec-path` is
- * the dangerous one (it can shadow `git-shell` with a program of the caller's choosing).
- * `git -c core.pager=cat log --oneline` falls in here too, which is the over-refusal
- * clause (b) already documents for `-c`. */
-const REPO_LOCATION =
-  /(?:^|\s)-{1,2}(?:c|C)(?:=|\s)|-{1,2}(?:git-dir|work-tree|exec-path)(?:=|\s)/i;
+/** A word carrying a substitution — `$` or a backtick. Braces are DELIBERATELY absent:
+ * they are ordinary punctuation in prose and in `awk '{print 1}'`, and a store name
+ * assembled from braces is caught by the brace-erased view of `namesStore`. A BACKSLASH
+ * is absent for the same reason and by the same argument: `echo -e "a\nb"`, `printf
+ * 'x\n'`, a `grep` BRE carrying `\|` and a `gh --jq` filter carrying `"\n"` are ordinary
+ * agent text (#1665), and an ESCAPED spelling of the store's name is caught by the
+ * backslash-erased view of `namesStore` instead — which is what an unreadable word could
+ * otherwise hide. Asked of the RAW text, so the `$` inside a quoted message still counts. */
+const EXPANSION_WORD = /[$`]/;
+/** A git repo-location selector is NOT a scope trigger on sight (#1643): the case-folded
+ * `-C` of `git -C <worktree> log` — the form AGENTS.md mandates for worktrees — is
+ * indistinguishable from the config `-c`, and refusing every command carrying one bricked
+ * the sanctioned worktree surface. What brings such a command into scope is a selector the
+ * guard cannot CLEAR: one aimed at the git common dir (where the findings store lives),
+ * one naming a protected file, a `key=value` config whose value the program runs, or one
+ * whose value it cannot read. The arms ask the SAME predicate, so a command the selector
+ * brought in is refused by the arms on that same selector. */
 /** Redirection characters: an arm word carrying one moves bytes to or from a path the
  * arms never saw. */
 const REDIRECT = /[<>]/;
@@ -220,13 +206,6 @@ function refusalReason(
  * the refusal reason, or undefined for "allowed": the DEFAULT is ALLOW, so a shape this
  * module simply does not think about passes — only the routes enumerated above block.
  */
-/** Is any word a runtime or a forge CLI, quotes stepped over? */
-const namesRunner = (text: string): boolean =>
-  shellWords(text).some((w) => {
-    const t = baseName(unquote(w));
-    return RUNTIME.test(t) || VCS.test(t);
-  });
-
 /** Is any NON-QUOTED word the store? A quoted word is prose, not an argument. */
 const opensProtected = (words: string[]): boolean =>
   words.some((w) => !/["']/.test(w) && isProtectedToken(unquote(w)));
@@ -271,13 +250,25 @@ function scanCommand(command: string): string | undefined {
   const kept = command.toLowerCase();
   const trimmed = squeeze(command);
   if (trimmed === "") return undefined;
-  // ONE view drives the whole decision: the command with its newlines folded. A shell
-  // treats a newline as a segment separator exactly as it treats `;`, and the previous
-  // shape compared a raw text against a folded one, so the newline check could not be
-  // trusted. Folding first makes the operator test below a plain substring scan.
-  const norm = normalise(trimmed);
-  if (norm === "PARSE_FAIL") return refusalReason({ dataOperand: true });
+  // normalise() is asked of the UNFOLDED command (#1665). A heredoc's delimiter is a
+  // LINE, and the previously-folded view had no lines left to search, so EVERY heredoc
+  // parsed as unreadable and every `cat > f <<EOF` was refused whatever it wrote. The
+  // fold is not lost: normalise's own last step is `squeeze`, so every other view here is
+  // the same folded text it always was.
+  const norm = normalise(command);
   const raw = kept;
+  // An UNREADABLE command is the guard's business only when its text names the store
+  // (#1665). A stray quote or an unterminated heredoc in a command that nowhere mentions
+  // the findings store cannot reach the findings store, and the findings-store refusal is
+  // the ONLY message this guard has — a store sentence on a command nowhere near the
+  // store is what made five cycles unreadable to their own agents. The PARSE_FAIL is
+  // still fatal for anything that DOES name the store: an odd quote or a heredoc whose
+  // body never terminates is exactly how a name gets hidden behind text the guard cannot
+  // read, and every odd-quote case in the case tables names the store.
+  if (norm === "PARSE_FAIL")
+    return namesStore(command, kept, isAcceptScriptToken)
+      ? refusalReason({ dataOperand: true })
+      : undefined;
   // The words as the shell hands them out (`--output=<path>` is ONE word here, which is
   // precisely what an arm's `-o <name>` pair test cannot see).
   const words = shellWords(raw);
@@ -311,23 +302,25 @@ function scanCommand(command: string): string | undefined {
   //      no tokeniser ever hands `isProtectedToken` the bare name and no arm's operand
   //      test sees the pair — asked of the raw text and of its lowercase view, since git
   //      reads such a value exactly as written;
-  //  (3) a git repo-location selector (`-c`, `--git-dir`, `--work-tree`, `--exec-path`,
-  //      spaced or `=`-attached, either case, quotes stepped over): the arms refuse one
-  //      outright because it moves the repository a "plain read" runs against, so such a
-  //      command must reach the arms whatever else it spells. It is a GIT shape, so it
-  //      brings a command in only when git itself is the program — `python3 -c '…'` is
+  //  (3) a git repo-location / config selector the guard cannot CLEAR (#1643): `-C <path>`
+  //      aimed at the git common dir or at a protected file, `--git-dir` / `--work-tree` /
+  //      `--exec-path`, or a `-c key=value` whose value the program runs. `git -C <worktree>
+  //      log` — AGENTS.md's sanctioned form — clears and brings nothing in. It is a GIT
+  //      shape, so it asks only when git itself is the program — `python3 -c '…'` is
   //      Python's inline-code flag and nothing moves.
   //  (4) a heredoc marker beside a runtime word: the body is text the guard cannot read
   //      and the interpreter will execute it, so an unreadable body next to a runner is
   //      in scope whatever the body spells;
   //  (5) an UNREADABLE WORD carried by a command that can READ THE STORE — a runtime,
-  //      git / a forge CLI, or one of the read tools the arms enumerate. A word with
-  //      `$`, a backtick or a backslash has no determinable final text, so on one of
-  //      those programs the arms must get the chance to refuse it (`cat {payload.js} |
-  //      bun -`). On a program that is none of those — `awk`, `echo` — a store name can
-  //      never reach the guard's protected bytes, and clause (a) leaves the command
-  //      alone: braces alone are ordinary punctuation (`echo {a,b}`, `awk '{print 1}'`
-  //      pass), and a name assembled from them is caught by (1)'s erased view.
+  //      git / a forge CLI, or one of the read tools the arms enumerate. A word with `$`
+  //      or a backtick has no determinable final text, so on one of those programs the arms
+  //      must get the chance to refuse it (`cat {payload.js} | bun -`). A BACKSLASH is not
+  //      such a word (#1665): the shell removes it, and the backslash-erased view of
+  //      `namesStore` catches an escaped spelling of the store's name. On a program that is
+  //      none of those — `awk`, `echo` — a store name can never reach the guard's protected
+  //      bytes, and clause (a) leaves the command alone: braces alone are ordinary
+  //      punctuation (`echo {a,b}`, `awk '{print 1}'` pass), and a name assembled from them
+  //      is caught by (1)'s erased view.
   //  (6) a WRITE-CAPABLE ARGUMENT on a VCS/forge command: `-o<name>` / `--output=<name>`
   //      / `--ext-diff=<name>` ATTACHED to the flag, and any SPACED flag the arms' own
   //      `hasFlag` recognises. Clause (b) refuses these whatever the target, because the
@@ -345,11 +338,11 @@ function scanCommand(command: string): string | undefined {
     namesStore(raw, norm, isAcceptScriptToken) ||
     namesAttachedValue(norm) ||
     namesAttachedValue(raw) ||
-    (namesGit(raw) && REPO_LOCATION.test(shellVisible(raw))) ||
-    ((norm.includes("<<") || hasStdinDash(words)) && namesRunner(norm)) ||
-    ((namesRunner(norm) || namesReadTool(norm)) && EXPANSION_WORD.test(raw)) ||
+    (namesGit(raw) && hasUnresolvedRepoSelector(words)) ||
+    ((norm.includes("<<") || hasStdinDash(words)) && namesInterpreter(norm)) ||
+    ((namesVcsOrRuntime(norm) || namesReadTool(norm)) && EXPANSION_WORD.test(raw)) ||
     (namesVcsOrRuntime(norm) &&
-      (ATTACHED_WRITE.test(`${shellVisible(raw)} `) || hasFlag(words, ...WRITE_FLAGS)));
+      (ATTACHED_WRITE.test(`${shellVisible(raw)} `) || hasFlag(words, ...OUTPUT_FLAGS)));
   // A PARSE_FAIL is refused above: an unreadable command is refused whatever it spells.
   if (!inScope) return undefined;
 

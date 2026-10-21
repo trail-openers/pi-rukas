@@ -109,6 +109,17 @@ export function eraseShellPunctuation(text: string): string {
   return text.replace(/["'`{},]/g, "");
 }
 
+/** Every backslash, gone: the text the program receives once the shell has removed its
+ * escapes. `cat re\view-findings.json` is one ordinary-looking word that becomes the
+ * exact store name on the way to `cat`, so the matcher is asked of THIS view too (#1665).
+ * It is what lets a backslash out of the "unreadable word" scope rule — where it was
+ * refusing `echo -e "a\nb"`, `printf 'x\n'` and every `grep` BRE — without letting an
+ * escaped spelling of the store's name through that door. Removing backslashes is
+ * conservative in the REFUSING direction: it can only add a match, never lose one. */
+export function eraseBackslashes(text: string): string {
+  return text.replace(/\\/g, "");
+}
+
 /** The operator script's basename stem. Its own name is protected — running it from an
  * agent shell is the act the whole guard exists to refuse — while a name that merely
  * STARTS with it (`review-acceptance-notes`) and the guard module beside it
@@ -163,6 +174,9 @@ export function isAcceptScriptToken(token: string): boolean {
  *        prefix GLUES the name to the flag. Each is matched case-insensitively because
  *        the guard asks this of its lowercased view, and git reads such a value exactly
  *        as written.
+ *  (vii) the raw text with every BACKSLASH removed — the word the program receives once
+ *        the shell has unescaped it, which is how `cat re\view-findings.json` is the store
+ *        although no word spells it (#1665).
  *
  * Clause (a) scopes the allowlist to commands that name the store, so this predicate —
  * not the arms — decides whether the adjudication applies at all. A command that does
@@ -175,9 +189,13 @@ export function namesStore(
   extra?: (token: string) => boolean,
 ): boolean {
   const asked = extra ? (t: string): boolean => isProtectedToken(t) || extra(t) : isProtectedToken;
-  return [command, normalised, eraseShellPunctuation(command)].some((text) =>
-    tokensOf(text).some(asked),
-  );
+  return [
+    command,
+    normalised,
+    eraseShellPunctuation(command),
+    eraseBackslashes(command),
+    eraseBackslashes(eraseShellPunctuation(command)),
+  ].some((text) => tokensOf(text).some(asked));
 }
 
 /** An option value ATTACHED to its flag, with the flag removed: `-G<name>`, `-S<name>`,
