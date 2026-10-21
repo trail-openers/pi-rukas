@@ -134,6 +134,10 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   list("ALLOWED_ROOTS", ":", null, "sandbox"),
   flag("AUTO_STEER", true),
   flag("AUTOSAVE", false, "interactive"),
+  // #1730 A — the PM's private-backlog reminder. `0` stops the per-turn probe
+  // from ever reaching the filesystem; the reminder itself is documented in
+  // docs/configuration.md.
+  flag("BACKLOG_REMINDER", true),
   ms("CAP_KILL_GRACE_MS", 300_000),
   // #1560 — the per-child run bound: wrap-up steer at the bound, kill this long after.
   ms("CHILD_BOUND_GRACE_MS", 600_000),
