@@ -38,6 +38,14 @@ export const PROTECTED_STEMS = [
 export const PROTECTED_BASENAME =
   /^review-(?:findings\.json(?:\.[a-z0-9-]+)?|findings-store(?:\.[a-z0-9-]+)?|accept(?:-row)?)(?:\.ts)?$/;
 
+/** Characters that make a word UNREADABLE, so its final form is unknown: `$` (an
+ * expansion or command substitution), a backtick, a backslash, and the brace / comma of
+ * a brace expansion. One regex for the whole guard: the segment-wide gate in
+ * `review-accept-guard.ts` and the `-C <path>` target test in `review-accept-arms.ts`
+ * ask the SAME question — what the guard cannot read it cannot clear — and two literals
+ * that must stay identical are one literal short of drifting. */
+export const UNREADABLE = /[$`\\{}]/;
+
 /** Tokenise into maximal runs of word / dot / hyphen / slash characters. */
 export function tokensOf(text: string): string[] {
   return Array.from(text.matchAll(/[A-Za-z0-9._/-]+/g), (m) => m[0] as string);
@@ -115,9 +123,16 @@ export function eraseShellPunctuation(text: string): string {
  * It is what lets a backslash out of the "unreadable word" scope rule — where it was
  * refusing `echo -e "a\nb"`, `printf 'x\n'` and every `grep` BRE — without letting an
  * escaped spelling of the store's name through that door. Removing backslashes is
- * conservative in the REFUSING direction: it can only add a match, never lose one. */
+ * conservative in the REFUSING direction: it can only add a match, never lose one.
+ *
+ * A LINE CONTINUATION is erased FIRST, and deleted rather than left in: `foo \<newline>bar`
+ * is one word `foobar` to the shell, so the pair vanishes and the two halves join. Erasing
+ * the backslashes alone kept the newline, which is a token separator in `tokensOf`, so
+ * `.git/review\` + newline + `-findings.json` came back as two words that name nothing and
+ * the store hid behind a line break (lens review of #1738). CRLF is the same continuation
+ * with a carriage return in it, so it joins too. */
 export function eraseBackslashes(text: string): string {
-  return text.replace(/\\/g, "");
+  return text.replace(/\\\r?\n/g, "").replace(/\\/g, "");
 }
 
 /** The operator script's basename stem. Its own name is protected — running it from an
@@ -156,9 +171,9 @@ export function isAcceptScriptToken(token: string): boolean {
 
 /**
  * The gate of clause (a): does this command name the findings store — the data file,
- * the store module, their stems, a `.tmp` / `.corrupt` sibling? Asked of FOUR views,
- * because each spelling below reaches the store's bytes by a different route, and the
- * matcher (`isProtectedToken`) supplies its own quote-erasure and case folding:
+ * the store module, their stems, a `.tmp` / `.corrupt` sibling? Asked of every view
+ * listed below, because each spelling reaches the store's bytes by a different route,
+ * and the matcher (`isProtectedToken`) supplies its own quote-erasure and case folding:
  *
  *  (i)   the RAW text — a name is a name wherever it appears;
  *  (ii)  the NORMALISED text — quoted spans already folded away, so this is what a
@@ -176,7 +191,9 @@ export function isAcceptScriptToken(token: string): boolean {
  *        as written.
  *  (vii) the raw text with every BACKSLASH removed — the word the program receives once
  *        the shell has unescaped it, which is how `cat re\view-findings.json` is the store
- *        although no word spells it (#1665).
+ *        although no word spells it (#1665) — and with every LINE CONTINUATION joined
+ *        first, which is how a name split across two lines by `\` + newline is the store
+ *        although no line spells it either (#1738).
  *
  * Clause (a) scopes the allowlist to commands that name the store, so this predicate —
  * not the arms — decides whether the adjudication applies at all. A command that does
@@ -241,8 +258,10 @@ export function squeeze(text: string): string {
 
 /**
  * Skip one heredoc starting at `start` and return the index just past it, or
- * PARSE_FAIL when the delimiter never returns — an unreadable body is refused, never
- * guessed at (clause (a)). Handles `<<TAG`, `<<-TAG`, `<<~TAG` and a quoted tag.
+ * PARSE_FAIL when the delimiter never returns — the body is REPORTED unreadable rather
+ * than guessed at, and what an unreadable command MEANS is the guard's scope predicate's
+ * call, not this parser's (clause (a)). Handles `<<TAG`, `<<-TAG`, `<<~TAG` and a
+ * quoted tag.
  */
 export function skipHeredoc(command: string, start: number): number | "PARSE_FAIL" {
   let i = start + 2;
