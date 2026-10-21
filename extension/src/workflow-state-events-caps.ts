@@ -206,6 +206,11 @@ export type WorkCapLiteral =
   // #280 §B — round-1 repeat-finding seam detection. Same finding
   // shape across ≥3 files → step-back (SDD spec-gap analysis).
   | "repeat-finding-seam"
+  // #1743 — the pre-loop guard (work-driver-state-guards.ts) refused a start
+  // because two earlier cycles already parked this issue for the same reason,
+  // against the same issue text. Nothing was dispatched and no state file was
+  // written: the cap exists so the refusal has a name on every surface.
+  | "repeat-park"
   | `verify-failed:${WorkStep}`
   // #1324 — the step's verify run was killed at its bound and reached no
   // verdict: distinct from verify-failed:<step>, which judged the code.

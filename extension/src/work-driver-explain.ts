@@ -23,6 +23,7 @@ import { explainLens } from "./work-driver-explain-lens.ts";
 import { adversarialFailureCause, explainOther } from "./work-driver-explain-other.ts";
 import { explainPlan } from "./work-driver-explain-plan.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
+import { explainRepeatPark } from "./work-driver-explain-repeat.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
 import {
   explainNoVerdictCap,
@@ -125,10 +126,19 @@ export function explainCap(
       return "explore concluded this issue is already done (e.g., satisfied by a prior PR or merged earlier). The driver halted before branch/develop ran — no code was written. Close the issue if you agree, or re-run /work with additional context if you believe there IS work to do";
     case "develop-incomplete-deliverables":
       return explainConvergeIncomplete(state);
+    case "existing-pr-detected":
     case "intent-park":
     // #1439 — the forge refused the push: routed to the same per-step module.
     case "push-refused:commit-pr":
       return explainPrSteps(cap, state);
+    case "repeat-park":
+      // #1743 — a start the pre-loop guard refused. The guard runs before any
+      // step and the driver persists no state for a refused start, so there is
+      // no cap-hit to read here: passing `state` would only ever produce the
+      // generic sentence, which is exactly what this renderer says. The
+      // detailed sentence (count, cap, arming issue) is built from the guard's
+      // structured verdict at the two places that hold it.
+      return explainRepeatPark();
     case "lens-diff-unreadable":
       return explainLens(cap, state);
     case "adversarial-infra-failure":
@@ -199,14 +209,6 @@ export function explainCap(
       return explainCrossGroupConflict(state);
     case "claims-lock-unavailable":
       return explainClaimsLock(cap, state);
-    case "existing-pr-detected": {
-      const pr = state.pipelineState.existingPr;
-      const via =
-        pr?.matchedBy === "branch"
-          ? `its head branch \`${pr.headRefName}\` names the issue`
-          : "its body carries a closing keyword for the issue";
-      return `PR #${pr?.number ?? "(unknown)"} is already open for this issue — ${via}. The driver halted at the branch step BEFORE any dispatch, so no tokens were spent and nothing was written. \`--restart\` wipes the driver's state file but not GitHub, which is how issue #5 got rebuilt from scratch and shipped as a duplicate (#358 left orphaned by #359). Decide whether to resume that PR's branch, close it, or retarget it — the driver will not attach new commits to a PR whose head is a different branch`;
-    }
     case "explore-needs-clarification": {
       // #830 — when the driver recorded WHY (the no-signal branch now carries
       // `evidence: "no verdict and no spec parsed"`), name it. The generic

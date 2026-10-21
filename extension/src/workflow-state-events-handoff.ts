@@ -37,12 +37,23 @@ export type HandoffEmittedEvent = {
    */
   delivery?: "dispatch" | "fallback" | "host";
   /**
-   * Set when a freshly re-resolved intent park matched the one a previous
-   * cycle already reported (same park reason, issue text and commit): no new
-   * comment was posted, and `commentUrl` is the earlier park's. `at` is when
-   * that earlier park was reported. See work-driver-park-memory.ts.
+   * Set when a freshly re-resolved park matched the one a previous cycle
+   * already reported (same cap, same reason, same issue text): no new comment
+   * was posted, and `commentUrl` is the earlier park's. `at` is when that
+   * earlier park was first reported. See work-driver-park-memory.ts.
+   *
+   * #1743 — `commentUrl` is OPTIONAL: a host-channel park posts no comment at
+   * all, so a repeat of one has an earlier report to point at and no URL. A
+   * renderer must print the no-URL form rather than the word `undefined`.
    */
-  repeatOf?: { at: number; commentUrl: string };
+  repeatOf?: { at: number; commentUrl?: string };
+  /**
+   * #1743 — this park repeats one already recorded: how many cycles have
+   * parked this (cap, reason, issue text), when the first did, and the handoff
+   * marker the last one published. Absent when this park is the first of its
+   * kind. The headless result carries it verbatim as `handoff.repeat`.
+   */
+  repeat?: { count: number; firstAt: number; marker: string };
   /** Path to the handoff markdown body (PR5; back-compat with PR4 events). */
   handoffBodyPath?: string;
   /**

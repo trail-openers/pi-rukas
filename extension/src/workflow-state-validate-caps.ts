@@ -174,6 +174,10 @@ export const CAP_HIT_FIXED_LITERALS = [
   "workstream-results-unreadable",
   // #280 §B — the same finding shape across ≥3 files routes to step-back.
   "repeat-finding-seam",
+  // #1743 — a third identical park was refused before any step ran. The
+  // refusal persists no state file, but the published vocabulary and the
+  // validator both have to know the literal.
+  "repeat-park",
   // #1349 — the adversarial fix pass parked on its own checks.
   "fix-pass-park",
   // #1101 — the group still held in the queue's wait list when a halt released
