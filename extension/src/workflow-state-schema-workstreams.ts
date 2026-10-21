@@ -14,6 +14,8 @@
  * paths unchanged.
  */
 
+import type { OutOfScopeClip } from "./plan-workstream-schema.ts";
+
 /**
  * #679 — the workstream value type. Extends the pre-#679 shape
  * `{ id, scope, paths, outOfScope }` with two optional fields:
@@ -33,6 +35,15 @@ export interface Workstream {
   scope: string;
   paths: string[];
   outOfScope: string[];
+  /**
+   * #1744 — what the driver had to bound in `outOfScope`: one record per entry
+   * it clipped or dropped. The entries themselves stay plain text (the develop
+   * gate and the fix fence match on them), so without this record a fence cut
+   * in half at 500 characters, or one of 20 entries past the count cap, is
+   * indistinguishable from a fence the planner never wrote. Absent when nothing
+   * was bounded — the pre-#1744 shape.
+   */
+  outOfScopeClipped?: OutOfScopeClip[];
   /** #679 — case 2(a). Workstream ids this one builds on (see above). */
   dependsOn?: string[];
   /** #679 — case 3. Consolidated-tree test path (see above). */

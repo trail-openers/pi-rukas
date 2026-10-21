@@ -10,8 +10,14 @@
  */
 
 import { hostBudget } from "./host-resources.ts";
-import { WORKSTREAM_ID_MAX, type WorkstreamArgs } from "./plan-workstream-schema.ts";
-import { trace } from "./trace.ts";
+import {
+  WORKSTREAM_FENCE_MAX,
+  WORKSTREAM_ID_MAX,
+  WORKSTREAM_LIST_MAX,
+  type WorkstreamArgs,
+  boundOutOfScope,
+} from "./plan-workstream-schema.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { foldTwo } from "./workstream-fold.ts";
 
@@ -19,17 +25,32 @@ import { foldTwo } from "./workstream-fold.ts";
  * A `report_workstream` call's arguments, already checked against the schema by
  * the reader (work-driver-plan-calls.ts). Optional lines add no keys when absent,
  * so a plan without them has the pre-#1322 shape.
+ *
+ * This is the ONE place a reported `outOfScope` becomes a stored one, so it is
+ * where the fence is BOUNDED (#1744): clipped at `WORKSTREAM_FENCE_MAX`, a path
+ * list written as one entry split into its parts, the list capped at
+ * `WORKSTREAM_LIST_MAX`. The schema accepts a long entry rather than refusing
+ * the call, and what was bounded is both recorded on the workstream and said on
+ * the trace — a fence that quietly disappeared is the failure this closes.
  */
 export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
   const dependsOn = args.dependsOn ?? [];
   const introduces = args.introduces ?? [];
   const consumes = args.consumes ?? [];
   const integrationTest = args.integrationTest ?? "";
+  const fence = boundOutOfScope(args.outOfScope);
+  if (fence.clipped.length > 0) {
+    const clipped = fence.clipped.filter((r) => r.keptLength > 0).length;
+    traceWarn(
+      `work-driver: plan workstream '${args.id}' outOfScope bounded — ${clipped} entr${clipped === 1 ? "y" : "ies"} clipped to ${WORKSTREAM_FENCE_MAX} chars, ${fence.clipped.length - clipped} dropped past the ${WORKSTREAM_LIST_MAX}-entry cap (kept: ${fence.entries.length}/${args.outOfScope.length})`,
+    );
+  }
   return {
     id: args.id.slice(0, WORKSTREAM_ID_MAX),
     scope: args.scope,
     paths: [...args.paths],
-    outOfScope: [...args.outOfScope],
+    outOfScope: fence.entries,
+    ...(fence.clipped.length > 0 ? { outOfScopeClipped: fence.clipped } : {}),
     ...(dependsOn.length > 0 ? { dependsOn } : {}),
     ...(integrationTest ? { integrationTest } : {}),
     ...(introduces.length > 0 ? { introduces } : {}),

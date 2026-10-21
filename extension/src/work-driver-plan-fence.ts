@@ -27,7 +27,11 @@
  * appended again, so a re-run of the plan tail adds nothing.
  */
 
-import { neutraliseFenceEntry, quotedOutOfScope } from "./plan-workstream-schema.ts";
+import {
+  type OutOfScopeClip,
+  neutraliseFenceEntry,
+  quotedOutOfScope,
+} from "./plan-workstream-schema.ts";
 import { splitDeliverablePaths } from "./work-driver-deliverable-paths.ts";
 import { protectedPathsEnabled } from "./work-driver-doctrine.ts";
 import { type SpecCoverageSpec, protectedDeferralsOf } from "./work-driver-plan-spec-coverage.ts";
@@ -119,12 +123,19 @@ export function protectedFenceNote(
  * The OUT OF SCOPE block a develop prompt (first or corrective) renders: the
  * fence line, then the protected note beside it when a fenced entry is deferred.
  * Empty when the workstream has no fence.
+ *
+ * `clipped` is the workstream's #1744 record: passing it makes an entry the
+ * driver had to cut say so, instead of reading as a fence the planner finished.
  */
-export function fenceLines(outOfScope: readonly string[], deferred: readonly string[]): string[] {
+export function fenceLines(
+  outOfScope: readonly string[],
+  deferred: readonly string[],
+  clipped?: readonly OutOfScopeClip[],
+): string[] {
   if (outOfScope.length === 0) return [];
   const note = protectedFenceNote(outOfScope, deferred);
   return [
-    `**OUT OF SCOPE — do NOT touch**: ${quotedOutOfScope(outOfScope)}`,
+    `**OUT OF SCOPE — do NOT touch**: ${quotedOutOfScope(outOfScope, clipped)}`,
     ...(note.length > 0 ? [note] : []),
   ];
 }

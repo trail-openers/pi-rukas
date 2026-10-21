@@ -198,6 +198,7 @@ async function runCorrectiveRound(
               command,
               lines: t.lines,
               outOfScope: ws?.outOfScope ?? [],
+              outOfScopeClipped: ws?.outOfScopeClipped,
               deferredProtected: deferred,
             }),
             cwd: t.cwd,
