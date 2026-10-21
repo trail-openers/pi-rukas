@@ -280,9 +280,14 @@ export async function toolArm(
     driverPath?: boolean;
     /** The loop's verdict. Defaults to APPROVED; the rejected arm passes a
      * rejection to show a refusal detail never overwrites the verdict's own.
-     * Typed as a partial of the two fields the arms vary, so the merge below
-     * stays a checked `DispatchResult` rather than an `as never` cast. */
-    result?: Partial<Pick<DispatchResult, "ok" | "loopOutcome">>;
+     * ALL THREE verdict-carrying fields are required together — `ok`,
+     * `loopOutcome` AND `text` — so an arm cannot merge a rejection's pass bit
+     * over APPROVED's approving report text (a row whose `passed` says false
+     * while its own `text` says APPROVED is a fixture asserting two opposite
+     * verdicts, and the reply-marker readers read the verdict out of `text`).
+     * The merge below stays a checked `DispatchResult`, not an `as never`
+     * cast. */
+    result?: Pick<DispatchResult, "ok" | "loopOutcome" | "text">;
     /** The git executor the writer uses. Defaults to the real one — every arm
      * runs real git; this exists for the arm that counts calls (#1360 lens 6). */
     execFn?: VerifyExecFn;
@@ -294,7 +299,9 @@ export async function toolArm(
 ): Promise<{ row: LedgerEntry; block: boolean; reason: string; ledgerPath: string }> {
   const pr = { comments: [] as string[] };
   await recordPassingLens(repo);
-  await writeAdversarialLedgerEntry(params.result ? { ...APPROVED, ...params.result } : APPROVED, {
+  // Spreading an absent override is a no-op, so one expression covers both
+  // the default (APPROVED) and the varied arm.
+  await writeAdversarialLedgerEntry({ ...APPROVED, ...params.result }, {
     workCwd: repo,
     branch: BRANCH,
     base: params.base,

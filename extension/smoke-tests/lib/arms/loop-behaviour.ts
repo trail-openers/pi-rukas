@@ -10,9 +10,11 @@
  */
 
 import { mock } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import type { LedgerEntry } from "../../../src/review-ledger.ts";
+import type { LedgerBinding } from "../../../src/adversarial-ledger-binding.ts";
+import type { BindingState } from "../../../src/adversarial-ledger-capture.ts";
 import { BINDING_REFUSAL_PREFIXES, ledgerFile, setupRepo } from "../adversarial-ledger-harness.ts";
 import { countedCapture } from "./capture-counter.ts";
 
@@ -99,8 +101,8 @@ mock.module(new URL("../../../src/async-jobs-registry.ts", import.meta.url).href
 // error at the call site. The ROW on disk stays the assertion target: a mocked
 // writer that recorded calls but wrote nothing is exactly the failure this test
 // exists to make visible.
-const realAppendLedgerEntry = (await import("../../../src/review-ledger.ts")).appendLedgerEntry;
 const ledgerSurface = await import("../../../src/review-ledger.ts");
+const { appendLedgerEntry: realAppendLedgerEntry, readLedgerFile } = ledgerSurface;
 const pendingWrites: Array<Promise<unknown>> = [];
 mock.module(new URL("../../../src/review-ledger.ts", import.meta.url).href, () => ({
   ...ledgerSurface,
@@ -136,19 +138,22 @@ process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = LEDGER_FILE;
 
 /** The rows on disk, after every in-flight write has settled.
  *
- * Typed as `LedgerEntry[]`, not `Array<Record<string, unknown>>`: this file's
- * row identity rests on `rowNonce`, and a stringly-keyed lookup makes a rename
- * of the writer's field invisible to tsc. */
+ * Read through the ledger's OWN reader (`readLedgerFile`, captured before the
+ * module mock so the arms read exactly what the guard reads): it runs
+ * `validEntries` on the same bytes, so a malformed row is dropped and traced
+ * there instead of being `as LedgerEntry`-asserted into existence here, and a
+ * rename of a writer's field cannot hide from tsc under an unchecked cast.
+ * `at` is a finite number by the time these rows arrive, so the chronological
+ * sort below cannot NaN its way into an arbitrary order. */
 async function readRows(): Promise<LedgerEntry[]> {
   await drainLedgerWrites();
   if (!existsSync(LEDGER_FILE)) return [];
-  const parsed = JSON.parse(readFileSync(LEDGER_FILE, "utf8")) as { entries?: unknown[] };
   // Chronological, explicitly: the file's own append order is what the arms
   // index into, so an arm that expected three rows and got two fails loudly
   // rather than reading some other round's row.
-  return (parsed.entries ?? [])
-    .filter((e) => (e as LedgerEntry).kind === "adversarial")
-    .sort((a, b) => ((a as LedgerEntry).at ?? 0) - ((b as LedgerEntry).at ?? 0)) as LedgerEntry[];
+  return readLedgerFile(LEDGER_FILE)
+    .entries.filter((e) => e.kind === "adversarial")
+    .sort((a, b) => a.at - b.at);
 }
 
 /** The rows carrying `nonce` — the `orchestratorJobId` an arm passed to
@@ -161,10 +166,32 @@ async function readRows(): Promise<LedgerEntry[]> {
  * judging another arm's. */
 async function waitForRowsWithNonce(nonce: string): Promise<LedgerEntry[]> {
   const deadline = Date.now() + 20_000;
+  let readFailure = "";
   for (;;) {
-    const rows = (await readRows()).filter((r) => r.rowNonce === nonce);
+    // A transient read failure (EMFILE/EAGAIN on the shared fixture, a torn
+    // read) must not abort the whole arms script: all arms share one
+    // try/finally, so a throw here would skip every remaining arm's
+    // assertions and the run would die with an uncaught crash instead of
+    // reaching its named failures and its `exit N` line. Record the reason,
+    // retry on the next tick, and surface it only at the deadline — then an
+    // empty result says what it might be rather than silently reading as
+    // absence.
+    let rows: LedgerEntry[] = [];
+    try {
+      rows = (await readRows()).filter((r) => r.rowNonce === nonce);
+      readFailure = "";
+    } catch (err) {
+      readFailure = err instanceof Error ? err.message : String(err);
+    }
     if (rows.length > 0) return rows;
-    if (Date.now() >= deadline) return rows;
+    if (Date.now() >= deadline) {
+      if (readFailure) {
+        console.error(
+          `ledger: the last read of ${LEDGER_FILE} failed (${readFailure}) — this empty result may be that read failure, not absence`,
+        );
+      }
+      return rows;
+    }
     await new Promise((r) => setTimeout(r, 20));
   }
 }
@@ -348,8 +375,12 @@ try {
   // identity base, the range refs, the merge-base, the HEAD and the patch id —
   // not just the first helper that happens to take one.
   const seen: string[] = [];
-  const state: { captured?: { binding?: unknown; headRef?: string } } = {};
-  const real = await captureRound(state, repo, "main", "HEAD", async (cmd, o) => {
+  // The real capture type, not a hand-declared `{ captured?: { binding?:
+  // unknown } }` erasure: the assertions below read the binding's fields, and
+  // this file is in the `tsconfig.smoke-tests.json` ratchet — the erasure was
+  // what kept the file from compiling under the project's own options.
+  const state: BindingState = {};
+  await captureRound(state, repo, "main", "HEAD", async (cmd, o) => {
     seen.push(`${cmd} ${(o?.argv ?? []).join(" ")}`.trim());
     return { stdout: `${"a".repeat(40)}\n` };
   });
@@ -357,11 +388,7 @@ try {
   // installed by the mock is what `captureRound` resolves to here. The counter
   // wrapper writes the state identically to production — but assert on what IT
   // produced rather than trusting the delegation.
-  const binding = (state.captured?.binding ?? real) as {
-    reviewedTreePatchId?: string;
-    headAtCapture?: string;
-    reviewedHeadRef?: string;
-  };
+  const binding: Partial<LedgerBinding> = state.captured?.binding ?? {};
   const gitReads = seen.filter((c) => c === "git" || c.startsWith("git "));
   assert(
     gitReads.length >= 4,

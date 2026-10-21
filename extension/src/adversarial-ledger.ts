@@ -74,6 +74,12 @@ export type AdversarialLedgerOutcome =
   | { recorded: true; landedAtPath?: string }
   | { recorded: false; reason: string };
 
+/** #1557 — the shape a caller-supplied `rowNonce` must have to be persisted
+ * (see the write below). `newJobId` mints `[a-z0-9]-[a-z0-9]`, well inside
+ * this conservative job-id bound; anything else is test-supplied text with no
+ * business in the guard's authority record. */
+const ROW_NONCE_SHAPE = /^[A-Za-z0-9_.:-]{1,64}$/;
+
 export function writeAdversarialLedgerEntry(
   result: DispatchResult,
   params: {
@@ -95,10 +101,9 @@ export function writeAdversarialLedgerEntry(
      * with its own exec policy) sees one seam for the whole binding, matching
      * `commentExecFn` on the comment check. Defaults to the real executor. */
     execFn?: VerifyExecFn;
-    /** #1557 — test-facing row identity: the loop's `orchestratorJobId`
-     * stamped onto the row so the smoke arms select their OWN row by nonce
-     * match (see `LedgerEntry.rowNonce`). Never a guard key; never read by
-     * the merge guard. Omitted (not stored) when the caller supplies none. */
+    /** #1557 — test-facing row identity (the loop's `orchestratorJobId`);
+     * see `LedgerEntry.rowNonce`. Bounded to a job-id shape at the write —
+     * anything else is omitted, never persisted. */
     rowNonce?: string;
   },
 ): Promise<AdversarialLedgerOutcome> {
@@ -217,9 +222,16 @@ export function writeAdversarialLedgerEntry(
       at: Date.now(),
       detail,
       ...(headSha ? { headSha } : {}),
-      // #1557 — the nonce rides on the row verbatim (absent when the caller
-      // supplied none, so hand-built and pre-#1557 shapes are untouched).
-      ...(params.rowNonce ? { rowNonce: params.rowNonce } : {}),
+      // #1557 — the nonce is caller-supplied text landing in the merge
+      // guard's authority record, so the write boundary bounds it to a
+      // conservative job-id shape (`newJobId` mints `[a-z0-9]-[a-z0-9]`);
+      // anything else — control characters, megabytes — is dropped rather
+      // than persisted, same convention as `writtenTo`'s sanitised
+      // rendering. Absent when the caller supplies none, so hand-built and
+      // pre-#1557 shapes are untouched.
+      ...(params.rowNonce && ROW_NONCE_SHAPE.test(params.rowNonce)
+        ? { rowNonce: params.rowNonce }
+        : {}),
       ...toolPathFields(bound ?? {}, toolPath),
     };
     // #1449 — the misdirection is answered in TWO places, and the row itself is

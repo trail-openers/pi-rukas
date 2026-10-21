@@ -199,9 +199,7 @@ export function makeLedgerWrite(opts: {
    * write (one seam, matching `commentExecFn`). */
   execFn?: VerifyExecFn;
   /** #1557 — the loop's `orchestratorJobId`, written to the row as
-   * `rowNonce` so the fire-and-forget writer's smoke arms can select their
-   * OWN row by identity instead of a timestamp floor. Test-facing
-   * provenance — the guard never reads it (see `LedgerEntry.rowNonce`). */
+   * `rowNonce` (test-facing provenance — see `LedgerEntry.rowNonce`). */
   rowNonce?: string;
   decorate: (raw: DispatchResult) => DispatchResult;
   note: (result: DispatchResult) => DispatchResult;
