@@ -23,14 +23,14 @@
  * Offline: no Pi session, no network (`PI_ENSEMBLE_FORGE=none`, the issue-body
  * fetch is stubbed).
  */
-import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runHeadless } from "../src/headless/run.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { parkRecordPath, repeatParkVerdict } from "../src/work-driver-park-memory.ts";
+import { parkRecordPath } from "../src/work-driver-park-memory.ts";
+import { humanActionFor } from "../src/work-queue-cap.ts";
 import {
   REPEAT_PARK_REFUSAL_PREFIX,
   isRepeatParkRefusal,
@@ -76,13 +76,21 @@ interface World {
   repo: string;
   body: string;
   bodyReadable: boolean;
+  /** What the ops stub answers. No URL in it → nothing was posted. */
+  opsReply: string;
   dispatches: number;
 }
 
 function world(label: string): World {
   const repo = mkdtempSync(path.join(tmpdir(), `repeat-guard-${label}-`));
   mkdirSync(path.join(repo, ".git", "info"), { recursive: true });
-  return { repo, body: `title:\tmock #${ISSUE}\n\nthe retry budget is shared`, bodyReadable: true, dispatches: 0 };
+  return {
+    repo,
+    body: `title:\tmock #${ISSUE}\n\nthe retry budget is shared`,
+    bodyReadable: true,
+    opsReply: `posted ${COMMENT} and labelled`,
+    dispatches: 0,
+  };
 }
 
 function seams(w: World) {
@@ -96,7 +104,7 @@ function seams(w: World) {
       return {
         role: spec.role,
         ok: true,
-        text: spec.role === "explore" ? PARK_REPLY : `posted ${COMMENT} and labelled`,
+        text: spec.role === "explore" ? PARK_REPLY : w.opsReply,
         toolUses: [],
         ms: 5,
         exitCode: 0,
@@ -285,70 +293,39 @@ for (const host of [false, true]) {
   }
 }
 
-// ── 4. The other two covered caps refuse from their own record.
-for (const [cap, reason] of [
-  ["plan-spec-mismatch", "no-calls"],
-  ["existing-pr-detected", "77"],
-] as const) {
-  const w = world(cap);
+// ── 3d. Two cycles whose forge post BOTH failed have told nobody anything. The
+// third start must run — the refusal threshold counts REPORTED parks, so
+// silencing the first report that ever lands is the worst thing the guard could
+// do. (`PI_ENSEMBLE_FORGE=none` + an ops reply with no URL is exactly that
+// world: nothing was posted and no label was verified.)
+{
+  const w = world("posts-failed");
   try {
-    const ctx = {
-      host: { sendUserMessage: () => undefined } as unknown as DriverHost,
+    w.opsReply = "I could not post the comment — gh returned a 502";
+    await parkNTimes(w, 2);
+    const rec = JSON.parse(readFileSync(parkRecordPath(w.repo, ISSUE, "intent-park"), "utf8"));
+    assert(rec.count === 2, "two cycles parked the same park");
+    assert(
+      rec.deliveredCount === 0,
+      `…and neither reported it (deliveredCount ${rec.deliveredCount}, not ${rec.count})`,
+    );
+    const run = await runHeadless({
       repoRoot: w.repo,
-      issue: ISSUE,
-      issueBodyFetcherFn: async () => ({ stdout: w.body }),
-    } as unknown as DriverContext;
-    const write = (fingerprint: string, count: number) => {
-      const file = parkRecordPath(w.repo, ISSUE, cap);
-      mkdirSync(path.dirname(file), { recursive: true });
-      writeFileSync(
-        file,
-        JSON.stringify({
-          cap,
-          reason,
-          fingerprint,
-          count,
-          firstAt: 1,
-          lastAt: 2,
-          lastMarker: `<!-- pi-rukas:handoff issue=${ISSUE} cap=${cap} -->`,
-          lastCycleId: 3,
-        }),
-        "utf8",
-      );
-      return file;
-    };
-    const stale = write("0".repeat(64), 2);
+      issues: [ISSUE],
+      restart: true,
+      driverSeams: seams(w) as never,
+      write: () => {},
+    });
     assert(
-      (await repeatParkVerdict(ctx)) === undefined,
-      `${cap}: a record from other issue text is not a refusal`,
-    );
-    const after = JSON.parse(readFileSync(stale, "utf8"));
-    assert(
-      after.count === 0 && after.reason === reason,
-      "…and its count is zeroed (it describes a park of a DIFFERENT issue body) while its reason is kept",
-    );
-    assert(
-      (await repeatParkVerdict(ctx)) === undefined,
-      "…and a zeroed count does not refuse the next start either",
-    );
-    const here = createHash("sha256").update(w.body).digest("hex");
-    write(here, 2);
-    const refusal = await repeatParkVerdict(ctx);
-    assert(
-      refusal?.cap === cap && refusal.reason === reason && refusal.count === 2,
-      `${cap}: two cycles parked THIS issue text, so the guard names the cap, the reason and the count`,
-    );
-    const refusedReason = await refuseRepeatPark(ctx);
-    assert(
-      typeof refusedReason === "string" && refusedReason.startsWith(REPEAT_PARK_REFUSAL_PREFIX),
-      `${cap}: refuseRepeatPark turns that into the reason the runner recognises`,
+      refusedResult(run).code !== 40,
+      "a third start RUNS: two failed posts are not two reports the operator has seen",
     );
   } finally {
     rmSync(w.repo, { recursive: true, force: true });
   }
 }
 
-// ── 5. The guard's own shape: a prefix the runner recognises, and no refusal
+// ── 6. The guard's own shape: a prefix the runner recognises, and no refusal
 // when nothing is recorded.
 {
   const w = world("nothing");
@@ -368,6 +345,30 @@ for (const [cap, reason] of [
   } finally {
     rmSync(w.repo, { recursive: true, force: true });
   }
+}
+
+// ── 7. What the QUEUE tells the operator about a refusal. A repeat-park of an
+// open PR is a PR problem, not an issue-body problem: a person who has already
+// closed the PR is told to rewrite the issue, which cannot end the park. The
+// repeat-park rule used to sit ABOVE the open-PR rule and shadow it — both
+// tokens are in the same reason string.
+{
+  const pr = humanActionFor(
+    `repeat-park: #${ISSUE} existing-pr-detected (77) already parked 2 times`,
+    ISSUE,
+  );
+  assert(
+    /resume, retarget or close the open PR/.test(pr) && /--continue-pr/.test(pr),
+    "an existing-pr-detected refusal gets the PR advice (and names --continue-pr), not 'revise the body'",
+  );
+  const intent = humanActionFor(
+    `repeat-park: #${ISSUE} intent-park (underspecified) already parked 2 times`,
+    ISSUE,
+  );
+  assert(
+    /revise the body/.test(intent) && !/open PR/.test(intent),
+    "an intent-park refusal still gets the issue-body advice — the two are not the same park",
+  );
 }
 
 process.exit(exit);

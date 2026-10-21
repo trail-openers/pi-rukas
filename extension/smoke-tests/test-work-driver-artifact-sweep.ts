@@ -64,6 +64,48 @@ async function runTests() {
     const eFile = join(ws, "queue-summary.json");
     writeFileSync(eFile, "{}");
 
+    // (f) #1743 — an OLD orphan dir holding a LIVE park record → untouched.
+    // The record is the evidence behind a refusal the operator was told about.
+    const fDir = join(ws, "500");
+    mkdirSync(fDir, { recursive: true });
+    writeFileSync(
+      join(fDir, "park-intent-park.json"),
+      JSON.stringify({
+        cap: "intent-park",
+        reason: "contradicted-by-code",
+        fingerprint: "f".repeat(64),
+        count: 2,
+        deliveredCount: 2,
+        firstAt: Date.now() - 3600_000,
+        lastAt: Date.now() - 1800_000,
+        lastMarker: "<!-- pi-rukas:handoff issue=500 cap=intent-park -->",
+        lastCycleId: 1,
+      }),
+    );
+    backdate(fDir, 30);
+
+    // (g) an OLD orphan dir whose park record is itself past the 14-day life →
+    // swept. The guard ignores an expired record, so exempting the directory
+    // would keep dead state alive in exchange for nothing.
+    const gDir = join(ws, "600");
+    mkdirSync(gDir, { recursive: true });
+    const ancient = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    writeFileSync(
+      join(gDir, "park-intent-park.json"),
+      JSON.stringify({
+        cap: "intent-park",
+        reason: "contradicted-by-code",
+        fingerprint: "e".repeat(64),
+        count: 2,
+        deliveredCount: 2,
+        firstAt: ancient,
+        lastAt: ancient,
+        lastMarker: "<!-- pi-rukas:handoff issue=600 cap=intent-park -->",
+        lastCycleId: 1,
+      }),
+    );
+    backdate(gDir, 30);
+
     const sweptNames: string[] = [];
     const execFn = async (cmd: string) => {
       sweptNames.push(cmd);
@@ -73,9 +115,15 @@ async function runTests() {
     const res = await runArtifactSweep({ repoRoot: root, execFn });
 
     assertTrue(res.ran, "sweep ran");
-    assertTrue(res.swept.length === 1 && res.swept[0] === "200", `only "200" swept, got [${res.swept}]`);
-    assertTrue(res.checked === 4, `checked 4 dirs (100, 200, 300, issue-553-notes), got ${res.checked}`);
-    assertTrue(sweptNames.length === 1, `one rm issued, got ${sweptNames.length}`);
+    assertTrue(
+      res.swept.length === 2 && res.swept.includes("200") && res.swept.includes("600"),
+      `only "200" and the expired-record "600" swept, got [${res.swept}]`,
+    );
+    assertTrue(
+      res.checked === 6,
+      `checked 6 dirs (100, 200, 300, 500, 600, issue-553-notes), got ${res.checked}`,
+    );
+    assertTrue(sweptNames.length === 2, `two rm's issued, got ${sweptNames.length}`);
     assertTrue(
       sweptNames[0]?.includes(JSON.stringify(bDir)) === true,
       `rm targeted the orphan path: ${sweptNames[0]}`,
@@ -90,12 +138,20 @@ async function runTests() {
     assertTrue(existsSync(cDir), "(c) fresh orphan dir survives");
     assertTrue(existsSync(dDir), "(d) non-numeric dir survives");
     assertTrue(existsSync(eFile), "(e) queue-summary.json file untouched");
+    assertTrue(
+      existsSync(fDir),
+      "(f) an old orphan dir holding a LIVE park record survives — it is the evidence behind a refusal the operator was given",
+    );
+    assertTrue(
+      res.skipped.some((s) => s.name === "500" && s.reason === "park-record-held"),
+      "…and the skip names the park record as the reason",
+    );
 
     const skippedNames = res.skipped.map((s) => s.name).sort();
     assert.deepStrictEqual(
       skippedNames,
-      ["100", "300", "issue-553-notes"],
-      "skipped = {100 live-state-file, 300 recent, issue-553-notes non-numeric}",
+      ["100", "300", "500", "issue-553-notes"],
+      "skipped = {100 live-state-file, 300 recent, 500 park-record-held, issue-553-notes non-numeric}",
     );
     assertTrue(true, "skip reasons recorded for every survivor");
 

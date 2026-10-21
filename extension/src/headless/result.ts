@@ -210,14 +210,26 @@ export function repeatParkRefusalResult(
   issue: number,
   stateFile: string,
   detail: string,
+  /** Set for a group sibling: it was never evaluated, so no `repeat-park` cap. */
+  opts: { notEvaluated?: boolean } = {},
 ): IssueResult {
   const failure: ResultFailure = { kind: "cap", message: detail };
   const result = notStartedResult(issue, stateFile, EXIT.refused, {
-    cap: "repeat-park",
+    ...(opts.notEvaluated ? {} : { cap: "repeat-park" as const }),
     failure,
   });
-  const cause = causeVerdictOf(initialState(issue), "repeat-park", failure);
-  if (cause) applyCause(result, cause);
+  if (!opts.notEvaluated) {
+    const cause = causeVerdictOf(initialState(issue), "repeat-park", failure);
+    if (cause) applyCause(result, cause);
+  } else {
+    // No `repeat-park` cause for a sibling: the cause table would tell the host
+    // THIS issue parked twice, which nothing ever checked. It is the group's
+    // problem, attributed to the issue that armed the guard — whose number the
+    // failure message already names.
+    result.causeClass = "issue";
+    result.causeReason = detail;
+    result.userAction = null;
+  }
   return result;
 }
 

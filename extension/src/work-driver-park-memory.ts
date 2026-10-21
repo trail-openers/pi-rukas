@@ -20,9 +20,20 @@
  * last one published.
  *
  * The headless result carries that repeat count (`handoff.repeat`). Once two
- * cycles have parked an identical park, the third is REFUSED before any step
- * is dispatched (`refuseRepeatPark` in work-driver-state-guards.ts) — a third
- * identical report says nothing the second did not.
+ * cycles haveparked an identical park AND actually reported it, the third is
+ * REFUSED before any step is dispatched (`refuseRepeatPark` in
+ * work-driver-state-guards.ts) — a third identical report says nothing the
+ * second did not.
+ *
+ * What the guard REFUSES on is deliberately narrower than what it REMEMBERS.
+ * Only the two parks whose verdict is deterministic — `intent-park` against an
+ * unchanged issue text, and `existing-pr-detected` while that same PR is still
+ * open — can be refused. `plan-spec-mismatch` is still counted (so the handoff
+ * can say "this is the Nth time the plan gate refused") but never refused: the
+ * planner is a model, and re-running it may well succeed. And a park nobody
+ * ever saw does not count: `deliveredCount`, not `count`, is what the refusal
+ * threshold is compared against, so two cycles whose forge post both failed do
+ * not arm a refusal for a park that was never reported.
  *
  * Deliberately NOT remembered: `--restart` still re-resolves (an intent verdict
  * is a model's judgement, not a computation), and a park for a DIFFERENT
@@ -34,48 +45,51 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { fetchIssueBodyViaGh } from "./work-driver-explore.ts";
 import { handoffMarker } from "./work-driver-handoff-channel.ts";
-import { type WorkEvent, type WorkState, workStateDir } from "./workflow-state.ts";
+import { findOpenPrForIssue } from "./work-driver-pr-preflight.ts";
+import {
+  type CoveredParkCap,
+  COVERED_PARK_CAPS,
+  type ParkRecord,
+  parkRecordExpired,
+  readParkRecord,
+  writeParkRecord,
+} from "./work-driver-park-record.ts";
+import { type WorkEvent, type WorkState } from "./workflow-state.ts";
 
-/** The parks this module remembers. Every other cap leaves records untouched. */
-export const COVERED_PARK_CAPS = [
-  "intent-park",
-  "plan-spec-mismatch",
-  "existing-pr-detected",
-] as const;
-export type CoveredParkCap = (typeof COVERED_PARK_CAPS)[number];
+// The record's SHAPE, PATH and LIFETIME live in `work-driver-park-record.ts` —
+// that module is the only code allowed to name, read, write, expire or delete
+// `park-<cap>.json`. They are re-exported here so the guard, the handoff, the
+// sweep and the tests all reach the park memory through one door.
+export {
+  type CoveredParkCap,
+  COVERED_PARK_CAPS,
+  clearParkRecords,
+  type ParkRecord,
+  parkRecordExpired,
+  parkRecordFileName,
+  parkRecordPath,
+  readParkRecord,
+} from "./work-driver-park-record.ts";
 
 /** How many identical parks are tolerated before the next start is refused. */
 export const REPEAT_PARK_REFUSAL_COUNT = 2;
 
+/**
+ * The parks the guard may REFUSE a start on. `plan-spec-mismatch` is
+ * deliberately absent: the plan gate's verdict is a model's judgement, so a
+ * re-run can genuinely come back different and the refusal would be the driver
+ * claiming a nondeterministic outcome was settled.
+ */
+export const REFUSABLE_PARK_CAPS = ["intent-park", "existing-pr-detected"] as const;
+
 /** `PI_ENSEMBLE_REPEAT_PARK=0` — the guard stops consulting records; the records themselves stay. */
 export function repeatParkEnabled(): boolean {
   return process.env.PI_ENSEMBLE_REPEAT_PARK !== "0";
-}
-
-/**
- * One (issue, cap) park record. `reason` is what the park fired for — the
- * intent park's `parkReason`, the plan verdict, or the PR number — so a park
- * for a different cause is a NEW record rather than an increment.
- */
-export interface ParkRecord {
-  cap: CoveredParkCap;
-  reason: string;
-  /** sha256 of the raw issue title + body this park was judged against. */
-  fingerprint: string;
-  /** Cycles that have parked this (issue, cap, reason, fingerprint). */
-  count: number;
-  firstAt: number;
-  lastAt: number;
-  /** The handoff marker the last park published, republished verbatim. */
-  lastMarker: string;
-  /** The cycle that wrote this record (`state.startedAt`) — the idempotency key. */
-  lastCycleId: number;
-  /** The forge comment URL, when one was ever posted for this park. */
-  commentUrl?: string;
 }
 
 /** The earlier park this cycle's handoff repeats: when it first fired, and its comment. */
@@ -100,66 +114,6 @@ export interface ParkMemory {
   repeatOf?: RepeatOf;
 }
 
-/** The record's path. Shared with the guard and the tests. */
-export function parkRecordPath(repoRoot: string, issue: number, cap: CoveredParkCap): string {
-  return path.join(workStateDir(repoRoot), String(issue), `park-${cap}.json`);
-}
-
-/** The legacy record name (`<N>/intent-park.txt`), unlinked on the next covered write. */
-function legacyParkPath(repoRoot: string, issue: number): string {
-  return path.join(workStateDir(repoRoot), String(issue), "intent-park.txt");
-}
-
-/** Read one record. A missing or malformed record is `undefined`, never a throw. */
-export async function readParkRecord(
-  repoRoot: string,
-  issue: number,
-  cap: CoveredParkCap,
-): Promise<ParkRecord | undefined> {
-  try {
-    const raw: unknown = JSON.parse(
-      await fs.readFile(parkRecordPath(repoRoot, issue, cap), "utf8"),
-    );
-    if (raw === null || typeof raw !== "object") return undefined;
-    const rec = raw as Record<string, unknown>;
-    if (
-      rec.cap === cap &&
-      typeof rec.reason === "string" &&
-      typeof rec.fingerprint === "string" &&
-      typeof rec.count === "number" &&
-      typeof rec.firstAt === "number" &&
-      typeof rec.lastAt === "number" &&
-      typeof rec.lastMarker === "string" &&
-      typeof rec.lastCycleId === "number"
-    ) {
-      return {
-        cap,
-        reason: rec.reason,
-        fingerprint: rec.fingerprint,
-        count: rec.count,
-        firstAt: rec.firstAt,
-        lastAt: rec.lastAt,
-        lastMarker: rec.lastMarker,
-        lastCycleId: rec.lastCycleId,
-        commentUrl:
-          typeof rec.commentUrl === "string" && rec.commentUrl ? rec.commentUrl : undefined,
-      };
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function writeParkRecord(repoRoot: string, issue: number, rec: ParkRecord): Promise<void> {
-  const file = parkRecordPath(repoRoot, issue, rec.cap);
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, JSON.stringify(rec, null, 2), "utf8");
-  // The `.txt` record this module wrote before #1743. Nothing reads it now;
-  // it is removed the first time the covered-cap write runs, not on sight.
-  await fs.rm(legacyParkPath(repoRoot, issue), { force: true });
-}
-
 /**
  * The one helper both record time and guard time use: the raw issue title +
  * body, hashed. `undefined` when the body cannot be read — half a fingerprint
@@ -169,7 +123,24 @@ async function writeParkRecord(repoRoot: string, issue: number, rec: ParkRecord)
 export async function parkFingerprint(
   ctx: DriverContext,
   issue: number,
+  /** The cycle's own cached issue body, when it has one (see below). */
+  localArtifact?: string,
 ): Promise<string | undefined> {
+  // The local artifact is what THIS cycle fetched (Step 1 writes it verbatim
+  // from the same fetch), so hashing it is the same hash for free and is
+  // immune to a mid-cycle edit landing between explore and handoff. Absent —
+  // or unreadable — the gh fetch is the fallback, never a silent "no record".
+  if (localArtifact) {
+    const file = path.resolve(ctx.repoRoot, localArtifact);
+    try {
+      const text = await fs.readFile(file, "utf8");
+      if (text.trim()) return createHash("sha256").update(text).digest("hex");
+    } catch (err) {
+      trace(
+        `work-driver: park fingerprint artifact ${file} unreadable, falling back to gh: ${(err as Error).message}`,
+      );
+    }
+  }
   const fetchBody = ctx.issueBodyFetcherFn ?? fetchIssueBodyViaGh;
   try {
     const { stdout } = await fetchBody(issue, ctx.repoRoot);
@@ -201,12 +172,25 @@ export function coveredParkOf(
   const hit = lastCapHit(state);
   if (!hit) return undefined;
   switch (hit.cap) {
-    case "intent-park":
-      return {
-        cap: "intent-park",
-        reason:
-          hit.parkReason ?? state.pipelineState.normalisedSpec?.parkReason ?? "underspecified",
-      };
+    case "intent-park": {
+      // A park reason the parser SUBSTITUTED is not a diagnosis. #404: a
+      // reason the driver made up is a guess wearing one, and recording it
+      // would make every unstated park look identical to every other unstated
+      // park — then refuse the third on a comparison the resolver never made.
+      // So: no stated reason, nothing recorded (the park is still reported in
+      // full). A reason the driver COMPUTED from a real condition
+      // (`blank-issue-body`, `unresolved-critical-open-point`) keeps its
+      // provenance-marked row and is still recordable.
+      const reason = hit.parkReason ?? state.pipelineState.normalisedSpec?.parkReason;
+      if (reason === undefined) return undefined;
+      if (
+        reason === "underspecified" &&
+        state.pipelineState.normalisedSpec?.parkReasonSource === "default"
+      ) {
+        return undefined;
+      }
+      return { cap: "intent-park", reason };
+    }
     case "plan-spec-mismatch":
       return { cap: "plan-spec-mismatch", reason: hit.planVerdict ?? "unspecified" };
     case "existing-pr-detected": {
@@ -237,7 +221,10 @@ export async function readParkMemory(
 ): Promise<ParkMemory> {
   const key = await parkKey(ctx, state);
   if (!key) return {};
-  const prior = await readParkRecord(ctx.repoRoot, ctx.issue, key.cap);
+  let prior = await readParkRecord(ctx.repoRoot, ctx.issue, key.cap);
+  // An expired record is not trusted as a repeat either: it is older than the
+  // clock under which the driver deletes it.
+  if (prior && parkRecordExpired(prior)) prior = undefined;
   if (!prior || prior.fingerprint !== key.fingerprint || prior.reason !== key.reason) {
     return { key };
   }
@@ -252,7 +239,7 @@ async function parkKey(ctx: DriverContext, state: WorkState): Promise<ParkMemory
   if (!repeatParkEnabled()) return undefined;
   const covered = coveredParkOf(state);
   if (!covered) return undefined;
-  const fingerprint = await parkFingerprint(ctx, ctx.issue);
+  const fingerprint = await parkFingerprint(ctx, ctx.issue, state.pipelineState.issueBodyArtifact);
   if (!fingerprint) return undefined;
   return {
     cap: covered.cap,
@@ -278,19 +265,31 @@ export async function recordPark(
   ctx: DriverContext,
   memory: ParkMemory,
   commentUrl: string | undefined,
+  /** Did this cycle actually REPORT the park? See `ParkRecord.deliveredCount`. */
+  delivered: boolean,
 ): Promise<ParkRecord | undefined> {
   const key = memory.key;
   if (!key) return undefined;
   try {
+    // Re-read immediately before writing. Two cycles of the same issue can be
+    // in flight (a fan-out, a re-run after a crash); reading `prior` at the
+    // handoff's start and writing it back at the end would silently discard a
+    // count the sibling wrote in between. `max(...) + 1` is the cheap
+    // lost-update guard — not a lock, and it does not need to be one.
+    const onDisk = await readParkRecord(ctx.repoRoot, ctx.issue, key.cap);
     const prior = memory.prior;
     if (prior && prior.fingerprint === key.fingerprint && prior.reason === key.reason) {
       // A repeat keeps its own first-report time and its comment; only the
-      // counter, the stamp, the marker and the cycle id move — unless this
+      // counters, the stamp, the marker and the cycle id move — unless this
       // same cycle already wrote it (a resume re-entering the handoff).
       if (prior.lastCycleId === key.cycleId) return prior;
+      const count = Math.max(onDisk?.count ?? 0, prior.count) + 1;
+      const deliveredCount =
+        Math.max(onDisk?.deliveredCount ?? 0, prior.deliveredCount) + (delivered ? 1 : 0);
       const updated: ParkRecord = {
         ...prior,
-        count: prior.count + 1,
+        count,
+        deliveredCount,
         lastAt: Date.now(),
         lastMarker: key.marker,
         lastCycleId: key.cycleId,
@@ -304,6 +303,7 @@ export async function recordPark(
       reason: key.reason,
       fingerprint: key.fingerprint,
       count: 1,
+      deliveredCount: delivered ? 1 : 0,
       firstAt: Date.now(),
       lastAt: Date.now(),
       lastMarker: key.marker,
@@ -320,63 +320,102 @@ export async function recordPark(
 
 /** What the pre-loop guard refuses on: which park, for what, and how often. */
 export interface RepeatParkVerdict {
+  /** The issue in the group whose record armed the refusal. */
+  issue: number;
   cap: CoveredParkCap;
   reason: string;
   count: number;
+  deliveredCount: number;
   firstAt: number;
 }
 
 /**
- * The pre-loop read `refuseRepeatPark` makes: the covered park this issue has
- * already parked twice against THIS issue text.
+ * The pre-loop read `refuseRepeatPark` makes: the covered park one of this
+ * cycle's issues has already parked — and REPORTED — twice against THIS issue
+ * text.
  *
- * Side effect, deliberately here rather than at record time: a record whose
- * fingerprint no longer matches describes a park of a DIFFERENT issue body, so
- * its count is zeroed (the reason is kept, it may still be the live one). A
- * park of the current body then starts its count again at 1.
+ * PURE: it reads and never writes. A record whose fingerprint no longer matches
+ * describes a park of a DIFFERENT issue body, so it simply does not count.
+ * Zeroing it here was a write on the read path — an unreadable body could
+ * leave a half-reset record, and a start that is about to be refused should not
+ * mutate the thing it is judging. The reset happens where it belongs: in
+ * `recordPark`, which replaces the record with a count of 1 the next time this
+ * issue actually parks.
  *
- * Fails open: an unreadable issue body returns `undefined` with a trace — the
- * run proceeds, and no count is zeroed on a comparison that never happened.
+ * Fails open in every direction: an unreadable issue body, an expired record,
+ * a cap whose verdict is a model's judgement (see REFUSABLE_PARK_CAPS), or an
+ * `existing-pr-detected` whose PR the forge no longer shows as open — each
+ * returns `undefined` with a trace and the run proceeds.
  */
 export async function repeatParkVerdict(
   ctx: DriverContext,
+  /** Every issue in the group, like the attention gate. Defaults to the primary. */
+  issues: number[] = [ctx.issue],
 ): Promise<RepeatParkVerdict | undefined> {
   if (!repeatParkEnabled()) return undefined;
-  // Cheap path first: with nothing recorded there is nothing to refuse, and a
-  // start on a fresh issue costs no `gh` call. Only a present record earns a
-  // fetch — the guard must not become a second issue-body fetch per cycle.
-  const recorded: ParkRecord[] = [];
-  for (const cap of COVERED_PARK_CAPS) {
-    const rec = await readParkRecord(ctx.repoRoot, ctx.issue, cap);
-    if (rec) recorded.push(rec);
-  }
-  if (recorded.length === 0) return undefined;
-  const fingerprint = await parkFingerprint(ctx, ctx.issue);
-  if (!fingerprint) {
-    trace(`work-driver: repeat-park guard did not run for #${ctx.issue} — issue body unreadable`);
-    return undefined;
-  }
-  let refusal: RepeatParkVerdict | undefined;
-  for (const rec of recorded) {
-    if (rec.fingerprint !== fingerprint) {
-      if (rec.count !== 0) await zeroParkCount(ctx.repoRoot, ctx.issue, rec);
+  const now = Date.now();
+  for (const issue of [...new Set([ctx.issue, ...issues])]) {
+    // Cheap path first: with nothing recorded there is nothing to refuse, and a
+    // start on a fresh issue costs no `gh` call. Only a present record earns a
+    // fetch — the guard must not become a second issue-body fetch per cycle.
+    const recorded: ParkRecord[] = [];
+    for (const cap of COVERED_PARK_CAPS) {
+      const rec = await readParkRecord(ctx.repoRoot, issue, cap);
+      if (rec && !parkRecordExpired(rec, now)) recorded.push(rec);
+    }
+    if (recorded.length === 0) continue;
+    const fingerprint = await parkFingerprint(ctx, issue);
+    if (!fingerprint) {
+      trace(`work-driver: repeat-park guard did not run for #${issue} — issue body unreadable`);
       continue;
     }
-    if (rec.count >= REPEAT_PARK_REFUSAL_COUNT && !refusal) {
-      refusal = { cap: rec.cap, reason: rec.reason, count: rec.count, firstAt: rec.firstAt };
+    for (const rec of recorded) {
+      if (rec.fingerprint !== fingerprint) continue;
+      if (!(REFUSABLE_PARK_CAPS as readonly string[]).includes(rec.cap)) continue;
+      if (rec.deliveredCount < REPEAT_PARK_REFUSAL_COUNT) continue;
+      if (
+        rec.cap === "existing-pr-detected" &&
+        !(await prStillOpen(ctx, issue, Number(rec.reason)))
+      ) {
+        continue;
+      }
+      return {
+        issue,
+        cap: rec.cap,
+        reason: rec.reason,
+        count: rec.count,
+        deliveredCount: rec.deliveredCount,
+        firstAt: rec.firstAt,
+      };
     }
   }
-  return refusal;
+  return undefined;
 }
 
-/** Zero a stale record's count, keeping its reason. Best-effort. */
-async function zeroParkCount(repoRoot: string, issue: number, rec: ParkRecord): Promise<void> {
-  try {
-    await writeParkRecord(repoRoot, issue, { ...rec, count: 0 });
-    trace(`work-driver: park record #${issue} ${rec.cap} count reset — the issue text changed`);
-  } catch (err) {
+/**
+ * The forge re-check an `existing-pr-detected` refusal has to pass. The record
+ * remembers a PR that was open when the branch step looked; a person may have
+ * closed it, merged it, or retargeted it since — and refusing on that would be
+ * the driver enforcing a GitHub state it has not read.
+ *
+ * Fails OPEN: any lookup failure returns false (run the cycle) with a trace.
+ * The whole point of the re-check is that the driver does not get to refuse on
+ * a state it could not confirm.
+ */
+async function prStillOpen(ctx: DriverContext, issue: number, prNumber: number): Promise<boolean> {
+  const execFn = ctx.verifyExecFn ?? execp;
+  const existing = await findOpenPrForIssue(execFn, ctx.repoRoot, issue);
+  if (existing === undefined) {
     trace(
-      `work-driver: could not reset park record #${issue} ${rec.cap}: ${(err as Error).message}`,
+      `work-driver: repeat-park guard did not confirm PR #${prNumber} for #${issue} (closed, or the lookup said nothing) — not refusing`,
     );
+    return false;
   }
+  if (existing.number !== prNumber) {
+    trace(
+      `work-driver: repeat-park guard found PR #${existing.number} open for #${issue}, not #${prNumber} — not refusing`,
+    );
+    return false;
+  }
+  return true;
 }

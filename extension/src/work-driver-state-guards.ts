@@ -114,8 +114,19 @@ export function isRepeatParkRefusal(reason: string): boolean {
 /**
  * #1743 — a park a human has already been told about twice is not news a third
  * time. Two cycles have parked this issue for this reason against this exact
- * issue text; a third start would re-run explore or plan, report the same
- * verdict again, and cost the operator another handoff to read.
+ * issue text AND reported it; a third start would re-run explore or plan,
+ * report the same verdict again, and cost the operator another handoff to read.
+ *
+ * Scope, deliberately narrow (each exclusion is a reproduced false stop):
+ *  - EVERY issue in the group is checked, like the attention gate — a grouped
+ *    cycle for #10+#11 must not start because only the primary was clean.
+ *  - Only `intent-park` and `existing-pr-detected` can refuse (see
+ *    REFUSABLE_PARK_CAPS). The plan gate's verdict is a model's judgement.
+ *  - `existing-pr-detected` is re-checked against the forge first: the record
+ *    remembers a GitHub state, and a PR a person has since closed is not a
+ *    reason to stop.
+ *  - `--continue-pr` never refuses: continuing that very PR is the documented
+ *    remedy for this park, so arming the guard against it would block the fix.
  *
  * `--restart` deliberately does NOT bypass this. Its whole contract is "re-run
  * this unchanged issue and see what happens", and a factory that passes it on
@@ -128,15 +139,29 @@ export function isRepeatParkRefusal(reason: string): boolean {
  * could not make. Returns the refusal reason, or `undefined` to continue.
  */
 export async function refuseRepeatPark(ctx: CycleContext): Promise<string | undefined> {
-  const verdict = await repeatParkVerdict(ctx);
+  // The documented way out of an open-PR park is to continue that PR. Refusing
+  // it would make the guard block the remedy it tells the operator to run.
+  if (ctx.continuePr) return undefined;
+  const verdict = await repeatParkVerdict(ctx, ctx.issues);
   if (!verdict) return undefined;
   const first = new Date(verdict.firstAt).toISOString();
-  const message = `pi-rukas /work refused to start on issue #${ctx.issue}: it has already parked ${verdict.count} times as \`${verdict.cap}\` (${verdict.reason}), first reported ${first}, against the same issue text.
+  const grouped = verdict.issue !== ctx.issue;
+  const message = `pi-rukas /work refused to start on issue #${ctx.issue}${grouped ? ` (group member #${verdict.issue})` : ""}: it has already been parked ${verdict.count} times and reported ${verdict.deliveredCount} times as \`${verdict.cap}\` (${verdict.reason}), first reported ${first}, against the same issue text.
 A third identical park reports nothing new, so no step was dispatched, no worktree was touched and no state file was written.
-Two ways forward: revise the body of #${ctx.issue} (any substantive edit clears the guard and the next park reports in full), or run once with PI_ENSEMBLE_REPEAT_PARK=0 to report it regardless.`;
+Two ways forward: revise the body of #${verdict.issue} (any substantive edit clears the guard and the next park reports in full), or run once with PI_ENSEMBLE_REPEAT_PARK=0 to report it regardless.`;
   trace(
-    `work-driver: repeat-park refusal for #${ctx.issue}: ${verdict.cap} (${verdict.reason}) x${verdict.count}`,
+    `work-driver: repeat-park refusal for #${verdict.issue} (cycle #${ctx.issue}): ${verdict.cap} (${verdict.reason}) x${verdict.count}, reported ${verdict.deliveredCount}`,
   );
   notifyAgent(ctx.host, message);
-  return `${REPEAT_PARK_REFUSAL_PREFIX}${verdict.cap} (${verdict.reason}) already parked ${verdict.count} times for this issue body`;
+  return `${REPEAT_PARK_REFUSAL_PREFIX}#${verdict.issue} ${verdict.cap} (${verdict.reason}) already parked ${verdict.count} times for this issue body`;
+}
+
+/**
+ * The issue the refusal fired on, read back out of the refusal reason. The
+ * group's OTHER members are reported as not evaluated (the group was refused,
+ * not them), so the runner needs to know which one actually armed the guard.
+ */
+export function repeatParkRefusalIssue(reason: string): number | undefined {
+  const m = reason.slice(REPEAT_PARK_REFUSAL_PREFIX.length).match(/^#(\d+)\s/);
+  return m ? Number(m[1]) : undefined;
 }
