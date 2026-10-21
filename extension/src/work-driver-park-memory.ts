@@ -59,7 +59,7 @@ import {
   readParkRecord,
   writeParkRecord,
 } from "./work-driver-park-record.ts";
-import { findOpenPrForIssue } from "./work-driver-pr-preflight.ts";
+import { type ExistingPr, findOpenPrForIssue } from "./work-driver-pr-preflight.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 // The record's SHAPE, PATH and LIFETIME live in `work-driver-park-record.ts` —
@@ -401,14 +401,16 @@ export async function repeatParkVerdict(
         // hand-edited file, an older writer) cannot be re-checked against the
         // forge, and refusing on a GitHub state the driver could not confirm is
         // exactly what the re-check exists to prevent — so it fails open.
-        const pr = Number(rec.reason);
-        if (!Number.isInteger(pr) || pr <= 0) {
+        // `^[1-9]\d*$` rather than `Number()`: the coercion accepts `" 77 "`,
+        // `"0x11"` (17) and `"1e2"` (100), each of which would have the guard
+        // re-check — and refuse on — a PR number nobody recorded.
+        if (!/^[1-9]\d*$/.test(rec.reason)) {
           trace(
             `work-driver: repeat-park guard could not read a PR number from the #${issue} existing-pr-detected record (reason ${JSON.stringify(rec.reason)}) — not refusing`,
           );
           continue;
         }
-        if (!(await prStillOpen(ctx, issue, pr))) continue;
+        if (!(await prStillOpen(ctx, issue, Number(rec.reason)))) continue;
       }
       return {
         issue,
@@ -434,6 +436,12 @@ export async function repeatParkVerdict(
  * a state it could not confirm. A timeout and an abort are failures too, so
  * they take the same path — and the cycle being interrupted is never a reason
  * to refuse a start, since nothing is about to run either way.
+ *
+ * The lookup catches its own exec and parse failures, but it is not the whole
+ * call: `matchPrForIssue` walks rows the forge emitted and a malformed row is
+ * reachable. Nothing in a pre-flight gate may throw, so the call itself is
+ * guarded too — an exception here is just another state the driver could not
+ * read.
  */
 async function prStillOpen(ctx: DriverContext, issue: number, prNumber: number): Promise<boolean> {
   if (ctx.signal?.aborted) {
@@ -442,11 +450,19 @@ async function prStillOpen(ctx: DriverContext, issue: number, prNumber: number):
     );
     return false;
   }
-  const existing = await findOpenPrForIssue(
-    boundedForgeExec(ctx.verifyExecFn ?? execp),
-    ctx.repoRoot,
-    issue,
-  );
+  let existing: ExistingPr | undefined;
+  try {
+    existing = await findOpenPrForIssue(
+      boundedForgeExec(ctx.verifyExecFn ?? execp),
+      ctx.repoRoot,
+      issue,
+    );
+  } catch (err) {
+    trace(
+      `work-driver: repeat-park guard could not ask the forge about PR #${prNumber} for #${issue}: ${(err as Error)?.message?.slice(0, 200) ?? "unknown error"} — not refusing`,
+    );
+    return false;
+  }
   if (existing === undefined) {
     trace(
       `work-driver: repeat-park guard did not confirm PR #${prNumber} for #${issue} (closed, or the lookup said nothing) — not refusing`,
