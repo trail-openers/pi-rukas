@@ -29,6 +29,9 @@
  * that is what this file exists to guarantee.
  */
 
+import { hasPathspecChar } from "./plan-path-shape.ts";
+import { globMatchesSegments } from "./work-driver-deliverable-paths.ts";
+
 /**
  * The paired markdown wrappers a planner puts around a path.
  *
@@ -86,9 +89,16 @@ function stripMarkup(raw: string): string {
  * the planner wrote as a glob keeps its wildcard through this function, which
  * is what lets the #819 exemption judge the slot it was actually given
  * (#1707). The fence grammar's opposite reading — a trailing `/**` means "this
- * directory" — lives in {@link fenceDirPrefix}, which every fence-matching
- * caller uses, because that reading belongs to the fence, not to the
- * normaliser.
+ * directory" — lives in {@link fenceDirPrefix} / {@link fenceMatches}, which
+ * every fence-matching caller uses, because that reading belongs to the fence,
+ * not to the normaliser.
+ *
+ * #1725 — the UNTERMINATED-parenthesis rule (#784) lives here, not only in the
+ * develop gate's module-local `normaliseScopePath`. Real state files carry
+ * fence entries whose annotation has no closing paren at all (the 778.json
+ * shape), and since both fences now ask THIS normaliser (#1725, one predicate),
+ * the rule has to sit where both fences read it — a fence whose entry never
+ * deannotates is a fence that never fires.
  */
 export function normaliseDeclaredPath(raw: string): string {
   // The annotation strip tolerates markup AFTER the closing paren
@@ -97,7 +107,12 @@ export function normaliseDeclaredPath(raw: string): string {
   // matched, so it can never eat a slot's own trailing wildcard: `src/foo/*`
   // has no parenthetical, and the lookbehind still refuses to strip a
   // parenthetical that is a whole path segment (`app/(group)`, #1652).
-  const deannotated = stripMarkup(raw).replace(/(?<=[^/])\s*\([^()]*\)[`*\s]*$/, "");
+  const deannotated = stripMarkup(raw)
+    .replace(/(?<=[^/])\s*\([^()]*\)[`*\s]*$/, "")
+    // #784: an UNTERMINATED " (…" runs to the end of the entry (778.json).
+    // Requires a literal space before the paren, so a whole-segment
+    // parenthetical ("app/(group") and a real "notes (draft).md" survive.
+    .replace(/ \((?:[^()]*)$/, "");
   return stripMarkup(deannotated).replace(/^\.\//, "").replace(/\/+$/, "").trim();
 }
 
@@ -145,4 +160,40 @@ export function stripFenceGlob(normalised: string): string {
  */
 export function fenceDirPrefix(entry: string): string {
   return stripFenceGlob(normaliseDeclaredPath(entry));
+}
+
+/**
+ * The ONE fence predicate: does fence entry `entry` cover git path `file`?
+ *
+ * #1725 — the two fences that refuse a path (the fix fence's `fencedBy` and the
+ * develop gate's `outOfScope` check) used to read the same entry through two
+ * grammars: one compared `fenceDirPrefix` output by exact/`/`-prefix match, the
+ * other by its own normalise-then-compare. `dir/** (note)` or a real glob entry
+ * (`src/*.test.ts`) therefore refused one fence and passed the other — two
+ * decisions from one entry is the drift this predicate closes. Both fences now
+ * call THIS, and so does the spec-slot admitter (which takes it as input), so
+ * "is it fenced" has exactly one answer per (entry, file).
+ *
+ * Three arms, in order:
+ *
+ *   1. normalise {@link normaliseDeclaredPath} then {@link stripFenceGlob} —
+ *      markup, annotation, `./` and the `dir/**` / `dir/*` directory spellings
+ *      collapse to the directory;
+ *   2. no pathspec character left → EXACT match or a `/`-boundary prefix
+ *      (`extension/src` fences what lives inside it, never `extension/srcfoo`);
+ *   3. a pathspec character survives (`src/*.test.ts`) → the converge gate's
+ *      OWN segment-anchored matcher ({@link globMatchesSegments}), so `*` spans
+ *      one segment and the fence, the admitter and converge agree on what the
+ *      same text matches.
+ *
+ * An entry that normalises to nothing covers nothing — fail-closed, never a
+ * whole-tree fence.
+ */
+export function fenceMatches(entry: string, file: string): boolean {
+  const normalised = stripFenceGlob(normaliseDeclaredPath(entry));
+  if (normalised.length === 0) return false;
+  if (!hasPathspecChar(normalised)) {
+    return file === normalised || file.startsWith(`${normalised}/`);
+  }
+  return globMatchesSegments(normalised, file);
 }
