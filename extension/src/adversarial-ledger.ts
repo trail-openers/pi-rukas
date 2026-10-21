@@ -95,6 +95,11 @@ export function writeAdversarialLedgerEntry(
      * with its own exec policy) sees one seam for the whole binding, matching
      * `commentExecFn` on the comment check. Defaults to the real executor. */
     execFn?: VerifyExecFn;
+    /** #1557 — test-facing row identity: the loop's `orchestratorJobId`
+     * stamped onto the row so the smoke arms select their OWN row by nonce
+     * match (see `LedgerEntry.rowNonce`). Never a guard key; never read by
+     * the merge guard. Omitted (not stored) when the caller supplies none. */
+    rowNonce?: string;
   },
 ): Promise<AdversarialLedgerOutcome> {
   const write = async (): Promise<AdversarialLedgerOutcome> => {
@@ -212,6 +217,9 @@ export function writeAdversarialLedgerEntry(
       at: Date.now(),
       detail,
       ...(headSha ? { headSha } : {}),
+      // #1557 — the nonce rides on the row verbatim (absent when the caller
+      // supplied none, so hand-built and pre-#1557 shapes are untouched).
+      ...(params.rowNonce ? { rowNonce: params.rowNonce } : {}),
       ...toolPathFields(bound ?? {}, toolPath),
     };
     // #1449 — the misdirection is answered in TWO places, and the row itself is
