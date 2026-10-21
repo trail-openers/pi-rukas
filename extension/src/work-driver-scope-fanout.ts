@@ -61,8 +61,8 @@ import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import {
   type SpecSlotSource,
+  createSpecAdmitter,
   specPatternSlots,
-  specSlotAdmitting,
 } from "./work-driver-spec-slot-admission.ts";
 import { normaliseScopePath as normaliseGitPath } from "./work-driver-verify-develop-helpers.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
@@ -243,23 +243,9 @@ export function runScopeFanoutGate(
   // slots from the plan-to-spec gate), so a spec-authorised new file can only
   // ever arrive here as "undeclared" unless the gate reads the spec itself.
   // Measured on cycle 1557: the adversarial fix pass split a module to stay
-  // under the 500-line ratchet and both fences refused the new file.
-  const specSlots = specPatternSlots(options.spec);
-  // One trace line per (workstream, file) the slot admits — the same file is
-  // consulted by the numerator and the discovery scan below.
-  const tracedAdmissions = new Set<string>();
-  const specAdmits = (id: string, file: string): boolean => {
-    const slot = specSlotAdmitting(specSlots, file);
-    if (!slot) return false;
-    const key = `${id}|${file}`;
-    if (!tracedAdmissions.has(key)) {
-      tracedAdmissions.add(key);
-      trace(
-        `scope-fence: ${id} admitted ${file} — the spec's deliverable ${slot.deliverableId} declares the pattern slot ${slot.slot}`,
-      );
-    }
-    return true;
-  };
+  // under the 500-line ratchet and both fences refused the new file. The
+  // admitter itself is built below, after `declaredBy` — it reads that map.
+
   // #814 — the SIBLING-declared sets, normalised ONCE per run (the review
   // flagged the previous per-workstream-loop re-normalisation: each workstream
   // re-normalised every sibling's paths). For every workstream, its own
@@ -274,6 +260,31 @@ export function runScopeFanoutGate(
     const own = otherWs.paths.map(normaliseScopePath).filter((p) => p.length > 0);
     if (own.length > 0) declaredBy.set(otherId, own);
   }
+  // #1725 — the SAME admitter the adversarial fix fence runs, so the two fences
+  // cannot drift on the two things that keep a slot from being a skeleton key: a
+  // PROTECTED path is never admitted here (the protected-path gate owns that
+  // halt; an admission would rename it as a scope pass), and a slot admits a
+  // file only for the workstream whose own declared paths reach the slot's
+  // directory (a sibling's deliverable is not this workstream's authorisation).
+  // The `admitted` tally is what the fan-out denominator grows by; the note is
+  // the audit trail an operator reads — an admission that only reached
+  // PI_ENSEMBLE_DEBUG is a fence that widened invisibly, and these notes are
+  // what the PR body carries.
+  const admitted = new Map<string, Set<string>>();
+  const admit = createSpecAdmitter({
+    slots: specPatternSlots(options.spec),
+    source: "scope-fence",
+    onAdmit: (id, file, slot) => {
+      const own = admitted.get(id) ?? new Set<string>();
+      own.add(file);
+      admitted.set(id, own);
+      notes.push(
+        `workstream ${id} changed ${file} — admitted by the spec's deliverable ${slot.deliverableId} pattern slot ${slot.slot} (authorised, counts toward the fan-out bound)`,
+      );
+    },
+  });
+  const specAdmits = (id: string, file: string): boolean =>
+    admit.admits(id, file, declaredBy.get(id) ?? []);
   // #725 — per-workstream, the union of the declared `paths` of the
   // workstreams this one depends on. A path in this set is exempt from the
   // outOfScope fence below: the cross-declaration contract (#572) puts it in
@@ -445,7 +456,7 @@ export function runScopeFanoutGate(
       notes.push(`scope fanout check skipped for ${id} — workstream has no declared paths`);
       continue;
     }
-    const limit = fanoutLimitFor(declaredPaths.length);
+    const limit = fanoutLimitFor(declaredPaths.length + (admitted.get(id)?.size ?? 0));
     // #672 (sub-defect 3) — the test-file exception: a changed path that
     // matches `isTestPath` is fence-permitted when its INFERRED SUBJECT
     // (via `couplesTo`) is in the plan-wide declared set. Inference-gated,
@@ -456,10 +467,14 @@ export function runScopeFanoutGate(
     const isDeclaredOrExempt = (file: string): boolean =>
       declaredPaths.some((declared) => matchesScopePath(file, declared)) ||
       [...planDeclaredPaths].some((declared) => matchesScopePath(file, declared)) ||
-      // #1557 — a spec pattern slot is a declared path for the numerator: the
-      // bound exists to catch a workstream inventing scope, not to punish it
-      // for creating a file the spec asked for.
-      specAdmits(id, file) ||
+      // #1725 — a spec pattern slot no longer deletes a file from the
+      // NUMERATOR (the previous shape: a workstream creating an unbounded
+      // number of spec-named files presented a numerator of zero). It is
+      // instead added to the DECLARED denominator above, so the bound grows by
+      // exactly what the spec authorised and a workstream still cannot change
+      // the tree without a ceiling. This file remains exempt from the
+      // `undeclared` WARNING scan above — authorised work is not an invention
+      // to warn about.
       (isTestPath(file) &&
         [...planDeclaredPaths].some(
           (declared) => !isTestPath(declared) && couplesTo(file, declared),

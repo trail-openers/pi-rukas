@@ -25,7 +25,6 @@
  */
 
 import path from "node:path";
-import { trace } from "./trace.ts";
 import {
   type FixExec,
   type GitRead,
@@ -34,12 +33,14 @@ import {
   trackedPaths,
   treeChanges,
 } from "./work-driver-adversarial-fix-git.ts";
+import { fenceDirPrefix } from "./work-driver-declared-path.ts";
 import { protectedPathsIn } from "./work-driver-doctrine.ts";
 import { fanoutLimitFor } from "./work-driver-scope-fanout.ts";
 import {
+  type SpecAdmitter,
   type SpecPatternSlot,
+  createSpecAdmitter,
   specPatternSlots,
-  specSlotAdmitting,
 } from "./work-driver-spec-slot-admission.ts";
 import type { PipelineState, Workstream } from "./workflow-state-schema.ts";
 
@@ -194,6 +195,20 @@ const allows = (entry: string, file: string): boolean =>
   file === entry || (entry.endsWith("/") && file.startsWith(entry));
 
 /**
+ * Does a FENCE entry cover `file`? The shared fence grammar answers it —
+ * `fenceDirPrefix` reduces `dir/**`, `dir/*` and `dir/` to the directory `dir`
+ * and the comparison runs on a `/` boundary, so `extension/src` fences what
+ * lives inside it and never a sibling named `extension/srcfoo`. The exact-or-
+ * trailing-slash `allows()` above cannot answer this question: it reads
+ * `dir/**` as a literal path, so a fenced directory failed to beat a spec slot
+ * and the slot silently unfenced a fence the plan wrote on purpose.
+ */
+const fencedBy = (entry: string, file: string): boolean => {
+  const dir = fenceDirPrefix(entry);
+  return dir.length > 0 && (file === dir || file.startsWith(`${dir}/`));
+};
+
+/**
  * A declared path may carry a planner annotation (`"src/a.ts (new)"`) or a
  * `./` prefix; normalised to the repo-relative form git emits, so a `./` path
  * neither false-parks nor fails to widen a directory anchor.
@@ -204,18 +219,21 @@ const cleaned = (p: string): string =>
 const listed = (xs: readonly string[]): string => (xs.length > 0 ? xs.join(", ") : "none");
 
 /**
- * #1557 — does a spec deliverable's pattern slot admit `file`? Two things
- * still refuse it, in this order, and they belong to THIS fence rather than to
- * the matcher: the workstream's own `outOfScope` fence (a fence the plan wrote
- * beats a spec slot — otherwise a spec could unfence itself), and a protected
- * path (the protected-path gate must halt the cycle, and admitting the file
- * here would only rename that halt as a scope pass). Then, and only then, the
- * segment-anchored slot matcher answers.
+ * #1557 / #1725 — does a spec deliverable's pattern slot admit `file`?
+ *
+ * The workstream's own `outOfScope` fence is judged FIRST, and it beats the
+ * slot: a fence the plan wrote wins over a spec pattern, or a spec could
+ * unfence itself. That check now runs through the shared fence grammar
+ * (`fenceDirPrefix` + a `/` boundary) rather than `allows()` — with the
+ * exact-or-trailing-slash reading, `outOfScope: ["extension/src/**"]` matched
+ * nothing, so a slot silently UNFENCED a directory the plan fenced on purpose
+ * (the HIGH finding this round closes). The protected-path refusal and the
+ * per-workstream scope check are the shared admitter's, so the develop gate
+ * and this fence cannot drift on either.
  */
-function specAdmitsFile(plan: PassPlan, file: string): SpecPatternSlot | undefined {
-  if (plan.outOfScope.some((entry) => allows(entry, file))) return undefined;
-  if (protectedPathsIn([file]).length > 0) return undefined;
-  return specSlotAdmitting(plan.specSlots, file);
+function specAdmitsFile(admit: SpecAdmitter, plan: PassPlan, file: string): boolean {
+  if (plan.outOfScope.some((entry) => fencedBy(entry, file))) return false;
+  return admit.admits(plan.id, file, plan.declared);
 }
 
 /**
@@ -247,9 +265,13 @@ function strayReason(plan: PassPlan, strays: readonly string[], basis: string): 
  * The post-pass checks, in order: the pass changed something, every file it
  * changed is allowed (uncommitted and untracked included), and a declared
  * fence stays within its fan-out ceiling. The ceiling is computed from the
- * DECLARED paths, not the widened list — and files a spec pattern slot admits
- * count as declared for it (#1557): the ceiling bounds what the workstream
- * invented, not what the spec authorised.
+ * DECLARED paths, not the widened list — and what the spec authorised is added
+ * to THAT count (#1557, #1725): a slot-admitted file stays in the numerator
+ * and the declared denominator grows by the authorisation, so the ceiling
+ * bounds what the workstream invented while the spec's own deliverable buys
+ * real room. Deleting admitted files from the numerator instead (the previous
+ * shape) meant a workstream could change an unbounded number of spec-named
+ * files and present a numerator of zero.
  */
 export async function postPassFault(
   execFn: FixExec,
@@ -287,21 +309,18 @@ export async function postPassFault(
     // #1557 — a new file the spec's pattern slot authorises is in scope
     // exactly as a declared path is; the finding-named widening could never
     // have seen it (`namedPaths` reads the tree tracked AT base, and a file
-    // this pass created is not in it). One trace line per admitted path: a
-    // fence that widened silently is a fence nobody can audit.
-    const strays: string[] = [];
+    // this pass created is not in it). The shared admitter traces ONE line per
+    // admitted pair: a fence that widened silently is a fence nobody can audit.
     const specAdmitted = new Set<string>();
+    const admit = createSpecAdmitter({
+      slots: plan.specSlots,
+      source: "work-driver: fix pass",
+      onAdmit: (_id, file) => specAdmitted.add(file),
+    });
+    const strays: string[] = [];
     for (const file of s.value.names) {
       if (allowed.some((a) => allows(a, file))) continue;
-      const slot = specAdmitsFile(plan, file);
-      if (!slot) {
-        strays.push(file);
-        continue;
-      }
-      specAdmitted.add(file);
-      trace(
-        `work-driver: fix pass ${plan.id} admitted ${file} — the spec's deliverable ${slot.deliverableId} declares the pattern slot ${slot.slot}`,
-      );
+      if (!specAdmitsFile(admit, plan, file)) strays.push(file);
     }
     if (strays.length > 0) {
       const basis =
@@ -311,11 +330,15 @@ export async function postPassFault(
       return { reason: strayReason(plan, strays, basis), diffs };
     }
     if (plan.declared.length > 0) {
-      const limit = fanoutLimitFor(plan.declared.length);
-      const counted = s.value.names.filter((f) => !specAdmitted.has(f));
+      // #1725 — the admitted set is added to the DECLARED count (the numerator
+      // keeps every file the pass changed) and the park reason reports both
+      // numbers separately, because "9 files, 3 of them spec-authorised" is a
+      // different disclosure from "9 files" and the operator reads this one.
+      const limit = fanoutLimitFor(plan.declared.length + specAdmitted.size);
+      const counted = s.value.names;
       if (counted.length > limit) {
         return {
-          reason: `${plan.id} changed ${counted.length} files — over the fan-out limit ${limit} for its ${plan.declared.length} declared path(s)`,
+          reason: `${plan.id} changed ${counted.length} files (${specAdmitted.size} of them admitted by a spec pattern slot: ${listed([...specAdmitted])}) — over the fan-out limit ${limit} for its ${plan.declared.length} declared path(s) plus those ${specAdmitted.size} authorisation(s)`,
           diffs,
         };
       }
