@@ -15,6 +15,7 @@
 import type { Case } from "./review-accept-guard-cases.ts";
 
 const NL = String.fromCharCode(10);
+const CR = String.fromCharCode(13);
 const Q = String.fromCharCode(39);
 const D = String.fromCharCode(36); // a dollar sign, spelled so the table is data
 const DATA = "review-findings.json";
@@ -38,16 +39,46 @@ export const MEASURED_MISFIRES_ALLOWED: Case[] = [
   { c: `git -C ${TREE} blame src/a.ts`, why: "blame in a worktree" },
   { c: `git -C ${TREE} add -A`, why: "staging a worktree's diff" },
   { c: `git -C ${TREE} commit -m "fix: a thing"`, why: "committing in a worktree" },
-  { c: `git -C . status`, why: "the same-directory spelling" },
+  { c: "git -C . status", why: "the same-directory spelling" },
   { c: "git -C extension status --porcelain", why: "a relative worktree path" },
   { c: `git -C ${TREE} rev-parse --abbrev-ref HEAD`, why: "the branch of a worktree" },
   // A heredoc that writes an ordinary scratch file: the body is prose, the target is
   // nobody's findings store (#1665's `cat > f <<EOF`, #1643's `-F-` heredoc).
   { c: `cat > /tmp/f <<EOF${NL}hello${NL}EOF`, why: "a heredoc into an ordinary file" },
-  { c: `cat > tmp/issue-1665/body.md <<EOF${NL}# Title${NL}- a bullet${NL}EOF`, why: "a scratch body file" },
-  { c: `git commit -F- <<EOF${NL}fix(guards): the message${NL}EOF`, why: "a commit message by heredoc" },
-  { c: `cat <<EOF${NL}a line with a backslash \\ in it${NL}EOF`, why: "a heredoc body carrying a backslash" },
+  {
+    c: `cat > tmp/issue-1665/body.md <<EOF${NL}# Title${NL}- a bullet${NL}EOF`,
+    why: "a scratch body file",
+  },
+  {
+    c: `git commit -F- <<EOF${NL}fix(guards): the message${NL}EOF`,
+    why: "a commit message by heredoc",
+  },
+  {
+    c: `cat <<EOF${NL}a line with a backslash \\ in it${NL}EOF`,
+    why: "a heredoc body carrying a backslash",
+  },
   { c: `cat <<'SH'${NL}git status${NL}SH`, why: "a quoted heredoc that runs nothing" },
+  // An unparseable command that is nowhere near the store. #1738: the parse failure is
+  // not itself a refusal — the SAME scope predicate a readable command faces decides,
+  // and none of its six tests fires here.
+  {
+    c: `echo ${Q}a line of prose about a normal file`,
+    why: "a stray quote in prose that names no store",
+  },
+  {
+    c: `git status --porcelain <<EOF${NL}some body text`,
+    why: "an unterminated heredoc beside a read verb that executes and writes nothing",
+  },
+  // The selector test is PER SEGMENT (#1738), the unit the arms judge: a `-c` in a
+  // segment that runs no git is some other program's flag, not a repo selector.
+  { c: "git log --oneline && ls -c", why: "a short flag in the segment that runs no git" },
+  { c: `printf hello \\${NL}world`, why: "a line continuation in an ordinary command" },
+  // The pair to the write-verb refusals below: `hash-object` writes only with `-w`, so
+  // reading an object from a heredoc stays the ordinary command it is.
+  {
+    c: `git hash-object --stdin <<EOF${NL}payload${NL}EOF`,
+    why: "git hash-object READING, with no -w",
+  },
   // Backslash-bearing ARGUMENTS: the shell removes the backslash, and what is left names
   // no store (#1665's `echo -e`, `printf`, `grep`/`rg` BRE alternation, `gh --jq`).
   { c: `printf ${Q}hello\\n${Q} > /tmp/f`, why: "printf with an escaped newline" },
@@ -69,8 +100,14 @@ export const MEASURED_MISFIRES_ALLOWED: Case[] = [
     c: `gh issue view 1665 --json title,body --jq ${Q}.title + "\\n" + .body${Q}`,
     why: "a gh read whose --jq filter carries an escaped newline",
   },
-  { c: `gh api -X PUT repos/o/r/branches/main/protection --input file.json`, why: "a gh api write to no store path" },
-  { c: `awk ${Q}BEGIN{system("echo ${D}{HOME}")}${Q}`, why: "awk running a shell at no store path" },
+  {
+    c: "gh api -X PUT repos/o/r/branches/main/protection --input file.json",
+    why: "a gh api write to no store path",
+  },
+  {
+    c: `awk ${Q}BEGIN{system("echo ${D}{HOME}")}${Q}`,
+    why: "awk running a shell at no store path",
+  },
 ];
 
 /**
@@ -96,7 +133,10 @@ export const STORE_REACHING_REFUSALS: Case[] = [
   // and `--git-dir` / `--work-tree` / `--exec-path` move the object store or the git
   // program itself. Clause (b)'s accepted cost, kept deliberately — only `-C <path>`, the
   // form AGENTS.md mandates, is resolved.
-  { c: "git -c core.pager=cat log --oneline", why: "ACCEPTANCE: a config override the program runs" },
+  {
+    c: "git -c core.pager=cat log --oneline",
+    why: "ACCEPTANCE: a config override the program runs",
+  },
   { c: "git -c color.ui=never diff HEAD~1 HEAD", why: "a config override on a diff" },
   { c: "git -c core.fsmonitor=/tmp/probe status", why: "a config whose value is a program path" },
   { c: "git --exec-path=/usr/lib/git-core status", why: "--exec-path names the program directory" },
@@ -116,9 +156,9 @@ export const STORE_REACHING_REFUSALS: Case[] = [
   { c: `cat ${Q}.git/${DATA}${Q}`, why: "the data file quoted" },
   // Backslash-escaped spellings of the store's name: the shell removes the backslash and
   // hands the program the exact store name, so the erased view must catch it.
-  { c: `cat re\\view-findings.json`, why: "ACCEPTANCE: a backslash inside the data name" },
-  { c: `cat rev\\iew-findings.js\\on`, why: "backslashes in both halves of the data name" },
-  { c: `cat /repo/.git/review\\-findings.json`, why: "an escaped hyphen in the data name" },
+  { c: "cat re\\view-findings.json", why: "ACCEPTANCE: a backslash inside the data name" },
+  { c: "cat rev\\iew-findings.js\\on", why: "backslashes in both halves of the data name" },
+  { c: "cat /repo/.git/review\\-findings.json", why: "an escaped hyphen in the data name" },
   {
     c: `grep -n ${Q}x${Q} re\\view-findings.json`,
     why: "ACCEPTANCE: a grep pattern that is harmless, against an escaped store path",
@@ -138,10 +178,79 @@ export const STORE_REACHING_REFUSALS: Case[] = [
     why: "a heredoc body assembling the data name",
   },
   // The operator's accept script, by name and by path.
-  { c: "bun extension/scripts/review-accept.ts feat/x deadbeef --reason x", why: "running the accept CLI" },
+  {
+    c: "bun extension/scripts/review-accept.ts feat/x deadbeef --reason x",
+    why: "running the accept CLI",
+  },
   { c: `bun ${Q}extension/scripts/review-accept.ts${Q}`, why: "the accept CLI quoted" },
   {
     c: `cat > /tmp/f <<EOF${NL}bun extension/scripts/review-accept.ts a b${NL}EOF`,
     why: "a heredoc body that runs the accept script",
+  },
+  // The store's name split across a LINE CONTINUATION: the shell deletes `\` + newline
+  // and hands the program one word, so the erased view must join the halves before it
+  // tokenises (#1738 — keeping the newline left two words that named nothing).
+  {
+    c: `cat .git/review\\${NL}-findings.json`,
+    why: "ACCEPTANCE: the data name split by a line continuation",
+  },
+  {
+    c: `cat .git/review\\${CR}${NL}-findings.json`,
+    why: "the data name split by a CRLF continuation",
+  },
+  // UNPARSEABLE and in scope: the parse failure is not what refuses, the scope test is.
+  // Each row below reaches the store by a route other than the bare name, so the
+  // unreadable branch that used to consult the name test alone let it through.
+  {
+    c: `git -c core.fsmonitor=/tmp/probe log --oneline ${Q}x`,
+    why: "ACCEPTANCE: an uncleared selector inside an unparseable command",
+  },
+  {
+    c: `git apply <<EOF${NL}--- a/x`,
+    why: "ACCEPTANCE: an unterminated heredoc beside a git verb that writes",
+  },
+  { c: `bun - <<EOF${NL}import`, why: "an unterminated heredoc feeding a runtime" },
+  // A heredoc or a stdin `-` beside a git verb that WRITES from it. Clause (a)'s
+  // unreadable text next to a program that puts bytes on disk.
+  {
+    c: `git apply <<EOF${NL}--- a/x${NL}+++ b/x${NL}EOF`,
+    why: "ACCEPTANCE: a patch handed to git apply by heredoc",
+  },
+  { c: "echo patch | git apply -", why: "a patch piped into git apply on stdin" },
+  { c: `git am - <<EOF${NL}From: x`, why: "a mailbox handed to git am" },
+  {
+    c: `git update-index --add - <<EOF${NL}a.txt${NL}EOF`,
+    why: "paths handed to git update-index on stdin",
+  },
+  { c: `git mv a b <<EOF${NL}junk${NL}EOF`, why: "a heredoc beside git mv" },
+  { c: `git rm --cached - <<EOF${NL}a.txt${NL}EOF`, why: "paths handed to git rm on stdin" },
+  {
+    c: `git checkout-index -a -f <<EOF${NL}junk${NL}EOF`,
+    why: "a heredoc beside git checkout-index",
+  },
+  {
+    c: `git hash-object -w --stdin <<EOF${NL}payload${NL}EOF`,
+    why: "ACCEPTANCE: git hash-object WRITING the object it reads",
+  },
+  // The attached selector that used to swallow the word after it: the value is inside
+  // the flag, so nothing was consumed and the following `-c` was never read (#1738).
+  {
+    c: "git log --oneline -C/tmp/x -c core.fsmonitor=/tmp/probe",
+    why: "ACCEPTANCE: a config selector the attached selector used to hide",
+  },
+  {
+    c: "git diff HEAD --stat -C=/tmp/x -c core.pager=cat",
+    why: "an `=`-attached selector hiding the selector after it",
+  },
+  { c: "git -C/repo/.git log --oneline", why: "an attached selector at the store's directory" },
+  // A selector the guard matches but cannot resolve, so it cannot clear it either.
+  { c: "git -C .git/* status", why: "ACCEPTANCE: a globbed selector at the store's directory" },
+  { c: "git -C repo/../.git status", why: "a `..`-walk in a selector's target" },
+  { c: "git -C ~/repo/.git status", why: "a home-relative selector at the store's directory" },
+  // The selector test is per SEGMENT, so a chained git segment cannot borrow the first
+  // segment's cleared selector.
+  {
+    c: `git -C ${TREE} status && git -c core.fsmonitor=/tmp/probe log`,
+    why: "ACCEPTANCE: a second segment carrying an uncleared selector",
   },
 ];

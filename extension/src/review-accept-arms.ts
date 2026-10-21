@@ -11,6 +11,7 @@
  */
 
 import {
+  UNREADABLE,
   baseName,
   isAcceptScriptToken,
   isProtectedToken,
@@ -23,14 +24,15 @@ import {
 export const RUNTIME = /^(?:bun|bunx|node|npx|tsx|ts-node|deno)$/;
 /** The write-capable arguments clause (b) refuses and names. Exported for the guard's
  * remedy sentence, which names the same flags. */
-export const WRITE_FLAGS = ["-o", "--output", "-c", "--ext-diff"];
-/** The write-capable arguments EXCEPT the git config selector `-c`. `-c` is not a write
- * flag in the same sense as an output path: it sets a config, and the thing that makes it
- * a route to the store is the value it sets (`core.fsmonitor=…`, `alias.x=!cat <store>`),
- * which is exactly what `hasUnresolvedRepoSelector` reads. Asking `OUTPUT_FLAGS` where a
- * `-C <path>` may appear keeps the #1643 sanctioned form from matching a write flag on a
- * case-folded `-C`. */
-export const OUTPUT_FLAGS = ["-o", "--output", "--ext-diff"];
+export const WRITE_FLAGS: readonly string[] = ["-o", "--output", "-c", "--ext-diff"];
+/** The write-capable arguments EXCEPT the git config selector `-c`, DERIVED from
+ * `WRITE_FLAGS` so the two lists cannot drift when a fifth flag is added: `-c` is not a
+ * write flag in the same sense as an output path — it sets a config, and the thing that
+ * makes it a route to the store is the value it sets (`core.fsmonitor=…`,
+ * `alias.x=!cat <store>`), which is exactly what `hasUnresolvedRepoSelector` reads.
+ * Asking `OUTPUT_FLAGS` where a `-C <path>` may appear keeps the #1643 sanctioned form
+ * from matching a write flag on a case-folded `-C`. */
+export const OUTPUT_FLAGS: readonly string[] = WRITE_FLAGS.filter((flag) => flag !== "-c");
 /** A runner that executes text rather than a file: no arm admits one. */
 const EVAL_FLAGS = ["-e", "-p", "--print", "--eval", "-r", "--require", "--preload"];
 /** The forge CLIs, whose read arms are exact. Exported because the guard's remedy sentence
@@ -69,6 +71,20 @@ export function namesVcsOrRuntime(text: string): boolean {
 export function namesInterpreter(text: string): boolean {
   return shellWords(text).some((w) => RUNTIME.test(baseName(unquote(w))));
 }
+/** The git verbs that PUT BYTES ON DISK from an operand the guard cannot read: a patch
+ * (`apply`), a mailbox (`am`), an index update, a rename / deletion, or a checkout, each of
+ * which takes its instructions from stdin or a heredoc. Beside one of these a heredoc body
+ * or a `-` program is text the guard cannot see AND a program that writes, so the command is
+ * in scope whatever the body spells (`git apply <<EOF` reaches the store by NAMING a path
+ * inside the patch). `commit` is deliberately absent — its heredoc is a MESSAGE, read as
+ * text and written nowhere, which is why `git commit -F- <<EOF` stays allowed (#1643) — and
+ * `hash-object` writes only with `-w`, so it is asked for that flag too. */
+const GIT_WRITE_VERBS = ["apply", "am", "update-index", "mv", "rm", "checkout-index"];
+export function namesGitWriteVerb(text: string): boolean {
+  const words = shellWords(text).map((w) => baseName(unquote(w)));
+  if (words.includes("hash-object")) return words.includes("-w");
+  return words.some((w) => GIT_WRITE_VERBS.includes(w));
+}
 /** Does the command run one of the READ TOOLS the arms admit (`cat`, `grep`, `rg`,
  * `head`, `wc`, …)? Together with `namesVcsOrRuntime` this is the set of programs through
  * which a store name can reach the guarded bytes at all: the scope test asks the
@@ -106,22 +122,32 @@ const VALUE_SELECTOR = /^-c(.*)$/i;
  * is what makes it a hook / pager / alias the program then RUNS, which no target test can
  * clear. */
 const CONFIG_VALUE = /=/;
-/** Characters that make a target unreadable, so its resolved path is unknown and the
- * pair cannot be cleared (clause (a): refuse what the guard cannot parse). */
-const UNREADABLE_TARGET = /[$`\\{}]/;
+/** A `-C` / `--git-dir` target carrying one of these is a path the guard cannot name: the
+ * shell expands it onto whatever it matches, so the resolved path is unknown and the pair
+ * cannot be cleared. The bracket class is included with `*` and `?` because `[.g]*` is a
+ * glob too. Asked separately from `UNREADABLE` because `{}` is not a glob in the shells
+ * this guard cares about but IS a substitution the other test already refuses. */
+const GLOBISH = /[*?[]/;
 /** Does a `-C` target reach the findings store's repo location? The store's data file and
  * its siblings live IN the git common dir, so a target that IS or CONTAINS `.git`, or that
  * carries a protected / accept-script segment, is the store's location and stays refused.
  * An empty or expansion-bearing target is refused too — a path the guard cannot resolve is
- * a path it cannot clear. */
+ * a path it cannot clear. So is a glob, a `~` or a `..` segment: this selector is MATCHED,
+ * not resolved (a symlink or a glob onto `.git` is not caught), so anything that makes the
+ * text stand for a different path than the one being read keeps the selector refused. */
 function targetReachesStore(target: string | undefined): boolean {
   if (target === undefined) return true;
   const value = unquote(target).replace(/^['"]+|['"]+$/g, "");
-  if (value === "" || UNREADABLE_TARGET.test(value)) return true;
+  if (value === "" || UNREADABLE.test(value) || GLOBISH.test(value) || value.includes("~"))
+    return true;
   return value
     .split(/[\\/]/)
     .some(
-      (segment) => segment === ".git" || isProtectedToken(segment) || isAcceptScriptToken(segment),
+      (segment) =>
+        segment === ".git" ||
+        segment === ".." ||
+        isProtectedToken(segment) ||
+        isAcceptScriptToken(segment),
     );
 }
 
@@ -135,40 +161,44 @@ function targetReachesStore(target: string | undefined): boolean {
  *    pager, a hook path, an alias — so no target test clears it (clause (b)'s accepted
  *    cost, and the position the case tables already record);
  *  - `-C <path>` whose path IS or CONTAINS the git common dir (`.git`), names a protected
- *    file, or cannot be resolved at all (empty, or carrying an expansion): refused;
- *  - `git -C <worktree>` — the form AGENTS.md mandates — clears, and is REMOVED from the
- *    returned `rest` so no later flag test reads its case-folded `-c` as a write flag.
+ *    file, walks (`..`), globs (`*?[`), roots at a home directory (`~`), or cannot be
+ *    resolved at all (empty, or carrying an expansion): refused;
+ *  - `git -C <worktree>` — the form AGENTS.md mandates — clears, and its VALUE is the
+ *    only word the loop steps over: an ATTACHED selector (`-C/tmp/x`, `-C=/tmp/x`) carries
+ *    its own value, so the following word is an ordinary argument and still gets asked.
+ *    Stepping over it unexamined was the fail-open this closes (#1738 lens review:
+ *    `git -C/tmp/x -c core.fsmonitor=/tmp/p log` never read its own `-c`).
  *
  * A selector at the END of the segment (no value at all) is unresolved: the value the
  * program would take is unknown.
  */
-export function resolveRepoSelectors(words: string[]): { unresolved: boolean; rest: string[] } {
-  const rest: string[] = [];
+export function resolveRepoSelectors(words: string[]): boolean {
   let unresolved = false;
   for (let i = 0; i < words.length; i++) {
     const a = unquote(words[i] ?? "");
     if (NEVER_CLEARED_SELECTOR.test(a)) {
       unresolved = true;
-      rest.push(words[i] as string);
       continue;
     }
     const value = VALUE_SELECTOR.exec(a);
     if (value !== null) {
       let target = value[1] ?? "";
       if (target.startsWith("=")) target = target.slice(1);
-      if (target === "") target = unquote(words[i + 1] ?? "");
+      // A selector that spelled NO value takes its target from the NEXT word, and that
+      // word is then consumed. An attached one consumed nothing, so the next word stays
+      // where the loop will reach it.
+      const spaced = target === "";
+      if (spaced) target = unquote(words[i + 1] ?? "");
       if (CONFIG_VALUE.test(target) || targetReachesStore(target)) unresolved = true;
-      else i++; // the cleared pair (`-C` and its path) leaves `rest` behind
-      continue;
+      else if (spaced) i++;
     }
-    rest.push(words[i] as string);
   }
-  return { unresolved, rest };
+  return unresolved;
 }
 
 /** Does the segment carry a repo-location / config selector that cannot be cleared? */
 export function hasUnresolvedRepoSelector(words: string[]): boolean {
-  return resolveRepoSelectors(words).unresolved;
+  return resolveRepoSelectors(words);
 }
 /** Flags that hand the tool a PROGRAM to run on each input. `rg --pre=CMD` pipes every
  * matched file through CMD, GNU `find -exec` runs a command per hit, and a

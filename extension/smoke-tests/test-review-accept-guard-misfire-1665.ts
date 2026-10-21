@@ -30,7 +30,6 @@ function assert(cond: boolean, msg: string) {
 }
 
 const verdict = (c: string): string | undefined => runsReviewAccept(c);
-const refused = (c: string): boolean => verdict(c) !== undefined;
 
 for (const t of MEASURED_MISFIRES_ALLOWED) {
   const reason = verdict(t.c);
