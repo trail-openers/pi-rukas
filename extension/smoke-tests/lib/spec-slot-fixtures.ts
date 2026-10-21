@@ -108,7 +108,7 @@ export async function fenceVerdict(
   const planned = await planFixPass(execFn, dir, ps, [
     { workstreamId: "default", findings: "the finding" },
   ]);
-  if (!planned.ok) return { parked: planned.reason, post: { diffs: {} }, traces: [] };
+  if (!planned.ok) return { parked: planned.reason, post: { diffs: {}, admissions: [] }, traces: [] };
   for (const f of created) {
     mkdirSync(path.join(dir, path.dirname(f)), { recursive: true });
     devCommit(dir, f, "export const split = 1;\n");

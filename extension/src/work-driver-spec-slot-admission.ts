@@ -62,10 +62,35 @@
  * subdirectory. A second wildcard grammar here would mean "the fence admits it"
  * and "converge counts it delivered" could disagree — the drift
  * work-driver-deliverable-paths.ts exists to prevent.
+ *
+ * #1725 round 3 adds three things, all aimed at "an authorisation is a budget,
+ * not a skeleton key":
+ *
+ *   - ONE fence predicate: the admitter takes `isFenced` as INPUT and refuses
+ *     a fenced file itself, so the fix fence and the develop gate cannot drift
+ *     on what "fenced" means (both now delegate to `fenceMatches`);
+ *   - a per-slot file cap (`SPEC_SLOT_MAX_FILES`): one slot admits at most
+ *     three files per workstream, and the fan-out DENOMINATOR grows by the
+ *     number of distinct admitting SLOTS — not by the file count. A workstream
+ *     can no longer multiply one authorisation into an unbounded bound; the
+ *     fourth file under a slot is refused (`slot-full`) and is undeclared
+ *     exactly as before admission existed;
+ *   - disclosure with teeth: `admit` returns a discriminated result naming the
+ *     refusal kind (`fenced` | `protected` | `no-slot` | `slot-full`), the fix
+ *     pass's park reason carries it, and every admitted pair emits one note
+ *     built by the SHARED `admissionNote` — a note that widened a fence
+ *     invisibly was the review's HIGH finding.
+ *
+ * DeliverableId and slot text are developer-adjacent prose that reaches a
+ * trace line or an operator note; `sanitizeSlotText` strips control characters
+ * and caps at 120 chars before interpolation, and only the VALIDATED glob form
+ * (`slot.glob`, already through `measurableAlternative` + `isAdmissibleSlot`)
+ * is ever interpolated.
  */
 
 import { hasPathspecChar } from "./plan-path-shape.ts";
 import { trace } from "./trace.ts";
+import { fenceMatches } from "./work-driver-declared-path.ts";
 import {
   globMatchesSegments,
   measurableAlternative,
@@ -217,40 +242,186 @@ export function specSlotAdmitting(
   );
 }
 
+/**
+ * The per-slot file cap (#1725 round 3): one pattern slot authorises AT MOST
+ * this many files for one workstream. The bound the fan-out check exists to
+ * enforce must not grow with the number of admitted FILES — a workstream that
+ * splits one module into ten files under one slot pattern would otherwise buy
+ * ten units of bound while the spec authorised one authorisation. The
+ * denominator therefore grows per distinct ADMITTING SLOT, and the fourth file
+ * under the same slot is refused and lands undeclared, exactly as before the
+ * admission existed. Three is the compromise: a 500-line module split (the
+ * ratchet shape that produced the #1557 incident) reaches four sibling files
+ * only when the spec named them elsewhere or the plan declared them.
+ */
+export const SPEC_SLOT_MAX_FILES = 3;
+
+/**
+ * Display sanitisation for the two untrusted strings an admission carries:
+ * the deliverable id and the slot text, both model-authored spec prose that
+ * reaches a trace line or an operator note verbatim. Control characters go
+ * (an ESC sequence in a note is terminal injection), and the text caps at 120
+ * chars with a visible marker — a slot cannot smuggle a paragraph into the
+ * handoff. The interpolated GLOB is validated (`measurableAlternative` +
+ * `isAdmissibleSlot` ran on it at slot build), so what the note shows is the
+ * matcher's own input.
+ */
+export function sanitizeSlotText(text: string, max = 120): string {
+  // \p{Cc} is the control-character class (C0 + C1) — written as a class
+  // rather than literals so the source carries no control characters and
+  // biome's noControlCharactersInRegex stays honest.
+  const clean = text.replace(/[\p{Cc}]/gu, "");
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+}
+
+/** Why an admission was refused — the fix-pass park reason names this kind. */
+export type AdmissionRefusal = "fenced" | "protected" | "no-slot" | "slot-full";
+
+/** The admitter's discriminated answer, so disclosure can name the refusal. */
+export type Admission =
+  | { admitted: true; slot: SpecPatternSlot }
+  | { admitted: false; refused: AdmissionRefusal };
+
 /** One gate's admission question, answered once per (workstream, file). */
 export interface SpecAdmitter {
-  admits(id: string, file: string, declared: readonly string[]): boolean;
+  /** Decide `file` for workstream `id`. Memoised: one decision, one note. */
+  admit(id: string, file: string, declared: readonly string[]): Admission;
+  /** Distinct slots that admitted ≥1 file for `id` — the fan-out growth. */
+  admittedSlotCount(id: string): number;
+  /** The files `id` was admitted, in admission order (for park disclosure). */
+  admittedFiles(id: string): string[];
 }
 
 /**
  * The gate-side half of admission, shared by the develop gate and the fix
- * fence so the two cannot drift: the protected-path refusal (the protected
- * gate owns that halt; admitting here would only rename it), the per-workstream
- * scope check, ONE trace line per admitted pair, and an optional non-blocking
- * audit note for whatever the gate shows the operator.
+ * fence so the two cannot drift on the three things that keep a slot from
+ * being a skeleton key, IN THIS ORDER (each refusal kind is observable in the
+ * discriminated result, so a park reason can say which one stopped the file):
+ *
+ *   1. `isFenced` (the caller's fence predicate — both gates now run
+ *      `fenceMatches`, the ONE fence predicate, so "fenced" means the same
+ *      thing at both); the spec never unfences a path the plan fenced;
+ *   2. a protected path (the protected gate owns that halt; admitting here
+ *      would only rename it);
+ *   3. no slot matches / the workstream's scope does not reach the slot's
+ *      directory → `no-slot`; a slot that matched but already admitted
+ *      `SPEC_SLOT_MAX_FILES` files for this workstream → `slot-full`.
+ *
+ * ONE trace line and ONE `onAdmit` call per admitted (workstream, file) — the
+ * audit trail an operator reads. A fence that widened invisibly is the failure
+ * class #1522 was written about.
  */
 export function createSpecAdmitter(opts: {
   slots: readonly SpecPatternSlot[];
   /** The trace prefix naming the gate asking (`scope-fence`, `fix pass`). */
   source: string;
+  /** The asking gate's fence, judged FIRST — a fenced file is never admitted. */
+  isFenced?: (id: string, file: string) => boolean;
   /** Called once per admitted (workstream, file) — the gate's own disclosure. */
   onAdmit?: (id: string, file: string, slot: SpecPatternSlot) => void;
 }): SpecAdmitter {
-  const seen = new Set<string>();
+  const decisions = new Map<string, Admission>();
+  // Per workstream: which slots admitted which files. The fan-out denominator
+  // counts these SLOTS, never the files (#1725 round 3).
+  const byWorkstream = new Map<string, Map<string, Set<string>>>();
+  const slotKey = (s: SpecPatternSlot) => `${s.deliverableId}|${s.glob}`;
+  const filesFor = (id: string, slot: SpecPatternSlot): Set<string> => {
+    let perWs = byWorkstream.get(id);
+    if (!perWs) {
+      perWs = new Map();
+      byWorkstream.set(id, perWs);
+    }
+    let files = perWs.get(slotKey(slot));
+    if (!files) {
+      files = new Set();
+      perWs.set(slotKey(slot), files);
+    }
+    return files;
+  };
   return {
-    admits(id, file, declared) {
-      if (protectedPathsIn([file]).length > 0) return false;
-      const slot = specSlotAdmitting(opts.slots, file, declared);
-      if (!slot) return false;
-      const key = `${id}|${file}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        trace(
-          `${opts.source}: ${id} admitted ${file} — the spec's deliverable ${slot.deliverableId} declares the pattern slot ${slot.slot}`,
-        );
-        opts.onAdmit?.(id, file, slot);
+    admit(id, file, declared) {
+      const memoKey = `${id}|${file}`;
+      const known = decisions.get(memoKey);
+      if (known) return known;
+      let decision: Admission;
+      if (opts.isFenced?.(id, file)) {
+        decision = { admitted: false, refused: "fenced" };
+      } else if (protectedPathsIn([file]).length > 0) {
+        decision = { admitted: false, refused: "protected" };
+      } else {
+        const slot = specSlotAdmitting(opts.slots, file, declared);
+        if (!slot) {
+          decision = { admitted: false, refused: "no-slot" };
+        } else {
+          const files = filesFor(id, slot);
+          if (files.size >= SPEC_SLOT_MAX_FILES) {
+            decision = { admitted: false, refused: "slot-full" };
+          } else {
+            files.add(file);
+            decision = { admitted: true, slot };
+            trace(
+              `${opts.source}: ${id} admitted ${file} — the spec's deliverable ${sanitizeSlotText(slot.deliverableId)} declares the pattern slot ${sanitizeSlotText(slot.glob)}`,
+            );
+            opts.onAdmit?.(id, file, slot);
+          }
+        }
       }
-      return true;
+      decisions.set(memoKey, decision);
+      return decision;
     },
+    admittedSlotCount(id) {
+      let n = 0;
+      for (const files of byWorkstream.get(id)?.values() ?? []) if (files.size > 0) n++;
+      return n;
+    },
+    admittedFiles(id) {
+      const out: string[] = [];
+      for (const files of byWorkstream.get(id)?.values() ?? []) out.push(...files);
+      return out;
+    },
+  };
+}
+
+/** The shared admission note (#1725 round 3): one line per admitted pair,
+ *  built once so both gates disclose the SAME text. Untrusted spec prose goes
+ *  through `sanitizeSlotText`. */
+export function admissionNote(id: string, file: string, slot: SpecPatternSlot): string {
+  return `workstream ${id} changed ${file} — admitted by the spec's deliverable ${sanitizeSlotText(slot.deliverableId)} pattern slot ${sanitizeSlotText(slot.glob)} (authorised, counts toward the fan-out bound)`;
+}
+
+/**
+ * The gate-side wiring both fences used to duplicate (and then drift): slots
+ * from the spec, the fence judgement through the ONE fence predicate
+ * (`fenceMatches` — the same one the fix fence's `fencedBy` runs, so a raw
+ * `outOfScope` entry cannot refuse one gate and pass the other), and the
+ * shared note into the gate's own `notes`. Kept here so the develop gate's
+ * file budget holds (#1725 round 3: the wiring moved OUT of
+ * `work-driver-scope-fanout.ts`, which sits at the size cap) and so a future
+ * third gate composes the same four pieces.
+ */
+export function createGateAdmitter(opts: {
+  spec: SpecSlotSource | undefined;
+  source: string;
+  /** The gate's non-blocking note sink — the PR body's admission trail. */
+  notes: string[];
+  /** The workstream's RAW `outOfScope` fence entries. */
+  outOfScopeOf: (id: string) => readonly string[];
+  /** The workstream's own declared paths, bound into `admit`. */
+  declaredOf: (id: string) => readonly string[];
+}): {
+  admit(id: string, file: string): Admission;
+  admittedSlotCount(id: string): number;
+  admittedFiles(id: string): string[];
+} {
+  const admit = createSpecAdmitter({
+    slots: specPatternSlots(opts.spec),
+    source: opts.source,
+    isFenced: (id, file) => opts.outOfScopeOf(id).some((entry) => fenceMatches(entry, file)),
+    onAdmit: (id, file, slot) => opts.notes.push(admissionNote(id, file, slot)),
+  });
+  return {
+    admit: (id, file) => admit.admit(id, file, opts.declaredOf(id)),
+    admittedSlotCount: (id) => admit.admittedSlotCount(id),
+    admittedFiles: (id) => admit.admittedFiles(id),
   };
 }

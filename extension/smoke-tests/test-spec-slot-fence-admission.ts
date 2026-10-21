@@ -450,7 +450,7 @@ for (const fence of ["extension/src/**", "extension/src/*", "extension/src"]) {
   const admitRun = (debugOn: boolean) =>
     captureTracesSync(() => {
       const admit = createSpecAdmitter({ slots, source: "unit-test" });
-      return admit.admits("default", NEW_FILE, CODE_DECLARED);
+      return admit.admit("default", NEW_FILE, CODE_DECLARED).admitted;
     }, debugOn);
   const quiet = admitRun(false);
   const loud = admitRun(true);
