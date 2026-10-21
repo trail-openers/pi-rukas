@@ -358,7 +358,15 @@ assert(
 
 // Fire before_agent_start with doctrine armed (set by the most recent /work call)
 const hook = rec.beforeAgentStartHandlers[0]!;
-const result1 = (await hook({ systemPrompt: "PI_BASE_PROMPT" })) as
+// #1730 A — the hook now reads `ctx.cwd` to decide whether this repo has a
+// private backlog, so every call here passes a ctx rooted at TMP_CWD (a temp
+// git repo with no `.backlog/` in it). Passing no ctx at all would also be
+// silent — the handler refuses to fall back to `process.cwd()` — but it would
+// leave the production path (a ctx IS passed) unexercised, and pointing it at
+// this repo would make the suite depend on whether the developer happens to
+// have cloned a backlog here.
+const HOOK_CTX = { cwd: TMP_CWD };
+const result1 = (await hook({ systemPrompt: "PI_BASE_PROMPT" }, HOOK_CTX)) as
   | { systemPrompt: string }
   | undefined;
 assert(result1 !== undefined, "before_agent_start returns a result when armed");
@@ -376,7 +384,7 @@ assert(
 // remainder of the session, so the sticky preamble must still be appended
 // (closes the "PM forgets the doctrine on turn 2+" bug). The FULL doctrine
 // is one-shot though — only the short preamble appears on turn 2.
-const result2 = await hook({ systemPrompt: "PI_BASE_PROMPT" });
+const result2 = await hook({ systemPrompt: "PI_BASE_PROMPT" }, HOOK_CTX);
 assert(
   result2?.systemPrompt?.includes("PM mode — orchestration only"),
   "before_agent_start: sticky preamble appended on turn 2 (PM mode active)",
@@ -400,7 +408,7 @@ assert(
 );
 // Even when /start is refused, PM mode stays active from the earlier successful
 // /start so the sticky preamble is still appended. The state didn't regress.
-const result3 = await hook({ systemPrompt: "PI_BASE_PROMPT" });
+const result3 = await hook({ systemPrompt: "PI_BASE_PROMPT" }, HOOK_CTX);
 assert(
   result3?.systemPrompt?.includes("PM mode — orchestration only"),
   "/start while busy: PM mode sticky preamble still active from earlier /start",
