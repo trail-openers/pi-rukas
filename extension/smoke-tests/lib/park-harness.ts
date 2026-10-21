@@ -7,11 +7,18 @@
  * `parkHandoff()` drives the handoff step for a cap explore cannot produce on
  * command — the plan gate's verdict and the branch step's open-PR pre-flight.
  *
+ * The lower half (`armParkRecord`, `ctxOf`'s options, `fingerprintOf`) is what
+ * the GUARD tests need rather than the cycle tests: a record written by hand,
+ * and a context whose forge replies on command. `test-repeat-park-scope.ts`
+ * (the guard's scope) and `test-repeat-park-projector.ts` (what a refused
+ * group reports) share it, along with `assert` / `exitCode`.
+ *
  * Split out of test-restart-repeat-park.ts for the §12 file-size cap; the
  * assertions live in test-restart-repeat-park.ts (forge channel + intent) and
  * test-park-memory-caps.ts (host channel + plan / open-PR parks).
  */
 
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -103,6 +110,16 @@ export interface World {
   opsPosts: number;
 }
 
+/** Overrides for the context the guard tests hand to `repeatParkVerdict`. */
+export interface CtxOpts {
+  /** Every issue in the group (the guard checks each). Default: the primary. */
+  issues?: number[];
+  /** What the stubbed `gh pr list` returns — an array of rows, or nothing. */
+  prList?: unknown;
+  /** The invocation that is itself the remedy for an open-PR park. */
+  continuePr?: boolean;
+}
+
 export function world(label: string): World {
   const dir = mkdtempSync(path.join(tmpdir(), `repeat-park-${label}-`));
   mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
@@ -117,16 +134,20 @@ export function world(label: string): World {
   };
 }
 
-export function ctxOf(w: World): DriverContext {
+export function ctxOf(w: World, opts: CtxOpts = {}): DriverContext {
   return {
     host: { sendUserMessage: () => undefined } as unknown as DriverHost,
     repoRoot: w.dir,
     issue: ISSUE,
+    issues: opts.issues ?? [ISSUE],
+    continuePr: opts.continuePr,
     issueBodyFetcherFn: async () => {
       if (!w.bodyReadable) throw new Error("gh: connection reset");
       return { stdout: w.body };
     },
-    verifyExecFn: async () => ({ stdout: "" }),
+    // The seam `findOpenPrForIssue` runs its `gh pr list` through — the same
+    // seam the branch pre-flight uses, so the guard's re-check is the same lookup.
+    verifyExecFn: async () => ({ stdout: opts.prList === undefined ? "" : JSON.stringify(opts.prList) }),
     dispatchFn: async (_pi, spec) => {
       if (spec.role === "explore") {
         w.explores++;
@@ -179,6 +200,55 @@ export const writeRecord = (w: World, cap: string, text: string) => {
   mkdirSync(path.dirname(recordFile(w, cap)), { recursive: true });
   writeFileSync(recordFile(w, cap), text, "utf8");
 };
+
+/** The same path for a GROUP SIBLING — the guard checks every issue, not just the primary. */
+export const recordFileFor = (w: World, cap: string, issue: number) =>
+  path.join(w.dir, ".pi", "work-state", String(issue), `park-${cap}.json`);
+
+/** What a well-formed record carries besides the cap, as the guard reads it. */
+export interface ParkRecordFields {
+  reason: string;
+  fingerprint: string;
+  count: number;
+  deliveredCount: number;
+}
+
+/**
+ * Write a well-formed record for `cap` directly — for the states no real cycle
+ * can be coaxed into (a malformed or expired record, a record on a sibling).
+ * Timestamps are recent, so the record is live unless the caller rewrites them.
+ * Returns the path so a caller can read it back or corrupt it on purpose.
+ */
+export function armParkRecord(
+  w: World,
+  cap: string,
+  fields: ParkRecordFields,
+  issue: number = ISSUE,
+): string {
+  const file = recordFileFor(w, cap, issue);
+  const at = Date.now();
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(
+    file,
+    JSON.stringify({
+      cap,
+      reason: fields.reason,
+      fingerprint: fields.fingerprint,
+      count: fields.count,
+      deliveredCount: fields.deliveredCount,
+      firstAt: at - 60_000,
+      lastAt: at - 30_000,
+      lastMarker: `<!-- pi-rukas:handoff issue=${issue} cap=${cap} -->`,
+      lastCycleId: 3,
+    }),
+    "utf8",
+  );
+  return file;
+}
+
+/** The guard's own key: what `parkFingerprint` hashes the issue body into. */
+export const fingerprintOf = (w: World) => createHash("sha256").update(w.body).digest("hex");
+
 export const capOf = (s: WorkState) =>
   [...s.eventLog]
     .reverse()
