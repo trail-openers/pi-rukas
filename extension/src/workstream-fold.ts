@@ -18,6 +18,10 @@
  *     this safe: every file appears in exactly ONE workstream's `paths`,
  *     so the only outOfScope entries that ever overlap the merged paths are
  *     the cross-declared ones, and those are exactly the ones to drop.
+ *     The entry-count cap is re-applied to the union (#1744) and each half's
+ *     `outOfScopeClipped` records are carried across by ENTRY TEXT — a record
+ *     whose entry the fold removed goes with it, and the re-cap says so on the
+ *     same trace line the tool boundary uses.
  *   - dependsOn — union of both halves' lists minus the two merged ids,
  *     and every OTHER workstream's dependsOn that named the absorbed id is
  *     re-pointed to the surviving id (the fold returns the full updated map).
@@ -29,6 +33,10 @@
  * Pure: returns a NEW map; the input is never mutated.
  */
 
+import { capFenceList, fenceBoundNotice, fenceWasBounded } from "./plan-fence-bound.ts";
+import { clippedField } from "./plan-fence-record.ts";
+import { traceWarn } from "./trace.ts";
+import type { OutOfScopeClip } from "./workflow-state-schema-workstreams.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 
 /**
@@ -75,9 +83,33 @@ export function foldWorkstream(
 export function foldTwo(a: Workstream, b: Workstream): Workstream {
   const mergedPaths = [...new Set([...a.paths, ...b.paths])];
   const inScope = new Set(mergedPaths);
-  const mergedOutOfScope = [...new Set([...a.outOfScope, ...b.outOfScope])].filter(
+  const mergedList = [...new Set([...a.outOfScope, ...b.outOfScope])].filter(
     (p) => !inScope.has(p),
   );
+  // #1744 — each half's clip records are keyed by their ENTRY TEXT, so carrying
+  // them across the fold is a keep-if-still-present filter (capFenceList), not a
+  // re-key: a record whose entry the fold removed (a self-fence, or the re-cap)
+  // goes with the entry, and every drop lands in one aggregated record per
+  // reason. A half's own drop records carry their count forward — the entries
+  // were never stored in either half, so nothing here can invalidate them.
+  const carried: OutOfScopeClip[] = [
+    ...(a.outOfScopeClipped ?? []),
+    ...(b.outOfScopeClipped ?? []),
+  ];
+  // Two halves at the cap union to twice the cap: re-apply it here so the fold
+  // cannot smuggle past the bound a single call was held to. The re-cap is the
+  // same event as the tool boundary's bound, so it says the same words on the
+  // same channel (#1744 review) — an operator greps one line and finds the
+  // fence the fold dropped, whichever pass bounded it — and the line reports
+  // ONLY what this fold dropped, because the carried records describe drops
+  // the halves' own calls already said out loud.
+  const fence = capFenceList(mergedList, carried);
+  if (fence.thisPass.cap > 0) {
+    fence.clipped.push({ kind: "dropped", reason: "cap", count: fence.thisPass.cap });
+  }
+  if (fenceWasBounded(fence)) {
+    traceWarn(fenceBoundNotice(`plan fold '${a.id}' + '${b.id}'`, fence));
+  }
   // #1005 — symmetric: drop BOTH merged ids from BOTH halves' dependsOn
   // (the doc's "minus the two merged ids" — the pre-#1005 asymmetry kept
   // b.id in a's own dependsOn, so a self-reference survived the fold).
@@ -94,7 +126,8 @@ export function foldTwo(a: Workstream, b: Workstream): Workstream {
     id: a.id,
     scope: `${a.scope} (+merged: ${b.id})`,
     paths: mergedPaths,
-    outOfScope: mergedOutOfScope,
+    outOfScope: fence.entries,
+    ...clippedField(fence.clipped),
     dependsOn: mergedDeps.size > 0 ? [...mergedDeps] : undefined,
     ...((a.integrationTest ?? b.integrationTest)
       ? { integrationTest: a.integrationTest ?? b.integrationTest }

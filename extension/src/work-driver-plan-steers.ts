@@ -13,7 +13,7 @@
  * Re-exported from work-driver-plan-helpers.ts so importers keep their paths.
  */
 
-import { neutraliseFenceEntry } from "./plan-workstream-schema.ts";
+import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 import type { RefusedWorkstreamCall } from "./work-driver-plan-calls.ts";
 import type { PathCollision } from "./work-driver-plan-paths.ts";
 import type { FenceContradiction } from "./work-driver-plan-paths.ts";

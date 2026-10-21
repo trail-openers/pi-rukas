@@ -388,6 +388,14 @@ The hook is the escape hatch for the inexpressible: anything the symlink allowli
 
 Each workstream gets its own worktree and its own developer, running in parallel, so a file in two `paths` lists means two developers editing it at once — which used to surface much later as a `git apply` conflict at commit-pr. The plan step now catches it and re-plans once. If it persists, the issue probably needs those workstreams merged.
 
+### A long `outOfScope` entry no longer refuses the whole plan call (#1744)
+
+**Symptom (before the fix):** the plan step reports `Validation failed for tool "report_workstream": outOfScope.0: must not have more than 500 characters`, the planner re-reports without the long entry, and the workstream develops with no out-of-scope fence.
+
+**Grep for:** `outOfScope bounded` (one `WARN` line per bounded call and per fold re-cap; it names the workstream, the clipped / cap-dropped / blank-dropped counts, `kept: N/M`, and any fence a clip widened into a directory: `clipped fence now covers docs/legacy/`).
+
+**Now:** `outOfScope` is free text and is BOUNDED, never a reason to refuse the call — an over-long entry is clipped at its last path separator, comma or space at or before `WORKSTREAM_FENCE_MAX` (500), a path list written as one entry is split, duplicates collapse, and past `WORKSTREAM_LIST_MAX` (50) entries the rest are dropped; every one of those is recorded on the workstream (`outOfScopeClipped`) and rendered where the fence is read. Only an entry past the abuse ceiling (20 000 chars) or an array past 500 entries is still refused, and `paths` over `WORKSTREAM_PATH_MAX` (300) is still refused outright.
+
 ### A parallel plan parks at `verify-failed:develop` with a type error no workstream caused alone
 
 **Symptom:** every developer reports success, yet develop parks with a type error such as *"Property 'x' does not exist"* or *"Module has no exported member 'y'"*, and the consolidated tree fails with the same error.

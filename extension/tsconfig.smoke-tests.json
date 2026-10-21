@@ -36,6 +36,8 @@
     "smoke-tests/test-auto-delta-carry-provenance.ts",
     "smoke-tests/test-work-driver-worktree-sweep-rules.ts",
     "smoke-tests/test-plan-spec-glob-coverage.ts",
+    "smoke-tests/test-plan-outofscope-bound-1744.ts",
+    "smoke-tests/test-plan-outofscope-visible-1744.ts",
     "smoke-tests/test-plan-spec-markup-slots.ts",
     "smoke-tests/test-plan-fence-dir-glob.ts",
     "smoke-tests/test-spec-slot-fence-admission.ts",
