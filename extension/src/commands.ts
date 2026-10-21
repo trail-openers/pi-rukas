@@ -36,8 +36,10 @@ import type {
   BeforeAgentStartEventResult,
   ExtensionAPI,
   ExtensionCommandContext,
+  ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { notifyAgent } from "./agent-message.ts";
+import { backlogReminderSection } from "./backlog-reminder.ts";
 import { execp } from "./exec.ts";
 import { buildMemoryPanel } from "./memory-panel.ts";
 import { GLOBAL_KEY, getAllOverrides } from "./model-config.ts";
@@ -337,7 +339,10 @@ export function registerCommands(pi: ExtensionAPI) {
 
   pi.on(
     "before_agent_start",
-    async (event: BeforeAgentStartEvent): Promise<BeforeAgentStartEventResult | undefined> => {
+    async (
+      event: BeforeAgentStartEvent,
+      ctx?: ExtensionContext,
+    ): Promise<BeforeAgentStartEventResult | undefined> => {
       // Two-layer doctrine: full PM doctrine on turn 1 (heavy, one-shot to
       // amortise cost), short PM_STICKY_PREAMBLE on every turn while in PM
       // mode (light, closes the "PM forgets the doctrine on turn 2+" gap that
@@ -345,6 +350,24 @@ export function registerCommands(pi: ExtensionAPI) {
       if (!isPmModeActive()) return undefined;
       const base = event.systemPrompt ?? "";
       const pieces: string[] = [base, PM_STICKY_PREAMBLE];
+      // #1730 A — the private-backlog reminder, PM-only. This handler is the
+      // only place it is appended, and it returns above unless PM mode is
+      // armed, so no child prompt ever carries it. `""` (no `.backlog/`, or
+      // one without `backlog.md`, or any stat failure) pushes nothing at all,
+      // which is what keeps the no-backlog prompt byte-identical to the
+      // pre-feature one. The probe is memoised per session directory.
+      //
+      // `ctx.cwd` is the session's directory (the same first-class source
+      // every other repo-root read uses) and there is deliberately NO
+      // `process.cwd()` fallback: without a session directory there is nothing
+      // to look under, and probing the harness's own cwd would let a test, or
+      // any caller that omits ctx, pick up a real `.backlog/` and get a
+      // different prompt than the one it is asserting on.
+      const sessionDir = ctx?.cwd;
+      if (sessionDir) {
+        const backlog = await backlogReminderSection(sessionDir);
+        if (backlog) pieces.push(backlog);
+      }
       if (takeDoctrinePending()) {
         try {
           const pmPrompt = await fs.readFile(PM_PROMPT_FILE, "utf8");

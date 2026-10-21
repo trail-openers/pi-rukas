@@ -30,6 +30,7 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-agents-md-tool.ts",
   "smoke-tests/test-agents-md-wrap.ts",
   "smoke-tests/test-audit.ts",
+  "smoke-tests/test-backlog-reminder.ts",
   "smoke-tests/test-build-list-dedup.ts",
   "smoke-tests/test-built-prompts.ts",
   "smoke-tests/test-cause-class.ts",
