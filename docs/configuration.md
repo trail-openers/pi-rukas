@@ -15,11 +15,34 @@ All optional. Defaults are reasonable for typical use. This file holds the full 
 | Skills (auto-installed) | `~/.pi/agent/skills/` |
 | Run transcripts | `~/.pi/agent/ensemble-runs/<date>/` |
 | Saved model config | `~/.pi/agent/ensemble-models.json` |
+| Private backlog (optional) | `<repository root>/.backlog/backlog.md` — a separate clone, kept out of `git status` by a per-clone `.git/info/exclude` entry |
+
+## Private backlog (optional)
+
+If you keep your real priority order somewhere other than the issue tracker, clone that repository into the project at `.backlog/` and maintain a `backlog.md` inside it:
+
+```bash
+git clone <your-private-backlog-url> .backlog
+grep -qx '/.backlog/' .git/info/exclude || echo '/.backlog/' >> .git/info/exclude
+```
+
+**Exclude it per clone, never in a committed `.gitignore`.** The directory is a nested clone holding private content, and the ignore rule is about *this* checkout's hygiene, not the project's shape — the same reasoning as the harness's own per-clone entries (`work-driver-git-exclude.ts`). A committed `/.backlog/` line would ship your working arrangement to every clone of the repository, including ones whose operators have no such backlog.
+
+**The path is the repository root, not the directory you launched `pi` from.** The reminder resolves the toplevel by walking up from the session directory to the first directory holding a `.git` (a directory in a normal clone, a file in a linked worktree; bounded at 50 levels), so a session started inside `extension/` or any other subdirectory still finds `<toplevel>/.backlog`. Cloning the backlog anywhere other than the repository root means nothing sees it.
+
+**What the reminder does.** When `.backlog/backlog.md` exists, the PM session is handed one short paragraph telling it the backlog exists, where it is, that its `## Now (in order)` list is the agreed order, that the order changes only with your explicit approval and by committing to that repository (never by editing the file uncommitted), and that machine-filed issues sit under Triage until you promote them. That is all it does: it is a pointer, not a reader. Nothing here fetches the backlog, runs git against it, or puts its content into a prompt.
+
+**It fires only for a real clone.** `.backlog` itself must be a real directory (not a symlink to somewhere else in the tree), must contain a `.git` marker, and `backlog.md` must be a regular file. A directory someone committed called `.backlog`, a `.backlog` that is a symlink, and a `backlog.md` that is a symlink or a directory, get no reminder — the feature is about your private clone, and telling the PM to treat whatever a symlink points at as the agreed order is not that.
+
+**What happens without it: nothing.** No `.backlog/`, a `.backlog/` that is not a clone, no `backlog.md`, a `backlog.md` that is a symlink or a directory, or a session with no directory at all all produce a session prompt byte-identical to a pi-rukas without this feature — there is no flag to turn on and no setting to set. The `.backlog` check runs per PM turn, so an operator who clones the backlog mid-session is heard on the next turn. Two bounds keep it cheap: a 250 ms wall clock bounds the *wait*, so a hung mount cannot hold a turn open, and one outstanding probe per process bounds the *requests*, so a mount that never answers costs one hanging probe rather than one per turn. (The repository root itself is remembered per session directory — the walk up a fixed path is the part that cannot change.) An ordinary absence (`ENOENT`/`ENOTDIR`) is silent; a real fault on your own clone (`EACCES`, `EIO`) prints one `WARN` line per code and path and is otherwise treated the same way as absence: the paragraph is simply not added, and nothing throws. The check runs only in the PM session — subagent prompts (developer, explore, ops, reviewers) never gain the paragraph. Set `PI_ENSEMBLE_BACKLOG_REMINDER=0` to switch the probe off entirely.
+
+Rendering the backlog itself — a panel at `/start`, so you see the agreed order rather than only being told one exists — is the follow-on half of this feature and is not in this release.
 
 ## Environment variables
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `PI_ENSEMBLE_BACKLOG_REMINDER` | `1` | Set to `0` to stop the PM's private-backlog reminder ([#1730](https://github.com/trail-openers/pi-rukas/issues/1730)). With the default, each PM turn probes the **repository root**'s `.backlog/` — it must be a real directory (not a symlink) holding a `.git` marker and a regular-file `backlog.md`, not a symlink — and appends one paragraph pointing the PM at it. `0` skips the probe entirely: no filesystem read, no paragraph. See [Private backlog](#private-backlog-optional). |
 | `PI_ENSEMBLE_QUIET_STATUS` | unset | Set to `1` to disable the **passive** live dispatch deck widget — the below-editor status row per in-flight subagent ([#117](https://github.com/trail-openers/pi-rukas/issues/117)) — and the roster-mode `↓` entry point from an empty editor ([#834](https://github.com/trail-openers/pi-rukas/issues/834)). The **agent list** (`alt+a`), the **live view** ([#839](https://github.com/trail-openers/pi-rukas/issues/839)), and the per-job ring buffer are **not** quiet-gated: the buffer is always created (the `startBuffer` early return that lived here is removed — the gate moved to the widget in `dispatch-deck.ts` `renderNow`), and the agent list opens the live view for a quiet session's rows. Roster mode ([#834](https://github.com/trail-openers/pi-rukas/issues/834)): with the deck enabled (i.e. NOT quiet), `↓` from an EMPTY editor enters it — walk running subagents with `↓`/`↑` (or `j`/`k`), `Enter` opens the **live view** — the child's recent activity (assistant text ≤400 chars, tool calls with ≤240-char args, results ≤200 chars, errors marked) from a per-job 200-event ring buffer, updating as events arrive — with `↑`/`↓`/`PgUp`/`PgDn` to scroll (pauses following), `End` to resume, `s` to open the steer prompt (the view re-opens after), and `Esc` to close; rows without a buffer (lens/adversarial children) open the steer prompt directly instead; finished runs are browsed via `/runs`; exit roster mode with `Esc` or `↑` at the top row; any other key exits and goes to the editor. |
 | `PI_ENSEMBLE_QUIET_LIFECYCLE` | unset | Set to `1` to disable scrollback lifecycle markers (`▸ ensemble: dispatched / ✓ finished / ✗ failed`) ([#118](https://github.com/trail-openers/pi-rukas/issues/118)). |
 | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS` | `7200000` (2 h) | Runaway backstop per spawned subagent — catches a child looping forever while still emitting output. Liveness (`PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS`) is the real hang detector; this should never fire in normal operation. Operator/CI override — not settable by the agent. |
