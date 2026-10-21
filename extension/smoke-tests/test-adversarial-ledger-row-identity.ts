@@ -24,11 +24,15 @@
  *      `dedupeLatest`) still pick by (branch, kind, max `at`): the nonce is
  *      test-facing provenance, NOT a guard key;
  *   3. the ARMS: a static canary on `lib/arms/loop-behaviour.ts` fails if the
- *      floor selector comes back (a gate never observed to fail is worthless).
+ *      floor selector — or any equivalent wait (`Atomics.wait`,
+ *      `Bun.sleepSync`, an `at >=` floor) — comes back, and fails if the arms
+ *      stop selecting through the exported identity selector;
+ *   4. the GUARD: no merge-guard / ledger-reader source mentions the field at
+ *      all, so "the guard never reads `rowNonce`" is a gate, not a docstring.
  */
 
 import { execSync } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { writeAdversarialLedgerEntry } from "../src/adversarial-ledger.ts";
 import {
@@ -39,6 +43,7 @@ import {
   readLedgerFile,
 } from "../src/review-ledger.ts";
 import {
+  APPROVED,
   BINDING_REFUSAL_PREFIXES,
   ledgerFile,
   setupRepo,
@@ -63,14 +68,13 @@ const execp = async (
     maxBuffer: opts?.maxBuffer ?? 1024 * 1024,
     encoding: "utf8",
     env: gitTestEnv(),
+    // Bounded subprocess I/O: a hung git call (lock contention on the shared
+    // fixture, an fs stall) must surface as a named failure here, not as the
+    // harness wall clock killing the whole smoke test.
+    timeout: 30_000,
   });
   return { stdout };
 };
-
-const APPROVED = {
-  ok: true,
-  loopOutcome: "approved",
-} as never;
 
 /** A row is a binding refusal iff its detail opens with one of the prefixes
  * the guard itself recognises (same predicate the arms use). */
@@ -87,10 +91,22 @@ const repo = fixture.dir;
 const LEDGER_FILE = ledgerFile(repo);
 process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = LEDGER_FILE;
 
+/**
+ * The rows on disk, with a read failure kept DISTINCT from an empty ledger.
+ * Returning `[]` on a failed read would make every absence assertion below
+ * vacuously true — the "nothing matched vs could not ask" collapse the sibling
+ * reader in `lib/arms/loop-behaviour.ts` (`readRows`) also refuses, by
+ * throwing. A failure therefore fails the run AT the read.
+ */
 const rowsOnDisk = (): LedgerEntry[] => {
   try {
     return readLedgerFile(LEDGER_FILE).entries;
-  } catch {
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    assert(
+      false,
+      `ledger: reading ${LEDGER_FILE} failed (${reason}) — an unreadable file is not an empty one`,
+    );
     return [];
   }
 };
@@ -209,26 +225,63 @@ try {
     "guard: dedupeLatest still collapses one row per (branch, kind) by max `at` — the nonce is not a dedupe key",
   );
 
-  // ── 3. the canary: the floor selector must not come back into the arms.
+  // ── 3. the canary: the floor's MECHANISM must not come back into the arms.
   // `waitForRowWrittenAfter` existed only in the arms file and had no test —
-  // the coverage gap the issue names. Read relative to this file's parent
-  // (extension/) so the read is cwd-independent; the literal names the repo
-  // path so the ALWAYS_RUN detector sees this file as a reader of it.
+  // the coverage gap the issue names. What is pinned is the hazard class and
+  // the API, not one variable name or one expression shape: a rename-tolerant
+  // negative on the waits that reproduce the flake, and a positive on the
+  // identity selector being called with an arm nonce. Read relative to this
+  // file's parent (extension/) so the read is cwd-independent; the literal
+  // names the repo path so the ALWAYS_RUN detector sees this file as a reader
+  // of it.
   const ARMS_REL = "smoke-tests/lib/arms/loop-behaviour.ts";
   // A missing file is a hard canary failure, not a silent pass on empty text.
   const armsSrc = readFileSync(path.resolve(import.meta.dirname, "..", ARMS_REL), "utf8");
+  // Comments explain the flake's history and quote the dead floor (`at >=
+  // Date.now() - 1`); the scan reads code, so strip them first rather than
+  // punish a file for documenting what it no longer does.
+  const armsCode = armsSrc
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .map((line) => line.replace(/\/\/.*$/, ""))
+    .join("\n");
   assert(
     !armsSrc.includes("waitForRowWrittenAfter"),
     `arms: the timestamp-floor selector is gone (see ${ARMS_REL})`,
   );
   assert(
-    !armsSrc.includes("staleStart"),
-    "arms: no `Date.now() - 1` floor remains in the arm script",
+    /waitForRowsWithNonce\(\s*"job-/.test(armsCode),
+    `arms: each arm selects its rows through the identity selector with its own job nonce (see waitForRowsWithNonce in ${ARMS_REL})`,
   );
-  assert(
-    /rowNonce\s*===\s*nonce/.test(armsSrc),
-    "arms: the row reader selects on rowNonce equality against the arm's own job id",
+  for (const [pattern, hazard] of [
+    [/Date\.now\(\)\s*-\s*\d+/, "a `Date.now() - N` write-start floor"],
+    [/\bat\s*>=/, "an `at >=` floor comparison"],
+    [/\bAtomics\.wait\b/, "a blocking `Atomics.wait`"],
+    [/\bBun\.sleepSync\b/, "a blocking `Bun.sleepSync`"],
+  ] as const) {
+    assert(
+      !pattern.test(armsCode),
+      `arms: ${hazard} is not back in the arm script (${pattern.source})`,
+    );
+  }
+
+  // ── 4. the guard-blindness contract, gated rather than documented. The
+  // `LedgerEntry.rowNonce` jsdoc says the merge guard never consults the field;
+  // a comment states current behaviour and forbids nothing, so the same claim
+  // is checked at the source (the shape `test-decision-seam-grep.ts` and
+  // `test-marker-contracts.ts` already use). The file list is derived from the
+  // directory so a new `merge-guard-*.ts` cannot be added without passing.
+  const srcDir = path.resolve(import.meta.dirname, "..", "src");
+  const guardSources = readdirSync(srcDir).filter((f) =>
+    /^(merge-guard.*|review-ledger-core|review-ledger-read)\.ts$/.test(f),
   );
+  assert(guardSources.length > 0, `guard: the guard sources were found under ${srcDir}`);
+  for (const file of guardSources) {
+    assert(
+      !readFileSync(path.join(srcDir, file), "utf8").includes("rowNonce"),
+      `guard: ${file} never mentions \`rowNonce\` — it is test-facing provenance, not a guard key`,
+    );
+  }
 } finally {
   rmSync(path.dirname(repo), { recursive: true, force: true });
 }

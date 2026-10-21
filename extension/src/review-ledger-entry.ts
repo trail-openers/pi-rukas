@@ -95,7 +95,21 @@ export interface LedgerEntry {
    * earlier arm can stamp itself past any floor and be misread as the current
    * arm's row (the #1557 flake). The guard readers must never consult it:
    * `latestEntry` / `dedupeLatest` keep selecting on (branch, kind, max `at`),
-   * and `merge-guard.ts` / `merge-guard-round-cap.ts` do not read this field.
+   * and `merge-guard.ts` / `merge-guard-round-cap.ts` do not read this field —
+   * that is a GATE, not a comment: `test-adversarial-ledger-row-identity.ts` §4
+   * fails if any `merge-guard*` / `review-ledger-core.ts` /
+   * `review-ledger-read.ts` source starts mentioning the name.
+   *
+   * The rejected alternative (why this field exists at all): the arms already
+   * wrap `appendLedgerEntry` and track every in-flight write, so draining
+   * before the loop and snapshotting the entries handed to the wrapper after it
+   * would identify this arm's writes with no production change. It was rejected because the rows the arms assert on are
+   * the rows ON DISK, and the mock's view of what it was handed is a second
+   * source of truth — an arm could then read green off a wrapper that recorded
+   * a call whose write never landed, which is the class of failure these arms
+   * exist to make visible. Storing the identity in the row keeps the assertion
+   * target the artefact itself.
+   *
    * Optional on purpose — hand-built rows and every pre-#1557 row carry
    * none and stay valid. */
   rowNonce?: string;
