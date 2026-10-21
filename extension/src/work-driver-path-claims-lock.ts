@@ -31,13 +31,16 @@
  * rather than under `.git/` — same reason `path-claims.json` does.
  *
  * #1640 — the stale-holder judgment and the delete that removes a corpse are
- * ONE synchronous operation in `work-driver-path-claims-lock-sweep.ts`
- * (`sweepStaleLock`), re-validated by inode and bytes immediately before the
- * unlink. They used to be an async `readFile` here plus an unconditional
- * `fs.rm` by path, and under an 8-way fan-out that let a waiter delete a
- * LIVE holder's lock (the read straddled the path's unlink+create) — two
- * writers in the body at once, one claim lost. Do not reintroduce a read +
- * rm pair for the lockfile.
+ * ONE synchronous operation, reached through
+ * `work-driver-path-claims-lock-sweep.ts` (`sweepStaleLock`) and implemented in
+ * the shared leaf `stale-lock-sweep.ts`, re-validated by inode and bytes
+ * immediately before the unlink. They used to be an async `readFile` here plus
+ * an unconditional `fs.rm` by path, and under an 8-way fan-out that let a
+ * waiter delete a LIVE holder's lock (the read straddled the path's
+ * unlink+create) — two writers in the body at once, one claim lost. Do not
+ * reintroduce a read + rm pair for the STALE SWEEP. (Release compares our own
+ * nonce-identified token before unlinking, and warns when that comparison
+ * fails; that is a different, correct pair.)
  */
 
 import { randomUUID } from "node:crypto";
@@ -45,11 +48,7 @@ import { closeSync, openSync, unlinkSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace, traceWarn } from "./trace.ts";
-import {
-  type HolderRead,
-  LOCK_STALE_MS,
-  sweepStaleLock,
-} from "./work-driver-path-claims-lock-sweep.ts";
+import { LOCK_HARD_STALE_MS, sweepStaleLock } from "./work-driver-path-claims-lock-sweep.ts";
 import { workStateDir } from "./workflow-state.ts";
 
 const LOCK_FILE = "path-claims.lock";
@@ -161,16 +160,45 @@ const LOCK_WAIT_MS = 5_000;
  */
 const LOCK_RETRY_MS = 0.5;
 
+/**
+ * Ceiling on the poll's doubling backoff.
+ *
+ * A contended claim is normally handed over in milliseconds, so the first few
+ * polls at 0.5 ms are what win the race; the backoff only ever gets paid on the
+ * rare wait behind a holder that is slow or sick, and there 20 ms is responsive
+ * enough while keeping a full `LOCK_WAIT_MS` spin to a few hundred syscalls
+ * instead of ten thousand.
+ */
+const LOCK_RETRY_MAX_MS = 20;
+
 function lockPath(repoRoot: string): string {
   return path.join(workStateDir(repoRoot), LOCK_FILE);
 }
 
-/** True when the lockfile still holds exactly `token` (this process's write). */
-async function holdsLockfile(file: string, token: string): Promise<boolean> {
+/**
+ * Read the lockfile's contents, or null when there is nothing to read.
+ *
+ * `null` is kept distinct from a token that merely DIFFERS, because the two
+ * mean different things to an operator: "someone else's token is here" is a
+ * theft, while "nothing is here" is a release that raced a sweep.
+ */
+async function readLockfile(file: string): Promise<string | null> {
   try {
-    return (await fs.readFile(file, "utf8")) === token;
+    return await fs.readFile(file, "utf8");
   } catch {
-    return false;
+    return null;
+  }
+}
+
+/** The pid a lockfile token names, for the theft warning an operator reads. */
+function tokenPid(raw: string): number | "unknown" {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return "unknown";
+    const pid = (parsed as { pid?: unknown }).pid;
+    return typeof pid === "number" && Number.isFinite(pid) ? pid : "unknown";
+  } catch {
+    return "unknown";
   }
 }
 
@@ -209,6 +237,7 @@ async function acquire(
   // writer of a fresh project down the unserialised path — exactly when a
   // fan-out is most likely to be racing.
   await fs.mkdir(path.dirname(file), { recursive: true }).catch(() => undefined);
+  let pollMs = LOCK_RETRY_MS;
   for (;;) {
     try {
       // `wx` is O_EXCL: the create itself is the atomic test-and-set.
@@ -291,17 +320,27 @@ async function acquire(
           // Remove only our own lock — never another holder's. `token` is
           // unique per acquisition (nonce), so a lock a sibling swept and
           // re-took can never be unlinked by us.
-          if (await holdsLockfile(file, token)) {
+          const current = await readLockfile(file);
+          if (current === token) {
             await fs.rm(file, { force: true }).catch(() => undefined);
-          } else {
-            // #1640 — never silent: our token is gone from a lock WE acquired,
-            // which means a sibling deleted a live lock. That is the theft
-            // fingerprint, and it must reach an operator rather than surface
-            // weeks later as a lost claim.
-            traceWarn(
-              "claims-lock: releasing without ownership — our lockfile was replaced while we held it (a live lock was stolen)",
-            );
+            return;
           }
+          // #1640 — never silent: our token is gone from a lock WE acquired.
+          // The two shapes say different things and the operator reading the
+          // trace needs the difference: a token that DIFFERS means our lock was
+          // unlinked and another process took the path while we held it, which
+          // is the theft fingerprint; nothing to read at all means the path was
+          // removed under us (a sweep that judged our live lock a corpse, or a
+          // sibling's cleanup) with no replacement in sight. Both name the file
+          // and the pid that now owns it, because the trace line is what gets
+          // pasted into an issue.
+          traceWarn(
+            `claims-lock: releasing without ownership — ${path.basename(file)} ${
+              current === null
+                ? "could not be read (removed while we held it)"
+                : `holds a different token (pid ${String(tokenPid(current))})`
+            }; pid ${String(process.pid)} believed it held this lock (a live lock was stolen)`,
+          );
         },
         state: "held",
       };
@@ -358,7 +397,12 @@ async function acquire(
         continue;
       }
       if (Date.now() > deadline) return null;
-      await new Promise((r) => setTimeout(r, LOCK_RETRY_MS));
+      await new Promise((r) => setTimeout(r, pollMs));
+      // First hand-offs are decided in the first few sub-millisecond polls; the
+      // doubling only matters for a wait that has already outlived them, and it
+      // stops at LOCK_RETRY_MAX_MS so a sick holder cannot turn the wait into
+      // ten thousand stat+read pairs.
+      pollMs = Math.min(pollMs * 2, LOCK_RETRY_MAX_MS);
     }
   }
 }
@@ -372,12 +416,10 @@ async function acquire(
  * to hold it — another cycle held the lock past the wait window, or the
  * lockfile could not be created at all (read-only `.pi`, ENOSPC), which is
  * `fault` and never the test's `injected-unlocked` — are traced before the
- * throw. The test's injected fault is the one
- * held the lock past the wait window, or the lockfile could not be created at
- * all (read-only `.pi`, ENOSPC). The test's injected fault is the one
- * exception, and only because the mutation arm exists to prove the positive
- * assertion tests the lock — it deliberately reproduces the lost update this
- * throw prevents. A production cycle sets neither variable and cannot reach it.
+ * throw. The test's injected fault is the one exception, and only because the
+ * mutation arm exists to prove the positive assertion tests the lock — it
+ * deliberately reproduces the lost update this throw prevents. A production
+ * cycle sets neither variable and cannot reach it.
  */
 export async function withClaimsLock<T>(
   repoRoot: string,
@@ -388,7 +430,7 @@ export async function withClaimsLock<T>(
   const handle = await acquire(repoRoot, Date.now() + waitMs);
   if (handle === null) {
     throw new Error(
-      `${CLAIMS_LOCK_REFUSAL} — held by another cycle for over ${waitMs}ms (a stale lock is swept after ${LOCK_STALE_MS}ms)`,
+      `${CLAIMS_LOCK_REFUSAL} — held by another cycle for over ${waitMs}ms; a lock whose holder pid is gone is swept at once, and one whose holder still answers is swept only past ${LOCK_HARD_STALE_MS}ms — no claim write holds this lock that long`,
     );
   }
   if (handle.state === "fault") {

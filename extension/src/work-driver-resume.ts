@@ -39,6 +39,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { processAlive } from "./process-liveness.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { deliverTerminalLine } from "./work-driver-terminal-delivery.ts";
@@ -244,22 +245,15 @@ export type RunningVerdict =
   | { action: "refuse"; ownerPid: number };
 
 /**
- * Is this process still alive?
+ * Re-exported from `process-liveness.ts`, where it now lives.
  *
- * `kill(pid, 0)` sends no signal and only tests reachability. EPERM means the
- * pid exists but belongs to another user — still alive, so still an owner.
- * Pid reuse can in principle make a dead owner look live; the failure mode is
- * refusing to resume, which is the safe direction.
+ * It moved out with #1740 because the stale-lock sweep needed the same
+ * predicate and should not have to import the state-file machinery for a
+ * two-syscall question. The re-export stays because every existing importer —
+ * the claims staleness gate, the sweep policy, the park reason, and the resume
+ * suite itself — names this module as its home for it.
  */
-export function processAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
+export { processAlive };
 
 /**
  * Decide what a `status: "running"` state file means.

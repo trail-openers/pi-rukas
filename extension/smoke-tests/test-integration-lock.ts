@@ -149,6 +149,63 @@ try {
     assert(ran, "an unparseable lockfile is treated as stale, not as a deadlock");
   }
 
+  {
+    // #1740 — the shape the pre-shared sweep got wrong, and the one the fix is
+    // about. A lockfile whose token could not be parsed used to be `rm`'d by
+    // path, unconditionally, the first time any waiter looked at it. That is
+    // how a LIVE holder lost its lock: this lock published its token through
+    // an awaited write after the create, so for the length of that write the
+    // path held a file that existed and parsed to nothing — and any sibling
+    // polling in that gap deleted it, then took the lock while the real holder
+    // was still in its critical section. Two consolidations writing repoRoot.
+    //
+    // Two changes close it: the token is now published in the create's own
+    // turn, and the delete is conditional — same inode, same size, same bytes,
+    // and old enough that it cannot be mid-publication. Seeded here is exactly
+    // what the old code could not distinguish from a corpse: a truncated token
+    // belonging to a process that is, in fact, running.
+    __resetIntegrationLock();
+    const lockFile = path.join(root, ".git", "pi-rukas-integration.lock");
+    const holder = Bun.spawn(["sleep", "20"]);
+    const halfWritten = `{"pid":${holder.pid},"at":${Date.now() - 40 * 60 * 1000},"po`;
+    writeFileSync(lockFile, halfWritten);
+    try {
+      let ran = false;
+      const pending = withIntegrationLock(root, async () => {
+        ran = true;
+      });
+      // Well inside the sweep's publish grace, and across several 250 ms polls:
+      // the waiter has had every opportunity to run the delete the old code ran
+      // on its first look.
+      await sleep(400);
+      assert(
+        !ran,
+        "the integration lock does not march into the body over a lockfile it cannot read",
+      );
+      assert(
+        existsSync(lockFile) && readFileSync(lockFile, "utf8") === halfWritten,
+        "and does NOT delete a live holder's unpublishable lockfile — the pre-#1740 unconditional rm removed it on the first poll",
+      );
+      // Once the file has demonstrably aged past the grace the same waiter
+      // sweeps it and proceeds, which is what makes the two assertions above a
+      // judgement about the sweep rather than a deadlock the test mistook for
+      // safety.
+      const outcome = await Promise.race([
+        pending.then(() => "acquired"),
+        sleep(5_000).then(() => "stuck"),
+      ]);
+      assert(outcome === "acquired", "the still-unreadable lockfile is swept once it has aged");
+      assert(ran, "and the body runs after that sweep");
+    } finally {
+      try {
+        holder.kill();
+      } catch {
+        // Already gone.
+      }
+      rmSync(lockFile, { force: true });
+    }
+  }
+
   // ------------------------------------------------- atomic git exclude
 
   {
