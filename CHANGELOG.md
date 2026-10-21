@@ -8,6 +8,19 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.2](https://github.com/trail-openers/pi-rukas/compare/v0.14.1...v0.14.2) (2026-10-21)
+
+
+### Features
+
+* **start:** remind the PM of a private .backlog when one is cloned ([#1739](https://github.com/trail-openers/pi-rukas/issues/1739)) ([0ab5c14](https://github.com/trail-openers/pi-rukas/commit/0ab5c147f162ebd5066f0e285a23a5d84df42e8f))
+
+
+### Bug Fixes
+
+* **guards:** refuse only commands that reach the review findings store ([#1738](https://github.com/trail-openers/pi-rukas/issues/1738)) ([95760aa](https://github.com/trail-openers/pi-rukas/commit/95760aadf4702399c5babb189d860faa2331a922))
+* **work:** sweep the claims lock as one synchronous compare-and-delete ([#1740](https://github.com/trail-openers/pi-rukas/issues/1740)) ([9611961](https://github.com/trail-openers/pi-rukas/commit/96119615747906eff955ceecdfa9e44ff52f60ae))
+
 ## [0.14.1](https://github.com/trail-openers/pi-rukas/compare/v0.14.0...v0.14.1) (2026-10-21)
 
 
