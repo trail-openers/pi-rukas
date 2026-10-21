@@ -10,6 +10,7 @@
  * operator off to inspect a diff or push a branch that was never created.
  */
 
+import { repeatParkNote } from "./work-driver-explain-repeat.ts";
 import { lastCapHit } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
@@ -35,16 +36,16 @@ export function explainPlan(cap: Cap, state: WorkState): string {
       // reached the child", so the sentence names both and the check that
       // separates them.
       if (hit?.planVerdict === "no-calls") {
-        return `the plan reply carried no accepted report_workstream call: ${evidence}. The driver cannot tell the two causes apart from the reply. Check the plan child's tool list in its transcript for report_workstream (the companion is loaded with --extension), and run test-pi-shape-live.ts against the installed Pi. If the tool is listed, the planner ignored it and a re-run may succeed; if it is not, the companion did not register and a re-run will park the same way. Nothing was written; the cycle cost one planning dispatch`;
+        return `${repeatParkNote(state)}the plan reply carried no accepted report_workstream call: ${evidence}. The driver cannot tell the two causes apart from the reply. Check the plan child's tool list in its transcript for report_workstream (the companion is loaded with --extension), and run test-pi-shape-live.ts against the installed Pi. If the tool is listed, the planner ignored it and a re-run may succeed; if it is not, the companion did not register and a re-run will park the same way. Nothing was written; the cycle cost one planning dispatch`;
       }
       // #1652 — the calls reached the driver and were refused, so the tool is
       // registered. The refusal reasons are the cause; the tool list is not.
       if (hit?.planVerdict === "all-refused") {
-        return `the plan's report_workstream calls were all refused by the driver's checks: ${evidence}. The tool is registered (a refusal proves it), so the cause is in the calls: a schema mismatch, a duplicate workstream id, or a path the planner grammar does not accept. Nothing was written; re-run \`/work ${state.issue} --restart\` (one planning dispatch), and the corrective re-dispatch receives these reasons`;
+        return `${repeatParkNote(state)}the plan's report_workstream calls were all refused by the driver's checks: ${evidence}. The tool is registered (a refusal proves it), so the cause is in the calls: a schema mismatch, a duplicate workstream id, or a path the planner grammar does not accept. Nothing was written; re-run \`/work ${state.issue} --restart\` (one planning dispatch), and the corrective re-dispatch receives these reasons`;
       }
       // #819 — the plan-to-spec gate. The plan was JUDGED, not lost: what the
       // cycle would have built matches nothing the spec asked for.
-      return `the plan-to-spec gate refused this plan: ${evidence}. Nothing was written — the gate fires after plan and before branch, so the cycle cost one planning dispatch, not a develop fan-out. The #818 shape this exists to stop: a corrective re-plan came back describing a different problem (a supply-chain overhaul no issue asked for) and four developers built it for 45 minutes because nothing between plan and develop compared the declared paths with the spec's deliverables. Check the issue's deliverables and the plan reply in \`.pi/work-state/${state.issue}/\` — if the spec's paths are stale (files renamed, or the work already landed), revise the issue body and re-run; if the planner drifted, re-run and the gate re-judges the new plan`;
+      return `${repeatParkNote(state)}the plan-to-spec gate refused this plan: ${evidence}. Nothing was written — the gate fires after plan and before branch, so the cycle cost one planning dispatch, not a develop fan-out. The #818 shape this exists to stop: a corrective re-plan came back describing a different problem (a supply-chain overhaul no issue asked for) and four developers built it for 45 minutes because nothing between plan and develop compared the declared paths with the spec's deliverables. Check the issue's deliverables and the plan reply in \`.pi/work-state/${state.issue}/\` — if the spec's paths are stale (files renamed, or the work already landed), revise the issue body and re-run; if the planner drifted, re-run and the gate re-judges the new plan`;
     }
     case "workstream-results-unreadable": {
       // #1652 — the planner made report_workstream calls, but the replay carried

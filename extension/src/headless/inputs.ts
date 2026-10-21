@@ -281,6 +281,11 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("QUIET_LIFECYCLE", false, "interactive"),
   flag("QUIET_STATUS", false, "interactive"),
   input("RATE_LIMIT_BURST_MAX_S", "number", 300, "cycle", { unit: "s" }),
+  // #1743 — the repeat-park guard: a third start of an issue that two earlier
+  // cycles already parked for the same reason against the same issue text is
+  // refused before any step runs. `0` turns the refusal off; the park records
+  // under `.pi/work-state/<N>/park-<cap>.json` are still written either way.
+  flag("REPEAT_PARK", true),
   flag("RESEARCH_FALLBACK", true, "interactive"),
   flag("RESUME", true),
   // The ceiling the `check_review_cap` tool answers against (#1429). Separate

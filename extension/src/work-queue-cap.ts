@@ -223,8 +223,22 @@ export function humanActionFor(
   }
   const continueCap = reason.match(/\bcap (continue-pr-[a-z-]+)/)?.[1];
   if (continueCap && isContinueCap(continueCap)) return continueHumanAction(continueCap, primary);
+  // #1743 — a third identical park was refused before any step ran. `--restart`
+  // does NOT bypass this guard (the issue is the thing that is unchanged), so
+  // the generic "inspect the state file and --restart" fallback would advise
+  // the one invocation that cannot work.
+  //
+  // Ordered AROUND the open-PR rule, not before it. `existing-pr-detected` is
+  // one of the two parks this guard can refuse, so its refusal reason contains
+  // BOTH tokens — and the real fix there is the PR, not the issue body. A
+  // person who closed or retargeted the PR has already done the work; telling
+  // them to rewrite the issue instead is advice that cannot end the park. And
+  // `--continue-pr` is the documented remedy the guard itself never arms
+  // against, so the action names it.
   if (/existing-pr-detected/.test(reason))
-    return `decide whether to resume, retarget or close the open PR for #${primary}`;
+    return `decide whether to resume, retarget or close the open PR for #${primary} — while it is open the repeat-park guard keeps refusing, and closing/merging it (or continuing that very PR with \`/work ${primary} --continue-pr\`) is what clears the park (not --restart)`;
+  if (/\brepeat-park\b/.test(reason))
+    return `revise the body of #${primary} — two cycles already parked it for this reason and reported it, and a third report says nothing new (or run once with PI_ENSEMBLE_REPEAT_PARK=0; --restart alone does not clear this guard)`;
   if (/explore-needs-clarification|step-back-revise-spec/.test(reason)) {
     return `revise the body of #${primary} — the spec is underspecified`;
   }

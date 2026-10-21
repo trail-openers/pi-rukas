@@ -11,13 +11,14 @@
 
 import type { ResourceReport } from "../resource-budget.ts";
 import type { DispatchUsage } from "../types.ts";
+import { causeVerdictOf } from "../work-driver-cause-class.ts";
 import type { CauseVerdict } from "../work-driver-cause-class.ts";
 import { causeForCycle } from "../work-driver-cause-for.ts";
 import type { CauseClass } from "../work-driver-cause-table.ts";
 import { handoffMarker, parseHandoffMarker } from "../work-driver-handoff-channel.ts";
 import { resumeEnabled } from "../work-driver-resume.ts";
 import type { WorkStep } from "../workflow-state-events.ts";
-import type { WorkState } from "../workflow-state.ts";
+import { type WorkState, initialState } from "../workflow-state.ts";
 import { type HeadlessCap, capStep } from "./caps.ts";
 import { EXIT, exitCodeForState, lastCap, lastCapIndex, lastEvent } from "./exit-code.ts";
 import { failedStepOf } from "./failed-step.ts";
@@ -77,6 +78,15 @@ export interface HandoffResult {
   commentUrl?: string;
   /** Forge channel: `needs-human-attention` was verified on the issue (and PR). */
   labelApplied: boolean;
+  /**
+   * #1743 — present when this park repeats one already recorded: how many
+   * cycles have parked this (cap, reason, issue text), when the first did, and
+   * the marker the last one published. A host uses it to tell a re-report from
+   * a first report; the third identical park is REFUSED at the pre-loop guard
+   * (cap `repeat-park`) rather than delivered a third time. Absent on the
+   * first park of its kind. See work-driver-park-memory.ts.
+   */
+  repeat?: { count: number; firstAt: number; marker: string };
 }
 
 export interface IssueResult {
@@ -184,6 +194,43 @@ export function notStartedResult(
     resumable: false,
     ...extra,
   };
+}
+
+/**
+ * #1743 — the projection of a start the repeat-park guard refused.
+ *
+ * The guard fires before the driver persists anything, so the state file on
+ * disk still belongs to the EARLIER cycle: projecting it would hand the host
+ * that cycle's cap, handoff, usage and branch as if this start had produced
+ * them — and its exit code, not 40. So this refusal is projected from an empty
+ * state instead: `not-started`, `cap: "repeat-park"`, the guard's own sentence
+ * as the failure, and NO `handoff` field (this start delivered nothing).
+ */
+export function repeatParkRefusalResult(
+  issue: number,
+  stateFile: string,
+  detail: string,
+  /** Set for a group sibling: it was never evaluated, so no `repeat-park` cap. */
+  opts: { notEvaluated?: boolean } = {},
+): IssueResult {
+  const failure: ResultFailure = { kind: "cap", message: detail };
+  const result = notStartedResult(issue, stateFile, EXIT.refused, {
+    ...(opts.notEvaluated ? {} : { cap: "repeat-park" as const }),
+    failure,
+  });
+  if (!opts.notEvaluated) {
+    const cause = causeVerdictOf(initialState(issue), "repeat-park", failure);
+    if (cause) applyCause(result, cause);
+  } else {
+    // No `repeat-park` cause for a sibling: the cause table would tell the host
+    // THIS issue parked twice, which nothing ever checked. It is the group's
+    // problem, attributed to the issue that armed the guard — whose number the
+    // failure message already names.
+    result.causeClass = "issue";
+    result.causeReason = detail;
+    result.userAction = null;
+  }
+  return result;
 }
 
 const zeroUsage = (): UsageTotals => ({
@@ -316,6 +363,9 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
   const capHit = lastEvent(state, "cap-hit");
   const parkReason = capHit?.parkReason ?? state.pipelineState.normalisedSpec?.parkReason;
   if (parkReason && cap === "intent-park") result.parkReason = parkReason;
+  // #1743 — a plan park's machine reason is its verdict, and a host switching
+  // on `parkReason` had only the intent park to switch on. Additive.
+  if (cap === "plan-spec-mismatch" && capHit?.planVerdict) result.parkReason = capHit.planVerdict;
   const handoff = handoffOf(state, cap);
   if (handoff) result.handoff = handoff;
   return result;
@@ -340,5 +390,7 @@ export function handoffOf(state: WorkState, cap: string | undefined): HandoffRes
   else h.bodyError = "not-recorded";
   if (e.handoffBodyPath) h.bodyFile = e.handoffBodyPath;
   if (e.commentUrl) h.commentUrl = e.commentUrl;
+  if (e.repeat)
+    h.repeat = { count: e.repeat.count, firstAt: e.repeat.firstAt, marker: e.repeat.marker };
   return h;
 }
