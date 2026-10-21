@@ -37,6 +37,7 @@
     "smoke-tests/test-work-driver-worktree-sweep-rules.ts",
     "smoke-tests/test-plan-spec-glob-coverage.ts",
     "smoke-tests/test-plan-spec-markup-slots.ts",
-    "smoke-tests/test-plan-fence-dir-glob.ts"
+    "smoke-tests/test-plan-fence-dir-glob.ts",
+    "smoke-tests/test-spec-slot-fence-admission.ts"
   ]
 }
