@@ -44,9 +44,10 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { closeSync, openSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { readTokenPid, unlinkIfStillOurs } from "./stale-lock-sweep.ts";
 import { trace, traceWarn } from "./trace.ts";
 import { LOCK_HARD_STALE_MS, sweepStaleLock } from "./work-driver-path-claims-lock-sweep.ts";
 import { workStateDir } from "./workflow-state.ts";
@@ -190,16 +191,15 @@ async function readLockfile(file: string): Promise<string | null> {
   }
 }
 
-/** The pid a lockfile token names, for the theft warning an operator reads. */
+/** The pid a lockfile token names, for the theft warning an operator reads.
+ *
+ * Delegates to the sweep's own reader so the warning and the judgement cannot
+ * disagree about what a token says: a `pid` outside the domain a process id
+ * lives in (`1.5`, `0`, a string) is "unknown" in both, never a confident
+ * number in one and a rejection in the other.
+ */
 function tokenPid(raw: string): number | "unknown" {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return "unknown";
-    const pid = (parsed as { pid?: unknown }).pid;
-    return typeof pid === "number" && Number.isFinite(pid) ? pid : "unknown";
-  } catch {
-    return "unknown";
-  }
+  return readTokenPid(raw) ?? "unknown";
 }
 
 /** Outcome of an acquisition attempt. */
@@ -300,16 +300,16 @@ async function acquire(
         // unparsable lock a corpse), so every waiter pays the full wait window
         // for a holder that is not one; and the fd we opened is still open.
         // Close it and remove the file WE created, then report the fault —
-        // half a lock is worse than no lock.
+        // half a lock is worse than no lock. The removal is inode-checked (the
+        // fd is the witness) because a sibling that swept this tokenless file
+        // and created its own lock in the meantime owns that path now, and an
+        // unlink by name would steal it — so it runs BEFORE the fd is closed,
+        // while the witness is still open.
+        unlinkIfStillOurs(file, fd);
         try {
           closeSync(fd);
         } catch {
           // Already closed by the write path, or closed twice: nothing to do.
-        }
-        try {
-          unlinkSync(file);
-        } catch {
-          // Gone already (another waiter swept it). Nothing of ours left.
         }
         throw writeErr;
       }
@@ -394,6 +394,11 @@ async function acquire(
         trace(
           `claims-lock: swept a ${holder.ageMs}ms-old lockfile (holder pid ${holder.pid ?? "unknown"})`,
         );
+        // The deadline governs the whole wait, not just the polls: re-creating
+        // after it has passed would hand the lock to a waiter that has already
+        // been told to give up, and the caller's contract is that a null handle
+        // and a refusal are the ONLY outcomes of an expired wait.
+        if (Date.now() > deadline) return null;
         continue;
       }
       if (Date.now() > deadline) return null;
@@ -430,7 +435,7 @@ export async function withClaimsLock<T>(
   const handle = await acquire(repoRoot, Date.now() + waitMs);
   if (handle === null) {
     throw new Error(
-      `${CLAIMS_LOCK_REFUSAL} — held by another cycle for over ${waitMs}ms; a lock whose holder pid is gone is swept at once, and one whose holder still answers is swept only past ${LOCK_HARD_STALE_MS}ms — no claim write holds this lock that long`,
+      `${CLAIMS_LOCK_REFUSAL} — held by another cycle for over ${waitMs}ms; a lock whose holder pid is gone is swept at once, and one whose holder still answers is swept only past ${LOCK_HARD_STALE_MS}ms — no claim write holds this lock that long. If ${lockPath(repoRoot)} is still there and its token cannot be judged (unreadable, or an "at" outside any real timestamp), this lock waits it out BY DESIGN and will not sweep it: remove that file by hand.`,
     );
   }
   if (handle.state === "fault") {

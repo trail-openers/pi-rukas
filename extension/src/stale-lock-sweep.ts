@@ -16,7 +16,9 @@
  * file at the path is re-validated to be the same inode, the same size, and
  * byte-for-byte the content that was judged. There is deliberately no exported
  * "read the lock age" primitive, because a caller that reads here and deletes
- * over there reproduces the bug this replaced.
+ * over there reproduces the bug this replaced. The one exported delete,
+ * `unlinkIfStillOurs`, is not that shape: it takes the fd of the file the
+ * caller CREATED and refuses to unlink a path that no longer resolves to it.
  *
  * # Synchronous by contract
  *
@@ -30,22 +32,48 @@
  * # What each verdict means to the caller
  *
  *   - `stale`      — this module deleted the file. Retry the create.
- *   - `alive`      — wait. Includes a lock that is not a regular file and a
- *                    lock too large to read: neither is a token anyone can
- *                    judge, and neither is safe to delete.
- *   - `unreadable` — wait, nothing deleted. A token that PARSED but whose `at`
- *                    sits outside its domain lives here and is NEVER deleted by
- *                    either lock: "we cannot make sense of it" is not evidence
- *                    of death.
+ *   - `alive`      — wait. Includes a lock that is not a regular file (nothing
+ *                    here can unlink a directory, so waiting is the only
+ *                    honest verdict) and a lock whose corpse is still too young
+ *                    to have finished being published.
+ *   - `unreadable` — wait, nothing deleted, with the `errno` when a read is
+ *                    what failed. Carries every shape whose token could not be
+ *                    judged: unreadable bytes, a nonsense `at`, an oversized
+ *                    file.
+ *
+ * # The token is judged on its real domain
+ *
+ * `at` is a wall-clock timestamp, so the domain is a finite number between a
+ * fixed floor (2020-01-01 — nothing this extension writes is older, and a
+ * value below the floor is not a time anyone stamped) and `now` plus a small
+ * clock-skew tolerance. `pid` is a positive integer. A token carrying
+ * `at: 1`, `at: 0`, `pid: 1.5` or `pid: -1` is NOT a holder that has been
+ * around since the epoch with a fractional process id: it is a token from a
+ * program that wrote something else, and treating it as a timestamp turns a
+ * nonsense value into an enormous age, which the hard ceiling would then
+ * "prove" dead. Values outside the domain are `bad-at`/pid-less and never
+ * become evidence of death on their own.
+ *
+ * # A read error is not a stale lock
+ *
+ * `EACCES`, `EIO`, `EAGAIN` — a file we could `stat` but not read has told us
+ * nothing about its holder, and deleting it would be a delete decided on an
+ * errno. Read errors NEVER delete, under either lock, even with
+ * `unreadableIsStale` set. Only content that was actually read and failed to
+ * parse is eligible for that option.
  *
  * `unreadableIsStale` is the one per-lock difference and it is an option, not a
  * fork. The claims lock (fail-closed: an unreadable lock is waited out) leaves
- * it off. The integration lock documents itself as fail-open and its suite pins
- * "an unparseable lockfile is treated as stale, not as a deadlock", so it opts
- * in — and even then the delete goes through the same revalidated path, gated
- * on the file's mtime having aged past a publish grace, so a lock a sibling
- * created a moment ago and has not published into yet is waited out rather than
- * stolen.
+ * it off. The integration lock documents itself as fail-open and its suite
+ * pins "an unparseable lockfile is treated as stale, not as a deadlock", so it
+ * opts in — and even then every delete goes through the same revalidated path:
+ *
+ *   - a file that was read and did not PARSE is swept once its mtime is older
+ *     than a publish grace (creating the file and writing its token are
+ *     adjacent syscalls, so a younger one may simply be mid-publication);
+ *   - every other shape we cannot judge is swept only past `hardStaleMs` by
+ *     mtime — the same last resort the age rule is for a live pid, applied to
+ *     a token that answers nothing at all.
  *
  * # Bounds are checked before the read, not after
  *
@@ -63,11 +91,11 @@
  * around the syscall, and `unlinkSync` deletes by path. It cannot be closed
  * from user space with these primitives. What makes it survivable is the
  * release side: a holder whose token has vanished from a lock it acquired warns
- * loudly (`claims-lock: releasing without ownership`), so the theft
+ * loudly (`releasing without ownership`, from both locks), so the theft
  * fingerprints itself instead of surfacing weeks later as a lost claim.
  */
 
-import { type Stats, readFileSync, statSync, unlinkSync } from "node:fs";
+import { type Stats, fstatSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { processAlive } from "./process-liveness.ts";
 import { traceWarn } from "./trace.ts";
 
@@ -98,6 +126,17 @@ const MAX_LOCK_BYTES = 4096;
 const CLOCK_SKEW_MS = 5_000;
 
 /**
+ * The floor of the `at` domain: 2020-01-01T00:00:00Z.
+ *
+ * Nothing this extension writes can be older than the extension, so anything
+ * below this is not a timestamp — it is `1`, `0`, a sentinel, or a field from a
+ * different schema. The distinction is not cosmetic: `now - 1` is an age of
+ * ~54 years, which every ceiling in this module reports as "unambiguously
+ * stale", so a nonsense number becomes a death sentence for a LIVE holder.
+ */
+const TOKEN_AT_FLOOR_MS = Date.UTC(2020, 0, 1);
+
+/**
  * How long an unpublishable lockfile is exempt from the `unreadableIsStale`
  * sweep. Creating the file and writing its token are adjacent syscalls, so a
  * lock younger than this may simply be mid-publication, and deleting it would
@@ -109,10 +148,14 @@ const PUBLISH_GRACE_MS = 1_000;
 export type HolderRead =
   /** This module deleted the file. Retry the exclusive create. */
   | { status: "stale"; ageMs: number; pid: number | null }
-  /** Wait. The holder is live, or the file is not judgeable and not deletable. */
+  /** Wait. The holder is live, or the file is one nothing here may unlink. */
   | { status: "alive" }
-  /** Wait. Nothing was deleted: the token could not be read or made no sense. */
-  | { status: "unreadable" };
+  /**
+   * Wait. Nothing was deleted: the token could not be read or made no sense.
+   * `errno` is set when a READ failed, so the caller's trace names the errno
+   * rather than implying the holder did something.
+   */
+  | { status: "unreadable"; errno?: string };
 
 /** Injected liveness probe — `processAlive` answers this in production. */
 export type AliveOf = (pid: number) => boolean;
@@ -133,7 +176,8 @@ export interface SweepOptions {
   /**
    * The integration lock's fail-open contract: an unpublishable lockfile is
    * swept rather than deadlocking consolidation. Off by default — the claims
-   * lock must never delete a lock it cannot read.
+   * lock must never delete a lock it cannot read. Never applies to a read
+   * ERROR, only to content that was read and could not be judged.
    */
   unreadableIsStale?: boolean;
 }
@@ -141,10 +185,40 @@ export interface SweepOptions {
 /** How the bytes at the lock path classify. */
 type TokenRead =
   | { kind: "token"; at: number; pid: number | null }
-  /** No JSON object at all: never judged, and only ever swept by opt-in. */
+  /** No JSON object at all: swept by opt-in once past the publish grace. */
   | { kind: "no-token" }
-  /** A JSON object whose `at` is outside its domain: never swept by anyone. */
+  /** A JSON object whose `at` is outside its domain: judged by mtime only. */
   | { kind: "bad-at" };
+
+/**
+ * A pid that the OS could have issued: a positive integer. Anything else —
+ * `1.5`, `0`, `-1`, `"4242"`, `NaN` — names no process, so it is no evidence
+ * of either life or death. Collapsing it to `null` is what keeps a malformed
+ * token out of the liveness probe, where `kill(1.5, 0)` throws EINVAL and an
+ * injected probe may cheerfully answer "not alive".
+ */
+function pidOf(parsed: unknown): number | null {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const pid = (parsed as { pid?: unknown }).pid;
+  return typeof pid === "number" && Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+/**
+ * The pid a lockfile token names, or `null` when nothing in it names one.
+ *
+ * Exported because the release side of both locks needs the SAME reading of a
+ * token as the sweep: an operator comparing a theft warning against the lock
+ * file must not see `pid 1.5` in one and `pid unknown` in the other.
+ */
+export function readTokenPid(raw: string): number | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  return pidOf(parsed);
+}
 
 /**
  * Is the holder PROVABLY gone?
@@ -161,9 +235,10 @@ function holderIsDead(pid: number | null, aliveOf: AliveOf): boolean {
 
 /**
  * Classify the bytes. Every shape that is not a token is named, because the
- * two non-token shapes get OPPOSITE treatment: an absent token may be swept by
- * a lock that opted into `unreadableIsStale`, while a token that parsed and
- * then made no sense is never swept by anyone.
+ * shapes get DIFFERENT treatment: an absent token may be swept by a lock that
+ * opted into `unreadableIsStale` once it is too old to be mid-publication,
+ * while a token that parsed and then made no sense is swept only by the mtime
+ * last resort past `hardStaleMs`.
  */
 function classify(raw: string, now: number): TokenRead {
   let parsed: unknown;
@@ -175,12 +250,35 @@ function classify(raw: string, now: number): TokenRead {
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     return { kind: "no-token" };
   }
-  const entry = parsed as { at?: unknown; pid?: unknown };
-  const at = entry.at;
-  if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) return { kind: "bad-at" };
-  if (at > now + CLOCK_SKEW_MS) return { kind: "bad-at" };
-  const pid = typeof entry.pid === "number" && Number.isFinite(entry.pid) ? entry.pid : null;
-  return { kind: "token", at, pid };
+  const at = (parsed as { at?: unknown }).at;
+  if (typeof at !== "number" || !Number.isFinite(at)) return { kind: "bad-at" };
+  if (at < TOKEN_AT_FLOOR_MS || at > now + CLOCK_SKEW_MS) return { kind: "bad-at" };
+  return { kind: "token", at, pid: pidOf(parsed) };
+}
+
+/**
+ * The two windows are the module's whole behaviour, so a caller that passes
+ * `NaN`, `0` or an inverted pair is a programming mistake — not a lock state to
+ * be conservative about. Throwing is the only answer that surfaces it: silently
+ * waiting on a `staleMs` of `NaN` looks exactly like a hung lockfile and gets
+ * debugged as one.
+ */
+function validateSweepOptions(staleMs: number, hardStaleMs: number): void {
+  if (!Number.isFinite(staleMs) || staleMs <= 0) {
+    throw new Error(
+      `stale-lock-sweep: programmer error — staleMs must be a finite number greater than 0, got ${String(staleMs)}`,
+    );
+  }
+  if (!Number.isFinite(hardStaleMs) || hardStaleMs <= 0) {
+    throw new Error(
+      `stale-lock-sweep: programmer error — hardStaleMs must be a finite number greater than 0, got ${String(hardStaleMs)}`,
+    );
+  }
+  if (hardStaleMs < staleMs) {
+    throw new Error(
+      `stale-lock-sweep: programmer error — hardStaleMs (${String(hardStaleMs)}) must be >= staleMs (${String(staleMs)}); a ceiling below the stale window makes every lock a corpse the moment it is stale`,
+    );
+  }
 }
 
 /**
@@ -188,9 +286,10 @@ function classify(raw: string, now: number): TokenRead {
  * a corpse. See the module header for the verdict contract.
  */
 export function sweepStaleLockfile(file: string, opts: SweepOptions): HolderRead {
+  const hardStaleMs = opts.hardStaleMs ?? opts.staleMs * LOCK_HARD_STALE_MULTIPLIER;
+  validateSweepOptions(opts.staleMs, hardStaleMs);
   const now = (opts.now ?? Date.now)();
   const aliveOf = opts.aliveOf ?? processAlive;
-  const hardStaleMs = opts.hardStaleMs ?? opts.staleMs * LOCK_HARD_STALE_MULTIPLIER;
 
   let first: Stats;
   try {
@@ -202,20 +301,36 @@ export function sweepStaleLockfile(file: string, opts: SweepOptions): HolderRead
     return { status: "alive" };
   }
   // Bounds before the read: a FIFO would block us and a huge file would be
-  // paid for in full. Neither is a token, and neither is safe to delete.
-  if (!first.isFile() || first.size > MAX_LOCK_BYTES) return { status: "alive" };
+  // paid for in full. Neither is a token.
+  if (!first.isFile()) {
+    // Not deletable by anything in this module — `unlinkSync` on a directory
+    // fails, and reaching for a recursive remove at a path we did not create is
+    // a worse failure than waiting. Both callers' wait windows end in a
+    // deadline, so this shape is a stall, never a deadlock.
+    return { status: "alive" };
+  }
+  if (first.size > MAX_LOCK_BYTES) {
+    return sweepByMtime(file, first, null, now, opts, hardStaleMs, "larger than any token");
+  }
 
   let raw: string;
   try {
     raw = readFileSync(file, "utf8");
-  } catch {
-    // Readable enough to stat, not to read: treat as no token rather than
-    // trusting a size we already saw.
-    return judgeNoToken(file, first, null, now, opts);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? "unknown";
+    if (code === "ENOENT") return { status: "alive" };
+    // Readable enough to stat, not to read. An errno is not evidence about a
+    // process, so this branch has no delete in it at all — not even for the
+    // fail-open lock. The caller's trace gets the errno to name.
+    return { status: "unreadable", errno: code };
   }
   const token = classify(raw, now);
-  if (token.kind === "bad-at") return { status: "unreadable" };
-  if (token.kind === "no-token") return judgeNoToken(file, first, raw, now, opts);
+  if (token.kind === "no-token") {
+    return sweepByMtime(file, first, raw, now, opts, PUBLISH_GRACE_MS, "no parsable token");
+  }
+  if (token.kind === "bad-at") {
+    return sweepByMtime(file, first, raw, now, opts, hardStaleMs, "an `at` outside its domain");
+  }
 
   const ageMs = now - token.at;
   const dead = holderIsDead(token.pid, aliveOf);
@@ -233,7 +348,7 @@ export function sweepStaleLockfile(file: string, opts: SweepOptions): HolderRead
   if (pastHardCeiling && !dead) {
     const who =
       token.pid === null
-        ? "names no pid at all"
+        ? "names no usable pid at all"
         : `pid ${String(token.pid)} still answers kill(pid, 0)`;
     traceWarn(
       `stale-lock: swept a ${ageMs}ms-old lockfile past the ${hardStaleMs}ms hard ceiling — its holder ${who}, and at this age a lock is a corpse whether the pid was recycled, zombied, stopped, or simply never written`,
@@ -243,33 +358,60 @@ export function sweepStaleLockfile(file: string, opts: SweepOptions): HolderRead
 }
 
 /**
- * The no-token branch: nothing in this file can be trusted as a holder.
+ * The last resort for a lockfile whose token answers nothing.
  *
- * Both locks wait unless they opted into `unreadableIsStale`, and even the
- * opt-in refuses to delete a file too young to have finished being published.
- * A token that PARSED but whose `at` was out of domain never reaches here — it
- * is reported `unreadable` with the sweep option ignored, because a
- * well-formed object carrying a nonsense timestamp is not evidence of death.
+ * Nothing in this file can be trusted as a holder, so the only clock left is
+ * the filesystem's own record of when the file appeared. Both locks wait unless
+ * they opted into `unreadableIsStale`, and the opt-in still refuses to delete
+ * anything too young to have finished being published — a lock a sibling
+ * created a moment ago is waited out rather than stolen.
+ *
+ * `overMs` is the two-tier gate: a file we READ and could not PARSE is almost
+ * certainly a create whose publish never landed, so a publish grace suffices;
+ * every other unjudgeable shape (`bad-at`, oversized) may be a token written by
+ * something else entirely, so it waits out the whole hard ceiling first.
  */
-function judgeNoToken(
+function sweepByMtime(
   file: string,
   first: Stats,
   raw: string | null,
   now: number,
   opts: SweepOptions,
+  overMs: number,
+  why: string,
 ): HolderRead {
   if (!opts.unreadableIsStale) return { status: "unreadable" };
-  // A token we could not parse has no `at` to age by, so the filesystem's own
-  // record of when the file appeared is the only clock available.
   const ageMs = now - first.mtimeMs;
-  if (ageMs < PUBLISH_GRACE_MS) return { status: "alive" };
+  if (ageMs <= overMs) return { status: "alive" };
   if (!deleteIfStillThere(file, first, raw, () => true)) return { status: "unreadable" };
   traceWarn(
-    `stale-lock: swept an unreadable ${ageMs}ms-old lockfile (no parsable token; pid ${
-      raw === null ? "unreadable" : "unknown"
-    })`,
+    `stale-lock: swept an unjudgeable ${ageMs}ms-old lockfile past ${overMs}ms of its mtime (${why}; no pid to judge)`,
   );
   return { status: "stale", ageMs, pid: null };
+}
+
+/**
+ * Remove the lockfile the CALLER just created, and only while the path still
+ * resolves to the inode its fd holds.
+ *
+ * A create that succeeds and a publish that throws leaves a file with no token
+ * in it: nobody can judge it, and every sibling pays its wait window for a
+ * holder that is not one. So the creator must clean it up — but an unlink BY
+ * PATH is the theft this module exists to prevent, because between the failed
+ * write and the unlink a sibling may have swept our half-written file and
+ * created its own lock. The fd is the witness: its inode is the file we made,
+ * and the path belongs to us only while it still resolves there.
+ */
+export function unlinkIfStillOurs(file: string, fd: number): boolean {
+  try {
+    if (statSync(file).ino !== fstatSync(fd).ino) return false;
+    unlinkSync(file);
+    return true;
+  } catch {
+    // Already gone (a sibling's verified sweep won): nothing of ours left to
+    // remove, and nothing to report — the create's own error is the fault.
+    return false;
+  }
 }
 
 /**
