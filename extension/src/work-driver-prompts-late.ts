@@ -1,5 +1,5 @@
 import { quotedPaths } from "./plan-path-shape.ts";
-import { quotedOutOfScope } from "./plan-workstream-schema.ts";
+import { type OutOfScopeClip, quotedOutOfScope } from "./plan-workstream-schema.ts";
 import { handoffOpsPromptWithoutLabel } from "./work-driver-handoff-ops-label.ts";
 import type { MergeMethod } from "./work-driver-merged-mechanized.ts";
 import {
@@ -65,6 +65,8 @@ export function inlineCommitPrPrompt(
       scope: string;
       paths: string[];
       outOfScope: string[];
+      /** #1744 — display only: which fence entries the driver had to clip. */
+      outOfScopeClipped?: OutOfScopeClip[];
       /** #679 — optional; presence is informational, never read by this prompt. */
       dependsOn?: string[];
       /** #679 — optional; plan-quality declaration, never read by this prompt. */
@@ -148,7 +150,7 @@ export function inlineCommitPrPrompt(
     (workstream) =>
       `  - \`${workstream.id}\`: ${
         workstream.outOfScope.length > 0
-          ? `DO NOT STAGE anything these out-of-scope entries name — ${quotedOutOfScope(workstream.outOfScope)}`
+          ? `DO NOT STAGE anything these out-of-scope entries name — ${quotedOutOfScope(workstream.outOfScope, workstream.outOfScopeClipped)}`
           : "no out-of-scope paths declared; still stage only reviewed in-scope paths or developer-created new files"
       }`,
   );

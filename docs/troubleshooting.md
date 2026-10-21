@@ -388,6 +388,12 @@ The hook is the escape hatch for the inexpressible: anything the symlink allowli
 
 Each workstream gets its own worktree and its own developer, running in parallel, so a file in two `paths` lists means two developers editing it at once — which used to surface much later as a `git apply` conflict at commit-pr. The plan step now catches it and re-plans once. If it persists, the issue probably needs those workstreams merged.
 
+### A long `outOfScope` entry no longer refuses the whole plan call (#1744)
+
+**Symptom (before the fix):** the plan step reports `Validation failed for tool "report_workstream": outOfScope.0: must not have more than 500 characters`, the planner re-reports without the long entry, and the workstream develops with no out-of-scope fence — the develop gate then blames the developer for files the fence would have named.
+
+**Now:** `outOfScope` is free text and is BOUNDED, never a reason to refuse the call. An entry over `WORKSTREAM_FENCE_MAX` (500) is cut at its last path separator, comma or whitespace at or before 500 — the retained text keeps fencing what it covers, and no marker is stored inside the entry (the marker would break the fence's own match). A comma- or semicolon-separated list whose every segment is a declarable path is stored as separate entries; a sentence with a comma in it is never split. Past `WORKSTREAM_LIST_MAX` (50) entries the rest are dropped. Each clip and each drop is recorded on the workstream (`outOfScopeClipped: { index, originalLength, keptLength }[]`) and said once on the trace (`plan workstream '<id>' outOfScope bounded — …`); a clipped entry renders as ` …[clipped]` in the develop and commit prompts, outside the quotes, derived from that record. The fold re-applies the same cap so two full lists cannot union past it. An entry over the schema's abuse ceiling (20 000 chars) is still refused — that is not a sentence, and `paths` entries over `WORKSTREAM_PATH_MAX` (300) are still refused outright: a declared path must be exact.
+
 ### A parallel plan parks at `verify-failed:develop` with a type error no workstream caused alone
 
 **Symptom:** every developer reports success, yet develop parks with a type error such as *"Property 'x' does not exist"* or *"Module has no exported member 'y'"*, and the consolidated tree fails with the same error.

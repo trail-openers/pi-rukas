@@ -5,6 +5,7 @@
  * Split out of work-driver.ts per AGENTS.md §12 module-size hygiene (#171).
  */
 import { quotedPaths } from "./plan-path-shape.ts";
+import type { OutOfScopeClip } from "./plan-workstream-schema.ts";
 import { fenceLines } from "./work-driver-plan-fence.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 import { developTestScopeLine, developVerifyLine } from "./work-driver-verify-fast.ts";
@@ -237,6 +238,8 @@ export function inlineDevelopPrompt(
     scope: string;
     paths: string[];
     outOfScope: string[];
+    /** #1744 — display only: which fence entries the driver had to clip. */
+    outOfScopeClipped?: OutOfScopeClip[];
     /** #679 — optional; presence is informational (sibling injection), not a gate input. */
     dependsOn?: string[];
     /** #679 — optional; plan-quality declaration, never executed by the develop step. */
@@ -334,7 +337,11 @@ export function inlineDevelopPrompt(
       // those files; separating them invites the reader to skip it.
       memoryBrief ?? "",
       ...(workstream.outOfScope.length > 0
-        ? fenceLines(workstream.outOfScope, options.deferredProtected ?? [])
+        ? fenceLines(
+            workstream.outOfScope,
+            options.deferredProtected ?? [],
+            workstream.outOfScopeClipped,
+          )
         : ["Stay tightly focused on the scope; other workstreams handle the rest."]),
       "",
     );

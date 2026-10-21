@@ -8,6 +8,7 @@
  * round is a repair of named failures, not a second implementation pass.
  */
 
+import type { OutOfScopeClip } from "./plan-workstream-schema.ts";
 import { fenceLines } from "./work-driver-plan-fence.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 
@@ -23,6 +24,8 @@ export interface CorrectivePromptInput {
   lines: string[];
   /** #1676 — the workstream's fence, the same one its first develop prompt named. */
   outOfScope?: string[];
+  /** #1744 — which of those entries the driver had to clip (display only). */
+  outOfScopeClipped?: OutOfScopeClip[];
   /** #1676 — the protected paths the plan deferred (no grant). */
   deferredProtected?: readonly string[];
 }
@@ -56,7 +59,7 @@ export function correctiveDevelopPrompt(input: CorrectivePromptInput): string {
   const files =
     input.paths.length > 0 ? [`In-scope files: ${input.paths.map(oneLine).join(", ")}`] : [];
   const outOfScope = input.outOfScope ?? [];
-  const fence = fenceLines(outOfScope, input.deferredProtected ?? []);
+  const fence = fenceLines(outOfScope, input.deferredProtected ?? [], input.outOfScopeClipped);
   return [
     `/work ${headline} — corrective develop round (${input.parallel ? `workstream \`${input.workstreamId}\`` : "single workstream"}).`,
     "",
