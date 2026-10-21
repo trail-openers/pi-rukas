@@ -10,8 +10,11 @@
  */
 
 import { mock } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
+import type { LedgerEntry } from "../../../src/review-ledger.ts";
+import type { LedgerBinding } from "../../../src/adversarial-ledger-binding.ts";
+import type { BindingState } from "../../../src/adversarial-ledger-capture.ts";
 import { BINDING_REFUSAL_PREFIXES, ledgerFile, setupRepo } from "../adversarial-ledger-harness.ts";
 import { countedCapture } from "./capture-counter.ts";
 
@@ -98,8 +101,8 @@ mock.module(new URL("../../../src/async-jobs-registry.ts", import.meta.url).href
 // error at the call site. The ROW on disk stays the assertion target: a mocked
 // writer that recorded calls but wrote nothing is exactly the failure this test
 // exists to make visible.
-const realAppendLedgerEntry = (await import("../../../src/review-ledger.ts")).appendLedgerEntry;
 const ledgerSurface = await import("../../../src/review-ledger.ts");
+const { appendLedgerEntry: realAppendLedgerEntry, readLedgerFile } = ledgerSurface;
 const pendingWrites: Array<Promise<unknown>> = [];
 mock.module(new URL("../../../src/review-ledger.ts", import.meta.url).href, () => ({
   ...ledgerSurface,
@@ -133,39 +136,62 @@ const repo = fixture.dir;
 const LEDGER_FILE = ledgerFile(repo);
 process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = LEDGER_FILE;
 
-/** The rows on disk, after every in-flight write has settled. */
-async function readRows(): Promise<Array<Record<string, unknown>>> {
+/** The rows on disk, after every in-flight write has settled.
+ *
+ * Read through the ledger's OWN reader (`readLedgerFile`, captured before the
+ * module mock so the arms read exactly what the guard reads): it runs
+ * `validEntries` on the same bytes, so a malformed row is dropped and traced
+ * there instead of being `as LedgerEntry`-asserted into existence here, and a
+ * rename of a writer's field cannot hide from tsc under an unchecked cast.
+ * `at` is a finite number by the time these rows arrive, so the chronological
+ * sort below cannot NaN its way into an arbitrary order. */
+async function readRows(): Promise<LedgerEntry[]> {
   await drainLedgerWrites();
   if (!existsSync(LEDGER_FILE)) return [];
-  const parsed = JSON.parse(readFileSync(LEDGER_FILE, "utf8")) as { entries?: unknown[] };
   // Chronological, explicitly: the file's own append order is what the arms
   // index into, so an arm that expected three rows and got two fails loudly
   // rather than reading some other round's row.
-  return (parsed.entries ?? [])
-    .filter((e) => (e as { kind?: string }).kind === "adversarial")
-    .sort((a, b) => ((a as { at?: number }).at ?? 0) - ((b as { at?: number }).at ?? 0)) as Array<
-    Record<string, unknown>
-  >;
+  return readLedgerFile(LEDGER_FILE)
+    .entries.filter((e) => e.kind === "adversarial")
+    .sort((a, b) => a.at - b.at);
 }
 
-async function waitForRows(n: number): Promise<Array<Record<string, unknown>>> {
+/** The rows carrying `nonce` — the `orchestratorJobId` an arm passed to
+ * `runAdversarialLoop`, which the writer stamps onto its own row as
+ * `LedgerEntry.rowNonce` (#1557; see that field's jsdoc for why identity, not
+ * a timestamp floor, is what identifies a fire-and-forget writer's row).
+ *
+ * A miss reports ABSENCE: at the deadline the poll returns `[]`, never "the
+ * latest row", so an arm that wrote no row fails its own assertion instead of
+ * judging another arm's. */
+async function waitForRowsWithNonce(nonce: string): Promise<LedgerEntry[]> {
   const deadline = Date.now() + 20_000;
+  let readFailure = "";
   for (;;) {
-    const rows = await readRows();
-    if (rows.length >= n) return rows;
-    if (Date.now() >= deadline) return rows;
-    await new Promise((r) => setTimeout(r, 20));
-  }
-}
-
-/** The most recent adversarial row written at or after `since` — the row this
- * arm caused, with earlier arms' in-flight writes excluded. */
-async function waitForRowWrittenAfter(since: number): Promise<Record<string, unknown> | undefined> {
-  const deadline = Date.now() + 20_000;
-  for (;;) {
-    const rows = (await readRows()).filter((r) => ((r.at as number) ?? 0) >= since);
-    if (rows.length > 0) return rows[rows.length - 1];
-    if (Date.now() >= deadline) return undefined;
+    // A transient read failure (EMFILE/EAGAIN on the shared fixture, a torn
+    // read) must not abort the whole arms script: all arms share one
+    // try/finally, so a throw here would skip every remaining arm's
+    // assertions and the run would die with an uncaught crash instead of
+    // reaching its named failures and its `exit N` line. Record the reason,
+    // retry on the next tick, and surface it only at the deadline — then an
+    // empty result says what it might be rather than silently reading as
+    // absence.
+    let rows: LedgerEntry[] = [];
+    try {
+      rows = (await readRows()).filter((r) => r.rowNonce === nonce);
+      readFailure = "";
+    } catch (err) {
+      readFailure = err instanceof Error ? err.message : String(err);
+    }
+    if (rows.length > 0) return rows;
+    if (Date.now() >= deadline) {
+      if (readFailure) {
+        console.error(
+          `ledger: the last read of ${LEDGER_FILE} failed (${readFailure}) — this empty result may be that read failure, not absence`,
+        );
+      }
+      return rows;
+    }
     await new Promise((r) => setTimeout(r, 20));
   }
 }
@@ -196,10 +222,11 @@ try {
     captureCounter.calls() === 0,
     "driver path: captureRound is never called (no wasted git subprocess)",
   );
-  const driverRows = await waitForRows(1);
+  // #1557 — this arm's rows, by its own nonce (see `waitForRowsWithNonce`).
+  const driverRows = await waitForRowsWithNonce("job-driver");
   assert(
     driverRows.length === 1 && driverRows[0]?.passed === true,
-    `driver path: the ledger write still runs exactly once and stays PASSING (got ${JSON.stringify(driverRows)})`,
+    `driver path: the ledger write still runs exactly once (for this arm's nonce) and stays PASSING (got ${JSON.stringify(driverRows)})`,
   );
   assert(
     driverRows[0]?.reviewedBase === undefined && driverRows[0]?.reviewedHead === undefined,
@@ -238,12 +265,15 @@ try {
     captureCounter.calls() === 1,
     `tool path: the round captures exactly once (got ${captureCounter.calls()})`,
   );
-  const toolRows = await waitForRows(2);
+  // #1557 — this arm's row, by its own nonce (see `waitForRowsWithNonce`). The
+  // old file-wide count (`waitForRows(2)` then `toolRows[1]`) was a positional
+  // read over rows whose survival is a race, not a contract.
+  const toolRows = await waitForRowsWithNonce("job-tool");
   assert(
-    toolRows.length === 2,
-    `tool path: its row is written too (got ${JSON.stringify(toolRows.map((r) => r.passed))})`,
+    toolRows.length === 1,
+    `tool path: exactly one row carries this arm's nonce (got ${JSON.stringify(toolRows.map((r) => r.passed))})`,
   );
-  const toolRow = toolRows[1];
+  const toolRow = toolRows[0];
   assert(
     toolRow?.passed === true,
     `tool path: an honest round whose capture matches the write PASSES (got passed=${JSON.stringify(toolRow?.passed)}, detail=${JSON.stringify(toolRow?.detail)})`,
@@ -276,8 +306,9 @@ try {
     headAtCapture: "f".repeat(40),
   });
   captureCounter.reset();
-  // Two independent defects made this arm flake, and the sentinel values only
-  // close one of them.
+  // Two independent defects made this arm flake; the nonce selector closes
+  // both, and the sentinel values stay because they keep the REFUSAL itself
+  // stale by construction.
   //
   // (1) The poisoned SHAs below are sentinels rather than `fixture.parent`.
   // A fixture SHA is only stale relative to whatever HEAD happens to be when
@@ -286,18 +317,13 @@ try {
   // this cut the flake from ~32% to ~3% — a large cut, which is exactly why the
   // remaining 3% needed a second cause rather than a better value.
   //
-  // (2) The straggler: the writer is fire-and-forget, so an earlier arm's write
-  // can still be in flight here, and a row's `at` is its OWN creation stamp —
-  // taken when the write began, not when it lands. A straggler can stamp itself
-  // at or after a floor sampled before it finished and be read as this arm's
-  // row: the honest arm-4 row (`passed=true, detail="approved"`) read as this
-  // arm's refusal. A 300ms delay injected into `appendLedgerEntry` drove that
-  // residual to 0/3, which is what identified it. Awaiting the in-flight writes
-  // before stamping the floor means every row that could carry a pre-drain stamp
-  // is already on disk when the floor is taken, so nothing stamped at or after
-  // it can belong to an earlier arm.
-  await drainLedgerWrites();
-  const staleStart = Date.now() - 1;
+  // (2) The straggler: the writer is fire-and-forget and a row's `at` is its
+  // OWN creation stamp, so an arm-4 write still in flight here stamped itself
+  // after the floor the old reader sampled and was read as THIS arm's row —
+  // the honest `passed=true, detail="approved"` row reported as the refusal. A
+  // 300ms delay injected into `appendLedgerEntry` drove that residual to 0/3,
+  // which proved the floor unsound by construction, not merely tight. #1557
+  // replaced it with identity (see `waitForRowsWithNonce`).
   // The range diff is supplied through the loop's own injectable seam (the 4th
   // argument, the one #859 added) rather than as a `diff` string: a pasted diff
   // sets `callerSuppliedDiff`, and a #1161 caller-supplied row is already
@@ -322,12 +348,15 @@ try {
     async () => ({ ok: true as const, diff: "diff --git a/a.txt b/a.txt\n+a\n" }),
   );
   assert(stale.ok === true, "stale capture: the loop still completes (a refusal is not a crash)");
-  // THIS arm's row, and only rows written after it started. The writer is
-  // fire-and-forget, so an earlier arm's write can still be in flight; reading
-  // "the latest row" or "the row at index N" would then judge a row this arm
-  // did not cause — which is exactly how a false pass is built. The timestamp
-  // boundary makes the arm's own row the only candidate.
-  const staleRow = await waitForRowWrittenAfter(staleStart);
+  // This arm's row, by its own nonce (see `waitForRowsWithNonce`): an arm that
+  // wrote no row reads as absence (`[]` at the deadline), so the next two
+  // assertions fail loudly instead of judging another arm's passing row.
+  const staleRows = await waitForRowsWithNonce("job-stale");
+  assert(
+    staleRows.length <= 1,
+    `stale capture: at most one row carries this arm's nonce (got ${staleRows.length})`,
+  );
+  const staleRow = staleRows[0];
   captureCounter.unpoison();
   assert(
     staleRow !== undefined,
@@ -346,8 +375,12 @@ try {
   // identity base, the range refs, the merge-base, the HEAD and the patch id —
   // not just the first helper that happens to take one.
   const seen: string[] = [];
-  const state: { captured?: { binding?: unknown; headRef?: string } } = {};
-  const real = await captureRound(state, repo, "main", "HEAD", async (cmd, o) => {
+  // The real capture type, not a hand-declared `{ captured?: { binding?:
+  // unknown } }` erasure: the assertions below read the binding's fields, and
+  // this file is in the `tsconfig.smoke-tests.json` ratchet — the erasure was
+  // what kept the file from compiling under the project's own options.
+  const state: BindingState = {};
+  await captureRound(state, repo, "main", "HEAD", async (cmd, o) => {
     seen.push(`${cmd} ${(o?.argv ?? []).join(" ")}`.trim());
     return { stdout: `${"a".repeat(40)}\n` };
   });
@@ -355,11 +388,7 @@ try {
   // installed by the mock is what `captureRound` resolves to here. The counter
   // wrapper writes the state identically to production — but assert on what IT
   // produced rather than trusting the delegation.
-  const binding = (state.captured?.binding ?? real) as {
-    reviewedTreePatchId?: string;
-    headAtCapture?: string;
-    reviewedHeadRef?: string;
-  };
+  const binding: Partial<LedgerBinding> = state.captured?.binding ?? {};
   const gitReads = seen.filter((c) => c === "git" || c.startsWith("git "));
   assert(
     gitReads.length >= 4,

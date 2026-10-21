@@ -123,6 +123,9 @@ export const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: numb
         passed: true,
         at: Date.now(),
         detail: "approved",
+        // #1557 — persisted verbatim; the arms of
+        // test-adversarial-tool-provenance.ts select their own row by it.
+        rowNonce: "nonce-writer-1557",
       },
       execp,
       repo,
@@ -135,6 +138,10 @@ export const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: numb
     );
     assert(entries?.[0]?.passed === true, "the stored entry is passed=true");
     assert(entries?.[0]?.patchId === patchId, "the stored patchId matches the computed one");
+    assert(
+      entries?.[0]?.rowNonce === "nonce-writer-1557",
+      "the stored row carries the caller's rowNonce verbatim (#1557)",
+    );
 
     // Writer and guard compute identical patchIds for the same content:
     // re-computing yields the same id (stability).

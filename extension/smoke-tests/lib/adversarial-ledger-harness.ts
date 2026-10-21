@@ -34,6 +34,7 @@ import { writeLensLedgerEntry } from "../../src/lens-ledger.ts";
 import { registerMergeGuard } from "../../src/merge-guard.ts";
 import type { LedgerEntry } from "../../src/review-ledger.ts";
 import { latestEntry, readLedgerFile } from "../../src/review-ledger.ts";
+import type { DispatchResult } from "../../src/types.ts";
 import { commandOf } from "./argv-shell.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 
@@ -234,8 +235,22 @@ export async function guard(repo: string, pr: { comments: string[] }, baseBranch
   }
 }
 
-/** An approving loop result — the verdict every binding arm except one carries. */
-export const APPROVED = { ok: true, loopOutcome: "approved" } as never;
+/** An approving loop result — the verdict every binding arm except one carries.
+ *
+ * A checked `DispatchResult` literal, not an `as never` cast: the cast is
+ * assignable to any parameter, so a renamed outcome literal, a misspelled
+ * field, or a newly-required field compiles silently and only the runtime
+ * assertion on the written row would notice (AGENTS §12 forbids the `any`
+ * equivalent). Every field the interface requires is written out. */
+export const APPROVED: DispatchResult = {
+  role: "adversarial-loop",
+  ok: true,
+  text: "VERDICT: APPROVED",
+  toolUses: [],
+  ms: 0,
+  exitCode: 0,
+  loopOutcome: "approved",
+};
 
 /** A passing lens row so the guard's lens half never colours the verdict. */
 export async function recordPassingLens(repo: string) {
@@ -264,8 +279,15 @@ export async function toolArm(
      * gates do not apply and the row keeps its pre-#1360 form. */
     driverPath?: boolean;
     /** The loop's verdict. Defaults to APPROVED; the rejected arm passes a
-     * rejection to show a refusal detail never overwrites the verdict's own. */
-    result?: { ok: boolean; loopOutcome: string };
+     * rejection to show a refusal detail never overwrites the verdict's own.
+     * ALL THREE verdict-carrying fields are required together — `ok`,
+     * `loopOutcome` AND `text` — so an arm cannot merge a rejection's pass bit
+     * over APPROVED's approving report text (a row whose `passed` says false
+     * while its own `text` says APPROVED is a fixture asserting two opposite
+     * verdicts, and the reply-marker readers read the verdict out of `text`).
+     * The merge below stays a checked `DispatchResult`, not an `as never`
+     * cast. */
+    result?: Pick<DispatchResult, "ok" | "loopOutcome" | "text">;
     /** The git executor the writer uses. Defaults to the real one — every arm
      * runs real git; this exists for the arm that counts calls (#1360 lens 6). */
     execFn?: VerifyExecFn;
@@ -277,7 +299,9 @@ export async function toolArm(
 ): Promise<{ row: LedgerEntry; block: boolean; reason: string; ledgerPath: string }> {
   const pr = { comments: [] as string[] };
   await recordPassingLens(repo);
-  await writeAdversarialLedgerEntry((params.result ?? APPROVED) as never, {
+  // Spreading an absent override is a no-op, so one expression covers both
+  // the default (APPROVED) and the varied arm.
+  await writeAdversarialLedgerEntry({ ...APPROVED, ...params.result }, {
     workCwd: repo,
     branch: BRANCH,
     base: params.base,

@@ -116,6 +116,9 @@ export async function runAdversarialLoop(
     // write consult it, so a caller with its own git seam has ONE to give
     // (same shape as `commentExecFn` for the comment check).
     execFn: params.commentExecFn,
+    // #1557 — see `LedgerEntry.rowNonce` for why identity, not a timestamp
+    // floor; the guard never reads it.
+    rowNonce: orchestratorJobId,
     // #1104 — fence findings are prefixed BEFORE the write: the durable ledger
     // row must carry the same text the caller sees.
     decorate: (raw) => withFixViolations(raw, fenceRecords),
