@@ -377,7 +377,12 @@ export function registerCommands(pi: ExtensionAPI) {
           const backlog = await backlogReminderSection(sessionDir);
           if (backlog) pieces.push(backlog);
         } catch (err) {
-          trace(`before_agent_start: backlog probe threw — ${(err as Error)?.message}`);
+          const reason = err instanceof Error ? err.message : String(err);
+          try {
+            trace(`before_agent_start: backlog probe threw — ${reason}`);
+          } catch {
+            /* the turn keeps its preamble either way */
+          }
         }
       } else {
         trace("before_agent_start: no session directory in ctx — no backlog reminder probed");
