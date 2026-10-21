@@ -17,17 +17,29 @@
  *    crash between the two leaves the PREVIOUS record intact instead of a
  *    half-written file the reader would reject — which would silently forget a
  *    park the operator had already been told about.
- *  - **Expiry is the sweep's clock.** `ORPHAN_ARTIFACT_MAX_AGE_MS` is the age
- *    at which the artifact directory holding the record is deleted, so the
+ *  - **Expiry is the sweep's clock.** `PARK_RECORD_MAX_AGE_MS` (declared here,
+ *    not imported) is the age at which the record stops being believed AND the
+ *    age at which the artifact sweep deletes the directory holding it. The
  *    guard must not refuse on an older record and the sweep must not keep a
- *    directory alive for one. Both sides ask this module, so they cannot drift.
+ *    directory alive for one, so both sides ask THIS module — the dependency
+ *    runs record → nothing, never record → sweep → record.
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
-import { ORPHAN_ARTIFACT_MAX_AGE_MS } from "./work-driver-artifact-sweep.ts";
 import { workStateDir } from "./workflow-state.ts";
+
+/**
+ * How long a park record is believed, and the age at which the artifact sweep
+ * deletes the directory holding it. ONE number for both clocks on purpose: a
+ * record the guard would still refuse on must never be deleted from under it,
+ * and a record past this age must never arm a refusal. Owned here (the leaf of
+ * this pair) so `work-driver-artifact-sweep.ts` imports it rather than the
+ * other way round — a cycle between the judge and the thing it judges.
+ */
+export const PARK_RECORD_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** The parks the driver remembers. Every other cap leaves records untouched. */
 export const COVERED_PARK_CAPS = [
@@ -84,7 +96,7 @@ export function parkRecordPath(repoRoot: string, issue: number, cap: CoveredPark
  * the guard already ignores.
  */
 export function parkRecordExpired(rec: ParkRecord, now = Date.now()): boolean {
-  return now - rec.lastAt > ORPHAN_ARTIFACT_MAX_AGE_MS;
+  return now - rec.lastAt > PARK_RECORD_MAX_AGE_MS;
 }
 
 /** The legacy record name (`<N>/intent-park.txt`), unlinked on the next covered write. */
@@ -92,7 +104,13 @@ function legacyParkPath(repoRoot: string, issue: number): string {
   return path.join(workStateDir(repoRoot), String(issue), "intent-park.txt");
 }
 
-/** A timestamp the driver could plausibly have written: finite, after 2020, not in the future. */
+/**
+ * A timestamp the driver could plausibly have written: finite, after 2020, not
+ * in the future. `Number.isFinite` is the load-bearing clause — `JSON.parse`
+ * turns `1e999` into `Infinity`, and `new Date(Infinity).toISOString()` in the
+ * refusal sentence THROWS, which would take the guard down mid-start. A record
+ * that cannot produce a date is absent, not trusted.
+ */
 function plausibleTimestamp(v: unknown): v is number {
   return (
     typeof v === "number" &&
@@ -105,6 +123,11 @@ function plausibleTimestamp(v: unknown): v is number {
 /** A counter the driver could have written: a non-negative safe integer. */
 function plausibleCount(v: unknown): v is number {
   return typeof v === "number" && Number.isInteger(v) && v >= 0;
+}
+
+/** The cycle id (`state.startedAt`, a ms epoch): a plausible finite number. */
+function plausibleCycleId(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0;
 }
 
 /**
@@ -154,7 +177,10 @@ export async function readParkRecord(
     plausibleTimestamp(rec.firstAt) &&
     plausibleTimestamp(rec.lastAt) &&
     typeof rec.lastMarker === "string" &&
-    typeof rec.lastCycleId === "number"
+    plausibleCycleId(rec.lastCycleId) &&
+    // Delivered is a subset of attempted: `3 parks, 5 reported` is not a state
+    // the writer can produce, so a record claiming it was edited or corrupted.
+    (rec.deliveredCount === undefined || rec.deliveredCount <= rec.count)
   ) {
     return {
       cap,
@@ -186,7 +212,9 @@ export async function writeParkRecord(
   const file = parkRecordPath(repoRoot, issue, rec.cap);
   const dir = path.dirname(file);
   await fs.mkdir(dir, { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
+  // The pid alone collides when two writers in one process race (and leaves a
+  // sibling's tmp file for a later rename to adopt), so the name is unique.
+  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(rec, null, 2), "utf8");
   await fs.rename(tmp, file);
   // The `.txt` record this module wrote before #1743. Nothing reads it now;

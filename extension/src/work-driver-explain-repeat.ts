@@ -20,7 +20,7 @@
  * reading one would always fall through to a guess.
  */
 
-import { REFUSABLE_PARK_CAPS, type RepeatParkVerdict } from "./work-driver-park-memory.ts";
+import { isRefusableParkCap } from "./work-driver-park-memory.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /** The repeat prefix for a handoff explanation, or "" when this park is the first of its kind. */
@@ -41,10 +41,8 @@ export function repeatParkNote(state: WorkState): string {
   // The plan gate is a model's judgement, so promising a refusal there would be
   // the driver overstating a verdict it cannot compute twice — and the advice
   // to re-run is genuinely correct for it.
-  const cap = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit")?.cap as
-    | string
-    | undefined;
-  const refuses = cap !== undefined && (REFUSABLE_PARK_CAPS as readonly string[]).includes(cap);
+  const cap = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit")?.cap;
+  const refuses = isRefusableParkCap(cap);
   const outlook = refuses
     ? "Two cycles have now said the same thing about this issue body — a further start is refused until the body changes (or PI_ENSEMBLE_REPEAT_PARK=0)."
     : "Two cycles have now said the same thing about this issue body. This gate is a model's judgement, so a re-run may genuinely come back different — try again, and revise the body if it parks a third time.";
@@ -53,13 +51,13 @@ export function repeatParkNote(state: WorkState): string {
 
 /**
  * The `repeat-park` cap: a start the pre-loop guard refused before any step
- * ran. Takes the guard's structured verdict — the driver writes no state for a
- * refused start, so there is no cap-hit to read and inventing one from the
- * event log would print a detail that was never recorded.
+ * ran. NO verdict parameter: the guard runs before any step and the driver
+ * persists no state for a refused start, so no renderer downstream of
+ * `explainCap(cap, state)` can have a verdict to hand in — the one place that
+ * holds it (`refuseRepeatPark`, and the headless projector that reads it) builds
+ * its own sentence from the record fields. This is the generic sentence for a
+ * cap seen without one, and it says only what it actually knows.
  */
-export function explainRepeatPark(verdict?: RepeatParkVerdict): string {
-  const detail = verdict
-    ? `#${verdict.issue} has already been parked ${verdict.count} times and reported ${verdict.deliveredCount} times as \`${verdict.cap}\` (${verdict.reason}), first reported ${new Date(verdict.firstAt).toISOString()}, against the same issue text`
-    : "an earlier cycle already parked this issue for the same reason, against the same issue text, and reported it";
-  return `this start was refused before any step ran: ${detail}. The park is not stale, it is UNCHANGED — a third report of the same verdict says nothing the second did. Two ways forward: revise the issue body (the guard fingerprints the title and body, so any substantive edit clears it and the next park reports in full), or run once with PI_ENSEMBLE_REPEAT_PARK=0 to report it regardless. Nothing was dispatched, no worktree was touched, and no state file was written`;
+export function explainRepeatPark(): string {
+  return "this start was refused before any step ran: an earlier cycle already parked this issue for the same reason, against the same issue text, and reported it. The park is not stale, it is UNCHANGED — a third report of the same verdict says nothing the second did. Two ways forward: revise the issue body (the guard fingerprints the title and body, so any substantive edit clears it and the next park reports in full), or run once with PI_ENSEMBLE_REPEAT_PARK=0 to report it regardless. Nothing was dispatched, no worktree was touched, and no state file was written";
 }

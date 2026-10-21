@@ -18,7 +18,8 @@ import { trace } from "./trace.ts";
 import { checkAttentionLabel } from "./work-driver-attention.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { reportFinalState } from "./work-driver-final-state.ts";
-import { repeatParkVerdict } from "./work-driver-park-memory.ts";
+import type { StartRefusal } from "./work-driver-outcome.ts";
+import { repeatParkVerdict, repeatParkVerdictReason } from "./work-driver-park-memory.ts";
 import { validateDiscriminants } from "./workflow-state-validate.ts";
 import { type WorkState, detectInconsistencies, workStateDir } from "./workflow-state.ts";
 
@@ -97,11 +98,11 @@ export const REPEAT_PARK_REFUSAL_PREFIX = "repeat-park: ";
 export async function refuseUnproductiveStart(
   ctx: CycleContext,
   state: WorkState,
-): Promise<string | undefined> {
+): Promise<StartRefusal | undefined> {
   const labelled = await refuseAttentionLabelled(ctx);
   if (labelled) {
     reportFinalState(ctx, state);
-    return labelled;
+    return { reason: labelled };
   }
   return refuseRepeatPark(ctx);
 }
@@ -125,8 +126,12 @@ export function isRepeatParkRefusal(reason: string): boolean {
  *  - `existing-pr-detected` is re-checked against the forge first: the record
  *    remembers a GitHub state, and a PR a person has since closed is not a
  *    reason to stop.
- *  - `--continue-pr` never refuses: continuing that very PR is the documented
- *    remedy for this park, so arming the guard against it would block the fix.
+ *  - `--continue-pr` never refuses AN OPEN-PR PARK: continuing that very PR is
+ *    the documented remedy for `existing-pr-detected`, so arming the guard
+ *    against it would block the fix. It does NOT waive an `intent-park`
+ *    refusal — continuing a PR has nothing to do with what the issue says, and
+ *    a third "this issue does not say enough to build from" is exactly the
+ *    report this guard stops.
  *
  * `--restart` deliberately does NOT bypass this. Its whole contract is "re-run
  * this unchanged issue and see what happens", and a factory that passes it on
@@ -136,14 +141,21 @@ export function isRepeatParkRefusal(reason: string): boolean {
  *
  * Fails open: an unreadable issue body cannot be compared with the record, so
  * the run proceeds (traced) rather than being refused on a judgement the driver
- * could not make. Returns the refusal reason, or `undefined` to continue.
+ * could not make. Returns the refusal (reason + verdict), or `undefined` to
+ * continue.
  */
-export async function refuseRepeatPark(ctx: CycleContext): Promise<string | undefined> {
-  // The documented way out of an open-PR park is to continue that PR. Refusing
-  // it would make the guard block the remedy it tells the operator to run.
-  if (ctx.continuePr) return undefined;
+export async function refuseRepeatPark(ctx: CycleContext): Promise<StartRefusal | undefined> {
   const verdict = await repeatParkVerdict(ctx, ctx.issues);
   if (!verdict) return undefined;
+  // The documented way out of an open-PR park is to continue that PR. Refusing
+  // it would make the guard block the remedy it tells the operator to run — and
+  // ONLY that remedy: an intent park is not a PR problem.
+  if (ctx.continuePr && verdict.cap === "existing-pr-detected") {
+    trace(
+      `work-driver: repeat-park guard stood down for #${verdict.issue} — --continue-pr IS the remedy for the open-PR park (PR #${verdict.reason})`,
+    );
+    return undefined;
+  }
   const first = new Date(verdict.firstAt).toISOString();
   const grouped = verdict.issue !== ctx.issue;
   const message = `pi-rukas /work refused to start on issue #${ctx.issue}${grouped ? ` (group member #${verdict.issue})` : ""}: it has already been parked ${verdict.count} times and reported ${verdict.deliveredCount} times as \`${verdict.cap}\` (${verdict.reason}), first reported ${first}, against the same issue text.
@@ -153,15 +165,8 @@ Two ways forward: revise the body of #${verdict.issue} (any substantive edit cle
     `work-driver: repeat-park refusal for #${verdict.issue} (cycle #${ctx.issue}): ${verdict.cap} (${verdict.reason}) x${verdict.count}, reported ${verdict.deliveredCount}`,
   );
   notifyAgent(ctx.host, message);
-  return `${REPEAT_PARK_REFUSAL_PREFIX}#${verdict.issue} ${verdict.cap} (${verdict.reason}) already parked ${verdict.count} times for this issue body`;
-}
-
-/**
- * The issue the refusal fired on, read back out of the refusal reason. The
- * group's OTHER members are reported as not evaluated (the group was refused,
- * not them), so the runner needs to know which one actually armed the guard.
- */
-export function repeatParkRefusalIssue(reason: string): number | undefined {
-  const m = reason.slice(REPEAT_PARK_REFUSAL_PREFIX.length).match(/^#(\d+)\s/);
-  return m ? Number(m[1]) : undefined;
+  return {
+    reason: `${REPEAT_PARK_REFUSAL_PREFIX}${repeatParkVerdictReason(verdict)}`,
+    repeatPark: verdict,
+  };
 }
