@@ -198,6 +198,11 @@ export function makeLedgerWrite(opts: {
   /** #1360 — the git executor threaded to BOTH the per-round capture and this
    * write (one seam, matching `commentExecFn`). */
   execFn?: VerifyExecFn;
+  /** #1557 — the loop's `orchestratorJobId`, written to the row as
+   * `rowNonce` so the fire-and-forget writer's smoke arms can select their
+   * OWN row by identity instead of a timestamp floor. Test-facing
+   * provenance — the guard never reads it (see `LedgerEntry.rowNonce`). */
+  rowNonce?: string;
   decorate: (raw: DispatchResult) => DispatchResult;
   note: (result: DispatchResult) => DispatchResult;
   /** #1449 — called with the resolved write outcome. Defaults to the
@@ -258,6 +263,8 @@ export function makeLedgerWrite(opts: {
         toolPath: opts.toolPath === true,
         binding: opts.state.captured?.binding,
         execFn: opts.execFn,
+        // #1557 — the per-loop identity, stored verbatim on the row.
+        rowNonce: opts.rowNonce,
       });
     } catch {
       // A writer that throws synchronously is a ledger fault, not a review

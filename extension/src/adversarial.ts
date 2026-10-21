@@ -116,6 +116,13 @@ export async function runAdversarialLoop(
     // write consult it, so a caller with its own git seam has ONE to give
     // (same shape as `commentExecFn` for the comment check).
     execFn: params.commentExecFn,
+    // #1557 — the wrapping job's id rides onto the ledger row as `rowNonce`.
+    // The write is fire-and-forget and its `at` is a write-START stamp, so the
+    // smoke arms cannot identify their own row by a time floor — a straggler
+    // from an earlier loop can stamp itself past any floor. The id is unique
+    // per loop call (newJobId mints it), which makes it a collision-free
+    // per-write nonce. Test-facing provenance; the guard never reads it.
+    rowNonce: orchestratorJobId,
     // #1104 — fence findings are prefixed BEFORE the write: the durable ledger
     // row must carry the same text the caller sees.
     decorate: (raw) => withFixViolations(raw, fenceRecords),

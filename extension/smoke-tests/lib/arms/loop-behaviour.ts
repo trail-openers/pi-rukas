@@ -148,24 +148,28 @@ async function readRows(): Promise<Array<Record<string, unknown>>> {
   >;
 }
 
-async function waitForRows(n: number): Promise<Array<Record<string, unknown>>> {
+/** The rows THIS arm wrote — the rows whose `rowNonce` equals the
+ * `orchestratorJobId` the arm passed to `runAdversarialLoop` (#1557).
+ *
+ * Identity, not a timestamp floor: the writer is fire-and-forget and a row's
+ * `at` is its OWN write-start stamp, so a straggler from an earlier arm can
+ * stamp itself at or after any floor sampled before it began and be read as
+ * the current arm's row — that is exactly how arm 4b read arm 4's honest
+ * `passed=true, detail="approved"` row as its refusal. A row without this
+ * arm's nonce can never satisfy the predicate, however late it lands.
+ *
+ * A miss reports ABSENCE: at the deadline the poll returns `[]`, never
+ * "the latest row" — an arm that wrote no row fails its own
+ * "this arm's row was written" assertion loudly instead of judging another
+ * arm's row (the false `passed=true` reading the flake produced). */
+async function waitForRowsWithNonce(
+  nonce: string,
+): Promise<Array<Record<string, unknown>>> {
   const deadline = Date.now() + 20_000;
   for (;;) {
-    const rows = await readRows();
-    if (rows.length >= n) return rows;
+    const rows = (await readRows()).filter((r) => r.rowNonce === nonce);
+    if (rows.length > 0) return rows;
     if (Date.now() >= deadline) return rows;
-    await new Promise((r) => setTimeout(r, 20));
-  }
-}
-
-/** The most recent adversarial row written at or after `since` — the row this
- * arm caused, with earlier arms' in-flight writes excluded. */
-async function waitForRowWrittenAfter(since: number): Promise<Record<string, unknown> | undefined> {
-  const deadline = Date.now() + 20_000;
-  for (;;) {
-    const rows = (await readRows()).filter((r) => ((r.at as number) ?? 0) >= since);
-    if (rows.length > 0) return rows[rows.length - 1];
-    if (Date.now() >= deadline) return undefined;
     await new Promise((r) => setTimeout(r, 20));
   }
 }
@@ -196,10 +200,15 @@ try {
     captureCounter.calls() === 0,
     "driver path: captureRound is never called (no wasted git subprocess)",
   );
-  const driverRows = await waitForRows(1);
+  // #1557 — identity selection, not a count into the file: exactly the rows
+  // carrying THIS arm's nonce (the `orchestratorJobId` it passed) count. A
+  // straggler from another arm can never satisfy the predicate, and an arm
+  // that wrote nothing reads as `[]` — the assertion goes red rather than
+  // judging some other round's row.
+  const driverRows = await waitForRowsWithNonce("job-driver");
   assert(
     driverRows.length === 1 && driverRows[0]?.passed === true,
-    `driver path: the ledger write still runs exactly once and stays PASSING (got ${JSON.stringify(driverRows)})`,
+    `driver path: the ledger write still runs exactly once (for this arm's nonce) and stays PASSING (got ${JSON.stringify(driverRows)})`,
   );
   assert(
     driverRows[0]?.reviewedBase === undefined && driverRows[0]?.reviewedHead === undefined,
@@ -238,12 +247,16 @@ try {
     captureCounter.calls() === 1,
     `tool path: the round captures exactly once (got ${captureCounter.calls()})`,
   );
-  const toolRows = await waitForRows(2);
+  // #1557 — "its row is written too" is an IDENTITY question: exactly one row
+  // carries this arm's nonce. The old file-wide count (`waitForRows(2)` then
+  // `toolRows[1]`) could only see whatever survived `dedupeLatest` — a
+  // positional read over rows whose survival is a race, not a contract.
+  const toolRows = await waitForRowsWithNonce("job-tool");
   assert(
-    toolRows.length === 2,
-    `tool path: its row is written too (got ${JSON.stringify(toolRows.map((r) => r.passed))})`,
+    toolRows.length === 1,
+    `tool path: exactly one row carries this arm's nonce (got ${JSON.stringify(toolRows.map((r) => r.passed))})`,
   );
-  const toolRow = toolRows[1];
+  const toolRow = toolRows[0];
   assert(
     toolRow?.passed === true,
     `tool path: an honest round whose capture matches the write PASSES (got passed=${JSON.stringify(toolRow?.passed)}, detail=${JSON.stringify(toolRow?.detail)})`,
@@ -276,8 +289,9 @@ try {
     headAtCapture: "f".repeat(40),
   });
   captureCounter.reset();
-  // Two independent defects made this arm flake, and the sentinel values only
-  // close one of them.
+  // Two independent defects made this arm flake; the nonce selector closes
+  // both, and the sentinel values stay because they keep the REFUSAL itself
+  // stale by construction.
   //
   // (1) The poisoned SHAs below are sentinels rather than `fixture.parent`.
   // A fixture SHA is only stale relative to whatever HEAD happens to be when
@@ -288,16 +302,18 @@ try {
   //
   // (2) The straggler: the writer is fire-and-forget, so an earlier arm's write
   // can still be in flight here, and a row's `at` is its OWN creation stamp —
-  // taken when the write began, not when it lands. A straggler can stamp itself
-  // at or after a floor sampled before it finished and be read as this arm's
-  // row: the honest arm-4 row (`passed=true, detail="approved"`) read as this
-  // arm's refusal. A 300ms delay injected into `appendLedgerEntry` drove that
-  // residual to 0/3, which is what identified it. Awaiting the in-flight writes
-  // before stamping the floor means every row that could carry a pre-drain stamp
-  // is already on disk when the floor is taken, so nothing stamped at or after
-  // it can belong to an earlier arm.
-  await drainLedgerWrites();
-  const staleStart = Date.now() - 1;
+  // taken when the write began, not when it lands. The old reader filtered on
+  // `at >= Date.now() - 1` and took the last match, so an arm-4 write that
+  // stamped itself after that floor (its `appendLedgerEntry` not yet called
+  // when the floor was sampled) was read as THIS arm's row: the honest
+  // `passed=true, detail="approved"` row reported as the refusal. A 300ms
+  // delay injected into `appendLedgerEntry` drove that residual to 0/3, which
+  // is what identified it — and proved the floor is unsound by construction,
+  // not merely tight. #1557 replaces the floor with identity: the row must
+  // carry this arm's nonce ("job-stale", threaded from `orchestratorJobId`
+  // through `makeLedgerWrite` into `LedgerEntry.rowNonce`), which a straggler
+  // from another arm cannot have whatever its `at` says. No sleep, no widened
+  // budget, no drain-then-floor pair.
   // The range diff is supplied through the loop's own injectable seam (the 4th
   // argument, the one #859 added) rather than as a `diff` string: a pasted diff
   // sets `callerSuppliedDiff`, and a #1161 caller-supplied row is already
@@ -322,12 +338,18 @@ try {
     async () => ({ ok: true as const, diff: "diff --git a/a.txt b/a.txt\n+a\n" }),
   );
   assert(stale.ok === true, "stale capture: the loop still completes (a refusal is not a crash)");
-  // THIS arm's row, and only rows written after it started. The writer is
-  // fire-and-forget, so an earlier arm's write can still be in flight; reading
-  // "the latest row" or "the row at index N" would then judge a row this arm
-  // did not cause — which is exactly how a false pass is built. The timestamp
-  // boundary makes the arm's own row the only candidate.
-  const staleRow = await waitForRowWrittenAfter(staleStart);
+  // THIS arm's row, identified by the nonce this arm's loop wrote into it —
+  // not by a wall-clock floor and not by position. A straggler carries the
+  // arm that caused it and can never satisfy this predicate; an arm that wrote
+  // no row reads as absence (`[]` at the deadline), so the next two
+  // assertions fail loudly instead of judging another arm's passing row — the
+  // exact false `passed=true, detail="approved"` reading of the #1557 flake.
+  const staleRows = await waitForRowsWithNonce("job-stale");
+  assert(
+    staleRows.length <= 1,
+    `stale capture: at most one row carries this arm's nonce (got ${staleRows.length})`,
+  );
+  const staleRow = staleRows[0];
   captureCounter.unpoison();
   assert(
     staleRow !== undefined,
