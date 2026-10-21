@@ -8,6 +8,17 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.1](https://github.com/trail-openers/pi-rukas/compare/v0.14.0...v0.14.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* **review:** no default token budget for reviewers ([#1703](https://github.com/trail-openers/pi-rukas/issues/1703)) ([de745a9](https://github.com/trail-openers/pi-rukas/commit/de745a91b5f0a5283ab35a60a2a2354ec0cbcbbb))
+* **work:** a spec pattern slot admits the file it authorises ([#1725](https://github.com/trail-openers/pi-rukas/issues/1725)) ([4b15ede](https://github.com/trail-openers/pi-rukas/commit/4b15edee3935a9668bde547f7cf8ad2bacf33072))
+* **work:** explain push-refused and integration-verify parks with their evidence ([#1702](https://github.com/trail-openers/pi-rukas/issues/1702)) ([bfb37b8](https://github.com/trail-openers/pi-rukas/commit/bfb37b8890a14f48d05a50fbdecc40ddc6da51f5))
+* **work:** scrub driver knobs from the integration and ci verify too ([#1700](https://github.com/trail-openers/pi-rukas/issues/1700)) ([f0e8b66](https://github.com/trail-openers/pi-rukas/commit/f0e8b6639d7454b3cb6eb50d2b24ad84bf5f08e2))
+* **work:** stop the plan-to-spec gate demanding a path no plan may declare ([#1707](https://github.com/trail-openers/pi-rukas/issues/1707)) ([2208240](https://github.com/trail-openers/pi-rukas/commit/22082409c742ed835cec44b991e44c4d73d9959e))
+
 ## [0.14.0](https://github.com/trail-openers/pi-rukas/compare/v0.13.0...v0.14.0) (2026-10-19)
 
 
