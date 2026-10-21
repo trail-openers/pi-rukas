@@ -55,6 +55,24 @@ assert(second === "acquired", "a second runner acquires the lock immediately");
 assert(!existsSync(lockFile), "the second runner's release leaves no lockfile");
 
 finish();
-await held;
+// The critical section's own `finally` now releases a lock the simulated signal
+// already handed back. That is a deliberate hand-back, not a theft — and the
+// release-side ownership warning must not cry wolf on it, or the one line that
+// fingerprints a real stolen lock fires on every headless shutdown too.
+const releaseLines: string[] = [];
+const realWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = ((chunk: string | Uint8Array) => {
+  releaseLines.push(String(chunk));
+  return true;
+}) as typeof process.stderr.write;
+try {
+  await held;
+} finally {
+  process.stderr.write = realWrite;
+}
+assert(
+  !releaseLines.some((line) => line.includes("releasing without ownership")),
+  "a signal release is not reported as a stolen lock (the warning is for theft, not shutdown)",
+);
 rmSync(repo, { recursive: true, force: true });
 process.exit(exit);

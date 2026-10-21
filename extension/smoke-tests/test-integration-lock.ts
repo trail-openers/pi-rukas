@@ -23,7 +23,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ensureGitExclude } from "../src/work-driver-branch-mechanized.ts";
-import { __resetIntegrationLock, withIntegrationLock } from "../src/work-driver-lock.ts";
+import { __resetIntegrationLock, setIntegrationLockWriteFaultForTests, withIntegrationLock } from "../src/work-driver-lock.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -204,6 +204,144 @@ try {
       }
       rmSync(lockFile, { force: true });
     }
+  }
+
+  // ------------------------------------------- release fingerprints a theft
+
+  {
+    // #1740 r2 — the sweep narrows the check-to-unlink window, it does not
+    // close it: another PROCESS can still remove our lock and re-create the
+    // path around the syscall. What makes that survivable is that the theft
+    // fingerprints itself, and until now only the CLAIMS lock said anything —
+    // the integration lock compared its token and did nothing on a mismatch, so
+    // two consolidations writing repoRoot left no trace at all.
+    __resetIntegrationLock();
+    const lockFile = path.join(root, ".git", "pi-rukas-integration.lock");
+    const THIEF_PID = 987_654;
+    const captured: string[] = [];
+    const realWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      captured.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    let ran = false;
+    try {
+      await withIntegrationLock(root, async () => {
+        ran = true;
+        // A sibling swept our live lock and took the path while we held it.
+        writeFileSync(lockFile, JSON.stringify({ pid: THIEF_PID, at: Date.now() }));
+      });
+    } finally {
+      process.stderr.write = realWrite;
+      rmSync(lockFile, { force: true });
+    }
+    const stolen = captured.find((line) => line.includes("releasing without ownership"));
+    assert(ran, "the body still ran — the theft is reported, not fatal");
+    assert(
+      stolen !== undefined,
+      "a stolen integration lock WARNS at release instead of going silent (the pre-r2 release compared its token and did nothing)",
+    );
+    assert(
+      stolen !== undefined && stolen.includes("pi-rukas-integration.lock"),
+      "the warning names the lockfile basename an operator can go and look at",
+    );
+    assert(
+      stolen !== undefined && stolen.includes(`pid ${String(process.pid)}`),
+      "the warning names OUR pid — the process that believed it held the lock",
+    );
+    assert(
+      stolen !== undefined && stolen.includes(`pid ${String(THIEF_PID)}`),
+      `and the pid that holds the path now (${stolen?.slice(0, 150)})`,
+    );
+
+    // The other shape says something different, and the operator needs the
+    // difference: nothing to read is "removed under us", not "someone else has
+    // it now".
+    __resetIntegrationLock();
+    const absent: string[] = [];
+    const realWrite2 = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      absent.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await withIntegrationLock(root, async () => {
+        rmSync(lockFile, { force: true });
+      });
+    } finally {
+      process.stderr.write = realWrite2;
+    }
+    assert(
+      absent.some((line) => /releasing without ownership.*could not be read/.test(line)),
+      "a lockfile that vanished outright warns with the OTHER half of the sentence",
+    );
+
+    // Negative control: an honest release says nothing, or this warning is noise
+    // an operator trains themselves to ignore.
+    __resetIntegrationLock();
+    const quiet: string[] = [];
+    const realWrite3 = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      quiet.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await withIntegrationLock(root, async () => undefined);
+    } finally {
+      process.stderr.write = realWrite3;
+    }
+    assert(
+      !quiet.some((line) => line.includes("releasing without ownership")),
+      "an HONEST release stays silent — the warning fires on theft, not on every release",
+    );
+  }
+
+  // ---------------------------------- a failed publish removes ONLY its own file
+
+  {
+    // #1740 r2 — the other side of the same theft. A create that succeeds and a
+    // publish that throws leaves a tokenless file the sweep will not delete, so
+    // the creator must clean it up; but an unlink BY NAME is the very failure
+    // this module exists to prevent, because between the failed write and the
+    // unlink a sibling can sweep our file and create its own lock at the path.
+    // The fd is the witness: the cleanup unlinks the path only while it still
+    // resolves to the inode we opened.
+    __resetIntegrationLock();
+    const lockFile = path.join(root, ".git", "pi-rukas-integration.lock");
+    const replacement = JSON.stringify({ pid: 987_655, at: Date.now() });
+    let fired = 0;
+    setIntegrationLockWriteFaultForTests(() => {
+      fired++;
+      // The window, induced: our create landed, and before our write a sibling
+      // swept the tokenless file and took the lock.
+      rmSync(lockFile, { force: true });
+      writeFileSync(lockFile, replacement);
+      throw new Error("injected: integration publish failed");
+    });
+    let published = false;
+    await withIntegrationLock(root, async () => {
+      published = true;
+    });
+    setIntegrationLockWriteFaultForTests(undefined);
+    assert(fired > 0, "the injected publish fault fired (the seam is wired)");
+    assert(published, "a failed publish fails open, as this lock documents");
+    assert(
+      existsSync(lockFile) && readFileSync(lockFile, "utf8") === replacement,
+      "and the cleanup did NOT delete the sibling's lock — it removes only the inode it created",
+    );
+    rmSync(lockFile, { force: true });
+
+    // ...and with nobody else at the path, the same cleanup does its job.
+    __resetIntegrationLock();
+    setIntegrationLockWriteFaultForTests(() => {
+      throw new Error("injected: integration publish failed");
+    });
+    await withIntegrationLock(root, async () => undefined);
+    setIntegrationLockWriteFaultForTests(undefined);
+    assert(
+      !existsSync(lockFile),
+      "with no sibling at the path our own tokenless file IS removed — no corpse left for the sweep to age out",
+    );
   }
 
   // ------------------------------------------------- atomic git exclude

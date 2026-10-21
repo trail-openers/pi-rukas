@@ -38,13 +38,20 @@
  * The one difference from the claims lock is passed as an option —
  * `unreadableIsStale`, this lock's documented fail-open contract that a corrupt
  * lockfile must not deadlock consolidation. The sweep still honours the publish
- * grace and the revalidation on that path.
+ * grace and the revalidation on that path, and it still refuses to delete on an
+ * errno: a lock this process could not READ is waited out, never removed.
+ *
+ * Release carries the same fingerprint as the claims lock's: our token is read
+ * ONCE and compared, and when it is gone from a lock we acquired the release
+ * warns (basename, our pid, the pid that now holds the path) rather than
+ * silently doing nothing. A token that vanished from under a live holder is the
+ * theft signature the sweep cannot rule out from user space.
  */
-import { closeSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { sweepStaleLockfile } from "./stale-lock-sweep.ts";
-import { trace } from "./trace.ts";
+import { readTokenPid, sweepStaleLockfile, unlinkIfStillOurs } from "./stale-lock-sweep.ts";
+import { trace, traceWarn } from "./trace.ts";
 
 let integrationChain: Promise<unknown> = Promise.resolve();
 /**
@@ -53,6 +60,16 @@ let integrationChain: Promise<unknown> = Promise.resolve();
  * content: a stale sweep may have handed the lock to another process.
  */
 const heldLockfiles = new Map<string, string>();
+/**
+ * Paths that `releaseHeldIntegrationLocks` handed back on purpose.
+ *
+ * A signal exit calls that function while the critical section is still on the
+ * stack, so the section's own `finally` runs a release for a lock the runner
+ * already took back. Reporting that as a stolen live lock would cry wolf on the
+ * one shape where the token going missing is exactly what we asked for — and a
+ * warning that fires on normal shutdown is a warning nobody reads.
+ */
+const signalReleased = new Set<string>();
 const LOCK_STALE_MS = 30 * 60 * 1000;
 /** Poll between create attempts. Integration holds run minutes, not ms. */
 const LOCK_RETRY_MS = 250;
@@ -61,13 +78,36 @@ function lockPath(repoRoot: string): string {
   return path.join(repoRoot, ".git", "pi-rukas-integration.lock");
 }
 
-/** True when the lockfile still holds exactly `token` (this process's write). */
-async function holdsLockfile(file: string, token: string): Promise<boolean> {
+/**
+ * The lockfile's current contents, or `null` when nothing could be read.
+ *
+ * One read, one comparison, on the release path: `null` (absent or unreadable)
+ * and "a different token" are reported differently in the theft warning because
+ * they say different things — "removed under us" versus "someone else holds
+ * this path now".
+ */
+async function readLockfile(file: string): Promise<string | null> {
   try {
-    return (await fs.readFile(file, "utf8")) === token;
+    return await fs.readFile(file, "utf8");
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * ACCEPTED test seam (the shape `setClaimsLockWriteFaultForTests` is): fires
+ * between a SUCCESSFUL `openSync('wx')` and the write that publishes the token.
+ * Never set in production — it stays `undefined` there, so the create path costs
+ * one `undefined` check. It exists because the cleanup a failed publish runs is
+ * otherwise unobservable: the inode guard only matters in the microseconds
+ * between the failed write and the unlink, and nothing but a fault can put a
+ * sibling's lock there.
+ */
+let writeFaultHook: (() => void) | undefined;
+
+/** Permanent test seam (accepted): set/clear the post-create publish fault. */
+export function setIntegrationLockWriteFaultForTests(fn?: () => void): void {
+  writeFaultHook = fn;
 }
 
 /**
@@ -77,26 +117,28 @@ async function holdsLockfile(file: string, token: string): Promise<boolean> {
  * in it. Nobody can judge that file, the sweep's fail-open branch will not
  * delete it until it has aged past the publish grace, and every sibling pays
  * that wait for a holder that is not one — so the file we made is unlinked
- * before the fault is reported.
+ * before the fault is reported, and only while the path still holds it.
  */
 function createAndPublish(file: string, token: string): void {
   const fd = openSync(file, "wx");
   try {
+    writeFaultHook?.();
     writeFileSync(fd, token);
   } catch (writeErr) {
+    // The fd we opened is the only proof of which file we made. Between the
+    // failed write and here a sibling may have swept our tokenless file and
+    // created ITS lock at the same path, and an unlink by path would then steal
+    // a live holder's lock — the exact failure #1640 measured. So the cleanup
+    // compares the path's inode against our fd's before removing anything.
+    unlinkIfStillOurs(file, fd);
+    throw writeErr;
+  } finally {
     try {
       closeSync(fd);
     } catch {
       // Already closed by the failing write — nothing of ours left to close.
     }
-    try {
-      unlinkSync(file);
-    } catch {
-      // Gone already; the sweep or a sibling owns it now.
-    }
-    throw writeErr;
   }
-  closeSync(fd);
 }
 
 async function acquireLockfile(repoRoot: string): Promise<() => Promise<void>> {
@@ -112,16 +154,32 @@ async function acquireLockfile(repoRoot: string): Promise<() => Promise<void>> {
       return async () => {
         heldLockfiles.delete(file);
         // Remove only our own lock — never another holder's.
-        if (await holdsLockfile(file, token)) {
+        const current = await readLockfile(file);
+        if (current === token) {
           await fs.rm(file, { force: true }).catch(() => undefined);
+          return;
         }
+        if (signalReleased.delete(file)) return;
+        // Never silent: our token is gone from a lock WE acquired. A token that
+        // DIFFERS means our lock was unlinked and another process took the path
+        // while we held it — the theft fingerprint, and the reason the sweep's
+        // residual check-to-unlink gap is survivable. Nothing to read at all
+        // means the path was removed under us (a sweep that judged our live
+        // lock a corpse, or a sibling's cleanup) with no replacement in sight.
+        traceWarn(
+          `integration-lock: releasing without ownership — ${path.basename(file)} ${
+            current === null
+              ? "could not be read (removed while we held it)"
+              : `holds a different token (pid ${String(readTokenPid(current) ?? "unknown")})`
+          }; pid ${String(process.pid)} believed it held this lock (a live lock was stolen)`,
+        );
       };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
         // Cannot create the lock at all (read-only .git, permissions), or we
-        // created it and the publish threw — in which case the file is already
-        // unlinked above. Fail OPEN: the in-process chain still serialises this
-        // process.
+        // created it and the publish threw — in which case our own file is
+        // already gone (removed by `createAndPublish`, inode-checked). Fail
+        // OPEN: the in-process chain still serialises this process.
         trace(`integration-lock: lockfile unavailable, continuing: ${(err as Error).message}`);
         return async () => undefined;
       }
@@ -187,6 +245,7 @@ async function guarded<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
  */
 export function releaseHeldIntegrationLocks(): void {
   for (const [file, token] of heldLockfiles) {
+    signalReleased.add(file);
     try {
       if (readFileSync(file, "utf8") === token) rmSync(file, { force: true });
     } catch {
