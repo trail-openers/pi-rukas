@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { projectRepeatParkRefusal } from "../src/headless/repeat-park-refusal.ts";
+import { ISSUE_BODY_TIMEOUT_MS } from "../src/work-driver-explore.ts";
 import { parkRecordPath, repeatParkVerdict } from "../src/work-driver-park-memory.ts";
 import {
   REPEAT_PARK_REFUSAL_PREFIX,
@@ -176,6 +177,71 @@ const now = Date.now();
           "…and the start runs",
         );
       }
+    } finally {
+      rmSync(w.repo, { recursive: true, force: true });
+    }
+  }
+
+  // 4c-bis. The re-check is BOUNDED, and a lookup that cannot answer is not a
+  // refusal. It runs before any step is dispatched, so an unbounded
+  // `gh pr list` here holds up the start for as long as the network hangs, and
+  // the guard would be the slowest thing in a cycle that runs no steps at all.
+  // The deadline is the issue-body fetch's own per-attempt bound, and a
+  // timeout — or a cycle that is being interrupted — fails OPEN.
+  {
+    const w = world("pr-lookup-bounded");
+    try {
+      const here = createHash("sha256").update(w.body).digest("hex");
+      write(w, "existing-pr-detected", "77", here, 2, 2);
+      const openPr = [
+        { number: 77, headRefName: `feature/issue-${ISSUE}-x`, body: `Closes #${ISSUE}` },
+      ];
+
+      let calls = 0;
+      let deadlineSeen: number | undefined;
+      const timingOut = {
+        ...mkCtx(w, openPr),
+        verifyExecFn: async (_cmd: string, opts?: { timeout?: number }) => {
+          calls++;
+          deadlineSeen = opts?.timeout;
+          throw Object.assign(new Error("command timed out after 45000ms"), {
+            killed: true,
+            timedOutKill: true,
+          });
+        },
+      } as unknown as DriverContext;
+      assert(
+        (await repeatParkVerdict(timingOut)) === undefined,
+        "existing-pr-detected: a `gh pr list` that times out does NOT refuse — the driver still cannot confirm the PR, so it does not get to enforce it",
+      );
+      assert(
+        calls > 0 && deadlineSeen === ISSUE_BODY_TIMEOUT_MS,
+        `…and the re-check ran WITH a deadline (saw ${String(deadlineSeen)}ms, expected ${ISSUE_BODY_TIMEOUT_MS}ms) — an unbounded forge call before the loop is how a start hangs forever`,
+      );
+      assert(
+        (await refuseRepeatPark(timingOut)) === undefined,
+        "…and refuseRepeatPark lets that start run rather than parking it on a state it could not read",
+      );
+
+      const stopping = new AbortController();
+      stopping.abort();
+      calls = 0;
+      const interrupted = {
+        ...mkCtx(w, openPr),
+        signal: stopping.signal,
+        verifyExecFn: async () => {
+          calls++;
+          return { stdout: JSON.stringify(openPr) };
+        },
+      } as unknown as DriverContext;
+      assert(
+        (await repeatParkVerdict(interrupted)) === undefined,
+        "an interrupted cycle is not refused on a PR state — nothing is about to run either way, so the guard has no verdict to defend",
+      );
+      assert(
+        calls === 0,
+        "…and the abort is checked BEFORE the `gh pr list`: the way out of a stopping cycle is not a network call",
+      );
     } finally {
       rmSync(w.repo, { recursive: true, force: true });
     }

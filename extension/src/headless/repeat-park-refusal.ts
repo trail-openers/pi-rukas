@@ -11,9 +11,9 @@
  */
 
 import { trace } from "../trace.ts";
+import type { DriverOutcome } from "../work-driver-outcome.ts";
 import { repeatParkVerdictReason } from "../work-driver-park-memory.ts";
 import { REPEAT_PARK_REFUSAL_PREFIX, isRepeatParkRefusal } from "../work-driver-state-guards.ts";
-import type { DriverOutcome } from "../work-driver-outcome.ts";
 import { workStateFile } from "../workflow-state.ts";
 import { EXIT } from "./exit-code.ts";
 import type { IssueResult } from "./result.ts";
