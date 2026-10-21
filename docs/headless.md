@@ -90,7 +90,7 @@ The headless runner's contract with its caller is four independent surfaces, eac
 | 20 | `aborted` | Aborted |
 | 21 | `interrupted` | Interrupted by a signal (SIGINT/SIGTERM) |
 | 30 | `crash` | The driver threw, or interrupted by the runner's own `--timeout`, or a cycle left running after the driver returned, or the runner process died without writing its result |
-| 40 | `refused` | Refused to start (claimed by a live cycle, `needs-human-attention` without `--restart`, bad arguments, unknown flag) |
+| 40 | `refused` | Refused to start (claimed by a live cycle, `needs-human-attention` without `--restart`, a third identical park (`cap: repeat-park`, #1743), bad arguments, unknown flag) |
 | 41 | `lost` | `plan` turns only: the session to resume does not exist |
 
 A grouped run exits 21 if any issue was interrupted, otherwise the highest per-issue code. The `--json` result carries every issue regardless.
@@ -160,8 +160,8 @@ With `--json`, stdout carries exactly one JSON document:
 | `buildVersion` | always | The release version of the running build (`extension/package.json`). |
 | `issues[].status` | always | `merged`, `handoff`, `aborted`, `interrupted`, `running` (the driver returned without a terminal state) or `not-started`. |
 | `issues[].cap` | when a cap was hit | The last cap the cycle hit, from the published vocabulary (below). It can be set on a `merged` result too (a cap the cycle recovered from), so a host reads `status` and `exitCode` for the outcome and `cap` for the reason. A cap recorded by a step that a signal then cut off is not reported (see [Exit codes](#exit-codes)). |
-| `issues[].parkReason` | when `cap` is `intent-park` | Why the cycle parked: `underspecified`, `contradicted-by-code`, `already-implemented`, `too-large`, `premise-unsound`, `unresolved-critical-open-point` or `blank-issue-body`. |
-| `issues[].handoff` | once the cycle emitted a handoff | `channel` (`forge` or `host`, see [Handoff channel](#handoff-channel)); `marker`, the machine marker that is the first line of the body; `body`, the full handoff markdown, taken from the driver's record of this cycle (never re-read from the file); `bodyError` (`not-recorded`) in place of `body` when the cycle recorded none; `bodyFile`, a path for a person; `commentUrl`, the comment pi-rukas posted (forge channel); `labelApplied`, whether `needs-human-attention` was verified on the issue (and PR). |
+| `issues[].parkReason` | when `cap` is `intent-park` or `plan-spec-mismatch` | Why the cycle parked. Intent parks: `underspecified`, `contradicted-by-code`, `already-implemented`, `too-large`, `premise-unsound`, `unresolved-critical-open-point` or `blank-issue-body`. Plan parks (#1743): the plan verdict — `no-calls`, `all-refused` or `uncovered-deliverables`. |
+| `issues[].handoff` | once the cycle emitted a handoff | `channel` (`forge` or `host`, see [Handoff channel](#handoff-channel)); `marker`, the machine marker that is the first line of the body; `body`, the full handoff markdown, taken from the driver's record of this cycle (never re-read from the file); `bodyError` (`not-recorded`) in place of `body` when the cycle recorded none; `bodyFile`, a path for a person; `commentUrl`, the comment pi-rukas posted (forge channel; absent on a host-channel park, which posts nothing); `labelApplied`, whether `needs-human-attention` was verified on the issue (and PR); `repeat` (`{count, firstAt, marker}`) when this park repeats one already recorded — see [Parks for hosts](#parks-for-hosts). |
 | `issues[].failure` | when `cap` is set and the cycle did not merge | Why the cycle stopped on `cap`, as stable fields (#1367, added in this release). See [The `failure` object](#the-failure-object). |
 | `issues[].failedStep` | when the cycle did not merge and started a step | The step it stopped in: the step a `<template>:<step>` cap names (`verify-failed:`, `verify-timeout:`, `verify-env:`, `verify-baseline-red:`, `pr-not-open:`, `step-failed:`, `driver-crash:`), else the last step started before the cap, else the last step started. It names where the cycle stopped, not necessarily a failure: for `awaiting-human-merge` it is the last step the cycle ran (e.g. `ci`). |
 | `issues[].branch`, `prNumber`, `prUrl` | when known | `prUrl` is present only when unambiguous: the PR URL the driver recorded (its handoff comment on the PR), else one built from the project's git remote when there is exactly one remote, the forge is GitHub or GitLab, and the web address is certain (an `http(s)` remote, or ssh to github.com / gitlab.com; GitLab subgroups and explicit https ports are kept). Otherwise only `prNumber` is set. |
@@ -470,7 +470,7 @@ What `--restart` does not reset or check:
 
 - **The forge.** An open PR for the issue is not duplicated. Without `--continue-pr` the run stops at the branch step with the cap `existing-pr-detected` (`PI_ENSEMBLE_PR_PREFLIGHT=0` turns that check off). With [`--continue-pr`](#--continue-pr-for-hosts) the run continues that PR.
 - **Worktrees and branches.** A leftover worktree with no uncommitted or unpushed work is recreated, and one that holds work is refused (see [troubleshooting.md](troubleshooting.md)).
-- **The intent-park record.** A restart that parks again for the same reason, on the same issue text and commit, links the earlier park comment instead of posting a new one.
+- **The park records.** A restart that parks again for the same reason, on the same issue text, links the earlier report instead of making a new one — for all three parks a cycle can reach twice (`intent-park`, `plan-spec-mismatch`, `existing-pr-detected`). A THIRD identical park is refused outright: see [Parks for hosts](#parks-for-hosts).
 - **Nothing about a live cycle.** `--restart` skips the check for another live process that owns the issue (that check is part of resuming). A host must never restart an issue it is still running; wait for the first run to exit.
 
 Use `--restart` only when a person, or the host acting on a person's answer, has dealt with the handoff. Passing it on every run turns the gate off entirely, and the same handoff repeats.
@@ -567,7 +567,8 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
     "restartClearsAttention": true, // #1327 — --restart clears needs-human-attention
     "failureReason": true,      // #1367 — issues[].failure in the result
     "usageByRole": true,        // #1368 — issues[].usage.byRole in the result
-    "continuePr": true          // #1468 — work --continue-pr and issues[].continuedPr
+    "continuePr": true,         // #1468 — work --continue-pr and issues[].continuedPr
+    "repeatParkGuard": true     // #1743 — parks are remembered; a third identical start is refused
   },
   "resources": { … }            // #1325 — the host budget and limits; see Resource report
 }
@@ -603,8 +604,15 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
 | `features.restartClearsAttention` | Constant `true` | `true` when `--restart` overrides the attention gate and clears `needs-human-attention` (#1327). See [`--restart` for hosts](#--restart-for-hosts). |
 | `features.failureReason` | Constant `true` | `true` when the result carries `issues[].failure`, the reason behind its `cap` (#1367). |
 | `features.usageByRole` | Constant `true` | `true` when the result's `usage` carries `byRole`, failed dispatches included (#1368). |
+| `features.repeatParkGuard` | Constant `true` | `true` when a park is remembered per (issue, cap) whether or not a comment was posted, `issues[].handoff.repeat` publishes `{count, firstAt, marker}`, and a third identical start is refused with `cap: "repeat-park"` and exit 40 (#1743). See [Parks for hosts](#parks-for-hosts). |
 | `features.continuePr` | Constant `true` | `true` when `work` accepts `--continue-pr` and the result carries `issues[].continuedPr` (#1468). See [`--continue-pr` for hosts](#--continue-pr-for-hosts). |
 | `resources` | `resourceReport()` (`resource-budget.ts`) | The host budget and the limits a cycle started now would run with, read when the answer is built. See [Resource report](#resource-report). |
+
+### Parks for hosts
+
+A park is a cycle stopping to ask a human something: `intent-park` (the issue does not say enough to build from), `plan-spec-mismatch` (the plan matches no deliverable), `existing-pr-detected` (the issue's PR is already open). pi-rukas remembers one per (issue, cap) in `.pi/work-state/<N>/park-<cap>.json` — the reason it fired for, a sha256 of the issue title + body it was judged against, how many cycles have parked that identical combination, when the first did, and the handoff marker the last one published. The record is written whichever handoff channel ran, so a host-owned cycle (which posts no comment) is remembered too; on that channel `handoff.commentUrl` is simply absent and the handoff's repeat line says so instead of printing a URL.
+
+`issues[].handoff.repeat` carries `{count, firstAt, marker}` when this park repeats one already recorded — `count: 2` on the second report of the same park. A THIRD identical start is refused before any step runs: `cap: "repeat-park"`, `status: "not-started"`, exit 40, no `handoff` field, and no state file written, because the guard reads the record rather than the (previous cycle's) state file. `--restart` does not bypass it; what clears it is editing the issue body (the fingerprint is the title + body), or `PI_ENSEMBLE_REPEAT_PARK=0` to report it regardless. An unreadable issue body never refuses — the guard fails open rather than calling an issue it could not read "unchanged".
 
 ### How a caller uses this
 

@@ -176,15 +176,19 @@ export async function runHandoff(
   // completion / dispatch-failed event construction moved verbatim.)
   const prNumber = next.pipelineState.prNumber;
   const target = prNumber ? `pr #${prNumber}` : `issue #${ctx.issue}`;
-  // A freshly re-resolved intent park that matches the one already reported
+  // A freshly re-resolved park that matches the one already reported
   // (work-driver-park-memory.ts) has its comment on the issue: no ops
   // dispatch, no second comment. The label is still verified below and
-  // re-applied if someone removed it.
-  const park = await readParkMemory(ctx, next);
+  // re-applied if someone removed it. #1743 — the record exists on the host
+  // channel too, where no URL was ever captured; suppressing the post then
+  // would leave the park unreported, so only a repeat that CAN point at an
+  // earlier comment (or a host channel that posts nothing either way) skips.
   // #1327 — a host-owned channel: nothing is posted or labelled; the body goes in the result.
   const host = handoffChannel() === "host";
+  const park = await readParkMemory(ctx, next, host);
+  const reusedComment = park.repeatOf?.commentUrl !== undefined;
   const dispatchResult =
-    park.repeatOf || host
+    reusedComment || host
       ? { next, opsReplyText: "" }
       : await runHandoffOpsDispatch(ctx, next, handoffBodyPath);
   next = dispatchResult.next;
@@ -330,6 +334,11 @@ export async function runHandoff(
             : ""
         }`
       : undefined;
+  // #1743 — the park record is written BEFORE the event is built, so the
+  // repeat count the event carries is the count this write produced rather
+  // than a number read back later. Returns undefined when nothing was
+  // recorded (an uncovered cap, an unreadable body, the feature off).
+  const parkRecord = await recordPark(ctx, park, commentUrl);
   const emitted = makeHandoffEmittedEvent({
     at: Date.now(),
     commentUrl,
@@ -346,15 +355,23 @@ export async function runHandoff(
       ? { degradedReason: consolidated.degradedReason }
       : {}),
     // A repeat delivered nothing this cycle — no provenance to assert.
-    delivery: host ? "host" : park.repeatOf ? undefined : delivery,
+    delivery: host ? "host" : reusedComment ? undefined : delivery,
     repeatOf: park.repeatOf,
+    ...(parkRecord && parkRecord.count >= 2
+      ? {
+          repeat: {
+            count: parkRecord.count,
+            firstAt: parkRecord.firstAt,
+            marker: parkRecord.lastMarker,
+          },
+        }
+      : {}),
     targetType: prNumber ? "pr" : "issue",
     targetNumber: prNumber ?? ctx.issue,
     issueLabelApplied,
     prLabelApplied,
   });
   next = appendEvent(next, emitted);
-  await recordPark(ctx, park, commentUrl);
   // #571 — release the path claim so sibling cycles can proceed.
   // #1454 — every issue in the group, not just the primary: a grouped cycle
   // claims all of them, so clearing one left a sibling entry to park the next

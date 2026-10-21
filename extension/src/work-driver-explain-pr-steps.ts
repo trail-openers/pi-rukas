@@ -1,20 +1,26 @@
 /**
- * work-driver-explain-pr-steps — cap-hit explanation for the
- * intent-park cap. Split from work-driver-explain.ts so that file sits
- * under the 500-line cap with headroom for new caps; the content here is
- * the verbatim former case body of work-driver-explain.ts.
+ * work-driver-explain-pr-steps — cap-hit explanation for the parks this module
+ * remembers: `intent-park`, `existing-pr-detected` and the forge push refusal.
+ * Split from work-driver-explain.ts so that file sits under the 500-line cap
+ * with headroom for new caps; the intent-park body is the verbatim former case
+ * body of work-driver-explain.ts.
+ *
+ * Each of these can park twice on an unchanged issue, so each opens with the
+ * shared repeat sentence when it does (work-driver-explain-repeat.ts).
  */
 
 import { explainPushRefusal } from "./work-driver-explain-push-refusal.ts";
+import { repeatParkNote } from "./work-driver-explain-repeat.ts";
 import { isMemoryClaim } from "./work-driver-intent-criticality.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
+import { lastCapHit } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 type Cap = Extract<WorkEvent, { kind: "cap-hit" }>["cap"];
 
 /**
- * Explains the `intent-park` cap; the dispatch is exhaustive, so an
- * unknown cap can never land here.
+ * Explains the parks and the push refusal; the dispatch in `explainCap` is
+ * exhaustive, so an unknown cap can never land here.
  */
 export function explainPrSteps(cap: Cap, state: WorkState): string {
   switch (cap) {
@@ -24,6 +30,16 @@ export function explainPrSteps(cap: Cap, state: WorkState): string {
     // called it a verify failure and sent the operator to fix code.
     case "push-refused:commit-pr":
       return explainPushRefusal(state);
+    // #1743 — the branch step's pre-flight found the issue's open PR. `--restart`
+    // wipes the state file but not GitHub, so this one repeats on every re-run.
+    case "existing-pr-detected": {
+      const pr = state.pipelineState.existingPr;
+      const via =
+        pr?.matchedBy === "branch"
+          ? `its head branch \`${pr.headRefName}\` names the issue`
+          : "its body carries a closing keyword for the issue";
+      return `${repeatParkNote(state)}PR #${pr?.number ?? "(unknown)"} is already open for this issue — ${via}. The driver halted at the branch step BEFORE any dispatch, so no tokens were spent and nothing was written. \`--restart\` wipes the driver's state file but not GitHub, which is how issue #5 got rebuilt from scratch and shipped as a duplicate (#358 left orphaned by #359). Decide whether to resume that PR's branch, close it, or retarget it — the driver will not attach new commits to a PR whose head is a different branch`;
+    }
     case "intent-park": {
       const spec = state.pipelineState.normalisedSpec;
       const reason = (spec?.parkReason ?? "underspecified") as ParkReason;
@@ -54,12 +70,7 @@ export function explainPrSteps(cap: Cap, state: WorkState): string {
       const rationale = spec?.rationale ? `\n\nResolver's rationale: ${spec.rationale}` : "";
       // A repeat was re-resolved but not re-reported; say so, so the operator
       // does not look for a new comment (work-driver-park-memory.ts).
-      const emitted = [...state.eventLog].reverse().find((e) => e.kind === "handoff-emitted");
-      const repeat =
-        emitted?.kind === "handoff-emitted" && emitted.repeatOf
-          ? `REPEAT of the park reported ${Math.max(0, Math.round((emitted.at - emitted.repeatOf.at) / 60_000))} min ago (${emitted.repeatOf.commentUrl}): this cycle re-resolved the issue from scratch and reached the same verdict against the same issue text and commit, so no second comment was posted.\n\n`
-          : "";
-      return `${repeat}${why} No code was written — the driver halted at intent resolution, before plan or branch ran.${evidence}${rationale}`;
+      return `${repeatParkNote(state)}${why} No code was written — the driver halted at intent resolution, before plan or branch ran.${evidence}${rationale}`;
     }
     default:
       return `unhandled intent-park cap: ${cap}`;

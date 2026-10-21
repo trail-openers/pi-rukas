@@ -164,6 +164,10 @@ assert(
 assert(caps.features.resultFromMemory === true, "features.resultFromMemory is true");
 assert(caps.features.cycleDeadline === true, "features.cycleDeadline is true");
 assert(caps.features.continuePr === true, "features.continuePr is true");
+assert(
+  caps.features.repeatParkGuard === true,
+  "features.repeatParkGuard is true (#1743: parks are remembered and a third identical start is refused)",
+);
 assert(CAPABILITIES_VERSION === 2, "--continue-pr is additive: CAPABILITIES_VERSION stays 2");
 // #1666 — `permissions` is additive (CAPABILITIES_VERSION stays 2) and reports the mode read at answer time.
 assert(caps.permissions.workCycles === "trust" || caps.permissions.workCycles === "strict", "permissions.workCycles is trust or strict");

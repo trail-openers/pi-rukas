@@ -206,7 +206,13 @@ export function makeHandoffEmittedEvent(opts: {
   /** #798 — per-target: the PR label was verified on the PR. */
   prLabelApplied?: boolean;
   /** The earlier intent park this handoff repeats (work-driver-park-memory.ts). */
-  repeatOf?: { at: number; commentUrl: string };
+  repeatOf?: { at: number; commentUrl?: string };
+  /**
+   * #1743 — this park repeats one already recorded (`{count, firstAt, marker}`,
+   * from work-driver-park-memory.ts). Carried so the headless result publishes
+   * `handoff.repeat` without re-reading the record file.
+   */
+  repeat?: { count: number; firstAt: number; marker: string };
 }): Extract<WorkEvent, { kind: "handoff-emitted" }> {
   const { at, commentUrl, labelApplied, handoffBodyPath, delivery } = opts;
   const ev: Extract<WorkEvent, { kind: "handoff-emitted" }> = {
@@ -223,6 +229,7 @@ export function makeHandoffEmittedEvent(opts: {
   if (opts.issueLabelApplied !== undefined) ev.issueLabelApplied = opts.issueLabelApplied;
   if (opts.prLabelApplied !== undefined) ev.prLabelApplied = opts.prLabelApplied;
   if (opts.repeatOf) ev.repeatOf = opts.repeatOf;
+  if (opts.repeat) ev.repeat = opts.repeat;
   if (opts.consolidated) {
     ev.consolidated = true;
     ev.consolidatedBranch = opts.consolidatedBranch;

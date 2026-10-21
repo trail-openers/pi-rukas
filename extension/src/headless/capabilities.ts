@@ -79,6 +79,14 @@ export const HEADLESS_FEATURES = {
   continuePr: true,
   /** #1471 — `plan --start` / `--resume`: a planning session, one turn per run, filed only on a confirm. */
   planTurns: true,
+  /**
+   * #1743 — a park is remembered per (issue, cap) whether or not a comment was
+   * ever posted, so it works on the host channel too; `handoff.repeat`
+   * {count, firstAt, marker} says how many cycles have parked the identical
+   * park, and a THIRD identical start is refused (cap `repeat-park`, exit 40)
+   * before any step runs. `PI_ENSEMBLE_REPEAT_PARK=0` disables the refusal.
+   */
+  repeatParkGuard: true,
 } as const;
 
 export interface Capabilities {

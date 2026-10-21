@@ -357,6 +357,15 @@ export const FIXED_CAP_CAUSE: Record<FixedCap, CapCause> = {
     reason: "the same finding repeats across files, which points at a missing seam in the spec",
     action: ISSUE_DECIDES,
   },
+  // #1743 — the guard refused a third identical park: what is unchanged is the
+  // issue, so what has to change is the issue.
+  "repeat-park": {
+    cls: "issue",
+    reason:
+      "two earlier cycles already parked this issue for this reason against the same issue text, so a third report says nothing new",
+    action:
+      "revise the body of #{issue} (any substantive edit clears the guard), or run once with PI_ENSEMBLE_REPEAT_PARK=0",
+  },
   "repo-root-residue": {
     cls: "environment",
     reason: "uncommitted work sat at the repo root before development, and it is not this cycle's",
