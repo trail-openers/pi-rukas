@@ -156,12 +156,15 @@ const now = Date.now();
             refusal.issue === ISSUE,
           "existing-pr-detected: the PR is still open, so the guard names the cap, the PR and the count",
         );
-        const refusedReason = await refuseRepeatPark(ctx);
+        const refused = await refuseRepeatPark(ctx);
         assert(
-          typeof refusedReason === "string" &&
-            refusedReason.startsWith(REPEAT_PARK_REFUSAL_PREFIX) &&
-            refusedReason.includes("existing-pr-detected"),
-          "…and refuseRepeatPark turns that into the reason the runner recognises",
+          typeof refused?.reason === "string" &&
+            refused.reason.startsWith(REPEAT_PARK_REFUSAL_PREFIX) &&
+            refused.reason.includes("existing-pr-detected") &&
+            refused.repeatPark?.cap === "existing-pr-detected" &&
+            refused.repeatPark.issue === ISSUE &&
+            refused.repeatPark.count === 2,
+          "…and refuseRepeatPark turns that into the reason the runner recognises, WITH the record fields on the refusal",
         );
       } else {
         assert(
@@ -178,8 +181,10 @@ const now = Date.now();
     }
   }
 
-  // 4d. `--continue-pr` is the documented remedy for the open-PR park, so the
+  // 4d. `--continue-pr` is the documented remedy for the OPEN-PR park, so the
   // guard never arms against the invocation that tells the operator to use it.
+  // But it is the remedy for THAT park only: an intent park is a statement
+  // about the issue body, and continuing a PR does nothing about it.
   {
     const w = world("continue-pr");
     try {
@@ -192,6 +197,36 @@ const now = Date.now();
       assert(
         (await refuseRepeatPark(ctx)) === undefined,
         "--continue-pr with a count-2 open-PR record: the run proceeds — refusing the documented remedy would block the fix",
+      );
+    } finally {
+      rmSync(w.repo, { recursive: true, force: true });
+    }
+  }
+  {
+    const w = world("continue-pr-intent");
+    try {
+      const here = createHash("sha256").update(w.body).digest("hex");
+      write(w, "intent-park", "contradicted-by-code", here, 2, 2);
+      const ctx = {
+        ...mkCtx(w, []),
+        continuePr: true,
+      } as unknown as DriverContext;
+      const refused = await refuseRepeatPark(ctx);
+      assert(
+        refused?.repeatPark?.cap === "intent-park" &&
+          refused.reason.startsWith(REPEAT_PARK_REFUSAL_PREFIX),
+        "--continue-pr does NOT waive an intent-park refusal — the flag continues a PR; it does not make the issue say more",
+      );
+      // And the flag still waives nothing when the PR park is not the one that
+      // armed: an intent record beside an open-PR record refuses on the intent.
+      write(w, "existing-pr-detected", "77", here, 2, 2);
+      const both = await refuseRepeatPark({
+        ...mkCtx(w, [{ number: 77, headRefName: `feature/issue-${ISSUE}-x`, body: `Closes #${ISSUE}` }]),
+        continuePr: true,
+      } as unknown as DriverContext);
+      assert(
+        both?.repeatPark?.cap === "intent-park",
+        "…and with both records armed, --continue-pr stands down only the open-PR one",
       );
     } finally {
       rmSync(w.repo, { recursive: true, force: true });
@@ -227,11 +262,16 @@ const now = Date.now();
   }
 
   // 4f. A record nobody can believe is treated as absent: a count that is not
-  // a number, or a timestamp from before the driver existed.
+  // a number, a timestamp from before the driver existed, delivered parks
+  // exceeding the parks, a cycle id that is not a number, or a timestamp JSON
+  // parses to Infinity (which would make the refusal's `toISOString()` throw).
   for (const [field, value, label] of [
     ["count", "2", "a string count"],
     ["count", -1, "a negative count"],
     ["lastAt", 2, "a 1970 timestamp"],
+    ["deliveredCount", 3, "more parks reported than there were"],
+    ["lastCycleId", "3", "a string cycle id"],
+    ["lastCycleId", Number.NaN, "a NaN cycle id"],
   ] as const) {
     const w = world(`bad-${label}`);
     try {
@@ -244,6 +284,62 @@ const now = Date.now();
       assert(
         (await repeatParkVerdict(ctx)) === undefined,
         `a malformed record (${label}) is treated as ABSENT — a hand-edited file cannot arm a hard stop`,
+      );
+    } finally {
+      rmSync(w.repo, { recursive: true, force: true });
+    }
+  }
+  {
+    // `1e999` is the case a JSON parse turns into Infinity, and
+    // `new Date(Infinity).toISOString()` THROWS. The refusal sentence formats
+    // that date, so an Infinity firstAt must be rejected on the read, not
+    // survive to crash the start it is refusing.
+    const w = world("bad-infinite-firstAt");
+    try {
+      const here = createHash("sha256").update(w.body).digest("hex");
+      const file = write(w, "intent-park", "contradicted-by-code", here, 2, 2);
+      const rec = JSON.parse(readFileSync(file, "utf8"));
+      writeFileSync(
+        file,
+        JSON.stringify(rec).replace(`"firstAt":${rec.firstAt}`, '"firstAt":1e999'),
+        "utf8",
+      );
+      assert(
+        readFileSync(file, "utf8").includes("1e999"),
+        "the record really carries the infinite timestamp on disk (JSON.parse turns it into Infinity)",
+      );
+      const ctx = mkCtx(w, []);
+      let threw: string | undefined;
+      let verdict: unknown;
+      try {
+        verdict = await repeatParkVerdict(ctx);
+        await refuseRepeatPark(ctx);
+      } catch (err) {
+        threw = (err as Error).message;
+      }
+      assert(
+        threw === undefined && verdict === undefined,
+        `an infinite firstAt is treated as ABSENT and the guard does not throw (${threw ?? "no throw"}) — a corrupted date cannot crash the refusal or print Invalid Date`,
+      );
+    } finally {
+      rmSync(w.repo, { recursive: true, force: true });
+    }
+  }
+
+  // 4f-bis. An `existing-pr-detected` record whose reason is not a PR number
+  // cannot be re-checked against the forge, so it fails OPEN: the driver does
+  // not get to refuse on a GitHub state it could not confirm.
+  for (const reason of ["not-a-pr", "77.5", "0", "-3", ""]) {
+    const w = world(`bad-pr-reason-${reason || "empty"}`);
+    try {
+      const here = createHash("sha256").update(w.body).digest("hex");
+      write(w, "existing-pr-detected", reason, here, 2, 2);
+      const ctx = mkCtx(w, [
+        { number: 77, headRefName: `feature/issue-${ISSUE}-x`, body: `Closes #${ISSUE}` },
+      ]);
+      assert(
+        (await repeatParkVerdict(ctx)) === undefined,
+        `existing-pr-detected with reason ${JSON.stringify(reason)}: the forge re-check cannot run, so the guard fails OPEN (a PR that looks open is not a reason the driver may enforce)`,
       );
     } finally {
       rmSync(w.repo, { recursive: true, force: true });
@@ -302,9 +398,9 @@ const now = Date.now();
         refusal?.issue === SIBLING,
         "group scope: the guard checks EVERY issue — #86 arms the refusal even though the primary #85 is clean",
       );
-      const reason = await refuseRepeatPark(ctx as unknown as DriverContext);
+      const refused = await refuseRepeatPark(ctx as unknown as DriverContext);
       assert(
-        typeof reason === "string" && reason.includes(`#${SIBLING}`),
+        typeof refused?.reason === "string" && refused.reason.includes(`#${SIBLING}`),
         "…and the refusal NAMES the issue that armed it, not just the primary",
       );
     } finally {
@@ -349,13 +445,13 @@ const now = Date.now();
       issueBodyFetcherFn: async () => ({ stdout: w.body }),
       verifyExecFn: async () => ({ stdout: "" }),
     } as unknown as DriverContext;
-    const reason = await refuseRepeatPark(ctx);
-    assert(typeof reason === "string", "the grouped start is refused");
+    const refusal = await refuseRepeatPark(ctx);
+    assert(typeof refusal?.reason === "string", "the grouped start is refused");
     const results: { issue: number; exitCode: number; cap?: string; failure?: { message?: string }; status: string }[] = [];
     const codes = projectRepeatParkRefusal(
       [ISSUE, SIBLING],
       w.repo,
-      { started: false, reason: reason ?? "" } as never,
+      { started: false, ...refusal } as never,
       results as never,
     );
     assert(codes !== undefined && codes.every((c) => c === 40), "…and every member exits EXIT.refused — the group did not start");
@@ -369,6 +465,25 @@ const now = Date.now();
       sibling?.cap === undefined &&
         /^not evaluated: the group was refused because #86/.test(sibling?.failure?.message ?? ""),
       "…and its sibling is reported as NOT EVALUATED, naming the issue that actually armed the guard — not as a repeat-park of its own",
+    );
+    // The projector reads the RECORD, not the prose: hand it a refusal whose
+    // sentence has been mangled and the numbers it publishes still come from
+    // the structured verdict it arrived with.
+    const mangled: typeof results = [];
+    projectRepeatParkRefusal(
+      [ISSUE, SIBLING],
+      w.repo,
+      { started: false, reason: "repeat-park: ", repeatPark: refusal?.repeatPark } as never,
+      mangled as never,
+    );
+    assert(
+      /^#86 intent-park \(contradicted-by-code\) already parked 2 times/.test(
+        mangled.find((r) => r.issue === SIBLING)?.failure?.message ?? "",
+      ) &&
+        /^not evaluated: the group was refused because #86 intent-park/.test(
+          mangled.find((r) => r.issue === ISSUE)?.failure?.message ?? "",
+        ),
+      "the projected detail is BUILT FROM THE STRUCTURED VERDICT, not parsed back out of the reason string the guard wrote for a human (an empty sentence still prints the record)",
     );
   } finally {
     rmSync(w.repo, { recursive: true, force: true });

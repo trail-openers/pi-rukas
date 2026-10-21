@@ -11,12 +11,9 @@
  */
 
 import { trace } from "../trace.ts";
-import {
-  REPEAT_PARK_REFUSAL_PREFIX,
-  isRepeatParkRefusal,
-  repeatParkRefusalIssue,
-} from "../work-driver-state-guards.ts";
-import type { DriverOutcome } from "../work-driver.ts";
+import { repeatParkVerdictReason } from "../work-driver-park-memory.ts";
+import { REPEAT_PARK_REFUSAL_PREFIX, isRepeatParkRefusal } from "../work-driver-state-guards.ts";
+import type { DriverOutcome } from "../work-driver-outcome.ts";
 import { workStateFile } from "../workflow-state.ts";
 import { EXIT } from "./exit-code.ts";
 import type { IssueResult } from "./result.ts";
@@ -45,13 +42,25 @@ export function projectRepeatParkRefusal(
 ): number[] | undefined {
   const reason = repeatParkRefusalReason(outcome);
   if (reason === undefined) return undefined;
-  const detail = reason.slice(REPEAT_PARK_REFUSAL_PREFIX.length);
+  // The guard's own RECORD reading, carried on the refusal outcome: the arming
+  // issue, the cap, the reason and the count are read from STRUCTURED fields,
+  // never parsed back out of the sentence the guard wrote for a human. The
+  // reason string stays what `isRepeatParkRefusal` recognises (the driver's
+  // `{started:false}` carries only that), so a refusal whose verdict did not
+  // reach the outcome — an older caller, a replayed outcome — still projects.
+  const verdict =
+    outcome !== "expired" && "started" in outcome && !outcome.started
+      ? outcome.repeatPark
+      : undefined;
+  const detail = verdict
+    ? repeatParkVerdictReason(verdict)
+    : reason.slice(REPEAT_PARK_REFUSAL_PREFIX.length);
   // The guard checked every issue in the group and stopped on the first that
   // armed it. Only THAT issue carries the `repeat-park` cap and the count; a
   // sibling is reported as not evaluated, naming the primary. Reporting each
   // member as its own repeat-park would tell the host that #11 had already
   // parked twice when nothing had ever looked at #11.
-  const armed = repeatParkRefusalIssue(reason);
+  const armed = verdict?.issue ?? refusalIssue(reason);
   const codes: number[] = [];
   for (const issue of group) {
     codes.push(EXIT.refused);
@@ -70,4 +79,14 @@ export function projectRepeatParkRefusal(
     `headless: issue group [${group.join(", ")}] refused by the repeat-park guard${armed === undefined ? "" : ` (armed on #${armed})`}`,
   );
   return codes;
+}
+
+/**
+ * The arming issue read out of the reason — the FALLBACK only, used when the
+ * refusal reached here without its structured verdict. Anchored on the leading
+ * `#N ` the guard's own sentence builder writes.
+ */
+function refusalIssue(reason: string): number | undefined {
+  const m = reason.slice(REPEAT_PARK_REFUSAL_PREFIX.length).match(/^#(\d+)\s/);
+  return m ? Number(m[1]) : undefined;
 }

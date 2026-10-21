@@ -30,13 +30,22 @@ import { lstatSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
-import { COVERED_PARK_CAPS, parkRecordExpired, readParkRecord } from "./work-driver-park-record.ts";
+import {
+  COVERED_PARK_CAPS,
+  PARK_RECORD_MAX_AGE_MS,
+  parkRecordExpired,
+  readParkRecord,
+} from "./work-driver-park-record.ts";
 import type { ExecFn } from "./worktree.ts";
 
 const defaultExecFn: ExecFn = execp;
 
-/** Hardcoded age floor for an orphan to be swept (14 days, ms). */
-export const ORPHAN_ARTIFACT_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+/**
+ * The age floor an orphan must pass to be swept is `PARK_RECORD_MAX_AGE_MS`,
+ * declared in `work-driver-park-record.ts` — the record's own expiry. It lives
+ * there (not here) so the record module never imports the sweep that judges
+ * its directory; see that module for why one clock serves both.
+ */
 
 /**
  * Options for the artifact sweep.
@@ -113,7 +122,7 @@ export async function runArtifactSweep(opts: ArtifactSweepOpts): Promise<Artifac
       continue;
     }
     // Rule 3: mtime older than the 14-day floor.
-    if (now() - st.mtimeMs < ORPHAN_ARTIFACT_MAX_AGE_MS) {
+    if (now() - st.mtimeMs < PARK_RECORD_MAX_AGE_MS) {
       skipped.push({ name, reason: "recent" });
       continue;
     }

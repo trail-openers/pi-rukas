@@ -39,6 +39,7 @@ import {
   emitStepStarted,
   updateFooter,
 } from "./work-driver-lifecycle.ts";
+import type { DriverOutcome } from "./work-driver-outcome.ts";
 import { recordProtectedGrant } from "./work-driver-protected-grant.ts";
 import { claimCycle } from "./work-driver-registry.ts";
 import {
@@ -76,9 +77,8 @@ import {
 } from "./workflow-state.ts";
 
 export { DriverNotImplementedError } from "./work-driver-context.ts";
-
-/** Outcome of a `runWorkDriver` call: `{started: true}` or `{started: false; reason}`. */
-export type DriverOutcome = { started: true } | { started: false; reason: string };
+/** Outcome of a `runWorkDriver` call; defined once in `work-driver-outcome.ts`. */
+export type { DriverOutcome };
 /**
  * Run one /work cycle: read/create state, loop over steps via `nextStep()`,
  * persist after every transition, surface outcome via `pi.sendUserMessage`.
@@ -185,7 +185,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
   // issue still labelled): before any dispatch or sweep, so a refused start
   // mutates nothing on disk, and `--restart` overrides neither.
   const refusedStart = await refuseUnproductiveStart(ctx, state);
-  if (refusedStart) return { started: false, reason: refusedStart };
+  if (refusedStart) return { started: false, ...refusedStart };
 
   // Launch sweep: other cycles' stale worktrees. Guarded by PI_ENSEMBLE_WORKTREE_SWEEP=0.
   if (process.env.PI_ENSEMBLE_WORKTREE_SWEEP !== "0") {

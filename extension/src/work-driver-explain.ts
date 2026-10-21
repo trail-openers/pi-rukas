@@ -135,8 +135,9 @@ export function explainCap(
       // #1743 — a start the pre-loop guard refused. The guard runs before any
       // step and the driver persists no state for a refused start, so there is
       // no cap-hit to read here: passing `state` would only ever produce the
-      // generic sentence. The renderer takes the guard's STRUCTURED verdict
-      // when a caller has one; with none it says exactly what it knows.
+      // generic sentence, which is exactly what this renderer says. The
+      // detailed sentence (count, cap, arming issue) is built from the guard's
+      // structured verdict at the two places that hold it.
       return explainRepeatPark();
     case "lens-diff-unreadable":
       return explainLens(cap, state);

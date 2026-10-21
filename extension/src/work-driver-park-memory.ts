@@ -50,16 +50,16 @@ import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { fetchIssueBodyViaGh } from "./work-driver-explore.ts";
 import { handoffMarker } from "./work-driver-handoff-channel.ts";
-import { findOpenPrForIssue } from "./work-driver-pr-preflight.ts";
 import {
-  type CoveredParkCap,
   COVERED_PARK_CAPS,
+  type CoveredParkCap,
   type ParkRecord,
   parkRecordExpired,
   readParkRecord,
   writeParkRecord,
 } from "./work-driver-park-record.ts";
-import { type WorkEvent, type WorkState } from "./workflow-state.ts";
+import { findOpenPrForIssue } from "./work-driver-pr-preflight.ts";
+import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 // The record's SHAPE, PATH and LIFETIME live in `work-driver-park-record.ts` —
 // that module is the only code allowed to name, read, write, expire or delete
@@ -85,7 +85,29 @@ export const REPEAT_PARK_REFUSAL_COUNT = 2;
  * re-run can genuinely come back different and the refusal would be the driver
  * claiming a nondeterministic outcome was settled.
  */
-export const REFUSABLE_PARK_CAPS = ["intent-park", "existing-pr-detected"] as const;
+export const REFUSABLE_PARK_CAPS: readonly CoveredParkCap[] = [
+  "intent-park",
+  "existing-pr-detected",
+];
+
+/**
+ * Is this cap one the guard may refuse on? Takes a plain string because the
+ * callers reach it with a value read out of a `cap-hit` event, where the cap is
+ * the whole `WorkCap` union, not a covered one.
+ */
+export function isRefusableParkCap(cap: string | undefined): boolean {
+  return cap !== undefined && REFUSABLE_PARK_CAPS.some((refusable) => refusable === cap);
+}
+
+/**
+ * The reason sentence the pre-loop guard returns for a verdict, without the
+ * `repeat-park: ` marker. ONE builder for the guard's reason and for the
+ * headless projector's detail text, so the projector never has to read the
+ * verdict back out of prose it did not write.
+ */
+export function repeatParkVerdictReason(verdict: RepeatParkVerdict): string {
+  return `#${verdict.issue} ${verdict.cap} (${verdict.reason}) already parked ${verdict.count} times for this issue body`;
+}
 
 /** `PI_ENSEMBLE_REPEAT_PARK=0` — the guard stops consulting records; the records themselves stay. */
 export function repeatParkEnabled(): boolean {
@@ -371,13 +393,21 @@ export async function repeatParkVerdict(
     }
     for (const rec of recorded) {
       if (rec.fingerprint !== fingerprint) continue;
-      if (!(REFUSABLE_PARK_CAPS as readonly string[]).includes(rec.cap)) continue;
+      if (!isRefusableParkCap(rec.cap)) continue;
       if (rec.deliveredCount < REPEAT_PARK_REFUSAL_COUNT) continue;
-      if (
-        rec.cap === "existing-pr-detected" &&
-        !(await prStillOpen(ctx, issue, Number(rec.reason)))
-      ) {
-        continue;
+      if (rec.cap === "existing-pr-detected") {
+        // The reason IS the PR number. A record whose reason is not one (a
+        // hand-edited file, an older writer) cannot be re-checked against the
+        // forge, and refusing on a GitHub state the driver could not confirm is
+        // exactly what the re-check exists to prevent — so it fails open.
+        const pr = Number(rec.reason);
+        if (!Number.isInteger(pr) || pr <= 0) {
+          trace(
+            `work-driver: repeat-park guard could not read a PR number from the #${issue} existing-pr-detected record (reason ${JSON.stringify(rec.reason)}) — not refusing`,
+          );
+          continue;
+        }
+        if (!(await prStillOpen(ctx, issue, pr))) continue;
       }
       return {
         issue,
