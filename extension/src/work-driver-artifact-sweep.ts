@@ -13,7 +13,10 @@
  *   - NO sibling `<N>.json` state file (a live or terminal state file
  *     keeps its artifacts),
  *   - directory mtime older than 14 days (recent orphans are left alone —
- *     a mid-recovery operator may be about to re-create the state file).
+ *     a mid-recovery operator may be about to re-create the state file),
+ *   - and, checked LAST (#1743), no LIVE park record inside: the record is the
+ *     evidence behind a refusal the operator was given, so its directory
+ *     survives the age floor — but only while the guard would still believe it.
  *
  * Best-effort by design: every failure mode (missing directory, permission
  * error, in-use directory) is traced and swallowed. This sweep runs at cycle
@@ -27,6 +30,7 @@ import { lstatSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
+import { COVERED_PARK_CAPS, parkRecordExpired, readParkRecord } from "./work-driver-park-record.ts";
 import type { ExecFn } from "./worktree.ts";
 
 const defaultExecFn: ExecFn = execp;
@@ -103,15 +107,6 @@ export async function runArtifactSweep(opts: ArtifactSweepOpts): Promise<Artifac
       skipped.push({ name, reason: "non-numeric-name" });
       continue;
     }
-    // Rule 1b (#1743): a dir holding a park record is never removed, whatever
-    // its state file says. The record is the cross-cycle memory — the state
-    // file it belongs to may legitimately be gone (a handoff that terminalised
-    // without persisting, or the documented "rm to start fresh" recovery) and
-    // deleting the record would hand the operator a third identical park.
-    if (hasParkRecord(full)) {
-      skipped.push({ name, reason: "park-record-held" });
-      continue;
-    }
     // Rule 2: no sibling <N>.json state file.
     if (existsStateFile(dir, name)) {
       skipped.push({ name, reason: "live-state-file" });
@@ -120,6 +115,22 @@ export async function runArtifactSweep(opts: ArtifactSweepOpts): Promise<Artifac
     // Rule 3: mtime older than the 14-day floor.
     if (now() - st.mtimeMs < ORPHAN_ARTIFACT_MAX_AGE_MS) {
       skipped.push({ name, reason: "recent" });
+      continue;
+    }
+    // Rule 1b (#1743), checked LAST: a dir holding a LIVE park record is not
+    // removed. The record is the cross-cycle memory behind a refusal the
+    // operator is told about ("this issue already parked twice, first reported
+    // <date>"), and the refusal names its path — deleting it would hand the
+    // operator a third identical park and destroy the evidence for the guard
+    // that stopped them. It is an exemption only while the record still
+    // describes the world: past the age floor below the guard ignores it
+    // anyway, so keeping the directory alive forever would preserve dead state.
+    //
+    // Last rather than first, because a record does not make a directory
+    // un-orphaned — it only delays the sweep, and an exemption checked before
+    // every other rule cannot report what the other rules found.
+    if (await holdsLiveParkRecord(repoRoot, name, now)) {
+      skipped.push({ name, reason: "park-record-held" });
       continue;
     }
 
@@ -154,14 +165,31 @@ function existsStateFile(dir: string, name: string): boolean {
 }
 
 /**
- * #1743 — true when the artifact dir holds any `park-*.json` record
- * (work-driver-park-memory.ts). An unreadable dir is treated as holding one:
- * the sweep keeps on doubt, and an orphan record costs a few bytes.
+ * #1743 — true when the artifact dir holds a park record the guard would still
+ * act on (work-driver-park-record.ts).
+ *
+ * The cap names and the expiry clock are both IMPORTED from that module, not
+ * restated here: it owns `park-<cap>.json`, and a record the sweep alone
+ * believes in — while the guard ignores it as expired, or after a rename adds a
+ * fourth cap — is an exemption from nothing.
+ *
+ * An unreadable dir counts as holding one: the sweep keeps on doubt, and an
+ * orphan record costs a few bytes where deleting a live one costs a wrong
+ * refusal (or a missing one).
  */
-function hasParkRecord(dir: string): boolean {
+async function holdsLiveParkRecord(
+  repoRoot: string,
+  name: string,
+  now: () => number,
+): Promise<boolean> {
   try {
-    return readdirSync(dir).some((n) => n.startsWith("park-") && n.endsWith(".json"));
+    readdirSync(join(repoRoot, ".pi", "work-state", name));
   } catch {
     return true;
   }
+  for (const cap of COVERED_PARK_CAPS) {
+    const rec = await readParkRecord(repoRoot, Number(name), cap);
+    if (rec && !parkRecordExpired(rec, now())) return true;
+  }
+  return false;
 }

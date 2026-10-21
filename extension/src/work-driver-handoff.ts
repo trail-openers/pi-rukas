@@ -30,7 +30,11 @@ import {
 } from "./work-driver-handoff-post.ts";
 import { providerParkResumeStep } from "./work-driver-handoff-provider-resume.ts";
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
-import { readParkMemory, recordPark } from "./work-driver-park-memory.ts";
+import {
+  REPEAT_PARK_REFUSAL_COUNT,
+  readParkMemory,
+  recordPark,
+} from "./work-driver-park-memory.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
@@ -338,7 +342,16 @@ export async function runHandoff(
   // repeat count the event carries is the count this write produced rather
   // than a number read back later. Returns undefined when nothing was
   // recorded (an uncovered cap, an unreadable body, the feature off).
-  const parkRecord = await recordPark(ctx, park, commentUrl);
+  //
+  // `parkReported` is the delivery half of the record: the refusal threshold
+  // counts REPORTED parks, not parks the driver attempted. On the forge
+  // channel that is a comment that exists or a label that was verified; on the
+  // host channel it is the body reaching the host in the result — which it does
+  // whenever a body was rendered at all.
+  const parkReported = host
+    ? handoffMd.trim().length > 0
+    : commentUrl !== undefined || labelApplied === true;
+  const parkRecord = await recordPark(ctx, park, commentUrl, parkReported);
   const emitted = makeHandoffEmittedEvent({
     at: Date.now(),
     commentUrl,
@@ -357,7 +370,7 @@ export async function runHandoff(
     // A repeat delivered nothing this cycle — no provenance to assert.
     delivery: host ? "host" : reusedComment ? undefined : delivery,
     repeatOf: park.repeatOf,
-    ...(parkRecord && parkRecord.count >= 2
+    ...(parkRecord && parkRecord.count >= REPEAT_PARK_REFUSAL_COUNT
       ? {
           repeat: {
             count: parkRecord.count,

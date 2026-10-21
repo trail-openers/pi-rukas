@@ -132,9 +132,12 @@ export function explainCap(
     case "push-refused:commit-pr":
       return explainPrSteps(cap, state);
     case "repeat-park":
-      // #1743 — a start refused because two earlier cycles already parked this
-      // issue for this reason. The sentence lives with the repeat renderer.
-      return explainRepeatPark(state);
+      // #1743 — a start the pre-loop guard refused. The guard runs before any
+      // step and the driver persists no state for a refused start, so there is
+      // no cap-hit to read here: passing `state` would only ever produce the
+      // generic sentence. The renderer takes the guard's STRUCTURED verdict
+      // when a caller has one; with none it says exactly what it knows.
+      return explainRepeatPark();
     case "lens-diff-unreadable":
       return explainLens(cap, state);
     case "adversarial-infra-failure":

@@ -11,7 +11,11 @@
  */
 
 import { trace } from "../trace.ts";
-import { REPEAT_PARK_REFUSAL_PREFIX, isRepeatParkRefusal } from "../work-driver-state-guards.ts";
+import {
+  REPEAT_PARK_REFUSAL_PREFIX,
+  isRepeatParkRefusal,
+  repeatParkRefusalIssue,
+} from "../work-driver-state-guards.ts";
 import type { DriverOutcome } from "../work-driver.ts";
 import { workStateFile } from "../workflow-state.ts";
 import { EXIT } from "./exit-code.ts";
@@ -42,11 +46,28 @@ export function projectRepeatParkRefusal(
   const reason = repeatParkRefusalReason(outcome);
   if (reason === undefined) return undefined;
   const detail = reason.slice(REPEAT_PARK_REFUSAL_PREFIX.length);
+  // The guard checked every issue in the group and stopped on the first that
+  // armed it. Only THAT issue carries the `repeat-park` cap and the count; a
+  // sibling is reported as not evaluated, naming the primary. Reporting each
+  // member as its own repeat-park would tell the host that #11 had already
+  // parked twice when nothing had ever looked at #11.
+  const armed = repeatParkRefusalIssue(reason);
   const codes: number[] = [];
   for (const issue of group) {
     codes.push(EXIT.refused);
-    results.push(repeatParkRefusalResult(issue, workStateFile(repoRoot, issue), detail));
+    results.push(
+      armed !== undefined && issue !== armed
+        ? repeatParkRefusalResult(
+            issue,
+            workStateFile(repoRoot, issue),
+            `not evaluated: the group was refused because #${armed} ${detail.replace(/^#\d+\s/, "")}`,
+            { notEvaluated: true },
+          )
+        : repeatParkRefusalResult(issue, workStateFile(repoRoot, issue), detail),
+    );
   }
-  trace(`headless: issue group [${group.join(", ")}] refused by the repeat-park guard`);
+  trace(
+    `headless: issue group [${group.join(", ")}] refused by the repeat-park guard${armed === undefined ? "" : ` (armed on #${armed})`}`,
+  );
   return codes;
 }

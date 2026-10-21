@@ -31,6 +31,7 @@ import {
 } from "./work-driver-merge-authority.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
 import { editIssueTldrs } from "./work-driver-merged-tldr.ts";
+import { clearParkRecords } from "./work-driver-park-record.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
 import {
   DOCTRINE_FILES,
@@ -464,6 +465,16 @@ export async function runMerged(
   // only the primary left a sibling entry parked over a merged cycle.
   try {
     await releaseClaim(ctx.repoRoot, activeIssuesOf(state));
+  } catch {
+    /* best-effort; merge must always succeed regardless */
+  }
+  // #1743 — forget this issue's park records. The work landed, so a park
+  // recorded against it describes a state of the world that no longer exists:
+  // refusing a LATER start on it would have the guard holding up work the
+  // operator can see is done. Same scope as the claim release, same
+  // best-effort discipline.
+  try {
+    await clearParkRecords(ctx.repoRoot, activeIssuesOf(state));
   } catch {
     /* best-effort; merge must always succeed regardless */
   }
