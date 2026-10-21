@@ -19,9 +19,10 @@
  *   1. no `.backlog/` → byte-identical to the pre-feature prompt;
  *   2. `.backlog` as a real clone with `backlog.md` → the paragraph appended,
  *      exactly once, on every turn (the probe is per turn, not memoised);
- *   3. the silent shapes: no clone marker, plain-file `.backlog`, `backlog.md`
- *      as a directory, `backlog.md` as a symlink, an unreadable `.backlog`, no
- *      session dir, and the `PI_ENSEMBLE_BACKLOG_REMINDER=0` kill switch;
+ *   3. the silent shapes: no clone marker, plain-file `.backlog`, `.backlog`
+ *      as a symlink to a clone elsewhere, `backlog.md` as a directory,
+ *      `backlog.md` as a symlink, an unreadable `.backlog`, no session dir, and
+ *      the `PI_ENSEMBLE_BACKLOG_REMINDER=0` kill switch;
  *   4. a session started in a SUBDIRECTORY still finds the root's backlog
  *      (the root is resolved by walking up, without running git);
  *   5. the backlog's own text never reaches the prompt, no git runs, and no
@@ -221,6 +222,15 @@ async function expectSilent(named: string, seed: (dir: string) => void): Promise
 }
 
 await expectSilent("is-a-plain-file", (dir) => writeFileSync(path.join(dir, ".backlog"), SECRET_BODY));
+// Whole-path provenance: a `.backlog` that is a symlink to a real clone holding
+// a plausible `backlog.md` elsewhere in the tree is not the clone the operator
+// made at the root. Following the link would remind on somebody else's file.
+await expectSilent("is-a-symlink-to-a-clone", (dir) => {
+  const elsewhere = path.join(dir, "somewhere-else");
+  mkdirSync(path.join(elsewhere, ".git"), { recursive: true });
+  writeFileSync(path.join(elsewhere, BACKLOG_FILE_NAME), SECRET_BODY);
+  symlinkSync(elsewhere, path.join(dir, ".backlog"));
+});
 await expectSilent("clone-without-backlog-md", (dir) => mkdirSync(path.join(dir, ".backlog", ".git"), { recursive: true }));
 await expectSilent("md-is-a-directory", (dir) => {
   mkdirSync(path.join(dir, ".backlog", ".git"), { recursive: true });
@@ -316,6 +326,30 @@ for (const [label, seed] of [
   assert(
     (await backlogReminderSection(late)) === BACKLOG_REMINDER,
     "a backlog cloned AFTER the first probe is heard on the next call (no memo, no stale answer)",
+  );
+
+  // The seam guards its own entry: an empty session directory resolves to the
+  // harness cwd, and a probe there could find a real `.backlog` and append a
+  // paragraph to a prompt nobody asked about.
+  assert(
+    (await backlogReminderSection("")) === "",
+    'backlogReminderSection("") → empty string (no `path.resolve("")` probe of the harness cwd)',
+  );
+
+  // One probe outstanding, not one per turn — and not an answer cache. Two
+  // calls in flight at once: the second is suppressed rather than paying for a
+  // second probe, and the call AFTER they settle re-probes and answers again.
+  const both = await Promise.all([backlogReminderSection(late), backlogReminderSection(late)]);
+  assert(
+    both[0] === BACKLOG_REMINDER && both[1] === "",
+    "a second probe while one is in flight is suppressed (a hung mount costs one request, not one per turn)",
+  );
+  // One macrotask tick so every microtask the settling probe queued has run,
+  // including the one that clears the outstanding slot.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert(
+    (await backlogReminderSection(late)) === BACKLOG_REMINDER,
+    "and once the probe has settled the next call probes again — the slot holds no answer",
   );
 }
 
