@@ -113,7 +113,9 @@ assert(
     const { row } = await toolArm(dir, {
       base: mergeBase,
       head: "HEAD",
-      result: { ok: false, loopOutcome: "rejected" },
+      // The whole verdict travels together — pass bit AND report text — so the
+      // fixture never carries a rejection whose `text` still says APPROVED.
+      result: { ok: false, loopOutcome: "rejected", text: "VERDICT: REJECTED" },
       binding: {},
     });
     assert(
