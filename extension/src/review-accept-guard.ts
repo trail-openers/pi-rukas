@@ -36,8 +36,9 @@
  *       has exactly one parser (`normalise`), one matcher (`namesStore`) and one
  *       dispatch (`scanCommand`); the parsing helpers live in review-accept-command.ts,
  *       the arms and the "which program runs this command" predicates live in
- *       review-accept-arms.ts, the six scope tests of clause (a) live in
- *       review-accept-scope.ts, and this module composes them.
+ *       review-accept-arms.ts, the git VERB position in review-accept-verb.ts, the six
+ *       scope tests of clause (a) live in review-accept-scope.ts, and this module composes
+ *       them.
  *
  * ── THE DECISION, in order ──────────────────────────────────────────────────────
  *
@@ -45,7 +46,8 @@
  *      single space, balanced `'…'` / `"…"`, spans removed (their contents are prose,
  *      so a commit message may name the store), and each heredoc BODY replaced by the
  *      bare marker `<<` (the body is text this guard cannot read). An odd count of `'`
- *      or `"` — or a heredoc whose delimiter never returns — is PARSE_FAIL: the scope
+ *      or `"` — or a heredoc whose delimiter never returns — is a parse FAILURE whose
+ *      cause `normalise()` itself reports: the scope
  *      predicate then runs on the squeezed raw text, and only a command it brings INTO
  *      scope is refused.
  *   2. `namesStore()` — TOKEN-wise match against the protected names, their stems and
@@ -215,16 +217,6 @@ function traceCommand(command: string): string {
   return flat.length <= 160 ? flat : `${flat.slice(0, 157)}…`;
 }
 
-/** Why `normalise()` could not read the command. For the trace line only — the decision
- * is the scope predicate's, never a guess about what the unreadable text spelled. */
-function parseCause(command: string): string {
-  const count = (ch: string): number => command.split(ch).length - 1;
-  if (count("'") % 2 !== 0) return "unbalanced single quote";
-  if (count('"') % 2 !== 0) return "unbalanced double quote";
-  if (command.includes("<<")) return "heredoc body never terminates";
-  return "unparseable";
-}
-
 function scanCommand(command: string): string | undefined {
   // The newline is kept here: it is a segment separator, and the SEGMENTS are taken from
   // this view. `flat` (the folded text) decides only the pre-checks and the remedy
@@ -243,11 +235,10 @@ function scanCommand(command: string): string | undefined {
   // The words as the shell hands them out (`--output=<path>` is ONE word here, which is
   // precisely what an arm's `-o <name>` pair test cannot see).
   const words = shellWords(raw);
-  // `flat` is the fold normalise() performs, for the one view normalise could not produce:
-  // on a PARSE_FAIL the scope predicate still gets a lowercase, whitespace-folded text to
-  // ask its questions of, rather than a branch that asks only some of them.
-  const flat = squeeze(kept);
-  const norm = parsed === "PARSE_FAIL" ? flat : parsed;
+  // On a parse failure the scope predicate still gets a lowercase, whitespace-folded text to
+  // ask its questions of — the fold normalise() performs, spelled here for the one view it
+  // could not produce — rather than a branch that asks only some of them.
+  const norm = parsed.ok ? parsed.text : squeeze(kept);
   // An UNREADABLE command is the guard's business exactly when a READABLE one of the same
   // text would be (#1665, and #1738: this branch used to consult test (1) alone, so an
   // unparseable command that reached the store by any of the other five routes walked
@@ -255,14 +246,16 @@ function scanCommand(command: string): string | undefined {
   // agent command — the findings-store refusal is the ONLY message this guard has, and a
   // store sentence on `echo 'a` is what made five cycles unreadable to their own agents.
   // In scope it is refused: an odd quote or a heredoc whose body never terminates is
-  // precisely how a name hides behind text the guard cannot read.
-  if (parsed === "PARSE_FAIL") {
+  // precisely how a name hides behind text the guard cannot read. An ALLOWED one is an
+  // ordinary command with a stray quote in it, so it logs at trace level, not warn: a host
+  // that types `echo 'a` a hundred times a day should not read a hundred warnings.
+  if (!parsed.ok) {
     const blocked = inScope(raw, norm, words);
-    traceWarn(
-      `review-accept-guard: unparseable command (${parseCause(command)}) ${
-        blocked ? "in scope, refusing" : "out of scope, allowing"
-      }: ${traceCommand(command)}`,
-    );
+    const line = `review-accept-guard: unparseable command (${parsed.cause}) ${
+      blocked ? "in scope, refusing" : "out of scope, allowing"
+    }: ${traceCommand(command)}`;
+    if (blocked) traceWarn(line);
+    else trace(line);
     return blocked ? refusalReason({ dataOperand: true }) : undefined;
   }
   // Does the folded command name a protected file? Both remedy computations below ask
