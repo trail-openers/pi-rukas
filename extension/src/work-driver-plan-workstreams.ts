@@ -10,13 +10,8 @@
  */
 
 import { hostBudget } from "./host-resources.ts";
-import {
-  WORKSTREAM_FENCE_MAX,
-  WORKSTREAM_ID_MAX,
-  WORKSTREAM_LIST_MAX,
-  type WorkstreamArgs,
-  boundOutOfScope,
-} from "./plan-workstream-schema.ts";
+import { boundOutOfScope, clippedField, fenceBoundNotice } from "./plan-fence-bound.ts";
+import { WORKSTREAM_ID_MAX, type WorkstreamArgs } from "./plan-workstream-schema.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { foldTwo } from "./workstream-fold.ts";
@@ -28,10 +23,13 @@ import { foldTwo } from "./workstream-fold.ts";
  *
  * This is the ONE place a reported `outOfScope` becomes a stored one, so it is
  * where the fence is BOUNDED (#1744): clipped at `WORKSTREAM_FENCE_MAX`, a path
- * list written as one entry split into its parts, the list capped at
- * `WORKSTREAM_LIST_MAX`. The schema accepts a long entry rather than refusing
- * the call, and what was bounded is both recorded on the workstream and said on
- * the trace — a fence that quietly disappeared is the failure this closes.
+ * list written as one entry split into its parts, duplicates collapsed, the list
+ * capped at `WORKSTREAM_LIST_MAX`. The schema accepts a long entry rather than
+ * refusing the call, and what was bounded is both recorded on the workstream and
+ * said on the trace — a fence that quietly disappeared is the failure this
+ * closes. The warning counts clipped, cap-dropped and blank-dropped entries
+ * SEPARATELY and measures `kept` against the expanded list, so the numbers add
+ * up to what the planner actually wrote.
  */
 export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
   const dependsOn = args.dependsOn ?? [];
@@ -40,17 +38,14 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
   const integrationTest = args.integrationTest ?? "";
   const fence = boundOutOfScope(args.outOfScope);
   if (fence.clipped.length > 0) {
-    const clipped = fence.clipped.filter((r) => r.keptLength > 0).length;
-    traceWarn(
-      `work-driver: plan workstream '${args.id}' outOfScope bounded — ${clipped} entr${clipped === 1 ? "y" : "ies"} clipped to ${WORKSTREAM_FENCE_MAX} chars, ${fence.clipped.length - clipped} dropped past the ${WORKSTREAM_LIST_MAX}-entry cap (kept: ${fence.entries.length}/${args.outOfScope.length})`,
-    );
+    traceWarn(fenceBoundNotice(`plan workstream '${args.id}'`, fence));
   }
   return {
     id: args.id.slice(0, WORKSTREAM_ID_MAX),
     scope: args.scope,
     paths: [...args.paths],
     outOfScope: fence.entries,
-    ...(fence.clipped.length > 0 ? { outOfScopeClipped: fence.clipped } : {}),
+    ...clippedField(fence.clipped),
     ...(dependsOn.length > 0 ? { dependsOn } : {}),
     ...(integrationTest ? { integrationTest } : {}),
     ...(introduces.length > 0 ? { introduces } : {}),

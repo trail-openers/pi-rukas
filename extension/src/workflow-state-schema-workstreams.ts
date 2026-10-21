@@ -14,7 +14,27 @@
  * paths unchanged.
  */
 
-import type { OutOfScopeClip } from "./plan-workstream-schema.ts";
+/**
+ * #1744 — why a planner's `outOfScope` list is not the list the driver stored.
+ * A discriminated union, so a reader never guesses what a zero meant:
+ *
+ *   - `clipped` — one entry cut short, keyed by the ENTRY TEXT it kept. Keying
+ *     by text (not by position) is what lets the fold and the unfence pass keep
+ *     "the records whose entry still exists" with no re-keying to get wrong.
+ *   - `dropped` — N entries that never landed, one aggregated record per
+ *     reason: `cap` past `WORKSTREAM_LIST_MAX` entries, `empty` for a blank one.
+ *
+ * The STORED entry carries no marker — the develop gate and the fix fence match
+ * on the entry text through the one `fenceMatches` predicate, and a marker
+ * inside it would change what they match. ` …[clipped]` is rendered at the
+ * prompt FROM this record, and the record is what makes the bound said out loud.
+ *
+ * Declared here, beside `Workstream`, so the field and its record shape cannot
+ * drift; `plan-workstream-schema.ts` imports it as a type only.
+ */
+export type OutOfScopeClip =
+  | { kind: "clipped"; entry: string; originalLength: number; keptLength: number }
+  | { kind: "dropped"; reason: "cap" | "empty"; count: number };
 
 /**
  * #679 — the workstream value type. Extends the pre-#679 shape
@@ -37,11 +57,11 @@ export interface Workstream {
   outOfScope: string[];
   /**
    * #1744 — what the driver had to bound in `outOfScope`: one record per entry
-   * it clipped or dropped. The entries themselves stay plain text (the develop
-   * gate and the fix fence match on them), so without this record a fence cut
-   * in half at 500 characters, or one of 20 entries past the count cap, is
-   * indistinguishable from a fence the planner never wrote. Absent when nothing
-   * was bounded — the pre-#1744 shape.
+   * it clipped, and one aggregated record per drop reason. The entries
+   * themselves stay plain text (the develop gate and the fix fence match on
+   * them), so without this record a fence cut in half at 500 characters, or one
+   * of 20 entries past the count cap, is indistinguishable from a fence the
+   * planner never wrote. Absent when nothing was bounded — the pre-#1744 shape.
    */
   outOfScopeClipped?: OutOfScopeClip[];
   /** #679 — case 2(a). Workstream ids this one builds on (see above). */
@@ -64,6 +84,15 @@ export interface Workstream {
    */
   consumes?: string[];
 }
+
+/**
+ * #1744 — the two fence fields a PROMPT needs from a workstream: the entries and
+ * the record of what the driver had to bound. Declared once so the develop
+ * prompt, the corrective prompt and the commit prompt cannot disagree about
+ * which fields carry a fence, and cannot render a clipped entry without saying
+ * it was clipped just because one of them forgot the second field.
+ */
+export type FenceView = Pick<Workstream, "outOfScope" | "outOfScopeClipped">;
 
 /**
  * #679 — the per-workstream EFFECTIVE BASE: the commit the workstream's

@@ -24,18 +24,25 @@
  * fence and the scope gate's fanout bound cannot disagree about whether it is on.
  *
  * Idempotent: an entry already present (after `normaliseDeclaredPath`) is not
- * appended again, so a re-run of the plan tail adds nothing.
+ * appended again, so a re-run of the plan tail adds nothing. The append is
+ * BOUNDED through the same cap as the other two fence writers (#1744): this is
+ * the third writer of `outOfScope`, and an unbounded one could push a plan past
+ * `WORKSTREAM_LIST_MAX` with no record of what it dropped.
  */
 
 import {
-  type OutOfScopeClip,
+  capFenceList,
+  clippedField,
   neutraliseFenceEntry,
   quotedOutOfScope,
-} from "./plan-workstream-schema.ts";
+} from "./plan-fence-bound.ts";
+import { WORKSTREAM_LIST_MAX } from "./plan-workstream-schema.ts";
+import { traceWarn } from "./trace.ts";
 import { splitDeliverablePaths } from "./work-driver-deliverable-paths.ts";
 import { protectedPathsEnabled } from "./work-driver-doctrine.ts";
 import { type SpecCoverageSpec, protectedDeferralsOf } from "./work-driver-plan-spec-coverage.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
+import type { OutOfScopeClip } from "./workflow-state-schema-workstreams.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 
 /**
@@ -82,7 +89,18 @@ export function withDeferredProtectedFence(
       continue;
     }
     changed = true;
-    out[id] = { ...ws, paths, outOfScope: [...ws.outOfScope, ...missing] };
+    // #1744 — the third writer of a fence list goes through the same cap, so a
+    // workstream already at the ceiling keeps the fence it had and the deferred
+    // paths it could not add are RECORDED, not silently lost: an entry dropped
+    // here is a protected path the developer was never told to stay out of.
+    const appended = [...ws.outOfScope, ...missing];
+    const fence = capFenceList(appended, ws.outOfScopeClipped ?? []);
+    if (fence.entries.length < appended.length) {
+      traceWarn(
+        `work-driver: plan workstream '${id}' deferred protected fence — ${fence.entries.length} of ${appended.length} entries fit the ${WORKSTREAM_LIST_MAX}-entry cap; the rest are recorded on outOfScopeClipped`,
+      );
+    }
+    out[id] = { ...ws, paths, outOfScope: fence.entries, ...clippedField(fence.clipped) };
   }
   return changed ? out : workstreams;
 }
@@ -124,13 +142,14 @@ export function protectedFenceNote(
  * fence line, then the protected note beside it when a fenced entry is deferred.
  * Empty when the workstream has no fence.
  *
- * `clipped` is the workstream's #1744 record: passing it makes an entry the
- * driver had to cut say so, instead of reading as a fence the planner finished.
+ * `clipped` is the workstream's #1744 record and is REQUIRED (`[]` when the
+ * caller holds none): it is what makes a cut entry say so and what names the
+ * entries the entry-count cap swallowed, in the same place the fence is read.
  */
 export function fenceLines(
   outOfScope: readonly string[],
   deferred: readonly string[],
-  clipped?: readonly OutOfScopeClip[],
+  clipped: readonly OutOfScopeClip[],
 ): string[] {
   if (outOfScope.length === 0) return [];
   const note = protectedFenceNote(outOfScope, deferred);

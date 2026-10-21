@@ -7,49 +7,58 @@
  * the schema carried `maxLength: 500` per entry and `maxItems: 50`. One entry
  * over the limit failed Pi's schema check and the companion refused the CALL —
  * so a workstream with a 700-character prose fence, or a 30-path list written
- * as one entry, reported nothing at all and could not correct itself inside
- * the dispatch. The field's own contract said "bounded, not verified"; the
- * schema was verifying it.
+ * as one entry, reported nothing at all and could not correct itself inside the
+ * dispatch. The field's own contract said "bounded, not verified"; the schema
+ * was verifying it.
  *
- * What this pins:
+ * This file judges THE BOUND:
  *
  *   1. the schema ACCEPTS what a sentence is and refuses only what no sentence
- *      can be (the abuse ceiling), while an over-limit `paths` entry is still
- *      refused — the two fields are different kinds of thing;
- *   2. the stored entry is clipped at its last path separator, comma or space
- *      at or before 500, carries NO marker, and the clip is recorded;
- *   3. a comma list of plain paths is split into its parts, and one prose
- *      sentence with a comma in it survives whole;
- *   4. past the entry-count cap the rest are dropped AND recorded;
- *   5. a clipped PATH-shaped entry still fences its path — at the develop gate
- *      and at the fix fence, the two consumers that match on the entry text;
- *   6. the fold carries the records onto the folded list and re-applies the
- *      cap, so a fold cannot smuggle past the bound a single call was held to;
- *   7. the bound is said out loud: one traceWarn per bounded call, and the
- *      prompt renders ` …[clipped]` beside a cut entry.
+ *      can be (the abuse ceilings, per entry AND per list), while an over-limit
+ *      `paths` entry is still refused — the two fields are different kinds of
+ *      thing;
+ *   2. the call lands, the entry is clipped at its last path separator, comma or
+ *      space at or before the bound, carries NO marker, and the clip is recorded
+ *      keyed by the ENTRY TEXT;
+ *   3. a comma list of plain paths is split into its parts, one prose sentence
+ *      with a comma in it survives whole, and duplicates collapse;
+ *   4. past the entry-count cap the rest are dropped and counted, a blank is an
+ *      `empty` drop wherever it sits, and past the ceiling the work STOPS — no
+ *      split, no path grammar, no clip;
+ *   5. the bound is measured in CODE POINTS, a clipped PATH entry still fences
+ *      (at the develop gate and at the fix fence, the two consumers that match on
+ *      entry text), and a clip that landed on a `/` is disclosed as the WIDER
+ *      fence it became.
+ *
+ * What the bound LEAVES BEHIND — the record through the fold, the third writer,
+ * and the prompt rendering — is the other half: test-plan-outofscope-visible-1744.ts.
  */
 
 import { rmSync } from "node:fs";
 import { Value } from "@sinclair/typebox/value";
+import { boundOutOfScope, clipFenceEntry, fenceDropCount } from "../src/plan-fence-bound.ts";
 import {
-  FENCE_CLIP_MARKER,
+  WORKSTREAM_FENCE_INPUT_LIST_MAX,
   WORKSTREAM_FENCE_INPUT_MAX,
   WORKSTREAM_FENCE_MAX,
   WORKSTREAM_LIST_MAX,
   WORKSTREAM_PARAMETERS,
-  type WorkstreamArgs,
-  boundOutOfScope,
-  clipFenceEntry,
-  neutraliseFenceEntry,
-  quotedOutOfScope,
-  rekeyClippedAfterRemoval,
   workstreamCallRefusal,
 } from "../src/plan-workstream-schema.ts";
+import { fenceMatches } from "../src/work-driver-declared-path.ts";
 import { workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
 import { workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
-import { foldTwo } from "../src/workstream-fold.ts";
-import { fenceMatches } from "../src/work-driver-declared-path.ts";
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
+import {
+  LONG_PATH_FENCE,
+  LONG_PROSE,
+  PROSE_SPLIT,
+  PROSE_WITH_COMMA,
+  THIRTY_PATHS,
+  VALID,
+  fenceList,
+} from "./lib/plan-outofscope-fixtures.ts";
+import { FENCED_FILE } from "./lib/plan-outofscope-fixtures.ts";
 import { planResultFromCalls, planResultFromRawCalls } from "./lib/plan-workstream-calls.ts";
 import {
   NEW_FILE,
@@ -60,7 +69,6 @@ import {
   specWith,
   stateWith,
 } from "./lib/spec-slot-fixtures.ts";
-import type { Workstream } from "../src/workflow-state-schema.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -70,24 +78,6 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
-
-/** A 700-character prose fence with no comma: one entry, over the bound. */
-const LONG_PROSE = `the legacy compatibility layer for the old report format ${"which must not be touched ".repeat(24)}`;
-/** A path-list entry: 30 plain paths, one entry, comma-separated. */
-const THIRTY_PATHS = Array.from({ length: 30 }, (_, i) => `src/mod${i}.ts`).join(",");
-/** One prose sentence with a comma AND a character no path may hold: never split. */
-const PROSE_WITH_COMMA = "the public API of foo, not its internals' internals";
-const PROSE_SPLIT = "the docs folder, the public API of foo";
-/** A path-shaped entry whose retained prefix still fences `FENCED_FILE`. */
-const LONG_PATH_FENCE = `extension/src/reports/${"widget".repeat(120)} must not change`;
-const FENCED_FILE = "extension/src/reports/widget-table.ts";
-
-const VALID: WorkstreamArgs = {
-  id: "task-a",
-  scope: "the fix",
-  paths: ["src/a.ts"],
-  outOfScope: [],
-};
 
 const REPO_DIRS: string[] = [];
 
@@ -104,9 +94,9 @@ const REPO_DIRS: string[] = [];
   assert(
     Value.Check(WORKSTREAM_PARAMETERS, {
       ...VALID,
-      outOfScope: Array.from({ length: 80 }, (_, i) => `fence ${i}`),
+      outOfScope: Array.from({ length: WORKSTREAM_LIST_MAX + 30 }, (_, i) => `fence ${i}`),
     }) === true,
-    "a 60+ entry outOfScope list is ACCEPTED by the schema — the cap is the tool boundary's job",
+    `an ${WORKSTREAM_LIST_MAX + 30}-entry outOfScope list is ACCEPTED — the count cap is the tool boundary's job`,
   );
   assert(
     Value.Check(WORKSTREAM_PARAMETERS, {
@@ -114,6 +104,23 @@ const REPO_DIRS: string[] = [];
       outOfScope: ["x".repeat(WORKSTREAM_FENCE_INPUT_MAX + 1)],
     }) === false,
     "an entry past the abuse ceiling is refused: the field is free text, not a megabyte pipe",
+  );
+  assert(
+    Value.Check(WORKSTREAM_PARAMETERS, {
+      ...VALID,
+      outOfScope: Array.from(
+        { length: WORKSTREAM_FENCE_INPUT_LIST_MAX + 1 },
+        (_, i) => `fence ${i}`,
+      ),
+    }) === false,
+    `an outOfScope ARRAY past ${WORKSTREAM_FENCE_INPUT_LIST_MAX} entries is refused — the ceiling bounds the abuse, and the work past the count cap is bounded too`,
+  );
+  assert(
+    Value.Check(WORKSTREAM_PARAMETERS, {
+      ...VALID,
+      outOfScope: Array.from({ length: WORKSTREAM_FENCE_INPUT_LIST_MAX }, (_, i) => `fence ${i}`),
+    }) === true,
+    "an outOfScope array AT the abuse ceiling is still accepted",
   );
   // The other field is still a path list with a grammar, and refusing it is right.
   assert(
@@ -135,7 +142,7 @@ const REPO_DIRS: string[] = [];
   );
 }
 
-// ── 2 — the call is accepted, the entry clipped, and the clip recorded ───────
+// ── 2 — the call is accepted, the entry clipped, and the clip keyed by text ───
 {
   const { value: report, traces } = captureTracesSync(() =>
     workstreamCallsOf(planResultFromCalls([{ ...VALID, outOfScope: [LONG_PROSE] }])),
@@ -160,9 +167,14 @@ const REPO_DIRS: string[] = [];
     assert(
       JSON.stringify(ws.outOfScopeClipped) ===
         JSON.stringify([
-          { index: 0, originalLength: LONG_PROSE.length, keptLength: stored.length },
+          {
+            kind: "clipped",
+            entry: stored,
+            originalLength: Array.from(LONG_PROSE).length,
+            keptLength: Array.from(stored).length,
+          },
         ]),
-      `the clip is recorded on the workstream (got ${JSON.stringify(ws.outOfScopeClipped)})`,
+      `the clip is recorded on the workstream, KEYED BY THE ENTRY TEXT (got ${JSON.stringify(ws.outOfScopeClipped)})`,
     );
   }
   const warned = traces.filter((t) => t.includes("outOfScope bounded"));
@@ -170,9 +182,17 @@ const REPO_DIRS: string[] = [];
     warned.length === 1 && warned[0]?.includes("task-a") === true,
     `one traceWarn names the bounded workstream (got ${warned.length})`,
   );
+  const line = warned[0] ?? "";
+  assert(
+    line.includes("1 entry clipped to 500 chars") &&
+      line.includes("0 dropped past the 50-entry cap") &&
+      line.includes("0 blank entries dropped") &&
+      line.includes("(kept: 1/1)"),
+    `the trace counts clipped, cap-dropped and blank-dropped SEPARATELY and measures kept against the expanded list (got: ${line.replace("[pi-rukas] WARN work-driver: ", "")})`,
+  );
 }
 
-// ── 3 — a path list written as one entry is split; a sentence is not ─────────
+// ── 3 — a path list is split, a sentence is not, duplicates collapse ──────────
 {
   const list = boundOutOfScope([THIRTY_PATHS]);
   assert(
@@ -202,25 +222,110 @@ const REPO_DIRS: string[] = [];
       splitProse.entries.every((e, i) => PROSE_SPLIT.split(/, /)[i] === e),
     `a prose comma list whose halves are all path-shaped splits, losing no text (got ${JSON.stringify(splitProse.entries)})`,
   );
+  const dupe = boundOutOfScope(["the docs folder", "the docs folder", "docs/**", "docs/**"]);
+  assert(
+    dupe.entries.length === 2 && dupe.expanded === 4,
+    `duplicates collapse so one text identifies one entry, and the trace denominator still counts what the planner wrote (kept ${dupe.entries.length}/expanded ${dupe.expanded})`,
+  );
+  assert(
+    dupe.clipped.length === 0,
+    "a duplicate is not a loss — the text is stored once, so no drop is recorded for it",
+  );
 }
 
-// ── 4 — the entry-count cap drops the rest and says so ───────────────────────
+// ── 4 — the entry-count cap drops the rest as ONE aggregated record ───────────
 {
-  const many = Array.from({ length: WORKSTREAM_LIST_MAX + 10 }, (_, i) => `src/fence-${i}.ts`);
+  const many = fenceList(WORKSTREAM_LIST_MAX + 10);
   const bounded = boundOutOfScope(many);
   assert(
     bounded.entries.length === WORKSTREAM_LIST_MAX,
     `the list is capped at ${WORKSTREAM_LIST_MAX} entries`,
   );
-  const drops = bounded.clipped.filter((r) => r.keptLength === 0);
+  const drops = bounded.clipped.filter((r) => r.kind === "dropped");
   assert(
-    drops.length === 10 &&
-      drops.every((r, i) => r.index === WORKSTREAM_LIST_MAX + i && r.originalLength > 0),
-    `the 10 entries past the cap are recorded as dropped (got ${JSON.stringify(drops.slice(0, 2))})`,
+    drops.length === 1 &&
+      drops[0]?.kind === "dropped" &&
+      drops[0].reason === "cap" &&
+      drops[0].count === 10,
+    `the 10 entries past the cap are ONE aggregated record, not ten (got ${JSON.stringify(drops)})`,
+  );
+  assert(
+    bounded.expanded === WORKSTREAM_LIST_MAX + 10,
+    "the trace denominator is the expanded count, so kept 50/expanded 60 reads true",
+  );
+  assert(
+    fenceDropCount(bounded.clipped, "cap") === 10 && fenceDropCount(bounded.clipped, "empty") === 0,
+    "the drop counts are readable per reason",
   );
 }
 
-// ── 5 — a clipped PATH entry still fences, at both gates ─────────────────────
+// ── 4b — a blank entry is an `empty` drop, never a cap drop ──────────────────
+{
+  const blanks = boundOutOfScope(["   ", "the docs folder", "", "\t\n", "docs/**"]);
+  assert(
+    blanks.entries.length === 2 &&
+      blanks.entries[0] === "the docs folder" &&
+      blanks.entries[1] === "docs/**",
+    `blank entries never reach the fence (got ${JSON.stringify(blanks.entries)})`,
+  );
+  assert(
+    fenceDropCount(blanks.clipped, "empty") === 3 && fenceDropCount(blanks.clipped, "cap") === 0,
+    "three blanks are three `empty` drops and zero cap drops",
+  );
+  // A blank entry past the cap is still an empty drop, not a cap drop.
+  const atCap = fenceList(WORKSTREAM_LIST_MAX);
+  const blanksPastCap = boundOutOfScope([...atCap, "", "   ", "src/one-more.ts"]);
+  assert(
+    fenceDropCount(blanksPastCap.clipped, "empty") === 2 &&
+      fenceDropCount(blanksPastCap.clipped, "cap") === 1,
+    "the blank/cap distinction is judged before the position, so a blank past the cap is not billed to the cap",
+  );
+}
+
+// ── 4c — past the ceiling the work stops: counted, not parsed ────────────────
+{
+  const atCap = fenceList(WORKSTREAM_LIST_MAX);
+  const beyond = boundOutOfScope([...atCap, THIRTY_PATHS, `${"x".repeat(900)} tail`]);
+  assert(
+    beyond.entries.length === WORKSTREAM_LIST_MAX,
+    "the ceiling holds when the extra entries arrive after it",
+  );
+  assert(
+    fenceDropCount(beyond.clipped, "cap") === 2,
+    `a 30-path list and a 900-char entry past the ceiling cost TWO counters, not a split and a clip (cap drops: ${fenceDropCount(beyond.clipped, "cap")})`,
+  );
+  assert(
+    beyond.clipped.every((r) => r.kind === "dropped"),
+    "no clip record is produced for an entry the bound never examined",
+  );
+}
+
+// ── 4d — the bound is measured in code points, not UTF-16 units ──────────────
+{
+  // 500 astral characters = 1 000 UTF-16 units but 500 CODE POINTS: a bound
+  // measured in units would clip half of a real character's worth of fence, and
+  // `slice` would cut between the halves of a surrogate pair.
+  const astral = `${"🚧".repeat(WORKSTREAM_FENCE_MAX)} / keep-this-out`;
+  const bounded = boundOutOfScope([astral]);
+  const kept = bounded.entries[0] ?? "";
+  const points = Array.from(kept).length;
+  assert(
+    bounded.clipped.some(
+      (r) => r.kind === "clipped" && r.originalLength === Array.from(astral).length,
+    ),
+    "originalLength is a code-point count, not the UTF-16 length",
+  );
+  assert(
+    points <= WORKSTREAM_FENCE_MAX && kept === kept.trim(),
+    `the kept text is at most ${WORKSTREAM_FENCE_MAX} CODE POINTS and is still whole (${points} code points, ${kept.length} UTF-16 units)`,
+  );
+  assert(
+    kept.length === points * 2 && /^(?:[\uD800-\uDBFF][\uDC00-\uDFFF])*$/.test(kept),
+    "the cut never lands between the halves of a surrogate pair: every pair is intact",
+  );
+}
+
+// ── 5 — a clipped PATH entry still fences, and the widening is disclosed ──────
 {
   const clipped = clipFenceEntry(LONG_PATH_FENCE);
   assert(
@@ -234,6 +339,23 @@ const REPO_DIRS: string[] = [];
   assert(
     !fenceMatches(LONG_PATH_FENCE, FENCED_FILE),
     "unclipped, that same entry fences nothing — the bound is what makes it a fence",
+  );
+
+  const { traces } = captureTracesSync(() =>
+    workstreamFromArgs({ ...VALID, id: "widening", outOfScope: [LONG_PATH_FENCE] }),
+  );
+  const warned = traces.filter((t) => t.includes("outOfScope bounded"));
+  assert(
+    warned.length === 1 &&
+      warned[0]?.includes("clipped fence now covers extension/src/reports/") === true,
+    `a clip that landed on a '/' says which SUBTREE the fence now covers (got: ${(warned[0] ?? "").replace("[pi-rukas] WARN work-driver: ", "")})`,
+  );
+  const noWiden = captureTracesSync(() =>
+    workstreamFromArgs({ ...VALID, id: "prose", outOfScope: [LONG_PROSE] }),
+  );
+  assert(
+    !noWiden.traces.some((t) => t.includes("clipped fence now covers")),
+    "a clip that fell on a space widens nothing and says nothing about widening",
   );
 
   const failures: string[] = [];
@@ -261,98 +383,6 @@ const REPO_DIRS: string[] = [];
   assert(
     parked.includes(NEW_FILE) && parked.includes("outOfScope fence"),
     `the fix fence refuses the file behind its clipped entry, not the slot (got: ${parked.slice(0, 140)})`,
-  );
-}
-
-// ── 6 — the fold carries the records and re-applies the cap ──────────────────
-{
-  const a = workstreamFromArgs({
-    ...VALID,
-    id: "a",
-    paths: ["src/a.ts"],
-    outOfScope: [LONG_PROSE, "docs/a.md"],
-  });
-  const b = workstreamFromArgs({
-    ...VALID,
-    id: "b",
-    paths: ["src/b.ts"],
-    outOfScope: [LONG_PATH_FENCE],
-  });
-  const folded: Workstream = foldTwo(a, b);
-  assert(
-    folded.outOfScope.length === 3 && folded.outOfScope.includes("docs/a.md"),
-    `the fold unions both halves' fences (got ${JSON.stringify(folded.outOfScope)})`,
-  );
-  const keptRecords = (folded.outOfScopeClipped ?? []).filter((r) => r.keptLength > 0);
-  assert(
-    keptRecords.length === 2,
-    `both halves' clip records survive the fold (got ${JSON.stringify(folded.outOfScopeClipped)})`,
-  );
-  assert(
-    keptRecords.every((r) => (folded.outOfScope[r.index] ?? "").length === r.keptLength),
-    "every carried record points at the entry it describes: keptLength is that entry's length",
-  );
-
-  // Twice the cap unions to the cap, and the excess is recorded.
-  const wide = (id: string, offset: number): Workstream =>
-    workstreamFromArgs({
-      ...VALID,
-      id,
-      paths: [`src/${id}.ts`],
-      outOfScope: Array.from(
-        { length: WORKSTREAM_LIST_MAX },
-        (_, i) => `src/${id}-${offset + i}.ts`,
-      ),
-    });
-  const big = foldTwo(wide("a", 0), wide("b", 1000));
-  assert(
-    big.outOfScope.length === WORKSTREAM_LIST_MAX,
-    `a fold of two full lists is re-capped at ${WORKSTREAM_LIST_MAX}, not twice it`,
-  );
-  assert(
-    (big.outOfScopeClipped ?? []).filter((r) => r.keptLength === 0).length === WORKSTREAM_LIST_MAX,
-    "and every entry the fold dropped is recorded",
-  );
-}
-
-// ── 7 — the bound is visible where a person reads it ─────────────────────────
-{
-  const bounded = boundOutOfScope([LONG_PROSE]);
-  const shown = quotedOutOfScope(bounded.entries, bounded.clipped);
-  assert(
-    shown.includes(
-      `${JSON.stringify(neutraliseFenceEntry(bounded.entries[0] ?? ""))}${FENCE_CLIP_MARKER}`,
-    ),
-    "a clipped fence says so in the prompt, outside the quotes",
-  );
-  assert(
-    !quotedOutOfScope(bounded.entries).includes("clipped"),
-    "with no record passed, the fence renders exactly as it did before #1744",
-  );
-  assert(
-    quotedOutOfScope(["the docs folder"]).includes('"the docs folder"'),
-    "an uncut entry is untouched by the marker path",
-  );
-
-  // The unfence pass re-keys the records against the list that actually remains.
-  const before = ["src/gone.ts", ...(bounded.entries as string[]), "src/keep.ts"];
-  const records = [
-    { index: 1, originalLength: LONG_PROSE.length, keptLength: bounded.entries[0]?.length ?? 0 },
-  ];
-  assert(
-    JSON.stringify(rekeyClippedAfterRemoval(before, before.slice(1), records)) ===
-      JSON.stringify([
-        { index: 0, originalLength: LONG_PROSE.length, keptLength: records[0]?.keptLength },
-      ]),
-    "removing an earlier entry shifts the record onto its entry's new position",
-  );
-  assert(
-    rekeyClippedAfterRemoval(
-      before,
-      before.filter((_, i) => i !== 1),
-      records,
-    ).length === 0,
-    "removing the clipped entry itself takes the record with it",
   );
 }
 

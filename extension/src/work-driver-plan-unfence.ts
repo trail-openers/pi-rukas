@@ -40,7 +40,7 @@
  * a file or symbol — lives in work-driver-plan-unfence-extract.ts.
  */
 
-import { rekeyClippedAfterRemoval } from "./plan-workstream-schema.ts";
+import { keepClippedRecords } from "./plan-fence-bound.ts";
 import { trace, traceWarn } from "./trace.ts";
 import { resolveDefiningFile } from "./work-driver-plan-unfence-defines.ts";
 import {
@@ -461,20 +461,21 @@ export async function unfenceIssueNamedPaths(
     }
   }
 
-  // #1744 — the clip records point at entries by POSITION in this workstream's
-  // own list, and this pass has just edited those lists. Re-key once, against
-  // the list as it ended up: a removed entry takes its record with it, a
-  // restored one (the no-owner rollback put it back) is found again wherever it
-  // landed, and the rest shift with it. Carrying a stale index would hang the
-  // "…[clipped]" marker on an entry the planner never wrote long.
+  // #1744 — a clip record is keyed by its ENTRY TEXT, so this pass needs no
+  // re-keying at all: keep the records whose entry still exists and every drop
+  // record, and a removed entry takes its own record with it. A restored entry
+  // (the no-owner rollback put it back) still names itself, so its marker
+  // survives. Carrying a record for an entry that is gone would hang the
+  // "…[clipped]" marker on nothing.
   for (const id of ids) {
     const ws = next[id];
-    const before = workstreams[id];
-    const records = ws?.outOfScopeClipped;
-    if (!ws || !before || !records) continue;
-    const kept = rekeyClippedAfterRemoval(before.outOfScope, ws.outOfScope, records);
-    if (kept.length > 0) ws.outOfScopeClipped = kept;
-    else ws.outOfScopeClipped = undefined;
+    if (!ws?.outOfScopeClipped) continue;
+    const kept = keepClippedRecords(ws.outOfScope, ws.outOfScopeClipped);
+    // The key is REMOVED when nothing is left, never set to `undefined`: a
+    // present-but-empty field is a second shape for "nothing was bounded", and a
+    // reader (or a state file that round-trips) has to learn which one means what.
+    const { outOfScopeClipped: _dropped, ...rest } = ws;
+    next[id] = kept.length > 0 ? { ...rest, outOfScopeClipped: kept } : rest;
   }
 
   if (removed.length > 0) {
