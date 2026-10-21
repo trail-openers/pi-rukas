@@ -1,4 +1,3 @@
-import { clipFenceEntry } from "../../src/plan-fence-bound.ts";
 /**
  * Shared fixtures for the #1744 fence-bound tests. The two files split the
  * concern in two — `test-plan-outofscope-bound-1744.ts` judges the bound itself
@@ -8,6 +7,7 @@ import { clipFenceEntry } from "../../src/plan-fence-bound.ts";
  * both read the same few over-long entries, so the fixtures live here rather
  * than being copied where they could drift.
  */
+import { clipFenceEntry } from "../../src/plan-fence-bound.ts";
 import type { WorkstreamArgs } from "../../src/plan-workstream-schema.ts";
 
 /** A 700-character prose fence with no comma: one entry, over the bound. */

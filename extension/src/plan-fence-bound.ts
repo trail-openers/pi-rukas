@@ -10,8 +10,26 @@
  * does NOT import this module — the fence bound imports the constants it
  * enforces from the schema module, never the other way — so neither drags a
  * module graph the companion-loaded child would have to resolve.
+ *
+ * THREE writers, one bound: the tool boundary (`workstreamFromArgs` in
+ * work-driver-plan-workstreams.ts), the fold's re-cap (`capFenceList`, called
+ * from workstream-fold.ts), and the deferred protected append
+ * (`withDeferredProtectedFence` in work-driver-plan-fence.ts).
+ *
+ * `neutraliseFenceEntry` is imported from plan-fence-render.ts, the module that
+ * owns how a fence entry is ALLOWED TO BE SAID (prompt or log). Importing it
+ * rather than duplicating it is what keeps the trace line and the prompt fence
+ * from drifting apart on what an entry may contain; the dependency runs ONE way
+ * — plan-fence-render imports no value from here, so there is no cycle.
  */
 
+import {
+  type ClippedRecord,
+  type DroppedRecord,
+  dropCountOf,
+  fenceDropCount,
+} from "./plan-fence-record.ts";
+import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 import { plannedPathProblem } from "./plan-path-shape.ts";
 import {
   FENCE_CLIP_MARKER,
@@ -36,8 +54,31 @@ interface FenceClip {
   kept: string;
   originalLength: number;
   keptLength: number;
-  /** The cut fell on a `/`, so what remains is a DIRECTORY fence. */
-  cutOnPath: boolean;
+  /**
+   * The RETAINED text is itself a path the planner could have declared, so the
+   * clipped entry now fences a whole subtree (or a whole file) the planner did
+   * not name — WIDER than what was written, and said out loud (see
+   * `BoundedOutOfScope.widened`).
+   *
+   * Judged on what is KEPT, not on the character the cut fell on (#1744
+   * adversarial round): a cut on a space or a comma leaves a bare path exactly
+   * as surely as a cut on a `/` does, and it is the retained text that does the
+   * fencing. A retained prefix holding any whitespace is prose, never a path.
+   */
+  widened: boolean;
+}
+
+/**
+ * Is the retained text a path in its own right? No whitespace, no longer than
+ * the planner's own path bound, and the ONE grammar `paths` is judged by
+ * pronounces it well. The length clause is what keeps a 500-character hard cut
+ * of a run with no separator in it — not a path anyone could have declared —
+ * from being reported as a widened fence.
+ */
+function isWideningFence(kept: string): boolean {
+  if (/\s/.test(kept)) return false;
+  if (Array.from(kept).length > WORKSTREAM_PATH_MAX) return false;
+  return plannedPathProblem(kept) === undefined;
 }
 
 /**
@@ -46,18 +87,18 @@ interface FenceClip {
  * points hold no boundary at all. Returns undefined when the entry needs no
  * cut, so the caller never mistakes an untouched entry for a clipped one.
  *
- * One pass over the code points, and only `WORKSTREAM_FENCE_MAX` of them are
- * ever materialised — a 20 000-character abuse-ceiling entry costs the scan, not
- * a 20 000-element array. `for…of` on a string iterates code points, so a cut
- * never lands between the halves of a surrogate pair, as `text-flatten.ts`
- * clips.
+ * An entry whose UTF-16 length already fits cannot need a cut (code points are
+ * never more numerous than the units encoding them), so it returns before the
+ * scan (#1744 review — the bound runs over every entry of every call).
  *
- * A cut at a `/` leaves a directory prefix, which is what a fence entry is for:
- * a clipped `extension/src/foo/bar/baz.ts` still fences everything under the
- * prefix it retains — which is WIDER than what the planner wrote, so the caller
- * says so (see `BoundedOutOfScope.widened`).
+ * One pass over the code points otherwise, and only `WORKSTREAM_FENCE_MAX` of
+ * them are ever materialised — a 20 000-character abuse-ceiling entry costs the
+ * scan, not a 20 000-element array. `for…of` on a string iterates code points,
+ * so a cut never lands between the halves of a surrogate pair, as
+ * `text-flatten.ts` clips.
  */
 function clipFenceEntryOf(entry: string): FenceClip | undefined {
+  if (entry.length <= WORKSTREAM_FENCE_MAX) return undefined;
   const window: string[] = [];
   let boundary = -1;
   let total = 0;
@@ -73,26 +114,27 @@ function clipFenceEntryOf(entry: string): FenceClip | undefined {
   }
   if (!truncated) return undefined;
   const kept = boundary > 0 ? window.slice(0, boundary).join("").trimEnd() : "";
-  if (kept.length > 0) {
-    return {
-      kept,
-      originalLength: total,
-      keptLength: Array.from(kept).length,
-      cutOnPath: window[boundary] === "/",
-    };
-  }
-  const hard = window.join("");
+  const cut = kept.length > 0 ? kept : window.join("");
   return {
-    kept: hard,
+    kept: cut,
     originalLength: total,
-    keptLength: WORKSTREAM_FENCE_MAX,
-    cutOnPath: false,
+    keptLength: Array.from(cut).length,
+    widened: isWideningFence(cut),
   };
 }
 
 /** The clipped text of an over-long entry, or the entry itself when it fits. */
 export function clipFenceEntry(entry: string): string {
   return clipFenceEntryOf(entry)?.kept ?? entry;
+}
+
+/** How many entries one raw entry says, counting only its list separators. */
+function fencePartCount(entry: string): number {
+  let parts = 1;
+  for (const c of entry) {
+    if (c === "," || c === ";") parts++;
+  }
+  return parts;
 }
 
 /**
@@ -110,6 +152,11 @@ export function clipFenceEntry(entry: string): string {
  * A segment over `WORKSTREAM_PATH_MAX` counts as prose, not a path: the
  * planner's own grammar refuses that length in `paths`, so a 400-character
  * "path" inside a fence list is a sentence with a comma in it.
+ *
+ * More segments than the list cap could ever KEEP is not a fence list either
+ * (#1744 review): judging each of a 10 000-segment blob through the path
+ * grammar is the unbounded work the bound exists to refuse, so such an entry is
+ * stored whole and clipped like any other long text.
  */
 function splitFenceList(entry: string): string[] {
   if (!/[,;]/.test(entry)) return [entry];
@@ -117,60 +164,84 @@ function splitFenceList(entry: string): string[] {
     .split(/[,;]/)
     .map((p) => p.trim())
     .filter((p) => p.length > 0);
-  if (parts.length < 2) return [entry];
+  if (parts.length < 2 || parts.length > WORKSTREAM_LIST_MAX) return [entry];
   return parts.every((p) => p.length <= WORKSTREAM_PATH_MAX && plannedPathProblem(p) === undefined)
     ? parts
     : [entry];
 }
 
+/** What ONE pass of the bound did — the numbers the trace line says. */
+export interface FenceTally {
+  clipped: number;
+  cap: number;
+  empty: number;
+  duplicate: number;
+}
+
 /**
  * The `outOfScope` a call arrives with, bounded, plus the record of the bound.
- * `widened` names the kept entries whose clip fell on a `/` — a fence that now
- * covers a whole SUBTREE, which is wider than what the planner wrote and has to
- * be said out loud. `expanded` is how many entries the planner's list turned
- * into once path lists were split, so a trace line can say `kept: 50/62`
- * instead of the misleading `50/57` the raw input length gives.
+ * `widened` names the kept entries whose retained text is a path — fences that
+ * now cover a whole SUBTREE, wider than what the planner wrote and said out
+ * loud. `expanded` is how many entries the planner's list turned into once path
+ * lists were split, so a trace line can say `kept: 50/62` instead of the
+ * misleading `50/57` the raw input length gives.
+ *
+ * `thisPass` is what THIS pass did, and it is what `fenceBoundNotice` says: a
+ * `clipped` list also carries records an EARLIER pass wrote (the fold carries
+ * both halves' records verbatim), and counting those would report drops this
+ * fold never made.
  */
 export interface BoundedOutOfScope {
   entries: string[];
   clipped: OutOfScopeClip[];
   widened: string[];
   expanded: number;
+  thisPass: FenceTally;
 }
 
-/** How many entries one record list says were dropped for one reason. */
-export function fenceDropCount(
-  clipped: readonly OutOfScopeClip[],
-  reason: "cap" | "empty",
-): number {
-  let n = 0;
-  for (const r of clipped) if (r.kind === "dropped" && r.reason === reason) n += r.count;
-  return n;
+/** True when one pass bounded anything at all, so a caller can warn on it. */
+export function fenceWasBounded(bounded: BoundedOutOfScope): boolean {
+  const t = bounded.thisPass;
+  return t.clipped + t.cap + t.empty + t.duplicate > 0;
 }
 
 /**
- * The one trace line a bounded fence list produces, shared by the tool boundary
- * (`workstreamFromArgs`) and the fold's re-cap so the two cannot say the same
- * event in two different words. `subject` names what was bounded.
+ * The one trace line a bounded fence list produces, shared by all three fence
+ * writers so they cannot say the same event in three different words.
+ * `subject` names what was bounded, and is planner-derived text: it and the
+ * widened paths go through `neutraliseFenceEntry`, which is what stops a
+ * workstream id or a fence entry from writing its own log line (#1744 review).
  */
 export function fenceBoundNotice(subject: string, bounded: BoundedOutOfScope): string {
-  const clipped = bounded.clipped.filter((r) => r.kind === "clipped").length;
-  const cap = fenceDropCount(bounded.clipped, "cap");
-  const empty = fenceDropCount(bounded.clipped, "empty");
+  const t = bounded.thisPass;
   const said = [
-    `${clipped} entr${clipped === 1 ? "y" : "ies"} clipped to ${WORKSTREAM_FENCE_MAX} chars`,
-    `${cap} dropped past the ${WORKSTREAM_LIST_MAX}-entry cap`,
-    `${empty} blank ${empty === 1 ? "entry" : "entries"} dropped`,
+    `${t.clipped} entr${t.clipped === 1 ? "y" : "ies"} clipped to ${WORKSTREAM_FENCE_MAX} chars`,
+    `${t.cap} dropped past the ${WORKSTREAM_LIST_MAX}-entry cap`,
+    `${t.empty} blank ${t.empty === 1 ? "entry" : "entries"} dropped`,
+    `${t.duplicate} ${t.duplicate === 1 ? "duplicate entry" : "duplicate entries"} collapsed`,
   ];
   const shown = bounded.widened
     .slice(0, 3)
-    .map((d) => `${d}/`)
+    .map((d) => `${neutraliseFenceEntry(d)}/`)
     .join(", ");
   const widened =
     bounded.widened.length > 0
       ? ` — clipped fence now covers ${shown}${bounded.widened.length > 3 ? ` (+${bounded.widened.length - 3} more)` : ""}`
       : "";
-  return `work-driver: ${subject} outOfScope bounded — ${said.join(", ")} (kept: ${bounded.entries.length}/${bounded.expanded})${widened}`;
+  return `work-driver: ${neutraliseFenceEntry(subject)} outOfScope bounded — ${said.join(", ")} (kept: ${bounded.entries.length}/${bounded.expanded})${widened}`;
+}
+
+/** The per-entry clip record, with the widening flag only when it is true. */
+function clipRecord(entry: string, clip: FenceClip): ClippedRecord {
+  const base = {
+    kind: "clipped" as const,
+    entry,
+    originalLength: clip.originalLength,
+    keptLength: clip.keptLength,
+  };
+  // Absent when false: the record is persisted and read by a person, and a
+  // field that only ever says "no" is noise beside the one that says "yes".
+  return clip.widened ? { ...base, widened: true } : base;
 }
 
 /**
@@ -181,11 +252,12 @@ export function fenceBoundNotice(subject: string, bounded: BoundedOutOfScope): s
  * happened, so the bound is said out loud rather than silently losing the fence
  * the planner wrote (#1744).
  *
- * Past the ceiling the remaining entries are COUNTED and nothing else: no split,
- * no path grammar, no clip (#1744 review — the ceiling is there to bound the
- * work, and a `boundOutOfScope` that still parsed all 500 entries bounded
- * nothing). A blank entry is an `empty` drop whatever its position, never a
- * cap drop.
+ * Past the ceiling the remaining entries are COUNTED by their list separators
+ * and nothing else: no split, no path grammar, no clip (#1744 review — the
+ * ceiling is there to bound the work, and a `boundOutOfScope` that still parsed
+ * all 500 entries bounded nothing; the separator count keeps the disclosure
+ * honest about how much fence was lost). A blank entry is an `empty` drop
+ * whatever its position, never a cap drop.
  *
  * Pure. The CALLER owns the trace and the record's placement on the workstream,
  * so a fold can carry the records forward and one call emits one warning.
@@ -193,131 +265,145 @@ export function fenceBoundNotice(subject: string, bounded: BoundedOutOfScope): s
 export function boundOutOfScope(entries: readonly string[]): BoundedOutOfScope {
   const kept: string[] = [];
   const seen = new Set<string>();
-  const clips = new Map<string, { originalLength: number; keptLength: number }>();
+  const clips = new Map<string, ClippedRecord>();
   const widened: string[] = [];
-  let capDrops = 0;
-  let emptyDrops = 0;
+  const thisPass: FenceTally = { clipped: 0, cap: 0, empty: 0, duplicate: 0 };
   let expanded = 0;
 
-  const keep = (part: string): void => {
+  const noteClip = (text: string, clip: FenceClip): void => {
+    thisPass.clipped++;
+    clips.set(text, clipRecord(text, clip));
+    if (clip.widened && !widened.includes(text)) widened.push(text);
+  };
+
+  const keep = (part: string, fromSplit: boolean): void => {
     const clip = clipFenceEntryOf(part);
     const text = clip ? clip.kept : part;
-    if (seen.has(text)) return;
+    if (seen.has(text)) {
+      // A part that lands on an entry already kept is still something the
+      // planner wrote and the developer will never see (#1744 review). A
+      // CLIPPED one keeps its record — the stored text IS a clip whatever asked
+      // for it, and its ` …[clipped]` marker has to render. An uncut one is a
+      // duplicate of a real entry: counted, never silently dropped.
+      if (clip) noteClip(text, clip);
+      else if (fromSplit) thisPass.duplicate++;
+      return;
+    }
     seen.add(text);
     kept.push(text);
-    if (!clip) return;
-    clips.set(text, { originalLength: clip.originalLength, keptLength: clip.keptLength });
-    if (clip.cutOnPath && !widened.includes(text)) widened.push(text);
+    if (clip) noteClip(text, clip);
   };
 
   for (const entry of entries) {
     if (entry.trim().length === 0) {
-      emptyDrops++;
+      thisPass.empty++;
       expanded++;
       continue;
     }
     if (kept.length >= WORKSTREAM_LIST_MAX) {
-      capDrops++;
-      expanded++;
+      const parts = fencePartCount(entry);
+      thisPass.cap += parts;
+      expanded += parts;
       continue;
     }
-    for (const part of splitFenceList(entry)) {
-      expanded++;
-      if (part.trim().length === 0) {
-        emptyDrops++;
-      } else if (kept.length >= WORKSTREAM_LIST_MAX) {
-        capDrops++;
-      } else {
-        keep(part);
+    const parts = splitFenceList(entry);
+    const fromSplit = parts.length > 1;
+    expanded += parts.length;
+    for (const [i, part] of parts.entries()) {
+      if (kept.length >= WORKSTREAM_LIST_MAX) {
+        thisPass.cap += parts.length - i;
+        break;
       }
+      keep(part, fromSplit);
     }
   }
 
-  const clipped: OutOfScopeClip[] = [...clips].map(([entry, r]) => ({
-    kind: "clipped",
-    entry,
-    originalLength: r.originalLength,
-    keptLength: r.keptLength,
-  }));
-  if (capDrops > 0) clipped.push({ kind: "dropped", reason: "cap", count: capDrops });
-  if (emptyDrops > 0) clipped.push({ kind: "dropped", reason: "empty", count: emptyDrops });
-  return { entries: kept, clipped, widened, expanded };
+  const clipped: OutOfScopeClip[] = [...clips.values()];
+  if (thisPass.cap > 0) clipped.push({ kind: "dropped", reason: "cap", count: thisPass.cap });
+  if (thisPass.empty > 0) clipped.push({ kind: "dropped", reason: "empty", count: thisPass.empty });
+  if (thisPass.duplicate > 0) {
+    clipped.push({ kind: "dropped", reason: "duplicate", count: thisPass.duplicate });
+  }
+  return { entries: kept, clipped, widened, expanded, thisPass };
 }
 
 /**
- * Re-apply the entry-count cap to a list two bounded halves were UNIONED into
- * (the fold), keeping the clip records whose entry survived and aggregating
- * every drop into one record per reason (#1744). No clipping happens here: both
- * halves arrived already bounded.
+ * Re-apply the bound to a list that arrived already-assembled: the union two
+ * bounded halves were folded into (workstream-fold.ts), or the workstream's
+ * fence with the deferred protected paths prepended (work-driver-plan-fence.ts,
+ * whose list is the one thing here that did NOT come through the tool
+ * boundary). Entries are clipped and deduplicated and the count cap re-applied;
+ * the records passed in are CARRIED VERBATIM — a half's drop record describes
+ * entries that were never stored in either half, so nothing here can invalidate
+ * it, and a clip record whose entry the fold removed goes with the entry
+ * (#1744).
+ *
+ * It does NOT write the cap-drop record: `thisPass.cap` is the count, and the
+ * CALLER owns the record (the doctrine every fence writer follows). That is
+ * what lets the deferred writer bill its own drops as a delta over what an
+ * earlier run already recorded instead of adding a second copy of the same
+ * loss.
  */
 export function capFenceList(
   entries: readonly string[],
   clipped: readonly OutOfScopeClip[],
 ): BoundedOutOfScope {
-  const kept = entries.slice(0, WORKSTREAM_LIST_MAX);
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  const newClips = new Map<string, ClippedRecord>();
+  const thisPass: FenceTally = { clipped: 0, cap: 0, empty: 0, duplicate: 0 };
+
+  const clipInto = (text: string, clip: FenceClip): void => {
+    if (newClips.has(text)) return;
+    thisPass.clipped++;
+    newClips.set(text, clipRecord(text, clip));
+  };
+
+  for (const entry of entries) {
+    const clip = clipFenceEntryOf(entry);
+    const text = clip ? clip.kept : entry;
+    // A collapse onto an entry the list already holds is a DUPLICATE, never a
+    // cap drop (#1744 review): billing it to the cap says "the list was too
+    // long" about an entry that was simply already there. A CLIPPED collapse
+    // still keeps its clip record — the stored text is a cut whatever asked for
+    // it, and its ` …[clipped]` marker has to render.
+    if (seen.has(text)) {
+      if (clip) clipInto(text, clip);
+      else thisPass.duplicate++;
+      continue;
+    }
+    seen.add(text);
+    deduped.push(text);
+    if (clip) clipInto(text, clip);
+  }
+
+  const kept = deduped.slice(0, WORKSTREAM_LIST_MAX);
+  thisPass.cap = deduped.length - kept.length;
   const survivors = new Set(kept);
-  let capDrops = entries.length - kept.length;
-  let emptyDrops = 0;
+
   const records: OutOfScopeClip[] = [];
   for (const r of clipped) {
     if (r.kind === "dropped") {
-      if (r.reason === "cap") capDrops += r.count;
-      else emptyDrops += r.count;
+      // Verbatim, minus a record this build cannot read (#1744 review: the
+      // state file is editable, and a corrupt count must not be repeated as a
+      // disclosure).
+      if (dropCountOf(r) !== undefined) records.push(r);
       continue;
     }
     // A record means nothing once its entry is gone; with the key being the text
     // there is no re-keying to get wrong — the record either still names an entry
-    // in the list or it is dropped with it.
-    if (survivors.has(r.entry)) records.push(r);
+    // in the list or it is dropped with it. A fresh clip of the same text wins.
+    if (survivors.has(r.entry) && !newClips.has(r.entry)) records.push(r);
   }
-  if (capDrops > 0) records.push({ kind: "dropped", reason: "cap", count: capDrops });
-  if (emptyDrops > 0) records.push({ kind: "dropped", reason: "empty", count: emptyDrops });
-  return { entries: kept, clipped: records, widened: [], expanded: entries.length };
-}
+  for (const r of newClips.values()) records.push(r);
 
-/**
- * The clip records for a fence list an entry was REMOVED from (the unfence
- * pass, #1744): a record whose entry is gone goes with it and the rest need no
- * change at all, because a record is keyed by its ENTRY TEXT. Carrying a record
- * for an entry that no longer exists would hang the ` …[clipped]` marker on
- * nothing, and re-keying by index was the defect this shape removes.
- */
-export function keepClippedRecords(
-  entries: readonly string[],
-  clipped: readonly OutOfScopeClip[],
-): OutOfScopeClip[] {
-  const present = new Set(entries);
-  return clipped.filter((r) => r.kind === "dropped" || present.has(r.entry));
-}
-
-/**
- * The `outOfScopeClipped` field as a workstream spread should carry it: absent
- * when nothing was bounded, so a plan the driver never touched keeps the
- * pre-#1744 shape. The three writers of a fence list (the tool boundary, the
- * fold, the deferred-protected append) all spread this, so none can leave a key
- * holding `undefined` behind.
- */
-export function clippedField(clipped: readonly OutOfScopeClip[]): {
-  outOfScopeClipped?: OutOfScopeClip[];
-} {
-  return clipped.length > 0 ? { outOfScopeClipped: [...clipped] } : {};
-}
-
-/**
- * An `outOfScope` entry as it may appear inside a prompt: one line, no backticks
- * (they would close the code span a renderer wraps it in), bounded. The entry is
- * the planner's text, so it is neutralised where it is rendered, never trusted.
- */
-export function neutraliseFenceEntry(entry: string): string {
-  const cleaned = entry
-    .replace(/[\r\n]+/g, " ")
-    .replace(/`/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-  // Code points, as every other fence bound (#1744 review): a UTF-16 slice can
-  // end between the halves of a surrogate pair, and a lone half in a prompt is
-  // noise the developer reads as part of the fence.
-  return Array.from(cleaned).slice(0, WORKSTREAM_FENCE_MAX).join("");
+  return {
+    entries: kept,
+    clipped: records,
+    widened: records.flatMap((r) => (r.kind === "clipped" && r.widened === true ? [r.entry] : [])),
+    expanded: entries.length,
+    thisPass,
+  };
 }
 
 /**
@@ -333,6 +419,9 @@ export function neutraliseFenceEntry(entry: string): string {
  * record passes `[]`; a caller that does not ask for it at all cannot exist, and
  * that is the point — a fence the driver truncated must never read exactly like
  * a fence the planner finished writing.
+ *
+ * Lives beside the bound it reads rather than in plan-fence-render.ts because it
+ * needs `fenceDropCount`, and render must not import a value from here.
  */
 export function quotedOutOfScope(
   entries: readonly string[],

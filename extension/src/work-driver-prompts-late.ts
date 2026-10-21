@@ -1,3 +1,14 @@
+/**
+ * /work driver — inline prompt builders for the late pipeline steps.
+ *
+ * Pure string-template builders (no `DriverContext`, no state-machine
+ * logic) for Steps 6-9: commit-pr, lens-fix, merge, step-back, the
+ * cap-hit handoff-ops comment, and ci monitoring — plus the shared
+ * `scratchHygieneSection` helper appended to every inline prompt. Split
+ * out of work-driver.ts per AGENTS.md §12 module-size hygiene (issue
+ * #171) — these are called directly by the corresponding `run<Step>`
+ * handlers in work-driver.ts.
+ */
 import { quotedOutOfScope } from "./plan-fence-bound.ts";
 import { quotedPaths } from "./plan-path-shape.ts";
 import { handoffOpsPromptWithoutLabel } from "./work-driver-handoff-ops-label.ts";
@@ -14,17 +25,7 @@ import {
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
 import { protectedGrantSectionOf } from "./work-driver-protected-grant.ts";
 import type { FenceView, Workstream } from "./workflow-state-schema.ts";
-/**
- * /work driver — inline prompt builders for the late pipeline steps.
- *
- * Pure string-template builders (no `DriverContext`, no state-machine
- * logic) for Steps 6-9: commit-pr, lens-fix, merge, step-back, the
- * cap-hit handoff-ops comment, and ci monitoring — plus the shared
- * `scratchHygieneSection` helper appended to every inline prompt. Split
- * out of work-driver.ts per AGENTS.md §12 module-size hygiene (issue
- * #171) — these are called directly by the corresponding `run<Step>`
- * handlers in work-driver.ts.
- */
+
 /**
  * Boilerplate appended to every inline prompt. Tells the subagent where
  * the project-local scratch dir is so they don't drop diffs, screenshots,
