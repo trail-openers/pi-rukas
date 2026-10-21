@@ -103,6 +103,15 @@ export async function runArtifactSweep(opts: ArtifactSweepOpts): Promise<Artifac
       skipped.push({ name, reason: "non-numeric-name" });
       continue;
     }
+    // Rule 1b (#1743): a dir holding a park record is never removed, whatever
+    // its state file says. The record is the cross-cycle memory — the state
+    // file it belongs to may legitimately be gone (a handoff that terminalised
+    // without persisting, or the documented "rm to start fresh" recovery) and
+    // deleting the record would hand the operator a third identical park.
+    if (hasParkRecord(full)) {
+      skipped.push({ name, reason: "park-record-held" });
+      continue;
+    }
     // Rule 2: no sibling <N>.json state file.
     if (existsStateFile(dir, name)) {
       skipped.push({ name, reason: "live-state-file" });
@@ -141,5 +150,18 @@ function existsStateFile(dir: string, name: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * #1743 — true when the artifact dir holds any `park-*.json` record
+ * (work-driver-park-memory.ts). An unreadable dir is treated as holding one:
+ * the sweep keeps on doubt, and an orphan record costs a few bytes.
+ */
+function hasParkRecord(dir: string): boolean {
+  try {
+    return readdirSync(dir).some((n) => n.startsWith("park-") && n.endsWith(".json"));
+  } catch {
+    return true;
   }
 }

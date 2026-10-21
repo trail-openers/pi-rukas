@@ -108,6 +108,9 @@ export const FIXED_CAPS = [
   // sorted where the sort puts it.
   "queue-stranded",
   "repeat-finding-seam",
+  // #1743 — a start refused because two earlier cycles already parked this
+  // issue for the same reason against the same issue text.
+  "repeat-park",
   "repo-root-residue",
   "review-incomplete",
   "round-cap",

@@ -81,6 +81,8 @@ function assert(cond: boolean, msg: string) {
   assert(capStep("verify-failed:develop") === "develop", "capStep reads a step template");
   assert(capStep("verify-timeout:develop") === "develop", "verify-timeout: is a step template");
   assert(fixed.includes("deadline"), "the cycle-deadline cap is published");
+  const rp = fixed.indexOf("repeat-park");
+  assert(rp > fixed.indexOf("repeat-finding-seam") && rp < fixed.indexOf("repo-root-residue"), "#1743: the repeat-park refusal is a published cap, sorted where the sort puts it");
   assert(capStep("branch-ahead:3") === undefined, "capStep ignores a count template");
   assert(capStep("fence-violation:develop") === undefined, "capStep ignores a fixed literal");
 }

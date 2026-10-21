@@ -46,6 +46,7 @@ import type { WorkState } from "../workflow-state.ts";
 import { EXIT, exitCodeForGroup, exitCodeForState } from "./exit-code.ts";
 import { type LineWriter, createHeadlessHost } from "./host.ts";
 import { prUrlResolver } from "./pr-url.ts";
+import { projectRepeatParkRefusal } from "./repeat-park-refusal.ts";
 import { type IssueResult, notStartedResult, projectIssue } from "./result.ts";
 
 export interface HeadlessRunOptions {
@@ -357,6 +358,10 @@ async function runGroup(
   // A signalled run that ran out of grace exits 21 (30 for --timeout), unless
   // the state is already terminal and decided its own code.
   const expiredCode = signal.reason === "timeout" ? EXIT.crash : EXIT.interrupted;
+  // #1743 — a start the repeat-park guard refused is projected from an empty
+  // state, not from the file the PREVIOUS cycle left behind. See the module.
+  const refusalCodes = projectRepeatParkRefusal(group, opts.repoRoot, outcome, results);
+  if (refusalCodes !== undefined) return refusalCodes;
   const codes: number[] = [];
   for (const issue of group) {
     const file = workStateFile(opts.repoRoot, issue);
