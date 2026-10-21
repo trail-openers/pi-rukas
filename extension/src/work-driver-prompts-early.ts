@@ -8,6 +8,7 @@ import { quotedPaths } from "./plan-path-shape.ts";
 import { fenceLines } from "./work-driver-plan-fence.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 import { developTestScopeLine, developVerifyLine } from "./work-driver-verify-fast.ts";
+import type { FenceView } from "./workflow-state-schema.ts";
 
 // #1322 — the Step 2 (plan) prompt lives in work-driver-prompts-plan.ts (500-line
 // cap); re-exported so existing importers keep this path.
@@ -232,11 +233,10 @@ export interface InlineDevelopOptions {
 export function inlineDevelopPrompt(
   issues: number[],
   scratchDirAbs: string,
-  workstream?: {
+  workstream?: FenceView & {
     id: string;
     scope: string;
     paths: string[];
-    outOfScope: string[];
     /** #679 — optional; presence is informational (sibling injection), not a gate input. */
     dependsOn?: string[];
     /** #679 — optional; plan-quality declaration, never executed by the develop step. */
@@ -334,7 +334,11 @@ export function inlineDevelopPrompt(
       // those files; separating them invites the reader to skip it.
       memoryBrief ?? "",
       ...(workstream.outOfScope.length > 0
-        ? fenceLines(workstream.outOfScope, options.deferredProtected ?? [])
+        ? fenceLines(
+            workstream.outOfScope,
+            options.deferredProtected ?? [],
+            workstream.outOfScopeClipped ?? [],
+          )
         : ["Stay tightly focused on the scope; other workstreams handle the rest."]),
       "",
     );

@@ -11,7 +11,11 @@ import type { CapEvidence, CapedPartialState } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 // #679/#728 — workstream shape + consolidation record, split for the 500-line gate.
 // Re-exported so existing importers keep their paths.
-export type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
+export type {
+  Workstream,
+  WorkstreamBaseShas,
+  FenceView,
+} from "./workflow-state-schema-workstreams.ts";
 export type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 export type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
 // #814 — FenceViolation lives with the other verifyEvidence shapes.

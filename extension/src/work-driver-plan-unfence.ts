@@ -40,6 +40,7 @@
  * a file or symbol — lives in work-driver-plan-unfence-extract.ts.
  */
 
+import { keepClippedRecords } from "./plan-fence-record.ts";
 import { trace, traceWarn } from "./trace.ts";
 import { resolveDefiningFile } from "./work-driver-plan-unfence-defines.ts";
 import {
@@ -458,6 +459,23 @@ export async function unfenceIssueNamedPaths(
       const why = `unfenced ${path}: named by the issue, left fenced for placement (no workstream shares a directory)`;
       if (!warnings.includes(why)) warnings.push(why);
     }
+  }
+
+  // #1744 — a clip record is keyed by its ENTRY TEXT, so this pass needs no
+  // re-keying at all: keep the records whose entry still exists and every drop
+  // record, and a removed entry takes its own record with it. A restored entry
+  // (the no-owner rollback put it back) still names itself, so its marker
+  // survives. Carrying a record for an entry that is gone would hang the
+  // "…[clipped]" marker on nothing.
+  for (const id of ids) {
+    const ws = next[id];
+    if (!ws?.outOfScopeClipped) continue;
+    const kept = keepClippedRecords(ws.outOfScope, ws.outOfScopeClipped);
+    // The key is REMOVED when nothing is left, never set to `undefined`: a
+    // present-but-empty field is a second shape for "nothing was bounded", and a
+    // reader (or a state file that round-trips) has to learn which one means what.
+    const { outOfScopeClipped: _dropped, ...rest } = ws;
+    next[id] = kept.length > 0 ? { ...rest, outOfScopeClipped: kept } : rest;
   }
 
   if (removed.length > 0) {

@@ -1,5 +1,16 @@
+/**
+ * /work driver — inline prompt builders for the late pipeline steps.
+ *
+ * Pure string-template builders (no `DriverContext`, no state-machine
+ * logic) for Steps 6-9: commit-pr, lens-fix, merge, step-back, the
+ * cap-hit handoff-ops comment, and ci monitoring — plus the shared
+ * `scratchHygieneSection` helper appended to every inline prompt. Split
+ * out of work-driver.ts per AGENTS.md §12 module-size hygiene (issue
+ * #171) — these are called directly by the corresponding `run<Step>`
+ * handlers in work-driver.ts.
+ */
+import { quotedOutOfScope } from "./plan-fence-bound.ts";
 import { quotedPaths } from "./plan-path-shape.ts";
-import { quotedOutOfScope } from "./plan-workstream-schema.ts";
 import { handoffOpsPromptWithoutLabel } from "./work-driver-handoff-ops-label.ts";
 import type { MergeMethod } from "./work-driver-merged-mechanized.ts";
 import {
@@ -13,18 +24,8 @@ import {
 } from "./work-driver-pr-body-definition.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
 import { protectedGrantSectionOf } from "./work-driver-protected-grant.ts";
-import type { Workstream } from "./workflow-state-schema.ts";
-/**
- * /work driver — inline prompt builders for the late pipeline steps.
- *
- * Pure string-template builders (no `DriverContext`, no state-machine
- * logic) for Steps 6-9: commit-pr, lens-fix, merge, step-back, the
- * cap-hit handoff-ops comment, and ci monitoring — plus the shared
- * `scratchHygieneSection` helper appended to every inline prompt. Split
- * out of work-driver.ts per AGENTS.md §12 module-size hygiene (issue
- * #171) — these are called directly by the corresponding `run<Step>`
- * handlers in work-driver.ts.
- */
+import type { FenceView, Workstream } from "./workflow-state-schema.ts";
+
 /**
  * Boilerplate appended to every inline prompt. Tells the subagent where
  * the project-local scratch dir is so they don't drop diffs, screenshots,
@@ -60,11 +61,10 @@ export function inlineCommitPrPrompt(
   worktrees: Record<string, string>,
   workstreams: Record<
     string,
-    {
+    FenceView & {
       id: string;
       scope: string;
       paths: string[];
-      outOfScope: string[];
       /** #679 — optional; presence is informational, never read by this prompt. */
       dependsOn?: string[];
       /** #679 — optional; plan-quality declaration, never read by this prompt. */
@@ -148,7 +148,7 @@ export function inlineCommitPrPrompt(
     (workstream) =>
       `  - \`${workstream.id}\`: ${
         workstream.outOfScope.length > 0
-          ? `DO NOT STAGE anything these out-of-scope entries name — ${quotedOutOfScope(workstream.outOfScope)}`
+          ? `DO NOT STAGE anything these out-of-scope entries name — ${quotedOutOfScope(workstream.outOfScope, workstream.outOfScopeClipped ?? [])}`
           : "no out-of-scope paths declared; still stage only reviewed in-scope paths or developer-created new files"
       }`,
   );
