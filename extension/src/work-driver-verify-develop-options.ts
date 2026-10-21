@@ -13,6 +13,7 @@
 import type { CommentEvidence } from "./comment-evidence.ts";
 import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+import type { SpecSlotSource } from "./work-driver-spec-slot-admission.ts";
 import type { VerifyRecordSlot } from "./work-driver-verify-record.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
@@ -21,7 +22,9 @@ import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
  * positional callbacks. The gate mutates `failures` / `notes` in place (they
  * stay positional — they are the result, not options); everything here is a
  * structured side-channel whose absence means "this caller does not route on
- * it", so every field is optional.
+ * it", so every field is optional. The minority of fields are inputs the gate
+ * forwards to a seam (`walkProcessTree`, `hangSink`, `spec`) rather than
+ * out-parameters; each says which.
  */
 export interface VerifyDevelopOutcomeOptions {
   /**
@@ -92,4 +95,14 @@ export interface VerifyDevelopOutcomeOptions {
   onSelectedVerify?: (
     record: import("./work-driver-verify-select-exec.ts").SelectedVerifyRecord,
   ) => void;
+  /**
+   * #1557 — IN-parameter (not an out-channel): the cycle's spec, forwarded to
+   * the develop scope/fanout gate so a changed path that matches a deliverable's
+   * PATTERN slot counts as declared — the file the 500-line ratchet forces and
+   * the plan schema forbids declaring (work-driver-spec-slot-admission.ts).
+   * `verifyStepOutcome` threads it from `pipelineState.normalisedSpec`; absent
+   * means the gate stays as it was before #1557 — blind to spec slots, which is
+   * the false refusal that parked cycle 1557's fix pass.
+   */
+  spec?: SpecSlotSource;
 }

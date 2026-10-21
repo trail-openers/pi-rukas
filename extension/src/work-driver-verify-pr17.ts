@@ -268,6 +268,10 @@ export async function verifyStepOutcome(
       },
       fenceViolations,
       fenceLifts,
+      // #1557 — the spec the develop scope gate reads PATTERN slots from, so a
+      // file the spec authorised (and the plan schema forbids declaring) counts
+      // as declared. Driver state only: the fence never reads issue prose.
+      spec: state.pipelineState.normalisedSpec,
       onConsolidatedLogPath: (logPath) => {
         consolidatedLogPath = logPath;
       },
