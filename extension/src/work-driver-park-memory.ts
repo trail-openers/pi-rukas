@@ -48,7 +48,8 @@ import path from "node:path";
 import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { fetchIssueBodyViaGh } from "./work-driver-explore.ts";
+import { ISSUE_BODY_TIMEOUT_MS, fetchIssueBodyViaGh } from "./work-driver-explore.ts";
+import type { VerifyExecFn } from "./work-driver-git.ts";
 import { handoffMarker } from "./work-driver-handoff-channel.ts";
 import {
   COVERED_PARK_CAPS,
@@ -430,11 +431,22 @@ export async function repeatParkVerdict(
  *
  * Fails OPEN: any lookup failure returns false (run the cycle) with a trace.
  * The whole point of the re-check is that the driver does not get to refuse on
- * a state it could not confirm.
+ * a state it could not confirm. A timeout and an abort are failures too, so
+ * they take the same path — and the cycle being interrupted is never a reason
+ * to refuse a start, since nothing is about to run either way.
  */
 async function prStillOpen(ctx: DriverContext, issue: number, prNumber: number): Promise<boolean> {
-  const execFn = ctx.verifyExecFn ?? execp;
-  const existing = await findOpenPrForIssue(execFn, ctx.repoRoot, issue);
+  if (ctx.signal?.aborted) {
+    trace(
+      `work-driver: repeat-park guard did not confirm PR #${prNumber} for #${issue} — the cycle is being interrupted — not refusing`,
+    );
+    return false;
+  }
+  const existing = await findOpenPrForIssue(
+    boundedForgeExec(ctx.verifyExecFn ?? execp),
+    ctx.repoRoot,
+    issue,
+  );
   if (existing === undefined) {
     trace(
       `work-driver: repeat-park guard did not confirm PR #${prNumber} for #${issue} (closed, or the lookup said nothing) — not refusing`,
@@ -448,4 +460,19 @@ async function prStillOpen(ctx: DriverContext, issue: number, prNumber: number):
     return false;
   }
   return true;
+}
+
+/**
+ * The guard's executor: the shared seam plus the deadline it must not exceed.
+ *
+ * The re-check runs BEFORE any step is dispatched, so an unbounded `gh pr list`
+ * here holds up a start for as long as the network hangs — while nothing is
+ * recorded the whole guard costs a fraction of a second. The deadline is the
+ * issue-body fetch's own per-attempt bound (`ISSUE_BODY_TIMEOUT_MS`), carried in
+ * the options so `execp` enforces it by killing the child, as every other timed
+ * seam in the driver does. The rejection is what `findOpenPrForIssue` already
+ * catches, so a timeout fails open on the traces above rather than a new one.
+ */
+function boundedForgeExec(execFn: VerifyExecFn): VerifyExecFn {
+  return (cmd, opts) => execFn(cmd, { ...opts, timeout: ISSUE_BODY_TIMEOUT_MS });
 }
