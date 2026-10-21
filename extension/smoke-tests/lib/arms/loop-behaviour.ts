@@ -12,6 +12,7 @@
 import { mock } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
+import type { LedgerEntry } from "../../../src/review-ledger.ts";
 import { BINDING_REFUSAL_PREFIXES, ledgerFile, setupRepo } from "../adversarial-ledger-harness.ts";
 import { countedCapture } from "./capture-counter.ts";
 
@@ -133,8 +134,12 @@ const repo = fixture.dir;
 const LEDGER_FILE = ledgerFile(repo);
 process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = LEDGER_FILE;
 
-/** The rows on disk, after every in-flight write has settled. */
-async function readRows(): Promise<Array<Record<string, unknown>>> {
+/** The rows on disk, after every in-flight write has settled.
+ *
+ * Typed as `LedgerEntry[]`, not `Array<Record<string, unknown>>`: this file's
+ * row identity rests on `rowNonce`, and a stringly-keyed lookup makes a rename
+ * of the writer's field invisible to tsc. */
+async function readRows(): Promise<LedgerEntry[]> {
   await drainLedgerWrites();
   if (!existsSync(LEDGER_FILE)) return [];
   const parsed = JSON.parse(readFileSync(LEDGER_FILE, "utf8")) as { entries?: unknown[] };
@@ -142,29 +147,19 @@ async function readRows(): Promise<Array<Record<string, unknown>>> {
   // index into, so an arm that expected three rows and got two fails loudly
   // rather than reading some other round's row.
   return (parsed.entries ?? [])
-    .filter((e) => (e as { kind?: string }).kind === "adversarial")
-    .sort((a, b) => ((a as { at?: number }).at ?? 0) - ((b as { at?: number }).at ?? 0)) as Array<
-    Record<string, unknown>
-  >;
+    .filter((e) => (e as LedgerEntry).kind === "adversarial")
+    .sort((a, b) => ((a as LedgerEntry).at ?? 0) - ((b as LedgerEntry).at ?? 0)) as LedgerEntry[];
 }
 
-/** The rows THIS arm wrote — the rows whose `rowNonce` equals the
- * `orchestratorJobId` the arm passed to `runAdversarialLoop` (#1557).
+/** The rows carrying `nonce` — the `orchestratorJobId` an arm passed to
+ * `runAdversarialLoop`, which the writer stamps onto its own row as
+ * `LedgerEntry.rowNonce` (#1557; see that field's jsdoc for why identity, not
+ * a timestamp floor, is what identifies a fire-and-forget writer's row).
  *
- * Identity, not a timestamp floor: the writer is fire-and-forget and a row's
- * `at` is its OWN write-start stamp, so a straggler from an earlier arm can
- * stamp itself at or after any floor sampled before it began and be read as
- * the current arm's row — that is exactly how arm 4b read arm 4's honest
- * `passed=true, detail="approved"` row as its refusal. A row without this
- * arm's nonce can never satisfy the predicate, however late it lands.
- *
- * A miss reports ABSENCE: at the deadline the poll returns `[]`, never
- * "the latest row" — an arm that wrote no row fails its own
- * "this arm's row was written" assertion loudly instead of judging another
- * arm's row (the false `passed=true` reading the flake produced). */
-async function waitForRowsWithNonce(
-  nonce: string,
-): Promise<Array<Record<string, unknown>>> {
+ * A miss reports ABSENCE: at the deadline the poll returns `[]`, never "the
+ * latest row", so an arm that wrote no row fails its own assertion instead of
+ * judging another arm's. */
+async function waitForRowsWithNonce(nonce: string): Promise<LedgerEntry[]> {
   const deadline = Date.now() + 20_000;
   for (;;) {
     const rows = (await readRows()).filter((r) => r.rowNonce === nonce);
@@ -200,11 +195,7 @@ try {
     captureCounter.calls() === 0,
     "driver path: captureRound is never called (no wasted git subprocess)",
   );
-  // #1557 — identity selection, not a count into the file: exactly the rows
-  // carrying THIS arm's nonce (the `orchestratorJobId` it passed) count. A
-  // straggler from another arm can never satisfy the predicate, and an arm
-  // that wrote nothing reads as `[]` — the assertion goes red rather than
-  // judging some other round's row.
+  // #1557 — this arm's rows, by its own nonce (see `waitForRowsWithNonce`).
   const driverRows = await waitForRowsWithNonce("job-driver");
   assert(
     driverRows.length === 1 && driverRows[0]?.passed === true,
@@ -247,10 +238,9 @@ try {
     captureCounter.calls() === 1,
     `tool path: the round captures exactly once (got ${captureCounter.calls()})`,
   );
-  // #1557 — "its row is written too" is an IDENTITY question: exactly one row
-  // carries this arm's nonce. The old file-wide count (`waitForRows(2)` then
-  // `toolRows[1]`) could only see whatever survived `dedupeLatest` — a
-  // positional read over rows whose survival is a race, not a contract.
+  // #1557 — this arm's row, by its own nonce (see `waitForRowsWithNonce`). The
+  // old file-wide count (`waitForRows(2)` then `toolRows[1]`) was a positional
+  // read over rows whose survival is a race, not a contract.
   const toolRows = await waitForRowsWithNonce("job-tool");
   assert(
     toolRows.length === 1,
@@ -300,20 +290,13 @@ try {
   // this cut the flake from ~32% to ~3% — a large cut, which is exactly why the
   // remaining 3% needed a second cause rather than a better value.
   //
-  // (2) The straggler: the writer is fire-and-forget, so an earlier arm's write
-  // can still be in flight here, and a row's `at` is its OWN creation stamp —
-  // taken when the write began, not when it lands. The old reader filtered on
-  // `at >= Date.now() - 1` and took the last match, so an arm-4 write that
-  // stamped itself after that floor (its `appendLedgerEntry` not yet called
-  // when the floor was sampled) was read as THIS arm's row: the honest
-  // `passed=true, detail="approved"` row reported as the refusal. A 300ms
-  // delay injected into `appendLedgerEntry` drove that residual to 0/3, which
-  // is what identified it — and proved the floor is unsound by construction,
-  // not merely tight. #1557 replaces the floor with identity: the row must
-  // carry this arm's nonce ("job-stale", threaded from `orchestratorJobId`
-  // through `makeLedgerWrite` into `LedgerEntry.rowNonce`), which a straggler
-  // from another arm cannot have whatever its `at` says. No sleep, no widened
-  // budget, no drain-then-floor pair.
+  // (2) The straggler: the writer is fire-and-forget and a row's `at` is its
+  // OWN creation stamp, so an arm-4 write still in flight here stamped itself
+  // after the floor the old reader sampled and was read as THIS arm's row —
+  // the honest `passed=true, detail="approved"` row reported as the refusal. A
+  // 300ms delay injected into `appendLedgerEntry` drove that residual to 0/3,
+  // which proved the floor unsound by construction, not merely tight. #1557
+  // replaced it with identity (see `waitForRowsWithNonce`).
   // The range diff is supplied through the loop's own injectable seam (the 4th
   // argument, the one #859 added) rather than as a `diff` string: a pasted diff
   // sets `callerSuppliedDiff`, and a #1161 caller-supplied row is already
@@ -338,12 +321,9 @@ try {
     async () => ({ ok: true as const, diff: "diff --git a/a.txt b/a.txt\n+a\n" }),
   );
   assert(stale.ok === true, "stale capture: the loop still completes (a refusal is not a crash)");
-  // THIS arm's row, identified by the nonce this arm's loop wrote into it —
-  // not by a wall-clock floor and not by position. A straggler carries the
-  // arm that caused it and can never satisfy this predicate; an arm that wrote
-  // no row reads as absence (`[]` at the deadline), so the next two
-  // assertions fail loudly instead of judging another arm's passing row — the
-  // exact false `passed=true, detail="approved"` reading of the #1557 flake.
+  // This arm's row, by its own nonce (see `waitForRowsWithNonce`): an arm that
+  // wrote no row reads as absence (`[]` at the deadline), so the next two
+  // assertions fail loudly instead of judging another arm's passing row.
   const staleRows = await waitForRowsWithNonce("job-stale");
   assert(
     staleRows.length <= 1,
