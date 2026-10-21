@@ -15,6 +15,24 @@ All optional. Defaults are reasonable for typical use. This file holds the full 
 | Skills (auto-installed) | `~/.pi/agent/skills/` |
 | Run transcripts | `~/.pi/agent/ensemble-runs/<date>/` |
 | Saved model config | `~/.pi/agent/ensemble-models.json` |
+| Private backlog (optional) | `<repo>/.backlog/backlog.md` — a separate clone, kept out of `git status` by a per-clone `.git/info/exclude` entry |
+
+## Private backlog (optional)
+
+If you keep your real priority order somewhere other than the issue tracker, clone that repository into the project at `.backlog/` and maintain a `backlog.md` inside it:
+
+```bash
+git clone <your-private-backlog-url> .backlog
+grep -qx '/.backlog/' .git/info/exclude || echo '/.backlog/' >> .git/info/exclude
+```
+
+**Exclude it per clone, never in a committed `.gitignore`.** The directory is a nested clone holding private content, and the ignore rule is about *this* checkout's hygiene, not the project's shape — the same reasoning as the harness's own per-clone entries (`work-driver-git-exclude.ts`). A committed `/.backlog/` line would ship your working arrangement to every clone of the repository, including ones whose operators have no such backlog.
+
+**What the reminder does.** When `.backlog/backlog.md` exists, the PM session is handed one short paragraph telling it the backlog exists, where it is, that its `## Now (in order)` list is the agreed order, that the order changes only with your explicit approval and by committing to that repository (never by editing the file uncommitted), and that machine-filed issues sit under Triage until you promote them. That is all it does: it is a pointer, not a reader. Nothing here fetches the backlog, runs git against it, or puts its content into a prompt.
+
+**What happens without it: nothing.** No `.backlog/`, a `.backlog/` with no `backlog.md`, or a `.backlog` that is a plain file all produce a session prompt byte-identical to a pi-rukas without this feature — there is no flag to turn on and no setting to set. Any error reading the path (a permission problem on your own clone, for instance) is treated the same way as absence: the paragraph is simply not added, and nothing throws. The presence check runs once per session, and it runs only in the PM session — subagent prompts (developer, explore, ops, reviewers) never gain the paragraph.
+
+Rendering the backlog itself — a panel at `/start`, so you see the agreed order rather than only being told one exists — is the follow-on half of this feature and is not in this release.
 
 ## Environment variables
 

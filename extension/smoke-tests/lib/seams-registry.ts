@@ -356,4 +356,18 @@ export const SEAMS: Seam[] = [
     },
     canary: { symbol: "gitCatFileSaysAbsent", importer: "lens-evidence.ts" },
   },
+  {
+    // #1730 A — the private-backlog reminder. `backlogReminderSection` is wired
+    // into the PM's `before_agent_start` handler; `BACKLOG_REMINDER` is read by
+    // nothing in production except this module's own probe, and the test asserts
+    // on the constant so "the paragraph landed exactly once" is a byte
+    // comparison rather than a substring match on a paraphrase.
+    file: "backlog-reminder.ts",
+    pending: {},
+    testOnly: {
+      BACKLOG_REMINDER:
+        "the appended paragraph as a constant; test-backlog-reminder.ts compares the whole prompt against it",
+    },
+    canary: { symbol: "backlogReminderSection", importer: "commands.ts" },
+  },
 ];
