@@ -29,14 +29,27 @@
  *
  * The lockfile sits beside the data it guards (`.pi/work-state/path-claims.lock`)
  * rather than under `.git/` — same reason `path-claims.json` does.
+ *
+ * #1640 — the stale-holder judgment and the delete that removes a corpse are
+ * ONE synchronous operation, reached through
+ * `work-driver-path-claims-lock-sweep.ts` (`sweepStaleLock`) and implemented in
+ * the shared leaf `stale-lock-sweep.ts`, re-validated by inode and bytes
+ * immediately before the unlink. They used to be an async `readFile` here plus
+ * an unconditional `fs.rm` by path, and under an 8-way fan-out that let a
+ * waiter delete a LIVE holder's lock (the read straddled the path's
+ * unlink+create) — two writers in the body at once, one claim lost. Do not
+ * reintroduce a read + rm pair for the STALE SWEEP. (Release compares our own
+ * nonce-identified token before unlinking, and warns when that comparison
+ * fails; that is a different, correct pair.)
  */
 
 import { randomUUID } from "node:crypto";
-import { closeSync, openSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { readTokenPid, unlinkIfStillOurs } from "./stale-lock-sweep.ts";
 import { trace, traceWarn } from "./trace.ts";
-import { processAlive } from "./work-driver-resume.ts";
+import { LOCK_HARD_STALE_MS, sweepStaleLock } from "./work-driver-path-claims-lock-sweep.ts";
 import { workStateDir } from "./workflow-state.ts";
 
 const LOCK_FILE = "path-claims.lock";
@@ -118,7 +131,7 @@ function throwCannotCreate(): never {
  * It exists because the half-created lockfile is otherwise untestable, and it
  * is a real fault, not a hypothetical: `O_EXCL` makes the file exist, and a
  * `writeFileSync` that then throws (ENOSPC, a signal-interrupted fd) leaves an
- * EMPTY file behind that is not ours to reclaim by age — `readLockAge` refuses
+ * EMPTY file behind that is not ours to reclaim by age — `sweepStaleLock` refuses
  * to call an unparsable lockfile stale. Every sibling then waits the full
  * `LOCK_WAIT_MS` on a file whose owner is gone, for as long as the corpse
  * stands. `acquire` closes the fd and unlinks what it created in that case.
@@ -138,13 +151,6 @@ export function setClaimsLockWriteFaultForTests(fn?: () => void): void {
 const LOCK_WAIT_MS = 5_000;
 
 /**
- * A lock whose holder is older than this is a corpse (a killed process left
- * it behind). Far beyond any plausible hold, short enough that a crashed
- * cycle does not park the registry for the rest of the session.
- */
-const LOCK_STALE_MS = 60_000;
-
-/**
  * Poll interval between acquisition attempts.
  *
  * Sub-millisecond, not the integration lock's 250ms. Measured: eight writers
@@ -155,64 +161,45 @@ const LOCK_STALE_MS = 60_000;
  */
 const LOCK_RETRY_MS = 0.5;
 
+/**
+ * Ceiling on the poll's doubling backoff.
+ *
+ * A contended claim is normally handed over in milliseconds, so the first few
+ * polls at 0.5 ms are what win the race; the backoff only ever gets paid on the
+ * rare wait behind a holder that is slow or sick, and there 20 ms is responsive
+ * enough while keeping a full `LOCK_WAIT_MS` spin to a few hundred syscalls
+ * instead of ten thousand.
+ */
+const LOCK_RETRY_MAX_MS = 20;
+
 function lockPath(repoRoot: string): string {
   return path.join(workStateDir(repoRoot), LOCK_FILE);
 }
 
-/** True when the lockfile still holds exactly `token` (this process's write). */
-async function holdsLockfile(file: string, token: string): Promise<boolean> {
+/**
+ * Read the lockfile's contents, or null when there is nothing to read.
+ *
+ * `null` is kept distinct from a token that merely DIFFERS, because the two
+ * mean different things to an operator: "someone else's token is here" is a
+ * theft, while "nothing is here" is a release that raced a sweep.
+ */
+async function readLockfile(file: string): Promise<string | null> {
   try {
-    return (await fs.readFile(file, "utf8")) === token;
+    return await fs.readFile(file, "utf8");
   } catch {
-    return false;
+    return null;
   }
 }
 
-/** What the waiter learned about the current holder. */
-type HolderRead =
-  | { status: "stale"; ageMs: number; pid: number | null }
-  | { status: "alive" }
-  | { status: "unreadable" };
-
-/**
- * Read the lockfile and judge its holder WITHOUT destroying it.
+/** The pid a lockfile token names, for the theft warning an operator reads.
  *
- * `stale` requires BOTH signals the name implies: the token parsed AND its
- * `at` timestamp sits past the stale window. Anything else — unreadable,
- * unparsable, zero-byte, an `at` we cannot parse — is `alive`, i.e. "wait".
- * That asymmetry is the whole point: the cost of waiting on a corpse is
- * bounded by the next poll and eventually by the deadline, while the cost of
- * deleting a live holder's lock is two writers in the body at once, which is
- * the exact lost update the lock exists to remove.
- *
- * A holder whose pid has exited is swept early: a killed process cannot
- * release, so its lock would otherwise pin the registry for the full stale
- * window across every concurrent cycle.
+ * Delegates to the sweep's own reader so the warning and the judgement cannot
+ * disagree about what a token says: a `pid` outside the domain a process id
+ * lives in (`1.5`, `0`, a string) is "unknown" in both, never a confident
+ * number in one and a rejection in the other.
  */
-async function readLockAge(file: string): Promise<HolderRead> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(file, "utf8");
-  } catch {
-    return { status: "unreadable" };
-  }
-  let parsed: { pid?: unknown; at?: unknown };
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { status: "unreadable" };
-  }
-  const at = typeof parsed.at === "number" ? parsed.at : null;
-  const pid = typeof parsed.pid === "number" ? parsed.pid : null;
-  if (at === null) return { status: "alive" };
-  const ageMs = Date.now() - at;
-  if (ageMs > LOCK_STALE_MS) return { status: "stale", ageMs, pid };
-  // A corpse's lock is stale immediately — but only when the token parsed, so
-  // a half-published file is never judged by a field we could not read.
-  if (pid !== null && pid !== process.pid && !processAlive(pid)) {
-    return { status: "stale", ageMs, pid };
-  }
-  return { status: "alive" };
+function tokenPid(raw: string): number | "unknown" {
+  return readTokenPid(raw) ?? "unknown";
 }
 
 /** Outcome of an acquisition attempt. */
@@ -250,6 +237,7 @@ async function acquire(
   // writer of a fresh project down the unserialised path — exactly when a
   // fan-out is most likely to be racing.
   await fs.mkdir(path.dirname(file), { recursive: true }).catch(() => undefined);
+  let pollMs = LOCK_RETRY_MS;
   for (;;) {
     try {
       // `wx` is O_EXCL: the create itself is the atomic test-and-set.
@@ -274,7 +262,7 @@ async function acquire(
       //
       // That window is the third way this lock can be bypassed. It is NOT the
       // only thing standing between a half-published lock and two writers in
-      // the body at once: `readLockAge` refusing to call an unparsable lockfile
+      // the body at once: `sweepStaleLock` refusing to call an unparsable lockfile
       // stale is load-bearing on its own, and it is what §2 of
       // `test-work-driver-claims-lock-publish.ts` pins (a waiter waits on a
       // zero-byte lock, it does not delete it). What the sync publish buys is
@@ -308,20 +296,20 @@ async function acquire(
         // The file EXISTS (the create succeeded) and holds nothing but
         // whatever got through before the throw. Two facts follow, and both
         // are ours to clean up: a sibling cannot judge this lock stale (the
-        // token is unparsable, and `readLockAge` correctly refuses to call an
+        // token is unparsable, and `sweepStaleLock` correctly refuses to call an
         // unparsable lock a corpse), so every waiter pays the full wait window
         // for a holder that is not one; and the fd we opened is still open.
         // Close it and remove the file WE created, then report the fault —
-        // half a lock is worse than no lock.
+        // half a lock is worse than no lock. The removal is inode-checked (the
+        // fd is the witness) because a sibling that swept this tokenless file
+        // and created its own lock in the meantime owns that path now, and an
+        // unlink by name would steal it — so it runs BEFORE the fd is closed,
+        // while the witness is still open.
+        unlinkIfStillOurs(file, fd);
         try {
           closeSync(fd);
         } catch {
           // Already closed by the write path, or closed twice: nothing to do.
-        }
-        try {
-          unlinkSync(file);
-        } catch {
-          // Gone already (another waiter swept it). Nothing of ours left.
         }
         throw writeErr;
       }
@@ -332,9 +320,27 @@ async function acquire(
           // Remove only our own lock — never another holder's. `token` is
           // unique per acquisition (nonce), so a lock a sibling swept and
           // re-took can never be unlinked by us.
-          if (await holdsLockfile(file, token)) {
+          const current = await readLockfile(file);
+          if (current === token) {
             await fs.rm(file, { force: true }).catch(() => undefined);
+            return;
           }
+          // #1640 — never silent: our token is gone from a lock WE acquired.
+          // The two shapes say different things and the operator reading the
+          // trace needs the difference: a token that DIFFERS means our lock was
+          // unlinked and another process took the path while we held it, which
+          // is the theft fingerprint; nothing to read at all means the path was
+          // removed under us (a sweep that judged our live lock a corpse, or a
+          // sibling's cleanup) with no replacement in sight. Both name the file
+          // and the pid that now owns it, because the trace line is what gets
+          // pasted into an issue.
+          traceWarn(
+            `claims-lock: releasing without ownership — ${path.basename(file)} ${
+              current === null
+                ? "could not be read (removed while we held it)"
+                : `holds a different token (pid ${String(tokenPid(current))})`
+            }; pid ${String(process.pid)} believed it held this lock (a live lock was stolen)`,
+          );
         },
         state: "held",
       };
@@ -383,16 +389,25 @@ async function acquire(
       // real cycle takes. An unwritable `.pi/work-state` is still reported
       // faithfully: it fails the `wx` create with EACCES/EROFS/ENOSPC and the
       // catch above names the code.
-      const holder = await readLockAge(file);
+      const holder = sweepStaleLock(file);
       if (holder.status === "stale") {
         trace(
-          `claims-lock: sweeping a ${holder.ageMs}ms-old lockfile (holder pid ${holder.pid ?? "unknown"})`,
+          `claims-lock: swept a ${holder.ageMs}ms-old lockfile (holder pid ${holder.pid ?? "unknown"})`,
         );
-        await fs.rm(file, { force: true }).catch(() => undefined);
+        // The deadline governs the whole wait, not just the polls: re-creating
+        // after it has passed would hand the lock to a waiter that has already
+        // been told to give up, and the caller's contract is that a null handle
+        // and a refusal are the ONLY outcomes of an expired wait.
+        if (Date.now() > deadline) return null;
         continue;
       }
       if (Date.now() > deadline) return null;
-      await new Promise((r) => setTimeout(r, LOCK_RETRY_MS));
+      await new Promise((r) => setTimeout(r, pollMs));
+      // First hand-offs are decided in the first few sub-millisecond polls; the
+      // doubling only matters for a wait that has already outlived them, and it
+      // stops at LOCK_RETRY_MAX_MS so a sick holder cannot turn the wait into
+      // ten thousand stat+read pairs.
+      pollMs = Math.min(pollMs * 2, LOCK_RETRY_MAX_MS);
     }
   }
 }
@@ -406,12 +421,10 @@ async function acquire(
  * to hold it — another cycle held the lock past the wait window, or the
  * lockfile could not be created at all (read-only `.pi`, ENOSPC), which is
  * `fault` and never the test's `injected-unlocked` — are traced before the
- * throw. The test's injected fault is the one
- * held the lock past the wait window, or the lockfile could not be created at
- * all (read-only `.pi`, ENOSPC). The test's injected fault is the one
- * exception, and only because the mutation arm exists to prove the positive
- * assertion tests the lock — it deliberately reproduces the lost update this
- * throw prevents. A production cycle sets neither variable and cannot reach it.
+ * throw. The test's injected fault is the one exception, and only because the
+ * mutation arm exists to prove the positive assertion tests the lock — it
+ * deliberately reproduces the lost update this throw prevents. A production
+ * cycle sets neither variable and cannot reach it.
  */
 export async function withClaimsLock<T>(
   repoRoot: string,
@@ -422,7 +435,7 @@ export async function withClaimsLock<T>(
   const handle = await acquire(repoRoot, Date.now() + waitMs);
   if (handle === null) {
     throw new Error(
-      `${CLAIMS_LOCK_REFUSAL} — held by another cycle for over ${waitMs}ms (a stale lock is swept after ${LOCK_STALE_MS}ms)`,
+      `${CLAIMS_LOCK_REFUSAL} — held by another cycle for over ${waitMs}ms; a lock whose holder pid is gone is swept at once, and one whose holder still answers is swept only past ${LOCK_HARD_STALE_MS}ms — no claim write holds this lock that long. If ${lockPath(repoRoot)} is still there and its token cannot be judged (unreadable, or an "at" outside any real timestamp), this lock waits it out BY DESIGN and will not sweep it: remove that file by hand.`,
     );
   }
   if (handle.state === "fault") {
