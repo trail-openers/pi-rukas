@@ -59,6 +59,11 @@ import { trace } from "./trace.ts";
 import { stripFenceGlob } from "./work-driver-declared-path.ts";
 import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+import {
+  type SpecSlotSource,
+  specPatternSlots,
+  specSlotAdmitting,
+} from "./work-driver-spec-slot-admission.ts";
 import { normaliseScopePath as normaliseGitPath } from "./work-driver-verify-develop-helpers.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
@@ -191,7 +196,19 @@ export function runScopeFanoutGate(
   // #1676 — `protectedRefused`: the paths the protected-path gate already refused
   // (no grant). A fence hit on one of them is not a second failure: that gate's
   // halt, with its --allow-protected instruction, is the single explanation.
-  options: { protectedRefused?: readonly string[]; protectedDeferred?: readonly string[] } = {},
+  options: {
+    protectedRefused?: readonly string[];
+    protectedDeferred?: readonly string[];
+    /**
+     * #1557 — the cycle's spec (`pipelineState.normalisedSpec`, from driver
+     * state — never issue prose at the fence). A changed path a deliverable's
+     * PATTERN slot matches counts as declared here, exactly as a declared path
+     * does: no `undeclared` record, and out of the fanout numerator. The
+     * `outOfScope` fence above still beats the slot (it is judged first and a
+     * fence hit never reaches this), and the protected-path gate still halts.
+     */
+    spec?: SpecSlotSource;
+  } = {},
 ): void {
   if (!scopeGateEnabled()) {
     notes.push("PI_ENSEMBLE_SCOPE_GATE=0 — develop scope/fanout gate disabled");
@@ -221,6 +238,28 @@ export function runScopeFanoutGate(
       if (n.length > 0) planDeclaredPaths.add(n);
     }
   }
+  // #1557 — the spec's pattern slots, read once per run. A plan may not declare
+  // a glob (`plannedPathProblem` refuses one, which is why #1707 exempted such
+  // slots from the plan-to-spec gate), so a spec-authorised new file can only
+  // ever arrive here as "undeclared" unless the gate reads the spec itself.
+  // Measured on cycle 1557: the adversarial fix pass split a module to stay
+  // under the 500-line ratchet and both fences refused the new file.
+  const specSlots = specPatternSlots(options.spec);
+  // One trace line per (workstream, file) the slot admits — the same file is
+  // consulted by the numerator and the discovery scan below.
+  const tracedAdmissions = new Set<string>();
+  const specAdmits = (id: string, file: string): boolean => {
+    const slot = specSlotAdmitting(specSlots, file);
+    if (!slot) return false;
+    const key = `${id}|${file}`;
+    if (!tracedAdmissions.has(key)) {
+      tracedAdmissions.add(key);
+      trace(
+        `scope-fence: ${id} admitted ${file} — the spec's deliverable ${slot.deliverableId} declares the pattern slot ${slot.slot}`,
+      );
+    }
+    return true;
+  };
   // #814 — the SIBLING-declared sets, normalised ONCE per run (the review
   // flagged the previous per-workstream-loop re-normalisation: each workstream
   // re-normalised every sibling's paths). For every workstream, its own
@@ -377,8 +416,13 @@ export function runScopeFanoutGate(
     for (const file of changedFiles) {
       if (declaredPaths.some((declared) => matchesScopePath(file, declared))) continue;
       if (depOwnedArr.some((declared) => matchesScopePath(file, declared))) continue;
+      // The out-of-scope check runs BEFORE any admission, and it wins: a spec
+      // slot never unfences a path the plan fenced against this workstream.
       if (outOfScope.some((declared) => matchesScopePath(file, declared))) continue;
       if (planDeclaredPaths.has(file)) continue;
+      // #1557 — a file the spec's pattern slot authorises is declared work, not
+      // an invention to warn about.
+      if (specAdmits(id, file)) continue;
       notes.push(
         `workstream ${id} touched ${file}, which is in no workstream's declared paths (undeclared — warning, not blocking)`,
       );
@@ -412,6 +456,10 @@ export function runScopeFanoutGate(
     const isDeclaredOrExempt = (file: string): boolean =>
       declaredPaths.some((declared) => matchesScopePath(file, declared)) ||
       [...planDeclaredPaths].some((declared) => matchesScopePath(file, declared)) ||
+      // #1557 — a spec pattern slot is a declared path for the numerator: the
+      // bound exists to catch a workstream inventing scope, not to punish it
+      // for creating a file the spec asked for.
+      specAdmits(id, file) ||
       (isTestPath(file) &&
         [...planDeclaredPaths].some(
           (declared) => !isTestPath(declared) && couplesTo(file, declared),
