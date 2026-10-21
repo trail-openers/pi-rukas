@@ -8,6 +8,15 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.3](https://github.com/trail-openers/pi-rukas/compare/v0.14.2...v0.14.3) (2026-10-21)
+
+
+### Bug Fixes
+
+* **work:** bound report_workstream outOfScope entries instead of refusing the call ([#1750](https://github.com/trail-openers/pi-rukas/issues/1750)) ([16ea9d7](https://github.com/trail-openers/pi-rukas/commit/16ea9d73eae6de69625e43272a057d82a2ac64fa))
+* **work:** remember parks in host mode and refuse a third identical park ([#1749](https://github.com/trail-openers/pi-rukas/issues/1749)) ([95c0d17](https://github.com/trail-openers/pi-rukas/commit/95c0d17c957288014f2ce519a9e1f91b30ee496b))
+* **work:** test-adversarial-tool-provenance.ts arms 3-4 flake… ([#1748](https://github.com/trail-openers/pi-rukas/issues/1748)) ([c92553d](https://github.com/trail-openers/pi-rukas/commit/c92553df6a545f72ea9ae56fd8cdeaf6330453dc))
+
 ## [0.14.2](https://github.com/trail-openers/pi-rukas/compare/v0.14.1...v0.14.2) (2026-10-21)
 
 
