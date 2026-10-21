@@ -358,10 +358,11 @@ export const SEAMS: Seam[] = [
   },
   {
     // #1730 A — the private-backlog reminder. `backlogReminderSection` is wired
-    // into the PM's `before_agent_start` handler; `BACKLOG_REMINDER` is read by
-    // nothing in production except this module's own probe, and the test asserts
-    // on the constant so "the paragraph landed exactly once" is a byte
-    // comparison rather than a substring match on a paraphrase.
+    // into the PM's `before_agent_start` handler and probed on every turn (no
+    // memo, so a backlog cloned mid-session is heard at once); `BACKLOG_REMINDER`
+    // is read by nothing in production except this module's own probe, and the
+    // test asserts on the constant so "the paragraph landed exactly once" is a
+    // byte comparison rather than a substring match on a paraphrase.
     file: "backlog-reminder.ts",
     pending: {},
     testOnly: {

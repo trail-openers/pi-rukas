@@ -352,21 +352,35 @@ export function registerCommands(pi: ExtensionAPI) {
       const pieces: string[] = [base, PM_STICKY_PREAMBLE];
       // #1730 A — the private-backlog reminder, PM-only. This handler is the
       // only place it is appended, and it returns above unless PM mode is
-      // armed, so no child prompt ever carries it. `""` (no `.backlog/`, or
-      // one without `backlog.md`, or any stat failure) pushes nothing at all,
-      // which is what keeps the no-backlog prompt byte-identical to the
-      // pre-feature one. The probe is memoised per session directory.
+      // armed, so no child prompt ever carries it. `""` (no clone, no
+      // `backlog.md`, a symlink in place of it, any probe failure) pushes
+      // nothing at all, which is what keeps the no-backlog prompt
+      // byte-identical to the pre-feature one. The probe runs per turn —
+      // bounded by its own wall clock inside the seam, so a hung mount cannot
+      // hold this handler either.
       //
-      // `ctx.cwd` is the session's directory (the same first-class source
-      // every other repo-root read uses) and there is deliberately NO
+      // `ctx.cwd` is the session's directory, NOT the repository root: a
+      // session started in `extension/` must still see the `.backlog` the
+      // operator cloned at the toplevel, so the seam resolves the root itself
+      // by walking up (no git is spawned). There is deliberately NO
       // `process.cwd()` fallback: without a session directory there is nothing
       // to look under, and probing the harness's own cwd would let a test, or
       // any caller that omits ctx, pick up a real `.backlog/` and get a
       // different prompt than the one it is asserting on.
+      //
+      // The `await` is wrapped because this handler's contract is the sticky
+      // preamble: `pieces` already carries it, and a throw here would discard
+      // the whole result and leave the PM un-orchestrating for the turn.
       const sessionDir = ctx?.cwd;
       if (sessionDir) {
-        const backlog = await backlogReminderSection(sessionDir);
-        if (backlog) pieces.push(backlog);
+        try {
+          const backlog = await backlogReminderSection(sessionDir);
+          if (backlog) pieces.push(backlog);
+        } catch (err) {
+          trace(`before_agent_start: backlog probe threw — ${(err as Error)?.message}`);
+        }
+      } else {
+        trace("before_agent_start: no session directory in ctx — no backlog reminder probed");
       }
       if (takeDoctrinePending()) {
         try {
