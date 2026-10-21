@@ -437,11 +437,16 @@ export async function runAdversarialFixPass(
   // that disclosed on the handoff, never parked. Only a check that was asked
   // for and could not run parks.
   let kept = restored;
+  // #1725 round 3 — one disclosure note per spec-slot admission made during
+  // this pass. An authorisation that only reached PI_ENSEMBLE_DEBUG is a
+  // fence that widened invisibly; these notes ride the state to the PR body,
+  // where the develop gate's own admission notes already surface.
+  for (const admission of post.admissions) kept = noteFixPass(kept, admission, now);
   if (!commentRetentionEnabled()) {
     const note =
       "comment retention NOT CHECKED (PI_ENSEMBLE_COMMENT_RETENTION=0) — the pass proceeded without the origin/main comment check";
     trace(`work-driver: ${note}`);
-    kept = noteFixPass(restored, note, now);
+    kept = noteFixPass(kept, note, now);
   } else {
     for (const p of plans) {
       const read = (diff: string) =>
