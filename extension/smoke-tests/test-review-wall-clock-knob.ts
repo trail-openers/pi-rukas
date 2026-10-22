@@ -173,23 +173,25 @@ async function main() {
   await withEnv({ [WALL]: String(45 * MIN), [CAPV]: undefined, [ENFORCE]: "1" }, async () => {
     assert(reviewWallClockMs() === 45 * MIN, "wall-clock knob → reviewWallClockMs() is 45m");
 
-    // (a) the fix-dispatch bound arithmetic
+    // (a) the fix-dispatch bound arithmetic (#1742: what remains MINUS the
+    // owed lens round's 10m reserve).
     const bound = await atNow(NOW, () =>
       reviewFixDispatchBoundMs(stateWithClock(20 * MIN), "lens-fix", NOW),
     );
     assert(
-      bound === 25 * MIN,
-      `…→ the fixer is bound to what REMAINS under the moved ceiling (20m into 45m → 25m, got ${bound})`,
+      bound === 15 * MIN,
+      `…→ the fixer is bound to what REMAINS under the moved ceiling minus the owed round's reserve (20m into 45m → 25m − 10m, got ${bound})`,
     );
     // Both-directions partner: under the DEFAULT ceiling the same state leaves
-    // 70m, so a reader still hardcoded to 90 cannot produce 25m above.
+    // 70m (→ 60m after the reserve), so a reader still hardcoded to 90 cannot
+    // produce the 15m above.
     await withEnv({ [WALL]: undefined }, async () => {
       const dflt = await atNow(NOW, () =>
         reviewFixDispatchBoundMs(stateWithClock(20 * MIN), "lens-fix", NOW),
       );
       assert(
-        dflt === 70 * MIN,
-        `canary: same state, knob unset → 70m remains, so the 25m above is the knob and not an accident (got ${dflt})`,
+        dflt === 60 * MIN,
+        `canary: same state, knob unset → 70m remains (60m after the reserve), so the 15m above is the knob and not an accident (got ${dflt})`,
       );
     });
 
@@ -304,14 +306,15 @@ async function main() {
   // The clamp is OBSERVABLE: a sub-grace ceiling must not reach any surface.
   await withEnv({ [WALL]: String(30_000), [ENFORCE]: "1" }, async () => {
     // 0m elapsed against a REJECTED 30s ceiling ⇒ the default 90m applies, so
-    // the bound is exactly 90m. Exact-value assertion: the first draft accepted
-    // `undefined` here, which was vacuously true whatever the clamp did.
+    // the bound is exactly 90m minus the owed round's 10m reserve. Exact-value
+    // assertion: the first draft accepted `undefined` here, which was vacuously
+    // true whatever the clamp did.
     const bound = await atNow(NOW, () =>
       reviewFixDispatchBoundMs(stateWithClock(0), "lens-fix", NOW),
     );
     assert(
-      bound === 90 * MIN,
-      `a sub-grace ceiling (30s) is REJECTED so the bound is the 90m default, not 30s — got ${bound}`,
+      bound === 80 * MIN,
+      `a sub-grace ceiling (30s) is REJECTED so the bound is the 90m default (minus the 10m owed-round reserve), not 30s — got ${bound}`,
     );
     const line = await atNow(NOW + 1, () => renderFooter(stateWithClock(2 * MIN), NOW + 1));
     assert(

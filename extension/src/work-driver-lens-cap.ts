@@ -99,6 +99,111 @@ export const ROUND_CAP_DISCLOSURE_PREFIX =
   "Round cap with non-critical findings: could not post them to the PR (";
 
 /**
+ * The one disclosure path the two cap routes share (#1742).
+ *
+ * `appendReviewCapHit`'s round-cap branch and `parkReviewNoFit`'s refused-owed-
+ * round branch answer the same question — *can these findings be disclosed, and
+ * what does the answer license?* — and must not drift: same patch identity
+ * computed here and passed to both the post and the fact, same marker rule (no
+ * marker ⇒ failed disclosure), same `lens-residualsPosted` fact on success, same
+ * plumb-report on failure. The owed round the fixer starved is the round-cap's
+ * merge-worthy shape once the adversarial gate has since re-checked the diff,
+ * so it earns the same `ci` route — under the same disclosure precondition.
+ *
+ * Returns the route the caller's cap-hit should carry and the state carrying
+ * the fact (or the decline). It does NOT append the cap-hit: the caller owns
+ * the cap kind, evidence, and its own routing rules (wall-clock still parks).
+ */
+export async function discloseResidualsAndRoute(
+  ctx: CycleContext,
+  state: WorkState,
+  round: number,
+  verdict: string,
+  findingsBlob: string,
+  disclosurePrefix: string = ROUND_CAP_DISCLOSURE_PREFIX,
+): Promise<{ nextStep: "ci" | "handoff"; state: WorkState }> {
+  // #1398 round 3 — the identity is computed HERE and passed to both the post
+  // and the fact, so the comment the PR carries and the record the ready gate
+  // reads are keyed on the same string by construction. When it cannot be
+  // computed the disclosure FAILS (no marker ⇒ no disclosure ⇒ park) and
+  // `recordLensResidualsPosted` records the decline as a plumb-report, so the
+  // handoff explains the hold it is about to cause.
+  const branch = state.pipelineState.branchName;
+  const execFn = ctx.verifyExecFn ?? execp;
+  const identity = branch
+    ? await currentPatchIdentity(execFn, ctx.repoRoot, branch)
+    : ({ ok: false, reason: "the cycle has no branch name" } as const);
+  const marker = identity.ok && branch ? lensResidualsMarker(branch, identity.patchId) : undefined;
+  if (!identity.ok) {
+    trace(`work-driver: round-cap — no patch identity for the disclosure (${identity.reason})`);
+  }
+  const disclosed = await discloseResidualFindings(
+    ctx,
+    state,
+    round,
+    findingsBlob,
+    verdict,
+    marker,
+  );
+  if (disclosed.ok) {
+    // #1398 — the route that DOES disclose now records that it did. This route
+    // posted the findings and recorded only its own `cap-hit`, so the draft
+    // gate could not tell a disclosed cap from an undisclosed one and had to
+    // guess from the cap's NAME. The fact is keyed on the patch identity, so a
+    // later fix push does not inherit it. `step` names this route so the
+    // recorded row says which disclosure path produced it.
+    return {
+      nextStep: "ci",
+      state: await recordLensResidualsPosted(ctx, state, {
+        round,
+        step: "lens-review",
+        ...(state.pipelineState.prNumber !== undefined
+          ? { prNumber: state.pipelineState.prNumber }
+          : {}),
+      }),
+    };
+  }
+  trace(`work-driver: round-cap — residual findings undisclosed (${disclosed.reason})`);
+  // #1398 round 3 — on BOTH the event log and `plumbReports`: the field is
+  // what `plumbReportSection` in work-driver-handoff-markdown.ts renders, so an
+  // event-only note is the #408 shape — a signal the driver produces and the
+  // handoff never shows. The operator reading a parked cap has to be told it
+  // parked for want of a disclosure, not for want of a converging fix loop.
+  let next = appendEvent(state, {
+    kind: "plumb-report",
+    at: Date.now(),
+    step: "lens-review",
+    role: "driver",
+    body: disclosurePrefix + disclosed.reason,
+  });
+  const prior = next.pipelineState.plumbReports ?? [];
+  const dup = prior.some(
+    (r) =>
+      r.step === "lens-review" &&
+      r.role === "driver" &&
+      r.body === disclosurePrefix + disclosed.reason,
+  );
+  if (!dup) {
+    next = {
+      ...next,
+      pipelineState: {
+        ...next.pipelineState,
+        plumbReports: [
+          ...prior,
+          {
+            step: "lens-review",
+            role: "driver",
+            body: disclosurePrefix + disclosed.reason,
+            at: Date.now(),
+          },
+        ],
+      },
+    };
+  }
+  return { nextStep: "handoff", state: next };
+}
+
+/**
  * Post the residual findings to the PR.
  *
  * Fails rather than throws, and every failure mode ends the same way for the
@@ -145,7 +250,10 @@ async function discloseResidualFindings(
     await execFn(cmd, { cwd: ctx.repoRoot, maxBuffer: 256 * 1024 });
     return { ok: true };
   } catch (err) {
-    return { ok: false, reason: (err as Error).message?.slice(0, 200) ?? "unknown error" };
+    return {
+      ok: false,
+      reason: (err as Error).message?.slice(0, 200) ?? "unknown error",
+    };
   }
 }
 
@@ -184,85 +292,9 @@ export async function appendReviewCapHit(
       verdict === "ISSUES_FOUND" &&
       adversarialGateApproved(state.eventLog)
     ) {
-      // #1398 round 3 — the identity is computed HERE and passed to both the
-      // post and the fact, so the comment the PR carries and the record the
-      // ready gate reads are keyed on the same string by construction. When it
-      // cannot be computed the disclosure FAILS (no marker ⇒ no disclosure ⇒
-      // park) and `recordLensResidualsPosted` records the decline as a
-      // plumb-report, so the handoff explains the hold it is about to cause.
-      const branch = state.pipelineState.branchName;
-      const execFn = ctx.verifyExecFn ?? execp;
-      const identity = branch
-        ? await currentPatchIdentity(execFn, ctx.repoRoot, branch)
-        : ({ ok: false, reason: "the cycle has no branch name" } as const);
-      const marker =
-        identity.ok && branch ? lensResidualsMarker(branch, identity.patchId) : undefined;
-      if (!identity.ok) {
-        trace(`work-driver: round-cap — no patch identity for the disclosure (${identity.reason})`);
-      }
-      const disclosed = await discloseResidualFindings(
-        ctx,
-        state,
-        round,
-        findingsBlob,
-        verdict,
-        marker,
-      );
-      if (disclosed.ok) {
-        nextStep = "ci";
-        // #1398 — the route that DOES disclose now records that it did. This
-        // route posted the findings and recorded only its own `cap-hit`, so the
-        // draft gate could not tell a disclosed cap from an undisclosed one and
-        // had to guess from the cap's NAME. The fact is keyed on the patch
-        // identity, so a later fix push does not inherit it. `step` names this
-        // route so the recorded row says which disclosure path produced it.
-        next = await recordLensResidualsPosted(ctx, next, {
-          round,
-          step: "lens-review",
-          ...(state.pipelineState.prNumber !== undefined
-            ? { prNumber: state.pipelineState.prNumber }
-            : {}),
-        });
-      } else {
-        trace(`work-driver: round-cap — residual findings undisclosed (${disclosed.reason})`);
-        // #1398 round 3 — on BOTH the event log and `plumbReports`: the field is
-        // what `plumbReportSection` in work-driver-handoff-markdown.ts renders,
-        // so an event-only note is the #408 shape — a signal the driver produces
-        // and the handoff never shows. The operator reading a parked round cap
-        // has to be told it parked for want of a disclosure, not for want of a
-        // converging fix loop.
-        next = appendEvent(next, {
-          kind: "plumb-report",
-          at: Date.now(),
-          step: "lens-review",
-          role: "driver",
-          body: ROUND_CAP_DISCLOSURE_PREFIX + disclosed.reason,
-        });
-        const prior = next.pipelineState.plumbReports ?? [];
-        const dup = prior.some(
-          (r) =>
-            r.step === "lens-review" &&
-            r.role === "driver" &&
-            r.body === ROUND_CAP_DISCLOSURE_PREFIX + disclosed.reason,
-        );
-        if (!dup) {
-          next = {
-            ...next,
-            pipelineState: {
-              ...next.pipelineState,
-              plumbReports: [
-                ...prior,
-                {
-                  step: "lens-review",
-                  role: "driver",
-                  body: ROUND_CAP_DISCLOSURE_PREFIX + disclosed.reason,
-                  at: Date.now(),
-                },
-              ],
-            },
-          };
-        }
-      }
+      const routed = await discloseResidualsAndRoute(ctx, next, round, verdict, findingsBlob);
+      nextStep = routed.nextStep;
+      next = routed.state;
     }
     return appendEvent(next, {
       kind: "cap-hit",

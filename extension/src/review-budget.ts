@@ -61,6 +61,16 @@ export const REVIEW_WALL_CLOCK_ENV = "PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS";
 /** The operator knob for the `check_review_cap` ceiling. */
 export const REVIEW_CAP_ENV = "PI_ENSEMBLE_REVIEW_CAP_MS";
 
+/** Default ceiling on ONE lens-fix dispatch: 45 minutes. Measured on the
+ *  #1742 cycle a lens-fix ran ~152m of a 90m wall clock (its own child bound
+ *  is 30 min + grace; the loop bound was the only ceiling and the fixer was
+ *  dispatched with none of it left). A single fixer should not be able to
+ *  outlive the loop's memory of why it started. */
+export const LENS_FIX_BOUND_DEFAULT_MS = 45 * 60 * 1000;
+
+/** The operator knob for the per-lens-fix-dispatch ceiling. */
+export const LENS_FIX_BOUND_ENV = "PI_ENSEMBLE_LENS_FIX_BOUND_MS";
+
 /**
  * The shortest review-loop budget the harness honours (10 minutes) — the
  * CLAMP both knobs apply.
@@ -141,4 +151,17 @@ export function reviewWallClockMs(env: NodeJS.ProcessEnv = process.env): number 
 /** The `check_review_cap` ceiling in force. Read per call. */
 export function reviewCapMs(env: NodeJS.ProcessEnv = process.env): number {
   return resolveMs(REVIEW_CAP_ENV, env[REVIEW_CAP_ENV], REVIEW_CAP_DEFAULT_MS);
+}
+
+/**
+ * The ceiling on ONE lens-fix dispatch, independent of the loop wall clock
+ * (#1742). Read per call; same validation as the other two knobs.
+ *
+ * This is a CALLER ceiling: it caps what the fixer may ask for even when the
+ * loop budget leaves more, and `reviewFixDispatchBoundMs` takes the minimum of
+ * it and what the budget leaves — the loop bound only ever shortens it, and
+ * this ceiling never extends a dispatch past one the caller already armed.
+ */
+export function lensFixBoundMs(env: NodeJS.ProcessEnv = process.env): number {
+  return resolveMs(LENS_FIX_BOUND_ENV, env[LENS_FIX_BOUND_ENV], LENS_FIX_BOUND_DEFAULT_MS);
 }

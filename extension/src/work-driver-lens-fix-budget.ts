@@ -38,6 +38,18 @@
  *    never started and a `lens-review-timeout` cap-hit routes to handoff. A
  *    lens round started at 84 of 90 min ran 27 min and its findings were
  *    never fixed; that round is now refused, and so is the fixer.
+ *  - #1742 — the fixer's bound is the budget left MINUS the owed lens round's
+ *    floor (`lensRoundReserveMs()`, default `MIN_USEFUL_MS["lens-review"]`).
+ *    A committed fix owes a re-review; a fixer free to spend everything but
+ *    the re-review broke the loop's contract at its worst moment. The refused
+ *    owed round reuses the round-cap's disclosure route: adversarial approved
+ *    + non-critical residuals POSTED to the PR ⇒ `ci`, anything else ⇒
+ *    `handoff`. The refused step and the knob are named in the cap evidence
+ *    (#1695).
+ *  - #1644 — the develop fix pass the adversarial gate requests is PARKED,
+ *    not merely bound, when the loop has less than `MIN_USEFUL_MS.develop`
+ *    left: zero dispatches with a named cap, instead of a dispatch armed at
+ *    the 60-second floor and killed to produce nothing.
  *  - `handoff` and `merged` are never capped: the comment is the whole point of
  *    a handoff, and merging a green PR is the cycle's payoff.
  *  - The clock itself is unchanged — `pipelineState.reviewCapStartedAt`, set
@@ -47,12 +59,14 @@
  *    (budget displayed, never enforced).
  */
 
+import { adversarialGateApproved } from "./adversarial-findings.ts";
 import { notifyAgent } from "./agent-message.ts";
-import { reviewWallClockMs } from "./review-budget.ts";
+import { REVIEW_WALL_CLOCK_ENV, reviewWallClockMs } from "./review-budget.ts";
 import { childBoundGraceMs, lensChildBoundMs } from "./spawn-child-bound.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { MIN_USEFUL_MS } from "./work-driver-deadline.ts";
+import { discloseResidualsAndRoute } from "./work-driver-lens-cap.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
 
 /** The least bound armed on a fix-loop dispatch: with the budget spent, the
@@ -115,7 +129,32 @@ export function reviewFixDispatchBoundMs(
   if (step !== "lens-fix") return undefined;
   const remaining = reviewRemainingMs(state, now);
   if (remaining === undefined) return undefined;
-  return Math.min(Math.max(remaining, MIN_FIX_DISPATCH_MS), boundCeiling(requestedTimeoutMs));
+  // #1742 — the owed lens round's floor is withheld from the fixer's bound:
+  // a fixer that consumes the whole budget leaves a round that must be
+  // refused at its own start gate, which is the cap the loop could not shed.
+  return Math.min(
+    Math.max(remaining - lensRoundReserveMs(), MIN_FIX_DISPATCH_MS),
+    boundCeiling(requestedTimeoutMs),
+  );
+}
+
+/**
+ * #1742 — the slice of the loop budget a fixer may never spend: the minimum
+ * a lens round needs to be worth starting (`MIN_USEFUL_MS["lens-review"]`).
+ *
+ * A committed fix OWES a re-review: the loop's contract is fix → re-review,
+ * and a budget that lets the fixer spend everything but the re-review breaks
+ * it at exactly the moment it matters — the findings have just been answered
+ * and nothing has verified the answer. Measured: a lens-fix took the entire
+ * remaining budget, the owed round was refused by this module's own start
+ * gate, and the cycle capped with the fix unverified.
+ *
+ * Read per call (like every other knob here) so tests can flip it. Default:
+ * the lens round's own minimum — reserving less than a round's floor would
+ * reserve a round that gets refused anyway.
+ */
+export function lensRoundReserveMs(): number {
+  return MIN_USEFUL_MS["lens-review"] ?? 10 * 60_000;
 }
 
 /**
@@ -148,38 +187,90 @@ function boundCeiling(requestedTimeoutMs?: number): number {
 async function parkReviewNoFit(
   ctx: CycleContext,
   state: WorkState,
-  step: "lens-fix" | "lens-review",
+  step: "lens-fix" | "lens-review" | "develop",
   now: number,
 ): Promise<WorkState> {
   const remaining = reviewRemainingMs(state, now);
-  const need = MIN_USEFUL_MS[step] ?? 0;
+  // The lens-fix needs its own floor PLUS the owed round's reserve: a fixer
+  // that can only run by eating the re-review's floor is the #1742 shape, and
+  // it is refused here rather than at the round's own start gate.
+  const base = MIN_USEFUL_MS[step] ?? 0;
+  const reserve = step === "lens-fix" ? lensRoundReserveMs() : 0;
+  const need = base + reserve;
   if (remaining === undefined || remaining >= need) return state;
   const capMs = reviewWallClockMs();
   const elapsedMin = Math.round((capMs - remaining) / 60_000);
   const round = state.pipelineState.reviewRound;
   const what =
-    step === "lens-fix" ? "lens-fix not dispatched" : `lens-review round ${round + 1} not started`;
+    step === "lens-fix"
+      ? "lens-fix not dispatched"
+      : step === "develop"
+        ? "the adversarial fix pass (develop) was not dispatched"
+        : `lens-review round ${round + 1} not started`;
   const why =
     remaining <= 0
       ? "so the step was stopped before it started rather than left running past its own printed budget"
-      : `and ${Math.round(remaining / 60_000)}m of it is left — ${step} needs at least ${need / 60_000}m to do useful work`;
-  const evidence = `${what}: the review loop has run ${elapsedMin}m (round ${round}) against the ${capMs / 60_000}-minute cap, ${why}.`;
+      : `and ${Math.round(remaining / 60_000)}m of it is left — ${step} needs at least ${base / 60_000}m${reserve > 0 ? ` and ${reserve / 60_000}m of the budget is reserved for the owed lens round` : ""} to do useful work`;
+  const evidence = `${what}: the review loop has run ${elapsedMin}m (round ${round}) against the ${capMs / 60_000}-minute cap (${REVIEW_WALL_CLOCK_ENV}), ${why}.`;
   trace(`work-driver: ${step} — the review loop cannot fit the step — ${evidence}`);
-  let next: WorkState = appendEvent(state, {
+  // #1695 — a REFUSED owed round is not the same event as an overrun round:
+  // the fix already landed, the adversarial gate has since re-checked the
+  // diff, and the only thing missing is the round that would have re-flagged
+  // it. That is the round-cap's own merge-worthy shape, so it takes the
+  // round-cap's own route: disclose the residuals to the PR, and only if the
+  // post lands does the cycle carry on to CI (a refused round whose findings
+  // went undisclosed parks — same rule as work-driver-lens-cap.ts).
+  let next: WorkState = state;
+  let nextStep: "ci" | "handoff" = "handoff";
+  if (step === "lens-review") {
+    const owed = lastOwedRoundFindings(state);
+    // Same bar as the round cap: non-critical findings, adversarial gate
+    // approved on the current diff. A CRITICAL_ISSUES_FOUND or an unreadable
+    // gate parks — the round being refused is the round that would have
+    // caught it.
+    if (owed && owed.verdict === "ISSUES_FOUND" && adversarialGateApproved(state.eventLog)) {
+      const routed = await discloseResidualsAndRoute(ctx, next, round, owed.verdict, owed.findings);
+      nextStep = routed.nextStep;
+      next = routed.state;
+    }
+  }
+  next = appendEvent(next, {
     kind: "cap-hit",
     at: now,
     cap: "lens-review-timeout",
     reviewRound: round,
     evidence,
-    nextStep: "handoff",
+    nextStep,
   });
-  next = { ...next, pipelineState: { ...next.pipelineState, currentStep: "handoff" } };
+  next = {
+    ...next,
+    pipelineState: { ...next.pipelineState, currentStep: nextStep },
+  };
   await persistCycle(ctx, next);
   notifyAgent(
     ctx.host,
-    `pi-rukas: /work for issue #${ctx.issue} hit the ${capMs / 60_000}-minute review-loop cap (${elapsedMin}m elapsed, round ${round}) — ${what}. Routing to handoff so the comment posts.`,
+    `pi-rukas: /work for issue #${ctx.issue} hit the ${capMs / 60_000}-minute review-loop cap (${elapsedMin}m elapsed, round ${round}) — ${what}. ${
+      nextStep === "ci"
+        ? "The adversarial gate approved the fix and the outstanding findings were disclosed to the PR, so the cycle carries on to CI."
+        : "Routing to handoff so the comment posts."
+    }`,
   );
   return next;
+}
+
+/** The last lens round's verdict + findings blob, or `undefined` when no
+ *  round has recorded issues (nothing owed, nothing to disclose). */
+function lastOwedRoundFindings(
+  state: WorkState,
+): { verdict: string; findings: string } | undefined {
+  const last = [...state.eventLog]
+    .reverse()
+    .find(
+      (e): e is Extract<(typeof state.eventLog)[number], { kind: "lens-issues-found" }> =>
+        e.kind === "lens-issues-found",
+    );
+  if (!last?.findings) return undefined;
+  return { verdict: last.verdict, findings: last.findings };
 }
 
 /** The pre-dispatch park for a fixer the loop budget cannot fit (#1416, #1242). */
@@ -189,6 +280,33 @@ export function parkLensFixOverrun(
   now: number,
 ): Promise<WorkState> {
   return parkReviewNoFit(ctx, state, "lens-fix", now);
+}
+
+/**
+ * #1644 — the pre-dispatch park for the develop fix pass the adversarial gate
+ * requests after a lens-fix. That pass was BOUND (it shares the lens-fix
+ * bound) but never PARKED: with no budget left it dispatched anyway and the
+ * bound killed it at 60s, burning a dispatch to produce nothing. Zero
+ * dispatches with a named cap beats a dispatch guaranteed to be killed.
+ */
+export function parkDevelopFixOverrun(
+  ctx: CycleContext,
+  state: WorkState,
+  now: number,
+): Promise<WorkState> {
+  return parkReviewNoFit(ctx, state, "develop", now);
+}
+
+/**
+ * #1644 — does the develop fix pass fit the budget the loop has left? The
+ * dispatch closure asks this BEFORE the fan-out so the step can short-circuit
+ * the safety-net/verify gates the same way the deferred-leftover park does;
+ * `parkDevelopFixOverrun` then records the cap with those gates skipped.
+ * Fits when enforcement is off, no clock, or `MIN_USEFUL_MS.develop` is left.
+ */
+export function developFixPassFits(state: WorkState, now: number): boolean {
+  const remaining = reviewRemainingMs(state, now);
+  return remaining === undefined || remaining >= (MIN_USEFUL_MS.develop ?? 0);
 }
 
 /**
