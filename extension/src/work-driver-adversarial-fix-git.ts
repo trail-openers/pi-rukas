@@ -23,9 +23,18 @@ export interface TreeChanges {
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 
-async function run(execFn: FixExec, cmd: string, cwd: string): Promise<GitRead<string>> {
+async function run(
+  execFn: FixExec,
+  cmd: string,
+  cwd: string,
+  timeoutMs?: number,
+): Promise<GitRead<string>> {
   try {
-    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024 * 1024 });
+    const { stdout } = await execFn(cmd, {
+      cwd,
+      maxBuffer: 64 * 1024 * 1024,
+      ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
+    });
     return { ok: true, value: stdout };
   } catch (err) {
     const why = (err as Error).message?.slice(0, 200) ?? String(err);
@@ -60,19 +69,36 @@ export async function committedChanges(
   cwd: string,
   baseSha: string,
   headSha: string,
+  timeoutMs?: number,
 ): Promise<GitRead<string[]>> {
-  if (!SHA_RE.test(baseSha) || !SHA_RE.test(headSha)) {
-    return { ok: false, reason: "the comparison commits are not SHAs" };
-  }
+  // Named, not "the commits": an operator reading the park has to know which
+  // of the two the fence was given was the unusable one, and 12 chars is
+  // enough to recognise it in `git log` without dumping a full SHA.
+  if (!SHA_RE.test(baseSha)) return notSha("base", baseSha);
+  if (!SHA_RE.test(headSha)) return notSha("head", headSha);
   // --no-renames for the same reason `treeChanges` gives: a rename must not
   // hide the source side of a move.
-  const r = await run(execFn, `git diff --name-only --no-renames ${baseSha}..${headSha}`, cwd);
+  const r = await run(
+    execFn,
+    `git diff --name-only --no-renames ${baseSha}..${headSha}`,
+    cwd,
+    timeoutMs,
+  );
   return r.ok ? { ok: true, value: lines(r.value) } : r;
 }
 
+/** The one refusal shape for a non-SHA commit argument. */
+function notSha(which: "base" | "head", value: string): GitRead<never> {
+  return { ok: false, reason: `the ${which} commit is not a SHA: ${value.slice(0, 12)}…` };
+}
+
 /** The commit a worktree's HEAD points at. */
-export async function headOf(execFn: FixExec, cwd: string): Promise<GitRead<string>> {
-  const r = await run(execFn, "git rev-parse HEAD", cwd);
+export async function headOf(
+  execFn: FixExec,
+  cwd: string,
+  timeoutMs?: number,
+): Promise<GitRead<string>> {
+  const r = await run(execFn, "git rev-parse HEAD", cwd, timeoutMs);
   if (!r.ok) return r;
   const sha = r.value.trim();
   return SHA_RE.test(sha)

@@ -21,11 +21,12 @@ import type { DispatchResult } from "../src/types.ts";
 import type { CycleContext, DriverContext } from "../src/work-driver-context.ts";
 import { defaultExec } from "../src/work-driver-adversarial-fix-git.ts";
 import {
-  correctiveEvidenceFrom,
   planFixPass,
   postPassFault,
 } from "../src/work-driver-adversarial-fix-scope.ts";
 import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
+import { parkFixPass } from "../src/work-driver-adversarial-plumb.ts";
+import type { CorrectiveRoundEvent } from "../src/workflow-state-events-corrective.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import {
   devCommit,
@@ -48,6 +49,38 @@ function assert(cond: boolean, msg: string) {
 function commitNew(dir: string, file: string, body: string): void {
   mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
   devCommit(dir, file, body);
+}
+
+/** The commit a worktree is at right now — what a corrective record stores. */
+const headNow = (dir: string): string => git(dir, "rev-parse HEAD").trim();
+
+/** One `corrective-round` record as the driver writes it, baseline included. */
+function round(id: string, lines: string[], headAtRound?: string): CorrectiveRoundEvent {
+  return {
+    kind: "corrective-round",
+    at: 1,
+    step: "develop",
+    workstreamId: id,
+    attempt: 1,
+    command: "sh check.sh",
+    evidenceLines: lines,
+    ...(headAtRound === undefined ? {} : { headAtRound }),
+  };
+}
+
+/**
+ * An early assert for a fence read that must succeed: a failed pre-pass read
+ * means the FIXTURE is broken, not the rule under test, so there is nothing
+ * left to assert and the case stops here instead of reading a `planned.value`
+ * that does not exist.
+ */
+function must<T>(read: { ok: true; value: T } | { ok: false; reason: string }, label: string): T {
+  if (!read.ok) {
+    assert(false, `${label}: the read failed (${read.reason})`);
+    throw new Error(`${label}: ${read.reason}`);
+  }
+  assert(true, `${label}: the pre-pass reads succeeded`);
+  return read.value;
 }
 
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
@@ -142,67 +175,158 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string, call: numb
   }
 }
 
-// 2b — the fence-level half of (b): the same admission read from the round's
-// events, and its boundedness — an unnamed corrective stray still parks.
+// 2b — the fence-level half of (b), and its two bounds. The corrective file is
+// committed AFTER the `corrective-round` record's `headAtRound`, which is what
+// makes it the round's own work; a file committed BEFORE the round, or a file
+// the evidence never named, is still a stray.
 {
   const dir = repoWithFile("1698-corrective-fence");
   try {
     const st = fixState(dir, ["a.txt"], "a.txt: change one to two");
-    const planned = await planFixPass(defaultExec, dir, st.pipelineState, [
-      { workstreamId: "default", findings: "a.txt: change one to two" },
-    ]);
-    assert(planned.ok, `2b: the pre-pass reads succeeded (${planned.ok ? "" : planned.reason})`);
-    if (planned.ok) {
-      devCommit(dir, "a.txt", "two\n");
-      commitNew(dir, "lib/ordered.ts", "export const o = 2;\n");
-      const events: WorkState["eventLog"] = [
-        {
-          kind: "corrective-round",
-          at: 1,
-          step: "develop",
-          workstreamId: "default",
-          attempt: 1,
-          command: "sh check.sh",
-          evidenceLines: ["\u2717 lib/ordered.ts:12 expected two"],
-        },
-      ];
-      const map = correctiveEvidenceFrom(events);
-      assert(
-        (map.default ?? "").includes("lib/ordered.ts"),
-        `2b: correctiveEvidenceFrom keys the evidence by workstream (got ${JSON.stringify(map)})`,
-      );
-      const withEvidence = await postPassFault(defaultExec, planned.value, st.pipelineState.baseSha ?? "", map);
-      assert(
-        withEvidence.reason === undefined,
-        `2b: the evidence-named corrective file is admitted (got "${withEvidence.reason}")`,
-      );
-      assert(
-        withEvidence.admissions.some((a) => a.includes("lib/ordered.ts")),
-        `2b: the admission is disclosed (got ${JSON.stringify(withEvidence.admissions)})`,
-      );
-      // Boundedness: the same pass with a file no evidence names still parks.
-      const dir2 = repoWithFile("1698-corrective-stray");
-      try {
-        const st2 = fixState(dir2, ["a.txt"], "a.txt: change one to two");
-        const planned2 = await planFixPass(defaultExec, dir2, st2.pipelineState, [
+    const planned = must(
+      await planFixPass(defaultExec, dir, st.pipelineState, [
+        { workstreamId: "default", findings: "a.txt: change one to two" },
+      ]),
+      "2b",
+    );
+    // The fix pass's own edit, then the round's record, then the round's edit.
+    devCommit(dir, "a.txt", "two\n");
+    const baseline = headNow(dir);
+    const events = [round("default", ["\u2717 lib/ordered.ts:12 expected two"], baseline)];
+    commitNew(dir, "lib/ordered.ts", "export const o = 2;\n");
+    const withEvidence = await postPassFault(defaultExec, planned, st.pipelineState.baseSha ?? "", events);
+    assert(
+      withEvidence.reason === undefined,
+      `2b: a file the round named AND committed after its baseline is admitted (got "${withEvidence.reason}")`,
+    );
+    assert(
+      withEvidence.admissions.some((a) => a.includes("lib/ordered.ts")),
+      `2b: the admission is disclosed (got ${JSON.stringify(withEvidence.admissions)})`,
+    );
+    // Boundedness 1 — the same pass with a file no evidence names still parks.
+    const dir2 = repoWithFile("1698-corrective-stray");
+    try {
+      const st2 = fixState(dir2, ["a.txt"], "a.txt: change one to two");
+      const planned2 = must(
+        await planFixPass(defaultExec, dir2, st2.pipelineState, [
           { workstreamId: "default", findings: "a.txt: change one to two" },
-        ]);
-        if (!planned2.ok) throw new Error(planned2.reason);
-        devCommit(dir2, "a.txt", "two\n");
-        commitNew(dir2, "lib/wandered.ts", "export const w = 1;\n");
-        const post2 = await postPassFault(
-          defaultExec,
-          planned2.value,
-          st2.pipelineState.baseSha ?? "",
-          map,
-        );
-        assert(
-          post2.reason?.includes("lib/wandered.ts") === true,
-          `2b: a corrective developer that wanders off its evidence still parks (got "${post2.reason}")`,
-        );
-      } finally {
-        rmSync(dir2, { recursive: true, force: true });
-      }
+        ]),
+        "2b (unnamed)",
+      );
+      devCommit(dir2, "a.txt", "two\n");
+      commitNew(dir2, "lib/wandered.ts", "export const w = 1;\n");
+      const post2 = await postPassFault(
+        defaultExec,
+        planned2,
+        st2.pipelineState.baseSha ?? "",
+        events,
+      );
+      assert(
+        post2.reason?.includes("lib/wandered.ts") === true,
+        `2b: a corrective developer that wanders off its evidence still parks (got "${post2.reason}")`,
+      );
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
+    // Boundedness 2 — a file the evidence names but that was committed BEFORE
+    // the round started is not the round's work: the pass wrote it. It parks,
+    // and the park says so rather than blaming the slot.
+    const dir3 = repoWithFile("1698-corrective-pre-round");
+    try {
+      const st3 = fixState(dir3, ["a.txt"], "a.txt: change one to two");
+      const planned3 = must(
+        await planFixPass(defaultExec, dir3, st3.pipelineState, [
+          { workstreamId: "default", findings: "a.txt: change one to two" },
+        ]),
+        "2b (pre-round)",
+      );
+      // Named by the evidence, changed by the PASS — before the baseline.
+      commitNew(dir3, "lib/early.ts", "export const e = 1;\n");
+      devCommit(dir3, "a.txt", "two\n");
+      const baseline3 = headNow(dir3);
+      const post3 = await postPassFault(defaultExec, planned3, st3.pipelineState.baseSha ?? "", [
+        round("default", ["\u2717 lib/early.ts:1 expected two", "\u2717 lib/ordered.ts:2 two"], baseline3),
+      ]);
+      // ...and committed after the baseline it WOULD be admitted, so plant the
+      // post-round file too and assert the pre-round one is the one refused.
+      commitNew(dir3, "lib/ordered.ts", "export const o = 2;\n");
+      const post3b = await postPassFault(defaultExec, planned3, st3.pipelineState.baseSha ?? "", [
+        round("default", ["\u2717 lib/early.ts:1 expected two", "\u2717 lib/ordered.ts:2 two"], baseline3),
+      ]);
+      assert(
+        post3.reason?.includes("lib/early.ts") === true,
+        `2b: a file named by the evidence but committed BEFORE the round still parks (got "${post3.reason}")`,
+      );
+      assert(
+        post3b.reason?.includes("lib/early.ts") === true &&
+          !post3b.admissions.some((a) => a.includes("lib/early.ts")),
+        `2b: the pre-round file is refused while its post-round sibling is admitted (reason "${post3b.reason}", admissions ${JSON.stringify(post3b.admissions)})`,
+      );
+      assert(
+        post3b.reason?.includes("not committed after the corrective round") === true,
+        `2b: the park names the corrective bound it refused under (got "${post3b.reason}")`,
+      );
+    } finally {
+      rmSync(dir3, { recursive: true, force: true });
+    }
+    // Boundedness 3 — no baseline at all (a record from before #1698(b), or a
+    // HEAD the driver could not read) admits nothing, and says which.
+    const dir4 = repoWithFile("1698-corrective-no-baseline");
+    try {
+      const st4 = fixState(dir4, ["a.txt"], "a.txt: change one to two");
+      const planned4 = must(
+        await planFixPass(defaultExec, dir4, st4.pipelineState, [
+          { workstreamId: "default", findings: "a.txt: change one to two" },
+        ]),
+        "2b (no baseline)",
+      );
+      devCommit(dir4, "a.txt", "two\n");
+      commitNew(dir4, "lib/ordered.ts", "export const o = 2;\n");
+      const post4 = await postPassFault(defaultExec, planned4, st4.pipelineState.baseSha ?? "", [
+        round("default", ["\u2717 lib/ordered.ts:12 expected two"]),
+      ]);
+      assert(
+        post4.reason?.includes("lib/ordered.ts") === true &&
+          post4.reason?.includes("no usable HEAD baseline") === true,
+        `2b: a round with no valid headAtRound admits nothing and names it (got "${post4.reason}")`,
+      );
+    } finally {
+      rmSync(dir4, { recursive: true, force: true });
+    }
+    // Boundedness 4 — one round is a bounded authorisation: the fourth
+    // evidence-named file is refused with the cap named, never taken silently.
+    const dir5 = repoWithFile("1698-corrective-cap");
+    try {
+      const st5 = fixState(dir5, ["a.txt"], "a.txt: change one to two");
+      const planned5 = must(
+        await planFixPass(defaultExec, dir5, st5.pipelineState, [
+          { workstreamId: "default", findings: "a.txt: change one to two" },
+        ]),
+        "2b (cap)",
+      );
+      devCommit(dir5, "a.txt", "two\n");
+      const baseline5 = headNow(dir5);
+      const named = ["lib/one.ts", "lib/two.ts", "lib/three.ts", "lib/four.ts"];
+      for (const f of named) commitNew(dir5, f, "export const v = 1;\n");
+      const post5 = await postPassFault(defaultExec, planned5, st5.pipelineState.baseSha ?? "", [
+        round(
+          "default",
+          named.map((f) => `\u2717 ${f}:1 two`),
+          baseline5,
+        ),
+      ]);
+      assert(
+        named.some((f) => post5.reason?.includes(f)) === true &&
+          post5.reason?.includes("already admitted its 3") === true,
+        `2b: the fourth evidence-named file is refused with the cap named (got "${post5.reason}")`,
+      );
+      assert(
+        post5.admissions.length === 3 &&
+          named.filter((f) => post5.admissions.some((a) => a.includes(f))).length === 3,
+        `2b: exactly CORRECTIVE_ADMIT_MAX admissions are disclosed (got ${JSON.stringify(post5.admissions)})`,
+      );
+    } finally {
+      rmSync(dir5, { recursive: true, force: true });
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -246,34 +370,30 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string, call: numb
     git(dir, "add -A");
     git(dir, 'commit -q -m "protected file"');
     const st = fixState(dir, ["a.txt"], "a.txt: fix; agents.json: and this");
-    const planned = await planFixPass(defaultExec, dir, st.pipelineState, [
-      { workstreamId: "default", findings: "a.txt: fix; agents.json: and this" },
-    ]);
-    assert(planned.ok, `4: the pre-pass reads succeeded (${planned.ok ? "" : planned.reason})`);
-    if (planned.ok) {
-      devCommit(dir, "a.txt", "two\n");
-      devCommit(dir, "agents.json", '{"auto": true}\n');
-      const post = await postPassFault(
-        defaultExec,
-        planned.value,
-        st.pipelineState.baseSha ?? "",
-        correctiveEvidenceFrom([
-          {
-            kind: "corrective-round",
-            at: 1,
-            step: "develop",
-            workstreamId: "default",
-            attempt: 1,
-            command: "sh check.sh",
-            evidenceLines: ["\u2717 agents.json:3 must stay {}"],
-          },
-        ]),
-      );
-      assert(
-        post.reason?.includes("agents.json") === true,
-        `4: a protected path is refused even when the finding and the corrective evidence name it (got "${post.reason}")`,
-      );
-    }
+    const planned = must(
+      await planFixPass(defaultExec, dir, st.pipelineState, [
+        { workstreamId: "default", findings: "a.txt: fix; agents.json: and this" },
+      ]),
+      "4",
+    );
+    devCommit(dir, "a.txt", "two\n");
+    devCommit(dir, "agents.json", '{"auto": true}\n');
+    const post = await postPassFault(
+      defaultExec,
+      planned,
+      st.pipelineState.baseSha ?? "",
+      [
+        round(
+          "default",
+          ["\u2717 agents.json:3 must stay {}"],
+          git(dir, "rev-parse HEAD~1").trim(),
+        ),
+      ],
+    );
+    assert(
+      post.reason?.includes("agents.json") === true,
+      `4: a protected path is refused even when the finding and the corrective evidence name it (got "${post.reason}")`,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -302,6 +422,30 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string, call: numb
     assert(
       !r.applied && r.parked.includes("does not widen the fence"),
       `5: the park states the widening rule it refused under (got "${r.parked}")`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 6 — a PARKED pass still discloses what it admitted. The refusals reach the
+// handoff through the park reason; the authorisations reached it through
+// nothing at all, so a fence that widened looked identical to one that did not.
+{
+  const dir = repoWithFile("1698-admissions-survive-park");
+  try {
+    const st = fixState(dir, ["a.txt"], "a.txt: fix");
+    const parked = parkFixPass(
+      st,
+      [{ workstreamId: "default", round: 1, findings: "a.txt: change one to two" }],
+      "the pass changed something outside its fence",
+      Date.now(),
+      ["default: lib/ordered.ts admitted — the corrective round's evidence named it"],
+    );
+    const report = (parked.pipelineState.plumbReports ?? []).at(-1)?.body ?? "";
+    assert(
+      report.includes("lib/ordered.ts") && report.includes("What the pass admitted"),
+      `6: the parked report carries the admission alongside the refusal (got "${report}")`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
