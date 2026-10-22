@@ -3,16 +3,22 @@
  * fix pass (#1137). Split from work-driver-adversarial-fix.ts (AGENTS.md §12
  * file-size limit). `plumbQuestion` is the single reader both no-change park
  * branches use; `withNewPlumbReports` records the fix developer's plumb
- * report that is new to this pass. Leaf module: no imports from the fix
- * pass or its handlers.
+ * report that is new to this pass. `parkFixPass` / `withFixPassReport` (the
+ * pass's own park + handoff report) moved here from
+ * work-driver-adversarial-fix.ts for the same size limit. Leaf module: no
+ * imports from the fix pass or its handlers.
  */
 
 import { postPassFault } from "./work-driver-adversarial-fix-scope.ts";
-import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
-import type { WorkState } from "./workflow-state.ts";
+import type { AdversarialOutcome, PendingFix } from "./work-driver-adversarial-types.ts";
+import { FIX_PASS_EVIDENCE_PREFIX } from "./workflow-state-cap.ts";
+import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /** Bound on the findings carried in an event / the fix prompt (state-file hygiene). */
 export const FIX_FINDINGS_MAX = 4000;
+
+/** Bound on the corrective-admission disclosure the park report carries. */
+export const FIX_ADMISSIONS_MAX = 2000;
 
 /**
  * Cuts one sibling's findings to `max` characters and says so, so a cut
@@ -71,6 +77,87 @@ export function noteFixPass(state: WorkState, note: string, now: number): WorkSt
       ],
     },
   };
+}
+
+/**
+ * Records the handoff report naming the rounds, the reason, the findings, and
+ * what the pass ADMITTED. #1760 — a park that discloses the refusals but not
+ * the authorisations reads as a fence that never widened, and an admission the
+ * operator never sees is a fence that widened invisibly. `admissions` is a
+ * REQUIRED parameter for that reason: every caller passes what
+ * {@link postPassFault} returned (an empty array when the fence ran and admitted
+ * nothing), and the block is capped like the findings block.
+ */
+export function withFixPassReport(
+  state: WorkState,
+  pending: readonly PendingFix[],
+  reason: string,
+  now: number,
+  admissions: readonly string[],
+): WorkState {
+  const rounds = pending.map((p) => `${p.workstreamId} round ${p.round}`).join(", ");
+  const findings = capWithMarker(pending.map((p) => p.findings).join("\n---\n"), FIX_FINDINGS_MAX);
+  const admitted =
+    admissions.length > 0
+      ? `\nWhat the pass admitted before parking:\n${capWithMarker(
+          admissions.map((a) => `- ${a}`).join("\n"),
+          FIX_ADMISSIONS_MAX,
+        )}`
+      : "";
+  return {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      plumbReports: [
+        ...(state.pipelineState.plumbReports ?? []),
+        {
+          step: "develop",
+          role: "driver",
+          body: `adversarial fix pass (${rounds}) parked: ${reason}. The findings that triggered it:\n${findings}${admitted}`,
+          at: now,
+        },
+      ],
+    },
+  };
+}
+
+/**
+ * Parks the fix pass: the handoff report, the verify evidence the handoff's
+ * cap text reads, and the pass's own cap event. `admissions` is REQUIRED and
+ * threads the fence's authorisations into the report even though the pass did
+ * not clear — see {@link withFixPassReport}.
+ */
+export function parkFixPass(
+  state: WorkState,
+  pending: readonly PendingFix[],
+  reason: string,
+  now: number,
+  admissions: readonly string[],
+): WorkState {
+  // The handoff's cap text reads verifyEvidence, not the event: without it the
+  // park reads as one whose reason was never recorded. The prefix is what
+  // keeps that text from blaming the outcome gate.
+  const reported = withFixPassReport(state, pending, reason, now, admissions);
+  const evidenced: WorkState = {
+    ...reported,
+    pipelineState: {
+      ...reported.pipelineState,
+      verifyEvidence: {
+        step: "develop",
+        failures: [`${FIX_PASS_EVIDENCE_PREFIX}${reason}`],
+        at: now,
+        origin: "fix-pass",
+      },
+    },
+  };
+  return appendEvent(evidenced, {
+    kind: "cap-hit",
+    at: Date.now(),
+    cap: "fix-pass-park", // #1349 — the pass's own check, not the outcome gate
+    reviewRound: state.pipelineState.reviewRound,
+    nextStep: "handoff",
+    evidence: `${FIX_PASS_EVIDENCE_PREFIX}${reason}`,
+  });
 }
 
 /** The shape plumbQuestion reads (the pipeline-state plumb report record). */

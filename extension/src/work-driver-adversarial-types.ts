@@ -1,9 +1,12 @@
 /**
  * work-driver-adversarial-types — the shared adversarial-gate types
- * (AdversarialOutcome / round records) + the per-workstream retry budget,
- * split from work-driver-adversarial-fanout.ts (AGENTS.md §12 file-size
- * limit). The fan-out module and its consumers (work-driver-adversarial.ts,
- * work-driver-adversarial-capkill.ts, work-driver-adversarial-reentry.ts)
+ * (AdversarialOutcome / round records) + the per-workstream retry budget
+ * + the fix pass's `PendingFix` (the fix-request shape the gate, its park
+ * report and its handoff all read), split from
+ * work-driver-adversarial-fanout.ts (AGENTS.md §12 file-size limit). The
+ * fan-out module and its consumers (work-driver-adversarial.ts,
+ * work-driver-adversarial-capkill.ts, work-driver-adversarial-reentry.ts) and
+ * the fix pass (work-driver-adversarial-fix.ts, work-driver-adversarial-plumb.ts)
  * import them from here.
  */
 
@@ -11,6 +14,20 @@ import type { WorkEvent } from "./workflow-state.ts";
 
 /** #486 — the driver's per-workstream adversarial retry budget. Matches the #308 router's TRANSIENT_MAX_RETRIES shape (2 retries = up to 3 total attempts). */
 export const ADVERSARIAL_PER_WS_MAX_RETRIES = 2;
+
+/**
+ * One fix request the adversarial gate raised and the fix pass has not cleared:
+ * which workstream, which round, and the findings that triggered it. The gate
+ * reads it to dispatch, the park report reads it to name the round it attempted,
+ * and `pipelineState.pendingFixes` persists it so a resumed cycle can see what
+ * was outstanding. Lives here (not in the gate module) because the gate and the
+ * plumb module both consume it and neither may own the other's copy.
+ */
+export interface PendingFix {
+  workstreamId: string;
+  round: number;
+  findings: string;
+}
 
 export type AdversarialRoundStatus =
   | "CRITICAL_ISSUES_FOUND"

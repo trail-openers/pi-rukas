@@ -29,6 +29,7 @@
  * that is what this file exists to guarantee.
  */
 
+import path from "node:path";
 import { hasPathspecChar } from "./plan-path-shape.ts";
 import { globMatchesSegments } from "./work-driver-deliverable-paths.ts";
 
@@ -196,4 +197,58 @@ export function fenceMatches(entry: string, file: string): boolean {
     return file === normalised || file.startsWith(`${normalised}/`);
   }
   return globMatchesSegments(normalised, file);
+}
+
+/**
+ * A path as `git` and the fences both spell it: a trailing planner annotation
+ * and a `./` prefix gone, a directory entry (`src/foo/`) KEEPING its trailing
+ * separator. It differs from {@link normaliseDeclaredPath} in exactly that one
+ * respect — and deliberately so, because `src/foo/` means the directory
+ * `src/foo`, a reading the normaliser's trailing-separator strip would erase.
+ */
+export function entryPath(raw: string): string {
+  return path.posix.normalize(raw.replace(/\s+\([^)]*\)$/, "").trim()).replace(/^\.\/+/, "");
+}
+
+/** The directory a repo-relative path lives in (`""` at the root). */
+export function dirOfPath(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i < 0 ? "" : p.slice(0, i);
+}
+
+/**
+ * The ONE directory-anchor rule: which directories an anchor set authorises.
+ *
+ * A path a workstream owns — a declared path, or one it already changed — is an
+ * authorisation for its OWN directory, never for the repo root (a root anchor
+ * would make every root file reachable, which is how a widening rule stops
+ * being a bound). A directory entry (`src/foo/`) anchors the directory it names.
+ *
+ * Both fix-pass widening routes read it — the finding-named one (`namedPaths`)
+ * and the corrective-round one — so the two cannot drift on what "anchored" means.
+ */
+export function anchorDirs(anchors: readonly string[]): Set<string> {
+  return new Set(
+    anchors
+      .map((a) => {
+        const c = entryPath(a);
+        return c.endsWith("/") ? c.slice(0, -1) : dirOfPath(c);
+      })
+      .filter((d) => d !== ""),
+  );
+}
+
+/**
+ * Does this prose name `p` as a WHOLE path token?
+ *
+ * Substring matching is not enough: `data.txt` must not name `a.txt`, and a
+ * `lib/a` hit must not name `lib/ab` or `lib/a.ts`. The lookarounds are the ONE
+ * answer to that question, shared by every route that decides "the findings /
+ * the verify output named this file" (the fix fence's widening, its corrective
+ * route, and its park reason) — two matchers for one question is the drift this
+ * module exists to prevent.
+ */
+export function pathTokenIn(text: string, p: string): boolean {
+  const escaped = p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w./-])${escaped}(?![\\w/-]|\\.\\w)`).test(text);
 }

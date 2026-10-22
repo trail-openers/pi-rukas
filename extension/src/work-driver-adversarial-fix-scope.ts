@@ -6,12 +6,21 @@
  * as a parameter; it is never written into the persisted pipeline state.
  *
  * Widening is bounded by three conditions, and only these: a finding-named path
- * widens the fence when it is tracked at base, not protected per
- * `protectedPathsIn` (the single source of protected paths), and in the same
- * non-root directory as a declared or already-changed path. There is no list of
- * project-specific modules: the /work driver runs on other repositories too. A
- * driver module is therefore no more editable in a fix pass than on a first
- * develop pass, which has the same fence and the same gates.
+ * widens the fence when it is tracked at base OR already changed by this cycle
+ * (#1698 — the committed diff from `baseSha` to the worktree's head before the
+ * pass, so a file the cycle's own earlier round created is reachable), not
+ * protected per `protectedPathsIn` (the single source of protected paths), and
+ * in the same non-root directory as a declared or already-changed path. There
+ * is no list of project-specific modules: the /work driver runs on other
+ * repositories too. A driver module is therefore no more editable in a fix pass
+ * than on a first develop pass, which has the same fence and the same gates.
+ *
+ * #1698(b): a corrective round the driver dispatches INSIDE a fix pass edits
+ * the files its own evidence lines name; those files are admitted from the
+ * stray set because the driver ordered the edit. The rule, its three
+ * conditions and its cap live in work-driver-corrective-admission.ts; this
+ * fence asks it the question AFTER the fence and the protected-path gate have
+ * answered, so neither can be overridden from below.
  *
  * #1557 adds the one thing that rule could not reach: a file that does not
  * exist yet. A spec deliverable's PATTERN slot (`review-ledger-*.ts`,
@@ -24,28 +33,39 @@
  * protected path still halts.
  */
 
-import path from "node:path";
 import {
   type FixExec,
   type GitRead,
   type TreeChanges,
+  committedChanges,
   headOf,
   trackedPaths,
   treeChanges,
 } from "./work-driver-adversarial-fix-git.ts";
-import { fenceMatches } from "./work-driver-declared-path.ts";
+import {
+  correctiveRoundFor,
+  createCorrectiveAdmission,
+} from "./work-driver-corrective-admission.ts";
+import {
+  anchorDirs,
+  dirOfPath,
+  entryPath,
+  fenceMatches,
+  pathTokenIn,
+} from "./work-driver-declared-path.ts";
 import { protectedPathsIn } from "./work-driver-doctrine.ts";
+import { type Stray, listed, strayReason } from "./work-driver-fix-pass-park-reason.ts";
 import { fanoutLimitFor } from "./work-driver-scope-fanout.ts";
 import {
   type Admission,
   type AdmissionRefusal,
-  SPEC_SLOT_MAX_FILES,
   type SpecAdmitter,
   type SpecPatternSlot,
   admissionNote,
   createSpecAdmitter,
   specPatternSlots,
 } from "./work-driver-spec-slot-admission.ts";
+import type { CorrectiveRoundEvent } from "./workflow-state-events-corrective.ts";
 import type { PipelineState, Workstream } from "./workflow-state-schema.ts";
 
 export interface FixRequest {
@@ -62,7 +82,7 @@ export interface PassPlan {
   /** Changes against the base commit before the pass (the N=1 baseline). */
   before: TreeChanges;
   declared: string[];
-  /** Tracked, unprotected paths a finding names in an anchor's directory (see namedPaths). */
+  /** Unprotected paths a finding names, tracked at base or already changed by this cycle, in an anchor's directory (see namedPaths). */
   named: string[];
   /** Named paths that widen a declared fence for this pass only. */
   widened: string[];
@@ -75,44 +95,40 @@ export interface PassPlan {
    * it, because that widening reads the tree tracked AT base.
    */
   specSlots: SpecPatternSlot[];
-}
-
-/** The directory a repo-relative path lives in ("" at the root). */
-function dirOfPath(p: string): string {
-  const i = p.lastIndexOf("/");
-  return i < 0 ? "" : p.slice(0, i);
+  /**
+   * #1760 — route (a)'s candidate set: `trackedPaths(base) ∪
+   * committedChanges(base..headBefore)`. Stored, not recomputed, so the
+   * corrective route judges a file against the SAME provenance the finding route
+   * did — two readings of "what this cycle owns" is how one fence gets two
+   * answers.
+   */
+  candidates: ReadonlySet<string>;
+  /** Route (a)'s anchor directories (`anchorDirs`), kept for the same reason. */
+  dirs: ReadonlySet<string>;
 }
 
 /**
  * Named paths a fix pass may widen its fence onto. Generic, not a project list:
- * a finding-named path qualifies only if it is (a) tracked at base, (b) not
- * protected per `protectedPathsIn` (the single source of protected paths), and
- * (c) in the same directory as an anchor — a declared path or a file the
- * workstream already changed. A directory entry (`src/foo/`) is its own
- * directory. The repo root is not an anchor: a root-level anchor would make every
- * root file widenable. Named as a whole path token (`data.txt` does not name `a.txt`).
+ * a finding-named path qualifies only if it is (a) in `candidates` — the union
+ * of the tree tracked at base and the files this cycle already committed
+ * (#1698: a file the cycle's own round created is never tracked at base, so
+ * the tracked-at-base reading alone made it un-nameable by construction),
+ * (b) not protected per `protectedPathsIn` (the single source of protected
+ * paths), and (c) in the same directory as an anchor — a declared path or a
+ * file the workstream already changed. A directory entry (`src/foo/`) is its
+ * own directory. The repo root is not an anchor: a root-level anchor would make
+ * every root file widenable. Named as a whole path token (`data.txt` does not
+ * name `a.txt`).
  */
 export function namedPaths(
   findings: string,
-  tracked: readonly string[],
+  candidates: readonly string[],
   anchors: readonly string[],
 ): string[] {
-  const dirs = new Set(
-    anchors
-      .map((a) => {
-        const c = cleaned(a);
-        return c.endsWith("/") ? c.slice(0, -1) : dirOfPath(c);
-      })
-      .filter((d) => d !== ""),
-  );
-  return tracked.filter(
+  const dirs = anchorDirs(anchors);
+  return [...new Set(candidates)].filter(
     (p) => protectedPathsIn([p]).length === 0 && dirs.has(dirOfPath(p)) && pathTokenIn(findings, p),
   );
-}
-
-function pathTokenIn(text: string, p: string): boolean {
-  const escaped = p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\w./-])${escaped}(?![\\w/-]|\\.\\w)`).test(text);
 }
 
 const fenced = (reason: string): { ok: false; reason: string } => ({
@@ -149,9 +165,21 @@ export async function planFixPass(
     if (!head.ok) return fenced(head.reason);
     const before = await treeChanges(execFn, worktree, ps.baseSha ?? "");
     if (!before.ok) return fenced(before.reason);
-    const declared = (ps.workstreams?.[p.workstreamId]?.paths ?? []).map(cleaned);
+    // #1698(a) — "already changed by this cycle" is the COMMITTED diff from
+    // base to the pass's head (treeChanges is worktree-vs-base and also
+    // carries uncommitted/untracked residue; the committed read is the
+    // precise record of what the cycle itself made).
+    const cycle = await committedChanges(execFn, worktree, ps.baseSha ?? "", head.value);
+    if (!cycle.ok) return fenced(cycle.reason);
+    const declared = (ps.workstreams?.[p.workstreamId]?.paths ?? []).map(entryPath);
     // Widening anchors: the declared fence, and what the workstream already changed.
-    const named = namedPaths(p.findings, tracked.value, [...declared, ...before.value.names]);
+    // Widening candidates: tracked at base OR already changed by this cycle.
+    // #1760 — both are computed ONCE here and kept on the plan, because the
+    // corrective route judges a file against the SAME provenance and the SAME
+    // anchors; a second reading of either is how one fence gets two answers.
+    const candidates = [...new Set([...tracked.value, ...cycle.value])];
+    const anchors = [...declared, ...before.value.names];
+    const named = namedPaths(p.findings, candidates, anchors);
     plans.push({
       id: p.workstreamId,
       worktree,
@@ -161,8 +189,10 @@ export async function planFixPass(
       declared,
       named,
       widened: declared.length > 0 ? named.filter((x) => !declared.includes(x)) : [],
-      outOfScope: (ps.workstreams?.[p.workstreamId]?.outOfScope ?? []).map(cleaned),
+      outOfScope: (ps.workstreams?.[p.workstreamId]?.outOfScope ?? []).map(entryPath),
       specSlots,
+      candidates: new Set(candidates),
+      dirs: anchorDirs(anchors),
     });
   }
   return { ok: true, value: plans };
@@ -221,13 +251,10 @@ const fencedBy = (entry: string, file: string): boolean => fenceMatches(entry, f
 
 /**
  * A declared path may carry a planner annotation (`"src/a.ts (new)"`) or a
- * `./` prefix; normalised to the repo-relative form git emits, so a `./` path
- * neither false-parks nor fails to widen a directory anchor.
+ * `./` prefix; the ONE entry-path reading in `work-driver-declared-path` strips
+ * it, so a `./` path neither false-parks nor fails to widen a directory anchor.
  */
-const cleaned = (p: string): string =>
-  path.posix.normalize(p.replace(/\s+\([^)]*\)$/, "").trim()).replace(/^\.\/+/, "");
-
-const listed = (xs: readonly string[]): string => (xs.length > 0 ? xs.join(", ") : "none");
+const cleaned = entryPath;
 
 /**
  * #1557 / #1725 — does a spec deliverable's pattern slot admit `file`?
@@ -250,42 +277,18 @@ function specAdmitsFile(admit: SpecAdmitter, plan: PassPlan, file: string): Admi
 }
 
 /**
- * #1522 — the scope-fence park names the fence it checked (both sets), what
- * the findings said about each stray, where the change sits and how to clear
- * it. The bare clause left the operator to rebuild all of that from the state.
+ * The refusals that OUTRANK the corrective round, stated positively: each is a
+ * guard's decision, not an absence. `fenced` is the fence the PLAN wrote and
+ * `protected` is the protected-path gate's call — a round the driver dispatched
+ * cannot unfence a path on purpose, and it certainly cannot reach a protected
+ * path. `no-slot` and `slot-full` are NOT here: they say the spec never mentioned
+ * the file, which is exactly the gap the corrective round exists to close.
  */
-function strayReason(
-  plan: PassPlan,
-  strays: ReadonlyArray<{ file: string; refused: AdmissionRefusal }>,
-  basis: string,
-): string {
-  const fence =
-    plan.declared.length > 0
-      ? `declared paths: ${listed(plan.declared)}`
-      : `files it already changed: ${listed(plan.before.names)}`;
-  // #1522 — the park names every fence it checked, so the spec slots the pass
-  // also honoured belong in the disclosure: without them an operator reading a
-  // refusal for a *different* file cannot tell what the spec authorised.
-  const spec = `spec pattern slots it admits: ${listed(plan.specSlots.map((s) => s.glob))}`;
-  // #1725 round 3 — the refusal KIND rides the park reason: "why is this file
-  // outside?" must be answerable from the handoff alone. `slot-full` tells the
-  // operator the slot spent its file budget (re-split under another declared
-  // location, or re-plan), instead of leaving the file's fate a mystery.
-  const WHY: Record<AdmissionRefusal, string> = {
-    fenced: "it sits behind this workstream's outOfScope fence, which the spec does not lift",
-    protected: "it is a protected path — the protected-path gate owns that decision",
-    "no-slot": "no spec pattern slot matches it, and no finding names it",
-    "slot-full": `the matching slot has already admitted its ${SPEC_SLOT_MAX_FILES} files — one slot is a bounded authorisation, not a skeleton key`,
-  };
-  const naming = strays
-    .map((s) =>
-      pathTokenIn(plan.findings, s.file)
-        ? `A finding names ${s.file}, but it does not widen the fence (a named file widens only when it is tracked at base, unprotected, and in the directory of a declared or already-changed non-root path); ${WHY[s.refused]}`
-        : `No finding names ${s.file} — ${WHY[s.refused]}`,
-    )
-    .join("; ");
-  const files = strays.map((s) => s.file).join(", ");
-  return `${plan.id} changed ${files} — outside ${basis} (${fence}; ${spec}; finding-named files it admits: ${listed(plan.named)}). ${naming}. The change is still in ${plan.worktree}. To clear it: if a finding's fix needs ${files}, the declared scope is what is wrong — name ${files} in the issue's scope and re-run \`/work <issue> --restart\`; otherwise the pass overreached — revert ${files} in that worktree and land the rest by hand, or re-run \`/work <issue> --restart\``;
+const CORRECTIVE_PRECEDES = ["fenced", "protected"] as const satisfies readonly AdmissionRefusal[];
+
+/** May the corrective round be asked about a file this refusal covered? */
+function outranksCorrective(refused: AdmissionRefusal): boolean {
+  return (CORRECTIVE_PRECEDES as readonly AdmissionRefusal[]).includes(refused);
 }
 
 /**
@@ -299,11 +302,30 @@ function strayReason(
  * real room. Deleting admitted files from the numerator instead (the previous
  * shape) meant a workstream could change an unbounded number of spec-named
  * files and present a numerator of zero.
+ *
+ * #1698(b): the gate owns its input. It takes the PASS-SCOPED
+ * `corrective-round` records — the ones the fix pass's own event window
+ * carries — and derives everything it admits from them, rather than reading a
+ * caller-built string map. A file is admitted on the corrective route only
+ * when all three hold: it is in the round's own target set (the paths its
+ * evidence names), `git` says it changed AFTER the commit the round was
+ * recorded at (so evidence alone cannot authorise a file the pass itself wrote
+ * before the round started), and it is neither fenced nor protected. Admissions
+ * #1698(b): the gate owns its input. It takes the PASS-SCOPED
+ * `corrective-round` records — the ones the fix pass's own event window
+ * carries — and derives everything it admits from them, rather than reading a
+ * caller-built string map. The route's conditions, its cap and its refusal
+ * texts all live in `work-driver-corrective-admission.ts`; this fence hands it
+ * the SAME provenance set and anchor set route (a) was judged against (the
+ * plan's `candidates` / `dirs`, computed once at plan time), and asks it ONE
+ * question per candidate stray — see {@link CORRECTIVE_PRECEDES} for the
+ * refusals the round may not speak over.
  */
 export async function postPassFault(
   execFn: FixExec,
   plans: readonly PassPlan[],
   baseSha: string,
+  corrective: readonly CorrectiveRoundEvent[] = [],
 ): Promise<PostPass> {
   const diffs: Record<string, string> = {};
   // #1725 round 3 — one disclosure note per admitted (workstream, file),
@@ -339,6 +361,24 @@ export async function postPassFault(
       plan.declared.length > 0
         ? [...plan.declared.map(cleaned), ...plan.named]
         : [...plan.before.names, ...plan.named];
+    // #1698(b) — this workstream's corrective round: its conditions, its
+    // post-round commit window, its cap and its disclosure all live in
+    // work-driver-corrective-admission.ts, which is handed this plan's OWN
+    // candidate set and anchor set so both widening routes judge a file against
+    // one reading of what the cycle owns. NO ROUND, NO ROUTE: asking it anyway
+    // would render "the round never named it" on a pass that ran no round, which
+    // is a true-sounding explanation of a route that was never in play. The
+    // FENCE still outranks it: the shared admitter is asked first and a `fenced`
+    // / `protected` refusal is final, so the round can never unfence a path the
+    // plan fenced.
+    const round = correctiveRoundFor(corrective, plan.id);
+    const admission = round
+      ? createCorrectiveAdmission(execFn, round, {
+          worktree: plan.worktree,
+          candidates: plan.candidates,
+          dirs: plan.dirs,
+        })
+      : undefined;
     // #1557 — a new file the spec's pattern slot authorises is in scope
     // exactly as a declared path is; the finding-named widening could never
     // have seen it (`namedPaths` reads the tree tracked AT base, and a file
@@ -353,11 +393,25 @@ export async function postPassFault(
       isFenced: (_id, file) => plan.outOfScope.some((entry) => fencedBy(entry, file)),
       onAdmit: (id, file, slot) => admissions.push(admissionNote(id, file, slot)),
     });
-    const strays: Array<{ file: string; refused: AdmissionRefusal }> = [];
+    const strays: Stray[] = [];
     for (const file of s.value.names) {
       if (allowed.some((a) => allows(a, file))) continue;
       const decision = specAdmitsFile(admit, plan, file);
-      if (!decision.admitted) strays.push({ file, refused: decision.refused });
+      if (decision.admitted) continue;
+      // The corrective route is reached only when the shared admitter's
+      // precedence-bearing refusals did not fire — see {@link CORRECTIVE_PRECEDES}
+      // — and then through ONE entry point, which judges the evidence, the
+      // provenance, the anchor, the window and the cap in its own order.
+      if (admission !== undefined && !outranksCorrective(decision.refused)) {
+        const verdict = await admission.tryAdmit(file);
+        if (verdict.admitted) {
+          admissions.push(`${plan.id}: ${verdict.note}`);
+          continue;
+        }
+        strays.push({ file, refused: decision.refused, correctiveNote: verdict.note });
+        continue;
+      }
+      strays.push({ file, refused: decision.refused });
     }
     if (strays.length > 0) {
       const basis =
