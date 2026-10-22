@@ -180,10 +180,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // Unset: a headless cycle opens its PR as a draft, an interactive one does not.
   flag("DRAFT_PR", null),
   ms("EXPLORE_BOUND_MS", 1_800_000),
-  input("EXTRA_IMAGE_DIRS", "list", null, "cycle", {
-    separator: ":",
-    manifestVersion: 1,
-  }),
+  input("EXTRA_IMAGE_DIRS", "list", null, "cycle", { separator: ":", manifestVersion: 1 }),
   flag("FORBID_LIVE_SPAWN", false, "test"),
   input("FORGE", "enum", null, "cycle", { values: ["github", "gitlab"] }),
   // Unset: probe an unknown forge host unless CI is set.
@@ -191,9 +188,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   list("FRONTEND_ONLY_GLOBS", ",", null),
   ms("GIT_NET_TIMEOUT_MS", 300_000),
   // forge: the driver posts the handoff comment and label; host: the result carries it instead.
-  input("HANDOFF_CHANNEL", "enum", "forge", "cycle", {
-    values: ["forge", "host"],
-  }),
+  input("HANDOFF_CHANNEL", "enum", "forge", "cycle", { values: ["forge", "host"] }),
   flag("HANDOFF_CONSOLIDATE", true),
   flag("HANDOFF_DRAFT_PR", true),
   flag("HANDOFF_POST_RETRY", true),
@@ -417,16 +412,8 @@ export interface HostFile {
  * state, not input, and are deliberately absent: they are not a host contract.
  */
 export const HEADLESS_FILES: readonly HostFile[] = [
-  {
-    path: ".pi/forge",
-    kind: "config",
-    whenAbsent: "forge detected from the git remote",
-  },
-  {
-    path: ".pi/permissions.json",
-    kind: "config",
-    whenAbsent: "~/.pi/agent/permissions.json",
-  },
+  { path: ".pi/forge", kind: "config", whenAbsent: "forge detected from the git remote" },
+  { path: ".pi/permissions.json", kind: "config", whenAbsent: "~/.pi/agent/permissions.json" },
   // #1509 — the per-tier verify budgets a project may declare (#1041). Read
   // like every other `.pi/` config file; an unparseable value is ignored with a
   // trace and the next precedence level answers.
@@ -435,16 +422,8 @@ export const HEADLESS_FILES: readonly HostFile[] = [
     kind: "config",
     whenAbsent: "smoke tier uses PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS or its default",
   },
-  {
-    path: ".pi/smoke-cmd",
-    kind: "command",
-    whenAbsent: "no product smoke gate",
-  },
-  {
-    path: ".pi/verify-cmd",
-    kind: "command",
-    whenAbsent: "verify command derived from the repo",
-  },
+  { path: ".pi/smoke-cmd", kind: "command", whenAbsent: "no product smoke gate" },
+  { path: ".pi/verify-cmd", kind: "command", whenAbsent: "verify command derived from the repo" },
   {
     path: ".pi/verify-cmd-fast",
     kind: "command",
@@ -455,11 +434,7 @@ export const HEADLESS_FILES: readonly HostFile[] = [
     kind: "config",
     whenAbsent: "fast tier uses PI_ENSEMBLE_VERIFY_FAST_TIMEOUT_MS or its default",
   },
-  {
-    path: ".pi/verify-cmd-full",
-    kind: "command",
-    whenAbsent: "verify-full tier skipped",
-  },
+  { path: ".pi/verify-cmd-full", kind: "command", whenAbsent: "verify-full tier skipped" },
   {
     path: ".pi/verify-timeout-ms",
     kind: "config",

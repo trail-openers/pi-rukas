@@ -430,7 +430,10 @@ async function main() {
       // is the ms-flake the NOW lesson names; ≤ 40m and > 39m still fails the
       // unreserved (50m) and over-reserved (30m) bounds this rule exists to catch.
       assert(
-        dev !== undefined && dev.timeoutMs !== undefined && dev.timeoutMs <= 40 * MIN && dev.timeoutMs > 35 * MIN,
+        dev !== undefined &&
+          dev.timeoutMs !== undefined &&
+          dev.timeoutMs <= 40 * MIN &&
+          dev.timeoutMs > 39 * MIN,
         `a develop fix pass under the review clock is bound to the remaining budget MINUS the owed round's reserve (50m left → 40m; got ${dev?.timeoutMs})`,
       );
 

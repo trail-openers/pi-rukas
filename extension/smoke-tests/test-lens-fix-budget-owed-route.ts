@@ -208,6 +208,37 @@ async function main() {
     }
   }
   {
+    // #1774 — the verdict's OWN head is the only thing that may license the
+    // route. `pipelineState.lensReviewedHead` equal to the current tip must
+    // NOT vouch for a verdict that recorded no head: the stamp moves when a
+    // later round reads a different head, so the fallback could pass while
+    // the findings described an entirely different commit.
+    const { ctx, repoRoot, gh } = disclosureCtx({ headSha: HEAD_SHA });
+    try {
+      const base = appendEvent(
+        reviewStateAt(Date.now() - 85 * MIN, HEAD_SHA), // state-level stamp == tip
+        approvedEv,
+        issuesEv("ISSUES_FOUND"), // the EVENT records no head
+      );
+      const out = await parkLensRoundNoFit(ctx, base, Date.now());
+      const tail = out.eventLog[out.eventLog.length - 1];
+      assert(
+        tail?.kind === "cap-hit" && tail.nextStep === "handoff",
+        "#1774: a verdict with no head of its own parks even when lensReviewedHead matches the tip — the state stamp cannot vouch for a verdict that never recorded one",
+      );
+      assert(
+        !gh.some((c) => /^gh pr comment/.test(c)),
+        "…and nothing is posted on the strength of that stamp",
+      );
+      assert(
+        tail?.kind === "cap-hit" && /no full commit head/.test(tail.evidence ?? ""),
+        "…and the evidence says WHY: the verdict recorded no head to compare",
+      );
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }
+  {
     // A round that came back CLEAN supersedes the earlier findings: the fix was
     // verified, and posting the older round's findings as "unverified" would
     // resurrect what the loop already resolved.

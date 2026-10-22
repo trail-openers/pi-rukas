@@ -20,7 +20,9 @@
  *  3. #1644 — the develop fix pass the adversarial gate requests is PARKED
  *     (zero dispatches) when the loop has less than `MIN_USEFUL_MS.develop`
  *     left; it used to dispatch under the 60-second floor and be killed to
- *     produce nothing.
+ *     produce nothing. The fan-out additionally does NOT retry it (#1774 —
+ *     section 6): the refusal is a clock reading, so a reset + re-dispatch
+ *     would destroy work to produce the same refusal.
  *
  * `PI_ENSEMBLE_REVIEW_ENFORCE=0` must stay byte-identical to the pre-cap
  * shape: no bound, no park, no cap — asserted last.
@@ -223,15 +225,15 @@ async function main() {
         `…25m fits and arms exactly the 15m floor (bound ${((reviewFixDispatchBoundMs(at25, "lens-fix", tFit) ?? 0) / MIN).toFixed(0)}m)`,
       );
       const { runDevelopTopological } = await import("../src/work-develop-topological.ts");
-      const ctx = developCtx(repo, seen);
+      const { ctx, dispatch, exec } = developCtx(repo, seen);
       const out = await runDevelopTopological(
         ctx,
         withClock,
         ["default"],
         passWorkstreams,
         [1742],
-        ctx.dispatchFn as never,
-        async () => ({ stdout: "", stderr: "" }) as never,
+        dispatch,
+        exec,
         Date.now(),
         "job-1742-fixpass",
       );
@@ -275,15 +277,15 @@ async function main() {
           reviewCapStartedAt: Date.now() - (90 * MIN - 5 * MIN),
         },
       };
-      const ctx2 = developCtx(repo, seen);
+      const { ctx: ctx2, dispatch: dispatch2, exec: exec2 } = developCtx(repo, seen);
       await runDevelopTopological(
         ctx2,
         freshState,
         ["default"],
         firstPass,
         [1742],
-        ctx2.dispatchFn as never,
-        async () => ({ stdout: "", stderr: "" }) as never,
+        dispatch2,
+        exec2,
         Date.now(),
         "job-1742-first",
       );
@@ -327,6 +329,61 @@ async function main() {
       delete process.env.PI_ENSEMBLE_REVIEW_ENFORCE;
       rmSync(repo, { recursive: true, force: true });
     }
+  }
+
+  // ─────── 6. #1774 — a budget-refused fix pass is not retried ───────
+  {
+    const { runIndependentFanout } = await import("../src/work-develop-retry.ts");
+    const budgetReason =
+      "lens-review-timeout: the review-loop budget cannot fit the develop fix pass — not dispatched";
+    // A refusal is a clock reading, not a transient failure: the fan-out must
+    // settle it where it stands. Without the exclusion, the fan-out resets
+    // the worktree (git ops that destroy work the save exists to protect) and
+    // re-dispatches into the same refusal.
+    const runs: string[] = [];
+    const resets: string[] = [];
+    const firstPassFailed = new Set<string>();
+    const out = await runIndependentFanout({
+      independent: ["refused", "green", "transient"],
+      preserved: new Set<string>(),
+      skip: [],
+      runAt: async (id) => {
+        runs.push(id);
+        if (id === "refused") return { id, ok: false, reason: budgetReason, noRetry: true };
+        if (id === "transient" && runs.filter((r) => r === "transient").length === 1)
+          return { id, ok: false, reason: "dispatch exited 1" };
+        return { id, ok: true };
+      },
+      resetFor: async (id) => {
+        resets.push(id);
+        return { attempt: 1 };
+      },
+      verdicts: [],
+      multi: true,
+      firstPassFailed,
+    });
+    assert(
+      runs.filter((r) => r === "refused").length === 1 && !resets.includes("refused"),
+      "#1774: the budget-refused pass runs ONCE — no reset, no re-dispatch (got runs=" +
+        runs.filter((r) => r === "refused").length +
+        ", resets=" +
+        resets.includes("refused") +
+        ")",
+    );
+    assert(
+      out.some((v) => v.id === "refused" && !v.ok && v.reason === budgetReason),
+      "…and its named refusal survives verbatim to the final verdicts",
+    );
+    assert(
+      firstPassFailed.has("refused"),
+      "…and it still counts as a first-pass failure (its dependents stay skipped)",
+    );
+    // Canary: the retry machinery is live for REAL transient failures —
+    // otherwise the exclusion above passes vacuously.
+    assert(
+      runs.filter((r) => r === "transient").length === 2 && resets.includes("transient"),
+      "canary: an ordinary transient failure IS reset and re-dispatched once, so the exclusion above is not vacuous",
+    );
   }
 
   process.exit(exit);

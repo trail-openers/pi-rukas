@@ -7,6 +7,11 @@
  * the bound it was handed, and a scripted git/gh exec that lets
  * `currentPatchIdentity` resolve and `gh pr comment` be recorded or failed —
  * the same four commands `test-draft-disclosure-carries-marker-1398.ts` pins.
+ *
+ * #1774 — every scripted seam is TYPED (the driver's own function types), not
+ * cast through `never`/`unknown`: a fabricated event shape here once carried
+ * `round:` where the event declares `rounds:`, and no compiler ever saw it.
+ * The fixture is in the smoke-tests tsconfig project; the shapes are checked.
  */
 
 import { execFile } from "node:child_process";
@@ -15,7 +20,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { DispatchResult } from "../../src/types.ts";
-import type { DriverContext } from "../../src/work-driver-context.ts";
+import type { CycleContext, DriverContext } from "../../src/work-driver-context.ts";
+import type { DriverExecFn } from "../../src/work-driver-context.ts";
+import type { DriverHost } from "../../src/work-driver-host.ts";
 import { createEmitSink } from "../../src/work-state-emit.ts";
 import { type WorkEvent, type WorkState, initialState } from "../../src/workflow-state.ts";
 import { commandOf } from "./argv-shell.ts";
@@ -87,17 +94,25 @@ export const FINDINGS = JSON.stringify([
     title: "duplicated guard",
   },
 ]);
-export const approvedEv: WorkEvent = {
+/** #1774 — typed against the event itself: `rounds` (plural) is what
+ *  `adversarial-approved` declares, and `satisfies` fails the build when a
+ *  fixture drifts from the schema instead of silently widening to a lie. */
+export const approvedEv = {
   kind: "adversarial-approved",
   at: 1_000_002,
   jobId: "adv",
-  round: 1,
-};
+  rounds: 1,
+} satisfies WorkEvent;
 /** The verdict event the lens step persists. `headSha` is the head the round
  *  read (#1742): the owed-round `ci` route may only be taken when it equals
  *  the branch tip, so a test that wants the route passes HEAD_SHA and a test
- *  that wants the park passes a head that is no longer current. */
-export const issuesEv = (verdict: string, headSha?: string): WorkEvent => ({
+ *  that wants the park passes a head that is no longer current. The verdict
+ *  parameter is the event's OWN narrow union (#1774) — a typo'd verdict is a
+ *  compile error, not a silently-unmatched string. */
+export const issuesEv = (
+  verdict: Extract<WorkEvent, { kind: "lens-issues-found" }>["verdict"],
+  headSha?: string,
+): Extract<WorkEvent, { kind: "lens-issues-found" }> => ({
   kind: "lens-issues-found",
   at: 1_000_003,
   jobId: "j",
@@ -105,10 +120,11 @@ export const issuesEv = (verdict: string, headSha?: string): WorkEvent => ({
   verdict,
   ...(headSha ? { headSha } : {}),
   findings: FINDINGS,
-  totalFindings: 1,
 });
 /** A round that came back clean — it supersedes any earlier round's findings. */
-export const lensApprovedEv = (round: number): WorkEvent => ({
+export const lensApprovedEv = (
+  round: number,
+): Extract<WorkEvent, { kind: "lens-approved" }> => ({
   kind: "lens-approved",
   at: 1_000_004,
   jobId: "j2",
@@ -121,7 +137,7 @@ export function disclosureCtx(opts: { ghFails?: string; headSha?: string } = {})
   const repoRoot = mkdtempSync(path.join(tmpdir(), "pi-ens-1742-disc-"));
   const gh: string[] = [];
   const notices: string[] = [];
-  const execFn = (async (cmd: string, o?: { argv?: string[] }) => {
+  const execFn: DriverExecFn = async (cmd, o) => {
     const line = commandOf(cmd, o);
     if (/^gh\b/.test(line)) {
       gh.push(line);
@@ -138,65 +154,84 @@ export function disclosureCtx(opts: { ghFails?: string; headSha?: string } = {})
     // patch id; the owed-round route compares it against the recorded head.
     if (line.includes("rev-parse")) return { stdout: `${opts.headSha ?? HEAD_SHA}\n` };
     return { stdout: "" };
-  }) as never;
-  const ctx = {
-    host: { sendUserMessage: (text: unknown) => notices.push(String(text)) } as never,
+  };
+  const host: DriverHost = {
+    sendUserMessage: (text) => {
+      notices.push(text);
+    },
+    emit: () => undefined,
+  };
+  const ctx: CycleContext = {
+    host,
     repoRoot,
     issue: 1742,
     emitSink: createEmitSink(() => undefined),
     verifyExecFn: execFn,
-  } as unknown as DriverContext;
+  };
   return { ctx, repoRoot, gh, notices };
+}
+
+type ScriptedDispatch = NonNullable<DriverContext["dispatchFn"]>;
+type ScriptedExec = NonNullable<DriverContext["verifyExecFn"]>;
+
+const okDispatch: DispatchResult = {
+  role: "developer",
+  ok: true,
+  text: "fixed",
+  toolUses: [],
+  ms: 1,
+  exitCode: 0,
+};
+
+/** A host whose notices go nowhere and whose emit is the required no-op. */
+function silentHost(): DriverHost {
+  return { sendUserMessage: () => undefined, emit: () => undefined };
 }
 
 export function dispatchCtx(
   repo: string,
   onDispatch: (opts?: { timeoutMs?: number }) => void,
-): DriverContext {
+): CycleContext & { dispatchFn: ScriptedDispatch } {
+  const dispatchFn: ScriptedDispatch = async (_pi, _spec, opts) => {
+    onDispatch(opts);
+    return okDispatch;
+  };
   return {
-    host: { sendUserMessage: () => undefined } as never,
+    host: silentHost(),
     repoRoot: repo,
     issue: 1742,
     emitSink: createEmitSink(() => undefined),
-    dispatchFn: (async (_pi: unknown, _spec: unknown, opts?: { timeoutMs?: number }) => {
-      onDispatch(opts);
-      return {
-        role: "developer",
-        ok: true,
-        text: "fixed",
-        toolUses: [],
-        ms: 1,
-        exitCode: 0,
-      } as DispatchResult;
-    }) as never,
+    dispatchFn,
     issueBodyFetcherFn: async () => ({
       stdout: "title:\tmock\nstate:\tOPEN\n\nbody — non-empty so the guard does not fire",
     }),
-  } as unknown as DriverContext;
+  };
 }
 
 /** The ctx the develop fix-pass block drives `runDevelopTopological` with:
- *  dispatches are recorded (label + bound), every git exec answers empty. */
+ *  dispatches are recorded (label + bound), every git exec answers empty.
+ *  #1774 — `dispatch` and `exec` are returned ALREADY TYPED so the test
+ *  passes them straight into runDevelopTopological: the casts they used to
+ *  carry (`as never`) were the reason a wrong seam signature compiled. */
 export function developCtx(
   repo: string,
   seen: Array<{ label?: string; timeoutMs?: number }>,
-): DriverContext {
+): { ctx: CycleContext; dispatch: ScriptedDispatch; exec: ScriptedExec } {
+  const dispatchFn: ScriptedDispatch = async (_pi, _spec, o) => {
+    seen.push({ label: o?.label, timeoutMs: o?.timeoutMs });
+    return okDispatch;
+  };
+  const exec: ScriptedExec = async () => ({ stdout: "", stderr: "" });
   return {
-    host: { sendUserMessage: () => undefined } as never,
-    repoRoot: repo,
-    issue: 1742,
-    emitSink: createEmitSink(() => undefined),
-    dispatchFn: (async (_pi: unknown, _spec: unknown, o?: { label?: string }) => {
-      seen.push({ label: o?.label, timeoutMs: o?.timeoutMs });
-      return {
-        role: "developer",
-        ok: true,
-        text: "fixed",
-        toolUses: [],
-        ms: 1,
-        exitCode: 0,
-      } as DispatchResult;
-    }) as never,
-    verifyExecFn: async () => ({ stdout: "", stderr: "" }),
-  } as unknown as DriverContext;
+    ctx: {
+      host: silentHost(),
+      repoRoot: repo,
+      issue: 1742,
+      emitSink: createEmitSink(() => undefined),
+      dispatchFn,
+      verifyExecFn: exec,
+    },
+    dispatch: dispatchFn,
+    exec,
+  };
 }

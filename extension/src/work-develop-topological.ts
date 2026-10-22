@@ -100,6 +100,7 @@ async function runDevelopTopological(
     ok: boolean;
     reason?: string;
     claimed?: true;
+    noRetry?: true;
   }> = [];
   const branchEvents: WorkEvent[] = [];
   const dependsOnMap: Record<string, string[]> = {};
@@ -231,7 +232,11 @@ async function runDevelopTopological(
       const cwd = worktrees[id];
       if (typeof cwd !== "string") return { id, ok: false, reason: "no worktree" };
       const r = await runOneWorkstream(id, cwd);
-      if (!r.ok) return { id, ok: false, reason: r.reason };
+      // #1774 — the budget refusal's `noRetry` marker rides through this
+      // wrapper: dropped here, the fan-out would treat a deterministic
+      // refusal as a transient failure and retry it.
+      if (!r.ok)
+        return { id, ok: false, reason: r.reason, ...(r.noRetry ? { noRetry: true } : {}) };
       const base = workstreamBaseShas[id] ?? globalBaseSha;
       // #1016 — the #622 safety net commits leftover edits before the green check.
       if (isValidBaseSha(base)) {
